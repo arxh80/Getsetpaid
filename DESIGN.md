@@ -2,6 +2,8 @@
 
 The visual direction for GetSetPaid. This is the source of truth for colour, type, spacing and shape. PRD §9 sets the UX requirements; this file sets the concrete values.
 
+**Building UI? Read ["Build-time design tooling"](#build-time-design-tooling) first** — it names which design skills to invoke, in what order, and which of their defaults to discard.
+
 **Direction:** minimalist, sharp-edged, bold serif. No rounded corners, no drop shadows, no gradients. Structure comes from hairline rules, generous whitespace and typographic weight — not from decoration.
 
 ---
@@ -255,6 +257,74 @@ Reject these in review:
 - Numbers in a table without `tabular-nums`.
 - A gradient anywhere.
 - Adding a colour that is not in this file. Extend the file first, with a measured ratio from `scripts/contrast.py`.
+
+---
+
+## Build-time design tooling
+
+When the build starts, no UI is written from scratch and unaided. Every screen goes through the design skills below. This section is the contract for how they are used.
+
+### The precedence rule
+
+> **This file outranks every skill.** Skills supply method — layout systems, component anatomy, UX heuristics, accessibility checks. They do **not** supply our tokens. Where a skill's default fights a rule here, this file wins, silently and always.
+
+The defaults that will fight us, in every skill: rounded corners, drop shadows, gradients, glassmorphism, sans-serif type stacks, indigo/violet "SaaS" accent colours, bouncy spring motion, and generic sales-CRM layouts. Take the structure, throw away the styling, re-express it in the tokens above.
+
+If a skill's output cannot be expressed in these tokens, the answer is to extend this file deliberately — with a measured contrast ratio — not to let the skill's palette in through a component.
+
+### Order of invocation — every piece of UI
+
+1. **`superpowers:brainstorming`** — before any screen or component. Settle the job the screen does and the states it has (empty, loading, partial, error, dense, over-limit) before pixels.
+2. **`hallmark`** — pinned in `skills-lock.json`, so it is the house style engine. Use its `study` / greenfield verbs for structure, macrostructure and slop avoidance. `.agents/skills/hallmark/references/` holds the detail: `layout-and-space.md`, `typography.md`, `interaction-and-states.md`, `motion.md`, `responsive.md`, `component-cookbook.md`, `anti-patterns.md`, `slop-test.md`.
+3. **`ui-ux-pro-max:ui-ux-pro-max`** — the UX layer: product-type patterns, 99 UX guidelines, interaction states, accessibility. Ignore its style/palette/font-pairing catalogues entirely; we already have those.
+4. **`frontend-design:frontend-design`** — the check against templated defaults. Run it on anything that starts to look like a generic dashboard.
+5. **`ui-ux-pro-max:ui-styling`** — implementation in Tailwind/shadcn. Every shadcn component ships rounded and shadowed; override at token level (`--radius: 0`, shadows off) once in the theme, never per component.
+
+Steps 1–2 are non-negotiable. 3–5 are as needed but expected on anything larger than a single control.
+
+### Skill map
+
+| Use case | Skill | Take | Discard |
+|---|---|---|---|
+| House style, structure, anti-slop | `hallmark` | Macrostructure, spacing rhythm, state coverage, slop test | Its theme/colour presets |
+| UX patterns, flows, a11y heuristics | `ui-ux-pro-max:ui-ux-pro-max` | Product-type patterns, UX rules, interaction states | Style catalogue, palettes, font pairings |
+| Distinctive visual direction | `frontend-design:frontend-design` | The "does this read as a template?" test | Any new palette |
+| Tailwind / shadcn implementation | `ui-ux-pro-max:ui-styling` | Component anatomy, Radix a11y wiring | Default radius, shadow, colour ramp |
+| Token architecture as it grows | `ui-ux-pro-max:design-system` | Primitive → semantic → component layering | Its example scales — ours are set above |
+| Charts and finance visuals | `dataviz` | Chart-type choice, axis/legend/tooltip rules, stat tiles | Its placeholder palette — use `--accent`, `--lilac`, `--pink` |
+| Motion, drawers, transitions | `framer-motion-best-practices` | `AnimatePresence`, layout animation, reduced-motion | Springs and bounce — see [Motion](#motion) |
+| Reference-driven redesign | `taste-skill:redesign-skill`, `taste-skill:minimalist-skill` | Editorial density, typographic contrast | Warm-monochrome palette, pastel drift |
+| Screenshot → component | `taste-skill:image-to-code-skill` | Structure extraction | Everything visual from the source image |
+| High-polish marketing/landing pages | `frontend-design-pro:frontend-design-pro` | Composition, imagery direction | Stock-photo maximalism; never used inside the app |
+| Mockups before code | `design` (canvas) | Fast artboard exploration of a flow | — |
+| Logo, brand marks, identity | `ui-ux-pro-max:brand`, `taste-skill:brandkit` | Identity system thinking | Palette proposals |
+| Imagery and OG assets | `banana-claude:banana`, `ui-ux-pro-max:banner-design` | Generated marketing imagery only | Any use inside product UI |
+| Second opinion on a visual call | `bencium-controlled-ux-designer` | Its ask-before-deciding discipline | — |
+
+**Do not use in this product:** `taste-skill:soft-skill` (rounded, soft — directly opposed to our shape rule), `taste-skill:brutalist-skill` (degradation/analog effects — we are sharp, not distressed), `scroll-world` (scroll-jacking), `21st-registry` (publishes our components publicly — not while the design is proprietary), `ui-ux-pro-max:slides` and `artifact-*` (documents and decks, not product UI).
+
+### Phase mapping
+
+| Build phase | Skills |
+|---|---|
+| Scaffold Next.js + theme | `ui-ux-pro-max:ui-styling` → tokens from [Tokens](#tokens) as the single theme source |
+| Primitive components (button, input, chip, table, drawer) | `hallmark` + `ui-ux-pro-max:ui-styling` + `ui-ux-pro-max:design-system` |
+| Golden path screens (contact → event → artist → venue → task → activity) | `superpowers:brainstorming` → `hallmark` → `ui-ux-pro-max:ui-ux-pro-max` |
+| The shared timeline/activity component | `hallmark` (one component, reused everywhere — decide it once) |
+| Event finance: budget & actuals | `dataviz` + `tabular-nums` rule above |
+| Drawers, command palette, transitions | `framer-motion-best-practices` under our motion tokens |
+| Empty states and onboarding copy | `hallmark` (`copy.md`) — empty states teach the workflow |
+| Public marketing site (post-MVP) | `frontend-design-pro:frontend-design-pro`, `banana-claude:banana` |
+
+### Gate before any UI merges
+
+1. `python scripts/contrast.py` passes.
+2. `hallmark` slop test passes (`references/slop-test.md`).
+3. Zero non-zero `border-radius`, zero `box-shadow`, zero gradient in the diff.
+4. No literal hex in a component — tokens only.
+5. Keyboard path complete and focus visible on every surface.
+
+Failing any of these means the feature is not done, same as a failing test.
 
 ---
 

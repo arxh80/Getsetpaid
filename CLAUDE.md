@@ -90,7 +90,7 @@ Type is Source Serif 4 throughout, with `tabular-nums` mandatory on every number
 
 `python scripts/contrast.py` audits the whole token contract against WCAG 2.2 AA and exits non-zero on any failure. Run it after touching a colour; any colour added to `DESIGN.md` arrives with its measured ratio.
 
-The product must not look like a re-skinned generic sales CRM. The `hallmark` skill (pinned in `skills-lock.json`) and `ui-ux-pro-max` are the intended design tooling.
+The product must not look like a re-skinned generic sales CRM. **`DESIGN.md` § "Build-time design tooling" is the contract for which design/UI/UX skills to invoke and in what order** — `superpowers:brainstorming` → `hallmark` (pinned in `skills-lock.json`) → `ui-ux-pro-max` → `frontend-design` → `ui-ux-pro-max:ui-styling`, plus `dataviz` for charts and `framer-motion-best-practices` for motion. Skills supply method; `DESIGN.md` supplies the tokens and outranks every skill default (rounded corners, shadows, gradients, sans stacks).
 
 Priorities: high information density without clutter; keyboard-first navigation and global command/search; contextual drawers for quick edits; one consistent timeline/activity component reused across every entity; status chips and relationship indicators; empty states that teach the workflow; WCAG 2.2 AA from the start, not retrofitted.
 
