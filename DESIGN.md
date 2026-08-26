@@ -172,6 +172,34 @@ Only `opacity`, `background-color`, `border-color` and `transform: translate` ar
 
 ---
 
+## Error pages
+
+404, 403, 500 and maintenance/offline all share one layout: they are not a place to teach the product (that's what empty states are for) — they are a dead end, and the job is to get the user out of it in one click.
+
+**Layout.** Centred on `--shell`, no chrome beyond the global nav if the session is authenticated. Large display numeral in `--text-5xl`/`--font-display`, one short sentence under it in `--text-lg`, one primary button back to safety. No illustration, no mascot, no joke copy — sharp-edged and quiet, consistent with the rest of the product.
+
+```
+404
+Page not found.
+[ Back to dashboard ]
+```
+
+The numeral may use `--danger` at display size (≥24px bold clears 3:1, same rule as `--accent`); body copy stays `--ink`. Never colour-only — the numeral and the label always ship together.
+
+| Page | Copy | Primary action | Notes |
+|---|---|---|---|
+| 404 Not found | "Page not found." | Back to dashboard | Also served for any record ID that doesn't resolve — see the tenant-isolation rule below |
+| 403 Forbidden | "You don't have access to this." | Back to dashboard | Only for a route that is category-gated (e.g. a Free-tier user hitting a Pro-only page) — never used for a record in another org, see below |
+| 500 Server error | "Something went wrong on our end." | Retry / Back to dashboard | No stack trace, no error ID exposed unless it's a correlation ID meant for support |
+| Maintenance / offline | "GetSetPaid is temporarily unavailable." | — (no action; optional status-page link if one exists) | Static page, must render with no JS/DB dependency |
+| Unauthenticated | "Sign in to continue." | Sign in | Redirect-after-login preserves the original destination |
+
+**Tenant-isolation rule (security-critical, ties to `CLAUDE.md` § Non-negotiable rules and the IDOR/BOLA testing gate):** a record that exists but belongs to another organisation must render the **identical 404** as a record that doesn't exist at all. Never a distinguishing 403, never a different message, never a different response time band. Returning 403 for "exists, not yours" and 404 for "doesn't exist" is an enumeration oracle — it lets an attacker map another tenant's IDs. 403 is reserved for feature/tier gating on a route the user's own org simply can't access, not for cross-tenant record lookups.
+
+**Copy tone:** plain, no blame, no apology beyond "something went wrong." No exclamation marks, no "oops," matching the serif/sharp-edged direction — errors are not the place for personality.
+
+---
+
 ## Tokens
 
 Drop-in CSS custom properties.
