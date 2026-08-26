@@ -15,7 +15,9 @@ The PRD is a binary docx and no text version is committed. To read it, run `pyth
 
 ## Current state
 
-The repo contains **no application code yet** — only the PRD, `skills-lock.json` (pins the `hallmark` design skill) and `.agents/skills/hallmark/` reference docs. There is no build, lint or test command yet. When the stack is scaffolded, adding those commands to this file is part of that work.
+The repo contains **no application code yet** — only the PRD, the design and security docs, and the pinned agent skills (`skills-lock.json` + `.agents/skills/`). There is no build, lint or test command yet. When the stack is scaffolded, adding those commands to this file is part of that work.
+
+Skills are pinned project-level so every agent and every machine gets the same set: restore with `npx skills experimental_install`, check updates with `npx skills check`. The roster and what each one is for live in `DESIGN.md` § "Build-time design tooling".
 
 ## Git workflow (required)
 
@@ -116,7 +118,13 @@ Type is Source Serif 4 throughout, with `tabular-nums` mandatory on every number
 
 `python scripts/contrast.py` audits the whole token contract against WCAG 2.2 AA and exits non-zero on any failure. Run it after touching a colour; any colour added to `DESIGN.md` arrives with its measured ratio.
 
-The product must not look like a re-skinned generic sales CRM. **`DESIGN.md` § "Build-time design tooling" is the contract for which design/UI/UX skills to invoke and in what order** — `superpowers:brainstorming` → `hallmark` (pinned in `skills-lock.json`) → `ui-ux-pro-max` → `frontend-design` → `ui-ux-pro-max:ui-styling`, plus `dataviz` for charts and `framer-motion-best-practices` for motion. Skills supply method; `DESIGN.md` supplies the tokens and outranks every skill default (rounded corners, shadows, gradients, sans stacks).
+The product must not look like a re-skinned generic sales CRM. **`DESIGN.md` § "Build-time design tooling" is the contract for which design/UI/UX/frontend skills to invoke and in what order.** Three passes over every piece of UI:
+
+1. **Decide** — `superpowers:brainstorming` → `hallmark` → `ui-ux-pro-max` → `frontend-design`.
+2. **Build** — `tailwind-design-system` (v4 `@theme`) → `shadcn-ui` + `ui-ux-pro-max:ui-styling` → `nextjs-app-router-patterns` + `vercel-composition-patterns` → `typescript-advanced-types`; `dataviz` for charts, `framer-motion-best-practices` for motion.
+3. **Review before merge** — `web-design-guidelines` on the diff, `accessibility-compliance` for WCAG 2.2 AA, `vercel-react-best-practices` on anything rendering a list or table.
+
+Skills supply method; `DESIGN.md` supplies the tokens and **outranks every skill default** (rounded corners, shadows, gradients, sans stacks, stock palettes).
 
 Priorities: high information density without clutter; keyboard-first navigation and global command/search; contextual drawers for quick edits; one consistent timeline/activity component reused across every entity; status chips and relationship indicators; empty states that teach the workflow; WCAG 2.2 AA from the start, not retrofitted.
 

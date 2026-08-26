@@ -272,15 +272,49 @@ The defaults that will fight us, in every skill: rounded corners, drop shadows, 
 
 If a skill's output cannot be expressed in these tokens, the answer is to extend this file deliberately — with a measured contrast ratio — not to let the skill's palette in through a component.
 
-### Order of invocation — every piece of UI
+### Installed skills
 
-1. **`superpowers:brainstorming`** — before any screen or component. Settle the job the screen does and the states it has (empty, loading, partial, error, dense, over-limit) before pixels.
-2. **`hallmark`** — pinned in `skills-lock.json`, so it is the house style engine. Use its `study` / greenfield verbs for structure, macrostructure and slop avoidance. `.agents/skills/hallmark/references/` holds the detail: `layout-and-space.md`, `typography.md`, `interaction-and-states.md`, `motion.md`, `responsive.md`, `component-cookbook.md`, `anti-patterns.md`, `slop-test.md`.
-3. **`ui-ux-pro-max:ui-ux-pro-max`** — the UX layer: product-type patterns, 99 UX guidelines, interaction states, accessibility. Ignore its style/palette/font-pairing catalogues entirely; we already have those.
-4. **`frontend-design:frontend-design`** — the check against templated defaults. Run it on anything that starts to look like a generic dashboard.
-5. **`ui-ux-pro-max:ui-styling`** — implementation in Tailwind/shadcn. Every shadcn component ships rounded and shadowed; override at token level (`--radius: 0`, shadows off) once in the theme, never per component.
+Design and frontend skills are pinned **project-level** in `skills-lock.json` and vendored to `.agents/skills/`, so the whole team and every agent get the same set:
 
-Steps 1–2 are non-negotiable. 3–5 are as needed but expected on anything larger than a single control.
+| Skill | Source | Role |
+|---|---|---|
+| `hallmark` | `nutlope/hallmark` | House style, structure, anti-slop |
+| `web-design-guidelines` | `vercel-labs/agent-skills` | UI review against the Web Interface Guidelines |
+| `vercel-react-best-practices` | `vercel-labs/agent-skills` | React/Next performance patterns |
+| `vercel-composition-patterns` | `vercel-labs/agent-skills` | Compound components, reusable APIs |
+| `nextjs-app-router-patterns` | `wshobson/agents` | Server Components, streaming, data fetching |
+| `tailwind-design-system` | `wshobson/agents` | Tailwind v4 CSS-first `@theme` tokens |
+| `shadcn-ui` | `giuseppe-trisciuoglio/developer-kit` | shadcn component anatomy and setup |
+| `typescript-advanced-types` | `wshobson/agents` | Type-level modelling |
+| `accessibility-compliance` | `wshobson/agents` | WCAG 2.2 AA, ARIA, focus management |
+
+Plus the globally installed `ui-ux-pro-max:*`, `frontend-design`, `taste-skill:*`, `dataviz`, `framer-motion-best-practices` and `superpowers:*`.
+
+Restore after a clone with `npx skills experimental_install`; check for updates with `npx skills check`. Adding a skill means adding a row here in the same commit.
+
+### Order of invocation — three passes over every piece of UI
+
+**Pass 1 — Decide (before any code)**
+
+1. **`superpowers:brainstorming`** — settle the job the screen does and the states it has (empty, loading, partial, error, dense, over-limit) before pixels.
+2. **`hallmark`** — pinned house style engine. Its `study` / greenfield verbs for structure, macrostructure and slop avoidance. `.agents/skills/hallmark/references/` holds the detail: `layout-and-space.md`, `typography.md`, `interaction-and-states.md`, `motion.md`, `responsive.md`, `component-cookbook.md`, `anti-patterns.md`, `slop-test.md`.
+3. **`ui-ux-pro-max:ui-ux-pro-max`** — UX layer: product-type patterns, UX guidelines, interaction states. Ignore its style/palette/font-pairing catalogues entirely; we already have those.
+4. **`frontend-design:frontend-design`** — the check against templated defaults. Run it the moment something starts to look like a generic dashboard.
+
+**Pass 2 — Build**
+
+5. **`tailwind-design-system`** — Tailwind v4 is CSS-first, so [our tokens](#tokens) go straight into `@theme` as the single source. Its example scales, palettes and radii are discarded on arrival.
+6. **`shadcn-ui`** + **`ui-ux-pro-max:ui-styling`** — component anatomy and Radix a11y wiring. Every shadcn component ships rounded and shadowed: set `--radius: 0` and strip shadow utilities **once in the theme**, never per component.
+7. **`nextjs-app-router-patterns`** + **`vercel-composition-patterns`** — Server/Client boundary, data fetching, and component APIs. Composition matters most for the one shared timeline/activity component and the entity drawers — build them compound, not as a wall of boolean props.
+8. **`typescript-advanced-types`** — model org scope, roles and entitlements in the type system so a tenant mix-up is a compile error, not a runtime one. It never replaces the RLS policy.
+
+**Pass 3 — Review (before merge)**
+
+9. **`web-design-guidelines`** — run it on the diff. It fetches Vercel's Web Interface Guidelines live and reports `file:line` findings.
+10. **`accessibility-compliance`** — WCAG 2.2 AA is a PRD acceptance criterion, so this runs on every interactive component: ARIA, focus management, focus trapping, keyboard paths, reduced motion.
+11. **`vercel-react-best-practices`** — performance pass on anything rendering a list, a table or a feed. Dense CRM tables are where this pays.
+
+Passes 1 and 3 are non-negotiable. Pass 2 is as needed, but expected on anything larger than a single control.
 
 ### Skill map
 
@@ -289,7 +323,14 @@ Steps 1–2 are non-negotiable. 3–5 are as needed but expected on anything lar
 | House style, structure, anti-slop | `hallmark` | Macrostructure, spacing rhythm, state coverage, slop test | Its theme/colour presets |
 | UX patterns, flows, a11y heuristics | `ui-ux-pro-max:ui-ux-pro-max` | Product-type patterns, UX rules, interaction states | Style catalogue, palettes, font pairings |
 | Distinctive visual direction | `frontend-design:frontend-design` | The "does this read as a template?" test | Any new palette |
-| Tailwind / shadcn implementation | `ui-ux-pro-max:ui-styling` | Component anatomy, Radix a11y wiring | Default radius, shadow, colour ramp |
+| Tailwind v4 theme setup | `tailwind-design-system` | CSS-first `@theme`, token layering, variants | Its palettes, radii, shadow scale |
+| shadcn / Radix components | `shadcn-ui`, `ui-ux-pro-max:ui-styling` | Component anatomy, Radix a11y wiring | Default radius, shadow, colour ramp |
+| Next.js structure and data | `nextjs-app-router-patterns` | Server/Client split, streaming, fetching | Framework-default styling examples |
+| Component API design | `vercel-composition-patterns` | Compound components, context providers | — |
+| React/Next performance | `vercel-react-best-practices` | List/table rendering, bundle, memoisation | — |
+| Types for tenancy and roles | `typescript-advanced-types` | Branded types, discriminated unions | Any suggestion that types replace RLS |
+| WCAG 2.2 AA compliance | `accessibility-compliance` | ARIA patterns, focus trapping, keyboard | Its contrast advice — `scripts/contrast.py` is authoritative |
+| UI review on a diff | `web-design-guidelines` | `file:line` findings, forms/focus/semantics | — |
 | Token architecture as it grows | `ui-ux-pro-max:design-system` | Primitive → semantic → component layering | Its example scales — ours are set above |
 | Charts and finance visuals | `dataviz` | Chart-type choice, axis/legend/tooltip rules, stat tiles | Its placeholder palette — use `--accent`, `--lilac`, `--pink` |
 | Motion, drawers, transitions | `framer-motion-best-practices` | `AnimatePresence`, layout animation, reduced-motion | Springs and bounce — see [Motion](#motion) |
@@ -307,12 +348,14 @@ Steps 1–2 are non-negotiable. 3–5 are as needed but expected on anything lar
 
 | Build phase | Skills |
 |---|---|
-| Scaffold Next.js + theme | `ui-ux-pro-max:ui-styling` → tokens from [Tokens](#tokens) as the single theme source |
-| Primitive components (button, input, chip, table, drawer) | `hallmark` + `ui-ux-pro-max:ui-styling` + `ui-ux-pro-max:design-system` |
+| Scaffold Next.js + theme | `nextjs-app-router-patterns`, `tailwind-design-system` → [Tokens](#tokens) into `@theme` as the single source |
+| Primitive components (button, input, chip, table, drawer) | `hallmark`, `shadcn-ui`, `ui-ux-pro-max:ui-styling`, `accessibility-compliance` |
 | Golden path screens (contact → event → artist → venue → task → activity) | `superpowers:brainstorming` → `hallmark` → `ui-ux-pro-max:ui-ux-pro-max` |
-| The shared timeline/activity component | `hallmark` (one component, reused everywhere — decide it once) |
+| The shared timeline/activity component | `hallmark` + `vercel-composition-patterns` (one component, reused everywhere — decide it once) |
+| Dense list and table views | `vercel-react-best-practices` (virtualisation, memo) + `tabular-nums` |
 | Event finance: budget & actuals | `dataviz` + `tabular-nums` rule above |
-| Drawers, command palette, transitions | `framer-motion-best-practices` under our motion tokens |
+| Drawers, command palette, transitions | `framer-motion-best-practices` + `accessibility-compliance` (focus trapping) under our motion tokens |
+| Org/role/entitlement modelling in the client | `typescript-advanced-types` — types narrow, RLS enforces |
 | Empty states and onboarding copy | `hallmark` (`copy.md`) — empty states teach the workflow |
 | Public marketing site (post-MVP) | `frontend-design-pro:frontend-design-pro`, `banana-claude:banana` |
 
@@ -320,9 +363,9 @@ Steps 1–2 are non-negotiable. 3–5 are as needed but expected on anything lar
 
 1. `python scripts/contrast.py` passes.
 2. `hallmark` slop test passes (`references/slop-test.md`).
-3. Zero non-zero `border-radius`, zero `box-shadow`, zero gradient in the diff.
-4. No literal hex in a component — tokens only.
-5. Keyboard path complete and focus visible on every surface.
+3. `web-design-guidelines` run on the diff, findings cleared.
+4. `accessibility-compliance` pass: keyboard path complete, focus visible on every surface, ARIA correct.
+5. Zero non-zero `border-radius`, zero `box-shadow`, zero gradient, zero literal hex in the diff — tokens only.
 
 Failing any of these means the feature is not done, same as a failing test.
 
