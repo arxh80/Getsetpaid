@@ -1,26 +1,28 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@theme {
+  /* GetSetPaid colour palette — per DESIGN.md */
+  --color-shell: #FFF4F4;
+  --color-lilac: #BDB2FF;
+  --color-pink: #FFD6E0;
+  --color-ink: #14141C;
+  --color-primary: #0062FF;
+  --color-accent: #3A86FF;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  /* Shape — square corners everywhere */
+  --radius: 0;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* Font from next/font/google */
+  --font-serif: var(--font-source-serif-4);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-shell);
+  color: var(--color-ink);
+  font-family: var(--font-serif), "Iowan Old Style", Georgia, "Times New Roman", serif;
+}
+
+/* Tabular figures for numeric columns in tables — no consumer yet, utility exists for later use */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
