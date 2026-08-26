@@ -103,7 +103,8 @@
 --     name + deleted_at on an org they did not own, 1 row updated.
 --
 --     'manage_organisation' is a new permission key, seeded to owner and admin
---     (supabase/seed.sql). SELECT is unchanged: any active member reads.
+--     in 20260826202023_reference_data.sql. SELECT is unchanged: any active
+--     member reads.
 --
 -- (g) organisation_subscriptions writes are platform-superuser-only. Also a
 --     deviation in letter from the brief's `has_permission(org_id,
@@ -131,8 +132,15 @@
 --       is_active_member          [DEFINER] -> memberships,     RLS OFF -> TERMINAL
 --       shares_active_organisation[DEFINER] -> memberships,     RLS OFF -> TERMINAL
 --       has_platform_permission   [DEFINER] -> platform_admins, RLS OFF -> TERMINAL
+--       stored_membership_status  [DEFINER] -> memberships,     RLS OFF -> TERMINAL
 --       has_permission            [INVOKER] -> memberships + role_permissions,
 --                                              RLS ON  -> re-enters policies
+--
+--     stored_membership_status is called from a policy ON organisation_
+--     memberships and reads organisation_memberships -- the one shape that
+--     genuinely would recurse if it were written inline as a subquery instead
+--     of behind a DEFINER function. It is the clearest illustration of why the
+--     rule at the end of this note exists.
 --
 --     has_permission is now the ONLY function in the graph that re-enters RLS
 --     at all. The property that bounds it: the two SELECT policies on
@@ -200,7 +208,7 @@
 -- empty allowlist is the correct, safe MVP state: nobody holds platform
 -- superuser access until a later migration deliberately grants it.
 -- ---------------------------------------------------------------------------
-create table public.platform_admins (
+create table if not exists public.platform_admins (
   user_id    uuid primary key references auth.users (id) on delete cascade,
   created_at timestamptz not null default now()
 );
@@ -367,6 +375,60 @@ comment on function public.has_platform_permission(text) is
 
 revoke all on function public.has_platform_permission(text) from public, anon, authenticated, service_role;
 grant execute on function public.has_platform_permission(text) to authenticated;
+
+-- ---------------------------------------------------------------------------
+-- stored_membership_status(membership_id)
+-- Returns a membership row's status AS STORED -- i.e. the pre-UPDATE value
+-- when called from an UPDATE policy. This is what lets a WITH CHECK expression
+-- constrain a TRANSITION (old -> new) rather than just the new row's shape.
+--
+-- WHY THIS WORKS (verified empirically, see supabase/tests/rls_foundation.sql
+-- C9-C14 -- do not take it on trust if you change any of this):
+--   WITH CHECK is evaluated against the NEW row, so `status` inside the policy
+--   is the proposed value. This function re-reads the same row by primary key.
+--   It is STABLE, so it runs on the calling statement's snapshot, and a command
+--   does not see its own effects -- it therefore returns the value as of the
+--   start of the UPDATE, i.e. OLD.status. That holds for multi-row UPDATEs too:
+--   every row in the statement is evaluated against the same statement-start
+--   snapshot, so rows updated earlier in the command cannot shift the answer
+--   for rows evaluated later.
+--
+-- WHY SECURITY DEFINER, and why this does NOT re-open the recursion problem:
+--   It is called from a policy ON organisation_memberships and reads
+--   organisation_memberships. Written inline as a subquery in the policy this
+--   would be textbook 42P17 ("infinite recursion detected in policy for
+--   relation"). DEFINER runs it as the table owner with RLS off, so it is
+--   TERMINAL in the graph of design note (h) -- exactly like is_active_member.
+--
+-- WHY A POLICY AND NOT A TRIGGER:
+--   A BEFORE UPDATE trigger would give OLD/NEW directly with no snapshot
+--   subtlety -- but it would apply to EVERY writer, including the SECURITY
+--   DEFINER acceptance function Task 6 has to write (whose entire job is to
+--   make the invited -> active transition) and including DBA/migration repair.
+--   The constraint belongs on the client path only, and RLS is precisely the
+--   layer that SECURITY DEFINER functions bypass. That is the deciding reason.
+--
+-- Read-only and takes only a row id -- it reveals nothing the caller could not
+-- already read, since a caller can only reach this through a policy on a row
+-- their USING clause already let them target.
+-- ---------------------------------------------------------------------------
+create or replace function public.stored_membership_status(p_membership_id uuid)
+returns text
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select m.status
+  from public.organisation_memberships m
+  where m.id = p_membership_id;
+$$;
+
+comment on function public.stored_membership_status(uuid) is
+  'Returns organisation_memberships.status as stored at statement start -- the OLD value when called from an UPDATE policy''s WITH CHECK. Lets a policy constrain a status TRANSITION rather than just the new row. STABLE (statement snapshot) and SECURITY DEFINER (avoids RLS self-recursion; terminal in the design note (h) call graph).';
+
+revoke all on function public.stored_membership_status(uuid) from public, anon, authenticated, service_role;
+grant execute on function public.stored_membership_status(uuid) to authenticated;
 
 -- ===========================================================================
 -- 2. Privileged write paths
@@ -594,31 +656,55 @@ create policy "organisation_memberships_select_same_organisation"
   on public.organisation_memberships for select to authenticated
   using ( public.is_active_member(organisation_id) );
 
--- A client INSERT here is an INVITE, never a completed membership:
+-- THE CONSENT INVARIANT, and where it is enforced.
 --
---   status = 'invited'  -- an admin must not be able to mint an already-active
---                          membership for someone else. Without this, holding
---                          'manage_members' means silently adding any user id
---                          to your organisation with no consent from them --
---                          and an active membership is what every read policy
---                          keys off, so the invitee is immediately exposed to
---                          that org's data through their own session.
---   joined_at is null   -- joined_at records when the invite was ACCEPTED. It
---                          stays null until that happens, so it cannot be
---                          back-dated at invite time.
---   invited_by          -- the audit trail of who issued the invite: the
---                          caller or nothing, so an invite cannot be
---                          attributed to a different admin.
+-- The invariant: holding 'manage_members' lets you INVITE someone and manage
+-- people who have already joined. It must NOT let you produce an ACTIVE
+-- membership for a user who never accepted -- because 'active' is what every
+-- read policy in this schema keys off, so minting one silently exposes that
+-- org's data to a person who never agreed to join, through their own session.
 --
--- The invited_by/status/joined_at guards are INSERT-only on purpose: on UPDATE
--- the NEW row still carries the ORIGINAL inviter, so the same predicate would
--- wrongly block a second admin from ever editing that membership.
+-- Enforcing it needs BOTH policies below, and the INSERT half alone is not
+-- enough. An earlier revision guarded only the INSERT; the invariant was
+-- trivially defeated in two statements instead of one -- INSERT the row as
+-- 'invited', then UPDATE it straight to 'active'. So:
 --
--- FOLLOW-ON, NOT BUILT HERE (Task 6): flipping status 'invited' -> 'active' on
--- acceptance cannot go through the UPDATE policy below, because the invitee
--- does not hold 'manage_members' in the org they are being invited to. It needs
--- its own SECURITY DEFINER function scoped to the caller's OWN membership row,
--- same pattern as create_organisation. Deliberately out of scope for Task 4.
+--   INSERT policy: a client INSERT is an INVITE, never a completed membership.
+--     status = 'invited'   -- no minting an already-active row
+--     joined_at is null    -- joined_at records ACCEPTANCE; it cannot be
+--                             back-dated at invite time
+--     invited_by           -- the caller or nothing, so an invite cannot be
+--                             attributed to a different admin
+--
+--   UPDATE policy: no TRANSITION into 'active'. Expressed as
+--     status <> 'active' or stored_membership_status(id) = 'active'
+--   i.e. the new row may be 'active' only if the row was ALREADY 'active'
+--   before this statement. See stored_membership_status() for why the
+--   subquery sees the OLD value.
+--
+-- What the UPDATE guard deliberately still ALLOWS, because these are the
+-- legitimate reasons this policy exists:
+--     active  -> active    change an existing member's role, or any other
+--                          field on someone who really did join
+--     active  -> revoked   revoke a member
+--     invited -> revoked   withdraw a pending invite
+--     invited -> invited   correct the role on a pending invite
+--     revoked -> invited   re-invite someone previously removed
+-- and blocks exactly:
+--     invited -> active    consent-free activation (the hole)
+--     revoked -> active    silent reinstatement of a removed member
+--
+-- The invited_by guard stays INSERT-only on purpose: on UPDATE the NEW row
+-- still carries the ORIGINAL inviter, so the same predicate would wrongly block
+-- a second admin from ever editing that membership.
+--
+-- FOLLOW-ON, NOT BUILT HERE (Task 6): something has to make the
+-- invited -> active transition when an invitee actually accepts. It cannot be
+-- this policy (the invitee does not hold 'manage_members' in the org inviting
+-- them) and it must not be a loosening of it. It needs its own SECURITY DEFINER
+-- function, scoped to the caller's OWN membership row, same pattern as
+-- create_organisation -- which bypasses RLS and so is unaffected by the guard
+-- above. Deliberately out of scope for Task 4; asserted as pending by test C8.
 create policy "organisation_memberships_insert_manage_members"
   on public.organisation_memberships for insert to authenticated
   with check (
@@ -638,6 +724,13 @@ create policy "organisation_memberships_update_manage_members"
   with check (
     public.has_permission(organisation_id, 'manage_members')
     and role <> 'platform_superuser'
+    -- No transition INTO 'active'. NULL-safe: if id names no stored row (a
+    -- rewritten primary key), the comparison is NULL, the OR is NULL, and
+    -- WITH CHECK treats that as a failure -- fail-closed.
+    and (
+      status <> 'active'
+      or public.stored_membership_status(id) = 'active'
+    )
   );
 
 create policy "organisation_memberships_delete_manage_members"

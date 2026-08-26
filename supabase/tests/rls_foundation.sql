@@ -212,9 +212,12 @@ select harness.val('B4  INVITED dave sees 0 organisations',
 select harness.val('B5  INVITED dave still sees his OWN membership row',
   $$select count(*)::text from public.organisation_memberships$$, '1');
 
+-- status='invited' on purpose: an otherwise-VALID invite, so the only thing
+-- that can reject it is dave's lack of manage_members -- which is what this
+-- test is about. With status='active' it would pass for the wrong reason.
 select harness.try('B6  INVITED dave cannot INSERT a membership',
   format($$insert into public.organisation_memberships (organisation_id,user_id,role,status)
-           values (%L,%L,'admin','active')$$, :'org_a_id', :'bob'), 'denied(42501)');
+           values (%L,%L,'admin','invited')$$, :'org_a_id', :'bob'), 'denied(42501)');
 
 reset role; reset request.jwt.claims;
 
@@ -241,9 +244,11 @@ reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'carol_c';
 
+-- Again an otherwise-valid invite, so the manage_members check is the only
+-- thing that can reject it.
 select harness.try('C1  ACTIVE non-admin (standard_user) cannot INSERT a membership',
   format($$insert into public.organisation_memberships (organisation_id,user_id,role,status)
-           values (%L,%L,'admin','active')$$, :'org_a_id', :'bob'), 'denied(42501)');
+           values (%L,%L,'admin','invited')$$, :'org_a_id', :'bob'), 'denied(42501)');
 
 select harness.try('C2  ACTIVE non-admin cannot promote herself to admin',
   format($$update public.organisation_memberships set role='admin' where user_id=%L$$, :'carol'), 'ok(0)');
@@ -297,6 +302,97 @@ select harness.try('C8  invitee cannot self-accept yet (Task 6 owns this)',
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
+-- C9-C16. THE CONSENT INVARIANT ACROSS THE UPDATE PATH.
+--
+-- Guarding only the INSERT was not enough: an admin could INSERT the row as
+-- 'invited' and then UPDATE it straight to 'active' -- two statements, same
+-- consent-free active membership. These assert the transition guard closes
+-- that WITHOUT breaking the legitimate reasons the UPDATE policy exists.
+--
+-- dave is 'invited' throughout; carol is 'active'.
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+
+-- (a) the hole itself, exactly as reported
+select harness.try('C9  REGRESSION: admin cannot flip an INVITED row to active',
+  format($$update public.organisation_memberships
+              set status='active', joined_at=now() where user_id=%L$$, :'dave'),
+  'denied(42501)');
+
+select harness.val('C9b ...and dave really is still invited afterwards',
+  format($$select status from public.organisation_memberships where user_id=%L$$, :'dave'),
+  'invited');
+
+-- the full two-statement exploit chain, end to end
+select harness.try('C10 exploit chain step 1: INSERT bob as a legitimate invite',
+  format($$insert into public.organisation_memberships (organisation_id,user_id,role,status)
+           values (%L,%L,'standard_user','invited')$$, :'org_a_id', :'bob'), 'ok(1)');
+
+select harness.try('C10b exploit chain step 2: UPDATE it to active -> MUST FAIL',
+  format($$update public.organisation_memberships
+              set status='active', joined_at=now() where user_id=%L$$, :'bob'),
+  'denied(42501)');
+
+-- (a) continued: revoked -> active is a silent reinstatement, also blocked
+select harness.try('C11 admin CAN revoke a pending invite (invited -> revoked)',
+  format($$update public.organisation_memberships set status='revoked' where user_id=%L$$, :'bob'),
+  'ok(1)');
+
+select harness.try('C12 REGRESSION: admin cannot reinstate revoked -> active',
+  format($$update public.organisation_memberships
+              set status='active', joined_at=now() where user_id=%L$$, :'bob'),
+  'denied(42501)');
+
+select harness.try('C12b cleanup: remove bob''s row',
+  format($$delete from public.organisation_memberships where user_id=%L$$, :'bob'), 'ok(1)');
+
+-- (b) NO REGRESSION on legitimate admin actions: role management on a member
+-- who really did join must still work.
+select harness.try('C13 admin CAN change an ACTIVE member''s role (active -> active)',
+  format($$update public.organisation_memberships set role='manager' where user_id=%L$$, :'carol'),
+  'ok(1)');
+
+select harness.val('C13b ...and the role really changed',
+  format($$select role from public.organisation_memberships where user_id=%L$$, :'carol'),
+  'manager');
+
+select harness.try('C14 admin CAN edit a PENDING invite''s role (invited -> invited)',
+  format($$update public.organisation_memberships set role='booker' where user_id=%L$$, :'dave'),
+  'ok(1)');
+
+-- (c) revoking an active member must still work
+select harness.try('C15 admin CAN revoke an ACTIVE member (active -> revoked)',
+  format($$update public.organisation_memberships set status='revoked' where user_id=%L$$, :'carol'),
+  'ok(1)');
+
+select harness.try('C15b ...but cannot then un-revoke her (revoked -> active)',
+  format($$update public.organisation_memberships set status='active' where user_id=%L$$, :'carol'),
+  'denied(42501)');
+
+-- restore carol to active as the DBA (stands in for Task 6's accept function,
+-- which bypasses RLS) so the rest of the suite still has an active member.
+reset role; reset request.jwt.claims;
+update public.organisation_memberships
+   set status='active', role='standard_user' where user_id = :'carol';
+
+-- The snapshot mechanic stored_membership_status() relies on: a MULTI-ROW
+-- update must evaluate every row against statement-start state, so an admin
+-- cannot launder an invited row through a batch that also touches active ones.
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+
+select harness.try('C16 blanket UPDATE cannot launder invited rows via a batch',
+  $$update public.organisation_memberships set status='active', joined_at=now()$$,
+  'denied(42501)');
+
+select harness.val('C16b ...and dave is STILL invited (nothing partially applied)',
+  format($$select status from public.organisation_memberships where user_id=%L$$, :'dave'),
+  'invited');
+
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
 -- D. platform_superuser self-escalation guard (every write path)
 -- ===========================================================================
 set role authenticated;
@@ -306,9 +402,11 @@ select harness.try('D1  owner cannot UPDATE own row to platform_superuser',
   format($$update public.organisation_memberships set role='platform_superuser' where user_id=%L$$, :'alice'),
   'denied(42501)');
 
+-- status='invited' so the ONLY thing wrong with this row is the role -- this
+-- isolates the platform_superuser guard rather than passing on the status one.
 select harness.try('D2  owner cannot INSERT a new platform_superuser membership',
   format($$insert into public.organisation_memberships (organisation_id,user_id,role,status)
-           values (%L,%L,'platform_superuser','active')$$, :'org_a_id', :'bob'),
+           values (%L,%L,'platform_superuser','invited')$$, :'org_a_id', :'bob'),
   'denied(42501)');
 
 -- The platform_admins allowlist is unreachable from any client role: RLS with
@@ -329,9 +427,10 @@ select harness.try('D5  owner cannot hop her membership into org B',
   format($$update public.organisation_memberships set organisation_id=%L where user_id=%L$$, :'org_b_id', :'alice'),
   'denied(42501)');
 
+-- status='invited' so the forged invited_by is the ONLY defect in the row.
 select harness.try('D6  owner cannot forge invited_by attribution',
   format($$insert into public.organisation_memberships (organisation_id,user_id,role,status,invited_by)
-           values (%L,%L,'admin','active',%L)$$, :'org_a_id', :'bob', :'super'),
+           values (%L,%L,'admin','invited',%L)$$, :'org_a_id', :'bob', :'super'),
   'denied(42501)');
 
 reset role; reset request.jwt.claims;
