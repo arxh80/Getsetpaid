@@ -72,9 +72,25 @@ Per-seat pricing, monthly or annual (15% off annual), GBP. No seat minimum — a
 | Starter | £19/seat/mo | Yes | Yes, can publish | 5 per entity | No | 5GB/org |
 | Pro | £39/seat/mo | Yes | Yes, can publish | Unlimited | Yes (budget & actuals) | 20GB/org |
 
-### Superuser impersonation
+### Superuser dashboard
 
-A platform superuser may impersonate a customer account for support, but only via break-glass: the superuser requests impersonation, the org's admin must accept the request, and the session is time-boxed and fully audited (actor, org, reason, start/end). No silent or unilateral impersonation.
+Single hardcoded superuser (the founder) at MVP — no multi-account superuser role yet.
+
+**Impersonation.** Break-glass only: the superuser requests impersonation, the org's admin must accept the request, and the session is time-boxed and fully audited (actor, org, reason, start/end). No silent or unilateral impersonation.
+
+**No direct tenant-data access outside impersonation.** The dashboard never shows record content (contacts, events, documents) directly — only aggregate metadata (seat count, storage used, record counts). Any deeper look goes through the audited, admin-approved impersonation flow above.
+
+**Org lifecycle.** Suspend/reinstate and delete are soft-delete only, require step-up re-auth, and notify the org's admin. Deletion follows the standard retention/soft-delete policy — no immediate hard delete.
+
+**Billing overrides** (manual tier/seat change, comps, refunds): require step-up re-auth, a mandatory reason field (goes into the audit record), and notify the org admin automatically. Comps/overrides are time-boxed and auto-revert to the org's actual paid tier when the period ends — never a silent permanent edit.
+
+**Per-org feature overrides** (early access, custom gating): scoped per org per flag, with a **mandatory expiry date** — no open-ended overrides. Prevents forgotten one-off grants from becoming permanent tech debt.
+
+**Platform health/ops view:** basic counts only at MVP (active orgs, signups, seat/storage usage, error counts), queried on-demand/daily from Postgres directly — no separate metrics/observability pipeline. Deeper real-time monitoring stays in existing infra tooling (Supabase dashboard, hosting provider), not rebuilt in-app.
+
+**Audit log viewer** is a core dashboard feature — searchable/filterable by org, actor, action type and date range, not just a raw DB table.
+
+**Incident alerting:** basic trigger-based email/SMS alerts only (e.g. repeated failed logins across an org, a malware-scan hit) — not a full alerting platform. A complete on-call/runbook build-out stays post-MVP per `SECURITY.md` § Incident response.
 
 ### Session security
 
@@ -158,6 +174,7 @@ Resolved 2026-08-26 (founder sign-off):
 - **Finance scope:** budget & actuals only at MVP.
 - **Retention:** 7yr financial / 2yr inactive as working defaults, pending legal review.
 - **Superuser impersonation:** allowed, but only with org-admin acceptance, time-boxing and full audit.
+- **Superuser dashboard scope:** single hardcoded superuser at MVP; org lifecycle (soft-delete only) + billing overrides (time-boxed, auto-revert) + per-org feature overrides (mandatory expiry) + basic platform health counts + searchable audit log viewer + trigger-based incident alerts. No direct tenant-record access outside impersonation. Full spec in § Superuser dashboard.
 - **Tier gating dimension:** seats + features (not pure usage/event-volume gating).
 - **Free tier shape:** view-only network access, no CRM writes.
 - **Audit log retention:** hot 30 days, archived up to 1 year total, then purged.

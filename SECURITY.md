@@ -34,6 +34,7 @@ This is not the public-facing Trust Centre page (PRD §12) — it is written for
 - Step-up re-authentication (re-enter credentials/MFA) is required before: changing security settings (MFA, password, email), large data exports, deleting organisation data, and any high-risk admin/superuser function — including impersonation.
 - Active-session listing with remote revocation is available to every user.
 - Superuser impersonation is break-glass only: the superuser requests it, the target org's admin must accept, the session is time-boxed, and the whole flow is audited (actor, org, reason, start/end). No silent or unilateral impersonation.
+- **Superuser dashboard** (single hardcoded superuser account at MVP): never exposes tenant record content directly — only aggregate metadata (seat count, storage, record counts). Org suspend/delete is soft-delete only, requires step-up re-auth, and notifies the org admin. Billing overrides require step-up re-auth, a mandatory audited reason, org-admin notification, and are time-boxed with auto-revert. Per-org feature overrides require a mandatory expiry date — no open-ended grants. Full spec in `CLAUDE.md` § Superuser dashboard.
 
 ## 5. Rate limiting and abuse prevention
 
@@ -117,6 +118,7 @@ Current stage (single founder, pre-launch): no formal on-call rotation yet.
   - **Sev3** — low-risk finding, hardening opportunity: addressed **next sprint**.
 - **Regulatory obligation:** notifiable UK GDPR breaches must be reported to the ICO without undue delay and, where feasible, within **72 hours** — this clock starts independent of the internal severity tiers above.
 - A full written runbook (roles, communication plan, customer notification templates, post-incident review process) is still to be drafted — flag as open work before handling real customer data.
+- **Basic trigger-based alerting ships at MVP** via the superuser dashboard: email/SMS on specific events (e.g. repeated failed logins across an org, a malware-scan hit). This is not a full alerting/observability platform — just enough to catch the incidents in the severity table above before a customer reports them.
 
 ## 13. Vulnerability disclosure
 
