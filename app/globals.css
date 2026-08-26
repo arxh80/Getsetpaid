@@ -6,7 +6,9 @@
   --color-lilac: #BDB2FF;
   --color-pink: #FFD6E0;
   --color-ink: #14141C;
+  /* --color-primary: text and buttons ONLY — the only blue permitted on text or a button */
   --color-primary: #0062FF;
+  /* --color-accent: borders, focus rings, active state, charts ONLY — never swap with primary */
   --color-accent: #3A86FF;
 
   /* Shape — square corners everywhere */
