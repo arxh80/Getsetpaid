@@ -1,0 +1,3 @@
+-- Local dev seed data.
+-- Filled in by a later Foundation-phase task once the schema migrations in
+-- supabase/migrations/ exist.
