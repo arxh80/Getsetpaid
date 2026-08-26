@@ -31,7 +31,17 @@ insert into public.role_permissions (role_key, permission_key) values
   ('owner', 'manage_members'),
   ('admin', 'manage_members'),
   ('owner', 'manage_billing'),
-  ('platform_superuser', 'view_audit_log');
+  ('platform_superuser', 'view_audit_log'),
+  -- Added by Task 4. `organisations` carries deleted_at, so the UPDATE policy
+  -- on it cannot be "any active member" -- that would let a Read Only user
+  -- soft-delete the tenant. See design note (f) in
+  -- migrations/20260826154304_permission_engine_and_rls.sql.
+  ('owner', 'manage_organisation'),
+  ('admin', 'manage_organisation'),
+  -- Added by Task 4. organisation_subscriptions IS the entitlement record and
+  -- no payment webhook exists yet, so writes are superuser-only until billing
+  -- is integrated. Deliberately NOT granted to `owner`. See design note (g).
+  ('platform_superuser', 'manage_billing');
 
 -- ---------------------------------------------------------------------------
 -- subscription_plans
