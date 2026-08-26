@@ -318,6 +318,8 @@ Design and frontend skills are pinned **project-level** in `skills-lock.json` an
 
 Plus the globally installed `ui-ux-pro-max:*`, `frontend-design`, `taste-skill:*`, `dataviz`, `framer-motion-best-practices` and `superpowers:*`.
 
+Backend, security and testing skills are pinned in the same lock file but documented where their gates live: `SECURITY.md` § 11 (`supabase`, `supabase-postgres-best-practices`, `supabase-audit-rls`, `owasp-security-check`, `javascript-testing-patterns`, `e2e-testing-patterns`, `wcag-audit-patterns`, `screen-reader-testing`).
+
 Restore after a clone with `npx skills experimental_install`; check for updates with `npx skills check`. Adding a skill means adding a row here in the same commit.
 
 ### Order of invocation — three passes over every piece of UI
@@ -392,7 +394,7 @@ Passes 1 and 3 are non-negotiable. Pass 2 is as needed, but expected on anything
 1. `python scripts/contrast.py` passes.
 2. `hallmark` slop test passes (`references/slop-test.md`).
 3. `web-design-guidelines` run on the diff, findings cleared.
-4. `accessibility-compliance` pass: keyboard path complete, focus visible on every surface, ARIA correct.
+4. `wcag-audit-patterns` audit clean, and `accessibility-compliance` satisfied: keyboard path complete, focus visible on every surface, ARIA correct. `screen-reader-testing` on anything with a custom widget.
 5. Zero non-zero `border-radius`, zero `box-shadow`, zero gradient, zero literal hex in the diff — tokens only.
 
 Failing any of these means the feature is not done, same as a failing test.

@@ -26,6 +26,10 @@ playwright-report/
 test-results/
 blob-report/
 
+# Pentest skill artefacts (supabase-audit-rls) — findings and keys, never commit
+.sb-pentest-context.json
+.sb-pentest-audit.log
+
 # Python (tooling scripts)
 __pycache__/
 *.py[cod]

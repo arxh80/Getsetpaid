@@ -152,6 +152,8 @@ Beyond unit tests, a release needs: **RLS integration tests across roles, tenant
 
 Tenant-breakout and network-leakage tests matter most — write them alongside the feature, not after.
 
+**Skills for these gates** (pinned project-level; full mapping in `SECURITY.md` § 11): `supabase` and `supabase-postgres-best-practices` for schema and policy design, `supabase-audit-rls` for RLS bypass auditing (**dev/staging only, anon key only**), `owasp-security-check` for the XSS/SQLi/IDOR/CSRF pass, `javascript-testing-patterns` for RLS integration and API tests, `e2e-testing-patterns` for Playwright golden-path and tenant-breakout runs, `wcag-audit-patterns` and `screen-reader-testing` for accessibility.
+
 ## Scope discipline
 
 MVP (PRD §4) is: auth + orgs + invites, core CRM entities, events with lineup, tasks/meetings/notes/attachments, basic event finance, RLS isolation, entitlements, network profiles, audit log, legal pages.

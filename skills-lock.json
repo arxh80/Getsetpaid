@@ -7,11 +7,23 @@
       "skillPath": "plugins/ui-design/skills/accessibility-compliance/SKILL.md",
       "computedHash": "689b0c2a2e399bfff0581f0ba3cbefc6c7b5806c6dbc8cb1a172cf055bff0c91"
     },
+    "e2e-testing-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/developer-essentials/skills/e2e-testing-patterns/SKILL.md",
+      "computedHash": "20a171bc2e543efec9d7158e06d6ee66e7dbd5205a7ebe1aa89cea90ef508cd8"
+    },
     "hallmark": {
       "source": "nutlope/hallmark",
       "sourceType": "github",
       "skillPath": "skills/hallmark/SKILL.md",
       "computedHash": "6d53b2b609e05849c1dd0fc53e37daa7515089d5880c15e7e885c86e8b814e9c"
+    },
+    "javascript-testing-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/javascript-typescript/skills/javascript-testing-patterns/SKILL.md",
+      "computedHash": "325957f63862a4ef54726b34d3cfad105a918fcdcf6d08e11dc8d803dbd2a7a0"
     },
     "nextjs-app-router-patterns": {
       "source": "wshobson/agents",
@@ -19,11 +31,41 @@
       "skillPath": "plugins/frontend-mobile-development/skills/nextjs-app-router-patterns/SKILL.md",
       "computedHash": "3a46e9093baecb3a85819529ce05006f817663f48d9e872868c32ae6049c0d5c"
     },
+    "owasp-security-check": {
+      "source": "sergiodxa/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/owasp-security-check/SKILL.md",
+      "computedHash": "94875bfeb111a97687dc4f90b71c23de959ce36bfa9cab65c007116218f7413e"
+    },
+    "screen-reader-testing": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/accessibility-compliance/skills/screen-reader-testing/SKILL.md",
+      "computedHash": "1608c01868304d12e41f0d864d575d689c64bb9cfc93537bda52a5ce024377ba"
+    },
     "shadcn-ui": {
       "source": "giuseppe-trisciuoglio/developer-kit",
       "sourceType": "github",
       "skillPath": "plugins/developer-kit-typescript/skills/shadcn-ui/SKILL.md",
       "computedHash": "5264d0399edb2e9cb517c722067fea44657a35ece43407a3aaa9e3ba9bd7f670"
+    },
+    "supabase": {
+      "source": "supabase/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/supabase/SKILL.md",
+      "computedHash": "a6260582f48df8ba53380bb9b9e870ed2ae5fe147799e90ed783b8aa25167d50"
+    },
+    "supabase-audit-rls": {
+      "source": "yoanbernabeu/supabase-pentest-skills",
+      "sourceType": "github",
+      "skillPath": "skills/audit-api/supabase-audit-rls/SKILL.md",
+      "computedHash": "2ac58ce5b714dc094940640e43fc3c42eec22a7234d2b46dd75885462a8c803c"
+    },
+    "supabase-postgres-best-practices": {
+      "source": "supabase/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/supabase-postgres-best-practices/SKILL.md",
+      "computedHash": "128fac78002d916c8ca908245d398e634f540d8bcf20915b2b2359aeb18eba59"
     },
     "tailwind-design-system": {
       "source": "wshobson/agents",
@@ -48,6 +90,12 @@
       "sourceType": "github",
       "skillPath": "skills/react-best-practices/SKILL.md",
       "computedHash": "ca7b0c0c6e5f2750043f7f0cd72d16ac4e2abc48f9b5500d047a4b77a2506212"
+    },
+    "wcag-audit-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/accessibility-compliance/skills/wcag-audit-patterns/SKILL.md",
+      "computedHash": "931332c7fc4dadbb32848b8f497efa793e120a6e8ff7524c1b90d18cac4f1d65"
     },
     "web-design-guidelines": {
       "source": "vercel-labs/agent-skills",

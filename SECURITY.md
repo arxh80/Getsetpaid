@@ -107,6 +107,28 @@ Per `CLAUDE.md` § Testing gates and PRD §16, before a release:
 - Pre-production backup restore test.
 - Independent penetration test before general availability.
 
+### Skills that run these gates
+
+Pinned in `skills-lock.json`, vendored to `.agents/skills/` (roster and design-side skills in `DESIGN.md` § "Build-time design tooling"):
+
+| Gate | Skill |
+|---|---|
+| RLS policy design and Postgres correctness | `supabase`, `supabase-postgres-best-practices` (official Supabase) |
+| RLS bypass audit — the tenant-breakout gate | `supabase-audit-rls` |
+| XSS / SQLi / IDOR / CSRF / authz review | `owasp-security-check` |
+| RLS integration + API tests | `javascript-testing-patterns` |
+| Golden-path and tenant-breakout E2E | `e2e-testing-patterns` (Playwright) |
+| Automated WCAG 2.2 AA audit | `wcag-audit-patterns` |
+| Screen-reader spot checks | `screen-reader-testing` |
+
+**`supabase-audit-rls` is a live pentest tool. Rules for using it:**
+
+1. **Never against production.** Local Supabase or a seeded staging project only.
+2. **Anon key only** — never the service-role key; the point is to attack from the client's position.
+3. It writes `.sb-pentest-context.json` and `.sb-pentest-audit.log` into the working directory. Both are gitignored: findings and keys never get committed.
+4. Findings are triaged into this file's § 10 (Known risk areas), not left in the log.
+5. It supplements the written RLS integration tests — it does not replace them. A policy is verified by a test that runs in CI, every time.
+
 ## 12. Incident response
 
 Current stage (single founder, pre-launch): no formal on-call rotation yet.
