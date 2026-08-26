@@ -10,6 +10,16 @@
 --    `supabase db reset --local` first, because the fixtures below assume an
 --    empty public schema.)
 --
+-- CAST OF CHARACTERS
+--   alice  owner of org A          bob   owner of org B (the other tenant)
+--   carol  ACTIVE standard_user in org A -- lowest-privilege real member
+--   dave   INVITED-but-not-active in org A -- the "not yet consented" case
+--   super  platform superuser via a public.platform_admins row, and a member
+--          of NO organisation at all. That is the point: platform status
+--          carries no tenant with it, so the superuser has no ordinary
+--          member-level read of anyone's data (CLAUDE.md § Superuser
+--          dashboard, "no direct tenant-data access outside impersonation").
+--
 -- HOW THE IMPERSONATION WORKS
 --   PostgREST authenticates a request by switching to the `authenticated`
 --   Postgres role and setting the `request.jwt.claims` GUC, which is what
@@ -114,22 +124,33 @@ set request.jwt.claims = :'bob_c';
 select public.create_organisation('Org B','org-b') as org_b;
 reset role; reset request.jwt.claims;
 
--- alice (owner) adds carol active + dave invited. Impersonated: this is the
--- positive control for the manage_members write path.
+-- alice (owner) invites carol and dave. Impersonated: this is the positive
+-- control for the manage_members write path. Note both go in as 'invited' --
+-- the INSERT policy now refuses anything else, so an admin cannot mint an
+-- already-active membership for someone who never consented.
 set role authenticated;
 set request.jwt.claims = :'alice_c';
-insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
-select id, :'carol', 'standard_user', 'active', now() from public.organisations where slug='org-a';
+insert into public.organisation_memberships (organisation_id, user_id, role, status)
+select id, :'carol', 'standard_user', 'invited' from public.organisations where slug='org-a';
 insert into public.organisation_memberships (organisation_id, user_id, role, status)
 select id, :'dave', 'standard_user', 'invited' from public.organisations where slug='org-a';
 reset role; reset request.jwt.claims;
 
--- DBA-only action: grant platform_superuser. Deliberately placed INSIDE org-a
--- so that alice can see the row -- otherwise the anti-escalation guards below
--- would be masked by RLS row filtering rather than actually exercised.
-insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
-select id, :'super', 'platform_superuser', 'active', now()
-  from public.organisations where slug='org-a';
+-- Carol ACCEPTS her invite. Done here as the DBA because the accept flow does
+-- not exist yet: the invitee does not hold 'manage_members' in the org they
+-- were invited to, so the UPDATE policy will not let them flip their own row.
+-- Task 6 builds that as a SECURITY DEFINER function scoped to the caller's own
+-- membership, same pattern as create_organisation. This line stands in for it
+-- so the suite has an ACTIVE non-admin member to test with.
+update public.organisation_memberships
+   set status = 'active', joined_at = now()
+ where user_id = :'carol';
+-- dave stays 'invited' on purpose -- he is the invited-but-not-active subject.
+
+-- DBA-only action: grant platform superuser. Note this is an allowlist row with
+-- NO organisation attached -- the superuser is not a member of org A, org B or
+-- anything else, and therefore has no ordinary member read of any tenant.
+insert into public.platform_admins (user_id) values (:'super');
 
 select id as org_a_id from public.organisations where slug='org-a' \gset
 select id as org_b_id from public.organisations where slug='org-b' \gset
@@ -153,14 +174,20 @@ select harness.val('A2  alice cannot see org B by slug',
 select harness.val('A3  alice cannot see org B by literal uuid',
   format($$select count(*)::text from public.organisations where id=%L$$, :'org_b_id'), '0');
 
-select harness.val('A4  alice sees only org A memberships (3 rows, not bob''s)',
-  $$select count(*)::text from public.organisation_memberships$$, '4');
+select harness.val('A4  alice sees only org A memberships (alice+carol+dave, not bob''s)',
+  $$select count(*)::text from public.organisation_memberships$$, '3');
 
 select harness.val('A5  no org B membership row leaks to alice',
   format($$select count(*)::text from public.organisation_memberships where organisation_id=%L$$, :'org_b_id'), '0');
 
+-- Carol is active in org A so her profile is visible; Dave is only INVITED, so
+-- his is not; Bob is another tenant; Superuser holds no membership anywhere.
 select harness.val('A6  alice sees only own + fellow-ACTIVE-member profiles',
-  $$select string_agg(full_name,',' order by full_name) from public.profiles$$, 'Alice,Carol,Superuser');
+  $$select string_agg(full_name,',' order by full_name) from public.profiles$$, 'Alice,Carol');
+
+select harness.val('A7  create_organisation made alice an ACTIVE owner (positive control)',
+  $$select status||'/'||role from public.organisation_memberships
+     where user_id = (select auth.uid())$$, 'active/owner');
 
 reset role; reset request.jwt.claims;
 
@@ -226,6 +253,49 @@ select harness.try('C3  ACTIVE non-admin cannot DELETE a membership',
 
 reset role; reset request.jwt.claims;
 
+-- An admin's INSERT is an INVITE, never a completed membership. Without this,
+-- holding manage_members means adding any user id to your org as an active
+-- member with no consent from them -- and active membership is what every read
+-- policy keys off, so the victim is immediately exposed to that org's data.
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+
+select harness.try('C4  admin cannot mint an already-ACTIVE membership',
+  format($$insert into public.organisation_memberships (organisation_id,user_id,role,status)
+           values (%L,%L,'standard_user','active')$$, :'org_a_id', :'bob'),
+  'denied(42501)');
+
+select harness.try('C5  admin cannot back-date joined_at on an invite',
+  format($$insert into public.organisation_memberships (organisation_id,user_id,role,status,joined_at)
+           values (%L,%L,'standard_user','invited', now())$$, :'org_a_id', :'bob'),
+  'denied(42501)');
+
+select harness.try('C6  admin cannot INSERT a pre-revoked membership either',
+  format($$insert into public.organisation_memberships (organisation_id,user_id,role,status)
+           values (%L,%L,'standard_user','revoked')$$, :'org_a_id', :'bob'),
+  'denied(42501)');
+
+select harness.try('C7  admin CAN issue a plain invite (positive control)',
+  format($$insert into public.organisation_memberships (organisation_id,user_id,role,status)
+           values (%L,%L,'standard_user','invited')$$, :'org_a_id', :'bob'),
+  'ok(1)');
+
+-- Undo C7 so later counts stay stable.
+select harness.try('C7b cleanup: remove the invite issued by C7',
+  format($$delete from public.organisation_memberships where user_id=%L$$, :'bob'), 'ok(1)');
+
+-- The invitee cannot self-accept yet -- this is Task 6's job, asserted here so
+-- the gap is visible and does not get silently "fixed" by a loosened policy.
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'dave_c';
+
+select harness.try('C8  invitee cannot self-accept yet (Task 6 owns this)',
+  $$update public.organisation_memberships set status='active', joined_at=now()
+     where user_id = (select auth.uid())$$, 'ok(0)');
+
+reset role; reset request.jwt.claims;
+
 -- ===========================================================================
 -- D. platform_superuser self-escalation guard (every write path)
 -- ===========================================================================
@@ -241,11 +311,19 @@ select harness.try('D2  owner cannot INSERT a new platform_superuser membership'
            values (%L,%L,'platform_superuser','active')$$, :'org_a_id', :'bob'),
   'denied(42501)');
 
-select harness.try('D3  owner cannot DELETE the platform_superuser row in her own org',
-  $$delete from public.organisation_memberships where role='platform_superuser'$$, 'ok(0)');
+-- The platform_admins allowlist is unreachable from any client role: RLS with
+-- zero policies AND no GRANT. These probe every operation on it.
+select harness.val('D3  owner cannot READ the platform_admins allowlist',
+  $$select count(*)::text from public.platform_admins$$, 'denied(42501)');
 
-select harness.try('D4  owner cannot DEMOTE the platform_superuser row in her own org',
-  $$update public.organisation_memberships set role='admin' where role='platform_superuser'$$, 'ok(0)');
+select harness.try('D4  owner cannot ADD herself to the platform_admins allowlist',
+  format($$insert into public.platform_admins (user_id) values (%L)$$, :'alice'), 'denied(42501)');
+
+select harness.try('D4b owner cannot DELETE from the platform_admins allowlist',
+  $$delete from public.platform_admins$$, 'denied(42501)');
+
+select harness.try('D4c owner cannot REPOINT an allowlist row at herself',
+  format($$update public.platform_admins set user_id=%L$$, :'alice'), 'denied(42501)');
 
 select harness.try('D5  owner cannot hop her membership into org B',
   format($$update public.organisation_memberships set organisation_id=%L where user_id=%L$$, :'org_b_id', :'alice'),
@@ -351,13 +429,47 @@ select harness.try('G3  platform superuser CAN write a subscription (positive co
            values (%L,'pro','monthly',1,'active', now()+interval '1 year')$$, :'org_a_id'),
   'ok(1)');
 
+-- Give org B a subscription too, so the targeted-vs-unqualified update below
+-- has two rows to distinguish between.
+select harness.try('G3b superuser writes a second org''s subscription',
+  format($$insert into public.organisation_subscriptions
+           (organisation_id,plan_id,billing_cycle,seat_count,status,current_period_end)
+           values (%L,'starter','monthly',1,'active', now()+interval '1 year')$$, :'org_b_id'),
+  'ok(1)');
+
+-- REGRESSION (review finding #1). Postgres applies SELECT policies to an
+-- UPDATE's row-matching too. With only the is_active_member SELECT policy, the
+-- superuser -- a member of nothing -- could see no subscription rows, so a
+-- TARGETED update silently hit 0 rows while an UNQUALIFIED one still wrote
+-- whatever the member policy happened to expose. A write path that fails when
+-- aimed and succeeds when unaimed is the dangerous shape; these assert it is
+-- gone.
+select harness.val('G6  superuser CAN READ every org''s subscription',
+  $$select count(*)::text from public.organisation_subscriptions$$, '2');
+
+select harness.try('G7  REGRESSION: superuser TARGETED update reaches the aimed org',
+  format($$update public.organisation_subscriptions set seat_count=7
+            where organisation_id=%L$$, :'org_b_id'), 'ok(1)');
+
+select harness.val('G8  ...and it changed the RIGHT org (org B, not org A)',
+  format($$select seat_count::text from public.organisation_subscriptions
+            where organisation_id=%L$$, :'org_b_id'), '7');
+
+select harness.val('G9  ...and left org A alone',
+  format($$select seat_count::text from public.organisation_subscriptions
+            where organisation_id=%L$$, :'org_a_id'), '1');
+
 reset role; reset request.jwt.claims;
 
 set role authenticated;
 set request.jwt.claims = :'bob_c';
 
 select harness.val('G4  org B owner cannot READ org A''s subscription',
-  $$select count(*)::text from public.organisation_subscriptions$$, '0');
+  format($$select count(*)::text from public.organisation_subscriptions
+            where organisation_id=%L$$, :'org_a_id'), '0');
+
+select harness.val('G4b org B owner sees exactly his own org''s subscription',
+  $$select count(*)::text from public.organisation_subscriptions$$, '1');
 
 reset role; reset request.jwt.claims;
 
@@ -375,8 +487,12 @@ reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'alice_c';
 
+-- 9, not 10: 'platform_superuser' is deliberately no longer an org role.
 select harness.val('H1  authenticated CAN read roles (positive control)',
-  $$select count(*)::text from public.roles$$, '10');
+  $$select count(*)::text from public.roles$$, '9');
+
+select harness.val('H1b platform_superuser is NOT an assignable org role',
+  $$select count(*)::text from public.roles where key='platform_superuser'$$, '0');
 
 select harness.try('H2  authenticated cannot write role_permissions',
   $$insert into public.role_permissions (role_key,permission_key) values ('standard_user','view_audit_log')$$,
@@ -423,6 +539,15 @@ select harness.val('H16 service_role has no table privileges on organisations',
   $$select count(*)::text from public.organisations$$, 'denied(42501)');
 select harness.val('H17 service_role has no table privileges on audit_events',
   $$select count(*)::text from public.audit_events$$, 'denied(42501)');
+select harness.val('H18 service_role cannot read the platform_admins allowlist',
+  $$select count(*)::text from public.platform_admins$$, 'denied(42501)');
+reset role;
+
+set role anon;
+select harness.val('H19 anon cannot read the platform_admins allowlist',
+  $$select count(*)::text from public.platform_admins$$, 'denied(42501)');
+select harness.val('H20 anon cannot call has_platform_permission',
+  $$select public.has_platform_permission('view_audit_log')::text$$, 'denied(42501)');
 reset role;
 
 -- ===========================================================================

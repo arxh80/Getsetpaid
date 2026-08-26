@@ -37,11 +37,14 @@
 --       - log_audit_event: public.audit_events has no INSERT policy for any
 --         client role, by design (SECURITY.md s7, "append-only from the
 --         application"). This function is the only write path.
+--       - has_platform_permission: public.platform_admins has RLS enabled with
+--         no policies and no client GRANT, so an INVOKER version would raise
+--         42501 rather than returning false for every ordinary user. See its
+--         own header comment.
 --
---     has_permission and has_platform_permission are SECURITY INVOKER. They
---     only ever read the caller's own membership rows, which the caller can
---     always see under the "select own rows" policy below, so no elevated
---     privilege is needed and none is taken.
+--     has_permission is SECURITY INVOKER. It only ever reads the caller's own
+--     membership rows, which the caller can always see under the "select own
+--     rows" policy below, so no elevated privilege is needed and none is taken.
 --
 -- (b) NULL organisation_id is NOT overloaded to mean "platform level".
 --     The task brief floated has_permission(NULL, 'view_audit_log') for the
@@ -54,16 +57,18 @@
 --       - has_platform_permission(permission) is a separate, explicitly named
 --         function for org-independent checks.
 --
--- (c) The platform_superuser role is not assignable through the Data API.
---     public.organisation_memberships.role is FK-constrained to public.roles,
---     which includes 'platform_superuser', and that role is the one that grants
---     'view_audit_log' -- i.e. read access to every organisation's audit trail.
---     Without a guard, any org owner/admin (who by definition holds
---     'manage_members') could simply UPDATE their own membership row to
---     role='platform_superuser' and read the whole platform's audit log. That
---     is a cross-tenant breakout, so the membership INSERT/UPDATE/DELETE
---     policies below refuse to create, modify or remove a platform_superuser
---     row. Granting that role is a migration/DBA action only.
+-- (c) The platform superuser is not reachable through the Data API at all.
+--     Platform superuser status lives in public.platform_admins (see the table
+--     comment and design note (i)) -- a table with no policies and no client
+--     grants, writable only by migration/DBA action. There is no client write
+--     path to escalate through.
+--
+--     The `role <> 'platform_superuser'` guards on the membership write
+--     policies below are retained as defence in depth. They are currently dead
+--     code -- 'platform_superuser' is no longer seeded into public.roles, so
+--     the FK on organisation_memberships.role already rejects it -- but they
+--     cost nothing and they hold if that key is ever re-introduced to the roles
+--     catalogue for an unrelated reason.
 --
 -- (d) RLS is enabled but NOT forced. The eight tables are owned by `postgres`,
 --     and a table owner is exempt from its own RLS unless FORCE ROW LEVEL
@@ -123,19 +128,19 @@
 --     No policy expression here names a table inline; every table access is
 --     behind a function call. The graph:
 --
---       is_active_member          [DEFINER] -> memberships, RLS OFF -> TERMINAL
---       shares_active_organisation[DEFINER] -> memberships, RLS OFF -> TERMINAL
+--       is_active_member          [DEFINER] -> memberships,     RLS OFF -> TERMINAL
+--       shares_active_organisation[DEFINER] -> memberships,     RLS OFF -> TERMINAL
+--       has_platform_permission   [DEFINER] -> platform_admins, RLS OFF -> TERMINAL
 --       has_permission            [INVOKER] -> memberships + role_permissions,
 --                                              RLS ON  -> re-enters policies
---       has_platform_permission   [INVOKER] -> memberships + role_permissions,
---                                              RLS ON  -> re-enters policies
 --
---     The property that bounds the whole graph: the two SELECT policies on
---     organisation_memberships -- the only table an INVOKER function re-enters
---     -- resolve to `user_id = auth.uid()` (no call at all) and
---     is_active_member (DEFINER, RLS off). NEITHER calls an INVOKER function.
---     role_permissions' SELECT policy is `true`. So every INVOKER path bottoms
---     out after exactly one re-entry:
+--     has_permission is now the ONLY function in the graph that re-enters RLS
+--     at all. The property that bounds it: the two SELECT policies on
+--     organisation_memberships -- the only table it re-enters -- resolve to
+--     `user_id = auth.uid()` (no call at all) and is_active_member (DEFINER,
+--     RLS off). NEITHER calls an INVOKER function. role_permissions' SELECT
+--     policy is `true`. So every INVOKER path bottoms out after exactly one
+--     re-entry:
 --
 --       <any write policy> -> has_permission
 --                          -> SELECT memberships
@@ -147,14 +152,61 @@
 --     raises zero 42P17 ("infinite recursion detected in policy for relation").
 --
 --     THE RULE THIS IMPLIES: a SELECT policy on organisation_memberships (or
---     on role_permissions) must never call has_permission /
---     has_platform_permission, or any future SECURITY INVOKER helper that
---     reads organisation_memberships. Those two tables' read policies are the
---     base case; keep them calling DEFINER helpers or nothing.
+--     on role_permissions) must never call has_permission, or any future
+--     SECURITY INVOKER helper that reads organisation_memberships. Those two
+--     tables' read policies are the base case; keep them calling DEFINER
+--     helpers or nothing.
+--
+-- (i) The platform superuser is NOT an organisation_memberships row.
+--     An earlier revision of this migration modelled platform_superuser as a
+--     role in the roles catalogue, held via a normal membership. That is
+--     wrong, for a reason that only shows up when you look at what else a
+--     membership row does: organisation_memberships.organisation_id is NOT
+--     NULL, so granting the platform role required pinning the superuser to
+--     some arbitrary organisation -- and that made them an ordinary active
+--     member of it, with ordinary member visibility into that tenant's data,
+--     through their own session, with no audit record and no impersonation
+--     request.
+--
+--     That directly contradicts CLAUDE.md § "Superuser dashboard": "No direct
+--     tenant-data access outside impersonation ... Any deeper look goes through
+--     the audited, admin-approved impersonation flow." A superuser silently
+--     reading one org for free because that is where their allowlist row
+--     happened to live is exactly the hole that rule exists to close.
+--
+--     public.platform_admins carries no organisation, so there is no tenant to
+--     leak. The superuser now has NO org-scoped read anywhere; every look at
+--     tenant data has to go through the impersonation flow, which is where the
+--     audit and the admin approval live. It also drops role_permissions out of
+--     the platform path entirely, which is what makes
+--     has_platform_permission terminal in note (h).
 
 -- ===========================================================================
 -- 1. Permission engine
 -- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- platform_admins
+-- The platform-superuser allowlist. Membership in this table IS platform
+-- superuser status; there is no role, no organisation and no tier.
+--
+-- This is deliberately NOT an organisation_memberships row (see design note
+-- (i)). RLS is enabled with ZERO policies and no client GRANTs, so the table
+-- is unreachable from anon/authenticated/service_role by any path -- it is
+-- read only by has_platform_permission() below, which is SECURITY DEFINER.
+-- Rows are added by migration/DBA action only.
+--
+-- Seeded EMPTY on purpose. There is no founder user id wired up yet, and an
+-- empty allowlist is the correct, safe MVP state: nobody holds platform
+-- superuser access until a later migration deliberately grants it.
+-- ---------------------------------------------------------------------------
+create table public.platform_admins (
+  user_id    uuid primary key references auth.users (id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+
+comment on table public.platform_admins is
+  'Platform superuser allowlist. RLS enabled with no policies and no client grants -- readable only via public.has_platform_permission() (SECURITY DEFINER). Rows are added by migration/DBA action only, never by any client. Intentionally empty at MVP.';
 
 -- ---------------------------------------------------------------------------
 -- is_active_member(org_id)
@@ -271,35 +323,47 @@ grant execute on function public.has_permission(uuid, text) to authenticated;
 -- ---------------------------------------------------------------------------
 -- has_platform_permission(permission)
 -- The organisation-independent counterpart, for platform-level permissions
--- such as 'view_audit_log'.
+-- such as 'view_audit_log'. True iff the caller is on the platform_admins
+-- allowlist above.
 --
--- The platform_superuser role is deliberately hardcoded rather than "any role
--- that happens to grant this key in any org": that keeps the platform surface
--- explicitly non-reachable through org-scoped permissions, so seeding a normal
--- org role with a platform permission key by mistake cannot open it up. See
--- design note (c) for why no client role can assign platform_superuser.
+-- SECURITY DEFINER, and it has to be: public.platform_admins has RLS enabled
+-- with no policies and no client GRANT, so a SECURITY INVOKER version would
+-- raise 42501 "permission denied for table platform_admins" for every ordinary
+-- user. That error would propagate out of the RLS policies that call this
+-- (audit_events SELECT, organisation_subscriptions), turning "you are not a
+-- superuser, see nothing" into a hard failure. DEFINER makes the negative case
+-- return false, which is what a permission predicate must do.
+--
+-- Read-only, anchored to auth.uid(), accepts no caller-supplied identity --
+-- the same discipline as is_active_member / shares_active_organisation.
+--
+-- ON THE p_permission ARGUMENT -- read this before adding a platform tier.
+--   It is accepted and deliberately NOT consulted. Per CLAUDE.md
+--   § "Superuser dashboard" there is a single hardcoded superuser at MVP with
+--   no granular platform permission tiers, so allowlist membership genuinely
+--   IS the answer for every platform permission -- there is nothing to consult
+--   yet. The parameter is kept so that call sites already name the permission
+--   they are asserting, which means introducing real granularity later is a
+--   change to THIS FUNCTION BODY ONLY, not to every policy that calls it.
+--   Until then, treat has_platform_permission('anything') as "is the caller
+--   the platform superuser" -- it does not verify that 'anything' was granted.
 -- ---------------------------------------------------------------------------
 create or replace function public.has_platform_permission(p_permission text)
 returns boolean
 language sql
 stable
-security invoker
+security definer
 set search_path = ''
 as $$
   select exists (
     select 1
-    from public.organisation_memberships m
-    join public.role_permissions rp
-      on rp.role_key = m.role
-    where m.user_id = (select auth.uid())
-      and m.status = 'active'
-      and m.role = 'platform_superuser'
-      and rp.permission_key = p_permission
+    from public.platform_admins pa
+    where pa.user_id = (select auth.uid())
   );
 $$;
 
 comment on function public.has_platform_permission(text) is
-  'Platform-level (organisation-independent) permission check. True only if auth.uid() holds an active platform_superuser membership whose role grants p_permission. platform_superuser is assignable by migration/DBA only -- the organisation_memberships write policies refuse it.';
+  'Platform-level (organisation-independent) permission check: true iff auth.uid() is on the public.platform_admins allowlist. SECURITY DEFINER because platform_admins is unreadable by any client role. p_permission is accepted but NOT consulted -- at MVP there is one all-powerful superuser and no platform permission tiers; the argument exists so call sites document intent and granularity can be added in this function body alone.';
 
 revoke all on function public.has_platform_permission(text) from public, anon, authenticated, service_role;
 grant execute on function public.has_platform_permission(text) to authenticated;
@@ -464,6 +528,10 @@ alter table public.role_permissions           enable row level security;
 alter table public.subscription_plans         enable row level security;
 alter table public.organisation_subscriptions enable row level security;
 alter table public.audit_events               enable row level security;
+-- No policies are created for platform_admins, on purpose: RLS with zero
+-- policies denies every row to every non-owner role. Combined with the GRANT
+-- revocation in section 4, the table is unreachable from any client.
+alter table public.platform_admins            enable row level security;
 
 -- ---------------------------------------------------------------------------
 -- profiles
@@ -526,17 +594,39 @@ create policy "organisation_memberships_select_same_organisation"
   on public.organisation_memberships for select to authenticated
   using ( public.is_active_member(organisation_id) );
 
--- invited_by is the audit trail of who issued an invite. On INSERT it must be
--- the caller or nothing -- a client must not be able to attribute an invite it
--- issued to a different admin. (The guard is INSERT-only on purpose: on UPDATE
+-- A client INSERT here is an INVITE, never a completed membership:
+--
+--   status = 'invited'  -- an admin must not be able to mint an already-active
+--                          membership for someone else. Without this, holding
+--                          'manage_members' means silently adding any user id
+--                          to your organisation with no consent from them --
+--                          and an active membership is what every read policy
+--                          keys off, so the invitee is immediately exposed to
+--                          that org's data through their own session.
+--   joined_at is null   -- joined_at records when the invite was ACCEPTED. It
+--                          stays null until that happens, so it cannot be
+--                          back-dated at invite time.
+--   invited_by          -- the audit trail of who issued the invite: the
+--                          caller or nothing, so an invite cannot be
+--                          attributed to a different admin.
+--
+-- The invited_by/status/joined_at guards are INSERT-only on purpose: on UPDATE
 -- the NEW row still carries the ORIGINAL inviter, so the same predicate would
--- wrongly block a second admin from ever editing that membership.)
+-- wrongly block a second admin from ever editing that membership.
+--
+-- FOLLOW-ON, NOT BUILT HERE (Task 6): flipping status 'invited' -> 'active' on
+-- acceptance cannot go through the UPDATE policy below, because the invitee
+-- does not hold 'manage_members' in the org they are being invited to. It needs
+-- its own SECURITY DEFINER function scoped to the caller's OWN membership row,
+-- same pattern as create_organisation. Deliberately out of scope for Task 4.
 create policy "organisation_memberships_insert_manage_members"
   on public.organisation_memberships for insert to authenticated
   with check (
     public.has_permission(organisation_id, 'manage_members')
     and role <> 'platform_superuser'
     and (invited_by is null or invited_by = (select auth.uid()))
+    and status = 'invited'
+    and joined_at is null
   );
 
 create policy "organisation_memberships_update_manage_members"
@@ -599,6 +689,19 @@ create policy "organisation_subscriptions_select_member"
   on public.organisation_subscriptions for select to authenticated
   using ( public.is_active_member(organisation_id) );
 
+-- Second permissive SELECT policy, OR'd with the member one above. This is NOT
+-- cosmetic and NOT just "so the dashboard can list subscriptions": Postgres
+-- applies SELECT policies to an UPDATE's row-matching as well. Without it, the
+-- superuser write policies below are half-working in a dangerous way -- a
+-- targeted `UPDATE ... WHERE organisation_id = <an org the superuser is not a
+-- member of>` silently matches 0 rows, while an unqualified
+-- `UPDATE ... SET seat_count = 5` still succeeds against whatever rows the
+-- member policy did expose. A write path that fails when aimed and succeeds
+-- when unaimed is worse than one that just fails.
+create policy "organisation_subscriptions_select_platform_billing"
+  on public.organisation_subscriptions for select to authenticated
+  using ( public.has_platform_permission('manage_billing') );
+
 create policy "organisation_subscriptions_insert_platform_billing"
   on public.organisation_subscriptions for insert to authenticated
   with check ( public.has_platform_permission('manage_billing') );
@@ -634,6 +737,7 @@ revoke all on public.role_permissions           from anon, authenticated, servic
 revoke all on public.subscription_plans         from anon, authenticated, service_role;
 revoke all on public.organisation_subscriptions from anon, authenticated, service_role;
 revoke all on public.audit_events               from anon, authenticated, service_role;
+revoke all on public.platform_admins           from anon, authenticated, service_role;
 
 -- profiles: select own + fellow members, update own.
 grant select, update on public.profiles to authenticated;
@@ -658,3 +762,8 @@ grant select, insert, update on public.organisation_subscriptions to authenticat
 -- audit_events: SELECT only. No INSERT/UPDATE/DELETE grant to any client role
 -- -- writes go through log_audit_event(), and the table is append-only.
 grant select on public.audit_events to authenticated;
+
+-- platform_admins: NOTHING, to any client role, for any operation. The
+-- revocation above is the whole story -- it is read only by
+-- has_platform_permission() (SECURITY DEFINER, runs as the owner) and written
+-- only by migration/DBA action. There is no policy to fall back on either.
