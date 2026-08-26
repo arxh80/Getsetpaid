@@ -50,7 +50,7 @@ Network identities and tenant-private records are **separate concepts in separat
 
 ### Domain entities
 
-Organisation, User, Contact, Company, Artist/DJ, Agency, Venue (+ rooms), Supplier, Event (+ lineup), Tour, Offer/Hold/Booking, Task, Meeting, Note, Email activity, Document (+ versions), Financial entry, Relationship, Rating, Network profile, Audit event, Notification, Consent, Data subject request, Integration connection.
+Organisation, User, Contact, Company, Artist/DJ, Agency, Venue (+ rooms), Supplier, Event (+ lineup), Tour, Offer/Hold/Booking, Task, Meeting, Note, Email activity, Document (+ versions), Financial entry, Relationship, Rating, Network profile, Audit event, Notification, Consent, Data subject request, Integration connection, Feedback.
 
 Full baseline table list is in PRD §11.
 
@@ -102,7 +102,9 @@ Any logged-in user, on any tier, can submit feedback (bug / idea / other) from w
 
 **Superuser dashboard view:** a dedicated Feedback list — filterable by org, category, and date — with a status per item (New / Read / Actioned / Archived) the founder updates manually. Separate UI from the audit log viewer, though the submission event itself is also audited like any other write.
 
-**Screenshot attachment** goes through the same file-security pipeline as any other upload (`CLAUDE.md` § Non-negotiable rules, `SECURITY.md` § 6): private bucket, malware-scanned, strict allowlist (image types only), signed URL, access logged.
+**Screenshot attachment** goes through the same file-security pipeline as any other upload (§ Non-negotiable rules, `SECURITY.md` § 6): private bucket, malware-scanned, strict allowlist (image types only), signed URL, access logged.
+
+**Screenshot risk (ties to § Superuser dashboard's "no direct tenant-data access" rule):** a screenshot can capture on-screen tenant-private data (another org's CRM record) that the submitting user happened to have open. The submit UI must warn the user before upload that the screenshot may include on-screen data. Because this is the one deliberate exception to "no direct tenant-data access outside impersonation," every superuser view of a feedback screenshot is itself an audited action (actor, feedback ID, timestamp) — same audit discipline as impersonation, not a silent read.
 
 **Rate limit:** 10 submissions / hour per user, same tier as other write actions (`SECURITY.md` § 5).
 
@@ -135,7 +137,7 @@ These are acceptance criteria, not hardening tasks. A feature is not done until 
 - **Files are private.** Private buckets, short-lived signed URLs issued after authorisation, sanitised filenames (never user-supplied paths as storage keys), every access logged. **Malware-scan every upload at MVP** (e.g. ClamAV or a scanning API) and hold quarantined files until cleared. Accept only a strict allowlist of file types (documents, images, PDFs) — not just MIME/extension checks, no executables or macro-enabled Office formats.
 - **Treat all user content as untrusted.** Sanitise rich text; validate URL protocols (reject `javascript:`, `data:`); avoid `dangerouslySetInnerHTML`; ship a strong CSP.
 - **Audit high-value actions.** Actor, org, timestamp, action, target, correlation ID, before/after. Append-only from the application. Superuser access audits itself. Never log passwords, tokens or keys. Retention: hot/queryable for 30 days, archived (cold storage) for up to 1 year total, then purged.
-- **Soft-delete operational records** rather than hard deletion, subject to the retention policy. Default retention: 7 years for financial records, 2 years for inactive-account data — confirm exact periods per record type with legal counsel before launch (see Legal).
+- **Soft-delete operational records** rather than hard deletion, subject to the retention policy. Default retention: 7 years for financial records, 2 years for inactive-account data — confirm exact periods per record type with legal counsel before launch (see § Legal and regulatory compliance).
 - **UTC in the database**, UK local time in the UI with explicit timezone handling. UUID primary keys. Index every foreign key.
 
 ## Design
@@ -172,7 +174,7 @@ Tenant-breakout and network-leakage tests matter most — write them alongside t
 
 ## Scope discipline
 
-MVP (PRD §4) is: auth + orgs + invites, core CRM entities, events with lineup, tasks/meetings/notes/attachments, basic event finance, RLS isolation, entitlements, network profiles, audit log, legal pages.
+MVP (PRD §4) is: auth + orgs + invites, core CRM entities, events with lineup, tasks/meetings/notes/attachments, basic event finance, RLS isolation, entitlements, network profiles, audit log, legal pages, superuser dashboard (§ Superuser dashboard), in-app feedback (§ In-app feedback).
 
 **Not MVP:** email/calendar integration, offers/holds/contracts workflow, settlements, ticketing APIs, file versioning, public profiles and connection requests, tour management, AI features, external API, first-class supplier management (suppliers exist only as a generic Contact/Company tag at MVP), network profile verification badges, Microsoft SSO, Enterprise/contact-sales subscription tier. Don't build ahead into these.
 
@@ -193,7 +195,8 @@ Resolved 2026-08-26 (founder sign-off):
 - **Retention:** 7yr financial / 2yr inactive as working defaults, pending legal review.
 - **Superuser impersonation:** allowed, but only with org-admin acceptance, time-boxing and full audit.
 - **Superuser dashboard scope:** single hardcoded superuser at MVP; org lifecycle (soft-delete only) + billing overrides (time-boxed, auto-revert) + per-org feature overrides (mandatory expiry) + basic platform health counts + searchable audit log viewer + trigger-based incident alerts. No direct tenant-record access outside impersonation. Full spec in § Superuser dashboard.
-- **In-app feedback:** any logged-in user can submit (bug/idea/other), always identified, optional screenshot. Emails the founder and lands in a dedicated superuser dashboard list (New/Read/Actioned/Archived). Platform-scoped table, not tenant RLS. 10/hour rate limit, 2yr retention. Full spec in § In-app feedback.
+- **In-app feedback:** any logged-in user can submit (bug/idea/other), always identified, optional screenshot. Emails the founder and lands in a dedicated superuser dashboard list (New/Read/Actioned/Archived). Platform-scoped table, not tenant RLS. 10/hour rate limit, 2yr retention. Screenshot upload carries a leakage warning and every superuser view of one is audited. Full spec in § In-app feedback.
+- **Superuser dashboard and in-app feedback are MVP**, not fast-follows — added to § Scope discipline.
 - **Tier gating dimension:** seats + features (not pure usage/event-volume gating).
 - **Free tier shape:** view-only network access, no CRM writes.
 - **Audit log retention:** hot 30 days, archived up to 1 year total, then purged.

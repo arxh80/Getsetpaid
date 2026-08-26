@@ -35,6 +35,7 @@ This is not the public-facing Trust Centre page (PRD §12) — it is written for
 - Active-session listing with remote revocation is available to every user.
 - Superuser impersonation is break-glass only: the superuser requests it, the target org's admin must accept, the session is time-boxed, and the whole flow is audited (actor, org, reason, start/end). No silent or unilateral impersonation.
 - **Superuser dashboard** (single hardcoded superuser account at MVP): never exposes tenant record content directly — only aggregate metadata (seat count, storage, record counts). Org suspend/delete is soft-delete only, requires step-up re-auth, and notifies the org admin. Billing overrides require step-up re-auth, a mandatory audited reason, org-admin notification, and are time-boxed with auto-revert. Per-org feature overrides require a mandatory expiry date — no open-ended grants. Full spec in `CLAUDE.md` § Superuser dashboard.
+- **In-app feedback screenshots are the one deliberate exception** to "no direct tenant-data access outside impersonation" — a screenshot can incidentally capture another org's on-screen data. The submit UI warns the user before upload, and every superuser view of a feedback screenshot is itself an audited action. See `CLAUDE.md` § In-app feedback and § 10 (Known risk areas) below.
 
 ## 5. Rate limiting and abuse prevention
 
@@ -92,6 +93,7 @@ Pulled from PRD §18. A tester or reviewer should focus here first — this is w
 | Financial scope creep | Finance drifting toward full accounting software expands the attack surface unnecessarily. | Finance stays at event/booking level (budget & actuals only) at MVP |
 | Integration dependencies | Ticketing/email providers add third-party trust boundaries. | Deferred past MVP; adapters + link-first design when built |
 | Legal/compliance drift | UK privacy guidance changes over time. | Scheduled legal review, versioned legal pages |
+| Feedback screenshot leakage | A feedback screenshot can incidentally show another org's on-screen data, reaching the superuser outside the impersonation flow. | Pre-upload warning + mandatory audit on every superuser view (`CLAUDE.md` § In-app feedback) |
 
 Tenant-breakout and network-leakage tests matter more than anything else in this list — they should exist before a feature ships, not be added after.
 
