@@ -2,7 +2,7 @@
 
 Internal engineering reference **and** pentest/audit prep document for GetSetPaid. Consolidates security decisions already made across `CLAUDE.md` and the PRD (`getsetpaid_crm_prd.docx` §10, §18) into one place, plus defines rate limits, incident response and vulnerability disclosure that didn't exist anywhere yet.
 
-This is not the public-facing Trust Centre page (PRD §12) — it is written for engineers and external security testers, not customers. Nothing here is a substitute for the pre-launch independent penetration test (PRD §10.8) or legal/privacy counsel review (see `CLAUDE.md` § Legal).
+This is not the public-facing Trust Centre page (PRD §12) — it is written for engineers and external security testers, not customers. Nothing here is a substitute for the pre-launch independent penetration test (PRD §10.8) or legal/privacy counsel review (see `CLAUDE.md` § Legal and regulatory compliance).
 
 ## 1. Principles
 
@@ -69,7 +69,7 @@ Standard defaults — tune during implementation, but these are the numbers to b
 ## 8. Data retention and residency
 
 - Soft-delete operational records rather than hard deletion, subject to retention policy.
-- Working defaults (pending legal sign-off — see `CLAUDE.md` § Legal): **7 years** for financial records, **2 years** for inactive-account data (also applied to in-app feedback submissions — see `CLAUDE.md` § In-app feedback), **30 days hot / 1 year archived** for audit logs.
+- Working defaults (pending legal sign-off — see `CLAUDE.md` § Legal and regulatory compliance): **7 years** for financial records, **2 years** for inactive-account data (also applied to in-app feedback submissions — see `CLAUDE.md` § In-app feedback), **30 days hot / 1 year archived** for audit logs.
 - GDPR data subject requests (export/erasure): **30-day** target, matching the ICO statutory maximum.
 - **Data residency: UK/EU Supabase region only** — no US-region hosting for customer data.
 - Currency: **GBP only at MVP**; schema (`financial_entries` etc.) stores a currency column and minor units so multi-currency UI can be added later without a migration.
@@ -154,3 +154,6 @@ Carried over from `CLAUDE.md` § Open decisions — these need founder/legal inp
 - Exact retention periods per record type (legal/privacy counsel sign-off required).
 - Whether/when to stand up a dedicated vulnerability disclosure channel and incident response runbook in full.
 - First ticketing API partner (affects integration-specific threat modelling when that phase starts).
+- EU Art 27 representative appointment (unconfirmed) — see `CLAUDE.md` § Legal and regulatory compliance.
+- DPIA, ROPA and ICO controller registration — all outstanding pre-launch legal tasks, see `CLAUDE.md` § Legal and regulatory compliance.
+- Analytics/tracking vendor and payment processor selection — both undecided, and both change the compliance surface (PECR cookie consent; PCI DSS scope) once chosen.

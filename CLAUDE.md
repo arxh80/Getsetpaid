@@ -214,10 +214,40 @@ Resolved 2026-08-26 (founder sign-off):
 ## Open decisions (need founder sign-off — ask, don't assume)
 
 - **First ticketing API partner** — deliberately deferred; ticketing integration is out of MVP scope, revisit when that phase starts.
-- **Exact retention periods per record type** — working defaults are set above (financial, inactive-account, audit log); needs sign-off from qualified UK legal/privacy counsel before launch (see Legal).
+- **Exact retention periods per record type** — working defaults are set above (financial, inactive-account, audit log); needs sign-off from qualified UK legal/privacy counsel before launch (see § Legal and regulatory compliance).
+- **EU Art 27 representative** — need and appointment unconfirmed; required before onboarding meaningful EU-based org signups if the company has no EU establishment.
+- **DPIA, ROPA and ICO registration** — none completed yet; all are pre-launch legal/compliance tasks, not engineering defaults (see § Legal and regulatory compliance).
+- **Analytics/tracking vendor** — none chosen; the choice determines whether a PECR cookie-consent banner is needed at launch.
+- **Payment processor** — not yet selected; must be confirmed PCI-DSS-compliant and used via tokenisation/redirect so the product stays out of PCI DSS scope.
 
-## Legal
+## Legal and regulatory compliance
 
-Legal pages and compliance decisions require review by qualified UK legal/privacy counsel before launch. Drafted content is a starting point for that review, never a substitute for it. PRD §12 lists the required pages and the ICO/OWASP sources behind them.
+Legal pages and compliance decisions require review by qualified UK legal/privacy counsel before launch. Drafted content here is a starting point for that review, never a substitute for it. PRD §12 lists the required pages and the ICO/OWASP sources behind them.
+
+**Applicable frameworks.** UK GDPR + Data Protection Act 2018 (primary, since the company and its Supabase region are UK-based); EU GDPR applies in parallel for any data subject located in the EU — a UK-first live-events product will have EU venues, artists and agents in its network from early on, so build to the aligned standard rather than UK-only with an EU bolt-on later. PECR (Privacy and Electronic Communications Regulations 2003, as amended) governs marketing email/SMS and non-essential cookies. The Equality Act 2010 underpins the accessibility requirement already in `DESIGN.md` and § Testing gates.
+
+**Lawful basis.** Contract (Art 6(1)(b)) for core CRM processing needed to deliver the service a customer signed up for; legitimate interests (Art 6(1)(f)) for product analytics, fraud/abuse prevention, and the in-app feedback feature (§ In-app feedback); consent only where legally required (marketing communications, non-essential cookies) — never bundled with core-service consent, and as easy to withdraw as to give. No MVP entity collects special category data (health, biometric, etc.); a future feature that would must trigger a DPIA before build, not after.
+
+**Data Protection Impact Assessment (DPIA).** Required pre-launch given systematic profiling for network matching/discovery and processing at scale across many orgs — a screening DPIA is a legal pre-launch task, owned by counsel + founder, not an engineering default.
+
+**Records of Processing Activities (ROPA)**, Art 30: required once the company crosses the regular/risky-processing threshold, which a multi-tenant CRM handling personal and financial data does. One ROPA entry per domain entity category (PRD §11), kept current as the schema changes.
+
+**International transfers.** Database and file storage are UK/EU-region-only (§ Non-functional targets) — no transfer issue there. Any sub-processor outside the UK/EU (transactional email provider, error-tracking/analytics, etc.) needs either an adequacy-covered location, the UK International Data Transfer Addendum (IDTA), or EU Standard Contractual Clauses before it touches personal data — checked per vendor at integration time, never assumed.
+
+**Sub-processor / DPA register.** Every third-party processor (Supabase, email provider, malware-scan API, future integrations) needs a signed Data Processing Agreement and a line in a public sub-processor list — required under Art 28 and expected by security-conscious customers even pre-Enterprise-tier.
+
+**EU representative (Art 27).** A UK company with no EU establishment that processes EU residents' data beyond an occasional/low-risk level must appoint an EU-based Art 27 representative — likely true here given the network's EU venues/artists. Confirm need and appoint before onboarding meaningful EU-based org signups (see Open decisions).
+
+**ICO registration.** The company must register as a data controller with the ICO (annual fee, tiered by size) before processing personal data commercially. A compliance task that blocks launch if missed, not a technical one.
+
+**Breach notification.** `SECURITY.md` § 12 already sets a 72-hour ICO notification clock for notifiable UK GDPR breaches. EU GDPR carries the equivalent 72-hour obligation to the relevant EU supervisory authority when EU data subjects are affected — the same incident-response process covers both; no separate EU-only path.
+
+**Cookies/tracking (PECR).** Any non-essential cookie (analytics, third-party embeds) requires prior opt-in consent via a cookie banner; strictly-necessary cookies (session, auth, CSRF) are exempt. No analytics/tracking vendor is chosen yet — its cookie footprint decides whether a consent banner ships alongside it.
+
+**B2B does not mean no individual rights.** GetSetPaid is sold to organisations, not consumers, so consumer-protection law (e.g. Consumer Rights Act cancellation rights) mostly doesn't apply — but individual users within a customer org remain data subjects with full UK/EU GDPR rights regardless of the B2B commercial relationship.
+
+**Payments.** No card data is handled directly — subscription billing routes through a PCI-DSS-compliant processor (provider TBD) via tokenisation/redirect, keeping the product itself out of PCI DSS scope. Reconfirm this holds once the billing integration is actually chosen.
+
+**Existing controls already meeting GDPR requirements** (cross-referenced, not duplicated): 30-day DSR export/erasure (§ Decisions log); UK/EU-only data residency (§ Non-functional targets); soft-delete + retention schedule (§ Non-negotiable rules, `SECURITY.md` § 8); audited access with defined retention (`SECURITY.md` § 7); RLS-enforced access minimisation (`SECURITY.md` § 2); the `Consent` and `Data subject request` domain entities (PRD §11) as the technical backbone for rights requests and consent records.
 
 **Data subject request (export/erasure) target: 30 days**, matching the ICO statutory maximum. Build the DSR workflow to hit this deadline, not just aim for it informally.
