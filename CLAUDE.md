@@ -70,7 +70,13 @@ These are acceptance criteria, not hardening tasks. A feature is not done until 
 
 ## Design
 
-Use a **bespoke design system** — the product must not look like a re-skinned generic sales CRM. The `hallmark` skill (pinned in `skills-lock.json`) and `ui-ux-pro-max` are the intended design tooling.
+**`DESIGN.md` holds the colour, type, spacing and shape tokens. Read it before writing any UI.**
+
+Direction in one line: minimalist, sharp-edged, bold serif — square corners everywhere (`--radius: 0`), no shadows, no gradients, structure from hairline rules and typographic weight.
+
+Palette is `#3A86FF` / `#BDB2FF` / `#FFD6E0` / `#FFF4F4`. All four fail WCAG AA for body text, so none of them carry small text — `--ink` (`#14141C`) does, and `DESIGN.md` defines the measured extensions (ink, link, status colours) that the four-colour palette cannot supply. Type is Source Serif 4 throughout, with `tabular-nums` mandatory on every number in a table.
+
+The product must not look like a re-skinned generic sales CRM. The `hallmark` skill (pinned in `skills-lock.json`) and `ui-ux-pro-max` are the intended design tooling.
 
 Priorities: high information density without clutter; keyboard-first navigation and global command/search; contextual drawers for quick edits; one consistent timeline/activity component reused across every entity; status chips and relationship indicators; empty states that teach the workflow; WCAG 2.2 AA from the start, not retrofitted.
 
