@@ -60,7 +60,15 @@ An action is allowed only if **all** of these permit it: platform policy ∩ sub
 
 Downgrading a subscription makes features read-only or limited; it must never silently delete data.
 
-Pricing shape: **free + paid tiers, gated by seats and features** (e.g. network profiles, finance, more users unlock at higher tiers). Free tier is **view-only network access — no CRM writes**: browsing/discovery only, creating contacts/events/etc. requires a paid tier. Custom field limits are also tier-gated (free: none, paid tiers: more). Exact tier names, seat counts, prices and custom-field caps are still to be specified — see Open decisions.
+### Subscription tiers
+
+Per-seat pricing, monthly or annual (15% off annual), GBP. No seat minimum — a single paid seat is valid. Enterprise/contact-sales tier is deliberately deferred past MVP (see Scope discipline).
+
+| Tier | Price | CRM writes | Network profile | Custom fields | Finance module | Storage |
+|---|---|---|---|---|---|---|
+| Free | £0 | No — view-only network browsing | No | 0 | No | — |
+| Starter | £19/seat/mo | Yes | Yes, can publish | 5 per entity | No | 5GB/org |
+| Pro | £39/seat/mo | Yes | Yes, can publish | Unlimited | Yes (budget & actuals) | 20GB/org |
 
 ### Superuser impersonation
 
@@ -124,7 +132,7 @@ Tenant-breakout and network-leakage tests matter most — write them alongside t
 
 MVP (PRD §4) is: auth + orgs + invites, core CRM entities, events with lineup, tasks/meetings/notes/attachments, basic event finance, RLS isolation, entitlements, network profiles, audit log, legal pages.
 
-**Not MVP:** email/calendar integration, offers/holds/contracts workflow, settlements, ticketing APIs, file versioning, public profiles and connection requests, tour management, AI features, external API, first-class supplier management (suppliers exist only as a generic Contact/Company tag at MVP), network profile verification badges, Microsoft SSO. Don't build ahead into these.
+**Not MVP:** email/calendar integration, offers/holds/contracts workflow, settlements, ticketing APIs, file versioning, public profiles and connection requests, tour management, AI features, external API, first-class supplier management (suppliers exist only as a generic Contact/Company tag at MVP), network profile verification badges, Microsoft SSO, Enterprise/contact-sales subscription tier. Don't build ahead into these.
 
 Finance starts at event/booking level and MVP scope is **budget & actuals only** — fee, cost and income lines per event, no invoicing, no full P&L. Resist expanding it toward accounting software or invoicing — that is an integration, later.
 
@@ -137,6 +145,7 @@ Resolved 2026-08-26 (founder sign-off):
 - **Network discovery:** request-to-connect (see private/network split).
 - **Suppliers:** not first-class at MVP.
 - **Pricing shape:** free + paid tiers.
+- **Subscription tiers:** Free (£0) / Starter (£19/seat/mo) / Pro (£39/seat/mo), 15% off annual, no seat minimum. Enterprise deferred past MVP. Full gating matrix in § Subscription tiers.
 - **Ratings:** permanently private in v1.
 - **Finance scope:** budget & actuals only at MVP.
 - **Retention:** 7yr financial / 2yr inactive as working defaults, pending legal review.
@@ -160,7 +169,6 @@ Resolved 2026-08-26 (founder sign-off):
 
 ## Open decisions (need founder sign-off — ask, don't assume)
 
-- **Exact subscription tier names, seat counts and prices** — the gating dimension (seats + features) and free-tier shape are decided, the specific numbers are not.
 - **First ticketing API partner** — deliberately deferred; ticketing integration is out of MVP scope, revisit when that phase starts.
 - **Exact retention periods per record type** — working defaults are set above (financial, inactive-account, audit log); needs sign-off from qualified UK legal/privacy counsel before launch (see Legal).
 
