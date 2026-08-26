@@ -32,15 +32,19 @@ This repo is linked to a GitHub remote. **Commit and push after every change.**
 
 **Backend:** Supabase — PostgreSQL is the system of record, Supabase Auth for identity, Supabase Storage (private buckets only) for documents, RLS for row access.
 
-**Frontend:** not yet decided (see Open decisions). Desktop-first responsive web app; no native mobile for MVP.
+**Frontend:** Next.js (React). Desktop-first responsive web app; no native mobile for MVP.
 
 ### Tenancy model
 
-`Organisation` is the tenant. Users belong to one or more organisations via `organisation_memberships`, with an explicit active-workspace selector in the UI. Every tenant-owned table must have a reliable row → organisation path, and RLS derives the current user from the authenticated session and checks membership **in the database**. Never trust a client-supplied organisation ID.
+`Organisation` is the tenant. Users belong to one or more organisations via `organisation_memberships` **from MVP** — the workspace switcher ships at launch, not deferred. Every tenant-owned table must have a reliable row → organisation path, and RLS derives the current user from the authenticated session and checks membership **in the database**. Never trust a client-supplied organisation ID.
 
 ### The private/network split (highest-risk boundary)
 
 Network identities and tenant-private records are **separate concepts in separate tables** (`network_profiles`, `network_links` vs. the tenant tables). Matching a private contact to a network identity must never expose private notes, ratings, financials, documents or activity. Discovery queries read only explicitly published fields, and publishing is opt-in per field. Do not join private tables into public discovery paths without an explicit, tested policy.
+
+**Discovery model: request-to-connect.** Published fields make a profile discoverable, but private/network data (ratings, history, financials, notes) never unlocks until both sides accept an explicit connection request. No public, logged-out profiles at MVP.
+
+**Ratings are permanently private in v1.** They never leave the rating organisation's tenant — not even as an anonymised aggregate on a network profile. Revisit only as a deliberate future decision, not an MVP default.
 
 ### Domain entities
 
@@ -54,6 +58,12 @@ An action is allowed only if **all** of these permit it: platform policy ∩ sub
 
 Downgrading a subscription makes features read-only or limited; it must never silently delete data.
 
+Pricing shape: **free + paid tiers** (exact tier definitions and plan limits still to be specified — see Open decisions).
+
+### Superuser impersonation
+
+A platform superuser may impersonate a customer account for support, but only via break-glass: the superuser requests impersonation, the org's admin must accept the request, and the session is time-boxed and fully audited (actor, org, reason, start/end). No silent or unilateral impersonation.
+
 ## Non-negotiable rules
 
 These are acceptance criteria, not hardening tasks. A feature is not done until they hold.
@@ -65,7 +75,7 @@ These are acceptance criteria, not hardening tasks. A feature is not done until 
 - **Files are private.** Private buckets, short-lived signed URLs issued after authorisation, MIME/extension validation, sanitised filenames (never user-supplied paths as storage keys), every access logged.
 - **Treat all user content as untrusted.** Sanitise rich text; validate URL protocols (reject `javascript:`, `data:`); avoid `dangerouslySetInnerHTML`; ship a strong CSP.
 - **Audit high-value actions.** Actor, org, timestamp, action, target, correlation ID, before/after. Append-only from the application. Superuser access audits itself. Never log passwords, tokens or keys.
-- **Soft-delete operational records** rather than hard deletion, subject to the retention policy.
+- **Soft-delete operational records** rather than hard deletion, subject to the retention policy. Default retention: 7 years for financial records, 2 years for inactive-account data — confirm exact periods per record type with legal counsel before launch (see Legal).
 - **UTC in the database**, UK local time in the UI with explicit timezone handling. UUID primary keys. Index every foreign key.
 
 ## Design
@@ -92,13 +102,29 @@ Tenant-breakout and network-leakage tests matter most — write them alongside t
 
 MVP (PRD §4) is: auth + orgs + invites, core CRM entities, events with lineup, tasks/meetings/notes/attachments, basic event finance, RLS isolation, entitlements, network profiles, audit log, legal pages.
 
-**Not MVP:** email/calendar integration, offers/holds/contracts workflow, settlements, ticketing APIs, file versioning, public profiles and connection requests, tour management, AI features, external API. Don't build ahead into these.
+**Not MVP:** email/calendar integration, offers/holds/contracts workflow, settlements, ticketing APIs, file versioning, public profiles and connection requests, tour management, AI features, external API, first-class supplier management (suppliers exist only as a generic Contact/Company tag at MVP). Don't build ahead into these.
 
-Finance starts at event/booking level. Resist expanding it toward accounting software — that is an integration, later.
+Finance starts at event/booking level and MVP scope is **budget & actuals only** — fee, cost and income lines per event, no invoicing, no full P&L. Resist expanding it toward accounting software or invoicing — that is an integration, later.
+
+## Decisions log
+
+Resolved 2026-08-26 (founder sign-off):
+
+- **Frontend:** Next.js (React).
+- **Multi-org:** supported from MVP, not deferred.
+- **Network discovery:** request-to-connect (see private/network split).
+- **Suppliers:** not first-class at MVP.
+- **Pricing shape:** free + paid tiers.
+- **Ratings:** permanently private in v1.
+- **Finance scope:** budget & actuals only at MVP.
+- **Retention:** 7yr financial / 2yr inactive as working defaults, pending legal review.
+- **Superuser impersonation:** allowed, but only with org-admin acceptance, time-boxing and full audit.
 
 ## Open decisions (need founder sign-off — ask, don't assume)
 
-Frontend stack; subscription tiers and plan limits; multi-org membership at MVP; whether superusers may impersonate and what break-glass controls apply; the network discovery model (public vs authenticated-only vs request-to-connect); whether ratings stay permanently private in v1; exact MVP finance scope; first ticketing API partner; whether suppliers are first-class at MVP; retention periods.
+- **Exact subscription tier definitions and plan limits** — the free/paid shape is decided, the specific tiers and limits are not.
+- **First ticketing API partner** — deliberately deferred; ticketing integration is out of MVP scope, revisit when that phase starts.
+- **Exact retention periods per record type** — working defaults are set above; needs sign-off from qualified UK legal/privacy counsel before launch (see Legal).
 
 ## Legal
 
