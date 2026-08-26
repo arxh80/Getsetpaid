@@ -52,29 +52,47 @@ Organisation, User, Contact, Company, Artist/DJ, Agency, Venue (+ rooms), Suppli
 
 Full baseline table list is in PRD §11.
 
+**Duplicate contacts/companies:** exact matches (email/name) auto-merge; fuzzy matches are flagged for manual review, never auto-merged silently. Every merge is audited.
+
 ### Permissions
 
 An action is allowed only if **all** of these permit it: platform policy ∩ subscription entitlement ∩ organisation role ∩ record scope ∩ user-specific exception. Entitlements are enforced **server-side** — hiding UI is not enforcement. Roles: Owner, Admin, Manager, Booker, Venue Manager, Finance, Marketing, Standard User, Read Only, Platform Superuser.
 
 Downgrading a subscription makes features read-only or limited; it must never silently delete data.
 
-Pricing shape: **free + paid tiers** (exact tier definitions and plan limits still to be specified — see Open decisions).
+Pricing shape: **free + paid tiers, gated by seats and features** (e.g. network profiles, finance, more users unlock at higher tiers). Free tier is **view-only network access — no CRM writes**: browsing/discovery only, creating contacts/events/etc. requires a paid tier. Custom field limits are also tier-gated (free: none, paid tiers: more). Exact tier names, seat counts, prices and custom-field caps are still to be specified — see Open decisions.
 
 ### Superuser impersonation
 
 A platform superuser may impersonate a customer account for support, but only via break-glass: the superuser requests impersonation, the org's admin must accept the request, and the session is time-boxed and fully audited (actor, org, reason, start/end). No silent or unilateral impersonation.
 
+### Session security
+
+- Inactivity timeout **30 minutes**; absolute max session lifetime **12 hours**.
+- MFA is **required** for: Platform Superuser, Organisation Owner, Admin, Finance. Optional (not enforced) for other roles at MVP.
+- Step-up re-authentication (re-enter credentials/MFA) is required before: changing security settings (MFA, password, email), large data exports, deleting organisation data, and any high-risk admin/superuser function (including impersonation).
+- SSO: **Google sign-in ships at MVP** (in addition to email/password + magic-link). Microsoft SSO is post-MVP.
+
+### Non-functional targets
+
+- Availability SLO: **99.9%**, excluding planned maintenance.
+- Backup targets: **RPO 24h / RTO 4h** for the database.
+- Data residency: **UK/EU Supabase region only** — no US-region hosting for customer data.
+- Currency: **GBP only at MVP**; `financial_entries` and related tables store a currency column and use minor units so multi-currency UI can be added later without a schema migration.
+
 ## Non-negotiable rules
 
 These are acceptance criteria, not hardening tasks. A feature is not done until they hold.
+
+**`SECURITY.md` consolidates all security controls, rate limits, incident response and known risk areas into one reference — read it before touching anything security-sensitive, and before any pentest/audit.**
 
 - **RLS on before access.** Enable RLS on every tenant-owned table before the application can reach it. Separate policies per operation where useful.
 - **Service-role keys stay server-side.** They bypass RLS. Never ship them to the browser.
 - **Parameterise everything.** No string-concatenated SQL. Search/filter/sort inputs map to allowlisted columns and operators.
 - **Paginate everything.** No unbounded list endpoint. Server-side page-size ceiling; cursor/keyset pagination for activity feeds. Exports are async and bounded.
-- **Files are private.** Private buckets, short-lived signed URLs issued after authorisation, MIME/extension validation, sanitised filenames (never user-supplied paths as storage keys), every access logged.
+- **Files are private.** Private buckets, short-lived signed URLs issued after authorisation, sanitised filenames (never user-supplied paths as storage keys), every access logged. **Malware-scan every upload at MVP** (e.g. ClamAV or a scanning API) and hold quarantined files until cleared. Accept only a strict allowlist of file types (documents, images, PDFs) — not just MIME/extension checks, no executables or macro-enabled Office formats.
 - **Treat all user content as untrusted.** Sanitise rich text; validate URL protocols (reject `javascript:`, `data:`); avoid `dangerouslySetInnerHTML`; ship a strong CSP.
-- **Audit high-value actions.** Actor, org, timestamp, action, target, correlation ID, before/after. Append-only from the application. Superuser access audits itself. Never log passwords, tokens or keys.
+- **Audit high-value actions.** Actor, org, timestamp, action, target, correlation ID, before/after. Append-only from the application. Superuser access audits itself. Never log passwords, tokens or keys. Retention: hot/queryable for 30 days, archived (cold storage) for up to 1 year total, then purged.
 - **Soft-delete operational records** rather than hard deletion, subject to the retention policy. Default retention: 7 years for financial records, 2 years for inactive-account data — confirm exact periods per record type with legal counsel before launch (see Legal).
 - **UTC in the database**, UK local time in the UI with explicit timezone handling. UUID primary keys. Index every foreign key.
 
@@ -106,7 +124,7 @@ Tenant-breakout and network-leakage tests matter most — write them alongside t
 
 MVP (PRD §4) is: auth + orgs + invites, core CRM entities, events with lineup, tasks/meetings/notes/attachments, basic event finance, RLS isolation, entitlements, network profiles, audit log, legal pages.
 
-**Not MVP:** email/calendar integration, offers/holds/contracts workflow, settlements, ticketing APIs, file versioning, public profiles and connection requests, tour management, AI features, external API, first-class supplier management (suppliers exist only as a generic Contact/Company tag at MVP). Don't build ahead into these.
+**Not MVP:** email/calendar integration, offers/holds/contracts workflow, settlements, ticketing APIs, file versioning, public profiles and connection requests, tour management, AI features, external API, first-class supplier management (suppliers exist only as a generic Contact/Company tag at MVP), network profile verification badges, Microsoft SSO. Don't build ahead into these.
 
 Finance starts at event/booking level and MVP scope is **budget & actuals only** — fee, cost and income lines per event, no invoicing, no full P&L. Resist expanding it toward accounting software or invoicing — that is an integration, later.
 
@@ -123,13 +141,31 @@ Resolved 2026-08-26 (founder sign-off):
 - **Finance scope:** budget & actuals only at MVP.
 - **Retention:** 7yr financial / 2yr inactive as working defaults, pending legal review.
 - **Superuser impersonation:** allowed, but only with org-admin acceptance, time-boxing and full audit.
+- **Tier gating dimension:** seats + features (not pure usage/event-volume gating).
+- **Free tier shape:** view-only network access, no CRM writes.
+- **Audit log retention:** hot 30 days, archived up to 1 year total, then purged.
+- **GDPR DSR turnaround target:** 30 days (ICO statutory maximum).
+- **Session limits:** 30min inactivity / 12hr absolute lifetime.
+- **MFA scope:** required for Superuser, Owner, Admin, Finance; optional for other roles at MVP.
+- **Step-up re-auth triggers:** security-setting changes, large exports, org data deletion, high-risk admin/superuser functions.
+- **Malware scanning:** enabled at MVP, plus a strict file-type allowlist (not just MIME/extension checks).
+- **SSO:** Google at MVP; Microsoft deferred.
+- **Currency:** GBP only at MVP, schema is multi-currency-ready.
+- **Availability SLO:** 99.9% excluding planned maintenance.
+- **Backup targets:** RPO 24h / RTO 4h.
+- **Data residency:** UK/EU Supabase region only.
+- **Dedup/merge:** exact matches auto-merge, fuzzy matches flagged for manual review.
+- **Custom field limits:** tier-gated (free: none, paid: more).
+- **Network profile verification:** deferred past MVP.
 
 ## Open decisions (need founder sign-off — ask, don't assume)
 
-- **Exact subscription tier definitions and plan limits** — the free/paid shape is decided, the specific tiers and limits are not.
+- **Exact subscription tier names, seat counts and prices** — the gating dimension (seats + features) and free-tier shape are decided, the specific numbers are not.
 - **First ticketing API partner** — deliberately deferred; ticketing integration is out of MVP scope, revisit when that phase starts.
-- **Exact retention periods per record type** — working defaults are set above; needs sign-off from qualified UK legal/privacy counsel before launch (see Legal).
+- **Exact retention periods per record type** — working defaults are set above (financial, inactive-account, audit log); needs sign-off from qualified UK legal/privacy counsel before launch (see Legal).
 
 ## Legal
 
 Legal pages and compliance decisions require review by qualified UK legal/privacy counsel before launch. Drafted content is a starting point for that review, never a substitute for it. PRD §12 lists the required pages and the ICO/OWASP sources behind them.
+
+**Data subject request (export/erasure) target: 30 days**, matching the ICO statutory maximum. Build the DSR workflow to hit this deadline, not just aim for it informally.
