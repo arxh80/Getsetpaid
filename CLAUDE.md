@@ -92,6 +92,22 @@ Single hardcoded superuser (the founder) at MVP — no multi-account superuser r
 
 **Incident alerting:** basic trigger-based email/SMS alerts only (e.g. repeated failed logins across an org, a malware-scan hit) — not a full alerting platform. A complete on-call/runbook build-out stays post-MVP per `SECURITY.md` § Incident response.
 
+**In-app feedback** is a dashboard section fed by the feature below — see § In-app feedback.
+
+### In-app feedback
+
+Any logged-in user, on any tier, can submit feedback (bug / idea / other) from within the app. Always identified — no anonymous option — capturing user, org, role, category, free-text message, current page/route, browser/device info, and an optional single screenshot attachment.
+
+**On submit:** an email is sent to the founder's inbox (the same single support/security contact as `SECURITY.md` § 13 at this stage — no separate feedback address yet), and the submission is written to a `feedback` table, platform-scoped (not tenant-owned — the superuser dashboard reads it directly, it does not go through org RLS).
+
+**Superuser dashboard view:** a dedicated Feedback list — filterable by org, category, and date — with a status per item (New / Read / Actioned / Archived) the founder updates manually. Separate UI from the audit log viewer, though the submission event itself is also audited like any other write.
+
+**Screenshot attachment** goes through the same file-security pipeline as any other upload (`CLAUDE.md` § Non-negotiable rules, `SECURITY.md` § 6): private bucket, malware-scanned, strict allowlist (image types only), signed URL, access logged.
+
+**Rate limit:** 10 submissions / hour per user, same tier as other write actions (`SECURITY.md` § 5).
+
+**Retention:** 2 years, same as the inactive-account default — feedback is low-sensitivity operational data, not a financial or audit record.
+
 ### Session security
 
 - Inactivity timeout **30 minutes**; absolute max session lifetime **12 hours**.
@@ -177,6 +193,7 @@ Resolved 2026-08-26 (founder sign-off):
 - **Retention:** 7yr financial / 2yr inactive as working defaults, pending legal review.
 - **Superuser impersonation:** allowed, but only with org-admin acceptance, time-boxing and full audit.
 - **Superuser dashboard scope:** single hardcoded superuser at MVP; org lifecycle (soft-delete only) + billing overrides (time-boxed, auto-revert) + per-org feature overrides (mandatory expiry) + basic platform health counts + searchable audit log viewer + trigger-based incident alerts. No direct tenant-record access outside impersonation. Full spec in § Superuser dashboard.
+- **In-app feedback:** any logged-in user can submit (bug/idea/other), always identified, optional screenshot. Emails the founder and lands in a dedicated superuser dashboard list (New/Read/Actioned/Archived). Platform-scoped table, not tenant RLS. 10/hour rate limit, 2yr retention. Full spec in § In-app feedback.
 - **Tier gating dimension:** seats + features (not pure usage/event-volume gating).
 - **Free tier shape:** view-only network access, no CRM writes.
 - **Audit log retention:** hot 30 days, archived up to 1 year total, then purged.

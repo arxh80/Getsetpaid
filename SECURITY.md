@@ -47,6 +47,7 @@ Standard defaults — tune during implementation, but these are the numbers to b
 | Search | 60 requests / min, per user |
 | Exports | 5 / hour, per organisation |
 | Network discovery | 30 requests / min, per user |
+| In-app feedback submission | 10 / hour, per user |
 
 - Every unbounded list/API endpoint is paginated (cursor/keyset for activity feeds); server-side page-size ceilings, never a client-defined unlimited limit.
 - Exports are async and bounded — no synchronous unbounded export endpoint.
@@ -68,7 +69,7 @@ Standard defaults — tune during implementation, but these are the numbers to b
 ## 8. Data retention and residency
 
 - Soft-delete operational records rather than hard deletion, subject to retention policy.
-- Working defaults (pending legal sign-off — see `CLAUDE.md` § Legal): **7 years** for financial records, **2 years** for inactive-account data, **30 days hot / 1 year archived** for audit logs.
+- Working defaults (pending legal sign-off — see `CLAUDE.md` § Legal): **7 years** for financial records, **2 years** for inactive-account data (also applied to in-app feedback submissions — see `CLAUDE.md` § In-app feedback), **30 days hot / 1 year archived** for audit logs.
 - GDPR data subject requests (export/erasure): **30-day** target, matching the ICO statutory maximum.
 - **Data residency: UK/EU Supabase region only** — no US-region hosting for customer data.
 - Currency: **GBP only at MVP**; schema (`financial_entries` etc.) stores a currency column and minor units so multi-currency UI can be added later without a migration.
