@@ -84,7 +84,11 @@ These are acceptance criteria, not hardening tasks. A feature is not done until 
 
 Direction in one line: minimalist, sharp-edged, bold serif — square corners everywhere (`--radius: 0`), no shadows, no gradients, structure from hairline rules and typographic weight.
 
-Palette is `#3A86FF` / `#BDB2FF` / `#FFD6E0` / `#FFF4F4`. All four fail WCAG AA for body text, so none of them carry small text — `--ink` (`#14141C`) does, and `DESIGN.md` defines the measured extensions (ink, link, status colours) that the four-colour palette cannot supply. Type is Source Serif 4 throughout, with `tabular-nums` mandatory on every number in a table.
+Palette is `#FFF4F4` shell, `#BDB2FF` lilac and `#FFD6E0` pink as surfaces, `#14141C` ink for all text, and **two blues**: `--primary` `#0062FF` is the only blue permitted on text or a button (the source `#3A86FF` fails AA at 4.5:1); `--accent` `#3A86FF` is borders, focus rails, active state and charts. That split is the single easiest thing to get wrong — always go through the token, never a literal hex.
+
+Type is Source Serif 4 throughout, with `tabular-nums` mandatory on every number in a table.
+
+`python scripts/contrast.py` audits the whole token contract against WCAG 2.2 AA and exits non-zero on any failure. Run it after touching a colour; any colour added to `DESIGN.md` arrives with its measured ratio.
 
 The product must not look like a re-skinned generic sales CRM. The `hallmark` skill (pinned in `skills-lock.json`) and `ui-ux-pro-max` are the intended design tooling.
 

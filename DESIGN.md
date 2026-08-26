@@ -8,18 +8,10 @@ The visual direction for GetSetPaid. This is the source of truth for colour, typ
 
 ## Palette
 
-Base palette (https://colorhunt.co/palette/3a86ffbdb2ffffd6e0fff4f4):
+Source palette (https://colorhunt.co/palette/3a86ffbdb2ffffd6e0fff4f4):
+`#3A86FF` `#BDB2FF` `#FFD6E0` `#FFF4F4`.
 
-| Token | Hex | Role |
-|---|---|---|
-| `--blue` | `#3A86FF` | Primary action, active state, focus, chart primary, large display text |
-| `--lilac` | `#BDB2FF` | Secondary surface, chips, chart series 2 |
-| `--pink` | `#FFD6E0` | Tertiary surface, chips, chart series 3 |
-| `--shell` | `#FFF4F4` | Page background |
-
-### Contrast constraints (measured, not assumed)
-
-The PRD requires WCAG 2.2 AA. Every colour in the base palette **fails** the 4.5:1 body-text threshold, so none of them may carry small text:
+Those four are pastels of near-equal lightness with no dark value between them, so **none of them can carry body text** against the shell — and PRD §14 commits us to WCAG 2.2 AA. Measured:
 
 | On `--shell` `#FFF4F4` | Ratio | Body 4.5:1 | Large/UI 3:1 |
 |---|---|---|---|
@@ -27,30 +19,43 @@ The PRD requires WCAG 2.2 AA. Every colour in the base palette **fails** the 4.5
 | `#BDB2FF` | 1.78:1 | FAIL | FAIL |
 | `#FFD6E0` | 1.22:1 | FAIL | FAIL |
 
-White text also fails on all of them (`#3A86FF` + white = 3.48:1).
+White text does not rescue the blue either — white on `#3A86FF` is 3.48:1, so the source palette cannot produce a compliant primary button in any combination.
 
-**Rules that follow:**
-- `--blue` is for **large bold display text (≥24px bold), borders, focus rings, fills and chart marks** — never body copy, never small labels.
-- `--lilac` and `--pink` are **surfaces only**. Never text, never a border that carries meaning, never the sole signal for a status.
-- Text on any palette surface is `--ink`. Verified: ink on shell 17.01:1, on pink 13.91:1, on lilac 9.57:1, **on blue 5.26:1** — so a primary button is blue fill with ink text, not white text.
+**The fix: deepen the blue.** `#3A86FF` is `hsl(217, 100%, 61%)`. At 50% lightness it becomes `#0062FF` — identical hue, identical saturation, still an electric blue, but 4.65:1 as text and 5.01:1 under white. One value moves; the other three source colours are untouched, and the original blue stays in the set as the lighter accent.
 
-### Required extensions
-
-Four colours cannot express a CRM. These are additions, chosen to sit with the palette rather than compete with it. All verified against `--shell`.
+### Working palette
 
 | Token | Hex | On shell | Role |
 |---|---|---|---|
-| `--ink` | `#14141C` | 17.01:1 | All body text, headings, icons, focus ring |
+| `--shell` | `#FFF4F4` | — | Page background *(source)* |
+| `--surface` | `#FFFFFF` | — | Cards, tables, drawers — lifts off the warm shell without a shadow |
+| `--ink` | `#14141C` | 17.01:1 | All body text, headings, icons |
 | `--ink-muted` | `#55555F` | 6.84:1 | Secondary text, metadata, table sub-labels |
-| `--link` | `#0B4FD1` | 6.39:1 | Inline text links (the darkened `--blue`, since `--blue` fails at text size) |
-| `--rule` | `#D6CBCB` | — | Hairline borders, table dividers (decorative, no contrast requirement) |
-| `--rule-strong` | `#14141C` | — | Emphasis borders, active row, focus |
+| `--primary` | `#0062FF` | 4.65:1 | Links, buttons, any blue that touches text |
+| `--accent` | `#3A86FF` | 3.23:1 | Borders, focus rails, active state, chart primary *(source)* |
+| `--lilac` | `#BDB2FF` | — | Surface, chips, chart series 2 *(source)* |
+| `--pink` | `#FFD6E0` | — | Surface, chips, chart series 3 *(source)* |
+| `--rule` | `#D6CBCB` | — | Hairline borders, table dividers |
+| `--rule-strong` | `#14141C` | — | Emphasis borders, active row |
 | `--success` | `#0E5F42` | 7.13:1 | Confirmed, paid, on sale |
 | `--warning` | `#7A4F00` | 6.62:1 | Hold, pending, overdue soon |
 | `--danger` | `#9E1C15` | 7.41:1 | Cancelled, failed, overdue, destructive |
-| `--surface` | `#FFFFFF` | — | Cards, tables, drawers — lifts off the warm shell without a shadow |
 
-Status must never be colour-only — always pair with a text label or shape. Colour-blind users and greyscale printing both need it.
+### The two-blue rule
+
+There are two blues 11% apart in lightness. They **will** be confused in review unless the split is explicit:
+
+> **`--primary` `#0062FF` is the only blue permitted to touch text or a button.**
+> **`--accent` `#3A86FF` is borders, focus rails, active indicators and chart marks — never text, never a fill behind a label.**
+
+The one exception: `--accent` may carry **large bold display text at ≥24px bold**, where 3:1 applies and it passes at 3.23:1.
+
+### Other constraints
+
+- `--lilac` and `--pink` are **surfaces only**. Never text, never a border that carries meaning, never the sole signal for a status.
+- Text on any palette surface is `--ink`. Verified: on shell 17.01:1, on pink 13.91:1, on lilac 9.57:1, on `--primary` 3.66:1 (so a primary button uses **white** text at 5.01:1, not ink).
+- Status must never be colour-only — always pair with a text label or shape. Colour-blind users and greyscale printing both need it.
+- Adding a colour means adding a row above with its measured ratio. `scripts/contrast.py` prints it.
 
 ---
 
@@ -141,12 +146,12 @@ Dense table rows use `--space-2` vertical padding, `--space-3` horizontal. Forms
 |---|---|
 | Hover (row) | Background `--surface` → `#FBF6F6`; no movement, no shadow |
 | Hover (button) | Fill darkens one step; no scale, no lift |
-| Focus | `outline: 2px solid var(--ink); outline-offset: 2px` — ink, not blue, so it is visible on every surface including a blue fill |
-| Active | Left border `3px solid var(--blue)`, background `--surface` |
+| Focus | `outline: 2px solid var(--ink); outline-offset: 2px` — ink, not blue, so it is visible on every surface including a `--primary` fill |
+| Active | Left border `3px solid var(--accent)`, background `--surface` |
 | Selected | Background `--lilac` at 35% over `--surface`, ink text |
 | Disabled | `--ink-muted` text at 55%, `--rule` border, no fill change |
 
-Focus must be visible on `--shell`, `--surface`, `--blue`, `--lilac` and `--pink`. Ink at 2px clears 3:1 on all five.
+Focus must be visible on `--shell`, `--surface`, `--primary`, `--lilac` and `--pink`. Ink at 2px clears 3:1 on all five (3.66:1 on `--primary`, its tightest case).
 
 Keyboard focus is never removed. `:focus-visible` for pointer users, full `:focus` for keyboard.
 
@@ -171,23 +176,32 @@ Drop-in CSS custom properties.
 
 ```css
 :root {
-  /* Base palette */
-  --blue: #3A86FF;
+  /* Ground */
+  --shell: #FFF4F4;      /* page */
+  --surface: #FFFFFF;    /* cards, tables, drawers */
+
+  /* Text */
+  --ink: #14141C;        /* 17.01:1 on shell */
+  --ink-muted: #55555F;  /*  6.84:1 on shell */
+
+  /* Blue — two values, see "The two-blue rule" */
+  --primary: #0062FF;    /*  4.65:1 — the ONLY blue allowed on text or a button */
+  --on-primary: #FFFFFF; /*  5.01:1 on --primary */
+  --accent: #3A86FF;     /*  3.23:1 — borders, focus rails, active, charts. Never text. */
+
+  /* Surfaces */
   --lilac: #BDB2FF;
   --pink: #FFD6E0;
-  --shell: #FFF4F4;
 
-  /* Extensions — see DESIGN.md for why these are required */
-  --surface: #FFFFFF;
-  --ink: #14141C;
-  --ink-muted: #55555F;
-  --link: #0B4FD1;
+  /* Structure */
   --rule: #D6CBCB;
   --rule-strong: #14141C;
-  --success: #0E5F42;
-  --warning: #7A4F00;
-  --danger: #9E1C15;
   --scrim: rgb(20 20 28 / 0.4);
+
+  /* Status — never the only signal, always with a label */
+  --success: #0E5F42;    /*  7.13:1 */
+  --warning: #7A4F00;    /*  6.62:1 */
+  --danger: #9E1C15;     /*  7.41:1 */
 
   /* Type */
   --font-display: "Source Serif 4", "Iowan Old Style", Georgia, serif;
@@ -234,17 +248,18 @@ Reject these in review:
 
 - Any `border-radius` above 0.
 - Any `box-shadow` used for elevation.
-- Small text in `--blue`, `--lilac` or `--pink`.
-- White text on `--blue` (3.48:1 — fails).
+- **`--accent` `#3A86FF` on any text under 24px bold, or as a fill behind a label.** Use `--primary`.
+- **A literal `#3A86FF` or `#0062FF` in a component.** Go through the token, so the two-blue rule stays enforceable.
+- Small text in `--lilac` or `--pink`.
 - Status conveyed by colour alone, with no label.
 - Numbers in a table without `tabular-nums`.
 - A gradient anywhere.
-- Adding a colour that is not in this file. Extend the file first, with a measured contrast ratio.
+- Adding a colour that is not in this file. Extend the file first, with a measured ratio from `scripts/contrast.py`.
 
 ---
 
 ## Open
 
 - **Dark mode** is not specified. The palette is light-only, and the PRD does not require dark mode. If it is wanted, the pastels cannot invert directly — it needs a separately designed dark ramp, not a filter.
-- **Charts** need series colours beyond three. `--blue`, `--lilac`, `--pink` cover three; a fourth-plus series needs derived steps with a verified categorical distinction.
+- **Charts** need series colours beyond three. `--accent`, `--lilac`, `--pink` cover three; a fourth-plus series needs derived steps with a verified categorical distinction.
 - **Display face** for marketing pages — Source Serif 4 throughout by default; Fraunces is the alternate if more voice is wanted on the public site.
