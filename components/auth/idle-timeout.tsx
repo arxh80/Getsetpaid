@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
   ACTIVITY_WRITE_THROTTLE_MS,
+  WARNING_LEAD_MS,
   activityStorageKey,
   idlePhase,
   onMountActivity,
@@ -207,17 +208,47 @@ export function IdleTimeout({ userId }: { userId: string }) {
   if (phase !== "warning") return null;
 
   return (
-    <div
-      role="alert"
-      aria-label="Session about to expire"
-      className="border-b border-danger bg-surface px-4 py-3"
-    >
+    <div className="border-b border-danger bg-surface px-4 py-3">
+      {/*
+        THE ANNOUNCEMENT AND THE COUNTDOWN ARE DELIBERATELY TWO DIFFERENT
+        NODES (Task 10 design/a11y gate).
+
+        This previously put role="alert" on the wrapper, which made the whole
+        banner -- INCLUDING the `{remaining}s` countdown -- one assertive
+        live region. role="alert" implies aria-live="assertive" and
+        aria-atomic="true", so every tick of the 5-second poll re-announced
+        the entire sentence and INTERRUPTED whatever the screen-reader user
+        was doing, roughly twelve times across the one-minute warning window.
+        A user cannot read the page to resolve the warning while the warning
+        talks over them; the assistive-technology experience of a 60-second
+        countdown was 12 forced interruptions.
+
+        It also carried aria-label="Session about to expire" on that same
+        element. Per the accessible-name computation an aria-label WINS over
+        the element's contents, so some AT announced the label in place of the
+        actual message -- the user heard "session about to expire" and not the
+        one thing that resolves it.
+
+        So: the alert below is sr-only and its text is CONSTANT (it names the
+        fixed warning window, not the live remainder), which means it fires
+        exactly once, when the warning mounts, and never re-fires as
+        `remaining` changes. The visible line keeps the live countdown for
+        sighted users and is aria-hidden, because the sr-only alert already
+        says the same thing and a screen reader should not meet it twice.
+        The button stays outside both and is fully reachable either way.
+      */}
+      <p className="sr-only" role="alert">
+        You have been inactive. You will be signed out in under{" "}
+        {WARNING_LEAD_MS / 1000} seconds unless you do something. Use the
+        &quot;Stay signed in&quot; button to stay signed in.
+      </p>
+
       <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-ink">
+        <p className="text-sm text-ink" aria-hidden="true">
           <span className="font-semibold text-danger">
-            You&apos;ve been inactive.
+            You’ve been inactive.
           </span>{" "}
-          You&apos;ll be signed out in{" "}
+          You’ll be signed out in{" "}
           <span className="tabular-nums font-semibold">{remaining}s</span>{" "}
           unless you do something.
         </p>
