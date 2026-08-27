@@ -21,6 +21,16 @@ supabase/.branches/
 # git write duplicate real files on clone and breaks the junction.
 .claude/skills/
 
+# Agent worktrees: full working copies including node_modules. The branch is
+# the durable record of the work; the checkout is disposable.
+.claude/worktrees/
+
+# Per-machine Claude Code settings (permissions differ per developer).
+.claude/settings.local.json
+
+# graphify knowledge-graph output — regenerated from source, not source itself.
+graphify-out/
+
 # Test / E2E output
 playwright-report/
 test-results/
