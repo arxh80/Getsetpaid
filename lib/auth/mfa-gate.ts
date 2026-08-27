@@ -128,8 +128,25 @@ import { createClient } from "@/lib/supabase/server";
 import type { FormState } from "@/lib/forms";
 import { getCurrentUser } from "./index";
 
-/** Org roles CLAUDE.md § Session security requires MFA for. */
-const MFA_REQUIRED_ROLES = new Set(["owner", "admin", "finance"]);
+/**
+ * Org roles CLAUDE.md § Session security requires MFA for.
+ *
+ * THIS IS ONE HALF OF A RULE THAT EXISTS TWICE. The other half is
+ * private.role_requires_mfa() in
+ * supabase/migrations/20260827210000_mfa_aal_permission_gate.sql, which is
+ * what the permission engine actually enforces. Two copies in two languages
+ * with nothing holding them together is exactly the drift that goes unnoticed
+ * until it is a security incident -- and it fails silently in BOTH directions:
+ * drop a role here and a privileged role stops being gated in the app; add one
+ * here that SQL does not have and that role is sent to an enrolment screen for
+ * a requirement the database will never enforce.
+ *
+ * EXPORTED SOLELY so tests/integration/mfa/roles-match-db.test.ts can assert
+ * set equality against the live database. It is not part of this module's API
+ * and nothing in app/ or lib/ should import it -- use requiresMfaEnrollment()
+ * or roleCheckRequiresMfa() instead.
+ */
+export const MFA_REQUIRED_ROLES = new Set(["owner", "admin", "finance"]);
 
 /**
  * Pure decision: given the organisation_memberships query's own {data, error}
