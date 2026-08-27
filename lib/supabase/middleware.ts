@@ -24,6 +24,7 @@
 //   directly. Treat a middleware check as a nicety; never as the control.
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { contentSecurityPolicy } from "@/lib/security/headers";
 import { supabasePublicKey, supabaseUrl } from "./env";
 
 /** Routes reachable without a session. Everything else requires one. */
@@ -50,6 +51,24 @@ function isUnder(pathname: string, roots: string[]): boolean {
  */
 const PATHNAME_HEADER = "x-pathname";
 
+/**
+ * Per-request Content-Security-Policy nonce.
+ *
+ * WHY THE CSP IS SET HERE AND NOT IN next.config.ts: a nonce has to be
+ * unpredictable and different on every response, so it cannot be a static
+ * config value. Setting the policy on the REQUEST headers as well as the
+ * response is Next's documented mechanism, not a workaround -- Next reads the
+ * nonce back out of the request's Content-Security-Policy header and stamps it
+ * onto its own inline bootstrap scripts. Without the request-header half, the
+ * framework's own scripts carry no nonce and every page is blank.
+ *
+ * crypto.randomUUID() is the CSPRNG available on the middleware runtime.
+ * Every directive, and every deliberate allowance, is documented in
+ * lib/security/headers.ts.
+ */
+const CSP_HEADER = "Content-Security-Policy";
+const NONCE_HEADER = "x-nonce";
+
 export async function updateSession(request: NextRequest) {
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set(
@@ -57,7 +76,16 @@ export async function updateSession(request: NextRequest) {
     `${request.nextUrl.pathname}${request.nextUrl.search}`,
   );
 
+  const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
+  const csp = contentSecurityPolicy(nonce);
+  // Both halves are required and they do different jobs: the REQUEST header is
+  // how Next finds the nonce to stamp on its scripts; the RESPONSE header is
+  // the policy the browser actually enforces.
+  requestHeaders.set(CSP_HEADER, csp);
+  requestHeaders.set(NONCE_HEADER, nonce);
+
   const response = NextResponse.next({ request: { headers: requestHeaders } });
+  response.headers.set(CSP_HEADER, csp);
 
   const supabase = createServerClient(supabaseUrl(), supabasePublicKey(), {
     cookies: {
@@ -121,5 +149,13 @@ function copyCookies(from: NextResponse, to: NextResponse): NextResponse {
   for (const cookie of from.cookies.getAll()) {
     to.cookies.set(cookie);
   }
+  // The CSP travels with them, for the same reason: this replacement response
+  // is what actually goes on the wire. A 302 body is never rendered, so this
+  // is defence in depth rather than the load-bearing case -- but a redirect
+  // that silently drops the policy is the sort of hole that is only ever found
+  // by reading response headers, which is how the missing-CSP finding itself
+  // came to light.
+  const csp = from.headers.get(CSP_HEADER);
+  if (csp) to.headers.set(CSP_HEADER, csp);
   return to;
 }
