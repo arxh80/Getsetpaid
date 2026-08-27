@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState } from "react";
 import { mfaEnrollStepAction, type MfaEnrollState } from "@/lib/auth/mfa-actions";
 import { EMPTY_FORM_STATE } from "@/lib/forms";
 import { Field } from "@/components/ui/field";
@@ -69,24 +69,34 @@ function VerifyStep({
   pending: boolean;
   next: string;
 }) {
-  const formRef = useRef<HTMLFormElement>(null);
-
-  // A failed code should not force re-scanning the QR code -- only the
-  // 6-digit field clears, so the user can just try typing again.
-  useEffect(() => {
-    if (state.error) {
-      const input = formRef.current?.elements.namedItem("code");
-      if (input instanceof HTMLInputElement) input.value = "";
-    }
-  }, [state.error]);
-
+  // A failed code should not force re-scanning the QR code, and only the
+  // 6-digit field should clear -- BUT NOTHING HERE HAS TO MAKE THAT HAPPEN.
+  //
+  // This is where the pattern originated: a `useEffect` keyed on
+  // `[state.error]` that blanked the code input, which MfaChallengeGate later
+  // copied. Fix round 1 correctly flagged that dependency as unable to fire
+  // on consecutive failures -- mfaErrorMessage() returns a FIXED string per
+  // rejection reason, and useEffect compares deps with Object.is. But
+  // measuring it showed the effect was never doing the work at all: React 19
+  // resets a <form action={serverAction}>'s uncontrolled fields once the
+  // action completes, so the code field emptied itself with the effect
+  // present, with the dependency "fixed", and with the effect deleted
+  // outright.
+  //
+  // The hidden factorId/qrCodeSvg/secret inputs survive that reset because
+  // they are React-controlled from `state`, and mfaEnrollStepAction's failure
+  // branch round-trips all three back verbatim -- so the "don't force a
+  // re-scan" guarantee comes from the action carrying its state forward, not
+  // from this effect either. Verified end to end on a fresh un-enrolled
+  // account, six consecutive wrong codes: the code field was empty after
+  // every one, and factorId, the rendered QR image and the enrollment secret
+  // were byte-identical throughout (compared as booleans, so no key material
+  // left the page).
+  //
+  // See components/auth/mfa-challenge-gate.tsx for the three-build
+  // measurement this conclusion rests on.
   return (
-    <form
-      ref={formRef}
-      action={formAction}
-      className="flex flex-col gap-5"
-      noValidate
-    >
+    <form action={formAction} className="flex flex-col gap-5" noValidate>
       <input type="hidden" name="factorId" value={state.factorId} />
       <input type="hidden" name="qrCodeSvg" value={state.qrCodeSvg ?? ""} />
       <input type="hidden" name="secret" value={state.secret ?? ""} />

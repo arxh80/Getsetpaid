@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState } from "react";
 import { mfaChallengeAction } from "@/lib/auth/mfa-actions";
 import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
 import { Field } from "@/components/ui/field";
@@ -23,25 +23,38 @@ export function MfaChallengeGate({ next }: { next: string }) {
     mfaChallengeAction,
     EMPTY_FORM_STATE,
   );
-  const formRef = useRef<HTMLFormElement>(null);
-
-  // Clear the code field after a rejected attempt -- the same behaviour
-  // MfaEnrollGate's VerifyStep already had, and the reason it needs to match
-  // is that these two screens are seen in sequence by the same person: they
-  // enroll once, then meet this challenge on every later sign-in. A TOTP code
-  // is dead the moment it is refused (it either was mistyped or its 30-second
-  // window has passed), so leaving the failed digits in the box means the
-  // user's first action after every failure is to select-all and delete
-  // before they can retype -- and a screen-reader or switch user pays more
-  // for that than anyone. Only the code clears; nothing else on this form is
-  // worth losing.
-  useEffect(() => {
-    if (state.error) {
-      const input = formRef.current?.elements.namedItem("code");
-      if (input instanceof HTMLInputElement) input.value = "";
-    }
-  }, [state.error]);
-
+  // NO EFFECT CLEARS THE CODE FIELD, BECAUSE REACT ALREADY DOES IT.
+  //
+  // Task 10 added a `useEffect` here that blanked the input whenever
+  // `state.error` was set, mirroring one MfaEnrollGate's VerifyStep already
+  // carried. Fix round 1 then pointed out that its `[state.error]` dependency
+  // could never fire twice in a row -- mfaErrorMessage() in
+  // lib/auth/mfa-actions.ts maps every rejection to a FIXED string, so a
+  // second consecutive wrong code produces a byte-identical value, and
+  // useEffect compares deps with Object.is.
+  //
+  // That reasoning about the dependency is correct. The premise underneath it
+  // -- that the stale digits therefore persist -- is not, on React 19.
+  // Measured against this component on a real enrolled TOTP factor, three
+  // consecutive wrong codes, in three separate production builds:
+  //
+  //   dependency [state.error] (the "buggy" version) -> cleared all 3 times
+  //   dependency [state]       (the "fixed"  version) -> cleared all 3 times
+  //   NO useEffect AT ALL                             -> cleared all 3 times
+  //
+  // React 19 resets a <form action={serverAction}>'s uncontrolled fields once
+  // the action completes, so the field was never being cleared by this effect
+  // in either version. Confirmed it is React's reset and not a stray
+  // form.reset(): a raw <input> injected into the same form via the DOM --
+  // one React does not own -- KEPT its value across the same submission that
+  // emptied the code field.
+  //
+  // So the effect was dead code whose comment claimed credit for behaviour
+  // the framework provides. Deleting it is the honest outcome; keeping a
+  // redundant version would leave the next reader believing this screen
+  // depends on it. If this form ever stops using a Server Action, or the
+  // input becomes controlled, the reset goes away with it -- that is the
+  // thing to re-check, not the dependency array.
   return (
     <div className="mx-auto flex w-full max-w-md flex-col gap-7">
       <div className="flex flex-col gap-3">
@@ -56,12 +69,7 @@ export function MfaChallengeGate({ next }: { next: string }) {
 
       {state.error ? <Alert tone="error">{state.error}</Alert> : null}
 
-      <form
-        ref={formRef}
-        action={formAction}
-        className="flex flex-col gap-5"
-        noValidate
-      >
+      <form action={formAction} className="flex flex-col gap-5" noValidate>
         <input type="hidden" name="next" value={next} />
         {/*
           autoFocus HERE BUT NOT IN MfaEnrollGate'S VerifyStep -- reviewed in

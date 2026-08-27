@@ -11,11 +11,29 @@
    `.transition-all`, `.animate-spin`, `.animate-pulse`.
 
    That is a DESIGN CONTRACT failure, not only dead weight. DESIGN.md
-   § Anti-patterns requires zero non-zero border-radius, zero box-shadow and
-   zero off-palette colour in what ships -- and the `* { border-radius:
-   var(--radius) }` guard below is specificity (0,0,0), so a generated
-   `.rounded-lg` (0,1,0) BEATS it. While those utilities exist in the bundle,
-   the global square-corner guarantee is bypassable by a single stray class.
+   § Anti-patterns requires zero non-zero border-radius, zero box-shadow, zero
+   gradient and zero off-palette colour in what ships. Reverting this
+   `source(none)` line puts real `linear-gradient` declarations, real
+   `box-shadow` offsets and `.rounded-lg` / `.rounded-md` / `.rounded-full`
+   straight back into the bundle (44,432 bytes vs 24,185).
+
+   WHY THAT IS DANGEROUS -- and it is NOT a specificity story, which is the
+   easy wrong answer. Checked against the built bundle rather than assumed:
+   the `* { border-radius: var(--radius) }` guard below is UNLAYERED, while
+   every generated utility sits in `@layer utilities`, and in the author
+   origin unlayered styles beat layered ones no matter what the selectors
+   score. So a stray `.rounded-lg` would have LOST to the guard -- radius is
+   the one property genuinely protected here.
+
+   The real hazard is everything else: there is NO global guard for
+   box-shadow, for gradients, or for colour AT ALL. Nothing was standing in
+   the way of `.shadow-sm`, `.shadow-lg`, `.bg-blue-500` or `.bg-gray-200` --
+   one stray class and an off-palette fill or a drop shadow the design system
+   forbids would have rendered exactly as written.
+
+   And underneath both: the shipped stylesheet was a function of
+   DOCUMENTATION. Editing a vendored skill's markdown changed the CSS the
+   product served. That coupling is wrong however the cascade resolves.
 
    `source(none)` disables automatic detection; the `@source` lines below then
    register only the directories that actually contain markup. lib/ and
