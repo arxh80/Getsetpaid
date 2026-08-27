@@ -48,7 +48,7 @@ export async function readCurrentOrgIdCookie(): Promise<string | null> {
  * Sets the cookie. Callable only from a Server Action or Route Handler --
  * Next.js throws ("Cookies can only be modified in a Server Action or Route
  * Handler") if this runs during a plain Server Component render. Both call
- * sites are Server Actions in lib/org/actions.ts.
+ * sites are Server Actions in lib/org/workspace-actions.ts.
  *
  * Attribute choices, and why:
  *

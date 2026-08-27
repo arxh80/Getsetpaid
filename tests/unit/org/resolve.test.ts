@@ -1,9 +1,9 @@
 // Unit tests for lib/org/resolve.ts's resolveTargetMembership() -- the ONE
 // function that ever reads a value out of the "last viewed workspace" cookie
 // (lib/org/current-org.ts) or the switcher's submitted form field
-// (lib/org/actions.ts). Both callers hand it a candidate id that is, by
-// construction, exactly as untrusted as a cookie is: this file is the proof
-// that treating them identically is safe.
+// (lib/org/workspace-actions.ts). Both callers hand it a candidate id that
+// is, by construction, exactly as untrusted as a cookie is: this file is the
+// proof that treating them identically is safe.
 //
 // THE PROPERTY THIS FILE EXISTS TO PROVE: a candidate id that does not name
 // one of the caller's OWN active memberships -- because it is a forged/
