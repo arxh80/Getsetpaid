@@ -83,10 +83,24 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
 /**
  * Every membership the caller holds, at any status, newest invite first.
  *
- * The "select own rows" policy on organisation_memberships makes this safe to
- * ask unfiltered: it returns the caller's rows and nobody else's. Pending
- * invites are included on purpose -- the invite landing page needs them, and
- * an 'invited' row is the caller's own business.
+ * THE `.eq("user_id", ...)` IS LOAD-BEARING. There are two SELECT policies on
+ * organisation_memberships, not one: "select own rows" returns the caller's
+ * rows at any status, and organisation_memberships_select_same_organisation
+ * additionally returns EVERY row in an organisation the caller is an active
+ * member of. Their union is what an unfiltered query gets back -- so the
+ * moment a workspace has a second person, this returns their rows too.
+ *
+ * Symptoms, seen in a real browser during fix round 1 and the reason this
+ * filter exists: the invitations page offered an active member somebody ELSE's
+ * pending invite, complete with an Accept button (accept_invite() refuses it
+ * in the database, so it was a broken affordance rather than a privilege hole),
+ * and getActiveMemberships() listed the same workspace once per member --
+ * "Your workspaces: Northern Lights Touring, Northern Lights Touring."
+ *
+ * This is the SAME defect getCurrentOrg() below was fixed for in Task 6, in
+ * the same file, for the same reason. Filtering by status is not a substitute
+ * for filtering by user; both policies are correct and it is this query that
+ * has to say which rows it actually wants.
  *
  * The join to organisations goes through the SAME query so it is subject to
  * organisations_select_member -- which means an invited-but-not-active
@@ -96,6 +110,9 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
  * user can still accept.
  */
 export const getMemberships = cache(async (): Promise<Membership[]> => {
+  const user = await getCurrentUser();
+  if (!user) return [];
+
   const supabase = await createClient();
 
   const { data, error } = await supabase
@@ -103,6 +120,7 @@ export const getMemberships = cache(async (): Promise<Membership[]> => {
     .select(
       "id, organisation_id, role, status, invited_at, joined_at, organisations ( id, name, slug )",
     )
+    .eq("user_id", user.id)
     .order("invited_at", { ascending: false });
 
   if (error || !data) return [];
