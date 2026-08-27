@@ -77,6 +77,29 @@ export type StepUpProofMode =
   | { mode: "unavailable" };
 
 /**
+ * The pure decision, extracted from stepUpProofMode() below.
+ *
+ * EXTRACTED FOR THE SAME REASON lib/auth/mfa-gate.ts extracts
+ * roleCheckRequiresMfa()/platformAdminCheckRequiresMfa(): the fail-closed
+ * direction is the whole point of the function and it must be assertable
+ * directly (tests/unit/auth/step-up-gate.test.ts) rather than by trying to
+ * provoke a genuine listFactors() failure through a live stack. The network
+ * calls and the log line stay in stepUpProofMode(); this decides.
+ */
+export function proofModeFor(input: {
+  factorId: string | null;
+  factorsError: { message: string } | null;
+  hasEmailIdentity: boolean;
+}): StepUpProofMode {
+  // FAIL CLOSED. See the long note above stepUpProofMode() for why "we could
+  // not list the factors" must never fall through to the weaker password
+  // proof.
+  if (input.factorsError) return { mode: "unavailable" };
+  if (input.factorId) return { mode: "mfa", factorId: input.factorId };
+  return input.hasEmailIdentity ? { mode: "password" } : { mode: "unavailable" };
+}
+
+/**
  * Which proof the re-auth prompt should ask for, for the CURRENT signed-in
  * caller. Not cached: unlike lib/auth/mfa-gate.ts's per-request checks, this
  * only runs when the gate has already decided step-up is needed at all, so
@@ -87,9 +110,34 @@ export async function stepUpProofMode(): Promise<StepUpProofMode> {
 
   const { data: factors, error: factorsError } =
     await supabase.auth.mfa.listFactors();
-  const factorId = factors?.totp[0]?.id;
-  if (!factorsError && factorId) {
-    return { mode: "mfa", factorId };
+
+  // FAIL CLOSED on a determination error, matching lib/auth/mfa-gate.ts.
+  //
+  // The original code fell through to the password branch here, which is the
+  // wrong direction and was inconsistent with the sibling file written in the
+  // same round. A transient listFactors() failure is indistinguishable from
+  // "no factor enrolled", so falling through means a single blip silently
+  // DOWNGRADES an MFA user's step-up from "present your factor" to "type your
+  // password" -- and CLAUDE.md § Session security is explicit that the roles
+  // step-up protects are exactly the roles that must hold a factor. Worse, a
+  // password proof mints an aal1 session (see problem 2 above), so the
+  // downgrade would also drop the caller's assurance level on the way past a
+  // gate that exists to raise it.
+  //
+  // "unavailable" is the honest answer: we could not establish what proof this
+  // caller can give, so we ask for none and grant nothing. The prompt says so
+  // rather than presenting a password field that would quietly be the weaker
+  // path. Callers treat it as a refusal, which is what it is.
+  if (factorsError) {
+    console.error(
+      "[step-up] listFactors() failed; failing CLOSED (no proof mode offered) rather than silently downgrading to the weaker password proof:",
+      factorsError.message,
+    );
+    return proofModeFor({
+      factorId: null,
+      factorsError: { message: factorsError.message },
+      hasEmailIdentity: false,
+    });
   }
 
   // No verified factor. Password is only a real option for an account that
@@ -105,5 +153,9 @@ export async function stepUpProofMode(): Promise<StepUpProofMode> {
     userData.user?.identities?.some((identity) => identity.provider === "email") ??
     false;
 
-  return hasEmailIdentity ? { mode: "password" } : { mode: "unavailable" };
+  return proofModeFor({
+    factorId: factors?.totp[0]?.id ?? null,
+    factorsError: null,
+    hasEmailIdentity,
+  });
 }
