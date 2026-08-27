@@ -162,7 +162,23 @@ site_url = "http://127.0.0.1:3000"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
 additional_redirect_urls = ["https://127.0.0.1:3000"]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
-jwt_expiry = 3600
+#
+# LOWERED FROM THE CLI DEFAULT (3600) AS PART OF TASK 7, and the reason is
+# precise rather than "shorter is safer": [auth.sessions] timebox and
+# inactivity_timeout below genuinely invalidate a session's REFRESH TOKEN
+# server-side (verified empirically -- see lib/supabase/middleware.ts), but
+# that invalidation is only checked when a refresh is actually ATTEMPTED. An
+# access token already in a browser's cookies keeps authenticating
+# successfully -- signature + exp only, no per-request auth.sessions lookup --
+# for the rest of ITS OWN lifetime regardless of what happened to the session
+# server-side in the meantime (verified: GET /auth/v1/user with a still-live
+# access token returned 200 for a session already rejected at
+# /auth/v1/token?grant_type=refresh_token). So the true worst-case lag between
+# "GoTrue invalidated this session" and "this app actually stops honouring it"
+# is bounded by THIS number, not by timebox/inactivity_timeout themselves.
+# 900s (15 min) keeps that lag small without materially increasing refresh
+# traffic (well inside auth.rate_limit.token_refresh = 150/5min/IP).
+jwt_expiry = 900
 # JWT issuer URL. If not set, defaults to auth.external_url.
 # jwt_issuer = ""
 # Path to JWT signing key. DO NOT commit your signing keys file to git.
@@ -341,6 +357,27 @@ max_frequency = "5s"
 #   "Inactivity timeout 30 minutes; absolute max session lifetime 12 hours."
 # An app-side timer would only control what the UI shows; timebox and
 # inactivity_timeout invalidate the refresh token itself.
+#
+# TASK 7 RE-VERIFIED THIS CLAIM AGAINST THE RUNNING STACK rather than taking
+# it on faith, and it holds -- with two nuances the sentence above doesn't
+# capture, both empirically confirmed and both accounted for elsewhere rather
+# than silently ignored. Full methodology and results are in
+# tests/integration/session/session-limits.test.ts (an automated, real-stack
+# regression suite -- not just a one-off manual check) and summarised in
+# lib/supabase/middleware.ts:
+#
+#   1. inactivity_timeout is skipped entirely on a session's FIRST-EVER
+#      refresh (its `refreshed_at` row starts NULL and the inactivity
+#      comparison only runs once that column is set) -- so a session that is
+#      abandoned before it ever needs to refresh is NOT caught by this alone,
+#      no matter how long it sits idle, up to the 12h timebox. Closed by
+#      components/auth/idle-timeout.tsx, which is genuine enforcement (it
+#      calls supabase.auth.signOut(), revoking the refresh token) rather than
+#      pure UX, precisely because of this gap.
+#   2. Both limits are enforced at REFRESH time, not on every request -- an
+#      access token already issued keeps authenticating for the rest of its
+#      own jwt_expiry above regardless of session state. See the jwt_expiry
+#      comment for why that value was lowered because of this.
 [auth.sessions]
 timebox = "12h"
 inactivity_timeout = "30m"
@@ -369,9 +406,15 @@ auth_token = "env(SUPABASE_AUTH_SMS_TWILIO_AUTH_TOKEN)"
 max_enrolled_factors = 10
 
 # Control MFA via App Authenticator (TOTP)
+#
+# ENABLED FOR TASK 7. CLAUDE.md § Session security: "MFA is required for:
+# Platform Superuser, Organisation Owner, Admin, Finance." That requirement is
+# unimplementable while GoTrue itself refuses every enroll()/verify() call --
+# lib/auth/mfa-gate.ts and components/auth/mfa-enroll-gate.tsx need a real
+# TOTP factor to enroll and verify against, not a mock.
 [auth.mfa.totp]
-enroll_enabled = false
-verify_enabled = false
+enroll_enabled = true
+verify_enabled = true
 
 # Configure MFA via Phone Messaging
 [auth.mfa.phone]
