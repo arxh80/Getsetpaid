@@ -9,6 +9,54 @@ import { Alert } from "@/components/ui/alert";
 
 const EMPTY_MFA_STATE: MfaEnrollState = EMPTY_FORM_STATE;
 
+/** The data-URI prefix Supabase's `totp.qr_code` already carries. */
+const SVG_DATA_URI_PREFIX = "data:image/svg+xml;utf-8,";
+
+/**
+ * Turns Supabase's `enroll().data.totp.qr_code` into a usable <img src>.
+ *
+ * ===========================================================================
+ * THE BUG THIS FIXES (review NEW-2)
+ * ===========================================================================
+ * This was `data:image/svg+xml;utf-8,${encodeURIComponent(qrCodeSvg)}` -- and
+ * `qr_code` is ALREADY A COMPLETE DATA URI, not a bare SVG. So the prefix was
+ * applied twice and the whole thing percent-encoded, producing:
+ *
+ *   data:image/svg+xml;utf-8,data%3Aimage%2Fsvg%2Bxml%3Butf-8%2C%3C%3Fxml...
+ *
+ * which is not an image. The QR code never rendered on ANY enrolment, for
+ * ANY user -- `naturalWidth` was 0 and the box was empty. Every Owner, Admin
+ * and Finance user has to pass this screen and it is the first thing they see,
+ * so "Scan this with your authenticator app" sat above nothing. It was only
+ * survivable because the manual key underneath is a working fallback, which is
+ * also why it was never noticed: enrolment still completes if you type the key.
+ *
+ * MEASURED, not assumed, against the running stack before fixing it:
+ *   typeof qr_code            string, 362657 chars
+ *   first 25 chars            "data:image/svg+xml;utf-8,"
+ *   body contains '#'         false
+ *
+ * ===========================================================================
+ * WHY IT STILL ENCODES, RATHER THAN JUST PASSING qr_code STRAIGHT THROUGH
+ * ===========================================================================
+ * Passing the raw value works today and is what Supabase's own docs show. It
+ * is one upstream change away from breaking silently: an unencoded `data:`
+ * URI ends at the first `#`, and `#` is the single most likely character to
+ * appear in an SVG (`fill:#fff`). Today's payload uses `style="fill:white"`
+ * and contains none -- verified above -- but "the QR silently truncates if
+ * they ever switch to hex colours" is not a property worth having on the one
+ * screen every privileged user must complete.
+ *
+ * So: strip the prefix if it is there (the actual fix), then encode the body
+ * exactly once. Also correct if Supabase ever returns a bare SVG instead.
+ */
+export function qrCodeDataUri(qrCode: string): string {
+  const body = qrCode.startsWith(SVG_DATA_URI_PREFIX)
+    ? qrCode.slice(SVG_DATA_URI_PREFIX.length)
+    : qrCode;
+  return `${SVG_DATA_URI_PREFIX}${encodeURIComponent(body)}`;
+}
+
 // The full-screen gate rendered by app/(app)/layout.tsx in place of the app
 // for a user CLAUDE.md § Session security requires MFA for
 // (Owner/Admin/Finance in any org, or the platform superuser) who has not yet
@@ -111,7 +159,7 @@ function VerifyStep({
             this never leaves the client, so there is no LCP/bandwidth case
             for it here. */}
         <img
-          src={`data:image/svg+xml;utf-8,${encodeURIComponent(state.qrCodeSvg ?? "")}`}
+          src={qrCodeDataUri(state.qrCodeSvg ?? "")}
           alt="QR code for your authenticator app"
           width={200}
           height={200}
