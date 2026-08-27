@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser, getMemberships } from "@/lib/auth";
+import { readCurrentOrgIdCookie } from "@/lib/org/current-org";
+import { resolveTargetMembership } from "@/lib/org/resolve";
 
 // The post-authentication hub.
 //
@@ -24,8 +26,22 @@ export default async function HomePage() {
   const memberships = await getMemberships();
 
   const active = memberships.filter((m) => m.status === "active");
-  if (active.length > 0 && active[0].organisation.slug) {
-    redirect(`/${active[0].organisation.slug}`);
+  if (active.length > 0) {
+    // Task 8: prefer the workspace the user last viewed over arbitrary query
+    // order, for the multi-org case this used to just take active[0] for.
+    // readCurrentOrgIdCookie() is client-supplied and untrusted -- see
+    // lib/org/resolve.ts's resolveTargetMembership(), the only thing that
+    // ever reads its return value, and only ever to pick among `active`
+    // (already RLS-verified, above). A cookie naming a stale, revoked or
+    // foreign org id resolves through the exact same "not found -> first
+    // active membership" path this redirect always took before the cookie
+    // existed -- never a 500, never a hint about whether the named org
+    // exists at all.
+    const rememberedOrgId = await readCurrentOrgIdCookie();
+    const target = resolveTargetMembership(rememberedOrgId, active);
+    if (target?.organisation.slug) {
+      redirect(`/${target.organisation.slug}`);
+    }
   }
 
   if (memberships.some((m) => m.status === "invited")) {
