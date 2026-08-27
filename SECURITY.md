@@ -33,6 +33,29 @@ This is not the public-facing Trust Centre page (PRD §12) — it is written for
 - MFA is **required** for Platform Superuser, Organisation Owner, Admin and Finance roles. Optional (not enforced) for all other roles at MVP.
 - MFA is **enforced at every sign-in, not just at enrollment**. A privileged user with a verified TOTP factor who signs in at `aal1` is challenged for a code before reaching the app — an enrolled-but-never-challenged factor satisfies the requirement in name only. Founder decision, 2026-08-27.
 - **MFA recovery (lost authenticator) has no self-service path at MVP.** Because the challenge is enforced, a privileged user who loses their TOTP device cannot sign in at all. There are no backup codes and no admin reset UI. The only recovery today is a manual operator action: delete that user's row from `auth.mfa_factors` in the Supabase dashboard (SQL editor, filtered by `user_id`) after verifying the requester out-of-band, which drops them back to the enrollment gate on next sign-in. **This is a deliberate MVP gap, not an oversight** — self-service recovery (backup codes at enrollment, plus a superuser-initiated, audited reset) belongs to Phase 7 (Admin/Security) alongside the rest of the superuser dashboard. Until then: the manual deletion must be treated as a high-risk admin action — verify identity out-of-band before performing it, since it is a complete bypass of the second factor.
+- **MFA is enforced in the database, not only in the UI.** `public.has_permission()` and `private.has_platform_permission()` return false for an MFA-required role on a session that has not reached `aal2` (`supabase/migrations/20260827210000_mfa_aal_permission_gate.sql`), so every write policy in the schema inherits the requirement. The app-layer gate (`lib/auth/mfa-gate.ts`, plus `assertMfaSatisfied()` on the privileged Server Actions) gives a readable refusal and stops side effects outside the database; it is not the enforcement. The anon key ships in the browser bundle by design, so anyone holding a session token can call PostgREST directly and bypass the entire Next.js app — the database is the only chokepoint on that path.
+
+### Known limitation: MFA gates privileged WRITES, not READS
+
+**A stolen password alone yields read access to that organisation's data at `aal1`.** This is a deliberate, understood boundary rather than an open defect, and it is written down here so it is found by review rather than rediscovered by a pentester.
+
+The `aal2` requirement is attached to *permissions*, so it bites on writes. It is deliberately **not** attached to the read policies — `organisation_memberships_select_own` / `_select_same_organisation`, `profiles_select_own` / `_select_shared_organisation` and `organisations_select_member` all resolve to `auth.uid()` or `private.is_active_member()` and never call `has_permission()`. That is not an oversight: **gating reads is precisely the lockout that would stop an un-enrolled user reaching the enrolment screen at all.** A privileged user who has never enrolled has to be able to load the app far enough to enrol, and there is no other way in.
+
+Two `SECURITY DEFINER` functions are also outside the gate, because they must be. Both are PostgREST-routable, and for both the MFA guard is app-layer only:
+
+- `public.create_organisation()` — measured: an `aal1` session gets `200`. It cannot consult `has_permission()`, because a brand-new user holds no membership anywhere and the organisation they are creating is what makes them an Owner.
+- `public.accept_invite()` — measured: a stolen-password admin invitee at `aal1` gets `204` and the membership becomes an active admin.
+
+**Why this is not privilege escalation.** That newly-active admin's `has_permission()` is still `false` at `aal1`, so no privileged write is reachable: they cannot invite, cannot change roles, cannot rename or soft-delete the org, cannot touch entitlements or read the audit log. What the attacker gains is **read access to that org's CRM data**, which is exactly what a stolen password already granted before MFA existed.
+
+**Why closing it is not straightforward.** Any fix has to distinguish "a session that has not presented a factor because it is on its way to enrol" from "a session that has not presented a factor because it never will", and those are the same session until the user acts. Candidate approaches, none free:
+
+- Gate reads on `aal2` **except** the narrow set the enrolment screen needs. Workable, but the allowlist becomes a security-critical dependency of the UI: any new query on the enrolment path silently locks every privileged user out, invisibly to build, lint and type-check.
+- Redirect rather than content-swap in `app/(app)/layout.tsx`. Improves the app path only and does nothing for a direct PostgREST call, which is the path that matters.
+- Force the MFA challenge at the GoTrue level so no `aal1` session is ever issued to a privileged user. The cleanest answer, and not available: assurance level is per-session and Supabase issues `aal1` on password sign-in regardless of enrolled factors (measured, `tests/integration/mfa/mfa-lifecycle.test.ts`).
+
+Revisit alongside Phase 7's superuser dashboard, where the first genuinely read-sensitive surface (cross-tenant audit log, impersonation) lands and the trade-off changes. Until then, the compensating controls are the ones in this section: the 30-minute inactivity timeout, the 12-hour session timebox, and the fact that every privileged *write* is refused.
+
 - Step-up re-authentication (re-enter credentials/MFA) is required before: changing security settings (MFA, password, email), large data exports, deleting organisation data, and any high-risk admin/superuser function — including impersonation.
 - Step-up prefers MFA re-verification over password re-entry: a password re-entry returns an `aal1` session (downgrading an MFA user) and mints a new session row (restarting the 12-hour absolute clock), so it is used only where no verified factor exists. A user with neither a verified factor nor a password identity (Google SSO only, no MFA) currently cannot satisfy step-up at all and is failed closed — closing that properly needs GoTrue's `reauthenticate()` email-nonce flow, tracked for Phase 7.
 - Active-session listing with remote revocation is available to every user.
@@ -97,6 +120,7 @@ Pulled from PRD §18. A tester or reviewer should focus here first — this is w
 | Integration dependencies | Ticketing/email providers add third-party trust boundaries. | Deferred past MVP; adapters + link-first design when built |
 | Legal/compliance drift | UK privacy guidance changes over time. | Scheduled legal review, versioned legal pages |
 | Feedback screenshot leakage | A feedback screenshot can incidentally show another org's on-screen data, reaching the superuser outside the impersonation flow. | Pre-upload warning + mandatory audit on every superuser view (`CLAUDE.md` § In-app feedback) |
+| MFA covers writes, not reads | A stolen password alone still yields read access to that org's data at `aal1`; `create_organisation()` and `accept_invite()` are `SECURITY DEFINER` and outside the database gate. Deliberate — gating reads is the lockout that would stop an un-enrolled user reaching the enrolment screen. | §4, "Known limitation: MFA gates privileged WRITES, not READS" — read it before testing this path |
 
 Tenant-breakout and network-leakage tests matter more than anything else in this list — they should exist before a feature ships, not be added after.
 
