@@ -1,11 +1,10 @@
 "use server";
 
-// Server Actions backing the MFA-enrollment gate screen
-// (components/auth/mfa-enroll-gate.tsx). One action, two steps -- distinguished
-// by whether a factorId+code came back from the client, exactly the pattern
-// lib/auth/actions.ts uses nowhere else because nothing else here is a
-// two-step flow. See lib/auth/mfa-gate.ts for why this exists and what it
-// does and does not enforce.
+// Server Actions backing the MFA screens:
+//   - components/auth/mfa-enroll-gate.tsx  (mfaEnrollStepAction)
+//   - components/auth/mfa-challenge-gate.tsx (mfaChallengeAction, fix round 1)
+// See lib/auth/mfa-gate.ts for why both exist and what they do and don't
+// enforce.
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { field, type FormState } from "@/lib/forms";
@@ -18,6 +17,30 @@ export interface MfaEnrollState extends FormState {
   qrCodeSvg?: string;
   /** Shown alongside the QR code for manual entry into an authenticator app. */
   secret?: string;
+}
+
+/**
+ * Maps a failed challengeAndVerify() to copy a person can act on, rather than
+ * collapsing every failure into "wrong code" (fix round 1, Minor).
+ *
+ * error-codes.d.ts in @supabase/auth-js enumerates the MFA-specific codes
+ * this switches on. `mfa_challenge_expired` is realistically unreachable
+ * through challengeAndVerify() specifically (it mints and consumes its own
+ * challenge inside one call, far under the challenge TTL) but is handled
+ * defensively rather than assumed impossible -- GoTrue's behaviour here is
+ * not something this codebase controls.
+ */
+function mfaErrorMessage(error: { code?: string } | null): string {
+  switch (error?.code) {
+    case "over_request_rate_limit":
+      return "Too many attempts. Wait a minute and try again.";
+    case "mfa_challenge_expired":
+      return "That code expired before it was checked. Enter the newest 6-digit code from your app and try again.";
+    case "mfa_verification_failed":
+    case "mfa_verification_rejected":
+    default:
+      return "That code didn't match. Check the time on your device and your authenticator app, then try again.";
+  }
 }
 
 /**
@@ -58,13 +81,12 @@ export async function mfaEnrollStepAction(
         factorId,
         qrCodeSvg: field(formData, "qrCodeSvg") ?? undefined,
         secret: field(formData, "secret") ?? undefined,
-        error:
-          "That code didn't match. Check the time on your device and your authenticator app, then try again.",
+        error: mfaErrorMessage(error),
       };
     }
     // Verified: the session now carries an aal2 amr entry (a fresh
-    // credential-equivalent event) and mfaGateBlocks() will read false on the
-    // next request. Redirect rather than returning state so the gate
+    // credential-equivalent event) and evaluateMfaGate() will read "pass" on
+    // the next request. Redirect rather than returning state so the gate
     // re-evaluates from a clean request, the same pattern every other
     // state-changing action in this file uses.
     redirect(safeNextPath(field(formData, "next")));
@@ -92,4 +114,47 @@ export async function mfaEnrollStepAction(
     qrCodeSvg: data.totp.qr_code,
     secret: data.totp.secret,
   };
+}
+
+/**
+ * The per-sign-in MFA challenge (fix round 1, Important 2): a privileged
+ * user who already has a verified TOTP factor still needs to PRESENT it once
+ * per session before evaluateMfaGate() reads "pass" -- Supabase does not
+ * force this on its own. The factor to challenge is resolved SERVER-SIDE via
+ * listFactors() rather than trusted from a hidden form field: the browser
+ * has no business asserting which factor id is "the" verified one, and the
+ * server already knows.
+ */
+export async function mfaChallengeAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const code = field(formData, "code");
+  const next = safeNextPath(field(formData, "next"));
+
+  if (!code) {
+    return { fieldErrors: { code: "Enter the 6-digit code." } };
+  }
+
+  const supabase = await createClient();
+  const { data: factors, error: listError } = await supabase.auth.mfa.listFactors();
+  const factorId = factors?.totp[0]?.id;
+
+  if (listError || !factorId) {
+    // The verified factor evaluateMfaGate() saw a moment ago is gone (e.g.
+    // unenrolled from another tab mid-challenge). Re-render the gate fresh
+    // rather than erroring here -- it will correctly fall through to the
+    // enrollment screen.
+    redirect(next);
+  }
+
+  const { error } = await supabase.auth.mfa.challengeAndVerify({
+    factorId,
+    code,
+  });
+  if (error) {
+    return { error: mfaErrorMessage(error) };
+  }
+
+  redirect(next);
 }
