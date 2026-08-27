@@ -82,10 +82,13 @@ export interface RlsFixtures {
   superuser: Persona;
   /** Fresh client with no session at all (anon key, signed out). */
   anonClient: SupabaseClient;
-  /** service-role client -- Admin Auth API only. Never used against
-   * PostgREST/table endpoints (those grants were revoked in Task 4; a
-   * service-role table query is expected to be denied, and the suite
-   * asserts exactly that rather than relying on it for setup). */
+  /** service-role client. Used for the Admin Auth API (user create/delete)
+   * throughout fixture setup/teardown, and exactly ONCE against a PostgREST
+   * table endpoint -- rls.test.ts's "service_role has NO table privileges on
+   * profiles" assertion -- to prove the Task 4 design decision that
+   * service_role holds zero table grants (design note (e): "a leaked service
+   * key is not, by itself, a read of every tenant's data"). Every other use
+   * in this file is Admin API only. */
   adminAuth: SupabaseClient;
   /** All created auth.users ids + organisation ids, for teardown. */
   _allUserIds: string[];

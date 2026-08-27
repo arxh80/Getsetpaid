@@ -475,6 +475,17 @@ describe("D. superuser-only tables", () => {
       .insert({ user_id: fx.ownerA.userId });
     expect(error?.code).toBe("42501");
   });
+
+  // Task 4 deliberately grants service_role NOTHING on any of these tables
+  // (design note (e): "a leaked service key is not, by itself, a read of
+  // every tenant's data"). fx.adminAuth is a client constructed with the
+  // service-role key -- this is the one place in the suite it is used
+  // against a PostgREST table endpoint rather than the Admin Auth API, and
+  // it exists specifically to prove that load-bearing design decision holds.
+  it("service_role has NO table privileges on profiles (a leaked service key alone cannot read tenant data)", async () => {
+    const { error } = await fx.adminAuth.from("profiles").select("*");
+    expect(error?.code).toBe("42501");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -580,5 +591,92 @@ describe("F. private schema helpers are not routable HTTP endpoints", () => {
     expect(status).toBe(200);
     expect(error).toBeNull();
     expect(data).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G. Write denial on the reference-data tables (roles, role_permissions,
+// subscription_plans) for a non-superuser.
+//
+// These three are seeded, read-only-by-design catalogues (see the reference-
+// data migration): "roles"/"role_permissions" change by migration only,
+// "subscription_plans" is the pricing catalogue. supabase/tests/rls_foundation.sql
+// (Task 4's frozen historical record) already covers them at the psql layer,
+// but that suite is not part of the durable regression gate -- this is, and
+// the brief asked for every Task 3 table here.
+//
+// role_permissions is the highest-stakes of the three: it is a direct
+// privilege-escalation surface. A single INSERT of
+// (role_key='read_only', permission_key='manage_organisation') would let
+// every Read Only member in every org soft-delete/rename their tenant, since
+// has_permission() joins this table directly with no other gate. The persona
+// used throughout is fx.ownerA -- an ACTIVE ORG OWNER, i.e. the most
+// privileged org-scoped role that exists -- specifically to prove that even
+// the top of the org role hierarchy cannot reach these tables; only a
+// migration (or, historically, a platform superuser for subscription_plans'
+// entitlement-adjacent sibling organisation_subscriptions, covered above)
+// can.
+// ---------------------------------------------------------------------------
+describe("G. reference-data tables reject writes from a non-superuser", () => {
+  it("roles: org owner cannot INSERT a new role", async () => {
+    const { error } = await fx.ownerA.client
+      .from("roles")
+      .insert({ key: `hacker_role_${fx.runId}`, label: "Hacker" });
+    expect(error?.code).toBe("42501");
+  });
+
+  it("roles: org owner cannot UPDATE an existing role (e.g. relabel 'owner')", async () => {
+    const { error } = await fx.ownerA.client
+      .from("roles")
+      .update({ label: "Hacked" })
+      .eq("key", "owner");
+    expect(error?.code).toBe("42501");
+  });
+
+  it("role_permissions: org owner cannot INSERT a privilege-escalation row (grant read_only -> manage_organisation)", async () => {
+    const { error } = await fx.ownerA.client.from("role_permissions").insert({
+      role_key: "read_only",
+      permission_key: "manage_organisation",
+    });
+    expect(error?.code).toBe("42501");
+  });
+
+  it("role_permissions: org owner cannot UPDATE an existing grant row", async () => {
+    const { error } = await fx.ownerA.client
+      .from("role_permissions")
+      .update({ created_at: new Date().toISOString() })
+      .eq("role_key", "owner")
+      .eq("permission_key", "manage_members");
+    expect(error?.code).toBe("42501");
+  });
+
+  it("subscription_plans: org owner cannot INSERT a new plan", async () => {
+    const { error } = await fx.ownerA.client.from("subscription_plans").insert({
+      key: `hacker_plan_${fx.runId}`,
+      price_monthly_minor: 0,
+      price_annual_minor: 0,
+      crm_writes: true,
+      network_publish: true,
+      finance_module: true,
+      storage_limit_gb: 999,
+    });
+    expect(error?.code).toBe("42501");
+  });
+
+  it("subscription_plans: org owner cannot UPDATE a real plan (e.g. give 'free' Pro-tier entitlements)", async () => {
+    const { error } = await fx.ownerA.client
+      .from("subscription_plans")
+      .update({ crm_writes: true, finance_module: true })
+      .eq("key", "free");
+    expect(error?.code).toBe("42501");
+  });
+
+  it("OUTCOME: 'free' plan entitlements are unchanged after the attempt above", async () => {
+    const { data, error } = await fx.ownerA.client
+      .from("subscription_plans")
+      .select("crm_writes, finance_module")
+      .eq("key", "free");
+    expect(error).toBeNull();
+    expect(data).toEqual([{ crm_writes: false, finance_module: false }]);
   });
 });
