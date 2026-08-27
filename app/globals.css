@@ -1,4 +1,30 @@
-@import "tailwindcss";
+/* SOURCE DETECTION IS EXPLICIT, NOT AUTOMATIC.
+   Tailwind v4 scans the whole project for class names by default. This repo
+   vendors the pinned agent skills into `.agents/skills/**` as committed
+   markdown, and several of those files DISCUSS Tailwind classes in prose --
+   `.agents/skills/hallmark/references/anti-patterns.md` names `transition-all`
+   as a tell, `shadcn-ui` and `tailwind-design-system` show `rounded-lg`,
+   `shadow-sm`, `bg-blue-500` in examples. Automatic detection cannot tell a
+   documented anti-pattern from a used class, so it generated all of them into
+   the production bundle: `.rounded-full`, `.rounded-lg`, `.rounded-md`,
+   `.shadow-sm`, `.shadow-lg`, `.bg-blue-500`, `.bg-gray-200`,
+   `.transition-all`, `.animate-spin`, `.animate-pulse`.
+
+   That is a DESIGN CONTRACT failure, not only dead weight. DESIGN.md
+   § Anti-patterns requires zero non-zero border-radius, zero box-shadow and
+   zero off-palette colour in what ships -- and the `* { border-radius:
+   var(--radius) }` guard below is specificity (0,0,0), so a generated
+   `.rounded-lg` (0,1,0) BEATS it. While those utilities exist in the bundle,
+   the global square-corner guarantee is bypassable by a single stray class.
+
+   `source(none)` disables automatic detection; the `@source` lines below then
+   register only the directories that actually contain markup. lib/ and
+   proxy.ts hold no class names (checked), so app/ and components/ is the
+   complete surface. Adding a new top-level directory that renders UI means
+   adding an `@source` line for it here. */
+@import "tailwindcss" source(none);
+@source "../app";
+@source "../components";
 
 /* ===========================================================================
    GetSetPaid design tokens.
@@ -56,6 +82,17 @@
   --font-serif: var(--font-source-serif-4), "Iowan Old Style", Georgia,
     "Times New Roman", serif;
 
+  /* DESIGN.md § Type declares a --font-mono token; without it here the
+     `font-mono` utility fell through to Tailwind's own default stack, so the
+     one place that uses it (the TOTP secret in
+     components/auth/mfa-enroll-gate.tsx, where a fixed pitch is what makes a
+     hand-copied key checkable character by character) was rendering in a
+     stack DESIGN.md never specified. Declared, not loaded: IBM Plex Mono is
+     not fetched via next/font -- shipping a whole webfont for one 32-character
+     string is not a trade worth making -- so this resolves to ui-monospace in
+     practice, exactly as DESIGN.md's own fallback chain intends. */
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
   --text-xs: 0.75rem;      --text-xs--line-height: 1rem;
   --text-sm: 0.8125rem;    --text-sm--line-height: 1.25rem;
   --text-base: 0.9375rem;  --text-base--line-height: 1.5rem;
@@ -72,10 +109,14 @@
   /* ---- Space -- 4px base ----------------------------------------------- */
   --spacing: 0.25rem;
 
-  /* ---- Motion ---------------------------------------------------------- */
-  --dur-fast: 120ms;
-  --dur-base: 160ms;
-  --dur-slow: 240ms;
+  /* ---- Motion ----------------------------------------------------------
+     `--ease-*` IS a Tailwind v4 theme namespace, so this one line generates
+     the `ease-brand` utility and DESIGN.md § Motion's easing is reachable by
+     name. The DURATIONS are not in @theme: `--duration-*` is not a v4
+     namespace (verified against the generated bundle -- naming them that way
+     produced no `duration-fast` utility at all and silently left the
+     controls with transition-duration: 0s). They live in :root below and are
+     referenced as duration-[var(--dur-fast)] instead. */
   --ease-brand: cubic-bezier(0.2, 0, 0, 1);
 }
 
@@ -88,6 +129,24 @@
    rule ("a literal hex in a component") still holds across the whole app and
    the diff stays greppable. Nothing else may use them.
    =========================================================================== */
+/* ===========================================================================
+   Motion durations -- DESIGN.md § Motion, verbatim names.
+
+   Plain custom properties rather than @theme entries because Tailwind v4 has
+   no `--duration-*` theme namespace to hang them on (see the @theme motion
+   note above). Components reference them as `duration-[var(--dur-fast)]`,
+   which is still one named source of truth -- the thing that matters -- and
+   is what replaced five copies of a hardcoded `duration-[120ms]` and four of
+   `ease-[cubic-bezier(0.2,0,0,1)]`. app/not-found.tsx was carrying the
+   duration WITHOUT the easing, so its one button was the only control in the
+   app easing on the browser default rather than DESIGN.md's curve.
+   =========================================================================== */
+:root {
+  --dur-fast: 120ms;
+  --dur-base: 160ms;
+  --dur-slow: 240ms;
+}
+
 :root {
   --brand-google-blue: #4285F4;
   --brand-google-green: #34A853;
@@ -104,6 +163,18 @@ html {
      silently kills position:sticky in descendants. */
   overflow-x: clip;
   background: var(--color-shell);
+
+  /* DESIGN.md § Open: "Dark mode is not specified. The palette is light-only,
+     and the PRD does not require dark mode." Saying so EXPLICITLY is what
+     stops the user agent from guessing: on a machine set to dark mode, an
+     undeclared color-scheme lets the browser render its OWN chrome dark --
+     the native <select> popup (two of them ship here: the workspace switcher
+     and the invite role picker), form-control internals, scrollbars and
+     autofill backgrounds -- against our light --color-shell page. Declaring
+     `light` pins all of that to the palette DESIGN.md actually specifies and
+     contrast.py actually measured. This is not dark-mode support; it is the
+     opposite, and deliberately so until a dark ramp is designed. */
+  color-scheme: light;
 }
 
 body {
@@ -123,10 +194,30 @@ body {
 
 /* DESIGN.md § Interaction states: ink, not blue, so the ring stays visible on
    every surface INCLUDING a --color-primary fill (3.66:1, its tightest case).
-   Never animated -- a focus ring must appear the instant focus lands. */
+   Never animated -- a focus ring must appear the instant focus lands.
+   ("Keyboard focus is never removed", DESIGN.md § Interaction states.)
+
+   THE `transition-property` LINE BELOW IS WHAT MAKES THAT COMMENT TRUE.
+   Tailwind v4's `transition-colors` resolves to
+     color, background-color, border-color, OUTLINE-COLOR,
+     text-decoration-color, fill, stroke, --tw-gradient-*
+   -- outline-color is in that list (verified against the generated bundle,
+   not assumed). Every control in this app carries `transition-colors` with a
+   120ms duration, so without this the focus ring did NOT appear instantly:
+   outline-style/width flip at once, but outline-color animated from the
+   element's resting currentColor to ink over 120ms. On a --color-primary
+   button, whose currentColor is white, that is a white ring visibly fading
+   to ink on every keyboard focus -- the exact "focus ring fades in" failure
+   the comment above claims we avoid.
+
+   Re-declaring the property list here, minus outline-color, keeps the
+   hover/active colour transitions the components rely on while pinning the
+   ring itself to frame one. */
 :focus-visible {
   outline: 2px solid var(--color-ink);
   outline-offset: 2px;
+  transition-property: color, background-color, border-color,
+    text-decoration-color, fill, stroke;
 }
 
 /* Removes the ~300ms tap delay mobile browsers hold in case a tap becomes a

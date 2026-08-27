@@ -24,7 +24,7 @@ export default function NotFound() {
       <p>
         <Link
           href="/"
-          className="inline-flex h-11 items-center justify-center border border-primary bg-primary px-4 text-base font-semibold text-on-primary no-underline transition-colors duration-[120ms] hover:border-ink hover:bg-ink"
+          className="inline-flex h-11 items-center justify-center border border-primary bg-primary px-4 text-base font-semibold text-on-primary no-underline transition-colors duration-[var(--dur-fast)] ease-brand hover:border-ink hover:bg-ink"
         >
           Back to your workspace
         </Link>

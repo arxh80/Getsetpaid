@@ -90,7 +90,7 @@ function RoleSelect({ error }: { error?: string }) {
         aria-describedby={error ? errorId : undefined}
         className={
           "h-11 w-full border bg-surface px-3 text-base text-ink " +
-          "transition-colors duration-[120ms] ease-[cubic-bezier(0.2,0,0,1)] " +
+          "transition-colors duration-[var(--dur-fast)] ease-brand " +
           (error ? "border-danger" : "border-rule hover:border-ink focus:border-accent")
         }
       >

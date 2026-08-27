@@ -23,7 +23,7 @@ type Variant = "primary" | "secondary" | "quiet" | "danger";
 const BASE =
   "inline-flex h-11 items-center justify-center gap-2 border px-4 " +
   "text-base font-semibold whitespace-nowrap " +
-  "transition-colors duration-[120ms] ease-[cubic-bezier(0.2,0,0,1)] " +
+  "transition-colors duration-[var(--dur-fast)] ease-brand " +
   "disabled:cursor-not-allowed disabled:opacity-55";
 
 const VARIANTS: Record<Variant, string> = {
