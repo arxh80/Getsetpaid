@@ -34,8 +34,24 @@ export default async function MembersPage({
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const canManageMembers = await hasPermission(org.id, "manage_members");
-  const members = await listMembers(org.id);
+  // Promise.all, not two sequential awaits (Task 10 gate,
+  // vercel-react-best-practices `async-parallel`). Both of these depend only
+  // on org.id and nothing on each other, so awaiting them in sequence made
+  // the page wait for a full permission round trip before it even ASKED for
+  // the member list -- a waterfall that cost one extra database round trip on
+  // every render of this route for no reason. app/(app)/[orgSlug]/page.tsx
+  // already did this correctly; this page had drifted from it.
+  //
+  // Running them together changes nothing about enforcement: hasPermission()
+  // is a `has_permission` RPC and listMembers() is filtered by
+  // organisation_memberships_select_same_organisation, so both still answer
+  // as the signed-in user. The permission result gates only what is RENDERED
+  // (the invite form) -- the INSERT behind it is refused by the policy
+  // regardless, per CLAUDE.md's "hiding UI is not enforcement".
+  const [canManageMembers, members] = await Promise.all([
+    hasPermission(org.id, "manage_members"),
+    listMembers(org.id),
+  ]);
 
   const active = members.filter((m) => m.status === "active");
   const pending = members.filter((m) => m.status === "invited");
@@ -44,9 +60,13 @@ export default async function MembersPage({
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-3">
         <p className="text-sm text-ink-muted">
+          {/* break-words: same user-supplied-name clipping risk as the
+              workspace home's <h1> -- a single unbroken organisation name has
+              no break opportunity, and `overflow-x: clip` hides the overflow
+              rather than letting the user scroll to it. */}
           <Link
             href={`/${org.slug}`}
-            className="text-primary underline underline-offset-4"
+            className="break-words text-primary underline underline-offset-4 hover:text-ink"
           >
             {org.name}
           </Link>
@@ -113,7 +133,7 @@ export default async function MembersPage({
           <div className="flex flex-col gap-2">
             <h2 className="text-xl font-bold text-ink">Invite someone</h2>
             <p className="text-base text-ink-muted">
-              They&apos;ll only see this workspace once they accept.
+              They’ll only see this workspace once they accept.
             </p>
           </div>
           <InviteForm orgSlug={org.slug} />

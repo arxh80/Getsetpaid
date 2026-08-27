@@ -55,7 +55,7 @@ export function LoginForm({ next }: { next: string }) {
 
       <p className="text-sm text-ink-muted">
         No password, or forgotten it?{" "}
-        <Link href="/magic-link" className="text-primary underline underline-offset-4">
+        <Link href="/magic-link" className="text-primary underline underline-offset-4 hover:text-ink">
           Get a sign-in link by email
         </Link>
         .

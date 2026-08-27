@@ -40,7 +40,7 @@ export default async function OnboardingPage() {
         <p className="border-t border-rule pt-5 text-base text-ink-muted">
           You also have {invites.length === 1 ? "an invitation" : `${invites.length} invitations`}{" "}
           waiting.{" "}
-          <Link href="/invites" className="text-primary underline underline-offset-4">
+          <Link href="/invites" className="text-primary underline underline-offset-4 hover:text-ink">
             Review {invites.length === 1 ? "it" : "them"}
           </Link>
           .
@@ -52,7 +52,7 @@ export default async function OnboardingPage() {
           Looking for a workspace you already belong to?{" "}
           <Link
             href={`/${active[0].organisation.slug}`}
-            className="text-primary underline underline-offset-4"
+            className="text-primary underline underline-offset-4 hover:text-ink"
           >
             Go to {active[0].organisation.name}
           </Link>

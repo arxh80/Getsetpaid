@@ -41,18 +41,30 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
     <div className="flex flex-col gap-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-2">
-          <h1 className="tracking-display text-3xl font-extrabold text-ink">
+          {/* break-words because this heading renders a USER-SUPPLIED name at
+              --text-3xl. Measured at 320px before the fix: an organisation
+              called "Northernlightstouringandproductionserviceslimited" (one
+              unbroken token -- no space or hyphen to break at) overflowed its
+              box by 503px, and because html/body carry `overflow-x: clip`
+              (app/globals.css) that overflow does NOT produce a scrollbar --
+              it is silently CLIPPED, so the user simply cannot see the end of
+              their own workspace name and has no way to scroll to it. Names
+              containing a space or hyphen were never affected, which is why
+              this survived earlier review. Verified after: wraps to 3 lines,
+              0px overflow, and ordinary names still render on one line
+              unchanged at every width. */}
+          <h1 className="tracking-display text-3xl font-extrabold break-words text-ink">
             {org.name}
           </h1>
           <p className="text-base text-ink-muted">
-            You&apos;re signed in as {roleLabel(org.role)}.
+            You’re signed in as {roleLabel(org.role)}.
           </p>
         </div>
 
         {canManageMembers ? (
           <Link
             href={`/${org.slug}/members`}
-            className="text-base text-primary underline underline-offset-4"
+            className="text-base text-primary underline underline-offset-4 hover:text-ink"
           >
             Manage members
           </Link>
@@ -81,7 +93,7 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
                 title={
                   <Link
                     href={`/${m.organisation.slug}`}
-                    className="text-primary underline underline-offset-4"
+                    className="text-primary underline underline-offset-4 hover:text-ink"
                   >
                     {m.organisation.name}
                   </Link>

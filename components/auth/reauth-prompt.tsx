@@ -33,7 +33,7 @@ export function ReauthPrompt({
     <div className="mx-auto flex w-full max-w-md flex-col gap-7">
       <div className="flex flex-col gap-3">
         <h1 className="tracking-display text-3xl font-extrabold text-ink">
-          Confirm it&apos;s you
+          Confirm it’s you
         </h1>
         <p className="text-lg text-ink-muted">
           {proof.mode === "mfa"
@@ -46,8 +46,8 @@ export function ReauthPrompt({
 
       {proof.mode === "unavailable" ? (
         <Alert tone="info">
-          Your account doesn&apos;t have a password or two-factor
-          authentication set up, so this check can&apos;t be completed here.
+          Your account doesn’t have a password or two-factor
+          authentication set up, so this check can’t be completed here.
           Ask an admin for help, or set up two-factor authentication first.
         </Alert>
       ) : (

@@ -28,12 +28,20 @@ export default async function CheckEmailPage({
         <p className="text-lg text-ink-muted">
           {email ? (
             <>
-              We&apos;ve sent a message to{" "}
-              <span translate="no" className="font-semibold text-ink">{email}</span>. Open it to
-              finish setting up your account.
+              {/* break-words: an email address is one unbroken token, and at
+                  320px a long address ran past the viewport where
+                  `overflow-x: clip` silently cut it off. Same fix and same
+                  reason as app/(auth)/magic-link/sent/page.tsx -- the address
+                  is echoed back so a typo can be caught, which needs all of
+                  it to be visible. */}
+              We’ve sent a message to{" "}
+              <span translate="no" className="font-semibold break-words text-ink">
+                {email}
+              </span>
+              . Open it to finish setting up your account.
             </>
           ) : (
-            <>We&apos;ve sent you a message. Open it to finish setting up your account.</>
+            <>We’ve sent you a message. Open it to finish setting up your account.</>
           )}
         </p>
       </div>
@@ -41,14 +49,14 @@ export default async function CheckEmailPage({
       <div className="flex flex-col gap-3 border-t border-rule pt-5">
         <p className="text-base text-ink-muted">
           Already confirmed?{" "}
-          <Link href="/login" className="text-primary underline underline-offset-4">
+          <Link href="/login" className="text-primary underline underline-offset-4 hover:text-ink">
             Sign in
           </Link>
           .
         </p>
         <p className="text-base text-ink-muted">
           Wrong address?{" "}
-          <Link href="/signup" className="text-primary underline underline-offset-4">
+          <Link href="/signup" className="text-primary underline underline-offset-4 hover:text-ink">
             Start again
           </Link>
           .

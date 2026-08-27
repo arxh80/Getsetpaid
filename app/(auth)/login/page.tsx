@@ -73,10 +73,10 @@ export default async function LoginPage({
       <GoogleButton next={next} />
 
       <p className="border-t border-rule pt-5 text-base text-ink-muted">
-        Don&apos;t have an account?{" "}
+        Don’t have an account?{" "}
         <Link
           href={next === "/" ? "/signup" : `/signup?next=${encodeURIComponent(next)}`}
-          className="text-primary underline underline-offset-4"
+          className="text-primary underline underline-offset-4 hover:text-ink"
         >
           Create one
         </Link>

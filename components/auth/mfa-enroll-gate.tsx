@@ -32,7 +32,7 @@ export function MfaEnrollGate({ next }: { next: string }) {
         </h1>
         <p className="text-lg text-ink-muted">
           Your role can see or change things other people in your workspace
-          can&apos;t, so this account needs an authenticator app before you
+          can’t, so this account needs an authenticator app before you
           continue.
         </p>
       </div>
@@ -108,7 +108,7 @@ function VerifyStep({
           className="h-[200px] w-[200px] self-start border border-rule"
         />
         <p className="text-sm text-ink-muted">
-          Can&apos;t scan it? Enter this key manually:
+          Can’t scan it? Enter this key manually:
         </p>
         <p className="break-all bg-shell px-3 py-2 font-mono text-sm tracking-wide text-ink">
           {state.secret}

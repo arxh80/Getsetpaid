@@ -85,7 +85,7 @@ export function CreateOrgForm() {
       </Button>
 
       <p className="text-sm text-ink-muted">
-        You&apos;ll be the owner. You can invite colleagues straight after.
+        You’ll be the owner. You can invite colleagues straight after.
       </p>
     </form>
   );

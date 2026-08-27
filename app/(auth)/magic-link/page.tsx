@@ -20,7 +20,7 @@ export default async function MagicLinkPage({
           Get a sign-in link
         </h1>
         <p className="text-lg text-ink-muted">
-          We&apos;ll email you a link that signs you in. It works once, and only
+          We’ll email you a link that signs you in. It works once, and only
           for a short time.
         </p>
       </div>
@@ -29,7 +29,7 @@ export default async function MagicLinkPage({
 
       <p className="border-t border-rule pt-5 text-base text-ink-muted">
         Prefer a password?{" "}
-        <Link href="/login" className="text-primary underline underline-offset-4">
+        <Link href="/login" className="text-primary underline underline-offset-4 hover:text-ink">
           Sign in with one
         </Link>
         .

@@ -26,8 +26,18 @@ export default async function MagicLinkSentPage({
         <p className="text-lg text-ink-muted">
           {email ? (
             <>
-              If <span translate="no" className="font-semibold text-ink">{email}</span> has a
-              GetSetPaid account, a sign-in link is on its way.
+              {/* break-words: an email address is one unbroken token. At
+                  320px a long address measured 8px past the viewport, and
+                  because html/body carry `overflow-x: clip` that tail was
+                  silently cut off rather than scrollable. This page exists
+                  precisely so someone can SPOT A TYPO in the address they
+                  just entered (see the file header) -- an address whose last
+                  characters are invisible defeats the page's only job. */}
+              If{" "}
+              <span translate="no" className="font-semibold break-words text-ink">
+                {email}
+              </span>{" "}
+              has a GetSetPaid account, a sign-in link is on its way.
             </>
           ) : (
             <>If that address has a GetSetPaid account, a sign-in link is on its way.</>
@@ -40,7 +50,7 @@ export default async function MagicLinkSentPage({
           Nothing after a minute? Check the spam folder, or{" "}
           <Link
             href="/magic-link"
-            className="text-primary underline underline-offset-4"
+            className="text-primary underline underline-offset-4 hover:text-ink"
           >
             request another link
           </Link>

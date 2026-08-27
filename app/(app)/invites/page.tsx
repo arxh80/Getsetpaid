@@ -106,7 +106,7 @@ export default async function InvitesPage({
                 {i > 0 ? ", " : ""}
                 <Link
                   href={`/${m.organisation.slug}`}
-                  className="text-primary underline underline-offset-4"
+                  className="text-primary underline underline-offset-4 hover:text-ink"
                 >
                   {m.organisation.name}
                 </Link>
@@ -119,7 +119,7 @@ export default async function InvitesPage({
             Not expecting an invitation?{" "}
             <Link
               href="/onboarding"
-              className="text-primary underline underline-offset-4"
+              className="text-primary underline underline-offset-4 hover:text-ink"
             >
               Create your own workspace
             </Link>{" "}
