@@ -1,0 +1,50 @@
+<!--
+  Invitation email.
+
+  THE LINK SHAPE IS THE WHOLE POINT OF THIS FILE. GoTrue's default template
+  uses {{ .ConfirmationURL }}, which points at /auth/v1/verify and redirects to
+  our app with the session in a URL FRAGMENT (#access_token=...). A fragment is
+  never sent to the server, so our /auth/callback route cannot read it --
+  supabase-js documents that "PKCE is not supported when using
+  inviteUserByEmail", and this is the consequence.
+
+  Using {{ .TokenHash }} against our own route instead keeps the exchange
+  server-side (verifyOtp), so the tokens never appear in the browser's address
+  bar, its history, or a Referer header.
+
+  Do not swap this back to {{ .ConfirmationURL }} without also building the
+  client-side fragment handler it would require.
+
+  Styling is inline and deliberately plain: email clients strip <style> blocks,
+  ignore CSS custom properties, and have no access to our design tokens. The
+  hex values below are the DESIGN.md palette written out longhand because this
+  is the one place a token cannot reach -- they are not a new palette.
+-->
+<div style="font-family: Georgia, 'Times New Roman', serif; color: #14141C; background: #FFF4F4; padding: 32px;">
+  <div style="max-width: 480px; margin: 0 auto; background: #FFFFFF; border: 1px solid #D6CBCB; padding: 32px;">
+    <p style="margin: 0 0 24px; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: #55555F;">
+      GetSetPaid
+    </p>
+
+    <h1 style="margin: 0 0 16px; font-size: 25px; line-height: 32px; font-weight: 800;">
+      You've been invited to a workspace
+    </h1>
+
+    <p style="margin: 0 0 24px; font-size: 15px; line-height: 24px;">
+      Someone has invited you to join their workspace on GetSetPaid. Use the
+      link below to set up your account and accept the invitation.
+    </p>
+
+    <p style="margin: 0 0 24px;">
+      <a
+        href="{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=invite"
+        style="display: inline-block; background: #0062FF; color: #FFFFFF; text-decoration: none; padding: 12px 24px; font-size: 15px; font-weight: 600;"
+      >Accept invitation</a>
+    </p>
+
+    <p style="margin: 0; font-size: 13px; line-height: 20px; color: #55555F;">
+      If you weren't expecting this, you can ignore this email — no account is
+      created for you until you use the link.
+    </p>
+  </div>
+</div>

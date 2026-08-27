@@ -1,0 +1,42 @@
+<!--
+  Magic-link sign-in email.
+
+  Uses {{ .TokenHash }} against our own /auth/callback for the same reason as
+  invite.html: the exchange completes server-side via verifyOtp(), so the
+  session tokens never land in the browser's address bar, history or Referer.
+
+  It matters more here than for OAuth, because a magic link is frequently
+  opened in a DIFFERENT browser from the one that requested it (requested on a
+  laptop, opened on a phone). PKCE cannot survive that -- the code verifier
+  cookie is on the other device -- whereas a token hash can.
+
+  Inline styles and longhand hex: email clients have no access to our design
+  tokens. See the note in invite.html.
+-->
+<div style="font-family: Georgia, 'Times New Roman', serif; color: #14141C; background: #FFF4F4; padding: 32px;">
+  <div style="max-width: 480px; margin: 0 auto; background: #FFFFFF; border: 1px solid #D6CBCB; padding: 32px;">
+    <p style="margin: 0 0 24px; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: #55555F;">
+      GetSetPaid
+    </p>
+
+    <h1 style="margin: 0 0 16px; font-size: 25px; line-height: 32px; font-weight: 800;">
+      Your sign-in link
+    </h1>
+
+    <p style="margin: 0 0 24px; font-size: 15px; line-height: 24px;">
+      Use the link below to sign in. It works once, and only for a short time.
+    </p>
+
+    <p style="margin: 0 0 24px;">
+      <a
+        href="{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=magiclink"
+        style="display: inline-block; background: #0062FF; color: #FFFFFF; text-decoration: none; padding: 12px 24px; font-size: 15px; font-weight: 600;"
+      >Sign in to GetSetPaid</a>
+    </p>
+
+    <p style="margin: 0; font-size: 13px; line-height: 20px; color: #55555F;">
+      If you didn't ask to sign in, ignore this email — the link does nothing
+      until it's used.
+    </p>
+  </div>
+</div>
