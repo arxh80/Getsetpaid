@@ -46,6 +46,15 @@ import { createClient } from "@/lib/supabase/server";
 import { adminAuthFetch, createAdminClient } from "@/lib/supabase/admin";
 import { siteUrl } from "@/lib/supabase/env";
 import { getCurrentOrg } from "@/lib/auth";
+// The MFA requirement, asserted server-side rather than merely rendered.
+// CLAUDE.md § Session security requires MFA for Owner/Admin/Finance; before
+// the final fix wave that requirement existed ONLY as a content swap in
+// app/(app)/layout.tsx, so a stolen Owner password could POST straight at
+// these action endpoints and never meet it. See assertMfaSatisfied()'s own
+// header for which actions are gated and, just as importantly, which are
+// deliberately not. This is the readable-error layer; the enforcement is
+// supabase/migrations/20260827210000_mfa_aal_permission_gate.sql.
+import { assertMfaSatisfied } from "@/lib/auth/mfa-gate";
 import { field, isValidEmail, type FormState } from "@/lib/forms";
 // Plain data lives in its own module: a "use server" file may only EXPORT
 // async functions, and exporting the roles array from here compiles fine then
@@ -59,6 +68,14 @@ export async function createOrganisationAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
+  // FIRST, before any validation or any write. A caller with no privileged
+  // membership anywhere -- the ordinary brand-new signup creating their first
+  // workspace -- passes straight through, because the gate does not apply to
+  // them at all. A caller who is already an Owner or Admin somewhere is
+  // refused until they present their factor.
+  const refusal = await assertMfaSatisfied();
+  if (refusal) return refusal;
+
   const name = field(formData, "name");
   const slug = slugify(field(formData, "slug") ?? name ?? "");
 
@@ -108,6 +125,17 @@ export async function inviteMemberAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
+  // FIRST, and the reason this guard is worth having at all even though the
+  // database now refuses the INSERT independently: step 1 below creates an
+  // auth.users row for the invitee through the Admin API and sends them an
+  // email. Without this, an aal1 attacker POSTing here could not complete the
+  // invite -- the RLS policy stops that -- but could still spray account
+  // creations and invitation emails at arbitrary addresses from the product's
+  // own domain. The database gate protects the tenant; this one stops the
+  // action before it does side-effectful work outside the database.
+  const refusal = await assertMfaSatisfied();
+  if (refusal) return refusal;
+
   const orgSlug = field(formData, "orgSlug");
   const email = field(formData, "email")?.toLowerCase() ?? null;
   const role = field(formData, "role");
@@ -338,6 +366,17 @@ export async function acceptInviteAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
+  // Accepting an invitation turns an 'invited' row into an 'active' one, and
+  // 'active' is what every read policy in the schema keys off -- so this is a
+  // privileged tenant write even though the caller is only acting on their own
+  // row. NOT a chicken-and-egg for the invitee: accept_invite() is SECURITY
+  // DEFINER and does not consult has_permission, so an ordinary invitee (no
+  // privileged membership anywhere yet) passes the gate untouched. It only
+  // bites someone who is ALREADY an Owner/Admin elsewhere and has not
+  // presented their factor -- who is already looking at the enrolment screen.
+  const refusal = await assertMfaSatisfied();
+  if (refusal) return refusal;
+
   const membershipId = field(formData, "membershipId");
   if (!membershipId) return { error: "Missing invitation." };
 

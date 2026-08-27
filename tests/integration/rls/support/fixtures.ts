@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
 import { getLocalSupabaseStatus } from "./env";
+import { totpCode } from "@/tests/support/totp";
 
 const PASSWORD = "Test-Passw0rd!-rls-js";
 
@@ -126,6 +127,74 @@ async function signInClient(
   return client;
 }
 
+/**
+ * Org roles CLAUDE.md § Session security requires MFA for. Mirrors
+ * private.role_requires_mfa() in
+ * supabase/migrations/20260827210000_mfa_aal_permission_gate.sql and
+ * MFA_REQUIRED_ROLES in lib/auth/mfa-gate.ts.
+ */
+const MFA_REQUIRED_ROLES = new Set<RoleKey>(["owner", "admin", "finance"]);
+
+/**
+ * Takes a signed-in client from aal1 to aal2 by genuinely enrolling a TOTP
+ * factor and completing a challenge against the live GoTrue verifier.
+ *
+ * ===========================================================================
+ * WHY THIS EXISTS, AND WHY IT IS NOT A WEAKENING OF THIS SUITE
+ * ===========================================================================
+ * 20260827210000_mfa_aal_permission_gate.sql makes has_permission() return
+ * false for an owner/admin/finance membership whose SESSION has not presented
+ * a factor. signInWithPassword() returns aal1 -- verified in the suite's own
+ * MFA lifecycle tests -- so before this helper, ownerA's fixture invites (and
+ * the superuser's subscription writes) were being made by a session that, per
+ * CLAUDE.md § Session security, should never have been able to make them. The
+ * fixture was passing because the requirement was not enforced anywhere.
+ *
+ * The fix is to make the FIXTURE realistic, not to relax the policy: a real
+ * Owner of a real organisation is required to hold a factor, so the persona
+ * standing in for one holds a factor too. Every assertion in rls.test.ts
+ * therefore still asserts exactly what it always did, against a persona whose
+ * privileges are now legitimately established rather than accidentally
+ * available.
+ *
+ * Applied ONLY to personas whose role requires MFA (plus the superuser).
+ * manager, booker, venue_manager, marketing, standard_user, read_only and the
+ * never-activated invited admin all stay at aal1 -- MFA is optional for those
+ * roles at MVP, and running them at aal1 is what keeps the suite honest about
+ * the gate being role-scoped rather than a blanket "aal2 to do anything",
+ * which would lock out most of the product.
+ *
+ * challengeAndVerify() upgrades the EXISTING session in place -- same
+ * session_id, same auth.sessions.created_at, only `aal` moves. That is
+ * measured, not assumed; see the regression-evidence test in
+ * tests/integration/mfa/mfa-lifecycle.test.ts. So this does not mint a second
+ * session or restart any clock the rest of the fixture depends on.
+ */
+async function elevateToAal2(client: SupabaseClient, label: string): Promise<void> {
+  const enrolled = await client.auth.mfa.enroll({ factorType: "totp" });
+  if (enrolled.error || !enrolled.data) {
+    throw new Error(`Fixture: could not enrol TOTP for ${label}: ${enrolled.error?.message}`);
+  }
+
+  const { error } = await client.auth.mfa.challengeAndVerify({
+    factorId: enrolled.data.id,
+    code: totpCode(enrolled.data.totp.secret),
+  });
+  if (error) {
+    throw new Error(`Fixture: TOTP challenge failed for ${label}: ${error.message}`);
+  }
+
+  // Assert the elevation actually happened rather than trusting a silent
+  // success. If this ever regresses, the failure has to name itself here --
+  // otherwise it surfaces as a baffling RLS denial fifty lines later.
+  const { data: aal } = await client.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (aal?.currentLevel !== "aal2") {
+    throw new Error(
+      `Fixture: ${label} is still ${aal?.currentLevel ?? "unknown"} after a successful TOTP challenge`,
+    );
+  }
+}
+
 export async function createFixtures(): Promise<RlsFixtures> {
   const env = getLocalSupabaseStatus();
   const runId = randomUUID().slice(0, 8);
@@ -204,6 +273,22 @@ export async function createFixtures(): Promise<RlsFixtures> {
   const ownerB = makePersona("ownerB", ownerBEmail, "owner");
   const superuser = makePersona("superuser", superuserEmail, null);
   const invitedAdminA = makePersona("invitedAdminA", invitedAdminEmail, "admin");
+
+  // ---- 2b. Raise the MFA-required personas to aal2, BEFORE any of them does
+  // anything privileged. Owners (steps 3-4), the superuser (steps 6-7) and the
+  // active admin/finance personas the assertions use all need it; everyone
+  // else stays at aal1 on purpose. See elevateToAal2()'s header.
+  await elevateToAal2(ownerA.client, "ownerA");
+  await elevateToAal2(ownerB.client, "ownerB");
+  await elevateToAal2(superuser.client, "superuser");
+  for (const role of nonOwnerRoles) {
+    if (!MFA_REQUIRED_ROLES.has(role)) continue;
+    await elevateToAal2(clientByEmail.get(roleEmails.get(role)!)!, `active ${role}`);
+  }
+  // invitedAdminA is deliberately NOT elevated. Their role is 'admin', but
+  // their membership is 'invited' and never activated, so has_permission()
+  // refuses them on status long before it looks at assurance level. Leaving
+  // them at aal1 keeps the status-gating assertions testing status, not aal.
 
   // ---- 3. Create organisations through the REAL create_organisation() RPC
   const orgASlug = `rls-js-a-${runId}`;

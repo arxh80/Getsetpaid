@@ -86,24 +86,46 @@ import "server-only";
 // a real PostgREST/RPC failure through the integration harness.
 //
 // ===========================================================================
-// THIS IS APP-LEVEL ROUTING, NOT A DATABASE-ENFORCED REQUIREMENT -- NAMED
-// RATHER THAN QUIETLY TREATED AS SUFFICIENT.
+// FINAL FIX WAVE: THIS FILE IS NO LONGER THE ONLY THING ENFORCING MFA.
 // ===========================================================================
-// CLAUDE.md § Permissions: "entitlements are enforced server-side -- hiding
-// UI is not enforcement." No RLS policy in this schema currently checks the
-// JWT's `aal` claim, because nothing privileged enough to need it exists yet
-// (no Finance module, no Superuser dashboard) -- there is no table for an
-// aal2-gated policy to protect. So today, this gate genuinely IS the control:
-// skip past it (e.g. hit a Server Action directly with curl) and nothing in
-// the database currently stops you. That is the same class of gap the
-// existing sign-in check already has (lib/supabase/middleware.ts: "easy to
-// bypass by anything that talks to Supabase directly... RLS is the
-// enforcement"), not a new one -- but it means the MFA requirement stays a
-// UX/routing guarantee, not a cryptographic one, until a later phase adds
-// aal2-gated RLS policies alongside the privileged tables this is meant to
-// protect. Flagged here so nobody mistakes this file for that policy.
+// An earlier version of this comment said no RLS policy checked the JWT's
+// `aal` claim, "because nothing privileged enough to need it exists yet -- no
+// table for an aal2-gated policy to protect", and treated this render-time
+// content swap as sufficient. That was wrong on its own terms:
+// organisation_memberships is such a table and inviteMemberAction is such an
+// action, and both shipped in this same phase. The concrete path was a stolen
+// Owner password -> an aal1 session -> POST inviteMemberAction {role:"admin"},
+// or, skipping the app entirely, POST /rest/v1/organisation_memberships with
+// that session token and the public anon key.
+//
+// It is now enforced at BOTH layers, and neither is redundant:
+//
+//   THIS LAYER   evaluateMfaGate() still decides what app/(app)/layout.tsx
+//                renders, and assertMfaSatisfied() below is called at the top
+//                of every privileged Server Action. Its job is to give the
+//                user a readable refusal instead of an opaque 42501, and to
+//                stop the action before it does any work (inviteMemberAction
+//                would otherwise create an auth.users row for the invitee
+//                before the database refused the membership).
+//
+//   THE DATABASE supabase/migrations/20260827210000_mfa_aal_permission_gate.sql
+//                puts the requirement inside public.has_permission() and
+//                private.has_platform_permission(), so every write policy in
+//                the schema inherits it. That is the layer that actually
+//                enforces: the anon key ships in the browser bundle by design,
+//                so anyone holding a session token can talk to PostgREST
+//                directly, and no amount of Server Action guarding is on that
+//                request's path.
+//
+// The two layers scope the check differently, on purpose. This file gates the
+// whole app on ANY privileged membership, because it has no current org to
+// scope to (see the SCOPE DECISION note above). has_permission() is handed a
+// specific organisation and scopes to THAT membership's role. The app-level
+// rule is the conservative routing decision; the database's is the precise
+// authorisation decision. Neither is a bug in the other.
 import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
+import type { FormState } from "@/lib/forms";
 import { getCurrentUser } from "./index";
 
 /** Org roles CLAUDE.md § Session security requires MFA for. */
@@ -275,3 +297,60 @@ export const evaluateMfaGate = cache(async (): Promise<MfaGateResult> => {
 
   return { kind: "challenge", factorId };
 });
+
+/**
+ * The Server Action guard. Returns null to allow, or the FormState to hand
+ * straight back to the form.
+ *
+ * ONE SOURCE OF TRUTH, DELIBERATELY. This is a thin adapter over
+ * evaluateMfaGate() and nothing more -- it re-derives no part of "does this
+ * caller need MFA". A second implementation of that question would drift from
+ * this one, and the two would disagree in exactly the situation neither was
+ * tested for. Everything the gate already reasons about (fail-closed on a
+ * determination error, enrol vs challenge, the cache() wrapper that keeps a
+ * layout render and an action in the same request down to one pair of round
+ * trips) applies here unchanged.
+ *
+ * WHICH ACTIONS CALL THIS, and why the others deliberately do not:
+ *
+ *   GATED   createOrganisationAction, inviteMemberAction, acceptInviteAction
+ *           -- every Server Action in the branch that performs a privileged
+ *           tenant write. Note none of them is a chicken-and-egg: a caller
+ *           who is refused here is refused precisely BECAUSE they already
+ *           hold a privileged role, which means the enrolment screen is
+ *           already what the app layout is rendering for them. They enrol,
+ *           they retry, it works.
+ *
+ *   NOT GATED, on purpose:
+ *     mfaEnrollStepAction / mfaChallengeAction -- these ARE the enrolment and
+ *       challenge. Gating them is the lockout: no privileged user could ever
+ *       reach aal2, forever, with no path back in.
+ *     reauthenticateAction -- the step-up prompt, whose MFA branch is one of
+ *       the ways a session reaches aal2. Same reason.
+ *     signIn/signUp/magicLink/signInWithGoogle/signOut -- pre-session, or the
+ *       way out. Gating sign-out in particular would trap a user in a session
+ *       they cannot leave.
+ *     completeAccountSetupAction -- writes only the caller's OWN password and
+ *       profile name, no tenant data, and already has its own fail-closed
+ *       step-up gate (passwordChangeGate, lib/auth/actions.ts). It is also the
+ *       screen an invited Admin must pass through BEFORE they can accept the
+ *       invite that makes them privileged, so gating it would put a gate in
+ *       front of the account it is meant to protect.
+ *     switchWorkspaceAction / recordCurrentOrgAction -- navigation state (a
+ *       cookie), no tenant write. Both already re-derive the target from the
+ *       caller's own RLS-filtered membership list.
+ */
+export async function assertMfaSatisfied(): Promise<FormState | null> {
+  const gate = await evaluateMfaGate();
+  if (gate.kind === "pass") return null;
+
+  // ONE message for both refusal kinds. "Set one up" and "enter your code"
+  // differ by whether this account already has a factor enrolled -- account
+  // metadata, and the caller is on a path they are not authorised to be on.
+  // The app layout is already rendering the right screen for whichever case
+  // they are actually in, so the message only has to point them at it.
+  return {
+    error:
+      "Your role requires two-step verification. Set it up, or enter your code, before making this change.",
+  };
+}

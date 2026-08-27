@@ -21,11 +21,16 @@
 //   3. The real TOTP enroll -> verify lifecycle: unverified factors are
 //      invisible to listFactors().data.totp (only .all), a wrong code is
 //      rejected, and a correct one verifies and then appears in .totp.
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
+// The RFC 6238 generator this suite uses to produce a code the LIVE GoTrue
+// verifier accepts. Moved to tests/support/totp.ts in the final fix wave when
+// the RLS fixtures needed the same thing to raise privileged personas to
+// aal2; the algorithm and its reasoning are unchanged, only its address.
+import { totpCode } from "@/tests/support/totp";
 
 const PASSWORD = "Test-Passw0rd!-mfa-lifecycle";
 
@@ -319,48 +324,4 @@ function decodeSessionId(accessToken: string): string {
   const json = Buffer.from(payload, "base64url").toString("utf8");
   const claims = JSON.parse(json) as { session_id: string };
   return claims.session_id;
-}
-
-// ---------------------------------------------------------------------------
-// RFC 4226 (HOTP) / RFC 6238 (TOTP), the standard algorithm every
-// authenticator app implements -- reimplemented here (SHA-1, 30s step,
-// 6 digits, GoTrue's defaults) purely so this test can generate a code that
-// actually matches the secret enroll() just returned, without a new runtime
-// dependency for one test file.
-// ---------------------------------------------------------------------------
-function base32Decode(input: string): Buffer {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  const clean = input.replace(/=+$/, "").toUpperCase();
-  let bits = "";
-  for (const char of clean) {
-    const val = alphabet.indexOf(char);
-    if (val === -1) throw new Error(`Invalid base32 character: ${char}`);
-    bits += val.toString(2).padStart(5, "0");
-  }
-  const bytes: number[] = [];
-  for (let i = 0; i + 8 <= bits.length; i += 8) {
-    bytes.push(parseInt(bits.slice(i, i + 8), 2));
-  }
-  return Buffer.from(bytes);
-}
-
-function totpCode(secretBase32: string, at: number = Date.now()): string {
-  const stepSeconds = 30;
-  const digits = 6;
-  const counter = Math.floor(at / 1000 / stepSeconds);
-
-  const counterBuf = Buffer.alloc(8);
-  counterBuf.writeBigUInt64BE(BigInt(counter));
-
-  const key = base32Decode(secretBase32);
-  const hmac = createHmac("sha1", key).update(counterBuf).digest();
-
-  const offset = hmac[hmac.length - 1] & 0x0f;
-  const binCode =
-    ((hmac[offset] & 0x7f) << 24) |
-    ((hmac[offset + 1] & 0xff) << 16) |
-    ((hmac[offset + 2] & 0xff) << 8) |
-    (hmac[offset + 3] & 0xff);
-
-  return (binCode % 10 ** digits).toString().padStart(digits, "0");
 }

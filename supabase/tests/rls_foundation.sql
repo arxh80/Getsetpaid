@@ -878,6 +878,179 @@ select harness.val('J10 the audit record names the actor and the org, not a gues
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
+-- K. MFA / assurance level in the permission engine
+--    (20260827210000_mfa_aal_permission_gate.sql)
+--
+-- CLAUDE.md § Session security requires MFA for Owner, Admin, Finance and the
+-- Platform Superuser. Before that migration, that requirement lived ONLY in
+-- which component app/(app)/layout.tsx chose to render -- so a stolen Owner
+-- password bought an aal1 session that could POST straight to PostgREST with
+-- the public anon key and invite itself an admin. The Next.js app is not on
+-- that path; the database is. These assertions are that path.
+--
+-- ALL OTHER FIXTURE USERS ARE UNCHANGED. alice/bob/super run at aal2
+-- throughout the rest of this file and carol/dave at aal1 (see run-rls-tests.sh
+-- for why each), so every assertion above still asserts exactly what it always
+-- did. This section re-impersonates the SAME users at a DIFFERENT assurance
+-- level; it adds cases rather than altering any.
+--
+-- The two halves matter equally:
+--   K1-K6, K12-K15  the gate BITES     -- privileged writes refused at aal1
+--   K7-K10, K14, K16  the gate does NOT OVERREACH -- everything an
+--                     un-enrolled user needs in order to reach and complete
+--                     enrolment still works at aal1. Get this half wrong and
+--                     the first Owner of every organisation is permanently
+--                     locked out with no path back in.
+-- ===========================================================================
+
+-- ---------------------------------------------------------------------------
+-- K1-K6. alice is a REAL owner of org A. Same user, same role, same row --
+-- the only thing different from section C is that this session never presented
+-- a factor. Everything C proved she could do, she now cannot.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'alice_c1';
+
+select harness.val('K1  aal1 owner: has_permission(manage_members) is FALSE',
+  format($$select public.has_permission(%L,'manage_members')::text$$, :'org_a_id'), 'false');
+
+select harness.val('K2  aal1 owner: has_permission(manage_organisation) is FALSE',
+  format($$select public.has_permission(%L,'manage_organisation')::text$$, :'org_a_id'), 'false');
+
+-- THE EXPLOIT ITSELF: an otherwise-perfectly-valid invite, at admin, from a
+-- session holding a stolen password and nothing else.
+select harness.try('K3  EXPLOIT: aal1 owner cannot INSERT an admin invite',
+  format($$insert into public.organisation_memberships (organisation_id,user_id,role,status)
+           values (%L,%L,'admin','invited')$$, :'org_a_id', :'super'),
+  'denied(42501)');
+
+-- ok(0), not denied: the UPDATE/DELETE policies fail in their USING clause, so
+-- the row is filtered out before the write is attempted. Different mechanism
+-- from K3's WITH CHECK rejection, same security outcome -- the suite asserts
+-- which one, exactly as it does for C2/C3 vs C1.
+select harness.try('K4  aal1 owner cannot change a member''s role',
+  format($$update public.organisation_memberships set role='admin' where user_id=%L$$, :'carol'),
+  'ok(0)');
+
+select harness.try('K5  aal1 owner cannot DELETE a membership',
+  format($$delete from public.organisation_memberships where user_id=%L$$, :'carol'), 'ok(0)');
+
+select harness.try('K6  aal1 owner cannot rename or soft-delete her own org',
+  $$update public.organisations set name='Pwned', deleted_at=now() where slug='org-a'$$, 'ok(0)');
+
+-- ---------------------------------------------------------------------------
+-- K7-K10. THE LOCKOUT GUARD. An Owner who has not enrolled yet has to be able
+-- to load the app far enough to enrol. Every read the post-auth shell and the
+-- enrolment screen depend on must still work at aal1. If any of these ever
+-- turns into 0 or denied, the aal gate has been widened onto a read path and
+-- every privileged user is locked out with no way back in.
+-- ---------------------------------------------------------------------------
+select harness.val('K7  LOCKOUT GUARD: aal1 owner still sees her own membership row',
+  $$select count(*)::text from public.organisation_memberships
+     where user_id = (select auth.uid())$$, '1');
+
+select harness.val('K8  LOCKOUT GUARD: aal1 owner still sees her own profile',
+  $$select count(*)::text from public.profiles where id = (select auth.uid())$$, '1');
+
+select harness.val('K9  LOCKOUT GUARD: aal1 owner still sees her organisation',
+  $$select count(*)::text from public.organisations where slug='org-a'$$, '1');
+
+-- The workspace switcher and the members page both read the whole org's
+-- membership list; neither read policy touches has_permission (design note (h)),
+-- and this asserts that stayed true.
+select harness.val('K10 LOCKOUT GUARD: aal1 owner still reads the org member list',
+  $$select count(*)::text from public.organisation_memberships$$, '3');
+
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- K11. POSITIVE CONTROL. Without this, K1-K6 pass just as well against a
+-- has_permission() that returns false for everybody, i.e. against a completely
+-- broken product.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+
+select harness.val('K11 POSITIVE CONTROL: the SAME owner at aal2 has the permission',
+  format($$select public.has_permission(%L,'manage_members')::text$$, :'org_a_id'), 'true');
+
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- K12-K16. The platform superuser, where the identity/permission split lives.
+--
+-- K14 is the subtle one and the reason public.is_platform_admin() deliberately
+-- is NOT aal-gated: lib/auth/mfa-gate.ts asks "does the MFA requirement apply
+-- to this caller?" and must ask it FROM AN aal1 SESSION, because a superuser
+-- who has not presented a factor is precisely the caller the gate exists to
+-- stop. If is_platform_admin() inherited the aal2 requirement it would answer
+-- "no, not a superuser", the gate would conclude MFA does not apply, and the
+-- superuser would be waved through WITHOUT MFA -- the aal check inverted into
+-- the hole it was added to close.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'super_c1';
+
+select harness.val('K12 aal1 superuser: has_platform_permission is FALSE',
+  $$select private.has_platform_permission('view_audit_log')::text$$, 'false');
+
+select harness.val('K13 aal1 superuser sees 0 audit_events (cf. E5 at aal2)',
+  $$select count(*)::text from public.audit_events$$, '0');
+
+select harness.val('K14 ...but is_platform_admin() is still TRUE -- the MFA gate depends on it',
+  $$select public.is_platform_admin()::text$$, 'true');
+
+select harness.try('K15 aal1 superuser cannot write an entitlement row',
+  format($$update public.organisation_subscriptions set seat_count=99
+            where organisation_id=%L$$, :'org_a_id'), 'ok(0)');
+
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'super_c';
+
+select harness.val('K16 POSITIVE CONTROL: the SAME superuser at aal2 reads audit_events',
+  $$select (count(*) > 0)::text from public.audit_events$$, 'true');
+
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- K17-K18. FAIL CLOSED on an absent claim. A JWT with no `aal` at all is not
+-- what this stack emits today, but "the claim we key a security decision on
+-- stopped being sent" must read as "no", never as "unknown, allow".
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'alice_c0';
+
+select harness.val('K17 FAIL CLOSED: no aal claim at all is not aal2',
+  format($$select public.has_permission(%L,'manage_members')::text$$, :'org_a_id'), 'false');
+
+select harness.val('K18 FAIL CLOSED: session_is_aal2() is false, not null',
+  $$select private.session_is_aal2()::text$$, 'false');
+
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- K19-K20. The rule is ROLE-scoped, not a blanket aal2-to-write. MFA is
+-- required for owner/admin/finance ONLY and is optional for every other role
+-- at MVP, so the predicate must key on the role. A blanket rule would pass
+-- K1-K6 identically and lock out manager/booker/standard_user the moment a
+-- later phase grants one of them a write permission.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+
+select harness.val('K19 the MFA-required role list is exactly owner/admin/finance',
+  $$select string_agg(r.key,',' order by r.key) from public.roles r
+     where private.role_requires_mfa(r.key)$$, 'admin,finance,owner');
+
+select harness.val('K20 ...and no other seeded role is caught by it',
+  $$select count(*)::text from public.roles r
+     where private.role_requires_mfa(r.key)$$, '3');
+
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o

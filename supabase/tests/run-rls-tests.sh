@@ -28,6 +28,37 @@ if [ -z "${SRK:-}" ]; then
   exit 1
 fi
 
+# ----------------------------------------------------------------------------
+# ASSURANCE LEVEL PER FIXTURE USER.
+#
+# A real Supabase access token always carries a top-level `aal` claim --
+# verified against this stack: a password grant returns "aal":"aal1", and
+# mfa.challengeAndVerify() moves the same session to "aal2". The claims handed
+# to psql below previously omitted it entirely, which was fine while nothing
+# read it and is not fine now that 20260827210000_mfa_aal_permission_gate.sql
+# gates every privileged permission on it.
+#
+# Each fixture user gets the level a REAL session of theirs would plausibly
+# have, so the existing assertions keep meaning what they always meant:
+#   alice/bob  owners  -> aal2. MFA is REQUIRED for them (CLAUDE.md § Session
+#                        security), so a session of theirs that can do anything
+#                        privileged is by definition one that presented a
+#                        factor. Every existing owner assertion is unchanged.
+#   super               -> aal2, same reason.
+#   carol      standard_user -> aal1. MFA is OPTIONAL for her role at MVP, so
+#                        aal1 is her REALISTIC steady state -- and running her
+#                        assertions at aal1 is what proves the new gate is
+#                        role-scoped rather than a blanket "aal2 to write
+#                        anything", which would lock out every unprivileged
+#                        role in the product.
+#   dave       invited  -> aal1, same.
+#
+# Two extra claim sets per user are exported for the new section K:
+#   <u>_c1   the same user at aal1        (the stolen-password session)
+#   <u>_c0   the same user with NO `aal` claim at all (fail-closed check)
+# ----------------------------------------------------------------------------
+declare -A AAL=( [alice]=aal2 [bob]=aal2 [carol]=aal1 [dave]=aal1 [super]=aal2 )
+
 declare -A ID
 for u in alice bob carol dave super; do
   resp=$(curl -s -X POST "$API/auth/v1/admin/users" \
@@ -48,7 +79,9 @@ docker cp "$HERE/rls_foundation.sql" "$CTR:/tmp/rls_foundation.sql"
 VARS=()
 for u in alice bob carol dave super; do
   VARS+=( -v "$u=${ID[$u]}" )
-  VARS+=( -v "${u}_c={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\"}" )
+  VARS+=( -v "${u}_c={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"${AAL[$u]}\"}" )
+  VARS+=( -v "${u}_c1={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
+  VARS+=( -v "${u}_c0={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\"}" )
 done
 
 MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
@@ -123,6 +156,72 @@ if [ "$rows" = "1" ]; then
   printf '  PASS  %-58s %s\n' "carol sees exactly 1 org over the REST API" "$rows"
 else
   printf '  FAIL  %-58s got %s want 1\n' "carol sees exactly 1 org over the REST API" "$rows"
+  api_fails=$((api_fails+1))
+fi
+
+# ----------------------------------------------------------------------------
+# THE MFA BYPASS, OVER REAL HTTP.
+#
+# The psql section K proves the aal gate holds when the claims are set by hand.
+# This proves it against the actual attack: a REAL access token, minted by a
+# REAL password sign-in (which returns aal1 -- no MFA challenge is possible
+# here, alice has no factor), plus the public anon key that ships in every
+# browser bundle, POSTed straight at PostgREST. That request never touches the
+# Next.js app, so no Server Action guard and no layout gate is on its path.
+# This is the request the whole Layer-2 half of the fix exists for.
+#
+# Its positive controls are the GET below (same token, same table, still works
+# -- so a 403 is the policy talking, not a dead endpoint or a bad token) and
+# psql K11/C7 (the same owner CAN do this at aal2).
+# ----------------------------------------------------------------------------
+echo
+echo "=== MFA enforcement at the API surface ==="
+
+ATOKEN=$(curl -s -X POST "$API/auth/v1/token?grant_type=password" \
+  -H "apikey: $ANON" -H "Content-Type: application/json" \
+  -d '{"email":"alice@test.local","password":"Test-Passw0rd!"}' \
+  | python -c "import sys,json;print(json.load(sys.stdin).get('access_token') or '')")
+[ -n "$ATOKEN" ] || { echo "could not sign in as alice over HTTP" >&2; exit 1; }
+
+# Sanity: this really is an aal1 session, not an accidentally-privileged one.
+alice_aal=$(printf '%s' "$ATOKEN" | python -c "
+import sys,json,base64
+p=sys.stdin.read().split('.')[1]; p+='='*(-len(p)%4)
+print(json.loads(base64.urlsafe_b64decode(p)).get('aal',''))")
+if [ "$alice_aal" = "aal1" ]; then
+  printf '  PASS  %-58s %s\n' "password sign-in really does yield an aal1 session" "$alice_aal"
+else
+  printf '  FAIL  %-58s got %s want aal1\n' "password sign-in really does yield an aal1 session" "$alice_aal"
+  api_fails=$((api_fails+1))
+fi
+
+ORG_A=$(curl -s "$API/rest/v1/organisations?select=id&slug=eq.org-a" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $ATOKEN" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(d[0]['id'] if d else '')")
+[ -n "$ORG_A" ] || { echo "alice could not read her own org over HTTP" >&2; exit 1; }
+
+code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+  "$API/rest/v1/organisation_memberships" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $ATOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"organisation_id\":\"$ORG_A\",\"user_id\":\"${ID[super]}\",\"role\":\"admin\",\"status\":\"invited\"}")
+if [ "$code" = "403" ]; then
+  printf '  PASS  %-58s %s\n' "aal1 owner CANNOT invite an admin via PostgREST" "$code"
+else
+  printf '  FAIL  %-58s got %s want 403\n' "aal1 owner CANNOT invite an admin via PostgREST" "$code"
+  api_fails=$((api_fails+1))
+fi
+
+# Positive control for the line above, AND the lockout guard at the HTTP layer:
+# the same aal1 token must still read the membership list, or an un-enrolled
+# Owner cannot render the app far enough to enrol.
+rows=$(curl -s "$API/rest/v1/organisation_memberships?select=id" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $ATOKEN" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+if [ "$rows" -ge 1 ] 2>/dev/null; then
+  printf '  PASS  %-58s %s\n' "LOCKOUT GUARD: aal1 owner still READS memberships" "$rows"
+else
+  printf '  FAIL  %-58s got %s want >=1\n' "LOCKOUT GUARD: aal1 owner still READS memberships" "$rows"
   api_fails=$((api_fails+1))
 fi
 
