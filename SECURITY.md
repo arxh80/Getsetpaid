@@ -171,3 +171,35 @@ Carried over from `CLAUDE.md` § Open decisions — these need founder/legal inp
 - `[auth.sessions] timebox = "12h"` and `inactivity_timeout = "30m"` — these are what actually enforce the session limits in § 4; the app-side idle tracker is a proactive UX layer on top, not the enforcement.
 - `[auth.mfa.totp] enroll_enabled` / `verify_enabled = true` — without these the MFA gate has nothing to enroll or challenge against.
 - `minimum_password_length = 10` — must match `MIN_PASSWORD_LENGTH` in `lib/forms.ts`, or the app's validation is bypassable by calling GoTrue directly.
+
+### The platform superuser grant
+
+`public.platform_admins` is the platform-superuser allowlist. It has RLS enabled with **zero policies and zero client grants**, so no client role — not even a leaked service-role key — can write to it. Rows are added by migration or DBA action only, and it seeds **empty** on purpose.
+
+That is the correct shape for the table and a launch blocker for the product, because three separately-correct decisions compose into a dead end while it stays empty:
+
+- `audit_events`' only SELECT policy is `has_platform_permission('view_audit_log')`. **With an empty allowlist the audit trail is write-only** — it is being recorded correctly and cannot be read by anyone, through any path the application offers.
+- `organisation_subscriptions`' write policies are superuser-only and `create_organisation()` writes no subscription row, so **every organisation resolves to Free with `crmWrites: false`, permanently**, with no manual override available to anybody.
+- The Platform-Superuser branch of the MFA gate and `public.is_platform_admin()` are dead code until a row exists.
+
+`supabase/migrations/20260827210500_seed_platform_superuser.sql` grants it to the founder. Two things about it need checking after deploy, which is why it is on this list rather than assumed done:
+
+1. **It looks the user up by email, and is a no-op if that account does not exist yet.** No Supabase auth user id existed when it was written, so it could not hardcode a UUID. If the migration is applied before the founder has signed up, the allowlist stays empty and the migration must be re-run afterwards. It is idempotent (`on conflict do nothing`), so re-running is safe.
+2. **Verify the row actually landed**, rather than assuming the migration did it:
+   ```sql
+   select u.email from public.platform_admins pa join auth.users u on u.id = pa.user_id;
+   ```
+   An empty result means the product is in the dead-end state described above.
+
+Granting or revoking further superusers is documented in that migration's header. Note that allowlist membership is necessary but **not sufficient**: per § 4 and `20260827210000_mfa_aal_permission_gate.sql`, every platform permission also requires an `aal2` session, so the founder must enrol TOTP before any superuser-gated policy will pass.
+
+### Response security headers
+
+Set in code, not config, so they ship with the app rather than needing a hosted-dashboard step — listed here so a launch review can confirm them rather than assume them. `lib/security/headers.ts` is the single definition; `next.config.ts` applies the static ones and `proxy.ts` applies the nonce-bearing CSP.
+
+Two of them are **deliberately conditional on `NEXT_PUBLIC_SITE_URL` being `https:`**, and therefore are NOT present in local development:
+
+- `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`
+- `upgrade-insecure-requests` in the CSP
+
+So confirm on the deployed environment, by reading actual response headers (`curl -sSI https://<host>/login`), that both appear. If `NEXT_PUBLIC_SITE_URL` is misconfigured to `http://` in production, the app will work and will silently ship without HSTS.

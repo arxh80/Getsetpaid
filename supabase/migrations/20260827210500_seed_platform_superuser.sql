@@ -1,0 +1,93 @@
+-- Foundation phase, final fix wave: grant platform superuser to the founder.
+--
+-- ===========================================================================
+-- WHY THIS MIGRATION HAS TO EXIST
+-- ===========================================================================
+-- public.platform_admins seeds empty on purpose (20260826154304, and again in
+-- 20260826202023's closing note), and nothing else in this repository can add
+-- a row to it -- the table has RLS on, zero policies and zero grants, so no
+-- client role, not even a leaked service key, has a write path. That is the
+-- correct shape for the table. It is not a correct shape for the SHIPPED
+-- PRODUCT, because three separately-correct decisions compose into a dead end:
+--
+--   * audit_events' only SELECT policy is has_platform_permission
+--     ('view_audit_log'). With an empty allowlist the audit trail this phase
+--     built is being written correctly and CANNOT BE READ BY ANYONE.
+--   * organisation_subscriptions' write policies are superuser-only and
+--     create_organisation() writes no subscription row, so every organisation
+--     resolves to Free with crmWrites:false, permanently, with no manual
+--     override available to anybody.
+--   * the Platform-Superuser branch of lib/auth/mfa-gate.ts, and
+--     public.is_platform_admin(), are dead code until a row exists.
+--
+-- One INSERT unblocks all three. It has to be a migration (or a DBA action)
+-- because there is no other write path, and a migration is the half of that
+-- pair which is reviewable, repeatable and present on a fresh database.
+--
+-- ===========================================================================
+-- WHY IT LOOKS UP BY EMAIL INSTEAD OF HARDCODING A UUID
+-- ===========================================================================
+-- Nothing has been pushed to a hosted Supabase project yet, so the founder's
+-- auth.users id DOES NOT EXIST. There is no UUID to hardcode, and inventing
+-- one would either fail the foreign key or -- worse -- silently grant platform
+-- superuser to whatever account later happened to be created with that id.
+--
+-- So the grant is expressed against the identity that is stable and known: the
+-- email address. The address is baked into migration history DELIBERATELY. It
+-- is not a secret (it is the same single support/security contact SECURITY.md
+-- § 13 already publishes), and the alternative -- a manual step in a runbook
+-- -- is exactly the shape of omission that left this table empty in the first
+-- place.
+--
+-- ===========================================================================
+-- IDEMPOTENT, AND A NO-OP RATHER THAN AN ERROR WHEN THE USER DOES NOT EXIST
+-- ===========================================================================
+-- Same reasoning as 20260826202023_reference_data.sql, which explains its own
+-- idempotency at length: `on conflict do nothing`, never an update or a delete,
+-- so re-running it is safe and it can sit alongside a later migration that
+-- grants a second superuser.
+--
+-- The `insert ... select` form is what makes the not-yet-registered case a
+-- no-op: on a fresh database, or any database where that address has never
+-- signed up, the SELECT returns zero rows and the INSERT writes nothing and
+-- raises nothing. That is required, not merely convenient -- `supabase db
+-- reset` runs the whole migration chain against an empty auth.users, and this
+-- file must not break it. It also means the grant is NOT retroactive: applying
+-- this migration before the founder's account exists leaves the allowlist
+-- empty, and the migration must be re-run (it is idempotent, so that is safe)
+-- after they sign up. Verifying the row landed is a step on SECURITY.md § 15's
+-- pre-launch checklist for exactly that reason.
+--
+-- Emails are compared case-insensitively via lower(): GoTrue stores what was
+-- submitted at signup, and an address that differs only in case is the same
+-- mailbox.
+--
+-- ===========================================================================
+-- GRANTING OR REVOKING FURTHER SUPERUSERS LATER
+-- ===========================================================================
+-- CLAUDE.md § Superuser dashboard is explicit that MVP has a SINGLE hardcoded
+-- superuser, so a second row is a deliberate decision, not routine admin. When
+-- one is genuinely needed:
+--
+--   GRANT   copy this file to a new timestamped migration with the new
+--           address. Do not edit this one -- migration history is append-only,
+--           and rewriting an applied migration hides who was granted access
+--           and when.
+--   REVOKE  a new migration with
+--             delete from public.platform_admins
+--              where user_id = (select id from auth.users
+--                                where lower(email) = lower('...'));
+--           Removing the row is the whole revocation: has_platform_permission()
+--           is a live EXISTS against this table, so it takes effect on the
+--           superuser's very next query, with no session to invalidate.
+--
+-- Note that being on this allowlist is necessary but NOT sufficient to act:
+-- 20260827210000_mfa_aal_permission_gate.sql requires an aal2 session for
+-- every platform permission, so the founder must also enrol TOTP before any
+-- superuser-gated policy will pass.
+
+insert into public.platform_admins (user_id)
+select u.id
+  from auth.users u
+ where lower(u.email) = lower('archie.mullins1807@gmail.com')
+on conflict (user_id) do nothing;
