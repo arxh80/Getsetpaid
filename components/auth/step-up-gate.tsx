@@ -1,4 +1,4 @@
-import { checkStepUp } from "@/lib/auth/step-up-gate";
+import { checkStepUp, stepUpProofMode } from "@/lib/auth/step-up-gate";
 import { ReauthPrompt } from "./reauth-prompt";
 
 /**
@@ -21,7 +21,10 @@ import { ReauthPrompt } from "./reauth-prompt";
  * readAuthFreshness) is proven in tests/unit/auth/step-up-gate.test.ts and,
  * for the amr arithmetic itself, tests/unit/auth/step-up.test.ts. This
  * component's own job is one branch: render the gated content when fresh,
- * the re-auth prompt when not.
+ * the re-auth prompt when not -- and, per fix round 1 Important 4,
+ * stepUpProofMode() decides WHICH proof that prompt asks for (MFA preferred,
+ * password fallback, or neither for a Google-SSO-only user with no verified
+ * factor).
  */
 export async function StepUpGate({
   next,
@@ -33,5 +36,7 @@ export async function StepUpGate({
 }) {
   const fresh = await checkStepUp();
   if (fresh) return <>{children}</>;
-  return <ReauthPrompt next={next} />;
+
+  const proof = await stepUpProofMode();
+  return <ReauthPrompt next={next} proof={proof} />;
 }
