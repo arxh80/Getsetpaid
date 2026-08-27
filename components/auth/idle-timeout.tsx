@@ -1,24 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import {
   ACTIVITY_WRITE_THROTTLE_MS,
+  activityStorageKey,
   idlePhase,
+  onMountActivity,
   secondsRemaining,
+  type ActivityStore,
   type IdlePhase,
 } from "@/lib/auth/idle-timeout";
 import { Button } from "@/components/ui/button";
-
-/**
- * localStorage, not sessionStorage or component state: activity in one tab
- * must count for every tab of this origin, and the browser's own `storage`
- * event tells the OTHER tabs when it changes (see the listener below). A
- * `sessionStorage`-based timer would sign a user out of a background tab
- * while they were actively typing in another.
- */
-const STORAGE_KEY = "gsp:last-activity-at";
 
 const ACTIVITY_EVENTS = [
   "mousedown",
@@ -29,37 +23,22 @@ const ACTIVITY_EVENTS = [
   "wheel",
 ] as const;
 
-function readLastActivity(): number {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? Number(raw) : NaN;
-    return Number.isFinite(parsed) ? parsed : Date.now();
-  } catch {
-    // Private-browsing / storage-blocked: fall back to "just active", which
-    // degrades to no client-side enforcement rather than an immediate,
-    // confusing sign-out on every page load.
-    return Date.now();
-  }
-}
-
-function writeLastActivity(at: number): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, String(at));
-  } catch {
-    // See readLastActivity -- storage being unavailable is not fatal here.
-  }
-}
-
 /**
  * Signs the user out after IDLE_TIMEOUT_MS of no mouse/keyboard/touch/scroll
- * activity ANYWHERE in this browser (see the localStorage note above),
+ * activity ANYWHERE in this browser (localStorage is origin-scoped, not
+ * per-tab -- see the storage-event listener below for why that's the point),
  * warning WARNING_LEAD_MS before it happens. Renders nothing until the
  * warning phase. See lib/auth/idle-timeout.ts for why this is real
  * enforcement rather than a cosmetic timer.
  *
+ * `userId` KEYS THE STORAGE (fix round 1, Critical 1): without it, a second
+ * person signing in on a shared browser inherited whatever timestamp the
+ * FIRST person's session left behind. Passed down from
+ * app/(app)/layout.tsx's already-resolved getCurrentUser().
+ *
  * Mounted once, in app/(app)/layout.tsx, so it runs on every signed-in page.
  */
-export function IdleTimeout() {
+export function IdleTimeout({ userId }: { userId: string }) {
   const router = useRouter();
   const [phase, setPhase] = useState<IdlePhase>("active");
   const [remaining, setRemaining] = useState(0);
@@ -70,9 +49,50 @@ export function IdleTimeout() {
     phaseRef.current = phase;
   }, [phase]);
 
+  const storageKey = activityStorageKey(userId);
+
+  // Memoised (not a fresh object literal every render): this is included in
+  // dependency arrays below, and an object recreated every render would
+  // otherwise force those callbacks/effects to be recreated every render
+  // too, for no behavioural difference -- storageKey is the only thing that
+  // can actually change its behaviour.
+  const store: ActivityStore = useMemo(
+    () => ({
+      read() {
+        try {
+          const raw = window.localStorage.getItem(storageKey);
+          const parsed = raw ? Number(raw) : NaN;
+          return Number.isFinite(parsed) ? parsed : null;
+        } catch {
+          // Private-browsing / storage-blocked. null -> callers treat this
+          // as "no record", never as "definitely stale" or "definitely
+          // fresh".
+          return null;
+        }
+      },
+      write(at) {
+        try {
+          window.localStorage.setItem(storageKey, String(at));
+        } catch {
+          // See read() -- storage being unavailable is not fatal here.
+        }
+      },
+    }),
+    [storageKey],
+  );
+
+  const clearStoredActivity = useCallback(() => {
+    try {
+      window.localStorage.removeItem(storageKey);
+    } catch {
+      // Best-effort hygiene only -- see store.read()/write() above.
+    }
+  }, [storageKey]);
+
   const signOut = useCallback(async () => {
     if (signingOutRef.current) return;
     signingOutRef.current = true;
+    clearStoredActivity();
     const supabase = createClient();
     // 'local' clears this browser's session, same scope signOutAction uses
     // for a manual sign-out -- revokes the refresh token server-side, which
@@ -80,21 +100,29 @@ export function IdleTimeout() {
     // that is still technically alive.
     await supabase.auth.signOut({ scope: "local" });
     router.push("/login?error=idle_timeout");
-  }, [router]);
+  }, [router, clearStoredActivity]);
 
-  const recordActivity = useCallback((now: number) => {
-    writeLastActivity(now);
-    lastWriteRef.current = now;
-  }, []);
+  const recordActivity = useCallback(
+    (now: number) => {
+      store.write(now);
+      lastWriteRef.current = now;
+    },
+    [store],
+  );
 
   useEffect(() => {
-    // Catches "was away, tab reopened/refocused" immediately on mount and on
-    // every visibility/focus change, rather than waiting for the next poll
-    // tick -- a backgrounded tab's timers are throttled by the browser, so
-    // without this a returning user could see a stale "active" state for a
-    // few seconds after a genuinely expired session.
+    // Catches "was away, tab reopened/refocused" immediately on visibility/
+    // focus change, rather than waiting for the next poll tick -- a
+    // backgrounded tab's timers are throttled by the browser, so without
+    // this a returning user could see a stale "active" state for a few
+    // seconds after a genuinely expired session.
     function checkNow() {
-      const elapsed = Date.now() - readLastActivity();
+      const last = store.read();
+      // No record at all (private browsing / first-ever read raced with
+      // something clearing storage) reads as "just active" rather than
+      // "definitely expired" -- the mount effect below is what establishes
+      // the record in the first place, so this should be rare in practice.
+      const elapsed = last === null ? 0 : Date.now() - last;
       const next = idlePhase(elapsed);
       setPhase(next);
       setRemaining(secondsRemaining(elapsed));
@@ -122,15 +150,27 @@ export function IdleTimeout() {
     // idle tab that is not itself receiving events does not sign out from
     // under a user who is actively working in a different tab.
     function onStorage(e: StorageEvent) {
-      if (e.key === STORAGE_KEY) checkNow();
+      if (e.key === storageKey) checkNow();
     }
 
     function onVisibilityChange() {
       if (document.visibilityState === "visible") checkNow();
     }
 
-    checkNow();
-    recordActivity(readLastActivity());
+    // FIX ROUND 1, CRITICAL 1: mounting IS activity. See
+    // lib/auth/idle-timeout.ts's onMountActivity() doc comment for the exact
+    // bug this replaces (the old sequence read-then-wrote-back a possibly
+    // many-hours-stale value before ever checking it). This ALWAYS reports
+    // "active, full window remaining" -- exactly the `useState` initial
+    // values above, so there is nothing to setState here -- and writes `now`
+    // to storage, never the stale value, regardless of what was on record a
+    // moment ago. onMountActivity()'s return is intentionally unused: it
+    // exists to make the write-not-read-back behaviour a single, unit-tested
+    // function (tests/unit/auth/idle-timeout.test.ts) rather than for this
+    // call site to react to.
+    const mountNow = Date.now();
+    onMountActivity(store, mountNow);
+    lastWriteRef.current = mountNow;
 
     for (const type of ACTIVITY_EVENTS) {
       window.addEventListener(type, onActivity, { passive: true });
@@ -150,11 +190,12 @@ export function IdleTimeout() {
       window.removeEventListener("focus", checkNow);
       window.clearInterval(interval);
     };
-    // recordActivity and signOut are stable (useCallback with stable deps);
-    // running this only once keeps a single set of listeners for the whole
-    // mounted lifetime instead of tearing them down on every phase change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // store/recordActivity/signOut are all memoised and stable for a given
+    // storageKey; storageKey itself only changes if the signed-in user
+    // changes, which remounts this component's parent anyway -- so this
+    // effect still only actually re-runs on a real user change, not on
+    // every phase tick.
+  }, [storageKey, store, recordActivity, signOut]);
 
   const staySignedIn = useCallback(() => {
     const now = Date.now();
@@ -167,8 +208,7 @@ export function IdleTimeout() {
 
   return (
     <div
-      role="alertdialog"
-      aria-live="assertive"
+      role="alert"
       aria-label="Session about to expire"
       className="border-b border-danger bg-surface px-4 py-3"
     >
