@@ -59,3 +59,69 @@ fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc 
         "select count(*) from harness.results where not pass" | tr -d '[:space:]')
 [ "$fails" = "0" ] || { echo "RLS SUITE FAILED: $fails failing assertion(s)" >&2; exit 1; }
 echo "RLS suite: all assertions passed."
+
+# ============================================================================
+# API-SURFACE CHECKS (PostgREST, over HTTP).
+#
+# The psql suite above proves the policies are right. It CANNOT prove which
+# functions are published as HTTP endpoints -- and that was a real defect: a
+# SECURITY DEFINER helper sat in `public` with EXECUTE to authenticated, which
+# made it an RPC that returned any membership row's status cross-tenant. Schema
+# placement is the control, so it gets tested at the layer it applies to.
+#
+# Runs as a REAL signed-in user (password grant), not a hand-made JWT.
+# ============================================================================
+echo
+echo "=== API surface (PostgREST) ==="
+
+ANON=$(cd "$ROOT" && supabase status -o json 2>/dev/null \
+       | python -c "import sys,json;print(json.load(sys.stdin)['ANON_KEY'])")
+
+TOKEN=$(curl -s -X POST "$API/auth/v1/token?grant_type=password" \
+  -H "apikey: $ANON" -H "Content-Type: application/json" \
+  -d '{"email":"carol@test.local","password":"Test-Passw0rd!"}' \
+  | python -c "import sys,json;print(json.load(sys.stdin).get('access_token') or '')")
+[ -n "$TOKEN" ] || { echo "could not sign in as carol over HTTP" >&2; exit 1; }
+
+api_fails=0
+probe() { # name  expected_http  path  body
+  local name="$1" want="$2" path="$3" body="${4:-{\}}"
+  local code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/rest/v1/$path" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" -d "$body")
+  if [ "$code" = "$want" ]; then
+    printf '  PASS  %-58s %s\n' "$name" "$code"
+  else
+    printf '  FAIL  %-58s got %s want %s\n' "$name" "$code" "$want"; api_fails=$((api_fails+1))
+  fi
+}
+
+# Every private helper must be unroutable (404 = not in an exposed schema).
+probe "private helper membership_update_is_permitted not an RPC" 404 \
+      "rpc/membership_update_is_permitted"
+probe "private helper has_platform_permission not an RPC"        404 "rpc/has_platform_permission"
+probe "private helper is_active_member not an RPC"               404 "rpc/is_active_member"
+probe "private helper shares_active_organisation not an RPC"     404 "rpc/shares_active_organisation"
+probe "private helper log_audit_event not an RPC"                404 "rpc/log_audit_event"
+# The one DEFINER function that IS meant to be a client endpoint stays routable
+# (400 = reached it, rejected the deliberately invalid slug).
+probe "create_organisation IS routable (positive control)"       400 \
+      "rpc/create_organisation" '{"p_name":"X","p_slug":"!"}'
+# has_permission is SECURITY INVOKER and self-scoped, so it stays public.
+probe "has_permission IS routable (positive control)"            200 \
+      "rpc/has_permission" '{"p_org_id":null,"p_permission":"manage_members"}'
+
+# End-to-end: RLS through the real API, not just through psql.
+rows=$(curl -s "$API/rest/v1/organisations?select=slug" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $TOKEN" \
+  | python -c "import sys,json;print(len(json.load(sys.stdin)))")
+if [ "$rows" = "1" ]; then
+  printf '  PASS  %-58s %s\n' "carol sees exactly 1 org over the REST API" "$rows"
+else
+  printf '  FAIL  %-58s got %s want 1\n' "carol sees exactly 1 org over the REST API" "$rows"
+  api_fails=$((api_fails+1))
+fi
+
+[ "$api_fails" = "0" ] || { echo "API SURFACE FAILED: $api_fails check(s)" >&2; exit 1; }
+echo "API surface: all checks passed."

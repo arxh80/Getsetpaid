@@ -204,7 +204,7 @@ select harness.val('B2  INVITED dave: has_permission for the org-update key is f
   format($$select public.has_permission(%L,'manage_organisation')::text$$, :'org_a_id'), 'false');
 
 select harness.val('B3  INVITED dave: has_platform_permission is false',
-  $$select public.has_platform_permission('view_audit_log')::text$$, 'false');
+  $$select private.has_platform_permission('view_audit_log')::text$$, 'false');
 
 select harness.val('B4  INVITED dave sees 0 organisations',
   $$select count(*)::text from public.organisations$$, '0');
@@ -231,10 +231,10 @@ select harness.val('B8  alice''s org A permission does NOT satisfy org B',
   format($$select public.has_permission(%L,'manage_members')::text$$, :'org_b_id'), 'false');
 
 select harness.val('B9  alice (org owner) is not a platform superuser',
-  $$select public.has_platform_permission('view_audit_log')::text$$, 'false');
+  $$select private.has_platform_permission('view_audit_log')::text$$, 'false');
 
 select harness.val('B10 alice cannot reach superuser billing permission',
-  $$select public.has_platform_permission('manage_billing')::text$$, 'false');
+  $$select private.has_platform_permission('manage_billing')::text$$, 'false');
 
 reset role; reset request.jwt.claims;
 
@@ -376,7 +376,7 @@ reset role; reset request.jwt.claims;
 update public.organisation_memberships
    set status='active', role='standard_user' where user_id = :'carol';
 
--- The snapshot mechanic stored_membership_status() relies on: a MULTI-ROW
+-- The snapshot mechanic membership_update_is_permitted() relies on: a MULTI-ROW
 -- update must evaluate every row against statement-start state, so an admin
 -- cannot launder an invited row through a batch that also touches active ones.
 set role authenticated;
@@ -389,6 +389,76 @@ select harness.try('C16 blanket UPDATE cannot launder invited rows via a batch',
 select harness.val('C16b ...and dave is STILL invited (nothing partially applied)',
   format($$select status from public.organisation_memberships where user_id=%L$$, :'dave'),
   'invited');
+
+-- ---------------------------------------------------------------------------
+-- C17-C21. IDENTITY-COLUMN AND joined_at PINNING.
+--
+-- Guarding the status TRANSITION was still not enough. An admin could take an
+-- ALREADY-ACTIVE row and repoint it at a different user: status never changes,
+-- so a status-only guard passes cleanly, and the victim ends up an active
+-- member of an organisation they never heard of. Same outcome, different
+-- column. organisation_id, user_id and joined_at are now immutable through
+-- this policy -- no legitimate client edit ever changes them.
+-- ---------------------------------------------------------------------------
+
+-- (carol is ACTIVE in org A here, so status stays untouched throughout)
+select harness.try('C17 REGRESSION: admin cannot repoint an ACTIVE row''s user_id',
+  format($$update public.organisation_memberships set user_id=%L where user_id=%L$$,
+         :'bob', :'carol'), 'denied(42501)');
+
+select harness.try('C18 REGRESSION: admin cannot repoint a row''s organisation_id',
+  format($$update public.organisation_memberships set organisation_id=%L where user_id=%L$$,
+         :'org_b_id', :'carol'), 'denied(42501)');
+
+select harness.try('C19 REGRESSION: admin cannot forge joined_at on an invited row',
+  format($$update public.organisation_memberships set joined_at=now() where user_id=%L$$,
+         :'dave'), 'denied(42501)');
+
+select harness.val('C19b ...and dave''s joined_at is still null',
+  format($$select coalesce(joined_at::text,'null') from public.organisation_memberships
+            where user_id=%L$$, :'dave'), 'null');
+
+select harness.try('C20 admin cannot clear joined_at on an active member either',
+  format($$update public.organisation_memberships set joined_at=null where user_id=%L$$,
+         :'carol'), 'denied(42501)');
+
+-- Rewriting the primary key itself must fail closed, not find a different row.
+select harness.try('C21 admin cannot rewrite a row''s id to dodge the guard',
+  format($$update public.organisation_memberships set id=gen_random_uuid(), user_id=%L
+            where user_id=%L$$, :'bob', :'carol'), 'denied(42501)');
+
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- C22-C25. OUTCOME-LEVEL ASSERTIONS.
+--
+-- Everything above asserts that a STATEMENT was rejected. That is not the same
+-- as asserting the WORLD is unchanged -- the identity-rewrite bypass passed
+-- every statement-level check that existed at the time, because it never
+-- touched the column being watched. These assert the actual end state from the
+-- would-be victim's own session, which is the thing that actually matters.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'bob_c';
+
+select harness.val('C22 OUTCOME: bob never consented, so he sees only his own org',
+  $$select count(*)::text from public.organisations$$, '1');
+
+select harness.val('C23 OUTCOME: bob holds exactly one membership, in his own org',
+  format($$select count(*)::text from public.organisation_memberships
+            where organisation_id=%L$$, :'org_a_id'), '0');
+
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'dave_c';
+
+select harness.val('C24 OUTCOME: dave is still only INVITED, so he sees 0 orgs',
+  $$select count(*)::text from public.organisations$$, '0');
+
+select harness.val('C25 OUTCOME: dave''s row is untouched (invited, never joined)',
+  $$select status||'/'||coalesce(joined_at::text,'null')
+      from public.organisation_memberships where user_id=(select auth.uid())$$,
+  'invited/null');
 
 reset role; reset request.jwt.claims;
 
@@ -444,8 +514,14 @@ set request.jwt.claims = :'alice_c';
 select harness.val('E1  org OWNER sees 0 audit_events',
   $$select count(*)::text from public.audit_events$$, '0');
 
-select harness.try('E2  authenticated cannot EXECUTE log_audit_event',
-  $$select public.log_audit_event('forged.action','organisation')$$, 'denied(42501)');
+-- Two independent locks, asserted separately. 42883 = undefined_function: it
+-- is not in `public` at all, so the Data API has no route to it. 42501 =
+-- permission denied: even naming it in `private` gets nowhere without EXECUTE.
+select harness.try('E2  log_audit_event is not in the exposed schema at all',
+  $$select public.log_audit_event('forged.action','organisation')$$, 'denied(42883)');
+
+select harness.try('E2b authenticated cannot EXECUTE private.log_audit_event',
+  $$select private.log_audit_event('forged.action','organisation')$$, 'denied(42501)');
 
 select harness.try('E3  authenticated cannot INSERT audit_events',
   format($$insert into public.audit_events (organisation_id,actor_user_id,action,target_type,correlation_id)
@@ -646,7 +722,7 @@ set role anon;
 select harness.val('H19 anon cannot read the platform_admins allowlist',
   $$select count(*)::text from public.platform_admins$$, 'denied(42501)');
 select harness.val('H20 anon cannot call has_platform_permission',
-  $$select public.has_platform_permission('view_audit_log')::text$$, 'denied(42501)');
+  $$select private.has_platform_permission('view_audit_log')::text$$, 'denied(42501)');
 reset role;
 
 -- ===========================================================================

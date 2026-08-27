@@ -3,15 +3,21 @@
 -- Depends on 20260826151656_foundation_schema.sql, which created the eight
 -- Foundation tables deliberately without RLS. This migration:
 --
---   1. Creates the permission-engine functions (has_permission,
---      has_platform_permission, is_active_member, shares_active_organisation).
---   2. Creates the two privileged write paths (create_organisation,
---      log_audit_event) that exist because RLS blocks the corresponding
---      direct client writes entirely.
---   3. Enables RLS on all eight tables and creates the policies.
---   4. Fixes table/function GRANTs, which are a *separate* control from RLS:
+--   1. Creates the `private` schema -- not exposed through the Data API -- and
+--      the RLS policy helpers that live in it (is_active_member,
+--      shares_active_organisation, has_platform_permission,
+--      membership_update_is_permitted, log_audit_event).
+--   2. Creates the two `public` functions that are genuinely client-facing:
+--      has_permission (SECURITY INVOKER, self-scoped) and create_organisation
+--      (the sanctioned org-creation RPC).
+--   3. Creates public.platform_admins, the platform-superuser allowlist.
+--   4. Enables RLS on all nine tables and creates the policies.
+--   5. Fixes table/function GRANTs, which are a *separate* control from RLS:
 --      RLS decides which rows are visible once a table is reachable at all,
 --      GRANTs decide whether it is reachable. See SECURITY.md s2.
+--
+-- SCHEMA PLACEMENT IS A SECURITY CONTROL HERE, not organisation. See the
+-- `private` schema block in section 1 before moving anything between schemas.
 --
 -- ===========================================================================
 -- Design notes -- read before changing anything in this file
@@ -42,9 +48,23 @@
 --         42501 rather than returning false for every ordinary user. See its
 --         own header comment.
 --
---     has_permission is SECURITY INVOKER. It only ever reads the caller's own
---     membership rows, which the caller can always see under the "select own
---     rows" policy below, so no elevated privilege is needed and none is taken.
+--       - membership_update_is_permitted: called from the UPDATE policy ON
+--         organisation_memberships and reads organisation_memberships. Same
+--         42P17 reason as is_active_member.
+--
+--     public.has_permission is SECURITY INVOKER. It only ever reads the
+--     caller's own membership rows, which the caller can always see under the
+--     "select own rows" policy below, so no elevated privilege is needed and
+--     none is taken. That, plus being useful to the app ("may I do X?"), is why
+--     it is the one permission helper that stays in `public`.
+--
+--     EVERY SECURITY DEFINER helper above lives in `private`, which the Data
+--     API does not route to. A DEFINER function reads with RLS off, so in
+--     `public` an EXECUTE grant publishes it as an HTTP endpoint -- which is
+--     exactly how an earlier revision of membership_update_is_permitted's
+--     predecessor leaked arbitrary rows' status cross-tenant. create_organisation
+--     is the sole DEFINER function in `public`, because being a client-callable
+--     endpoint is its entire purpose.
 --
 -- (b) NULL organisation_id is NOT overloaded to mean "platform level".
 --     The task brief floated has_permission(NULL, 'view_audit_log') for the
@@ -129,18 +149,18 @@
 --     No policy expression here names a table inline; every table access is
 --     behind a function call. The graph:
 --
---       is_active_member          [DEFINER] -> memberships,     RLS OFF -> TERMINAL
---       shares_active_organisation[DEFINER] -> memberships,     RLS OFF -> TERMINAL
---       has_platform_permission   [DEFINER] -> platform_admins, RLS OFF -> TERMINAL
---       stored_membership_status  [DEFINER] -> memberships,     RLS OFF -> TERMINAL
---       has_permission            [INVOKER] -> memberships + role_permissions,
---                                              RLS ON  -> re-enters policies
+--       private.is_active_member               [DEF] -> memberships     RLS OFF  TERMINAL
+--       private.shares_active_organisation     [DEF] -> memberships     RLS OFF  TERMINAL
+--       private.has_platform_permission        [DEF] -> platform_admins RLS OFF  TERMINAL
+--       private.membership_update_is_permitted [DEF] -> memberships     RLS OFF  TERMINAL
+--       public.has_permission                  [INV] -> memberships + role_permissions
+--                                                       RLS ON -> re-enters policies
 --
---     stored_membership_status is called from a policy ON organisation_
---     memberships and reads organisation_memberships -- the one shape that
---     genuinely would recurse if it were written inline as a subquery instead
---     of behind a DEFINER function. It is the clearest illustration of why the
---     rule at the end of this note exists.
+--     private.membership_update_is_permitted is called from a policy ON
+--     organisation_memberships and reads organisation_memberships -- the one
+--     shape that genuinely would recurse if it were written inline as a
+--     subquery instead of behind a DEFINER function. It is the clearest
+--     illustration of why the rule at the end of this note exists.
 --
 --     has_permission is now the ONLY function in the graph that re-enters RLS
 --     at all. The property that bounds it: the two SELECT policies on
@@ -194,6 +214,36 @@
 -- ===========================================================================
 
 -- ---------------------------------------------------------------------------
+-- The `private` schema: policy helpers that must NOT be a public API.
+--
+-- supabase/config.toml exposes only ["public", "graphql_public"] through the
+-- Data API, so nothing in here is routable as a PostgREST RPC. That matters:
+-- every SECURITY DEFINER helper below reads rows with RLS switched off, and in
+-- `public` an EXECUTE grant would silently publish it as an HTTP endpoint.
+--
+-- This is not hypothetical. An earlier revision put stored_membership_status()
+-- in public and granted EXECUTE to authenticated; that made it callable over
+-- HTTP with an arbitrary membership UUID, handing back the status of a row in
+-- an organisation the caller had no membership in -- RLS hid the row from a
+-- SELECT and the function returned its contents anyway.
+--
+-- THE RULE: a SECURITY DEFINER function belongs in `public` only if being a
+-- client-callable API endpoint is its actual purpose (create_organisation).
+-- Anything that exists to serve an RLS policy goes here.
+--
+-- USAGE is granted to `authenticated` because RLS policy expressions execute
+-- as the querying role, so it must be able to call them. It is NOT granted to
+-- anon (no anon policy calls a helper) and NOT to service_role.
+-- ---------------------------------------------------------------------------
+create schema if not exists private;
+
+comment on schema private is
+  'Internal helpers for RLS policies. Not exposed through the Data API (see supabase/config.toml [api] schemas). SECURITY DEFINER functions that bypass RLS live here, never in public, so an EXECUTE grant cannot turn one into an HTTP endpoint.';
+
+revoke all on schema private from public;
+grant usage on schema private to authenticated;
+
+-- ---------------------------------------------------------------------------
 -- platform_admins
 -- The platform-superuser allowlist. Membership in this table IS platform
 -- superuser status; there is no role, no organisation and no tier.
@@ -214,7 +264,7 @@ create table if not exists public.platform_admins (
 );
 
 comment on table public.platform_admins is
-  'Platform superuser allowlist. RLS enabled with no policies and no client grants -- readable only via public.has_platform_permission() (SECURITY DEFINER). Rows are added by migration/DBA action only, never by any client. Intentionally empty at MVP.';
+  'Platform superuser allowlist. RLS enabled with no policies and no client grants -- readable only via private.has_platform_permission() (SECURITY DEFINER). Rows are added by migration/DBA action only, never by any client. Intentionally empty at MVP.';
 
 -- ---------------------------------------------------------------------------
 -- is_active_member(org_id)
@@ -227,7 +277,7 @@ comment on table public.platform_admins is
 -- `organisation_id = NULL` / `user_id = NULL` match no rows, so a NULL org id
 -- or an unauthenticated caller both yield false rather than an error or a pass.
 -- ---------------------------------------------------------------------------
-create or replace function public.is_active_member(p_org_id uuid)
+create or replace function private.is_active_member(p_org_id uuid)
 returns boolean
 language sql
 stable
@@ -243,11 +293,11 @@ as $$
   );
 $$;
 
-comment on function public.is_active_member(uuid) is
+comment on function private.is_active_member(uuid) is
   'True iff auth.uid() has an active membership of p_org_id. SECURITY DEFINER to avoid RLS recursion when called from organisation_memberships policies; reads only the caller''s own rows.';
 
-revoke all on function public.is_active_member(uuid) from public, anon, authenticated, service_role;
-grant execute on function public.is_active_member(uuid) to authenticated;
+revoke all on function private.is_active_member(uuid) from public, anon, authenticated, service_role;
+grant execute on function private.is_active_member(uuid) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- shares_active_organisation(user_id)
@@ -258,7 +308,7 @@ grant execute on function public.is_active_member(uuid) to authenticated;
 -- correctness of the answer must not depend on whether the *other* user's
 -- membership row happens to be visible to the caller under RLS.
 -- ---------------------------------------------------------------------------
-create or replace function public.shares_active_organisation(p_user_id uuid)
+create or replace function private.shares_active_organisation(p_user_id uuid)
 returns boolean
 language sql
 stable
@@ -277,11 +327,11 @@ as $$
   );
 $$;
 
-comment on function public.shares_active_organisation(uuid) is
+comment on function private.shares_active_organisation(uuid) is
   'True iff auth.uid() and p_user_id share at least one organisation in which both memberships are active.';
 
-revoke all on function public.shares_active_organisation(uuid) from public, anon, authenticated, service_role;
-grant execute on function public.shares_active_organisation(uuid) to authenticated;
+revoke all on function private.shares_active_organisation(uuid) from public, anon, authenticated, service_role;
+grant execute on function private.shares_active_organisation(uuid) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- has_permission(org_id, permission)
@@ -356,7 +406,7 @@ grant execute on function public.has_permission(uuid, text) to authenticated;
 --   Until then, treat has_platform_permission('anything') as "is the caller
 --   the platform superuser" -- it does not verify that 'anything' was granted.
 -- ---------------------------------------------------------------------------
-create or replace function public.has_platform_permission(p_permission text)
+create or replace function private.has_platform_permission(p_permission text)
 returns boolean
 language sql
 stable
@@ -370,35 +420,73 @@ as $$
   );
 $$;
 
-comment on function public.has_platform_permission(text) is
+comment on function private.has_platform_permission(text) is
   'Platform-level (organisation-independent) permission check: true iff auth.uid() is on the public.platform_admins allowlist. SECURITY DEFINER because platform_admins is unreadable by any client role. p_permission is accepted but NOT consulted -- at MVP there is one all-powerful superuser and no platform permission tiers; the argument exists so call sites document intent and granularity can be added in this function body alone.';
 
-revoke all on function public.has_platform_permission(text) from public, anon, authenticated, service_role;
-grant execute on function public.has_platform_permission(text) to authenticated;
+revoke all on function private.has_platform_permission(text) from public, anon, authenticated, service_role;
+grant execute on function private.has_platform_permission(text) to authenticated;
 
 -- ---------------------------------------------------------------------------
--- stored_membership_status(membership_id)
--- Returns a membership row's status AS STORED -- i.e. the pre-UPDATE value
--- when called from an UPDATE policy. This is what lets a WITH CHECK expression
--- constrain a TRANSITION (old -> new) rather than just the new row's shape.
+-- membership_update_is_permitted(id, organisation_id, user_id, status, joined_at)
 --
--- WHY THIS WORKS (verified empirically, see supabase/tests/rls_foundation.sql
--- C9-C14 -- do not take it on trust if you change any of this):
---   WITH CHECK is evaluated against the NEW row, so `status` inside the policy
---   is the proposed value. This function re-reads the same row by primary key.
---   It is STABLE, so it runs on the calling statement's snapshot, and a command
---   does not see its own effects -- it therefore returns the value as of the
---   start of the UPDATE, i.e. OLD.status. That holds for multi-row UPDATEs too:
---   every row in the statement is evaluated against the same statement-start
---   snapshot, so rows updated earlier in the command cannot shift the answer
---   for rows evaluated later.
+-- Compares a PROPOSED membership row against the one currently STORED under the
+-- same primary key, and answers whether the client-facing UPDATE policy should
+-- allow it. Everything that must not change through that policy is checked
+-- here, in one place, against one read of the stored row.
 --
--- WHY SECURITY DEFINER, and why this does NOT re-open the recursion problem:
+-- WHAT IT ENFORCES
+--   organisation_id  IMMUTABLE via this policy
+--   user_id          IMMUTABLE via this policy
+--   joined_at        IMMUTABLE via this policy
+--   status           may be anything EXCEPT a transition INTO 'active'
+--
+--   Immutable rather than allow-listed, because there is no legitimate
+--   client-facing "edit" that changes which user or which organisation a
+--   membership points at. Moving someone between organisations is not an edit,
+--   it is revoke-and-re-invite. joined_at records acceptance and is written
+--   only by the sanctioned acceptance path.
+--
+--   Each of these was a live consent bypass before it was pinned, all reaching
+--   the same outcome by different columns:
+--     - status:          INSERT 'invited', then UPDATE straight to 'active'.
+--     - user_id:         UPDATE an ALREADY-ACTIVE row to point at an arbitrary
+--                        user. status never changes, so a status-only guard
+--                        passes cleanly, and the victim is an active member of
+--                        an organisation they never heard of.
+--     - organisation_id: the same trick aimed at the other identity column.
+--     - joined_at:       an invited -> invited edit that forges an acceptance
+--                        timestamp while status stays 'invited'.
+--
+-- WHY IT SEES THE OLD ROW (verified empirically -- see rls_foundation.sql
+-- C9-C20, do not take it on trust if you change any of this):
+--   WITH CHECK is evaluated against the NEW row, so the values passed in are
+--   the proposed ones. This function re-reads the same row by primary key. It
+--   is STABLE, so it runs on the calling statement's snapshot and a command
+--   does not see its own effects -- it therefore reads the row as of the start
+--   of the UPDATE. That holds for multi-row UPDATEs too: every row is evaluated
+--   against the same statement-start snapshot, so rows updated earlier in the
+--   command cannot shift the answer for rows evaluated later.
+--
+-- FAIL-CLOSED ON A REWRITTEN PRIMARY KEY
+--   The lookup is by p_id, which is itself the NEW value. If a caller rewrites
+--   `id` to something that names no stored row, EXISTS is false (never NULL)
+--   and the update is refused. If they rewrite it to another EXISTING row's id,
+--   the primary key rejects it. Either way there is no path through.
+--
+-- WHY SECURITY DEFINER, and why this does not re-open the recursion problem:
 --   It is called from a policy ON organisation_memberships and reads
---   organisation_memberships. Written inline as a subquery in the policy this
---   would be textbook 42P17 ("infinite recursion detected in policy for
---   relation"). DEFINER runs it as the table owner with RLS off, so it is
---   TERMINAL in the graph of design note (h) -- exactly like is_active_member.
+--   organisation_memberships. Written inline as a subquery this would be
+--   textbook 42P17 ("infinite recursion detected in policy for relation").
+--   DEFINER runs it as the table owner with RLS off, so it is TERMINAL in the
+--   graph of design note (h) -- exactly like is_active_member.
+--
+-- WHY IT LIVES IN `private`
+--   It reads a row the caller may have no right to see. Its predecessor
+--   returned a bare status and sat in `public` with EXECUTE to authenticated,
+--   which published it as a PostgREST RPC: pass any membership UUID, get that
+--   row's status back, regardless of tenant. Returning a boolean about a row
+--   the caller already had to name, from a schema the Data API does not route
+--   to, closes that off structurally rather than by comment.
 --
 -- WHY A POLICY AND NOT A TRIGGER:
 --   A BEFORE UPDATE trigger would give OLD/NEW directly with no snapshot
@@ -407,28 +495,41 @@ grant execute on function public.has_platform_permission(text) to authenticated;
 --   make the invited -> active transition) and including DBA/migration repair.
 --   The constraint belongs on the client path only, and RLS is precisely the
 --   layer that SECURITY DEFINER functions bypass. That is the deciding reason.
---
--- Read-only and takes only a row id -- it reveals nothing the caller could not
--- already read, since a caller can only reach this through a policy on a row
--- their USING clause already let them target.
 -- ---------------------------------------------------------------------------
-create or replace function public.stored_membership_status(p_membership_id uuid)
-returns text
+create or replace function private.membership_update_is_permitted(
+  p_id              uuid,
+  p_organisation_id uuid,
+  p_user_id         uuid,
+  p_status          text,
+  p_joined_at       timestamptz
+)
+returns boolean
 language sql
 stable
 security definer
 set search_path = ''
 as $$
-  select m.status
-  from public.organisation_memberships m
-  where m.id = p_membership_id;
+  select exists (
+    select 1
+    from public.organisation_memberships m
+    where m.id = p_id
+      -- identity columns are immutable through the client UPDATE policy
+      and m.organisation_id = p_organisation_id
+      and m.user_id         = p_user_id
+      -- joined_at records acceptance; not writable here (NULL-safe compare)
+      and m.joined_at is not distinct from p_joined_at
+      -- and no transition INTO 'active'
+      and (p_status <> 'active' or m.status = 'active')
+  );
 $$;
 
-comment on function public.stored_membership_status(uuid) is
-  'Returns organisation_memberships.status as stored at statement start -- the OLD value when called from an UPDATE policy''s WITH CHECK. Lets a policy constrain a status TRANSITION rather than just the new row. STABLE (statement snapshot) and SECURITY DEFINER (avoids RLS self-recursion; terminal in the design note (h) call graph).';
+comment on function private.membership_update_is_permitted(uuid, uuid, uuid, text, timestamptz) is
+  'Guard for the client-facing organisation_memberships UPDATE policy. Compares the proposed row against the row stored under the same id at statement start (STABLE = statement snapshot). Refuses any change to organisation_id, user_id or joined_at, and any transition into status=''active''. SECURITY DEFINER to avoid RLS self-recursion; lives in `private` so the Data API cannot route to it.';
 
-revoke all on function public.stored_membership_status(uuid) from public, anon, authenticated, service_role;
-grant execute on function public.stored_membership_status(uuid) to authenticated;
+revoke all on function private.membership_update_is_permitted(uuid, uuid, uuid, text, timestamptz)
+  from public, anon, authenticated, service_role;
+grant execute on function private.membership_update_is_permitted(uuid, uuid, uuid, text, timestamptz)
+  to authenticated;
 
 -- ===========================================================================
 -- 2. Privileged write paths
@@ -448,7 +549,7 @@ grant execute on function public.stored_membership_status(uuid) to authenticated
 -- tenant. Granting it out is a deliberate decision for a later task, not a
 -- default.
 -- ---------------------------------------------------------------------------
-create or replace function public.log_audit_event(
+create or replace function private.log_audit_event(
   p_action          text,
   p_target_type     text,
   p_organisation_id uuid  default null,
@@ -503,10 +604,10 @@ begin
 end;
 $$;
 
-comment on function public.log_audit_event(text, text, uuid, uuid, uuid, jsonb, jsonb) is
+comment on function private.log_audit_event(text, text, uuid, uuid, uuid, jsonb, jsonb) is
   'Sole write path into public.audit_events (which has no INSERT policy). actor_user_id is forced to auth.uid() and cannot be supplied by the caller. EXECUTE is intentionally granted to no client role -- callers are other SECURITY DEFINER functions.';
 
-revoke all on function public.log_audit_event(text, text, uuid, uuid, uuid, jsonb, jsonb)
+revoke all on function private.log_audit_event(text, text, uuid, uuid, uuid, jsonb, jsonb)
   from public, anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------------
@@ -560,7 +661,7 @@ begin
   values
     (v_org, v_actor, 'owner', 'active', now());
 
-  perform public.log_audit_event(
+  perform private.log_audit_event(
     p_action          => 'organisation.created',
     p_target_type     => 'organisation',
     p_organisation_id => v_org,
@@ -607,7 +708,7 @@ create policy "profiles_select_own"
 
 create policy "profiles_select_shared_organisation"
   on public.profiles for select to authenticated
-  using ( public.shares_active_organisation(id) );
+  using ( private.shares_active_organisation(id) );
 
 -- WITH CHECK as well as USING: without it a user could rewrite the row's id
 -- and hand their profile to someone else.
@@ -628,7 +729,7 @@ create policy "profiles_update_own"
 -- ---------------------------------------------------------------------------
 create policy "organisations_select_member"
   on public.organisations for select to authenticated
-  using ( public.is_active_member(id) );
+  using ( private.is_active_member(id) );
 
 create policy "organisations_update_manage_organisation"
   on public.organisations for update to authenticated
@@ -654,7 +755,7 @@ create policy "organisation_memberships_select_own"
 
 create policy "organisation_memberships_select_same_organisation"
   on public.organisation_memberships for select to authenticated
-  using ( public.is_active_member(organisation_id) );
+  using ( private.is_active_member(organisation_id) );
 
 -- THE CONSENT INVARIANT, and where it is enforced.
 --
@@ -664,10 +765,21 @@ create policy "organisation_memberships_select_same_organisation"
 -- read policy in this schema keys off, so minting one silently exposes that
 -- org's data to a person who never agreed to join, through their own session.
 --
--- Enforcing it needs BOTH policies below, and the INSERT half alone is not
--- enough. An earlier revision guarded only the INSERT; the invariant was
--- trivially defeated in two statements instead of one -- INSERT the row as
--- 'invited', then UPDATE it straight to 'active'. So:
+-- Enforcing it needs BOTH policies below, and it took three attempts to get the
+-- UPDATE half right. Each earlier revision closed one column and left another
+-- route to the identical outcome -- an active membership for someone who never
+-- accepted -- so read the whole list before relaxing any of it:
+--
+--     guarded status only    -> INSERT 'invited', UPDATE it to 'active'.
+--     pinned the transition  -> UPDATE an ALREADY-ACTIVE row's user_id to point
+--                               at an arbitrary user. status never changes, so
+--                               a status-only guard passes cleanly.
+--     (same via organisation_id, aimed at the other identity column)
+--     joined_at unpinned     -> invited -> invited edit that forges an
+--                               acceptance timestamp while status stays
+--                               'invited'.
+--
+-- So:
 --
 --   INSERT policy: a client INSERT is an INVITE, never a completed membership.
 --     status = 'invited'   -- no minting an already-active row
@@ -676,23 +788,31 @@ create policy "organisation_memberships_select_same_organisation"
 --     invited_by           -- the caller or nothing, so an invite cannot be
 --                             attributed to a different admin
 --
---   UPDATE policy: no TRANSITION into 'active'. Expressed as
---     status <> 'active' or stored_membership_status(id) = 'active'
---   i.e. the new row may be 'active' only if the row was ALREADY 'active'
---   before this statement. See stored_membership_status() for why the
---   subquery sees the OLD value.
+--   UPDATE policy: delegates to private.membership_update_is_permitted(), which
+--   compares the proposed row against the stored one and enforces:
+--     organisation_id  IMMUTABLE through this policy
+--     user_id          IMMUTABLE through this policy
+--     joined_at        IMMUTABLE through this policy
+--     status           anything EXCEPT a transition INTO 'active'
 --
--- What the UPDATE guard deliberately still ALLOWS, because these are the
--- legitimate reasons this policy exists:
+--   The identity columns are pinned outright rather than allow-listed, because
+--   there is no legitimate client-facing edit that changes which user or which
+--   organisation a membership row points at. Moving someone between
+--   organisations is not "editing a membership", it is revoke-and-re-invite.
+--   That leaves no exception to reason about and nothing to get wrong later.
+--
+-- What the UPDATE policy deliberately still ALLOWS, because these are the
+-- legitimate reasons it exists:
 --     active  -> active    change an existing member's role, or any other
---                          field on someone who really did join
+--                          non-pinned field on someone who really did join
 --     active  -> revoked   revoke a member
 --     invited -> revoked   withdraw a pending invite
 --     invited -> invited   correct the role on a pending invite
 --     revoked -> invited   re-invite someone previously removed
 -- and blocks exactly:
---     invited -> active    consent-free activation (the hole)
+--     invited -> active    consent-free activation
 --     revoked -> active    silent reinstatement of a removed member
+--     any change to organisation_id, user_id or joined_at
 --
 -- The invited_by guard stays INSERT-only on purpose: on UPDATE the NEW row
 -- still carries the ORIGINAL inviter, so the same predicate would wrongly block
@@ -724,13 +844,11 @@ create policy "organisation_memberships_update_manage_members"
   with check (
     public.has_permission(organisation_id, 'manage_members')
     and role <> 'platform_superuser'
-    -- No transition INTO 'active'. NULL-safe: if id names no stored row (a
-    -- rewritten primary key), the comparison is NULL, the OR is NULL, and
-    -- WITH CHECK treats that as a failure -- fail-closed.
-    and (
-      status <> 'active'
-      or public.stored_membership_status(id) = 'active'
-    )
+    -- Pins organisation_id, user_id and joined_at immutable through this
+    -- policy, and refuses any transition into status='active'. Fail-closed if
+    -- `id` itself is rewritten.
+    and private.membership_update_is_permitted(
+          id, organisation_id, user_id, status, joined_at)
   );
 
 create policy "organisation_memberships_delete_manage_members"
@@ -780,7 +898,7 @@ create policy "subscription_plans_select_public"
 -- ---------------------------------------------------------------------------
 create policy "organisation_subscriptions_select_member"
   on public.organisation_subscriptions for select to authenticated
-  using ( public.is_active_member(organisation_id) );
+  using ( private.is_active_member(organisation_id) );
 
 -- Second permissive SELECT policy, OR'd with the member one above. This is NOT
 -- cosmetic and NOT just "so the dashboard can list subscriptions": Postgres
@@ -793,16 +911,16 @@ create policy "organisation_subscriptions_select_member"
 -- when unaimed is worse than one that just fails.
 create policy "organisation_subscriptions_select_platform_billing"
   on public.organisation_subscriptions for select to authenticated
-  using ( public.has_platform_permission('manage_billing') );
+  using ( private.has_platform_permission('manage_billing') );
 
 create policy "organisation_subscriptions_insert_platform_billing"
   on public.organisation_subscriptions for insert to authenticated
-  with check ( public.has_platform_permission('manage_billing') );
+  with check ( private.has_platform_permission('manage_billing') );
 
 create policy "organisation_subscriptions_update_platform_billing"
   on public.organisation_subscriptions for update to authenticated
-  using      ( public.has_platform_permission('manage_billing') )
-  with check ( public.has_platform_permission('manage_billing') );
+  using      ( private.has_platform_permission('manage_billing') )
+  with check ( private.has_platform_permission('manage_billing') );
 
 -- ---------------------------------------------------------------------------
 -- audit_events
@@ -814,7 +932,7 @@ create policy "organisation_subscriptions_update_platform_billing"
 -- ---------------------------------------------------------------------------
 create policy "audit_events_select_platform_superuser"
   on public.audit_events for select to authenticated
-  using ( public.has_platform_permission('view_audit_log') );
+  using ( private.has_platform_permission('view_audit_log') );
 
 -- ===========================================================================
 -- 4. Table privileges
