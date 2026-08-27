@@ -43,7 +43,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { adminAuthFetch, createAdminClient } from "@/lib/supabase/admin";
 import { siteUrl } from "@/lib/supabase/env";
 import { getCurrentOrg } from "@/lib/auth";
 import { field, isValidEmail, type FormState } from "@/lib/forms";
@@ -261,28 +261,74 @@ async function resolveOrInviteAuthUser(
   return { error: "We couldn't send that invitation. Try again." };
 }
 
+/** Users per page when scanning the Admin API's filtered result set. */
+const LOOKUP_PAGE_SIZE = 100;
+/**
+ * Hard ceiling on pages walked. With `filter` set to a full email address the
+ * server-side result set is one row in every realistic case (see below), so
+ * this is a runaway guard, not a working limit.
+ */
+const LOOKUP_MAX_PAGES = 10;
+
 /**
  * Finds an existing auth user by email address.
  *
- * GoTrue's admin list endpoint accepts `filter`, which is a SUBSTRING match on
- * the email -- so `?filter=a@b.com` also matches `xa@b.com.attacker.test`.
- * That is why every returned row is re-checked for an exact,
- * case-insensitive match here. Trusting the filter would let a near-miss
- * address hand back a different user's id, and the invitation would then
- * attach a membership to the wrong account.
+ * TWO THINGS ARE GOING ON HERE, and they are easy to confuse.
+ *
+ * 1. THE QUERY IS FILTERED SERVER-SIDE. `?filter=` is sent to GoTrue's admin
+ *    list endpoint, so the database does the matching. The previous version of
+ *    this function called `admin.listUsers({ page: 1, perPage: 200 })` with NO
+ *    filter and searched the result in JS -- so past 200 auth users
+ *    project-wide, inviting somebody who already had an account silently
+ *    failed to find them and the invite errored out generically. It also
+ *    scanned the whole user table on every such invite. Review finding 2.
+ *
+ *    The filter has to be passed by hand: @supabase/auth-js 2.112.4 types
+ *    listUsers() as taking `PageParams = { page?, perPage? }` only, and its
+ *    implementation sends exactly those two. adminAuthFetch() in
+ *    lib/supabase/admin.ts is the escape hatch, hard-scoped to /auth/v1.
+ *
+ * 2. THE FILTER IS NOT TRUSTED. GoTrue's `filter` is a SUBSTRING match --
+ *    verified against the running stack, where `?filter=probe-` returned two
+ *    distinct users -- so `?filter=a@b.com` also matches
+ *    `xa@b.com.attacker.test`. Every returned row is therefore re-checked for
+ *    an exact, case-insensitive match. Handing back a near-miss id would
+ *    attach the membership to the wrong account, in a flow whose entire job is
+ *    granting somebody access to a tenant.
+ *
+ * Pagination metadata is honoured rather than ignored: the walk follows the
+ * `link: ...; rel="next"` header until the match is found or the pages run
+ * out. With `filter` set to a complete address a second page is vanishingly
+ * unlikely -- it would need other addresses CONTAINING this whole address as a
+ * substring -- but "unlikely" was the previous version's failure mode too.
  */
 async function findAuthUserByEmail(email: string): Promise<string | null> {
-  const admin = createAdminClient();
   const target = email.toLowerCase();
 
-  const { data, error } = await admin.auth.admin.listUsers({
-    page: 1,
-    perPage: 200,
-  });
-  if (error || !data?.users) return null;
+  for (let page = 1; page <= LOOKUP_MAX_PAGES; page++) {
+    const response = await adminAuthFetch("/admin/users", {
+      filter: target,
+      page: String(page),
+      per_page: String(LOOKUP_PAGE_SIZE),
+    });
+    if (!response.ok) return null;
 
-  const match = data.users.find((u) => u.email?.toLowerCase() === target);
-  return match?.id ?? null;
+    const body: unknown = await response.json();
+    const users =
+      typeof body === "object" && body !== null && "users" in body
+        ? (body as { users?: { id?: string; email?: string }[] }).users
+        : undefined;
+    if (!Array.isArray(users) || users.length === 0) return null;
+
+    const match = users.find((u) => u.email?.toLowerCase() === target);
+    if (match?.id) return match.id;
+
+    // GoTrue emits `link: <...>; rel="next"` only while another page exists.
+    // No rel="next" means this was the last page and there is no exact match.
+    if (!/rel="next"/.test(response.headers.get("link") ?? "")) return null;
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
