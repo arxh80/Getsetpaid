@@ -26,8 +26,8 @@ export const CURRENT_ORG_COOKIE = "gsp_current_org";
 // not daily), short enough that a workspace someone hasn't touched in months
 // eventually stops being "remembered" if they never come back to reselect it.
 // Refreshed every time the org is (re)selected -- see writeCurrentOrgIdCookie's
-// two call sites in lib/org/actions.ts -- so an actively used workspace never
-// actually approaches this ceiling.
+// two call sites in lib/org/workspace-actions.ts -- so an actively used
+// workspace never actually approaches this ceiling.
 const MAX_AGE_SECONDS = 60 * 60 * 24 * 180;
 
 /**

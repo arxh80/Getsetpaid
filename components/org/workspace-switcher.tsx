@@ -40,16 +40,28 @@ export function WorkspaceSwitcher({
 }) {
   return (
     <form action={switchWorkspaceAction} className="flex items-center gap-2">
-      <label
-        htmlFor="workspace-switcher"
-        className="hidden text-sm text-ink-muted sm:inline"
-      >
+      {/*
+        `sr-only` (not `hidden`/display:none) below the `sm` breakpoint: a
+        display:none label is removed from the accessibility tree, and
+        accessible-name computation from a display:none <label> is
+        inconsistent across browser/AT combinations -- unlike sr-only, which
+        keeps the element in the tree (just visually clipped), the same
+        technique components/ui/skip-link.tsx uses. That alone would already
+        give the <select> a reliable accessible name at every width via the
+        <label for>. The redundant aria-label on the <select> is a second,
+        belt-and-braces floor: it wins over the <label> association per the
+        accessible-name computation spec, so it does not create a doubled or
+        conflicting name -- it makes the association robust even against a
+        future markup change that breaks the htmlFor/id link between them.
+      */}
+      <label htmlFor="workspace-switcher" className="sr-only text-sm text-ink-muted sm:not-sr-only sm:inline">
         Workspace
       </label>
       <select
         id="workspace-switcher"
         name="organisationId"
         defaultValue={current.id}
+        aria-label="Workspace"
         className={
           "h-11 min-w-0 max-w-40 truncate border bg-surface px-3 text-base text-ink " +
           "border-rule hover:border-ink focus:border-accent " +

@@ -9,7 +9,7 @@ import type { Membership } from "@/lib/auth";
  *   - the "last used workspace" cookie app/page.tsx reads to decide where to
  *     send a returning multi-org user (lib/org/current-org.ts)
  *   - the workspace switcher's submitted form field
- *     (lib/org/actions.ts's switchWorkspaceAction)
+ *     (lib/org/workspace-actions.ts's switchWorkspaceAction)
  *
  * A cookie and a form field are both things the browser fully controls, so
  * neither gets to skip this check just because one of them "should" already

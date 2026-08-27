@@ -39,7 +39,12 @@ export function RecordCurrentOrg({ organisationId }: { organisationId: string })
   const pathname = usePathname();
 
   useEffect(() => {
-    void recordCurrentOrgAction(organisationId);
+    // .catch(() => {}): fire-and-forget by design (see file header), but an
+    // unhandled rejection from a Server Action network failure would still
+    // surface as a console warning / unhandled-rejection event for something
+    // this component deliberately does not want the caller to have to react
+    // to -- there is nothing useful to do with a failure here.
+    void recordCurrentOrgAction(organisationId).catch(() => {});
   }, [organisationId, pathname]);
 
   return null;
