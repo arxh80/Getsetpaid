@@ -38,8 +38,26 @@ function isUnder(pathname: string, roots: string[]): boolean {
   );
 }
 
+/**
+ * Fix round 1 (Task 7), Minor: the signed-in layout (app/(app)/layout.tsx)
+ * needs the current path to send a user BACK to it once an interstitial gate
+ * (MFA enrollment/challenge, future step-up) is satisfied -- without this,
+ * every gate redirected to "/" regardless of what page the user actually
+ * wanted. A Server Component/layout has no built-in way to read the request
+ * path (that's a Client Component-only hook, usePathname()), so middleware
+ * -- the one place that DOES see the raw request -- stamps it onto a request
+ * header the layout reads back via next/headers's headers().
+ */
+const PATHNAME_HEADER = "x-pathname";
+
 export async function updateSession(request: NextRequest) {
-  const response = NextResponse.next({ request });
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set(
+    PATHNAME_HEADER,
+    `${request.nextUrl.pathname}${request.nextUrl.search}`,
+  );
+
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
 
   const supabase = createServerClient(supabaseUrl(), supabasePublicKey(), {
     cookies: {
