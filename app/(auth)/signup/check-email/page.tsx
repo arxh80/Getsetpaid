@@ -29,7 +29,7 @@ export default async function CheckEmailPage({
           {email ? (
             <>
               We&apos;ve sent a message to{" "}
-              <span className="font-semibold text-ink">{email}</span>. Open it to
+              <span translate="no" className="font-semibold text-ink">{email}</span>. Open it to
               finish setting up your account.
             </>
           ) : (

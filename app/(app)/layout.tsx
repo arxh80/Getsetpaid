@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { signOutAction } from "@/lib/auth/actions";
 import { Wordmark } from "@/components/wordmark";
 import { Button } from "@/components/ui/button";
+import { SkipLink } from "@/components/ui/skip-link";
 
 // Shell for every signed-in screen.
 //
@@ -22,6 +23,7 @@ export default async function AppLayout({
 
   return (
     <div className="flex min-h-dvh flex-col">
+      <SkipLink />
       <header className="border-b border-rule">
         <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-4">
           <Link href="/" className="no-underline">
@@ -29,7 +31,13 @@ export default async function AppLayout({
           </Link>
 
           <div className="ml-auto flex items-center gap-4">
-            <span className="hidden truncate text-sm text-ink-muted sm:inline">
+            {/* translate="no": an email address is an identifier, and a
+                browser's page translator will happily "translate" the domain
+                into something that is no longer the user's address. */}
+            <span
+              translate="no"
+              className="hidden truncate text-sm text-ink-muted sm:inline"
+            >
               {user.fullName ?? user.email}
             </span>
             {/* A form, not a link: signing out is a state change and must not
@@ -44,7 +52,7 @@ export default async function AppLayout({
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-4xl flex-1 px-4 py-8 sm:py-12">
+      <main id="main" className="mx-auto w-full max-w-4xl flex-1 px-4 py-8 sm:py-12">
         {children}
       </main>
     </div>

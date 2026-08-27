@@ -129,6 +129,19 @@ body {
   outline-offset: 2px;
 }
 
+/* Removes the ~300ms tap delay mobile browsers hold in case a tap becomes a
+   double-tap-to-zoom. Scoped to controls, so pinch-zoom on the page itself is
+   untouched -- disabling that would be an accessibility failure. */
+button,
+a,
+label,
+input,
+select,
+textarea,
+summary {
+  touch-action: manipulation;
+}
+
 /* Display sizes need tightening -- bold serifs open up at scale. */
 .tracking-display {
   letter-spacing: -0.02em;

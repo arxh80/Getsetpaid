@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Wordmark } from "@/components/wordmark";
+import { SkipLink } from "@/components/ui/skip-link";
 
 // Shell for every signed-out screen.
 //
@@ -18,6 +19,7 @@ export default function AuthLayout({
 }) {
   return (
     <div className="flex min-h-dvh flex-col">
+      <SkipLink />
       <header className="border-b border-rule">
         <div className="mx-auto flex w-full max-w-md items-center px-4 py-5">
           <Link href="/" className="no-underline">
@@ -26,7 +28,7 @@ export default function AuthLayout({
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-md flex-1 px-4 py-8 sm:py-12">
+      <main id="main" className="mx-auto w-full max-w-md flex-1 px-4 py-8 sm:py-12">
         {children}
       </main>
 

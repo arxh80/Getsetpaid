@@ -39,6 +39,14 @@ export function PasswordInput({
       name={name}
       type={visible ? "text" : "password"}
       autoComplete={autoComplete}
+      // While the toggle above has the field showing plain text, the browser
+      // treats it as an ordinary text input -- which means spellcheck, autocorrect
+      // and auto-capitalisation all apply. Autocorrect silently rewriting a
+      // password is the obvious hazard; spellcheck is the quieter one, since
+      // some engines send the contents off-device to check them.
+      spellCheck={false}
+      autoCorrect="off"
+      autoCapitalize="none"
       error={error}
       hint={hint}
       required={required}

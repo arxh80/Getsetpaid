@@ -26,7 +26,7 @@ export default async function MagicLinkSentPage({
         <p className="text-lg text-ink-muted">
           {email ? (
             <>
-              If <span className="font-semibold text-ink">{email}</span> has a
+              If <span translate="no" className="font-semibold text-ink">{email}</span> has a
               GetSetPaid account, a sign-in link is on its way.
             </>
           ) : (

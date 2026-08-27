@@ -42,6 +42,19 @@ export function Field({
   className = "",
   ...props
 }: FieldProps) {
+  // Email is never a word, never a sentence, and never capitalised. Left to
+  // the defaults, a phone keyboard capitalises the first letter and autocorrect
+  // "fixes" the domain -- both of which produce an address that silently fails
+  // to match an existing account. Overridable per call site if ever needed.
+  const typeDefaults =
+    props.type === "email"
+      ? ({
+          spellCheck: false,
+          autoCorrect: "off",
+          autoCapitalize: "none",
+        } as const)
+      : {};
+
   const id = useId();
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
@@ -68,6 +81,7 @@ export function Field({
       ) : null}
 
       <input
+        {...typeDefaults}
         {...props}
         id={id}
         required={required}
