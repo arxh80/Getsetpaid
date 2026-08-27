@@ -22,6 +22,17 @@ const ERRORS: Record<string, string> = {
     "Google sign-in isn't available right now. Use your email and password instead.",
 };
 
+/**
+ * Same allowlist idea as ERRORS, but for a routine, expected event rather
+ * than a failure -- CLAUDE.md § Session security's 30-minute inactivity
+ * timeout (components/auth/idle-timeout.tsx) firing is not an error, and
+ * a red "Error." banner over ordinary security behaviour reads as something
+ * having gone wrong when nothing did.
+ */
+const NOTICES: Record<string, string> = {
+  idle_timeout: "You were signed out after 30 minutes of inactivity.",
+};
+
 export default async function LoginPage({
   searchParams,
 }: PageProps<"/login">) {
@@ -29,9 +40,11 @@ export default async function LoginPage({
   const rawNext = typeof params.next === "string" ? params.next : null;
   const next = safeNextPath(rawNext);
   const rawError = typeof params.error === "string" ? params.error : null;
-  const errorMessage = rawError
-    ? (ERRORS[rawError] ?? "Something went wrong. Try again.")
-    : null;
+  const noticeMessage = rawError ? NOTICES[rawError] : undefined;
+  const errorMessage =
+    rawError && !noticeMessage
+      ? (ERRORS[rawError] ?? "Something went wrong. Try again.")
+      : null;
 
   return (
     <div className="flex flex-col gap-7">
@@ -44,6 +57,7 @@ export default async function LoginPage({
         </p>
       </div>
 
+      {noticeMessage ? <Alert tone="info">{noticeMessage}</Alert> : null}
       {errorMessage ? <Alert tone="error">{errorMessage}</Alert> : null}
 
       <LoginForm next={next} />
