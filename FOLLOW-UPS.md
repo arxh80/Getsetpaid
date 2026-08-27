@@ -25,10 +25,14 @@ These become live the moment a real tenant table exists.
 
 - **Wrap constant-argument policy calls in `(select …)`** so Postgres caches the
   InitPlan. Performance only, but Phase 2 is when row counts start to matter.
-- **Establish an `ALTER DEFAULT PRIVILEGES` baseline for schema `public`.**
-  Without it every future migration has to repeat the revoke by hand. Set the
-  baseline with the first Phase 2 migration — retrofitting it later means
-  auditing everything written in between.
+- **Decide whether `is_primary` should be enforced unique.**
+  `contact_companies.is_primary` and `artist_representations.is_primary` both
+  allow any number of primaries per parent. A partial unique index
+  (`unique (contact_id) where is_primary`, and the artist equivalent) would fix
+  that, at the cost of making "change the primary" a two-statement write — a
+  partial unique index cannot be deferred, so the old primary must be cleared
+  before the new one is set. Raised by Task 1 rather than decided; it belongs
+  with Task 4's write path, which is what has to do the clearing.
 - **`invited_at` / `created_at` are still rewritable** through the
   `manage_members` UPDATE policy. Same shape as the `joined_at` hole that was
   closed, no authorisation impact. Close it when a members-management task next
@@ -36,8 +40,33 @@ These become live the moment a real tenant table exists.
 - **`audit_events.actor_user_id` has no `ON DELETE` clause.** Correct as it
   stands: GDPR erasure must anonymise rather than hard-delete, and that
   workflow is Phase 7+. Revisit with the erasure workflow, not before.
+  **`merges.merged_by` (Phase 2 Task 1) now has the same shape, for the same
+  reason** — a merge is destructive and its attribution must outlive the
+  actor's account. Both are one decision, not two: whatever the erasure
+  workflow does about `audit_events` it must do about `merges` in the same
+  change. Verified against the live database: deleting an `auth.users` row
+  referenced by a merge raises `merges_merged_by_fkey`.
 - **The members page's `unavailable` state also hides the "Invited (n)"
   section**, and the inner `profiles` lookup still discards its error.
+
+## Phase 3 — events
+
+Both carried out of Phase 2 Task 1, and both are one-line additions to the
+migration that creates `public.events`. Neither is optional: until they happen,
+Phase 2 ships a column and three allowlists that Phase 3 silently invalidates.
+
+- **`artist_fee_history.event_id` has no foreign key.** It could not have one —
+  `public.events` does not exist yet. The events migration must add
+  `foreign key (event_id) references public.events (id) on delete set null`
+  (SET NULL, not CASCADE: the fee outlives the event record). Until then the
+  column is an unvalidated uuid that can name a nonexistent event or one in
+  another tenant. The exact statement is in
+  `20260827232510_core_crm_entities.sql`'s header for that table.
+- **`'event'` is missing from three `entity_type` allowlists** —
+  `custom_field_definitions`, `custom_field_values` and `merges` each constrain
+  it to the five Phase 2 entities. Custom fields on events (PRD §6.5 lists them
+  explicitly) and event dedup do not work until all three are widened in the
+  same migration.
 
 ## Phase 3 — members management with a real UI
 
