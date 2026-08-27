@@ -156,11 +156,21 @@ max_indexes = 5
 enabled = true
 # The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
 # in emails.
-site_url = "http://127.0.0.1:3000"
+# NOTE: `supabase config push` applies this file to the LINKED HOSTED project,
+# so site_url is not a local-only setting -- it is the base every auth email
+# (magic link, invite, confirmation, password reset) is built from. A localhost
+# value here means a hosted user receives a link pointing at their own machine.
+# Change this to the deployed origin as part of the first real deployment; it is
+# on the SECURITY.md § 15 pre-launch checklist for that reason.
+site_url = "http://localhost:3000"
 # The public URL that Auth serves on. Defaults to the API external URL with `/auth/v1` appended.
 # external_url = ""
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["https://127.0.0.1:3000"]
+# Both loopback spellings are listed because they are different origins to the
+# browser and to GoTrue's allow-list: a redirect to localhost is NOT matched by
+# a 127.0.0.1 entry. Scheme is http -- local dev does not serve TLS, and an
+# https entry here silently matches nothing.
+additional_redirect_urls = ["http://localhost:3000/**", "http://127.0.0.1:3000/**"]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 #
 # LOWERED FROM THE CLI DEFAULT (3600) AS PART OF TASK 7, and the reason is

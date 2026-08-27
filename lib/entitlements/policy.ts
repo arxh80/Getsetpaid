@@ -52,15 +52,36 @@ import "server-only";
 // zero-row result into the same `[]` -- a known, already-flagged wart in
 // that file, not a pattern worth propagating into a new one.
 //
-// STATUS GATING (product call, flagged for founder confirmation): only
-// status = 'active' grants the plan's entitlements. 'past_due' and
-// 'cancelled' fall back to Free's entitlements rather than the paid plan's.
-// CLAUDE.md § Subscription tiers: downgrading "makes features read-only or
-// limited; it must never silently delete data" -- falling back to Free
-// limits nothing that isn't already reversible and deletes no rows, so this
-// reads as "limited," not as an unannounced downgrade. Whether a past_due
-// org should get a short grace window at its paid tier before falling back
-// is NOT decided here -- see task-9-report.md.
+// STATUS GATING (founder decision, 2026-08-28): 'active' grants the plan's
+// entitlements outright. 'past_due' keeps them for a 3-DAY GRACE WINDOW, then
+// falls back to Free. 'cancelled' falls back to Free immediately, with no
+// grace at all.
+//
+// Why the two non-active statuses are treated differently: 'cancelled' is
+// something the customer chose, so honouring it at once is respecting a
+// decision. 'past_due' is something that happened TO them -- a card expired,
+// a bank declined a routine renewal -- and taking a paying customer's
+// features away the same hour their card bounced punishes them for their
+// bank's timing. Three days is enough for a retry to clear or for someone to
+// update a card, and short enough that it is not a free month.
+//
+// Falling back to Free when the grace expires still satisfies CLAUDE.md
+// § Subscription tiers: downgrading "makes features read-only or limited; it
+// must never silently delete data" -- Free limits what a user can do and
+// deletes no rows.
+//
+// GRACE IS MEASURED FROM current_period_end, and that deserves stating
+// plainly because it is a proxy, not the real thing. The honest clock would
+// start when the subscription actually entered past_due, but no column
+// records that -- organisation_subscriptions has no `past_due_since`. In the
+// ordinary case the two coincide: a renewal is attempted at period end and
+// fails, so period end IS when the trouble started. Where they diverge, the
+// proxy is conservative in the customer's favour, never against them.
+//
+// When a payment processor is wired (Phase 7 / open decision), its webhook
+// knows the real transition moment: add an explicit `past_due_since` or
+// `grace_expires_at` column then and measure from it. Do not keep deriving
+// the grace from period end once something better is available.
 //
 // NOT BUILT HERE, ON PURPOSE: comp_expires_at auto-revert
 // (organisation_subscriptions.comp_expires_at is set for time-boxed
@@ -94,8 +115,43 @@ export interface EntitlementsResult {
  * operates on -- PostgREST's own {data, error}, narrowed to the two columns
  * actually read. */
 interface SubscriptionQueryResult {
-  data: { plan_id: string; status: string } | null;
+  data: {
+    plan_id: string;
+    status: string;
+    /** ISO 8601, UTC. The clock the past_due grace window is measured from --
+     * see the STATUS GATING note above this file's imports for why this is a
+     * proxy for the real transition moment and what should replace it. */
+    current_period_end: string;
+  } | null;
   error: { message: string } | null;
+}
+
+/** How long a past_due subscription keeps its paid entitlements before
+ * falling back to Free. Founder decision, 2026-08-28. */
+export const PAST_DUE_GRACE_DAYS = 3;
+
+const PAST_DUE_GRACE_MS = PAST_DUE_GRACE_DAYS * 24 * 60 * 60 * 1000;
+
+/**
+ * Is a past_due subscription still inside its grace window?
+ *
+ * Fails CLOSED on an unparseable or missing timestamp: a row whose
+ * current_period_end cannot be read is not evidence that grace applies, and
+ * "could not determine" must never be the branch that keeps paid features
+ * switched on. Same asymmetry the MFA gate draws.
+ */
+export function isWithinPastDueGrace(
+  currentPeriodEnd: string,
+  now: number = Date.now(),
+): boolean {
+  const periodEnd = Date.parse(currentPeriodEnd);
+  if (Number.isNaN(periodEnd)) {
+    console.error(
+      `[entitlements] organisation_subscriptions.current_period_end "${currentPeriodEnd}" is not a parseable timestamp; treating the past_due grace window as expired rather than granting paid entitlements on an unreadable date.`,
+    );
+    return false;
+  }
+  return now < periodEnd + PAST_DUE_GRACE_MS;
 }
 
 /**
@@ -109,7 +165,10 @@ interface SubscriptionQueryResult {
  * (tests/unit/entitlements/policy.test.ts) without provoking a real
  * PostgREST failure through the integration harness.
  */
-export function resolveEntitlements(result: SubscriptionQueryResult): EntitlementsResult {
+export function resolveEntitlements(
+  result: SubscriptionQueryResult,
+  now: number = Date.now(),
+): EntitlementsResult {
   if (result.error) {
     return { status: "indeterminate", tier: null, entitlements: TIER_MATRIX.free };
   }
@@ -118,11 +177,14 @@ export function resolveEntitlements(result: SubscriptionQueryResult): Entitlemen
     return { status: "no-subscription", tier: "free", entitlements: TIER_MATRIX.free };
   }
 
-  const { plan_id: planId, status } = result.data;
+  const { plan_id: planId, status, current_period_end: currentPeriodEnd } = result.data;
 
-  if (status !== "active") {
-    // past_due / cancelled: fall back to Free's entitlements. See the
-    // STATUS GATING note above this file's imports.
+  // 'cancelled' -- and any status this mirror does not recognise -- falls back
+  // to Free at once. Only 'past_due' earns the grace window, and only while it
+  // lasts. See the STATUS GATING note above this file's imports.
+  const inGrace = status === "past_due" && isWithinPastDueGrace(currentPeriodEnd, now);
+
+  if (status !== "active" && !inGrace) {
     return { status: "resolved", tier: "free", entitlements: TIER_MATRIX.free };
   }
 
@@ -159,12 +221,17 @@ export const getOrganisationEntitlements = cache(
 
     const { data, error } = await supabase
       .from("organisation_subscriptions")
-      .select("plan_id, status")
+      .select("plan_id, status, current_period_end")
       .eq("organisation_id", organisationId)
       .maybeSingle();
 
     const result = resolveEntitlements({
-      data: (data as { plan_id: string; status: string } | null) ?? null,
+      data:
+        (data as {
+          plan_id: string;
+          status: string;
+          current_period_end: string;
+        } | null) ?? null,
       error: error ? { message: error.message } : null,
     });
 
