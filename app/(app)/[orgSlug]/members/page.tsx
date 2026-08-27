@@ -17,6 +17,26 @@ interface MemberRow {
   name: string | null;
 }
 
+/**
+ * Three-way, not `MemberRow[]`.
+ *
+ * REVIEW FINDING (M-2): this page had copied lib/auth/index.ts's
+ * `if (error || !data) return []` and collapsed a failed query into an empty
+ * list, silently and with nothing in the logs. That pattern is defensible
+ * where it originated -- the onboarding path, where "you have no workspaces
+ * yet" and "we could not tell" should look the same to a brand-new user -- and
+ * indefensible here. A transient PostgREST failure rendered
+ * "In this workspace (0)" to a legitimate member of a workspace that
+ * demonstrably has an owner in it, which reads as data loss, not as a blip.
+ *
+ * Same shape lib/entitlements/policy.ts uses for the same reason: the caller
+ * is made to name which of the two cases it is handling, so "empty" and
+ * "unknown" cannot be confused by omission.
+ */
+type MemberList =
+  | { outcome: "loaded"; members: MemberRow[] }
+  | { outcome: "unavailable" };
+
 // The people list, and the invite form.
 //
 // Every row here comes from a query made as the signed-in user, so
@@ -48,11 +68,13 @@ export default async function MembersPage({
   // as the signed-in user. The permission result gates only what is RENDERED
   // (the invite form) -- the INSERT behind it is refused by the policy
   // regardless, per CLAUDE.md's "hiding UI is not enforcement".
-  const [canManageMembers, members] = await Promise.all([
+  const [canManageMembers, memberList] = await Promise.all([
     hasPermission(org.id, "manage_members"),
     listMembers(org.id),
   ]);
 
+  const loaded = memberList.outcome === "loaded";
+  const members = loaded ? memberList.members : [];
   const active = members.filter((m) => m.status === "active");
   const pending = members.filter((m) => m.status === "invited");
 
@@ -76,24 +98,39 @@ export default async function MembersPage({
         </h1>
       </div>
 
-      <section className="flex flex-col gap-4">
-        <h2 className="text-xl font-bold text-ink">
-          In this workspace{" "}
-          <span className="tabular-nums font-normal text-ink-muted">
-            ({active.length})
-          </span>
-        </h2>
-        <RuledList>
-          {active.map((m) => (
-            <RuledRow
-              key={m.id}
-              title={m.name ?? "Member"}
-              meta={roleLabel(m.role)}
-              status={<StatusChip tone="active">Active</StatusChip>}
-            />
-          ))}
-        </RuledList>
-      </section>
+      {/* An unreadable member list must not render as an EMPTY one. A count of
+          (0) on a workspace that certainly has an owner is a claim about the
+          data; "we couldn't load this" is a claim about the request, and only
+          the second one is true here. role="status" so a screen reader hears
+          it -- it replaces content the user asked for. */}
+      {loaded ? (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-xl font-bold text-ink">
+            In this workspace{" "}
+            <span className="tabular-nums font-normal text-ink-muted">
+              ({active.length})
+            </span>
+          </h2>
+          <RuledList>
+            {active.map((m) => (
+              <RuledRow
+                key={m.id}
+                title={m.name ?? "Member"}
+                meta={roleLabel(m.role)}
+                status={<StatusChip tone="active">Active</StatusChip>}
+              />
+            ))}
+          </RuledList>
+        </section>
+      ) : (
+        <section className="flex flex-col gap-4">
+          <h2 className="text-xl font-bold text-ink">In this workspace</h2>
+          <p role="status" className="border-t border-rule pt-4 text-base text-ink-muted">
+            We couldn’t load the member list just now. Refresh the page to try
+            again — nobody has been removed.
+          </p>
+        </section>
+      )}
 
       {pending.length > 0 ? (
         <section className="flex flex-col gap-4">
@@ -147,7 +184,7 @@ export default async function MembersPage({
   );
 }
 
-async function listMembers(organisationId: string): Promise<MemberRow[]> {
+async function listMembers(organisationId: string): Promise<MemberList> {
   const supabase = await createClient();
 
   const { data, error } = await supabase
@@ -162,7 +199,19 @@ async function listMembers(organisationId: string): Promise<MemberRow[]> {
     .order("invited_at", { ascending: true })
     .limit(200);
 
-  if (error || !data) return [];
+  // A query error and a genuinely empty result are DIFFERENT ANSWERS and are
+  // returned as different values. Logged, so the failure exists somewhere
+  // other than the rendered page -- the original silence is half of what made
+  // this worth fixing. The error message only (never the row payload): an
+  // audit/log line must not become a second copy of tenant data.
+  if (error) {
+    console.error(
+      `[members] organisation_memberships lookup failed for org ${organisationId}; rendering "unavailable" rather than an empty member list:`,
+      error.message,
+    );
+    return { outcome: "unavailable" };
+  }
+  if (!data) return { outcome: "unavailable" };
 
   // TWO QUERIES, NOT A POSTGREST EMBED. There is no foreign key from
   // organisation_memberships.user_id to public.profiles -- that column
@@ -193,14 +242,17 @@ async function listMembers(organisationId: string): Promise<MemberRow[]> {
     }
   }
 
-  return data.map((row) => ({
-    id: row.id as string,
-    role: row.role as string,
-    status: row.status as MemberRow["status"],
-    invitedAt: row.invited_at as string,
-    joinedAt: (row.joined_at as string | null) ?? null,
-    name: nameById.get(row.user_id as string) ?? null,
-  }));
+  return {
+    outcome: "loaded",
+    members: data.map((row) => ({
+      id: row.id as string,
+      role: row.role as string,
+      status: row.status as MemberRow["status"],
+      invitedAt: row.invited_at as string,
+      joinedAt: (row.joined_at as string | null) ?? null,
+      name: nameById.get(row.user_id as string) ?? null,
+    })),
+  };
 }
 
 function roleLabel(key: string): string {
