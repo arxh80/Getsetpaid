@@ -51,10 +51,20 @@ export function PasswordInput({
       hint={hint}
       required={required}
       footer={
+        // min-h-6 = 24px: WCAG 2.2 AA SC 2.5.8 (Target Size, Minimum) sets a
+        // 24x24 CSS-pixel floor for a pointer target. Measured in the browser
+        // before this, the toggle's box was 96x20 -- 4px short on height, and
+        // none of 2.5.8's exceptions rescue it: it is not inline in a
+        // sentence, it is not a user-agent control, and the "spacing"
+        // exception fails too because the password input sits only 8px above
+        // it (Field's `gap-2`), so a 24px-diameter circle centred on this
+        // control overlaps the input's own target area. inline-flex +
+        // items-center keeps the label optically where it already sat, so the
+        // fix is 4px of box height and no visible change to the text.
         <button
           type="button"
           onClick={() => setVisible((v) => !v)}
-          className="self-start text-sm text-primary underline underline-offset-4"
+          className="inline-flex min-h-6 items-center self-start text-sm text-primary underline underline-offset-4 hover:text-ink"
         >
           {visible ? "Hide password" : "Show password"}
         </button>

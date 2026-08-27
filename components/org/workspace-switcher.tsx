@@ -38,6 +38,32 @@ export function WorkspaceSwitcher({
   current: CurrentOrg;
   memberships: Membership[];
 }) {
+  // ALPHABETICAL, NOT THE QUERY'S ORDER (Task 10 gate).
+  //
+  // getMemberships() returns `invited_at DESC` -- newest membership first --
+  // which is the right default for the /invites list it also feeds ("what
+  // arrived most recently"), but it is meaningless as a PICKER order: the
+  // position of a workspace in this list would change every time the user is
+  // invited to another one, so the item they reach for keeps moving. A
+  // picker's order should be stable and predictable, and for names the
+  // predictable order is alphabetical -- it also makes the native <select>'s
+  // built-in type-ahead (press "n" to jump) land somewhere sensible instead
+  // of cycling through an arbitrary sequence.
+  //
+  // Sorted HERE rather than in getMemberships() on purpose: this is a
+  // presentation choice belonging to this one control, and changing the
+  // shared query would silently re-order the invitations list and the
+  // "Your other workspaces" list too, neither of which asked for it.
+  //
+  // en-GB collation with numeric:true so "Studio 2" sorts before "Studio 10"
+  // rather than after it, and accented names sort where a UK reader expects.
+  const options = [...memberships].sort((a, b) =>
+    a.organisation.name.localeCompare(b.organisation.name, "en-GB", {
+      numeric: true,
+      sensitivity: "base",
+    }),
+  );
+
   return (
     <form action={switchWorkspaceAction} className="flex items-center gap-2">
       {/*
@@ -65,10 +91,10 @@ export function WorkspaceSwitcher({
         className={
           "h-11 min-w-0 max-w-40 truncate border bg-surface px-3 text-base text-ink " +
           "border-rule hover:border-ink focus:border-accent " +
-          "transition-colors duration-[120ms] ease-[cubic-bezier(0.2,0,0,1)]"
+          "transition-colors duration-[var(--dur-fast)] ease-brand"
         }
       >
-        {memberships.map((m) => (
+        {options.map((m) => (
           <option key={m.organisationId} value={m.organisationId}>
             {m.organisation.name}
           </option>
