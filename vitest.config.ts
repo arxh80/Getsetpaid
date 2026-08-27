@@ -1,5 +1,15 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
+// Test config. Two kinds of suite live under tests/ and they are deliberately
+// different in nature:
+//
+//   tests/integration/rls  -- real stack, no mocking (Task 5). See below.
+//   tests/unit             -- pure functions only, for properties an
+//                             integration test could only assert by waiting
+//                             (session age). See tests/unit/auth/step-up.test.ts
+//                             for why that exception is drawn where it is.
+//
 // Integration-test config for the RLS/permission-engine suite (Task 5).
 //
 // These tests talk to a REAL local Supabase stack over HTTP
@@ -24,5 +34,24 @@ export default defineConfig({
     // against the same local Postgres instance.
     fileParallelism: false,
     reporters: ["default"],
+  },
+  resolve: {
+    alias: {
+      // tsconfig's "@/*" -> "./*". Vitest does not read tsconfig paths.
+      "@": fileURLToPath(new URL(".", import.meta.url)),
+      // `import "server-only"` is a build-time guard: the package's default
+      // export is a bare `throw`, and only Next's `react-server` condition
+      // resolves it to the empty module. Vitest resolves the default, so any
+      // server module imported here would explode on import.
+      //
+      // Stubbing it out is safe and does NOT weaken the guarantee: the guard's
+      // whole job is to fail the NEXT BUILD when a Client Component reaches a
+      // server module, and that check still runs untouched (verified in Task 6
+      // by making a Client Component import lib/supabase/admin.ts -- the build
+      // failed hard). Nothing about a Node test process is a client bundle.
+      "server-only": fileURLToPath(
+        new URL("./node_modules/server-only/empty.js", import.meta.url),
+      ),
+    },
   },
 });

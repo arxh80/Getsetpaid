@@ -21,6 +21,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { siteUrl } from "@/lib/supabase/env";
 import { safeNextPath } from "./redirects";
+import { mayChangePassword, readAuthFreshness } from "./step-up";
 import {
   field,
   isValidEmail,
@@ -225,13 +226,44 @@ export async function signInWithGoogleAction(formData: FormData): Promise<void> 
 // So the invite landing page offers this, and the flow is not actually
 // complete without it.
 //
-// ON STEP-UP RE-AUTH: CLAUDE.md requires step-up re-authentication before
-// "changing security settings (MFA, password, email)". This is deliberately
-// NOT that case -- it is the INITIAL credential being set by someone whose
-// session was minted seconds ago from a one-time token sent to the address
-// being secured, which is the strongest proof of control available at this
-// point. A genuine password CHANGE, from account settings, must go through
-// step-up re-auth; that screen is a later task and must not reuse this action.
+// ON STEP-UP RE-AUTH -- REWRITTEN IN FIX ROUND 1, read this before touching
+// the password branch.
+//
+// CLAUDE.md § Session security requires step-up re-authentication before
+// "changing security settings (MFA, password, email)". The original version of
+// this action checked only that getUser() returned a user, and relied on the
+// UI's ?welcome=1 flag to mean "this is a first-time setup". That flag is a
+// query parameter: it grants nothing, anyone can type it, and the server never
+// looked at it anyway. The effect was that ANY authenticated session -- one
+// eleven hours into its 12-hour lifetime, or a stolen cookie -- could set a new
+// password with no proof of the old one. Review finding 1.
+//
+// What replaces it is a check on HOW, and HOW RECENTLY, this session actually
+// authenticated -- read from the JWT's `amr` claim, which survives token
+// refresh and therefore measures the authentication event rather than the
+// token's age. Two proofs are accepted and nothing else is:
+//
+//   STEP-UP     a credential method (password/MFA) within five minutes.
+//   LINK PROOF  a single-use emailed token (otp) within thirty minutes --
+//               the invitee's path, and the only proof they can have.
+//
+// A valid session that authenticated hours ago now fails BOTH, which is the
+// finding closed. lib/auth/step-up.ts holds the windows and the reasoning.
+//
+// WHY NOT "does this account already have a password?", which would let a
+// first-time set skip the gate entirely and force step-up on every genuine
+// change: BECAUSE THAT FACT IS NOT OBSERVABLE. Probed exhaustively --
+// user.identities is identical for an invitee and a password user, the Admin
+// API exposes no password field, and auth.users.encrypted_password stops being
+// empty the moment the invitee CONFIRMS, which is strictly before they can
+// reach this form. Full measurements are in lib/auth/step-up.ts, along with
+// the residual that leaves and the state of the notification email intended to
+// cover it.
+//
+// This action still must not become the account-settings "change password"
+// screen. That screen is a later task and owes the user a real re-entry of
+// their current password / MFA, not merely a recent one; what is here is the
+// floor, not the design.
 export async function completeAccountSetupAction(
   _prev: FormState,
   formData: FormData,
@@ -254,6 +286,9 @@ export async function completeAccountSetupAction(
     const problem = passwordProblem(password);
     if (problem) return { fieldErrors: { password: problem } };
 
+    const gate = await passwordChangeGate(supabase);
+    if (gate) return gate;
+
     const { error } = await supabase.auth.updateUser({ password });
     if (error) {
       return { fieldErrors: { password: authErrorMessage(error.message) } };
@@ -272,6 +307,45 @@ export async function completeAccountSetupAction(
   }
 
   return { message: "Saved." };
+}
+
+/**
+ * Decides whether this session may set a password right now.
+ *
+ * Returns null to allow, or the FormState to hand straight back to the form.
+ * Every failure path returns a REFUSAL -- there is no branch that falls
+ * through to "allow" on an unexpected condition. That is the whole point: the
+ * bug this replaces was a gate that permitted by default.
+ *
+ * Not exported (a "use server" module may only export async functions, and
+ * this is not an action). Deliberately not reachable from anywhere else
+ * either: the account-settings change-password screen must build its own real
+ * step-up, not import this one.
+ */
+async function passwordChangeGate(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+): Promise<FormState | null> {
+  // getClaims() validates the JWT with the auth server before returning the
+  // payload, so `amr` here is checked, not merely parsed off a cookie. An
+  // error, or claims with no usable amr, both land on ageSeconds === null --
+  // which every gate in step-up.ts refuses. Fail closed, by construction.
+  const { data: claimsData } = await supabase.auth.getClaims();
+  const freshness = readAuthFreshness(claimsData?.claims);
+
+  if (mayChangePassword(freshness)) return null;
+
+  // ONE message for every refusal. The alternatives ("your link expired" vs
+  // "sign in with your password first") would differ by whether the account
+  // has a password and how it last authenticated -- account metadata, handed
+  // to whoever holds the session. Same discipline as the enumeration note at
+  // the top of this file. The message names both recovery paths, so it is
+  // actionable whichever case the user is actually in.
+  return {
+    fieldErrors: {
+      password:
+        "For your security, sign in again before setting a password — with your password, or a fresh emailed link.",
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

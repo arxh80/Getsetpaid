@@ -179,7 +179,16 @@ enable_anonymous_sign_ins = false
 # Allow/disallow testing manual linking of accounts
 enable_manual_linking = false
 # Passwords shorter than this value will be rejected as weak. Minimum 6, recommended 8 or more.
-minimum_password_length = 6
+#
+# MUST STAY IN STEP WITH MIN_PASSWORD_LENGTH IN lib/forms.ts. This was the CLI
+# default of 6 while the application asked for 10, and the two are not
+# equivalent protections: GoTrue's endpoints are directly reachable with the
+# anon key, so a 6-character password could be set out-of-band and the
+# app-level check skipped entirely. CLAUDE.md § Permissions: "enforced
+# server-side -- hiding UI is not enforcement", and the app's own validator is
+# UI as far as the auth server is concerned. lib/forms.ts keeps the friendlier
+# message; this is the line that actually holds.
+minimum_password_length = 10
 # Passwords that do not meet the following requirements will be rejected as weak. Supported values
 # are: `letters_digits`, `lower_upper_letters_digits`, `lower_upper_letters_digits_symbols`
 password_requirements = ""
@@ -234,7 +243,20 @@ double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
 enable_confirmations = false
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
-secure_password_change = false
+#
+# ON AS A BACKSTOP, NOT AS THE GATE. Read GoTrue's actual rule before relying
+# on it: it only demands a reauthentication nonce when the session is more than
+# 24 HOURS old. Our absolute session lifetime is 12 hours ([auth.sessions]
+# timebox below), so that branch can never fire here -- which is why turning
+# this on is not, by itself, an answer to "a stale session must not be able to
+# change a password". The real gate is passwordChangeGate() in
+# lib/auth/actions.ts: a credential-method authentication within five minutes,
+# or a single-use emailed token within thirty (lib/auth/step-up.ts). This flag
+# is set so the intent is recorded at the auth server too, and so it starts
+# protecting if timebox is ever widened past 24h. Verified it breaks neither
+# password path: an invitee setting a first password and an existing user
+# changing theirs both still succeed.
+secure_password_change = true
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
 max_frequency = "1s"
 # Number of characters used in the email OTP.
@@ -271,11 +293,34 @@ content_path = "./supabase/templates/invite.html"
 subject = "Your GetSetPaid sign-in link"
 content_path = "./supabase/templates/magic-link.html"
 
-# Uncomment to customize notification email template
-# [auth.email.notification.password_changed]
-# enabled = true
-# subject = "Your password has been changed"
-# content_path = "./templates/password_changed_notification.html"
+# Password-change notification. ON DELIBERATELY, and intended as a security
+# control rather than a nicety.
+#
+# lib/auth/step-up.ts explains why: the application cannot tell whether an
+# account already has a password (GoTrue replaces the empty hash with a bcrypt
+# of a random value the moment an invitee confirms, so the column reads "has a
+# password" for a user who has none). The gate therefore accepts a freshly
+# consumed one-time emailed link as proof for setting a password -- no weaker
+# than the recovery flow, but it should not be SILENT. This notification is
+# what would make an unexpected change visible to the account holder.
+#
+# NOT VERIFIED WORKING LOCALLY, and the honest state is worth writing down
+# rather than assuming. Supabase CLI 2.108 ACCEPTS this block (it validates
+# content_path and fails the config load on a wrong one) but does not pass it
+# to the local GoTrue container: after two password writes, no notification
+# reached Mailpit, and `docker exec supabase_auth_… env | grep GOTRUE_MAILER`
+# shows subjects/templates for INVITE and MAGIC_LINK only -- no notification
+# variable of any kind. So this is currently declared intent, not an active
+# control. Re-check it on a newer CLI and on the hosted project before counting
+# it as the mitigation for the residual named in lib/auth/step-up.ts.
+[auth.email.notification.password_changed]
+enabled = true
+subject = "Your GetSetPaid password was changed"
+# NOTE the different base directory from [auth.email.template.*] above, which
+# take "./supabase/templates/...". The CLI resolves notification templates
+# relative to supabase/ itself, and a path with the extra segment fails the
+# config load outright ("open supabase\supabase\templates\..."). Not a typo.
+content_path = "./templates/password-changed.html"
 
 [auth.sms]
 # Allow/disallow new user signups via SMS to your project.
