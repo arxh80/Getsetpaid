@@ -104,10 +104,13 @@ probe "private helper has_platform_permission not an RPC"        404 "rpc/has_pl
 probe "private helper is_active_member not an RPC"               404 "rpc/is_active_member"
 probe "private helper shares_active_organisation not an RPC"     404 "rpc/shares_active_organisation"
 probe "private helper log_audit_event not an RPC"                404 "rpc/log_audit_event"
-# The one DEFINER function that IS meant to be a client endpoint stays routable
-# (400 = reached it, rejected the deliberately invalid slug).
+probe "private helper handle_new_user not an RPC"                404 "rpc/handle_new_user"
+# The two DEFINER functions that ARE meant to be client endpoints stay routable
+# (400 = reached it, rejected the deliberately invalid slug / null id).
 probe "create_organisation IS routable (positive control)"       400 \
       "rpc/create_organisation" '{"p_name":"X","p_slug":"!"}'
+probe "accept_invite IS routable (positive control)"             400 \
+      "rpc/accept_invite" '{"p_membership_id":null}'
 # has_permission is SECURITY INVOKER and self-scoped, so it stays public.
 probe "has_permission IS routable (positive control)"            200 \
       "rpc/has_permission" '{"p_org_id":null,"p_permission":"manage_members"}'

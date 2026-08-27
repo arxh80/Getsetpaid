@@ -108,9 +108,17 @@ grant execute on function harness.val(text,text,text)   to authenticated, anon, 
 -- ---------------------------------------------------------------------------
 -- Fixtures
 -- ---------------------------------------------------------------------------
+-- run-rls-tests.sh creates these auth.users rows through the Admin API, and
+-- as of Task 6 an AFTER INSERT trigger on auth.users (private.handle_new_user)
+-- already provisioned a public.profiles row for each of them -- with a NULL
+-- full_name, since the script sends no user_metadata. So this is now an UPSERT
+-- that names them, not the INSERT that creates them. Do not revert it to a
+-- plain INSERT: \set ON_ERROR_STOP on means the primary-key conflict would
+-- abort the entire suite.
 insert into public.profiles (id, full_name) values
   (:'alice','Alice'), (:'bob','Bob'), (:'carol','Carol'),
-  (:'dave','Dave'), (:'super','Superuser');
+  (:'dave','Dave'), (:'super','Superuser')
+on conflict (id) do update set full_name = excluded.full_name;
 
 -- alice creates org A, bob creates org B -- both through the sanctioned path,
 -- impersonated, so create_organisation() is itself under test.
@@ -136,15 +144,17 @@ insert into public.organisation_memberships (organisation_id, user_id, role, sta
 select id, :'dave', 'standard_user', 'invited' from public.organisations where slug='org-a';
 reset role; reset request.jwt.claims;
 
--- Carol ACCEPTS her invite. Done here as the DBA because the accept flow does
--- not exist yet: the invitee does not hold 'manage_members' in the org they
--- were invited to, so the UPDATE policy will not let them flip their own row.
--- Task 6 builds that as a SECURITY DEFINER function scoped to the caller's own
--- membership, same pattern as create_organisation. This line stands in for it
--- so the suite has an ACTIVE non-admin member to test with.
-update public.organisation_memberships
-   set status = 'active', joined_at = now()
- where user_id = :'carol';
+-- Carol ACCEPTS her invite -- through the REAL public.accept_invite() RPC
+-- (Task 6), impersonated as carol, exactly like create_organisation above.
+-- This used to be a DBA UPDATE standing in for a function that did not exist
+-- yet; now that it does, the fixture goes through the sanctioned path and the
+-- function is itself under test here as well as in section C17-C24.
+set role authenticated;
+set request.jwt.claims = :'carol_c';
+select public.accept_invite(id)
+  from public.organisation_memberships
+ where user_id = (select auth.uid());
+reset role; reset request.jwt.claims;
 -- dave stays 'invited' on purpose -- he is the invited-but-not-active subject.
 
 -- DBA-only action: grant platform superuser. Note this is an allowlist row with
@@ -289,13 +299,16 @@ select harness.try('C7  admin CAN issue a plain invite (positive control)',
 select harness.try('C7b cleanup: remove the invite issued by C7',
   format($$delete from public.organisation_memberships where user_id=%L$$, :'bob'), 'ok(1)');
 
--- The invitee cannot self-accept yet -- this is Task 6's job, asserted here so
--- the gap is visible and does not get silently "fixed" by a loosened policy.
+-- The invitee cannot self-accept through a plain UPDATE. Task 6 has now built
+-- the sanctioned path (public.accept_invite, section J), and this assertion is
+-- exactly what must NOT change as a result: the acceptance function is an
+-- addition, not a loosening. If this ever starts returning ok(1), the Task 4
+-- UPDATE policy has been weakened and the consent invariant is gone.
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'dave_c';
 
-select harness.try('C8  invitee cannot self-accept yet (Task 6 owns this)',
+select harness.try('C8  invitee still cannot self-accept via a plain UPDATE (see J)',
   $$update public.organisation_memberships set status='active', joined_at=now()
      where user_id = (select auth.uid())$$, 'ok(0)');
 
@@ -745,6 +758,122 @@ select harness.try('I4  no client INSERT into profiles',
 
 select harness.try('I5  no client DELETE from profiles',
   format($$delete from public.profiles where id=%L$$, :'alice'), 'denied(42501)');
+
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- J. accept_invite()  (Task 6)
+--
+-- The sanctioned invited -> active transition. C8 asserts the plain UPDATE is
+-- still refused; this section asserts the function that replaces it cannot be
+-- turned into a way to join an organisation you were never invited to.
+--
+-- RUNS LAST ON PURPOSE: J5 consumes dave's invite, and dave being 'invited' is
+-- a precondition of sections B, C and C22-C25. Do not move this section up.
+--
+-- The threat model, in order:
+--   accept someone else's invite            -> J1
+--   accept an invite that does not exist    -> J2 (must be INDISTINGUISHABLE
+--                                                  from J1 -- see design note
+--                                                  (c) in the migration)
+--   reach the function without a session    -> J3, J4
+--   re-accept / reinstate an existing row   -> J7, J8
+-- ===========================================================================
+
+-- Membership ids needed below. Read as the table owner, before impersonating.
+select id as alice_mem_id from public.organisation_memberships
+ where user_id = :'alice' \gset
+select id as dave_mem_id  from public.organisation_memberships
+ where user_id = :'dave' \gset
+select id as carol_mem_id from public.organisation_memberships
+ where user_id = :'carol' \gset
+
+set role authenticated;
+set request.jwt.claims = :'dave_c';
+
+-- THE CORE ATTACK: dave holds a real, valid pending invite, so he is exactly
+-- the caller who legitimately may call this function -- just not with someone
+-- else's row id. The ownership predicate lives in the lookup's WHERE clause,
+-- so alice's row is never even read.
+select harness.try('J1  invitee cannot accept ANOTHER user''s membership row',
+  format($$select public.accept_invite(%L)$$, :'alice_mem_id'), 'denied(42501)');
+
+-- Same sqlstate as J1, and the migration raises the same message text too.
+-- Two distinguishable errors here would be a membership-id enumeration oracle
+-- (DESIGN.md § Error pages: "exists, not yours" must look like "not found").
+select harness.try('J2  ...and a nonexistent membership id fails IDENTICALLY',
+  $$select public.accept_invite(gen_random_uuid())$$, 'denied(42501)');
+
+select harness.try('J2b a NULL membership id is rejected, not silently ignored',
+  $$select public.accept_invite(null)$$, 'denied(22023)');
+
+-- alice's row is untouched by the failed J1 -- statement-level rejection is not
+-- the same claim as "the world is unchanged" (same reasoning as C22-C25).
+select harness.val('J1b OUTCOME: dave still sees 0 organisations after J1',
+  $$select count(*)::text from public.organisations$$, '0');
+
+reset role; reset request.jwt.claims;
+
+-- No EXECUTE grant to anon: an unauthenticated caller cannot even reach the
+-- auth.uid() null-check inside the function.
+set role anon;
+select harness.try('J3  anon has no EXECUTE on accept_invite',
+  $$select public.accept_invite(gen_random_uuid())$$, 'denied(42501)');
+reset role;
+
+-- service_role is granted nothing anywhere in this schema (Task 4 design note
+-- (e)) and accept_invite is no exception -- a leaked service key is not a way
+-- to force-join anyone to an organisation.
+set role service_role;
+select harness.try('J4  service_role has no EXECUTE on accept_invite either',
+  $$select public.accept_invite(gen_random_uuid())$$, 'denied(42501)');
+reset role;
+
+-- Positive control. Without this, every assertion above passes against a
+-- function that simply always raises.
+set role authenticated;
+set request.jwt.claims = :'dave_c';
+
+select harness.try('J5  invitee CAN accept their OWN invite (positive control)',
+  format($$select public.accept_invite(%L)$$, :'dave_mem_id'), 'ok(1)');
+
+select harness.val('J6  OUTCOME: dave is now active WITH a joined_at stamp',
+  $$select status||'/'||(joined_at is not null)::text
+      from public.organisation_memberships where user_id=(select auth.uid())$$,
+  'active/true');
+
+select harness.val('J6b OUTCOME: dave can now actually see org A',
+  $$select count(*)::text from public.organisations$$, '1');
+
+-- Re-accepting must not re-stamp joined_at or re-audit. This is the case that
+-- gets its OWN error message (unlike J1/J2): the caller already proved
+-- ownership to reach it, so there is nothing left to leak.
+select harness.try('J7  accepting an ALREADY-ACTIVE row is refused',
+  format($$select public.accept_invite(%L)$$, :'dave_mem_id'), 'denied(22023)');
+
+reset role; reset request.jwt.claims;
+
+-- Carol accepted in the fixtures, through this same function.
+set role authenticated;
+set request.jwt.claims = :'carol_c';
+select harness.try('J8  an existing active member cannot re-accept',
+  format($$select public.accept_invite(%L)$$, :'carol_mem_id'), 'denied(22023)');
+reset role; reset request.jwt.claims;
+
+-- The acceptance is audited, like create_organisation. Only the platform
+-- superuser can read audit_events, so the assertion runs as super.
+set role authenticated;
+set request.jwt.claims = :'super_c';
+
+select harness.val('J9  both acceptances (carol fixture + dave J5) were audited',
+  $$select count(*)::text from public.audit_events
+     where action='membership.accepted'$$, '2');
+
+select harness.val('J10 the audit record names the actor and the org, not a guess',
+  format($$select (actor_user_id=%L)::text||'/'||(organisation_id=%L)::text
+             from public.audit_events
+            where action='membership.accepted' and target_id=%L$$,
+         :'dave', :'org_a_id', :'dave_mem_id'), 'true/true');
 
 reset role; reset request.jwt.claims;
 

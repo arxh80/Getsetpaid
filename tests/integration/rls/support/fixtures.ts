@@ -10,13 +10,10 @@
 //   - Invites are created through a REAL INSERT against
 //     organisation_memberships, signed in as an org admin/owner who holds
 //     'manage_members' -- again the actual client path.
-//   - Activating an invite to 'active' has NO client path yet (Task 6 owns
-//     building it -- see the permission-engine migration's own comment on
-//     organisation_memberships_update_manage_members). Exactly like
-//     rls_foundation.sql's carol-activation step, this file does that one
-//     step as the Postgres superuser (bypassing RLS), because it is
-//     fixture *arrangement*, not something under test. No assertion in the
-//     test suite is ever made through this pg connection.
+//   - Activating an invite to 'active' goes through the REAL
+//     public.accept_invite() RPC (Task 6), called by each invitee's own
+//     signed-in client. It used to be a raw superuser UPDATE because no
+//     client path existed; that path now exists, so the fixture uses it.
 //   - Granting platform_admins is a DBA-only action by design (no client
 //     path exists at all, and the suite asserts that) -- done the same way.
 //
@@ -166,18 +163,22 @@ export async function createFixtures(): Promise<RlsFixtures> {
 
   const allUserIds = [...idByEmail.values()];
 
-  // ---- 1b. Provision public.profiles rows for every persona.
-  // There is no trigger yet that creates a profiles row when an auth.users
-  // row is created -- the permission-engine migration's own comment says so
-  // explicitly ("profile rows are provisioned alongside the auth.users row
-  // (Task 6)"), and rls_foundation.sql does this exact INSERT by hand for
-  // the same reason. public.profiles has no client-facing INSERT policy at
-  // all, so this can only be done as the Postgres superuser -- fixture
-  // arrangement standing in for a not-yet-built provisioning step, same as
-  // the membership-activation step below.
+  // ---- 1b. Name the personas' public.profiles rows.
+  // These rows already EXIST: as of Task 6 an AFTER INSERT trigger on
+  // auth.users (private.handle_new_user) provisions one for every user, which
+  // is what the permission-engine migration meant by "profile rows are
+  // provisioned alongside the auth.users row (Task 6)". createUser() above
+  // sends no user_metadata, so each arrives with a NULL full_name.
+  //
+  // This is therefore an UPSERT that gives them readable names for the
+  // profile-visibility assertions, not the INSERT that creates them -- a
+  // plain INSERT would now hit the primary key. profiles still has no
+  // client-facing INSERT/UPDATE-anyone-else policy, so naming another user's
+  // profile is still only possible as the Postgres superuser.
   await pool.query(
     `insert into public.profiles (id, full_name)
-     select * from unnest($1::uuid[], $2::text[])`,
+     select * from unnest($1::uuid[], $2::text[])
+     on conflict (id) do update set full_name = excluded.full_name`,
     [allUserIds, allEmails],
   );
 
@@ -249,18 +250,32 @@ export async function createFixtures(): Promise<RlsFixtures> {
     throw new Error(`Fixture invites into org A failed: ${inviteErr.message}`);
   }
 
-  // ---- 5. Activate every invite EXCEPT invitedAdminA, as the Postgres
-  // superuser (bypasses RLS). This stands in for Task 6's not-yet-built
-  // accept-invite flow -- see the header comment. invitedAdminA is left
-  // 'invited' on purpose: it is the subject of the status-gating tests.
-  const toActivate = nonOwnerRoles.map((role) => idByEmail.get(roleEmails.get(role)!)!);
-  await pool.query(
-    `update public.organisation_memberships
-        set status = 'active', joined_at = now()
-      where organisation_id = $1
-        and user_id = any($2::uuid[])`,
-    [orgAId, toActivate],
-  );
+  // ---- 5. Activate every invite EXCEPT invitedAdminA, through the REAL
+  // public.accept_invite() RPC (Task 6), each call made by the invitee's own
+  // signed-in client. This used to be a raw superuser UPDATE standing in for
+  // a flow that did not exist; now that it does, the fixture goes through the
+  // sanctioned path like every other step here.
+  //
+  // invitedAdminA is left 'invited' on purpose: it is the subject of the
+  // status-gating tests.
+  for (const role of nonOwnerRoles) {
+    const persona = clientByEmail.get(roleEmails.get(role)!)!;
+    const { data: rows, error: findErr } = await persona
+      .from("organisation_memberships")
+      .select("id")
+      .eq("organisation_id", orgAId as string);
+    if (findErr || !rows?.length) {
+      throw new Error(
+        `Fixture: ${role} could not see their own pending membership: ${findErr?.message}`,
+      );
+    }
+    const { error: acceptErr } = await persona.rpc("accept_invite", {
+      p_membership_id: rows[0].id as string,
+    });
+    if (acceptErr) {
+      throw new Error(`Fixture accept_invite failed for ${role}: ${acceptErr.message}`);
+    }
+  }
 
   // ---- 6. Grant platform_admins to the superuser persona. No client path
   // exists for this at all (public.platform_admins has zero policies and no
