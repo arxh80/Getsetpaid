@@ -196,7 +196,16 @@ password_requirements = ""
 
 [auth.rate_limit]
 # Number of emails that can be sent per hour. Requires auth.email.smtp to be enabled.
-email_sent = 2
+#
+# Raised from the CLI default of 2. Two auth emails per hour PER PROJECT (not
+# per user) makes the invite flow unusable the moment an organisation onboards
+# more than one colleague in a sitting -- the third invite silently fails to
+# send while the membership row is created, leaving an invitee who can never
+# accept. 30/hour is a working figure for local development and small-team
+# onboarding; the real production ceiling belongs with the transactional email
+# provider once one is chosen, alongside the per-user application rate limits
+# in SECURITY.md § 5.
+email_sent = 30
 # Number of SMS messages that can be sent per hour. Requires auth.sms to be enabled.
 sms_sent = 30
 # Number of anonymous sign-ins that can be made per hour per IP address. Requires enable_anonymous_sign_ins = true.
@@ -243,10 +252,24 @@ otp_expiry = 3600
 # admin_email = "admin@email.com"
 # sender_name = "Admin"
 
-# Uncomment to customize email template
-# [auth.email.template.invite]
-# subject = "You have been invited"
-# content_path = "./supabase/templates/invite.html"
+# Custom email templates. THESE ARE NOT COSMETIC -- read supabase/templates/
+# invite.html before changing either of them.
+#
+# GoTrue's stock templates use {{ .ConfirmationURL }}, which routes through
+# /auth/v1/verify and hands the session back in a URL FRAGMENT
+# (#access_token=...). Fragments are never sent to the server, so our
+# server-side /auth/callback route cannot read one -- supabase-js documents
+# that "PKCE is not supported when using inviteUserByEmail", and this is the
+# consequence. Both templates below use {{ .TokenHash }} against our own
+# callback instead, which completes the exchange with verifyOtp() on the
+# server and keeps auth tokens out of the browser's URL, history and Referer.
+[auth.email.template.invite]
+subject = "You've been invited to a GetSetPaid workspace"
+content_path = "./supabase/templates/invite.html"
+
+[auth.email.template.magic_link]
+subject = "Your GetSetPaid sign-in link"
+content_path = "./supabase/templates/magic-link.html"
 
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]
@@ -268,12 +291,14 @@ max_frequency = "5s"
 # [auth.sms.test_otp]
 # 4152127777 = "123456"
 
-# Configure logged in session timeouts.
-# [auth.sessions]
-# Force log out after the specified duration.
-# timebox = "24h"
-# Force log out if the user has been inactive longer than the specified duration.
-# inactivity_timeout = "8h"
+# Session limits. These are the values CLAUDE.md § Session security signed off
+# on, enforced by the auth server rather than by application code:
+#   "Inactivity timeout 30 minutes; absolute max session lifetime 12 hours."
+# An app-side timer would only control what the UI shows; timebox and
+# inactivity_timeout invalidate the refresh token itself.
+[auth.sessions]
+timebox = "12h"
+inactivity_timeout = "30m"
 
 # This hook runs before a new user is created and allows developers to reject the request based on the incoming user object.
 # [auth.hook.before_user_created]
@@ -333,6 +358,36 @@ url = ""
 skip_nonce_check = false
 # If enabled, it will allow the user to successfully authenticate when the provider does not return an email address.
 email_optional = false
+
+# Google SSO. CLAUDE.md § Session security: "Google sign-in ships at MVP ...
+# Microsoft SSO is post-MVP."
+#
+# CREDENTIALS ARE NOT PROVISIONED YET. Creating the Google Cloud OAuth client
+# is a founder action tracked as an open decision, so both values below resolve
+# from environment variables that are currently unset. `enabled = true` with
+# empty credentials means the provider is wired but any attempt fails at
+# Google's end -- which is the honest state, and is why this task could not
+# verify an end-to-end Google login.
+#
+# THESE ARE READ BY THE SUPABASE AUTH SERVER, NOT BY THE NEXT.JS APP. No
+# application code reads GOOGLE_OAUTH_CLIENT_ID or _SECRET; the app only calls
+# signInWithOAuth({ provider: 'google' }). That is why neither is NEXT_PUBLIC_
+# and why the secret never enters the repo -- config.toml's env() substitution
+# resolves them at container start.
+#
+# Authorised redirect URI to register with Google:
+#   http://127.0.0.1:54321/auth/v1/callback   (local)
+# GoTrue then forwards to our own /auth/callback with a ?code= to exchange.
+[auth.external.google]
+enabled = true
+client_id = "env(GOOGLE_OAUTH_CLIENT_ID)"
+# DO NOT commit the secret. Environment variable substitution only.
+secret = "env(GOOGLE_OAUTH_CLIENT_SECRET)"
+redirect_uri = ""
+url = ""
+# Local sign-in with Google requires the nonce check to be skipped; leave this
+# false for hosted environments.
+skip_nonce_check = false
 
 # Allow Solana wallet holders to sign in to your project via the Sign in with Solana (SIWS, EIP-4361) standard.
 # You can configure "web3" rate limit in the [auth.rate_limit] section and set up [auth.captcha] if self-hosting.

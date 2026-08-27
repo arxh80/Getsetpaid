@@ -1,30 +1,162 @@
 @import "tailwindcss";
 
+/* ===========================================================================
+   GetSetPaid design tokens.
+
+   DESIGN.md § Tokens is the source of truth; this file is that contract
+   expressed as Tailwind v4 `@theme`, which is CSS-first -- so these ARE the
+   utilities. `bg-shell`, `text-ink-muted`, `border-rule`, `p-5`, `text-2xl`
+   all resolve from here, and there is no tailwind.config.js to disagree with.
+
+   RULES THAT ARE NOT NEGOTIABLE (DESIGN.md § Anti-patterns):
+     - No literal hex in a component. Ever. Add a token here first.
+     - --radius is 0 everywhere. No exceptions, no per-component override.
+     - No box-shadow for elevation. Depth is a 1px --rule hairline plus a
+       background step (shell -> surface -> surface + rule-strong).
+     - THE TWO-BLUE RULE: --color-primary (#0062FF, 4.65:1) is the ONLY blue
+       allowed to touch text or fill a button. --color-accent (#3A86FF,
+       3.23:1) is borders, focus rails, active state and charts -- never
+       text under 24px bold, never a fill behind a label. They are 11% apart
+       in lightness and WILL be confused unless you go through the token.
+     - --lilac / --pink are surfaces only. Never text, never a meaningful
+       border, never the sole signal for a status.
+
+   `python scripts/contrast.py` audits every pair above against WCAG 2.2 AA
+   and exits non-zero on a failure. Run it after touching any colour.
+   =========================================================================== */
+
 @theme {
-  /* GetSetPaid colour palette — per DESIGN.md */
-  --color-shell: #FFF4F4;
+  /* ---- Ground ---------------------------------------------------------- */
+  --color-shell: #FFF4F4;      /* page */
+  --color-surface: #FFFFFF;    /* cards, tables, drawers */
+
+  /* ---- Text ------------------------------------------------------------ */
+  --color-ink: #14141C;        /* 17.01:1 on shell */
+  --color-ink-muted: #55555F;  /*  6.84:1 on shell */
+
+  /* ---- Blue -- two values, see the two-blue rule above ------------------ */
+  --color-primary: #0062FF;    /*  4.65:1 -- the ONLY blue on text or a button */
+  --color-on-primary: #FFFFFF; /*  5.01:1 on --color-primary */
+  --color-accent: #3A86FF;     /*  3.23:1 -- borders, focus rails, active, charts */
+
+  /* ---- Surfaces -------------------------------------------------------- */
   --color-lilac: #BDB2FF;
   --color-pink: #FFD6E0;
-  --color-ink: #14141C;
-  /* --color-primary: text and buttons ONLY — the only blue permitted on text or a button */
-  --color-primary: #0062FF;
-  /* --color-accent: borders, focus rings, active state, charts ONLY — never swap with primary */
-  --color-accent: #3A86FF;
 
-  /* Shape — square corners everywhere */
+  /* ---- Structure ------------------------------------------------------- */
+  --color-rule: #D6CBCB;
+  --color-rule-strong: #14141C;
+
+  /* ---- Status -- never the only signal, always paired with a label ------ */
+  --color-success: #0E5F42;    /*  7.13:1 */
+  --color-warning: #7A4F00;    /*  6.62:1 */
+  --color-danger: #9E1C15;     /*  7.41:1 */
+
+  /* ---- Type ------------------------------------------------------------ */
+  --font-serif: var(--font-source-serif-4), "Iowan Old Style", Georgia,
+    "Times New Roman", serif;
+
+  --text-xs: 0.75rem;      --text-xs--line-height: 1rem;
+  --text-sm: 0.8125rem;    --text-sm--line-height: 1.25rem;
+  --text-base: 0.9375rem;  --text-base--line-height: 1.5rem;
+  --text-lg: 1.0625rem;    --text-lg--line-height: 1.625rem;
+  --text-xl: 1.25rem;      --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5625rem;   --text-2xl--line-height: 2rem;
+  --text-3xl: 2rem;        --text-3xl--line-height: 2.375rem;
+  --text-4xl: 2.75rem;     --text-4xl--line-height: 3rem;
+  --text-5xl: 3.75rem;     --text-5xl--line-height: 3.875rem;
+
+  /* ---- Shape -- square everywhere -------------------------------------- */
   --radius: 0;
 
-  /* Font from next/font/google */
-  --font-serif: var(--font-source-serif-4);
+  /* ---- Space -- 4px base ----------------------------------------------- */
+  --spacing: 0.25rem;
+
+  /* ---- Motion ---------------------------------------------------------- */
+  --dur-fast: 120ms;
+  --dur-base: 160ms;
+  --dur-slow: 240ms;
+  --ease-brand: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ===========================================================================
+   Third-party brand marks -- NOT design tokens.
+
+   Google's sign-in button must carry the official four-colour "G"; recolouring
+   it breaks Google's brand guidelines, so these four values are fixed by them,
+   not chosen by us. They live here, named and quarantined, so the anti-pattern
+   rule ("a literal hex in a component") still holds across the whole app and
+   the diff stays greppable. Nothing else may use them.
+   =========================================================================== */
+:root {
+  --brand-google-blue: #4285F4;
+  --brand-google-green: #34A853;
+  --brand-google-yellow: #FBBC05;
+  --brand-google-red: #EA4335;
+}
+
+/* ===========================================================================
+   Base
+   =========================================================================== */
+
+html {
+  /* hallmark responsive gate: clip, never hidden -- `hidden` on the root
+     silently kills position:sticky in descendants. */
+  overflow-x: clip;
+  background: var(--color-shell);
 }
 
 body {
+  overflow-x: clip;
   background: var(--color-shell);
   color: var(--color-ink);
-  font-family: var(--font-serif), "Iowan Old Style", Georgia, "Times New Roman", serif;
+  font-family: var(--font-serif);
 }
 
-/* Tabular figures for numeric columns in tables — no consumer yet, utility exists for later use */
+/* DESIGN.md § Shape: square corners everywhere. Set once, globally, rather
+   than fighting a component library's rounded defaults one class at a time. */
+*,
+*::before,
+*::after {
+  border-radius: var(--radius);
+}
+
+/* DESIGN.md § Interaction states: ink, not blue, so the ring stays visible on
+   every surface INCLUDING a --color-primary fill (3.66:1, its tightest case).
+   Never animated -- a focus ring must appear the instant focus lands. */
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 2px;
+}
+
+/* Display sizes need tightening -- bold serifs open up at scale. */
+.tracking-display {
+  letter-spacing: -0.02em;
+}
+
+/* DESIGN.md § Numerals: non-negotiable on every number in a table, every
+   currency value and every date column. */
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+/* iOS Safari zooms the viewport when a focused input's font-size is under
+   16px. Our base type is 15px by design (DESIGN.md § Type, "base 15px"), so
+   the fix is scoped to touch-sized viewports and to form controls only --
+   the type scale itself is untouched. */
+@media (max-width: 48rem) {
+  input,
+  select,
+  textarea {
+    font-size: 1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
 }
