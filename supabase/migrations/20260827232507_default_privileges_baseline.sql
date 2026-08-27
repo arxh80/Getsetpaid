@@ -1,0 +1,115 @@
+-- Phase 2 (Core CRM), Task 1a: ALTER DEFAULT PRIVILEGES baseline for schema
+-- `public`.
+--
+-- Carried in from FOLLOW-UPS.md § "Phase 2 -- Core CRM". This migration creates
+-- no objects. It changes what a *future* CREATE TABLE in `public` grants by
+-- default, so it must run before the first Phase 2 table exists -- which is why
+-- it is its own migration and the first one of the phase.
+--
+-- ===========================================================================
+-- WHY THIS EXISTS
+-- ===========================================================================
+--
+-- Foundation's Task 4 migration (20260826154304) ends with a block of
+--
+--     revoke all on public.<table> from anon, authenticated, service_role;
+--
+-- one line per table, and its design note (e) explains why: Supabase's stock
+-- default ACL for `public` hands anon/authenticated/service_role the residual
+-- TRUNCATE / REFERENCES / TRIGGER / MAINTAIN privileges on every table the
+-- `postgres` role creates. Measured on this stack before this migration ran:
+--
+--     defaclrole | nspname | objtype | defaclacl
+--     -----------+---------+---------+-------------------------------------
+--     postgres   | public  | r       | {postgres=arwdDxtm/postgres,
+--                                       anon=Dxtm/postgres,
+--                                       authenticated=Dxtm/postgres,
+--                                       service_role=Dxtm/postgres}
+--
+-- `Dxtm` is TRUNCATE, REFERENCES, TRIGGER, MAINTAIN. No SELECT/INSERT/UPDATE/
+-- DELETE -- this project does not auto-expose new tables (supabase/config.toml,
+-- `auto_expose_new_tables` unset) -- but `anon` holding TRUNCATE on every
+-- tenant table is not a privilege anyone intended to grant, and RLS does not
+-- stop a TRUNCATE.
+--
+-- The per-table revoke is correct and it worked. The problem is that it is a
+-- thing every future migration has to REMEMBER to repeat, forever, once per
+-- new table, with no failure mode if it is forgotten -- the table simply ships
+-- with a privilege nobody reviewed. Phase 2 adds twelve tables in one go and
+-- later phases add more, so the odds of that omission stop being theoretical.
+--
+-- Setting the default at the schema level inverts it: new tables arrive locked,
+-- and *granting* becomes the deliberate act that shows up in review. That is
+-- the direction the control should point.
+--
+-- ===========================================================================
+-- SCOPE AND ITS LIMITS -- read before assuming this covers something
+-- ===========================================================================
+--
+-- ALTER DEFAULT PRIVILEGES is scoped to (grantor role, schema, object type).
+-- It is NOT a property of the schema. Getting that wrong produces a baseline
+-- that silently does nothing, so the scoping here is deliberate and was
+-- verified empirically rather than assumed:
+--
+--   * FOR ROLE postgres -- because `postgres` is the role that creates every
+--     object in this project. Verified: all nine Foundation tables report
+--     `tableowner = postgres` in pg_tables, and both `supabase db reset` and
+--     `supabase db push` apply migrations over the `postgres` connection.
+--
+--   * The clause is written out explicitly rather than relying on the
+--     current_user default. An unqualified ALTER DEFAULT PRIVILEGES silently
+--     retargets itself if this file is ever replayed by a different role
+--     (a DBA session, a restore, a future pooled connection), and the failure
+--     is invisible: the statement succeeds and protects nothing.
+--
+--   * IT DOES NOT COVER `supabase_admin`. That role has its own, far more
+--     permissive default ACL for `public` (anon/authenticated/service_role all
+--     get arwdDxtm), and `postgres` is not a member of it, so this migration
+--     cannot alter it. Nothing in this repo creates objects as supabase_admin
+--     -- but a table created by hand in the Supabase SQL editor may, and it
+--     would arrive fully granted to anon. Create tables through migrations.
+--
+--   * It applies only to objects created AFTER it runs. Foundation's nine
+--     tables keep the explicit revokes they already have; this changes nothing
+--     about them, by design (additive-only migrations -- FOLLOW-UPS.md
+--     § "Gate: before the first `supabase db push`").
+--
+-- ===========================================================================
+-- WHAT THIS IS NOT
+-- ===========================================================================
+--
+-- This is not RLS and does not replace it. GRANTs decide whether a table is
+-- reachable at all; RLS decides which rows are visible once it is (SECURITY.md
+-- § 2, and Foundation design note (e)). Every new tenant table still needs
+-- `alter table ... enable row level security` in the migration that creates it.
+-- The two controls fail independently and both are required.
+-- ===========================================================================
+
+-- TABLES. `revoke all` rather than naming privileges: the point is that the
+-- floor is zero and every privilege a client role holds is one some migration
+-- granted on purpose. Matches the shape Foundation used per-table.
+alter default privileges for role postgres in schema public
+  revoke all on tables from anon, authenticated, service_role;
+
+-- SEQUENCES. Stock default hands anon/authenticated/service_role `w` (UPDATE)
+-- on every sequence, which is nextval/setval. No Phase 2 table uses a sequence
+-- (UUID primary keys throughout, per CLAUDE.md § Non-negotiable rules), so this
+-- protects nothing today. It is here so that the first table that DOES want a
+-- serial/identity column -- an invoice number, a display order -- does not
+-- quietly ship a client-writable counter.
+alter default privileges for role postgres in schema public
+  revoke all on sequences from anon, authenticated, service_role;
+
+-- FUNCTIONS. Postgres's hard-wired default grants EXECUTE to PUBLIC on every
+-- new function, and anon/authenticated/service_role inherit from PUBLIC. The
+-- stock Supabase default ACL for (postgres, public, functions) already narrows
+-- that to `{postgres=X/postgres}`, so this line is currently a no-op -- it is
+-- written anyway because that stock entry is a platform default this project
+-- does not control, and a SECURITY DEFINER function that arrives
+-- PUBLIC-executable in `public` is a PostgREST endpoint that bypasses RLS.
+-- Foundation hit exactly that class of bug (design note in 20260826154304:
+-- stored_membership_status() published as an RPC, leaking cross-tenant rows).
+-- Pinning the floor here means the protection does not depend on a Supabase
+-- default staying what it is today.
+alter default privileges for role postgres in schema public
+  revoke all on functions from public, anon, authenticated, service_role;
