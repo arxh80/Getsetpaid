@@ -254,12 +254,73 @@ describe("mergeSocials: an edit must not destroy a key the form never showed", (
     expect(mergeSocials([1, 2], { x: "@a" })).toEqual({ x: "@a" });
   });
 
-  it("does not carry a stored NON-STRING through into the column", () => {
-    // Same rule parseSocials applies on the way out: a number or a nested
-    // object is not a handle. Carrying it would re-store a value no screen can
-    // render.
+  it("CARRIES a stored NON-STRING through into the column (N-7)", () => {
+    // THIS ASSERTION USED TO SAY THE OPPOSITE, and the reason given was "the
+    // same rule parseSocials applies on the way out". It is not the same rule:
+    // parseSocials declines to RENDER a non-string, it does not DELETE it. The
+    // column's only CHECK is `jsonb_typeof(socials) = 'object'`, so a number
+    // or a nested object is a legal value an import or Task 6's merge can
+    // write -- and the old behaviour destroyed it on the first edit of an
+    // unrelated field, with no undo and no audit row. Nothing renders these,
+    // so nothing is exposed by keeping them.
     expect(mergeSocials({ a: 1, b: null, c: [], keep: "@k" }, {})).toEqual({
+      a: 1,
+      b: null,
+      c: [],
       keep: "@k",
+    });
+  });
+
+  it("carries the two shapes the re-review measured being destroyed", () => {
+    // Verbatim from N-7's table: both were in the column before an ordinary
+    // edit of `instagram` and gone after it, with nothing on screen saying so.
+    expect(mergeSocials({ mixcloud: 42 }, { instagram: "@ok" })).toEqual({
+      mixcloud: 42,
+      instagram: "@ok",
+    });
+    expect(
+      mergeSocials({ mixcloud: { url: "https://m.example" } }, { instagram: "@ok" }),
+    ).toEqual({ mixcloud: { url: "https://m.example" }, instagram: "@ok" });
+  });
+});
+
+describe("mergeSocials: the six keys the form owns are case-insensitive (N-6)", () => {
+  // jsonb keys are case-sensitive, so `Instagram` and `instagram` are two rows
+  // of one column. Measured in a browser: both rendered under the SAME label
+  // (PLATFORM_LABELS has no "Instagram", so parseSocials falls back to the
+  // key), and emptying the form's one input cleared `instagram` and left
+  // `Instagram` in place, unremovable through the product for ever.
+
+  it("a submitted key removes every case-variant of itself", () => {
+    // THE CASE, exactly as briefed.
+    expect(
+      mergeSocials(
+        { Instagram: "x", instagram: "@old", mixcloud: "m" },
+        { instagram: "@ok" },
+      ),
+    ).toEqual({ instagram: "@ok", mixcloud: "m" });
+  });
+
+  it("clearing the input removes the variants too, not just the canonical key", () => {
+    // The half that makes the row REMOVABLE, which is the whole complaint.
+    expect(mergeSocials({ INSTAGRAM: "a", Instagram: "b", instagram: "c" }, {})).toEqual(
+      {},
+    );
+  });
+
+  it("only writes back the canonical lowercase spelling", () => {
+    const out = mergeSocials({ SoundCloud: "@old" }, { soundcloud: "@new" });
+    expect(Object.keys(out)).toEqual(["soundcloud"]);
+    expect(out).toEqual({ soundcloud: "@new" });
+  });
+
+  it("leaves an UNKNOWN key alone whatever its case", () => {
+    // The fold is scoped to the six. `Telegram` is not one of them, so it is
+    // still somebody else's data and is carried untouched -- N-7's rule.
+    expect(mergeSocials({ Telegram: "@t", MixCloud: "@m" }, { x: "@ok" })).toEqual({
+      Telegram: "@t",
+      MixCloud: "@m",
+      x: "@ok",
     });
   });
 });

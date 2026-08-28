@@ -207,16 +207,33 @@ export function normaliseWebsite(raw: string | null): WebsiteResult {
  * costs nothing, and the FORM stays closed so today's keys are consistent
  * enough to filter and display.
  *
- * A KEY THAT IS NOT ON THIS LIST SURVIVES BOTH DIRECTIONS, and the second
- * half of that sentence was FALSE when it was first written. `parseSocials`
- * preserved unknown keys on READ, and the previous version of this comment
- * stopped there -- but `updateContactAction` then wrote a fresh object built
- * by iterating this list alone, straight over the column. Reproduced in a
- * browser: a row imported with `mixcloud` rendered its link on the detail
- * page, the edit form had no input for it, and the first save of any other
- * field destroyed it silently and permanently. The write path now merges
- * through `mergeSocials()` below; this comment is only true because that
- * function exists.
+ * A KEY THAT IS NOT ON THIS LIST SURVIVES BOTH DIRECTIONS, WHATEVER ITS VALUE,
+ * and that sentence has been wrong twice -- in a different way each time, so
+ * both corrections are recorded rather than quietly overwritten:
+ *
+ *   1. It was false on the WRITE side. `parseSocials` preserved unknown keys
+ *      on read and the comment stopped there, but `updateContactAction` wrote
+ *      a fresh object built by iterating this list alone, straight over the
+ *      column. Reproduced in a browser: a row imported with `mixcloud`
+ *      rendered its link on the detail page, the edit form had no input for
+ *      it, and the first save of any other field destroyed it silently and
+ *      permanently. `mergeSocials()` below is the fix.
+ *
+ *   2. "Whatever its value" was still false after that. `mergeSocials` carried
+ *      only STRING values through and dropped everything else, which the fix
+ *      report defended as "the same rule `parseSocials` applies on the way
+ *      out". It is not the same rule: `parseSocials` declines to RENDER a
+ *      non-string, it does not DELETE it. The column's only CHECK is
+ *      `jsonb_typeof(socials) = 'object'`, so `{"mixcloud":{"url":"..."}}` is
+ *      a legal value an import or Task 6's merge can write, and an ordinary
+ *      edit of the `instagram` field destroyed it. `mergeSocials` now carries
+ *      non-strings through untouched -- nothing renders them, so nothing is
+ *      exposed, and the alternative is silent data loss with no undo and no
+ *      audit row until Phase 7.
+ *
+ * THE ONE EXCEPTION, AND IT IS DELIBERATE: a stored key that differs from one
+ * of the six ONLY IN CASE is not an unknown key, it is this key spelled
+ * differently, and `mergeSocials` folds it. See that function.
  */
 export const SOCIAL_PLATFORMS = [
   { key: "instagram", label: "Instagram" },
@@ -255,6 +272,37 @@ export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number]["key"];
  * carried through untouched, because the form never offered the user a way to
  * say anything about it.
  *
+ * ===========================================================================
+ * "THE SIX" IS CASE-INSENSITIVE, BECAUSE THE COLUMN'S KEYS ARE NOT
+ * ===========================================================================
+ * jsonb object keys are case-sensitive, so `Instagram` and `instagram` are two
+ * rows of the same column and the form owns only the second. Measured in a
+ * browser before this fold existed: both rendered on the detail page, under
+ * the SAME label (`PLATFORM_LABELS.get("Instagram")` is undefined, so
+ * `parseSocials` falls back to the key), and emptying the one input the form
+ * has cleared `instagram` and left `Instagram` there for ever. No XSS -- the
+ * value's `href` was null both times -- but a permanently unremovable row
+ * wearing a platform name the product claims to own.
+ *
+ * So the submitted `instagram` deletes EVERY stored key that lowercases to
+ * `instagram`, then writes the canonical lowercase one. A key that is unknown
+ * in any case (`mixcloud`, `Telegram`) is untouched, as before.
+ *
+ * ===========================================================================
+ * A NON-STRING VALUE IS CARRIED, NOT DROPPED
+ * ===========================================================================
+ * The column's only CHECK is `jsonb_typeof(socials) = 'object'`, so a value
+ * can be a number, an array, a nested object or null, and an import or Task
+ * 6's merge can legally write one. `parseSocials` declines to RENDER those --
+ * which is right, and is a different act from deleting them. Dropping them
+ * here made an ordinary edit of one field destroy the contents of another,
+ * silently, with no undo and no audit row until Phase 7. Nothing renders a
+ * non-string, so carrying it exposes nothing; destroying it is the same defect
+ * as writing the six keys over the whole column, narrowed.
+ *
+ * That is why the return type is `Record<string, unknown>` and not
+ * `Record<string, string>`: the honest type of what goes back into the column.
+ *
  * `stored` is read from the database at save time, NOT echoed through a hidden
  * input: a hidden input is client-supplied and would let a caller rewrite keys
  * the form does not render, under cover of an ordinary save.
@@ -264,20 +312,23 @@ export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number]["key"];
 export function mergeSocials(
   stored: unknown,
   submitted: Readonly<Record<string, string>>,
-): Record<string, string> {
-  const out: Record<string, string> = {};
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   if (stored !== null && typeof stored === "object" && !Array.isArray(stored)) {
     for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
-      // Same shape discipline as parseSocials: the column's only CHECK is
-      // `jsonb_typeof(socials) = 'object'`, so a value can be a number, an
-      // array or null. A non-string is not a handle and is not carried.
-      if (typeof value === "string") out[key] = value;
+      out[key] = value;
     }
+  }
+  // FOLD FIRST, THEN WRITE. Every case-variant of an owned key goes, including
+  // the canonical spelling, so the second pass is the only thing that can put
+  // one back -- and a cleared field leaves none of them behind.
+  const owned = new Set<string>(SOCIAL_PLATFORMS.map((p) => p.key as string));
+  for (const key of Object.keys(out)) {
+    if (owned.has(key.toLowerCase())) delete out[key];
   }
   for (const platform of SOCIAL_PLATFORMS) {
     const value = submitted[platform.key];
-    if (value === undefined) delete out[platform.key];
-    else out[platform.key] = value;
+    if (value !== undefined) out[platform.key] = value;
   }
   return out;
 }
@@ -300,8 +351,11 @@ const PLATFORM_LABELS = new Map<string, string>(
  * DEFENSIVE ABOUT SHAPE AS WELL AS PROTOCOL. The column's only constraint is
  * `jsonb_typeof(socials) = 'object'`, so a value can be a number, an array, a
  * nested object or null, and any of those reaching `String()` produces
- * `[object Object]` in a table cell. Non-strings are dropped, which is the
- * honest reading of "this is not a handle".
+ * `[object Object]` in a table cell. Non-strings are dropped FROM THE RENDER,
+ * which is the honest reading of "this is not a handle" -- and is a different
+ * act from dropping them from the COLUMN, which `mergeSocials` used to do and
+ * deliberately no longer does. Declining to show a value is not a licence to
+ * delete it.
  *
  * `href` is computed here, once, rather than at each call site, so no page can
  * render one of these values into an `href` without going through `safeHref`.
