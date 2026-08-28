@@ -4,7 +4,11 @@ import { useEffect, useId, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { buildListHref, type ListParams } from "@/lib/list/params";
+import {
+  buildListHref,
+  DEFAULT_PAGE_SIZE,
+  type ListParams,
+} from "@/lib/list/params";
 import type { ListSpec } from "@/lib/list/spec";
 
 // The search and filter strip.
@@ -108,13 +112,24 @@ export function ListToolbar<TSort extends string, TFilter extends string>({
       // columns stretching to the tallest.
       className="flex flex-wrap items-end gap-x-4 gap-y-3 border-y border-rule py-4"
     >
-      {/* Sort and page size survive a search. Omitted at their defaults so a
-          no-JS submit produces the same tidy URL the JS path builds. */}
+      {/* Sort, direction and page size survive a search. Omitted at their
+          defaults so a no-JS submit produces the same tidy URL the JS path
+          builds.
+
+          THE `size` INPUT WAS MISSING (review finding M-3), and the comment
+          here used to claim it was not: with JavaScript `buildListHref` carries
+          `params.pageSize`, so the bug was invisible in the browser, but a
+          no-JS submit from `?size=50` dropped the user back to 25 rows. The
+          three inputs and the three things `buildListHref` preserves are the
+          same list, and they have to stay the same list. */}
       {params.sort !== spec.defaultSort ? (
         <input type="hidden" name="sort" value={params.sort} />
       ) : null}
       {params.dir !== spec.sort[params.sort].defaultDirection ? (
         <input type="hidden" name="dir" value={params.dir} />
+      ) : null}
+      {params.pageSize !== DEFAULT_PAGE_SIZE ? (
+        <input type="hidden" name="size" value={String(params.pageSize)} />
       ) : null}
 
       <div className="flex min-w-0 flex-1 basis-64 flex-col gap-2">

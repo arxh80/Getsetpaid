@@ -148,13 +148,21 @@ describe("parseListParams: the page-size ceiling", () => {
     ["51", MAX_PAGE_SIZE],
     ["1000", MAX_PAGE_SIZE],
     ["999999999", MAX_PAGE_SIZE],
-    ["1e9", 1], // parseInt("1e9") is 1 -- clamped, not trusted
-    ["0", 1],
-    ["-1", 1],
-    ["-99999", 1],
+    // Review M-2. These used to clamp parseInt's PREFIX and render a
+    // one-row page with a full pager, which reads as a rendering fault. A
+    // value that is not a plain positive integer is now absent, not a 1.
+    ["1e9", DEFAULT_PAGE_SIZE],
+    ["0", DEFAULT_PAGE_SIZE],
+    ["-1", DEFAULT_PAGE_SIZE],
+    ["-99999", DEFAULT_PAGE_SIZE],
     ["abc", DEFAULT_PAGE_SIZE],
     ["", DEFAULT_PAGE_SIZE],
-    ["25abc", 25],
+    ["25abc", DEFAULT_PAGE_SIZE],
+    [" 25 ", DEFAULT_PAGE_SIZE],
+    ["+25", DEFAULT_PAGE_SIZE],
+    ["0x40", DEFAULT_PAGE_SIZE],
+    ["25", 25],
+    ["1", 1],
     ["NaN", DEFAULT_PAGE_SIZE],
     ["Infinity", DEFAULT_PAGE_SIZE],
   ])("clamps size=%s to %i", (raw, expected) => {
@@ -162,7 +170,7 @@ describe("parseListParams: the page-size ceiling", () => {
   });
 
   it("never returns a size above the ceiling for any input", () => {
-    for (const raw of ["50", "51", "9007199254740993", "0x40", "+80", " 80 "]) {
+    for (const raw of ["50", "51", "9007199254740993", "0x40", "+80", " 80 ", "1e9", "0", "-1"]) {
       const size = parseListParams(SPEC, { size: raw }).pageSize;
       expect(size).toBeGreaterThanOrEqual(1);
       expect(size).toBeLessThanOrEqual(MAX_PAGE_SIZE);
@@ -193,7 +201,11 @@ describe("parseListParams: the search term", () => {
 });
 
 describe("parseListParams: the cursor", () => {
-  const cursor = { value: "Ada Ali", id: "11111111-1111-1111-1111-111111111111" };
+  const cursor = {
+    value: "Ada Ali",
+    id: "11111111-1111-1111-1111-111111111111",
+    sort: "name" as const,
+  };
 
   it("reads an `after` cursor", () => {
     const params = parseListParams(SPEC, { after: encodeCursor(cursor) });
@@ -214,6 +226,51 @@ describe("parseListParams: the cursor", () => {
     });
     expect(params.cursorDirection).toBe("after");
     expect(params.cursor?.value).toBe("Ada Ali");
+  });
+
+  // ------------------------------------------------------------------
+  // Review I-2. A cursor made under one sort, sent with another, used to
+  // reach the query as `updated_at >= 'Contact 00100'` -- a PostgREST 400,
+  // rendered to the user as "we couldn't load contacts", which says the
+  // system is broken when the URL is merely stale.
+  // ------------------------------------------------------------------
+  it("discards a cursor made under a DIFFERENT sort", () => {
+    const nameCursor = encodeCursor({ ...cursor, sort: "name" });
+    const params = parseListParams(SPEC, {
+      sort: "updated",
+      after: nameCursor,
+    });
+    expect(params.sort).toBe("updated");
+    expect(params.cursor).toBeNull();
+    expect(params.cursorDirection).toBeNull();
+  });
+
+  it("discards a `before` cursor made under a different sort too", () => {
+    const params = parseListParams(SPEC, {
+      sort: "updated",
+      before: encodeCursor({ ...cursor, sort: "name" }),
+    });
+    expect(params.cursor).toBeNull();
+    expect(params.cursorDirection).toBeNull();
+  });
+
+  it("keeps a cursor whose sort matches, including a non-default sort", () => {
+    const params = parseListParams(SPEC, {
+      sort: "updated",
+      after: encodeCursor({ ...cursor, sort: "updated" }),
+    });
+    expect(params.cursor).toEqual({ ...cursor, sort: "updated" });
+    expect(params.cursorDirection).toBe("after");
+  });
+
+  it("discards a name cursor when the sort param is absent and the DEFAULT differs", () => {
+    // The default sort is `name`, so a cursor tagged `updated` must be
+    // dropped even though the request named no sort at all.
+    const params = parseListParams(SPEC, {
+      after: encodeCursor({ ...cursor, sort: "updated" }),
+    });
+    expect(params.sort).toBe("name");
+    expect(params.cursor).toBeNull();
   });
 
   it("treats an unreadable cursor as page one", () => {
@@ -268,6 +325,7 @@ describe("buildListHref", () => {
       after: encodeCursor({
         value: "Ada",
         id: "11111111-1111-1111-1111-111111111111",
+        sort: "name",
       }),
     });
     const href = buildListHref(SPEC, base, withCursor, { q: "zoe" });
@@ -280,6 +338,7 @@ describe("buildListHref", () => {
       after: encodeCursor({
         value: "Ada",
         id: "11111111-1111-1111-1111-111111111111",
+        sort: "name",
       }),
     });
     expect(
@@ -292,6 +351,7 @@ describe("buildListHref", () => {
       after: encodeCursor({
         value: "Ada",
         id: "11111111-1111-1111-1111-111111111111",
+        sort: "name",
       }),
     });
     expect(

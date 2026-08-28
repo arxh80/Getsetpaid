@@ -168,19 +168,40 @@ export function parseListParams<TSort extends string, TFilter extends string>(
   }
 
   // ---- page size -----------------------------------------------------
-  // Clamped, not validated: `?size=1e9`, `?size=-1`, `?size=abc` and `?size=`
-  // all resolve to something servable. Number.parseInt on "12abc" gives 12,
-  // which is fine -- the clamp is what enforces the ceiling, not the parse.
-  const rawSize = Number.parseInt(first(raw.size) ?? "", 10);
-  const pageSize = Number.isFinite(rawSize)
-    ? Math.min(Math.max(rawSize, 1), MAX_PAGE_SIZE)
-    : DEFAULT_PAGE_SIZE;
+  // A value that is not a plain positive integer is treated as ABSENT, not as
+  // something to clamp the parsed prefix of.
+  //
+  // Fix round 1, review finding M-2: `Number.parseInt("1e9", 10)` is 1, so
+  // `?size=1e9` rendered a ONE-ROW page with a full pager. So did `?size=0`
+  // and `?size=-1`. The old comment called that "something servable", which it
+  // is, but a single row reads as a rendering fault rather than as a clamp --
+  // and the three inputs that produce it are all typos or tampering, never a
+  // real request for one row. Falling back to the default is the honest
+  // reading of "I could not understand this".
+  //
+  // A number this DOES understand is still clamped, so the ceiling is enforced
+  // by the clamp and not by the parse: `?size=10000` is 50, not 10000.
+  const rawSizeText = first(raw.size) ?? "";
+  const rawSize = /^\d+$/.test(rawSizeText) ? Number(rawSizeText) : Number.NaN;
+  const pageSize =
+    Number.isFinite(rawSize) && rawSize > 0
+      ? Math.min(rawSize, MAX_PAGE_SIZE)
+      : DEFAULT_PAGE_SIZE;
 
   // ---- cursor --------------------------------------------------------
   // `after` wins if both are present. They cannot both be meaningful, and
   // preferring one deterministically beats erroring on a hand-edited URL.
   const after = decodeCursor(first(raw.after));
   const before = after ? null : decodeCursor(first(raw.before));
+  const decoded = after ?? before;
+
+  // A CURSOR MADE UNDER A DIFFERENT SORT IS DISCARDED, not used. Its `value`
+  // is the other column's -- a name where a timestamp is expected -- and
+  // sending it produces `updated_at >= 'Contact 00100'`, a PostgREST 400, and
+  // a page that tells the user the system is broken when the URL is merely
+  // stale. Dropping it gives page one under the requested sort, which is what
+  // lib/list/cursor.ts's header promises for every other unreadable cursor.
+  const cursor = decoded && decoded.sort === sort ? decoded : null;
 
   return {
     q,
@@ -188,8 +209,8 @@ export function parseListParams<TSort extends string, TFilter extends string>(
     dir,
     filters,
     pageSize,
-    cursor: after ?? before,
-    cursorDirection: after ? "after" : before ? "before" : null,
+    cursor,
+    cursorDirection: cursor ? (after ? "after" : "before") : null,
   };
 }
 

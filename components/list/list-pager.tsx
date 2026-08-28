@@ -129,10 +129,32 @@ function PagerLink({
         "whitespace-nowrap transition-colors duration-[var(--dur-fast)] ease-brand " +
         (enabled
           ? "border-rule bg-surface text-ink hover:border-ink hover:bg-shell"
-          : // DESIGN.md § Interaction states, Disabled: muted text, --rule
-            // border, no fill change. Plus cursor and aria-disabled, so three
-            // channels carry it and not one.
-            "cursor-not-allowed border-rule bg-surface text-ink-muted opacity-55")
+          : // Disabled: muted text, --rule border, no fill change, plus
+            // `cursor-not-allowed` and `aria-disabled`, so three channels
+            // carry the state and not one.
+            //
+            // NO `opacity-55`, and that is a deliberate departure from
+            // DESIGN.md § Interaction states' disabled row. Review finding
+            // M-4 measured what it produced here: --ink-muted at 55% over
+            // --surface computes to #A2A2A7, which is 2.54:1 — under the 4.5:1
+            // this text needs.
+            //
+            // WCAG 1.4.3 exempts "inactive user interface components", and for
+            // every other disabled control in this product that exemption
+            // applies. It does not apply to THIS one, because this control is
+            // deliberately not inactive: list-pager.tsx keeps it an <a href> in
+            // the tab order precisely so focus is not lost when a direction
+            // becomes unavailable (see the header). A control that is
+            // focusable, reachable and activatable is an active control that
+            // happens to look disabled, and it has to meet the contrast that
+            // active controls meet.
+            //
+            // Without the opacity, --ink-muted on --surface is 6.4:1 and the
+            // three signals all survive. Routed to DESIGN.md rather than
+            // decided here: the 55% rule needs a sentence saying it applies
+            // only to genuinely inert controls, and Task 4 ships five more of
+            // these.
+            "cursor-not-allowed border-rule bg-surface text-ink-muted")
       }
     >
       {children}
