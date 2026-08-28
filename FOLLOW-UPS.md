@@ -256,6 +256,32 @@ These become live the moment a real tenant table exists.
   can no longer reach the enrolment screen. Worth a guard test in the shape of
   `rls_phase2_crm.sql` H12/H13: no file reachable from the app-shell layout may
   query the twelve CRM tables.
+- **Task 6: a record-scoped `merges` list is ~2.3 s per page at 20k rows, and no
+  policy can fix it.** `merges_select_via_winner` is the one CRM SELECT policy
+  whose predicate calls a function with COLUMN arguments, so the polymorphic
+  dispatch cannot be hoisted. Fix round 3 (`20260828160000`, New-2) put the
+  hoistable `full_scope_organisations()` term in front, which takes the
+  **full-scope** case from 12308 ms to 6.083 ms on a 50-row page over 20k rows —
+  but a record-scoped reader still pays two `entity_is_visible()` calls per row,
+  measured at 2266 ms. That is a data-model problem, not a predicate problem:
+  the merge list for a Standard User needs something indexable, most plausibly a
+  denormalised `winner_owner_user_id` written by Task 6's own merge and a policy
+  term of `winner_owner_user_id = (select auth.uid())`. Design it with the merge,
+  not after it. `rls_phase2_crm.sql` H15 guards the ordering that bought the
+  full-scope half.
+- **Task 3/4: nothing renders the suspended workspace the suspension fix
+  assumes.** `20260828140000` justifies leaving `private.is_active_member()`
+  untouched so "the app has to be able to render 'this workspace is suspended'
+  rather than a blank screen". That affordance does not exist, and the two
+  helpers currently disagree: `getCurrentOrg()` (`lib/auth/index.ts:184`) already
+  filters `.is("deleted_at", null)`, so a suspended slug resolves to `null` and
+  renders as not-found — indistinguishable from another tenant's slug — while
+  `getActiveMemberships()` filters on `status` only, so the workspace switcher
+  still **lists** the suspended workspace, which then 404s when clicked. Either
+  drop suspended organisations from the switcher, or let `getCurrentOrg()` return
+  them with an `isSuspended` flag and render the notice. Not a security issue —
+  the database denies either way — but the migration's stated justification is
+  aspirational until this exists, and Q6's default is what makes it visible.
 - **Task 6: `merges` SELECT now requires BOTH sides visible, not just the
   winner.** Changed in fix round 1 (`20260828140500`) because
   `field_resolution` copies both records' values verbatim and a record-scoped
@@ -373,15 +399,27 @@ before the first real consumer exists rather than alongside it.
   function), but shipping suspend without reinstate is a one-way door.
   `rls_phase2_crm.sql` P7 asserts the Owner cannot un-suspend, so it will need
   updating when the superuser path exists.
-- **The organisation-delete cascade will emit one audit row per child row.** The
-  audit triggers from `20260828141000` skip sessionless writers, but a cascade
-  started by a SUPERUSER session has an `auth.uid()`, so `DELETE FROM
-  organisations` will write one `audit_events` row per cascaded
-  `contact_companies` and `custom_field_values` row — thousands for a real
-  tenant, each with its own `correlation_id`, because
+- ~~**The organisation-delete cascade will emit one audit row per child row.**~~
+  **THAT DESCRIPTION WAS WRONG, and wrong in the reassuring direction — the
+  statement did not emit thousands of rows, it ABORTED.** Corrected and fixed in
+  fix round 3 (`20260828160000`, New-1). With a session set, `DELETE FROM
+  organisations` failed with `23503 audit_events_organisation_id_fkey`: the
+  cascade removes the organisation first, and each child's `AFTER DELETE` trigger
+  then inserted an `audit_events` row naming a parent that was already gone.
+  (`ON DELETE SET NULL` on `audit_events.organisation_id` is resolved against the
+  rows that existed when the DELETE began; rows inserted *during* the cascade get
+  no such treatment.) The suite missed it because R10/R11 delete sessionlessly,
+  which is the branch the null-actor guard had already made safe.
+  `private.audit_crm_row()` now resolves the organisation through a live lookup,
+  so a vanished parent degrades to `NULL` rather than aborting. R12/R13 assert it
+  **with `request.jwt.claims` set**, and go red as `denied(23503)` when reverted.
+  **What genuinely remains for Phase 7** is the volume half: one audit row per
+  cascaded child row, each with its own `correlation_id` because
   `private.log_audit_event()` mints a fresh one per call. Either thread one
-  correlation id through the deletion path or suppress row-level audit inside
-  the bulk operation and write a single summary row.
+  correlation id through the deletion path or suppress row-level audit inside the
+  bulk operation and write a single summary row. This matters beyond tidiness —
+  it is the path superuser organisation deletion and GDPR erasure both take, and
+  erasure carries a 30-day statutory clock.
 - **Full CRM write auditing** — INSERT and UPDATE on all twelve tables, which
   fix round 1 deliberately did not build (only the two hard DELETEs and merges
   are audited). Belongs with the audit log viewer, and needs a before/after diff
