@@ -61,63 +61,140 @@ describe("the past_due grace window is the same rule in TypeScript and in SQL", 
     );
   });
 
-  // The one that actually matters. `now < end + 3d` and `now <= end + 3d`
-  // share a constant and differ at the boundary, and the difference is
-  // "a lapsed subscription can still write". So compare the DECISIONS.
+  // The one that actually matters -- and the one that did not, until fix
+  // round 3.
   //
-  // The SQL expression here is the exact predicate
-  // private.crm_write_organisations() applies to a past_due row -- kept in
-  // step by the shape assertion in the third test below, which fails if that
-  // function stops calling past_due_grace_days() at all.
-  it("both implementations agree on every side of the boundary", async () => {
+  // AN EARLIER VERSION OF THIS TEST DID NOT BIND WHAT IT CLAIMED TO BIND. It
+  // built its OWN `now < end + interval` expression and compared that to
+  // TypeScript, which proves the two agree about an expression the test wrote
+  // rather than about the one the database enforces. The re-reviewer changed
+  // `<` to `<=` inside private.crm_write_organisations(), left the constant,
+  // the call and the status branch untouched, and got 5/5 here, 212/212 psql
+  // and 39/39 HTTP -- fully green against a deployed function whose boundary
+  // had moved.
+  //
+  // So this now drives THE DEPLOYED FUNCTION. Each offset builds a real
+  // organisation, membership and past_due subscription inside a transaction,
+  // sets request.jwt.claims the way PostgREST does, asks
+  // private.crm_write_organisations() whether that organisation may write, and
+  // rolls the whole thing back. That is the same value the RLS policies consume,
+  // so an operator change anywhere in the chain shows up here.
+  it("the DEPLOYED function agrees with resolveEntitlements() on every side of the boundary", async () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
     const graceMs = PAST_DUE_GRACE_DAYS * DAY_MS;
-    const now = Date.now();
 
-    // Offsets of `current_period_end` relative to now, chosen to straddle the
-    // window's far edge: comfortably inside, one second inside, one second
-    // outside, and far outside.
+    // Offsets of `current_period_end` relative to the evaluation instant,
+    // straddling the window's far edge. `-graceMs` is the boundary itself:
+    // `<` denies there and `<=` allows, and it is the only offset that
+    // discriminates between them.
     const offsetsMs = [
       +30 * DAY_MS, // period end still in the future -- trivially in grace
       0, // period end is now
       -1 * DAY_MS, // one day into the window
       -(graceMs - 1000), // one second before the window closes
-      -graceMs, // exactly on the boundary
+      -graceMs, // EXACTLY on the boundary
       -(graceMs + 1000), // one second after it closes
       -30 * DAY_MS, // long lapsed
       -365 * DAY_MS, // far in the past
     ];
 
-    for (const offset of offsetsMs) {
-      const periodEnd = new Date(now + offset);
+    const client = await pool.connect();
+    try {
+      for (const offset of offsetsMs) {
+        await client.query("begin");
+        try {
+          // `now()` is transaction_timestamp(), so inside one transaction the
+          // instant this fixture is built from and the instant the function
+          // compares against are identical -- which is what makes the exact
+          // boundary reachable at all. Across transactions the clock advances
+          // and `-graceMs` silently becomes "just outside", which is how the
+          // psql side missed it too (see rls_phase2_crm.sql N14f).
+          // `pg` parses timestamptz into a JS Date, NOT a string. The first
+          // draft typed these as `string` and called Date.parse() on the
+          // result, which coerces a Date via toString() and SILENTLY DROPS
+          // MILLISECONDS -- moving the TypeScript "now" up to a second
+          // earlier and making the boundary offset disagree. It failed on
+          // exactly the offset this test exists for, which is the right
+          // outcome for the wrong reason; both sides now use getTime().
+          const { rows: seeded } = await client.query<{
+            org: string;
+            period_end: Date;
+            evaluated_at: Date;
+          }>(
+            `with u as (
+               insert into auth.users (id, instance_id, aud, role, email)
+               values (gen_random_uuid(),
+                       '00000000-0000-0000-0000-000000000000',
+                       'authenticated', 'authenticated',
+                       'grace-probe-' || gen_random_uuid() || '@test.local')
+               returning id
+             ), o as (
+               insert into public.organisations (name, slug)
+               values ('Grace Probe', 'grace-probe-' || replace(gen_random_uuid()::text,'-',''))
+               returning id
+             ), m as (
+               insert into public.organisation_memberships
+                 (organisation_id, user_id, role, status, joined_at)
+               select o.id, u.id, 'manager', 'active', now() from o, u
+               returning organisation_id, user_id
+             ), s as (
+               insert into public.organisation_subscriptions
+                 (organisation_id, plan_id, billing_cycle, seat_count, status,
+                  current_period_end)
+               select o.id, 'starter', 'monthly', 1, 'past_due',
+                      now() + make_interval(secs => $1::float8 / 1000)
+               from o
+               returning organisation_id, current_period_end
+             )
+             select m.organisation_id as org,
+                    s.current_period_end as period_end,
+                    now() as evaluated_at,
+                    set_config('request.jwt.claims',
+                      json_build_object('sub', m.user_id, 'role', 'authenticated',
+                                        'aal', 'aal1')::text, true) as claims
+             from m join s on s.organisation_id = m.organisation_id`,
+            [offset],
+          );
 
-      const fromTypeScript = isWithinPastDueGrace(periodEnd.toISOString(), now);
+          const { org, periodEnd, evaluatedAt } = {
+            org: seeded[0].org,
+            periodEnd: seeded[0].period_end,
+            evaluatedAt: seeded[0].evaluated_at,
+          };
 
-      // `<`, matching private.crm_write_organisations() exactly. The first
-      // draft of this query wrote `>` -- the negation -- and the test caught
-      // it on the very first offset, which is a fair demonstration of what it
-      // is for: the constant was identical and the comparison was inverted,
-      // which is precisely the drift a "do the two numbers match" test would
-      // have missed.
-      const { rows } = await pool.query<{ in_grace: boolean }>(
-        `select $1::timestamptz < $2::timestamptz
-                  + make_interval(days => private.past_due_grace_days())
-                as in_grace`,
-        [new Date(now).toISOString(), periodEnd.toISOString()],
-      );
+          // THE DEPLOYED FUNCTION, not a copy of its predicate.
+          const { rows: decided } = await client.query<{ may_write: boolean }>(
+            `select exists (
+               select 1 from private.crm_write_organisations() x where x = $1::uuid
+             ) as may_write`,
+            [org],
+          );
 
-      expect(
-        rows[0].in_grace,
-        `period_end offset ${offset}ms: SQL said ${rows[0].in_grace}, ` +
-          `isWithinPastDueGrace() said ${fromTypeScript}`,
-      ).toBe(fromTypeScript);
+          // The same question, answered by the TypeScript half against the same
+          // two instants Postgres used.
+          const fromTypeScript = isWithinPastDueGrace(
+            periodEnd.toISOString(),
+            evaluatedAt.getTime(),
+          );
+
+          expect(
+            decided[0].may_write,
+            `period_end offset ${offset}ms: crm_write_organisations() said ` +
+              `${decided[0].may_write}, isWithinPastDueGrace() said ${fromTypeScript}`,
+          ).toBe(fromTypeScript);
+        } finally {
+          await client.query("rollback");
+        }
+      }
+    } finally {
+      client.release();
     }
   });
 
-  // Binds the boundary test above to the function it claims to be testing. If
-  // someone inlines the interval back into crm_write_organisations(), or drops
-  // the past_due branch entirely, the test above would keep passing against an
-  // expression nothing uses any more.
+  // Belt and braces around the boundary test above: it drives the real
+  // function, so an inlined constant would still be caught by the offsets --
+  // but this states the intent directly and fails with a readable message
+  // rather than eight timestamp mismatches.
   it("crm_write_organisations() really is built on that constant and that status", async () => {
     const { rows } = await pool.query<{ src: string }>(
       "select prosrc as src from pg_proc p" +

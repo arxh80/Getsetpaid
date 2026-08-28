@@ -1010,6 +1010,26 @@ select crm.val('H13 every Phase 2 policy is built on the hoistable set form',
        'custom_field_definitions','custom_field_values','merges')
       and coalesce(qual,'') || coalesce(with_check,'')
           not like '%permitted_organisations%'$$, '0');
+-- H15 -- the third shape guard, added in fix round 3 for the reason H12/H13
+-- exist and did not cover: they forbid `has_permission(` and require
+-- `permitted_organisations`, so a per-row POLYMORPHIC dispatch walks straight
+-- past them. merges is the one CRM SELECT policy that calls a function with
+-- column arguments, and it was measured at 12308 ms for a 50-row page over 20k
+-- rows until the hoistable full-scope term was put in front of it.
+--
+-- THE `position(...) > 0` CHECK IS NOT REDUNDANT, and leaving it out was the
+-- first draft's bug. `position()` returns 0 when the substring is ABSENT, so
+-- `position(full_scope) < position(entity_is_visible)` is trivially true for a
+-- policy that dropped the full-scope term entirely -- which is exactly the
+-- mutation this guard exists to catch, and it sailed through. Same failure
+-- shape as New-3: a guard written without being made to fail first.
+select crm.val('H15 the merges read path leads with the hoistable full-scope term',
+  $$select (position('full_scope_organisations' in qual) > 0
+            and position('entity_is_visible' in qual) > 0
+            and position('full_scope_organisations' in qual)
+                < position('entity_is_visible' in qual))::text
+    from pg_policies
+    where schemaname='public' and tablename='merges' and cmd='SELECT'$$, 'true');
 select crm.val('H14 Foundation''s four constant-argument policies are wrapped',
   $$select count(*)::text from pg_policies
     where schemaname='public'
@@ -1368,9 +1388,15 @@ select crm.try('N14 PAST_DUE inside the 3-day grace window: writes are KEPT',
     values (%L,'past due, in grace')$$, :'alpha_org'), 'ok(1)');
 reset role; reset request.jwt.claims;
 
--- One second before the window closes. The difference between `<` and `<=`
--- lives here, and it is the difference between a lapsed subscription writing
--- and not writing.
+-- One second before the window closes.
+--
+-- THE COMMENT THAT USED TO BE HERE CLAIMED THIS WAS WHERE `<` AND `<=` DIFFER.
+-- It is not, and the claim was false in the same way three other comments in
+-- this round were: asserted rather than run. N14b and N14c straddle the
+-- boundary and AGREE under both operators, so neither catches an operator
+-- change -- the re-reviewer flipped `<` to `<=` inside
+-- private.crm_write_organisations() and got 212/212 psql, 39/39 HTTP and 5/5
+-- vitest, fully green. The boundary instant itself is N14f, below.
 update public.organisation_subscriptions
    set current_period_end = now() - (interval '3 days' - interval '1 second')
  where organisation_id = :'alpha_org'::uuid;
@@ -1401,6 +1427,33 @@ select crm.try('N14d PAST_DUE, long lapsed: writes stay closed',
     values (%L,'past due, long lapsed')$$, :'alpha_org'), 'denied(42501)');
 select crm.val('N14e ...and reads were never affected by any of it',
   $$select (count(*) > 0)::text from public.contacts$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- EXACTLY ON THE BOUNDARY -- the assertion this suite claimed to have and did
+-- not. `now() < current_period_end + 3 days` is STRICT, so at the instant the
+-- window closes the write must be DENIED. Flip that `<` to `<=` inside
+-- private.crm_write_organisations() and this is the only assertion in the whole
+-- project that goes red.
+--
+-- THE EXPLICIT TRANSACTION IS LOAD-BEARING, and the first draft of this
+-- assertion got it wrong in a way that would have re-created the very gap it is
+-- closing. `now()` is transaction_timestamp(), so it only holds still WITHIN one
+-- transaction. Under psql's autocommit the UPDATE and the INSERT are two
+-- transactions, the INSERT's `now()` is strictly later, and
+-- `now_insert < (now_update - 3d) + 3d` is false under `<` AND under `<=` --
+-- so the assertion would pass either way and prove nothing, exactly like N14b
+-- and N14c. Inside one transaction both statements read the same instant, the
+-- comparison lands precisely on the edge, and the two operators disagree.
+begin;
+update public.organisation_subscriptions
+   set current_period_end = pg_catalog.now() - interval '3 days'
+ where organisation_id = :'alpha_org'::uuid;
+set local role authenticated;
+set local request.jwt.claims = :'pmanager_c';
+select crm.try('N14f PAST_DUE EXACTLY on the boundary: strict `<`, so DENIED',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'past due, exactly at the edge')$$, :'alpha_org'), 'denied(42501)');
+commit;
 reset role; reset request.jwt.claims;
 
 -- 'cancelled' gets NO grace: the customer chose it, so honouring it at once is
@@ -1468,15 +1521,36 @@ select '77770000-0000-0000-0000-00000000000d', o.id,
        '22220000-0000-0000-0000-000000000002','11110000-0000-0000-0000-000000000002'
 from public.organisations o where o.slug='org-alpha';
 
+-- NEW-4: FRESH, UNOCCUPIED TARGETS IN ORG BETA, so O1 and O5 discriminate on
+-- the PIN rather than on a unique constraint.
+--
+-- Under the IMP-3 mutation those two failed as denied(23505), not ok(1),
+-- because they aimed at BETA rows that already had a matching
+-- custom_field_values_field_entity_unique / contact_companies_contact_company_unique
+-- partner -- so the re-home was refused by a uniqueness rule before the policy
+-- was ever consulted, and the assertions went red on the wrong control. The
+-- pin IS load-bearing (O3/O6/O7 fail as ok(1) without it), but these two were
+-- not proving it. With unoccupied targets they now fail the same way.
+insert into public.contacts (id, organisation_id, owner_user_id, name)
+select '2222000c-0000-0000-0000-00000000000c', o.id, :'pbowner', 'Beta Contact Two'
+from public.organisations o where o.slug='org-beta';
+insert into public.companies (id, organisation_id, owner_user_id, name)
+select '1111000c-0000-0000-0000-00000000000c', o.id, :'pbowner', 'Beta Co Two'
+from public.organisations o where o.slug='org-beta';
+insert into public.custom_field_definitions
+  (id, organisation_id, entity_type, key, label, field_type)
+select 'aaaa000c-0000-0000-0000-00000000000c', o.id, 'contact','beta_nickname','Beta Nickname','text'
+from public.organisations o where o.slug='org-beta';
+
 set role authenticated;
 set request.jwt.claims = :'pmulti_c';
 
 select crm.try('O1  cfv: move the row AND its definition AND its entity into BETA',
   format($$update public.custom_field_values
       set organisation_id=%L,
-          field_id='aaaa000b-0000-0000-0000-00000000000b',
-          entity_type='artist',
-          entity_id='4444000b-0000-0000-0000-00000000000b'
+          field_id='aaaa000c-0000-0000-0000-00000000000c',
+          entity_type='contact',
+          entity_id='2222000c-0000-0000-0000-00000000000c'
     where id='bbbb0000-0000-0000-0000-000000000001'$$, :'beta_org'),
   'denied(42501)');
 select crm.try('O2  POSITIVE: the same row edits normally',
@@ -1495,8 +1569,8 @@ select crm.try('O4  POSITIVE: the same room renames normally',
 select crm.try('O5  contact_companies: move the link AND both its parents into BETA',
   format($$update public.contact_companies
       set organisation_id=%L,
-          contact_id='2222000b-0000-0000-0000-00000000000b',
-          company_id='1111000b-0000-0000-0000-00000000000b'
+          contact_id='2222000c-0000-0000-0000-00000000000c',
+          company_id='1111000c-0000-0000-0000-00000000000c'
     where id='77770000-0000-0000-0000-00000000000d'$$, :'beta_org'),
   'denied(42501)');
 
@@ -1628,6 +1702,52 @@ select crm.val('Q6  POSITIVE: a full-scope role sees both merges',
                   'cccc0000-0000-0000-0000-00000000000c')$$, '2');
 reset role; reset request.jwt.claims;
 
+-- Q7/Q8 -- THE DELIBERATE BEHAVIOUR CHANGE FROM NEW-2, asserted so it is a
+-- decision rather than a side effect.
+--
+-- 20260828160000 reorders this policy so the hoistable full_scope_organisations()
+-- term leads: a full-scope role never evaluates the per-row polymorphic
+-- dispatch, which took a 50-row page over 20k merges from 12308 ms to 6.083 ms.
+-- The consequence is that a full-scope role can now see a merge whose winner or
+-- loser has been HARD-deleted, where previously the dispatch could not resolve
+-- the missing row and the record was invisible to everyone.
+--
+-- Taken as a correction: a history table that loses rows when its subject is
+-- erased is the wrong failure direction, and a full-scope role is entitled to
+-- every record in that organisation anyway. The record-scoped guarantee IMP-2
+-- exists for is untouched -- Q8 proves it.
+--
+-- These are also the only BEHAVIOURAL assertions that go red if the reordering
+-- is reverted. The speed itself is invisible to every other test in this file,
+-- which is exactly the lesson task-2-report § 3.1 drew and H12/H13 exist for.
+insert into public.merges
+  (id, organisation_id, entity_type, winner_id, loser_id, merged_by, field_resolution)
+select 'cccc0000-0000-0000-0000-00000000000e', o.id, 'contact',
+       '22220000-0000-0000-0000-000000000002',
+       -- Names no contact row at all: the loser was hard-deleted. entity_id is
+       -- polymorphic and unvalidated at the constraint layer, so this is
+       -- exactly the state a GDPR erasure or a Phase 7 purge leaves behind.
+       'dddddddd-dead-dead-dead-dddddddddddd', :'pmanager',
+       '{"email":{"kept":"mgr@example.test","discarded":"erased@example.test"}}'::jsonb
+from public.organisations o where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('Q7  NEW-2: a full-scope role sees a merge whose loser was HARD-deleted',
+  $$select count(*)::text from public.merges
+     where id='cccc0000-0000-0000-0000-00000000000e'$$, '1');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.val('Q8  ...and a record-scoped role still cannot -- IMP-2 is intact',
+  $$select count(*)::text from public.merges
+     where id='cccc0000-0000-0000-0000-00000000000e'$$, '0');
+select crm.val('Q9  ...nor reach its discarded value by any path',
+  $$select count(*)::text from public.merges
+     where field_resolution::text like '%erased@example.test%'$$, '0');
+reset role; reset request.jwt.claims;
+
 -- ===========================================================================
 -- R. THE IRREVERSIBLE WRITES ARE AUDITED (IMP-5)
 -- ===========================================================================
@@ -1721,6 +1841,55 @@ select crm.try('R10 organisation delete still cascades through an audited table'
 select crm.val('R11 ...and took the remaining link row with it',
   $$select count(*)::text from public.contact_companies
      where id='eeee0000-0000-0000-0000-0000000000c3'$$, '0');
+
+-- R12/R13 -- THE BRANCH R10/R11 NEVER TESTED, AND THE ONE PHASE 7 WILL USE.
+--
+-- R10 above deletes SESSIONLESS, which is the branch the null-actor guard
+-- already made safe -- the trigger returns before it inserts anything. WITH a
+-- session set, fix round 1's trigger aborted the whole statement:
+--
+--   ERROR: insert or update on table "audit_events" violates foreign key
+--          constraint "audit_events_organisation_id_fkey"
+--   DETAIL: Key (organisation_id)=(...) is not present in table "organisations".
+--
+-- because the cascade removes the organisation first and each child's AFTER
+-- DELETE trigger then names a parent that is already gone. The header called
+-- that a VOLUME problem ("will write one row per cascaded row"); it was an
+-- abort. 20260828160000 resolves the organisation through a live lookup so a
+-- vanished parent degrades to NULL instead.
+--
+-- This matters beyond tidiness: it is the path Phase 7's superuser organisation
+-- deletion takes, and the path a GDPR erasure runs on -- a legal obligation
+-- with a 30-day statutory clock.
+insert into public.organisations (id, name, slug)
+values ('eeee0000-0000-0000-0000-0000000000ef','Org Zed Two','org-zed-two');
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+values ('eeee0000-0000-0000-0000-0000000000ef', :'pmanager', 'manager', 'active', now());
+insert into public.contacts (id, organisation_id, name)
+values ('eeee0000-0000-0000-0000-0000000000d1','eeee0000-0000-0000-0000-0000000000ef','Zed2 Contact');
+insert into public.companies (id, organisation_id, name)
+values ('eeee0000-0000-0000-0000-0000000000d2','eeee0000-0000-0000-0000-0000000000ef','Zed2 Co');
+insert into public.contact_companies (id, organisation_id, contact_id, company_id)
+values ('eeee0000-0000-0000-0000-0000000000d3','eeee0000-0000-0000-0000-0000000000ef',
+        'eeee0000-0000-0000-0000-0000000000d1','eeee0000-0000-0000-0000-0000000000d2');
+
+-- `set role authenticated` is NOT used here: the point is an auth.uid() being
+-- present during the cascade, which is what makes the trigger fire, and the
+-- DELETE itself has to run as an owner of the table because no client role has
+-- DELETE on public.organisations at all. This is the DBA/superuser shape.
+set request.jwt.claims = :'pmanager_c';
+select crm.try('R12 organisation delete cascades WITH a session set',
+  $$delete from public.organisations where slug='org-zed-two'$$, 'ok(1)');
+reset request.jwt.claims;
+
+select crm.val('R13 ...and the cascaded audit row carries a NULL organisation, not an error',
+  $$select (count(*) = 1 and bool_and(organisation_id is null))::text
+     from public.audit_events
+     where target_id='eeee0000-0000-0000-0000-0000000000d3'$$, 'true');
+select crm.val('R14 ...while an ordinary delete still records the organisation',
+  $$select (count(*) > 0 and bool_and(organisation_id is not null))::text
+     from public.audit_events
+     where action='custom_field_value.deleted'$$, 'true');
 
 -- ===========================================================================
 -- Results

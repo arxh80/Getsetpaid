@@ -28,6 +28,44 @@ if [ -z "${SRK:-}" ]; then
   exit 1
 fi
 
+# Accumulated across the whole run rather than exiting at the first failure --
+# see the summary at the bottom of this file (New-5).
+psql_status=0
+http_status=0
+
+# ============================================================================
+# PREFLIGHT: REFUSE TO RUN AGAINST A DIRTY DATABASE.
+#
+# NEW-6. Neither rls_foundation.sql nor rls_phase2_crm.sql tears its fixtures
+# down -- deliberately, because the HTTP sections below read them. So a second
+# run without an intervening `npx supabase db reset` starts with the previous
+# run's rows still present, and schema_invariants.sql (which runs FIRST and
+# assumes an empty public schema) fails E3 and Z1 with "0/0/0/0 expected,
+# 4/15/3/4 actual".
+#
+# That is not a real finding, but it LOOKS exactly like one -- Z1 exists to
+# catch leftover fixtures and cannot tell its own suite's from a previous
+# invocation's. The header has always said a reset is required; this makes the
+# script enforce it, so the failure mode is one actionable line instead of two
+# red tenant-boundary-shaped assertions.
+dirty=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select coalesce(sum(n),0) from (
+     select count(*) n from public.organisations
+     union all select count(*) from public.contacts
+     union all select count(*) from public.companies
+     union all select count(*) from public.venues
+     union all select count(*) from public.artists
+     union all select count(*) from public.merges) s" | tr -d '[:space:]')
+if [ "${dirty:-0}" != "0" ]; then
+  echo "REFUSING TO RUN: public schema is not empty ($dirty tenant rows present)." >&2
+  echo "  These suites are not idempotent -- they build fixtures and do not tear" >&2
+  echo "  them down, because the HTTP sections read them. Run:" >&2
+  echo "      npx supabase db reset" >&2
+  echo "  and try again. (Running anyway would fail schema_invariants E3/Z1 in a" >&2
+  echo "  way that looks like a reopened tenant boundary and is not.)" >&2
+  exit 1
+fi
+
 # ----------------------------------------------------------------------------
 # ASSURANCE LEVEL PER FIXTURE USER.
 #
@@ -90,13 +128,13 @@ MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=foo
 
 inv_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
             "select count(*) from invariants.results where not pass" | tr -d '[:space:]')
-[ "$inv_fails" = "0" ] || {
+if [ "$inv_fails" != "0" ]; then
   echo "SCHEMA INVARIANT SUITE FAILED: $inv_fails failing assertion(s)" >&2
   echo "  A failure in section A is a REOPENED TENANT BOUNDARY -- treat as Sev1." >&2
-  echo "  A failure in D4/D5 is expected once Task 2 lands; update the expectation." >&2
-  exit 1
-}
-echo "Schema invariants: all assertions passed."
+  psql_status=1
+else
+  echo "Schema invariants: all assertions passed."
+fi
 echo
 
 docker cp "$HERE/rls_foundation.sql" "$CTR:/tmp/rls_foundation.sql"
@@ -115,8 +153,12 @@ MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=foo
 # Non-zero exit if anything failed, so this is usable as a gate.
 fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
         "select count(*) from harness.results where not pass" | tr -d '[:space:]')
-[ "$fails" = "0" ] || { echo "RLS SUITE FAILED: $fails failing assertion(s)" >&2; exit 1; }
-echo "RLS suite: all assertions passed."
+if [ "$fails" != "0" ]; then
+  echo "RLS SUITE FAILED: $fails failing assertion(s)" >&2
+  psql_status=1
+else
+  echo "RLS suite: all assertions passed."
+fi
 
 # ============================================================================
 # PHASE 2 (CORE CRM) RLS / PERMISSION / RECORD-SCOPE SUITE.
@@ -174,12 +216,13 @@ MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=foo
 
 p2_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
            "select count(*) from crm.results where not pass" | tr -d '[:space:]')
-[ "$p2_fails" = "0" ] || {
+if [ "$p2_fails" != "0" ]; then
   echo "PHASE 2 CRM SUITE FAILED: $p2_fails failing assertion(s)" >&2
   echo "  A failure in section B or E is a REOPENED TENANT BOUNDARY -- treat as Sev1." >&2
-  exit 1
-}
-echo "Phase 2 CRM suite: all assertions passed."
+  psql_status=1
+else
+  echo "Phase 2 CRM suite: all assertions passed."
+fi
 
 # ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
@@ -517,5 +560,24 @@ p2_sub "delete from public.organisation_subscriptions where organisation_id='$AL
 p2_code "RESTORED: no subscription row, writes allowed again" 201 POST "artists" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"inert artist\"}" "$BKR"
 
-[ "$api_fails" = "0" ] || { echo "API SURFACE FAILED: $api_fails check(s)" >&2; exit 1; }
-echo "API surface: all checks passed."
+if [ "$api_fails" != "0" ]; then
+  echo "API SURFACE FAILED: $api_fails check(s)" >&2
+  http_status=1
+else
+  echo "API surface: all checks passed."
+fi
+
+# NEW-5. Both halves have now run, so report both. Previously each psql suite
+# exited immediately on failure under `set -e`, which meant a mutation run that
+# reddened one psql assertion silently skipped ALL 39 HTTP checks -- including
+# the "Subscription entitlement at the API surface" block, which reproduces
+# IMP-1's original defect at the layer it was found. A red run looked like a
+# smaller failure than it was, and an HTTP-only regression sitting behind a psql
+# failure was invisible.
+if [ "$psql_status" != "0" ] || [ "$http_status" != "0" ]; then
+  echo >&2
+  echo "SUITE FAILED (psql=$psql_status http=$http_status)" >&2
+  exit 1
+fi
+echo
+echo "All suites passed."
