@@ -2902,24 +2902,24 @@ select crm.val('S3a ...and no second primary survived',
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 select crm.val('S4  a manager moves the primary back, and gets the count',
-  $$select public.set_contact_primary_company(
-      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a1')::text$$,
+  format($$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a1',%L)::text$$, :'alpha_org'),
   '1');
 select crm.val('S5  ...exactly one primary, and it moved',
   $$select company_id::text from public.contact_companies
      where contact_id='22220000-0000-0000-0000-0000000000a1' and is_primary$$,
   '11110000-0000-0000-0000-0000000000a1');
 select crm.val('S6  re-nominating the CURRENT primary is a no-op that still reports 1',
-  $$select public.set_contact_primary_company(
-      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a1')::text$$,
+  format($$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a1',%L)::text$$, :'alpha_org'),
   '1');
 reset role; reset request.jwt.claims;
 
 set role authenticated;
 set request.jwt.claims = :'pstd1_c';
 select crm.val('S7  a standard_user may set the primary on a contact THEY OWN',
-  $$select public.set_contact_primary_company(
-      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a3')::text$$,
+  format($$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a3',%L)::text$$, :'alpha_org'),
   '1');
 -- The record-scope half. pstd1 does not own contact ...a2, so both statements
 -- inside the function match nothing -- and the function RAISES rather than
@@ -2927,8 +2927,8 @@ select crm.val('S7  a standard_user may set the primary on a contact THEY OWN',
 -- at the application as a 200 with no error, the same trap as a 204 one layer
 -- down.
 select crm.val('S8  ...and NOT on a contact they do not own -- 42501, not 0',
-  $$select public.set_contact_primary_company(
-      '22220000-0000-0000-0000-0000000000a2','11110000-0000-0000-0000-0000000000a2')::text$$,
+  format($$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a2','11110000-0000-0000-0000-0000000000a2',%L)::text$$, :'alpha_org'),
   'denied(42501)');
 reset role; reset request.jwt.claims;
 -- THE OUTCOME CHECK RUNS AS postgres, NOT AS THE ATTACKER, and the first draft
@@ -2946,18 +2946,62 @@ select crm.val('S8a ...and that contact still has its original primary',
 set role authenticated;
 set request.jwt.claims = :'pro_c';
 select crm.val('S9  a read_only user is refused, with the mechanism 42501',
-  $$select public.set_contact_primary_company(
-      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a2')::text$$,
+  format($$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a2',%L)::text$$, :'alpha_org'),
   'denied(42501)');
 reset role; reset request.jwt.claims;
 
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
 select crm.val('S10 a NON-MEMBER of the organisation is refused the same way',
-  $$select public.set_contact_primary_company(
-      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a2')::text$$,
+  format($$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a2',%L)::text$$, :'alpha_org'),
   'denied(42501)');
 reset role; reset request.jwt.claims;
+
+-- --------------------------------------------------------------------------
+-- S10a-S10d. THE WORKSPACE TERM, which is what 20260828234500 exists for.
+--
+-- RLS answers "may this caller write this row". The URL asks "is this row the
+-- one this workspace's page is about". For a member of ONE organisation those
+-- coincide, and every assertion above passes either way. pmulti is an admin of
+-- BOTH -- an ordinary user at MVP, not a contrived one -- and is where they
+-- diverge: the 2-arg version promoted a company on org-beta's contact when
+-- called with org-beta's ids from org-alpha's URL, returning 1.
+--
+-- The refusal has to be the ORGANISATION and not pmulti's access, which is
+-- what S10c is for: the same caller, the same rows, org-beta's id, accepted.
+-- Without that control S10a would pass just as well if the function had
+-- stopped working.
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmulti_c';
+select crm.val('S10a pmulti, from ALPHA, cannot promote a BETA contact''s company',
+  format($$select public.set_contact_primary_company(
+      '2222000b-0000-0000-0000-00000000000b','1111000b-0000-0000-0000-00000000000b',%L)::text$$,
+    :'alpha_org'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+-- As postgres, for the reason S8a gives: the outcome check must be taken by a
+-- principal that could see the row either way.
+select crm.val('S10b ...and the BETA link row is untouched -- 0 rows changed',
+  $$select count(*)::text from public.contact_companies
+     where id='7777000b-0000-0000-0000-00000000000b' and is_primary$$, '0');
+
+set role authenticated;
+set request.jwt.claims = :'pmulti_c';
+select crm.val('S10c POSITIVE CONTROL: the same caller and rows, with BETA''s org id',
+  format($$select public.set_contact_primary_company(
+      '2222000b-0000-0000-0000-00000000000b','1111000b-0000-0000-0000-00000000000b',%L)::text$$,
+    :'beta_org'),
+  '1');
+reset role; reset request.jwt.claims;
+select crm.val('S10d ...so S10a''s refusal is the WORKSPACE, not the caller',
+  $$select count(*)::text from public.contact_companies
+     where id='7777000b-0000-0000-0000-00000000000b' and is_primary$$, '1');
+-- Put the beta fixture back the way section B left it.
+update public.contact_companies set is_primary = false
+ where id='7777000b-0000-0000-0000-00000000000b';
 
 -- --------------------------------------------------------------------------
 -- S11-S16. Soft delete and restore, and the MECHANISM of each refusal.
@@ -3026,8 +3070,8 @@ select crm.try('S18 SUSPENDED: ...and their soft delete matches NOTHING -- ok(0)
   $$update public.contacts set deleted_at = pg_catalog.now()
      where id='22220000-0000-0000-0000-0000000000a1'$$, 'ok(0)');
 select crm.val('S19 SUSPENDED: ...and the RPC raises 42501 rather than half-applying',
-  $$select public.set_contact_primary_company(
-      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a2')::text$$,
+  format($$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a2',%L)::text$$, :'alpha_org'),
   'denied(42501)');
 -- The half that makes S19 worth asserting: the demote statement inside the
 -- function must not have committed on its own. If it had, a suspended

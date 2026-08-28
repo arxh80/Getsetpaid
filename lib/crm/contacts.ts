@@ -126,6 +126,20 @@ function stateFor(
   formData: FormData,
 ): FormState {
   if (result.outcome === "applied") return { message: success };
+  return failureState(result, formData);
+}
+
+/**
+ * The FormState for a write that did not apply.
+ *
+ * Split out because `setPrimaryCompanyAction` has no success string to pass --
+ * its confirmation depends on whether a company was named -- and calling
+ * `stateFor(result, "", formData)` to reach this branch reads as a bug.
+ */
+function failureState(
+  result: Exclude<WriteResult, { outcome: "applied" }>,
+  formData: FormData,
+): FormState {
   const values = echoedValues(formData);
   if (result.outcome === "refused") return { error: REFUSED_MESSAGE, values };
   return { error: FAILED_MESSAGE, values };
@@ -475,6 +489,52 @@ export async function restoreContactAction(
 // database's decision and this file does not narrow it, because narrowing it
 // here and not there is drift that reads as a control.
 
+/**
+ * Is this contact a row of THIS workspace, reachable by THIS caller?
+ *
+ * ===========================================================================
+ * RLS ANSWERS A DIFFERENT QUESTION FROM THE ONE THE URL ASKS
+ * ===========================================================================
+ * `contact_companies_*_via_contact` asks "may this caller write this row".
+ * The URL asks "is this row the one this workspace's page is about". For a
+ * member of one organisation those coincide; multi-org membership ships at
+ * MVP, so for an ordinary admin of two workspaces they do not -- and the
+ * primary-company RPC, the only write in the task without an explicit
+ * organisation term, let workspace A's URL promote a company on workspace B's
+ * contact. Every other write in this file carries
+ * `.eq("organisation_id", org.id)` for the same reason.
+ *
+ * Read through the CALLER'S OWN client, so it is not a privileged existence
+ * check: a contact outside the caller's record scope returns nothing here and
+ * would have been refused by the policy anyway. The database is still the
+ * control -- the 3-arg RPC and the `.eq()` on every statement make the same
+ * refusal without this function. What this adds is that the refusal happens
+ * before a write is attempted against the wrong workspace's row, and that
+ * `revalidatePath` cannot be handed a slug for a page that did not change.
+ */
+async function contactInOrg(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  organisationId: string,
+  contactId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("id")
+    .eq("organisation_id", organisationId)
+    .eq("id", contactId)
+    .maybeSingle();
+  if (error) {
+    // 22P02 is an unparseable uuid from the form: no such contact, and there
+    // never could be. Anything else is a fault, and a fault must not read as
+    // "the contact is fine" -- fail closed.
+    if (error.code !== "22P02") {
+      console.error("[crm] contact lookup for a join write failed:", error.message);
+    }
+    return false;
+  }
+  return data !== null;
+}
+
 export async function linkCompanyAction(
   _prev: FormState,
   formData: FormData,
@@ -572,6 +632,13 @@ export async function unlinkCompanyAction(
  * applies as everywhere else: 0 means the caller's write did not apply. It
  * raises 42501 rather than returning 0 when a promote is refused, precisely so
  * the demote half rolls back with it.
+ *
+ * THE ORGANISATION IS PASSED, and it used not to be. This was the one write in
+ * the task with no workspace term: a member of two organisations, acting from
+ * workspace A's URL, promoted a company on workspace B's contact and got
+ * `rows_promoted = 1`. 20260828234500 adds `p_organisation_id` to both
+ * statements inside the function and drops the 2-arg version so the unscoped
+ * path is not reachable by omitting an argument from the RPC body.
  */
 export async function setPrimaryCompanyAction(
   _prev: FormState,
@@ -587,26 +654,37 @@ export async function setPrimaryCompanyAction(
   const companyId = field(formData, "companyId");
 
   const supabase = await createClient();
-  const { error } = await supabase.rpc("set_contact_primary_company", {
-    p_contact_id: contactId,
-    p_company_id: companyId,
-  });
-
-  if (error) {
-    // 42501 covers all three refusals the function can make: the promote
-    // matched nothing, the clear had nothing to clear, or a policy refused the
-    // caller outright. They are deliberately one answer -- see the function's
-    // own comment on why distinguishing them would be an existence oracle.
-    if (error.code === "42501") return { error: REFUSED_MESSAGE };
-    console.error("[crm] set primary company failed:", error.message);
-    return { error: FAILED_MESSAGE };
+  // THE WORKSPACE CHECK, BEFORE THE RPC. See contactInOrg(): the function now
+  // takes an organisation and applies it to both statements, so this is a
+  // second lock rather than the only one -- but it is what makes the refusal a
+  // sentence instead of a raised 42501, and it stops revalidatePath() being
+  // handed this workspace's slug for a write aimed at another one's row.
+  if (!(await contactInOrg(supabase, org.id, contactId))) {
+    return { error: REFUSED_MESSAGE };
   }
 
-  // No row-count check here, and that is not an exception to the rule -- it is
-  // the rule moved inside the function. `set_contact_primary_company()` raises
-  // rather than returning 0 for every case where nothing applied, precisely
-  // because a returned 0 would arrive here as a 200 with no error, which is
-  // the same trap as a 204 one layer down.
+  const result = await commitWrite(
+    `set primary company on contact ${contactId}`,
+    async () => {
+      const { error } = await supabase.rpc("set_contact_primary_company", {
+        p_contact_id: contactId,
+        p_company_id: companyId,
+        // NEVER FROM THE FORM. `org` is resolved from the slug through
+        // getCurrentOrg(), which is RLS-gated -- CLAUDE.md § Tenancy model.
+        p_organisation_id: org.id,
+      });
+      // `count: 1` is not a measured row count and is not pretending to be
+      // one. This RPC signals a refusal by RAISING -- deliberately, so the
+      // demote half rolls back with it, and so a returned 0 cannot arrive here
+      // as a 200 with no error the way a 204 does one layer down. So the count
+      // channel is not in play and only the error vocabulary is being reused:
+      // 42501 refused, 23505 conflict, anything else a fault.
+      return { error, count: 1 };
+    },
+  );
+
+  if (result.outcome !== "applied") return failureState(result, formData);
+
   revalidatePath(`/${org.slug}/contacts/${contactId}`);
   if (companyId) revalidatePath(`/${org.slug}/companies/${companyId}`);
 

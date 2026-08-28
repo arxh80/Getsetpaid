@@ -906,7 +906,21 @@ p2_sub "update public.contacts set deleted_at = null
 #    nothing applied, specifically so the refusal arrives as a 403 the
 #    application can read from the error rather than as a 200 carrying a zero.
 #    That mapping is PostgREST's, not Postgres's, so it has to be measured here.
-t4_rpc() { # name want_code contact company token
+t4_rpc() { # name want_code contact company token [org]
+  local name="$1" want="$2" ct="$3" co="$4" tok="$5" org="${6:-$ALPHA_ORG}" code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "$API/rest/v1/rpc/set_contact_primary_company" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+    -H "Content-Type: application/json" \
+    -d "{\"p_contact_id\":\"$ct\",\"p_company_id\":$co,\"p_organisation_id\":\"$org\"}")
+  if [ "$code" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$code"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$code" "$want"; api_fails=$((api_fails+1)); fi
+}
+# The 2-arg overload, by NAME, exactly as a caller who simply omits the new
+# argument would send it. PostgREST resolves an RPC by the argument names in
+# the body, so leaving the old function granted would have left the unscoped
+# path one missing key away. 20260828234500 drops it; this is what says so.
+t4_rpc_2arg() { # name want_code contact company token
   local name="$1" want="$2" ct="$3" co="$4" tok="$5" code
   code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     "$API/rest/v1/rpc/set_contact_primary_company" \
@@ -926,6 +940,18 @@ t4_rpc "LIVE CONTROL: a manager sets a primary company -> 200" 200 \
   "$S_CONTACT" "\"$S_CO1\"" "$MGR"
 t4_rpc "a read_only caller is refused -> 403, not a 200 carrying 0" 403 \
   "$S_CONTACT" "\"$S_CO1\"" "$RO"
+# THE WORKSPACE TERM AT THE TRANSPORT. The manager is a member of org-alpha and
+# these are org-alpha's rows; only the organisation argument is wrong, and that
+# alone has to refuse. Sent as a real uuid rather than a nonsense one, so the
+# statement is well-formed and the 403 is the predicate rather than a parse
+# error.
+t4_rpc "the RIGHT rows with the WRONG organisation id -> 403" 403 \
+  "$S_CONTACT" "\"$S_CO1\"" "$MGR" "$BETA_ORG"
+# And the old signature is GONE, not merely ungranted: PostgREST answers 404
+# (PGRST202, no function matching those argument names) rather than resolving
+# the unscoped 2-arg version.
+t4_rpc_2arg "omitting p_organisation_id finds NO function -> 404" 404 \
+  "$S_CONTACT" "\"$S_CO1\"" "$MGR"
 p2_sub "update public.organisations set deleted_at = now() where id='$ALPHA_ORG';"
 t4_rpc "SUSPENDED: the manager is refused -> 403, not a silent 204" 403 \
   "$S_CONTACT" "\"$S_CO1\"" "$MGR"
