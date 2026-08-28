@@ -46,6 +46,11 @@ import "server-only";
 //     11.995 ms / 884 buffers against 1.015 ms / 314. Wrong rows AND twelve
 //     times the work.
 //
+//     Task 4 made the SIDE of the line an option (`scope`) so the restore view
+//     can exist, and did NOT make the clause itself optional -- there is no
+//     value of `scope` that omits it, and the "deleted" side has its own
+//     partial indexes for the same reason this side does.
+//
 //  3. The keyset predicate, in TWO PARTS. See `applyCursor`.
 //
 //  4. `.limit(pageSize + 1)`. The spare row is how "is there another page" is
@@ -209,6 +214,24 @@ export interface FetchListPageOptions<
   readonly select: string;
   /** Maps a raw row once, so pages never handle PostgREST shapes. */
   readonly mapRow: (raw: Record<string, unknown>) => TRow;
+  /**
+   * Which side of the soft-delete line this list is.
+   *
+   * ADDED BY TASK 4, AND IT IS A NARROWING OF CLAUSE 2 ABOVE RATHER THAN AN
+   * ESCAPE FROM IT. `deleted_at` is still always constrained -- there is no
+   * value of this option that omits the clause -- because a list with no
+   * soft-delete predicate cannot use either partial index and would show
+   * deleted records among live ones.
+   *
+   * "deleted" exists because CLAUDE.md requires soft delete, and a soft delete
+   * nobody can undo is a hard delete with extra steps. Restore needs a way to
+   * REACH a deleted record; this is it, on its own route, with its own
+   * indexes (20260828230000) and its own single sort. It is deliberately NOT a
+   * query-string filter on the live list: the count line there would stop
+   * being a true statement about live records, and the clause this file calls
+   * non-negotiable would become negotiable by URL.
+   */
+  readonly scope?: "live" | "deleted";
   // NO `sortValue` OPTION. It used to be here, and every entity supplied a
   // ternary mapping its sort keys back to column names -- a map the spec
   // already holds. Review finding M-6: the else branch of that ternary is a
@@ -296,7 +319,12 @@ function applyScope<TRow, TSort extends string, TFilter extends string>(
 ): ListQuery {
   const { spec, params, organisationId, applyFilters } = options;
 
-  let q = query.eq("organisation_id", organisationId).is("deleted_at", null);
+  let q = query.eq("organisation_id", organisationId);
+  // Always one of the two, never neither. See `scope`'s note above.
+  q =
+    options.scope === "deleted"
+      ? q.filter("deleted_at", "not.is", null)
+      : q.is("deleted_at", null);
 
   if (params.q !== "") {
     // A top-level filter, so the value is literal -- no quoting, by

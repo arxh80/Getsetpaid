@@ -417,6 +417,8 @@ MGR=$(p2_token pmanager);   [ -n "$MGR" ] || { echo "no token for pmanager" >&2;
 BKR=$(p2_token pbooker);    [ -n "$BKR" ] || { echo "no token for pbooker" >&2; exit 1; }
 STD=$(p2_token pstd1);      [ -n "$STD" ] || { echo "no token for pstd1" >&2; exit 1; }
 OWN=$(p2_token powner);     [ -n "$OWN" ] || { echo "no token for powner" >&2; exit 1; }
+# Task 4: the read_only role, for the RPC refusal checks at the bottom.
+RO=$(p2_token pro);         [ -n "$RO" ]  || { echo "no token for pro" >&2; exit 1; }
 
 # anon: the tables must not be reachable logged out at all.
 p2_code "anon GET contacts"                       401 GET  "contacts?select=id"
@@ -875,6 +877,69 @@ p2_range_written "REINSTATED: PATCH contact_companies writes rows again"      ">
         "contact_companies?organisation_id=eq.$ALPHA_ORG"      '{"is_primary":false}' "$MGR"
 p2_range_written "REINSTATED: DELETE organisation_memberships writes rows again" ">=1" DELETE \
         "organisation_memberships?organisation_id=eq.$ALPHA_ORG&role=eq.read_only" '' "$OWN2"
+
+# ---------------------------------------------------------------------------
+# TASK 4. The two things the application depends on that only PostgREST can
+# answer, and which the psql suite therefore cannot check.
+# ---------------------------------------------------------------------------
+echo
+echo "-- Task 4: the write path over PostgREST --"
+
+# 1. THE DELETED-SCOPE FILTER'S GRAMMAR.
+#    lib/list/query.ts writes `.filter("deleted_at", "not.is", null)` for the
+#    restore view, which becomes `deleted_at=not.is.null` on the wire. If that
+#    spelling is wrong PostgREST does not error -- it returns a page, and the
+#    restore queue quietly shows the wrong set. Asserted as a PAIR against the
+#    live predicate, because either one alone is satisfied by a filter that
+#    matches everything.
+p2_sub "update public.contacts set deleted_at = now()
+        where organisation_id='$ALPHA_ORG' and name='S Manager Contact';"
+p2_rows "deleted_at=is.null excludes the soft-deleted contact" 0 \
+  "contacts?organisation_id=eq.$ALPHA_ORG&name=eq.S%20Manager%20Contact&deleted_at=is.null" "$MGR"
+p2_rows "deleted_at=not.is.null includes exactly it" 1 \
+  "contacts?organisation_id=eq.$ALPHA_ORG&name=eq.S%20Manager%20Contact&deleted_at=not.is.null" "$MGR"
+p2_sub "update public.contacts set deleted_at = null
+        where organisation_id='$ALPHA_ORG' and name='S Manager Contact';"
+
+# 2. THE RPC'S STATUS CODES.
+#    set_contact_primary_company() raises 42501 rather than returning 0 when
+#    nothing applied, specifically so the refusal arrives as a 403 the
+#    application can read from the error rather than as a 200 carrying a zero.
+#    That mapping is PostgREST's, not Postgres's, so it has to be measured here.
+t4_rpc() { # name want_code contact company token
+  local name="$1" want="$2" ct="$3" co="$4" tok="$5" code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "$API/rest/v1/rpc/set_contact_primary_company" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+    -H "Content-Type: application/json" \
+    -d "{\"p_contact_id\":\"$ct\",\"p_company_id\":$co}")
+  if [ "$code" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$code"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$code" "$want"; api_fails=$((api_fails+1)); fi
+}
+S_CONTACT=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select id from public.contacts where organisation_id='$ALPHA_ORG'
+   and name='S Std1 Contact'" | tr -d '[:space:]')
+S_CO1=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select id from public.companies where organisation_id='$ALPHA_ORG'
+   and name='S Co One'" | tr -d '[:space:]')
+t4_rpc "LIVE CONTROL: a manager sets a primary company -> 200" 200 \
+  "$S_CONTACT" "\"$S_CO1\"" "$MGR"
+t4_rpc "a read_only caller is refused -> 403, not a 200 carrying 0" 403 \
+  "$S_CONTACT" "\"$S_CO1\"" "$RO"
+p2_sub "update public.organisations set deleted_at = now() where id='$ALPHA_ORG';"
+t4_rpc "SUSPENDED: the manager is refused -> 403, not a silent 204" 403 \
+  "$S_CONTACT" "\"$S_CO1\"" "$MGR"
+susp_primary=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select count(*) from public.contact_companies
+   where contact_id='$S_CONTACT' and is_primary" | tr -d '[:space:]')
+if [ "$susp_primary" = "1" ]; then
+  printf '  PASS  %-58s %s\n' "SUSPENDED: ...and the demote half did not commit" "$susp_primary primary"
+else
+  printf '  FAIL  %-58s got %s want 1\n' \
+         "SUSPENDED: ...and the demote half did not commit" "$susp_primary"
+  api_fails=$((api_fails+1))
+fi
+p2_sub "update public.organisations set deleted_at = null where id='$ALPHA_ORG';"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

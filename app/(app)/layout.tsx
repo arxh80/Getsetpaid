@@ -11,6 +11,7 @@ import { IdleTimeout } from "@/components/auth/idle-timeout";
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { RecordCurrentOrg } from "@/components/org/record-current-org";
 import { WorkspaceSwitcher } from "@/components/org/workspace-switcher";
+import { SuspendedBanner } from "@/components/org/suspended-banner";
 import { Wordmark } from "@/components/wordmark";
 import { SkipLink } from "@/components/ui/skip-link";
 
@@ -131,6 +132,20 @@ export default async function AppLayout({
           </div>
         </div>
       </header>
+
+      {/* Task 4 / DECISIONS-QUEUE Q6. Immediately under the header and above
+          every route's content, because it is a fact about the whole workspace
+          rather than about one screen -- and because getCurrentOrg() is
+          resolved HERE for the switcher, so no route has to remember to render
+          it. A CRM page that forgot would be a page whose disabled buttons had
+          no explanation.
+
+          It sits OUTSIDE <main>, before the content and after the skip link's
+          target, so "skip to content" still lands on the content and the
+          banner is still read before it in DOM order. */}
+      {currentOrg?.isSuspended ? (
+        <SuspendedBanner orgName={currentOrg.name} />
+      ) : null}
 
       <main id="main" className="mx-auto w-full max-w-4xl flex-1 px-4 py-8 sm:py-12">
         {mfaGate.kind === "enroll" ? (

@@ -106,3 +106,47 @@ export const CONTACT_LIST = defineListSpec({
 
 export type ContactSortKey = keyof (typeof CONTACT_LIST)["sort"];
 export type ContactFilterKey = keyof (typeof CONTACT_LIST)["filters"];
+
+/**
+ * The restore view's spec. Its own spec, not a mode of the one above.
+ *
+ * See lib/crm/companies-list.ts's copy of this note for the full argument;
+ * both entities carry it because Task 4b copies whichever it opens first. The
+ * short version: the live list's two indexes are partial on `deleted_at is
+ * null` and cannot serve a query for deleted rows, so `backedBy` has to name a
+ * different index; and `notNull` on `deleted_at` is true of the rows this list
+ * reads (`scope: "deleted"` plus the partial index predicate) rather than of
+ * the column, which is worth knowing before anyone reuses it.
+ */
+export const CONTACT_DELETED_LIST = defineListSpec({
+  entity: "contacts-deleted",
+  noun: { one: "deleted contact", many: "deleted contacts" },
+  searchColumn: "name",
+  searchLabel: "Search deleted contacts by name",
+  sort: {
+    deleted: {
+      column: "deleted_at",
+      label: "Deleted",
+      defaultDirection: "desc",
+      directionLabels: { asc: "oldest first", desc: "most recent first" },
+      notNull: true,
+      backedBy: "contacts_org_deleted_at_id_idx",
+    },
+  },
+  defaultSort: "deleted",
+  filters: {},
+});
+
+export const CONTACT_DELETED_SELECT =
+  "id, name, email, title, owner_user_id, deleted_at";
+
+export interface DeletedContactRow {
+  id: string;
+  name: string;
+  email: string | null;
+  title: string | null;
+  deletedAt: string;
+}
+
+export type ContactDeletedSortKey = keyof (typeof CONTACT_DELETED_LIST)["sort"];
+export type ContactDeletedFilterKey = keyof (typeof CONTACT_DELETED_LIST)["filters"];

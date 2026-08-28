@@ -4,6 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentOrg, getCurrentUser } from "@/lib/auth";
 import { isRecordScopedRole } from "@/lib/crm/record-scope";
+import { getCrmWriteAccess, type CrmWriteAccess } from "@/lib/crm/write-access";
 import {
   CONTACT_LIST,
   CONTACT_SELECT,
@@ -22,6 +23,7 @@ import type { ListColumn } from "@/lib/list/spec";
 import { EntityList } from "@/components/list/entity-list";
 import { ListSkeleton } from "@/components/list/list-skeleton";
 import { ListToolbar } from "@/components/list/list-toolbar";
+import { NewRecordAction } from "@/components/crm/write-gate";
 
 // Contacts -- the first caller of the shared list surface, and the one Task 4
 // copies for companies, artists, agencies and venues.
@@ -73,6 +75,13 @@ export default async function ContactsPage({
   const narrowed = isNarrowed(CONTACT_LIST, listParams);
   const recordScoped = isRecordScopedRole(org.role);
 
+  // Resolved OUTSIDE the Suspense boundary, alongside the heading, because the
+  // "New contact" button belongs to the page frame rather than to the results:
+  // it must not vanish and reappear on every search. getCurrentOrg() is
+  // already cached for this request, so this costs the two lookups
+  // getCrmWriteAccess makes in parallel and nothing else.
+  const access = await getCrmWriteAccess(org, "manage_contacts");
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-3">
@@ -88,9 +97,29 @@ export default async function ContactsPage({
             {org.name}
           </Link>
         </p>
-        <h1 className="tracking-display text-3xl font-extrabold text-ink">
-          Contacts
-        </h1>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <h1 className="tracking-display text-3xl font-extrabold text-ink">
+            Contacts
+          </h1>
+          {/* Disabled with a visible reason rather than hidden -- see
+              components/crm/write-gate.tsx. A Read Only user, a Free-tier
+              workspace and a suspended one each get a different sentence, and
+              none of them gets a control that silently does nothing. */}
+          <NewRecordAction
+            access={access}
+            href={`${basePath}/new`}
+            label="New contact"
+            id="new-contact"
+          />
+        </div>
+        <p className="text-sm text-ink-muted">
+          <Link
+            href={`${basePath}/deleted`}
+            className="text-primary underline underline-offset-4 hover:text-ink"
+          >
+            Deleted contacts
+          </Link>
+        </p>
       </div>
 
       <ListToolbar
@@ -136,14 +165,16 @@ export default async function ContactsPage({
           listParams.filters,
           listParams.pageSize,
         ])}
-        fallback={<ListSkeleton columns={CONTACT_COLUMNS.length} />}
+        fallback={<ListSkeleton columns={5} />}
       >
         <ContactResults
           organisationId={org.id}
+          orgSlug={org.slug}
           listParams={listParams}
           basePath={basePath}
           narrowed={narrowed}
           recordScoped={recordScoped}
+          access={access}
         />
       </Suspense>
     </div>
@@ -152,16 +183,20 @@ export default async function ContactsPage({
 
 async function ContactResults({
   organisationId,
+  orgSlug,
   listParams,
   basePath,
   narrowed,
   recordScoped,
+  access,
 }: {
   organisationId: string;
+  orgSlug: string;
   listParams: ListParams<ContactSortKey, ContactFilterKey>;
   basePath: string;
   narrowed: boolean;
   recordScoped: boolean;
+  access: CrmWriteAccess;
 }) {
   // The signed-in user's own id, read from the VERIFIED JWT
   // (getClaims(), not the cookie's contents) and cached for the request, so
@@ -215,7 +250,7 @@ async function ContactResults({
       params={listParams}
       basePath={basePath}
       page={page}
-      columns={CONTACT_COLUMNS}
+      columns={contactColumns(orgSlug)}
       rowKey={(row) => row.id}
       narrowed={narrowed}
       scopeNote={
@@ -239,28 +274,64 @@ async function ContactResults({
             settlements all point back to someone here, so this is where the
             rest of the workflow starts.
           </p>
-          <p className="mt-3 max-w-prose text-base text-ink-muted">
-            {recordScoped
-              ? "Ask an Owner or Admin to assign some to you."
-              : "Adding contacts arrives with the next release."}
-          </p>
+          {/* THE THIRD BEAT OF THE EMPTY STATE, which Task 3 recorded as owed
+              once a create route existed: what is empty, why it matters, one
+              button. "Adding contacts arrives with the next release" was the
+              honest stand-in while there was nothing to link to.
+
+              A record-scoped user gets a different sentence and no button,
+              because the button would not help them: contacts_insert lets a
+              Standard User create records they own, but the reason their list
+              is empty is assignment, not creation. That branch is the fix for
+              the defect Task 3's browser pass found -- a Read Only user in a
+              71-contact workspace shown "No contacts yet" -- and it survives
+              intact here. */}
+          {recordScoped ? (
+            <p className="mt-3 max-w-prose text-base text-ink-muted">
+              Ask an Owner or Admin to assign some to you.
+            </p>
+          ) : (
+            <div className="mt-4">
+              <NewRecordAction
+                access={access}
+                href={`${basePath}/new`}
+                label="Add the first contact"
+                id="empty-new-contact"
+              />
+            </div>
+          )}
         </div>
       }
     />
   );
 }
 
-const CONTACT_COLUMNS: readonly ListColumn<ContactRow, ContactSortKey>[] = [
+/**
+ * The columns.
+ *
+ * A FUNCTION OF THE SLUG rather than a module constant, and that is the only
+ * structural change Task 4 made to this file's table. Task 3 left the name as
+ * plain text with a note: "a name styled as a link that navigates nowhere is
+ * the dead-affordance class the Foundation review caught three times. Task 4
+ * wraps this in a <Link> and nothing else on this page changes." That held --
+ * a row link needs the workspace slug, and a module constant has no way to
+ * receive it.
+ */
+function contactColumns(
+  orgSlug: string,
+): readonly ListColumn<ContactRow, ContactSortKey>[] {
+  return [
   {
     key: "name",
     header: "Name",
     sortKey: "name",
-    // No link, deliberately. Contact detail pages are Task 4; a name styled
-    // as a link that navigates nowhere is the "dead affordance" the Foundation
-    // review caught three times. Task 4 wraps this in a <Link> and nothing
-    // else on this page changes.
     render: (row) => (
-      <span className="font-semibold break-words text-ink">{row.name}</span>
+      <Link
+        href={`/${orgSlug}/contacts/${row.id}`}
+        className="font-semibold break-words text-primary underline underline-offset-4 hover:text-ink"
+      >
+        {row.name}
+      </Link>
     ),
   },
   {
@@ -303,7 +374,8 @@ const CONTACT_COLUMNS: readonly ListColumn<ContactRow, ContactSortKey>[] = [
       </time>
     ),
   },
-];
+  ];
+}
 
 /**
  * An empty cell, said out loud.

@@ -2818,6 +2818,273 @@ select crm.val('R14 ...while an ordinary delete still records the organisation',
      where action='custom_field_value.deleted'$$, 'true');
 
 -- ===========================================================================
+-- S. TASK 4's WRITE PATH: is_primary, soft delete, restore
+-- ===========================================================================
+-- ITS OWN FIXTURE, with its own ids. Sections A-R have already deleted and
+-- re-inserted link rows, and a test that depends on what they left behind is a
+-- test whose meaning changes when they do.
+--
+--   contacts    ...00a1 owned by pstd1      ...00a2 owned by pmanager
+--   companies   ...00a1, ...00a2, ...00a3   all unowned (record scope on a
+--               link row derives from the CONTACT -- Q5 -- so the company's
+--               owner is deliberately not the variable under test here)
+--   links       a1->a1 primary, a1->a2, a1->a3   on pstd1's contact
+--               a2->a1 primary                   on pmanager's contact
+insert into public.companies (id, organisation_id, name)
+select v.id::uuid, o.id, v.nm
+from public.organisations o, (values
+  ('11110000-0000-0000-0000-0000000000a1', 'S Co One'),
+  ('11110000-0000-0000-0000-0000000000a2', 'S Co Two'),
+  ('11110000-0000-0000-0000-0000000000a3', 'S Co Three')
+) as v(id, nm) where o.slug='org-alpha';
+
+insert into public.contacts (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, v.owner::uuid, v.nm
+from public.organisations o, (values
+  ('22220000-0000-0000-0000-0000000000a1', :'pstd1',    'S Std1 Contact'),
+  ('22220000-0000-0000-0000-0000000000a2', :'pmanager', 'S Manager Contact')
+) as v(id, owner, nm) where o.slug='org-alpha';
+
+insert into public.contact_companies (organisation_id, contact_id, company_id, is_primary)
+select o.id, v.ct::uuid, v.co::uuid, v.pri
+from public.organisations o, (values
+  ('22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a1', true),
+  ('22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a2', false),
+  ('22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a3', false),
+  ('22220000-0000-0000-0000-0000000000a2','11110000-0000-0000-0000-0000000000a1', true)
+) as v(ct, co, pri) where o.slug='org-alpha';
+
+-- --------------------------------------------------------------------------
+-- S1-S3. THE MEASUREMENT THE is_primary DECISION RESTS ON.
+--
+-- 20260828230000's header says a single UPDATE that demotes one row and
+-- promotes another is checked PER ROW against the non-deferrable partial
+-- unique index, so it succeeds or raises 23505 depending on the order the
+-- executor happens to visit the rows in. That is a claim about behaviour, and
+-- a claim about behaviour that nothing runs is this phase's named failure
+-- mode -- so it runs here, as postgres, with no RLS in the way, so the only
+-- thing under test is the index.
+-- --------------------------------------------------------------------------
+select crm.try('S1  a single UPDATE promoting BEFORE demoting raises 23505',
+  $$update public.contact_companies set is_primary = true
+     where contact_id='22220000-0000-0000-0000-0000000000a1'
+       and company_id='11110000-0000-0000-0000-0000000000a2'$$, 'denied(23505)');
+
+-- The outer quote is $s2$ and not $$ because the payload is itself a
+-- dollar-quoted DO block; `$do$$$` is a syntax error, not a nesting.
+select crm.try('S2  demote-then-promote, two statements, is accepted',
+  $s2$do $do$
+    begin
+      update public.contact_companies set is_primary = false
+       where contact_id='22220000-0000-0000-0000-0000000000a1' and is_primary;
+      update public.contact_companies set is_primary = true
+       where contact_id='22220000-0000-0000-0000-0000000000a1'
+         and company_id='11110000-0000-0000-0000-0000000000a2';
+    end
+    $do$$s2$, 'ok(0)');
+
+select crm.val('S3  ...leaving exactly one primary, and it is the new one',
+  $$select count(*)::text from public.contact_companies
+     where contact_id='22220000-0000-0000-0000-0000000000a1'
+       and is_primary
+       and company_id='11110000-0000-0000-0000-0000000000a2'$$, '1');
+select crm.val('S3a ...and no second primary survived',
+  $$select count(*)::text from public.contact_companies
+     where contact_id='22220000-0000-0000-0000-0000000000a1' and is_primary$$, '1');
+
+-- --------------------------------------------------------------------------
+-- S4-S10. set_contact_primary_company() across every role that matters.
+--
+-- The function is SECURITY INVOKER, so what is under test is that it adds no
+-- privilege: every refusal the RLS policies make against a direct PATCH they
+-- make against this, and the MECHANISM is asserted rather than "it failed".
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('S4  a manager moves the primary back, and gets the count',
+  $$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a1')::text$$,
+  '1');
+select crm.val('S5  ...exactly one primary, and it moved',
+  $$select company_id::text from public.contact_companies
+     where contact_id='22220000-0000-0000-0000-0000000000a1' and is_primary$$,
+  '11110000-0000-0000-0000-0000000000a1');
+select crm.val('S6  re-nominating the CURRENT primary is a no-op that still reports 1',
+  $$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a1')::text$$,
+  '1');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.val('S7  a standard_user may set the primary on a contact THEY OWN',
+  $$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a3')::text$$,
+  '1');
+-- The record-scope half. pstd1 does not own contact ...a2, so both statements
+-- inside the function match nothing -- and the function RAISES rather than
+-- returning 0, which is the whole reason it raises: a returned 0 would arrive
+-- at the application as a 200 with no error, the same trap as a 204 one layer
+-- down.
+select crm.val('S8  ...and NOT on a contact they do not own -- 42501, not 0',
+  $$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a2','11110000-0000-0000-0000-0000000000a2')::text$$,
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+-- THE OUTCOME CHECK RUNS AS postgres, NOT AS THE ATTACKER, and the first draft
+-- got this wrong in a way worth recording: written inside pstd1's session it
+-- returned 0 and looked like the primary had been destroyed. It had not --
+-- pstd1 cannot READ a link row on a contact they do not own (record scope,
+-- Q5), so the assertion was measuring visibility while claiming to measure
+-- state. Any "and the row is untouched" check has to be taken by a principal
+-- that could see the row either way.
+select crm.val('S8a ...and that contact still has its original primary',
+  $$select count(*)::text from public.contact_companies
+     where contact_id='22220000-0000-0000-0000-0000000000a2'
+       and is_primary and company_id='11110000-0000-0000-0000-0000000000a1'$$, '1');
+
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select crm.val('S9  a read_only user is refused, with the mechanism 42501',
+  $$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a2')::text$$,
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select crm.val('S10 a NON-MEMBER of the organisation is refused the same way',
+  $$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a2')::text$$,
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- --------------------------------------------------------------------------
+-- S11-S16. Soft delete and restore, and the MECHANISM of each refusal.
+--
+-- Task 3a's lesson: accepting "refused" without asserting HOW hides a real
+-- difference. Here the two mechanisms are the point of the whole task --
+-- ok(0) is the silent 204 the application must read a row count to detect,
+-- and denied(42501) is the loud one it can read from the error.
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('S11 a manager soft-deletes a contact',
+  $$update public.contacts set deleted_at = pg_catalog.now()
+     where id='22220000-0000-0000-0000-0000000000a2' and deleted_at is null$$, 'ok(1)');
+select crm.try('S12 ...and deleting it again matches nothing, so the timestamp is not restamped',
+  $$update public.contacts set deleted_at = pg_catalog.now()
+     where id='22220000-0000-0000-0000-0000000000a2' and deleted_at is null$$, 'ok(0)');
+select crm.val('S13 ...the soft-deleted row is still READABLE -- design note (g)',
+  $$select count(*)::text from public.contacts
+     where id='22220000-0000-0000-0000-0000000000a2'$$, '1');
+select crm.try('S14 ...and it restores',
+  $$update public.contacts set deleted_at = null
+     where id='22220000-0000-0000-0000-0000000000a2' and deleted_at is not null$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+-- THE 204. read_only holds view_crm but not manage_contacts, so the UPDATE
+-- policy's USING clause filters the row out and the statement matches nothing.
+-- Over PostgREST that is 204 No Content with `Content-Range: */0` -- byte
+-- identical in the status line to a write that changed fifteen rows. This is
+-- the exact response lib/crm/write.ts exists to classify.
+select crm.try('S15 a read_only soft delete matches NOTHING -- ok(0), the silent 204',
+  $$update public.contacts set deleted_at = pg_catalog.now()
+     where id='22220000-0000-0000-0000-0000000000a1'$$, 'ok(0)');
+-- The INSERT half, for contrast, on the same session: a refused INSERT is a
+-- LOUD 42501, which is why lib/crm/contacts.ts reads the error on create and
+-- the row count on update.
+select crm.try('S16 ...while a read_only INSERT is loud: 42501, not ok(0)',
+  format($$insert into public.contacts (organisation_id, name)
+           values (%L,'read only should not be here')$$, :'alpha_org'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+-- As postgres, for the reason S8a gives: a read_only user is record-scoped and
+-- cannot see this contact at all, so asking them whether it changed measures
+-- their visibility rather than the row.
+select crm.val('S15a ...and the contact really is untouched',
+  $$select (deleted_at is null)::text from public.contacts
+     where id='22220000-0000-0000-0000-0000000000a1'$$, 'true');
+select crm.val('S16a ...and no row was inserted by the refused INSERT',
+  $$select count(*)::text from public.contacts
+     where name='read only should not be here'$$, '0');
+
+-- --------------------------------------------------------------------------
+-- S17-S20. A SUSPENDED workspace. DECISIONS-QUEUE Q6: read-only, not a
+-- lockout -- and the UI half of that is what Task 4 shipped.
+-- --------------------------------------------------------------------------
+update public.organisations set deleted_at = now() where slug = 'org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('S17 SUSPENDED: a manager still READS the contact',
+  $$select count(*)::text from public.contacts
+     where id='22220000-0000-0000-0000-0000000000a1'$$, '1');
+select crm.try('S18 SUSPENDED: ...and their soft delete matches NOTHING -- ok(0)',
+  $$update public.contacts set deleted_at = pg_catalog.now()
+     where id='22220000-0000-0000-0000-0000000000a1'$$, 'ok(0)');
+select crm.val('S19 SUSPENDED: ...and the RPC raises 42501 rather than half-applying',
+  $$select public.set_contact_primary_company(
+      '22220000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-0000000000a2')::text$$,
+  'denied(42501)');
+-- The half that makes S19 worth asserting: the demote statement inside the
+-- function must not have committed on its own. If it had, a suspended
+-- workspace could strip a contact's primary company through a call that
+-- reports an error.
+select crm.val('S20 SUSPENDED: ...and the demote half did NOT commit',
+  $$select count(*)::text from public.contact_companies
+     where contact_id='22220000-0000-0000-0000-0000000000a1' and is_primary$$, '1');
+reset role; reset request.jwt.claims;
+
+update public.organisations set deleted_at = null where slug = 'org-alpha';
+
+-- --------------------------------------------------------------------------
+-- S21-S23. The restore view's query shape, which is a route rather than a
+-- filter (app/(app)/[orgSlug]/contacts/deleted/page.tsx) and therefore needs
+-- its own index and its own predicate to be right.
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('S21 a manager soft-deletes, so the restore view has something in it',
+  $$update public.contacts set deleted_at = pg_catalog.now()
+     where id='22220000-0000-0000-0000-0000000000a2' and deleted_at is null$$, 'ok(1)');
+select crm.val('S22 the LIVE list predicate excludes it',
+  format($$select count(*)::text from public.contacts
+     where organisation_id=%L and deleted_at is null
+       and id='22220000-0000-0000-0000-0000000000a2'$$, :'alpha_org'), '0');
+select crm.val('S23 ...and the DELETED list predicate includes exactly it',
+  format($$select count(*)::text from public.contacts
+     where organisation_id=%L and deleted_at is not null
+       and id='22220000-0000-0000-0000-0000000000a2'$$, :'alpha_org'), '1');
+reset role; reset request.jwt.claims;
+
+-- The two indexes 20260828230000 adds for that route, asserted to EXIST with
+-- the predicate the sort option's `notNull: true` leans on. lib/crm/*-list.ts
+-- names them in `backedBy`, which is a string; this is what makes the string
+-- true.
+select crm.val('S24 contacts_org_deleted_at_id_idx exists, partial on deleted_at not null',
+  $$select (indexdef like '%WHERE (deleted_at IS NOT NULL)')::text
+     from pg_indexes where indexname='contacts_org_deleted_at_id_idx'$$, 'true');
+select crm.val('S25 companies_org_deleted_at_id_idx likewise',
+  $$select (indexdef like '%WHERE (deleted_at IS NOT NULL)')::text
+     from pg_indexes where indexname='companies_org_deleted_at_id_idx'$$, 'true');
+select crm.val('S26 the companies list indexes named by backedBy exist',
+  $$select count(*)::text from pg_indexes
+     where indexname in ('companies_org_name_id_live_idx',
+                         'companies_org_updated_at_id_live_idx')$$, '2');
+
+-- Leave the fixture as section R left it, so a later section (there is none
+-- today, and there will be) does not inherit a deleted contact.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('S27 ...and restoring puts it back',
+  $$update public.contacts set deleted_at = null
+     where id='22220000-0000-0000-0000-0000000000a2' and deleted_at is not null$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o

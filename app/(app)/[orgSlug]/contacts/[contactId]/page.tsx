@@ -1,0 +1,328 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { getCurrentOrg } from "@/lib/auth";
+import { getCrmWriteAccess } from "@/lib/crm/write-access";
+import {
+  loadCompaniesForContact,
+  loadContact,
+  loadLinkOptions,
+} from "@/lib/crm/queries";
+import { deleteContactAction, restoreContactAction } from "@/lib/crm/contacts";
+import { Alert } from "@/components/ui/alert";
+import {
+  DeleteRecordForm,
+  RestoreRecordForm,
+} from "@/components/crm/delete-restore";
+import { ContactCompanyPanel } from "@/components/crm/link-panel";
+
+// One contact.
+//
+// ===========================================================================
+// WHERE TASK 7'S TIMELINE GOES, AND WHY THERE IS A GAP RATHER THAN A STUB
+// ===========================================================================
+// The activity timeline (notes, tasks, meetings, email activity) is Task 7 and
+// belongs at the bottom of this page, below the join panel, as a full-width
+// section. The layout is already the two-column-on-wide/stacked-on-narrow
+// shape it needs, and nothing here has to move for it to land.
+//
+// There is deliberately NO placeholder heading. "Activity — coming soon" is a
+// dead affordance of the same class the Foundation review caught three times,
+// and an empty <section> is a thing someone later has to work out the purpose
+// of. A comment costs nothing and says more.
+//
+// ===========================================================================
+// A DELETED CONTACT RENDERS, AND THAT IS THE RESTORE PATH
+// ===========================================================================
+// `loadContact` does not filter `deleted_at`, so this route serves a
+// soft-deleted record with a notice and a Restore control instead of a 404.
+// Two things depend on it: the restore queue links straight here, and the
+// delete confirmation leaves the user on the record they just deleted with the
+// undo already in front of them. A 404 after deleting is the shape that makes
+// people afraid of the delete button.
+
+export async function generateMetadata({
+  params,
+}: PageProps<"/[orgSlug]/contacts/[contactId]">): Promise<Metadata> {
+  const { orgSlug, contactId } = await params;
+  const org = await getCurrentOrg(orgSlug);
+  if (!org) return { title: "Not found · GetSetPaid" };
+  const result = await loadContact(org.id, contactId);
+  return {
+    title:
+      result.outcome === "found"
+        ? `${result.record.name} · Contacts · ${org.name} · GetSetPaid`
+        : "Not found · GetSetPaid",
+  };
+}
+
+export default async function ContactDetailPage({
+  params,
+}: PageProps<"/[orgSlug]/contacts/[contactId]">) {
+  const { orgSlug, contactId } = await params;
+
+  const org = await getCurrentOrg(orgSlug);
+  if (!org) notFound();
+
+  const [result, access] = await Promise.all([
+    loadContact(org.id, contactId),
+    getCrmWriteAccess(org, "manage_contacts"),
+  ]);
+
+  // A FAILED QUERY IS NOT A MISSING RECORD. Same rule as the list surface and
+  // the members page: "there is no such contact" is a claim about the
+  // customer's data, and making it because the database was unreachable reads
+  // as deletion.
+  if (result.outcome === "unavailable") {
+    return (
+      <Alert tone="error">
+        We couldn’t load this contact just now. Refresh the page to try again —
+        nothing has been deleted.
+      </Alert>
+    );
+  }
+  if (result.outcome === "missing") notFound();
+
+  const contact = result.record;
+  const links = await loadCompaniesForContact(org.id, contact.id);
+  const options = access.canWrite
+    ? await loadLinkOptions(
+        "companies",
+        org.id,
+        links.map((l) => l.otherId),
+      )
+    : [];
+
+  const blocked = access.canWrite ? null : access.explanation;
+  const basePath = `/${org.slug}/contacts`;
+
+  return (
+    <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-3">
+        <p className="text-sm text-ink-muted">
+          <Link
+            href={basePath}
+            className="text-primary underline underline-offset-4 hover:text-ink"
+          >
+            Contacts
+          </Link>
+        </p>
+        <h1 className="tracking-display text-3xl font-extrabold break-words text-ink">
+          {contact.name}
+        </h1>
+        {contact.title ? (
+          <p className="text-base break-words text-ink-muted">{contact.title}</p>
+        ) : null}
+      </div>
+
+      {contact.deletedAt !== null ? (
+        <div
+          role="status"
+          className="border border-rule-strong bg-surface px-3 py-3"
+        >
+          <p className="text-base text-ink">
+            <span className="font-semibold text-warning">Deleted.</span> This
+            contact was deleted on{" "}
+            <time dateTime={contact.deletedAt} className="tabular-nums">
+              {formatDateTime(contact.deletedAt)}
+            </time>
+            . It is out of the contacts list and out of search, and everything
+            about it is still here.
+          </p>
+        </div>
+      ) : null}
+
+      <dl className="grid grid-cols-1 gap-x-8 gap-y-4 border-t border-rule pt-6 sm:grid-cols-2">
+        <Detail label="Email">
+          {contact.email ? (
+            // mailto is generated from a value validated as an email address
+            // by lib/crm/validate.ts, never from an arbitrary user URL --
+            // which is why lib/crm/urls.ts's allowlist does not need to carry
+            // `mailto:`. encodeURIComponent so a stored address containing a
+            // `?` cannot smuggle mail headers into the link.
+            <a
+              href={`mailto:${encodeURIComponent(contact.email)}`}
+              translate="no"
+              className="break-all text-primary underline underline-offset-4 hover:text-ink"
+            >
+              {contact.email}
+            </a>
+          ) : (
+            <Absent />
+          )}
+        </Detail>
+        <Detail label="Phone">
+          {contact.phone ? (
+            <span translate="no" className="tabular-nums">
+              {contact.phone}
+            </span>
+          ) : (
+            <Absent />
+          )}
+        </Detail>
+        <Detail label="Location">{contact.location ?? <Absent />}</Detail>
+        <Detail label="Website">
+          {contact.website ? (
+            <a
+              href={contact.website}
+              // Stored values are already normalised to http(s) by
+              // normaliseWebsite(), and a row written before that existed (or
+              // straight through PostgREST) is caught by the render-side
+              // check in the socials list below. noreferrer as well as
+              // noopener: an outbound link from a CRM should not carry the
+              // internal URL of the record it came from.
+              rel="noopener noreferrer nofollow"
+              target="_blank"
+              className="break-all text-primary underline underline-offset-4 hover:text-ink"
+            >
+              {contact.website}
+            </a>
+          ) : (
+            <Absent />
+          )}
+        </Detail>
+        <Detail label="Tags">
+          {contact.tags.length > 0 ? (
+            <span className="flex flex-wrap gap-2">
+              {contact.tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="border border-rule px-2 py-0.5 text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase"
+                >
+                  {tag}
+                </span>
+              ))}
+            </span>
+          ) : (
+            <Absent />
+          )}
+        </Detail>
+        <Detail label="Social">
+          {contact.socials.length > 0 ? (
+            <ul className="flex flex-col gap-1">
+              {contact.socials.map((entry) => (
+                <li key={entry.key} className="break-all">
+                  <span className="text-ink-muted">{entry.label}: </span>
+                  {entry.href ? (
+                    <a
+                      href={entry.href}
+                      rel="noopener noreferrer nofollow"
+                      target="_blank"
+                      className="text-primary underline underline-offset-4 hover:text-ink"
+                    >
+                      {entry.value}
+                    </a>
+                  ) : (
+                    // NOT A LINK, and this is the render-side half of the
+                    // protocol rule. A handle is not a URL, and a stored
+                    // `javascript:` -- from an import, a merge, or a direct
+                    // PostgREST call that never met the form -- reaches here
+                    // as inert text rather than an anchor. safeHref() has
+                    // already decided; this branch only renders the decision.
+                    <span translate="no">{entry.value}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <Absent />
+          )}
+        </Detail>
+        <Detail label="Added">
+          <time dateTime={contact.createdAt} className="tabular-nums">
+            {formatDateTime(contact.createdAt)}
+          </time>
+        </Detail>
+        <Detail label="Last updated">
+          <time dateTime={contact.updatedAt} className="tabular-nums">
+            {formatDateTime(contact.updatedAt)}
+          </time>
+        </Detail>
+      </dl>
+
+      <ContactCompanyPanel
+        orgSlug={org.slug}
+        side="contact"
+        anchorId={contact.id}
+        linked={links.map((link) => ({
+          id: link.otherId,
+          name: link.otherName,
+          isPrimary: link.isPrimary,
+          isDeleted: link.otherDeleted,
+          href: `/${org.slug}/companies/${link.otherId}`,
+        }))}
+        options={options}
+        disabledReason={blocked}
+      />
+
+      {/* Task 7's activity timeline goes here. See the file header. */}
+
+      <section className="flex flex-col gap-4 border-t border-rule pt-6">
+        <h2 className="text-xl font-bold text-ink">Manage</h2>
+        {contact.deletedAt === null ? (
+          <>
+            <div className="flex flex-wrap items-start gap-4">
+              {access.canWrite ? (
+                <Link
+                  href={`${basePath}/${contact.id}/edit`}
+                  className="inline-flex h-11 items-center justify-center border border-rule bg-surface px-4 text-base font-semibold whitespace-nowrap text-ink no-underline transition-colors duration-[var(--dur-fast)] ease-brand hover:border-ink hover:bg-shell"
+                >
+                  Edit contact
+                </Link>
+              ) : null}
+            </div>
+            <DeleteRecordForm
+              action={deleteContactAction}
+              hiddenFields={{ orgSlug: org.slug, contactId: contact.id }}
+              label="Delete contact"
+              question={`Delete ${contact.name}? It comes out of the contacts list and out of search. You can restore it from Contacts › Deleted.`}
+              disabledReason={blocked}
+            />
+          </>
+        ) : (
+          <RestoreRecordForm
+            action={restoreContactAction}
+            hiddenFields={{ orgSlug: org.slug, contactId: contact.id }}
+            label="Restore contact"
+            disabledReason={blocked}
+          />
+        )}
+      </section>
+    </div>
+  );
+}
+
+function Detail({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <dt className="text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase">
+        {label}
+      </dt>
+      <dd className="text-base break-words text-ink">{children}</dd>
+    </div>
+  );
+}
+
+/** See the contacts list's copy of this: a blank cell is indistinguishable
+ *  from a rendering fault, and silent to a screen reader. */
+function Absent() {
+  return (
+    <span className="text-ink-muted">
+      <span aria-hidden="true">—</span>
+      <span className="sr-only">Not recorded</span>
+    </span>
+  );
+}
+
+/** en-GB and Europe/London explicitly -- CLAUDE.md § Non-functional targets:
+ *  UTC in the database, UK local time in the UI with explicit handling. */
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/London",
+  });
+}

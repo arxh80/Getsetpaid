@@ -92,8 +92,15 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
             Contacts
           </Link>{" "}
           are the people this workspace works with — events, holds and
-          settlements all point back to one. Companies, artists, venues, events
-          and financials follow.
+          settlements all point back to one.{" "}
+          <Link
+            href={`/${org.slug}/companies`}
+            className="text-primary underline underline-offset-4 hover:text-ink"
+          >
+            Companies
+          </Link>{" "}
+          are the businesses behind them, and a contact can belong to several.
+          Artists, venues, events and financials follow.
         </p>
         {canManageMembers ? (
           <p className="mt-3 max-w-prose text-base text-ink-muted">
