@@ -73,14 +73,33 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
 
       {/* An honest empty state rather than invented dashboard tiles. It names
           what is coming and what can be done now -- DESIGN.md: "empty states
-          that teach the workflow". */}
+          that teach the workflow".
+
+          UPDATED IN PHASE 2 TASK 3, and the update was not cosmetic: this
+          panel said "Contacts, events and financials arrive with the next
+          release" while /[orgSlug]/contacts existed and worked. Nothing in the
+          product linked to it, so the only way to reach the first CRM screen
+          was to type the URL, and the workspace home actively said it was not
+          there yet. Task 4 turns this into real navigation once there are five
+          entity lists to navigate between; until then, one honest link. */}
       <section className="border border-rule bg-surface p-5">
-        <h2 className="text-xl font-bold text-ink">Nothing here yet</h2>
+        <h2 className="text-xl font-bold text-ink">Where to start</h2>
         <p className="mt-2 max-w-prose text-base text-ink-muted">
-          Contacts, events and financials arrive with the next release. For now,
-          this workspace is set up and ready
-          {canManageMembers ? " — bring your colleagues in." : "."}
+          <Link
+            href={`/${org.slug}/contacts`}
+            className="text-primary underline underline-offset-4 hover:text-ink"
+          >
+            Contacts
+          </Link>{" "}
+          are the people this workspace works with — events, holds and
+          settlements all point back to one. Companies, artists, venues, events
+          and financials follow.
         </p>
+        {canManageMembers ? (
+          <p className="mt-3 max-w-prose text-base text-ink-muted">
+            This workspace is set up and ready — bring your colleagues in.
+          </p>
+        ) : null}
       </section>
 
       {others.length > 0 ? (
