@@ -488,6 +488,30 @@ p2_sub "update public.organisation_subscriptions set plan_id='starter'
 p2_code "STARTER tier: the same artist POST is allowed"  201 POST "artists" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"starter artist\"}" "$BKR"
 
+# The founder's past_due grace window (lib/entitlements/policy.ts, 2026-08-28),
+# at the layer that enforces it. Both sides of the boundary, because a window
+# that never opens and a window that never closes are opposite bugs and a
+# one-sided probe passes for both.
+p2_sub "update public.organisation_subscriptions
+          set status='past_due', current_period_end = now() - interval '1 day'
+        where organisation_id='$ALPHA_ORG';"
+p2_code "PAST_DUE inside the 3-day grace: writes are KEPT"     201 POST "artists" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"in grace artist\"}" "$BKR"
+
+p2_sub "update public.organisation_subscriptions
+          set current_period_end = now() - interval '4 days'
+        where organisation_id='$ALPHA_ORG';"
+p2_code "PAST_DUE after the grace expires: writes fall to Free" 403 POST "artists" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"lapsed artist\"}" "$BKR"
+
+# 'cancelled' is something the customer chose, so it is honoured at once --
+# set INSIDE what would be a grace window, so only the status can deny it.
+p2_sub "update public.organisation_subscriptions
+          set status='cancelled', current_period_end = now() - interval '1 day'
+        where organisation_id='$ALPHA_ORG';"
+p2_code "CANCELLED inside the window: no grace, closed at once"  403 POST "artists" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"cancelled artist\"}" "$BKR"
+
 # Restore the shipped state -- no subscription row, so the gate is inert again.
 p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
 p2_code "RESTORED: no subscription row, writes allowed again" 201 POST "artists" \

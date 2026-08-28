@@ -351,6 +351,19 @@ before the first real consumer exists rather than alongside it.
   "Subscription entitlement" block are what prove the machinery works while it
   is switched off; N1 and N16 are the two assertions that must change when the
   escape goes.
+- **Replace the `past_due` grace proxy with a real column, in BOTH halves.**
+  The founder's 3-day grace window (`lib/entitlements/policy.ts`, 2026-08-28) is
+  now enforced in the database too — `private.past_due_grace_days()` and
+  `private.crm_write_organisations()`, `20260828150000`. Both halves measure the
+  window from `current_period_end`, which `policy.ts` states plainly is a
+  **proxy**: the honest clock starts when the subscription actually entered
+  `past_due`, and no column records that. In the ordinary case they coincide (a
+  renewal is attempted at period end and fails), and where they diverge the
+  proxy is conservative in the customer's favour. When the payment processor is
+  wired, add `past_due_since` (or `grace_expires_at`) and measure from it — in
+  the SQL function **and** in `policy.ts`, in the same change.
+  `tests/integration/entitlements/past-due-grace-matches-db.test.ts` is what
+  fails if only one of them moves.
 - **Ship the superuser REINSTATE path in the same change as the suspend
   button.** Since `20260828140000`, a soft-deleted organisation grants no
   permission at all — which means its own Owner can no longer clear

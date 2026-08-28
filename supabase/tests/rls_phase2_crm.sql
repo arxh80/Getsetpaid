@@ -1342,27 +1342,97 @@ select crm.try('N13 STARTER: the DELETE comes back too',
     where id='77770000-0000-0000-0000-000000000002'$$, 'ok(1)');
 reset role; reset request.jwt.claims;
 
--- past_due and cancelled. Implemented as the conservative reading -- neither
--- writes -- and raised in DECISIONS-QUEUE, because CLAUDE.md defines no grace
--- period and "a failed card payment freezes the CRM immediately" is a product
--- decision rather than a security one.
-update public.organisation_subscriptions set status='past_due'
+-- ---------------------------------------------------------------------------
+-- THE past_due GRACE WINDOW. Founder decision, 2026-08-28, recorded in
+-- lib/entitlements/policy.ts: 'past_due' keeps the plan's entitlements for
+-- three days measured from current_period_end, then falls back to Free;
+-- 'cancelled' falls back at once, with no grace.
+--
+-- Fix round 1 shipped `status = 'active'` only and called past_due "the
+-- conservative reading" of an open question. The question was not open, and
+-- the effect was that the app layer granted three days while the database
+-- refused them -- so the decision was, at the layer that enforces anything,
+-- not implemented. 20260828150000 fixes it and these are the assertions.
+--
+-- The boundary is asserted from BOTH sides, because a grace window that is
+-- never open and a grace window that never closes both pass a single-sided
+-- test, and they are opposite bugs.
+-- ---------------------------------------------------------------------------
+update public.organisation_subscriptions
+   set status='past_due', current_period_end = now() - interval '1 day'
  where organisation_id = :'alpha_org'::uuid;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select crm.try('N14 PAST_DUE: writes close (no grace period -- see DECISIONS-QUEUE)',
+select crm.try('N14 PAST_DUE inside the 3-day grace window: writes are KEPT',
   format($$insert into public.contacts (organisation_id, name)
-    values (%L,'past due')$$, :'alpha_org'), 'denied(42501)');
+    values (%L,'past due, in grace')$$, :'alpha_org'), 'ok(1)');
 reset role; reset request.jwt.claims;
 
-update public.organisation_subscriptions set status='cancelled', plan_id='pro'
+-- One second before the window closes. The difference between `<` and `<=`
+-- lives here, and it is the difference between a lapsed subscription writing
+-- and not writing.
+update public.organisation_subscriptions
+   set current_period_end = now() - (interval '3 days' - interval '1 second')
  where organisation_id = :'alpha_org'::uuid;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select crm.try('N15 CANCELLED on a paid plan: writes still close',
+select crm.try('N14b PAST_DUE one second before the window closes: still KEPT',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'past due, edge of grace')$$, :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+update public.organisation_subscriptions
+   set current_period_end = now() - (interval '3 days' + interval '1 second')
+ where organisation_id = :'alpha_org'::uuid;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('N14c PAST_DUE one second AFTER it closes: writes fall to Free',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'past due, grace expired')$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+update public.organisation_subscriptions
+   set current_period_end = now() - interval '400 days'
+ where organisation_id = :'alpha_org'::uuid;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('N14d PAST_DUE, long lapsed: writes stay closed',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'past due, long lapsed')$$, :'alpha_org'), 'denied(42501)');
+select crm.val('N14e ...and reads were never affected by any of it',
+  $$select (count(*) > 0)::text from public.contacts$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- 'cancelled' gets NO grace: the customer chose it, so honouring it at once is
+-- respecting a decision. Set INSIDE what would be a past_due grace window, so
+-- the only thing that can deny it is the status itself.
+update public.organisation_subscriptions
+   set status='cancelled', plan_id='pro', current_period_end = now() - interval '1 day'
+ where organisation_id = :'alpha_org'::uuid;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('N15 CANCELLED on a paid plan, inside the grace window: closed at once',
   format($$insert into public.contacts (organisation_id, name)
     values (%L,'cancelled')$$, :'alpha_org'), 'denied(42501)');
 reset role; reset request.jwt.claims;
+
+-- The SQL half of the constant. The TypeScript half, and the proof that the
+-- two agree at every boundary, is
+-- tests/integration/entitlements/past-due-grace-matches-db.test.ts -- this
+-- assertion only catches the number being changed here in isolation.
+select crm.val('N15b the grace window is private.past_due_grace_days() days',
+  $$select private.past_due_grace_days()::text$$, '3');
+-- Fail-closed on an unreadable period end, by three-valued logic rather than
+-- by a guard clause: `now() < NULL + interval` is NULL, a NULL conjunct is not
+-- true, and a row whose predicate is not true is not in the set. Asserted
+-- rather than reasoned about, because reasoning about SQL semantics instead of
+-- measuring them is a mistake this task has already made twice. The column is
+-- NOT NULL, so the expression is probed directly.
+select crm.val('N15c a NULL period end denies (fails closed, not open)',
+  $$select coalesce(
+      (now() < null::timestamptz
+        + make_interval(days => private.past_due_grace_days()))::text,
+      'null-not-true')$$, 'null-not-true');
 
 -- Restore the shipped state: no subscription row anywhere.
 delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
