@@ -188,12 +188,32 @@ export const getCurrentOrg = cache(
     // tenant-isolation 404 and the customer sees nothing at all -- the exact
     // outcome Q6 reversed.
     //
-    // It is left in place deliberately, because removing it alone is worse:
-    // the workspace would render as normal and every write would 403 with no
-    // explanation. The fix is an `isSuspended` flag on the returned object plus
-    // a read-only banner and disabled write controls, scoped to Task 4 and
-    // specified in FOLLOW-UPS.md § "Phase 3 -- events". Do not delete this line
-    // without shipping that in the same change.
+    // It is left in place deliberately, because removing it alone is worse --
+    // and the Task 3a review MEASURED how much worse, which corrects what this
+    // comment used to say. The failure mode is not "every write would 403". An
+    // INSERT is a loud 403; an UPDATE is refused by the USING clause, matches no
+    // rows, and PostgREST answers 204 NO CONTENT -- byte-identical to a PATCH
+    // that changed fifteen rows:
+    //
+    //     LIVE:      manager PATCHes contacts   204   (15 rows changed)
+    //     SUSPENDED: manager PATCHes contacts   204   ( 0 rows changed)
+    //
+    // So deleting this filter alone gives the customer a normal-looking
+    // workspace, a form that submits, and a 2xx, with their edit discarded. That
+    // is not a UX problem, it is false confirmation that data was saved.
+    //
+    // The fix is an `isSuspended` flag on the returned object plus a read-only
+    // banner and disabled write controls, scoped to Task 4 and specified in
+    // FOLLOW-UPS.md § "Phase 3 -- events" (five items). ITEM 5 IS THE ONE THIS
+    // COMMENT EXISTS FOR: the save path must send `Prefer:
+    // return=representation` on every mutating request and treat an empty array
+    // as a failed write, because that is the only thing at the network layer
+    // that separates an applied write from an accepted no-op. `Prefer:
+    // count=exact` does NOT -- still 204, measured. Disabling the button is not
+    // enough: PostgREST is reachable from the browser with the anon key
+    // regardless of what the UI renders.
+    //
+    // Do not delete this line without shipping that in the same change.
     const { data: org, error } = await supabase
       .from("organisations")
       .select("id, name, slug")

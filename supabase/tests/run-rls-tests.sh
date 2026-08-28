@@ -569,6 +569,132 @@ echo "=== Read-only suspension at the API surface (Q6 / Task 3a) ==="
 # defect that only the HTTP layer showed. It also pins the SHAPE of each
 # refusal, which the browser has to interpret and psql's ok(0) does not describe.
 #
+# ============================================================================
+# REWRITTEN IN TASK 3a FIX ROUND 1 (review finding I-5). TWO OF THE EIGHT
+# CHECKS HERE WERE VACUOUS: THEY MEASURED THE MFA GATE, NOT SUSPENSION.
+# ============================================================================
+# $OWN comes from a password grant, which yields aal1 (measured in the MFA block
+# above), and `owner` is an MFA-required role. So
+#
+#     SUSPENDED: owner POSTs a venue                             403
+#     SUSPENDED: owner PATCHes deleted_at back to null -> no rows 204
+#
+# returned exactly those values with the organisation LIVE as well. The reviewer
+# proved it material rather than tidy: under a mutation that genuinely opened a
+# suspended organisation (manage_organisation.survives_suspension := true) the
+# psql suite went red on P7/P7a/P7b while this entire HTTP block stayed green,
+# INCLUDING the "deleted_at really is still set" line -- which passed because
+# the aal1 owner could not have performed the write in any state.
+#
+# Two things fix it, and both are used below.
+#
+#   1. A REAL aal2 OWNER SESSION. A real TOTP enrolment against this stack, the
+#      same journey tests/integration/mfa/aal-enforcement.test.ts walks in
+#      vitest, done here in curl + python. Nothing is mocked: GoTrue issues the
+#      secret, we compute the RFC 6238 code from it, GoTrue verifies it and
+#      returns a token whose `aal` claim is asserted before use.
+#   2. A LIVE CONTROL FOR EVERY SUSPENDED CHECK, taken with the same token and
+#      the same statement moments earlier. If the pair does not differ, the
+#      check is not measuring what its name says -- which is exactly the
+#      discipline the psql suite's P2q/P2r already carry and this block did not.
+#
+# AND THE MECHANISM THAT MAKES A PATCH READABLE AT ALL (review M-3). A PATCH
+# refused by a USING clause matches no rows and PostgREST answers 204 No
+# Content -- byte-identical to a PATCH that changed fifteen rows. `Prefer:
+# return=representation` turns both into a 200 with a JSON array whose LENGTH is
+# the number of rows actually written, which is the only thing at the network
+# layer that separates an applied write from an accepted no-op. It is asserted
+# here because it is what Task 4's save path has to send.
+#
+# NOTE ON ORDERING: the elevation happens HERE and not earlier, because
+# verifying a user's first TOTP factor revokes their other sessions, and the
+# aal1-owner checks above are load-bearing (the MFA read gate and its lockout
+# guard). $OWN keeps its aal1 meaning; $OWN2 is the elevated session.
+
+p2_totp_elevate() { # aal1 access token -> aal2 access token ('' on failure)
+  local tok="$1" enroll fid secret ch cid code
+  enroll=$(curl -s -X POST "$API/auth/v1/factors" -H "apikey: $ANON" \
+    -H "Authorization: Bearer $tok" -H "Content-Type: application/json" \
+    -d "{\"factor_type\":\"totp\",\"friendly_name\":\"rls-suite-$$-$RANDOM\"}")
+  fid=$(printf '%s' "$enroll" | python -c \
+    "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  secret=$(printf '%s' "$enroll" | python -c \
+    "import sys,json;print(json.load(sys.stdin).get('totp',{}).get('secret',''))")
+  [ -n "$fid" ] && [ -n "$secret" ] || { printf ''; return; }
+  ch=$(curl -s -X POST "$API/auth/v1/factors/$fid/challenge" -H "apikey: $ANON" \
+    -H "Authorization: Bearer $tok" -H "Content-Type: application/json" -d '{}')
+  cid=$(printf '%s' "$ch" | python -c \
+    "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  # RFC 6238, SHA-1 / 30s / 6 digits -- GoTrue's defaults. The same algorithm
+  # tests/support/totp.ts implements for the vitest suites; reimplemented in
+  # python here so this script keeps its no-node-dependency shape.
+  code=$(SECRET="$secret" python -c "
+import os,base64,hmac,hashlib,struct,time
+s=os.environ['SECRET'].upper(); s+='='*(-len(s)%8)
+h=hmac.new(base64.b32decode(s), struct.pack('>Q', int(time.time())//30), hashlib.sha1).digest()
+o=h[-1]&0x0f
+print(str((struct.unpack('>I',h[o:o+4])[0]&0x7fffffff)%1000000).zfill(6))")
+  curl -s -X POST "$API/auth/v1/factors/$fid/verify" -H "apikey: $ANON" \
+    -H "Authorization: Bearer $tok" -H "Content-Type: application/json" \
+    -d "{\"challenge_id\":\"$cid\",\"code\":\"$code\"}" \
+    | python -c "import sys,json;print(json.load(sys.stdin).get('access_token') or '')"
+}
+
+p2_aal() { # token -> its aal claim
+  printf '%s' "$1" | python -c "
+import sys,json,base64
+p=sys.stdin.read().split('.')[1]; p+='='*(-len(p)%4)
+print(json.loads(base64.urlsafe_b64decode(p)).get('aal',''))" 2>/dev/null
+}
+
+p2_written() { # name want_rows METHOD path body token
+  # Rows ACTUALLY written, read from the representation PostgREST returns when
+  # asked for it. This is the number a 204 hides.
+  local name="$1" want="$2" method="$3" path="$4" body="$5" tok="$6" n
+  n=$(curl -s -X "$method" "$API/rest/v1/$path" \
+      -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+      -H "Content-Type: application/json" -H "Prefer: return=representation" \
+      -d "$body" \
+      | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+  if [ "$n" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$n rows written"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$n" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+OWN2=$(p2_totp_elevate "$OWN")
+own2_aal=$(p2_aal "$OWN2")
+if [ "$own2_aal" = "aal2" ]; then
+  printf '  PASS  %-58s %s\n' "the OWNER session is genuinely aal2 (real TOTP enrol)" "$own2_aal"
+else
+  printf '  FAIL  %-58s got "%s" want aal2\n' \
+         "the OWNER session is genuinely aal2 (real TOTP enrol)" "$own2_aal"
+  api_fails=$((api_fails+1))
+  echo "  (without an aal2 owner the suspension checks below measure the MFA gate," >&2
+  echo "   which is review finding I-5 -- failing loudly rather than passing hollow)" >&2
+fi
+
+ALPHA_NAME=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select name from public.organisations where id='$ALPHA_ORG'" | tr -d '\r')
+
+# ---- THE LIVE CONTROLS. Same token, same statements, organisation LIVE. -----
+p2_code "LIVE CONTROL: aal2 owner POSTs a venue"           201 POST "venues" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"live venue\"}" "$OWN2"
+p2_written "LIVE CONTROL: aal2 owner PATCHes the org NAME"   1 PATCH \
+        "organisations?id=eq.$ALPHA_ORG" "{\"name\":\"$ALPHA_NAME\"}" "$OWN2"
+p2_written "LIVE CONTROL: aal2 owner PATCHes deleted_at=null" 1 PATCH \
+        "organisations?id=eq.$ALPHA_ORG" "{\"deleted_at\":null}" "$OWN2"
+
+live_patched=$(curl -s -X PATCH "$API/rest/v1/contacts?organisation_id=eq.$ALPHA_ORG" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $MGR" \
+  -H "Content-Type: application/json" -H "Prefer: return=representation" \
+  -d '{"title":"live patch"}' \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+if [ "$live_patched" -ge 1 ] 2>/dev/null; then
+  printf '  PASS  %-58s %s\n' "LIVE CONTROL: manager PATCHes contacts" "$live_patched rows written"
+else
+  printf '  FAIL  %-58s got %s want >=1\n' "LIVE CONTROL: manager PATCHes contacts" "$live_patched"
+  api_fails=$((api_fails+1))
+fi
+
 # Every count here is compared against the same request made moments earlier
 # with the organisation live, so nothing is hardcoded against a fixture size.
 susp_before=$(curl -s "$API/rest/v1/contacts?select=id&organisation_id=eq.$ALPHA_ORG" \
@@ -594,19 +720,42 @@ p2_code "SUSPENDED: manager POSTs a contact"    403 POST "contacts" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"suspended contact\"}" "$MGR"
 p2_code "SUSPENDED: booker POSTs an artist"     403 POST "artists" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"suspended artist\"}" "$BKR"
-p2_code "SUSPENDED: owner POSTs a venue"        403 POST "venues" \
-        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"suspended venue\"}" "$OWN"
+# 201 LIVE (above) -> 403 SUSPENDED. The pair differs, so this line is now
+# measuring suspension. With $OWN (aal1) it read 403 in both states.
+p2_code "SUSPENDED: aal2 owner POSTs a venue"   403 POST "venues" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"suspended venue\"}" "$OWN2"
+# The aal1 owner is still probed, because MFA composing WITH suspension is its
+# own property -- but it is LABELLED for what it is, matching P2q/P2r's wording.
+p2_code "SUSPENDED: aal1 owner POSTs a venue (MFA refuses this when live too)" \
+        403 POST "venues" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"aal1 suspended venue\"}" "$OWN"
+
 # THE SHAPE TASK 4 HAS TO HANDLE. A PATCH is refused by the USING clause, so it
 # matches no rows and PostgREST answers 204 No Content -- a SILENT SUCCESS as
 # far as a naive client is concerned. A save form that treats 2xx as "saved"
 # will tell a suspended user their edit went through. The INSERT above is a
 # loud 403; the UPDATE is not, and the difference is not cosmetic.
+#
+# The 204 itself is NOT new and NOT caused by Task 3a -- PostgREST answers 204
+# for any PATCH matching no rows, including one at an id that does not exist and
+# one aimed at another tenant. What Task 3a changed is REACHABILITY: before it,
+# a suspended organisation's member could not read the record, so no edit form
+# could exist to submit. Now one can.
 p2_code "SUSPENDED: manager PATCHes a contact -> silent 204, not 403" 204 PATCH \
         "contacts?organisation_id=eq.$ALPHA_ORG&limit=1" \
         "{\"title\":\"suspended patch\"}" "$MGR"
-# The Owner cannot lift their own suspension over the API either (P7).
-p2_code "SUSPENDED: owner PATCHes deleted_at back to null -> no rows" 204 PATCH \
-        "organisations?id=eq.$ALPHA_ORG" "{\"deleted_at\":null}" "$OWN"
+p2_written "SUSPENDED: ...and return=representation shows the 0" 0 PATCH \
+        "contacts?organisation_id=eq.$ALPHA_ORG" '{"title":"suspended patch"}' "$MGR"
+
+# The Owner cannot lift their own suspension over the API either (P7), and now
+# that the session is aal2 this measures P7 rather than the MFA gate: 1 row
+# written LIVE, 0 rows written SUSPENDED, same token, same statement.
+p2_code "SUSPENDED: aal2 owner PATCHes deleted_at -> silent 204" 204 PATCH \
+        "organisations?id=eq.$ALPHA_ORG" "{\"deleted_at\":null}" "$OWN2"
+p2_written "SUSPENDED: ...and 0 rows were written (LIVE wrote 1)" 0 PATCH \
+        "organisations?id=eq.$ALPHA_ORG" "{\"deleted_at\":null}" "$OWN2"
+p2_written "SUSPENDED: nor can the aal2 owner rename it (LIVE wrote 1)" 0 PATCH \
+        "organisations?id=eq.$ALPHA_ORG" "{\"name\":\"Renamed While Suspended\"}" "$OWN2"
 susp_still=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
   "select (deleted_at is not null)::text from public.organisations where id='$ALPHA_ORG'" \
   | tr -d '[:space:]')
@@ -617,10 +766,21 @@ else
          "SUSPENDED: ...and deleted_at really is still set" "$susp_still"
   api_fails=$((api_fails+1))
 fi
+susp_name=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select name from public.organisations where id='$ALPHA_ORG'" | tr -d '\r' | tr -d '\n')
+if [ "$susp_name" = "$ALPHA_NAME" ]; then
+  printf '  PASS  %-58s %s\n' "SUSPENDED: ...and the name really is unchanged" "$susp_name"
+else
+  printf '  FAIL  %-58s got "%s" want "%s"\n' \
+         "SUSPENDED: ...and the name really is unchanged" "$susp_name" "$ALPHA_NAME"
+  api_fails=$((api_fails+1))
+fi
 
 p2_sub "update public.organisations set deleted_at = null where id='$ALPHA_ORG';"
 p2_code "REINSTATED: the same contact POST is allowed again" 201 POST "contacts" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"reinstated contact\"}" "$MGR"
+p2_code "REINSTATED: the same aal2 owner venue POST is allowed again" 201 POST "venues" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"reinstated venue\"}" "$OWN2"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

@@ -357,8 +357,23 @@ These become live the moment a real tenant table exists.
 
   **Its tests in `rls_phase2_crm.sql` must include, each expecting 0 rows:**
   called for an organisation the caller is not in; called by an `aal1` Owner;
-  called by a `standard_user` for a row they do not own; called for a
-  soft-deleted organisation. That is a task, not a patch.
+  called by a `standard_user` for a row they do not own.
+
+  **CORRECTED IN TASK 3a FIX ROUND 1. A fourth case used to be listed here —
+  "called for a soft-deleted organisation", expecting 0 rows — and since
+  `20260828210000` (Q6) that expectation is WRONG in the direction that matters.**
+  Suspension is read-only, not a lockout: a member of a suspended organisation
+  holds `view_crm`, so `p_org in (select private.permitted_organisations('view_crm'))`
+  is TRUE and the search returns rows. Writing the test to expect 0 would either
+  fail against a correct implementation or, worse, be "fixed" by adding a
+  `deleted_at is null` on the ORGANISATION inside the function body — which would
+  reintroduce the lockout Q6 reversed, in a `SECURITY DEFINER` function where the
+  body is the entire control. The correct assertion is the opposite one: **a
+  member of a SUSPENDED organisation searching their own tenant gets their rows,
+  and a non-member of that suspended organisation still gets 0** (the shape
+  `rls_phase2_crm.sql` P1/P9 already use). The `c.deleted_at is null` in the
+  function body above is the CONTACT's soft-delete filter and is unrelated —
+  keep it. That is a task, not a patch.
 
 - **DECIDED, fix round 1: KEEP all four trigram indexes, for a different reason
   than the one originally given.** The original justification ("Task 6's dedup
@@ -623,6 +638,40 @@ These become live the moment a real tenant table exists.
   4. The switcher renders the suspended workspace with a read-only marker
      rather than dropping it — dropping it hides a workspace the user still has
      lawful read access to, which is the outcome Q6 exists to prevent.
+  5. **`Prefer: return=representation` on every mutating request, and treat an
+     empty array as a failed write.** Item 3 is necessary and not sufficient:
+     PostgREST is reachable from the browser with the anon key regardless of
+     what the UI disables, so the save path — not only the button — has to be
+     able to tell an applied write from an accepted no-op. It cannot today. A
+     PATCH refused by a USING clause matches no rows and PostgREST answers
+     **204 No Content**, byte-identical to a PATCH that changed fifteen rows:
+
+     ```
+       LIVE:      manager PATCHes contacts   204   (15 rows changed)
+       SUSPENDED: manager PATCHes contacts   204   ( 0 rows changed)
+     ```
+
+     `Prefer: count=exact` does NOT distinguish them (still 204).
+     `Prefer: return=representation` does — `200` with a JSON array whose length
+     is the number of rows actually written. Both measurements are now asserted
+     in `run-rls-tests.sh` ("…and return=representation shows the 0", against a
+     live control that writes 14).
+
+     **This is TWELVE endpoints, not one — and not the nine the Task 3a review
+     counted; I re-measured rather than copying the number.** In a suspended
+     workspace, all 204: `PATCH` on `contacts`, `companies`, `venues`,
+     `artists`, `agencies`, `venue_rooms`, `custom_field_values`,
+     `custom_field_definitions`, `organisation_memberships` and `organisations`;
+     `DELETE` on `contact_companies` and `custom_field_values`. Treat that list
+     as a floor, not a census: it is every mutating endpoint the Phase 2 tables
+     expose today, and Phase 3 adds more.
+
+     **It is not a defect Task 3a introduced.** 204-on-no-match is generic
+     PostgREST behaviour — a PATCH at an id that does not exist, or at another
+     tenant's row, is also 204. What Task 3a changed is *reachability*: before
+     it, a suspended organisation's member could not read the record at all, so
+     no edit form could exist to submit. Now one can, and a naive save path
+     would tell them it worked.
 - **Task 6: `merges` SELECT now requires BOTH sides visible, not just the
   winner.** Changed in fix round 1 (`20260828140500`) because
   `field_resolution` copies both records' values verbatim and a record-scoped
@@ -732,14 +781,34 @@ before the first real consumer exists rather than alongside it.
   `tests/integration/entitlements/past-due-grace-matches-db.test.ts` is what
   fails if only one of them moves.
 - **Ship the superuser REINSTATE path in the same change as the suspend
-  button.** Since `20260828140000`, a soft-deleted organisation grants no
-  permission at all — which means its own Owner can no longer clear
-  `deleted_at`, and there is no superuser write policy on `public.organisations`
-  either. Today, reinstatement is a DBA action. That is the fail-closed
-  direction and it matches CLAUDE.md (suspend/reinstate is a superuser
-  function), but shipping suspend without reinstate is a one-way door.
-  `rls_phase2_crm.sql` P7 asserts the Owner cannot un-suspend, so it will need
-  updating when the superuser path exists.
+  button.** **CORRECTED IN TASK 3a FIX ROUND 1 — the first sentence used to say
+  "since `20260828140000`, a soft-deleted organisation grants no permission at
+  all", which has been false since `20260828210000` and cites a superseded
+  migration. The conclusion below is unchanged; the mechanism behind it is
+  different, and this is the entry Phase 7 reads to build reinstate, so getting
+  the mechanism right matters more here than anywhere else.**
+
+  Since `20260828210000` (Q6), a soft-deleted organisation grants `view_crm`
+  and nothing else — suspension is READ-ONLY, not a lockout. `manage_organisation`
+  is a write, so its own Owner still cannot clear `deleted_at`, and there is
+  still no superuser write policy on `public.organisations`. Since
+  `20260828220000` that is enforced twice: by the catalogue
+  (`permissions.survives_suspension = false` for `manage_organisation`) and by
+  an unconditional `deleted_at is null` in the policy's own `USING`.
+
+  Today, reinstatement is a DBA action. That is the fail-closed direction and it
+  matches CLAUDE.md (suspend/reinstate is a superuser function), but shipping
+  suspend without reinstate is a one-way door.
+
+  **What the Phase 7 change has to do, given both gates:** add a NEW permissive
+  policy for the superuser (permissive policies OR together, so the term added
+  in `20260828220000` does not block a separate policy) — do **not** relax
+  `organisations_update_manage_organisation`, and do **not** open
+  `manage_organisation` in the catalogue, because either would hand
+  self-service un-suspension to every Owner. `rls_phase2_crm.sql` P7 (the Owner
+  cannot un-suspend) and P11a/P11b (nor can they with the catalogue gate
+  disabled) both stay true under that shape and will need updating only for the
+  new superuser path, not for the Owner one.
 - ~~**The organisation-delete cascade will emit one audit row per child row.**~~
   **THAT DESCRIPTION WAS WRONG, and wrong in the reassuring direction — the
   statement did not emit thousands of rows, it ABORTED.** Corrected and fixed in

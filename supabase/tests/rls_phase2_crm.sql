@@ -1273,7 +1273,7 @@ begin
                               else 'nobody -- suspension is a lockout again' end);
 end $$;
 
--- M1c -- THE SHAPE GUARD BEHIND THE CATALOGUE.
+-- M1c/M1d -- THE SHAPE GUARD BEHIND THE CATALOGUE.
 --
 -- M1 and M1b are behavioural and cannot tell a catalogue lookup from a string
 -- literal that happens to produce the same answers today. The catalogue is the
@@ -1281,21 +1281,86 @@ end $$;
 -- edit in two function bodies every time a later phase adds a read key, and the
 -- failure is silent and points at a suspended customer losing access.
 --
--- Postgres strips comments from a stored function body, so a term cannot be
--- hidden from these guards in a comment -- established in Task 2 fix round 2.
-select crm.val('M1c both forms consult the CATALOGUE, not a permission literal',
+-- ===========================================================================
+-- REWRITTEN IN TASK 3a FIX ROUND 1 (review findings I-1 and I-2). THE TWO
+-- GUARDS THAT SHIPPED HERE WERE BOTH DEFEATABLE, AND WERE DEFEATED.
+-- ===========================================================================
+-- What shipped:
+--     M1c: `survives_suspension` appears in both bodies AND `deleted_at`
+--          appears in both bodies -- two independent substring presence checks.
+--     M1d: the literal `'view_crm'` appears in NEITHER body.
+--
+-- The reviewer got 464 psql assertions and 47 HTTP checks green against BOTH of
+-- the implementations these were written to reject:
+--
+--   * A one-sided drift naming a key that does not exist yet -- the exact
+--     Phase 5 mistake the catalogue was built to prevent:
+--         and (o.deleted_at is null or perm.survives_suspension
+--              or rp.permission_key = 'view_events')     -- one body only
+--     M1c passed (both substrings still present in both bodies). M1d passed
+--     (the literal is not 'view_crm'). M1b passed, because the two forms agree
+--     on every key that EXISTS -- and view_events does not exist yet.
+--
+--   * A hardcoded literal with a DEAD catalogue join:
+--         and (o.deleted_at is null
+--              or (perm.survives_suspension or true)
+--                 and rp.permission_key = pg_catalog.concat('view','_crm'))
+--     M1c passed (the join is still textually there). M1d passed (the literal
+--     is spelled so `position('''view_crm''' in prosrc)` finds nothing).
+--     Setting survives_suspension on any key would have had NO EFFECT and
+--     nothing in the suite would have noticed.
+--
+-- Both guards were testing SPELLING. The replacement tests STRUCTURE: the
+-- suspension rule must be exactly one clause, written in exactly the catalogue
+-- form, in both bodies, with nothing else in either body that could carry a
+-- suspension decision.
+--
+-- COMMENTS ARE STRIPPED FIRST, and that is not decoration. The comment that
+-- used to sit here said "Postgres strips comments from a stored function body,
+-- so a term cannot be hidden from these guards in a comment -- established in
+-- Task 2 fix round 2." THAT IS FALSE for these two functions and was measured:
+--     select (position('--' in prosrc) > 0) from pg_proc ... has_permission
+--       -> t
+-- `LANGUAGE sql ... AS $$...$$` stores prosrc verbatim, comments and all. (The
+-- Task 2 finding was about a different function form; it does not generalise.)
+-- Without the strip, a mutant could delete the real clause and leave a comment
+-- containing its text, and M1c would still count 2.
+select crm.val('M1c the suspension clause is EXACTLY the catalogue form, in both bodies',
   $$select count(*)::text from pg_proc p
      join pg_namespace n on n.oid = p.pronamespace
     where (n.nspname, p.proname) in (('public','has_permission'),
                                      ('private','permitted_organisations'))
-      and position('survives_suspension' in p.prosrc) > 0
-      and position('deleted_at' in p.prosrc) > 0$$, '2');
-select crm.val('M1d neither form hardcodes a permission key against deleted_at',
-  $$select count(*)::text from pg_proc p
-     join pg_namespace n on n.oid = p.pronamespace
-    where (n.nspname, p.proname) in (('public','has_permission'),
-                                     ('private','permitted_organisations'))
-      and position('''view_crm''' in p.prosrc) > 0$$, '0');
+      and substring(regexp_replace(p.prosrc, '--[^\n]*', '', 'g')
+            from '\(o\.deleted_at is null or perm\.survives_suspension\)')
+          is not null$$, '2');
+-- M1c alone still has one hole: a mutant can leave the anchored clause intact
+-- and OR a second term around it --
+--     and ((o.deleted_at is null or perm.survives_suspension)
+--          or rp.permission_key = 'view_events')
+-- -- because the anchored substring is still present as a nested group. M1d
+-- closes it by asserting the whole SHAPE of each body: `deleted_at` occurs
+-- exactly once, `survives_suspension` occurs exactly once, and the ONLY string
+-- literal in either body is 'active' (the membership status). A permission-key
+-- literal anywhere in either body, by any spelling, changes this value.
+--
+-- IT IS DELIBERATELY BRITTLE. If a later phase legitimately needs a second
+-- literal in one of these bodies, this assertion goes red and someone updates
+-- the expected string in the same diff that adds it. That is the point: the
+-- suspension rule is not a thing to edit without a reviewer seeing it.
+select crm.val('M1d the ONLY suspension term and the ONLY literal, per body',
+  $$select string_agg(
+             n.nspname||'.'||p.proname||'='||
+             ((length(s.src)-length(replace(s.src,'deleted_at','')))/10)::text ||'/'||
+             ((length(s.src)-length(replace(s.src,'survives_suspension','')))/19)::text ||'/'||
+             coalesce((select string_agg(distinct m[1], '+' order by m[1])
+                         from regexp_matches(s.src, '''([^'']*)''', 'g') m), '<none>'),
+             ' ' order by n.nspname||'.'||p.proname)
+      from pg_proc p
+      join pg_namespace n on n.oid = p.pronamespace
+      cross join lateral (select regexp_replace(p.prosrc,'--[^\n]*','','g') as src) s
+     where (n.nspname,p.proname) in (('public','has_permission'),
+                                     ('private','permitted_organisations'))$$,
+  'private.permitted_organisations=1/1/active public.has_permission=1/1/active');
 -- The catalogue is only trustworthy if nothing can grant a key that is not in
 -- it -- otherwise an uncatalogued key silently inherits "no row, no join, no
 -- permission" for reads AND the wrong suspension answer.
@@ -1763,6 +1828,24 @@ select crm.val('P1f SUSPENDED: custom_field_values still readable (polymorphic)'
   $$select count(*)::text from public.custom_field_values$$, '4');
 select crm.val('P1g SUSPENDED: merges still readable',
   $$select count(*)::text from public.merges$$, '2');
+-- M-2 (Task 3a fix round 1). FOUR MORE TABLES CARRY WRITE POLICIES AND WERE
+-- NEVER DRIVEN AGAINST SUSPENSION. The Task 3a brief named eight surfaces and
+-- the implementer tested exactly those eight; the brief was incomplete.
+-- custom_field_definitions, contact_companies, artist_representations and
+-- artist_fee_history all have INSERT/UPDATE (and two of them DELETE) policies
+-- naming permitted_organisations()/crm_write_organisations(), so all four are
+-- on the path this task changed. The reviewer measured them and they behave
+-- correctly -- this is the coverage that makes that a standing guarantee rather
+-- than a one-off measurement. Reads here, writes at P12* (as the Owner, who is
+-- the only role holding manage_custom_fields).
+select crm.val('P1h SUSPENDED: custom_field_definitions still readable',
+  $$select count(*)::text from public.custom_field_definitions$$, '4');
+select crm.val('P1i SUSPENDED: contact_companies still readable',
+  $$select count(*)::text from public.contact_companies$$, '2');
+select crm.val('P1j SUSPENDED: artist_representations still readable',
+  $$select count(*)::text from public.artist_representations$$, '2');
+select crm.val('P1k SUSPENDED: artist_fee_history still readable',
+  $$select count(*)::text from public.artist_fee_history$$, '1');
 
 -- ---- 2. EVERY WRITE CLOSES (§ 7.2) ----------------------------------------
 -- The mechanism is asserted, not left open. Two DIFFERENT refusals appear here
@@ -1860,18 +1943,25 @@ select crm.val('P3  SUSPENDED: has_permission(view_crm) is TRUE (was: false)',
 select crm.val('P4  SUSPENDED: so is the set form (the two must not drift)',
   format($$select exists (select 1 from private.permitted_organisations('view_crm') x
                           where x = %L)::text$$, :'alpha_org'), 'true');
-select crm.val('P4a SUSPENDED: every WRITE key is false -- has_permission',
+-- M-1 (Task 3a fix round 1): THESE TWO RUN AS pmanager AND THE LABEL USED TO
+-- SAY "every WRITE key", WHICH OVERSTATED THEM. Measured with the organisation
+-- LIVE, a manager holds manage_contacts/manage_artists/manage_venues/
+-- merge_records and does NOT hold manage_members, manage_organisation or
+-- manage_custom_fields -- so three of the disjuncts were false when live too and
+-- contributed nothing. They are KEPT (a manager losing their four keys under
+-- suspension is worth asserting) with an honest label, and the Owner sweep that
+-- actually covers all seven write keys is P4d/P4e below, run at aal2 by a user
+-- who holds every one of them when live (P4f/P4g are that live control).
+select crm.val('P4a SUSPENDED: the four write keys a MANAGER holds are false -- has_permission',
   format($$select (public.has_permission(%1$L,'manage_contacts')
                 or public.has_permission(%1$L,'manage_artists')
                 or public.has_permission(%1$L,'manage_venues')
-                or public.has_permission(%1$L,'merge_records')
-                or public.has_permission(%1$L,'manage_members')
-                or public.has_permission(%1$L,'manage_organisation'))::text$$,
+                or public.has_permission(%1$L,'merge_records'))::text$$,
     :'alpha_org'), 'false');
 select crm.val('P4b SUSPENDED: ...and false in the set form too',
   format($$select exists (
       select 1 from unnest(array['manage_contacts','manage_artists','manage_venues',
-                                 'merge_records','manage_members','manage_organisation']) k
+                                 'merge_records']) k
       where %L in (select private.permitted_organisations(k))
     )::text$$, :'alpha_org'), 'false');
 -- The entitlement gate keeps its OWN unconditional deleted_at clause, so the
@@ -1969,6 +2059,73 @@ select crm.val('P10b POSITIVE CONTROL: the same owner at aal2 DOES read the susp
 select crm.try('P10c ...and still cannot write to it',
   format($$insert into public.contacts (organisation_id, name)
     values (%L,'suspended-owner')$$, :'alpha_org'), 'denied(42501)');
+
+-- ---- M-1: the WRITE-KEY sweep, run by somebody who actually holds them all --
+-- P4a/P4b run as a manager, who holds four of the seven write keys when live,
+-- so three of their disjuncts were vacuous -- and the two vacuous ones were
+-- manage_members and manage_organisation, which are exactly the two keys with
+-- no second gate before 20260828220000. Nothing in the suite proved an Owner of
+-- a suspended organisation loses manage_members. This does, at aal2, over all
+-- seven, with P4f/P4g as the live control that the same expression is TRUE
+-- before suspension. manage_custom_fields is included; P4a omitted it entirely.
+select crm.val('P4d SUSPENDED: all SEVEN write keys false for the aal2 OWNER -- has_permission',
+  format($$select (public.has_permission(%1$L,'manage_contacts')
+                or public.has_permission(%1$L,'manage_artists')
+                or public.has_permission(%1$L,'manage_venues')
+                or public.has_permission(%1$L,'manage_custom_fields')
+                or public.has_permission(%1$L,'merge_records')
+                or public.has_permission(%1$L,'manage_members')
+                or public.has_permission(%1$L,'manage_organisation'))::text$$,
+    :'alpha_org'), 'false');
+select crm.val('P4e SUSPENDED: ...and none of the seven in the set form either',
+  format($$select exists (
+      select 1 from unnest(array['manage_contacts','manage_artists','manage_venues',
+                                 'manage_custom_fields','merge_records',
+                                 'manage_members','manage_organisation']) k
+      where %L in (select private.permitted_organisations(k))
+    )::text$$, :'alpha_org'), 'false');
+
+-- ---- M-2: the four write-carrying tables the brief never named -------------
+-- Driven as the aal2 Owner, the strongest possible caller: if these close for
+-- an Owner they close for everyone. Same mechanism discipline as P2* -- INSERT
+-- is denied(42501) because WITH CHECK rejects the new row; UPDATE is ok(0)
+-- because USING matches nothing. Asserting WHICH refusal happens is what made
+-- mutation 3 fully visible rather than half-caught.
+select crm.try('P12  SUSPENDED: custom_field_definitions INSERT refused',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'artist','susp_key','Susp','text')$$, :'alpha_org'), 'denied(42501)');
+select crm.try('P12a SUSPENDED: contact_companies INSERT refused',
+  format($$insert into public.contact_companies (organisation_id, contact_id, company_id)
+    values (%L,'22220000-0000-0000-0000-000000000003',
+               '11110000-0000-0000-0000-000000000002')$$, :'alpha_org'), 'denied(42501)');
+select crm.try('P12b SUSPENDED: artist_representations INSERT refused',
+  format($$insert into public.artist_representations
+      (organisation_id, artist_id, agency_id)
+    values (%L,'44440000-0000-0000-0000-000000000003',
+               '33330000-0000-0000-0000-000000000002')$$, :'alpha_org'), 'denied(42501)');
+select crm.try('P12c SUSPENDED: artist_fee_history INSERT refused',
+  format($$insert into public.artist_fee_history
+      (organisation_id, artist_id, occurred_on, amount_minor, currency)
+    values (%L,'44440000-0000-0000-0000-000000000002',
+            date '2026-01-01',999900,'GBP')$$,
+    :'alpha_org'), 'denied(42501)');
+select crm.try('P12d SUSPENDED: custom_field_definitions UPDATE matches nothing',
+  $$update public.custom_field_definitions set label='suspended'
+    where id='aaaa0000-0000-0000-0000-000000000001'$$, 'ok(0)');
+select crm.try('P12e SUSPENDED: artist_fee_history UPDATE matches nothing',
+  $$update public.artist_fee_history set amount_minor=1
+    where organisation_id is not null$$, 'ok(0)');
+-- The two FOUNDATION write surfaces, as the Owner. These are the keys I-3 is
+-- about: before 20260828220000 they were held closed by ONE catalogue boolean.
+select crm.try('P12f SUSPENDED: organisation_memberships INSERT refused (no new members)',
+  format($$insert into public.organisation_memberships
+      (organisation_id, user_id, role, status, invited_by)
+    values (%L,'%s','admin','invited',(select auth.uid()))$$,
+    :'alpha_org', :'pbowner'), 'denied(42501)');
+select crm.try('P12g SUSPENDED: organisation_memberships UPDATE matches nothing',
+  format($$update public.organisation_memberships set role='booker'
+    where organisation_id=%L and role='marketing'$$, :'alpha_org'), 'ok(0)');
 reset role; reset request.jwt.claims;
 
 -- ---- 3. THE OWNER CANNOT UN-SUSPEND (§ 7.3) ------------------------------
@@ -1990,6 +2147,114 @@ select crm.try('P7b SUSPENDED: nor can the Owner rename the organisation',
     where slug='org-alpha'$$, 'ok(0)');
 reset role; reset request.jwt.claims;
 
+-- ---- 7. THE SECOND GATE, PROVEN BY TURNING THE FIRST ONE OFF -------------
+-- TASK 3a FIX ROUND 1, review finding I-3. THREE DOCUMENTS SAID THE WRITE HALF
+-- WAS "closed twice over" AND FOR THESE TWO KEYS IT WAS NOT.
+--
+-- private.crm_write_organisations() carries its own unconditional deleted_at
+-- clause and is named by 25 CRM write policies, so a wrong catalogue boolean on
+-- a CRM key changes nothing (the reviewer flipped manage_contacts and the
+-- INSERT was still refused). But the FOUR Foundation write policies --
+-- organisation_memberships INSERT/UPDATE/DELETE and organisations UPDATE --
+-- consulted public.has_permission() and NOTHING ELSE. The reviewer flipped one
+-- boolean and an aal2 Owner UN-SUSPENDED THEIR OWN ORGANISATION and INVITED A
+-- NEW ADMIN INTO A SUSPENDED ONE. Consequence P7, which the brief calls the
+-- thing that would "make the control meaningless" if broken, rested on one row
+-- of one table.
+--
+-- 20260828220000 adds the second gate: an unconditional `deleted_at is null` in
+-- organisations_update_manage_organisation's USING, and
+-- private.organisation_is_live() in the three membership policies. This block
+-- is what proves it, and it can only be proved by DISABLING THE FIRST GATE --
+-- a defence-in-depth term whose value is never measured with the term beside it
+-- removed is an assumption, not a control. P11 is the positive control that the
+-- first gate really is open while P11a-P11d run.
+--
+-- The flip is made and restored inside one DO block; nothing downstream sees it.
+do $$
+declare
+  v_alpha uuid; v_owner uuid; v_guest uuid; n int;
+  r_unsuspend text; r_rename text; r_invite text; r_demote text; r_remove text;
+  v_first_gate text;
+begin
+  select id into v_alpha from public.organisations where slug = 'org-alpha';
+  select id into v_owner from auth.users where email = 'powner@test.local';
+  select id into v_guest from auth.users where email = 'pbowner@test.local';
+
+  -- The exact one-row mistake the new design makes possible.
+  update public.permissions set survives_suspension = true
+   where key in ('manage_organisation','manage_members');
+
+  perform pg_catalog.set_config('request.jwt.claims',
+    pg_catalog.json_build_object('sub', v_owner, 'role','authenticated', 'aal','aal2')::text,
+    true);
+  v_first_gate := (public.has_permission(v_alpha,'manage_organisation')
+               and public.has_permission(v_alpha,'manage_members'))::text;
+
+  set local role authenticated;
+  begin
+    update public.organisations set deleted_at = null where id = v_alpha;
+    get diagnostics n = row_count; r_unsuspend := 'ok(' || n || ')';
+  exception when others then r_unsuspend := 'denied(' || sqlstate || ')'; end;
+  begin
+    update public.organisations set name = 'Flipped While Suspended' where id = v_alpha;
+    get diagnostics n = row_count; r_rename := 'ok(' || n || ')';
+  exception when others then r_rename := 'denied(' || sqlstate || ')'; end;
+  begin
+    insert into public.organisation_memberships
+      (organisation_id, user_id, role, status, invited_by)
+    values (v_alpha, v_guest, 'admin', 'invited', v_owner);
+    get diagnostics n = row_count; r_invite := 'ok(' || n || ')';
+  exception when others then r_invite := 'denied(' || sqlstate || ')'; end;
+  begin
+    update public.organisation_memberships set role = 'booker'
+     where organisation_id = v_alpha and role = 'marketing';
+    get diagnostics n = row_count; r_demote := 'ok(' || n || ')';
+  exception when others then r_demote := 'denied(' || sqlstate || ')'; end;
+  begin
+    delete from public.organisation_memberships
+     where organisation_id = v_alpha and role = 'marketing';
+    get diagnostics n = row_count; r_remove := 'ok(' || n || ')';
+  exception when others then r_remove := 'denied(' || sqlstate || ')'; end;
+  reset role;
+
+  perform pg_catalog.set_config('request.jwt.claims', '', true);
+  update public.permissions set survives_suspension = false
+   where key in ('manage_organisation','manage_members');
+
+  perform crm.record(
+    'P11  CONTROL: the catalogue flip really DOES open the first gate',
+    'true', v_first_gate);
+  perform crm.record(
+    'P11a FIRST GATE OFF: the Owner still cannot un-suspend (second gate)',
+    'ok(0)', r_unsuspend);
+  perform crm.record(
+    'P11b FIRST GATE OFF: ...and deleted_at really is still set',
+    'true',
+    (select (deleted_at is not null)::text from public.organisations where id = v_alpha));
+  perform crm.record(
+    'P11c FIRST GATE OFF: nor rename, nor invite an admin into a suspended org',
+    'ok(0)/denied(42501)', r_rename || '/' || r_invite);
+  perform crm.record(
+    'P11d FIRST GATE OFF: nor promote/demote nor remove a member',
+    'ok(0)/ok(0)', r_demote || '/' || r_remove);
+end $$;
+
+-- The shape guard beside it: a policy can be reverted by a later migration and
+-- P11a-P11d would go on passing on the strength of the FIRST gate alone, which
+-- is precisely the state this fix round was opened to end. So the second gate's
+-- presence is asserted structurally too, read out of pg_policies rather than
+-- out of the migration file.
+select crm.val('P11e all four Foundation write policies carry the SECOND gate',
+  $$select count(*)::text from pg_policies
+     where schemaname='public'
+       and policyname in ('organisations_update_manage_organisation',
+                          'organisation_memberships_insert_manage_members',
+                          'organisation_memberships_update_manage_members',
+                          'organisation_memberships_delete_manage_members')
+       and (coalesce(qual,'') || coalesce(with_check,''))
+           ~ '(organisation_is_live|deleted_at IS NULL)'$$, '4');
+
 update public.organisations set deleted_at = null where slug = 'org-alpha';
 
 -- ---- THE BASELINE THE P1* COUNTS ARE MEASURED AGAINST --------------------
@@ -2010,6 +2275,11 @@ select crm.val('P24 LIVE baseline: venues',              $$select count(*)::text
 select crm.val('P25 LIVE baseline: venue_rooms',         $$select count(*)::text from public.venue_rooms$$, '4');
 select crm.val('P26 LIVE baseline: custom_field_values', $$select count(*)::text from public.custom_field_values$$, '4');
 select crm.val('P27 LIVE baseline: merges',              $$select count(*)::text from public.merges$$, '2');
+-- M-2's four tables get the same paired baseline as the original eight.
+select crm.val('P29 LIVE baseline: custom_field_definitions', $$select count(*)::text from public.custom_field_definitions$$, '4');
+select crm.val('P30 LIVE baseline: contact_companies',        $$select count(*)::text from public.contact_companies$$, '2');
+select crm.val('P31 LIVE baseline: artist_representations',   $$select count(*)::text from public.artist_representations$$, '2');
+select crm.val('P32 LIVE baseline: artist_fee_history',       $$select count(*)::text from public.artist_fee_history$$, '1');
 -- ...and the write that was refused throughout section P is accepted again, so
 -- the refusals above were suspension and not some unrelated breakage.
 select crm.try('P28 REINSTATED: the same INSERT that was refused now succeeds',
@@ -2017,6 +2287,41 @@ select crm.try('P28 REINSTATED: the same INSERT that was refused now succeeds',
     values (%L,'reinstated')$$, :'alpha_org'), 'ok(1)');
 reset role; reset request.jwt.claims;
 delete from public.contacts where name='reinstated';
+
+-- THE LIVE CONTROL FOR P4d/P4e (M-1). Without it, "all seven write keys are
+-- false under suspension" passes for an Owner who never held them -- which is
+-- exactly the trap P4a/P4b fell into for three of their six disjuncts. Same
+-- user, same organisation, one thing different: it is not suspended.
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select crm.val('P4f LIVE CONTROL: the same aal2 OWNER holds all seven write keys',
+  format($$select (public.has_permission(%1$L,'manage_contacts')
+                and public.has_permission(%1$L,'manage_artists')
+                and public.has_permission(%1$L,'manage_venues')
+                and public.has_permission(%1$L,'manage_custom_fields')
+                and public.has_permission(%1$L,'merge_records')
+                and public.has_permission(%1$L,'manage_members')
+                and public.has_permission(%1$L,'manage_organisation'))::text$$,
+    :'alpha_org'), 'true');
+select crm.val('P4g LIVE CONTROL: ...and all seven in the set form too',
+  format($$select (not exists (
+      select 1 from unnest(array['manage_contacts','manage_artists','manage_venues',
+                                 'manage_custom_fields','merge_records',
+                                 'manage_members','manage_organisation']) k
+      where %L not in (select private.permitted_organisations(k))
+    ))::text$$, :'alpha_org'), 'true');
+-- ...and the write surfaces P12* found closed are open again, so those refusals
+-- were suspension and not a missing grant.
+select crm.try('P33 REINSTATED: custom_field_definitions INSERT succeeds again',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'artist','reinstated_key','Reinstated','text')$$,
+    :'alpha_org'), 'ok(1)');
+select crm.try('P34 REINSTATED: organisation_memberships UPDATE matches again',
+  format($$update public.organisation_memberships set role='marketing'
+    where organisation_id=%L and role='marketing'$$, :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+delete from public.custom_field_definitions where key='reinstated_key';
 
 -- ===========================================================================
 -- Q. merges LEAKED THE LOSER'S DISCARDED VALUES (IMP-2)
