@@ -33,16 +33,39 @@ These become live the moment a real tenant table exists.
   "make company B the primary" is two statements in one transaction, not one
   `UPDATE`. This is the cost that was paid for it, recorded where the write
   path will be built.
-- **`updated_at` is maintained by nothing, on all 21 tables in `public`.**
-  Foundation's nine tables and Phase 2's twelve all carry
-  `updated_at timestamptz not null default now()`, `pg_trigger` has no
-  non-internal trigger anywhere in `public`, and a grep of `app/`, `lib/` and
-  `components/` finds **zero** writes to the column. So it currently equals
-  `created_at` forever, on every row, everywhere — including Foundation's, so
-  this is not a Phase 2 regression.
+- **`artist_representations_one_current_primary_per_artist` enforces one
+  *open-ended* primary, not one *current* one.** A representation with a
+  future-dated `ended_at` is excluded from the index and so slips past it. The
+  index cannot say otherwise — `current_date` is not `IMMUTABLE`, so it cannot
+  appear in a partial index predicate. Either the write path rejects
+  future-dated `ended_at`, or the name is wrong. Task 4 owns the call.
+- **Task 6's merge must resolve `is_primary` collisions before repointing.**
+  The same two indexes break the merge, not just the edit form, and that was
+  recorded against Task 4 only. If the winner and the loser each have a
+  primary — both legal rows — then
+  `update contact_companies set contact_id = <winner> where contact_id = <loser>`
+  raises `23505`, and the same applies to `artist_representations`. Neither
+  index is deferrable, so the merge must demote one side's primary in a
+  separate statement first and record which side won in
+  `merges.field_resolution`. The pre-existing
+  `contact_companies_contact_company_unique` collides the same way when both
+  records link to the same company: that row is a duplicate and must be
+  dropped, not repointed.
+- **`updated_at` is maintained by almost nothing, on the 17 tables in `public`
+  that carry it.** `audit_events`, `merges`, `platform_admins` and
+  `role_permissions` do not have the column — the first two deliberately, being
+  append-only — so the decision below covers 17 tables, not 21, and applying it
+  literally to all of them would add the column where it was deliberately
+  omitted. `pg_trigger` has no non-internal trigger anywhere in `public`, and
+  the only write to the column in the entire codebase is `accept_invite()`'s
+  `update public.organisation_memberships … set updated_at = pg_catalog.now()`
+  (`20260827015924:272`) — one table, one of that table's write paths. That is
+  worse than uniformly unmaintained: a consumer could reasonably conclude the
+  column works. Everywhere else it equals `created_at` forever, Foundation's
+  included, so this is not a Phase 2 regression.
   Task 1's fix round deliberately did **not** add triggers to only the twelve
   new tables: that would leave the schema half-maintained, which is worse for a
-  reader than either extreme. **Task 2 should take one decision for all 21.**
+  reader than either extreme. **Task 2 should take one decision for all 17.**
   The argument for a trigger is the same one `SECURITY.md` §4 makes about the
   database being the only chokepoint — a PostgREST `PATCH` goes nowhere near
   app code, so an app-maintained `updated_at` is not maintained. The argument
