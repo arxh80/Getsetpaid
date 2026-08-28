@@ -23,8 +23,35 @@ it or decide out loud that it is never happening.
 
 These become live the moment a real tenant table exists.
 
-- **Wrap constant-argument policy calls in `(select …)`** so Postgres caches the
-  InitPlan. Performance only, but Phase 2 is when row counts start to matter.
+- ~~**Wrap constant-argument policy calls in `(select …)`**~~ **DONE, Phase 2
+  Task 2** (`20260828122000_policy_initplan_retrofit.sql`). Four Foundation
+  policies qualified — all four call `private.has_platform_permission` with a
+  literal; every other policy in `public` takes a column argument and cannot be
+  hoisted. Measured on 200k committed `audit_events` rows: **6785.848 ms →
+  6.360 ms**, 200,263 buffer hits → 161. It was worth checking rather than
+  assuming — Postgres does *not* hoist a variable-free `STABLE` function call in
+  a qual on its own. Two corrections for anyone reading the original entry:
+  `create or replace policy` **does not exist** in Postgres (42601); the
+  additive statement is `alter policy`. And "performance only" was wrong at the
+  scale Phase 2's own policies operate at — see the next entry.
+- **Any new RLS policy must use the set form, not the per-row form.** Phase 2
+  Task 2 measured this on the policies it was shipping, and it is a design rule
+  now rather than a tuning note. `has_permission(organisation_id, 'view_crm')`
+  takes a **column**, so it runs once per row and nothing hoists it: a fifty-row
+  page of a 50,000-contact organisation took **5210 ms**, and the equivalent
+  child-table page **12830 ms**. `organisation_id in (select
+  private.permitted_organisations('view_crm'))` takes a **constant**, so the
+  planner builds one hashed SubPlan per statement: the same two queries take
+  **23 ms** and **19.6 ms**. Pagination does not rescue the per-row form —
+  `order by … limit 50` sorts the whole tenant before it can take fifty, so the
+  policy is evaluated on every row either way; only a primary-key fetch escapes
+  (0.78 ms in both). Both forms return identical rows, so **no behavioural test
+  can tell them apart** — `rls_phase2_crm.sql` H12/H13 are shape guards that
+  exist for exactly that reason. Phase 3 and beyond: write
+  `<org column> in (select private.permitted_organisations('<key>'))`, and for
+  a child table an inline `exists` against its one parent (which the planner can
+  hoist; a `SECURITY DEFINER` helper cannot be inlined and is structurally
+  per-row). `20260828120500`'s header carries the plans.
 - **Task 4 must clear the old `is_primary` before setting a new one.** Not a
   question any more — `contact_companies_one_primary_per_contact` and
   `artist_representations_one_current_primary_per_artist` ship in
@@ -71,6 +98,24 @@ These become live the moment a real tenant table exists.
   app code, so an app-maintained `updated_at` is not maintained. The argument
   against is that Foundation chose app-maintained deliberately and no consumer
   needs the column yet.
+  **DECIDED, Phase 2 Task 2: a shared `BEFORE UPDATE` trigger on all 17**
+  (`20260828121500_updated_at_triggers.sql`, `private.set_updated_at()`). The
+  PostgREST argument won, and a second one turned up while implementing it that
+  is a security argument rather than a tidiness one: `updated_at` was
+  **client-writable**. Every one of those tables grants UPDATE to
+  `authenticated`, no policy constrains which columns an UPDATE may touch, and
+  PostgREST will send whatever is in the body — so a client could back-date or
+  future-date a record's modification time, which matters the moment anything
+  reads the column for "what changed since my last sync", to order an activity
+  feed, or to answer a retention question. The trigger overwrites whatever
+  arrived. Asserted by `rls_phase2_crm.sql` L3/L4 (a timestamp forged ten years
+  out is discarded) and L5/L6 (every table carrying the column has the trigger,
+  and that is 17). The `when (old.* is distinct from new.*)` clause means a
+  no-op UPDATE does not move the timestamp. The four tables without the column
+  (`audit_events`, `merges`, `platform_admins`, `role_permissions`) were left
+  alone. **Phase 3+: a new table with `updated_at` needs the trigger added by
+  hand** — the event-trigger option stays rejected for Task 1's I6 reason, and
+  L5 is the assertion that catches the omission.
 - **`invited_at` / `created_at` are still rewritable** through the
   `manage_members` UPDATE policy. Same shape as the `joined_at` hole that was
   closed, no authorisation impact. Close it when a members-management task next
@@ -125,6 +170,47 @@ These become live the moment a real tenant table exists.
   Foundation helper uses) makes `name % $1` fail with "operator does not exist".
   Write `name operator(extensions.%) $1` and `extensions.similarity(...)`.
 
+### Opened by Task 2 (RLS policies) — carried into Tasks 3-7
+
+- **RLS does NOT filter soft-deleted rows. Every query in Tasks 3-7 must write
+  `deleted_at is null` itself.** Decided in `20260828121000` design note (g) and
+  stated here because it is the kind of thing a screen forgets silently: nothing
+  will error, a deleted contact will simply appear in the list. Hiding them in
+  the policy was rejected because a `USING` clause that excludes deleted rows
+  excludes exactly the row an undelete is trying to restore, so restore would
+  need its own `SECURITY DEFINER` bypass; because Task 6's merge has to read the
+  loser it just soft-deleted; and because DSR export must reach soft-deleted
+  rows, which are still personal data. The partial trigram and
+  `contacts_org_email_lower_idx` indexes are only usable when the predicate is
+  present anyway (Task 1 §4.4 measured the Seq Scan you get without it), so the
+  same clause serves both purposes. `rls_phase2_crm.sql` § K asserts the
+  visibility; nothing can assert the application's half.
+- **`custom_field_definitions` has no DELETE policy and no DELETE grant —
+  Task 5 owns fixing that properly.** A definition cannot be removed through the
+  API today, only renamed. Deliberate:
+  `custom_field_values_definition_fkey` is `ON DELETE CASCADE`, so deleting one
+  definition destroys every value filed under it across the whole organisation,
+  and CLAUDE.md § Permissions forbids silently deleting data. Task 5 should add
+  `deleted_at` to the table (which it already needs for the tier-downgrade item
+  above) and give "remove this field" the soft-delete shape; only then does a
+  DELETE policy make sense, if at all. **The cost is real and is accepted for
+  now: a mistyped field key is permanent until Task 5 lands.**
+- **Task 4 and Task 6's orphan sweep must delete `custom_field_values` BEFORE
+  the entity row is hard-deleted.** The DELETE policy resolves `entity_id`
+  against the live entity row, so once the entity is gone the values are
+  unreachable to every client role. Soft delete leaves the row in place, so the
+  ordinary path is unaffected — this only bites on a genuine hard delete
+  (Phase 7's organisation deletion, a DSR erasure). Stated beside the existing
+  orphan-sweep item because that item names the statement and this names its
+  ordering constraint.
+- **`contact_companies` has a company-existence oracle, accepted.** Q5 scopes
+  the link by the contact for writes as well as reads (requiring the company to
+  be manageable too would reintroduce the `AND` Q5 rejected, one layer down), so
+  a caller can learn whether a uuid they already hold names a company in their
+  own tenant by whether the insert succeeds. It requires guessing a v4 uuid
+  inside one's own organisation and reveals nothing but existence. Recorded, not
+  paid for.
+
 ## Phase 3 — events
 
 Both carried out of Phase 2 Task 1, and both are one-line additions to the
@@ -159,11 +245,23 @@ Phase 2 ships a column and three allowlists that Phase 3 silently invalidates.
   deleting any referenced event fail outright. Both traps are written onto the
   CHECK constraint's own comment in the database, which Phase 3 has to read in
   order to drop it.
-- **`'event'` is missing from three `entity_type` allowlists** —
-  `custom_field_definitions`, `custom_field_values` and `merges` each constrain
-  it to the five Phase 2 entities. Custom fields on events (PRD §6.5 lists them
-  explicitly) and event dedup do not work until all three are widened in the
-  same migration.
+- **`'event'` is missing from three `entity_type` allowlists AND from two
+  policy helpers — that is five places, not three.** The three CHECK
+  constraints on `custom_field_definitions`, `custom_field_values` and `merges`
+  each constrain it to the five Phase 2 entities. Custom fields on events (PRD
+  §6.5 lists them explicitly) and event dedup do not work until all three are
+  widened in the same migration.
+
+  **The two that Task 2 added, and that the original entry could not know
+  about:** `private.entity_is_visible()` and `private.entity_is_manageable()`
+  (`20260828120500`) are `CASE` dispatches over the same five values with
+  `else false`. Widening the CHECKs without adding an `'event'` branch to both
+  makes every event custom-field value and every event merge record silently
+  unreadable and unwritable — it will present as an RLS bug, and the tempting
+  fix (loosening the policy) would reopen the cross-tenant hole the dispatch
+  exists to close. Add the branch in the same migration, using `view_crm` for
+  the visible half and whichever key Phase 3 defines for event writes.
+  `SECURITY.md` § 10 carries the same warning where a pentester will see it.
 
 ## Phase 3 — members management with a real UI
 
