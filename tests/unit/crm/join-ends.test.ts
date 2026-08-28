@@ -7,7 +7,11 @@ import { describe, expect, it } from "vitest";
 // ===========================================================================
 // `liveInOrg()` returned a boolean and `deletedEndState()` turned every false
 // into "This record is deleted, so its links can't be changed. Restore it
-// first and these controls come back." The re-review measured what that means
+// first and these controls come back." (That is the wording AT THE TIME. Task
+// 4b's browser pass changed "its links" to "what's attached to it", because a
+// venue's ROOMS are not links -- see DELETED_RECORD_EXPLANATION. The defect
+// described here is unaffected: it was about which SITUATIONS got the
+// sentence, not about the noun in it.) The re-review measured what that means
 // in practice: a live `Make primary` form's hidden `companyId` repointed at a
 // LIVE company in another workspace was correctly refused, and the user was
 // told to restore a record that is not deleted -- an instruction they cannot

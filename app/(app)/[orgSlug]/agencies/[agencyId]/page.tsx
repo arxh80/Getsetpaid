@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentOrg } from "@/lib/auth";
+import { isRecordScopedRole } from "@/lib/crm/record-scope";
 import {
   DELETED_RECORD_EXPLANATION,
   getCrmWriteAccess,
@@ -113,6 +114,12 @@ export default async function AgencyDetailPage({
       ])
     : [[], []];
 
+  // WHY THE PANEL NEEDS THE ROLE AND NOT ONLY THE ACCESS. An empty picker
+  // means "this workspace has none" for a full-scope viewer and "none are
+  // assigned to you" for a record-scoped one. Task 4b's browser pass rendered
+  // the first sentence to `pstd1` on a page listing six representations; see
+  // RepresentationPanel's `recordScoped` prop.
+  const recordScoped = isRecordScopedRole(org.role);
   // THE PANEL HAS A SECOND REASON TO BE READ-ONLY, and this route is where it
   // applies. The detail route deliberately serves DELETED records -- that is
   // how restore is reached -- so without this the whole panel would render
@@ -205,6 +212,7 @@ export default async function AgencyDetailPage({
         }))}
         otherOptions={artistOptions}
         contactOptions={contactOptions}
+        recordScoped={recordScoped}
         disabledReason={panelBlocked}
       />
 

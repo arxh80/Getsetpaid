@@ -94,7 +94,7 @@ const EXPLANATION: Record<WriteBlockedReason, string> = {
 };
 
 /**
- * Why the link panel's controls are not there on a deleted record.
+ * Why a deleted record's child panel has no controls.
  *
  * ONE STRING, for the reason `authorise()` returns `access.explanation`
  * verbatim: the sentence next to an absent control and the sentence after a
@@ -102,17 +102,48 @@ const EXPLANATION: Record<WriteBlockedReason, string> = {
  * anyone who ignores the UI and two different answers is how a user concludes
  * one of them is wrong.
  *
- * A LINK IS ONLY EDITABLE WHILE BOTH ENDS ARE LIVE, and that rule is one
+ * A CHILD IS ONLY EDITABLE WHILE BOTH ENDS ARE LIVE, and that rule is one
  * sentence on purpose. The alternative -- "the anchor must be live, and the
  * other end may be deleted if the operation is a removal" -- is defensible and
  * unstateable: it reads differently from a contact than from a company, so the
  * same button would work on one page and refuse on the other. `restore has to
  * bring the record back as it was` (deleteCompanyAction) is what decides it:
- * if the links of a deleted record can be edited while it is deleted, restore
- * brings back something else.
+ * if the children of a deleted record can be edited while it is deleted,
+ * restore brings back something else.
+ *
+ * ===========================================================================
+ * IT USED TO SAY "ITS LINKS", AND TASK 4b's BROWSER PASS FOUND THAT WRONG
+ * ===========================================================================
+ * Written for `contact_companies`, where "link" is exactly right. Task 4b
+ * points three more panels at it, and on a soft-deleted VENUE the sentence
+ * rendered as
+ *
+ *     Rooms
+ *     …
+ *     This record is deleted, so its links can't be changed.
+ *
+ * A room is not a link. It is a child record with a name, and a user reading
+ * that sentence under a heading called "Rooms" has to work out that the
+ * product means the rooms -- or concludes the page is showing them somebody
+ * else's message. Seen in a browser on a real deleted venue; the BEHAVIOUR was
+ * correct (no controls rendered, the write refused, nothing changed in the
+ * database), only the noun was wrong.
+ *
+ * "What's attached to it" is true of all three: a company link on a contact, a
+ * representation on an artist or an agency, a room in a venue. Changing the
+ * constant rather than parameterising the noun keeps the property this file's
+ * header is about -- one string, so the disabled state and the refusal cannot
+ * disagree.
+ *
+ * EDITING THIS FILE IS THE ONE THING TASK 4b's BRIEF SAYS TO RECORD BEFORE
+ * DOING. Recorded in that task's report § 5: the copy did not need
+ * write-access.ts to change in order to WORK, and the mechanism it provides
+ * (`joinEndExplanation`, `RecordPresence`, `getCrmWriteAccess(org, key)`)
+ * copied without an edit. What needed changing was one noun in one sentence,
+ * which is a copy defect rather than a design finding.
  */
 export const DELETED_RECORD_EXPLANATION =
-  "This record is deleted, so its links can’t be changed. Restore it first and these controls come back.";
+  "This record is deleted, so what’s attached to it can’t be changed. Restore it first and these controls come back.";
 
 /**
  * What a lookup for one end of a join actually found.

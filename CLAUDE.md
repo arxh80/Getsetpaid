@@ -22,7 +22,7 @@ The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrast
 | Command | What it is |
 |---|---|
 | `pnpm lint` | ESLint (`eslint`). |
-| `pnpm typecheck` | `tsc --noEmit`. **Nothing else runs `tsc`** — there is no CI, no git hook, and `pnpm build` is forbidden in a worktree pointed at the local stack. Several exhaustiveness guards (the `switch` with no `default` in `lib/crm/contacts.ts` and `lib/crm/companies.ts`) are compile-time only, so skipping this is skipping them entirely. |
+| `pnpm typecheck` | `tsc --noEmit`. **Nothing else runs `tsc`** — there is no CI, no git hook, and `pnpm build` is forbidden in a worktree pointed at the local stack. Several exhaustiveness guards (the `switch` with no `default` in `lib/crm/contacts.ts`, `lib/crm/companies.ts` and `lib/crm/actions.ts`) are compile-time only, so skipping this is skipping them entirely. |
 | `pnpm test` | Vitest, unit and integration (`vitest run`). |
 | `pnpm test:rls` | The RLS integration tests (`vitest run tests/integration/rls`), included in `pnpm test`. |
 
@@ -32,6 +32,14 @@ refuses to run twice without a reset in between.
 
 `pnpm build` and `pnpm start` resolve to the **hosted** project and must not be
 run from a worktree that is deliberately unlinked from it.
+
+**After adding or renaming a route, run `npx next typegen` before
+`pnpm typecheck`.** Next.js types `PageProps<"/some/route">` against a
+generated manifest in `.next/types/`, and `pnpm build` — the usual thing that
+regenerates it — is forbidden here. Without it a new page fails with
+`Type '"/[orgSlug]/…"' does not satisfy the constraint 'AppRoutes'`, which
+looks like a mistake in the page and is not. `pnpm dev` regenerates it too;
+`next typegen` is the version that does not start a server.
 
 Skills are pinned project-level so every agent and every machine gets the same set: restore with `npx skills experimental_install`, check updates with `npx skills check`. The roster and what each one is for live in `DESIGN.md` § "Build-time design tooling".
 

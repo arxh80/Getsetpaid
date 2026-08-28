@@ -120,6 +120,7 @@ export function RepresentationPanel({
   otherOptions,
   contactOptions,
   disabledReason,
+  recordScoped,
 }: {
   orgSlug: string;
   side: "artist" | "agency";
@@ -129,6 +130,26 @@ export function RepresentationPanel({
   otherOptions: readonly PickerOption[];
   contactOptions: readonly PickerOption[];
   disabledReason: string | null;
+  /**
+   * The viewer sees only records assigned to them, so an EMPTY PICKER does not
+   * mean an empty workspace.
+   *
+   * ADDED IN TASK 4b's BROWSER PASS, because the panel shipped the exact defect
+   * Task 3 found on the contacts list and every list since has carried a
+   * role-aware empty state for. Seen as `pstd1`, a Standard User who owns the
+   * artist and none of the agencies: the page rendered six representations,
+   * each naming an agency, above the sentence
+   *
+   *     There are no agencies in this workspace yet. Create one first and it
+   *     will appear here.
+   *
+   * There are four. `loadLinkOptions` runs through the caller's own client --
+   * which is correct, and is where the Q3a write half is closed -- so a
+   * record-scoped user is offered nothing they cannot read, and an empty
+   * result is the ordinary case for them rather than an empty workspace. The
+   * copy has to know which of the two it is, and only the role can say.
+   */
+  recordScoped: boolean;
 }) {
   const onArtist = side === "artist";
   const editable = disabledReason === null;
@@ -212,6 +233,7 @@ export function RepresentationPanel({
           anchorId={anchorId}
           otherOptions={otherOptions}
           contactOptions={contactOptions}
+          recordScoped={recordScoped}
         />
       ) : (
         <p className="max-w-prose text-sm text-ink-muted">{disabledReason}</p>
@@ -734,12 +756,14 @@ function AddRepresentation({
   anchorId,
   otherOptions,
   contactOptions,
+  recordScoped,
 }: {
   orgSlug: string;
   side: "artist" | "agency";
   anchorId: string;
   otherOptions: readonly PickerOption[];
   contactOptions: readonly PickerOption[];
+  recordScoped: boolean;
 }) {
   const [state, formAction, pending] = useActionState(
     createRepresentationAction,
@@ -752,11 +776,22 @@ function AddRepresentation({
   const selected = new Set(selectedInGroup(state.values, "isExclusive", []));
 
   if (otherOptions.length === 0) {
+    // TWO SENTENCES, NOT ONE, AND ONLY THE ROLE CAN CHOOSE BETWEEN THEM. An
+    // empty picker means "this workspace has none" for a full-scope viewer and
+    // "none are assigned to you" for a record-scoped one -- and the second
+    // sentence rendered as the first is a false claim about the customer's own
+    // data, which is the defect Task 3 found on the contacts list. Measured
+    // here in a browser: `pstd1` saw six representations above the words
+    // "There are no agencies in this workspace yet."
     return (
       <p className="max-w-prose text-sm text-ink-muted">
-        {onArtist
-          ? "There are no agencies in this workspace yet. Create one first and it will appear here."
-          : "There are no artists in this workspace yet. Create one first and it will appear here."}
+        {recordScoped
+          ? onArtist
+            ? "No agencies are assigned to you, so there are none to choose here. Ask an Owner or Admin to assign one — others in this workspace may see more."
+            : "No artists are assigned to you, so there are none to choose here. Ask an Owner or Admin to assign one — others in this workspace may see more."
+          : onArtist
+            ? "There are no agencies in this workspace yet. Create one first and it will appear here."
+            : "There are no artists in this workspace yet. Create one first and it will appear here."}
       </p>
     );
   }

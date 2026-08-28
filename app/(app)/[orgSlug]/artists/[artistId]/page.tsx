@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentOrg } from "@/lib/auth";
+import { isRecordScopedRole } from "@/lib/crm/record-scope";
 import {
   DELETED_RECORD_EXPLANATION,
   getCrmWriteAccess,
@@ -127,6 +128,12 @@ export default async function ArtistDetailPage({
       ])
     : [[], []];
 
+  // WHY THE PANEL NEEDS THE ROLE AND NOT ONLY THE ACCESS. An empty picker
+  // means "this workspace has none" for a full-scope viewer and "none are
+  // assigned to you" for a record-scoped one. Task 4b's browser pass rendered
+  // the first sentence to `pstd1` on a page listing six representations; see
+  // RepresentationPanel's `recordScoped` prop.
+  const recordScoped = isRecordScopedRole(org.role);
   const blocked = access.canWrite ? null : access.explanation;
   const panelBlocked =
     artist.deletedAt !== null ? DELETED_RECORD_EXPLANATION : blocked;
@@ -291,6 +298,7 @@ export default async function ArtistDetailPage({
         }))}
         otherOptions={agencyOptions}
         contactOptions={contactOptions}
+        recordScoped={recordScoped}
         disabledReason={panelBlocked}
       />
 
