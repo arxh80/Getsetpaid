@@ -19,7 +19,7 @@
 // script exists to prevent. Refusing to start is the correct outcome: a dev
 // server that quietly talks to production is worse than one that will not boot.
 import { execSync } from "node:child_process";
-import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 const TARGET = join(process.cwd(), ".env.development.local");
@@ -58,6 +58,21 @@ function readSiteUrl() {
   if (!existsSync(configPath)) return "http://localhost:3000";
   const match = readFileSync(configPath, "utf8").match(/^site_url\s*=\s*"([^"]+)"/m);
   return match?.[1] ?? "http://localhost:3000";
+}
+
+// `pnpm dev:hosted` is the deliberate escape hatch, and it did not work: this
+// script writes .env.development.local, Next loads that file ahead of
+// .env.local in development, and nothing removed it -- so once `pnpm dev` had
+// run once, `dev:hosted` kept talking to the local stack no matter what it was
+// asked for. Found by the Task 3 review. Removing the generated file is the
+// whole fix, because .env.local is what Next falls back to.
+if (process.argv.includes("--hosted")) {
+  if (existsSync(TARGET)) rmSync(TARGET);
+  console.log(
+    "dev-env: generated override removed -- the app will use .env.local, " +
+      "which points at the HOSTED project. This is not a drill.",
+  );
+  process.exit(0);
 }
 
 const stack = readLocalStack();

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/dev-env.mjs && next dev",
-    "dev:hosted": "next dev",
+    "dev:hosted": "node scripts/dev-env.mjs --hosted && next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
