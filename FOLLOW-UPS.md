@@ -203,13 +203,67 @@ These become live the moment a real tenant table exists.
   (Phase 7's organisation deletion, a DSR erasure). Stated beside the existing
   orphan-sweep item because that item names the statement and this names its
   ordering constraint.
-- **`contact_companies` has a company-existence oracle, accepted.** Q5 scopes
-  the link by the contact for writes as well as reads (requiring the company to
-  be manageable too would reintroduce the `AND` Q5 rejected, one layer down), so
-  a caller can learn whether a uuid they already hold names a company in their
-  own tenant by whether the insert succeeds. It requires guessing a v4 uuid
-  inside one's own organisation and reveals nothing but existence. Recorded, not
-  paid for.
+- ~~**`contact_companies` has a company-existence oracle, accepted.**~~
+  **THAT ASSESSMENT WAS WRONG, in the reassuring direction. Corrected in fix
+  round 1.** It said the residue "requires guessing a v4 uuid inside one's own
+  organisation and reveals nothing but existence". Nothing has to be guessed:
+  the SELECT policy hands the identifiers over. A record-scoped user reads the
+  `company_id` of every link on a contact they own — including companies outside
+  their scope — and `artist_representations` is the same shape and wider,
+  exposing `agency_id` **and** `contact_id` of rows the user cannot read, plus
+  the free-text `role` and `territory` on the representation itself. Q3a's
+  "a display wart, not a disclosure" is wrong too: it is an identifier
+  disclosure.
+  **Bounded, and the bound is the reason it is still accepted:** no attributes
+  leak. A PostgREST embed of `companies(*)` renders `null` and
+  `companies!inner(*)` renders `[]`, so this is IDOR-adjacent enumeration, not a
+  content leak. **The write half is real and is Task 4's:** a Standard User can
+  create and delete links to companies they cannot see, and those links surface
+  on the company's page for full-scope users. Close it in the create-link form
+  (offer only companies the caller can read), NOT in a policy — a policy that
+  refused it would reintroduce the `AND` that Q5 rejected and break the case Q5
+  exists to protect. Corrected on the policies themselves via `comment on
+  policy` (`20260828140500`) and in `SECURITY.md` § 10.
+- **A soft-deleted record is still fully editable — Tasks 3-7 must remember
+  `deleted_at is null` on WRITES as well as reads.** Design note (h) is about
+  visibility only; nothing stops an UPDATE of a soft-deleted row. So a record
+  can be soft-deleted, edited, and restored with only `updated_at` moving, which
+  is a wart for the retention and DSR story. Not fixed in a policy because the
+  UPDATE `USING` clause is exactly what a restore needs to match — the same
+  argument that decided design note (h). Task 4 owns it on the write path.
+- **A denied write can return `204 No Content`.** Where the `USING` clause
+  filters the target out first, PostgREST returns 204 rather than 403 — measured
+  on a `read_only` PATCH, a `read_only` DELETE and a cross-tenant PATCH. Nothing
+  changes, so it is secure, but Foundation's design note (c) calls a
+  silently-zero-row write "worse than one that just fails" and every screen from
+  Task 3 on will hit it. **Every mutation must send `Prefer:
+  return=representation` (or `count=exact`) and treat a zero-row result as a
+  denial, not a success.** The two CRM `DELETE` policies are the worst case: a
+  DELETE policy has no `WITH CHECK`, so the entitlement term has to live in
+  `USING` and an unentitled delete is necessarily a silent zero-row result.
+- **`custom_field_definitions.field_type` is mutable while values exist —
+  Task 5.** An Owner/Admin can flip a definition from `text` to `number` with
+  `text` values already filed under it. The `entity_type` equivalent is refused
+  by the composite FK (`23503`); `field_type` is the axis left open. Not a
+  security issue. Either forbid narrowing conversions server-side or add a
+  `WITH CHECK` pinning `field_type` once values exist. Task 5 already carries
+  the `deleted_at` item for this table; this belongs beside it.
+- **Task 3: no CRM query may appear above `MfaEnrollGate`.** The MFA read gate
+  is safe only because `app/(app)/layout.tsx` reaches `profiles`,
+  `organisations` and `organisation_memberships` and nothing else — verified end
+  to end with a real TOTP enrolment. The moment a CRM read appears in the app
+  shell, the MFA gate components or `lib/auth`, an un-enrolled privileged user
+  can no longer reach the enrolment screen. Worth a guard test in the shape of
+  `rls_phase2_crm.sql` H12/H13: no file reachable from the app-shell layout may
+  query the twelve CRM tables.
+- **Task 6: `merges` SELECT now requires BOTH sides visible, not just the
+  winner.** Changed in fix round 1 (`20260828140500`) because
+  `field_resolution` copies both records' values verbatim and a record-scoped
+  user was reading the DISCARDED email and phone of a record that was never in
+  their scope. A merge screen can therefore only show merges where the viewer
+  can see both records. The corollary: if a loser is ever HARD-deleted its merge
+  record becomes invisible to everyone, so a merge whose record is gone must be
+  read through the audit trail rather than through this policy.
 
 ## Phase 3 — events
 
@@ -283,6 +337,51 @@ Phase 2 ships a column and three allowlists that Phase 3 silently invalidates.
 This is where the privileged surface actually lands, so these must be fixed
 before the first real consumer exists rather than alongside it.
 
+- **Switch the subscription entitlement gate on: remove the escape and backfill,
+  in ONE migration.** `private.crm_write_organisations()` (`20260828140000`) is
+  on all 25 CRM write policies and is **deliberately inert**: its
+  `s.organisation_id is null` branch means an organisation with no subscription
+  row is not gated, and `create_organisation()` writes no such row, so today it
+  gates nothing. Without that branch it would deny every CRM write in the
+  product on the day it shipped. Phase 7 must (1) backfill an
+  `organisation_subscriptions` row for every existing organisation, (2) make
+  `create_organisation()` write one, and (3) delete the branch — in the same
+  migration, in that order. Do it in the wrong order and every tenant loses
+  write access to their own CRM. `rls_phase2_crm.sql` § N and the HTTP
+  "Subscription entitlement" block are what prove the machinery works while it
+  is switched off; N1 and N16 are the two assertions that must change when the
+  escape goes.
+- **Ship the superuser REINSTATE path in the same change as the suspend
+  button.** Since `20260828140000`, a soft-deleted organisation grants no
+  permission at all — which means its own Owner can no longer clear
+  `deleted_at`, and there is no superuser write policy on `public.organisations`
+  either. Today, reinstatement is a DBA action. That is the fail-closed
+  direction and it matches CLAUDE.md (suspend/reinstate is a superuser
+  function), but shipping suspend without reinstate is a one-way door.
+  `rls_phase2_crm.sql` P7 asserts the Owner cannot un-suspend, so it will need
+  updating when the superuser path exists.
+- **The organisation-delete cascade will emit one audit row per child row.** The
+  audit triggers from `20260828141000` skip sessionless writers, but a cascade
+  started by a SUPERUSER session has an `auth.uid()`, so `DELETE FROM
+  organisations` will write one `audit_events` row per cascaded
+  `contact_companies` and `custom_field_values` row — thousands for a real
+  tenant, each with its own `correlation_id`, because
+  `private.log_audit_event()` mints a fresh one per call. Either thread one
+  correlation id through the deletion path or suppress row-level audit inside
+  the bulk operation and write a single summary row.
+- **Full CRM write auditing** — INSERT and UPDATE on all twelve tables, which
+  fix round 1 deliberately did not build (only the two hard DELETEs and merges
+  are audited). Belongs with the audit log viewer, and needs a before/after diff
+  design plus a retention answer for the diffs. See `SECURITY.md` § 7, "CRM
+  writes: what is audited today, and what is not".
+- **Restore-from-audit is not possible, by design.** The audit payload is an
+  allowlist of identifiers — `private.audit_crm_payload()` drops
+  `custom_field_values.value` and `merges.field_resolution` — because
+  `audit_events` is superuser-readable and CLAUDE.md § Superuser dashboard keeps
+  tenant record content off that surface, naming the feedback screenshot as *the
+  one* exception. If restore-from-audit is wanted it needs a founder decision
+  about superuser access to tenant content, or a tenant-scoped undo table that
+  is not `audit_events`.
 - **`stepUpProofMode()` fail direction** — resolved in Foundation, but re-verify
   under a real step-up consumer.
 - **Step-up trusts a client-supplied `factorId`** while the MFA path resolves it
