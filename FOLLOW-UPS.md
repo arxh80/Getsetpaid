@@ -420,6 +420,17 @@ before the first real consumer exists rather than alongside it.
   bulk operation and write a single summary row. This matters beyond tidiness —
   it is the path superuser organisation deletion and GDPR erasure both take, and
   erasure carries a 30-day statutory clock.
+- **DSR erasure must scrub `merges.field_resolution`, not just the entity row.**
+  Since fix round 3 (`20260828160000`, New-2) a full-scope role can read a merge
+  whose subject has been hard-deleted, and `field_resolution` holds the
+  discarded record's values verbatim — email, phone, whatever the merge touched.
+  Erasing a contact therefore has to delete or redact every `merges` row naming
+  it as winner or loser, or the erased person's data stays readable by the
+  organisation's whole full-scope roster. Before the reordering those rows were
+  unreadable by everyone, so "unreadable" was doing accidental duty as a
+  control; it no longer is. The data was always *in* the table and erasure
+  always had to purge it — what changed is that nothing now hides it in the
+  meantime. Same 30-day statutory clock as the entry above.
 - **Full CRM write auditing** — INSERT and UPDATE on all twelve tables, which
   fix round 1 deliberately did not build (only the two hard DELETEs and merges
   are audited). Belongs with the audit log viewer, and needs a before/after diff

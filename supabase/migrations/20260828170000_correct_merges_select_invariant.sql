@@ -1,0 +1,35 @@
+-- Fix round 2 re-review, NR2-1: state the merges SELECT invariant precisely.
+--
+-- No behaviour changes here. This migration exists because the comment on
+-- merges_select_via_winner -- and 20260828160000's header, which cannot be
+-- edited now it is applied -- describe the consequence of the reordering more
+-- narrowly, and more reassuringly, than the code actually behaves.
+--
+-- WHAT THEY SAY: "a full-scope role can now see a merge whose winner or loser
+-- has been HARD-deleted."
+--
+-- WHAT IS TRUE: for a full-scope reader the winner and loser identifiers are
+-- not validated AT ALL -- neither for existence, nor for membership of the
+-- merge's own organisation. The reordering puts the hoistable
+-- full_scope_organisations() term first precisely so that a full-scope role
+-- never evaluates the per-row polymorphic dispatch, and the dispatch is what
+-- was doing that validation. A hard-deleted subject is one reachable cause of
+-- the difference; a winner or loser naming a row in ANOTHER organisation is
+-- another, and the original wording does not cover it.
+--
+-- This is not a tenant leak and the reordering is still right. The merges
+-- INSERT policy validates both sides with entity_is_manageable(), so no client
+-- can create either state -- the reachable causes are a later hard delete and
+-- a privileged or DBA write, and field_resolution on such a row was written by
+-- someone already entitled in the merge's own organisation. The guarantee IMP-2
+-- exists for is record scope, and that is untouched: a record-scoped reader
+-- still evaluates the dispatch for both sides. rls_phase2_crm.sql Q10/Q11
+-- assert both halves.
+--
+-- It is corrected because a statement about behaviour that is narrower than the
+-- code is the defect this task kept producing -- the design note in
+-- 20260828121000, the Q5 oracle note, the "volume" characterisation of the
+-- cascade abort, and now this. The pattern is worth naming: each was written
+-- from what the change was intended to do rather than from what was run.
+comment on policy "merges_select_via_winner" on public.merges is
+  'MISNAMED SINCE FIX ROUND 1: a record-scoped reader must be able to see BOTH the winner and the loser, because field_resolution copies the DISCARDED values of both records verbatim -- scoping by the winner alone let a Standard User read the email and phone of a contact that was never in their scope. REORDERED IN FIX ROUND 3 (New-2): the hoistable full_scope_organisations() term leads, so a full-scope role never evaluates the per-row polymorphic dispatch -- measured 12308 ms -> 6.083 ms on a 50-row page over 20k rows. PRECISE CONSEQUENCE (corrected by the fix-round-2 re-review, NR2-1): for a full-scope reader the winner and loser identifiers are no longer validated at all -- not for existence and not for membership of this organisation. The earlier wording said only "hard-deleted", which is one reachable cause and not the invariant. No client can create either state, because the INSERT policy checks both sides with entity_is_manageable(); the reachable causes are a later hard delete and a privileged/DBA write. Taken as a correction -- a history table that loses rows when its subject is erased is the wrong failure direction, and a full-scope role is entitled to every record in the organisation anyway. The record-scoped path still evaluates the dispatch for both sides, is unchanged in shape, and is still ~2.3 s at 20k rows; Task 6 owns an index-backed design for it. Renaming the policy would mean dropping and re-creating it, which these migrations deliberately avoid.';

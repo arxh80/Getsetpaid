@@ -1748,6 +1748,41 @@ select crm.val('Q9  ...nor reach its discarded value by any path',
      where field_resolution::text like '%erased@example.test%'$$, '0');
 reset role; reset request.jwt.claims;
 
+-- Q10/Q11 -- the PRECISE invariant behind Q7 (fix-round-2 re-review, NR2-1).
+--
+-- Q7 asserts one reachable cause of the reordering's consequence: a subject
+-- that was hard-deleted. That wording is narrower than the code. For a
+-- full-scope reader the winner and loser identifiers are not validated at all,
+-- so a merge naming a row in ANOTHER organisation is equally visible -- and
+-- nothing above would have caught it.
+--
+-- Not a tenant leak: the merges INSERT policy checks both sides with
+-- entity_is_manageable(), so no client can create this row. It is planted as
+-- postgres precisely because only a privileged write or a later hard delete
+-- can produce the state. What is under test is that the record-scoped
+-- guarantee still holds even when the full-scope one does not (Q11).
+insert into public.merges
+  (id, organisation_id, entity_type, winner_id, loser_id, merged_by, field_resolution)
+select 'cccc0000-0000-0000-0000-0000000000f2', o.id, 'contact',
+       '22220000-0000-0000-0000-000000000002',
+       -- A BETA contact id: the loser is a real row, in the wrong tenant.
+       '2222000b-0000-0000-0000-00000000000b', :'pmanager', '{}'::jsonb
+from public.organisations o where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('Q10 NEW-2: winner/loser ids are unvalidated for a full-scope reader',
+  $$select count(*)::text from public.merges
+     where id='cccc0000-0000-0000-0000-0000000000f2'$$, '1');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.val('Q11 ...and a record-scoped reader still cannot see it',
+  $$select count(*)::text from public.merges
+     where id='cccc0000-0000-0000-0000-0000000000f2'$$, '0');
+reset role; reset request.jwt.claims;
+
 -- ===========================================================================
 -- R. THE IRREVERSIBLE WRITES ARE AUDITED (IMP-5)
 -- ===========================================================================
