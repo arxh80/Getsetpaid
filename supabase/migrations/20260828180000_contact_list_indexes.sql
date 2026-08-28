@@ -1,0 +1,162 @@
+-- Phase 2 (Core CRM), Task 3: the indexes the contacts list page reads through.
+--
+-- Additive. No previously applied migration is edited.
+--
+-- ===========================================================================
+-- WHY A TASK ABOUT A COMPONENT SHIPS A MIGRATION
+-- ===========================================================================
+-- The Task 3 brief says to measure the list query with `explain (analyze,
+-- buffers)` on at least 20,000 rows, because Task 2's headline finding was a
+-- five-second list page that passed every behavioural test. The measurement
+-- was taken, and the answer was that the shipped schema has no index any list
+-- query can use for ordering: every plan was a Seq Scan of the tenant plus a
+-- top-N sort.
+--
+-- 25,000 contacts in one organisation (24,509 live, 491 soft-deleted), 5,000
+-- in a second tenant, committed and VACUUM ANALYZEd -- not measured inside a
+-- transaction, which is 20260828001134's own recorded lesson. As the real
+-- `authenticated` role with request.jwt.claims set the way PostgREST sets it,
+-- so the Phase 2 RLS policies are in the plan:
+--
+--   page one, order by name, limit 26
+--     before   Seq Scan + top-N heapsort of 24,509 rows
+--              Buffers: shared hit=866        Execution Time: 13.575 ms
+--     after    Index Scan using contacts_org_name_id_live_idx
+--              Buffers: shared hit=37         Execution Time:  1.015 ms
+--
+--   page two (keyset), same order
+--     before   13.575 -> 15.022 ms            after  0.478 ms
+--
+--   order by updated_at desc, limit 26
+--     before   10.974 ms                      after  0.451 ms
+--
+--   name ilike '%kaur%', ordered, limit 26
+--     before   24.010 ms                      after  1.079 ms
+--
+--   page one as a record-scoped Standard User
+--     before    6.349 ms                      after  1.545 ms, Heap Fetches: 0
+--
+-- Thirteen milliseconds is not a bug today. THE SHAPE IS: the "before" plans
+-- sort every live row in the tenant to return twenty-five, so the cost of one
+-- page click grows linearly with how successful the customer is. It is the
+-- same class as Task 2's 5,210 ms page and it is invisible to every test that
+-- checks which rows come back, because both plans return the same rows.
+--
+-- Deferring this to Task 4 was the alternative and it is the wrong one: Task 4
+-- copies Task 3's shape across four more entities, so the omission would be
+-- copied four times before anything measured it.
+--
+-- ===========================================================================
+-- THE SHAPE, AND WHY EACH PIECE OF IT
+-- ===========================================================================
+--   (organisation_id, <sort column>, id) include (owner_user_id)
+--   where deleted_at is null
+--
+-- organisation_id LEADS because every list query pins it with equality
+-- (lib/list/query.ts writes it explicitly and does not lean on RLS), which
+-- leaves the rest of the index as a sorted run within one tenant.
+--
+-- id IS IN THE KEY, not decoration. Keyset pagination compares
+-- `(sort column, id)` against the previous page's last row, because no sort
+-- column here is unique -- a contacts list has several "Sam Patel"s -- and a
+-- keyset over a non-total order skips and repeats rows at every page boundary
+-- a tie straddles. The index has to carry the tie-break for the comparison to
+-- be a range.
+--
+-- include (owner_user_id) IS NOT PADDING. The Phase 2 SELECT policy's record
+-- scope term is `... or owner_user_id = (select auth.uid())`, so without the
+-- column in the index every candidate row needs a heap fetch just to decide
+-- whether the caller may see it. With it, a Standard User's page one is an
+-- Index Only Scan with `Heap Fetches: 0` -- 6,152 rows rejected without
+-- touching the table (3.170 ms with the column merely absent, 1.545 ms with
+-- it). It is `include` rather than a key column because nothing orders by it.
+--
+-- PARTIAL, `where deleted_at is null`, which makes the index a functional
+-- dependency of a rule the application must already follow. RLS does NOT hide
+-- soft-deleted rows (Task 2 § 4.1, FOLLOW-UPS.md), so every list query has to
+-- write `deleted_at is null` itself. Measured, dropping that clause:
+--
+--     with it      Index Scan,  314 buffers,  1.015 ms, 0 deleted rows shown
+--     without it   Seq Scan,    884 buffers, 11.995 ms, 491 deleted rows shown
+--
+-- so forgetting it is a correctness failure AND a twelve-fold cost, and the
+-- second one is the half a reviewer will notice.
+--
+-- ASCENDING ONLY, both directions served. A btree scans backwards, and
+-- organisation_id is pinned by equality, so `order by updated_at desc, id
+-- desc` uses the same index -- verified rather than assumed: the plan reads
+-- `Index Scan Backward using contacts_org_updated_at_id_live_idx`, 0.451 ms.
+-- A second DESC index would be dead weight.
+--
+-- ===========================================================================
+-- WHAT ABOUT contacts_name_trgm_idx? IT IS NOT USED, AND THAT IS MEASURED
+-- ===========================================================================
+-- The Task 3 brief says search is "trigram-backed on the entity's name column.
+-- The indexes exist (20260827232510)". The index exists; no query the
+-- application can make chooses it.
+--
+--   as `authenticated`, RLS applied, `name ilike '%kaur%'` ordered and limited:
+--     default settings                 Seq Scan                   24.010 ms
+--     enable_seqscan = off             Index Scan on
+--                                      contacts_organisation_id_idx 31.449 ms
+--     enable_seqscan + indexscan off   BitmapAnd on
+--                                      contacts_organisation_id_idx 25.909 ms
+--
+--   the same statement as `postgres`, where no policy applies:
+--     Bitmap Index Scan on contacts_name_trgm_idx                   1.348 ms
+--
+-- So the trigram index is usable in principle and unreachable in practice for
+-- this query shape once RLS is on -- three separate plan-forcing settings and
+-- the planner still never picks it. pg_stat_user_indexes agrees: across every
+-- run above, contacts_name_trgm_idx recorded exactly one scan, the `postgres`
+-- one.
+--
+-- The mechanism is NOT asserted here. Whether it is the security-qual
+-- ordering, the cost of combining a bitmap with a qual that must be applied
+-- first, or something else, was not established, and this phase has been
+-- bitten three times by comments that stated a mechanism instead of a
+-- measurement. What IS established is the outcome and the remedy: with the
+-- btree below the same search runs in 1.079 ms as an Index Only Scan, because
+-- the index supplies the ordering for free and the ILIKE becomes a cheap
+-- filter over one tenant's entries.
+--
+-- contacts_name_trgm_idx is left in place. It was created for Task 6's dedup
+-- lookup, which has no ORDER BY and a different predicate, and nothing here
+-- has measured that shape.
+--
+-- ===========================================================================
+-- THE RULE FOR TASK 4, AND FOR EVERY LIST AFTER IT
+-- ===========================================================================
+-- Companies, artists, agencies and venues all get a list in Task 4, and every
+-- one of them needs its own pair of these. The rule, stated so it can be
+-- checked rather than remembered:
+--
+--   A COLUMN MAY BE IN A LIST'S SORT ALLOWLIST ONLY IF IT IS `NOT NULL` AND
+--   HAS A MATCHING (organisation_id, <column>, id) include (owner_user_id)
+--   where deleted_at is null INDEX.
+--
+-- NOT NULL because keyset pagination compares against the column and every
+-- comparison with NULL is NULL, so a nullable sort column silently drops a
+-- contiguous band of rows out of the middle of the list. `contacts.email` is
+-- the tempting mistake and is deliberately not sortable.
+--
+-- lib/list/spec.ts makes both halves of that rule a required field on every
+-- sort option (`notNull` and `backedBy`, the index's name), so adding a sort
+-- without an index is something an author has to write down rather than
+-- something they can omit.
+
+create index contacts_org_name_id_live_idx
+  on public.contacts (organisation_id, name, id)
+  include (owner_user_id)
+  where deleted_at is null;
+
+comment on index public.contacts_org_name_id_live_idx is
+  'Contacts list, default sort. (organisation_id, name, id) so the keyset tie-break is part of the range; include(owner_user_id) so the RLS record-scope term is answerable without a heap fetch; partial on deleted_at is null because RLS does not hide soft-deleted rows and the query must. Page one of a 25,000-row tenant: 13.575 ms Seq Scan + sort before, 1.015 ms Index Scan after. Adding a sort column to lib/crm/contacts-list.ts without a matching index reinstates the Seq Scan.';
+
+create index contacts_org_updated_at_id_live_idx
+  on public.contacts (organisation_id, updated_at, id)
+  include (owner_user_id)
+  where deleted_at is null;
+
+comment on index public.contacts_org_updated_at_id_live_idx is
+  'Contacts list, "recently updated" sort. Ascending only: a btree scans backwards and organisation_id is pinned by equality, so `order by updated_at desc, id desc` plans as Index Scan Backward on this index (0.451 ms) -- a second DESC index would be dead weight. updated_at is maintained by the trigger in 20260828121500 and is NOT client-writable, which is what makes it safe to sort on.';
