@@ -522,15 +522,31 @@ export async function restoreContactAction(
  * `.eq("organisation_id", org.id)` for the same reason.
  *
  * ===========================================================================
- * AND NEITHER OF THEM ASKS WHETHER THE RECORD IS DELETED
+ * AND ONLY ONE OF THEM ASKS WHETHER THE RECORD IS DELETED
  * ===========================================================================
- * `deleted_at` is deliberately NOT in the policies -- design note (g): RLS
- * does not hide a soft-deleted row, because restore has to be able to read it.
- * The detail route serves deleted records for exactly that reason, and it
- * rendered the whole link panel next to the "Deleted" notice. Reproduced in a
- * browser: a soft-deleted contact's primary company was changed, and the write
- * applied. `updateContactAction` refuses the same record with
- * `.is("deleted_at", null)` and the edit route says so; these three did not.
+ * The defect: the detail route serves deleted records on purpose (restore has
+ * to be reachable) and it rendered the whole link panel next to the "Deleted"
+ * notice. Reproduced in a browser -- a soft-deleted contact's primary company
+ * was changed and the write applied. `updateContactAction` refuses the same
+ * record with `.is("deleted_at", null)`; these three did not.
+ *
+ * WHAT IS BEHIND THIS CHECK, EXACTLY, AND WHAT IS NOT:
+ *
+ *   * THE CONTACT END IS ENFORCED BY THE DATABASE. 20260828235000 adds
+ *     `p.deleted_at is null` to the three `contact_companies_*_via_contact`
+ *     write policies, so a direct PostgREST PATCH by a member with
+ *     'manage_contacts' and the anon key is refused too. Measured at S28.
+ *     The first fix round argued a policy term was impossible here on design
+ *     note (g); (g) is about SELECT on the row being restored, and restoring
+ *     a contact does not touch this table. That reason was wrong.
+ *
+ *   * THE COMPANY END IS THIS FILE AND NOTHING ELSE. A `companies.deleted_at`
+ *     term in the policy would have to read the company row as the caller,
+ *     and under Q5 a record-scoped user may link their own contact to a
+ *     company they cannot see -- so "deleted" would collapse into "invisible"
+ *     and refuse a legitimate write. Left open deliberately, measured at S28b,
+ *     and the reason is in 20260828235000's header. Delete the company half of
+ *     this check and nothing catches it.
  *
  * Read through the CALLER'S OWN client, so this is not a privileged existence
  * check: a record outside the caller's scope returns nothing here and would
@@ -717,9 +733,11 @@ export async function setPrimaryCompanyAction(
   // so the workspace half is a second lock rather than the only one -- but it
   // is what makes the refusal a sentence instead of a raised 42501, and it
   // stops revalidatePath() being handed this workspace's slug for a write
-  // aimed at another one's row. The soft-delete half has no counterpart in the
-  // database at all: `deleted_at` is deliberately absent from the policies so
-  // restore can read the row.
+  // aimed at another one's row. The soft-delete half now HAS a counterpart for
+  // the CONTACT -- 20260828235000 put `deleted_at is null` into the three
+  // contact_companies write policies, and this RPC is SECURITY INVOKER so they
+  // decide both of its statements. For the COMPANY it still has none, by Q5.
+  // See liveInOrg().
   //
   // A NULL companyId IS "CLEAR THE PRIMARY", which names no company, so only
   // the contact is checked on that path.

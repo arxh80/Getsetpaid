@@ -118,18 +118,20 @@ describe("loadLinkOptions does not offer soft-deleted records", () => {
 });
 
 describe("the join actions refuse a soft-deleted end (M-1)", () => {
-  // `deleted_at` is deliberately ABSENT from the RLS policies -- design note
-  // (g): RLS must not hide a soft-deleted row, because restore has to read it.
-  // So there is nothing behind these three checks, and the review proved it by
-  // changing a soft-deleted contact's primary company from the panel. S28 in
-  // rls_phase2_crm.sql asserts the database really does permit the write, so
-  // that the application being the only control is a measured fact rather than
-  // an assumption.
+  // TWO ENDS, TWO DIFFERENT AMOUNTS OF BACKING, and that is the reason this
+  // block is worth its noise:
+  //
+  //   contact -- ALSO enforced by the database since 20260828235000
+  //              (`p.deleted_at is null` in the three contact_companies write
+  //              policies). S28 in rls_phase2_crm.sql measures the refusal.
+  //   company -- THIS FILE'S ASSERTIONS ARE THE ONLY THING GUARDING IT. A
+  //              policy term there would collapse "deleted" into "invisible"
+  //              for a record-scoped caller under Q5, so it is deliberately
+  //              absent; S28b measures the database still saying yes.
   //
   // A source assertion because a Server Action is not drivable from a node
   // test in this repository (tests/unit is pure functions only, by the config's
-  // own rule) and the DATABASE cannot be asked -- it would answer "allowed".
-  // The behavioural half is the browser walk in the fix report.
+  // own rule). The behavioural half is the browser walk in the fix report.
   const contacts = read("lib/crm/contacts.ts");
 
   function actionBody(name: string): string {

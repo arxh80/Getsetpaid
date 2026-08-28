@@ -3120,24 +3120,54 @@ select crm.val('S26 the companies list indexes named by backedBy exist',
                          'companies_org_updated_at_id_live_idx')$$, '2');
 
 -- --------------------------------------------------------------------------
--- S28. WHERE THE SOFT-DELETE CHECK ON THE JOIN ACTUALLY LIVES.
+-- S28 / S28b. WHERE THE SOFT-DELETE CHECK ON THE JOIN ACTUALLY LIVES.
 --
--- `deleted_at` is deliberately NOT a term in any policy -- design note (g),
--- asserted at S13: RLS must not hide a soft-deleted row, because restore has
--- to be able to read it. The consequence is that the DATABASE permits a write
--- to the links of a deleted contact, and the Task 4 review used the product's
--- own panel to change a soft-deleted contact's primary company.
+-- IT MOVED. Until 20260828235000 this assertion read "the DATABASE still
+-- permits a link write on a DELETED contact -- app-side only", expecting
+-- ok(1), and the comment above it argued that design note (g) made a policy
+-- term impossible. Note (g) is about SELECT on the row being restored; the
+-- rule needed here is a WRITE predicate on a different table, and restoring a
+-- contact never touches contact_companies. So the predicate went in.
 --
--- lib/crm/contacts.ts is the control for this one rule (`liveInOrg`), and this
--- assertion is what stops that being an assumption: it measures the database
--- SAYING YES, so a reader can see there is nothing behind the application
--- check and nobody deletes it thinking a policy will catch it. The contact is
--- soft-deleted here (S21 set it and S27 below restores it).
+-- S28: the CONTACT end is now enforced BY THE POLICY. This is the assertion a
+-- reader should reach for before deciding lib/crm/contacts.ts's `liveInOrg` is
+-- the only thing standing between a soft-deleted record and its links -- it is
+-- not, for the contact. The contact is soft-deleted here (S21 set it, S27
+-- below restores it), and the same statement returned ok(1) before the
+-- migration.
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select crm.try('S28 the DATABASE still permits a link write on a DELETED contact -- app-side only',
+select crm.try('S28 the DATABASE REFUSES a link write on a DELETED contact',
   $$update public.contact_companies set is_primary = is_primary
-     where contact_id='22220000-0000-0000-0000-0000000000a2'$$, 'ok(1)');
+     where contact_id='22220000-0000-0000-0000-0000000000a2'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+
+-- S28b. THE OTHER END, AND WHY IT IS DELIBERATELY STILL OPEN.
+--
+-- The product rule (lib/crm/contacts.ts) is BOTH ENDS LIVE. The policy
+-- enforces the contact half only. A `companies.deleted_at is null` term would
+-- have to READ THE COMPANY ROW as the caller, and under Q5 a record-scoped
+-- user may legitimately link their own contact to a company they cannot see --
+-- so "deleted" and "invisible" would collapse into one refusal and break the
+-- case the schema deliberately permits. The company end therefore stays
+-- application-only, and this assertion is what stops that being an assumption:
+-- it measures the database SAYING YES so nobody deletes the application check
+-- thinking a policy will catch it.
+--
+-- Contact a1 is LIVE and owned by pstd1; company a3 is soft-deleted here and
+-- restored two statements later, so the fixture is left exactly as found.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('S28b setup: a manager soft-deletes S Co Three',
+  $$update public.companies set deleted_at = pg_catalog.now()
+     where id='11110000-0000-0000-0000-0000000000a3' and deleted_at is null$$, 'ok(1)');
+select crm.try('S28b the DATABASE still PERMITS a link write whose only deleted end is the COMPANY -- app-side only, by Q5',
+  $$update public.contact_companies set is_primary = is_primary
+     where contact_id='22220000-0000-0000-0000-0000000000a1'
+       and company_id='11110000-0000-0000-0000-0000000000a3'$$, 'ok(1)');
+select crm.try('S28b teardown: ...and restoring the company puts it back',
+  $$update public.companies set deleted_at = null
+     where id='11110000-0000-0000-0000-0000000000a3' and deleted_at is not null$$, 'ok(1)');
 reset role; reset request.jwt.claims;
 
 -- Leave the fixture as section R left it, so a later section (there is none
