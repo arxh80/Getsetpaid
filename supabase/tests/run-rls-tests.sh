@@ -598,13 +598,30 @@ echo "=== Read-only suspension at the API surface (Q6 / Task 3a) ==="
 #      check is not measuring what its name says -- which is exactly the
 #      discipline the psql suite's P2q/P2r already carry and this block did not.
 #
-# AND THE MECHANISM THAT MAKES A PATCH READABLE AT ALL (review M-3). A PATCH
-# refused by a USING clause matches no rows and PostgREST answers 204 No
-# Content -- byte-identical to a PATCH that changed fifteen rows. `Prefer:
-# return=representation` turns both into a 200 with a JSON array whose LENGTH is
-# the number of rows actually written, which is the only thing at the network
-# layer that separates an applied write from an accepted no-op. It is asserted
-# here because it is what Task 4's save path has to send.
+# AND THE MECHANISM THAT MAKES A PATCH READABLE AT ALL (review M-3, corrected
+# by re-review I-A). A PATCH refused by a USING clause matches no rows and
+# PostgREST answers 204 No Content -- byte-identical, IN THE STATUS LINE, to a
+# PATCH that changed fifteen rows.
+#
+# THE ROW COUNT IS IN THE `Content-Range` RESPONSE HEADER AND IS NEVER IN THE
+# STATUS CODE. Fix round 1 measured only the status code, concluded that
+# `Prefer: count=exact` "does not distinguish them (still 204)", and wrote that
+# into four places. It is false. Measured on this stack, same caller, same
+# PATCH, live then suspended:
+#
+#   no Prefer header at all   204   Content-Range: 0-14/*   vs   */*
+#   Prefer: count=exact       204   Content-Range: 0-14/15  vs   */0
+#   Prefer: return=represent. 200   6056 bytes of body      vs   2 bytes ([])
+#
+# So there are THREE mechanisms, in increasing cost, and all three work:
+#   1. nothing at all -- the RANGE part alone separates them (`0-14` vs `*`);
+#   2. `Prefer: count=exact` -- makes the TOTAL explicit (`/15` vs `/0`), still
+#      a 204 with an empty body. This is the cheap, correct default;
+#   3. `Prefer: return=representation` -- also works and returns `[]`, but
+#      downloads every mutated row on every save to learn a number the header
+#      already carried.
+# All three are asserted below, against a live control, because Task 4's save
+# path has to send one of them and should send the cheapest that works.
 #
 # NOTE ON ORDERING: the elevation happens HERE and not earlier, because
 # verifying a user's first TOTP factor revokes their other sessions, and the
@@ -660,6 +677,49 @@ p2_written() { # name want_rows METHOD path body token
   else printf '  FAIL  %-58s got %s want %s\n' "$name" "$n" "$want"; api_fails=$((api_fails+1)); fi
 }
 
+# NOTE on the `|| true` inside the two helpers below: a refused write can answer
+# 403 with NO Content-Range header at all, and under `set -o pipefail` a grep
+# that matches nothing would abort the whole run instead of failing one check.
+# An empty $cr is a FAILURE here, not a crash -- which is what lets the mutation
+# runs in task-3a-fix-2-report.md report the rest of the suite.
+p2_range_shape() { # name want(rows|none) METHOD path body token
+  # NO Prefer header at all. The RANGE half of Content-Range is `first-last`
+  # when rows were written and a bare `*` when none were, so even the default
+  # request already separates the two cases. Asserted as a SHAPE rather than a
+  # literal range so it does not hardcode the fixture size.
+  local name="$1" want="$2" method="$3" path="$4" body="$5" tok="$6" cr half got
+  local args=(-s -D - -o /dev/null -X "$method" "$API/rest/v1/$path"
+      -H "apikey: $ANON" -H "Authorization: Bearer $tok"
+      -H "Content-Type: application/json")
+  [ -n "$body" ] && args+=(-d "$body")
+  cr=$(curl "${args[@]}" | tr -d '\r' | grep -i '^content-range:' | head -1 \
+       | sed 's/^[Cc]ontent-[Rr]ange:[[:space:]]*//' || true)
+  half="${cr%%/*}"
+  if [ "$half" = "*" ]; then got=none; else got=rows; fi
+  if [ "$got" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "Content-Range: $cr"
+  else printf '  FAIL  %-58s got "%s" (%s) want %s\n' "$name" "$cr" "$got" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+p2_range_written() { # name want_total METHOD path body token -- count=exact
+  # Only the TOTAL after the slash, so it does not hardcode a fixture size on
+  # the live side.
+  local name="$1" want="$2" method="$3" path="$4" body="$5" tok="$6" cr n
+  local args=(-s -D - -o /dev/null -X "$method" "$API/rest/v1/$path"
+      -H "apikey: $ANON" -H "Authorization: Bearer $tok"
+      -H "Content-Type: application/json" -H "Prefer: count=exact")
+  [ -n "$body" ] && args+=(-d "$body")
+  cr=$(curl "${args[@]}" | tr -d '\r' | grep -i '^content-range:' | head -1 \
+       | sed 's/^[Cc]ontent-[Rr]ange:[[:space:]]*//' || true)
+  n="${cr##*/}"
+  if [ "$want" = ">=1" ]; then
+    if [ "${n:-0}" -ge 1 ] 2>/dev/null
+    then printf '  PASS  %-58s %s\n' "$name" "count=exact total $n (Content-Range: $cr)"; return; fi
+  elif [ "$n" = "$want" ]; then
+    printf '  PASS  %-58s %s\n' "$name" "count=exact total $n (Content-Range: $cr)"; return
+  fi
+  printf '  FAIL  %-58s got "%s" want "%s"\n' "$name" "$cr" "$want"; api_fails=$((api_fails+1))
+}
+
 OWN2=$(p2_totp_elevate "$OWN")
 own2_aal=$(p2_aal "$OWN2")
 if [ "$own2_aal" = "aal2" ]; then
@@ -694,6 +754,11 @@ else
   printf '  FAIL  %-58s got %s want >=1\n' "LIVE CONTROL: manager PATCHes contacts" "$live_patched"
   api_fails=$((api_fails+1))
 fi
+# The same write, read out of the header rather than a body (re-review I-A).
+p2_range_written "LIVE CONTROL: count=exact reports the rows written" ">=1" PATCH \
+        "contacts?organisation_id=eq.$ALPHA_ORG" '{"title":"live patch"}' "$MGR"
+p2_range_shape "LIVE CONTROL: and with NO Prefer header the range is not '*'" rows PATCH \
+        "contacts?organisation_id=eq.$ALPHA_ORG" '{"title":"live patch"}' "$MGR"
 
 # Every count here is compared against the same request made moments earlier
 # with the organisation live, so nothing is hardcoded against a fixture size.
@@ -744,6 +809,12 @@ p2_code "SUSPENDED: aal1 owner POSTs a venue (MFA refuses this when live too)" \
 p2_code "SUSPENDED: manager PATCHes a contact -> silent 204, not 403" 204 PATCH \
         "contacts?organisation_id=eq.$ALPHA_ORG&limit=1" \
         "{\"title\":\"suspended patch\"}" "$MGR"
+# The three mechanisms, cheapest first. Re-review I-A: fix round 1 asserted only
+# the third and told Task 4 it was the only one that worked.
+p2_range_shape "SUSPENDED: ...and with NO Prefer header the range IS '*'" none PATCH \
+        "contacts?organisation_id=eq.$ALPHA_ORG" '{"title":"suspended patch"}' "$MGR"
+p2_range_written "SUSPENDED: ...and count=exact reports the 0, not the live count" 0 PATCH \
+        "contacts?organisation_id=eq.$ALPHA_ORG" '{"title":"suspended patch"}' "$MGR"
 p2_written "SUSPENDED: ...and return=representation shows the 0" 0 PATCH \
         "contacts?organisation_id=eq.$ALPHA_ORG" '{"title":"suspended patch"}' "$MGR"
 
@@ -756,6 +827,19 @@ p2_written "SUSPENDED: ...and 0 rows were written (LIVE wrote 1)" 0 PATCH \
         "organisations?id=eq.$ALPHA_ORG" "{\"deleted_at\":null}" "$OWN2"
 p2_written "SUSPENDED: nor can the aal2 owner rename it (LIVE wrote 1)" 0 PATCH \
         "organisations?id=eq.$ALPHA_ORG" "{\"name\":\"Renamed While Suspended\"}" "$OWN2"
+
+# THE FOUR ENDPOINTS THE ROUND-1 CENSUS MISSED (re-review M-A). Its list of
+# twelve was labelled "every mutating endpoint the Phase 2 tables expose today"
+# and it is sixteen. These four are the difference; they are asserted here so
+# the number cannot drift back into being a claim nobody runs.
+p2_range_written "SUSPENDED: PATCH artist_fee_history writes 0"     0 PATCH \
+        "artist_fee_history?organisation_id=eq.$ALPHA_ORG"     '{"note":"x"}'         "$OWN2"
+p2_range_written "SUSPENDED: PATCH artist_representations writes 0" 0 PATCH \
+        "artist_representations?organisation_id=eq.$ALPHA_ORG" '{"territory":"x"}'    "$OWN2"
+p2_range_written "SUSPENDED: PATCH contact_companies writes 0"      0 PATCH \
+        "contact_companies?organisation_id=eq.$ALPHA_ORG"      '{"is_primary":false}' "$MGR"
+p2_range_written "SUSPENDED: DELETE organisation_memberships writes 0" 0 DELETE \
+        "organisation_memberships?organisation_id=eq.$ALPHA_ORG&role=eq.read_only" '' "$OWN2"
 susp_still=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
   "select (deleted_at is not null)::text from public.organisations where id='$ALPHA_ORG'" \
   | tr -d '[:space:]')
@@ -781,6 +865,16 @@ p2_code "REINSTATED: the same contact POST is allowed again" 201 POST "contacts"
         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"reinstated contact\"}" "$MGR"
 p2_code "REINSTATED: the same aal2 owner venue POST is allowed again" 201 POST "venues" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"reinstated venue\"}" "$OWN2"
+# The live controls for the four M-A endpoints. Without these, "writes 0 while
+# suspended" is satisfied by an endpoint that writes 0 in every state.
+p2_range_written "REINSTATED: PATCH artist_fee_history writes rows again"     ">=1" PATCH \
+        "artist_fee_history?organisation_id=eq.$ALPHA_ORG"     '{"note":"y"}'        "$OWN2"
+p2_range_written "REINSTATED: PATCH artist_representations writes rows again" ">=1" PATCH \
+        "artist_representations?organisation_id=eq.$ALPHA_ORG" '{"territory":"y"}'   "$OWN2"
+p2_range_written "REINSTATED: PATCH contact_companies writes rows again"      ">=1" PATCH \
+        "contact_companies?organisation_id=eq.$ALPHA_ORG"      '{"is_primary":false}' "$MGR"
+p2_range_written "REINSTATED: DELETE organisation_memberships writes rows again" ">=1" DELETE \
+        "organisation_memberships?organisation_id=eq.$ALPHA_ORG&role=eq.read_only" '' "$OWN2"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

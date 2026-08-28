@@ -560,9 +560,12 @@ These become live the moment a real tenant table exists.
   on a `read_only` PATCH, a `read_only` DELETE and a cross-tenant PATCH. Nothing
   changes, so it is secure, but Foundation's design note (c) calls a
   silently-zero-row write "worse than one that just fails" and every screen from
-  Task 3 on will hit it. **Every mutation must send `Prefer:
-  return=representation` (or `count=exact`) and treat a zero-row result as a
-  denial, not a success.** The two CRM `DELETE` policies are the worst case: a
+  Task 3 on will hit it. **Every mutation must ask for the row count and treat
+  zero as a denial, not a success** — `Prefer: count=exact` is the cheap way
+  (the count is in the `Content-Range` header, never in the status code);
+  `Prefer: return=representation` also works and costs a full body. See § "Task
+  3/4" item 5 for the measurement and the sixteen endpoints this applies to.
+  The two CRM `DELETE` policies are the worst case: a
   DELETE policy has no `WITH CHECK`, so the entitlement term has to live in
   `USING` and an unentitled delete is necessarily a silent zero-row result.
 - **`custom_field_definitions.field_type` is mutable while values exist —
@@ -638,33 +641,83 @@ These become live the moment a real tenant table exists.
   4. The switcher renders the suspended workspace with a read-only marker
      rather than dropping it — dropping it hides a workspace the user still has
      lawful read access to, which is the outcome Q6 exists to prevent.
-  5. **`Prefer: return=representation` on every mutating request, and treat an
-     empty array as a failed write.** Item 3 is necessary and not sufficient:
-     PostgREST is reachable from the browser with the anon key regardless of
-     what the UI disables, so the save path — not only the button — has to be
-     able to tell an applied write from an accepted no-op. It cannot today. A
-     PATCH refused by a USING clause matches no rows and PostgREST answers
-     **204 No Content**, byte-identical to a PATCH that changed fifteen rows:
+  5. **Check the row count on every mutating request, and treat zero as a
+     failed write.** Item 3 is necessary and not sufficient: PostgREST is
+     reachable from the browser with the anon key regardless of what the UI
+     disables, so the save path — not only the button — has to be able to tell
+     an applied write from an accepted no-op. It cannot today. A PATCH refused
+     by a USING clause matches no rows and PostgREST answers **204 No Content**,
+     byte-identical *in the status line* to a PATCH that changed fifteen rows:
 
      ```
        LIVE:      manager PATCHes contacts   204   (15 rows changed)
        SUSPENDED: manager PATCHes contacts   204   ( 0 rows changed)
      ```
 
-     `Prefer: count=exact` does NOT distinguish them (still 204).
-     `Prefer: return=representation` does — `200` with a JSON array whose length
-     is the number of rows actually written. Both measurements are now asserted
-     in `run-rls-tests.sh` ("…and return=representation shows the 0", against a
-     live control that writes 14).
+     **The row count is in the `Content-Range` response header, and it is never
+     in the status code.** Fix round 1 measured only the status line, concluded
+     that `Prefer: count=exact` "does NOT distinguish them (still 204)", and
+     wrote that into four places. It is false — corrected here in fix round 2
+     after the re-review measured it. Same caller, same PATCH, live then
+     suspended, on the local stack:
 
-     **This is TWELVE endpoints, not one — and not the nine the Task 3a review
-     counted; I re-measured rather than copying the number.** In a suspended
-     workspace, all 204: `PATCH` on `contacts`, `companies`, `venues`,
-     `artists`, `agencies`, `venue_rooms`, `custom_field_values`,
-     `custom_field_definitions`, `organisation_memberships` and `organisations`;
-     `DELETE` on `contact_companies` and `custom_field_values`. Treat that list
-     as a floor, not a census: it is every mutating endpoint the Phase 2 tables
-     expose today, and Phase 3 adds more.
+     ```
+       no Prefer header      204   Content-Range: 0-14/*    vs   */*
+       count=exact           204   Content-Range: 0-14/15   vs   */0
+       return=representation 200   6056 bytes of body       vs   2 bytes ([])
+     ```
+
+     Three mechanisms, all of which work, in increasing cost:
+
+     1. **Nothing at all.** The *range* half of `Content-Range` is `first-last`
+        when rows were written and a bare `*` when none were. Free, but it is
+        the shape rather than the number, and a `DELETE` reports `*/n` — range
+        `*` with a real total — so this one does not generalise across verbs.
+     2. **`Prefer: count=exact`** — the total after the slash *is* the number of
+        rows written (`/15` versus `/0`). Still a 204 with an empty body. In the
+        pinned supabase-js (2.112.4) this is `.update(values, { count: 'exact' })`
+        and `.delete({ count: 'exact' })`, and the count arrives on the result
+        object — measured through the client library, not only over curl:
+
+        ```
+          LIVE       status=204 count=15 data=null error=null
+          LIVE       DELETE status=204 count=1
+          SUSPENDED  status=204 count=0  data=null error=null
+          SUSPENDED  DELETE status=204 count=0
+        ```
+
+        Note `error` is `null` and `status` is `204` in **both** rows: the only
+        thing that differs is `count`. **This is the right default for a save
+        path**, and `count === 0` is the failed-write signal.
+     3. **`Prefer: return=representation`** (`.select()` in supabase-js) — also
+        works, returns `[]` on a refused write, and costs a full body on every
+        save: 6056 bytes for fifteen contacts, against 0 for the header that
+        carries the same fact. Use it when the save path *wants* the written row
+        back (server defaults, triggers, `updated_at`), not to learn a count.
+
+     All three are asserted in `run-rls-tests.sh` against a live control.
+
+     **The rule, rather than a list, because a list cannot stay correct: every
+     PostgREST `PATCH` and `DELETE` answers 204 on no-match, so the count has to
+     be checked on all of them.** As of today that is **sixteen** endpoints, not
+     the twelve fix round 1 called "every mutating endpoint the Phase 2 tables
+     expose today" and not the nine the Task 3a review counted. Derived from
+     `pg_policies` (every `public` table carrying an UPDATE or DELETE policy a
+     member can reach) and then each one measured over HTTP in a suspended
+     workspace — all sixteen `204` with `Content-Range: */0`:
+
+     - `PATCH` on `contacts`, `companies`, `venues`, `artists`, `agencies`,
+       `venue_rooms`, `custom_field_values`, `custom_field_definitions`,
+       `organisation_memberships`, `organisations`, **`artist_fee_history`**,
+       **`artist_representations`**, **`contact_companies`** — thirteen;
+     - `DELETE` on `contact_companies`, `custom_field_values`,
+       **`organisation_memberships`** — three.
+
+     (`profiles` and `organisation_subscriptions` also carry UPDATE policies and
+     are deliberately not in the list: `profiles` is user-scoped rather than
+     organisation-scoped, and `organisation_subscriptions` UPDATE is the
+     platform-billing path, not a member surface.) Phase 3 adds more, so treat
+     the list as today's derivation and the rule as the thing to implement.
 
      **It is not a defect Task 3a introduced.** 204-on-no-match is generic
      PostgREST behaviour — a PATCH at an id that does not exist, or at another

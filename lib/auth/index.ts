@@ -192,8 +192,8 @@ export const getCurrentOrg = cache(
     // and the Task 3a review MEASURED how much worse, which corrects what this
     // comment used to say. The failure mode is not "every write would 403". An
     // INSERT is a loud 403; an UPDATE is refused by the USING clause, matches no
-    // rows, and PostgREST answers 204 NO CONTENT -- byte-identical to a PATCH
-    // that changed fifteen rows:
+    // rows, and PostgREST answers 204 NO CONTENT -- byte-identical IN THE STATUS
+    // LINE to a PATCH that changed fifteen rows:
     //
     //     LIVE:      manager PATCHes contacts   204   (15 rows changed)
     //     SUSPENDED: manager PATCHes contacts   204   ( 0 rows changed)
@@ -204,13 +204,30 @@ export const getCurrentOrg = cache(
     //
     // The fix is an `isSuspended` flag on the returned object plus a read-only
     // banner and disabled write controls, scoped to Task 4 and specified in
-    // FOLLOW-UPS.md § "Phase 3 -- events" (five items). ITEM 5 IS THE ONE THIS
-    // COMMENT EXISTS FOR: the save path must send `Prefer:
-    // return=representation` on every mutating request and treat an empty array
-    // as a failed write, because that is the only thing at the network layer
-    // that separates an applied write from an accepted no-op. `Prefer:
-    // count=exact` does NOT -- still 204, measured. Disabling the button is not
-    // enough: PostgREST is reachable from the browser with the anon key
+    // FOLLOW-UPS.md § "Task 3/4" (five items). ITEM 5 IS THE ONE THIS COMMENT
+    // EXISTS FOR: the save path must ask for the ROW COUNT on every mutating
+    // request and treat zero as a failed write.
+    //
+    // THE COUNT IS IN THE `Content-Range` RESPONSE HEADER AND IS NEVER IN THE
+    // STATUS CODE. An earlier version of this comment said `Prefer: count=exact`
+    // "does NOT [distinguish them] -- still 204, measured", and that
+    // `return=representation` was "the only thing at the network layer" that
+    // did. Both halves were wrong: the measurement looked at the status line
+    // only. Re-measured, same caller, same PATCH, live then suspended:
+    //
+    //     no Prefer header      204   Content-Range: 0-14/*    vs  */*
+    //     count=exact           204   Content-Range: 0-14/15   vs  */0
+    //     return=representation 200   6056 bytes of body       vs  2 bytes ([])
+    //
+    // and through supabase-js itself, `.update(values, { count: 'exact' })`:
+    //
+    //     LIVE       status=204 count=15 data=null error=null
+    //     SUSPENDED  status=204 count=0  data=null error=null
+    //
+    // `count === 0` is the signal. Prefer that over `return=representation`,
+    // which works too but downloads every mutated row on every save to learn a
+    // number the header already carried. Disabling the button is not enough
+    // either way: PostgREST is reachable from the browser with the anon key
     // regardless of what the UI renders.
     //
     // Do not delete this line without shipping that in the same change.
