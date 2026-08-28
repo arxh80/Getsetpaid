@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 // that have not been built yet. So the stored-bad-value-on-the-way-OUT case is
 // tested first and hardest.
 
-const { safeHref, hasUnsafeScheme, normaliseWebsite, parseSocials } =
+const { safeHref, hasUnsafeScheme, normaliseWebsite, parseSocials, mergeSocials } =
   await import("@/lib/crm/urls");
 
 // The evasions, written with escapes rather than literal control characters --
@@ -176,5 +176,54 @@ describe("parseSocials", () => {
     expect(parseSocials("string")).toEqual([]);
     expect(parseSocials([1, 2])).toEqual([]);
     expect(parseSocials(undefined)).toEqual([]);
+  });
+});
+
+describe("mergeSocials: an edit must not destroy a key the form never showed", () => {
+  // I-1. `parseSocials` preserved unknown keys on READ and the comment on
+  // SOCIAL_PLATFORMS said so; the write path then built a fresh object from
+  // the six form keys and wrote it over the column. Reproduced in a browser
+  // against a planted row: editing `instagram` deleted `mixcloud`, silently,
+  // with no undo and no audit row.
+
+  it("keeps a stored key the form has no input for", () => {
+    // The exact fixture from the review: an imported row, one field edited.
+    expect(
+      mergeSocials(
+        { mixcloud: "https://mixcloud.com/keepme", instagram: "@old" },
+        { instagram: "@ok" },
+      ),
+    ).toEqual({ mixcloud: "https://mixcloud.com/keepme", instagram: "@ok" });
+  });
+
+  it("CLEARS a known platform the user emptied, rather than reverting it", () => {
+    // The other half, and the one a naive `{ ...stored, ...submitted }` gets
+    // wrong: an emptied input submits nothing, so the key is absent from the
+    // submission -- and absent must mean cleared for the six the form owns.
+    expect(mergeSocials({ instagram: "@old", mixcloud: "@keep" }, {})).toEqual({
+      mixcloud: "@keep",
+    });
+  });
+
+  it("adds a platform that was not stored before", () => {
+    expect(mergeSocials({}, { x: "@new" })).toEqual({ x: "@new" });
+  });
+
+  it("takes an empty stored column, a null one, and a malformed one", () => {
+    // `jsonb_typeof(socials) = 'object'` is the whole constraint, and rows
+    // predating it exist by assumption.
+    expect(mergeSocials(null, { x: "@a" })).toEqual({ x: "@a" });
+    expect(mergeSocials(undefined, { x: "@a" })).toEqual({ x: "@a" });
+    expect(mergeSocials("not an object", { x: "@a" })).toEqual({ x: "@a" });
+    expect(mergeSocials([1, 2], { x: "@a" })).toEqual({ x: "@a" });
+  });
+
+  it("does not carry a stored NON-STRING through into the column", () => {
+    // Same rule parseSocials applies on the way out: a number or a nested
+    // object is not a handle. Carrying it would re-store a value no screen can
+    // render.
+    expect(mergeSocials({ a: 1, b: null, c: [], keep: "@k" }, {})).toEqual({
+      keep: "@k",
+    });
   });
 });

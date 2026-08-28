@@ -180,9 +180,18 @@ export function normaliseWebsite(raw: string | null): WebsiteResult {
  * 20260827232510 chose jsonb precisely so the set could change without a
  * migration. Both are right: the SCHEMA stays open so tomorrow's platform
  * costs nothing, and the FORM stays closed so today's keys are consistent
- * enough to filter and display. A key arriving from an import that is not on
- * this list is still stored and still rendered -- `parseSocials` preserves
- * unknown keys rather than dropping the user's data.
+ * enough to filter and display.
+ *
+ * A KEY THAT IS NOT ON THIS LIST SURVIVES BOTH DIRECTIONS, and the second
+ * half of that sentence was FALSE when it was first written. `parseSocials`
+ * preserved unknown keys on READ, and the previous version of this comment
+ * stopped there -- but `updateContactAction` then wrote a fresh object built
+ * by iterating this list alone, straight over the column. Reproduced in a
+ * browser: a row imported with `mixcloud` rendered its link on the detail
+ * page, the edit form had no input for it, and the first save of any other
+ * field destroyed it silently and permanently. The write path now merges
+ * through `mergeSocials()` below; this comment is only true because that
+ * function exists.
  */
 export const SOCIAL_PLATFORMS = [
   { key: "instagram", label: "Instagram" },
@@ -194,6 +203,59 @@ export const SOCIAL_PLATFORMS = [
 ] as const;
 
 export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number]["key"];
+
+/**
+ * What to STORE in `socials` after an edit: the submitted six, over the top of
+ * whatever was already there.
+ *
+ * ===========================================================================
+ * WHY THIS IS A MERGE AND NOT AN ASSIGNMENT
+ * ===========================================================================
+ * `socials` is a free-form jsonb object and only six of its keys have inputs
+ * on the form. An import, Task 6's merge, or a direct PostgREST call can put
+ * anything else in there -- `mixcloud`, `telegram`, a key that does not exist
+ * yet -- and `parseSocials` deliberately renders all of it. Writing the six
+ * form fields over the whole column therefore DELETES data the user was never
+ * shown, never warned about and cannot recover: there is no undo and field
+ * edits are not audited until Phase 7.
+ *
+ * ===========================================================================
+ * WHY THE SIX ARE AUTHORITATIVE AND EVERYTHING ELSE IS NOT
+ * ===========================================================================
+ * An absent key among the six means CLEARED, not unchanged -- the user emptied
+ * that input on purpose and `field()` turns "" into null, so the submission
+ * has no entry for it. Falling back to the stored value there would make an
+ * emptied social field un-clearable, which is the same defect as the checkbox
+ * group reverting (see `selectedInGroup` in lib/forms.ts). Every OTHER key is
+ * carried through untouched, because the form never offered the user a way to
+ * say anything about it.
+ *
+ * `stored` is read from the database at save time, NOT echoed through a hidden
+ * input: a hidden input is client-supplied and would let a caller rewrite keys
+ * the form does not render, under cover of an ordinary save.
+ *
+ * Pure, so the round trip is a unit test rather than a browser walk.
+ */
+export function mergeSocials(
+  stored: unknown,
+  submitted: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (stored !== null && typeof stored === "object" && !Array.isArray(stored)) {
+    for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+      // Same shape discipline as parseSocials: the column's only CHECK is
+      // `jsonb_typeof(socials) = 'object'`, so a value can be a number, an
+      // array or null. A non-string is not a handle and is not carried.
+      if (typeof value === "string") out[key] = value;
+    }
+  }
+  for (const platform of SOCIAL_PLATFORMS) {
+    const value = submitted[platform.key];
+    if (value === undefined) delete out[platform.key];
+    else out[platform.key] = value;
+  }
+  return out;
+}
 
 export interface SocialEntry {
   readonly key: string;

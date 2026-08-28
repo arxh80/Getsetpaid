@@ -63,7 +63,12 @@ import {
   parseTags,
   type FieldProblem,
 } from "@/lib/crm/validate";
-import { hasUnsafeScheme, normaliseWebsite, SOCIAL_PLATFORMS } from "@/lib/crm/urls";
+import {
+  hasUnsafeScheme,
+  mergeSocials,
+  normaliseWebsite,
+  SOCIAL_PLATFORMS,
+} from "@/lib/crm/urls";
 
 /** The permission key every write below is gated on. */
 const PERMISSION = "manage_contacts";
@@ -175,6 +180,12 @@ function readContact(
   // though: lib/crm/urls.ts's render side is, because PostgREST is reachable
   // from a browser with the anon key and rows predating this file exist by
   // assumption.
+  //
+  // WHAT THIS RETURNS IS THE SIX KEYS THE FORM OWNS, NOT THE WHOLE COLUMN.
+  // `createContactAction` stores it as-is (there is nothing to merge with);
+  // `updateContactAction` puts it through `mergeSocials()` over the stored
+  // object, so a key from an import that the form never rendered is not
+  // destroyed by an unrelated edit.
   const socials: Record<string, string> = {};
   for (const platform of SOCIAL_PLATFORMS) {
     const value = field(formData, `social_${platform.key}`);
@@ -310,6 +321,30 @@ export async function updateContactAction(
 
   const supabase = await createClient();
 
+  // SOCIALS ARE MERGED, NOT REPLACED, and the read that makes that possible is
+  // this one. `socials` is a free-form jsonb object; the form has inputs for
+  // six keys and an import can have written any number of others. Writing the
+  // six over the column destroyed the rest -- silently, permanently, with no
+  // undo and no audit row. See mergeSocials() for the rule.
+  //
+  // Read through the CALLER'S client and filtered by organisation, so this is
+  // not a privileged peek: if the caller cannot read the row, `stored` is
+  // empty and the UPDATE below matches nothing and is reported as refused.
+  const existing = await supabase
+    .from("contacts")
+    .select("socials")
+    .eq("organisation_id", org.id)
+    .eq("id", contactId)
+    .maybeSingle();
+  if (existing.error && existing.error.code !== "22P02") {
+    // A FAILED LOOKUP IS NOT AN EMPTY ONE. Continuing with `{}` here would
+    // turn a transient database error into the exact data loss this read
+    // exists to prevent.
+    console.error("[crm] update contact socials read failed:", existing.error.message);
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
+  const socials = mergeSocials(existing.data?.socials, parsed.values.socials);
+
   const result = await commitWrite(`update contact ${contactId}`, () =>
     supabase
       .from("contacts")
@@ -321,7 +356,7 @@ export async function updateContactAction(
           title: parsed.values.title,
           location: parsed.values.location,
           website: parsed.values.website,
-          socials: parsed.values.socials,
+          socials,
           tags: parsed.values.tags,
         },
         // THE WHOLE POINT. Without this the response is 204/null/null whether
