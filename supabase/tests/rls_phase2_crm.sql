@@ -1273,7 +1273,8 @@ begin
                               else 'nobody -- suspension is a lockout again' end);
 end $$;
 
--- M1c/M1d -- THE SHAPE GUARD BEHIND THE CATALOGUE.
+-- M1c/M1d/M1d2 -- THE SHAPE GUARD BEHIND THE CATALOGUE, READ THROUGH THE
+-- POSTGRES PARSER RATHER THAN OFF THE RAW SOURCE TEXT.
 --
 -- M1 and M1b are behavioural and cannot tell a catalogue lookup from a string
 -- literal that happens to produce the same answers today. The catalogue is the
@@ -1282,85 +1283,139 @@ end $$;
 -- failure is silent and points at a suspended customer losing access.
 --
 -- ===========================================================================
--- REWRITTEN IN TASK 3a FIX ROUND 1 (review findings I-1 and I-2). THE TWO
--- GUARDS THAT SHIPPED HERE WERE BOTH DEFEATABLE, AND WERE DEFEATED.
+-- REWRITTEN AGAIN IN TASK 3a FIX ROUND 2 (re-review finding I-B).
+-- THIS IS THE THIRD VERSION OF THIS GUARD. THE FIRST TWO WERE BOTH DEFEATED,
+-- AND THEY WERE DEFEATED THE SAME WAY: THEY READ prosrc AS TEXT.
 -- ===========================================================================
--- What shipped:
---     M1c: `survives_suspension` appears in both bodies AND `deleted_at`
---          appears in both bodies -- two independent substring presence checks.
---     M1d: the literal `'view_crm'` appears in NEITHER body.
+-- Version 1 (Task 3a): `survives_suspension` and `deleted_at` both appear in
+--   both bodies, and the literal 'view_crm' appears in neither. Defeated by a
+--   one-sided disjunct naming a key that does not exist yet, and by a
+--   concatenated literal.
+-- Version 2 (fix round 1): an anchored-substring guard plus a body-shape guard,
+--   both run over prosrc with `--` line comments stripped. Defeated three ways:
+--     * `/* ... */` and nested block comments -- the strip only handled `--`,
+--       so the real clause could be deleted from a body and left behind as a
+--       block comment, and both guards read the comment as the clause.
+--     * `$q$view_events$q$` -- Postgres's OTHER literal syntax. The literal
+--       enumerator matched `'([^']*)'`, single quotes only, and walked past it.
+--     * `E'view\137events'` and `U&'view\005fevents'` reach the guard as their
+--       ESCAPE spelling, so the value it reports is not the value the database
+--       will compare against.
+--   All three shipped 492/492 psql and 58/58 HTTP green.
 --
--- The reviewer got 464 psql assertions and 47 HTTP checks green against BOTH of
--- the implementations these were written to reject:
+-- THE LESSON, AND WHY THIS VERSION IS DIFFERENT IN KIND. The space of ways to
+-- spell one string in Postgres is unbounded: two quoting syntaxes, two escape
+-- syntaxes, concatenation, two comment syntaxes (one of them nestable),
+-- arbitrary whitespace. A guard that matches the source text of a function will
+-- keep losing to whoever writes the next function, and each loss looks like a
+-- fully green suite. So this version does not read the source text.
 --
---   * A one-sided drift naming a key that does not exist yet -- the exact
---     Phase 5 mistake the catalogue was built to prevent:
---         and (o.deleted_at is null or perm.survives_suspension
---              or rp.permission_key = 'view_events')     -- one body only
---     M1c passed (both substrings still present in both bodies). M1d passed
---     (the literal is not 'view_crm'). M1b passed, because the two forms agree
---     on every key that EXISTS -- and view_events does not exist yet.
+-- IT ASKS POSTGRES. crm.canon() below feeds each function body back through the
+-- server's own parser (as a view) and reads out the DEPARSED form. The parser
+-- has already resolved every one of those spellings by the time the deparser
+-- prints it:
+--       $q$view_events$q$     -> 'view_events'::text
+--       E'view\137events'     -> 'view_events'::text
+--       U&'view\005fevents'   -> 'view_events'::text
+--       /* anything */        -> gone
+--       -- anything           -> gone
+--       ragged whitespace     -> normalised
+--       ((a or b) or c)       -> flattened to (a OR b OR c)
+-- Measured, all of them, in task-3a-fix-2-report.md.
 --
---   * A hardcoded literal with a DEAD catalogue join:
---         and (o.deleted_at is null
---              or (perm.survives_suspension or true)
---                 and rp.permission_key = pg_catalog.concat('view','_crm'))
---     M1c passed (the join is still textually there). M1d passed (the literal
---     is spelled so `position('''view_crm''' in prosrc)` finds nothing).
---     Setting survives_suspension on any key would have had NO EFFECT and
---     nothing in the suite would have noticed.
---
--- Both guards were testing SPELLING. The replacement tests STRUCTURE: the
--- suspension rule must be exactly one clause, written in exactly the catalogue
--- form, in both bodies, with nothing else in either body that could carry a
--- suspension decision.
---
--- COMMENTS ARE STRIPPED FIRST, and that is not decoration. The comment that
--- used to sit here said "Postgres strips comments from a stored function body,
--- so a term cannot be hidden from these guards in a comment -- established in
--- Task 2 fix round 2." THAT IS FALSE for these two functions and was measured:
---     select (position('--' in prosrc) > 0) from pg_proc ... has_permission
---       -> t
--- `LANGUAGE sql ... AS $$...$$` stores prosrc verbatim, comments and all. (The
--- Task 2 finding was about a different function form; it does not generalise.)
--- Without the strip, a mutant could delete the real clause and leave a comment
--- containing its text, and M1c would still count 2.
-select crm.val('M1c the suspension clause is EXACTLY the catalogue form, in both bodies',
-  $$select count(*)::text from pg_proc p
-     join pg_namespace n on n.oid = p.pronamespace
-    where (n.nspname, p.proname) in (('public','has_permission'),
-                                     ('private','permitted_organisations'))
-      and substring(regexp_replace(p.prosrc, '--[^\n]*', '', 'g')
-            from '\(o\.deleted_at is null or perm\.survives_suspension\)')
-          is not null$$, '2');
--- M1c alone still has one hole: a mutant can leave the anchored clause intact
--- and OR a second term around it --
---     and ((o.deleted_at is null or perm.survives_suspension)
---          or rp.permission_key = 'view_events')
--- -- because the anchored substring is still present as a nested group. M1d
--- closes it by asserting the whole SHAPE of each body: `deleted_at` occurs
--- exactly once, `survives_suspension` occurs exactly once, and the ONLY string
--- literal in either body is 'active' (the membership status). A permission-key
--- literal anywhere in either body, by any spelling, changes this value.
+-- crm.canon() returns a marker string instead of raising if a body cannot be
+-- made into a view, so a mutation that mangles the syntax fails this assertion
+-- loudly rather than aborting the run under ON_ERROR_STOP.
+create function crm.canon(p_nsp text, p_proname text)
+returns text language plpgsql security definer set search_path = 'pg_catalog, public' as $fn$
+declare v_src text; v_view text := 'crm.canon_' || p_proname;
+begin
+  select p.prosrc into v_src
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = p_nsp and p.proname = p_proname;
+  if v_src is null then return '<no such function>'; end if;
+  -- The parameters become typed NULLs so the body stands alone as a query.
+  -- Nothing about the suspension rule depends on their values -- what is under
+  -- test is the SHAPE of the body, and the behavioural guards below are what
+  -- test the values.
+  v_src := replace(v_src, 'p_org_id',     'null::uuid');
+  v_src := replace(v_src, 'p_permission', 'null::text');
+  execute 'create or replace view ' || v_view || ' as ' || v_src;
+  return pg_get_viewdef(v_view::regclass, true);
+exception when others then
+  return '<could not canonicalise: ' || sqlstate || '>';
+end $fn$;
+
+-- The other half of "ask Postgres": what the body actually READS. Taken from
+-- pg_depend on the canonical view, so it is the parser's answer and not a
+-- regex's. This is what closes the one evasion a literal check cannot see --
+-- a disjunct with no literal in it at all, reading the key from somewhere else
+-- (another table, or a helper function that holds the literal instead).
+create function crm.canon_deps(p_proname text)
+returns text language plpgsql security definer set search_path = 'pg_catalog, public' as $fn$
+declare v_oid oid; v_rw oid; v_tables text; v_funcs text;
+begin
+  v_oid := ('crm.canon_' || p_proname)::regclass;
+  select oid into v_rw from pg_rewrite where ev_class = v_oid;
+  select string_agg(distinct c.relname, ',' order by c.relname) into v_tables
+    from pg_depend d join pg_class c on c.oid = d.refobjid
+   where d.classid = 'pg_rewrite'::regclass and d.refclassid = 'pg_class'::regclass
+     and d.objid = v_rw and c.oid <> v_oid and c.relkind in ('r','v','m','p','f');
+  select string_agg(distinct n.nspname||'.'||p.proname, ',' order by n.nspname||'.'||p.proname)
+    into v_funcs
+    from pg_depend d join pg_proc p on p.oid = d.refobjid
+    join pg_namespace n on n.oid = p.pronamespace
+   where d.classid = 'pg_rewrite'::regclass and d.refclassid = 'pg_proc'::regclass
+     and d.objid = v_rw;
+  return coalesce(v_tables,'<none>') || ' | ' || coalesce(v_funcs,'<none>');
+exception when others then
+  return '<no canonical view: ' || sqlstate || '>';
+end $fn$;
+
+-- M1c: the suspension clause, in the PARSER's spelling, in both bodies.
+-- `(o.deleted_at IS NULL OR perm.survives_suspension)` is what the deparser
+-- prints for the shipped clause. Note that the deparser FLATTENS nested ORs, so
+-- the round-1 hole -- leaving the clause intact and wrapping a second disjunct
+-- around it -- now removes the substring instead of nesting it, and this
+-- assertion goes red on its own.
+select crm.val('M1c the suspension clause is EXACTLY the catalogue form, in both PARSED bodies',
+  $$select ( (crm.canon('public','has_permission')
+                like '%(o.deleted_at IS NULL OR perm.survives_suspension)%')::int
+           + (crm.canon('private','permitted_organisations')
+                like '%(o.deleted_at IS NULL OR perm.survives_suspension)%')::int )::text$$,
+  '2');
+
+-- M1d: the whole shape of each PARSED body -- `deleted_at` once,
+-- `survives_suspension` once, and the only string constant in either body being
+-- 'active' (the membership status). Any permission-key literal, IN ANY OF THE
+-- SPELLINGS ABOVE, arrives here as 'view_events' and changes this value.
 --
 -- IT IS DELIBERATELY BRITTLE. If a later phase legitimately needs a second
 -- literal in one of these bodies, this assertion goes red and someone updates
 -- the expected string in the same diff that adds it. That is the point: the
 -- suspension rule is not a thing to edit without a reviewer seeing it.
-select crm.val('M1d the ONLY suspension term and the ONLY literal, per body',
-  $$select string_agg(
-             n.nspname||'.'||p.proname||'='||
-             ((length(s.src)-length(replace(s.src,'deleted_at','')))/10)::text ||'/'||
-             ((length(s.src)-length(replace(s.src,'survives_suspension','')))/19)::text ||'/'||
+select crm.val('M1d the ONLY suspension term and the ONLY literal, per PARSED body',
+  $$select string_agg(x.label || '=' ||
+             ((length(x.src)-length(replace(x.src,'deleted_at','')))/10)::text || '/' ||
+             ((length(x.src)-length(replace(x.src,'survives_suspension','')))/19)::text || '/' ||
              coalesce((select string_agg(distinct m[1], '+' order by m[1])
-                         from regexp_matches(s.src, '''([^'']*)''', 'g') m), '<none>'),
-             ' ' order by n.nspname||'.'||p.proname)
-      from pg_proc p
-      join pg_namespace n on n.oid = p.pronamespace
-      cross join lateral (select regexp_replace(p.prosrc,'--[^\n]*','','g') as src) s
-     where (n.nspname,p.proname) in (('public','has_permission'),
-                                     ('private','permitted_organisations'))$$,
+                         from regexp_matches(x.src, '''([^'']*)''', 'g') m), '<none>'),
+             ' ' order by x.label)
+      from (values
+        ('private.permitted_organisations', crm.canon('private','permitted_organisations')),
+        ('public.has_permission',           crm.canon('public','has_permission'))
+      ) x(label, src)$$,
   'private.permitted_organisations=1/1/active public.has_permission=1/1/active');
+
+-- M1d2: and nothing else feeds either body. A disjunct can name a key without
+-- ever writing it down -- `or exists (select 1 from public.some_table b where
+-- b.key = rp.permission_key)`, or `or rp.permission_key = private.some_fn()`.
+-- Neither adds a literal, so M1d stays green; both add a dependency, and the
+-- parser records it.
+select crm.val('M1d2 the two PARSED bodies read exactly the four tables and three functions the rule is made of',
+  $$select crm.canon_deps('has_permission') || '  ||  '
+        || crm.canon_deps('permitted_organisations')$$,
+  'organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.role_requires_mfa,private.session_is_aal2  ||  organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.role_requires_mfa,private.session_is_aal2');
 -- The catalogue is only trustworthy if nothing can grant a key that is not in
 -- it -- otherwise an uncatalogued key silently inherits "no row, no join, no
 -- permission" for reads AND the wrong suspension answer.
@@ -1381,6 +1436,136 @@ select crm.val('M1h survives_suspension DEFAULTS to false (a new key arrives clo
   $$select column_default from information_schema.columns
      where table_schema='public' and table_name='permissions'
        and column_name='survives_suspension'$$, 'false');
+
+-- ---------------------------------------------------------------------------
+-- M1i / M1j / M1k -- THE BEHAVIOURAL GUARD, AND THE ONE THAT IS LOAD-BEARING.
+--
+-- TASK 3a FIX ROUND 2, re-review finding I-B. Everything above this point that
+-- concerns the suspension rule reads the FUNCTION BODIES. M1 and M1b test
+-- behaviour, but only over the nine keys that exist today -- and every evasion
+-- found in this guard so far has worked by naming a key that does not exist
+-- yet, precisely because nothing behavioural could see it.
+--
+-- So: invent one. A throwaway catalogue key is inserted here, granted to every
+-- role, and swept through BOTH function forms across
+--     {survives_suspension false, true}
+--   x {organisation live, organisation suspended}
+--   x every auth.users row
+--   x {aal1, aal2}
+--   x every organisation
+-- and removed again. That is the "Phase 5 adds a key" case, made real, in a
+-- database where the key genuinely did not exist when either body was written.
+--
+-- TWO SEPARATE PROPERTIES ARE ASSERTED, AND THE SECOND IS THE IMPORTANT ONE:
+--   M1i  the two forms AGREE with each other. Catches one-sided drift.
+--   M1j  both forms agree with the rule computed INDEPENDENTLY here, straight
+--        out of organisation_memberships x role_permissions x permissions x
+--        organisations. Catches two-sided drift, which M1i cannot: if both
+--        bodies are wrong in the same way they still agree.
+-- M1k is the positive control. M1i and M1j both pass perfectly in a world where
+-- the catalogue is inert and the probe key is simply never held, so the control
+-- asserts that flipping survives_suspension on the probe key really does change
+-- the suspended answer -- in BOTH forms.
+--
+-- WHAT THIS CATCHES THAT THE SHAPE GUARDS CANNOT: any future respelling,
+-- because it never looks at the text. WHAT IT DOES NOT CATCH, stated plainly
+-- rather than left to be rediscovered: a disjunct naming a SPECIFIC key that
+-- does not exist -- `or rp.permission_key = 'view_events'` -- is dormant by
+-- construction and cannot be observed behaviourally until someone adds
+-- view_events. Measured: all three of MUT-1b, MUT-5 and MUT-7 pass this sweep.
+-- That case is M1c/M1d/M1d2's job, and it is why the shape guards are still
+-- here rather than deleted. The two halves cover different failures and neither
+-- is redundant.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  k        constant text := 'zz_task3a_probe_key';
+  u record; o record; a text; surv boolean; susp boolean;
+  v_alpha  uuid;
+  v_scalar boolean; v_set boolean; v_expect boolean;
+  n int := 0; disagree int := 0; wrong int := 0;
+  v_owner uuid;
+  f_scalar boolean; f_set boolean; t_scalar boolean; t_set boolean;
+begin
+  select id into v_alpha from public.organisations where slug = 'org-alpha';
+  select id into v_owner from auth.users where email = 'powner@test.local';
+
+  insert into public.permissions (key, survives_suspension, description)
+  values (k, false,
+    'Throwaway probe key inserted by rls_phase2_crm.sql § M (M1i-M1k) and deleted again in the same block. If you are reading this in a live database, that block did not finish.');
+  insert into public.role_permissions (role_key, permission_key)
+    select r.key, k from public.roles r;
+
+  foreach surv in array array[false, true] loop
+    update public.permissions set survives_suspension = surv where key = k;
+    foreach susp in array array[false, true] loop
+      update public.organisations
+         set deleted_at = case when susp then pg_catalog.now() else null end
+       where id = v_alpha;
+
+      for u in select id from auth.users loop
+        foreach a in array array['aal1','aal2'] loop
+          perform pg_catalog.set_config('request.jwt.claims',
+            pg_catalog.json_build_object('sub', u.id, 'role', 'authenticated', 'aal', a)::text,
+            true);
+          for o in select id from public.organisations loop
+            v_scalar := public.has_permission(o.id, k);
+            v_set    := exists (select 1 from private.permitted_organisations(k) x
+                                 where x = o.id);
+            -- The rule, restated from the tables rather than from either
+            -- function. This is the only place in the suite that says what the
+            -- answer OUGHT to be without asking the code under test.
+            v_expect := exists (
+              select 1
+              from public.organisation_memberships m
+              join public.role_permissions rp
+                on rp.role_key = m.role and rp.permission_key = k
+              join public.permissions perm on perm.key = rp.permission_key
+              join public.organisations org on org.id = m.organisation_id
+              where m.user_id = u.id
+                and m.organisation_id = o.id
+                and m.status = 'active'
+                and (org.deleted_at is null or perm.survives_suspension)
+                and (not private.role_requires_mfa(m.role) or a = 'aal2'));
+            n := n + 1;
+            if v_scalar is distinct from v_set    then disagree := disagree + 1; end if;
+            if v_scalar is distinct from v_expect then wrong    := wrong + 1;    end if;
+            if v_set    is distinct from v_expect then wrong    := wrong + 1;    end if;
+
+            -- The control's one cell: the aal2 Owner of the SUSPENDED org-alpha.
+            if o.id = v_alpha and susp and a = 'aal2' and u.id = v_owner then
+              if surv then t_scalar := v_scalar; t_set := v_set;
+              else         f_scalar := v_scalar; f_set := v_set; end if;
+            end if;
+          end loop;
+        end loop;
+      end loop;
+    end loop;
+  end loop;
+
+  perform pg_catalog.set_config('request.jwt.claims', '', true);
+  update public.organisations set deleted_at = null where id = v_alpha;
+  delete from public.role_permissions where permission_key = k;
+  delete from public.permissions       where key = k;
+
+  perform crm.record(
+    'M1i FUTURE KEY: the two forms agree on a key neither body has ever seen, '
+      || n || ' cases',
+    '0 mismatches', disagree || ' mismatches');
+  perform crm.record(
+    'M1j FUTURE KEY: ...and both forms match the catalogue, live AND suspended',
+    '0 wrong answers', wrong || ' wrong answers');
+  perform crm.record(
+    'M1k CONTROL: flipping survives_suspension on the probe key changes the SUSPENDED answer in both forms',
+    'scalar false->true set false->true',
+    'scalar ' || f_scalar || '->' || t_scalar
+      || ' set ' || f_set || '->' || t_set);
+  perform crm.record(
+    'M1l the probe key and its grants are gone again',
+    '0 rows',
+    ((select count(*) from public.permissions where key = k)
+     + (select count(*) from public.role_permissions where permission_key = k))::text || ' rows');
+end $$;
 
 -- MIN-4: M1 sweeps only non-NULL organisations, and a NULL organisation is the
 -- ONE input on which the two forms genuinely disagree -- which makes it the one
@@ -2176,10 +2361,24 @@ declare
   v_alpha uuid; v_owner uuid; v_guest uuid; n int;
   r_unsuspend text; r_rename text; r_invite text; r_demote text; r_remove text;
   v_first_gate text;
+  -- The catalogue values as this block FOUND them. Re-review finding M-B: the
+  -- previous version restored a hardcoded `false`, which is an assignment and
+  -- not a restore. It happened to be right today, but it meant the suite wrote
+  -- a value of its own choosing into the very table it exists to assert, so a
+  -- catalogue mistake introduced before this point would be silently corrected
+  -- here instead of surviving to be caught by anything that runs after it.
+  v_saved record;
 begin
   select id into v_alpha from public.organisations where slug = 'org-alpha';
   select id into v_owner from auth.users where email = 'powner@test.local';
   select id into v_guest from auth.users where email = 'pbowner@test.local';
+
+  select
+    (select survives_suspension from public.permissions where key = 'manage_organisation')
+      as manage_organisation,
+    (select survives_suspension from public.permissions where key = 'manage_members')
+      as manage_members
+    into v_saved;
 
   -- The exact one-row mistake the new design makes possible.
   update public.permissions set survives_suspension = true
@@ -2219,8 +2418,11 @@ begin
   reset role;
 
   perform pg_catalog.set_config('request.jwt.claims', '', true);
-  update public.permissions set survives_suspension = false
-   where key in ('manage_organisation','manage_members');
+  -- Put back exactly what was there, per key, rather than assigning a constant.
+  update public.permissions set survives_suspension = v_saved.manage_organisation
+   where key = 'manage_organisation';
+  update public.permissions set survives_suspension = v_saved.manage_members
+   where key = 'manage_members';
 
   perform crm.record(
     'P11  CONTROL: the catalogue flip really DOES open the first gate',
@@ -2238,6 +2440,15 @@ begin
   perform crm.record(
     'P11d FIRST GATE OFF: nor promote/demote nor remove a member',
     'ok(0)/ok(0)', r_demote || '/' || r_remove);
+  -- Re-review M-B. The restore above puts back v_saved, so a catalogue change
+  -- made before this point is no longer overwritten -- it survives, and this
+  -- line is where it becomes visible. M1g asserts the whole catalogue; this
+  -- asserts the two keys THIS block borrows, in the block that borrows them.
+  perform crm.record(
+    'P11f the two keys this block borrows were found -- and restored -- FALSE',
+    'manage_organisation=false manage_members=false',
+    'manage_organisation=' || v_saved.manage_organisation
+      || ' manage_members=' || v_saved.manage_members);
 end $$;
 
 -- The shape guard beside it: a policy can be reverted by a later migration and
