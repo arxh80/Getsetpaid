@@ -117,6 +117,19 @@ describe("a lost race is not an outage", () => {
     expect(CONFLICT_MESSAGE).not.toBe(FAILED_MESSAGE);
   });
 
+  it("...and it does NOT name one operation, because eight actions render it (N-9)", () => {
+    // It used to read "Somebody else changed this contact's primary company",
+    // and it is returned by `failureState()` in BOTH lib/crm/contacts.ts and
+    // lib/crm/companies.ts -- eight Server Actions between them. Not reachable
+    // from seven of them today (on `contacts` and `companies` the only unique
+    // indexes are over `id` and `(id, organisation_id)`), and CLAUDE.md
+    // § Domain entities names the feature that changes that: dedup's
+    // auto-merge wants a unique index on email/name, at which point
+    // `updateContactAction` is a 23505 path and a user fixing a duplicate
+    // email is told about a primary company.
+    expect(CONFLICT_MESSAGE).not.toContain("primary company");
+    expect(CONFLICT_MESSAGE).toContain("this record");
+  });
 });
 
 describe("errors", () => {

@@ -198,9 +198,32 @@ export const FAILED_MESSAGE =
  * second sentence is the instruction: what they are looking at is stale, so
  * retrying the same submit blind would either fail again or overwrite a
  * decision somebody else just made.
+ *
+ * ===========================================================================
+ * "THIS RECORD", NOT "THIS CONTACT'S PRIMARY COMPANY"
+ * ===========================================================================
+ * It used to name the one operation that can reach it today, and it is wired
+ * to eight Server Actions across two modules -- every one of which would have
+ * rendered a sentence about primary companies on any 23505 it ever saw. The
+ * re-review checked the catalogue rather than assuming: on `contacts` and
+ * `companies` the only unique indexes are over `id` and `(id, organisation_id)`,
+ * which an UPDATE that does not move a row's id cannot violate, so today
+ * `set_contact_primary_company` is genuinely the only path here.
+ *
+ * THE TRIGGER IS NAMED IN CLAUDE.md. § Domain entities: "exact matches
+ * (email/name) auto-merge". Task 6 adding a unique index on, say,
+ * `(organisation_id, lower(email))` makes `updateContactAction` a 23505 path,
+ * and a user editing a contact's email into a collision would be told somebody
+ * else changed the primary company. A wrong sentence arriving with a feature
+ * that has nothing to do with it is the cheapest possible thing to prevent
+ * now.
+ *
+ * The specific wording survives at the ONE call site that earns it --
+ * `setPrimaryCompanyAction` in lib/crm/contacts.ts, which passes its own
+ * string to `failureState()`.
  */
 export const CONFLICT_MESSAGE =
-  "Somebody else changed this contact’s primary company. Reload the page and try again.";
+  "Somebody else changed this record while you were editing it. Reload the page and try again.";
 
 /**
  * The one message that must NOT claim to know what happened.

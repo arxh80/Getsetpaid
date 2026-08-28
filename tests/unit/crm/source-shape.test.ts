@@ -155,17 +155,43 @@ describe("the join actions refuse a soft-deleted end (M-1)", () => {
     it(`${action} checks the company too, and refuses a deleted end`, () => {
       const body = actionBody(action);
       expect(body).toContain(`liveInOrg(supabase, "companies", org.id, companyId)`);
-      expect(body).toContain("deletedEndState(formData)");
+      expect(body).toContain("refusedEndState(ends, formData)");
     });
   }
 
-  it("liveInOrg really filters deleted_at, and really scopes the organisation", () => {
+  it("liveInOrg reads deleted_at rather than FILTERING it, and scopes the organisation", () => {
+    // N-8. It used to carry `.is("deleted_at", null)` and return a boolean, so
+    // "soft-deleted" and "not there at all" were the same answer and got the
+    // same sentence -- one that tells the user to restore a record that may be
+    // live in another workspace. Reading the column is what separates them.
     const helper = contacts.slice(
       contacts.indexOf("async function liveInOrg("),
-      contacts.indexOf("function deletedEndState("),
+      contacts.indexOf("function refusedEndState("),
     );
-    expect(helper).toContain(`.is("deleted_at", null)`);
+    expect(helper).toContain(`.select("deleted_at")`);
+    expect(helper).not.toContain(`.is("deleted_at", null)`);
     expect(helper).toContain(`.eq("organisation_id", organisationId)`);
+    // The three answers, all present, and "gone" is the fail-closed one.
+    expect(helper).toContain(`return "gone"`);
+    expect(helper).toContain(`return data.deleted_at === null ? "live" : "deleted"`);
+  });
+
+  it("only setPrimaryCompanyAction overrides the generic conflict sentence (N-9)", () => {
+    // CONFLICT_MESSAGE is wired to eight actions across two modules. Naming
+    // one operation in it made the other seven wrong the moment a second 23505
+    // path exists -- and CLAUDE.md § Domain entities names the feature that
+    // creates one (dedup's unique index on email/name). The specific wording
+    // lives at the one call site that earns it and nowhere else.
+    expect(contacts).toContain("const PRIMARY_COMPANY_CONFLICT =");
+    expect(
+      actionBody("setPrimaryCompanyAction"),
+    ).toContain("failureState(result, formData, PRIMARY_COMPANY_CONFLICT)");
+    // No other action passes a conflict message, so every one of them renders
+    // the generic sentence.
+    expect(contacts.match(/failureState\(result, formData, /g)).toHaveLength(1);
+    expect(read("lib/crm/companies.ts")).not.toContain("PRIMARY_COMPANY_CONFLICT");
+    // The constant's own wording is asserted in tests/unit/crm/write.test.ts,
+    // where it can be read as a value rather than as source text.
   });
 });
 

@@ -65,6 +65,11 @@ import "server-only";
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import { hasPermission, type CurrentOrg } from "@/lib/auth";
+// One direction only: lib/crm/write.ts imports nothing from here, so this is
+// not a cycle. REFUSED_MESSAGE is the sentence that declines to guess WHY, and
+// joinEndExplanation() below needs exactly that for the case where guessing
+// would be wrong.
+import { REFUSED_MESSAGE } from "@/lib/crm/write";
 
 export type WriteBlockedReason = "suspended" | "tier" | "permission";
 
@@ -108,6 +113,56 @@ const EXPLANATION: Record<WriteBlockedReason, string> = {
  */
 export const DELETED_RECORD_EXPLANATION =
   "This record is deleted, so its links can’t be changed. Restore it first and these controls come back.";
+
+/**
+ * What a lookup for one end of a join actually found.
+ *
+ * THREE ANSWERS, NOT TWO, AND THE THIRD IS THE POINT. `liveInOrg()` used to
+ * return a boolean, and `false` covered four different situations that got one
+ * sentence between them:
+ *
+ *   the record really is soft-deleted        "deleted -- restore it first"  OK
+ *   the record is in another workspace       "deleted -- restore it first"  wrong
+ *   the record does not exist                "deleted -- restore it first"  wrong
+ *   the record is outside a record-scoped
+ *     user's scope                           "deleted -- restore it first"  wrong
+ *
+ * Measured by the re-review: a live `Make primary` form's hidden `companyId`
+ * repointed at a LIVE company in another workspace was correctly refused, and
+ * told the user to restore a record that is not deleted -- an instruction they
+ * cannot carry out, about a record they cannot see.
+ *
+ * "gone" IS NOT AN EXISTENCE ORACLE. All three of the wrong rows above collapse
+ * into it, byte-identically, because the lookup runs through the CALLER'S OWN
+ * client: a row in another workspace, a row outside the caller's record scope
+ * and a row that never existed are all `data === null` from one query, and
+ * nothing downstream can tell them apart. That is the same discipline
+ * `REFUSED_MESSAGE` applies deliberately -- see lib/crm/write.ts's header --
+ * and it is why the fix is to stop guessing rather than to guess better.
+ */
+export type RecordPresence = "live" | "deleted" | "gone";
+
+/**
+ * The sentence a join write gets when an end is not live, or null if all are.
+ *
+ * WHY "gone" ANYWHERE WINS OVER "deleted" ANYWHERE. `DELETED_RECORD_EXPLANATION`
+ * ends "Restore it first and these controls come back", which is a promise:
+ * undo the deletion and the write will work. That is only true when being
+ * deleted is the ONLY thing wrong. If any end is `gone` -- another workspace,
+ * out of scope, or absent -- restoring the deleted one changes nothing, so the
+ * honest answer is `REFUSED_MESSAGE`, which deliberately does not say why.
+ *
+ * Pure and exported so the three branches are a unit test rather than three
+ * browser walks; `lib/crm/contacts.ts` holds the queries that produce the
+ * inputs.
+ */
+export function joinEndExplanation(
+  ends: readonly RecordPresence[],
+): string | null {
+  if (ends.some((end) => end === "gone")) return REFUSED_MESSAGE;
+  if (ends.some((end) => end === "deleted")) return DELETED_RECORD_EXPLANATION;
+  return null;
+}
 
 /**
  * True when a resolved entitlements answer permits CRM writes.

@@ -49,8 +49,9 @@ import { getCurrentOrg, getCurrentUser, type CurrentOrg } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import {
-  DELETED_RECORD_EXPLANATION,
   getCrmWriteAccess,
+  joinEndExplanation,
+  type RecordPresence,
 } from "@/lib/crm/write-access";
 import {
   commitWrite,
@@ -144,17 +145,25 @@ function stateFor(
 function failureState(
   result: Exclude<WriteResult, { outcome: "applied" }>,
   formData: FormData,
+  // The generic sentence unless a caller has earned a specific one. Only
+  // `setPrimaryCompanyAction` does -- see PRIMARY_COMPANY_CONFLICT and
+  // CONFLICT_MESSAGE's own comment for why the default stopped naming it.
+  conflictMessage: string = CONFLICT_MESSAGE,
 ): FormState {
   const values = echoedValues(formData);
-  // A SWITCH RATHER THAN AN IF-CHAIN WITH A FALLBACK. Four outcomes today and
-  // the `never` arm is what makes a fifth a compile error here rather than a
-  // wrong sentence in front of a customer -- which is how "Nothing has been
-  // changed" came to be shown for a write that had changed something.
+  // A SWITCH RATHER THAN AN IF-CHAIN WITH A FALLBACK, and NO `default` arm.
+  // Four outcomes today; a fifth is a compile error here rather than a wrong
+  // sentence in front of a customer -- which is how "Nothing has been changed"
+  // came to be shown for a write that had changed something. The mechanism is
+  // the declared `FormState` return type under `strict`: with every arm
+  // returning and no default, a new member of the union leaves a path that
+  // falls off the end returning `undefined`, and TS2366 says so. There is no
+  // `never` arm and none is needed. `pnpm typecheck` is what runs it.
   switch (result.outcome) {
     case "refused":
       return { error: REFUSED_MESSAGE, values };
     case "conflict":
-      return { error: CONFLICT_MESSAGE, values };
+      return { error: conflictMessage, values };
     case "unknown":
       return { error: UNKNOWN_MESSAGE, values };
     case "failed":
@@ -551,42 +560,74 @@ export async function restoreContactAction(
  * Read through the CALLER'S OWN client, so this is not a privileged existence
  * check: a record outside the caller's scope returns nothing here and would
  * have been refused by the policy anyway.
+ *
+ * ===========================================================================
+ * THREE ANSWERS, BECAUSE A BOOLEAN MADE THE PRODUCT LIE
+ * ===========================================================================
+ * This returned `boolean`, and `false` covered a soft-deleted record, a record
+ * in another workspace, one outside a record-scoped user's scope and one that
+ * does not exist -- all told "This record is deleted... Restore it first". The
+ * re-review measured it: a `Make primary` form repointed at a LIVE company in
+ * another workspace got that sentence. See `RecordPresence` in
+ * lib/crm/write-access.ts for why "gone" is not an existence oracle, and
+ * `joinEndExplanation()` for which sentence each case earns.
+ *
+ * NOTE THE MISSING `.is("deleted_at", null)`. It was the filter; it is now the
+ * column being read. Filtering it here is what made "deleted" indistinguishable
+ * from "not there", and SELECT on a soft-deleted row is permitted on purpose
+ * (design note (g)) -- the restore route depends on it.
  */
 async function liveInOrg(
   supabase: Awaited<ReturnType<typeof createClient>>,
   table: "contacts" | "companies",
   organisationId: string,
   id: string,
-): Promise<boolean> {
+): Promise<RecordPresence> {
   const { data, error } = await supabase
     .from(table)
-    .select("id")
+    .select("deleted_at")
     .eq("organisation_id", organisationId)
     .eq("id", id)
-    .is("deleted_at", null)
     .maybeSingle();
   if (error) {
     // 22P02 is an unparseable uuid from the form: no such record, and there
     // never could be. Anything else is a fault, and a fault must not read as
-    // "the record is fine" -- fail closed.
+    // "the record is fine" -- fail closed, and fail into the sentence that
+    // claims the least.
     if (error.code !== "22P02") {
       console.error(`[crm] ${table} lookup for a join write failed:`, error.message);
     }
-    return false;
+    return "gone";
   }
-  return data !== null;
+  // ONE BRANCH FOR FOUR SITUATIONS, DELIBERATELY. Another workspace, out of
+  // scope, and never existed are all `null` here through the caller's own
+  // client, and telling them apart would be the oracle this file is careful
+  // not to build.
+  if (data === null) return "gone";
+  return data.deleted_at === null ? "live" : "deleted";
 }
 
 /**
- * The refusal a join write gets when one of its two ends is gone.
+ * The FormState a join write gets when an end is not live, or null when all
+ * are and the write should go ahead.
  *
- * `DELETED_RECORD_EXPLANATION` verbatim rather than `REFUSED_MESSAGE`, because
- * this refusal is one the user can act on: the panel says the same sentence
- * where the controls would be, and the record is one click from being
- * restored. `REFUSED_MESSAGE` deliberately does not guess why.
+ * The sentence is chosen by `joinEndExplanation()` -- `DELETED_RECORD_EXPLANATION`
+ * only when being deleted is the only thing wrong, because that string ends
+ * with an instruction ("Restore it first") and an instruction that will not
+ * help is worse than no explanation. Everything else gets `REFUSED_MESSAGE`,
+ * which does not guess.
+ *
+ * `values` for the same reason every other refusal carries them: React 19
+ * resets the form after the action, and a refused save that also empties it has
+ * taken the user's work twice.
  */
-function deletedEndState(formData: FormData): FormState {
-  return { error: DELETED_RECORD_EXPLANATION, values: echoedValues(formData) };
+function refusedEndState(
+  ends: readonly RecordPresence[],
+  formData: FormData,
+): FormState | null {
+  const explanation = joinEndExplanation(ends);
+  if (explanation === null) return null;
+  return { error: explanation, values: echoedValues(formData) };
 }
 
 export async function linkCompanyAction(
@@ -605,14 +646,16 @@ export async function linkCompanyAction(
   }
 
   const supabase = await createClient();
-  // BOTH ENDS LIVE, AND BOTH IN THIS WORKSPACE. See liveInOrg(): the policies
-  // ask neither question, and the panel used to be rendered next to a deleted
-  // record's own "Deleted" notice.
-  const [contactLive, companyLive] = await Promise.all([
+  // BOTH ENDS LIVE, AND BOTH IN THIS WORKSPACE. See liveInOrg(): the contact
+  // half is also a policy term now (20260828235000), the company half is this
+  // check and nothing else, and the panel used to be rendered next to a
+  // deleted record's own "Deleted" notice.
+  const ends = await Promise.all([
     liveInOrg(supabase, "contacts", org.id, contactId),
     liveInOrg(supabase, "companies", org.id, companyId),
   ]);
-  if (!contactLive || !companyLive) return deletedEndState(formData);
+  const blocked = refusedEndState(ends, formData);
+  if (blocked) return blocked;
 
   // ALWAYS is_primary FALSE. Making the link and making it primary are two
   // operations because the second one has to demote whatever is primary now,
@@ -662,11 +705,12 @@ export async function unlinkCompanyAction(
   // (deleteCompanyAction). One rule for all three actions, stated once in
   // DELETED_RECORD_EXPLANATION, rather than a per-verb exception that reads
   // differently depending on which page you are standing on.
-  const [contactLive, companyLive] = await Promise.all([
+  const ends = await Promise.all([
     liveInOrg(supabase, "contacts", org.id, contactId),
     liveInOrg(supabase, "companies", org.id, companyId),
   ]);
-  if (!contactLive || !companyLive) return deletedEndState(formData);
+  const blocked = refusedEndState(ends, formData);
+  if (blocked) return blocked;
 
   // A HARD DELETE, and the only one in this file. The link row carries no
   // information of its own beyond "these two are connected"; there is nothing
@@ -693,6 +737,19 @@ export async function unlinkCompanyAction(
   }
   return stateFor(result, "Unlinked.", formData);
 }
+
+/**
+ * The conflict sentence for the one write that can actually produce a 23505.
+ *
+ * Not exported, and not in lib/crm/write.ts: it is specific to this operation,
+ * and putting it beside the generic one is how the generic one came to name a
+ * primary company in the first place. `set_contact_primary_company` losing a
+ * race to `contact_companies_one_primary_per_contact` is the only path to
+ * `outcome: "conflict"` on this schema today (measured by catalogue query in
+ * the re-review, N-9), so this is the only place the wording is true.
+ */
+const PRIMARY_COMPANY_CONFLICT =
+  "Somebody else changed this contact’s primary company. Reload the page and try again.";
 
 /**
  * Set (or clear) a contact's primary company.
@@ -741,13 +798,14 @@ export async function setPrimaryCompanyAction(
   //
   // A NULL companyId IS "CLEAR THE PRIMARY", which names no company, so only
   // the contact is checked on that path.
-  const [contactLive, companyLive] = await Promise.all([
+  const ends = await Promise.all([
     liveInOrg(supabase, "contacts", org.id, contactId),
     companyId === null
-      ? Promise.resolve(true)
+      ? Promise.resolve<RecordPresence>("live")
       : liveInOrg(supabase, "companies", org.id, companyId),
   ]);
-  if (!contactLive || !companyLive) return deletedEndState(formData);
+  const blocked = refusedEndState(ends, formData);
+  if (blocked) return blocked;
 
   const result = await commitWrite(
     `set primary company on contact ${contactId}`,
@@ -769,7 +827,15 @@ export async function setPrimaryCompanyAction(
     },
   );
 
-  if (result.outcome !== "applied") return failureState(result, formData);
+  // THE ONE CALL SITE THAT EARNS THE SPECIFIC SENTENCE. 23505 here is
+  // `contact_companies_one_primary_per_contact` losing a race to another
+  // promote, measured in the Task 4 review -- so naming the operation is
+  // accurate rather than a guess, and it tells the user what to look at when
+  // they reload. Every other action in this file and in companies.ts takes the
+  // generic CONFLICT_MESSAGE; see its comment in lib/crm/write.ts.
+  if (result.outcome !== "applied") {
+    return failureState(result, formData, PRIMARY_COMPANY_CONFLICT);
+  }
 
   revalidatePath(`/${org.slug}/contacts/${contactId}`);
   if (companyId) revalidatePath(`/${org.slug}/companies/${companyId}`);
