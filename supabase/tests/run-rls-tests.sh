@@ -440,5 +440,58 @@ p2_code "aal1 OWNER cannot POST a contact"              403 POST "contacts" \
 p2_rows "LOCKOUT GUARD: aal1 owner still GETs their org" 1 \
         "organisations?select=id&slug=eq.org-alpha" "$OWN"
 
+# ----------------------------------------------------------------------------
+# SUBSCRIPTION ENTITLEMENT, OVER REAL HTTP.
+#
+# The review reproduced the missing gate exactly here -- three Free-tier users
+# POSTing artists, contacts and venues and getting 201 each -- so the fix is
+# proven at the same layer rather than only in psql. The psql suite's § N is the
+# thorough version; this is the end-to-end one, and it is the one that matches
+# the reproduction.
+#
+# The subscription row is written with psql because organisation_subscriptions
+# is superuser-only over the API by design (Foundation design note (g): an
+# org-scoped write path there is a free upgrade to Pro).
+# ----------------------------------------------------------------------------
+echo
+echo "=== Subscription entitlement at the API surface ==="
+
+p2_sub() { # sql
+  MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c "$1" > /dev/null
+}
+
+p2_sub "insert into public.organisation_subscriptions
+          (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+        values ('$ALPHA_ORG','free','monthly',1,'active', now() + interval '30 days')
+        on conflict (organisation_id) do update set plan_id='free', status='active';"
+
+p2_code "FREE tier: booker POSTs an artist"    403 POST "artists" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"free artist\"}" "$BKR"
+p2_code "FREE tier: manager POSTs a contact"   403 POST "contacts" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"free contact\"}" "$MGR"
+p2_code "FREE tier: standard_user POSTs a venue" 403 POST "venues" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"free venue\"}" "$STD"
+# Free is a READ tier (CLAUDE.md § Subscription tiers), and a downgrade must
+# never hide a customer's existing data. So reads stay open.
+rows=$(curl -s "$API/rest/v1/contacts?select=id" -H "apikey: $ANON" \
+       -H "Authorization: Bearer $MGR" \
+       | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+if [ "$rows" -ge 1 ] 2>/dev/null; then
+  printf '  PASS  %-58s %s\n' "FREE tier: reads still work (Free is a read tier)" "$rows"
+else
+  printf '  FAIL  %-58s got %s want >=1\n' "FREE tier: reads still work (Free is a read tier)" "$rows"
+  api_fails=$((api_fails+1))
+fi
+
+p2_sub "update public.organisation_subscriptions set plan_id='starter'
+        where organisation_id='$ALPHA_ORG';"
+p2_code "STARTER tier: the same artist POST is allowed"  201 POST "artists" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"starter artist\"}" "$BKR"
+
+# Restore the shipped state -- no subscription row, so the gate is inert again.
+p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
+p2_code "RESTORED: no subscription row, writes allowed again" 201 POST "artists" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"inert artist\"}" "$BKR"
+
 [ "$api_fails" = "0" ] || { echo "API SURFACE FAILED: $api_fails check(s)" >&2; exit 1; }
 echo "API surface: all checks passed."

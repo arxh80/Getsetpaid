@@ -1186,6 +1186,47 @@ begin
     '0 mismatches', bad || ' mismatches');
 end $$;
 
+-- MIN-4: M1 sweeps only non-NULL organisations, and a NULL organisation is the
+-- ONE input on which the two forms genuinely disagree -- which makes it the one
+-- input the equivalence test most needed to state.
+--
+--   public.has_permission(NULL, k)                    -> false
+--   NULL in (select permitted_organisations(k))       -> SQL NULL, when the set
+--                                                        is non-empty
+--
+-- Both DENY inside a policy (a policy treats NULL as not-true), and
+-- organisation_id is NOT NULL on all twelve tables, so nothing is reachable
+-- today. It is asserted rather than left to be rediscovered because the day
+-- someone reuses permitted_organisations() in a context where NULL is possible
+-- -- a nullable column, an unset route parameter -- the two forms stop agreeing
+-- and M1 would not have noticed. Foundation's design note (b) is the same
+-- argument: "a security predicate that turns an accidental NULL into a grant is
+-- failing open on exactly the input most likely to arrive by mistake."
+do $$
+declare
+  u record; k text; n int := 0; bad int := 0;
+  v_scalar boolean; v_set boolean;
+begin
+  for u in select id from auth.users limit 6 loop
+    perform pg_catalog.set_config('request.jwt.claims',
+      pg_catalog.json_build_object('sub', u.id, 'role', 'authenticated', 'aal', 'aal2')::text,
+      true);
+    foreach k in array array['view_crm','manage_contacts','no_such_permission'] loop
+      v_scalar := public.has_permission(null, k);
+      v_set    := (null::uuid in (select private.permitted_organisations(k)));
+      n := n + 1;
+      -- The scalar form must be exactly false, and the set form must be
+      -- NOT TRUE -- false or NULL, both of which a policy denies.
+      if v_scalar is not false or v_set is true then bad := bad + 1; end if;
+    end loop;
+  end loop;
+  perform pg_catalog.set_config('request.jwt.claims', '', true);
+  perform crm.record(
+    'M3  NULL org: has_permission is false and the set form is never true, '
+      || n || ' cases',
+    '0 failures', bad || ' failures');
+end $$;
+
 -- full_scope_organisations() has no scalar twin to mirror, so it gets the
 -- property that matters instead, read out of the live membership table rather
 -- than out of the function's source: no active membership in a record-scoped
@@ -1197,6 +1238,419 @@ select crm.val('M2  full_scope_organisations excludes exactly the scoped roles',
        and exists (
          select 1 from private.full_scope_organisations() f where f = m.organisation_id
        )$$, '0');
+
+-- ===========================================================================
+-- N. SUBSCRIPTION ENTITLEMENT (IMP-1) -- the gate that is inert today
+-- ===========================================================================
+-- private.crm_write_organisations() ships with the `s.organisation_id is null`
+-- escape, because create_organisation() writes no subscription row and a gate
+-- without it would deny every CRM write in the product. So in normal operation
+-- this control does nothing, and NOTHING ELSE IN THIS SUITE WOULD NOTICE IF IT
+-- WERE DELETED. This section is the only thing that will.
+--
+-- It drives the gate directly: insert a real `free` subscription row for org
+-- ALPHA, watch every write close for every role while reads keep working,
+-- upgrade the row to `starter`, watch writes come back, and restore the
+-- no-row state so the rest of the fixture is untouched.
+--
+-- Phase 7 removes the escape and backfills. When it does, N1 and N16 are the
+-- assertions that will change; everything between them is the behaviour Phase 7
+-- is switching on and must keep.
+
+-- N1: the baseline. No subscription row = not yet billed = not yet gated.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('N1  BASELINE: no subscription row, a write is allowed',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'Entitlement Baseline')$$, :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- Free tier, active. CLAUDE.md § Subscription tiers: crm_writes = No.
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'alpha_org'::uuid, 'free', 'monthly', 1, 'active', now() + interval '30 days');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('N2  FREE: reads still work (Free is a read tier)',
+  $$select (count(*) > 0)::text from public.contacts$$, 'true');
+select crm.try('N3  FREE: manager INSERTs a contact',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'free tier')$$, :'alpha_org'), 'denied(42501)');
+select crm.try('N4  FREE: manager UPDATEs a contact',
+  $$update public.contacts set title='free'
+    where id='22220000-0000-0000-0000-000000000002'$$, 'denied(42501)');
+select crm.try('N5  FREE: manager INSERTs a merges row',
+  format($$insert into public.merges
+      (organisation_id, entity_type, winner_id, loser_id, merged_by)
+    values (%L,'contact','22220000-0000-0000-0000-000000000002',
+            '22220000-0000-0000-0000-000000000003',(select auth.uid()))$$,
+    :'alpha_org'), 'denied(42501)');
+-- A DELETE policy has no WITH CHECK, so the entitlement term lives in USING and
+-- the refusal is a zero-row result rather than a 42501. Secure, and asserted as
+-- the DIFFERENT mechanism it is -- see 20260828140500's header and MIN-5.
+select crm.try('N6  FREE: manager DELETEs a link -> filtered, not denied',
+  $$delete from public.contact_companies
+    where id='77770000-0000-0000-0000-000000000002'$$, 'ok(0)');
+select crm.try('N7  FREE: manager DELETEs a custom field value -> filtered',
+  $$delete from public.custom_field_values
+    where id='bbbb0000-0000-0000-0000-000000000002'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pbooker_c';
+select crm.try('N8  FREE: booker INSERTs an artist',
+  format($$insert into public.artists (organisation_id, name)
+    values (%L,'free artist')$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.try('N9  FREE: standard_user INSERTs a venue',
+  format($$insert into public.venues (organisation_id, name)
+    values (%L,'free venue')$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select crm.try('N10 FREE: admin DEFINEs a custom field',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','free_key','Free','text')$$, :'alpha_org'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pvenuemgr_c';
+select crm.try('N11 FREE: venue_manager INSERTs a venue_room',
+  format($$insert into public.venue_rooms (organisation_id, venue_id, name)
+    values (%L,'55550000-0000-0000-0000-000000000002','free room')$$,
+    :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- Upgrade. Starter and Pro both carry crm_writes = true.
+update public.organisation_subscriptions set plan_id='starter'
+ where organisation_id = :'alpha_org'::uuid;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('N12 STARTER: the same write is now allowed',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'starter tier')$$, :'alpha_org'), 'ok(1)');
+select crm.try('N13 STARTER: the DELETE comes back too',
+  $$delete from public.contact_companies
+    where id='77770000-0000-0000-0000-000000000002'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- past_due and cancelled. Implemented as the conservative reading -- neither
+-- writes -- and raised in DECISIONS-QUEUE, because CLAUDE.md defines no grace
+-- period and "a failed card payment freezes the CRM immediately" is a product
+-- decision rather than a security one.
+update public.organisation_subscriptions set status='past_due'
+ where organisation_id = :'alpha_org'::uuid;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('N14 PAST_DUE: writes close (no grace period -- see DECISIONS-QUEUE)',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'past due')$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+update public.organisation_subscriptions set status='cancelled', plan_id='pro'
+ where organisation_id = :'alpha_org'::uuid;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('N15 CANCELLED on a paid plan: writes still close',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'cancelled')$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- Restore the shipped state: no subscription row anywhere.
+delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('N16 RESTORED: back to the inert state, writes allowed again',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'inert again')$$, :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- O. organisation_id IMMUTABILITY ON THE CHILD TABLES (IMP-3)
+-- ===========================================================================
+-- 20260828121000 design note (e) claimed these five inherited immutability from
+-- their tenant-scoped composite FK. They did not: the FK constrains the NEW
+-- pair, so a caller authorised in both tenants moves the child AND its parent
+-- reference in one statement and the constraint is satisfied. The reviewer
+-- reproduced it on custom_field_values -- which has no composite FK to its
+-- entity at all -- moving a row and its value from ALPHA into BETA.
+--
+-- Every probe below moves EVERY column the FK looks at, together, which is what
+-- makes it the real attack rather than the weaker "change organisation_id
+-- alone" that section G already covered.
+--
+-- A DEDICATED link row, because the fixture's two have been consumed by now --
+-- D23 deleted one and N13 the other, and the first draft of O5 aimed at a row
+-- that no longer existed and reported `ok(0)`, which reads exactly like a
+-- refusal and is an empty statement. Same class of mistake as the org-id one in
+-- section B: an assertion whose target is absent proves nothing and looks green.
+insert into public.contact_companies (id, organisation_id, contact_id, company_id)
+select '77770000-0000-0000-0000-00000000000d', o.id,
+       '22220000-0000-0000-0000-000000000002','11110000-0000-0000-0000-000000000002'
+from public.organisations o where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmulti_c';
+
+select crm.try('O1  cfv: move the row AND its definition AND its entity into BETA',
+  format($$update public.custom_field_values
+      set organisation_id=%L,
+          field_id='aaaa000b-0000-0000-0000-00000000000b',
+          entity_type='artist',
+          entity_id='4444000b-0000-0000-0000-00000000000b'
+    where id='bbbb0000-0000-0000-0000-000000000001'$$, :'beta_org'),
+  'denied(42501)');
+select crm.try('O2  POSITIVE: the same row edits normally',
+  $$update public.custom_field_values set value='"edited in place"'::jsonb
+    where id='bbbb0000-0000-0000-0000-000000000001'$$, 'ok(1)');
+
+select crm.try('O3  venue_rooms: move the room AND its venue into BETA',
+  format($$update public.venue_rooms
+      set organisation_id=%L, venue_id='5555000b-0000-0000-0000-00000000000b'
+    where id='66660000-0000-0000-0000-000000000002'$$, :'beta_org'),
+  'denied(42501)');
+select crm.try('O4  POSITIVE: the same room renames normally',
+  $$update public.venue_rooms set name='Manager Room II'
+    where id='66660000-0000-0000-0000-000000000002'$$, 'ok(1)');
+
+select crm.try('O5  contact_companies: move the link AND both its parents into BETA',
+  format($$update public.contact_companies
+      set organisation_id=%L,
+          contact_id='2222000b-0000-0000-0000-00000000000b',
+          company_id='1111000b-0000-0000-0000-00000000000b'
+    where id='77770000-0000-0000-0000-00000000000d'$$, :'beta_org'),
+  'denied(42501)');
+
+select crm.try('O6  artist_fee_history: move the fee AND its artist into BETA',
+  format($$update public.artist_fee_history
+      set organisation_id=%L, artist_id='4444000b-0000-0000-0000-00000000000b'
+    where id='99990000-0000-0000-0000-000000000002'$$, :'beta_org'),
+  'denied(42501)');
+
+select crm.try('O7  artist_representations: move the row AND all its parents into BETA',
+  format($$update public.artist_representations
+      set organisation_id=%L,
+          artist_id='4444000b-0000-0000-0000-00000000000b',
+          agency_id='3333000b-0000-0000-0000-00000000000b'
+    where id='88880000-0000-0000-0000-000000000002'$$, :'beta_org'),
+  'denied(42501)');
+
+select crm.val('O8  ...and nothing actually moved',
+  $$select count(*)::text from public.custom_field_values
+     where id='bbbb0000-0000-0000-0000-000000000001'
+       and organisation_id = (select id from public.organisations where slug='org-alpha')$$,
+  '1');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- P. A SOFT-DELETED (SUSPENDED) ORGANISATION (IMP-4)
+-- ===========================================================================
+-- CLAUDE.md § Superuser dashboard ships suspend/reinstate as soft delete.
+-- Before fix round 1, organisations.deleted_at was invisible to the permission
+-- engine, so a suspended tenant kept full CRM read AND write. Restores the
+-- organisation at the end so the rest of the fixture is untouched.
+update public.organisations set deleted_at = now() where slug = 'org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('P1  SUSPENDED: the CRM is unreadable',
+  $$select count(*)::text from public.contacts$$, '0');
+select crm.try('P2  SUSPENDED: the CRM is unwritable',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'suspended')$$, :'alpha_org'), 'denied(42501)');
+select crm.val('P3  SUSPENDED: has_permission agrees',
+  format($$select public.has_permission(%L,'view_crm')::text$$, :'alpha_org'), 'false');
+select crm.val('P4  SUSPENDED: so does the set form (the two must not drift)',
+  format($$select exists (select 1 from private.permitted_organisations('view_crm') x
+                          where x = %L)::text$$, :'alpha_org'), 'false');
+-- The deliberate exception: is_active_member is UNCHANGED, so the workspace
+-- itself is still visible and the app can render a suspension notice rather
+-- than a blank screen or an error.
+select crm.val('P5  SUSPENDED: the organisation row is still visible (suspension notice)',
+  $$select count(*)::text from public.organisations where slug='org-alpha'$$, '1');
+select crm.val('P6  SUSPENDED: memberships still readable (workspace switcher)',
+  $$select (count(*) > 0)::text from public.organisation_memberships$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- Reinstatement is now a privileged action with no client path. Fail-closed and
+-- correct per CLAUDE.md (suspend/reinstate is a superuser function), but Phase 7
+-- must ship the superuser reinstate path in the same change as the suspend
+-- button or it ships a one-way door. Routed in FOLLOW-UPS.md.
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select crm.try('P7  SUSPENDED: even the Owner cannot un-suspend (Phase 7 owns this)',
+  $$update public.organisations set deleted_at=null where slug='org-alpha'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+
+update public.organisations set deleted_at = null where slug = 'org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('P8  REINSTATED: the CRM comes back',
+  $$select (count(*) > 0)::text from public.contacts$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- Q. merges LEAKED THE LOSER'S DISCARDED VALUES (IMP-2)
+-- ===========================================================================
+-- Scoping the SELECT by the winner alone left field_resolution -- a verbatim
+-- copy of BOTH records' fields, including the values the merge DISCARDED --
+-- readable by anyone who could see the winner. The reviewer had a Manager merge
+-- a contact pstd1 could not see into one pstd1 owned, and pstd1 read the
+-- discarded email and phone.
+--
+-- Two merges are planted: a mixed one (winner pstd1's, loser pmanager's) and a
+-- clean one (both pstd1's), because closing the leak by making merges invisible
+-- to record-scoped users altogether would also pass the first assertion.
+insert into public.contacts (id, organisation_id, owner_user_id, name, deleted_at)
+select '22220000-0000-0000-0000-00000000000a', o.id, :'pstd1', 'Std1 Own Loser', now()
+from public.organisations o where o.slug='org-alpha';
+
+insert into public.merges
+  (id, organisation_id, entity_type, winner_id, loser_id, merged_by, field_resolution)
+select 'cccc0000-0000-0000-0000-00000000000a', o.id, 'contact',
+       '22220000-0000-0000-0000-000000000001',
+       '22220000-0000-0000-0000-000000000002', :'pmanager',
+       '{"email":{"kept":"std1@example.test","discarded":"MANAGER-ONLY-SECRET@example.test"}}'::jsonb
+from public.organisations o where o.slug='org-alpha';
+
+insert into public.merges
+  (id, organisation_id, entity_type, winner_id, loser_id, merged_by, field_resolution)
+select 'cccc0000-0000-0000-0000-00000000000c', o.id, 'contact',
+       '22220000-0000-0000-0000-000000000001',
+       '22220000-0000-0000-0000-00000000000a', :'pstd1',
+       '{"email":{"kept":"std1@example.test","discarded":"std1-old@example.test"}}'::jsonb
+from public.organisations o where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.val('Q1  CONTROL: pstd1 CAN see the winner of both merges',
+  $$select count(*)::text from public.contacts
+     where id='22220000-0000-0000-0000-000000000001'$$, '1');
+select crm.val('Q2  CONTROL: pstd1 CANNOT see the mixed merge''s loser',
+  $$select count(*)::text from public.contacts
+     where id='22220000-0000-0000-0000-000000000002'$$, '0');
+select crm.val('Q3  THE FIX: the mixed merge is invisible, so its secret is too',
+  $$select count(*)::text from public.merges
+     where id='cccc0000-0000-0000-0000-00000000000a'$$, '0');
+select crm.val('Q4  ...and no discarded value leaks by any path',
+  $$select count(*)::text from public.merges
+     where field_resolution::text like '%MANAGER-ONLY-SECRET%'$$, '0');
+select crm.val('Q5  NOT OVER-CLOSED: a merge of two records pstd1 owns IS visible',
+  $$select count(*)::text from public.merges
+     where id='cccc0000-0000-0000-0000-00000000000c'$$, '1');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('Q6  POSITIVE: a full-scope role sees both merges',
+  $$select count(*)::text from public.merges
+     where id in ('cccc0000-0000-0000-0000-00000000000a',
+                  'cccc0000-0000-0000-0000-00000000000c')$$, '2');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- R. THE IRREVERSIBLE WRITES ARE AUDITED (IMP-5)
+-- ===========================================================================
+-- audit_events is readable only by the platform superuser, so these assertions
+-- run as postgres. What is under test is that the TRIGGER fires on a write made
+-- through a policy by a real impersonated session -- which is the path a direct
+-- PostgREST call takes, and the one an application-side audit misses entirely.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('R1  a hard DELETE of a link succeeds',
+  format($$delete from public.contact_companies
+    where contact_id='22220000-0000-0000-0000-000000000001'
+      and company_id='11110000-0000-0000-0000-000000000003'$$), 'ok(1)');
+select crm.try('R2  a hard DELETE of a custom field value succeeds',
+  $$delete from public.custom_field_values
+    where id='bbbb0000-0000-0000-0000-000000000002'$$, 'ok(1)');
+select crm.try('R3  a merge row is inserted',
+  format($$insert into public.merges
+      (organisation_id, entity_type, winner_id, loser_id, merged_by)
+    values (%L,'contact','22220000-0000-0000-0000-000000000002',
+            '22220000-0000-0000-0000-000000000003',(select auth.uid()))$$,
+    :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- DISTINCT, because by this point earlier sections have legitimately produced
+-- more of these events -- C21 inserted a merge and N13 deleted a link, both as
+-- real sessions, and both were audited. That is the trigger working; the first
+-- draft of this assertion listed every row and failed on the duplicates.
+select crm.val('R4  ...and all three are in the audit trail, attributed to the actor',
+  format($$select string_agg(distinct action,',' order by action)
+     from public.audit_events
+     where actor_user_id=%L
+       and action in ('contact_company.deleted','custom_field_value.deleted','records.merged')$$,
+    :'pmanager'),
+  'contact_company.deleted,custom_field_value.deleted,records.merged');
+select crm.val('R5  the audit row carries the organisation and the target id',
+  $$select (organisation_id is not null and target_id is not null
+            and correlation_id is not null)::text
+     from public.audit_events where action='custom_field_value.deleted' limit 1$$, 'true');
+-- The allowlist. audit_events is superuser-readable, and CLAUDE.md
+-- § Superuser dashboard keeps tenant record CONTENT off that surface -- the
+-- feedback screenshot is described there as the ONE deliberate exception. So
+-- the payload carries identifiers and never the user-entered value.
+select crm.val('R6  ...and NOT the user-entered value (identifiers only)',
+  $$select (before ? 'field_id' and before ? 'entity_id'
+            and not (before ? 'value'))::text
+     from public.audit_events where action='custom_field_value.deleted' limit 1$$, 'true');
+select crm.val('R7  ...nor the merge''s field_resolution',
+  $$select (after ? 'winner_id' and after ? 'loser_id'
+            and not (after ? 'field_resolution'))::text
+     from public.audit_events where action='records.merged' limit 1$$, 'true');
+
+-- THE NULL-ACTOR GUARD, which is what stops the trigger breaking organisation
+-- deletion. A sessionless writer -- a migration, a seed, a DBA repair, or an FK
+-- cascade started by one -- has no auth.uid(), and private.log_audit_event()
+-- RAISES on a null actor. Without the early return, the cascade below would
+-- abort.
+-- On a throwaway organisation, so the probe can name the exact target_id and
+-- assert on THAT rather than on a global count, which earlier sections have
+-- legitimately added to. `actor_user_id is null` would also have been a hollow
+-- assertion: that column is NOT NULL, so it can never match.
+insert into public.organisations (id, name, slug)
+values ('eeee0000-0000-0000-0000-0000000000ee','Org Zed','org-zed');
+insert into public.contacts (id, organisation_id, name)
+values ('eeee0000-0000-0000-0000-0000000000c1','eeee0000-0000-0000-0000-0000000000ee','Zed Contact');
+-- Two DISTINCT companies: contact_companies_contact_company_unique forbids two
+-- links between the same pair, and the first draft of this fixture tripped it.
+insert into public.companies (id, organisation_id, name)
+values ('eeee0000-0000-0000-0000-0000000000c2','eeee0000-0000-0000-0000-0000000000ee','Zed Co'),
+       ('eeee0000-0000-0000-0000-0000000000c5','eeee0000-0000-0000-0000-0000000000ee','Zed Co II');
+insert into public.contact_companies (id, organisation_id, contact_id, company_id)
+values ('eeee0000-0000-0000-0000-0000000000c3','eeee0000-0000-0000-0000-0000000000ee',
+        'eeee0000-0000-0000-0000-0000000000c1','eeee0000-0000-0000-0000-0000000000c2'),
+       ('eeee0000-0000-0000-0000-0000000000c4','eeee0000-0000-0000-0000-0000000000ee',
+        'eeee0000-0000-0000-0000-0000000000c1','eeee0000-0000-0000-0000-0000000000c5');
+
+select crm.try('R8  a SESSIONLESS delete succeeds instead of raising 28000',
+  $$delete from public.contact_companies
+     where id='eeee0000-0000-0000-0000-0000000000c4'$$, 'ok(1)');
+select crm.val('R9  ...and emitted no audit row for it (no actor to attribute)',
+  $$select count(*)::text from public.audit_events
+     where target_id='eeee0000-0000-0000-0000-0000000000c4'$$, '0');
+
+-- The cascade itself, because this is the behaviour Task 1 measured
+-- ("organisation delete cascades cleanly, no error") and an unconditional
+-- trigger would have destroyed: DELETE FROM organisations cascades into
+-- contact_companies with no session, log_audit_event() raises 28000 on a null
+-- actor, and the whole statement aborts.
+select crm.try('R10 organisation delete still cascades through an audited table',
+  $$delete from public.organisations where slug='org-zed'$$, 'ok(1)');
+select crm.val('R11 ...and took the remaining link row with it',
+  $$select count(*)::text from public.contact_companies
+     where id='eeee0000-0000-0000-0000-0000000000c3'$$, '0');
 
 -- ===========================================================================
 -- Results
