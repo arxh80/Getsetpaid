@@ -277,6 +277,27 @@ Only `opacity`, `background-color`, `border-color` and `transform: translate` ar
 
 **One standing waiver: the sidebar rail animates `width`** (`components/nav/sidebar.tsx`, reviewed and accepted). The rail's expand/collapse is a container growing around fixed-size children; the two letter-of-the-rule alternatives are worse — `scaleX` squashes every child with the container, and a `translateX` overlay changes the rail from pushing content to covering it, a bigger deviation than the property. The waiver is exactly that one tween: `--dur-slow` / `--ease`, instant under `prefers-reduced-motion`, expansion gated on hover capability plus ~120ms of hover intent so a passing pointer never pays the relayout. It is not precedent for animating `width`/`height` anywhere else; the property list above stays the rule. One acknowledged consequence rides with it: a rail that pushes rather than overlays necessarily translates the centred content column while it expands (the layout balances the rail's *collapsed* footprint with a matching trailing spacer, so the column is centred at rest and the translation exists only during hover/pin) — accepted as the cost of choosing push over overlay, not a defect to engineer away.
 
+**Name collision with the Hallmark skill — these values are canonical.** The block
+above is the single source of truth and matches `app/globals.css` exactly. Two skill
+files disagree, and one of them disagrees *under the same token names*:
+
+| Source | Names | Values |
+| --- | --- | --- |
+| **DESIGN.md + `app/globals.css`** | `--dur-fast` / `--dur-base` / `--dur-slow` | **120 / 160 / 240ms** |
+| `hallmark/references/design-md.md` | `--dur-fast` / `--dur-base` / `--dur-slow` | 180 / 240 / 320ms |
+| `hallmark/references/motion.md`, `export-formats.md` | `--dur-micro` / `--dur-short` / `--dur-long` | 120 / 220 / 420ms |
+
+The `motion.md` scale uses distinct names and is harmless — it simply does not apply
+here. The `design-md.md` scale is the hazard: identical names, different values, so a
+Hallmark `design.md` export merged into the entry stylesheet would silently redefine
+the project's durations and every `duration-[var(--dur-fast)]` in `components/` would
+change behaviour with nothing to grep for.
+
+**Rule: never write a Hallmark token export into `app/globals.css`.** Take the method
+from the skill, take the values from here. This is the general precedence rule in
+`CLAUDE.md` ("DESIGN.md outranks every skill default") applied to the one case where
+the conflict is invisible rather than obvious.
+
 ---
 
 ## Error pages

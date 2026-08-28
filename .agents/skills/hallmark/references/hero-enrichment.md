@@ -194,13 +194,17 @@ Same composition as E3 but without browser chrome — the screenshot floats with
 
 ### E5 · Custom Illustration Centerpiece
 
-A hand-built SVG (the default, Tier B) or a generated raster (Tier C, when characters demand it) sitting on the hero as a single illustrative element — the bakery loaf, the studio's mascot, the diagram of how the workflow flows.
+A hand-built SVG (the default, Tier B) or a generated raster (Tier E, when characters demand it) sitting on the hero as a single illustrative element — the bakery loaf, the studio's mascot, the diagram of how the workflow flows.
 
 *Use when:* the brand has a story or a thing-it-makes that benefits from being drawn.
 *Avoid when:* the brand is "modern professional team" generic — illustrating that is the new template.
 
 **Knobs:**
-- Build method (Tier A pure-CSS / Tier B hand-SVG / Tier C generated / Tier D library)
+- Build method (Tier A pure-CSS / Tier B hand-SVG / Tier E generated / Tier F library)
+  <!-- GSP-PATCH: tier letters realigned to custom-craft.md, which is the file that
+       defines the tiers (A pure-CSS, B hand-SVG, C declarative animation, D Three.js,
+       E generated stills, F library + Lottie). This line previously read
+       "Tier C generated / Tier D library", colliding with C and D as defined there. -->
 - Animation (none · loop · scroll-linked)
 - Scale (small accent · dominant)
 
@@ -412,7 +416,14 @@ Cross-references [`motion.md`](motion.md), [`microinteractions.md`](microinterac
 **Banned for hero entrances:**
 - Bouncy elastic easing (`cubic-bezier(0.34, 1.56, ...)`) — reads as 2016 Framer demo
 - Scroll-fade-everything (every section fades in when it enters the viewport)
-- Mouse-follow gradients on SaaS landing pages (allowed only on portfolio / creative / agency work)
+- Mouse-follow gradients that track over content, run page-wide, or ship without a
+  `prefers-reduced-motion` fallback — on any brief.
+  <!-- GSP-PATCH: this line previously read "Mouse-follow gradients on SaaS landing
+       pages (allowed only on portfolio / creative / agency work)", which directly
+       contradicted HP3 · Cursor-spotlight in this same file — HP3's "Use when" names
+       SaaS marketing explicitly and cites Linear, Tailwind Labs and Raycast. The ban
+       is now scoped to what HP3 already forbids (tracking over text, unscoped, no
+       reduced-motion fallback) so the two read as one rule instead of opposites. -->
 - Parallax-on-mouse (motion sickness, gimmicky)
 - Particle / starfield backgrounds (2010s nostalgia, distracting)
 - Auto-rotating hero carousels (WCAG 2.2.2 fail unless paused-on-hover-and-focus is implemented)

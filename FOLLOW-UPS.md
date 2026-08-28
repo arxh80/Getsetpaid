@@ -2823,6 +2823,34 @@ before the first real consumer exists rather than alongside it.
   true. Observed in `.superpowers/sdd/phase-3-events/task-6-browser-walk.spec.ts`
   test 6, whose log carries the verbatim page text.
 
+## Gate: after any `npx skills experimental_install` or `npx skills check`
+
+Six vendored skill files carry local patches. They fix contradictions the skills ship
+with — each one was verified against the source files, not inferred. **A skills
+update overwrites all six silently**, and `skills-lock.json` stores a `computedHash`
+per skill, so patched files will also read as drift.
+
+Find them all with `grep -rn "GSP-PATCH" .agents/skills/`. Re-apply after any update.
+
+| File | What the patch fixes |
+| --- | --- |
+| `hallmark/references/hero-enrichment.md` | Tier letters said "C generated / D library"; `custom-craft.md`, which *defines* the tiers, has C = declarative animation, D = Three.js, E = generated, F = library. Realigned to E/F. |
+| `hallmark/references/hero-enrichment.md` | Self-contradiction in one file: HP3 · Cursor-spotlight names SaaS marketing in its "Use when" and cites Linear/Raycast, while the banned list forbade mouse-follow gradients on SaaS. Ban rescoped to what HP3 already forbids. |
+| `hallmark/references/components/s1-left-margin-numbered.md` | Ships `grid-template-columns: 10rem 1fr` with the label left and `<h2>` right — the exact shape gate 54 hard-bans — with no warning. Three other files agree it is banned by default. Warning added. |
+| `hallmark/references/custom-theme.md` | The `italic-serif` and `display-condensed-italic` display axes auto-fail gate 38a, which bans italic on headings and wordmarks "for every theme". Tension stated; neither side deleted. |
+| `hallmark/references/microinteractions.md` | "Use `IntersectionObserver`, never scroll listeners" read unqualified, banning the passive rAF-throttled scroll listener that `floating-nav.md` correctly uses for nav state. Scoped to reveals. |
+| `vercel-react-best-practices/rules/rendering-hydration-no-flicker.md` | Recommends an inline `dangerouslySetInnerHTML` script. Blocked by `CLAUDE.md`, by the nonce-based `script-src`, and it would falsify the "ships zero `dangerouslySetInnerHTML`" claim that `lib/security/headers.ts` uses to justify `style-src 'unsafe-inline'`. |
+
+Two upstream defects were **not** patched, deliberately — fixing them means asserting
+facts we cannot verify, and they cost nothing while unfixed:
+
+- **`supabase-postgres-best-practices/SKILL.md` frontmatter says `version: "1.1.1"`
+  while its own `CHANGELOG.md` is at `1.6.0`.** Stale vendor metadata. Report
+  upstream rather than inventing a version locally.
+- **`hallmark/references/export-formats.md` `tokens.css` disagrees with
+  `layout-and-space.md` and `typography.md` on `--space-*` / `--text-*` values.** The
+  project takes neither — `app/globals.css` is canonical, per DESIGN.md § Motion.
+
 ## Standing lesson from Foundation
 
 Three defects shipped past a source-only review and were caught only by running
