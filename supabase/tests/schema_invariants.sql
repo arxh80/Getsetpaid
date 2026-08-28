@@ -399,23 +399,61 @@ select invariants.val('D3  every FK in public has its leading column indexed',
             and i.indkey[0] = con.conkey[1])$$,
   '0');
 
--- PHASE-GATED. Task 2 creates the policies; when it does, change '0' to the
--- number it creates, or replace this with a per-table assertion.
-select invariants.val('D4  [UNTIL TASK 2] the 12 tables have zero policies',
-  $$select count(*)::text from invariants.phase2_tables t
-     join pg_catalog.pg_class c on c.relname=t.relname
-      and c.relnamespace='public'::regnamespace
-     join pg_catalog.pg_policy p on p.polrelid=c.oid$$,
+-- WAS PHASE-GATED, NOW LIVE. Task 2 (20260828121000) created the policies, so
+-- this flipped from "zero policies" to the invariant that survives: every one
+-- of the twelve is reachable, and none of them is reachable through a `for
+-- all` policy. A `for all` policy silently applies its USING expression as the
+-- WITH CHECK for INSERT, which is how a read predicate ends up governing a
+-- write -- CLAUDE.md § Non-negotiable rules and SECURITY.md § 2 both require
+-- separate policies per operation.
+select invariants.val('D4  all 12 tables have policies, and none is FOR ALL',
+  $$select count(*)::text from (
+      select c.relname,
+             count(p.oid)                                  as npol,
+             count(*) filter (where p.polcmd = '*')        as nall
+        from invariants.phase2_tables t
+        join pg_catalog.pg_class c on c.relname=t.relname
+         and c.relnamespace='public'::regnamespace
+        left join pg_catalog.pg_policy p on p.polrelid=c.oid
+       group by c.relname) s
+     where s.npol = 0 or s.nall > 0$$,
   '0');
 
--- PHASE-GATED. Task 2 grants DML back one grant per policy. When it does, this
--- becomes "no table holds a grant its policies do not justify" -- and `anon`
--- should still hold nothing on any of the twelve.
-select invariants.val('D5  [UNTIL TASK 2] no client role holds any privilege on the 12',
-  $$select count(*)::text from invariants.phase2_tables t
-     join pg_catalog.pg_class c on c.relname=t.relname
-      and c.relnamespace='public'::regnamespace
-     where c.relacl is not null$$,
+-- WAS PHASE-GATED, NOW LIVE, and this is the form the original note asked for:
+-- "no table holds a grant its policies do not justify". Foundation's design
+-- note (e) says a table gets an INSERT grant only if it has an INSERT policy;
+-- this asserts the biconditional in BOTH directions, so it also catches the
+-- opposite mistake -- a policy written for an operation that was never granted,
+-- which reads as a working control and is dead code.
+--
+-- GRANTS AND POLICIES ARE INDEPENDENT CONTROLS (SECURITY.md § 2): the grant
+-- decides whether the table is reachable at all, the policy decides which rows.
+-- A mismatch is not cosmetic in either direction.
+select invariants.val('D5  every grant on the 12 is justified by a policy, and vice versa',
+  $$with granted as (
+      select distinct c.relname, g.privilege_type::text as op
+        from invariants.phase2_tables t
+        join pg_catalog.pg_class c on c.relname=t.relname
+         and c.relnamespace='public'::regnamespace
+        join information_schema.role_table_grants g
+          on g.table_schema='public' and g.table_name=t.relname
+         and g.grantee='authenticated'
+       where g.privilege_type in ('SELECT','INSERT','UPDATE','DELETE')
+    ), policed as (
+      select distinct c.relname,
+             case p.polcmd when 'r' then 'SELECT' when 'a' then 'INSERT'
+                           when 'w' then 'UPDATE' when 'd' then 'DELETE'
+                           else 'ALL' end as op
+        from invariants.phase2_tables t
+        join pg_catalog.pg_class c on c.relname=t.relname
+         and c.relnamespace='public'::regnamespace
+        join pg_catalog.pg_policy p on p.polrelid=c.oid
+    )
+    select count(*)::text from (
+      (select relname, op from granted except select relname, op from policed)
+      union all
+      (select relname, op from policed except select relname, op from granted)
+    ) d$$,
   '0');
 
 -- PERMANENT even after Task 2: anon is never granted anything on a tenant

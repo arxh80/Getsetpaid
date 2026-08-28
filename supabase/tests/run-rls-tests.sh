@@ -119,6 +119,69 @@ fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc 
 echo "RLS suite: all assertions passed."
 
 # ============================================================================
+# PHASE 2 (CORE CRM) RLS / PERMISSION / RECORD-SCOPE SUITE.
+#
+# Its twelve fixture users are created HERE, after rls_foundation.sql has run,
+# and deliberately not in the loop at the top of this script. That suite makes
+# assertions over the whole of public.profiles (`string_agg(full_name)` and a
+# bare `count(*)`), so twelve extra auth.users rows -- each of which the
+# handle_new_user trigger turns into a profile -- would be reasoning about a
+# different database than the one it was written against. Creating them after
+# it finishes keeps the two suites independent.
+#
+# ASSURANCE LEVEL PER FIXTURE USER, same rule as the block at the top of this
+# script: each user gets the level a REAL session of theirs would plausibly
+# have. owner/admin/finance require MFA (CLAUDE.md § Session security), so a
+# session of theirs that can do anything at all is one that presented a factor
+# -- and since 20260827210000 they hold NO permission below aal2, which now
+# reaches the CRM read policies too. Everyone else is aal1, which is their
+# realistic steady state and is what proves the gate is role-scoped rather
+# than a blanket lockout.
+# ============================================================================
+declare -A P2AAL=(
+  [powner]=aal2 [padmin]=aal2 [pmanager]=aal1 [pbooker]=aal1 [pvenuemgr]=aal1
+  [pfinance]=aal2 [pmarketing]=aal1 [pstd1]=aal1 [pstd2]=aal1 [pro]=aal1
+  [pbowner]=aal2 [pmulti]=aal2
+)
+
+declare -A P2ID
+for u in powner padmin pmanager pbooker pvenuemgr pfinance pmarketing \
+         pstd1 pstd2 pro pbowner pmulti; do
+  resp=$(curl -s -X POST "$API/auth/v1/admin/users" \
+    -H "apikey: $SRK" -H "Authorization: Bearer $SRK" -H "Content-Type: application/json" \
+    -d "{\"email\":\"$u@test.local\",\"password\":\"Test-Passw0rd!\",\"email_confirm\":true}")
+  id=$(printf '%s' "$resp" | python -c "import sys,json;print(json.load(sys.stdin).get('id') or '')")
+  if [ -z "$id" ]; then
+    id=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+         "select id from auth.users where email='$u@test.local'" | tr -d '[:space:]')
+  fi
+  if [ -z "$id" ]; then echo "Could not create or find auth user $u: $resp" >&2; exit 1; fi
+  P2ID[$u]=$id
+done
+
+docker cp "$HERE/rls_phase2_crm.sql" "$CTR:/tmp/rls_phase2_crm.sql"
+
+P2VARS=()
+for u in powner padmin pmanager pbooker pvenuemgr pfinance pmarketing \
+         pstd1 pstd2 pro pbowner pmulti; do
+  P2VARS+=( -v "$u=${P2ID[$u]}" )
+  P2VARS+=( -v "${u}_c={\"sub\":\"${P2ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"${P2AAL[$u]}\"}" )
+  P2VARS+=( -v "${u}_c1={\"sub\":\"${P2ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
+done
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P2VARS[@]}" -f /tmp/rls_phase2_crm.sql
+
+p2_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from crm.results where not pass" | tr -d '[:space:]')
+[ "$p2_fails" = "0" ] || {
+  echo "PHASE 2 CRM SUITE FAILED: $p2_fails failing assertion(s)" >&2
+  echo "  A failure in section B or E is a REOPENED TENANT BOUNDARY -- treat as Sev1." >&2
+  exit 1
+}
+echo "Phase 2 CRM suite: all assertions passed."
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -249,6 +312,133 @@ else
   printf '  FAIL  %-58s got %s want >=1\n' "LOCKOUT GUARD: aal1 owner still READS memberships" "$rows"
   api_fails=$((api_fails+1))
 fi
+
+# ============================================================================
+# PHASE 2 CRM OVER REAL HTTP.
+#
+# The psql suite above proves the policies. It CANNOT prove that the same
+# answers come back through PostgREST, and that gap is not theoretical in this
+# repo: Foundation found that grant-layer and policy-layer denials surface
+# differently (401 vs 403 vs an empty 200), and that a SECURITY DEFINER helper
+# in the wrong schema is an HTTP endpoint no psql assertion would notice.
+#
+# Every request below uses a REAL access token from a REAL password sign-in
+# plus the public anon key that ships in the browser bundle -- i.e. the request
+# an attacker sends, which never touches the Next.js app and so meets no Server
+# Action guard and no layout gate.
+#
+# NOTE the assurance level a password grant yields: aal1, always (measured in
+# the MFA block above). So powner's probes below are the aal1-owner case, which
+# is why they expect an EMPTY result rather than a full one -- see
+# 20260828121000 design note (i).
+# ============================================================================
+echo
+echo "=== Phase 2 CRM at the API surface ==="
+
+BETA_ORG=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select id from public.organisations where slug='org-beta'" | tr -d '[:space:]')
+ALPHA_ORG=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+            "select id from public.organisations where slug='org-alpha'" | tr -d '[:space:]')
+
+p2_token() { # email -> access token
+  curl -s -X POST "$API/auth/v1/token?grant_type=password" \
+    -H "apikey: $ANON" -H "Content-Type: application/json" \
+    -d "{\"email\":\"$1@test.local\",\"password\":\"Test-Passw0rd!\"}" \
+    | python -c "import sys,json;print(json.load(sys.stdin).get('access_token') or '')"
+}
+
+p2_code() { # name want_http METHOD path [body] [token]
+  local name="$1" want="$2" method="$3" path="$4" body="${5:-}" tok="${6:-}"
+  local code
+  if [ -n "$body" ]; then
+    code=$(curl -s -o /dev/null -w "%{http_code}" -X "$method" "$API/rest/v1/$path" \
+      -H "apikey: $ANON" ${tok:+-H "Authorization: Bearer $tok"} \
+      -H "Content-Type: application/json" -d "$body")
+  else
+    code=$(curl -s -o /dev/null -w "%{http_code}" -X "$method" "$API/rest/v1/$path" \
+      -H "apikey: $ANON" ${tok:+-H "Authorization: Bearer $tok"})
+  fi
+  if [ "$code" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$code"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$code" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+p2_rows() { # name want_count path token
+  local name="$1" want="$2" path="$3" tok="$4" n
+  n=$(curl -s "$API/rest/v1/$path" -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+      | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+  if [ "$n" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$n"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$n" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+MGR=$(p2_token pmanager);   [ -n "$MGR" ] || { echo "no token for pmanager" >&2; exit 1; }
+BKR=$(p2_token pbooker);    [ -n "$BKR" ] || { echo "no token for pbooker" >&2; exit 1; }
+STD=$(p2_token pstd1);      [ -n "$STD" ] || { echo "no token for pstd1" >&2; exit 1; }
+OWN=$(p2_token powner);     [ -n "$OWN" ] || { echo "no token for powner" >&2; exit 1; }
+
+# anon: the tables must not be reachable logged out at all.
+p2_code "anon GET contacts"                       401 GET  "contacts?select=id"
+p2_code "anon GET custom_field_values"            401 GET  "custom_field_values?select=id"
+p2_code "anon POST contacts"                      401 POST "contacts" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"anon\"}"
+
+# Tenant boundary, over HTTP, aimed directly at the other tenant's org id --
+# the request an attacker actually sends, since the org id is in every URL.
+p2_rows "manager GET contacts of org BETA (expect 0)"   0 \
+        "contacts?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+p2_rows "manager GET venue_rooms of org BETA (expect 0)" 0 \
+        "venue_rooms?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+p2_code "manager POSTs a contact into org BETA"         403 POST "contacts" \
+        "{\"organisation_id\":\"$BETA_ORG\",\"name\":\"planted\"}" "$MGR"
+
+# The role matrix, over HTTP.
+p2_code "booker POSTs a venue (no manage_venues)"       403 POST "venues" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"http venue\"}" "$BKR"
+p2_code "booker POSTs an artist (has manage_artists)"   201 POST "artists" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"http artist\"}" "$BKR"
+p2_code "booker POSTs a custom field DEFINITION"        403 POST "custom_field_definitions" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"artist\",\"key\":\"http_key\",\"label\":\"H\",\"field_type\":\"text\"}" "$BKR"
+
+# The polymorphic hole, over HTTP: an ALPHA row naming a BETA contact.
+BETA_CONTACT='2222000b-0000-0000-0000-00000000000b'
+CFD_CONTACT='aaaa0000-0000-0000-0000-000000000002'
+p2_code "manager POSTs a custom field value onto a BETA entity" 403 POST "custom_field_values" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"field_id\":\"$CFD_CONTACT\",\"entity_type\":\"contact\",\"entity_id\":\"$BETA_CONTACT\",\"value\":\"\\\"x\\\"\"}" "$MGR"
+
+# The absent grants are absent at the HTTP layer too, which is the only place a
+# missing grant and a denying policy look different.
+p2_code "manager DELETEs a contact (no DELETE grant)"   403 DELETE \
+        "contacts?id=eq.22220000-0000-0000-0000-000000000002" "" "$MGR"
+p2_code "manager PATCHes merges (append-only)"          403 PATCH \
+        "merges?id=eq.cccc0000-0000-0000-0000-000000000002" \
+        '{"field_resolution":{}}' "$MGR"
+p2_code "manager DELETEs merges (append-only)"          403 DELETE \
+        "merges?id=eq.cccc0000-0000-0000-0000-000000000002" "" "$MGR"
+
+# Record scope, over HTTP: every row pstd1 gets back is a row pstd1 owns.
+STD_ID="${P2ID[pstd1]}"
+foreign=$(curl -s "$API/rest/v1/contacts?select=id,owner_user_id" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $STD" \
+  | python -c "
+import sys,json
+d=json.load(sys.stdin)
+print(-1 if not isinstance(d,list) else sum(1 for r in d if r['owner_user_id']!='$STD_ID'))")
+if [ "$foreign" = "0" ]; then
+  printf '  PASS  %-58s %s\n' "standard_user GETs only rows they own" "$foreign"
+else
+  printf '  FAIL  %-58s got %s want 0\n' "standard_user GETs only rows they own" "$foreign"
+  api_fails=$((api_fails+1))
+fi
+
+# THE MFA READ GATE, over real HTTP. A password sign-in yields aal1, and an
+# Owner requires MFA -- so this is the stolen-password case reaching PostgREST
+# directly with the anon key, which is the path SECURITY.md § 4 is about.
+p2_rows "aal1 OWNER GETs zero contacts (MFA read gate)"  0 "contacts?select=id" "$OWN"
+p2_code "aal1 OWNER cannot POST a contact"              403 POST "contacts" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"aal1\"}" "$OWN"
+# Positive control / lockout guard: the SAME aal1 token still reads the tables
+# the enrolment screen needs, so an un-enrolled Owner is not locked out.
+p2_rows "LOCKOUT GUARD: aal1 owner still GETs their org" 1 \
+        "organisations?select=id&slug=eq.org-alpha" "$OWN"
 
 [ "$api_fails" = "0" ] || { echo "API SURFACE FAILED: $api_fails check(s)" >&2; exit 1; }
 echo "API surface: all checks passed."
