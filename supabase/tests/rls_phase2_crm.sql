@@ -3180,6 +3180,815 @@ select crm.try('S27 ...and restoring puts it back',
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
+-- T. TASK 4b's WRITE PATH: artists, agencies, venues, rooms, representations
+-- ===========================================================================
+-- ITS OWN FIXTURE, with its own ids, for the reason section S gives: sections
+-- A-S have already inserted, deleted and re-inserted rows on these tables, and
+-- a test that depends on what they left behind is a test whose meaning changes
+-- when they do.
+--
+--   artists     ...00b1 owned by pstd1        ...00b2 owned by pmanager
+--   agencies    ...00b1 ...00b2 ...00b3       all unowned (a representation's
+--               record scope derives from the ARTIST -- Q3a -- so the agency's
+--               owner is deliberately not the variable under test here)
+--   venues      ...00b1 owned by pstd1        ...00b2 owned by pmanager
+--   reps        (id prefix 888800b0-, suffix shown; "r1" below is a LABEL for
+--                888800b0-0000-0000-0000-0000000000a1 and so on -- the ids are
+--                hex because a uuid column is, which the first draft of this
+--                fixture found out with `invalid input syntax for type uuid:
+--                "…0000000000r1"`)
+--               r1 = …a1  artist b1 -> agency b1, PRIMARY, open-ended
+--               r2 = …a2  artist b1 -> agency b2, open-ended
+--               r3 = …a3  artist b1 -> agency b3, open-ended
+--               r4 = …a4  artist b2 -> agency b1, PRIMARY, open-ended
+--               r5 = …a5  artist b1 -> agency b2, PRIMARY, 2020-01-01 → 2023-01-01
+--
+-- r5 IS THE POINT OF THE WHOLE FIXTURE. It is a HISTORICAL primary: is_primary
+-- is true and ended_at is set, so it sits outside
+-- artist_representations_one_current_primary_per_artist's predicate and
+-- coexists legally with r1. Every temporal assertion below is about whether
+-- the write path leaves it alone.
+insert into public.agencies (id, organisation_id, name)
+select v.id::uuid, o.id, v.nm
+from public.organisations o, (values
+  ('333300b0-0000-0000-0000-0000000000b1', 'T Agency One'),
+  ('333300b0-0000-0000-0000-0000000000b2', 'T Agency Two'),
+  ('333300b0-0000-0000-0000-0000000000b3', 'T Agency Three')
+) as v(id, nm) where o.slug='org-alpha';
+
+insert into public.artists (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, v.owner::uuid, v.nm
+from public.organisations o, (values
+  ('444400b0-0000-0000-0000-0000000000b1', :'pstd1',    'T Std1 Artist'),
+  ('444400b0-0000-0000-0000-0000000000b2', :'pmanager', 'T Manager Artist')
+) as v(id, owner, nm) where o.slug='org-alpha';
+
+insert into public.venues (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, v.owner::uuid, v.nm
+from public.organisations o, (values
+  ('555500b0-0000-0000-0000-0000000000b1', :'pstd1',    'T Std1 Venue'),
+  ('555500b0-0000-0000-0000-0000000000b2', :'pmanager', 'T Manager Venue')
+) as v(id, owner, nm) where o.slug='org-alpha';
+
+insert into public.artist_representations
+  (id, organisation_id, artist_id, agency_id, is_primary, started_at, ended_at)
+select v.id::uuid, o.id, v.ar::uuid, v.ag::uuid, v.pri,
+       nullif(v.st,'')::date, nullif(v.en,'')::date
+from public.organisations o, (values
+  ('888800b0-0000-0000-0000-0000000000a1','444400b0-0000-0000-0000-0000000000b1',
+   '333300b0-0000-0000-0000-0000000000b1', true,  '', ''),
+  ('888800b0-0000-0000-0000-0000000000a2','444400b0-0000-0000-0000-0000000000b1',
+   '333300b0-0000-0000-0000-0000000000b2', false, '', ''),
+  ('888800b0-0000-0000-0000-0000000000a3','444400b0-0000-0000-0000-0000000000b1',
+   '333300b0-0000-0000-0000-0000000000b3', false, '', ''),
+  ('888800b0-0000-0000-0000-0000000000a4','444400b0-0000-0000-0000-0000000000b2',
+   '333300b0-0000-0000-0000-0000000000b1', true,  '', ''),
+  ('888800b0-0000-0000-0000-0000000000a5','444400b0-0000-0000-0000-0000000000b1',
+   '333300b0-0000-0000-0000-0000000000b2', true,  '2020-01-01', '2023-01-01')
+) as v(id, ar, ag, pri, st, en) where o.slug='org-alpha';
+
+insert into public.artist_fee_history
+  (id, organisation_id, artist_id, occurred_on, amount_minor, note)
+select v.id::uuid, o.id, '444400b0-0000-0000-0000-0000000000b1',
+       v.d::date, v.amt::bigint, v.nt
+from public.organisations o, (values
+  ('999900b0-0000-0000-0000-0000000000f1','2024-06-01', '250000','Warehouse, June'),
+  ('999900b0-0000-0000-0000-0000000000f2','2025-02-14', '400000','Valentine''s')
+) as v(id, d, amt, nt) where o.slug='org-alpha';
+
+-- --------------------------------------------------------------------------
+-- T0. THE FIXTURE IS THE MEASUREMENT. Four is_primary rows would be a bug on
+-- most schemas; here two is a legal state, and the suite has to say so out
+-- loud before anything is asserted about the write path.
+-- --------------------------------------------------------------------------
+select crm.val('T0  artist b1 legally holds TWO is_primary rows (one has ended)',
+  $$select count(*)::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1' and is_primary$$, '2');
+select crm.val('T0a ...and exactly ONE of them is open-ended, which is what the index enforces',
+  $$select count(*)::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'
+       and is_primary and ended_at is null and deleted_at is null$$, '1');
+
+-- --------------------------------------------------------------------------
+-- T1-T3. THE MEASUREMENT set_artist_primary_representation() RESTS ON.
+--
+-- 20260828230000's header says a single UPDATE that demotes one row and
+-- promotes another is checked PER ROW against the non-deferrable partial
+-- unique index, so it succeeds or raises 23505 depending on the order the
+-- executor happens to visit the rows in. S1/S2/S3 pin that for
+-- contact_companies; this pins it for artist_representations, whose index has
+-- a DIFFERENT predicate. Run as postgres, with no RLS in the way, so the only
+-- thing under test is the index.
+-- --------------------------------------------------------------------------
+select crm.try('T1  a single UPDATE promoting BEFORE demoting raises 23505',
+  $$update public.artist_representations set is_primary = true
+     where id='888800b0-0000-0000-0000-0000000000a2'$$, 'denied(23505)');
+
+-- $t2$ and not $$ because the payload is itself a dollar-quoted DO block.
+select crm.try('T2  demote-then-promote, SCOPED to the index predicate, is accepted',
+  $t2$do $do$
+    begin
+      update public.artist_representations set is_primary = false
+       where artist_id='444400b0-0000-0000-0000-0000000000b1'
+         and is_primary and ended_at is null and deleted_at is null;
+      update public.artist_representations set is_primary = true
+       where id='888800b0-0000-0000-0000-0000000000a2';
+    end
+    $do$$t2$, 'ok(0)');
+
+select crm.val('T3  ...leaving exactly one OPEN-ENDED primary, and it is r2',
+  $$select count(*)::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'
+       and is_primary and ended_at is null
+       and id='888800b0-0000-0000-0000-0000000000a2'$$, '1');
+select crm.val('T3a THE TEMPORAL HALF: the HISTORICAL primary r5 is untouched',
+  $$select is_primary::text from public.artist_representations
+     where id='888800b0-0000-0000-0000-0000000000a5'$$, 'true');
+
+-- --------------------------------------------------------------------------
+-- T4-T10. set_artist_primary_representation() across every role that matters.
+--
+-- SECURITY INVOKER, so what is under test is that it adds no privilege: every
+-- refusal the RLS policies make against a direct PATCH they make against this,
+-- and the MECHANISM is asserted rather than "it failed".
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('T4  a manager moves the primary back to r1, and gets the count',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000a1',%L)::text$$,
+    :'alpha_org'), '1');
+select crm.val('T5  ...exactly one open-ended primary, and it moved',
+  $$select id::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'
+       and is_primary and ended_at is null$$,
+  '888800b0-0000-0000-0000-0000000000a1');
+select crm.val('T5a THE FUNCTION''s temporal half: r5 is STILL is_primary',
+  $$select is_primary::text from public.artist_representations
+     where id='888800b0-0000-0000-0000-0000000000a5'$$, 'true');
+select crm.val('T6  re-nominating the CURRENT primary is a no-op that still reports 1',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000a1',%L)::text$$,
+    :'alpha_org'), '1');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.val('T7  a standard_user may set the primary on an artist THEY OWN',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000a3',%L)::text$$,
+    :'alpha_org'), '1');
+-- The record-scope half. pstd1 does not own artist b2, so both statements
+-- inside the function match nothing -- and the function RAISES rather than
+-- returning 0, which is the whole reason it raises: a returned 0 would arrive
+-- at the application as a 200 with no error, the same trap as a 204 one layer
+-- down.
+select crm.val('T8  ...and NOT on an artist they do not own -- 42501, not 0',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b2','888800b0-0000-0000-0000-0000000000a4',%L)::text$$,
+    :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+-- THE OUTCOME CHECK RUNS AS postgres, for the reason S8a records: written
+-- inside the attacker's session it would measure their VISIBILITY while
+-- claiming to measure state.
+select crm.val('T8a ...and that artist still has its original primary',
+  $$select count(*)::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b2'
+       and is_primary and id='888800b0-0000-0000-0000-0000000000a4'$$, '1');
+
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select crm.val('T9  a read_only user is refused, with the mechanism 42501',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000a1',%L)::text$$,
+    :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pvenuemgr_c';
+-- THE KEY IS `manage_artists`, NOT "any CRM key". A Venue Manager can write
+-- venues and rooms all day and must not touch representation.
+select crm.val('T9a a venue_manager holds no manage_artists, so this is 42501 too',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000a1',%L)::text$$,
+    :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select crm.val('T10 a NON-MEMBER of the organisation is refused the same way',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000a1',%L)::text$$,
+    :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- --------------------------------------------------------------------------
+-- T10a-T10d. THE WORKSPACE TERM, copied from 20260828234500 because that
+-- migration's header instructs Task 4b to copy it and NOT to ship a 2-arg
+-- overload.
+--
+-- RLS answers "may this caller write this row". The URL asks "is this row the
+-- one this workspace's page is about". For a member of ONE organisation those
+-- coincide and every assertion above passes either way. pmulti is an admin of
+-- BOTH -- an ordinary user at MVP -- and is where they diverge.
+--
+-- The refusal has to be the ORGANISATION and not pmulti's access, which is
+-- what T10c is for: the same caller, the same rows, org-beta's id, accepted.
+-- Without that control T10a would pass just as well if the function had simply
+-- stopped working.
+-- --------------------------------------------------------------------------
+insert into public.artist_representations (id, organisation_id, artist_id, agency_id, is_primary)
+select '888800bb-0000-0000-0000-0000000000bb', o.id,
+       '4444000b-0000-0000-0000-00000000000b','3333000b-0000-0000-0000-00000000000b', false
+from public.organisations o where o.slug='org-beta';
+
+set role authenticated;
+set request.jwt.claims = :'pmulti_c';
+select crm.val('T10a pmulti, from ALPHA, cannot promote a BETA artist''s representation',
+  format($$select public.set_artist_primary_representation(
+      '4444000b-0000-0000-0000-00000000000b','888800bb-0000-0000-0000-0000000000bb',%L)::text$$,
+    :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+select crm.val('T10b ...and the BETA representation row is untouched -- 0 rows changed',
+  $$select count(*)::text from public.artist_representations
+     where id='888800bb-0000-0000-0000-0000000000bb' and is_primary$$, '0');
+
+set role authenticated;
+set request.jwt.claims = :'pmulti_c';
+select crm.val('T10c POSITIVE CONTROL: the same caller and rows, with BETA''s org id',
+  format($$select public.set_artist_primary_representation(
+      '4444000b-0000-0000-0000-00000000000b','888800bb-0000-0000-0000-0000000000bb',%L)::text$$,
+    :'beta_org'), '1');
+reset role; reset request.jwt.claims;
+select crm.val('T10d ...so T10a''s refusal is the WORKSPACE, not the caller',
+  $$select count(*)::text from public.artist_representations
+     where id='888800bb-0000-0000-0000-0000000000bb' and is_primary$$, '1');
+
+-- --------------------------------------------------------------------------
+-- T11-T12. THE PROMOTE'S OWN SCOPE, which the contact version has no analogue
+-- for. Without `ended_at is null and deleted_at is null` on the promote, this
+-- function could demote the live open-ended primary and promote an ENDED or
+-- REMOVED row in its place -- leaving the artist with no current primary at
+-- all and one marked on a row the product does not show as current.
+--
+-- The second assertion of each pair is the one that matters: the demote must
+-- have ROLLED BACK with the raise.
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('T11 promoting an ENDED representation is refused -- 42501',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000a5',%L)::text$$,
+    :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+select crm.val('T11a ...and the demote did NOT commit -- r3 is still the primary',
+  $$select id::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'
+       and is_primary and ended_at is null$$,
+  '888800b0-0000-0000-0000-0000000000a3');
+
+update public.artist_representations set deleted_at = now()
+ where id='888800b0-0000-0000-0000-0000000000a2';
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('T12 promoting a REMOVED representation is refused -- 42501',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000a2',%L)::text$$,
+    :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+select crm.val('T12a ...and the demote did NOT commit either',
+  $$select id::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'
+       and is_primary and ended_at is null and deleted_at is null$$,
+  '888800b0-0000-0000-0000-0000000000a3');
+update public.artist_representations set deleted_at = null
+ where id='888800b0-0000-0000-0000-0000000000a2';
+
+-- --------------------------------------------------------------------------
+-- T13-T14. CLEARING, and the one branch that costs the caller something.
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('T13 clearing the primary returns 0 rows promoted',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1',null,%L)::text$$, :'alpha_org'), '0');
+select crm.val('T14 ...and clearing again RAISES, because 0 demoted cannot be told from a refusal',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1',null,%L)::text$$, :'alpha_org'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+select crm.val('T13a no OPEN-ENDED primary remains',
+  $$select count(*)::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'
+       and is_primary and ended_at is null and deleted_at is null$$, '0');
+select crm.val('T13b ...and CLEARING did not rewrite history either -- r5 is still primary',
+  $$select is_primary::text from public.artist_representations
+     where id='888800b0-0000-0000-0000-0000000000a5'$$, 'true');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('T14a put it back, so the rest of the section has a primary',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000a1',%L)::text$$,
+    :'alpha_org'), '1');
+reset role; reset request.jwt.claims;
+
+-- --------------------------------------------------------------------------
+-- T15. THE FUTURE-DATED `ended_at` GAP -- FOLLOW-UPS.md's open item, and the
+-- § 3(b) decision, as assertions rather than as a paragraph.
+--
+-- The index enforces one OPEN-ENDED primary, not one CURRENT one, because
+-- `current_date` is not IMMUTABLE and cannot appear in a partial index
+-- predicate (nor in a CHECK constraint). Task 4b ACCEPTED that rather than
+-- forbidding a future-dated end date: a representation that ends on a known
+-- date is an ordinary industry fact, and rejecting it would forbid a true
+-- statement to protect an index name.
+--
+-- The price of accepting it is a display rule (lib/crm/queries.ts,
+-- `PrimaryState`) and the guarantee below: THE WRITE PATH CANNOT CREATE THE
+-- AMBIGUOUS STATE. T15d is that guarantee.
+-- --------------------------------------------------------------------------
+insert into public.artist_representations
+  (id, organisation_id, artist_id, agency_id, is_primary, ended_at)
+select '888800b0-0000-0000-0000-0000000000f9', o.id,
+       '444400b0-0000-0000-0000-0000000000b1',
+       '333300b0-0000-0000-0000-0000000000b2', true, date '2099-01-01'
+from public.organisations o where o.slug='org-alpha';
+
+select crm.val('T15 THE GAP IS REAL: a FUTURE-dated primary coexists with the open-ended one',
+  $$select count(*)::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'
+       and is_primary and deleted_at is null$$, '3');
+select crm.try('T15a but a SECOND OPEN-ENDED primary is still refused -- the index does bite',
+  $$insert into public.artist_representations
+      (organisation_id, artist_id, agency_id, is_primary)
+    select id,'444400b0-0000-0000-0000-0000000000b1',
+           '333300b0-0000-0000-0000-0000000000b3', true
+    from public.organisations where slug='org-alpha'$$, 'denied(23505)');
+select crm.val('T15b the DISPLAY RULE''s input: exactly one row is primary AND open-ended',
+  $$select count(*)::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'
+       and is_primary and ended_at is null and deleted_at is null$$, '1');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('T15c THE WRITE PATH CANNOT CREATE IT: promoting the 2099 row is 42501',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000f9',%L)::text$$,
+    :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+select crm.val('T15d ...and that refusal rolled the demote back, so r1 is still primary',
+  $$select id::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'
+       and is_primary and ended_at is null and deleted_at is null$$,
+  '888800b0-0000-0000-0000-0000000000a1');
+-- The 2099 row is left in place deliberately: T28/T28b below write against
+-- this artist and the gap must not be a fixture that quietly disappears.
+
+-- --------------------------------------------------------------------------
+-- T16-T23. SOFT DELETE AND RESTORE ON THE THREE NEW ENTITIES, and the
+-- MECHANISM of each refusal.
+--
+-- ok(0) is the silent 204 the application must read a row count to detect;
+-- denied(42501) is the loud one it can read from the error. Asserting which is
+-- the point (Task 3a's lesson), not accepting either.
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('T16 a manager soft-deletes an artist',
+  $$update public.artists set deleted_at = pg_catalog.now()
+     where id='444400b0-0000-0000-0000-0000000000b2' and deleted_at is null$$, 'ok(1)');
+select crm.try('T17 ...and deleting it again matches nothing, so the timestamp is not restamped',
+  $$update public.artists set deleted_at = pg_catalog.now()
+     where id='444400b0-0000-0000-0000-0000000000b2' and deleted_at is null$$, 'ok(0)');
+select crm.val('T18 ...the soft-deleted row is still READABLE -- design note (g)',
+  $$select count(*)::text from public.artists
+     where id='444400b0-0000-0000-0000-0000000000b2'$$, '1');
+select crm.val('T18a ...and so are its representations, so restore can show what comes back',
+  $$select count(*)::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b2'$$, '1');
+select crm.try('T19 ...and it restores',
+  $$update public.artists set deleted_at = null
+     where id='444400b0-0000-0000-0000-0000000000b2' and deleted_at is not null$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+-- THE 204. read_only holds view_crm but not manage_artists, so the UPDATE
+-- policy's USING clause filters the row out and the statement matches nothing.
+-- Over PostgREST that is 204 No Content with `Content-Range: */0` -- byte
+-- identical in the status line to a write that changed fifteen rows.
+select crm.try('T20 a read_only soft delete of an ARTIST matches NOTHING -- ok(0)',
+  $$update public.artists set deleted_at = pg_catalog.now()
+     where id='444400b0-0000-0000-0000-0000000000b1'$$, 'ok(0)');
+select crm.try('T20a a read_only soft delete of a VENUE matches NOTHING -- ok(0)',
+  $$update public.venues set deleted_at = pg_catalog.now()
+     where id='555500b0-0000-0000-0000-0000000000b1'$$, 'ok(0)');
+select crm.try('T20b a read_only soft delete of an AGENCY matches NOTHING -- ok(0)',
+  $$update public.agencies set deleted_at = pg_catalog.now()
+     where id='333300b0-0000-0000-0000-0000000000b1'$$, 'ok(0)');
+-- The INSERT half, for contrast, on the same session: a refused INSERT is a
+-- LOUD 42501, which is why the create paths read the error and the update
+-- paths read the row count.
+select crm.try('T21 ...while a read_only INSERT is loud: 42501, not ok(0)',
+  format($$insert into public.artists (organisation_id, name)
+           values (%L,'read only should not be here')$$, :'alpha_org'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+-- As postgres, for the reason S8a gives.
+select crm.val('T20c ...and none of the three really changed',
+  $$select (count(*) filter (where deleted_at is null))::text from (
+      select deleted_at from public.artists  where id='444400b0-0000-0000-0000-0000000000b1'
+      union all
+      select deleted_at from public.venues   where id='555500b0-0000-0000-0000-0000000000b1'
+      union all
+      select deleted_at from public.agencies where id='333300b0-0000-0000-0000-0000000000b1') s$$,
+  '3');
+select crm.val('T21a ...and no artist was inserted by the refused INSERT',
+  $$select count(*)::text from public.artists
+     where name='read only should not be here'$$, '0');
+
+-- THE SIX KEYS ARE NOT ONE KEY. A Booker writes artists and not venues; a
+-- Venue Manager is the mirror image; an agency is on `manage_contacts`, which
+-- neither of them holds. Every one of these is a soft DELETE -- the verb Task
+-- 4b added -- rather than the INSERT section C already covers.
+set role authenticated;
+set request.jwt.claims = :'pbooker_c';
+select crm.try('T22 a booker soft-deletes an ARTIST (manage_artists: yes)',
+  $$update public.artists set deleted_at = pg_catalog.now()
+     where id='444400b0-0000-0000-0000-0000000000b2' and deleted_at is null$$, 'ok(1)');
+select crm.try('T22a ...and restores it',
+  $$update public.artists set deleted_at = null
+     where id='444400b0-0000-0000-0000-0000000000b2' and deleted_at is not null$$, 'ok(1)');
+select crm.try('T22b a booker soft-deletes a VENUE (manage_venues: NO) -- ok(0)',
+  $$update public.venues set deleted_at = pg_catalog.now()
+     where id='555500b0-0000-0000-0000-0000000000b2' and deleted_at is null$$, 'ok(0)');
+-- T22c CORRECTS AN ASSUMPTION THIS SUITE'S AUTHOR MADE AND DID NOT RUN.
+-- The first version expected ok(0) here, on the reasoning that a Booker is an
+-- artist role. Read out of role_permissions rather than out of a mental model:
+--
+--   booker        manage_artists, manage_contacts, view_crm
+--   venue_manager manage_contacts, manage_venues, view_crm
+--   marketing     manage_contacts, view_crm
+--   finance       view_crm
+--   read_only     view_crm
+--
+-- `manage_contacts` is the widest CRM key in the matrix -- every role except
+-- finance and read_only holds it -- because it covers contacts, companies AND
+-- agencies, which is the relationship layer everybody in a booking business
+-- works in. The roles that DIVERGE on an agency page are therefore
+-- venue_manager and marketing (agency yes, representation no), NOT booker.
+-- Two comments in the application said otherwise and were corrected with this.
+select crm.try('T22c a booker soft-deletes an AGENCY -- manage_contacts: YES, and it is the widest key',
+  $$update public.agencies set deleted_at = pg_catalog.now()
+     where id='333300b0-0000-0000-0000-0000000000b1' and deleted_at is null$$, 'ok(1)');
+select crm.try('T22d ...and restores it',
+  $$update public.agencies set deleted_at = null
+     where id='333300b0-0000-0000-0000-0000000000b1' and deleted_at is not null$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- The roles that really cannot. Finance is the interesting one: it is the role
+-- whose name suggests the most access to a table called artist_fee_history and
+-- has the least (C15, T32b).
+set role authenticated;
+set request.jwt.claims = :'pfinance_c';
+select crm.try('T22e finance soft-deletes an AGENCY (view_crm only) -- ok(0)',
+  $$update public.agencies set deleted_at = pg_catalog.now()
+     where id='333300b0-0000-0000-0000-0000000000b1' and deleted_at is null$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmarketing_c';
+select crm.try('T22f marketing soft-deletes an AGENCY (manage_contacts: yes)',
+  $$update public.agencies set deleted_at = pg_catalog.now()
+     where id='333300b0-0000-0000-0000-0000000000b1' and deleted_at is null$$, 'ok(1)');
+select crm.try('T22g ...and restores it',
+  $$update public.agencies set deleted_at = null
+     where id='333300b0-0000-0000-0000-0000000000b1' and deleted_at is not null$$, 'ok(1)');
+-- THE DIVERGENCE THE AGENCY DETAIL PAGE IS BUILT ON: the same user, the same
+-- page, and the representation panel is refused. This is why that page asks
+-- for TWO keys.
+select crm.try('T22h ...but marketing cannot touch a REPRESENTATION on that page -- ok(0)',
+  $$update public.artist_representations set territory='pwned'
+     where id='888800b0-0000-0000-0000-0000000000a1'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pvenuemgr_c';
+select crm.try('T22i a venue_manager edits an AGENCY (manage_contacts: yes)',
+  $$update public.agencies set name='T Agency One (vm edit)'
+     where id='333300b0-0000-0000-0000-0000000000b1' and deleted_at is null$$, 'ok(1)');
+select crm.try('T22j ...and is refused the representation panel on the same page -- ok(0)',
+  $$update public.artist_representations set territory='pwned'
+     where id='888800b0-0000-0000-0000-0000000000a1'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+select crm.val('T22k ...and the representation really is untouched',
+  $$select coalesce(territory,'<null>') from public.artist_representations
+     where id='888800b0-0000-0000-0000-0000000000a1'$$, '<null>');
+
+set role authenticated;
+set request.jwt.claims = :'pvenuemgr_c';
+select crm.try('T23 a venue_manager soft-deletes a VENUE (manage_venues: yes)',
+  $$update public.venues set deleted_at = pg_catalog.now()
+     where id='555500b0-0000-0000-0000-0000000000b2' and deleted_at is null$$, 'ok(1)');
+select crm.try('T23a ...and restores it',
+  $$update public.venues set deleted_at = null
+     where id='555500b0-0000-0000-0000-0000000000b2' and deleted_at is not null$$, 'ok(1)');
+select crm.try('T23b a venue_manager soft-deletes an ARTIST (manage_artists: NO) -- ok(0)',
+  $$update public.artists set deleted_at = pg_catalog.now()
+     where id='444400b0-0000-0000-0000-0000000000b2' and deleted_at is null$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('T23c a manager soft-deletes an AGENCY (manage_contacts: yes)',
+  $$update public.agencies set deleted_at = pg_catalog.now()
+     where id='333300b0-0000-0000-0000-0000000000b3' and deleted_at is null$$, 'ok(1)');
+select crm.val('T23d ...and the representation naming it SURVIVES -- the whole reason agencies.deleted_at exists',
+  $$select count(*)::text from public.artist_representations
+     where agency_id='333300b0-0000-0000-0000-0000000000b3' and deleted_at is null$$, '1');
+select crm.try('T23e ...and it restores',
+  $$update public.agencies set deleted_at = null
+     where id='333300b0-0000-0000-0000-0000000000b3' and deleted_at is not null$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- --------------------------------------------------------------------------
+-- T24-T26. venue_rooms: the full inline lifecycle, on the right key.
+-- --------------------------------------------------------------------------
+insert into public.venue_rooms (id, organisation_id, venue_id, name)
+select '666600b0-0000-0000-0000-0000000000b1', o.id,
+       '555500b0-0000-0000-0000-0000000000b2', 'T Main Room'
+from public.organisations o where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pvenuemgr_c';
+select crm.try('T24 a venue_manager renames a room',
+  $$update public.venue_rooms set name='T Main Room (renamed)'
+     where id='666600b0-0000-0000-0000-0000000000b1' and deleted_at is null$$, 'ok(1)');
+select crm.try('T24a ...closes it (a soft delete -- Phase 3 events may reference it)',
+  $$update public.venue_rooms set deleted_at = pg_catalog.now()
+     where id='666600b0-0000-0000-0000-0000000000b1' and deleted_at is null$$, 'ok(1)');
+select crm.val('T24b ...the closed room is still READABLE, so reopen is reachable',
+  $$select count(*)::text from public.venue_rooms
+     where id='666600b0-0000-0000-0000-0000000000b1'$$, '1');
+select crm.try('T24c ...and reopens it',
+  $$update public.venue_rooms set deleted_at = null
+     where id='666600b0-0000-0000-0000-0000000000b1' and deleted_at is not null$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pbooker_c';
+select crm.try('T25 a booker cannot rename a room (manage_venues: NO) -- ok(0)',
+  $$update public.venue_rooms set name='pwned'
+     where id='666600b0-0000-0000-0000-0000000000b1'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select crm.try('T26 a read_only user cannot close a room -- ok(0)',
+  $$update public.venue_rooms set deleted_at = pg_catalog.now()
+     where id='666600b0-0000-0000-0000-0000000000b1'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+select crm.val('T26a ...and the room really is untouched',
+  $$select name from public.venue_rooms
+     where id='666600b0-0000-0000-0000-0000000000b1' and deleted_at is null$$,
+  'T Main Room (renamed)');
+
+-- --------------------------------------------------------------------------
+-- T27. TENANT BREAKOUT ON THE NEW ENDPOINTS -- THE MISMATCHED PAIR.
+--
+-- Section B already covers a foreign organisation_id in the body and a foreign
+-- row id in the URL. The pair the brief names is the third one: THIS
+-- workspace's organisation_id with THAT workspace's parent id. It is the shape
+-- that looks legitimate to a naive check ("the org matches my session") and it
+-- is what the composite tenant-scoped foreign keys from 20260828001132 exist
+-- for.
+--
+-- BOTH LAYERS, IN ORDER, because they are different controls with different
+-- reach:
+--   * as `authenticated`, the POLICY refuses first, 42501 -- it requires
+--     `p.organisation_id = <row>.organisation_id` on the parent lookup;
+--   * as `postgres`, with no policy in the way, the FOREIGN KEY refuses,
+--     23503 -- which holds for EVERY writer in every role, including a
+--     SECURITY DEFINER function or a DBA repair script.
+-- Proven, not cited.
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('T27 ALPHA org id + BETA artist id in artist_representations -- policy, 42501',
+  format($$insert into public.artist_representations
+             (organisation_id, artist_id, agency_id)
+           values (%L,'4444000b-0000-0000-0000-00000000000b',
+                      '333300b0-0000-0000-0000-0000000000b1')$$, :'alpha_org'),
+  'denied(42501)');
+select crm.try('T27a ALPHA org id + BETA agency id -- also 42501 (the FK would too)',
+  format($$insert into public.artist_representations
+             (organisation_id, artist_id, agency_id)
+           values (%L,'444400b0-0000-0000-0000-0000000000b1',
+                      '3333000b-0000-0000-0000-00000000000b')$$, :'alpha_org'),
+  'denied(23503)');
+select crm.try('T27b ALPHA org id + BETA venue id in venue_rooms -- policy, 42501',
+  format($$insert into public.venue_rooms (organisation_id, venue_id, name)
+           values (%L,'5555000b-0000-0000-0000-00000000000b','planted')$$, :'alpha_org'),
+  'denied(42501)');
+select crm.try('T27c POSITIVE CONTROL: the same statement with THIS workspace''s parent',
+  format($$insert into public.venue_rooms (organisation_id, venue_id, name)
+           values (%L,'555500b0-0000-0000-0000-0000000000b2','T Control Room')$$,
+    :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- The constraint layer, with no policy in the way. This is the half that holds
+-- for a writer RLS does not apply to.
+select crm.try('T27d as postgres, the COMPOSITE FK refuses the same artist mismatch -- 23503',
+  format($$insert into public.artist_representations
+             (organisation_id, artist_id, agency_id)
+           values (%L,'4444000b-0000-0000-0000-00000000000b',
+                      '333300b0-0000-0000-0000-0000000000b1')$$, :'alpha_org'),
+  'denied(23503)');
+select crm.try('T27e as postgres, likewise for the venue mismatch -- 23503',
+  format($$insert into public.venue_rooms (organisation_id, venue_id, name)
+           values (%L,'5555000b-0000-0000-0000-00000000000b','planted by postgres')$$,
+    :'alpha_org'), 'denied(23503)');
+select crm.val('T27f ...and nothing was planted in BETA',
+  $$select count(*)::text from public.venue_rooms
+     where venue_id='5555000b-0000-0000-0000-00000000000b'$$, '1');
+
+-- --------------------------------------------------------------------------
+-- T28 / T28b / T29. WHERE THE SOFT-DELETE CHECK ON A CHILD ACTUALLY LIVES.
+--
+-- 20260829001000 copies the split 20260828235000 made for contact_companies:
+-- the PARENT end goes into the policy, the OTHER ends stay application-only.
+-- T28 is the assertion a reader should reach for before deciding
+-- lib/crm/actions.ts's `liveInOrg` is the only thing standing between a
+-- soft-deleted record and its children -- it is not, for the parent.
+-- T28b is what stops the other half being an assumption: it measures the
+-- database SAYING YES, so nobody deletes the application check thinking a
+-- policy will catch it.
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('T28 setup: a manager soft-deletes T Manager Artist',
+  $$update public.artists set deleted_at = pg_catalog.now()
+     where id='444400b0-0000-0000-0000-0000000000b2' and deleted_at is null$$, 'ok(1)');
+select crm.try('T28 the DATABASE REFUSES a representation write on a DELETED artist',
+  $$update public.artist_representations set territory = 'UK'
+     where artist_id='444400b0-0000-0000-0000-0000000000b2'$$, 'ok(0)');
+select crm.try('T28a ...including soft-deleting the representation itself',
+  $$update public.artist_representations set deleted_at = pg_catalog.now()
+     where artist_id='444400b0-0000-0000-0000-0000000000b2'$$, 'ok(0)');
+select crm.try('T28 teardown: restoring the artist puts it back',
+  $$update public.artists set deleted_at = null
+     where id='444400b0-0000-0000-0000-0000000000b2' and deleted_at is not null$$, 'ok(1)');
+
+-- T28b. THE OTHER END, AND WHY IT IS DELIBERATELY STILL OPEN.
+--
+-- The product rule (lib/crm/artists.ts) is BOTH ENDS LIVE. The policy enforces
+-- the ARTIST half only. An `agencies.deleted_at is null` term would have to
+-- READ THE AGENCY ROW as the caller, and under Q3a a record-scoped user may
+-- legitimately record a representation naming an agency they cannot see -- so
+-- "deleted" and "invisible" would collapse into one refusal and break the case
+-- the schema deliberately permits.
+select crm.try('T28b setup: a manager soft-deletes T Agency Three',
+  $$update public.agencies set deleted_at = pg_catalog.now()
+     where id='333300b0-0000-0000-0000-0000000000b3' and deleted_at is null$$, 'ok(1)');
+select crm.try('T28b the DATABASE still PERMITS a write whose only deleted end is the AGENCY -- app-side only, by Q3a',
+  $$update public.artist_representations set territory = 'UK'
+     where agency_id='333300b0-0000-0000-0000-0000000000b3'$$, 'ok(1)');
+select crm.try('T28b teardown: ...and restoring the agency puts it back',
+  $$update public.agencies set deleted_at = null
+     where id='333300b0-0000-0000-0000-0000000000b3' and deleted_at is not null$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- T29. venue_rooms has ONE parent and no other end, so its half of the split
+-- is one-sided: nothing is left application-only.
+set role authenticated;
+set request.jwt.claims = :'pvenuemgr_c';
+select crm.try('T29 setup: a venue_manager soft-deletes T Manager Venue',
+  $$update public.venues set deleted_at = pg_catalog.now()
+     where id='555500b0-0000-0000-0000-0000000000b2' and deleted_at is null$$, 'ok(1)');
+select crm.try('T29 the DATABASE REFUSES a room rename on a DELETED venue',
+  $$update public.venue_rooms set name='renamed while deleted'
+     where id='666600b0-0000-0000-0000-0000000000b1'$$, 'ok(0)');
+select crm.try('T29a ...and refuses a NEW room on it -- a loud 42501, because INSERT is',
+  format($$insert into public.venue_rooms (organisation_id, venue_id, name)
+           values (%L,'555500b0-0000-0000-0000-0000000000b2','room on a deleted venue')$$,
+    :'alpha_org'), 'denied(42501)');
+select crm.val('T29b ...while the rooms stay READABLE, so restore can show what comes back',
+  $$select count(*)::text from public.venue_rooms
+     where venue_id='555500b0-0000-0000-0000-0000000000b2'$$, '2');
+select crm.try('T29 teardown: restoring the venue makes the rooms writable again',
+  $$update public.venues set deleted_at = null
+     where id='555500b0-0000-0000-0000-0000000000b2' and deleted_at is not null$$, 'ok(1)');
+select crm.try('T29c POSITIVE CONTROL: the same rename now applies',
+  $$update public.venue_rooms set name='T Main Room (renamed)'
+     where id='666600b0-0000-0000-0000-0000000000b1' and deleted_at is null$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- --------------------------------------------------------------------------
+-- T30. A SUSPENDED WORKSPACE. Q6: read-only, not a lockout.
+-- --------------------------------------------------------------------------
+update public.organisations set deleted_at = now() where slug = 'org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('T30 SUSPENDED: a manager still READS the artist',
+  $$select count(*)::text from public.artists
+     where id='444400b0-0000-0000-0000-0000000000b1'$$, '1');
+select crm.try('T30a SUSPENDED: ...and their soft delete matches NOTHING -- ok(0)',
+  $$update public.artists set deleted_at = pg_catalog.now()
+     where id='444400b0-0000-0000-0000-0000000000b1'$$, 'ok(0)');
+select crm.try('T30b SUSPENDED: ...nor can they rename a room -- ok(0)',
+  $$update public.venue_rooms set name='suspended rename'
+     where id='666600b0-0000-0000-0000-0000000000b1'$$, 'ok(0)');
+select crm.val('T30c SUSPENDED: ...and the RPC raises 42501 rather than half-applying',
+  format($$select public.set_artist_primary_representation(
+      '444400b0-0000-0000-0000-0000000000b1','888800b0-0000-0000-0000-0000000000a3',%L)::text$$,
+    :'alpha_org'), 'denied(42501)');
+-- The half that makes T30c worth asserting: the demote statement inside the
+-- function must not have committed on its own. If it had, a suspended
+-- workspace could strip an artist's primary representation through a call that
+-- reports an error.
+select crm.val('T30d SUSPENDED: ...and the demote half did NOT commit',
+  $$select id::text from public.artist_representations
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'
+       and is_primary and ended_at is null and deleted_at is null$$,
+  '888800b0-0000-0000-0000-0000000000a1');
+reset role; reset request.jwt.claims;
+
+update public.organisations set deleted_at = null where slug = 'org-alpha';
+
+-- --------------------------------------------------------------------------
+-- T31. THE INDEXES `backedBy` NAMES. lib/crm/*-list.ts names them in a STRING;
+-- this is what makes the string true. Adding a sort without an index is the
+-- one move that makes that required field pointless, and it is invisible to
+-- every test that checks which rows come back.
+-- --------------------------------------------------------------------------
+select crm.val('T31 the six live-list indexes named by backedBy exist',
+  $$select count(*)::text from pg_indexes
+     where indexname in ('artists_org_name_id_live_idx',
+                         'artists_org_updated_at_id_live_idx',
+                         'agencies_org_name_id_live_idx',
+                         'agencies_org_updated_at_id_live_idx',
+                         'venues_org_name_id_live_idx',
+                         'venues_org_updated_at_id_live_idx')$$, '6');
+select crm.val('T31a ...and all six are PARTIAL on deleted_at is null, which is what the list writes',
+  $$select count(*)::text from pg_indexes
+     where indexname in ('artists_org_name_id_live_idx',
+                         'artists_org_updated_at_id_live_idx',
+                         'agencies_org_name_id_live_idx',
+                         'agencies_org_updated_at_id_live_idx',
+                         'venues_org_name_id_live_idx',
+                         'venues_org_updated_at_id_live_idx')
+       and indexdef like '%WHERE (deleted_at IS NULL)'$$, '6');
+select crm.val('T31b the three restore-view indexes exist, partial the other way',
+  $$select count(*)::text from pg_indexes
+     where indexname in ('artists_org_deleted_at_id_idx',
+                         'agencies_org_deleted_at_id_idx',
+                         'venues_org_deleted_at_id_idx')
+       and indexdef like '%WHERE (deleted_at IS NOT NULL)'$$, '3');
+select crm.val('T31c the fee-history index pins BOTH equality columns before the sort',
+  $$select (indexdef like '%(organisation_id, artist_id, occurred_on, id)%')::text
+     from pg_indexes
+     where indexname='artist_fee_history_org_artist_occurred_on_id_live_idx'$$, 'true');
+
+-- --------------------------------------------------------------------------
+-- T32. THE FEE-HISTORY READ, which is the only new list Task 4b ships that is
+-- not a top-level entity.
+--
+-- IT IS READ-ONLY IN THE PRODUCT AND THE DATABASE DOES NOT SAY SO. There is a
+-- write policy (`manage_artists`), and T32c asserts it -- so nobody reads "no
+-- form exists" as "no write path exists". The decision not to build the form is
+-- Task 4b's, recorded in the report, not a constraint.
+-- --------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.val('T32 a standard_user reads the fee history of an artist THEY OWN',
+  $$select count(*)::text from public.artist_fee_history
+     where artist_id='444400b0-0000-0000-0000-0000000000b1' and deleted_at is null$$, '2');
+select crm.val('T32a ...and NOT of an artist they do not own -- record scope, via the artist',
+  $$select count(*)::text from public.artist_fee_history
+     where artist_id='444400b0-0000-0000-0000-0000000000b2'$$, '0');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pfinance_c';
+-- The tempting cell, restated for the READ direction: Finance holds view_crm
+-- and no write key here (C15 asserts the write half).
+select crm.val('T32b finance READS fee history (view_crm) even though it cannot write it',
+  $$select count(*)::text from public.artist_fee_history
+     where artist_id='444400b0-0000-0000-0000-0000000000b1'$$, '2');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('T32c THE WRITE PATH EXISTS IN THE DATABASE -- the form''s absence is a product decision',
+  $$update public.artist_fee_history set note = 'edited'
+     where id='999900b0-0000-0000-0000-0000000000f1'$$, 'ok(1)');
+select crm.try('T32d ...and event_id is still held NULL until Phase 3 adds the FK',
+  $$update public.artist_fee_history
+      set event_id = '00000000-0000-0000-0000-0000000000ee'
+     where id='999900b0-0000-0000-0000-0000000000f1'$$, 'denied(23514)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o

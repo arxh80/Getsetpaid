@@ -419,6 +419,11 @@ STD=$(p2_token pstd1);      [ -n "$STD" ] || { echo "no token for pstd1" >&2; ex
 OWN=$(p2_token powner);     [ -n "$OWN" ] || { echo "no token for powner" >&2; exit 1; }
 # Task 4: the read_only role, for the RPC refusal checks at the bottom.
 RO=$(p2_token pro);         [ -n "$RO" ]  || { echo "no token for pro" >&2; exit 1; }
+# Task 4b: the venue_manager, who is the role that DIVERGES on an agency page --
+# manage_contacts and manage_venues, and no manage_artists. Read out of
+# role_permissions rather than guessed; see T22c in rls_phase2_crm.sql for the
+# assumption that got corrected.
+VNM=$(p2_token pvenuemgr);  [ -n "$VNM" ] || { echo "no token for pvenuemgr" >&2; exit 1; }
 
 # anon: the tables must not be reachable logged out at all.
 p2_code "anon GET contacts"                       401 GET  "contacts?select=id"
@@ -963,6 +968,162 @@ if [ "$susp_primary" = "1" ]; then
 else
   printf '  FAIL  %-58s got %s want 1\n' \
          "SUSPENDED: ...and the demote half did not commit" "$susp_primary"
+  api_fails=$((api_fails+1))
+fi
+p2_sub "update public.organisations set deleted_at = null where id='$ALPHA_ORG';"
+
+# ---------------------------------------------------------------------------
+# TASK 4b. The three new entities and their children, at the layer the psql
+# suite cannot reach.
+#
+# Three things only PostgREST can answer, and each has already been a real
+# defect somewhere in this phase:
+#
+#   1. WHICH FUNCTIONS ARE PUBLISHED, and with which argument names. PostgREST
+#      resolves an RPC by the NAMES in the request body, so a 2-arg variant of
+#      the primary-representation function would be one missing JSON key away
+#      from an unscoped write. 20260828234500 had to DROP the old
+#      set_contact_primary_company(uuid,uuid) for exactly that reason. This one
+#      never had a 2-arg version; the check below is what says it still does
+#      not.
+#   2. HOW A REFUSAL ARRIVES. The RPC raises 42501 so the refusal is a 403 the
+#      application reads from the error rather than a 200 carrying a zero. That
+#      mapping is PostgREST's, not Postgres's.
+#   3. THE ROW COUNT ON A REFUSED PATCH. `Content-Range: */0` under
+#      `Prefer: count=exact`, against a live control -- the mechanism
+#      lib/crm/write.ts exists for, on the two child tables Task 4b opened.
+#
+# The ids are the fixture's literals (section T of rls_phase2_crm.sql), which
+# is safe for the reason the whole HTTP block is safe: the preflight refuses a
+# dirty database, so the psql suite has just built them.
+# ---------------------------------------------------------------------------
+echo
+echo "-- Task 4b: artists, agencies, venues and their children over PostgREST --"
+
+T_ARTIST='444400b0-0000-0000-0000-0000000000b1'   # T Std1 Artist  (alpha)
+T_REP='888800b0-0000-0000-0000-0000000000a2'      # r2, open-ended, not primary
+T_AGENCY='333300b0-0000-0000-0000-0000000000b1'   # T Agency One   (alpha)
+T_VENUE='555500b0-0000-0000-0000-0000000000b2'    # T Manager Venue (alpha)
+B_ARTIST='4444000b-0000-0000-0000-00000000000b'   # Beta Artist
+B_VENUE='5555000b-0000-0000-0000-00000000000b'    # Beta Venue
+
+t4b_rpc() { # name want_code artist representation token [org]
+  local name="$1" want="$2" ar="$3" rep="$4" tok="$5" org="${6:-$ALPHA_ORG}" code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "$API/rest/v1/rpc/set_artist_primary_representation" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+    -H "Content-Type: application/json" \
+    -d "{\"p_artist_id\":\"$ar\",\"p_representation_id\":$rep,\"p_organisation_id\":\"$org\"}")
+  if [ "$code" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$code"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$code" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+# The 2-arg body, exactly as a caller who omits the workspace would send it.
+# 20260828234500's instruction to this task was to copy the organisation term
+# AND never ship an overload without it; a 404 (PGRST202, no function matching
+# those argument names) is what "never shipped one" looks like from outside.
+t4b_rpc_2arg() { # name want_code artist representation token
+  local name="$1" want="$2" ar="$3" rep="$4" tok="$5" code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "$API/rest/v1/rpc/set_artist_primary_representation" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+    -H "Content-Type: application/json" \
+    -d "{\"p_artist_id\":\"$ar\",\"p_representation_id\":$rep}")
+  if [ "$code" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$code"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$code" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+t4b_rpc "LIVE CONTROL: a manager sets a primary representation -> 200" 200 \
+  "$T_ARTIST" "\"$T_REP\"" "$MGR"
+t4b_rpc "a read_only caller is refused -> 403, not a 200 carrying 0" 403 \
+  "$T_ARTIST" "\"$T_REP\"" "$RO"
+# THE WORKSPACE TERM AT THE TRANSPORT. The manager is a member of org-alpha and
+# these are org-alpha's rows; only the organisation argument is wrong, and that
+# alone has to refuse. A real uuid rather than a nonsense one, so the statement
+# is well-formed and the 403 is the predicate rather than a parse error.
+t4b_rpc "the RIGHT rows with the WRONG organisation id -> 403" 403 \
+  "$T_ARTIST" "\"$T_REP\"" "$MGR" "$BETA_ORG"
+t4b_rpc_2arg "omitting p_organisation_id finds NO function -> 404" 404 \
+  "$T_ARTIST" "\"$T_REP\"" "$MGR"
+# A venue_manager holds manage_contacts and manage_venues and NOT
+# manage_artists -- the divergence the agency detail page asks two keys for.
+t4b_rpc "a venue_manager has no manage_artists -> 403" 403 \
+  "$T_ARTIST" "\"$T_REP\"" "$VNM"
+
+# THE MISMATCHED PAIR: this workspace's organisation_id with THAT workspace's
+# parent id. It is the shape that looks legitimate to a naive check ("the org
+# matches my session"), it is what the composite tenant-scoped foreign keys
+# from 20260828001132 exist for, and it is the request an attacker actually
+# sends because both ids are in the URL bar.
+p2_code "ALPHA org id + BETA artist id in artist_representations" 403 POST \
+  "artist_representations" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"artist_id\":\"$B_ARTIST\",\"agency_id\":\"$T_AGENCY\"}" \
+  "$MGR"
+p2_code "ALPHA org id + BETA venue id in venue_rooms" 403 POST "venue_rooms" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"venue_id\":\"$B_VENUE\",\"name\":\"planted\"}" "$MGR"
+# The positive controls. Without them "403 for the mismatched pair" is
+# satisfied by an endpoint that 403s for everything.
+p2_code "POSITIVE CONTROL: the same POST with THIS workspace's artist" 201 POST \
+  "artist_representations" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"artist_id\":\"$T_ARTIST\",\"agency_id\":\"$T_AGENCY\"}" \
+  "$MGR"
+p2_code "POSITIVE CONTROL: the same POST with THIS workspace's venue" 201 POST \
+  "venue_rooms" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"venue_id\":\"$T_VENUE\",\"name\":\"http control room\"}" \
+  "$MGR"
+
+# THE ROW COUNT ON A CHILD WHOSE PARENT IS SOFT-DELETED. 20260829001000 put
+# `p.deleted_at is null` into the artist_representations and venue_rooms write
+# policies, so this PATCH matches nothing -- and PostgREST answers 204 either
+# way. The count is the only thing that differs, which is the whole of
+# lib/crm/write.ts.
+p2_range_written "LIVE CONTROL: PATCH artist_representations writes rows" ">=1" PATCH \
+  "artist_representations?artist_id=eq.$T_ARTIST" '{"territory":"UK"}' "$MGR"
+p2_sub "update public.artists set deleted_at = now() where id='$T_ARTIST';"
+p2_code "DELETED ARTIST: the PATCH is a silent 204, not a 403" 204 PATCH \
+  "artist_representations?artist_id=eq.$T_ARTIST" '{"territory":"pwned"}' "$MGR"
+p2_range_written "DELETED ARTIST: ...and count=exact reports the 0" 0 PATCH \
+  "artist_representations?artist_id=eq.$T_ARTIST" '{"territory":"pwned"}' "$MGR"
+p2_code "DELETED ARTIST: ...while a new representation is a LOUD 403" 403 POST \
+  "artist_representations" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"artist_id\":\"$T_ARTIST\",\"agency_id\":\"$T_AGENCY\"}" \
+  "$MGR"
+p2_sub "update public.artists set deleted_at = null where id='$T_ARTIST';"
+p2_range_written "RESTORED: the same PATCH writes rows again" ">=1" PATCH \
+  "artist_representations?artist_id=eq.$T_ARTIST" '{"territory":"UK"}' "$MGR"
+
+p2_range_written "LIVE CONTROL: PATCH venue_rooms writes rows" ">=1" PATCH \
+  "venue_rooms?venue_id=eq.$T_VENUE" '{"name":"http renamed"}' "$MGR"
+p2_sub "update public.venues set deleted_at = now() where id='$T_VENUE';"
+p2_range_written "DELETED VENUE: ...and count=exact reports the 0" 0 PATCH \
+  "venue_rooms?venue_id=eq.$T_VENUE" '{"name":"pwned"}' "$MGR"
+p2_sub "update public.venues set deleted_at = null where id='$T_VENUE';"
+p2_range_written "RESTORED: the same PATCH writes rows again" ">=1" PATCH \
+  "venue_rooms?venue_id=eq.$T_VENUE" '{"name":"http renamed"}' "$MGR"
+
+# The three new tables have NO DELETE grant. A missing grant and a denying
+# policy look different only at this layer -- 403 with no Content-Range at all.
+p2_code "manager DELETEs an artist (no DELETE grant)" 403 DELETE \
+  "artists?id=eq.$T_ARTIST" "" "$MGR"
+p2_code "manager DELETEs a venue_room (no DELETE grant)" 403 DELETE \
+  "venue_rooms?venue_id=eq.$T_VENUE" "" "$MGR"
+p2_code "manager DELETEs an artist_representation (no DELETE grant)" 403 DELETE \
+  "artist_representations?artist_id=eq.$T_ARTIST" "" "$MGR"
+
+# The RPC under suspension: a 403 rather than a silent 204, and the demote half
+# must not have committed on its own.
+p2_sub "update public.organisations set deleted_at = now() where id='$ALPHA_ORG';"
+t4b_rpc "SUSPENDED: the manager is refused -> 403, not a silent 204" 403 \
+  "$T_ARTIST" "\"$T_REP\"" "$MGR"
+t4b_susp=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select count(*) from public.artist_representations
+   where artist_id='$T_ARTIST' and is_primary and ended_at is null
+     and deleted_at is null" | tr -d '[:space:]')
+if [ "$t4b_susp" = "1" ]; then
+  printf '  PASS  %-58s %s\n' "SUSPENDED: ...and the demote half did not commit" "$t4b_susp primary"
+else
+  printf '  FAIL  %-58s got %s want 1\n' \
+         "SUSPENDED: ...and the demote half did not commit" "$t4b_susp"
   api_fails=$((api_fails+1))
 fi
 p2_sub "update public.organisations set deleted_at = null where id='$ALPHA_ORG';"

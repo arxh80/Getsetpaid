@@ -111,3 +111,93 @@ export function Field({
     </div>
   );
 }
+
+interface TextAreaFieldProps extends Omit<ComponentProps<"textarea">, "id"> {
+  label: string;
+  hint?: ReactNode;
+  error?: string;
+}
+
+/**
+ * The same field, for a paragraph.
+ *
+ * ADDED BY TASK 4b, AND A SEPARATE COMPONENT RATHER THAN A `multiline` PROP ON
+ * `Field`. `Field` spreads `ComponentProps<"input">` onto an `<input>`;
+ * `<textarea>` takes a different prop set (`rows`, no `type`, no `size`), so a
+ * flag would mean two prop unions and a cast at the spread. Two components
+ * that share their accessibility wiring by writing it out twice is worse than
+ * one that shares it by structure -- but the wiring here is nine lines and
+ * the alternative is a generic that neither reads nor typechecks well.
+ *
+ * WHAT IS DELIBERATELY THE SAME: the visible bound `<label>`, the persistent
+ * hint, the error BELOW ITS OWN FIELD with `role="alert"` and
+ * `aria-describedby`, and `aria-invalid` on the control itself. Every rule in
+ * `Field`'s header applies unchanged, and an error summary at the top of a
+ * form with nothing next to the input is still a WCAG 3.3.1 failure.
+ *
+ * TWO COLUMNS THIS SERVES: `artists.notes` and `venues.technical_info`. Both
+ * are untrusted free text with no structure by design, both are capped at
+ * MAX_LONG_TEXT in lib/crm/validate.ts, and both are rendered as TEXT on the
+ * way out -- never as HTML, never through `dangerouslySetInnerHTML`.
+ */
+export function TextAreaField({
+  label,
+  hint,
+  error,
+  required,
+  className = "",
+  rows = 5,
+  ...props
+}: TextAreaFieldProps) {
+  const id = useId();
+  const hintId = `${id}-hint`;
+  const errorId = `${id}-error`;
+
+  const describedBy =
+    [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(" ") ||
+    undefined;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <label htmlFor={id} className="text-sm font-semibold text-ink">
+        {label}
+        {required ? (
+          <span className="ml-2 font-normal text-ink-muted">Required</span>
+        ) : (
+          <span className="ml-2 font-normal text-ink-muted">Optional</span>
+        )}
+      </label>
+
+      {hint ? (
+        <p id={hintId} className="text-sm text-ink-muted">
+          {hint}
+        </p>
+      ) : null}
+
+      <textarea
+        {...props}
+        id={id}
+        rows={rows}
+        required={required}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy}
+        className={
+          "w-full min-w-0 border bg-surface px-3 py-2 text-base text-ink " +
+          "placeholder:text-ink-muted " +
+          "transition-colors duration-[var(--dur-fast)] ease-brand " +
+          (error
+            ? "border-danger "
+            : "border-rule hover:border-ink focus:border-accent ") +
+          "disabled:cursor-not-allowed disabled:opacity-55 " +
+          className
+        }
+      />
+
+      {error ? (
+        <p id={errorId} role="alert" className="text-sm font-semibold text-danger">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
