@@ -10,11 +10,38 @@ it or decide out loud that it is never happening.
 
 ## Gate: before the first `supabase db push`
 
+- **`.env.local` POINTS `pnpm dev` AT THE HOSTED PROJECT, NOT THE LOCAL STACK.**
+  Found in Phase 2 Task 3, by accident, in the worst possible way: the task's
+  browser walkthrough began with a sign-up, and it created a real account on
+  `xgearhhusrepzhcwhrzs.supabase.co`. `NEXT_PUBLIC_SUPABASE_URL` and both keys
+  in `.env.local` are the hosted project's; `supabase start` does not change
+  them, and nothing in the repo warns about it. Every "open it in a browser"
+  instruction this phase has issued would have done the same thing.
+  **Consequences to deal with, in order:**
+  1. One `auth.users` row and its `profiles` row exist on the hosted project:
+     `ada@getsetpaid.test`, "Ada Lister", created 2026-08-28. No organisation
+     was created. It is left in place rather than deleted, because deleting an
+     account on a live project is the founder's call, not an implementer's.
+  2. **The hosted project is NOT empty**, which contradicts the entry below.
+     The sign-up completed, the app rendered the profile's name (not the
+     fallback email) and then rendered the onboarding form — which requires
+     `public.profiles`, the new-user trigger from `20260827015924` and
+     `public.organisations` to exist there. Stated as what was observed; the
+     hosted database was not probed further, deliberately.
+  3. Point local development at the local stack. `@next/env` does not override
+     variables already in `process.env`, so exporting
+     `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` /
+     `SUPABASE_SERVICE_ROLE_KEY` from `supabase status` before `pnpm dev` works
+     today and is what Task 3's walkthrough used. A committed
+     `.env.development.local` fed from `supabase status`, or an npm script that
+     does the export, would make it the default instead of a thing each person
+     has to know.
 - **Migration `20260826154304` was amended in place** during Foundation's fix
-  rounds. Harmless while nothing is deployed — the hosted project has had
-  nothing applied. Task 6 switched to additive migrations for exactly this
-  reason, so the discipline is already established. This is the reminder to
-  confirm the remote is still empty before the first push.
+  rounds. ~~Harmless while nothing is deployed — the hosted project has had
+  nothing applied.~~ **That premise is now in doubt — see the entry above.**
+  Task 6 switched to additive migrations for exactly this reason, so the
+  discipline is already established. Establish what the remote actually has
+  applied before the first push, rather than assuming it is empty.
 - **`SECURITY.md` §15** lists the configuration that does not ship itself
   (`jwt_expiry`, session timebox/inactivity, TOTP enrolment, the
   `platform_admins` grant). Work through it as part of provisioning, not after.
@@ -170,6 +197,95 @@ These become live the moment a real tenant table exists.
   Foundation helper uses) makes `name % $1` fail with "operator does not exist".
   Write `name operator(extensions.%) $1` and `extensions.similarity(...)`.
 
+### Opened by Task 3 (the shared list surface) — carried into Task 4
+
+- **EVERY list Task 4 ships needs its own pair of indexes, and the rule is
+  checkable rather than rememberable.** Task 3 measured the contacts list on
+  25,000 rows and found the shipped schema had no index any list query could
+  use for ordering: page one was a Seq Scan plus a top-N sort of every live row
+  in the tenant, 13.575 ms and 866 buffers, against 1.015 ms and 314 with an
+  index. Thirteen milliseconds is not a bug; the SHAPE is — it grows linearly
+  with how successful the customer is, and it is invisible to every test that
+  checks which rows come back, because both plans return the same rows.
+  `20260828180000_contact_list_indexes.sql` fixes it for `contacts` only.
+  Companies, artists, agencies and venues each need:
+
+  ```sql
+  create index <table>_org_<column>_id_live_idx
+    on public.<table> (organisation_id, <sort column>, id)
+    include (owner_user_id)
+    where deleted_at is null;
+  ```
+
+  one per allowlisted sort column. The rule, stated so it can be enforced:
+  **a column may be in a list's sort allowlist only if it is `NOT NULL` and has
+  a matching index of that shape.** `NOT NULL` because keyset pagination
+  compares against the column and every comparison with NULL is NULL, so a
+  nullable sort column silently drops a contiguous band of rows out of the
+  middle of the list — `contacts.email` is the tempting mistake and is
+  deliberately not sortable. `include (owner_user_id)` because the RLS
+  record-scope term reads that column, and without it a Standard User's page
+  costs a heap fetch per candidate row (3.170 ms vs 1.545 ms, `Heap Fetches: 0`
+  with it). ASCENDING ONLY — a btree scans backwards and `organisation_id` is
+  pinned by equality, so one index serves both directions (verified:
+  `Index Scan Backward`, 0.451 ms).
+  `lib/list/spec.ts` makes both halves of the rule a REQUIRED field on every
+  sort option (`notNull` and `backedBy`, the index's name), so adding a sort
+  without an index is something an author has to write down rather than omit.
+
+- **`contacts_name_trgm_idx` is never used by the list, and the brief that said
+  it would be was wrong.** Measured as `authenticated` with RLS applied, on
+  `name ilike '%kaur%'` ordered and limited: default settings give a Seq Scan
+  (24.010 ms); `enable_seqscan = off` gives an Index Scan on
+  `contacts_organisation_id_idx` (31.449 ms); disabling index scans too gives a
+  BitmapAnd on the same index (25.909 ms). The planner never picks the trigram
+  index. The identical statement as `postgres`, where no policy applies, DOES
+  pick it (Bitmap Index Scan, 1.348 ms), and `pg_stat_user_indexes` confirms it
+  across a full browser walkthrough of a 25,000-row tenant: 0 scans on the
+  trigram index, 35 on the new btree. Search is served by the composite btree
+  at 1.079 ms instead, because the index supplies the ordering for free.
+  **The mechanism is not asserted** — three separate plan-forcing settings were
+  tried and the outcome recorded; this phase has already been bitten three
+  times by comments stating a mechanism instead of a measurement. The index is
+  left in place: it was created for Task 6's dedup lookup, which has no
+  `ORDER BY` and a different predicate, and nothing has measured that shape.
+
+- **The exact count above the table is O(tenant), and that is the one part of
+  the list that is.** `count=exact` needs every row and the RLS predicate's
+  `owner_user_id` term keeps it off an index-only path, so it plans as a Seq
+  Scan: 7.703 ms in psql on 24,509 rows, 34.1 ms end to end over PostgREST —
+  more than the page query itself (18.7 ms). It runs in parallel with the page
+  and fails independently, so the page still renders without a total. Revisit
+  if a tenant reaches a few hundred thousand records: the answer then is an
+  estimate or a maintained counter, not a cleverer query.
+
+- **Task 4: rows do not link anywhere yet, deliberately.** `CONTACT_COLUMNS`
+  renders the name as plain text because contact detail pages do not exist; a
+  name styled as a link that navigates nowhere is the dead-affordance class the
+  Foundation review caught three times. Task 4 wraps it in a `<Link>` and
+  nothing else on the page changes. **Add the row hover state at the same
+  time** — DESIGN.md § Interaction states specifies `--surface` → `#FBF6F6` for
+  a hovered row, and it is deliberately absent while rows are not interactive,
+  because a hover highlight on an inert row promises a click that does nothing.
+  That colour is not yet a token; add it to `@theme`, to DESIGN.md's palette
+  table and to `scripts/contrast.py` in the same change, per DESIGN.md's own
+  rule about adding a colour.
+
+- **Task 4: the empty state has no primary action, and should get one.**
+  `hallmark`'s empty-state rule is three beats — what is empty, why it matters,
+  one button — and the contacts empty state ships the first two plus an honest
+  "Adding contacts arrives with the next release" instead of a button to a
+  route that does not exist. When the create form lands, that line becomes the
+  button.
+
+- **Task 4: the list surface has no write affordances at all**, so "a Read Only
+  user sees no write affordances" and "a Free-tier org gets no write path" are
+  currently true by construction rather than by a gate. The moment Task 4 adds
+  a "New contact" button, both need real checks — `hasPermission(org.id,
+  'manage_contacts')` for the role half and `lib/entitlements/policy.ts` for the
+  tier half — and CLAUDE.md's "hiding UI is not enforcement" means the write
+  itself must still be refused by the policy when the button is hidden.
+
 ### Opened by Task 2 (RLS policies) — carried into Tasks 3-7
 
 - **RLS does NOT filter soft-deleted rows. Every query in Tasks 3-7 must write
@@ -248,14 +364,19 @@ These become live the moment a real tenant table exists.
   security issue. Either forbid narrowing conversions server-side or add a
   `WITH CHECK` pinning `field_type` once values exist. Task 5 already carries
   the `deleted_at` item for this table; this belongs beside it.
-- **Task 3: no CRM query may appear above `MfaEnrollGate`.** The MFA read gate
-  is safe only because `app/(app)/layout.tsx` reaches `profiles`,
-  `organisations` and `organisation_memberships` and nothing else — verified end
-  to end with a real TOTP enrolment. The moment a CRM read appears in the app
-  shell, the MFA gate components or `lib/auth`, an un-enrolled privileged user
-  can no longer reach the enrolment screen. Worth a guard test in the shape of
-  `rls_phase2_crm.sql` H12/H13: no file reachable from the app-shell layout may
-  query the twelve CRM tables.
+- ~~**Task 3: no CRM query may appear above `MfaEnrollGate`.**~~ **DONE, Phase 2
+  Task 3** (`tests/unit/list/app-shell-has-no-crm-query.test.ts`). It walks the
+  real import graph from `app/(app)/layout.tsx`, both MFA gate components,
+  `lib/auth/mfa-gate.ts` and `lib/auth/index.ts`, and fails if any reachable
+  module queries one of the twelve CRM tables.
+  **One correction for anyone extending it:** the obvious detector — grep for
+  `.from("contacts")` — DOES NOT WORK any more and its positive control proved
+  it on the first run. `lib/list/query.ts` takes the table name as a parameter,
+  so the literal lives at the call site as `table: "contacts"` and the query
+  itself is `supabase.from(table)`. The guard therefore also fails on
+  `table: "<crm table>"` and on importing `lib/list/query` at all, which is the
+  form that will survive Task 4 routing four more entities through the same
+  helper.
 - **Task 6: a record-scoped `merges` list is ~2.3 s per page at 20k rows, and no
   policy can fix it.** `merges_select_via_winner` is the one CRM SELECT policy
   whose predicate calls a function with COLUMN arguments, so the polymorphic
