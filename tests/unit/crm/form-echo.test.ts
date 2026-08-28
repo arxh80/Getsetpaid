@@ -112,7 +112,7 @@ describe("echoedValues", () => {
 // expression `CompanyForm` renders `defaultChecked` from, so a regression in
 // the derivation is red here rather than in a browser six weeks later. The
 // hidden marker input itself is bound by
-// tests/unit/crm/write-call-sites.test.ts, because no assertion on a pure
+// tests/unit/crm/source-shape.test.ts, because no assertion on a pure
 // function can see a `<input>` deleted from a .tsx file.
 
 describe("a cleared checkbox group survives a failed submit as CLEARED", () => {

@@ -87,9 +87,14 @@ function stateFor(
 ): FormState {
   if (result.outcome === "applied") return { message: success };
   const values = echoedValues(formData);
-  // See lib/crm/contacts.ts's copy: a switch, so a new outcome is a compile
-  // error rather than a wrong sentence. `unknown` in particular must not be
-  // told "Nothing has been changed", because that is exactly what is not known.
+  // See lib/crm/contacts.ts's copy: a switch with NO `default` arm, so a new
+  // outcome is a compile error rather than a wrong sentence. The mechanism is
+  // the declared `FormState` return type under `strict` -- a fifth member of
+  // the union leaves a path that falls off the end returning `undefined`, and
+  // TS2366 says so. There is no `never` arm; an earlier version of this comment
+  // said there was. `pnpm typecheck` is the only thing that runs it.
+  // `unknown` in particular must not be told "Nothing has been changed",
+  // because that is exactly what is not known.
   switch (result.outcome) {
     case "refused":
       return { error: REFUSED_MESSAGE, values };

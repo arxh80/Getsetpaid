@@ -18,9 +18,11 @@ import { describe, expect, it } from "vitest";
 // Both are OMITTED OPTIONS on a query builder. A behavioural test cannot see
 // one without a live database and a policy arranged to refuse -- which is what
 // supabase/tests/rls_phase2_crm.sql does, one call site at a time, and there
-// are eight of them today and Task 4b adds more. `classifyWrite` itself is
-// well bound (mutating it turns three assertions red); it is the CALL SITES
-// that were unguarded.
+// are SEVEN of them today and Task 4b adds more. (It said eight until N-3: the
+// eighth was a sentence in lib/crm/write.ts's header, and the census counted
+// the prose. See `CENSUS_EXEMPT` and `callArguments` below.) `classifyWrite`
+// itself is well bound (mutating it turns three assertions red); it is the
+// CALL SITES that were unguarded.
 //
 // The same reasoning covers a hidden `<input>` in a .tsx file: no assertion on
 // a pure function can see it deleted, and deleting it reintroduces I-2.
@@ -47,8 +49,21 @@ function read(relative: string): string {
  * Balanced-paren scan rather than a fixed window, so a call spanning fifteen
  * lines is read whole and a short one does not accidentally swallow the next
  * statement.
+ *
+ * COMMENT LINES ARE STRIPPED FIRST (N-3). A line whose first non-space
+ * characters are `//` is prose, and prose about `.update(` is not a call site
+ * -- counting one propped the floor assertion up by a sentence. Line comments
+ * only: this is a blunt census, and every real call site in lib/crm/ is
+ * ordinary code, so the cheapest rule that removes the observed failure is the
+ * right one. A `.update(` inside a block comment would still be counted, which
+ * is a false RED and therefore safe -- the file's own header says being noisy
+ * is the intended failure direction.
  */
-function callArguments(source: string, method: string): string[] {
+function callArguments(rawSource: string, method: string): string[] {
+  const source = rawSource
+    .split("\n")
+    .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+    .join("\n");
   const needle = `.${method}(`;
   const out: string[] = [];
   let from = 0;
@@ -69,8 +84,25 @@ function callArguments(source: string, method: string): string[] {
   }
 }
 
+/**
+ * `lib/crm/write.ts` DEFINES the discipline; it does not use it.
+ *
+ * N-3. It contains no query builder at all, and the census counted it anyway:
+ * its header explains the mechanism in prose --
+ *
+ *     //   2. `Prefer: count=exact`. What `.update(values, { count: "exact" })`
+ *
+ * -- and `.update(` in a comment is still `.update(`. So the run showed eight
+ * "call sites", the eighth was a sentence, and the floor assertion below (whose
+ * stated job is "so this suite cannot pass vacuously") was one higher than the
+ * number of things it guarded. Two fixes, because either alone leaves the trap:
+ * this module is excluded, AND `callArguments` skips comment lines, so the next
+ * module that explains itself in prose is not counted either.
+ */
+const CENSUS_EXEMPT = new Set(["write.ts"]);
+
 const CRM_SOURCES = readdirSync(root + "lib/crm")
-  .filter((name) => name.endsWith(".ts"))
+  .filter((name) => name.endsWith(".ts") && !CENSUS_EXEMPT.has(name))
   .map((name) => ({ name: `lib/crm/${name}`, text: read(`lib/crm/${name}`) }));
 
 describe("every mutating call in lib/crm/ asks for the row count", () => {
@@ -88,10 +120,14 @@ describe("every mutating call in lib/crm/ asks for the row count", () => {
   );
 
   it("finds the call sites at all, so this suite cannot pass vacuously", () => {
-    // Eight in the task as shipped. Asserted as a floor rather than an exact
-    // number so Task 4b adding call sites does not turn this red for the wrong
-    // reason -- but deleting them all does.
-    expect(sites.length).toBeGreaterThanOrEqual(8);
+    // SEVEN, not eight. The eighth was `.update(#1)` in lib/crm/write.ts's
+    // header comment -- a sentence, not a statement, so the floor was one
+    // higher than the number of things it guarded (N-3). Three real `.update(`
+    // in companies.ts, three plus one `.delete(` in contacts.ts.
+    //
+    // A floor rather than an exact number so Task 4b adding call sites does
+    // not turn this red for the wrong reason -- but deleting them all does.
+    expect(sites.length).toBeGreaterThanOrEqual(7);
   });
 
   for (const site of sites) {

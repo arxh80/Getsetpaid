@@ -74,6 +74,24 @@
  * A value with an interior space is still safe. `"java script:alert(1)"` has
  * no valid scheme once the space stays, so `new URL()` throws and `safeHref`
  * renders it as inert text -- which is what the browser does with it too.
+ *
+ * ===========================================================================
+ * AND, SINCE THE CORRECTION, THIS IS NO LONGER LOAD-BEARING
+ * ===========================================================================
+ * As of the M-5 correction this duplicates `new URL()`'s own normalisation and
+ * is kept as a guard against a future change of oracle; its only behavioural
+ * effect today is on `normaliseWebsite`'s empty case. The re-review measured
+ * it: replacing this whole function with `return raw` leaves all TWELVE
+ * evasion assertions GREEN and turns exactly one test red -- `normaliseWebsite
+ * treats empty and null as no website, not as an error`, because a
+ * whitespace-only field stops trimming to null. `safeHref(x)` and `new URL(x)`
+ * agree on all 21 values in that table.
+ *
+ * NOT A HOLE, and the suite is right to stay green: the strip cannot open
+ * anything the parser would not open anyway. It is written down because the
+ * file header above presents this function as the thing that makes the check
+ * safe, and that has been belt-and-braces over a parser that already wears
+ * both since the interior-whitespace bug was fixed.
  */
 function stripUrlNoise(raw: string): string {
   // The ranges are written as backslash-u escapes rather than as literal

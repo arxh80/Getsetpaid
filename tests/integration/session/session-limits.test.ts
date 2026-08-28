@@ -2,7 +2,7 @@
 // [auth.sessions] comment makes: "timebox and inactivity_timeout invalidate
 // the refresh token itself." Task 7 re-verified this against the running
 // stack by hand before writing anything into middleware.ts or
-// components/auth/idle-timeout.ts -- this file is that verification made
+// components/auth/idle-timeout.tsx -- this file is that verification made
 // permanent and automated, real local stack, no mocking, same philosophy as
 // tests/integration/rls/rls.test.ts.
 //

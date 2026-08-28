@@ -15,7 +15,23 @@ The PRD is a binary docx and no text version is committed. To read it, run `pyth
 
 ## Current state
 
-The repo contains **no application code yet** — only the PRD, the design and security docs, and the pinned agent skills (`skills-lock.json` + `.agents/skills/`). There is no build, lint or test command yet. When the stack is scaffolded, adding those commands to this file is part of that work.
+The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrastructure, core CRM writes). The PRD, the design and security docs and the pinned agent skills (`skills-lock.json` + `.agents/skills/`) sit alongside them.
+
+**The gates. Run all four before claiming a change is done:**
+
+| Command | What it is |
+|---|---|
+| `pnpm lint` | ESLint (`eslint`). |
+| `pnpm typecheck` | `tsc --noEmit`. **Nothing else runs `tsc`** — there is no CI, no git hook, and `pnpm build` is forbidden in a worktree pointed at the local stack. Several exhaustiveness guards (the `switch` with no `default` in `lib/crm/contacts.ts` and `lib/crm/companies.ts`) are compile-time only, so skipping this is skipping them entirely. |
+| `pnpm test` | Vitest, unit and integration (`vitest run`). |
+| `pnpm test:rls` | The RLS integration tests (`vitest run tests/integration/rls`), included in `pnpm test`. |
+
+The psql/HTTP RLS suite is separate and needs a fresh database:
+`npx supabase db reset --local` then `bash supabase/tests/run-rls-tests.sh`. It
+refuses to run twice without a reset in between.
+
+`pnpm build` and `pnpm start` resolve to the **hosted** project and must not be
+run from a worktree that is deliberately unlinked from it.
 
 Skills are pinned project-level so every agent and every machine gets the same set: restore with `npx skills experimental_install`, check updates with `npx skills check`. The roster and what each one is for live in `DESIGN.md` § "Build-time design tooling".
 
