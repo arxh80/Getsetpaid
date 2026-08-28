@@ -199,44 +199,47 @@ These become live the moment a real tenant table exists.
 
 ### Opened by Task 4 (CRUD on contacts and companies)
 
-- **EVERY `<Link>` NAVIGATION IN THIS APPLICATION IS A FULL DOCUMENT LOAD, and
-  it costs the product its keyboard focus continuity.** Found in Task 4's
-  browser pass, app-wide, and NOT Task 4's code — the workspace breadcrumb on
-  `app/(app)/[orgSlug]/page.tsx` behaves identically.
+- **WITHDRAWN (Task 4 fix round 1): "every `<Link>` navigation is a full
+  document load".** Left here as a record of how the entry got written, not as
+  work for anybody.
 
-  Proven three ways on `pnpm dev` against the local stack:
-  a `window` property set immediately before the click is gone after it; a
-  `data-` attribute stamped on the Next.js anchor is absent from the anchor
-  that replaces it; and the network log shows a document `GET` for the
-  destination followed by a complete re-fetch of every chunk, with **no
-  `?_rsc=` request attempted at all**. `document.activeElement` is `BODY`
-  afterwards, from a real mouse click and from a real `Enter` press.
+  Task 4's browser pass reported that no `?_rsc=` request was attempted, that
+  the document was reloaded on every `<Link>`, and that `document.activeElement`
+  was `BODY` afterwards; it named the per-request CSP nonce in
+  `lib/supabase/middleware.ts` as the leading (explicitly unverified) cause, and
+  it rewrote two source comments to remove Task 3's true claim about focus.
 
-  **Two claims in the codebase were false because of it and are now corrected
-  rather than left standing** (`components/list/list-pager.tsx`,
-  `app/(app)/[orgSlug]/contacts/page.tsx`): Task 3's fix for "pagination
-  dropped focus to `<body>`" split the Suspense key so the pager would not
-  remount, verified that focus survived, and recorded it. The split is right
-  and stays — it decides which interactions show a placeholder — but it cannot
-  preserve focus across a navigation that destroys the document, so the focus
-  half of that fix is not in effect.
+  **It does not reproduce.** Re-measured independently twice on a clean
+  `pnpm dev` against the local stack, signed in as `pmanager` — once by the Task
+  4 review, once by the fix round:
 
-  **Leading hypothesis, explicitly NOT verified:** the per-request CSP nonce
-  that `lib/supabase/middleware.ts` sets via
-  `NextResponse.next({ request: { headers: requestHeaders } })`. A per-request
-  nonce is the documented reason Next stops prefetching `<Link>`s, and no soft
-  navigation is attempted here at all. The experiment that would confirm it is
-  removing the CSP header temporarily, which is a deliberate weakening of a
-  security control and was not run.
+  | probe | result |
+  |---|---|
+  | `window` property set before a sort click | survived |
+  | `performance.getEntriesByType("navigation").length` after | 1 — still the original load |
+  | `?_rsc=` request for the destination | issued |
+  | `document.activeElement` after a focused sort activation | the same `<a>` |
+  | `document.activeElement === ` the "Next" node it started on | true |
 
-  **Whoever picks this up owns a real trade-off**, which is why it is routed
-  rather than fixed: the nonce CSP is a Foundation acceptance criterion
-  (`SECURITY.md`, CLAUDE.md § Non-negotiable rules) and client-side routing is
-  an accessibility one (WCAG 2.4.3 focus order). The likely resolution is a
-  static `script-src 'strict-dynamic'` policy with hashes instead of a
-  per-request nonce, or accepting hard navigation and managing focus explicitly
-  after each one. Measure before choosing: confirm the cause first, because
-  this entry names a hypothesis, not a finding.
+  The nonce is **refuted**, not merely unverified: it is present on the wire
+  (`script-src 'self' 'nonce-…' 'strict-dynamic'`, read with curl) and
+  navigation is soft anyway.
+
+  **The likely cause of the original reading**, stated as inference rather than
+  as measurement: an orphaned `pnpm dev` from an earlier session was still
+  listening on port 3000 in a crashed state (`Failed to generate static paths`,
+  `Jest worker … exceeding retry limit`, `write EPIPE`), and Next falls back to
+  a hard navigation when the RSC fetch fails. That server was not reconstructed
+  to re-measure. `document.activeElement` really is `BODY` after a *pointer or
+  programmatic* click, which never focuses the anchor in the first place — the
+  browser's normal behaviour, and the most likely thing the original probe was
+  reading.
+
+  **Both rewritten comments are restored** (`components/list/list-pager.tsx`,
+  `app/(app)/[orgSlug]/contacts/page.tsx`), each carrying the numbers above.
+  Task 3's Suspense-key fix is intact and should not be re-litigated. Measured
+  in `pnpm dev` only, twice: `pnpm build` / `pnpm start` still resolve to the
+  hosted project (ledger I-5), so no production build was run.
 
 - **A detail page's link picker is bounded at 100 and has no search.**
   `LINK_PANEL_LIMIT` in `lib/crm/queries.ts`. A workspace with more than 100
