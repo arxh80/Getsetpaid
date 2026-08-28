@@ -233,22 +233,100 @@ These become live the moment a real tenant table exists.
   sort option (`notNull` and `backedBy`, the index's name), so adding a sort
   without an index is something an author has to write down rather than omit.
 
-- **`contacts_name_trgm_idx` is never used by the list, and the brief that said
-  it would be was wrong.** Measured as `authenticated` with RLS applied, on
-  `name ilike '%kaur%'` ordered and limited: default settings give a Seq Scan
-  (24.010 ms); `enable_seqscan = off` gives an Index Scan on
-  `contacts_organisation_id_idx` (31.449 ms); disabling index scans too gives a
-  BitmapAnd on the same index (25.909 ms). The planner never picks the trigram
-  index. The identical statement as `postgres`, where no policy applies, DOES
-  pick it (Bitmap Index Scan, 1.348 ms), and `pg_stat_user_indexes` confirms it
-  across a full browser walkthrough of a 25,000-row tenant: 0 scans on the
-  trigram index, 35 on the new btree. Search is served by the composite btree
-  at 1.079 ms instead, because the index supplies the ordering for free.
-  **The mechanism is not asserted** — three separate plan-forcing settings were
-  tried and the outcome recorded; this phase has already been bitten three
-  times by comments stating a mechanism instead of a measurement. The index is
-  left in place: it was created for Task 6's dedup lookup, which has no
-  `ORDER BY` and a different predicate, and nothing has measured that shape.
+- ~~**`contacts_name_trgm_idx` is never used by the list.**~~ **TRUE, BUT THE
+  REASON AND THE CONSEQUENCE WERE BOTH WRONG. Corrected in fix round 1, and the
+  correction is the important item in this section.** The original entry said
+  search was served by the new composite btree "at 1.079 ms instead" and kept
+  the trigram index "for Task 6's dedup lookup, which has no `ORDER BY`".
+  Neither survived re-measurement.
+
+  **SEARCH IS O(TENANT) AND NO INDEX CAN CHANGE THAT FROM THE POSTGREST PATH.**
+  1.079 ms was measured on a term matching ~4% of the tenant, dense enough that
+  walking the ordered index and stopping at 26 wins. A user types a surname.
+  On 19,882 live rows, as the real `authenticated` role, a term matching ONE
+  row:
+
+  | | plan | time |
+  |---|---|---|
+  | the page | Index Scan on `contacts_organisation_id_idx`, 20,000 rows filtered | **39.0 ms** |
+  | its count | the same shape | **35.9 ms** |
+
+  So a realistic search costs two scans of the tenant — ~75 ms of database time
+  at 20k rows, growing linearly with the customer's success. The list's
+  headline property, O(page) paging, does not extend to the search path.
+
+  **THE MECHANISM, now established rather than declined.** The original entry
+  refused to name one (rightly, at the time) and the review's correction named
+  a different one ("the blocker is the query shape, not RLS"). Both were
+  partial. It is the operator:
+
+  ```
+  select p.proname, p.proleakproof from pg_operator o
+    join pg_proc p on p.oid = o.oprcode where o.oprname in ('~~*','%','>=');
+      texticlike     f      -- ILIKE
+      similarity_op  f      -- pg_trgm's `%`
+      text_ge        t      -- `>=`
+  ```
+
+  Postgres will not evaluate a **non-leakproof** qual before an RLS security
+  qual, so a non-leakproof operator can never become an Index Cond on a table
+  with RLS on. The controlled pair — same index, same fixture, same session,
+  differing only in leakproofness:
+
+  ```
+  name >= 'Wilhelmina'      Index Cond: (organisation_id = ... AND name >= ...)
+                            1.425 ms, Heap Fetches: 0
+  name like 'Wilhelmina%'   Index Cond: (organisation_id = ...) only,
+                            20,000 Rows Removed by Filter, 6.853 ms
+  ```
+
+  That predicts every observation, including the one the review asked for: a
+  composite `gin (organisation_id, name gin_trgm_ops) where deleted_at is null`
+  **was created, ANALYZEd and measured, and is also never chosen** — the same
+  selective search stayed at 24.313 ms. It was dropped again. Adding an index
+  cannot help, because the absence of an index is not the blocker.
+
+  **THE CEILING, as a number, the way the count's already is:** a search costs
+  two sequential scans of the tenant. ~75 ms at 20k rows; ~750 ms at 200k, per
+  search, per user. Revisit at the first tenant approaching six figures.
+
+  **WHAT A REAL FIX LOOKS LIKE — scoped here, deliberately not built in Task 3.**
+  A `SECURITY DEFINER` search function that applies the tenant scope and the
+  soft-delete filter itself. SECURITY DEFINER does not apply RLS to the table
+  it reads, which is the one context where a non-leakproof operator CAN reach
+  an index. It needs: `search_path` locked to `''`, the trigram operator
+  schema-qualified (`name operator(extensions.%) $1`), the organisation
+  membership checked INSIDE the function rather than trusted from the
+  argument — it is bypassing the policy, so it must re-establish what the
+  policy would have enforced — and its own tests in `rls_phase2_crm.sql`
+  proving it cannot be called for an organisation the caller is not in. That
+  is a task, not a patch.
+
+- **DECIDED, fix round 1: KEEP all four trigram indexes, for a different reason
+  than the one originally given.** The original justification ("Task 6's dedup
+  has no `ORDER BY`") was measured by the review and is false — that shape is a
+  Seq Scan too. The justification that holds is the one above: FOLLOW-UPS
+  already specifies Task 6's dedup helper as a `SECURITY DEFINER` function, and
+  in that context the index is not merely usable but decisive. Measured with
+  exactly that function shape:
+
+  ```
+  private.dedup_probe(org, name), trigram index present   0.36-0.53 ms
+  the same function, index dropped                       48.1-50.9 ms
+                                                         Seq Scan, 25,000 filtered
+  ```
+
+  **Write cost, measured, because "keep it" needs both sides.** 2,000 inserts
+  plus a bulk update of 2,000 rows, alternated with and without all four
+  indexes so a warm cache favours neither: inserts 144.7/147.1/102.7/147.1 ms
+  with against 77.0/82.9 ms without (~**+0.033 ms per row**), updates 78-99 ms
+  against 57-61 ms, and 5.7 MB per 25,000 contacts. A 10,000-row bulk import
+  pays about a third of a second.
+
+  **Drop them if Task 6 ships dedup WITHOUT a SECURITY DEFINER path** — at that
+  point they have no reachable consumer at all. `20260828190000` carries this
+  on the indexes themselves via `comment on index`, so it travels with the
+  database.
 
 - **The exact count above the table is O(tenant), and that is the one part of
   the list that is.** `count=exact` needs every row and the RLS predicate's
@@ -277,6 +355,45 @@ These become live the moment a real tenant table exists.
   "Adding contacts arrives with the next release" instead of a button to a
   route that does not exist. When the create form lands, that line becomes the
   button.
+
+- **DESIGN.md's "Disabled: --ink-muted text at 55%" needs a caveat, and the
+  pager is the reason.** Review M-4 measured the disabled pager control at
+  **2.54:1** — `--ink-muted` at 55% over `--surface` computes to `#A2A2A7`.
+  WCAG 1.4.3 exempts "inactive user interface components", and that exemption
+  covers every other disabled control in the product. It does NOT cover this
+  one: `list-pager.tsx` deliberately keeps an unavailable direction a focusable
+  `<a href>` in the tab order, so that focus is not lost when Next becomes
+  unavailable under a keyboard user's hands. A control that is focusable,
+  reachable and activatable is an active control that happens to look disabled.
+  The opacity is dropped for that case (now **7.37:1**, verified in the running
+  page, with `aria-disabled` and `cursor-not-allowed` still carrying the state).
+  **DESIGN.md should say that the 55% rule applies only to genuinely inert
+  controls**, and name this as the exception — Task 4 ships five more pagers.
+
+- **`pnpm build` and `pnpm start` still resolve to the hosted project.** The
+  `pnpm dev` guard (`scripts/dev-env.mjs`) works and was verified with the
+  stack down. It covers one of the three commands that run this application:
+  `@next/env`'s own loader returns the local URL for `dev=true` and the hosted
+  URL for `dev=false`, so `next build` collects page data and `next start`
+  serves the whole app against production. Checking a change against a
+  production build is the obvious next thing anyone does after `pnpm dev`, and
+  the task brief lists `pnpm build` as a gate. Not fixed in Task 3's fix round
+  because the script is not Task 3's — the shape the review proposes is a
+  `--check-local-only` flag on the same script, wired to `prebuild` and
+  `start`, refusing anything but loopback unless an explicit
+  `GETSETPAID_ALLOW_HOSTED=1` is set (so Vercel, where `.env.local` is absent,
+  is unaffected). `tests/integration/rls/support/env.ts` already contains the
+  loopback assertion to reuse.
+
+- **A soft-deleted organisation still appears in the workspace switcher.** Not
+  Task 3's code; found by the reviewer while building fixtures.
+  `getActiveMemberships()` filters on membership `status` but not on
+  `organisations.deleted_at`, while `getCurrentOrg()` filters it correctly — so
+  a suspended workspace is listed in the header switcher and 404s when
+  selected. A dead entry rather than an access problem (the database denies
+  either way). This is the same disagreement `20260828140000`'s
+  suspension note already depends on being resolved; it belongs to whichever
+  task next owns the switcher.
 
 - **Task 4: the list surface has no write affordances at all**, so "a Read Only
   user sees no write affordances" and "a Free-tier org gets no write path" are
