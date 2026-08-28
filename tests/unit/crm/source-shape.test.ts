@@ -245,3 +245,227 @@ describe("the company form carries the checkbox-group marker (I-2)", () => {
     expect(form).toContain(`selectedInGroup(state.values, "type", values.type)`);
   });
 });
+
+// ===========================================================================
+// TASK 4b
+// ===========================================================================
+
+describe("the representation panel carries the checkbox-group marker", () => {
+  // A GROUP OF ONE IS STILL A GROUP. `is_exclusive` is a single checkbox and
+  // an unticked checkbox submits nothing, so without the marker an emptied box
+  // is indistinguishable from a form that never had it -- and a failed submit
+  // re-ticks the exclusivity the user just removed. Same defect as I-2,
+  // narrower. No assertion on a pure function can see an `<input>` deleted
+  // from a .tsx file, which is why this block is here rather than in
+  // form-echo.test.ts.
+  const panel = read("components/crm/representation-panel.tsx");
+
+  it("renders the hidden marker input for the exclusivity checkbox", () => {
+    expect(panel).toContain(`name={groupMarkerName("isExclusive")}`);
+    expect(panel).toContain(`type="hidden"`);
+  });
+
+  it("derives what is ticked through selectedInGroup, in BOTH forms", () => {
+    // The add form and the edit form each have their own `useActionState`, so
+    // each derives its own. Two call sites, and the count is asserted so that
+    // fixing one and forgetting the other is red.
+    expect(
+      panel.match(/selectedInGroup\(state\.values, "isExclusive"/g),
+    ).toHaveLength(2);
+  });
+});
+
+describe("the new child writes refuse a soft-deleted parent", () => {
+  // THE SAME TWO-ENDS ASYMMETRY AS M-1, one entity along:
+  //
+  //   artist  -- ALSO enforced by the database since 20260829001000
+  //             (`p.deleted_at is null` in the two artist_representations
+  //             write policies). T28 measures the refusal.
+  //   agency,
+  //   contact -- THESE ASSERTIONS ARE THE ONLY THING GUARDING THEM. A policy
+  //             term there would collapse "deleted" into "invisible" for a
+  //             record-scoped caller under Q3a, so it is deliberately absent;
+  //             T28b measures the database still saying yes.
+  //   venue   -- ALSO enforced by the database (T29). A room has no second
+  //             end, so there is nothing left application-only.
+  //
+  // Source assertions because a Server Action is not drivable from a node test
+  // in this repository (tests/unit is pure functions only, by the config's own
+  // rule). The behavioural half is the browser walk in the task report.
+  const artists = read("lib/crm/artists.ts");
+  const venues = read("lib/crm/venues.ts");
+
+  function actionBody(source: string, name: string): string {
+    const start = source.indexOf(`export async function ${name}(`);
+    expect(start, `${name} not found`).toBeGreaterThan(-1);
+    const next = source.indexOf("\nexport async function ", start + 1);
+    return source.slice(start, next === -1 ? undefined : next);
+  }
+
+  it("representationEnds checks all three ends through liveInOrg", () => {
+    const helper = artists.slice(
+      artists.indexOf("async function representationEnds("),
+      artists.indexOf("function revalidateRepresentation("),
+    );
+    expect(helper).toContain(`liveInOrg(supabase, "artists", organisationId, artistId)`);
+    expect(helper).toContain(`liveInOrg(supabase, "agencies", organisationId, agencyId)`);
+    expect(helper).toContain(`liveInOrg(supabase, "contacts", organisationId, contactId)`);
+  });
+
+  for (const action of [
+    "createRepresentationAction",
+    "updateRepresentationAction",
+    "deleteRepresentationAction",
+    "restoreRepresentationAction",
+    "setPrimaryRepresentationAction",
+  ]) {
+    it(`${action} refuses when an end is not live`, () => {
+      const body = actionBody(artists, action);
+      expect(body).toContain("representationEnds(");
+      expect(body).toContain("refusedEndState(");
+    });
+  }
+
+  for (const action of [
+    "addRoomAction",
+    "renameRoomAction",
+    "closeRoomAction",
+    "reopenRoomAction",
+  ]) {
+    it(`${action} checks the venue is live in this organisation`, () => {
+      const body = actionBody(venues, action);
+      expect(body).toContain(`liveInOrg(supabase, "venues", org.id, venueId)`);
+      expect(body).toContain("refusedEndState(");
+    });
+  }
+
+  it("liveInOrg reads deleted_at rather than FILTERING it, and scopes the org", () => {
+    // N-8, in its new home. It used to carry `.is("deleted_at", null)` and
+    // return a boolean, so "soft-deleted" and "not there at all" were the same
+    // answer and got the same sentence -- one that tells the user to restore a
+    // record that may be live in another workspace.
+    const shared = read("lib/crm/actions.ts");
+    const helper = shared.slice(
+      shared.indexOf("export async function liveInOrg("),
+      shared.indexOf("export function refusedEndState("),
+    );
+    expect(helper).toContain(`.select("deleted_at")`);
+    expect(helper).not.toContain(`.is("deleted_at", null)`);
+    expect(helper).toContain(`.eq("organisation_id", organisationId)`);
+    // The three answers, all present, and "gone" is the fail-closed one. TWO
+    // `return "gone"` literals and no third: the error branch and the
+    // not-found branch, byte-identical, so a caller cannot learn which.
+    expect(helper.match(/return "gone";/g)).toHaveLength(2);
+    expect(helper).toContain(`return data.deleted_at === null ? "live" : "deleted"`);
+  });
+});
+
+describe("the child writes carry the id of the row's PARENT, not only its own", () => {
+  // A forged `representationId` or `roomId` belonging to a different artist or
+  // venue in the SAME workspace is permitted by the policy -- the policy asks
+  // whether the caller may write the row, not whether the row is the one this
+  // URL is about. The extra `.eq` is what closes it, and it is one line that
+  // is easy to drop while copying.
+  const artists = read("lib/crm/artists.ts");
+  const venues = read("lib/crm/venues.ts");
+
+  /**
+   * The argument text of every `commitWrite(...)` call, read by the same
+   * balanced-paren scan `callArguments` uses.
+   *
+   * SPLITTING ON THE TABLE NAME DOES NOT WORK, and the first version of these
+   * two tests did exactly that and failed for the right reason: `String.split`
+   * leaves the whole tail of the file as the last chunk, so a later,
+   * unrelated `commitWrite` (the venue's own restore) landed inside the chunk
+   * being asserted about rooms. One statement at a time is the only honest
+   * unit.
+   */
+  function commitWrites(rawSource: string): string[] {
+    const source = rawSource
+      .split("\n")
+      .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+      .join("\n");
+    const needle = "commitWrite(";
+    const out: string[] = [];
+    let from = 0;
+    for (;;) {
+      const at = source.indexOf(needle, from);
+      if (at === -1) return out;
+      let depth = 0;
+      let i = at + needle.length - 1;
+      for (; i < source.length; i += 1) {
+        if (source[i] === "(") depth += 1;
+        else if (source[i] === ")") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      out.push(source.slice(at + needle.length, i));
+      from = i;
+    }
+  }
+
+  it("every artist_representations UPDATE scopes to the artist", () => {
+    const writes = commitWrites(artists).filter((call) =>
+      call.includes(`.from("artist_representations")`),
+    );
+    // update, remove (soft delete) and restore.
+    expect(writes).toHaveLength(3);
+    for (const call of writes) {
+      expect(call).toContain(`.eq("artist_id", artistId)`);
+      expect(call).toContain(`.eq("id", representationId)`);
+      expect(call).toContain(`count: "exact"`);
+    }
+  });
+
+  it("every venue_rooms UPDATE scopes to the venue", () => {
+    const writes = commitWrites(venues).filter((call) =>
+      call.includes(`.from("venue_rooms")`),
+    );
+    // rename, close and reopen.
+    expect(writes).toHaveLength(3);
+    for (const call of writes) {
+      expect(call).toContain(`.eq("venue_id", venueId)`);
+      expect(call).toContain(`.eq("id", roomId)`);
+      expect(call).toContain(`count: "exact"`);
+    }
+  });
+});
+
+describe("the primary-representation RPC is called with three arguments", () => {
+  // 20260828234500's instruction to Task 4b in as many words: "Copy the
+  // demote/promote ORDER, the raise-rather-than-return-0 rule, AND
+  // p_organisation_id on BOTH statements." There is no 2-arg overload of the
+  // function to fall back to, so omitting the key here is a 404 rather than an
+  // unscoped write -- but a 404 rendered as "something went wrong" is still a
+  // defect, and the organisation must come from the RESOLVED org.
+  const artists = read("lib/crm/artists.ts");
+  it("passes p_organisation_id from the resolved org, never from the form", () => {
+    expect(artists).toContain(`supabase.rpc("set_artist_primary_representation"`);
+    expect(artists).toContain("p_organisation_id: org.id");
+  });
+});
+
+describe("only the two writes that earn it override the conflict sentence (N-9)", () => {
+  // CONFLICT_MESSAGE is generic because it is wired to every action in the
+  // phase. Two writes on artist_representations have a 23505 path with a
+  // specific, TRUE sentence: the promote (a real race) and the restore (not a
+  // race at all -- see REPRESENTATION_PRIMARY_CONFLICT). Nothing else may name
+  // an operation.
+  const artists = read("lib/crm/artists.ts");
+  const agencies = read("lib/crm/agencies.ts");
+  const venues = read("lib/crm/venues.ts");
+
+  it("artists.ts defines exactly the two specific sentences", () => {
+    expect(artists).toContain("const REPRESENTATION_PRIMARY_CONFLICT =");
+    expect(artists).toContain("const PRIMARY_REPRESENTATION_CONFLICT =");
+    expect(artists.match(/failureState\(result, formData, /g)).toHaveLength(2);
+  });
+
+  it("agencies.ts and venues.ts render the generic sentence only", () => {
+    for (const source of [agencies, venues]) {
+      expect(source).not.toContain("CONFLICT =");
+      expect(source).not.toContain("failureState(result, formData, ");
+    }
+  });
+});

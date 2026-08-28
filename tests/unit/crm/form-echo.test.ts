@@ -20,6 +20,11 @@ import { describe, expect, it } from "vitest";
 
 const { echoedValues, splitEchoed, groupMarkerName, selectedInGroup } =
   await import("@/lib/forms");
+// Task 4b. At module scope, not inside a `describe` callback -- top-level
+// await is what this file uses and a `describe` body is an ordinary
+// synchronous function, so an await in there is a transform error rather than
+// a failing test.
+const { parseGenres, formatTags } = await import("@/lib/crm/validate");
 
 function formOf(pairs: [string, string][]): FormData {
   const data = new FormData();
@@ -162,5 +167,93 @@ describe("a cleared checkbox group survives a failed submit as CLEARED", () => {
     // that does not carry the marker cannot distinguish "none" from "not
     // asked", so it must not claim the user cleared anything.
     expect(selectedInGroup(echoOf([["name", "x"]]), "type", STORED)).toEqual(STORED);
+  });
+});
+
+// ===========================================================================
+// TASK 4b: THE TWO MULTI-VALUE FIELDS THE NEW FORMS ADD
+// ===========================================================================
+// The brief asks for this block in as many words: "Multi-value fields
+// (`genres`, `socials`) must survive a failed submit -- Task 4's
+// `form-echo.test.ts` covers tags and a checkbox group; extend it to genres."
+//
+// They survive by two DIFFERENT mechanisms, and the difference is the point of
+// testing both.
+
+describe("genres survive a failed submit", () => {
+  it("a comma-separated text field needs NO marker, and this is why", () => {
+    // `genres` is ONE text input. An emptied text input still submits -- as ""
+    // -- so `echoedValues` has an entry for it and the echo can be trusted
+    // directly. That is the whole difference from a checkbox group, where an
+    // emptied group submits NOTHING and "none" collides with "not asked".
+    expect(echoedValues(formOf([["genres", ""]]))).toEqual({ genres: "" });
+    expect(echoedValues(formOf([["genres", "techno, house"]]))).toEqual({
+      genres: "techno, house",
+    });
+  });
+
+  it("the echo is what was TYPED, so a refused submit does not re-punctuate it", () => {
+    // The artist form renders `state.values.genres ?? stored`. If the action
+    // echoed the PARSED value instead, a user correcting one field would find
+    // their genre list silently rewritten -- "Techno,techno" collapsed, spacing
+    // normalised -- while they were being asked to fix something else.
+    const typed = "Techno,  techno , House";
+    expect(echoedValues(formOf([["genres", typed]])).genres).toBe(typed);
+    // ...and the parsed form really is different, so the assertion above is
+    // not vacuous.
+    expect(formatTags(parseGenres(typed).genres)).not.toBe(typed);
+  });
+
+  it("an emptied genres field survives as EMPTY, not reverted to the record", () => {
+    // The same state the checkbox group needed a marker to express. Here the
+    // form reads `state.values?.genres ?? values.genres`, and "" is not
+    // undefined -- so `??` keeps the empty string and the artist really does
+    // end up with no genres.
+    const echoed = echoedValues(formOf([["name", ""], ["genres", ""]]));
+    expect(echoed.genres).toBe("");
+    expect(echoed.genres ?? "techno").toBe("");
+  });
+});
+
+describe("a lone checkbox needs the marker too (is_exclusive)", () => {
+  // A GROUP OF ONE IS STILL A GROUP. `artist_representations.is_exclusive` is
+  // a single checkbox, and HTML submits a checkbox only when it is ticked --
+  // so an unticked box is absent from the FormData exactly as an emptied group
+  // of six is. Without the marker, a user who unticks "Exclusive" and then
+  // trips a date validation error gets it silently re-ticked, and the next
+  // submit saves an exclusivity they removed.
+  //
+  // The vocabulary is `["1"]` / `[]` because the input's `value` is "1".
+  const echoOf = (pairs: [string, string][]) => echoedValues(formOf(pairs));
+
+  it("shows it UNTICKED when the form was submitted with it unticked", () => {
+    const echoed = echoOf([
+      ["role", "booking agent"],
+      [groupMarkerName("isExclusive"), "1"],
+    ]);
+    expect(echoed.isExclusive).toBeUndefined();
+    expect(selectedInGroup(echoed, "isExclusive", ["1"])).toEqual([]);
+  });
+
+  it("shows it TICKED when it was submitted ticked", () => {
+    const echoed = echoOf([
+      [groupMarkerName("isExclusive"), "1"],
+      ["isExclusive", "1"],
+    ]);
+    expect(selectedInGroup(echoed, "isExclusive", [])).toEqual(["1"]);
+  });
+
+  it("falls back to the stored row on a first render", () => {
+    expect(selectedInGroup(undefined, "isExclusive", ["1"])).toEqual(["1"]);
+    expect(selectedInGroup(undefined, "isExclusive", [])).toEqual([]);
+  });
+
+  it("falls back to the stored row when no marker was carried", () => {
+    // The safe direction: a form that does not carry the marker cannot tell
+    // "not exclusive" from "not asked", so it must not claim the user cleared
+    // anything.
+    expect(selectedInGroup(echoOf([["role", "x"]]), "isExclusive", ["1"])).toEqual([
+      "1",
+    ]);
   });
 });
