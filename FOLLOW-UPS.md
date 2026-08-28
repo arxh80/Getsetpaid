@@ -268,10 +268,25 @@ These become live the moment a real tenant table exists.
       text_ge        t      -- `>=`
   ```
 
-  Postgres will not evaluate a **non-leakproof** qual before an RLS security
-  qual, so a non-leakproof operator can never become an Index Cond on a table
-  with RLS on. The controlled pair — same index, same fixture, same session,
-  differing only in leakproofness:
+  Postgres will not promote a **non-leakproof** qual to an index qual on a
+  relation that carries RLS **security quals for the current caller**, so on
+  this table `ILIKE` and `%` can never become an Index Cond for an
+  `authenticated` session. A role RLS does not apply to (`BYPASSRLS`, or the
+  table owner without `FORCE ROW LEVEL SECURITY`) has no such quals, which is
+  why the same statement as `postgres` uses the trigram index — and why a
+  `SECURITY DEFINER` function owned by such a role can too. "RLS enabled on the
+  table" is NOT the condition, and stating it that way is a counter-example to
+  itself: measured, `contacts` has `relrowsecurity = t` and `postgres` still
+  uses the trigram index, and still does after `force row level security`
+  (0.045 ms with FORCE on, 0.044 ms off, identical plans). The distinction is
+  load-bearing — the whole SECURITY DEFINER consequence below turns on it.
+
+  The controlled pair below varies leakproofness AND which index can serve the
+  operator, so it is suggestive rather than decisive. The decisive version, run
+  in re-review, holds role, RLS, index, statement and session fixed and flips
+  only `pg_proc.proleakproof`: `texticlike` goes 27.379 ms Seq Scan → 0.855 ms
+  `Bitmap Index Scan … Index Cond: (name ~~* '%Wilhelmina%')`, and
+  `similarity_op` 31.345 ms → 0.566 ms.
 
   ```
   name >= 'Wilhelmina'      Index Cond: (organisation_id = ... AND name >= ...)
@@ -295,12 +310,55 @@ These become live the moment a real tenant table exists.
   soft-delete filter itself. SECURITY DEFINER does not apply RLS to the table
   it reads, which is the one context where a non-leakproof operator CAN reach
   an index. It needs: `search_path` locked to `''`, the trigram operator
-  schema-qualified (`name operator(extensions.%) $1`), the organisation
-  membership checked INSIDE the function rather than trusted from the
-  argument — it is bypassing the policy, so it must re-establish what the
-  policy would have enforced — and its own tests in `rls_phase2_crm.sql`
-  proving it cannot be called for an organisation the caller is not in. That
-  is a task, not a patch.
+  schema-qualified (`name operator(extensions.%) $1`), and — the part that
+  matters most — **the WHOLE policy re-established inside the function, not
+  just membership.**
+
+  A re-review built this function to the earlier spec, minus the membership
+  check, and read `BRAVO SECRET CONTACT` out of a tenant the caller is not in.
+  The body is the only control there is, so the spec has to be exact:
+
+  ```sql
+  create function private.contact_search(p_org uuid, p_term text)
+  returns table (id uuid, name text)
+  language sql stable security definer set search_path = ''
+  as $$
+    select c.id, c.name
+      from public.contacts c
+     where c.organisation_id = p_org
+       and c.deleted_at is null
+       and p_org in (select private.permitted_organisations('view_crm'))
+       and ( p_org in (select private.full_scope_organisations())
+             or c.owner_user_id = (select auth.uid()) )
+       and c.name operator(extensions.%) p_term
+     order by extensions.similarity(c.name, p_term) desc
+     limit 50;
+  $$;
+  revoke execute on function private.contact_search(uuid, text) from public;
+  grant  execute on function private.contact_search(uuid, text) to authenticated;
+  ```
+
+  Calling the existing helpers inside the body is the cheapest correct way, and
+  it works: `auth.uid()` reads `request.jwt.claims`, which is session state and
+  is **not** rewritten by `SECURITY DEFINER` — verified inside a definer body
+  running as `postgres`, `uid` was still the caller's. Omitting them loses, in
+  order: the role→permission mapping, the soft-deleted-organisation check, the
+  MFA gate (`role_requires_mfa(role) → session_is_aal2()`), and the record-scope
+  disjunction — the last of which returns to a Standard User rows their own list
+  will not show them. Add `deleted_at is null`; RLS deliberately does not
+  (Task 2 § 4.1).
+
+  **It must be owned by the table owner, and that cannot be reduced.** Measured:
+  the same function owned by a role that is neither table owner nor `BYPASSRLS`
+  returns **0 rows** — RLS applies to it and it has no policy. So "own it with a
+  least-privilege role" is the obvious mitigation and it does not work; the
+  function will be able to read every tenant's contacts and its body is the
+  entire control. `revoke execute … from public`, grant only to `authenticated`.
+
+  **Its tests in `rls_phase2_crm.sql` must include, each expecting 0 rows:**
+  called for an organisation the caller is not in; called by an `aal1` Owner;
+  called by a `standard_user` for a row they do not own; called for a
+  soft-deleted organisation. That is a task, not a patch.
 
 - **DECIDED, fix round 1: KEEP all four trigram indexes, for a different reason
   than the one originally given.** The original justification ("Task 6's dedup
@@ -316,12 +374,24 @@ These become live the moment a real tenant table exists.
                                                          Seq Scan, 25,000 filtered
   ```
 
+  Re-review reproduced this independently on its own fixture — 0.159 ms against
+  31.233 ms over 20 calls each, **196×**, `Bitmap Index Scan on
+  contacts_name_trgm_idx`, `Index Cond: (name % 'Wilhelmina'::text)`.
+
   **Write cost, measured, because "keep it" needs both sides.** 2,000 inserts
   plus a bulk update of 2,000 rows, alternated with and without all four
-  indexes so a warm cache favours neither: inserts 144.7/147.1/102.7/147.1 ms
-  with against 77.0/82.9 ms without (~**+0.033 ms per row**), updates 78-99 ms
-  against 57-61 ms, and 5.7 MB per 25,000 contacts. A 10,000-row bulk import
-  pays about a third of a second.
+  indexes so a warm cache favours neither, and re-measured over three further
+  alternated rounds in re-review: **+0.01–0.03 ms per inserted row** (+24.0 ms
+  per 2,000 inserts). A bulk update **of the indexed column** roughly
+  **doubles** (125.5 ms against 61.5 ms) — not the "+35%" first recorded, which
+  is what you get updating some other column; updating a non-indexed column is
+  a HOT update and costs nothing measurable, and deletes are noise. Size is
+  **≈0.8–6 MB per 25,000 contacts, depending on name diversity** — the index
+  is dominated by distinct trigram count, so the earlier bare "5.7 MB per
+  25,000" read as a property of the schema and is not one (824 kB measured on
+  the re-review fixture, against 8,624 kB for `contacts_org_name_id_live_idx`).
+  The decision does not move: a 196× win against ~0.02 ms per insert is not
+  close. These are the numbers to size a bulk import with.
 
   **Drop them if Task 6 ships dedup WITHOUT a SECURITY DEFINER path** — at that
   point they have no reachable consumer at all. `20260828190000` carries this

@@ -72,15 +72,29 @@ import "server-only";
 // to name one and the reviewer's correction named a different one:
 //
 //   select p.proname, p.proleakproof from pg_operator o
-//     join pg_proc p on p.oid = o.oprcode where o.oprname in ('~~*','%','>=');
+//     join pg_proc p on p.oid = o.oprcode
+//    where o.oprname in ('~~*','%','>=') and o.oprleft = 'text'::regtype;
 //     texticlike     f      -- ILIKE
 //     similarity_op  f      -- the pg_trgm `%` operator
 //     text_ge        t      -- `>=`
 //
-// Postgres will not evaluate a NON-LEAKPROOF qual before an RLS security qual,
-// so a non-leakproof operator can never become an Index Cond on a table with
-// RLS enabled. The controlled pair, same index, same fixture, differing only
-// in leakproofness:
+// Postgres will not promote a NON-LEAKPROOF qual to an index qual on a relation
+// that carries RLS SECURITY QUALS FOR THE CURRENT CALLER, so on this table
+// ILIKE and `%` can never become an Index Cond for an `authenticated` session.
+//
+// "on a table with RLS enabled" would be the wrong condition, and this
+// paragraph's own `postgres` control below is the counter-example: `contacts`
+// has relrowsecurity = t, and `postgres` uses the trigram index anyway -- and
+// still does after `force row level security` (0.045 ms on, 0.044 ms off,
+// identical plans), because it is BYPASSRLS. A role RLS does not apply to has
+// no security quals to order against, which is why the SECURITY DEFINER fix
+// below works at all. The distinction is load-bearing, not pedantry.
+//
+// The pair below varies leakproofness AND which index can serve the operator,
+// so it is suggestive rather than decisive. The decisive experiment holds role,
+// RLS, index, statement and session fixed and flips only pg_proc.proleakproof:
+// texticlike goes 27.379 ms Seq Scan -> 0.855 ms Bitmap Index Scan,
+// Index Cond: (name ~~* '%Wilhelmina%'); similarity_op 31.345 ms -> 0.566 ms.
 //
 //   name >= 'Wilhelmina'     Index Cond: (organisation_id = ... AND name >= ...)
 //                            1.425 ms, Heap Fetches: 0

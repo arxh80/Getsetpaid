@@ -92,7 +92,14 @@ export interface ListSpec<
   readonly entity: string;
   /** Singular and plural, for counts and empty states. Lower case. */
   readonly noun: { readonly one: string; readonly many: string };
-  /** The column `q` searches. Trigram-indexed in the schema; see query.ts. */
+  /**
+   * The column `q` searches, with ILIKE.
+   *
+   * There IS a trigram index on this column and the search does NOT use it and
+   * cannot: ILIKE is not leakproof, so under RLS it can never become an Index
+   * Cond (lib/list/query.ts, "SEARCH IS O(TENANT)"). Search is a sequential
+   * scan of the tenant. Pick a column that is worth that.
+   */
   readonly searchColumn: string;
   /** Accessible name of the search input. A real label, not a placeholder. */
   readonly searchLabel: string;
