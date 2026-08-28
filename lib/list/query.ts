@@ -168,13 +168,31 @@ export type ListPage<TRow> =
       readonly firstCursor: Cursor | null;
       readonly lastCursor: Cursor | null;
       /**
-       * True when the request carried a cursor that pointed past the data and
-       * this is the first page instead. The component says so, rather than
-       * silently showing different rows than the URL asked for.
+       * Why this is page one when the URL asked for somewhere else, or null.
+       *
+       * A BOOLEAN WAS WRONG IN BOTH DIRECTIONS, and the flag is widened rather
+       * than the string reworded:
+       *
+       *   past-end      the cursor named a row at or after the end of the
+       *                 list. The link pointed PAST the data.
+       *   before-start  the cursor named a row at or before the start, on a
+       *                 `before` request. The link pointed BEFORE the data --
+       *                 and the one string the component used to render said
+       *                 the opposite, in as many words.
+       *   stale-sort    the cursor was made under a different sort and was
+       *                 discarded by `parseListParams`. Same class of event --
+       *                 your link is stale and this is not what you asked for
+       *                 -- and it previously produced page one with NO notice
+       *                 at all, which is the quietest of the three failures.
+       *
+       * The component picks the sentence. Nothing here writes copy.
        */
-      readonly recovered: boolean;
+      readonly recovered: RecoveryReason;
     }
   | { readonly outcome: "unavailable" };
+
+/** @see ListPage.recovered */
+export type RecoveryReason = "past-end" | "before-start" | "stale-sort" | null;
 
 export interface FetchListPageOptions<
   TRow,
@@ -372,10 +390,44 @@ export async function fetchListPage<
         ).limit(1)
       : null;
 
-  const [pageResult, countResult, nextResult] = await Promise.all([
+  // "IS THERE A PAGE BEFORE THIS ONE" WHEN PAGING FORWARDS -- the mirror of
+  // the probe above, and it exists because the asymmetry was the defect.
+  //
+  // `hasPrevious` used to be `direction === "after"`: on a forward page that
+  // is the literal `true`, dressed as a derivation. It is the same statement
+  // that `hasNext` used to make in the other direction, and the re-reviewer
+  // reproduced what it costs -- a cursor whose value sorts before every row
+  // renders 25 rows starting at the true first row, with PREVIOUS ENABLED, on
+  // what is literally page one.
+  //
+  // Symmetric answer, symmetric cost: one indexed `limit 1` asking whether any
+  // row still exists at or before the cursor we came forward from, reading
+  // backwards. `includeCursorRow` is what makes the cursor's OWN row count --
+  // it is the last row of the previous page, so if it is still there, there is
+  // still a page behind. A fabricated cursor that names nothing finds nothing.
+  //
+  // Runs in PARALLEL and only on forward pages, so it never coexists with the
+  // backward probe above; between them a page issues at most three round trips
+  // plus the degenerate recovery.
+  const prevProbeQuery =
+    params.cursorDirection === "after" && params.cursor
+      ? applyCursor(
+          applyScope(
+            supabase.from(table).select("id") as unknown as ListQuery,
+            options,
+          ),
+          sortOption.column,
+          flip(params.dir),
+          params.cursor,
+          { includeCursorRow: true },
+        ).limit(1)
+      : null;
+
+  const [pageResult, countResult, nextResult, prevResult] = await Promise.all([
     buildPage(params.cursor, params.cursorDirection),
     countQuery,
     nextProbeQuery ?? Promise.resolve(null),
+    prevProbeQuery ?? Promise.resolve(null),
   ]);
 
   if (pageResult.error || !pageResult.data) {
@@ -390,7 +442,11 @@ export async function fetchListPage<
 
   let raw = pageResult.data as Record<string, unknown>[];
   let direction = params.cursorDirection;
-  let recovered = false;
+  // The third recovery cause is decided BEFORE the query, by the parser: a
+  // cursor made under another sort never reaches this function at all, so the
+  // page is already page one and there is nothing to re-run. It is reported
+  // here anyway because the component needs one flag, not two.
+  let recovered: RecoveryReason = params.cursorDiscarded ? "stale-sort" : null;
 
   // A CURSOR THAT LANDS PAST THE DATA RECOVERS TO PAGE ONE INSTEAD OF DEAD-ENDING.
   //
@@ -420,8 +476,14 @@ export async function fetchListPage<
       return { outcome: "unavailable" };
     }
     raw = retry.data as Record<string, unknown>[];
+    // WHICH END WE FELL OFF IS DECIDED BY `cursorDirection` ALONE, and not by
+    // comparing it against `params.dir` as the brief suggested. `applyCursor`
+    // already folds `dir` in -- it reads `flip(dir)` for a `before` page -- so
+    // by the time a cursored page comes back empty, "nothing after the cursor"
+    // and "nothing before it" are exactly the two request directions. Bringing
+    // `dir` back in would invert the message on every descending list.
+    recovered = direction === "before" ? "before-start" : "past-end";
     direction = null;
-    recovered = true;
   }
 
   const more = raw.length > params.pageSize;
@@ -473,14 +535,35 @@ export async function fetchListPage<
     hasNext = true;
   }
 
+  // The mirror of the block above, deliberately written the same shape so the
+  // asymmetry that produced N-1 cannot come back by drift. Paging backward the
+  // spare row answers it directly; with no cursor -- including a page that
+  // RECOVERED to page one, which sets `direction` to null -- this is page one
+  // and there is nothing behind by definition; paging forward it is measured.
+  let hasPrevious: boolean;
+  if (direction === "before") {
+    hasPrevious = more;
+  } else if (direction === null) {
+    hasPrevious = false;
+  } else if (prevResult && !prevResult.error && Array.isArray(prevResult.data)) {
+    hasPrevious = prevResult.data.length > 0;
+  } else {
+    // Optimistic on a failed probe, same as `hasNext`, and for the same
+    // reason: an offered Previous can no longer strand anyone now that an
+    // empty cursored page recovers. Logged rather than silent, so a failing
+    // query does not look like an answer.
+    console.error(
+      `[list] ${spec.entity} previous-page probe failed for organisation ${options.organisationId}; assuming a previous page exists:`,
+      prevResult?.error?.message ?? "no data returned",
+    );
+    hasPrevious = true;
+  }
+
   return {
     outcome: "loaded",
     rows: ordered.map(mapRow),
     hasNext,
-    // Paging forward, having arrived from somewhere means there is something
-    // behind. Paging backward, the spare row is what says so. With no cursor
-    // this is page one, so there is nothing behind by definition.
-    hasPrevious: direction === "before" ? more : direction === "after",
+    hasPrevious,
     total: countResult.error ? null : countResult.count,
     firstCursor: edge(ordered[0]),
     lastCursor: edge(ordered[ordered.length - 1]),

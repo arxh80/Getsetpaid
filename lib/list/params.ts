@@ -67,6 +67,24 @@ export interface ListParams<
   readonly pageSize: number;
   readonly cursor: Cursor | null;
   readonly cursorDirection: CursorDirection | null;
+  /**
+   * A cursor arrived, decoded cleanly, and was thrown away because it was made
+   * under a DIFFERENT SORT than the one being rendered.
+   *
+   * Surfaced because the user is looking at page one of a list they asked for
+   * a middle page of, and nothing told them. It is the same class of event as
+   * the two `fetchListPage` recovers from -- your link is stale, so this is
+   * not what you asked for -- and it was the only one of the three that
+   * produced no notice at all. `null` is not distinguishable from "no cursor
+   * was sent" without it: the cursor field is null in both cases.
+   *
+   * Deliberately NOT true for a cursor that failed to DECODE. That one is
+   * either tampering or truncation, is not a link the product ever issued, and
+   * `lib/list/cursor.ts` already decided the answer is silently page one. This
+   * flag is for a link this product really did hand out and has since
+   * invalidated by a sort change.
+   */
+  readonly cursorDiscarded: boolean;
 }
 
 /**
@@ -211,6 +229,11 @@ export function parseListParams<TSort extends string, TFilter extends string>(
     pageSize,
     cursor,
     cursorDirection: cursor ? (after ? "after" : "before") : null,
+    // `decoded !== null && cursor === null` is exactly the discard branch
+    // above, written as a fact about the two values rather than as a second
+    // copy of the condition -- so it cannot say "discarded" while the cursor
+    // was in fact kept.
+    cursorDiscarded: decoded !== null && cursor === null,
   };
 }
 

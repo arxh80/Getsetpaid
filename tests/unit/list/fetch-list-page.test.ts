@@ -169,7 +169,7 @@ interface LoadedPage {
   total: number | null;
   firstCursor: { value: string; id: string; sort: string } | null;
   lastCursor: { value: string; id: string; sort: string } | null;
-  recovered: boolean;
+  recovered: "past-end" | "before-start" | "stale-sort" | null;
 }
 
 /** Runs the function and asserts it loaded, so every test reads the same. */
@@ -376,10 +376,18 @@ describe("paging backwards", () => {
     expect(arg(made.probe[0].calls, "limit")).toEqual([1]);
   });
 
-  it("no probe is issued on a forward page", async () => {
-    const made = stubQueries({ page: { data: [row(1)] }, count: { count: 1 } });
+  it("the backward probe is not issued on a forward page", async () => {
+    // A forward page issues the OTHER probe (see "paging forwards" below), so
+    // this asserts the direction rather than the absence: the one probe a
+    // forward page makes reads BACKWARDS from the cursor.
+    const made = stubQueries({
+      page: { data: [row(1)] },
+      count: { count: 1 },
+      probe: { data: [{ id: uuid(1) }] },
+    });
     await load({ after: cursorFor("Row 1", 1) });
-    expect(made.probe).toHaveLength(0);
+    expect(made.probe).toHaveLength(1);
+    expect(arg(made.probe[0].calls, "filter")).toEqual(["name", "lte", "Row 1"]);
   });
 
   it("a failed probe stays optimistic and says so", async () => {
@@ -413,7 +421,7 @@ describe("a cursor that lands past the data", () => {
     const page = await load({ after: cursorFor("zzz", 9) });
 
     expect(page.rows).toHaveLength(3);
-    expect(page.recovered).toBe(true);
+    expect(page.recovered).toBe("past-end");
     // ...and the recovery query carries NO cursor.
     expect(made.page[1].calls.some((c) => c.method === "or")).toBe(false);
     expect(made.page[1].calls.some((c) => c.method === "filter")).toBe(false);
@@ -438,7 +446,9 @@ describe("a cursor that lands past the data", () => {
       recovery: { data: [row(1)] },
     });
     const page = await load({ before: cursorFor("aaa", 1) });
-    expect(page.recovered).toBe(true);
+    // NOT "past-end". The link pointed BEFORE the beginning, and the single
+    // string this used to render told the user the opposite.
+    expect(page.recovered).toBe("before-start");
     expect(page.rows).toHaveLength(1);
     expect(page.hasNext).toBe(false);
     expect(page.hasPrevious).toBe(false);
@@ -449,8 +459,116 @@ describe("a cursor that lands past the data", () => {
     // the same rows and must not produce the same screen.
     const made = stubQueries({ page: { data: [] }, count: { count: 0 } });
     const page = await load({});
-    expect(page.recovered).toBe(false);
+    expect(page.recovered).toBeNull();
     expect(page.rows).toHaveLength(0);
+    expect(made.page).toHaveLength(1);
+  });
+});
+
+describe("paging forwards: hasPrevious is measured, not assumed", () => {
+  // ------------------------------------------------------------------
+  // Re-review N-1. `hasPrevious` was `direction === "after"` -- the literal
+  // `true` on every forward page, dressed as a derivation, and exactly the
+  // statement `hasNext` had already been caught making in the other
+  // direction. The re-reviewer reproduced it: a cursor whose value sorts
+  // before every row renders the true first page with PREVIOUS ENABLED.
+  //
+  // These four are the same four the backward probe has, mirrored, because
+  // the asymmetry was the defect and a symmetric test suite is what stops it
+  // growing back.
+  // ------------------------------------------------------------------
+  it("reads BACKWARDS from the cursor, inclusively, limit 1", async () => {
+    const made = stubQueries({
+      page: { data: [row(2)] },
+      count: { count: 9 },
+      probe: { data: [{ id: uuid(1) }] },
+    });
+    await load({ after: cursorFor("Row 1", 1) });
+
+    // Backwards: `lte` where the forward page uses `gte`.
+    expect(arg(made.probe[0].calls, "filter")).toEqual(["name", "lte", "Row 1"]);
+    // Inclusive on the id, because the cursor row is the LAST ROW OF THE
+    // PREVIOUS PAGE. If it still exists, there is still a page behind.
+    expect(String(arg(made.probe[0].calls, "or")?.[0])).toContain(
+      `id.lte.${uuid(1)}`,
+    );
+    expect(arg(made.probe[0].calls, "limit")).toEqual([1]);
+  });
+
+  it("a cursor that names nothing behind it reports NO previous page", async () => {
+    // The reproduction, in the fake: rows come back (so this is not the
+    // recovery path) and the probe finds nothing at or before the cursor.
+    // Under the old expression this page rendered Previous as an enabled
+    // link on what is literally page one.
+    stubQueries({
+      page: { data: [row(1), row(2)] },
+      count: { count: 9 },
+      probe: { data: [] },
+    });
+    const page = await load({ after: cursorFor("!!!", 1) });
+    expect(page.hasPrevious).toBe(false);
+  });
+
+  it("a cursor with a real row behind it reports a previous page", async () => {
+    stubQueries({
+      page: { data: [row(5), row(6)] },
+      count: { count: 9 },
+      probe: { data: [{ id: uuid(4) }] },
+    });
+    const page = await load({ after: cursorFor("Row 4", 4) });
+    expect(page.hasPrevious).toBe(true);
+  });
+
+  it("a failed probe stays optimistic and says so", async () => {
+    stubQueries({
+      page: { data: [row(5)] },
+      count: { count: 9 },
+      probe: { data: null, error: { message: "prev boom" } },
+    });
+    const page = await load({ after: cursorFor("Row 4", 4) });
+    expect(page.hasPrevious).toBe(true);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining("previous-page probe failed"),
+      expect.stringContaining("prev boom"),
+    );
+  });
+
+  it("page one issues no probe at all and reports no previous page", async () => {
+    const made = stubQueries({ page: { data: [row(1)] }, count: { count: 1 } });
+    const page = await load({});
+    expect(made.probe).toHaveLength(0);
+    expect(page.hasPrevious).toBe(false);
+  });
+});
+
+describe("a cursor discarded for a sort mismatch", () => {
+  // ------------------------------------------------------------------
+  // Re-review N-2, second half. `parseListParams` drops a cursor made under
+  // another sort -- correct, and it produced page one with NO notice, though
+  // it is the same class of event as the two recoveries: your link is stale
+  // and this is not what you asked for.
+  // ------------------------------------------------------------------
+  it("is reported as stale-sort, with no cursor and no re-run", async () => {
+    const made = stubQueries({ page: { data: [row(1)] }, count: { count: 9 } });
+    // A cursor made under `name`, requested under `updated`.
+    const page = await load({ sort: "updated", after: cursorFor("Row 1", 1) });
+
+    expect(page.recovered).toBe("stale-sort");
+    expect(page.hasPrevious).toBe(false);
+    // One page query, carrying no cursor: the parser already dropped it, so
+    // there is nothing to recover FROM.
+    expect(made.page).toHaveLength(1);
+    expect(made.page[0].calls.some((c) => c.method === "or")).toBe(false);
+    expect(made.probe).toHaveLength(0);
+  });
+
+  it("a cursor that does not decode is NOT reported -- it is not a link we issued", async () => {
+    // Tampering and truncation already resolve to page one silently
+    // (lib/list/cursor.ts). Announcing them would put a notice on the screen
+    // for a URL the product never handed out.
+    const made = stubQueries({ page: { data: [row(1)] }, count: { count: 9 } });
+    const page = await load({ after: "not-a-cursor" });
+    expect(page.recovered).toBeNull();
     expect(made.page).toHaveLength(1);
   });
 });

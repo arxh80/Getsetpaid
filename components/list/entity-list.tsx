@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { buildListHref, narrowedBy, type ListParams } from "@/lib/list/params";
-import type { ListPage } from "@/lib/list/query";
+import type { ListPage, RecoveryReason } from "@/lib/list/query";
 import type { ListColumn, ListSpec } from "@/lib/list/spec";
 import { ListPager } from "./list-pager";
 
@@ -110,16 +110,21 @@ export function EntityList<TRow, TSort extends string, TFilter extends string>({
           {spec.sort[params.sort].directionLabels[params.dir]}
         </p>
         {scopeNote}
-        {/* The cursor in the URL pointed past the data and fetchListPage
-            recovered to the first page. Saying so is the difference between a
-            link that quietly shows something other than what it asked for and
-            one that explains itself -- and it is cheap, because the recovery
-            already happened and the alternative was the dead end review found
-            (I-1). Only rendered in the degenerate case. */}
+        {/* The URL asked for somewhere other than page one and did not get it.
+            Saying so is the difference between a link that quietly shows
+            something other than what it asked for and one that explains
+            itself, and it is cheap because the recovery already happened.
+
+            THREE CAUSES, THREE SENTENCES. This used to be one string --
+            "pointed past the end of the list" -- rendered for both cursor
+            recoveries, so a `before` cursor naming a row at the start was told
+            the exact opposite of what happened; and a cursor discarded for a
+            sort mismatch, which is the same class of event, said nothing at
+            all. The flag was widened rather than the string reworded, because
+            a component cannot infer a direction the query already knew. */}
         {page.recovered ? (
           <p role="status" className="text-sm text-ink-muted">
-            That link pointed past the end of the list, so this is the first
-            page.
+            {RECOVERY_NOTICE[page.recovered]}
           </p>
         ) : null}
       </div>
@@ -234,6 +239,26 @@ export function EntityList<TRow, TSort extends string, TFilter extends string>({
     </div>
   );
 }
+
+/**
+ * One sentence per recovery cause.
+ *
+ * A `Record` keyed by the union rather than a chain of ternaries, so adding a
+ * fourth cause to `RecoveryReason` is a compile error here instead of a
+ * silently missing notice.
+ *
+ * None of the three says "error". Every one of them is an ordinary
+ * consequence of a link outliving the list it was made from -- a bookmark, a
+ * shared URL, a back button after somebody else deleted a row -- and the user
+ * did nothing wrong. They say what happened and where the user now is.
+ */
+const RECOVERY_NOTICE: Record<NonNullable<RecoveryReason>, string> = {
+  "past-end": "That link pointed past the end of the list, so this is the first page.",
+  "before-start":
+    "That link pointed before the start of the list, so this is the first page.",
+  "stale-sort":
+    "That link was made under a different sort order, so this is the first page.",
+};
 
 /**
  * Names what is narrowing the list, or nothing when nothing is.
