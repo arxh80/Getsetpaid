@@ -77,6 +77,30 @@ export type WriteResult =
    * explicit 42501 from a function that raises rather than returning 0.
    */
   | { readonly outcome: "refused" }
+  /**
+   * Somebody else changed the same thing first. 23505, a unique violation.
+   *
+   * SEPARATE FROM "failed" BECAUSE THE USER'S NEXT MOVE IS DIFFERENT. A fault
+   * says "try again in a moment"; a conflict says "reload and look, because
+   * what you are looking at is out of date". Reached on this stack by two
+   * overlapping calls to set_contact_primary_company() promoting different
+   * companies on the same contact -- measured in the Task 4 review, three
+   * scenarios, never two primaries and never zero, but the loser got
+   * `contact_companies_one_primary_per_contact` and a sentence about an
+   * outage.
+   */
+  | { readonly outcome: "conflict" }
+  /**
+   * The row count was not returned, so what happened is UNKNOWN.
+   *
+   * NOT THE SAME EVENT AS A FAILURE, and the difference is a claim about the
+   * customer's data. `FAILED_MESSAGE` ends "Nothing has been changed", which
+   * is true of a refused write and FALSE here: the review removed
+   * `{ count: "exact" }` from `updateContactAction`, every save then reported
+   * that sentence, and the row HAD changed. Fail-safe and a lie. This outcome
+   * exists so the message can say what is actually known.
+   */
+  | { readonly outcome: "unknown"; readonly message: string }
   /** The request failed. A different sentence, and a logged one. */
   | { readonly outcome: "failed"; readonly message: string };
 
@@ -95,11 +119,13 @@ export interface MutationResponse {
  * directly. The integration half (a policy really refusing a real PATCH) lives
  * in the RLS suite; this is the half that binds the CLIENT.
  *
- * `count === null` is treated as FAILED, not as applied. Null means the header
- * was not requested or not returned, which means this code cannot tell what
- * happened -- and "cannot tell" must never resolve to "saved". It is the exact
- * shape a caller that forgets `{ count: "exact" }` produces, so the failure is
- * loud instead of a silent return to the old behaviour.
+ * `count === null` is UNKNOWN, never applied. Null means the header was not
+ * requested or not returned, which means this code cannot tell what happened
+ * -- and "cannot tell" must never resolve to "saved". It is the exact shape a
+ * caller that forgets `{ count: "exact" }` produces, so the failure is loud
+ * instead of a silent return to the old behaviour. It is deliberately not
+ * "failed" either: see the outcome's own comment, and M-4 in the Task 4
+ * review.
  */
 export function classifyWrite(
   response: MutationResponse,
@@ -111,11 +137,17 @@ export function classifyWrite(
     // operation. It is a refusal, not a fault, and must not be logged as one
     // or shown as "something went wrong".
     if (response.error.code === "42501") return { outcome: "refused" };
+    // 23505 is unique_violation. On this schema the one a save can hit is
+    // `contact_companies_one_primary_per_contact` losing a race -- see the
+    // `conflict` outcome. `linkCompanyAction` handles its own 23505 (the link
+    // already exists) before reaching here, because that one has a better
+    // sentence still: "already linked" is not a conflict, it is the answer.
+    if (response.error.code === "23505") return { outcome: "conflict" };
     return { outcome: "failed", message: response.error.message };
   }
   if (response.count === null) {
     return {
-      outcome: "failed",
+      outcome: "unknown",
       message: `${context}: no row count was returned, so whether the write applied is unknown. The caller must pass { count: "exact" }.`,
     };
   }
@@ -134,7 +166,11 @@ export async function commitWrite(
   run: () => PromiseLike<MutationResponse>,
 ): Promise<WriteResult> {
   const result = classifyWrite(await run(), context);
-  if (result.outcome === "failed") {
+  // "unknown" is logged too, and more loudly deserved: it is a programming
+  // error in this repository (a call site that forgot `{ count: "exact" }`)
+  // rather than something the database did. A conflict is NOT logged -- it is
+  // two users working at once, which is the product working.
+  if (result.outcome === "failed" || result.outcome === "unknown") {
     console.error(`[crm] ${context} failed:`, result.message);
   }
   return result;
@@ -153,3 +189,27 @@ export const REFUSED_MESSAGE =
 
 export const FAILED_MESSAGE =
   "We couldn’t save that just now. Nothing has been changed. Try again in a moment.";
+
+/**
+ * Somebody else got there first.
+ *
+ * Names the situation, because "we couldn't save that just now" reads as an
+ * outage and sends the user to support instead of to the reload button. The
+ * second sentence is the instruction: what they are looking at is stale, so
+ * retrying the same submit blind would either fail again or overwrite a
+ * decision somebody else just made.
+ */
+export const CONFLICT_MESSAGE =
+  "Somebody else changed this contact’s primary company. Reload the page and try again.";
+
+/**
+ * The one message that must NOT claim to know what happened.
+ *
+ * `FAILED_MESSAGE` ends "Nothing has been changed", and for a missing row
+ * count that sentence is a guess -- the review dropped `{ count: "exact" }`
+ * from a save and measured the row changing while the user was told it had
+ * not. When the count is missing the honest answer is that the outcome is
+ * unknown and the page is the only way to find out.
+ */
+export const UNKNOWN_MESSAGE =
+  "We couldn’t tell whether that saved. Reload the page and check before trying again.";

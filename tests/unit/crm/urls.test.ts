@@ -25,7 +25,14 @@ describe("safeHref: a stored bad value renders inert", () => {
     ["plain", "javascript:alert(1)"],
     ["case", "JaVaScRiPt:alert(1)"],
     ["leading whitespace", "   javascript:alert(1)"],
-    ["leading NUL", `${NUL}javascript:alert(1)`],
+    // NOT A VALUE THIS DATABASE CAN HOLD, and the test is kept anyway.
+    // Postgres refuses a NUL inside `text`/`jsonb` outright (`ERROR: null
+    // character not permitted`, measured while planting hostile rows), so this
+    // cannot arrive from the `socials` column. It CAN arrive from a form post,
+    // a future integration, or any caller that is not Postgres -- and the
+    // reason it is here is that the parser trims it before reading the scheme,
+    // which is the property under test rather than the byte.
+    ["leading NUL (not storable in Postgres -- see comment)", `${NUL}javascript:alert(1)`],
     ["TAB inside the scheme", `java${TAB}script:alert(1)`],
     ["LF inside the scheme", `java${LF}script:alert(1)`],
     ["CR inside the scheme", `java${CR}script:alert(1)`],
@@ -42,6 +49,35 @@ describe("safeHref: a stored bad value renders inert", () => {
       expect(safeHref(value)).toBeNull();
     });
   }
+
+  it("returns null for a PROTOCOL-RELATIVE //host, which has no scheme of its own", () => {
+    // `//evil.example/pwned` is the one evasion in the brief the suite did not
+    // name. It is safe today for a reason worth writing down: `new URL()` with
+    // no base THROWS on it, so it never reaches the protocol check at all --
+    // which means the safety is a property of the missing base, not of the
+    // allowlist. A refactor to `new URL(raw, location.origin)` or
+    // `new URL(raw, "https://x")` -- the obvious "let's support relative
+    // links" change -- would resolve it to `https://evil.example/pwned` and
+    // silently open it. This assertion is what fails when somebody tries.
+    expect(safeHref("//evil.example/pwned")).toBeNull();
+    expect(safeHref("//evil.example")).toBeNull();
+    expect(safeHref("\\\\evil.example\\pwned")).toBeNull();
+    // And the write side agrees it announces nothing, so it is stored as text
+    // rather than refused -- the render side is the control.
+    expect(hasUnsafeScheme("//evil.example/pwned")).toBe(false);
+  });
+
+  it("does not clean a SPACE out of the middle and call the result a link", () => {
+    // M-5. `stripUrlNoise` used to remove all whitespace from anywhere, so
+    // `"http s://x"` became a live anchor to `https://x` -- a string no
+    // browser would navigate there. The file's own rule is "check the same
+    // string the browser will", and the browser does not do this.
+    expect(safeHref("http s://example.com")).toBeNull();
+    expect(safeHref("java script:alert(1)")).toBeNull();
+    // TAB, LF and CR still go, from anywhere: that is the rule the parser
+    // really has, and the one the scheme evasions rely on.
+    expect(safeHref(`https://exa${TAB}mple.com/`)).toBe("https://example.com/");
+  });
 
   it("returns null for a bare handle, which is the ORDINARY case", () => {
     // Not a failure. A social field holds handles far more often than URLs,

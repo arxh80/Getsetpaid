@@ -36,10 +36,12 @@
 //     <NUL>javascript:alert(1)   a leading C0 control
 //     "  javascript:alert(1)"      leading whitespace
 //
-// HTML's own URL parser strips ASCII whitespace and C0 controls before it
-// reads the scheme, so anything that does not do the same is checking a
-// different string than the browser will. `stripUrlNoise` below does it
-// first; `new URL()` then answers what the protocol actually is.
+// The URL parser removes TAB/LF/CR from anywhere and trims leading and
+// trailing C0 controls and spaces before it reads the scheme, so anything that
+// does not do the same is checking a different string than the browser will.
+// `stripUrlNoise` below does exactly that and no more -- see its own comment on
+// why "and no more" is half the point; `new URL()` then answers what the
+// protocol actually is.
 //
 // The allowlist is `http:` and `https:` and nothing else. `mailto:` and `tel:`
 // are deliberately absent: nothing in this task renders a link from a
@@ -47,19 +49,42 @@
 // a four-entry one that has to be re-argued.
 
 /**
- * Everything the URL parser ignores, removed before the scheme is read.
+ * Exactly what the URL parser ignores, removed before the scheme is read.
  *
- * C0 controls and DEL (U+0000-U+001F, U+007F) plus all Unicode whitespace.
- * Removed from ANYWHERE in the string, not just the ends -- `java\tscript:`
- * is the case that makes trimming insufficient.
+ * ===========================================================================
+ * TWO DIFFERENT RULES, BECAUSE THE PARSER HAS TWO
+ * ===========================================================================
+ * The WHATWG basic URL parser does precisely this and nothing more:
+ *
+ *   1. TAB, LF and CR are removed from ANYWHERE in the string. That is what
+ *      makes `java<TAB>script:alert(1)` a javascript URL, and the case a
+ *      regex over the raw string loses to.
+ *   2. Leading and trailing C0 controls and SPACE (U+0000-U+0020) are
+ *      trimmed. That is `<NUL>javascript:` and `"   javascript:"`.
+ *
+ * It does NOT remove a space from the middle, and neither does this any more.
+ * The first version stripped every C0 control and all Unicode whitespace from
+ * anywhere, so `"http s://x"` became a live link to `https://x` -- a string no
+ * browser would navigate there. No security consequence (the output was still
+ * an http(s) URL the parser had normalised) and a direct contradiction of the
+ * rule this file states: CHECK THE SAME STRING THE BROWSER WILL. Over-cleaning
+ * is the same class of mistake as under-cleaning; it just fails in the
+ * friendly direction, by linkifying something the user did not write.
+ *
+ * A value with an interior space is still safe. `"java script:alert(1)"` has
+ * no valid scheme once the space stays, so `new URL()` throws and `safeHref`
+ * renders it as inert text -- which is what the browser does with it too.
  */
 function stripUrlNoise(raw: string): string {
-  // The range is written as backslash-u escapes rather than as literal
+  // The ranges are written as backslash-u escapes rather than as literal
   // control characters on purpose. tests/unit/list/cursor.test.ts shipped a
   // raw NUL byte in Task 3, which made git treat the file as BINARY -- so the
   // test for the security-critical cursor decoder became the one file no
   // reviewer could read in a diff. Escapes cost nothing and cannot do that.
-  return raw.replace(/[\u0000-\u001f\u007f\s]/g, "");
+  return raw
+    .replace(/[\u0009\u000a\u000d]/g, "")
+    .replace(/^[\u0000-\u0020]+/, "")
+    .replace(/[\u0000-\u0020]+$/, "");
 }
 
 const SAFE_PROTOCOLS = new Set(["http:", "https:"]);

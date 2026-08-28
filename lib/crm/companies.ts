@@ -37,8 +37,10 @@ import { echoedValues, field, type FormState } from "@/lib/forms";
 import { getCrmWriteAccess } from "@/lib/crm/write-access";
 import {
   commitWrite,
+  CONFLICT_MESSAGE,
   FAILED_MESSAGE,
   REFUSED_MESSAGE,
+  UNKNOWN_MESSAGE,
   type WriteResult,
 } from "@/lib/crm/write";
 import { checkName, type FieldProblem } from "@/lib/crm/validate";
@@ -85,8 +87,19 @@ function stateFor(
 ): FormState {
   if (result.outcome === "applied") return { message: success };
   const values = echoedValues(formData);
-  if (result.outcome === "refused") return { error: REFUSED_MESSAGE, values };
-  return { error: FAILED_MESSAGE, values };
+  // See lib/crm/contacts.ts's copy: a switch, so a new outcome is a compile
+  // error rather than a wrong sentence. `unknown` in particular must not be
+  // told "Nothing has been changed", because that is exactly what is not known.
+  switch (result.outcome) {
+    case "refused":
+      return { error: REFUSED_MESSAGE, values };
+    case "conflict":
+      return { error: CONFLICT_MESSAGE, values };
+    case "unknown":
+      return { error: UNKNOWN_MESSAGE, values };
+    case "failed":
+      return { error: FAILED_MESSAGE, values };
+  }
 }
 
 interface CompanyValues {

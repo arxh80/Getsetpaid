@@ -18,7 +18,13 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 //
 // `status`, `data` and `error` are IDENTICAL. Only `count` differs.
 
-const { classifyWrite, commitWrite } = await import("@/lib/crm/write");
+const {
+  classifyWrite,
+  commitWrite,
+  CONFLICT_MESSAGE,
+  FAILED_MESSAGE,
+  UNKNOWN_MESSAGE,
+} = await import("@/lib/crm/write");
 
 describe("a refused UPDATE is not a save", () => {
   it("count 0 with NO error is refused, not applied", () => {
@@ -53,16 +59,64 @@ describe("a refused UPDATE is not a save", () => {
 });
 
 describe("a missing count is not a save either", () => {
-  it("count null is FAILED, never applied", () => {
+  it("count null is UNKNOWN, never applied", () => {
     // The shape a caller that forgets `{ count: "exact" }` produces. Resolving
     // it to "applied" would silently restore the old, broken behaviour for
     // every call site that omitted the option -- which is precisely how this
     // defect class comes back.
     const result = classifyWrite({ error: null, count: null }, "update contact");
-    expect(result.outcome).toBe("failed");
-    if (result.outcome !== "failed") throw new Error("unreachable");
+    expect(result.outcome).toBe("unknown");
+    if (result.outcome !== "unknown") throw new Error("unreachable");
     expect(result.message).toContain("count");
   });
+
+  it("...and UNKNOWN is a different outcome from FAILED, on purpose", () => {
+    // THE SENTENCE IS THE REASON. `FAILED_MESSAGE` ends "Nothing has been
+    // changed"; the review dropped `{ count: "exact" }` from a save, watched
+    // every save report exactly that, and then read the row -- which HAD
+    // changed. Fail-safe, and false in its second sentence. Collapsing these
+    // two outcomes back together brings the false sentence back with them.
+    expect(classifyWrite({ error: null, count: null }, "ctx").outcome).not.toBe(
+      classifyWrite({ error: { message: "boom", code: "08006" }, count: null }, "ctx")
+        .outcome,
+    );
+    expect(UNKNOWN_MESSAGE).not.toContain("Nothing has been changed");
+    expect(FAILED_MESSAGE).toContain("Nothing has been changed");
+  });
+});
+
+describe("a lost race is not an outage", () => {
+  it("23505 is a CONFLICT, not a fault", () => {
+    // Measured in the Task 4 review: two overlapping transactions promoting
+    // different companies on the same contact. No deadlock, never two
+    // primaries, never zero -- the loser's whole transaction rolls back, which
+    // is the property set_contact_primary_company() exists for. What the loser
+    // got was `duplicate key value violates unique constraint
+    // contact_companies_one_primary_per_contact`, rendered as "we couldn't
+    // save that just now", which reads as an outage rather than as somebody
+    // else having just changed it.
+    expect(
+      classifyWrite(
+        {
+          error: {
+            message:
+              'duplicate key value violates unique constraint "contact_companies_one_primary_per_contact"',
+            code: "23505",
+          },
+          count: null,
+        },
+        "set primary company",
+      ),
+    ).toEqual({ outcome: "conflict" });
+  });
+
+  it("...and the message tells the user to reload rather than to wait", () => {
+    // The two situations have different next moves, which is the whole reason
+    // they are different outcomes: a fault is retried, a conflict is re-read.
+    expect(CONFLICT_MESSAGE).toContain("Reload");
+    expect(CONFLICT_MESSAGE).not.toBe(FAILED_MESSAGE);
+  });
+
 });
 
 describe("errors", () => {
@@ -102,6 +156,15 @@ describe("commitWrite", () => {
     expect(console.error).not.toHaveBeenCalled();
   });
 
+  it("does not log a conflict -- two people working at once is the product working", async () => {
+    const result = await commitWrite("set primary company", async () => ({
+      error: { message: "duplicate key value", code: "23505" },
+      count: null,
+    }));
+    expect(result).toEqual({ outcome: "conflict" });
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
   it("logs a genuine failure once, with the message and not the rows", async () => {
     await commitWrite("update contact 1", async () => ({
       error: { message: "boom", code: "08006" },
@@ -110,5 +173,18 @@ describe("commitWrite", () => {
     const logged = vi.mocked(console.error).mock.calls.flat().join(" ");
     expect(logged).toContain("boom");
     expect(logged).toContain("update contact 1");
+  });
+
+  it("logs an UNKNOWN too -- it is this repository's bug, not the database's", async () => {
+    // A call site that forgot `{ count: "exact" }`. The user gets a message
+    // that does not guess; the developer gets a line naming the call site.
+    const result = await commitWrite("update contact 1", async () => ({
+      error: null,
+      count: null,
+    }));
+    expect(result.outcome).toBe("unknown");
+    expect(vi.mocked(console.error).mock.calls.flat().join(" ")).toContain(
+      "update contact 1",
+    );
   });
 });

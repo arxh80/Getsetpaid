@@ -54,8 +54,10 @@ import {
 } from "@/lib/crm/write-access";
 import {
   commitWrite,
+  CONFLICT_MESSAGE,
   FAILED_MESSAGE,
   REFUSED_MESSAGE,
+  UNKNOWN_MESSAGE,
   type WriteResult,
 } from "@/lib/crm/write";
 import {
@@ -144,8 +146,20 @@ function failureState(
   formData: FormData,
 ): FormState {
   const values = echoedValues(formData);
-  if (result.outcome === "refused") return { error: REFUSED_MESSAGE, values };
-  return { error: FAILED_MESSAGE, values };
+  // A SWITCH RATHER THAN AN IF-CHAIN WITH A FALLBACK. Four outcomes today and
+  // the `never` arm is what makes a fifth a compile error here rather than a
+  // wrong sentence in front of a customer -- which is how "Nothing has been
+  // changed" came to be shown for a write that had changed something.
+  switch (result.outcome) {
+    case "refused":
+      return { error: REFUSED_MESSAGE, values };
+    case "conflict":
+      return { error: CONFLICT_MESSAGE, values };
+    case "unknown":
+      return { error: UNKNOWN_MESSAGE, values };
+    case "failed":
+      return { error: FAILED_MESSAGE, values };
+  }
 }
 
 interface ContactValues {

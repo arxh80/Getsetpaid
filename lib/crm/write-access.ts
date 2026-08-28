@@ -57,7 +57,7 @@ import "server-only";
 // the database happily accepted the write from anything that bypassed the UI.
 //
 // So the mirror is explicit, it is named, and it is bound by a test that
-// drives BOTH sides (tests/integration/list/crm-write-access-matches-db.test.ts)
+// drives BOTH sides (tests/integration/crm/crm-write-access-matches-db.test.ts)
 // -- the same treatment `record-scope-matches-db`, `tiers-match-db` and
 // `past-due-grace-matches-db` already give the other four places where one
 // rule is written in two languages. When Phase 7 removes the escape from the
