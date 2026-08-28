@@ -18,7 +18,8 @@ import { describe, expect, it } from "vitest";
 // what it was given, the form uses that as `defaultValue`, so the reset
 // restores the submitted values. These are the two functions that carry it.
 
-const { echoedValues, splitEchoed } = await import("@/lib/forms");
+const { echoedValues, splitEchoed, groupMarkerName, selectedInGroup } =
+  await import("@/lib/forms");
 
 function formOf(pairs: [string, string][]): FormData {
   const data = new FormData();
@@ -79,10 +80,11 @@ describe("echoedValues", () => {
   });
 
   it("no checked boxes means the key is absent, and splitEchoed says empty", () => {
-    // NOT the same as "unchanged". `companies.type` accepts the empty array
-    // and 20260827232510 calls an untyped company "a legitimate half-entered
-    // record", so clearing every box has to survive a failed submit as
-    // CLEARED rather than reverting to what was stored.
+    // The PRECONDITION only. What the form then does with it is the next
+    // describe block -- and the first version of this file stopped here, said
+    // in a comment that clearing every box "has to survive a failed submit as
+    // CLEARED", and asserted nothing about that. It did not survive. See the
+    // CompanyForm block below.
     const echoed = echoedValues(formOf([["name", "Untyped Ltd"]]));
     expect(echoed.type).toBeUndefined();
     expect(splitEchoed(echoed.type)).toEqual([]);
@@ -93,5 +95,72 @@ describe("echoedValues", () => {
     // Also a state that must survive: the user cleared a field on purpose, and
     // falling back to the stored value would put it back.
     expect(echoedValues(formOf([["email", ""]]))).toEqual({ email: "" });
+  });
+});
+
+// ===========================================================================
+// I-2: WHAT THE COMPANY FORM DOES WITH AN EMPTIED CHECKBOX GROUP
+// ===========================================================================
+// The defect this block exists for was reproduced in a browser: a company with
+// types `promoter` + `venue`, both unticked, the name blanked to force a
+// refusal, submitted -- and both came back ticked. Retrying with a name
+// re-saved the types the user had removed.
+//
+// The previous test suite named that exact case in a COMMENT and asserted
+// `echoed.type === undefined` instead, which is the bug's precondition rather
+// than its consequence. These assertions drive `selectedInGroup`, which is the
+// expression `CompanyForm` renders `defaultChecked` from, so a regression in
+// the derivation is red here rather than in a browser six weeks later. The
+// hidden marker input itself is bound by
+// tests/unit/crm/write-call-sites.test.ts, because no assertion on a pure
+// function can see a `<input>` deleted from a .tsx file.
+
+describe("a cleared checkbox group survives a failed submit as CLEARED", () => {
+  /** What `useActionState` hands the form back after a refused submit. */
+  const echoOf = (pairs: [string, string][]) => echoedValues(formOf(pairs));
+
+  const STORED = ["promoter", "venue"];
+
+  it("shows NOTHING ticked when the group was submitted with nothing ticked", () => {
+    // THE CASE. `companies.type` accepts the empty array and 20260827232510
+    // calls an untyped company "a legitimate half-entered record", so this is
+    // a state the user is entitled to be in.
+    const echoed = echoOf([
+      ["name", ""],
+      [groupMarkerName("type"), "1"],
+    ]);
+    expect(echoed.type).toBeUndefined();
+    expect(selectedInGroup(echoed, "type", STORED)).toEqual([]);
+  });
+
+  it("shows exactly what was ticked when something was", () => {
+    const echoed = echoOf([
+      ["name", ""],
+      [groupMarkerName("type"), "1"],
+      ["type", "agency"],
+    ]);
+    expect(selectedInGroup(echoed, "type", STORED)).toEqual(["agency"]);
+  });
+
+  it("round-trips a multi-tick through the join and back", () => {
+    const echoed = echoOf([
+      [groupMarkerName("type"), "1"],
+      ["type", "promoter"],
+      ["type", "venue"],
+    ]);
+    expect(selectedInGroup(echoed, "type", [])).toEqual(["promoter", "venue"]);
+  });
+
+  it("falls back to the stored record when the form has NOT been submitted", () => {
+    // The first render of an edit form: `state.values` is undefined, so the
+    // record is what the boxes come from.
+    expect(selectedInGroup(undefined, "type", STORED)).toEqual(STORED);
+  });
+
+  it("falls back to the stored record when the echo carries no marker", () => {
+    // The safe direction, and the one the old code took in every case: a form
+    // that does not carry the marker cannot distinguish "none" from "not
+    // asked", so it must not claim the user cleared anything.
+    expect(selectedInGroup(echoOf([["name", "x"]]), "type", STORED)).toEqual(STORED);
   });
 });

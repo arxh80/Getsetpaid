@@ -75,6 +75,52 @@ export function splitEchoed(value: string | undefined): string[] {
   return value.split("\n");
 }
 
+/**
+ * The hidden input a form must carry alongside a checkbox group.
+ *
+ * ===========================================================================
+ * AN UNTICKED CHECKBOX SUBMITS NOTHING, SO "NONE" AND "NOT ASKED" COLLIDE
+ * ===========================================================================
+ * HTML submits a checkbox only when it is checked. With every box in a group
+ * clear, the group's name is ABSENT from the FormData -- indistinguishable
+ * from a form that never had the group at all. `echoedValues` therefore omits
+ * the key, and a form that reads `state.values?.type !== undefined ? echo :
+ * stored` falls back to the STORED array and re-ticks the boxes the user just
+ * cleared.
+ *
+ * Measured in a browser on the company form: untick both types, blank the name
+ * to force a refusal, submit -- and both types come back ticked. Retrying the
+ * submit with a name then re-saves the types the user removed.
+ *
+ * The marker is the missing bit of information: it is always submitted, so its
+ * presence says "this form asked about that group" and the group's own absence
+ * then means "and the answer was none". Cheaper and more honest than a
+ * sentinel value inside the group itself, which has to be filtered out again
+ * server-side and would be a value the CHECK constraint has to tolerate.
+ */
+export function groupMarkerName(group: string): string {
+  return `${group}__submitted`;
+}
+
+/**
+ * What a checkbox group should show: the submitted answer if there was one,
+ * otherwise the stored record.
+ *
+ * The echo wins whenever the marker says the group was submitted, INCLUDING
+ * when the submitted answer is nothing at all -- that is the whole point.
+ * Without a marker (a form that has not been submitted, or one that does not
+ * carry it) the stored value stands, which is the safe direction.
+ */
+export function selectedInGroup(
+  values: Readonly<Record<string, string>> | undefined,
+  group: string,
+  stored: readonly string[],
+): string[] {
+  if (values === undefined) return [...stored];
+  if (values[groupMarkerName(group)] === undefined) return [...stored];
+  return splitEchoed(values[group]);
+}
+
 export const EMPTY_FORM_STATE: FormState = {};
 
 /** Reads a text field, trimming and normalising "" to null. */

@@ -4,7 +4,7 @@ import { useActionState } from "react";
 import Link from "next/link";
 import { createCompanyAction, updateCompanyAction } from "@/lib/crm/companies";
 import { COMPANY_TYPES } from "@/lib/crm/companies-list";
-import { EMPTY_FORM_STATE, splitEchoed } from "@/lib/forms";
+import { EMPTY_FORM_STATE, groupMarkerName, selectedInGroup } from "@/lib/forms";
 import { Field } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
@@ -51,13 +51,17 @@ export function CompanyForm({
   );
   // See ContactForm's note: React 19 resets the form after the action, so the
   // submitted values have to come back as the defaults or a failed submit
-  // empties the form. `splitEchoed` is the inverse of the join `echoedValues`
-  // uses for a repeated name -- the checkbox group is the only field here that
-  // submits more than one value.
+  // empties the form.
   const shownName = state.values?.name ?? values.name;
-  const selected = new Set(
-    state.values?.type !== undefined ? splitEchoed(state.values.type) : values.type,
-  );
+  // THE CHECKBOX GROUP NEEDS MORE THAN THE ECHO, and this line used to read
+  // `state.values?.type !== undefined ? splitEchoed(...) : values.type`, which
+  // silently undid the user's work. An unticked checkbox submits NOTHING, so
+  // with the group cleared the key is absent, the echo has no entry, and that
+  // branch fell back to the stored array and re-ticked everything. Measured:
+  // untick both types, blank the name to force a refusal, submit -- both types
+  // come back. `type__submitted` below is what tells "none" from "not asked";
+  // lib/forms.ts's `selectedInGroup` is the rule.
+  const selected = new Set(selectedInGroup(state.values, "type", values.type));
   const typeErrorId = "company-type-error";
 
   return (
@@ -91,6 +95,14 @@ export function CompanyForm({
           Choose as many as apply, or none. A venue that promotes its own nights
           is one company with two types, not two records.
         </p>
+        {/* THE MARKER. Always submitted, so the action's echo can say "this
+            form asked about `type`" even when the answer was none. Without it
+            an emptied group is indistinguishable from a group that was never
+            on the form, and a failed submit re-ticks what the user cleared.
+            Not part of the group's own name, so `formData.getAll("type")`
+            server-side needs no filtering and the CHECK constraint's
+            vocabulary is untouched. */}
+        <input type="hidden" name={groupMarkerName("type")} value="1" />
         <div className="flex flex-col gap-1">
           {COMPANY_TYPES.map((type) => (
             <label
