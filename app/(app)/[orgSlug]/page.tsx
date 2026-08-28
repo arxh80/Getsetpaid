@@ -80,30 +80,44 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
           release" while /[orgSlug]/contacts existed and worked. Nothing in the
           product linked to it, so the only way to reach the first CRM screen
           was to type the URL, and the workspace home actively said it was not
-          there yet. Task 4 turns this into real navigation once there are five
-          entity lists to navigate between; until then, one honest link. */}
+          there yet.
+
+          UPDATED AGAIN IN TASK 4b, for the same reason and against the note
+          Task 3 left here ("Task 4 turns this into real navigation once there
+          are five entity lists to navigate between"). There are five now, and
+          three of them had no link into them from anywhere in the product --
+          which is the identical defect, one release later. This is a LIST OF
+          LINKS rather than a paragraph with two of them in it, because five
+          destinations in prose is a paragraph people scan past.
+
+          IT IS STILL NOT A NAVIGATION BAR. A persistent nav belongs in
+          app/(app)/layout.tsx, where it would also have to answer what happens
+          on narrow screens, where the workspace switcher sits relative to it,
+          and which of these a Read Only user should see -- a design, not a
+          list. Named here rather than half-built. */}
       <section className="border border-rule bg-surface p-5">
         <h2 className="text-xl font-bold text-ink">Where to start</h2>
         <p className="mt-2 max-w-prose text-base text-ink-muted">
-          <Link
-            href={`/${org.slug}/contacts`}
-            className="text-primary underline underline-offset-4 hover:text-ink"
-          >
-            Contacts
-          </Link>{" "}
-          are the people this workspace works with — events, holds and
-          settlements all point back to one.{" "}
-          <Link
-            href={`/${org.slug}/companies`}
-            className="text-primary underline underline-offset-4 hover:text-ink"
-          >
-            Companies
-          </Link>{" "}
-          are the businesses behind them, and a contact can belong to several.
-          Artists, venues, events and financials follow.
+          The five record types this workspace is built on. Events, holds and
+          settlements all point back to one of them.
         </p>
+        <ul className="mt-4 flex flex-col border-t border-rule">
+          {CRM_AREAS.map((area) => (
+            <li key={area.path} className="border-b border-rule py-3">
+              <Link
+                href={`/${org.slug}/${area.path}`}
+                className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+              >
+                {area.label}
+              </Link>
+              <p className="mt-1 max-w-prose text-base text-ink-muted">
+                {area.blurb}
+              </p>
+            </li>
+          ))}
+        </ul>
         {canManageMembers ? (
-          <p className="mt-3 max-w-prose text-base text-ink-muted">
+          <p className="mt-4 max-w-prose text-base text-ink-muted">
             This workspace is set up and ready — bring your colleagues in.
           </p>
         ) : null}
@@ -140,3 +154,51 @@ function roleLabel(key: string): string {
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
 }
+
+/**
+ * The five CRM areas, in the order the workflow uses them.
+ *
+ * DATA RATHER THAN FIVE COPIES OF THE SAME JSX, so the sixth (events, Phase 3)
+ * is one line here instead of a paragraph somebody has to match to the other
+ * five.
+ *
+ * NOT FILTERED BY PERMISSION, deliberately. Every role in the Q2 matrix that
+ * can reach this page holds `view_crm`, so all five lists are READABLE by all
+ * of them -- and each list already explains, in its own empty state, why a
+ * record-scoped user is seeing fewer rows than their colleagues. Hiding a link
+ * because the viewer cannot WRITE there would be the "hidden loses the
+ * explanation" mistake components/crm/write-gate.tsx exists to avoid, applied
+ * to a read.
+ */
+const CRM_AREAS = [
+  {
+    path: "contacts",
+    label: "Contacts",
+    blurb:
+      "The people this workspace works with — agents, promoters, venue managers, drivers.",
+  },
+  {
+    path: "companies",
+    label: "Companies",
+    blurb:
+      "The businesses behind them. A contact can belong to several, and one of them is their main one.",
+  },
+  {
+    path: "artists",
+    label: "Artists",
+    blurb:
+      "Who you book. Their representation and their fee history hang off one record.",
+  },
+  {
+    path: "agencies",
+    label: "Agencies",
+    blurb:
+      "Who represents them, in what territory, and from when.",
+  },
+  {
+    path: "venues",
+    label: "Venues",
+    blurb:
+      "Where the events happen, and the rooms inside them events can be assigned to.",
+  },
+] as const;
