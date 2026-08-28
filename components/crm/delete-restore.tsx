@@ -37,27 +37,32 @@ export function DeleteRecordForm({
   hiddenFields,
   label,
   question,
-  disabledReason,
+  blocked,
+  describedBy,
 }: {
   action: (prev: FormState, data: FormData) => Promise<FormState>;
   hiddenFields: Record<string, string>;
   label: string;
   question: string;
-  /** Non-null when the caller may not write. Renders inert with the reason. */
-  disabledReason: string | null;
+  /** True when the caller may not write. Renders inert. */
+  blocked: boolean;
+  /**
+   * The id of the ONE explanation the page renders for this group of
+   * controls. Not a per-control note: the same sentence repeated beside every
+   * disabled button is noise on screen and a wall between a screen-reader user
+   * and the record.
+   */
+  describedBy: string;
 }) {
   const [state, formAction, pending] = useActionState(action, EMPTY_FORM_STATE);
   const [asking, setAsking] = useState(false);
 
-  if (disabledReason !== null) {
+  if (blocked) {
     return (
-      <div className="flex flex-col items-start gap-2">
-        <Button type="button" variant="danger" disabled aria-describedby="delete-why">
+      <div>
+        <Button type="button" variant="danger" disabled aria-describedby={describedBy}>
           {label}
         </Button>
-        <p id="delete-why" className="max-w-prose text-sm text-ink-muted">
-          {disabledReason}
-        </p>
       </div>
     );
   }
@@ -104,24 +109,23 @@ export function RestoreRecordForm({
   action,
   hiddenFields,
   label,
-  disabledReason,
+  blocked,
+  describedBy,
 }: {
   action: (prev: FormState, data: FormData) => Promise<FormState>;
   hiddenFields: Record<string, string>;
   label: string;
-  disabledReason: string | null;
+  blocked: boolean;
+  describedBy: string;
 }) {
   const [state, formAction, pending] = useActionState(action, EMPTY_FORM_STATE);
 
-  if (disabledReason !== null) {
+  if (blocked) {
     return (
-      <div className="flex flex-col items-start gap-2">
-        <Button type="button" disabled aria-describedby="restore-why">
+      <div>
+        <Button type="button" disabled aria-describedby={describedBy}>
           {label}
         </Button>
-        <p id="restore-why" className="max-w-prose text-sm text-ink-muted">
-          {disabledReason}
-        </p>
       </div>
     );
   }

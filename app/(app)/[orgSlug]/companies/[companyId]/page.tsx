@@ -16,6 +16,13 @@ import {
   RestoreRecordForm,
 } from "@/components/crm/delete-restore";
 import { ContactCompanyPanel } from "@/components/crm/link-panel";
+import {
+  SecondaryRecordAction,
+  WriteBlockedNote,
+} from "@/components/crm/write-gate";
+
+/** The id of the single explanation the Manage section's controls point at. */
+const MANAGE_NOTE = "company-manage-blocked";
 
 // One company. The other side of the contact_companies join.
 //
@@ -157,24 +164,25 @@ export default async function CompanyDetailPage({
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">
         <h2 className="text-xl font-bold text-ink">Manage</h2>
+        {/* One explanation for the group -- see the contact page's copy. */}
+        <WriteBlockedNote access={access} id={MANAGE_NOTE} />
         {company.deletedAt === null ? (
           <>
             <div className="flex flex-wrap items-start gap-4">
-              {access.canWrite ? (
-                <Link
-                  href={`${basePath}/${company.id}/edit`}
-                  className="inline-flex h-11 items-center justify-center border border-rule bg-surface px-4 text-base font-semibold whitespace-nowrap text-ink no-underline transition-colors duration-[var(--dur-fast)] ease-brand hover:border-ink hover:bg-shell"
-                >
-                  Edit company
-                </Link>
-              ) : null}
+              <SecondaryRecordAction
+                access={access}
+                href={`${basePath}/${company.id}/edit`}
+                label="Edit company"
+                describedBy={MANAGE_NOTE}
+              />
             </div>
             <DeleteRecordForm
               action={deleteCompanyAction}
               hiddenFields={{ orgSlug: org.slug, companyId: company.id }}
               label="Delete company"
               question={`Delete ${company.name}? It comes out of the companies list. Anyone linked to it keeps the link, and you can restore it from Companies › Deleted.`}
-              disabledReason={blocked}
+              blocked={!access.canWrite}
+              describedBy={MANAGE_NOTE}
             />
           </>
         ) : (
@@ -182,7 +190,8 @@ export default async function CompanyDetailPage({
             action={restoreCompanyAction}
             hiddenFields={{ orgSlug: org.slug, companyId: company.id }}
             label="Restore company"
-            disabledReason={blocked}
+            blocked={!access.canWrite}
+            describedBy={MANAGE_NOTE}
           />
         )}
       </section>

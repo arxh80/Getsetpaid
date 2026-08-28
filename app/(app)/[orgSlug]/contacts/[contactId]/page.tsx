@@ -14,6 +14,10 @@ import {
   DeleteRecordForm,
   RestoreRecordForm,
 } from "@/components/crm/delete-restore";
+import {
+  SecondaryRecordAction,
+  WriteBlockedNote,
+} from "@/components/crm/write-gate";
 import { ContactCompanyPanel } from "@/components/crm/link-panel";
 
 // One contact.
@@ -162,21 +166,30 @@ export default async function ContactDetailPage({
         </Detail>
         <Detail label="Location">{contact.location ?? <Absent />}</Detail>
         <Detail label="Website">
-          {contact.website ? (
+          {/* `websiteHref`, NEVER `website`. The raw column is user content and
+              `normaliseWebsite()` only guards the form -- an import, a merge or
+              a direct PostgREST call with the anon key writes this column
+              without meeting it. An earlier draft of this page put the raw
+              value straight into href with a comment asserting the socials
+              check covered it, which was false: socials is a different column.
+              safeHref() decides in lib/crm/queries.ts; this only renders the
+              decision.
+
+              noreferrer as well as noopener: an outbound link from a CRM
+              should not carry the internal URL of the record it came from. */}
+          {contact.websiteHref ? (
             <a
-              href={contact.website}
-              // Stored values are already normalised to http(s) by
-              // normaliseWebsite(), and a row written before that existed (or
-              // straight through PostgREST) is caught by the render-side
-              // check in the socials list below. noreferrer as well as
-              // noopener: an outbound link from a CRM should not carry the
-              // internal URL of the record it came from.
+              href={contact.websiteHref}
               rel="noopener noreferrer nofollow"
               target="_blank"
               className="break-all text-primary underline underline-offset-4 hover:text-ink"
             >
               {contact.website}
             </a>
+          ) : contact.website ? (
+            <span translate="no" className="break-all">
+              {contact.website}
+            </span>
           ) : (
             <Absent />
           )}
@@ -259,24 +272,28 @@ export default async function ContactDetailPage({
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">
         <h2 className="text-xl font-bold text-ink">Manage</h2>
+        {/* ONE EXPLANATION FOR THE WHOLE GROUP, above the controls it explains
+            and referenced by each of them through aria-describedby. Repeating
+            it per control puts the same sentence between a screen-reader user
+            and every button. */}
+        <WriteBlockedNote access={access} id={MANAGE_NOTE} />
         {contact.deletedAt === null ? (
           <>
             <div className="flex flex-wrap items-start gap-4">
-              {access.canWrite ? (
-                <Link
-                  href={`${basePath}/${contact.id}/edit`}
-                  className="inline-flex h-11 items-center justify-center border border-rule bg-surface px-4 text-base font-semibold whitespace-nowrap text-ink no-underline transition-colors duration-[var(--dur-fast)] ease-brand hover:border-ink hover:bg-shell"
-                >
-                  Edit contact
-                </Link>
-              ) : null}
+              <SecondaryRecordAction
+                access={access}
+                href={`${basePath}/${contact.id}/edit`}
+                label="Edit contact"
+                describedBy={MANAGE_NOTE}
+              />
             </div>
             <DeleteRecordForm
               action={deleteContactAction}
               hiddenFields={{ orgSlug: org.slug, contactId: contact.id }}
               label="Delete contact"
               question={`Delete ${contact.name}? It comes out of the contacts list and out of search. You can restore it from Contacts › Deleted.`}
-              disabledReason={blocked}
+              blocked={!access.canWrite}
+              describedBy={MANAGE_NOTE}
             />
           </>
         ) : (
@@ -284,13 +301,17 @@ export default async function ContactDetailPage({
             action={restoreContactAction}
             hiddenFields={{ orgSlug: org.slug, contactId: contact.id }}
             label="Restore contact"
-            disabledReason={blocked}
+            blocked={!access.canWrite}
+            describedBy={MANAGE_NOTE}
           />
         )}
       </section>
     </div>
   );
 }
+
+/** The id of the single explanation the Manage section's controls point at. */
+const MANAGE_NOTE = "contact-manage-blocked";
 
 function Detail({ label, children }: { label: string; children: React.ReactNode }) {
   return (

@@ -47,7 +47,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getCurrentOrg, getCurrentUser, type CurrentOrg } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
-import { field, type FormState } from "@/lib/forms";
+import { echoedValues, field, type FormState } from "@/lib/forms";
 import { getCrmWriteAccess } from "@/lib/crm/write-access";
 import {
   commitWrite,
@@ -84,26 +84,46 @@ const PERMISSION = "manage_contacts";
  */
 async function authorise(
   orgSlug: string | null,
+  formData: FormData,
 ): Promise<
   | { readonly ok: true; readonly org: CurrentOrg }
   | { readonly ok: false; readonly state: FormState }
 > {
-  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE } };
+  // EVERY REFUSAL CARRIES THE SUBMITTED VALUES BACK, not just the validation
+  // ones. Measured in a browser: with the org suspended mid-edit, the form
+  // correctly refused to say it saved -- and threw away the change the user
+  // had just typed, because React resets the form and this path returned no
+  // `values`. Losing the edit is the same insult whichever gate refused it.
+  const echoed = echoedValues(formData);
+  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
   const org = await getCurrentOrg(orgSlug);
   // A slug that does not exist, belongs to another tenant, or that the caller
   // is only invited to. All three are the same answer, on purpose.
-  if (!org) return { ok: false, state: { error: FAILED_MESSAGE } };
+  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
 
   const access = await getCrmWriteAccess(org, PERMISSION);
-  if (!access.canWrite) return { ok: false, state: { error: access.explanation } };
+  if (!access.canWrite) {
+    return { ok: false, state: { error: access.explanation, values: echoed } };
+  }
   return { ok: true, org };
 }
 
-/** Turn a WriteResult into the FormState a form renders. */
-function stateFor(result: WriteResult, success: string): FormState {
+/**
+ * Turn a WriteResult into the FormState a form renders.
+ *
+ * `formData` so a refusal echoes the submitted values back with the message --
+ * React 19 resets the form after the action, and a refused save that also
+ * empties the form has taken the user's work twice.
+ */
+function stateFor(
+  result: WriteResult,
+  success: string,
+  formData: FormData,
+): FormState {
   if (result.outcome === "applied") return { message: success };
-  if (result.outcome === "refused") return { error: REFUSED_MESSAGE };
-  return { error: FAILED_MESSAGE };
+  const values = echoedValues(formData);
+  if (result.outcome === "refused") return { error: REFUSED_MESSAGE, values };
+  return { error: FAILED_MESSAGE, values };
 }
 
 interface ContactValues {
@@ -183,7 +203,13 @@ function readContact(
       fieldErrors[problem.field] = problem.message;
     }
   }
-  if (Object.keys(fieldErrors).length > 0) return { ok: false, state: { fieldErrors } };
+  // ECHO WHAT WAS SUBMITTED BACK WITH THE ERRORS. React 19 resets an
+  // uncontrolled form after its action resolves, so without this a single
+  // mistyped character empties every field -- measured in a browser, see
+  // FormState.values.
+  if (Object.keys(fieldErrors).length > 0) {
+    return { ok: false, state: { fieldErrors, values: echoedValues(formData) } };
+  }
 
   return {
     ok: true,
@@ -209,7 +235,7 @@ export async function createContactAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -272,7 +298,7 @@ export async function updateContactAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -316,7 +342,7 @@ export async function updateContactAction(
     revalidatePath(`/${org.slug}/contacts/${contactId}`);
     redirect(`/${org.slug}/contacts/${contactId}`);
   }
-  return stateFor(result, "Saved.");
+  return stateFor(result, "Saved.", formData);
 }
 
 // ---------------------------------------------------------------------------
@@ -336,7 +362,7 @@ export async function deleteContactAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -363,14 +389,14 @@ export async function deleteContactAction(
   // one click away at the moment people realise they wanted it, rather than a
   // trip to a list they have to know exists. It is also what makes the detail
   // route work for the restore queue, which links straight into it.
-  return stateFor(result, "Deleted. It is no longer in the contacts list.");
+  return stateFor(result, "Deleted. It is no longer in the contacts list.", formData);
 }
 
 export async function restoreContactAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -394,7 +420,7 @@ export async function restoreContactAction(
     revalidatePath(`/${org.slug}/contacts/deleted`);
     revalidatePath(`/${org.slug}/contacts/${contactId}`);
   }
-  return stateFor(result, "Restored. It is back in the contacts list.");
+  return stateFor(result, "Restored. It is back in the contacts list.", formData);
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +444,7 @@ export async function linkCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -464,7 +490,7 @@ export async function unlinkCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -496,7 +522,7 @@ export async function unlinkCompanyAction(
     revalidatePath(`/${org.slug}/contacts/${contactId}`);
     revalidatePath(`/${org.slug}/companies/${companyId}`);
   }
-  return stateFor(result, "Unlinked.");
+  return stateFor(result, "Unlinked.", formData);
 }
 
 /**
@@ -516,7 +542,7 @@ export async function setPrimaryCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 

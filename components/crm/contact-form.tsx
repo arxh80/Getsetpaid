@@ -19,11 +19,15 @@ import { Alert } from "@/components/ui/alert";
 // query rather than in five copies of the component.
 //
 // EVERY FIELD IS PRE-FILLED FROM `defaultValue`, NOT FROM CONTROLLED STATE.
-// An uncontrolled form keeps what the user typed across a failed submit for
-// free -- `useActionState` re-renders with the same DOM nodes -- whereas a
-// controlled one has to round-trip every keystroke through React to achieve
-// the same thing. It also means this form works with JavaScript disabled: a
-// Server Action bound to a <form action> submits as an ordinary POST.
+// The form then works with JavaScript disabled -- a Server Action bound to a
+// <form action> submits as an ordinary POST -- and there is no re-render per
+// keystroke.
+//
+// The first version of this comment claimed an uncontrolled form "keeps what
+// the user typed across a failed submit for free". IT DOES NOT, in React 19,
+// and the browser said so: React resets a form with an `action` prop once the
+// action resolves, so every field goes back to its `defaultValue`. See the
+// `shown` helper below and FormState.values.
 //
 // `noValidate` matches the rest of this codebase: the browser's own bubbles
 // are unstyleable, inconsistent between engines, and disappear on blur, and
@@ -57,6 +61,24 @@ export function ContactForm({
     EMPTY_FORM_STATE,
   );
 
+  // WHAT THE FIELDS DEFAULT TO AFTER A FAILED SUBMIT, AND WHY THIS LINE EXISTS.
+  //
+  // React 19 RESETS a `<form action={...}>` once the action resolves, which for
+  // an uncontrolled form means every input goes back to its `defaultValue`.
+  // Found in a browser on this exact form: type a name and a malformed phone
+  // number, submit, and the phone error renders correctly while the name --
+  // and everything else -- comes back empty. Nothing in tsc, lint, build or the
+  // test suite can see it.
+  //
+  // The action echoes the submitted values back (FormState.values), so the
+  // reset restores them instead of blanks. The `??` order matters: the echo
+  // wins when there is one, because it is newer than the record the page
+  // loaded with.
+  const shown = (name: keyof ContactFormValues & string, fallback: string) =>
+    state.values?.[name] ?? fallback;
+  const shownSocial = (key: string) =>
+    state.values?.[`social_${key}`] ?? values.socials[key] ?? "";
+
   return (
     <form action={formAction} className="flex flex-col gap-6" noValidate>
       {state.error ? <Alert tone="error">{state.error}</Alert> : null}
@@ -74,7 +96,7 @@ export function ContactForm({
         <Field
           label="Name"
           name="name"
-          defaultValue={values.name}
+          defaultValue={shown("name", values.name)}
           autoComplete="off"
           required
           maxLength={200}
@@ -84,7 +106,7 @@ export function ContactForm({
         <Field
           label="Role"
           name="title"
-          defaultValue={values.title}
+          defaultValue={shown("title", values.title)}
           autoComplete="off"
           maxLength={200}
           hint="Booking agent, venue manager, tour manager, driver…"
@@ -94,7 +116,7 @@ export function ContactForm({
           label="Email"
           name="email"
           type="email"
-          defaultValue={values.email}
+          defaultValue={shown("email", values.email)}
           autoComplete="off"
           inputMode="email"
           maxLength={254}
@@ -104,7 +126,7 @@ export function ContactForm({
           label="Phone"
           name="phone"
           type="tel"
-          defaultValue={values.phone}
+          defaultValue={shown("phone", values.phone)}
           autoComplete="off"
           inputMode="tel"
           maxLength={40}
@@ -117,7 +139,7 @@ export function ContactForm({
         <Field
           label="Location"
           name="location"
-          defaultValue={values.location}
+          defaultValue={shown("location", values.location)}
           autoComplete="off"
           maxLength={200}
           hint="City or region. Free text — there is no country list yet."
@@ -127,7 +149,7 @@ export function ContactForm({
           label="Website"
           name="website"
           type="url"
-          defaultValue={values.website}
+          defaultValue={shown("website", values.website)}
           autoComplete="off"
           inputMode="url"
           hint="getsetpaid.com works — it is stored as https://getsetpaid.com."
@@ -136,7 +158,7 @@ export function ContactForm({
         <Field
           label="Tags"
           name="tags"
-          defaultValue={values.tags}
+          defaultValue={shown("tags", values.tags)}
           autoComplete="off"
           hint="Comma separated. Your own labels — nothing here is a fixed list."
           error={state.fieldErrors?.tags}
@@ -159,7 +181,7 @@ export function ContactForm({
             key={platform.key}
             label={platform.label}
             name={`social_${platform.key}`}
-            defaultValue={values.socials[platform.key] ?? ""}
+            defaultValue={shownSocial(platform.key)}
             autoComplete="off"
             maxLength={300}
             error={state.fieldErrors?.[`social_${platform.key}`]}

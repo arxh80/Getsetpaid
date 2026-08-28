@@ -4,7 +4,7 @@ import { useActionState } from "react";
 import Link from "next/link";
 import { createCompanyAction, updateCompanyAction } from "@/lib/crm/companies";
 import { COMPANY_TYPES } from "@/lib/crm/companies-list";
-import { EMPTY_FORM_STATE } from "@/lib/forms";
+import { EMPTY_FORM_STATE, splitEchoed } from "@/lib/forms";
 import { Field } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
@@ -49,7 +49,15 @@ export function CompanyForm({
     editing ? updateCompanyAction : createCompanyAction,
     EMPTY_FORM_STATE,
   );
-  const selected = new Set(values.type);
+  // See ContactForm's note: React 19 resets the form after the action, so the
+  // submitted values have to come back as the defaults or a failed submit
+  // empties the form. `splitEchoed` is the inverse of the join `echoedValues`
+  // uses for a repeated name -- the checkbox group is the only field here that
+  // submits more than one value.
+  const shownName = state.values?.name ?? values.name;
+  const selected = new Set(
+    state.values?.type !== undefined ? splitEchoed(state.values.type) : values.type,
+  );
   const typeErrorId = "company-type-error";
 
   return (
@@ -63,7 +71,7 @@ export function CompanyForm({
       <Field
         label="Name"
         name="name"
-        defaultValue={values.name}
+        defaultValue={shownName}
         autoComplete="off"
         required
         maxLength={200}

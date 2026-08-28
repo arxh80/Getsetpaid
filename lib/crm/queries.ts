@@ -29,7 +29,7 @@ import "server-only";
 // `deleted_at` itself (lib/crm/contacts.ts), which is where it matters.
 
 import { createClient } from "@/lib/supabase/server";
-import { parseSocials, type SocialEntry } from "@/lib/crm/urls";
+import { parseSocials, safeHref, type SocialEntry } from "@/lib/crm/urls";
 
 export type RecordResult<T> =
   | { readonly outcome: "found"; readonly record: T }
@@ -44,6 +44,18 @@ export interface ContactDetail {
   title: string | null;
   location: string | null;
   website: string | null;
+  /**
+   * The href to render for `website`, or null to render it as inert text.
+   *
+   * SEPARATE FROM `website` BECAUSE THE RAW VALUE IS NOT SAFE TO PUT IN AN
+   * href, and the first version of the detail page did exactly that with a
+   * comment claiming the socials check covered it. It does not: `website` is
+   * its own column, `normaliseWebsite()` guards the FORM, and a row written by
+   * an import, a merge, or a direct PostgREST call with the anon key never
+   * meets the form. Computed here, once, so no page can reintroduce it by
+   * reaching for `website` when it means `websiteHref`.
+   */
+  websiteHref: string | null;
   tags: string[];
   socials: SocialEntry[];
   /** The raw object, for pre-filling the edit form. */
@@ -103,6 +115,7 @@ export async function loadContact(
       title: (data.title as string | null) ?? null,
       location: (data.location as string | null) ?? null,
       website: (data.website as string | null) ?? null,
+      websiteHref: safeHref(data.website as string | null),
       tags: (data.tags as string[] | null) ?? [],
       // Protocol validation on the way OUT, which is the half that is the
       // control -- see lib/crm/urls.ts. Every consumer of this record gets

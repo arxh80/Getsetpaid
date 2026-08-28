@@ -89,6 +89,59 @@ export function NewRecordAction({
 }
 
 /**
+ * A secondary write action -- "Edit contact" -- as a link when it is allowed
+ * and an inert button when it is not.
+ *
+ * SEPARATE FROM `NewRecordAction` ONLY IN APPEARANCE, and it exists because
+ * the first version of the detail page HID the Edit link when write access was
+ * blocked while DISABLING the Delete button beside it. Seen in a browser on a
+ * suspended workspace: two controls, one gone and one explained, for the same
+ * reason. Hiding loses the explanation, which is the thing this whole file is
+ * for.
+ *
+ * `describedBy` rather than its own note: the caller renders ONE
+ * `WriteBlockedNote` for the group. Five disabled buttons each repeating "this
+ * workspace is suspended" is noise, and for a screen-reader user it is five
+ * identical sentences between them and the record.
+ */
+export function SecondaryRecordAction({
+  access,
+  href,
+  label,
+  describedBy,
+}: {
+  access: CrmWriteAccess;
+  href: string;
+  label: string;
+  describedBy: string;
+}) {
+  const SECONDARY =
+    "inline-flex h-11 items-center justify-center border px-4 text-base " +
+    "font-semibold whitespace-nowrap no-underline " +
+    "transition-colors duration-[var(--dur-fast)] ease-brand ";
+  if (access.canWrite) {
+    return (
+      <Link
+        href={href}
+        className={`${SECONDARY}border-rule bg-surface text-ink hover:border-ink hover:bg-shell`}
+      >
+        {label}
+      </Link>
+    );
+  }
+  return (
+    <button
+      type="button"
+      disabled
+      aria-describedby={describedBy}
+      className={`${SECONDARY}border-rule bg-surface text-ink cursor-not-allowed opacity-55`}
+    >
+      {label}
+    </button>
+  );
+}
+
+/**
  * The same explanation without a control, for a page whose write affordances
  * are a whole panel rather than one button.
  *

@@ -24,17 +24,44 @@ import type { ListSpec } from "@/lib/list/spec";
 // control they were using.
 //
 // Keeping it an anchor at the same position keeps the DOM node, so React
-// updates attributes instead of replacing the element and focus survives.
-// `aria-disabled` (not the `disabled` attribute, which anchors do not have
-// and buttons are not focusable under) is what announces the state, and the
-// href points at the current view so activating it is a no-op rather than a
-// lie. This is the ARIA practice of preferring aria-disabled to removing an
-// element from the tab order, applied for the specific reason that focus
-// continuity is the whole point of a pager for keyboard users.
+// updates attributes instead of replacing the element. `aria-disabled` (not
+// the `disabled` attribute, which anchors do not have and buttons are not
+// focusable under) is what announces the state, and the href points at the
+// current view so activating it is a no-op rather than a lie. This is the ARIA
+// practice of preferring aria-disabled to removing an element from the tab
+// order.
 //
-// It also means the pager needs no client JavaScript at all, which the
-// alternative fix -- restoring focus in an effect after navigation -- would
-// have.
+// It also means the pager needs no client JavaScript at all.
+//
+// ===========================================================================
+// WHAT THIS DOES *NOT* ACHIEVE TODAY, MEASURED IN TASK 4'S BROWSER PASS
+// ===========================================================================
+// This comment used to end "...and focus survives", and the Task 3 note on the
+// contacts page said focus was verified to stay on Next across a page click.
+// BOTH ARE FALSE IN THIS APPLICATION AS IT IS CONFIGURED, and the reason is
+// not React:
+//
+//   EVERY <Link> NAVIGATION IS A FULL DOCUMENT LOAD. Proven three ways on
+//   `pnpm dev` against the local stack: a `window` property set before the
+//   click is gone after it; a `data-` attribute stamped on the Next anchor is
+//   gone from the new one; and the network log shows a document GET for the
+//   destination plus a complete re-fetch of every chunk, with NO `?_rsc=`
+//   request attempted at all. `document.activeElement` is BODY afterwards,
+//   from a real mouse click and from a real Enter press.
+//
+// It is not this component's doing and it is not Task 4's: the same thing
+// happens on the workspace breadcrumb, which is Foundation code. The leading
+// hypothesis -- NOT verified, because the experiment that would verify it was
+// removing a security header -- is the per-request CSP nonce that
+// lib/supabase/middleware.ts sets through
+// `NextResponse.next({ request: { headers } })`; a per-request nonce is the
+// documented reason Next stops prefetching, and no soft navigation was
+// attempted here at all. Recorded in FOLLOW-UPS.md rather than fixed, because
+// the fix is a decision about the CSP and belongs to whoever owns that.
+//
+// The anchor-not-span choice is kept regardless. It costs nothing, it is the
+// right ARIA shape on its own merits, and it becomes load-bearing again the
+// moment soft navigation works.
 
 interface ListPagerProps<TSort extends string, TFilter extends string> {
   spec: ListSpec<TSort, TFilter>;

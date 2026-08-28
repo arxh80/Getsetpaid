@@ -157,8 +157,23 @@ export default async function ContactsPage({
                                          nothing worth showing a placeholder
                                          for.
 
-          Verified after the change: focus stays on "Next" across a page
-          click, and on the column header across a sort click. */}
+          TASK 4 CORRECTION, MEASURED: this note used to end "Verified after
+          the change: focus stays on Next across a page click, and on the
+          column header across a sort click." That is FALSE as this application
+          is configured, and not because of the key. Every <Link> navigation in
+          the app is a FULL DOCUMENT LOAD -- a `window` property set before the
+          click is gone after it, the anchor's DOM node is replaced, and the
+          network log shows a document GET plus a full chunk re-fetch with no
+          `?_rsc=` request attempted. `document.activeElement` is BODY after a
+          real click and after a real Enter press. It happens on the workspace
+          breadcrumb too, so it is app-wide and predates this task.
+          components/list/list-pager.tsx carries the evidence and the leading
+          (unverified) hypothesis; FOLLOW-UPS.md carries the routing.
+
+          THE SPLIT IS STILL RIGHT AND STAYS. It is what decides which
+          interactions show a placeholder, which is a real difference the user
+          sees, and it is the shape that is correct the moment soft navigation
+          works. What is removed is the claim that it preserves focus today. */}
       <Suspense
         key={JSON.stringify([
           listParams.q,

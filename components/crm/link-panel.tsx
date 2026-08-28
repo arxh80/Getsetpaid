@@ -116,7 +116,18 @@ export function ContactCompanyPanel({
                       {row.name}
                     </Link>
                   )}
-                  {row.isPrimary ? <Chip tone="primary">Primary</Chip> : null}
+                  {/* THE LABEL DIFFERS BY SIDE, and the browser is why.
+                      `is_primary` is unique on CONTACT_ID: it means "this is
+                      the contact's main company". Rendered from a company, a
+                      bare "PRIMARY" chip on two different people reads as "two
+                      primary contacts for this company", which is not a thing
+                      the schema can even express. Seen on S Co One with two
+                      such rows before this was changed. */}
+                  {row.isPrimary ? (
+                    <Chip tone="primary">
+                      {onContact ? "Primary" : "Primary for them"}
+                    </Chip>
+                  ) : null}
                   {row.isDeleted ? <Chip tone="muted">Deleted</Chip> : null}
                 </span>
               </div>
@@ -269,8 +280,16 @@ function LinkForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-3 border border-rule p-4">
+      {/* ERRORS ONLY, NO SUCCESS ALERT, and it is a correction rather than an
+          omission. The first version rendered "Done. Linked." here, and in the
+          browser it STAYED on screen through every later action -- this is a
+          Client Component that is not remounted by the revalidation, so its
+          `useActionState` result outlives the thing it describes. A user who
+          then clicked "Make primary" was still being told "Linked."
+          The confirmation this action needs is the row appearing in the list
+          above, which is a better one: it shows the actual new state rather
+          than asserting that something happened. */}
       {state.error ? <Alert tone="error">{state.error}</Alert> : null}
-      {state.message ? <Alert tone="success">{state.message}</Alert> : null}
 
       <input type="hidden" name="orgSlug" value={orgSlug} />
       <input

@@ -197,6 +197,67 @@ These become live the moment a real tenant table exists.
   Foundation helper uses) makes `name % $1` fail with "operator does not exist".
   Write `name operator(extensions.%) $1` and `extensions.similarity(...)`.
 
+### Opened by Task 4 (CRUD on contacts and companies)
+
+- **EVERY `<Link>` NAVIGATION IN THIS APPLICATION IS A FULL DOCUMENT LOAD, and
+  it costs the product its keyboard focus continuity.** Found in Task 4's
+  browser pass, app-wide, and NOT Task 4's code — the workspace breadcrumb on
+  `app/(app)/[orgSlug]/page.tsx` behaves identically.
+
+  Proven three ways on `pnpm dev` against the local stack:
+  a `window` property set immediately before the click is gone after it; a
+  `data-` attribute stamped on the Next.js anchor is absent from the anchor
+  that replaces it; and the network log shows a document `GET` for the
+  destination followed by a complete re-fetch of every chunk, with **no
+  `?_rsc=` request attempted at all**. `document.activeElement` is `BODY`
+  afterwards, from a real mouse click and from a real `Enter` press.
+
+  **Two claims in the codebase were false because of it and are now corrected
+  rather than left standing** (`components/list/list-pager.tsx`,
+  `app/(app)/[orgSlug]/contacts/page.tsx`): Task 3's fix for "pagination
+  dropped focus to `<body>`" split the Suspense key so the pager would not
+  remount, verified that focus survived, and recorded it. The split is right
+  and stays — it decides which interactions show a placeholder — but it cannot
+  preserve focus across a navigation that destroys the document, so the focus
+  half of that fix is not in effect.
+
+  **Leading hypothesis, explicitly NOT verified:** the per-request CSP nonce
+  that `lib/supabase/middleware.ts` sets via
+  `NextResponse.next({ request: { headers: requestHeaders } })`. A per-request
+  nonce is the documented reason Next stops prefetching `<Link>`s, and no soft
+  navigation is attempted here at all. The experiment that would confirm it is
+  removing the CSP header temporarily, which is a deliberate weakening of a
+  security control and was not run.
+
+  **Whoever picks this up owns a real trade-off**, which is why it is routed
+  rather than fixed: the nonce CSP is a Foundation acceptance criterion
+  (`SECURITY.md`, CLAUDE.md § Non-negotiable rules) and client-side routing is
+  an accessibility one (WCAG 2.4.3 focus order). The likely resolution is a
+  static `script-src 'strict-dynamic'` policy with hashes instead of a
+  per-request nonce, or accepting hard navigation and managing focus explicitly
+  after each one. Measure before choosing: confirm the cause first, because
+  this entry names a hypothesis, not a finding.
+
+- **A detail page's link picker is bounded at 100 and has no search.**
+  `LINK_PANEL_LIMIT` in `lib/crm/queries.ts`. A workspace with more than 100
+  companies shows the first 100 by name in the "Link a company" `<select>` and
+  a contact linked to more than 100 companies shows the first 100. That is well
+  past any real record and it is still an unbounded-list rule (CLAUDE.md
+  § Non-negotiable rules) satisfied by a cap rather than by a design. The real
+  answer is a search-backed picker with its own keyset page; it needs a
+  measured design and Task 4 did not have one, so the cap is deliberate and
+  named rather than guessed at. Task 4b copies this shape five more times.
+
+- **`artist_representations_one_current_primary_per_artist` still enforces one
+  *open-ended* primary rather than one *current* one** — pre-existing, restated
+  because Task 4's `is_primary` decision does not close it.
+  `20260828230000`'s column comment now tells Task 4b that the demote half of
+  its write path must be scoped to `ended_at is null`, or changing an artist's
+  primary agency rewrites history. The residual gap is unchanged: a
+  future-dated `ended_at` slips out of the index's predicate, and no index can
+  say otherwise because `current_date` is not `IMMUTABLE`. Either the write
+  path rejects a future-dated `ended_at` or the index name is wrong.
+
 ### Opened by Task 3 (the shared list surface) — carried into Task 4
 
 - **EVERY list Task 4 ships needs its own pair of indexes, and the rule is

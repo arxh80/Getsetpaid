@@ -33,7 +33,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getCurrentOrg, getCurrentUser, type CurrentOrg } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
-import { field, type FormState } from "@/lib/forms";
+import { echoedValues, field, type FormState } from "@/lib/forms";
 import { getCrmWriteAccess } from "@/lib/crm/write-access";
 import {
   commitWrite,
@@ -50,22 +50,43 @@ const ALLOWED_TYPES = new Set<string>(COMPANY_TYPES.map((t) => t.value));
 
 async function authorise(
   orgSlug: string | null,
+  formData: FormData,
 ): Promise<
   | { readonly ok: true; readonly org: CurrentOrg }
   | { readonly ok: false; readonly state: FormState }
 > {
-  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE } };
+  // EVERY REFUSAL CARRIES THE SUBMITTED VALUES BACK, not just the validation
+  // ones. Measured in a browser: with the org suspended mid-edit, the form
+  // correctly refused to say it saved -- and threw away the change the user
+  // had just typed, because React resets the form and this path returned no
+  // `values`. Losing the edit is the same insult whichever gate refused it.
+  const echoed = echoedValues(formData);
+  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
   const org = await getCurrentOrg(orgSlug);
-  if (!org) return { ok: false, state: { error: FAILED_MESSAGE } };
+  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
   const access = await getCrmWriteAccess(org, PERMISSION);
-  if (!access.canWrite) return { ok: false, state: { error: access.explanation } };
+  if (!access.canWrite) {
+    return { ok: false, state: { error: access.explanation, values: echoed } };
+  }
   return { ok: true, org };
 }
 
-function stateFor(result: WriteResult, success: string): FormState {
+/**
+ * Turn a WriteResult into the FormState a form renders.
+ *
+ * `formData` so a refusal echoes the submitted values back with the message --
+ * React 19 resets the form after the action, and a refused save that also
+ * empties the form has taken the user's work twice.
+ */
+function stateFor(
+  result: WriteResult,
+  success: string,
+  formData: FormData,
+): FormState {
   if (result.outcome === "applied") return { message: success };
-  if (result.outcome === "refused") return { error: REFUSED_MESSAGE };
-  return { error: FAILED_MESSAGE };
+  const values = echoedValues(formData);
+  if (result.outcome === "refused") return { error: REFUSED_MESSAGE, values };
+  return { error: FAILED_MESSAGE, values };
 }
 
 interface CompanyValues {
@@ -105,7 +126,11 @@ function readCompany(
       fieldErrors[problem.field] = problem.message;
     }
   }
-  if (Object.keys(fieldErrors).length > 0) return { ok: false, state: { fieldErrors } };
+  // See lib/crm/contacts.ts's copy: React 19 resets the form after the action,
+  // so the submitted values have to come back with the errors.
+  if (Object.keys(fieldErrors).length > 0) {
+    return { ok: false, state: { fieldErrors, values: echoedValues(formData) } };
+  }
 
   return { ok: true, values: { name: name as string, type } };
 }
@@ -114,7 +139,7 @@ export async function createCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -151,7 +176,7 @@ export async function updateCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -179,14 +204,14 @@ export async function updateCompanyAction(
     revalidatePath(`/${org.slug}/companies/${companyId}`);
     redirect(`/${org.slug}/companies/${companyId}`);
   }
-  return stateFor(result, "Saved.");
+  return stateFor(result, "Saved.", formData);
 }
 
 export async function deleteCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -213,14 +238,14 @@ export async function deleteCompanyAction(
   // links stay, and the contact detail page marks a linked company that has
   // been deleted rather than hiding it -- hiding it would make the contact
   // look unaffiliated while the row still says otherwise.
-  return stateFor(result, "Deleted. It is no longer in the companies list.");
+  return stateFor(result, "Deleted. It is no longer in the companies list.", formData);
 }
 
 export async function restoreCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"));
+  const auth = await authorise(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -242,5 +267,5 @@ export async function restoreCompanyAction(
     revalidatePath(`/${org.slug}/companies/deleted`);
     revalidatePath(`/${org.slug}/companies/${companyId}`);
   }
-  return stateFor(result, "Restored. It is back in the companies list.");
+  return stateFor(result, "Restored. It is back in the companies list.", formData);
 }
