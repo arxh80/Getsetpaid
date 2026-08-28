@@ -2,7 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentOrg } from "@/lib/auth";
-import { getCrmWriteAccess } from "@/lib/crm/write-access";
+import {
+  DELETED_RECORD_EXPLANATION,
+  getCrmWriteAccess,
+} from "@/lib/crm/write-access";
 import {
   loadCompaniesForContact,
   loadContact,
@@ -98,6 +101,16 @@ export default async function ContactDetailPage({
     : [];
 
   const blocked = access.canWrite ? null : access.explanation;
+  // THE LINK PANEL HAS A SECOND REASON TO BE READ-ONLY, and this route is the
+  // one place it applies. The detail route deliberately serves DELETED records
+  // -- that is how restore is reached -- and it rendered the whole panel next
+  // to the record's own "Deleted" notice, so Link / Unlink / Make primary were
+  // offered on a record the /edit route refuses to open. The review changed a
+  // soft-deleted contact's primary company from here and the write applied.
+  // lib/crm/contacts.ts enforces the same rule, so this is the explanation and
+  // not the control.
+  const panelBlocked =
+    contact.deletedAt !== null ? DELETED_RECORD_EXPLANATION : blocked;
   const basePath = `/${org.slug}/contacts`;
 
   return (
@@ -265,7 +278,7 @@ export default async function ContactDetailPage({
           href: `/${org.slug}/companies/${link.otherId}`,
         }))}
         options={options}
-        disabledReason={blocked}
+        disabledReason={panelBlocked}
       />
 
       {/* Task 7's activity timeline goes here. See the file header. */}

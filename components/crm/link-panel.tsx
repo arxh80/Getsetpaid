@@ -132,7 +132,15 @@ export function ContactCompanyPanel({
                 </span>
               </div>
 
-              {disabledReason === null ? (
+              {/* A LINK IS ONLY EDITABLE WHILE BOTH ENDS ARE LIVE, so a
+                  deleted row carries no controls -- not disabled ones, none.
+                  `disabledReason` covers the anchor; `row.isDeleted` covers
+                  the other end. Offering a button whose action is guaranteed
+                  to refuse is worse than not offering it, and the same rule is
+                  enforced in lib/crm/contacts.ts so the UI is not the only
+                  check: the review changed a SOFT-DELETED contact's primary
+                  company from this panel and the write applied. */}
+              {disabledReason === null && !row.isDeleted ? (
                 <div className="flex flex-wrap items-center gap-2">
                   {row.isPrimary ? null : (
                     <PrimaryButton

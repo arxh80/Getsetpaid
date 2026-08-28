@@ -3119,6 +3119,27 @@ select crm.val('S26 the companies list indexes named by backedBy exist',
      where indexname in ('companies_org_name_id_live_idx',
                          'companies_org_updated_at_id_live_idx')$$, '2');
 
+-- --------------------------------------------------------------------------
+-- S28. WHERE THE SOFT-DELETE CHECK ON THE JOIN ACTUALLY LIVES.
+--
+-- `deleted_at` is deliberately NOT a term in any policy -- design note (g),
+-- asserted at S13: RLS must not hide a soft-deleted row, because restore has
+-- to be able to read it. The consequence is that the DATABASE permits a write
+-- to the links of a deleted contact, and the Task 4 review used the product's
+-- own panel to change a soft-deleted contact's primary company.
+--
+-- lib/crm/contacts.ts is the control for this one rule (`liveInOrg`), and this
+-- assertion is what stops that being an assumption: it measures the database
+-- SAYING YES, so a reader can see there is nothing behind the application
+-- check and nobody deletes it thinking a policy will catch it. The contact is
+-- soft-deleted here (S21 set it and S27 below restores it).
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('S28 the DATABASE still permits a link write on a DELETED contact -- app-side only',
+  $$update public.contact_companies set is_primary = is_primary
+     where contact_id='22220000-0000-0000-0000-0000000000a2'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
 -- Leave the fixture as section R left it, so a later section (there is none
 -- today, and there will be) does not inherit a deleted contact.
 set role authenticated;

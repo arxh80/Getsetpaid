@@ -2,7 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentOrg } from "@/lib/auth";
-import { getCrmWriteAccess } from "@/lib/crm/write-access";
+import {
+  DELETED_RECORD_EXPLANATION,
+  getCrmWriteAccess,
+} from "@/lib/crm/write-access";
 import {
   loadCompany,
   loadContactsForCompany,
@@ -77,6 +80,10 @@ export default async function CompanyDetailPage({
     : [];
 
   const blocked = access.canWrite ? null : access.explanation;
+  // See the contact detail page's copy: a deleted record's links are not
+  // editable, and this route serves deleted records on purpose.
+  const panelBlocked =
+    company.deletedAt !== null ? DELETED_RECORD_EXPLANATION : blocked;
   const basePath = `/${org.slug}/companies`;
 
   return (
@@ -157,7 +164,7 @@ export default async function CompanyDetailPage({
           href: `/${org.slug}/contacts/${link.otherId}`,
         }))}
         options={options}
-        disabledReason={blocked}
+        disabledReason={panelBlocked}
       />
 
       {/* Task 7's activity timeline goes here. */}

@@ -117,6 +117,56 @@ describe("loadLinkOptions does not offer soft-deleted records", () => {
   });
 });
 
+describe("the join actions refuse a soft-deleted end (M-1)", () => {
+  // `deleted_at` is deliberately ABSENT from the RLS policies -- design note
+  // (g): RLS must not hide a soft-deleted row, because restore has to read it.
+  // So there is nothing behind these three checks, and the review proved it by
+  // changing a soft-deleted contact's primary company from the panel. S28 in
+  // rls_phase2_crm.sql asserts the database really does permit the write, so
+  // that the application being the only control is a measured fact rather than
+  // an assumption.
+  //
+  // A source assertion because a Server Action is not drivable from a node
+  // test in this repository (tests/unit is pure functions only, by the config's
+  // own rule) and the DATABASE cannot be asked -- it would answer "allowed".
+  // The behavioural half is the browser walk in the fix report.
+  const contacts = read("lib/crm/contacts.ts");
+
+  function actionBody(name: string): string {
+    const start = contacts.indexOf(`export async function ${name}(`);
+    expect(start, `${name} not found`).toBeGreaterThan(-1);
+    const next = contacts.indexOf("\nexport async function ", start + 1);
+    return contacts.slice(start, next === -1 ? undefined : next);
+  }
+
+  for (const action of [
+    "linkCompanyAction",
+    "unlinkCompanyAction",
+    "setPrimaryCompanyAction",
+  ]) {
+    it(`${action} checks the contact is live in this organisation`, () => {
+      expect(actionBody(action)).toContain(
+        `liveInOrg(supabase, "contacts", org.id, contactId)`,
+      );
+    });
+
+    it(`${action} checks the company too, and refuses a deleted end`, () => {
+      const body = actionBody(action);
+      expect(body).toContain(`liveInOrg(supabase, "companies", org.id, companyId)`);
+      expect(body).toContain("deletedEndState(formData)");
+    });
+  }
+
+  it("liveInOrg really filters deleted_at, and really scopes the organisation", () => {
+    const helper = contacts.slice(
+      contacts.indexOf("async function liveInOrg("),
+      contacts.indexOf("function deletedEndState("),
+    );
+    expect(helper).toContain(`.is("deleted_at", null)`);
+    expect(helper).toContain(`.eq("organisation_id", organisationId)`);
+  });
+});
+
 describe("the company form carries the checkbox-group marker (I-2)", () => {
   const form = read("components/crm/company-form.tsx");
 

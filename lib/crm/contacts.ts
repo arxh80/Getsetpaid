@@ -48,7 +48,10 @@ import { revalidatePath } from "next/cache";
 import { getCurrentOrg, getCurrentUser, type CurrentOrg } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
-import { getCrmWriteAccess } from "@/lib/crm/write-access";
+import {
+  DELETED_RECORD_EXPLANATION,
+  getCrmWriteAccess,
+} from "@/lib/crm/write-access";
 import {
   commitWrite,
   FAILED_MESSAGE,
@@ -490,7 +493,7 @@ export async function restoreContactAction(
 // here and not there is drift that reads as a control.
 
 /**
- * Is this contact a row of THIS workspace, reachable by THIS caller?
+ * Is this a LIVE row of THIS workspace, reachable by THIS caller?
  *
  * ===========================================================================
  * RLS ANSWERS A DIFFERENT QUESTION FROM THE ONE THE URL ASKS
@@ -504,35 +507,56 @@ export async function restoreContactAction(
  * contact. Every other write in this file carries
  * `.eq("organisation_id", org.id)` for the same reason.
  *
- * Read through the CALLER'S OWN client, so it is not a privileged existence
- * check: a contact outside the caller's record scope returns nothing here and
- * would have been refused by the policy anyway. The database is still the
- * control -- the 3-arg RPC and the `.eq()` on every statement make the same
- * refusal without this function. What this adds is that the refusal happens
- * before a write is attempted against the wrong workspace's row, and that
- * `revalidatePath` cannot be handed a slug for a page that did not change.
+ * ===========================================================================
+ * AND NEITHER OF THEM ASKS WHETHER THE RECORD IS DELETED
+ * ===========================================================================
+ * `deleted_at` is deliberately NOT in the policies -- design note (g): RLS
+ * does not hide a soft-deleted row, because restore has to be able to read it.
+ * The detail route serves deleted records for exactly that reason, and it
+ * rendered the whole link panel next to the "Deleted" notice. Reproduced in a
+ * browser: a soft-deleted contact's primary company was changed, and the write
+ * applied. `updateContactAction` refuses the same record with
+ * `.is("deleted_at", null)` and the edit route says so; these three did not.
+ *
+ * Read through the CALLER'S OWN client, so this is not a privileged existence
+ * check: a record outside the caller's scope returns nothing here and would
+ * have been refused by the policy anyway.
  */
-async function contactInOrg(
+async function liveInOrg(
   supabase: Awaited<ReturnType<typeof createClient>>,
+  table: "contacts" | "companies",
   organisationId: string,
-  contactId: string,
+  id: string,
 ): Promise<boolean> {
   const { data, error } = await supabase
-    .from("contacts")
+    .from(table)
     .select("id")
     .eq("organisation_id", organisationId)
-    .eq("id", contactId)
+    .eq("id", id)
+    .is("deleted_at", null)
     .maybeSingle();
   if (error) {
-    // 22P02 is an unparseable uuid from the form: no such contact, and there
+    // 22P02 is an unparseable uuid from the form: no such record, and there
     // never could be. Anything else is a fault, and a fault must not read as
-    // "the contact is fine" -- fail closed.
+    // "the record is fine" -- fail closed.
     if (error.code !== "22P02") {
-      console.error("[crm] contact lookup for a join write failed:", error.message);
+      console.error(`[crm] ${table} lookup for a join write failed:`, error.message);
     }
     return false;
   }
   return data !== null;
+}
+
+/**
+ * The refusal a join write gets when one of its two ends is gone.
+ *
+ * `DELETED_RECORD_EXPLANATION` verbatim rather than `REFUSED_MESSAGE`, because
+ * this refusal is one the user can act on: the panel says the same sentence
+ * where the controls would be, and the record is one click from being
+ * restored. `REFUSED_MESSAGE` deliberately does not guess why.
+ */
+function deletedEndState(formData: FormData): FormState {
+  return { error: DELETED_RECORD_EXPLANATION, values: echoedValues(formData) };
 }
 
 export async function linkCompanyAction(
@@ -551,6 +575,15 @@ export async function linkCompanyAction(
   }
 
   const supabase = await createClient();
+  // BOTH ENDS LIVE, AND BOTH IN THIS WORKSPACE. See liveInOrg(): the policies
+  // ask neither question, and the panel used to be rendered next to a deleted
+  // record's own "Deleted" notice.
+  const [contactLive, companyLive] = await Promise.all([
+    liveInOrg(supabase, "contacts", org.id, contactId),
+    liveInOrg(supabase, "companies", org.id, companyId),
+  ]);
+  if (!contactLive || !companyLive) return deletedEndState(formData);
+
   // ALWAYS is_primary FALSE. Making the link and making it primary are two
   // operations because the second one has to demote whatever is primary now,
   // and a partial unique index cannot be deferred -- see
@@ -594,6 +627,17 @@ export async function unlinkCompanyAction(
   if (!contactId || !companyId) return { error: FAILED_MESSAGE };
 
   const supabase = await createClient();
+  // BOTH ENDS LIVE. Removing a link is still changing the links of a deleted
+  // record, and `restore has to bring the record back as it was`
+  // (deleteCompanyAction). One rule for all three actions, stated once in
+  // DELETED_RECORD_EXPLANATION, rather than a per-verb exception that reads
+  // differently depending on which page you are standing on.
+  const [contactLive, companyLive] = await Promise.all([
+    liveInOrg(supabase, "contacts", org.id, contactId),
+    liveInOrg(supabase, "companies", org.id, companyId),
+  ]);
+  if (!contactLive || !companyLive) return deletedEndState(formData);
+
   // A HARD DELETE, and the only one in this file. The link row carries no
   // information of its own beyond "these two are connected"; there is nothing
   // to soft-delete and CLAUDE.md's rule is about operational RECORDS. It is
@@ -654,14 +698,24 @@ export async function setPrimaryCompanyAction(
   const companyId = field(formData, "companyId");
 
   const supabase = await createClient();
-  // THE WORKSPACE CHECK, BEFORE THE RPC. See contactInOrg(): the function now
-  // takes an organisation and applies it to both statements, so this is a
-  // second lock rather than the only one -- but it is what makes the refusal a
-  // sentence instead of a raised 42501, and it stops revalidatePath() being
-  // handed this workspace's slug for a write aimed at another one's row.
-  if (!(await contactInOrg(supabase, org.id, contactId))) {
-    return { error: REFUSED_MESSAGE };
-  }
+  // THE WORKSPACE AND SOFT-DELETE CHECKS, BEFORE THE RPC. See liveInOrg().
+  // The function now takes an organisation and applies it to both statements,
+  // so the workspace half is a second lock rather than the only one -- but it
+  // is what makes the refusal a sentence instead of a raised 42501, and it
+  // stops revalidatePath() being handed this workspace's slug for a write
+  // aimed at another one's row. The soft-delete half has no counterpart in the
+  // database at all: `deleted_at` is deliberately absent from the policies so
+  // restore can read the row.
+  //
+  // A NULL companyId IS "CLEAR THE PRIMARY", which names no company, so only
+  // the contact is checked on that path.
+  const [contactLive, companyLive] = await Promise.all([
+    liveInOrg(supabase, "contacts", org.id, contactId),
+    companyId === null
+      ? Promise.resolve(true)
+      : liveInOrg(supabase, "companies", org.id, companyId),
+  ]);
+  if (!contactLive || !companyLive) return deletedEndState(formData);
 
   const result = await commitWrite(
     `set primary company on contact ${contactId}`,

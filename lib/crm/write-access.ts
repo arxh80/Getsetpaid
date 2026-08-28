@@ -89,6 +89,27 @@ const EXPLANATION: Record<WriteBlockedReason, string> = {
 };
 
 /**
+ * Why the link panel's controls are not there on a deleted record.
+ *
+ * ONE STRING, for the reason `authorise()` returns `access.explanation`
+ * verbatim: the sentence next to an absent control and the sentence after a
+ * submitted form have to be the same, because the form can be submitted by
+ * anyone who ignores the UI and two different answers is how a user concludes
+ * one of them is wrong.
+ *
+ * A LINK IS ONLY EDITABLE WHILE BOTH ENDS ARE LIVE, and that rule is one
+ * sentence on purpose. The alternative -- "the anchor must be live, and the
+ * other end may be deleted if the operation is a removal" -- is defensible and
+ * unstateable: it reads differently from a contact than from a company, so the
+ * same button would work on one page and refuse on the other. `restore has to
+ * bring the record back as it was` (deleteCompanyAction) is what decides it:
+ * if the links of a deleted record can be edited while it is deleted, restore
+ * brings back something else.
+ */
+export const DELETED_RECORD_EXPLANATION =
+  "This record is deleted, so its links can’t be changed. Restore it first and these controls come back.";
+
+/**
  * True when a resolved entitlements answer permits CRM writes.
  *
  * EXPORTED AND PURE so the mirror test can drive it against the database
