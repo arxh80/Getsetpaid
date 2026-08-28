@@ -185,8 +185,16 @@ async function ContactResults({
       location: (row.location as string | null) ?? null,
       updatedAt: String(row.updated_at),
     }),
-    sortValue: (row, sort) =>
-      sort === "updated" ? String(row.updated_at) : String(row.name),
+    // NO `sortValue` HERE ANY MORE. It was
+    //   (row, sort) => sort === "updated" ? String(row.updated_at) : String(row.name)
+    // -- a hand-written copy of a map the spec already holds, whose `else`
+    // branch is a catch-all. Review finding M-6: add a third sort to
+    // CONTACT_LIST without touching this line and every cursor silently
+    // carries the wrong column's value, which is I-2's failure arrived at by
+    // omission rather than by a forged URL. `fetchListPage` derives it from
+    // `spec.sort[sort].column`; the only remaining obligation is that
+    // CONTACT_SELECT contains every sortable column, and that is checked and
+    // logged at runtime.
     applyFilters: (query: ListQuery, filters) =>
       // "Mine" is the caller's own id from the verified session above -- never
       // a value from the request. The only two things that reach this query

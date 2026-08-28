@@ -5,21 +5,37 @@ import "server-only";
 // ===========================================================================
 // THE CLAUSES THAT ARE NOT NEGOTIABLE, AND WHAT EACH ONE COSTS TO OMIT
 // ===========================================================================
-// Measured on a committed, VACUUM ANALYZEd fixture: 25,000 contacts in one
-// organisation (24,509 live, 491 soft-deleted), 5,000 in a second tenant, as
-// a real `authenticated` role with `request.jwt.claims` set the way PostgREST
-// sets it. Not inside a transaction -- Task 1's lesson.
+// Measured on a committed, VACUUM ANALYZEd fixture -- 19,882 live contacts in
+// one organisation, 119 soft-deleted, 5,000 in a second tenant with an
+// overlapping name range -- as a real `authenticated` role with
+// `request.jwt.claims` set the way PostgREST sets it. Not inside a transaction
+// (Task 1's lesson), and re-taken in fix round 1 WITH this task's own indexes
+// in place, because the first round's numbers were taken before them and one
+// of the conclusions below did not survive that.
 //
 //  1. `.eq("organisation_id", ...)` -- THE TENANT FILTER, ALWAYS EXPLICIT.
-//     CLAUDE.md § Tenancy model. Worth being precise about why, because the
-//     measurement does NOT say what the brief expected: for a single-org user
-//     the plan is the same node with and without it (10.925 ms vs 11.995 ms),
-//     because the RLS set-form predicate has already narrowed to the caller's
-//     organisations. The clause is a CORRECTNESS control, not a performance
-//     one -- and multi-org membership ships at MVP (CLAUDE.md § Tenancy
+//     Required twice over, and fix round 1 corrects this comment: the first
+//     version said the clause "is a CORRECTNESS control, not a performance
+//     one", on a measurement taken when no index existed for either plan to
+//     use. With `contacts_org_name_id_live_idx` in place -- the state this
+//     file actually ships in -- `organisation_id` is that index's LEADING
+//     COLUMN, so the clause is what makes the index reachable at all:
+//
+//       with it      Index Scan using contacts_org_name_id_live_idx
+//                    1.790 ms   shared hit=317
+//       without it   Seq Scan + top-N heapsort of 19,882 rows
+//                    13.141 ms  shared hit=498
+//
+//     CORRECTNESS: multi-org membership ships at MVP (CLAUDE.md § Tenancy
 //     model), so for an admin in two workspaces the query without it returns
-//     BOTH tenants' contacts on one workspace's page. RLS allows that; it is
+//     BOTH tenants' rows on one workspace's page. RLS allows that; it is
 //     supposed to. Only the query can say which workspace is being viewed.
+//     PERFORMANCE: 7x on the shipped schema, and the comment mattered --
+//     "the plan is the same with and without it" is exactly what a Task 4
+//     author would read while deciding whether their single-org page needs
+//     the clause, and dropping it silently reinstates the Seq Scan this
+//     task's migration exists to remove. Nothing would fail; the rows are
+//     identical.
 //
 //  2. `.is("deleted_at", null)` -- RLS DOES NOT DO THIS. Task 2 § 4.1 decided
 //     the policies deliberately do not hide soft-deleted rows, and
@@ -34,6 +50,54 @@ import "server-only";
 //
 //  4. `.limit(pageSize + 1)`. The spare row is how "is there another page" is
 //     answered without a second query and without a count.
+//
+// ===========================================================================
+// SEARCH IS O(TENANT) AND NO INDEX CAN CHANGE THAT UNDER RLS
+// ===========================================================================
+// The first round of this task claimed the composite btree served search at
+// 1.079 ms. That number is real and it is unrepresentative: it was taken on a
+// term matching ~4% of the tenant, dense enough that walking the ordered index
+// and stopping at 26 wins. A user types a surname. Measured on this fixture,
+// as `authenticated`, a term matching ONE row of 19,882:
+//
+//   page   Index Scan on contacts_organisation_id_idx, 20,000 rows filtered
+//                                                         39.002 ms
+//   count  the same shape                                 35.926 ms
+//
+// So a realistic search costs two scans of the tenant, ~75 ms of database time
+// at 20k rows, growing linearly. The list's headline property -- O(page)
+// paging -- does not extend to the search path.
+//
+// THE MECHANISM, TESTED RATHER THAN ASSERTED, because the first round declined
+// to name one and the reviewer's correction named a different one:
+//
+//   select p.proname, p.proleakproof from pg_operator o
+//     join pg_proc p on p.oid = o.oprcode where o.oprname in ('~~*','%','>=');
+//     texticlike     f      -- ILIKE
+//     similarity_op  f      -- the pg_trgm `%` operator
+//     text_ge        t      -- `>=`
+//
+// Postgres will not evaluate a NON-LEAKPROOF qual before an RLS security qual,
+// so a non-leakproof operator can never become an Index Cond on a table with
+// RLS enabled. The controlled pair, same index, same fixture, differing only
+// in leakproofness:
+//
+//   name >= 'Wilhelmina'     Index Cond: (organisation_id = ... AND name >= ...)
+//                            1.425 ms, Heap Fetches: 0
+//   name like 'Wilhelmina%'  Index Cond: (organisation_id = ...) only,
+//                            20,000 rows removed by Filter, 6.853 ms
+//
+// That is why `contacts_name_trgm_idx` is never chosen (0 scans, ever), why a
+// composite `gin (organisation_id, name gin_trgm_ops)` was built and measured
+// and ALSO never chosen (24.313 ms, unchanged), and why the same statement as
+// `postgres` -- no policy, no barrier -- uses the trigram index in 0.114 ms.
+// It is a property of RLS plus the operator, not of this schema, so no index
+// this project can add will fix it from the PostgREST path.
+//
+// The ceiling is recorded in FOLLOW-UPS.md with these numbers. A real search
+// design (a SECURITY DEFINER search function, which CAN use the trigram index
+// -- measured at 0.36 ms against 48-51 ms without it) is scoped there and is
+// deliberately NOT built here.
 // ===========================================================================
 
 import { createClient } from "@/lib/supabase/server";
@@ -89,6 +153,12 @@ export type ListPage<TRow> =
       /** Boundary cursors for this page, for the pager's two links. */
       readonly firstCursor: Cursor | null;
       readonly lastCursor: Cursor | null;
+      /**
+       * True when the request carried a cursor that pointed past the data and
+       * this is the first page instead. The component says so, rather than
+       * silently showing different rows than the URL asked for.
+       */
+      readonly recovered: boolean;
     }
   | { readonly outcome: "unavailable" };
 
@@ -107,11 +177,17 @@ export interface FetchListPageOptions<
   readonly select: string;
   /** Maps a raw row once, so pages never handle PostgREST shapes. */
   readonly mapRow: (raw: Record<string, unknown>) => TRow;
-  /** Reads the sort column off a raw row, to build the boundary cursors. */
-  readonly sortValue: (
-    raw: Record<string, unknown>,
-    sort: TSort,
-  ) => string;
+  // NO `sortValue` OPTION. It used to be here, and every entity supplied a
+  // ternary mapping its sort keys back to column names -- a map the spec
+  // already holds. Review finding M-6: the else branch of that ternary is a
+  // catch-all, so a third sort added to a spec without a matching branch
+  // produces cursors carrying the WRONG COLUMN'S VALUE. That is exactly the
+  // failure I-2 reproduced, reached by an ordinary omission in a copied file
+  // rather than by a forged URL, and Task 4 would have had five chances to
+  // make it. The boundary value is now derived from
+  // `spec.sort[params.sort].column` below, so the only thing a caller still
+  // has to get right is including that column in `select` -- which is checked
+  // at runtime and logged loudly.
   /** Entity-specific filters. Server-side only; never crosses to a client. */
   readonly applyFilters?: (
     query: ListQuery,
@@ -164,15 +240,20 @@ function applyCursor(
   column: string,
   reading: SortDirection,
   cursor: Cursor,
+  { includeCursorRow = false }: { includeCursorRow?: boolean } = {},
 ): ListQuery {
   const strict = reading === "asc" ? "gt" : "lt";
-  const inclusive = reading === "asc" ? "gte" : "lte";
+  const bound = reading === "asc" ? "gte" : "lte";
+  // `includeCursorRow` widens the tie-break from strictly-after to
+  // at-or-after. Only the "is there anything ahead of this backward page"
+  // probe uses it; a page always wants strictly-after, or it repeats a row.
+  const idOp = includeCursorRow ? bound : strict;
   const quoted = quoteLogicValue(cursor.value);
 
   return query
-    .filter(column, inclusive, topLevelValue(cursor.value))
+    .filter(column, bound, topLevelValue(cursor.value))
     .or(
-      `${column}.${strict}.${quoted},and(${column}.eq.${quoted},id.${strict}.${cursor.id})`,
+      `${column}.${strict}.${quoted},and(${column}.eq.${quoted},id.${idOp}.${cursor.id})`,
     );
 }
 
@@ -200,7 +281,7 @@ export async function fetchListPage<
   TSort extends string,
   TFilter extends string,
 >(options: FetchListPageOptions<TRow, TSort, TFilter>): Promise<ListPage<TRow>> {
-  const { spec, params, table, select, mapRow, sortValue } = options;
+  const { spec, params, table, select, mapRow } = options;
   const sortOption = spec.sort[params.sort];
   const supabase = await createClient();
 
@@ -208,25 +289,29 @@ export async function fetchListPage<
   // the rows reversed again in memory. There is no other way to take "the 25
   // rows immediately before this one" from a limit-based API, and every other
   // way (an offset, a second count) reintroduces what keyset exists to avoid.
-  const reading: SortDirection =
-    params.cursorDirection === "before" ? flip(params.dir) : params.dir;
-  const ascending = reading === "asc";
-
-  let page = applyScope(
-    supabase.from(table).select(select) as unknown as ListQuery,
-    options,
-  );
-  if (params.cursor) {
-    page = applyCursor(page, sortOption.column, reading, params.cursor);
-  }
-  page = page
-    .order(sortOption.column, { ascending })
-    // `id` is the tie-break and it is not optional. No sort column here is
-    // unique -- a contacts list has several "Sam Patel"s -- and a keyset over
-    // a non-total order both skips and repeats rows at every page boundary a
-    // tie straddles. The primary key makes the order total.
-    .order("id", { ascending })
-    .limit(params.pageSize + 1);
+  const buildPage = (
+    cursor: Cursor | null,
+    direction: CursorDirection | null,
+  ): ListQuery => {
+    const reading: SortDirection =
+      direction === "before" ? flip(params.dir) : params.dir;
+    const ascending = reading === "asc";
+    let q = applyScope(
+      supabase.from(table).select(select) as unknown as ListQuery,
+      options,
+    );
+    if (cursor) q = applyCursor(q, sortOption.column, reading, cursor);
+    return (
+      q
+        .order(sortOption.column, { ascending })
+        // `id` is the tie-break and it is not optional. No sort column here is
+        // unique -- a contacts list has several "Sam Patel"s -- and a keyset
+        // over a non-total order both skips and repeats rows at every page
+        // boundary a tie straddles. The primary key makes the order total.
+        .order("id", { ascending })
+        .limit(params.pageSize + 1)
+    );
+  };
 
   // The count deliberately does NOT carry the cursor: it answers "how many
   // match", not "how many are left". It is a separate round trip because
@@ -234,12 +319,12 @@ export async function fetchListPage<
   // included, which would make the total shrink as the user pages -- a number
   // that changes when nothing changed.
   //
-  // Cost, measured: 7.703 ms over 24,509 live rows, a Seq Scan, and it cannot
-  // be anything else -- a count needs every row, and the RLS predicate's
-  // owner_user_id term keeps it off an index-only path. So it is O(tenant)
-  // where the page query is O(page), and at a few hundred thousand records it
-  // would dominate the request. It runs in PARALLEL with the page and fails
-  // independently: a page renders without a total rather than not at all.
+  // Cost, measured: it is the one part of this page that is O(tenant). A count
+  // needs every row, so it is a scan whatever indexes exist -- 7.7 ms over
+  // 24,509 rows unfiltered, and 20.5-35.9 ms when a search narrows it, because
+  // the search predicate is then a per-row filter too (see the header's search
+  // note). It runs in PARALLEL with the page and fails independently: a page
+  // renders without a total rather than not at all.
   const countQuery = applyScope(
     supabase
       .from(table)
@@ -247,7 +332,37 @@ export async function fetchListPage<
     options,
   );
 
-  const [pageResult, countResult] = await Promise.all([page, countQuery]);
+  // "IS THERE A PAGE AFTER THIS ONE" WHEN PAGING BACKWARDS.
+  //
+  // This used to be the literal `true`, with a comment calling it a fact. It
+  // was an assumption about how the page was reached, and review reproduced
+  // what that costs: land on a `before` page that happens to be the end of the
+  // list -- a bookmark, or a link that was correct before rows were removed --
+  // and the app offers a Next that leads somewhere empty.
+  //
+  // The real answer is one indexed `limit 1`: does any row still exist at or
+  // after the cursor we came back from, reading forwards? It runs in PARALLEL,
+  // because that cursor is known before the page query returns, and only on
+  // backward pages.
+  const nextProbeQuery =
+    params.cursorDirection === "before" && params.cursor
+      ? applyCursor(
+          applyScope(
+            supabase.from(table).select("id") as unknown as ListQuery,
+            options,
+          ),
+          sortOption.column,
+          params.dir,
+          params.cursor,
+          { includeCursorRow: true },
+        ).limit(1)
+      : null;
+
+  const [pageResult, countResult, nextResult] = await Promise.all([
+    buildPage(params.cursor, params.cursorDirection),
+    countQuery,
+    nextProbeQuery ?? Promise.resolve(null),
+  ]);
 
   if (pageResult.error || !pageResult.data) {
     // The message only, never the rows: a log line must not become a second
@@ -259,14 +374,67 @@ export async function fetchListPage<
     return { outcome: "unavailable" };
   }
 
-  const raw = pageResult.data as Record<string, unknown>[];
+  let raw = pageResult.data as Record<string, unknown>[];
+  let direction = params.cursorDirection;
+  let recovered = false;
+
+  // A CURSOR THAT LANDS PAST THE DATA RECOVERS TO PAGE ONE INSTEAD OF DEAD-ENDING.
+  //
+  // Review finding I-1, reproduced three ways: a cursor past the end of the
+  // table, a `before` cursor of the very first row, and a Next link the app
+  // itself offered -- each rendering "No contacts yet" in a workspace holding
+  // 20,220 contacts, with no table and no pager, so the only way out was the
+  // breadcrumb. Telling a customer their workspace is empty is the same class
+  // of lie as the Read Only empty state, reached through the cursor instead of
+  // through the role.
+  //
+  // Fixed HERE rather than in the component, so that no entity page can get it
+  // wrong: Task 4 copies EntityList five times and would have copied a branch
+  // that cannot tell "no records" from "bad cursor". It also makes
+  // lib/list/cursor.ts's stated invariant -- "a cursor that does not decode
+  // must produce the FIRST page" -- true of the SEMANTIC failure as well as
+  // the syntactic one, which is what that header always promised in spirit.
+  //
+  // One extra round trip, in a case that is already degenerate.
+  if (raw.length === 0 && params.cursor !== null) {
+    const retry = await buildPage(null, null);
+    if (retry.error || !retry.data) {
+      console.error(
+        `[list] ${spec.entity} recovery query failed for organisation ${options.organisationId} after an empty cursored page:`,
+        retry.error?.message ?? "no data returned",
+      );
+      return { outcome: "unavailable" };
+    }
+    raw = retry.data as Record<string, unknown>[];
+    direction = null;
+    recovered = true;
+  }
+
   const more = raw.length > params.pageSize;
   const window = more ? raw.slice(0, params.pageSize) : raw;
-  const ordered =
-    params.cursorDirection === "before" ? [...window].reverse() : window;
+  const ordered = direction === "before" ? [...window].reverse() : window;
+
+  // The boundary value comes from the SPEC's column, not from a per-entity
+  // callback -- see the note where `sortValue` used to be. The one thing a
+  // caller can still get wrong is leaving the sort column out of `select`, so
+  // that is checked rather than assumed: silently, it would produce cursors
+  // whose value is the string "undefined" and a list that pages in circles.
+  if (ordered.length > 0 && ordered[0]![sortOption.column] === undefined) {
+    console.error(
+      `[list] ${spec.entity}: sort column "${sortOption.column}" is not in the select list, so cursors cannot be built. Add it to the entity's select.`,
+    );
+  }
 
   const edge = (row: Record<string, unknown> | undefined): Cursor | null =>
-    row ? { value: sortValue(row, params.sort), id: String(row.id) } : null;
+    row
+      ? {
+          value: String(row[sortOption.column] ?? ""),
+          id: String(row.id),
+          // The cursor records WHICH sort it was made under, so a stale link
+          // under a different sort degrades to page one instead of to a 400.
+          sort: params.sort,
+        }
+      : null;
 
   if (countResult.error) {
     console.error(
@@ -275,21 +443,34 @@ export async function fetchListPage<
     );
   }
 
+  let hasNext: boolean;
+  if (direction !== "before") {
+    hasNext = more;
+  } else if (nextResult && !nextResult.error && Array.isArray(nextResult.data)) {
+    hasNext = nextResult.data.length > 0;
+  } else {
+    // The probe failed. Stay optimistic, because the recovery above means an
+    // offered Next can no longer strand anyone -- but say so, rather than let
+    // a failed query look like an answer.
+    console.error(
+      `[list] ${spec.entity} next-page probe failed for organisation ${options.organisationId}; assuming a next page exists:`,
+      nextResult?.error?.message ?? "no data returned",
+    );
+    hasNext = true;
+  }
+
   return {
     outcome: "loaded",
     rows: ordered.map(mapRow),
-    // Paging forward, the spare row says there is more ahead and having
-    // arrived from somewhere says there is something behind. Paging backward,
-    // both are true in mirror image. With no cursor this is page one, so
-    // there is nothing behind by definition.
-    hasNext: params.cursorDirection === "before" ? true : more,
-    hasPrevious:
-      params.cursorDirection === "before"
-        ? more
-        : params.cursorDirection === "after",
+    hasNext,
+    // Paging forward, having arrived from somewhere means there is something
+    // behind. Paging backward, the spare row is what says so. With no cursor
+    // this is page one, so there is nothing behind by definition.
+    hasPrevious: direction === "before" ? more : direction === "after",
     total: countResult.error ? null : countResult.count,
     firstCursor: edge(ordered[0]),
     lastCursor: edge(ordered[ordered.length - 1]),
+    recovered,
   };
 }
 

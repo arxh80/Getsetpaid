@@ -110,6 +110,18 @@ export function EntityList<TRow, TSort extends string, TFilter extends string>({
           {spec.sort[params.sort].directionLabels[params.dir]}
         </p>
         {scopeNote}
+        {/* The cursor in the URL pointed past the data and fetchListPage
+            recovered to the first page. Saying so is the difference between a
+            link that quietly shows something other than what it asked for and
+            one that explains itself -- and it is cheap, because the recovery
+            already happened and the alternative was the dead end review found
+            (I-1). Only rendered in the degenerate case. */}
+        {page.recovered ? (
+          <p role="status" className="text-sm text-ink-muted">
+            That link pointed past the end of the list, so this is the first
+            page.
+          </p>
+        ) : null}
       </div>
 
       {rows.length === 0 ? (
@@ -153,7 +165,19 @@ export function EntityList<TRow, TSort extends string, TFilter extends string>({
           {/* A wide table scrolls INSIDE this box, never the page (hallmark
               gate 34: no horizontal scroll on the document at any width).
               tabIndex + a name because a scrollable region has to be
-              reachable and identifiable from the keyboard -- WCAG 2.1.1. */}
+              reachable and identifiable from the keyboard -- WCAG 2.1.1.
+
+              THE TAB STOP AND THE LANDMARK ARE UNCONDITIONAL, AND THAT IS A
+              TRADE, NOT AN OVERSIGHT. Review finding M-5 measured it: at
+              1568px `scrollWidth === clientWidth`, so nothing scrolls and the
+              keyboard user gets a tab stop that does nothing. Whether the box
+              scrolls is a layout fact known only in the browser, and this is a
+              Server Component, so the alternatives are to guess (and drop the
+              tab stop at exactly the widths where a real user needs it) or to
+              ship a client component with a ResizeObserver to set one
+              attribute. One inert tab stop is the cheaper mistake, and it is
+              the one that fails toward reachable. Task 4 copies this; if it is
+              ever worth changing, the ResizeObserver is the way. */}
           <div
             role="region"
             aria-label={`${spec.noun.many} table`}
