@@ -177,6 +177,23 @@ export const getCurrentOrg = cache(
     // organisations_select_member gates this: an org the caller is not an
     // ACTIVE member of returns zero rows, so the .eq() on slug is a lookup
     // within what the caller may already see, not an access decision.
+    //
+    // THE `.is("deleted_at", null)` BELOW IS NOW THE ONE LINE THAT MAKES A
+    // SUSPENDED WORKSPACE UNREACHABLE, AND THAT IS NO LONGER THE INTENDED
+    // BEHAVIOUR. DECISIONS-QUEUE Q6 (founder, 2026-08-28) made suspension
+    // READ-ONLY rather than a lockout, and Task 3a implemented it in the
+    // database (20260828210000): a suspended organisation's members keep
+    // `view_crm` and lose every write, proven by rls_phase2_crm.sql § P. This
+    // filter returns null for such a slug, so every route under it renders the
+    // tenant-isolation 404 and the customer sees nothing at all -- the exact
+    // outcome Q6 reversed.
+    //
+    // It is left in place deliberately, because removing it alone is worse:
+    // the workspace would render as normal and every write would 403 with no
+    // explanation. The fix is an `isSuspended` flag on the returned object plus
+    // a read-only banner and disabled write controls, scoped to Task 4 and
+    // specified in FOLLOW-UPS.md § "Phase 3 -- events". Do not delete this line
+    // without shipping that in the same change.
     const { data: org, error } = await supabase
       .from("organisations")
       .select("id, name, slug")

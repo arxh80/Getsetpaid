@@ -458,12 +458,18 @@ These become live the moment a real tenant table exists.
 - **A soft-deleted organisation still appears in the workspace switcher.** Not
   Task 3's code; found by the reviewer while building fixtures.
   `getActiveMemberships()` filters on membership `status` but not on
-  `organisations.deleted_at`, while `getCurrentOrg()` filters it correctly — so
-  a suspended workspace is listed in the header switcher and 404s when
-  selected. A dead entry rather than an access problem (the database denies
-  either way). This is the same disagreement `20260828140000`'s
-  suspension note already depends on being resolved; it belongs to whichever
-  task next owns the switcher.
+  `organisations.deleted_at`, while `getCurrentOrg()` filters it — so a
+  suspended workspace is listed in the header switcher and 404s when selected.
+
+  **REWRITTEN BY TASK 3a, AND THE FIX DIRECTION IS NOW THE OPPOSITE ONE.** This
+  entry originally called `getCurrentOrg()`'s filter "correct" and the whole
+  thing "a dead entry rather than an access problem (the database denies either
+  way)". Both halves were true only under the decision Q6 reversed. Since
+  `20260828210000` the database **permits** the read, so the filter in
+  `getCurrentOrg()` is now the single line that makes the founder's decision
+  unreachable from a browser, and the switcher entry is not dead — it is the
+  correct entry pointing at a page that wrongly 404s. See the Task 3a item under
+  "Phase 3 — events" below for the full description of what the UI owes this.
 
 - **Task 4: the list surface has no write affordances at all**, so "a Read Only
   user sees no write affordances" and "a Free-tier org gets no write path" are
@@ -577,19 +583,46 @@ These become live the moment a real tenant table exists.
   term of `winner_owner_user_id = (select auth.uid())`. Design it with the merge,
   not after it. `rls_phase2_crm.sql` H15 guards the ordering that bought the
   full-scope half.
-- **Task 3/4: nothing renders the suspended workspace the suspension fix
-  assumes.** `20260828140000` justifies leaving `private.is_active_member()`
-  untouched so "the app has to be able to render 'this workspace is suspended'
-  rather than a blank screen". That affordance does not exist, and the two
-  helpers currently disagree: `getCurrentOrg()` (`lib/auth/index.ts:184`) already
-  filters `.is("deleted_at", null)`, so a suspended slug resolves to `null` and
-  renders as not-found — indistinguishable from another tenant's slug — while
-  `getActiveMemberships()` filters on `status` only, so the workspace switcher
-  still **lists** the suspended workspace, which then 404s when clicked. Either
-  drop suspended organisations from the switcher, or let `getCurrentOrg()` return
-  them with an `isSuspended` flag and render the notice. Not a security issue —
-  the database denies either way — but the migration's stated justification is
-  aspirational until this exists, and Q6's default is what makes it visible.
+- **Task 3/4: THE READ-ONLY SUSPENDED WORKSPACE IS UNREACHABLE FROM THE BROWSER,
+  and one line is why.** Raised by Task 3a, which implemented DECISIONS-QUEUE Q6
+  in the database (`20260828210000`) and deliberately did not build the UI.
+
+  Q6 (founder, 2026-08-28) makes suspension **read-only**: a suspended
+  organisation's members keep `view_crm` and lose every write. The database now
+  does exactly that — `rls_phase2_crm.sql` § P proves a manager reads all 13
+  contacts of a suspended organisation and cannot insert, update or delete a
+  single row on any of the eight surfaces. **The application never gets that
+  far.** `getCurrentOrg()` (`lib/auth/index.ts:184`) filters
+  `.is("deleted_at", null)`, so a suspended slug resolves to `null` and every
+  route under it renders the tenant-isolation 404 — indistinguishable from
+  another tenant's slug. Meanwhile `getActiveMemberships()` filters on `status`
+  only, so the switcher still **lists** the workspace and sends the user
+  straight into that 404.
+
+  This was previously written up here as "not a security issue — the database
+  denies either way". **That is no longer true and it is the reason this entry
+  was rewritten rather than ticked off:** the database no longer denies, so the
+  filter is not a redundant belt-and-braces, it is the thing that defeats the
+  decision. Until it moves, Q6 is implemented at the only layer that enforces
+  anything and at none of the layers a customer can see.
+
+  What the UI owes it, at minimum:
+  1. `getCurrentOrg()` returns the organisation with an `isSuspended` flag
+     instead of `null`. Do **not** simply delete the filter — the flag is what
+     every consumer needs, and a silent unfiltered read gives a
+     normal-looking workspace whose every write 403s with no explanation.
+  2. A persistent, non-dismissible banner on every route of a suspended
+     workspace: the workspace is read-only, why (suspended by the platform),
+     and who to contact. It must not imply the user can fix it themselves —
+     `manage_organisation` is a write, so an Owner genuinely cannot un-suspend
+     (P7; DECISIONS-QUEUE consequence P7).
+  3. Write controls **disabled**, not hidden and not present-and-failing.
+     Hidden loses the explanation; present-and-failing produces a 403 the user
+     cannot interpret. The same `isSuspended` flag drives both, alongside the
+     role and entitlement checks the Task 4 item above already lists.
+  4. The switcher renders the suspended workspace with a read-only marker
+     rather than dropping it — dropping it hides a workspace the user still has
+     lawful read access to, which is the outcome Q6 exists to prevent.
 - **Task 6: `merges` SELECT now requires BOTH sides visible, not just the
   winner.** Changed in fix round 1 (`20260828140500`) because
   `field_resolution` copies both records' values verbatim and a record-scoped

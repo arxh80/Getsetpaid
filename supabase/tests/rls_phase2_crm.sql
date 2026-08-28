@@ -1206,6 +1206,117 @@ begin
     '0 mismatches', bad || ' mismatches');
 end $$;
 
+-- ---------------------------------------------------------------------------
+-- M1b -- THE SAME SWEEP AGAINST A GENUINELY SUSPENDED ORGANISATION.
+--
+-- TASK 3a. M1 above could not see the clause this task changed. No organisation
+-- is soft-deleted at the point M1 runs -- section P sets and clears deleted_at
+-- 400 lines later -- so `o.deleted_at is null` was TRUE for every one of M1's
+-- 1224 triples, and the join degenerated to a plain membership join. A mirror
+-- test that cannot distinguish the two functions on the exact clause under
+-- change is not doing its job: the whole Q6 rewrite could have been applied to
+-- one body and not the other and M1 would have stayed green.
+--
+-- So the sweep runs twice. org-alpha is soft-deleted for the second pass and
+-- restored immediately, inside the same DO block, so nothing downstream sees it
+-- -- section P does its own suspend/restore and is unaffected.
+--
+-- This pass is also the one that would notice the OTHER wrong implementation:
+-- if the catalogue join were dropped from one body and replaced by
+-- `or p_permission = 'view_crm'`, the two would still agree here -- which is
+-- why M1c below guards the shape as well as the behaviour.
+do $$
+declare
+  u record; o record; a text; k text;
+  v_scalar boolean; v_set boolean; n int := 0; bad int := 0;
+  v_alpha uuid;
+  v_readable int := 0;   -- positive control: the suspended org must appear
+begin
+  select id into v_alpha from public.organisations where slug = 'org-alpha';
+  update public.organisations set deleted_at = pg_catalog.now() where id = v_alpha;
+
+  for u in select id from auth.users loop
+    foreach a in array array['aal1','aal2'] loop
+      perform pg_catalog.set_config('request.jwt.claims',
+        pg_catalog.json_build_object('sub', u.id, 'role', 'authenticated', 'aal', a)::text,
+        true);
+      for o in select id from public.organisations loop
+        foreach k in array array[
+          'view_crm','manage_contacts','manage_artists','manage_venues',
+          'manage_custom_fields','merge_records',
+          'manage_members','manage_organisation','no_such_permission'] loop
+          v_scalar := public.has_permission(o.id, k);
+          v_set    := exists (select 1 from private.permitted_organisations(k) x where x = o.id);
+          n := n + 1;
+          if v_scalar is distinct from v_set then bad := bad + 1; end if;
+          -- The positive control. Without it this sweep passes perfectly in a
+          -- world where suspension closed EVERYTHING again, because false ==
+          -- false is still agreement -- exactly the shape of the bug Q6 exists
+          -- to reverse.
+          if o.id = v_alpha and k = 'view_crm' and v_scalar then
+            v_readable := v_readable + 1;
+          end if;
+        end loop;
+      end loop;
+    end loop;
+  end loop;
+
+  perform pg_catalog.set_config('request.jwt.claims', '', true);
+  update public.organisations set deleted_at = null where id = v_alpha;
+
+  perform crm.record(
+    'M1b SUSPENDED org: the two forms still agree, ' || n || ' triples',
+    '0 mismatches', bad || ' mismatches');
+  perform crm.record(
+    'M1b+ POSITIVE CONTROL: view_crm IS held in the suspended org by somebody',
+    'at least 1 holder', case when v_readable > 0 then 'at least 1 holder'
+                              else 'nobody -- suspension is a lockout again' end);
+end $$;
+
+-- M1c -- THE SHAPE GUARD BEHIND THE CATALOGUE.
+--
+-- M1 and M1b are behavioural and cannot tell a catalogue lookup from a string
+-- literal that happens to produce the same answers today. The catalogue is the
+-- decision (task-3a-brief § 2): a literal is a line someone must remember to
+-- edit in two function bodies every time a later phase adds a read key, and the
+-- failure is silent and points at a suspended customer losing access.
+--
+-- Postgres strips comments from a stored function body, so a term cannot be
+-- hidden from these guards in a comment -- established in Task 2 fix round 2.
+select crm.val('M1c both forms consult the CATALOGUE, not a permission literal',
+  $$select count(*)::text from pg_proc p
+     join pg_namespace n on n.oid = p.pronamespace
+    where (n.nspname, p.proname) in (('public','has_permission'),
+                                     ('private','permitted_organisations'))
+      and position('survives_suspension' in p.prosrc) > 0
+      and position('deleted_at' in p.prosrc) > 0$$, '2');
+select crm.val('M1d neither form hardcodes a permission key against deleted_at',
+  $$select count(*)::text from pg_proc p
+     join pg_namespace n on n.oid = p.pronamespace
+    where (n.nspname, p.proname) in (('public','has_permission'),
+                                     ('private','permitted_organisations'))
+      and position('''view_crm''' in p.prosrc) > 0$$, '0');
+-- The catalogue is only trustworthy if nothing can grant a key that is not in
+-- it -- otherwise an uncatalogued key silently inherits "no row, no join, no
+-- permission" for reads AND the wrong suspension answer.
+select crm.val('M1e role_permissions.permission_key is FK-bound to the catalogue',
+  $$select count(*)::text from pg_constraint
+     where conname = 'role_permissions_permission_key_fkey'
+       and contype = 'f'
+       and confrelid = 'public.permissions'::regclass$$, '1');
+select crm.val('M1f every permission key in use has a catalogue row',
+  $$select count(*)::text from public.role_permissions rp
+     where not exists (select 1 from public.permissions p where p.key = rp.permission_key)$$,
+  '0');
+select crm.val('M1g exactly one key survives suspension today, and it is view_crm',
+  $$select coalesce(string_agg(key, ',' order by key), '<none>')
+      from public.permissions where survives_suspension$$, 'view_crm');
+-- The default is the control that protects Phase 5's author from themselves.
+select crm.val('M1h survives_suspension DEFAULTS to false (a new key arrives closed)',
+  $$select column_default from information_schema.columns
+     where table_schema='public' and table_name='permissions'
+       and column_name='survives_suspension'$$, 'false');
+
 -- MIN-4: M1 sweeps only non-NULL organisations, and a NULL organisation is the
 -- ONE input on which the two forms genuinely disagree -- which makes it the one
 -- input the equivalence test most needed to state.
@@ -1596,52 +1707,316 @@ select crm.val('O8  ...and nothing actually moved',
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
--- P. A SOFT-DELETED (SUSPENDED) ORGANISATION (IMP-4)
+-- P. A SOFT-DELETED (SUSPENDED) ORGANISATION -- READ-ONLY, NOT A LOCKOUT
 -- ===========================================================================
 -- CLAUDE.md § Superuser dashboard ships suspend/reinstate as soft delete.
--- Before fix round 1, organisations.deleted_at was invisible to the permission
--- engine, so a suspended tenant kept full CRM read AND write. Restores the
--- organisation at the end so the rest of the fixture is untouched.
+--
+-- THIS SECTION INVERTED IN TASK 3a. DECISIONS-QUEUE § Q6, ANSWERED 2026-08-28:
+-- **READ-ONLY. THE DEFAULT WAS OVERRULED.** Task 2's fix round 1 (IMP-4) shipped
+-- the opposite reading -- a suspended organisation granted NOTHING, so a
+-- suspended customer saw an empty application -- and P1/P3/P4 asserted exactly
+-- that. The founder overruled it: suspension stops WORK, it does not hide a
+-- customer's own records from them.
+--
+-- The assertions below are the SAME assertions with the expectation inverted,
+-- not new ones replacing deleted ones, so the diff shows what the decision
+-- changed:
+--   P1  'the CRM is unreadable'          0     -> the real row count
+--   P3  has_permission(view_crm)         false -> true
+--   P4  permitted_organisations(view_crm) false -> true
+-- P2 (writes closed), P5, P6, P7 and P8 are unchanged: the write half of the
+-- rule did not move, and neither did the workspace-switcher exception.
+--
+-- WHAT P1 NOW PROVES THAT IT DID NOT BEFORE. '0 rows' passes against a database
+-- where every policy denies everything -- it could not tell "suspension closed
+-- the read" from "the fixture was empty" or "the role holds nothing". An exact
+-- non-zero count can only pass if the suspended organisation's rows are
+-- genuinely reachable through the real SELECT policy, by a real role, at the
+-- real assurance level. Every count below is the count the SAME user sees when
+-- the organisation is live (P20-P27 re-assert them after reinstatement), so
+-- these are equalities against a measured baseline, not floors.
+--
+-- Restores the organisation at the end so the rest of the fixture is untouched.
 update public.organisations set deleted_at = now() where slug = 'org-alpha';
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select crm.val('P1  SUSPENDED: the CRM is unreadable',
-  $$select count(*)::text from public.contacts$$, '0');
-select crm.try('P2  SUSPENDED: the CRM is unwritable',
+
+-- ---- 1. READS SURVIVE, on every entity surface (§ 7.1) --------------------
+-- pmanager is a manager: full record scope, aal1, no MFA requirement. The
+-- counts are exact. RLS does not hide soft-deleted ROWS (design note (g)), so
+-- these include the fixture's soft-deleted contacts -- that is the pre-existing
+-- rule and it is unrelated to organisation suspension.
+select crm.val('P1  SUSPENDED: contacts are still readable (was: expect 0)',
+  $$select count(*)::text from public.contacts$$, '13');
+select crm.val('P1a SUSPENDED: companies still readable',
+  $$select count(*)::text from public.companies$$, '3');
+select crm.val('P1b SUSPENDED: agencies still readable',
+  $$select count(*)::text from public.agencies$$, '1');
+select crm.val('P1c SUSPENDED: artists still readable',
+  $$select count(*)::text from public.artists$$, '3');
+select crm.val('P1d SUSPENDED: venues still readable',
+  $$select count(*)::text from public.venues$$, '3');
+select crm.val('P1e SUSPENDED: venue_rooms still readable (child, via parent)',
+  $$select count(*)::text from public.venue_rooms$$, '4');
+select crm.val('P1f SUSPENDED: custom_field_values still readable (polymorphic)',
+  $$select count(*)::text from public.custom_field_values$$, '4');
+select crm.val('P1g SUSPENDED: merges still readable',
+  $$select count(*)::text from public.merges$$, '2');
+
+-- ---- 2. EVERY WRITE CLOSES (§ 7.2) ----------------------------------------
+-- The mechanism is asserted, not left open. Two DIFFERENT refusals appear here
+-- and the difference is real:
+--
+--   INSERT -> denied(42501). WITH CHECK names
+--             permitted_organisations('manage_*'), which no longer contains a
+--             suspended organisation, so the new row is rejected outright.
+--   UPDATE/DELETE -> ok(0). USING names the same empty set, so the target row
+--             is not visible to the statement and it matches nothing. This is
+--             a DIFFERENT mechanism from the Free-tier refusal in § N, which is
+--             denied(42501) on UPDATE because crm_write_organisations() lives
+--             in WITH CHECK only and the row stays visible. Suspension closes
+--             the USING side; entitlement closes the WITH CHECK side.
+--   ...except where `authenticated` holds no table grant at all, which is
+--             DELETE on everything but contact_companies and
+--             custom_field_values, and UPDATE on merges (append-only). Those
+--             are denied(42501) from the grant layer, before RLS is consulted,
+--             and would be denied for a live organisation too -- asserted so
+--             the section does not silently credit suspension for a refusal
+--             that has nothing to do with it.
+select crm.try('P2  SUSPENDED: contacts INSERT refused',
   format($$insert into public.contacts (organisation_id, name)
     values (%L,'suspended')$$, :'alpha_org'), 'denied(42501)');
-select crm.val('P3  SUSPENDED: has_permission agrees',
-  format($$select public.has_permission(%L,'view_crm')::text$$, :'alpha_org'), 'false');
-select crm.val('P4  SUSPENDED: so does the set form (the two must not drift)',
+select crm.try('P2a SUSPENDED: companies INSERT refused',
+  format($$insert into public.companies (organisation_id, name)
+    values (%L,'suspended')$$, :'alpha_org'), 'denied(42501)');
+select crm.try('P2b SUSPENDED: agencies INSERT refused',
+  format($$insert into public.agencies (organisation_id, name)
+    values (%L,'suspended')$$, :'alpha_org'), 'denied(42501)');
+select crm.try('P2c SUSPENDED: artists INSERT refused',
+  format($$insert into public.artists (organisation_id, name)
+    values (%L,'suspended')$$, :'alpha_org'), 'denied(42501)');
+select crm.try('P2d SUSPENDED: venues INSERT refused',
+  format($$insert into public.venues (organisation_id, name)
+    values (%L,'suspended')$$, :'alpha_org'), 'denied(42501)');
+select crm.try('P2e SUSPENDED: venue_rooms INSERT refused',
+  format($$insert into public.venue_rooms (organisation_id, venue_id, name)
+    values (%L,'55550000-0000-0000-0000-000000000002','suspended')$$,
+    :'alpha_org'), 'denied(42501)');
+select crm.try('P2f SUSPENDED: custom_field_values INSERT refused',
+  format($$insert into public.custom_field_values
+      (organisation_id, field_id, entity_type, entity_id, value)
+    values (%L,'aaaa0000-0000-0000-0000-000000000001','artist',
+            '44440000-0000-0000-0000-000000000001','"suspended"'::jsonb)$$,
+    :'alpha_org'), 'denied(42501)');
+select crm.try('P2g SUSPENDED: merges INSERT refused',
+  format($$insert into public.merges
+      (organisation_id, entity_type, winner_id, loser_id, merged_by)
+    values (%L,'contact','22220000-0000-0000-0000-000000000002',
+            '22220000-0000-0000-0000-000000000003',(select auth.uid()))$$,
+    :'alpha_org'), 'denied(42501)');
+
+select crm.try('P2h SUSPENDED: contacts UPDATE matches nothing (USING is empty)',
+  $$update public.contacts set title='suspended'
+    where id='22220000-0000-0000-0000-000000000002'$$, 'ok(0)');
+select crm.try('P2i SUSPENDED: companies UPDATE matches nothing',
+  $$update public.companies set name='suspended'
+    where id='11110000-0000-0000-0000-000000000002'$$, 'ok(0)');
+select crm.try('P2j SUSPENDED: agencies UPDATE matches nothing',
+  $$update public.agencies set name='suspended'
+    where id='33330000-0000-0000-0000-000000000002'$$, 'ok(0)');
+select crm.try('P2k SUSPENDED: artists UPDATE matches nothing',
+  $$update public.artists set name='suspended'
+    where id='44440000-0000-0000-0000-000000000002'$$, 'ok(0)');
+select crm.try('P2l SUSPENDED: venues UPDATE matches nothing',
+  $$update public.venues set name='suspended'
+    where id='55550000-0000-0000-0000-000000000002'$$, 'ok(0)');
+select crm.try('P2m SUSPENDED: venue_rooms UPDATE matches nothing',
+  $$update public.venue_rooms set name='suspended'
+    where id='66660000-0000-0000-0000-000000000002'$$, 'ok(0)');
+select crm.try('P2n SUSPENDED: custom_field_values UPDATE matches nothing',
+  $$update public.custom_field_values set value='"suspended"'::jsonb
+    where id='bbbb0000-0000-0000-0000-000000000002'$$, 'ok(0)');
+select crm.try('P2o SUSPENDED: merges UPDATE -- no grant, append-only',
+  $$update public.merges set field_resolution='{}'::jsonb
+    where id='cccc0000-0000-0000-0000-000000000002'$$, 'denied(42501)');
+
+select crm.try('P2p SUSPENDED: custom_field_values DELETE matches nothing',
+  $$delete from public.custom_field_values
+    where id='bbbb0000-0000-0000-0000-000000000002'$$, 'ok(0)');
+select crm.try('P2q SUSPENDED: contacts DELETE -- no grant (true when live too)',
+  $$delete from public.contacts
+    where id='22220000-0000-0000-0000-000000000002'$$, 'denied(42501)');
+select crm.try('P2r SUSPENDED: venues DELETE -- no grant (true when live too)',
+  $$delete from public.venues
+    where id='55550000-0000-0000-0000-000000000002'$$, 'denied(42501)');
+select crm.val('P2s SUSPENDED: ...and nothing above actually changed anything',
+  $$select count(*)::text from public.contacts
+     where id='22220000-0000-0000-0000-000000000002' and title is null$$, '1');
+
+-- ---- The permission engine's own answer, both representations ------------
+select crm.val('P3  SUSPENDED: has_permission(view_crm) is TRUE (was: false)',
+  format($$select public.has_permission(%L,'view_crm')::text$$, :'alpha_org'), 'true');
+select crm.val('P4  SUSPENDED: so is the set form (the two must not drift)',
   format($$select exists (select 1 from private.permitted_organisations('view_crm') x
+                          where x = %L)::text$$, :'alpha_org'), 'true');
+select crm.val('P4a SUSPENDED: every WRITE key is false -- has_permission',
+  format($$select (public.has_permission(%1$L,'manage_contacts')
+                or public.has_permission(%1$L,'manage_artists')
+                or public.has_permission(%1$L,'manage_venues')
+                or public.has_permission(%1$L,'merge_records')
+                or public.has_permission(%1$L,'manage_members')
+                or public.has_permission(%1$L,'manage_organisation'))::text$$,
+    :'alpha_org'), 'false');
+select crm.val('P4b SUSPENDED: ...and false in the set form too',
+  format($$select exists (
+      select 1 from unnest(array['manage_contacts','manage_artists','manage_venues',
+                                 'merge_records','manage_members','manage_organisation']) k
+      where %L in (select private.permitted_organisations(k))
+    )::text$$, :'alpha_org'), 'false');
+-- The entitlement gate keeps its OWN unconditional deleted_at clause, so the
+-- write half is closed twice over. Asserted rather than assumed, because "the
+-- other term also denies" is the kind of claim this phase has been wrong about.
+select crm.val('P4c SUSPENDED: crm_write_organisations() also excludes it',
+  format($$select exists (select 1 from private.crm_write_organisations() x
                           where x = %L)::text$$, :'alpha_org'), 'false');
--- The deliberate exception: is_active_member is UNCHANGED, so the workspace
--- itself is still visible and the app can render a suspension notice rather
--- than a blank screen or an error.
+
+-- ---- 4. THE WORKSPACE MUST STAY REACHABLE (§ 7.4) ------------------------
+-- is_active_member is UNCHANGED, so the organisation row, the caller's own
+-- membership and the subscription row stay visible. Without these the switcher
+-- breaks, getCurrentOrg() cannot resolve the slug, and the read-only state is
+-- unreachable in practice even though the CRM policies now permit it.
 select crm.val('P5  SUSPENDED: the organisation row is still visible (suspension notice)',
   $$select count(*)::text from public.organisations where slug='org-alpha'$$, '1');
 select crm.val('P6  SUSPENDED: memberships still readable (workspace switcher)',
   $$select (count(*) > 0)::text from public.organisation_memberships$$, 'true');
+select crm.val('P6a SUSPENDED: specifically the caller''s OWN membership row',
+  format($$select count(*)::text from public.organisation_memberships
+     where organisation_id=%L and user_id=(select auth.uid()) and status='active'$$,
+    :'alpha_org'), '1');
 reset role; reset request.jwt.claims;
 
--- Reinstatement is now a privileged action with no client path. Fail-closed and
--- correct per CLAUDE.md (suspend/reinstate is a superuser function), but Phase 7
--- must ship the superuser reinstate path in the same change as the suspend
--- button or it ships a one-way door. Routed in FOLLOW-UPS.md.
+-- ---- 5. THE NEGATIVE CONTROL (§ 7.5) -------------------------------------
+-- Suspension becoming read-only must not widen anything for a NON-member.
+-- pbowner owns org BETA and has never been a member of ALPHA; ALPHA is
+-- suspended right now, which is the state a naive `or true` would open up.
+--
+-- THE TASK 3a BRIEF CALLED THIS "the test that would catch the change being
+-- implemented as 'drop the clause'". IT IS NOT, AND THAT WAS MEASURED RATHER
+-- THAN ARGUED. Mutation 3 of task-3a-report -- both function bodies with the
+-- deleted_at clause removed outright -- leaves P9..P9f entirely GREEN, because
+-- dropping the clause restores permissions to MEMBERS of a suspended
+-- organisation and grants nothing at all to a non-member: the membership join
+-- is a separate term and it never moved. What actually catches that mutation is
+-- P4a/P4b (a write key becomes true), P2h-P2n (the UPDATE refusal changes
+-- mechanism from ok(0) to denied(42501), because the entitlement gate's own
+-- unconditional clause is still holding the line underneath) and, most
+-- visibly, P7/P7a -- the Owner un-suspends their own organisation and
+-- deleted_at really is cleared.
+--
+-- P9 is kept anyway, and it is not redundant: it is the guard for the OTHER
+-- direction, a clause rewritten in a way that admits an organisation the caller
+-- has no membership in at all. It just is not the guard the brief claimed.
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select crm.val('P9  NEGATIVE CONTROL: a non-member reads 0 rows of the suspended org',
+  format($$select count(*)::text from public.contacts where organisation_id=%L$$,
+    :'alpha_org'), '0');
+select crm.val('P9a NEGATIVE CONTROL: ...on every other surface too',
+  format($$select (count(*))::text from (
+      select 1 from public.companies where organisation_id=%1$L
+      union all select 1 from public.agencies where organisation_id=%1$L
+      union all select 1 from public.artists where organisation_id=%1$L
+      union all select 1 from public.venues where organisation_id=%1$L
+      union all select 1 from public.venue_rooms where organisation_id=%1$L
+      union all select 1 from public.custom_field_values where organisation_id=%1$L
+      union all select 1 from public.merges where organisation_id=%1$L) s$$,
+    :'alpha_org'), '0');
+select crm.val('P9b NEGATIVE CONTROL: has_permission(suspended org, view_crm) is false',
+  format($$select public.has_permission(%L,'view_crm')::text$$, :'alpha_org'), 'false');
+select crm.val('P9c NEGATIVE CONTROL: the suspended org is not in their permitted set',
+  format($$select exists (select 1 from private.permitted_organisations('view_crm') x
+                          where x = %L)::text$$, :'alpha_org'), 'false');
+select crm.val('P9d NEGATIVE CONTROL: the org row itself is still invisible to them',
+  $$select count(*)::text from public.organisations where slug='org-alpha'$$, '0');
+select crm.try('P9e NEGATIVE CONTROL: and they still cannot write into it',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'breakout')$$, :'alpha_org'), 'denied(42501)');
+-- POSITIVE CONTROL for the four above: pbowner is not blind, they simply
+-- cannot see ALPHA. Without this, P9-P9e would pass against a broken session.
+select crm.val('P9f POSITIVE CONTROL: pbowner does see their OWN organisation''s rows',
+  format($$select count(*)::text from public.contacts where organisation_id=%L$$,
+    :'beta_org'), '2');
+reset role; reset request.jwt.claims;
+
+-- ---- 6. MFA COMPOSES WITH SUSPENSION, IT IS NOT REPLACED BY IT (§ 7.6) ----
+-- powner is an Owner, which private.role_requires_mfa() covers. On an aal1
+-- session they hold nothing anywhere -- and opening READS for a suspended
+-- organisation must not have created a back door around that. The aal2 half is
+-- the positive control: the same user, the same suspended organisation, one
+-- claim different.
+set role authenticated;
+set request.jwt.claims = :'powner_c1';
+select crm.val('P10 SUSPENDED + aal1 owner: still zero CRM rows (MFA composes)',
+  $$select count(*)::text from public.contacts$$, '0');
+select crm.val('P10a SUSPENDED + aal1 owner: has_permission(view_crm) still false',
+  format($$select public.has_permission(%L,'view_crm')::text$$, :'alpha_org'), 'false');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select crm.val('P10b POSITIVE CONTROL: the same owner at aal2 DOES read the suspended org',
+  $$select count(*)::text from public.contacts$$, '13');
+select crm.try('P10c ...and still cannot write to it',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'suspended-owner')$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ---- 3. THE OWNER CANNOT UN-SUSPEND (§ 7.3) ------------------------------
+-- DECISIONS-QUEUE consequence P7, and it SURVIVES the Q6 reversal intact:
+-- manage_organisation is a write, so it is false in a suspended organisation.
+-- Suspension is a superuser action under CLAUDE.md § Superuser dashboard, with
+-- step-up re-auth and admin notification; a self-service undo would make the
+-- control meaningless. Reinstatement is a privileged path Phase 7 must ship in
+-- the same change as the suspend button or it ships a one-way door.
 set role authenticated;
 set request.jwt.claims = :'powner_c';
 select crm.try('P7  SUSPENDED: even the Owner cannot un-suspend (Phase 7 owns this)',
   $$update public.organisations set deleted_at=null where slug='org-alpha'$$, 'ok(0)');
+select crm.val('P7a ...and deleted_at really is still set',
+  $$select (deleted_at is not null)::text from public.organisations
+     where slug='org-alpha'$$, 'true');
+select crm.try('P7b SUSPENDED: nor can the Owner rename the organisation',
+  $$update public.organisations set name='Renamed While Suspended'
+    where slug='org-alpha'$$, 'ok(0)');
 reset role; reset request.jwt.claims;
 
 update public.organisations set deleted_at = null where slug = 'org-alpha';
 
+-- ---- THE BASELINE THE P1* COUNTS ARE MEASURED AGAINST --------------------
+-- Every count asserted while suspended is re-asserted here with the
+-- organisation LIVE, by the same user, with the same statement. If suspension
+-- narrowed a read anywhere, one of these pairs disagrees. If a fixture change
+-- moves a count, BOTH halves go red together and the failure is obviously a
+-- fixture change rather than a policy regression.
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 select crm.val('P8  REINSTATED: the CRM comes back',
   $$select (count(*) > 0)::text from public.contacts$$, 'true');
+select crm.val('P20 LIVE baseline: contacts',            $$select count(*)::text from public.contacts$$, '13');
+select crm.val('P21 LIVE baseline: companies',           $$select count(*)::text from public.companies$$, '3');
+select crm.val('P22 LIVE baseline: agencies',            $$select count(*)::text from public.agencies$$, '1');
+select crm.val('P23 LIVE baseline: artists',             $$select count(*)::text from public.artists$$, '3');
+select crm.val('P24 LIVE baseline: venues',              $$select count(*)::text from public.venues$$, '3');
+select crm.val('P25 LIVE baseline: venue_rooms',         $$select count(*)::text from public.venue_rooms$$, '4');
+select crm.val('P26 LIVE baseline: custom_field_values', $$select count(*)::text from public.custom_field_values$$, '4');
+select crm.val('P27 LIVE baseline: merges',              $$select count(*)::text from public.merges$$, '2');
+-- ...and the write that was refused throughout section P is accepted again, so
+-- the refusals above were suspension and not some unrelated breakage.
+select crm.try('P28 REINSTATED: the same INSERT that was refused now succeeds',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'reinstated')$$, :'alpha_org'), 'ok(1)');
 reset role; reset request.jwt.claims;
+delete from public.contacts where name='reinstated';
 
 -- ===========================================================================
 -- Q. merges LEAKED THE LOSER'S DISCARDED VALUES (IMP-2)

@@ -560,6 +560,68 @@ p2_sub "delete from public.organisation_subscriptions where organisation_id='$AL
 p2_code "RESTORED: no subscription row, writes allowed again" 201 POST "artists" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"inert artist\"}" "$BKR"
 
+echo
+echo "=== Read-only suspension at the API surface (Q6 / Task 3a) ==="
+#
+# The psql sections drive the same policies through the same mechanism PostgREST
+# uses (the `authenticated` role plus request.jwt.claims), so this block is not
+# a different gate -- it is a different LAYER, and this phase has twice found a
+# defect that only the HTTP layer showed. It also pins the SHAPE of each
+# refusal, which the browser has to interpret and psql's ok(0) does not describe.
+#
+# Every count here is compared against the same request made moments earlier
+# with the organisation live, so nothing is hardcoded against a fixture size.
+susp_before=$(curl -s "$API/rest/v1/contacts?select=id&organisation_id=eq.$ALPHA_ORG" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $MGR" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+
+p2_sub "update public.organisations set deleted_at = now() where id='$ALPHA_ORG';"
+
+susp_after=$(curl -s "$API/rest/v1/contacts?select=id&organisation_id=eq.$ALPHA_ORG" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $MGR" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+
+if [ "$susp_after" = "$susp_before" ] && [ "$susp_before" -ge 1 ] 2>/dev/null; then
+  printf '  PASS  %-58s %s\n' "SUSPENDED: reads are UNCHANGED (Q6 read-only)" \
+         "$susp_after of $susp_before"
+else
+  printf '  FAIL  %-58s got %s want %s (and >=1)\n' \
+         "SUSPENDED: reads are UNCHANGED (Q6 read-only)" "$susp_after" "$susp_before"
+  api_fails=$((api_fails+1))
+fi
+
+p2_code "SUSPENDED: manager POSTs a contact"    403 POST "contacts" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"suspended contact\"}" "$MGR"
+p2_code "SUSPENDED: booker POSTs an artist"     403 POST "artists" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"suspended artist\"}" "$BKR"
+p2_code "SUSPENDED: owner POSTs a venue"        403 POST "venues" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"suspended venue\"}" "$OWN"
+# THE SHAPE TASK 4 HAS TO HANDLE. A PATCH is refused by the USING clause, so it
+# matches no rows and PostgREST answers 204 No Content -- a SILENT SUCCESS as
+# far as a naive client is concerned. A save form that treats 2xx as "saved"
+# will tell a suspended user their edit went through. The INSERT above is a
+# loud 403; the UPDATE is not, and the difference is not cosmetic.
+p2_code "SUSPENDED: manager PATCHes a contact -> silent 204, not 403" 204 PATCH \
+        "contacts?organisation_id=eq.$ALPHA_ORG&limit=1" \
+        "{\"title\":\"suspended patch\"}" "$MGR"
+# The Owner cannot lift their own suspension over the API either (P7).
+p2_code "SUSPENDED: owner PATCHes deleted_at back to null -> no rows" 204 PATCH \
+        "organisations?id=eq.$ALPHA_ORG" "{\"deleted_at\":null}" "$OWN"
+susp_still=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select (deleted_at is not null)::text from public.organisations where id='$ALPHA_ORG'" \
+  | tr -d '[:space:]')
+if [ "$susp_still" = "true" ]; then
+  printf '  PASS  %-58s %s\n' "SUSPENDED: ...and deleted_at really is still set" "$susp_still"
+else
+  printf '  FAIL  %-58s got %s want true\n' \
+         "SUSPENDED: ...and deleted_at really is still set" "$susp_still"
+  api_fails=$((api_fails+1))
+fi
+
+p2_sub "update public.organisations set deleted_at = null where id='$ALPHA_ORG';"
+p2_code "REINSTATED: the same contact POST is allowed again" 201 POST "contacts" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"reinstated contact\"}" "$MGR"
+
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2
   http_status=1
