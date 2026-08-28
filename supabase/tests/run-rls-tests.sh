@@ -74,6 +74,31 @@ for u in alice bob carol dave super; do
   ID[$u]=$id
 done
 
+# ============================================================================
+# SCHEMA INVARIANTS / TENANT BOUNDARY (Phase 2).
+#
+# Runs FIRST, and needs no fixture users at all -- every assertion in it is
+# enforced by a constraint rather than a policy, which is the entire reason the
+# cross-tenant write was fixed at the constraint layer (see
+# 20260828001132's header). It uses its own `invariants` schema because
+# rls_foundation.sql opens with `drop schema if exists harness cascade`, and it
+# tears its own fixtures down so the suite below still meets an empty schema.
+# ============================================================================
+docker cp "$HERE/schema_invariants.sql" "$CTR:/tmp/schema_invariants.sql"
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  -f /tmp/schema_invariants.sql
+
+inv_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+            "select count(*) from invariants.results where not pass" | tr -d '[:space:]')
+[ "$inv_fails" = "0" ] || {
+  echo "SCHEMA INVARIANT SUITE FAILED: $inv_fails failing assertion(s)" >&2
+  echo "  A failure in section A is a REOPENED TENANT BOUNDARY -- treat as Sev1." >&2
+  echo "  A failure in D4/D5 is expected once Task 2 lands; update the expectation." >&2
+  exit 1
+}
+echo "Schema invariants: all assertions passed."
+echo
+
 docker cp "$HERE/rls_foundation.sql" "$CTR:/tmp/rls_foundation.sql"
 
 VARS=()
