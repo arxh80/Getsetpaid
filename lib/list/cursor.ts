@@ -31,18 +31,40 @@ export interface Cursor {
   readonly value: string;
   /** The boundary row's primary key. */
   readonly id: string;
+  /**
+   * WHICH SORT THE VALUE CAME FROM. Not decoration -- without it a cursor is
+   * just a string, and the caller has no way to know whether that string is a
+   * name or a timestamp.
+   *
+   * Found in review: `?sort=updated` with a cursor made under `sort=name`
+   * produced `updated_at >= 'Contact 00100'`, PostgREST answered 400, and the
+   * page rendered "We couldn't load contacts just now" -- telling the user the
+   * system is broken when in fact the URL is stale. `buildListHref` drops the
+   * cursor on a sort change, so in-app navigation cannot produce it; the only
+   * thing between that error and a user is a link that outlives one
+   * `buildListHref` call. A bookmark. A Slack paste. This file's own header
+   * names "a bookmark from before a sort was renamed" as an ordinary case it
+   * intends to answer with page one, and before this field it did not.
+   *
+   * `parseListParams` discards a cursor whose sort does not match the request's,
+   * so the stale link degrades to page one instead of to an error.
+   */
+  readonly sort: string;
 }
+
+/** Sort keys longer than this are refused. Real keys are one short word. */
+const MAX_SORT_LENGTH = 64;
 
 /** Which side of the cursor the page lies on. */
 export type CursorDirection = "after" | "before";
 
 export function encodeCursor(cursor: Cursor): string {
-  // A two-element array rather than an object: shorter in the URL, and it has
-  // no key names for a reader to mistake for something meaningful. The cursor
-  // is opaque by intent -- it encodes a position, not a promise about shape.
-  return Buffer.from(JSON.stringify([cursor.value, cursor.id])).toString(
-    "base64url",
-  );
+  // An array rather than an object: shorter in the URL, and it has no key
+  // names for a reader to mistake for something meaningful. The cursor is
+  // opaque by intent -- it encodes a position, not a promise about shape.
+  return Buffer.from(
+    JSON.stringify([cursor.value, cursor.id, cursor.sort]),
+  ).toString("base64url");
 }
 
 /**
@@ -68,11 +90,18 @@ export function decodeCursor(raw: string | null | undefined): Cursor | null {
     return null;
   }
 
-  if (!Array.isArray(parsed) || parsed.length !== 2) return null;
-  const [value, id] = parsed as [unknown, unknown];
+  // Exactly three elements. A two-element array is the OLD format, and it is
+  // refused rather than defaulted: a pre-sort-key cursor cannot say which
+  // column it came from, so accepting one with an assumed sort would reinstate
+  // the defect the third element exists to close. Refusing gives page one,
+  // which is what every other unreadable cursor gives.
+  if (!Array.isArray(parsed) || parsed.length !== 3) return null;
+  const [value, id, sort] = parsed as [unknown, unknown, unknown];
 
   if (typeof value !== "string" || value.length > MAX_VALUE_LENGTH) return null;
   if (typeof id !== "string" || !UUID.test(id)) return null;
+  if (typeof sort !== "string" || sort.length === 0) return null;
+  if (sort.length > MAX_SORT_LENGTH) return null;
 
-  return { value, id };
+  return { value, id, sort };
 }
