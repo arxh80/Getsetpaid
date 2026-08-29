@@ -242,6 +242,19 @@ These become live the moment a real tenant table exists.
   the table grant it replaces, which WAS reachable over HTTP. Close it properly
   if the merge is ever moved behind a server-side-only path.
 
+- **`merges.field_resolution` has TWO SHAPES, and the version number is how to
+  tell them apart.** `20260829030000` (fix round 1, review finding I-1) gave the
+  custom-field section the same `{from, chosen, discarded}` keys the ordinary
+  columns always had, because the previous shape recorded the LOSER's value
+  only -- so a reviewer who explicitly chose the loser's value for a field the
+  winner also held overwrote the winner's value and nothing recorded it.
+  `version` is `2` from that migration on. **The v1 rows cannot be repaired**:
+  `merges` is append-only by design, there is no UPDATE grant, and a v1 row
+  simply does not contain the winner's value. A reader -- the support path in
+  `20260829020000`'s DECISION 5, and anything Phase 7 builds over the merge
+  history -- must branch on `field_resolution ->> 'version'` and treat a v1
+  chosen-loser overwrite as unrecoverable.
+
 - **`field_resolution.links` records COUNTS, not which rows moved.** Enough to
   reconstruct both records by hand (task-6-report § 2 walks the support request
   through), and NOT enough to know exactly which `contact_companies` rows were
