@@ -215,6 +215,62 @@ These become live the moment a real tenant table exists.
   Foundation helper uses) makes `name % $1` fail with "operator does not exist".
   Write `name operator(extensions.%) $1` and `extensions.similarity(...)`.
 
+### Opened by Task 7 (the shared activity timeline)
+
+- **A record-scoped read of `merges` still pays the polymorphic dispatch, and
+  it is now on a page path.** Measured on 20,800 merges with a contact that
+  survived 401 of them: the record-scoped first page is **343.4 ms**, of which
+  **318.9 ms and 10,079 buffers** are the `merges_entity_winner_idx` scan
+  evaluating `private.entity_is_visible()` twice per row.
+  Task 6's two denormalised owner equalities short-circuit the dispatch only
+  when the owners **differ**; when the rows really are the reader's, it runs for
+  every one. The realistic case (a five-event contact) is 8–10 ms, so this is
+  not urgent — but the shape is O(rows on the record) with a per-row function
+  call, and **it recurs in every later phase that adds a polymorphic source**
+  to `public.activity_events`. The fix belongs in the policy (a denormalised
+  visibility column, or a per-entity-type partial index), not in the view.
+
+- **A refused write on `public.activity_events` answers HTTP 500, not 4xx.**
+  Postgres rejects it at rewrite time (SQLSTATE 55000, "Views containing UNION,
+  INTERSECT, or EXCEPT are not automatically updatable") **before** any
+  privilege check, so the absent INSERT grant never produces its 403. The write
+  is refused twice over and nothing leaks, but anything watching error rates
+  will read it as a server fault. Asserted as measured in `run-rls-tests.sh`;
+  if the platform ever gets error-rate alerting, this is a known benign 500.
+
+- **`contact_companies` removals can never appear on a timeline.** That table
+  has no `deleted_at` — unlinking is a hard DELETE — so the removal leaves no
+  trace anywhere in the database. `artist_representations` and `venue_rooms`
+  are soft-deleted and their removals do appear, so the product shows an
+  asymmetry a customer can see. Closing it means adding `deleted_at` to
+  `contact_companies` and turning the unlink into a soft delete, which is a
+  schema and a UX decision (a "former employer" is a real CRM concept), not a
+  timeline one.
+
+- **`SortOption.backedBy` is table-shaped and `ACTIVITY_LIST` is the first spec
+  that is not a table.** The field's contract says "required to be a real index
+  name"; a view has no index of its own, so the activity spec names the
+  per-branch set instead. Either widen the field's contract to say what a view
+  should put there, or accept that one spec's value is a sentence.
+
+- **Nothing records WHO did anything except `merges`.** Of the eight event
+  kinds, only `merge_absorbed` / `merge_into` can name a person, because
+  `merges.merged_by` is the only actor column in the Phase 2 schema.
+  `owner_user_id` is the record-scope column and is explicitly **not** an
+  author (nullable, `ON DELETE SET NULL`, rewritten by any future reassignment
+  feature). A "who changed this" timeline needs `audit_events`, whose only
+  SELECT policy is platform superuser; the narrowest exposure that would work
+  is designed in `task-7-report.md` § 3 and deliberately **not built** — Q13's
+  standing default keeps the boundary shut in Phase 2.
+
+- **Two paginated lists on one page drop each other's state unless the page
+  says otherwise.** `ListSpec.paramPrefix` and `HrefOverrides.preserve` (both
+  added by Task 7, both off by default) fix it for the artist detail page, and
+  the artist page is the only caller. Phase 3's event page will have several
+  such surfaces: the prefix must be set on every spec that shares a route, and
+  `preserve` passed to every list on it. There is no compile-time check that
+  either was done — the failure is a wrong page, not an error.
+
 ### Opened by Task 6 (dedup detection and the merge workflow)
 
 - **`CLAUDE.md` § Architecture still says "exact matches (email/name)
