@@ -4182,6 +4182,73 @@ select crm.try('U11 AT THE LIMIT: retyping a field still applies',
   format($$update public.custom_field_definitions set field_type='number'
      where organisation_id=%L and key='u1'$$, :'limit_org'), 'ok(1)');
 
+-- ---- I-1: entity_type IS IMMUTABLE, SO A RE-TYPE CANNOT MULTIPLY THE LIMIT --
+-- The trigger returns early on every UPDATE of a live row, which is what keeps
+-- an over-limit organisation editable after a downgrade. Before 20260829012000
+-- that also let an UPDATE change entity_type, and an entity_type change
+-- increases the TARGET type's live count -- so five definitions on each of five
+-- types could be PATCHed into one bucket, 25 live on a plan allowing 5, with no
+-- INSERT anywhere. Measured on this stack before the fix: `UPDATE 5`, then
+-- `contact | 10`.
+--
+-- The fix is IMMUTABILITY rather than a second count, so what is asserted here
+-- is that the re-type is refused REGARDLESS of whether the target has room --
+-- which is what tells a later reader this is not the limit talking.
+--
+-- State at this point: 5 live 'contact' (u1-u4, u6), 1 live 'venue' (u_venue),
+-- Starter, limit 5 per type.
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select crm.val('U21 the fixture is what these assertions assume: 5 contact, 1 venue',
+  format($$select string_agg(entity_type||'='||n, ',' order by entity_type)
+     from (select entity_type, count(*) n from public.custom_field_definitions
+            where organisation_id=%L and deleted_at is null
+            group by entity_type) s$$, :'limit_org'), 'contact=5,venue=1');
+-- TARGET HAS ROOM (venue: 1 of 5). A count-based fix would ALLOW this.
+select crm.try('U21a re-typing contact -> venue is refused even though venue has room',
+  format($$update public.custom_field_definitions set entity_type='venue'
+     where organisation_id=%L and key='u1'$$, :'limit_org'), 'denied(42501)');
+-- TARGET IS FULL (contact: 5 of 5). Same operation, same answer.
+select crm.try('U21b re-typing venue -> contact is refused too, target full',
+  format($$update public.custom_field_definitions set entity_type='contact'
+     where organisation_id=%L and key='u_venue'$$, :'limit_org'), 'denied(42501)');
+-- ONE ANSWER, NOT TWO. If the TRIGGER were doing this the at-limit case would
+-- carry 'custom field limit reached' and the under-limit case would not, so the
+-- sentence a user sees would depend on how full the target bucket is. The
+-- policy gives both the same refusal, and crm.errkind reads the message
+-- because both are 42501 and a sqlstate cannot tell them apart.
+select crm.errkind('U21c ...and BOTH are the POLICY''s refusal, not the limit''s',
+  format($$update public.custom_field_definitions set entity_type='contact'
+     where organisation_id=%L and key='u_venue'$$, :'limit_org'), 'policy refusal');
+-- THE ATTACK AS WRITTEN, not one row of it.
+select crm.try('U21d the whole-bucket re-type -- the reproduction -- is refused',
+  format($$update public.custom_field_definitions set entity_type='contact'
+     where organisation_id=%L and entity_type='venue' and deleted_at is null$$,
+    :'limit_org'), 'denied(42501)');
+select crm.val('U21e ...and nothing moved',
+  format($$select string_agg(entity_type||'='||n, ',' order by entity_type)
+     from (select entity_type, count(*) n from public.custom_field_definitions
+            where organisation_id=%L and deleted_at is null
+            group by entity_type) s$$, :'limit_org'), 'contact=5,venue=1');
+-- POSITIVE CONTROL. Without it, "the UPDATE is refused" is satisfied by a
+-- policy that refuses every UPDATE -- which would have broken the downgrade
+-- rule U10/U15 exist for. Same row, same verb, only entity_type left alone.
+select crm.try('U21f POSITIVE CONTROL: the same row''s label still updates',
+  format($$update public.custom_field_definitions set label='Still editable after I-1'
+     where organisation_id=%L and key='u_venue'$$, :'limit_org'), 'ok(1)');
+-- ...and so does the soft delete, which is also an UPDATE that leaves
+-- entity_type alone. U22 restores it so the counts U19/§ V assume still hold.
+select crm.try('U21g POSITIVE CONTROL: removing a field is still an UPDATE that applies',
+  format($$update public.custom_field_definitions set deleted_at = now()
+     where organisation_id=%L and key='u_venue'$$, :'limit_org'), 'ok(1)');
+select crm.try('U21h POSITIVE CONTROL: and restoring it applies (venue has room)',
+  format($$update public.custom_field_definitions set deleted_at = null
+     where organisation_id=%L and key='u_venue'$$, :'limit_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+
 -- ---- THE `options` ELEMENT SHAPE, AS AN AUTHENTICATED CALLER ---------------
 -- 20260829010000 pins options to [{key,label}] with a CHECK backed by an
 -- IMMUTABLE helper, because a CHECK may not contain a subquery. A CHECK
@@ -4402,6 +4469,51 @@ select crm.val('V5b jsonb ''null'' is still jsonb ''null'' -- NOT converted to S
   $$select (value is not null and jsonb_typeof(value) = 'null')::text
      from public.custom_field_values
      where id='bbbb00c5-0000-0000-0000-0000000000a2'$$, 'true');
+
+-- ---- I-2: A KEY THE PAYLOAD DOES NOT CARRY IS LEFT ALONE -------------------
+-- The DATABASE half of the `skip` outcome. lib/crm/custom-fields.ts's
+-- buildCustomFieldPayload() omits a field the form did not carry, and that is
+-- only a fix if the RPC then leaves it alone -- the delete touches only ids it
+-- is given a JSON null for, and the upsert only ids it is given a value for.
+--
+-- Before fix round 1 an absent group marker produced `value: null`, which the
+-- payload carried as the CLEAR verb, so a form rendered without a field DELETED
+-- that field's value. Three comments and two unit-test titles claimed the
+-- opposite. This asserts the RPC's side of the corrected contract against a
+-- REAL stored value rather than the planted nulls V5 uses.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('V5c set two real values, both stored',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'"keep me"'::jsonb, %L,'7'::jsonb))::text$$,
+    :'limit_org', :'v_text', :'v_num'), '2');
+-- The save a partial form produces: ONE key, and the other field's id is not in
+-- the payload at all. Not `{"<id>": null}`, which is the CLEAR verb.
+select crm.val('V5d ...then a save carrying ONLY the other key',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'8'::jsonb))::text$$,
+    :'limit_org', :'v_num'), '1');
+reset role; reset request.jwt.claims;
+select crm.val('V5e ...leaves the omitted field''s value EXACTLY as it was',
+  format($$select value::text from public.custom_field_values
+     where entity_id='222200c5-0000-0000-0000-0000000000c5' and field_id=%L$$,
+    :'v_text'), '"keep me"');
+-- The negative control, so V5e is not satisfied by an RPC that ignores its
+-- payload: the SAME field id, sent as an explicit JSON null, IS cleared.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('V5f NEGATIVE CONTROL: the same id sent as JSON null IS cleared',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'null'::jsonb))::text$$,
+    :'limit_org', :'v_text'), '1');
+reset role; reset request.jwt.claims;
+select crm.val('V5g ...and that row really is gone',
+  format($$select count(*)::text from public.custom_field_values
+     where entity_id='222200c5-0000-0000-0000-0000000000c5' and field_id=%L$$,
+    :'v_text'), '0');
 
 -- ---- A DELETED PARENT ------------------------------------------------------
 -- 20260829011000 puts private.entity_is_live() into the three WRITE policies

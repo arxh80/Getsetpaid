@@ -1281,6 +1281,52 @@ p2_range_written "AT THE LIMIT: an ordinary label edit still applies" 1 PATCH \
   "custom_field_definitions?organisation_id=eq.$ALPHA_ORG&entity_type=eq.company&key=eq.h1" \
   '{"label":"Renamed at the limit"}' "$OWN2"
 
+# I-1: entity_type IS IMMUTABLE, AT THE TRANSPORT AND WITH THE ANON KEY.
+#
+# The limit trigger returns early on every UPDATE of a live row, so before
+# 20260829012000 a PATCH could move a definition into another per-type bucket
+# with no slot check at all: five on each of five types, then all 25 PATCHed to
+# entity_type=contact, on a plan whose limit is 5. Reproduced in psql before the
+# fix (UPDATE 5, then contact | 10). This is the same request over HTTP.
+#
+# 403 rather than a silent 204: the refusal is the UPDATE policy's WITH CHECK,
+# which raises 42501, not a USING clause filtering rows to nothing. Measured,
+# and it is the distinction lib/crm/write.ts exists to keep straight.
+p2_code "I-1: PATCHing entity_type is refused (a LOUD 403)" 403 PATCH \
+  "custom_field_definitions?organisation_id=eq.$ALPHA_ORG&entity_type=eq.company&key=eq.h1" \
+  '{"entity_type":"venue"}' "$OWN2"
+# The whole-bucket form, which is the request an attacker actually sends.
+p2_code "I-1: the whole-bucket re-type is refused too" 403 PATCH \
+  "custom_field_definitions?organisation_id=eq.$ALPHA_ORG&entity_type=eq.company" \
+  '{"entity_type":"venue"}' "$OWN2"
+# ...and nothing moved. A 403 with rows already written would be worse than no
+# check at all, so the count is read back out of the database rather than
+# inferred from the status code.
+#
+# SIX, NOT FIVE, AND `deleted_at` IS DELIBERATELY NOT FILTERED. This block has
+# created h1-h4 and h6 live plus h5 removed -- six rows, five of them live. The
+# invariant is that no row LEFT the company bucket, and a re-typed row leaves it
+# whether it is live or removed, so filtering the removed one out would stop
+# measuring half of what the PATCH could have moved. The first version of this
+# check expected 5 and failed against 6: the check was right and the expectation
+# was wrong.
+cf_types=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select count(*) from public.custom_field_definitions
+    where organisation_id='$ALPHA_ORG' and entity_type='company'" | tr -d '[:space:]')
+if [ "$cf_types" = "6" ]; then
+  printf '  PASS  %-58s %s\n' "I-1: ...and all six company definitions stayed put" "$cf_types"
+else
+  printf '  FAIL  %-58s got %s want 6\n' \
+         "I-1: ...and all six company definitions stayed put" "$cf_types"
+  api_fails=$((api_fails+1))
+fi
+# POSITIVE CONTROL: the same row, the same verb, entity_type left alone. Without
+# it, "the PATCH is refused" is satisfied by a policy that refuses every UPDATE
+# -- which would break the downgrade rule the check above this one asserts.
+p2_range_written "I-1 POSITIVE CONTROL: the same row PATCHes label fine" 1 PATCH \
+  "custom_field_definitions?organisation_id=eq.$ALPHA_ORG&entity_type=eq.company&key=eq.h1" \
+  '{"label":"Renamed again"}' "$OWN2"
+
 # THE PERMISSION SPLIT. manage_custom_fields is Owner/Admin only; a Manager
 # holds every other CRM key and not this one, and a Read Only user holds none.
 p2_code "a MANAGER cannot define a field (manage_custom_fields: no)" 403 POST \
