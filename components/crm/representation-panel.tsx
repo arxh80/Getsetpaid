@@ -14,6 +14,10 @@ import {
   groupMarkerName,
   selectedInGroup,
 } from "@/lib/forms";
+import {
+  resolveClearPrimaryTargets,
+  type ClearPrimaryTarget,
+} from "@/lib/crm/representation-primary";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 
@@ -155,7 +159,11 @@ export function RepresentationPanel({
   const editable = disabledReason === null;
   const live = rows.filter((row) => !row.isRemoved);
   const removed = rows.filter((row) => row.isRemoved);
-  const hasCurrentPrimary = live.some((row) => row.primaryState === "current");
+  // fix round 1, I-1: ONE TARGET PER CURRENT-PRIMARY ROW, not one shared
+  // control that had to pick among them. See representation-primary.ts for
+  // why the artist side always resolves to at most one and the agency side
+  // does not.
+  const clearTargets = resolveClearPrimaryTargets(rows, onArtist);
 
   return (
     <section className="flex flex-col gap-4">
@@ -222,9 +230,16 @@ export function RepresentationPanel({
         </ul>
       )}
 
-      {editable && hasCurrentPrimary ? (
-        <ClearPrimary orgSlug={orgSlug} artistId={onArtist ? anchorId : rows[0]?.artistId} rows={rows} />
-      ) : null}
+      {editable
+        ? clearTargets.map((target) => (
+            <ClearPrimary
+              key={`${target.artistId}:${target.agencyId}`}
+              orgSlug={orgSlug}
+              target={target}
+              onArtist={onArtist}
+            />
+          ))
+        : null}
 
       {editable ? (
         <AddRepresentation
@@ -425,45 +440,57 @@ function PrimaryButton({
 }
 
 /**
- * Clear the artist's primary representation.
+ * Clear one artist's primary representation.
  *
  * A SEPARATE CONTROL BECAUSE THERE IS NOWHERE ELSE TO PUT IT: unsetting the
  * primary is not an operation on any one row, and a "Make primary" button that
  * toggles would submit the same form for two different transactions.
  *
- * Only rendered when a CURRENT primary exists. That is not decoration either:
- * `set_artist_primary_representation()` raises 42501 when the clear branch
- * demotes nothing, so offering the control with nothing to clear would produce
- * a refusal the user cannot act on. (The RPC's own header records that the
- * same branch is reachable by a race even so, and that the transaction still
- * rolls back whole.)
+ * ONE CONTROL PER `target`, not one control for the whole panel (fix round 1,
+ * I-1). `resolveClearPrimaryTargets` (lib/crm/representation-primary.ts) is
+ * why: on the ARTIST side there is at most one target, because
+ * `artist_representations_one_current_primary_per_artist` is unique on
+ * `artist_id` and every row here shares that one id -- so the generic label
+ * is unambiguous. On the AGENCY side an agency's roster can hold several
+ * artists who are each independently current for THIS agency, and the
+ * reviewed version had ONE shared control naming `rows[0]` -- an arbitrary,
+ * order-dependent pick that cleared whichever artist happened to sort first,
+ * silently, with no way for the user to tell which one they were about to
+ * act on. Naming the artist per target removes the need to pick at all.
+ *
+ * Only rendered for a row that IS the current primary. That is not decoration
+ * either: `set_artist_primary_representation()` raises 42501 when the clear
+ * branch demotes nothing, so offering the control with nothing to clear would
+ * produce a refusal the user cannot act on. (The RPC's own header records
+ * that the same branch is reachable by a race even so, and that the
+ * transaction still rolls back whole.)
  */
 function ClearPrimary({
   orgSlug,
-  artistId,
-  rows,
+  target,
+  onArtist,
 }: {
   orgSlug: string;
-  artistId: string | undefined;
-  rows: readonly RepresentationRecord[];
+  target: ClearPrimaryTarget;
+  onArtist: boolean;
 }) {
   const [state, formAction, pending] = useActionState(
     setPrimaryRepresentationAction,
     EMPTY_FORM_STATE,
   );
-  const current = rows.find((row) => row.primaryState === "current");
-  const resolvedArtistId = artistId ?? current?.artistId;
-  if (!resolvedArtistId) return null;
+  const label = onArtist
+    ? "Clear primary representation"
+    : `Clear primary for ${target.artistName ?? "a record you can’t see"}`;
   return (
     <form action={formAction} className="flex flex-col gap-2">
       <input type="hidden" name="orgSlug" value={orgSlug} />
-      <input type="hidden" name="artistId" value={resolvedArtistId} />
+      <input type="hidden" name="artistId" value={target.artistId} />
       {/* The agency is passed so the OTHER page is revalidated too. No
           representationId at all: its absence is what means "clear". */}
-      {current ? <input type="hidden" name="agencyId" value={current.agencyId} /> : null}
+      <input type="hidden" name="agencyId" value={target.agencyId} />
       <div>
         <Button type="submit" variant="quiet" pending={pending} pendingLabel="Clearing…">
-          Clear primary representation
+          {label}
         </Button>
       </div>
       {state.error ? <Alert tone="error">{state.error}</Alert> : null}
