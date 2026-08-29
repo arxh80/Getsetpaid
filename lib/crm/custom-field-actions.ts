@@ -92,7 +92,7 @@ import {
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import {
-  customFieldInputName,
+  buildCustomFieldPayload,
   customFieldLimit,
   ENTITY_PATH_SEGMENT,
   isCustomFieldEntityType,
@@ -101,10 +101,8 @@ import {
   MAX_CUSTOM_FIELD_LABEL,
   parseOptionsInput,
   PERMISSION_FOR_ENTITY,
-  readCustomFieldValue,
   slotAvailable,
   type CustomFieldEntityType,
-  type CustomFieldJson,
   type CustomFieldOption,
 } from "@/lib/crm/custom-fields";
 import { loadCustomFieldDefinitions } from "@/lib/crm/custom-field-queries";
@@ -533,22 +531,18 @@ export async function saveCustomFieldValuesAction(
     return { message: "There are no custom fields on this record any more." };
   }
 
-  const payload: Record<string, CustomFieldJson | null> = {};
-  const fieldErrors: Record<string, string> = {};
-  for (const definition of definitions.definitions) {
-    const read = readCustomFieldValue(definition, formData);
-    if (!read.ok) {
-      fieldErrors[customFieldInputName(definition.id)] = read.message;
-      continue;
-    }
-    // JSON null IS THE CLEAR INSTRUCTION. It is a transport verb and is never
-    // stored -- see the RPC's own header for the SQL-NULL-versus-JSON-null
-    // contract this implements.
-    payload[definition.id] = read.value;
+  // BUILT BY A PURE FUNCTION, so the one property worth asserting -- that a
+  // field this form did not carry is OMITTED from the payload rather than sent
+  // as the CLEAR verb -- is a unit test rather than a claim. See
+  // buildCustomFieldPayload()'s own header, and I-2 of the fix round 1
+  // findings: the `skip` outcome was documented in three comments and two test
+  // names before it existed, and until it did an absent group marker deleted
+  // the row it claimed to leave alone.
+  const built = buildCustomFieldPayload(definitions.definitions, formData);
+  if (!built.ok) {
+    return { fieldErrors: built.fieldErrors, values: echoedValues(formData) };
   }
-  if (Object.keys(fieldErrors).length > 0) {
-    return { fieldErrors, values: echoedValues(formData) };
-  }
+  const payload = built.payload;
 
   const result = await commitWrite(
     `save custom field values on ${entityType} ${entityId}`,

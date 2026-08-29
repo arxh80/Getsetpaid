@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCustomFieldPayload,
   CUSTOM_FIELD_ENTITY_TYPES,
   CUSTOM_FIELD_TYPES,
   customFieldInputName,
@@ -250,6 +251,7 @@ describe("text", () => {
   it("stores a jsonb STRING", () => {
     expect(readCustomFieldValue(def, submitted(def, ["hello"]))).toEqual({
       ok: true,
+      outcome: "set",
       value: "hello",
     });
   });
@@ -258,7 +260,7 @@ describe("text", () => {
     // Storing "" would be a third state beside "no row" and "a value".
     expect(readCustomFieldValue(def, submitted(def, ["   "]))).toEqual({
       ok: true,
-      value: null,
+      outcome: "clear",
     });
   });
 
@@ -266,6 +268,7 @@ describe("text", () => {
     const at = "x".repeat(MAX_CUSTOM_FIELD_TEXT);
     expect(readCustomFieldValue(def, submitted(def, [at]))).toEqual({
       ok: true,
+      outcome: "set",
       value: at,
     });
     expect(readCustomFieldValue(def, submitted(def, [at + "x"])).ok).toBe(false);
@@ -275,6 +278,7 @@ describe("text", () => {
     const hostile = "<script>alert(1)</script>";
     expect(readCustomFieldValue(def, submitted(def, [hostile]))).toEqual({
       ok: true,
+      outcome: "set",
       value: hostile,
     });
   });
@@ -285,22 +289,27 @@ describe("number", () => {
 
   it("stores a jsonb NUMBER, never a numeric string", () => {
     const result = readCustomFieldValue(def, submitted(def, ["250"]));
-    expect(result).toEqual({ ok: true, value: 250 });
-    if (!result.ok) return;
+    expect(result).toEqual({ ok: true, outcome: "set", value: 250 });
+    // Narrowed on the OUTCOME, not merely on `ok`: `clear` and `skip` carry
+    // no `value` at all now, which is the point of the three-way union.
+    if (!result.ok || result.outcome !== "set") throw new Error("expected a set");
     expect(typeof result.value).toBe("number");
   });
 
   it("accepts decimals, a sign and a leading dot", () => {
     expect(readCustomFieldValue(def, submitted(def, ["12.5"]))).toEqual({
       ok: true,
+      outcome: "set",
       value: 12.5,
     });
     expect(readCustomFieldValue(def, submitted(def, ["-3"]))).toEqual({
       ok: true,
+      outcome: "set",
       value: -3,
     });
     expect(readCustomFieldValue(def, submitted(def, [".5"]))).toEqual({
       ok: true,
+      outcome: "set",
       value: 0.5,
     });
   });
@@ -323,7 +332,7 @@ describe("number", () => {
   it("clears on a blank input", () => {
     expect(readCustomFieldValue(def, submitted(def, [""]))).toEqual({
       ok: true,
-      value: null,
+      outcome: "clear",
     });
   });
 });
@@ -333,7 +342,7 @@ describe("date", () => {
 
   it("stores the ISO STRING, never a Date", () => {
     const result = readCustomFieldValue(def, submitted(def, ["2026-03-03"]));
-    expect(result).toEqual({ ok: true, value: "2026-03-03" });
+    expect(result).toEqual({ ok: true, outcome: "set", value: "2026-03-03" });
   });
 
   it("refuses a shape that is not YYYY-MM-DD", () => {
@@ -364,8 +373,10 @@ describe("boolean", () => {
 
   it("stores a jsonb BOOLEAN, never the string 'true'", () => {
     const result = readCustomFieldValue(def, submitted(def, ["true"]));
-    expect(result).toEqual({ ok: true, value: true });
-    if (!result.ok) return;
+    expect(result).toEqual({ ok: true, outcome: "set", value: true });
+    // Narrowed on the OUTCOME, not merely on `ok`: `clear` and `skip` carry
+    // no `value` at all now, which is the point of the three-way union.
+    if (!result.ok || result.outcome !== "set") throw new Error("expected a set");
     expect(typeof result.value).toBe("boolean");
   });
 
@@ -375,16 +386,21 @@ describe("boolean", () => {
     // control that cannot tell them apart.
     expect(readCustomFieldValue(def, submitted(def, []))).toEqual({
       ok: true,
-      value: null,
+      outcome: "clear",
     });
   });
 
-  it("NO MARKER means the form never asked, and nothing is written", () => {
-    // The defect the marker exists for: without it, "cleared" and "not on this
-    // form" are the same absent key.
+  it("NO MARKER means the form never asked, so the stored value is UNTOUCHED", () => {
+    // I-2. This test's title said "nothing is written" and it asserted
+    // `{ ok: true, value: null }` -- which the RPC reads as the CLEAR verb and
+    // which DELETES the row. It passed while the opposite happened. `skip` is
+    // the outcome that means what the title always said, and
+    // buildCustomFieldPayload() omits it from the payload entirely (asserted
+    // below); the database half is rls_phase2_crm.sql § V, which proves the
+    // deployed RPC leaves a key it is not given alone.
     expect(
       readCustomFieldValue(def, submitted(def, [], { withMarker: false })),
-    ).toEqual({ ok: true, value: null });
+    ).toEqual({ ok: true, outcome: "skip" });
   });
 });
 
@@ -397,6 +413,7 @@ describe("single_select", () => {
   it("accepts an option key", () => {
     expect(readCustomFieldValue(def, submitted(def, ["b"]))).toEqual({
       ok: true,
+      outcome: "set",
       value: "b",
     });
   });
@@ -411,7 +428,7 @@ describe("single_select", () => {
   it("clears on the empty option", () => {
     expect(readCustomFieldValue(def, submitted(def, [""]))).toEqual({
       ok: true,
-      value: null,
+      outcome: "clear",
     });
   });
 });
@@ -427,6 +444,7 @@ describe("multi_select", () => {
     // Stable across saves, so an unchanged answer does not look changed.
     expect(readCustomFieldValue(def, submitted(def, ["c", "a"]))).toEqual({
       ok: true,
+      outcome: "set",
       value: ["a", "c"],
     });
   });
@@ -436,6 +454,7 @@ describe("multi_select", () => {
     // so a sentence about it would be a sentence about nothing.
     expect(readCustomFieldValue(def, submitted(def, ["a", "a"]))).toEqual({
       ok: true,
+      outcome: "set",
       value: ["a"],
     });
   });
@@ -447,14 +466,16 @@ describe("multi_select", () => {
   it("an empty group with the marker present CLEARS", () => {
     expect(readCustomFieldValue(def, submitted(def, []))).toEqual({
       ok: true,
-      value: null,
+      outcome: "clear",
     });
   });
 
-  it("NO MARKER leaves the stored value alone", () => {
+  it("NO MARKER leaves the stored value alone -- and now actually does", () => {
+    // I-2, the second of the two mis-titled tests. Same correction as the
+    // boolean group's.
     expect(
       readCustomFieldValue(def, submitted(def, [], { withMarker: false })),
-    ).toEqual({ ok: true, value: null });
+    ).toEqual({ ok: true, outcome: "skip" });
   });
 });
 
@@ -478,13 +499,14 @@ describe("url -- the write-side protocol allowlist", () => {
   it("upgrades a bare host, once, where the user can see what it became", () => {
     expect(readCustomFieldValue(def, submitted(def, ["getsetpaid.com"]))).toEqual({
       ok: true,
+      outcome: "set",
       value: "https://getsetpaid.com/",
     });
   });
 
   it("stores the URL parser's normalised output, not the raw string", () => {
     const result = readCustomFieldValue(def, submitted(def, ["HTTPS://Example.com/A"]));
-    expect(result).toEqual({ ok: true, value: "https://example.com/A" });
+    expect(result).toEqual({ ok: true, outcome: "set", value: "https://example.com/A" });
   });
 });
 
@@ -638,5 +660,131 @@ describe("customFieldInputName", () => {
     for (const reserved of ["orgSlug", "entityType", "entityId", "fieldId"]) {
       expect(name).not.toBe(reserved);
     }
+  });
+});
+
+// ===========================================================================
+// FIX ROUND 1, I-2 — "the form did not ask" is a third answer
+// ===========================================================================
+
+describe("a field the form did not carry is SKIPPED, not cleared", () => {
+  // THE FINDING. Three comments and two test names said an absent group marker
+  // "leaves the value exactly as it was". The branch returned
+  // `{ ok: true, value: null }`, the action put that in the payload
+  // unconditionally, and in the RPC's payload JSON `null` is the CLEAR verb
+  // that DELETES the row. So the documented behaviour and the implemented
+  // behaviour were opposites, and both tests passed.
+  //
+  // The rule now covers all seven types, not only the two with a marker: an
+  // `<input>` that is on the form submits its name even when empty, and one
+  // that is not on the form submits nothing, so `formData.has()` separates
+  // "the user cleared it" from "this form did not ask" for the five
+  // single-value types exactly as the marker does for the two group ones.
+
+  it("every single-value type skips when its key is absent", () => {
+    for (const type of ["text", "number", "date", "url", "single_select"] as const) {
+      const def = definition(type, [{ key: "a", label: "Alpha" }]);
+      const data = new FormData();
+      // Deliberately NOT empty: another field's key is present, so this is a
+      // real partial submission rather than an empty FormData that would skip
+      // for the wrong reason.
+      data.set("orgSlug", "walk-co");
+      expect(readCustomFieldValue(def, data), type).toEqual({
+        ok: true,
+        outcome: "skip",
+      });
+    }
+  });
+
+  it("...and CLEARS when the key is present and blank -- the two are different", () => {
+    for (const type of ["text", "number", "date", "url", "single_select"] as const) {
+      const def = definition(type, [{ key: "a", label: "Alpha" }]);
+      const data = new FormData();
+      data.set(customFieldInputName(def.id), "");
+      expect(readCustomFieldValue(def, data), type).toEqual({
+        ok: true,
+        outcome: "clear",
+      });
+    }
+  });
+
+  it("both checkbox groups skip without their marker and clear with it", () => {
+    for (const type of ["boolean", "multi_select"] as const) {
+      const def = definition(type, [{ key: "a", label: "Alpha" }]);
+      expect(
+        readCustomFieldValue(def, submitted(def, [], { withMarker: false })),
+        `${type} without marker`,
+      ).toEqual({ ok: true, outcome: "skip" });
+      expect(
+        readCustomFieldValue(def, submitted(def, [])),
+        `${type} with marker`,
+      ).toEqual({ ok: true, outcome: "clear" });
+    }
+  });
+});
+
+describe("buildCustomFieldPayload: what actually reaches the RPC", () => {
+  // THE HALF THAT MATTERS, and the half the two mis-titled tests never
+  // reached. `readCustomFieldValue` returning "skip" is only useful if the
+  // payload then OMITS the field -- the RPC deletes the ids it is given a null
+  // for and upserts the ids it is given a value for, so an absent key is the
+  // only representation of "leave it alone". This was inline in a Server
+  // Action, which tests/unit cannot drive; it is a pure function now so the
+  // claim is an assertion about KEYS.
+  const text = { ...definition("text"), id: "aaaaaaaa-0000-0000-0000-000000000001" };
+  const num = { ...definition("number"), id: "bbbbbbbb-0000-0000-0000-000000000002" };
+  const flag = { ...definition("boolean"), id: "cccccccc-0000-0000-0000-000000000003" };
+  const defs = [text, num, flag];
+
+  it("omits a skipped field entirely -- no key, so the RPC cannot touch it", () => {
+    const data = new FormData();
+    // Only `text` is on this form. `num` and `flag` are not.
+    data.set(customFieldInputName(text.id), "kept");
+    const built = buildCustomFieldPayload(defs, data);
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(Object.keys(built.payload)).toEqual([text.id]);
+    expect(built.payload[text.id]).toBe("kept");
+    // The assertion the finding is about: NOT `{[num.id]: null}`, which would
+    // delete a value the form never showed anybody.
+    expect(num.id in built.payload).toBe(false);
+    expect(flag.id in built.payload).toBe(false);
+  });
+
+  it("sends null -- the CLEAR verb -- only for a field that was submitted blank", () => {
+    const data = new FormData();
+    data.set(customFieldInputName(text.id), "   ");
+    data.set(customFieldInputName(num.id), "7");
+    data.set(groupMarkerName(customFieldInputName(flag.id)), "1");
+    const built = buildCustomFieldPayload(defs, data);
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.payload).toEqual({
+      [text.id]: null, // present and blank -> clear
+      [num.id]: 7, // present with a value -> set
+      [flag.id]: null, // marker present, box unticked -> clear
+    });
+  });
+
+  it("reports every field error at once, keyed by input name, and sends nothing", () => {
+    const data = new FormData();
+    data.set(customFieldInputName(text.id), "x".repeat(MAX_CUSTOM_FIELD_TEXT + 1));
+    data.set(customFieldInputName(num.id), "12x");
+    const built = buildCustomFieldPayload(defs, data);
+    expect(built.ok).toBe(false);
+    if (built.ok) return;
+    expect(Object.keys(built.fieldErrors).sort()).toEqual(
+      [customFieldInputName(num.id), customFieldInputName(text.id)].sort(),
+    );
+  });
+
+  it("an entirely empty submission changes nothing", () => {
+    // The degenerate case, and the one where "skip" earns its keep: a form
+    // that carried no custom field at all must not delete every value on the
+    // record.
+    const built = buildCustomFieldPayload(defs, new FormData());
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.payload).toEqual({});
   });
 });

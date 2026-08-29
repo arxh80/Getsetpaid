@@ -418,10 +418,51 @@ export function customFieldInputName(definitionId: string): string {
 // Validation: form input -> the jsonb to store, or a sentence
 // ---------------------------------------------------------------------------
 
+/**
+ * What one submitted field asks for.
+ *
+ * ===========================================================================
+ * THREE OUTCOMES, AND THE THIRD WAS DOCUMENTED BEFORE IT EXISTED (I-1 of the
+ * review's Important findings, fix round 1)
+ * ===========================================================================
+ * This used to be `{ ok: true; value: CustomFieldJson | null }`, where `null`
+ * meant CLEAR -- and the comments on the `boolean` and `multi_select` branches
+ * said an absent group marker "leaves the value exactly as it was", which
+ * `null` is not: `saveCustomFieldValuesAction` put it in the payload
+ * unconditionally, and in the RPC's payload JSON `null` is the CLEAR verb that
+ * DELETES the row. Two unit tests were named after the behaviour and asserted
+ * only `value: null`, so they passed while the opposite happened.
+ *
+ * "not asked" is a real third answer and it now has a representation. The
+ * marker mechanism (`groupMarkerName` / `selectedInGroup` in lib/forms.ts)
+ * exists precisely to tell "the group was submitted and the answer is none"
+ * from "the group was not on this form", and `skip` is the second of those
+ * reaching the write path intact: `buildCustomFieldPayload()` OMITS the field
+ * from the RPC's payload, and the RPC touches only the keys it is given.
+ *
+ * IT APPLIES TO ALL SEVEN TYPES, not just the two with a marker. A text input
+ * that is present and empty submits `name=""`; one that is not on the form
+ * submits nothing at all, so `formData.has(name)` separates them for the five
+ * single-value types exactly as the marker does for the two group ones. Before
+ * this, a partial form -- one rendered without a field, for any reason -- would
+ * have silently deleted that field's value on the next save.
+ */
 export type CustomFieldValueResult =
-  /** `value === null` means CLEAR: the row is deleted, nothing is stored. */
-  | { readonly ok: true; readonly value: CustomFieldJson | null }
+  /** Store this value. Its JSON type always matches the definition's. */
+  | { readonly ok: true; readonly outcome: "set"; readonly value: CustomFieldJson }
+  /** The field was submitted empty: delete the row. Nothing is stored. */
+  | { readonly ok: true; readonly outcome: "clear" }
+  /** The form did not carry this field: leave whatever is stored alone. */
+  | { readonly ok: true; readonly outcome: "skip" }
   | { readonly ok: false; readonly message: string };
+
+/** The two `ok` shorthands, so the branches below read as their outcome. */
+const CLEAR = { ok: true, outcome: "clear" } as const;
+const SKIP = { ok: true, outcome: "skip" } as const;
+
+function setTo(value: CustomFieldJson): CustomFieldValueResult {
+  return { ok: true, outcome: "set", value };
+}
 
 /**
  * Validate one submitted custom field value against its definition.
@@ -433,8 +474,13 @@ export type CustomFieldValueResult =
  *
  * EMPTY IS "CLEAR", NOT "EMPTY STRING". Storing `""` would be a third state
  * beside "no row" and "a value", indistinguishable to a reader and different
- * to a query. lib/forms.ts's `field()` already normalises a blank input to
- * null, so this returns `{ ok: true, value: null }` and the RPC deletes.
+ * to a query. A blank input therefore returns `clear` and the RPC deletes.
+ *
+ * ABSENT IS "SKIP", WHICH IS NOT THE SAME AS EMPTY. See
+ * `CustomFieldValueResult`. Every branch below establishes that the form
+ * actually carried the field before deciding anything else -- `formData.has()`
+ * for the five single-value types, the group marker for the two that are
+ * checkbox groups.
  *
  * THE ARGUMENT IS FormData, not a pre-read string, because two of the seven
  * types are not a single value: `multi_select` is a checkbox group and
@@ -446,11 +492,20 @@ export function readCustomFieldValue(
   formData: FormData,
 ): CustomFieldValueResult {
   const name = customFieldInputName(definition.id);
+  // PRESENT-AND-EMPTY IS NOT ABSENT. An `<input>` that is on the form always
+  // submits its name, even with nothing typed in it; one that is not on the
+  // form submits nothing at all. `has()` is the whole difference between
+  // "the user cleared this" and "this form did not ask", for the five types
+  // that are a single control. The two checkbox groups cannot use it -- an
+  // unticked box submits nothing either -- so they use the hidden marker
+  // lib/forms.ts's groupMarkerName() exists for.
+  const asked = formData.has(name);
   const single = readTrimmed(formData, name);
 
   switch (definition.fieldType) {
     case "text": {
-      if (single === null) return { ok: true, value: null };
+      if (!asked) return SKIP;
+      if (single === null) return CLEAR;
       if (single.length > MAX_CUSTOM_FIELD_TEXT) {
         return {
           ok: false,
@@ -462,11 +517,12 @@ export function readCustomFieldValue(
       // rendered as TEXT, never as HTML and never through
       // dangerouslySetInnerHTML, so React escapes it on the way out. Stripping
       // here would silently rewrite what somebody typed about their own record.
-      return { ok: true, value: single };
+      return setTo(single);
     }
 
     case "number": {
-      if (single === null) return { ok: true, value: null };
+      if (!asked) return SKIP;
+      if (single === null) return CLEAR;
       // A strict numeric literal. `Number("")` is 0 and `Number("1,200")` is
       // NaN but `parseFloat("1,200")` is 1 -- neither is a good way to read a
       // form, so the shape is checked before the conversion. Same discipline
@@ -487,11 +543,12 @@ export function readCustomFieldValue(
           message: "That number is too large for this field.",
         };
       }
-      return { ok: true, value: parsed };
+      return setTo(parsed);
     }
 
     case "date": {
-      if (single === null) return { ok: true, value: null };
+      if (!asked) return SKIP;
+      if (single === null) return CLEAR;
       const problem = checkCalendarDate(single);
       if (problem) return { ok: false, message: problem };
       // THE STRING, NEVER A `Date`. A calendar date is not an instant: the
@@ -501,16 +558,20 @@ export function readCustomFieldValue(
       // Europe/London during BST renders "2 March". CLAUDE.md's "UTC in the
       // database, UK local in the UI" is about INSTANTS; a date has no
       // instant to convert.
-      return { ok: true, value: single };
+      return setTo(single);
     }
 
     case "boolean": {
       // A GROUP OF ONE. An unticked checkbox submits nothing, so `getAll` is
-      // empty for "no" and for "this form never had the field" alike. The
-      // panel always renders the marker, so an absent marker means the latter
-      // and the value is left exactly as it was.
+      // empty for "no" and for "this form never had the field" alike -- which
+      // is exactly why the panel renders a hidden marker beside it. An absent
+      // marker means the form did not ask, and `skip` is what keeps the stored
+      // value: it is omitted from the RPC's payload, and the RPC touches only
+      // the keys it is given. This branch RETURNED `value: null` until fix
+      // round 1, which the RPC reads as the CLEAR verb -- so the comment said
+      // "left exactly as it was" while the row was being deleted.
       if (formData.get(groupMarkerName(name)) === null) {
-        return { ok: true, value: null };
+        return SKIP;
       }
       const ticked = formData
         .getAll(name)
@@ -521,23 +582,25 @@ export function readCustomFieldValue(
       // gave. Clearing keeps "no" and "not answered" the same thing on a
       // control that cannot tell them apart -- and a `false` written by some
       // other path still reads back as "No" rather than as broken.
-      return { ok: true, value: ticked ? true : null };
+      return ticked ? setTo(true) : CLEAR;
     }
 
     case "single_select": {
-      if (single === null) return { ok: true, value: null };
+      if (!asked) return SKIP;
+      if (single === null) return CLEAR;
       if (!definition.options.some((option) => option.key === single)) {
         return {
           ok: false,
           message: "Pick one of the choices on this field.",
         };
       }
-      return { ok: true, value: single };
+      return setTo(single);
     }
 
     case "multi_select": {
+      // Same marker rule, and the same correction, as `boolean` above.
       if (formData.get(groupMarkerName(name)) === null) {
-        return { ok: true, value: null };
+        return SKIP;
       }
       const raw = formData
         .getAll(name)
@@ -555,15 +618,16 @@ export function readCustomFieldValue(
         // than the submission, so the stored array is stable across saves.
         if (!chosen.includes(entry)) chosen.push(entry);
       }
-      if (chosen.length === 0) return { ok: true, value: null };
+      if (chosen.length === 0) return CLEAR;
       const ordered = definition.options
         .map((option) => option.key)
         .filter((key) => chosen.includes(key));
-      return { ok: true, value: ordered };
+      return setTo(ordered);
     }
 
     case "url": {
-      if (single === null) return { ok: true, value: null };
+      if (!asked) return SKIP;
+      if (single === null) return CLEAR;
       // REUSED, NOT REWRITTEN. lib/crm/urls.ts's normaliseWebsite() is the
       // write-side protocol allowlist Task 4 already built for
       // companies.website and venues.website: it upgrades a bare host to
@@ -572,9 +636,79 @@ export function readCustomFieldValue(
       // be a second thing to keep in step with safeHref() on the render side.
       const normalised = normaliseWebsite(single);
       if (!normalised.ok) return { ok: false, message: normalised.message };
-      return { ok: true, value: normalised.value };
+      // `normaliseWebsite` returns `value: null` for an input it reads as
+      // empty. `single` is already non-null here, so this is unreachable
+      // today -- it is written out rather than cast away because `CLEAR` is
+      // the honest answer if that ever changes, and a cast would make the
+      // next reader trust a `string` that is typed `string | null`.
+      if (normalised.value === null) return CLEAR;
+      return setTo(normalised.value);
     }
   }
+}
+
+/**
+ * The whole panel's submission, turned into the RPC's payload.
+ *
+ * ===========================================================================
+ * PURE, AND EXPORTED, BECAUSE "skip IS OMITTED" IS THE CLAIM THAT NEEDED A TEST
+ * ===========================================================================
+ * The Server Action used to build this inline, which made the one thing worth
+ * asserting -- that a field the form did not carry never reaches the RPC --
+ * unprovable without driving a Server Action, which `tests/unit` cannot do (it
+ * is pure functions only, by the vitest config's own rule). Two unit tests were
+ * named after that behaviour and asserted something else entirely.
+ *
+ * Here it is a function over a `FormData` and a definition list, so
+ * tests/unit/crm/custom-fields.test.ts can assert the payload's KEYS directly:
+ * a skipped field has no key, a cleared one has a `null`, and a set one has its
+ * JSON value. The RPC's half -- that a key it is not given is left untouched --
+ * is asserted in rls_phase2_crm.sql § V against the deployed function.
+ *
+ * AN EXHAUSTIVE SWITCH WITH NO `default`, for the reason lib/crm/actions.ts's
+ * `failureState` has one: a fourth outcome added later is a compile error here
+ * rather than a value silently dropped from the payload. `pnpm typecheck` is
+ * what runs it.
+ */
+export function buildCustomFieldPayload(
+  definitions: readonly CustomFieldDefinition[],
+  formData: FormData,
+):
+  | {
+      readonly ok: true;
+      /** Field id -> the value to store, or `null` meaning CLEAR. */
+      readonly payload: Record<string, CustomFieldJson | null>;
+    }
+  | { readonly ok: false; readonly fieldErrors: Record<string, string> } {
+  const payload: Record<string, CustomFieldJson | null> = {};
+  const fieldErrors: Record<string, string> = {};
+
+  for (const definition of definitions) {
+    const read = readCustomFieldValue(definition, formData);
+    if (!read.ok) {
+      fieldErrors[customFieldInputName(definition.id)] = read.message;
+      continue;
+    }
+    switch (read.outcome) {
+      case "set":
+        payload[definition.id] = read.value;
+        break;
+      case "clear":
+        // JSON null IS THE CLEAR INSTRUCTION. A transport verb, never stored --
+        // see set_custom_field_values()'s header for the SQL-NULL-versus-
+        // JSON-null contract this implements.
+        payload[definition.id] = null;
+        break;
+      case "skip":
+        // NO KEY AT ALL. The RPC deletes only the ids it is given a null for
+        // and upserts only the ids it is given a value for, so an absent key
+        // leaves whatever is stored exactly where it is.
+        break;
+    }
+  }
+
+  if (Object.keys(fieldErrors).length > 0) return { ok: false, fieldErrors };
+  return { ok: true, payload };
 }
 
 /** `field()` from lib/forms.ts, inlined so this module imports no server code. */
