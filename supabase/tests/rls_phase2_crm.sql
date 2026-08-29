@@ -3988,6 +3988,61 @@ select crm.try('T32d ...and event_id is still held NULL until Phase 3 adds the F
      where id='999900b0-0000-0000-0000-0000000000f1'$$, 'denied(23514)');
 reset role; reset request.jwt.claims;
 
+-- --------------------------------------------------------------------------
+-- T33-T38a. THE OWNER, THE ROLE THIS SUITE NEVER EXERCISED (fix round 1,
+-- I-3). Every write path above ran as Manager, Standard User, Read Only, a
+-- Venue Manager, a non-member and a multi-org Admin -- never as Owner. Owner
+-- is a superset role and "the superset behaves like the subset" is precisely
+-- the kind of assumption T22c already proved this suite should not make
+-- without running it.
+--
+-- Fresh fixture rows (id suffix c1), so these six writes do not depend on --
+-- or disturb -- the state T0-T32 already measured, and can run at the very
+-- end of the file with nothing downstream to break.
+-- --------------------------------------------------------------------------
+insert into public.venues (id, organisation_id, owner_user_id, name)
+select '555500b0-0000-0000-0000-0000000000c1', o.id, :'pstd1'::uuid, 'T Owner Venue'
+from public.organisations o where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+
+select crm.try('T33 OWNER creates an artist -- not their own, and it is full-scope not record-scope',
+  format($$insert into public.artists (organisation_id, owner_user_id, name)
+    values (%L,%L,'T Owner-Created Artist')$$, :'alpha_org', :'pstd1'), 'ok(1)');
+select crm.try('T34 OWNER creates an agency',
+  format($$insert into public.agencies (organisation_id, name)
+    values (%L,'T Owner-Created Agency')$$, :'alpha_org'), 'ok(1)');
+select crm.try('T35 OWNER creates a venue',
+  format($$insert into public.venues (organisation_id, owner_user_id, name)
+    values (%L,%L,'T Owner-Created Venue')$$, :'alpha_org', :'pstd1'), 'ok(1)');
+select crm.try('T36 OWNER adds a room to a venue THEY DO NOT OWN',
+  format($$insert into public.venue_rooms (organisation_id, venue_id, name)
+    values (%L,'555500b0-0000-0000-0000-0000000000c1','T Owner Room')$$,
+    :'alpha_org'), 'ok(1)');
+select crm.try('T37 OWNER creates a representation on an artist and agency they do not own',
+  format($$insert into public.artist_representations (organisation_id, artist_id, agency_id)
+    select %L, a.id, ag.id
+      from public.artists a, public.agencies ag
+     where a.name='T Owner-Created Artist' and ag.name='T Owner-Created Agency'$$,
+    :'alpha_org'), 'ok(1)');
+select crm.val('T38 OWNER promotes it primary through the RPC, and gets the count',
+  format($$select public.set_artist_primary_representation(
+      (select id from public.artists where name='T Owner-Created Artist'),
+      (select id from public.artist_representations
+        where artist_id=(select id from public.artists where name='T Owner-Created Artist')),
+      %L)::text$$, :'alpha_org'), '1');
+reset role; reset request.jwt.claims;
+
+-- NEGATIVE CONTROL, so T33-T38 are not "everything succeeds because these
+-- tables have no RLS at all": the SAME Owner, from ALPHA, against BETA's org.
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select crm.try('T38a OWNER NEGATIVE CONTROL: cannot create an artist in BETA''s workspace',
+  format($$insert into public.artists (organisation_id, name)
+    values (%L,'Owner Cannot Write Here')$$, :'beta_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
 -- ===========================================================================
 -- Results
 -- ===========================================================================

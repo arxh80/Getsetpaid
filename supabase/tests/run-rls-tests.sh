@@ -1050,6 +1050,29 @@ t4b_rpc_2arg "omitting p_organisation_id finds NO function -> 404" 404 \
 t4b_rpc "a venue_manager has no manage_artists -> 403" 403 \
   "$T_ARTIST" "\"$T_REP\"" "$VNM"
 
+# OWNER, THE ROLE THIS BLOCK NEVER EXERCISED (fix round 1, I-3). $OWN is
+# fetched at the top of this file for the Foundation suite and nothing in this
+# block used it -- a superset role assumed to behave like the subset roles
+# rather than measured, the same shape of gap T22c already found in the psql
+# suite. Six write paths, six checks, all POSITIVE CONTROLS against ALPHA's
+# own fixtures: the org is not suspended and Owner holds every CRM key, so
+# 200/201 is the expected mechanism throughout.
+t4b_rpc "OWNER sets a primary representation -> 200" 200 \
+  "$T_ARTIST" "\"888800b0-0000-0000-0000-0000000000a1\"" "$OWN"
+p2_code "OWNER creates an artist (POSITIVE CONTROL)" 201 POST "artists" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"Owner HTTP Artist\"}" "$OWN"
+p2_code "OWNER creates an agency (POSITIVE CONTROL)" 201 POST "agencies" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"Owner HTTP Agency\"}" "$OWN"
+p2_code "OWNER creates a venue (POSITIVE CONTROL)" 201 POST "venues" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"Owner HTTP Venue\"}" "$OWN"
+p2_code "OWNER adds a venue_room (POSITIVE CONTROL)" 201 POST "venue_rooms" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"venue_id\":\"$T_VENUE\",\"name\":\"owner http room\"}" \
+  "$OWN"
+p2_code "OWNER adds an artist_representation (POSITIVE CONTROL)" 201 POST \
+  "artist_representations" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"artist_id\":\"$T_ARTIST\",\"agency_id\":\"$T_AGENCY\"}" \
+  "$OWN"
+
 # THE MISMATCHED PAIR: this workspace's organisation_id with THAT workspace's
 # parent id. It is the shape that looks legitimate to a naive check ("the org
 # matches my session"), it is what the composite tenant-scoped foreign keys
