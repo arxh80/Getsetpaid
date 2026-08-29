@@ -880,6 +880,29 @@ Phase 2 ships a column and three allowlists that Phase 3 silently invalidates.
 This is where the privileged surface actually lands, so these must be fixed
 before the first real consumer exists rather than alongside it.
 
+- **`private.custom_field_limit()` has the SAME escape, and it dies in the same
+  migration.** Task 5 (`20260829010500`) mirrors
+  `private.crm_write_organisations()` clause for clause, including reading "no
+  subscription row" as **unlimited** rather than as Free. That is not a
+  copy-paste convenience: Free's `custom_field_limit` is `0`, so reading a
+  missing row as Free would give every organisation in the product zero custom
+  fields on every entity type and ship the feature dead. The TypeScript half
+  (`customFieldLimit()` in `lib/crm/custom-fields.ts`) carries the same branch,
+  and `tests/integration/crm/custom-field-limit-matches-db.test.ts` binds the
+  two. When the escape below is removed, remove it in **three** places — that
+  function, this one, and the TypeScript mirror — in the same change.
+- **Custom field slot cycling is a billing question, not a schema one.** Founder
+  decision Q12 (2026-08-29): a soft-deleted `custom_field_definitions` row frees
+  its tier slot, so an organisation on Starter can remove five definitions and
+  create five more, holding ten definitions' worth of **values** while paying
+  for five slots. Nothing prevents it and nothing should at the schema layer —
+  the alternative is a restriction on removing a field, in a product where
+  removing a field is the operation the soft delete exists to make possible
+  (`20260829010000` closes Task 2's "a mistyped key is permanent" deviation).
+  Phase 7 owns whatever metering answer is right: count removed definitions
+  toward the limit for some window, meter stored values rather than definitions,
+  or decide it does not matter. `private.custom_field_slot_available()` is the
+  one function that changes.
 - **Switch the subscription entitlement gate on: remove the escape and backfill,
   in ONE migration.** `private.crm_write_organisations()` (`20260828140000`) is
   on all 25 CRM write policies and is **deliberately inert**: its
