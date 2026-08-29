@@ -30,8 +30,9 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [canManageMembers, memberships] = await Promise.all([
+  const [canManageMembers, canManageCustomFields, memberships] = await Promise.all([
     hasPermission(org.id, "manage_members"),
+    hasPermission(org.id, "manage_custom_fields"),
     getActiveMemberships(),
   ]);
 
@@ -61,14 +62,37 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
           </p>
         </div>
 
-        {canManageMembers ? (
-          <Link
-            href={`/${org.slug}/members`}
-            className="text-base text-primary underline underline-offset-4 hover:text-ink"
-          >
-            Manage members
-          </Link>
-        ) : null}
+        {/* TWO ADMIN LINKS, EACH ON ITS OWN KEY. `manage_custom_fields` is a
+            different permission from `manage_members` (Owner and Admin hold
+            both; nobody else holds either), so they are checked separately
+            rather than one standing in for the other -- a Manager who could
+            invite people but not define fields would otherwise get a link to a
+            screen that refuses them.
+
+            NOT LINKED FOR EVERYONE WHO CAN READ THE PAGE, which is the one
+            place this page and the settings page differ on purpose: the
+            settings page renders read-only for anyone with view_crm (so a
+            typed URL is not a 404 that implies there are no custom fields),
+            but putting a link to a read-only settings screen in front of every
+            Read Only user would be signposting a dead end. */}
+        <div className="flex flex-wrap items-center gap-4">
+          {canManageMembers ? (
+            <Link
+              href={`/${org.slug}/members`}
+              className="text-base text-primary underline underline-offset-4 hover:text-ink"
+            >
+              Manage members
+            </Link>
+          ) : null}
+          {canManageCustomFields ? (
+            <Link
+              href={`/${org.slug}/settings/custom-fields`}
+              className="text-base text-primary underline underline-offset-4 hover:text-ink"
+            >
+              Custom fields
+            </Link>
+          ) : null}
+        </div>
       </div>
 
       {/* An honest empty state rather than invented dashboard tiles. It names

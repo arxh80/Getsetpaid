@@ -8,6 +8,8 @@ import {
 } from "@/lib/crm/write-access";
 import { loadRoomsForVenue, loadVenue } from "@/lib/crm/queries";
 import { deleteVenueAction, restoreVenueAction } from "@/lib/crm/venues";
+import { loadCustomFieldPanel } from "@/lib/crm/custom-field-queries";
+import { CustomFieldsPanel } from "@/components/crm/custom-fields-panel";
 import { Alert } from "@/components/ui/alert";
 import {
   DeleteRecordForm,
@@ -92,6 +94,30 @@ export default async function VenueDetailPage({
   const blocked = access.canWrite ? null : access.explanation;
   const panelBlocked =
     venue.deletedAt !== null ? DELETED_RECORD_EXPLANATION : blocked;
+  // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
+  // the panel is a Client Component and this is the only place with an
+  // RLS-scoped server client. `includeRemoved` is implied: the loader
+  // returns the values of REMOVED fields too, which is what makes
+  // "removing a field keeps what was filled in" visible rather than merely
+  // true (20260829010000, decision 1).
+  const customFields = await loadCustomFieldPanel(org.id, "venue", venue.id);
+  // A CUSTOM FIELD VALUE IS AN ORDINARY CRM WRITE ON THIS RECORD, so the
+  // key that gates it is the venue's own key --
+  // private.entity_is_manageable() maps this entity type to it in the
+  // database, and lib/crm/custom-fields.ts's PERMISSION_FOR_ENTITY mirrors
+  // that mapping for the sentence. `manage_custom_fields` governs the
+  // DEFINITION and nothing here.
+  //
+  // A DELETED RECORD'S VALUES ARE READ-ONLY, and as of 20260829011000 that
+  // is a policy term (private.entity_is_live() in the three
+  // custom_field_values write policies), not only an application check --
+  // so this is the explanation rather than the control.
+  const customFieldsBlocked =
+    venue.deletedAt !== null
+      ? DELETED_RECORD_EXPLANATION
+      : access.canWrite
+        ? null
+        : access.explanation;
   const basePath = `/${org.slug}/venues`;
 
   return (
@@ -235,6 +261,25 @@ export default async function VenueDetailPage({
         }))}
         disabledReason={panelBlocked}
       />
+
+      {/* A FAILED QUERY IS NOT AN EMPTY PANEL. Rendering nothing here
+          would tell a user with forty custom fields that they have none,
+          which is the one thing the empty state must never do. */}
+      {customFields.outcome === "unavailable" ? (
+        <Alert tone="error">
+          We couldn’t load this record’s custom fields just now. Refresh the
+          page to try again — nothing has been changed.
+        </Alert>
+      ) : (
+        <CustomFieldsPanel
+          orgSlug={org.slug}
+          entityType="venue"
+          entityId={venue.id}
+          live={customFields.panel.live}
+          removed={customFields.panel.removed}
+          disabledReason={customFieldsBlocked}
+        />
+      )}
 
       {/* Task 7's activity timeline goes here. */}
 
