@@ -171,8 +171,19 @@ export function stateFor(
  * with a 404 that this helper would read as `error`, and therefore as "gone",
  * and therefore as a refusal the user cannot act on. `contacts` is here
  * because artist_representations names a contact as the individual agent.
+ *
+ * `companies` was added by Task 5: custom field values hang off all FIVE
+ * entity types, and companies is the one this union did not already have --
+ * Task 4 kept its company checks in lib/crm/contacts.ts's own copy of
+ * liveInOrg rather than in this shared one. Adding a member is additive; every
+ * existing call site is unchanged.
  */
-export type ParentTable = "artists" | "agencies" | "venues" | "contacts";
+export type ParentTable =
+  | "artists"
+  | "agencies"
+  | "venues"
+  | "contacts"
+  | "companies";
 
 /**
  * Is this a LIVE row of THIS workspace, reachable by THIS caller?

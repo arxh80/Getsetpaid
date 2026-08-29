@@ -547,3 +547,185 @@ describe("I-2: a refused write does not throw away what was typed", () => {
     expect(body).toContain("if (!artistId) return { error: FAILED_MESSAGE };");
   });
 });
+
+// ===========================================================================
+// TASK 5 -- the custom fields engine
+// ===========================================================================
+
+describe("PERMISSION_FOR_ENTITY mirrors private.entity_is_manageable()", () => {
+  // A FIFTH COPY OF A MAPPING THAT LIVES IN SQL, and this is what binds it.
+  // The SQL function is the ENFORCEMENT -- every custom field value write is
+  // decided by it through the three write policies -- while the TypeScript
+  // table only decides which sentence a blocked user reads and whether the
+  // panel renders controls. Getting it wrong here cannot open a write; it can
+  // show the wrong explanation, or hide a control from somebody who could have
+  // used it, which is the "hidden loses the explanation" mistake
+  // components/crm/write-gate.tsx exists to avoid.
+  //
+  // The live-catalogue half (every entity type HAS a branch at all) is
+  // tests/integration/crm/custom-field-entity-types-match-db.test.ts. This is
+  // the half that checks WHICH KEY each branch names, which is a fact about
+  // the source rather than about the deployed shape.
+  const helpers = read(
+    "supabase/migrations/20260828120500_crm_policy_helpers.sql",
+  );
+  const start = helpers.indexOf(
+    "create or replace function private.entity_is_manageable(",
+  );
+  const body = helpers.slice(
+    start,
+    helpers.indexOf("comment on function private.entity_is_manageable"),
+  );
+
+  it("finds the function body at all, so this cannot pass vacuously", () => {
+    expect(start).toBeGreaterThan(-1);
+    expect(body).toContain("when 'venue' then");
+  });
+
+  const EXPECTED: Record<string, string> = {
+    company: "manage_contacts",
+    contact: "manage_contacts",
+    agency: "manage_contacts",
+    artist: "manage_artists",
+    venue: "manage_venues",
+  };
+
+  for (const [entity, key] of Object.entries(EXPECTED)) {
+    it(`'${entity}' resolves to ${key} in SQL and in TypeScript`, () => {
+      // The branch text between this `when` and the next one.
+      const from = body.indexOf(`when '${entity}' then`);
+      expect(from, `no '${entity}' branch`).toBeGreaterThan(-1);
+      const nextWhen = body.indexOf("    when '", from + 10);
+      const branch = body.slice(from, nextWhen === -1 ? undefined : nextWhen);
+      expect(branch).toContain(`permitted_organisations('${key}')`);
+
+      const fields = read("lib/crm/custom-fields.ts");
+      const table = fields.slice(
+        fields.indexOf("export const PERMISSION_FOR_ENTITY"),
+        fields.indexOf("export const ENTITY_PATH_SEGMENT"),
+      );
+      expect(table).toContain(`${entity}: "${key}"`);
+    });
+  }
+});
+
+describe("the custom fields panel carries the checkbox-group markers", () => {
+  // Same defect as I-2, twice over: `multi_select` is a checkbox group and
+  // `boolean` is a group of one, and an unticked box submits nothing -- so
+  // without the marker an emptied field is indistinguishable from a form that
+  // never had it, and a failed submit re-ticks what the user just cleared. No
+  // assertion on a pure function can see an <input> deleted from a .tsx file.
+  const panel = read("components/crm/custom-fields-panel.tsx");
+
+  it("renders the hidden marker in BOTH group controls", () => {
+    expect(panel.match(/name=\{groupMarkerName\(name\)\}/g)).toHaveLength(2);
+    expect(panel).toContain(`type="hidden"`);
+  });
+
+  it("derives what is ticked through selectedInGroup, in both", () => {
+    expect(panel.match(/selectedInGroup\(/g)).toHaveLength(2);
+  });
+
+  it("renders a url value through cell.href, never the raw column", () => {
+    // The render-side half of the protocol rule. `cell.href` is safeHref()'s
+    // answer; a stored javascript: arrives as null and is rendered as inert
+    // text.
+    expect(panel).toContain("href={cell.href}");
+    expect(panel).not.toContain("href={cell.display}");
+  });
+});
+
+describe("the definition writes carry the entity type as well as the id", () => {
+  // A forged `fieldId` naming a definition on a DIFFERENT entity type in the
+  // same workspace is permitted by the policy -- it asks whether the caller
+  // may write the row, not whether the row is the one this tab is about. The
+  // extra `.eq` is what closes it, and it is one line that is easy to drop
+  // while copying. Same rule the child writes in artists.ts/venues.ts follow.
+  const actions = read("lib/crm/custom-field-actions.ts");
+
+  function commitWrites(rawSource: string): string[] {
+    const source = rawSource
+      .split("\n")
+      .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+      .join("\n");
+    const needle = "commitWrite(";
+    const out: string[] = [];
+    let from = 0;
+    for (;;) {
+      const at = source.indexOf(needle, from);
+      if (at === -1) return out;
+      let depth = 0;
+      let i = at + needle.length - 1;
+      for (; i < source.length; i += 1) {
+        if (source[i] === "(") depth += 1;
+        else if (source[i] === ")") {
+          depth -= 1;
+          if (depth === 0) break;
+        }
+      }
+      out.push(source.slice(at + needle.length, i));
+      from = i;
+    }
+  }
+
+  it("every custom_field_definitions UPDATE scopes org, entity type and id", () => {
+    const writes = commitWrites(actions).filter((call) =>
+      call.includes(`.from("custom_field_definitions")`),
+    );
+    // update, remove (soft delete) and restore.
+    expect(writes).toHaveLength(3);
+    for (const call of writes) {
+      expect(call).toContain(`.eq("organisation_id", org.id)`);
+      expect(call).toContain(`.eq("entity_type", entityType)`);
+      expect(call).toContain(`.eq("id", fieldId)`);
+      expect(call).toContain(`count: "exact"`);
+    }
+  });
+
+  it("the create INSERT never takes the organisation from the form", () => {
+    const body = actions.slice(
+      actions.indexOf("export async function createCustomFieldAction("),
+      actions.indexOf("export async function updateCustomFieldAction("),
+    );
+    expect(body).toContain("organisation_id: org.id");
+    expect(body).not.toContain('field(formData, "organisationId")');
+  });
+
+  it("updateCustomFieldAction never writes `key` -- it is immutable after creation", () => {
+    const body = actions.slice(
+      actions.indexOf("export async function updateCustomFieldAction("),
+      actions.indexOf("export async function deleteCustomFieldAction("),
+    );
+    expect(body).not.toContain("key:");
+  });
+});
+
+describe("the values RPC is called with the workspace, and every refusal echoes", () => {
+  const actions = read("lib/crm/custom-field-actions.ts");
+
+  it("passes p_organisation_id from the resolved org, never from the form", () => {
+    // 20260828234500: PostgREST resolves an RPC by argument name, so there is
+    // no 3-argument overload to fall back to -- omitting the key is a 404
+    // rather than an unscoped write, and a 404 rendered as "something went
+    // wrong" is still a defect.
+    expect(actions).toContain(`supabase.rpc("set_custom_field_values"`);
+    expect(actions).toContain("p_organisation_id: org.id");
+  });
+
+  it("checks the parent record is live through the shared liveInOrg", () => {
+    const body = actions.slice(
+      actions.indexOf("export async function saveCustomFieldValuesAction("),
+    );
+    expect(body).toContain("liveInOrg(");
+    expect(body).toContain("refusedEndState(");
+  });
+
+  it("every missing-id and validation refusal carries the submitted values", () => {
+    // React 19 resets a <form action> once the action resolves, so a refusal
+    // with no `values` throws away what the user typed. Every `return` that
+    // is not a success in this file has to carry them.
+    const bare = actions.match(/return \{ error: FAILED_MESSAGE \};/g);
+    expect(bare, "a refusal with no `values` discards the user's work").toBeNull();
+    expect(actions).not.toContain("return { error: REFUSED_MESSAGE };");
+  });
+});
