@@ -1,0 +1,98 @@
+-- Phase 2 Task 7, fix round 1 -- I-1: the branch-pruning claim in
+-- 20260829040000's header is false for three of that file's own branches.
+--
+-- NO BEHAVIOUR CHANGES HERE. One `comment on view`. 20260829040000 is applied
+-- and is not edited; this is the correction of record, in the same shape
+-- 20260828170000 and 20260828200000 used for the same class of defect.
+--
+-- ===========================================================================
+-- WHAT IT SAYS
+-- ===========================================================================
+--   Every branch emits its `subject_type` as a LITERAL. A record-scoped read
+--   sends `subject_type = 'contact'`, and the planner proves the other
+--   branches false at plan time and never executes them -- an append over 4
+--   branches rather than 14.
+--
+-- ===========================================================================
+-- WHAT IS TRUE
+-- ===========================================================================
+-- THREE BRANCHES PROJECT A COLUMN, NOT A LITERAL:
+--
+--     20260829040000:238   merge_absorbed    m.entity_type
+--     20260829040000:269   merge_into        m.entity_type
+--     20260829040000:438   custom_field_set  cfv.entity_type
+--
+-- A qual on a column cannot be constant-folded, so those three are NEVER
+-- eliminated at plan time. They execute on every read of every entity type.
+-- The counts are wrong too: the view is 9 top-level `union all` branches, the
+-- first of which is a CTE unioning the 5 entity tables, so the planner
+-- considers 13 branch scans -- not 14 -- and a `subject_type='contact'` read
+-- executes 5 of them, not 4.
+--
+-- SO PRUNING IS PARTIAL, and this is the honest statement of it:
+--
+--   * 10 of the 13 emit a literal `subject_type` (the 5 entity tables, both
+--     directions of contact_companies, both of artist_representations, and
+--     venue_rooms). Those ARE eliminated at plan time when they do not match.
+--   * 3 of the 13 are polymorphic and are NOT. They stay cheap for a different
+--     reason: `entity_type` is the LEADING column of merges_entity_winner_idx,
+--     merges_entity_loser_idx and custom_field_values_entity_idx, so a
+--     non-matching type is an index seek that finds nothing rather than a
+--     filter over rows.
+--
+-- ===========================================================================
+-- MEASURED, ON THE SAME FIXTURE THE TASK 7 REPORT USES
+-- ===========================================================================
+-- 40,800 contacts / 20,000 companies / 20,800 links / 20,800 merges / 20,000
+-- custom field values, VACUUM ANALYZEd, as a real `authenticated` role. The
+-- Append's children, named from the plan rather than counted from the source:
+--
+--   subject_type='contact'   5 executed: contacts (CTE), merges winner,
+--                            merges loser, contact_companies, custom_field_values
+--   subject_type='venue'     5 executed: venues (CTE), merges winner,
+--                            merges loser, venue_rooms, custom_field_values
+--
+-- Both merges branches and the custom-field branch are in BOTH lists. That is
+-- the finding: they are not pruned, and the report's own pasted plan showed it.
+--
+-- ===========================================================================
+-- WHY THE SHAPE IS NOT CHANGED -- MEASURED, NOT ASSUMED
+-- ===========================================================================
+-- The alternative was to make the original claim true: split the three
+-- polymorphic branches five ways so every branch emits a literal. That was
+-- built as a scratch view (21 top-level branches, 25 branch scans) and
+-- measured against this one, 7 samples each, warm cache:
+--
+--                          executed Append children   exec median   plan median
+--   ordinary contact
+--     shipped                              5            11.724 ms      9.166 ms
+--     split five ways                      5            11.547 ms      7.539 ms
+--   venue, no activity
+--     shipped                              5             0.526 ms      4.396 ms
+--     split five ways                      5             1.151 ms      5.970 ms
+--
+-- THE EXECUTED BRANCH LIST IS IDENTICAL -- same five relations, same index
+-- scans, in all three cases tested. Splitting buys nothing, because the four
+-- non-matching literal variants prune back to exactly the one branch the
+-- shipped view already reaches directly; the only difference is WHEN the
+-- entity_type predicate resolves (plan time vs a leading-column index seek).
+-- It is 2.2x SLOWER on the venue read (0.526 -> 1.151 ms), because 12 extra
+-- branches still have to be planned before they are thrown away. Row-for-row
+-- equivalence was checked both directions over 810 rows: 0/0 differences.
+--
+-- So: keep the shape, correct the record.
+--
+-- ===========================================================================
+-- WHAT A LATER PHASE HAS TO TAKE FROM THIS
+-- ===========================================================================
+-- A polymorphic source keyed on an `entity_type` column is FINE, and it is
+-- what `merges` and `custom_field_values` already do. What it is not is free:
+-- your branch executes on every read of every OTHER entity type too, so it
+-- needs an index whose LEADING column is that `entity_type`. A branch with a
+-- literal subject_type costs nothing on a non-matching read; a polymorphic one
+-- costs an index seek. Neither is a reason to prefer one over the other -- the
+-- shape of your source decides that -- but only one of them can be omitted
+-- from the index and still be cheap.
+
+comment on view public.activity_events is
+  'Query-time aggregation of the CRM tables into one uniform event row, for the shared activity timeline. security_invoker: every branch reads its base table under the CALLER''S policies, so this view grants nothing -- a row is here exactly when the caller could already select it from its source. `id` is a synthetic md5-derived uuid (kind:subject_type:subject_id:source row id): deterministic, unique across branches, and a real uuid so lib/list/''s [value, id, sort] cursor can carry it. audit_events is deliberately NOT a source (its only SELECT policy is platform superuser), so only `merges` carries an actor. Phase 3-5 add sources with `create or replace view`, which enforces that the column list does not change. BRANCH PRUNING IS PARTIAL, and 20260829040000''s header overstates it (corrected here, fix round 1 I-1): the view is 9 top-level branches, the first a CTE unioning the 5 entity tables, so the planner considers 13 branch scans. TEN emit a literal subject_type and are eliminated at plan time when they do not match. THREE project a column instead -- merge_absorbed and merge_into (m.entity_type), custom_field_set (cfv.entity_type) -- and are NEVER eliminated at plan time; they execute on every read of every entity type and stay cheap only because entity_type is the leading column of merges_entity_winner_idx, merges_entity_loser_idx and custom_field_values_entity_idx. Measured: subject_type=''contact'' executes 5 of the 13, subject_type=''venue'' also 5, and both merges branches plus the custom-field branch are in both lists. Splitting the three five ways so every branch carries a literal was built and measured: the executed branch list is identical and the venue read is 2.2x slower (0.526 -> 1.151 ms), because the extra branches are still planned. A polymorphic source is fine; it just needs a leading-column (entity_type, ...) index, because it runs on every entity type''s reads.';

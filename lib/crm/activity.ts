@@ -28,9 +28,15 @@ import "server-only";
 //      writes. `detail` is deliberately `Record<string, unknown>` here: one
 //      flat interface covering every source would grow a field per phase and
 //      every renderer would have to defend against the other phases' nulls.
-//   4. AN INDEX ON THE SOURCE, covering `(subject key)` at least. Every branch
-//      shipped today reaches one that already existed; see the migration
-//      header for the list and the Task 7 report for the plans.
+//   4. AN INDEX ON THE SOURCE, covering the subject key -- and if your branch
+//      is POLYMORPHIC (keyed on an `entity_type` column rather than emitting a
+//      literal subject_type, as `merges` and `custom_field_values` are), that
+//      index must LEAD on `entity_type`. A literal branch is eliminated at
+//      plan time on every read of a different entity type; a polymorphic one
+//      is not, and executes on all of them. Measured, and both are fine: see
+//      20260829050000, which corrects 20260829040000's header on this --
+//      pruning is PARTIAL, 10 of the view's 13 branch scans, not all of them.
+//      Every branch shipped today reaches an index that already existed.
 //
 // WHAT THE CONTRACT DOES NOT PROMISE, and a Phase 4 source must not assume:
 //   * NOT O(page). The union has no covering index, so each page SORTS every
