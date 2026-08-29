@@ -365,18 +365,25 @@ select invariants.val('E3  ...and contact_companies cascaded away with the conta
 
 -- The list is written out once, as a VALUES set, so that adding a Phase 3 table
 -- without adding it here is visible rather than silent.
+-- THIRTEEN SINCE PHASE 2 TASK 6. merge_candidates is the review queue, and it
+-- is in this list rather than beside it because D4 and D5 are the assertions
+-- that would have caught its two most likely mistakes: a FOR ALL policy, and a
+-- grant with no policy behind it (or, in its case, the reverse -- it has no
+-- INSERT grant and must therefore have no INSERT policy, because
+-- public.screen_for_duplicates() is its only writer).
 create view invariants.phase2_tables as
   select unnest(array[
     'companies','contacts','contact_companies','agencies','artists',
     'artist_representations','artist_fee_history','venues','venue_rooms',
-    'custom_field_definitions','custom_field_values','merges'
+    'custom_field_definitions','custom_field_values','merges',
+    'merge_candidates'
   ]) as relname;
 
-select invariants.val('D1  all 12 Phase 2 tables exist',
+select invariants.val('D1  all 13 Phase 2 tables exist',
   $$select count(*)::text from invariants.phase2_tables t
      join pg_catalog.pg_class c on c.relname=t.relname
       and c.relnamespace='public'::regnamespace and c.relkind='r'$$,
-  '12');
+  '13');
 
 -- RLS on EVERY table in public, not just the twelve: the cheapest possible
 -- guard against the next entity table shipping without it.
@@ -406,7 +413,7 @@ select invariants.val('D3  every FK in public has its leading column indexed',
 -- WITH CHECK for INSERT, which is how a read predicate ends up governing a
 -- write -- CLAUDE.md § Non-negotiable rules and SECURITY.md § 2 both require
 -- separate policies per operation.
-select invariants.val('D4  all 12 tables have policies, and none is FOR ALL',
+select invariants.val('D4  all 13 tables have policies, and none is FOR ALL',
   $$select count(*)::text from (
       select c.relname,
              count(p.oid)                                  as npol,
@@ -429,7 +436,7 @@ select invariants.val('D4  all 12 tables have policies, and none is FOR ALL',
 -- GRANTS AND POLICIES ARE INDEPENDENT CONTROLS (SECURITY.md § 2): the grant
 -- decides whether the table is reachable at all, the policy decides which rows.
 -- A mismatch is not cosmetic in either direction.
-select invariants.val('D5  every grant on the 12 is justified by a policy, and vice versa',
+select invariants.val('D5  every grant on the 13 is justified by a policy, and vice versa',
   $$with granted as (
       select distinct c.relname, g.privilege_type::text as op
         from invariants.phase2_tables t
@@ -499,13 +506,13 @@ select invariants.val('D9  custom_field_values'' definition FK spans 3 columns',
 -- Every Phase 2 table must have a row -> organisation path. CLAUDE.md
 -- § Tenancy model makes this a requirement, and every RLS policy Task 2 writes
 -- depends on it.
-select invariants.val('D10 all 12 tables carry a NOT NULL organisation_id',
+select invariants.val('D10 all 13 tables carry a NOT NULL organisation_id',
   $$select count(*)::text from invariants.phase2_tables t
      join pg_catalog.pg_class c on c.relname=t.relname
       and c.relnamespace='public'::regnamespace
      join pg_catalog.pg_attribute a on a.attrelid=c.oid and a.attname='organisation_id'
      where a.attnotnull$$,
-  '12');
+  '13');
 
 -- ---------------------------------------------------------------------------
 -- Teardown. Cascades through every fixture row; rls_foundation.sql runs next

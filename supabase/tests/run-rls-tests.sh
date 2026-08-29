@@ -55,7 +55,8 @@ dirty=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc 
      union all select count(*) from public.companies
      union all select count(*) from public.venues
      union all select count(*) from public.artists
-     union all select count(*) from public.merges) s" | tr -d '[:space:]')
+     union all select count(*) from public.merges
+     union all select count(*) from public.merge_candidates) s" | tr -d '[:space:]')
 if [ "${dirty:-0}" != "0" ]; then
   echo "REFUSING TO RUN: public schema is not empty ($dirty tenant rows present)." >&2
   echo "  These suites are not idempotent -- they build fixtures and do not tear" >&2
@@ -1478,6 +1479,167 @@ fi
 p2_sub "update public.organisations set deleted_at = null where id='$ALPHA_ORG';"
 cf_rpc "REINSTATED: the same save applies again (positive control)" 200 \
   "\"$ALPHA_ORG\"" company "$H_COMPANY" "{\"$CF_TEXT\":\"reinstated\"}" "$MGR"
+
+
+# ----------------------------------------------------------------------------
+# DEDUP AND MERGE AT THE API SURFACE (Task 6)
+#
+# The psql suite proves the policies and the function bodies. What only HTTP can
+# prove is which of these functions PostgREST publishes: private.duplicate_probe
+# is the one that returns rows outside the caller's record scope, and schema
+# placement is the entire control on it -- the same defect class the block at
+# the top of this section exists for.
+#
+# Its own organisation, because the psql § W fixtures have already been merged
+# and dismissed by the time this runs, and a merge is not idempotent.
+# ----------------------------------------------------------------------------
+echo
+echo "=== Dedup and merge at the API surface (Task 6) ==="
+
+MERGE_ORG="b0b00000-0000-0000-0000-00000000000b"
+HM_W="4d0000ff-0000-0000-0000-000000000001"   # older -> the winner
+HM_L="4d0000ff-0000-0000-0000-000000000002"   # newer -> the loser
+HM_N="4d0000ff-0000-0000-0000-000000000003"   # a fuzzy-name match, pstd1's
+
+p2_sub "insert into public.organisations (id, name, slug)
+        values ('$MERGE_ORG','Org HTTP Merge','org-http-merge')
+        on conflict (id) do nothing;
+        insert into public.organisation_memberships
+          (organisation_id, user_id, role, status, joined_at)
+        values ('$MERGE_ORG','${P2ID[pmanager]}','manager','active',now()),
+               ('$MERGE_ORG','${P2ID[powner]}','owner','active',now()),
+               ('$MERGE_ORG','${P2ID[pstd1]}','standard_user','active',now()),
+               ('$MERGE_ORG','${P2ID[pro]}','read_only','active',now())
+        on conflict do nothing;
+        insert into public.contacts
+          (id, organisation_id, owner_user_id, name, email, created_at)
+        values ('$HM_W','$MERGE_ORG','${P2ID[pmanager]}','Ines Duarte',
+                'INES@http.test', now() - interval '2 days'),
+               ('$HM_L','$MERGE_ORG','${P2ID[pmanager]}','Ines Duarte',
+                'ines@http.test', now()),
+               ('$HM_N','$MERGE_ORG','${P2ID[pstd1]}','Ines Duart', null, now())
+        on conflict (id) do nothing;"
+
+# SCHEMA PLACEMENT. The unscoped probe is the function that would hand a
+# record-scoped user every row in their organisation; it lives in `private` and
+# has no grant, and this is the layer where that is visible.
+probe "private helper duplicate_probe not an RPC"     404 "rpc/duplicate_probe"
+probe "private helper duplicate_matches not an RPC"   404 "rpc/duplicate_matches"
+probe "private helper record_merge not an RPC"        404 "rpc/record_merge"
+probe "private helper dedup_entity_table not an RPC"  404 "rpc/dedup_entity_table"
+
+# The two that ARE endpoints, and the no-overload rule: PostgREST resolves by
+# argument name, so a call missing p_organisation_id must find NO function
+# rather than an unscoped variant.
+p2_code "screen_for_duplicates IS routable and screens"  200 POST "rpc/screen_for_duplicates" \
+        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_entity_id\":\"$HM_L\"}" "$MGR"
+p2_code "screen_for_duplicates without p_organisation_id finds NO function" 404 POST \
+        "rpc/screen_for_duplicates" \
+        "{\"p_entity_type\":\"contact\",\"p_entity_id\":\"$HM_L\"}" "$MGR"
+p2_code "merge_records without p_organisation_id finds NO function" 404 POST \
+        "rpc/merge_records" \
+        "{\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$MGR"
+
+# The queue is readable over HTTP and NOT writable: no INSERT grant, no INSERT
+# policy, one definer writer.
+hm_q=$(curl -s "$API/rest/v1/merge_candidates?select=id,reason&organisation_id=eq.$MERGE_ORG" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $MGR" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+if [ "$hm_q" = "2" ]; then
+  printf '  PASS  %-58s %s\n' "screening flagged both pairs into the queue" "$hm_q"
+else
+  printf '  FAIL  %-58s got %s want 2\n' "screening flagged both pairs into the queue" "$hm_q"
+  api_fails=$((api_fails+1))
+fi
+p2_code "manager POSTs a merge_candidates row (no INSERT grant)" 403 POST "merge_candidates" \
+        "{\"organisation_id\":\"$MERGE_ORG\",\"entity_type\":\"contact\",\"keep_id\":\"$HM_W\",\"duplicate_id\":\"$HM_L\",\"label\":\"x\",\"reason\":\"fuzzy_name\"}" "$MGR"
+p2_code "manager POSTs a merges row (no INSERT grant since Task 6)" 403 POST "merges" \
+        "{\"organisation_id\":\"$MERGE_ORG\",\"entity_type\":\"contact\",\"winner_id\":\"$HM_W\",\"loser_id\":\"$HM_L\",\"merged_by\":\"${P2ID[pmanager]}\"}" "$MGR"
+
+# A 204 IS NOT A SAVE. read_only holds no merge_records, so the UPDATE policy
+# filters the row out and PostgREST answers 204 with a row count of ZERO -- the
+# same status a real dismissal returns. Only Content-Range separates them, which
+# is why lib/crm/write.ts sends Prefer: count=exact on every mutation.
+hm_range() { # name want_range method path body token
+  local name="$1" want="$2" method="$3" path="$4" body="$5" tok="$6" range
+  range=$(curl -s -D - -o /dev/null -X "$method" "$API/rest/v1/$path" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+    -H "Content-Type: application/json" -H "Prefer: count=exact" \
+    ${body:+-d "$body"} | tr -d '\r' | awk 'tolower($1)=="content-range:"{print $2}')
+  if [ "$range" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$range"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "${range:-none}" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+HM_CAND=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select id from public.merge_candidates
+    where organisation_id='$MERGE_ORG' and duplicate_id='$HM_N'" | tr -d '[:space:]')
+
+hm_range "read_only dismisses a candidate: 204 carrying ZERO" "*/0" PATCH \
+  "merge_candidates?id=eq.$HM_CAND" \
+  "{\"deleted_at\":\"2026-08-29T00:00:00Z\",\"resolution\":\"dismissed\",\"resolved_by\":\"${P2ID[pro]}\"}" "$RO"
+# `0-0/1`, not `*/1`: a PATCH reports a real range and a DELETE reports `*`.
+# That asymmetry is recorded in lib/crm/write.ts's header as the trap in reading
+# the range rather than the count, and this is it in the suite.
+hm_range "manager dismisses the same candidate: 204 carrying ONE" "0-0/1" PATCH \
+  "merge_candidates?id=eq.$HM_CAND" \
+  "{\"deleted_at\":\"2026-08-29T00:00:00Z\",\"resolution\":\"dismissed\",\"resolved_by\":\"${P2ID[pmanager]}\"}" "$MGR"
+
+# THE MERGE, over HTTP, by every role that matters.
+p2_code "read_only merges (no merge_records)"           403 POST "rpc/merge_records" \
+        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$RO"
+p2_code "standard_user merges (no merge_records)"       403 POST "rpc/merge_records" \
+        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$STD"
+# $OWN2, NOT $OWN. Owner is an MFA-required role, so an aal1 owner session holds
+# no merge_records at all -- the refusal would be the MFA gate rather than
+# anything this task built, and the check would pass for the wrong reason.
+p2_code "aal1 OWNER merges -> refused by the MFA gate, not by this task" 403 POST \
+        "rpc/merge_records" \
+        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$OWN"
+# TENANT BREAKOUT, over HTTP: the request an attacker actually sends.
+p2_code "TENANT BREAKOUT: merging an ALPHA record from org-http-merge" 403 POST \
+        "rpc/merge_records" \
+        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"22220000-0000-0000-0000-000000000002\"}" "$MGR"
+p2_code "TENANT BREAKOUT: ...and tagging it with the other org's id" 403 POST \
+        "rpc/merge_records" \
+        "{\"p_organisation_id\":\"$ALPHA_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$MGR"
+
+# A SUSPENDED WORKSPACE IS READ-ONLY (Q6). The queue stays readable; the merge
+# and the screening do not. Asserted as the MECHANISM -- an RPC that raises is a
+# loud 403, not the silent 204 an UPDATE gives.
+p2_sub "update public.organisations set deleted_at = now() where id='$MERGE_ORG';"
+p2_code "SUSPENDED: merge_records refused -> 403, not a silent 200" 403 POST \
+        "rpc/merge_records" \
+        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$MGR"
+p2_code "SUSPENDED: screen_for_duplicates refused -> 403" 403 POST \
+        "rpc/screen_for_duplicates" \
+        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_entity_id\":\"$HM_L\"}" "$MGR"
+hm_susp=$(curl -s "$API/rest/v1/merge_candidates?select=id&organisation_id=eq.$MERGE_ORG" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $MGR" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+if [ "$hm_susp" -ge 1 ] 2>/dev/null; then
+  printf '  PASS  %-58s %s\n' "SUSPENDED: the review queue is still READABLE" "$hm_susp"
+else
+  printf '  FAIL  %-58s got %s want >=1\n' "SUSPENDED: the review queue is still READABLE" "$hm_susp"
+  api_fails=$((api_fails+1))
+fi
+p2_sub "update public.organisations set deleted_at = null where id='$MERGE_ORG';"
+
+# THE POSITIVE CONTROL, last, because it destroys the fixture. Without it every
+# 403 above is satisfied by a function that refuses everybody.
+p2_code "REINSTATED: the manager's merge applies (positive control)" 200 POST \
+        "rpc/merge_records" \
+        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$MGR"
+hm_after=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select (select count(*) from public.contacts where id='$HM_L' and deleted_at is not null)
+        ||'/'|| (select count(*) from public.merges where organisation_id='$MERGE_ORG')
+        ||'/'|| (select count(*) from public.merge_candidates
+                  where organisation_id='$MERGE_ORG' and deleted_at is null)" | tr -d '[:space:]')
+if [ "$hm_after" = "1/1/0" ]; then
+  printf '  PASS  %-58s %s\n' "...loser soft-deleted, merge recorded, queue cleared" "$hm_after"
+else
+  printf '  FAIL  %-58s got %s want 1/1/0\n' "...loser soft-deleted, merge recorded, queue cleared" "$hm_after"
+  api_fails=$((api_fails+1))
+fi
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

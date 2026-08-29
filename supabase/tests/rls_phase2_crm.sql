@@ -90,6 +90,20 @@ returns void language sql security definer set search_path = '' as $$
   values (p_label, p_expected, p_actual, p_expected is not distinct from p_actual);
 $$;
 
+-- SCRATCH STORAGE FOR ASSERTIONS THAT COMPARE TWO MOMENTS. § W records the
+-- dedup search's answer while an organisation is LIVE and compares it against
+-- the answer while the same organisation is SUSPENDED -- the Q6 assertion
+-- FOLLOW-UPS asks for ("the same answer permitted_organisations() gives, not a
+-- hardcoded 0"). SECURITY DEFINER for the same reason crm.record is: the note
+-- is taken while the session is switched to `authenticated`.
+create table crm.notes (k text primary key, v text);
+
+create function crm.note(p_k text, p_v text)
+returns void language sql security definer set search_path = '' as $$
+  insert into crm.notes (k, v) values (p_k, p_v)
+  on conflict (k) do update set v = excluded.v;
+$$;
+
 create function crm.try(p_label text, p_sql text, p_expected text)
 returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
 declare v_rows bigint; v_actual text;
@@ -119,6 +133,8 @@ end $$;
 
 grant usage on schema crm to authenticated, anon, service_role;
 grant execute on function crm.record(text,text,text) to authenticated, anon, service_role;
+grant execute on function crm.note(text,text)         to authenticated, anon, service_role;
+grant select  on crm.notes                            to authenticated, anon, service_role;
 grant execute on function crm.try(text,text,text)    to authenticated, anon, service_role;
 grant execute on function crm.val(text,text,text)    to authenticated, anon, service_role;
 
@@ -291,6 +307,20 @@ from public.organisations o, (values
 -- values, so an org-wide read policy here would defeat record scope.
 insert into public.contacts (id, organisation_id, owner_user_id, name, deleted_at)
 select '22220000-0000-0000-0000-000000000005', o.id, :'pmanager', 'Merged Loser', now()
+from public.organisations o where o.slug='org-alpha';
+
+-- One OPEN review-queue row, so the Q6 read assertions (P1h) and the grant
+-- shape assertions have something real to read. Planted directly, as postgres:
+-- public.merge_candidates has no INSERT grant and no INSERT policy by design --
+-- public.screen_for_duplicates() is the only writer -- and § W drives that
+-- function properly on its own fixtures.
+insert into public.merge_candidates
+  (id, organisation_id, entity_type, keep_id, duplicate_id,
+   keep_owner_user_id, duplicate_owner_user_id, label, reason, similarity)
+select 'cdcd0000-0000-0000-0000-000000000001', o.id, 'contact',
+       '22220000-0000-0000-0000-000000000002',
+       '22220000-0000-0000-0000-000000000003',
+       :'pmanager', :'pmanager', 'Fixture Duplicate', 'fuzzy_name', 0.8
 from public.organisations o where o.slug='org-alpha';
 
 insert into public.merges
@@ -509,11 +539,22 @@ select crm.try('C6  booker INSERTs an artist_representation (via manage_artists)
   $$insert into public.artist_representations (organisation_id, artist_id, agency_id)
     select id,'44440000-0000-0000-0000-000000000002','33330000-0000-0000-0000-000000000002'
     from public.organisations where slug='org-alpha'$$, 'ok(1)');
-select crm.try('C7  booker INSERTs a merges row (matrix: NO merge_records)',
+-- PHASE 2 TASK 6 MOVED THE CONTROL THIS ASSERTS. public.merges no longer has
+-- an INSERT grant or an INSERT policy for `authenticated` -- writes go through
+-- private.record_merge(), which restates the dropped policy term for term. So
+-- C7 still passes and now proves the GRANT rather than the policy, which is a
+-- weaker statement; C7b is the one that still tests the authorisation, and
+-- both are kept because "no grant" and "the body refuses" are two controls.
+select crm.try('C7  booker INSERTs a merges row directly (no grant since Task 6)',
   $$insert into public.merges (organisation_id, entity_type, winner_id, loser_id, merged_by)
     select id,'artist','44440000-0000-0000-0000-000000000001',
            '44440000-0000-0000-0000-000000000002', (select auth.uid())
     from public.organisations where slug='org-alpha'$$, 'denied(42501)');
+select crm.try('C7b booker through record_merge (matrix: NO merge_records)',
+  format($$select private.record_merge(%L,'artist',
+      '44440000-0000-0000-0000-000000000001',
+      '44440000-0000-0000-0000-000000000002', null, null, '{}'::jsonb, '{}'::jsonb)$$,
+    (select id from public.organisations where slug='org-alpha')), 'denied(42501)');
 reset role; reset request.jwt.claims;
 
 -- ---- Venue Manager: the mirror image -------------------------------------
@@ -576,11 +617,19 @@ select crm.try('C19 manager EDITs a custom field definition (matrix: NO)',
     where id='aaaa0000-0000-0000-0000-000000000002'$$, 'ok(0)');
 select crm.val('C20 manager still READS definitions (view_crm)',
   $$select count(*)::text from public.custom_field_definitions$$, '3');
-select crm.try('C21 manager INSERTs a merges row (matrix: yes)',
+-- Through the function, because the table grant is gone (Task 6). The owner
+-- columns are passed NULL deliberately: that is what a merges row written
+-- before Task 6 looks like, and Q5b asserts what such a row is visible to.
+select crm.try('C21 manager records a merge (matrix: yes)',
+  format($$select private.record_merge(%L,'contact',
+      '22220000-0000-0000-0000-000000000002',
+      '22220000-0000-0000-0000-000000000003', null, null, '{}'::jsonb, '{}'::jsonb)$$,
+    (select id from public.organisations where slug='org-alpha')), 'ok(1)');
+select crm.try('C21b ...and the raw INSERT is refused even for that manager',
   $$insert into public.merges (organisation_id, entity_type, winner_id, loser_id, merged_by)
     select id,'contact','22220000-0000-0000-0000-000000000002',
            '22220000-0000-0000-0000-000000000003',(select auth.uid())
-    from public.organisations where slug='org-alpha'$$, 'ok(1)');
+    from public.organisations where slug='org-alpha'$$, 'denied(42501)');
 reset role; reset request.jwt.claims;
 
 -- ---- Admin: the only role that may define custom fields ------------------
@@ -792,19 +841,33 @@ select crm.try('E5  cfv: REPOINT an existing value at a BETA entity',
     set entity_id='2222000b-0000-0000-0000-00000000000b'
     where id='bbbb0000-0000-0000-0000-000000000001'$$, 'denied(42501)');
 
+-- E6-E8 GO THROUGH private.record_merge() SINCE PHASE 2 TASK 6. The raw
+-- INSERT they used to make is now refused by the missing grant before any
+-- policy runs, which would have left three tenant-boundary assertions passing
+-- for a reason that has nothing to do with the boundary. The function restates
+-- the dropped policy, so these test the same control they always did.
 select crm.try('E6  merges: winner in ALPHA, loser in BETA',
-  $$insert into public.merges
-      (organisation_id, entity_type, winner_id, loser_id, merged_by)
-    select id,'contact','22220000-0000-0000-0000-000000000002',
-           '2222000b-0000-0000-0000-00000000000b',(select auth.uid())
-    from public.organisations where slug='org-alpha'$$, 'denied(42501)');
+  format($$select private.record_merge(%L,'contact',
+      '22220000-0000-0000-0000-000000000002',
+      '2222000b-0000-0000-0000-00000000000b', null, null, '{}'::jsonb, '{}'::jsonb)$$,
+    (select id from public.organisations where slug='org-alpha')), 'denied(42501)');
 select crm.try('E7  merges: BOTH sides in BETA, row tagged ALPHA',
-  $$insert into public.merges
-      (organisation_id, entity_type, winner_id, loser_id, merged_by)
-    select id,'contact','2222000b-0000-0000-0000-00000000000b',
-           '1111000b-0000-0000-0000-00000000000b',(select auth.uid())
-    from public.organisations where slug='org-alpha'$$, 'denied(42501)');
-select crm.try('E8  merges: attributed to ANOTHER user',
+  format($$select private.record_merge(%L,'contact',
+      '2222000b-0000-0000-0000-00000000000b',
+      '1111000b-0000-0000-0000-00000000000b', null, null, '{}'::jsonb, '{}'::jsonb)$$,
+    (select id from public.organisations where slug='org-alpha')), 'denied(42501)');
+-- E8 CHANGED SHAPE BECAUSE THE ATTACK DID. merged_by used to be a column a
+-- client could supply and a WITH CHECK term pinned it; there is now no
+-- parameter that could carry an actor at all, so the assertion is that the
+-- function's signature has no such argument. A test that "the forged value is
+-- refused" would be asserting a refusal of something unsendable.
+select crm.val('E8  merges: no argument of record_merge() can carry an actor',
+  $$select (pg_catalog.pg_get_function_arguments(p.oid) not like '%merged%'
+            and pg_catalog.pg_get_function_arguments(p.oid) not like '%actor%')::text
+     from pg_catalog.pg_proc p
+     join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+    where n.nspname='private' and p.proname='record_merge'$$, 'true');
+select crm.try('E8b merges: the raw INSERT that could carry one has no grant',
   format($$insert into public.merges
       (organisation_id, entity_type, winner_id, loser_id, merged_by)
     select id,'contact','22220000-0000-0000-0000-000000000002',
@@ -944,11 +1007,11 @@ select crm.val('H4  exactly two tables carry a DELETE grant',
        'artist_representations','artist_fee_history','venues','venue_rooms',
        'custom_field_definitions','custom_field_values','merges')$$,
   'contact_companies,custom_field_values');
-select crm.val('H5  merges has SELECT+INSERT and nothing else',
+select crm.val('H5  merges has SELECT and nothing else (Task 6 revoked INSERT)',
   $$select string_agg(privilege_type,',' order by privilege_type)
     from information_schema.role_table_grants
     where grantee='authenticated' and table_schema='public' and table_name='merges'$$,
-  'INSERT,SELECT');
+  'SELECT');
 select crm.val('H6  every Phase 2 table still has RLS enabled',
   $$select count(*)::text from pg_class c join pg_namespace n on n.oid=c.relnamespace
     where n.nspname='public' and c.relrowsecurity and c.relname in
@@ -1148,11 +1211,11 @@ select crm.val('L5  every table carrying updated_at has the trigger',
       and not exists (select 1 from pg_trigger t
                       where t.tgrelid=c.oid and not t.tgisinternal
                         and t.tgname='set_updated_at')$$, '0');
-select crm.val('L6  ...and that is 17 tables',
+select crm.val('L6  ...and that is 18 tables (merge_candidates joined in Task 6)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '17');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '18');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together
@@ -1661,11 +1724,14 @@ select crm.try('N3  FREE: manager INSERTs a contact',
 select crm.try('N4  FREE: manager UPDATEs a contact',
   $$update public.contacts set title='free'
     where id='22220000-0000-0000-0000-000000000002'$$, 'denied(42501)');
-select crm.try('N5  FREE: manager INSERTs a merges row',
-  format($$insert into public.merges
-      (organisation_id, entity_type, winner_id, loser_id, merged_by)
-    values (%L,'contact','22220000-0000-0000-0000-000000000002',
-            '22220000-0000-0000-0000-000000000003',(select auth.uid()))$$,
+select crm.try('N5  FREE: manager records a merge',
+  format($$select private.record_merge(%L,'contact',
+      '22220000-0000-0000-0000-000000000002',
+      '22220000-0000-0000-0000-000000000003', null, null, '{}'::jsonb, '{}'::jsonb)$$,
+    :'alpha_org'), 'denied(42501)');
+select crm.try('N5b FREE: screening for duplicates is a write and is refused too',
+  format($$select public.screen_for_duplicates(%L,'contact',
+      '22220000-0000-0000-0000-000000000002')$$,
     :'alpha_org'), 'denied(42501)');
 -- A DELETE policy has no WITH CHECK, so the entitlement term lives in USING and
 -- the refusal is a zero-row result rather than a 42501. Secure, and asserted as
@@ -2013,6 +2079,15 @@ select crm.val('P1f SUSPENDED: custom_field_values still readable (polymorphic)'
   $$select count(*)::text from public.custom_field_values$$, '4');
 select crm.val('P1g SUSPENDED: merges still readable',
   $$select count(*)::text from public.merges$$, '2');
+-- Q6 for the two surfaces Task 6 added. The queue and the dedup search are
+-- READS and stay open in a suspended workspace; P2g/P2g2/P2g3 are the writes.
+select crm.val('P1h SUSPENDED: the review queue is still readable',
+  $$select count(*)::text from public.merge_candidates$$, '1');
+-- The Q6 half for private.duplicate_matches() -- "the same answer
+-- permitted_organisations() gives, not a hardcoded 0" -- needs a KNOWN
+-- duplicate pair inside a SUSPENDED organisation and the same pair inside a
+-- live one, which this section's fixtures do not have. It is in § W, on
+-- fixtures built for it (W12-W15).
 -- M-2 (Task 3a fix round 1). FOUR MORE TABLES CARRY WRITE POLICIES AND WERE
 -- NEVER DRIVEN AGAINST SUSPENSION. The Task 3a brief named eight surfaces and
 -- the implementer tested exactly those eight; the brief was incomplete.
@@ -2077,11 +2152,24 @@ select crm.try('P2f SUSPENDED: custom_field_values INSERT refused',
     values (%L,'aaaa0000-0000-0000-0000-000000000001','artist',
             '44440000-0000-0000-0000-000000000001','"suspended"'::jsonb)$$,
     :'alpha_org'), 'denied(42501)');
-select crm.try('P2g SUSPENDED: merges INSERT refused',
-  format($$insert into public.merges
-      (organisation_id, entity_type, winner_id, loser_id, merged_by)
-    values (%L,'contact','22220000-0000-0000-0000-000000000002',
-            '22220000-0000-0000-0000-000000000003',(select auth.uid()))$$,
+-- Q6: SUSPENSION IS READ-ONLY. The mechanism matters as much as the outcome --
+-- a merge is a function call, so the refusal is a LOUD 42501 (PostgREST: 403)
+-- rather than the silent 204/ok(0) an UPDATE gives. P2g2/P2g3 assert the same
+-- for the other two write paths this task opened, and P1h/P1i that the READS
+-- stay open.
+select crm.try('P2g SUSPENDED: merge_records refused (loud 42501, not ok(0))',
+  format($$select public.merge_records(%L,'contact',
+      '22220000-0000-0000-0000-000000000002',
+      '22220000-0000-0000-0000-000000000003')$$,
+    :'alpha_org'), 'denied(42501)');
+select crm.try('P2g2 SUSPENDED: record_merge refused',
+  format($$select private.record_merge(%L,'contact',
+      '22220000-0000-0000-0000-000000000002',
+      '22220000-0000-0000-0000-000000000003', null, null, '{}'::jsonb, '{}'::jsonb)$$,
+    :'alpha_org'), 'denied(42501)');
+select crm.try('P2g3 SUSPENDED: screen_for_duplicates refused',
+  format($$select public.screen_for_duplicates(%L,'contact',
+      '22220000-0000-0000-0000-000000000002')$$,
     :'alpha_org'), 'denied(42501)');
 
 select crm.try('P2h SUSPENDED: contacts UPDATE matches nothing (USING is empty)',
@@ -2486,6 +2574,7 @@ select crm.val('P24 LIVE baseline: venues',              $$select count(*)::text
 select crm.val('P25 LIVE baseline: venue_rooms',         $$select count(*)::text from public.venue_rooms$$, '4');
 select crm.val('P26 LIVE baseline: custom_field_values', $$select count(*)::text from public.custom_field_values$$, '4');
 select crm.val('P27 LIVE baseline: merges',              $$select count(*)::text from public.merges$$, '2');
+select crm.val('P28b LIVE baseline: merge_candidates',  $$select count(*)::text from public.merge_candidates$$, '1');
 -- M-2's four tables get the same paired baseline as the original eight.
 select crm.val('P29 LIVE baseline: custom_field_definitions', $$select count(*)::text from public.custom_field_definitions$$, '4');
 select crm.val('P30 LIVE baseline: contact_companies',        $$select count(*)::text from public.contact_companies$$, '2');
@@ -2550,20 +2639,39 @@ insert into public.contacts (id, organisation_id, owner_user_id, name, deleted_a
 select '22220000-0000-0000-0000-00000000000a', o.id, :'pstd1', 'Std1 Own Loser', now()
 from public.organisations o where o.slug='org-alpha';
 
+-- THE OWNER COLUMNS ARE PART OF THE FIXTURE SINCE PHASE 2 TASK 6. The policy's
+-- record-scoped branch now leads with them, so a row that omits them is
+-- invisible to a record-scoped reader whatever the dispatch would say -- which
+-- is the documented behaviour for rows predating the columns, and is what Q5b
+-- asserts on purpose rather than by leaving these NULL and calling it a pass.
 insert into public.merges
-  (id, organisation_id, entity_type, winner_id, loser_id, merged_by, field_resolution)
+  (id, organisation_id, entity_type, winner_id, loser_id, merged_by,
+   winner_owner_user_id, loser_owner_user_id, field_resolution)
 select 'cccc0000-0000-0000-0000-00000000000a', o.id, 'contact',
        '22220000-0000-0000-0000-000000000001',
        '22220000-0000-0000-0000-000000000002', :'pmanager',
+       :'pstd1', :'pmanager',
        '{"email":{"kept":"std1@example.test","discarded":"MANAGER-ONLY-SECRET@example.test"}}'::jsonb
 from public.organisations o where o.slug='org-alpha';
 
 insert into public.merges
-  (id, organisation_id, entity_type, winner_id, loser_id, merged_by, field_resolution)
+  (id, organisation_id, entity_type, winner_id, loser_id, merged_by,
+   winner_owner_user_id, loser_owner_user_id, field_resolution)
 select 'cccc0000-0000-0000-0000-00000000000c', o.id, 'contact',
        '22220000-0000-0000-0000-000000000001',
        '22220000-0000-0000-0000-00000000000a', :'pstd1',
+       :'pstd1', :'pstd1',
        '{"email":{"kept":"std1@example.test","discarded":"std1-old@example.test"}}'::jsonb
+from public.organisations o where o.slug='org-alpha';
+
+-- The same clean merge again with the owner columns left NULL, which is what a
+-- row written before 20260829020000 looks like.
+insert into public.merges
+  (id, organisation_id, entity_type, winner_id, loser_id, merged_by, field_resolution)
+select 'cccc0000-0000-0000-0000-00000000000d', o.id, 'contact',
+       '22220000-0000-0000-0000-000000000001',
+       '22220000-0000-0000-0000-00000000000a', :'pstd1',
+       '{"email":{"kept":"std1@example.test","discarded":"std1-legacy@example.test"}}'::jsonb
 from public.organisations o where o.slug='org-alpha';
 
 set role authenticated;
@@ -2583,6 +2691,15 @@ select crm.val('Q4  ...and no discarded value leaks by any path',
 select crm.val('Q5  NOT OVER-CLOSED: a merge of two records pstd1 owns IS visible',
   $$select count(*)::text from public.merges
      where id='cccc0000-0000-0000-0000-00000000000c'$$, '1');
+-- THE DELIBERATE NARROWING FROM TASK 6, asserted rather than discovered. The
+-- record-scoped branch of the policy leads with the two denormalised owner
+-- columns because the per-row dispatch was 2266 ms at 20k rows. They are a
+-- snapshot: a merges row written before they existed has NULL in both, and NULL
+-- = auth.uid() is not true, so a record-scoped reader cannot see it even though
+-- it names two records they own. Fail-safe, and the fail-safe direction.
+select crm.val('Q5b LEGACY ROW: NULL owner columns hide it from a record-scoped reader',
+  $$select count(*)::text from public.merges
+     where id='cccc0000-0000-0000-0000-00000000000d'$$, '0');
 reset role; reset request.jwt.claims;
 
 set role authenticated;
@@ -2591,6 +2708,9 @@ select crm.val('Q6  POSITIVE: a full-scope role sees both merges',
   $$select count(*)::text from public.merges
      where id in ('cccc0000-0000-0000-0000-00000000000a',
                   'cccc0000-0000-0000-0000-00000000000c')$$, '2');
+select crm.val('Q6b ...including the legacy row Q5b hides from pstd1',
+  $$select count(*)::text from public.merges
+     where id='cccc0000-0000-0000-0000-00000000000d'$$, '1');
 reset role; reset request.jwt.claims;
 
 -- Q7/Q8 -- THE DELIBERATE BEHAVIOUR CHANGE FROM NEW-2, asserted so it is a
@@ -2690,11 +2810,11 @@ select crm.try('R1  a hard DELETE of a link succeeds',
 select crm.try('R2  a hard DELETE of a custom field value succeeds',
   $$delete from public.custom_field_values
     where id='bbbb0000-0000-0000-0000-000000000002'$$, 'ok(1)');
-select crm.try('R3  a merge row is inserted',
-  format($$insert into public.merges
-      (organisation_id, entity_type, winner_id, loser_id, merged_by)
-    values (%L,'contact','22220000-0000-0000-0000-000000000002',
-            '22220000-0000-0000-0000-000000000003',(select auth.uid()))$$,
+select crm.try('R3  a merge row is recorded',
+  format($$select private.record_merge(%L,'contact',
+      '22220000-0000-0000-0000-000000000002',
+      '22220000-0000-0000-0000-000000000003', null, null, '{}'::jsonb,
+      '{"fields_taken_from_loser": ["email"]}'::jsonb)$$,
     :'alpha_org'), 'ok(1)');
 reset role; reset request.jwt.claims;
 
@@ -2725,6 +2845,24 @@ select crm.val('R7  ...nor the merge''s field_resolution',
   $$select (after ? 'winner_id' and after ? 'loser_id'
             and not (after ? 'field_resolution'))::text
      from public.audit_events where action='records.merged' limit 1$$, 'true');
+-- THE SECOND AUDIT ROW, which 20260828141000's header asks Task 6 for: the
+-- trigger records THAT a merge happened and cannot see the winner's field
+-- rewrite, because that is an UPDATE on a table nothing audits. R7b asserts the
+-- row exists and R7c that it carries column NAMES and no values -- the same
+-- rule audit_crm_payload() enforces for the trigger's half.
+-- Filtered to R3's own row: C21 recorded a merge too, with an empty summary,
+-- and `limit 1` over both would assert on whichever came back first.
+select crm.val('R7b the field-level rewrite has its own audit row',
+  $$select count(*)::text from public.audit_events
+     where action='records.merged.fields'
+       and after -> 'fields_taken_from_loser' ? 'email'$$, '1');
+select crm.val('R7c ...carrying field NAMES and no field values',
+  $$select (after ? 'fields_taken_from_loser'
+            and not (after ? 'field_resolution')
+            and after::text not like '%example.test%')::text
+     from public.audit_events
+    where action='records.merged.fields'
+      and after -> 'fields_taken_from_loser' ? 'email' limit 1$$, 'true');
 
 -- THE NULL-ACTOR GUARD, which is what stops the trigger breaking organisation
 -- deletion. A sessionless writer -- a migration, a seed, a DBA repair, or an FK
@@ -4654,6 +4792,629 @@ select crm.try('V22 REINSTATED: removing a field applies again',
   format($$update public.custom_field_definitions set deleted_at = now()
      where organisation_id=%L and key='u2'$$, :'limit_org'), 'ok(1)');
 reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- W. PHASE 2 TASK 6 -- DEDUP DETECTION, THE REVIEW QUEUE, AND THE MERGE
+-- ===========================================================================
+-- Its own organisation, built here rather than reusing org-alpha, because this
+-- section plants duplicate pairs and then destroys half of them -- and every
+-- count assertion above this point is written against org-alpha's fixture.
+--
+-- org-merge's members are chosen for what each one proves:
+--   powner        owner, MFA-required role -> the aal1 case (W4)
+--   pmanager      merge_records + full scope -> the only role that can merge
+--   pbooker       manage_contacts, NO merge_records -> the permission boundary
+--   pstd1         standard_user -> record scope, and cannot merge at all
+--   pro           read_only -> the queue with no way to act on it
+-- ---------------------------------------------------------------------------
+insert into public.organisations (id, name, slug)
+values ('a0a00000-0000-0000-0000-00000000000a','Org Merge','org-merge');
+
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+select 'a0a00000-0000-0000-0000-00000000000a', v.uid::uuid, v.rk, 'active', now()
+from (values
+  (:'powner','owner'), (:'pmanager','manager'), (:'pbooker','booker'),
+  (:'pstd1','standard_user'), (:'pro','read_only')
+) as v(uid, rk);
+
+-- CONTACTS. m1 is the OLDEST and is therefore the winner of every pair it is
+-- in; m2 shares its email in a different case; m3 is a near-name owned by the
+-- record-scoped user; m4 is an EXACT NAME match owned by the record-scoped
+-- user, which must never auto-merge (DECISION 1).
+insert into public.contacts
+  (id, organisation_id, owner_user_id, name, email, phone, title, created_at)
+values
+ ('4d000000-0000-0000-0000-000000000001','a0a00000-0000-0000-0000-00000000000a',
+  :'pmanager','Nadia Okafor','NADIA@merge.test','0100','Promoter', now() - interval '3 days'),
+ ('4d000000-0000-0000-0000-000000000002','a0a00000-0000-0000-0000-00000000000a',
+  :'pmanager','Nadia Okafor','nadia@merge.test',null,'DISCARDED-TITLE', now() - interval '1 day'),
+ ('4d000000-0000-0000-0000-000000000003','a0a00000-0000-0000-0000-00000000000a',
+  :'pstd1','Nadia Okafo',null,null,null, now()),
+ ('4d000000-0000-0000-0000-000000000004','a0a00000-0000-0000-0000-00000000000a',
+  :'pstd1','Nadia Okafor',null,null,null, now());
+
+-- A BETA contact with the SAME email. The auto-merge must never see it.
+insert into public.contacts (id, organisation_id, owner_user_id, name, email)
+select '4d00000b-0000-0000-0000-00000000000b', o.id, :'pbowner',
+       'Nadia Okafor','nadia@merge.test'
+from public.organisations o where o.slug='org-beta';
+
+insert into public.companies (id, organisation_id, owner_user_id, name)
+values ('4c000000-0000-0000-0000-000000000001','a0a00000-0000-0000-0000-00000000000a',
+        :'pmanager','Shared Promoter Co'),
+       ('4c000000-0000-0000-0000-000000000002','a0a00000-0000-0000-0000-00000000000a',
+        :'pmanager','Loser Only Co');
+
+-- THE 23505 SETUP, twice over: both contacts have a primary, and both link the
+-- same company. FOLLOW-UPS obligation (a) -- neither
+-- contact_companies_one_primary_per_contact nor
+-- contact_companies_contact_company_unique is deferrable.
+insert into public.contact_companies (organisation_id, contact_id, company_id, is_primary)
+values ('a0a00000-0000-0000-0000-00000000000a','4d000000-0000-0000-0000-000000000001',
+        '4c000000-0000-0000-0000-000000000001', true),
+       ('a0a00000-0000-0000-0000-00000000000a','4d000000-0000-0000-0000-000000000002',
+        '4c000000-0000-0000-0000-000000000001', false),
+       ('a0a00000-0000-0000-0000-00000000000a','4d000000-0000-0000-0000-000000000002',
+        '4c000000-0000-0000-0000-000000000002', true);
+
+-- THE SAME COLLISION ON THE ARTIST SIDE. Both artists hold a CURRENT primary
+-- representation; the loser also holds an ENDED one that must keep its flag,
+-- because artist_representations_one_current_primary_per_artist is partial on
+-- `ended_at is null` and the demote has to carry that predicate exactly.
+insert into public.artists (id, organisation_id, owner_user_id, name, country, city, created_at)
+values ('4a000000-0000-0000-0000-000000000001','a0a00000-0000-0000-0000-00000000000a',
+        :'pmanager','Bassline Theory','GB',null, now() - interval '3 days'),
+       ('4a000000-0000-0000-0000-000000000002','a0a00000-0000-0000-0000-00000000000a',
+        :'pmanager','Bassline Theroy',null,'Bristol', now());
+insert into public.agencies (id, organisation_id, owner_user_id, name)
+values ('4e000000-0000-0000-0000-000000000001','a0a00000-0000-0000-0000-00000000000a',
+        :'pmanager','Winner Agency'),
+       ('4e000000-0000-0000-0000-000000000002','a0a00000-0000-0000-0000-00000000000a',
+        :'pmanager','Loser Agency');
+insert into public.artist_representations
+  (id, organisation_id, artist_id, agency_id, is_primary, started_at, ended_at)
+values ('4f000000-0000-0000-0000-000000000001','a0a00000-0000-0000-0000-00000000000a',
+        '4a000000-0000-0000-0000-000000000001','4e000000-0000-0000-0000-000000000001',
+        true,'2020-01-01',null),
+       ('4f000000-0000-0000-0000-000000000002','a0a00000-0000-0000-0000-00000000000a',
+        '4a000000-0000-0000-0000-000000000002','4e000000-0000-0000-0000-000000000002',
+        true,'2021-01-01',null),
+       ('4f000000-0000-0000-0000-000000000003','a0a00000-0000-0000-0000-00000000000a',
+        '4a000000-0000-0000-0000-000000000002','4e000000-0000-0000-0000-000000000001',
+        true,'2017-01-01','2018-01-01');
+
+-- CUSTOM FIELDS. d1 is filled on both contacts (the winner keeps its own);
+-- d2 only on the loser (it must be carried, not discarded -- obligation (b)).
+insert into public.custom_field_definitions (id, organisation_id, entity_type, key, label, field_type)
+values ('4b000000-0000-0000-0000-000000000001','a0a00000-0000-0000-0000-00000000000a',
+        'contact','rider','Rider','text'),
+       ('4b000000-0000-0000-0000-000000000002','a0a00000-0000-0000-0000-00000000000a',
+        'contact','deal','Deal memo','text');
+insert into public.custom_field_values (organisation_id, field_id, entity_type, entity_id, value)
+values ('a0a00000-0000-0000-0000-00000000000a','4b000000-0000-0000-0000-000000000001',
+        'contact','4d000000-0000-0000-0000-000000000001','"winner rider"'::jsonb),
+       ('a0a00000-0000-0000-0000-00000000000a','4b000000-0000-0000-0000-000000000001',
+        'contact','4d000000-0000-0000-0000-000000000002','"DISCARDED-RIDER"'::jsonb),
+       ('a0a00000-0000-0000-0000-00000000000a','4b000000-0000-0000-0000-000000000002',
+        'contact','4d000000-0000-0000-0000-000000000002','"CARRIED-DEAL"'::jsonb);
+
+-- ---------------------------------------------------------------------------
+-- W1-W11. THE SECURITY DEFINER PROBE (FOLLOW-UPS obligation (c)).
+--
+-- Its four required 0-row cases, plus the positive controls without which
+-- "returns 0" is satisfied by a function that is simply broken.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('W1  CONTROL: a full-scope caller gets the exact-email match',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')
+     where reason='exact_email'$$, '1');
+select crm.val('W2  CONTROL: ...and the fuzzy name matches above the threshold',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')
+     where reason='fuzzy_name'$$, '2');
+select crm.val('W3  CONTROL: a match BELOW the threshold is not returned',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')
+     where similarity < private.dedup_similarity_threshold()
+       and reason='fuzzy_name'$$, '0');
+-- THE TRIGRAM INDEX IS THE WHOLE REASON THIS IS A DEFINER FUNCTION. Asserted
+-- structurally rather than by timing: the index exists and has the shape the
+-- probe needs. The 196x measurement is in FOLLOW-UPS and in task-6-report.
+select crm.val('W3b the five indexes this task consumes all exist',
+  $$select count(*)::text from pg_indexes
+     where schemaname='public' and indexname in (
+       'contacts_name_trgm_idx','companies_name_trgm_idx','artists_name_trgm_idx',
+       'venues_name_trgm_idx','agencies_name_trgm_idx','contacts_org_email_lower_idx')$$,
+  '6');
+reset role; reset request.jwt.claims;
+
+-- (i) called by an aal1 session for an MFA-REQUIRED role.
+set role authenticated;
+set request.jwt.claims = :'powner_c1';
+select crm.val('W4  aal1 Owner (MFA-required role) gets 0 rows',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')$$, '0');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select crm.val('W5  POSITIVE: the same Owner at aal2 gets rows',
+  $$select (count(*) > 0)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- (ii) called for an organisation the caller is not a member of.
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select crm.val('W6  a non-member of org-merge gets 0 rows',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')$$, '0');
+reset role; reset request.jwt.claims;
+
+-- (iii) called by a record-scoped user about rows they do not own.
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.val('W7  standard_user asking about a record they do not own gets 0',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')$$, '0');
+select crm.val('W8  ...and asking about their OWN record sees only their own',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000003')$$, '1');
+select crm.val('W9  ...specifically, none of the manager''s records',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000003')
+     where id in ('4d000000-0000-0000-0000-000000000001',
+                  '4d000000-0000-0000-0000-000000000002')$$, '0');
+-- THE UNSCOPED PROBE IS NOT REACHABLE. p_scoped => false is what lets
+-- screen_for_duplicates flag a duplicate the caller cannot see; if a client
+-- could pass it, record scope would be a query-string away.
+select crm.try('W10 the UNSCOPED probe is not executable by authenticated',
+  $$select private.duplicate_probe(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000003', false)$$, 'denied(42501)');
+select crm.try('W11 ...nor with p_scoped => true',
+  $$select private.duplicate_probe(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000003', true)$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- W12-W16. Q6: A SUSPENDED WORKSPACE IS READ-ONLY, NOT LOCKED OUT.
+--
+-- FOLLOW-UPS' spec for this function once required "called for a soft-deleted
+-- organisation -> 0 rows". That expectation predates founder decision Q6 and is
+-- wrong in the direction that matters: view_crm survives suspension, so the
+-- correct assertion is that the search gives THE SAME ANSWER
+-- permitted_organisations() gives -- which is what W13 compares, against the
+-- count recorded while the organisation was live.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.note('dedup_live', (select count(*)::text from private.duplicate_matches(
+  'a0a00000-0000-0000-0000-00000000000a','contact','4d000000-0000-0000-0000-000000000002')));
+reset role; reset request.jwt.claims;
+
+update public.organisations set deleted_at = now()
+ where id='a0a00000-0000-0000-0000-00000000000a';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('W12 SUSPENDED: the org still holds view_crm (Q6)',
+  $$select ('a0a00000-0000-0000-0000-00000000000a'
+            in (select private.permitted_organisations('view_crm')))::text$$, 'true');
+select crm.val('W13 SUSPENDED: duplicate_matches gives the SAME answer, not 0',
+  $$select ((select count(*)::text from private.duplicate_matches(
+              'a0a00000-0000-0000-0000-00000000000a','contact',
+              '4d000000-0000-0000-0000-000000000002'))
+            = (select v from crm.notes where k='dedup_live'))::text$$, 'true');
+select crm.val('W14 SUSPENDED: ...and that answer is not zero (so W13 is not vacuous)',
+  $$select (v <> '0')::text from crm.notes where k='dedup_live'$$, 'true');
+select crm.try('W15 SUSPENDED: screening is a WRITE and is refused -- loud 42501',
+  $$select public.screen_for_duplicates(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')$$, 'denied(42501)');
+select crm.try('W16 SUSPENDED: merge_records is refused -- loud 42501, not ok(0)',
+  $$select public.merge_records(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000001',
+      '4d000000-0000-0000-0000-000000000002')$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select crm.val('W17 SUSPENDED: a NON-member still gets 0 (the boundary is unchanged)',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')$$, '0');
+reset role; reset request.jwt.claims;
+
+update public.organisations set deleted_at = null
+ where id='a0a00000-0000-0000-0000-00000000000a';
+
+-- ---------------------------------------------------------------------------
+-- W20-W29. SCREENING, AND THE AUTO-MERGE RULE.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('W20 REINSTATED: screening flags the pairs and proposes ONE auto-merge',
+  $$select public.screen_for_duplicates(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002') ->> 'auto_merge_winner_id'$$,
+  '4d000000-0000-0000-0000-000000000001');
+select crm.val('W21 ...and the loser is the NEWER record (older wins)',
+  $$select public.screen_for_duplicates(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002') ->> 'auto_merge_loser_id'$$,
+  '4d000000-0000-0000-0000-000000000002');
+select crm.val('W22 screening is idempotent: the second call adds no rows',
+  $$select count(*)::text from public.merge_candidates
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'
+       and deleted_at is null$$, '3');
+-- AN EXACT NAME MATCH NEVER AUTO-MERGES. m4 is character-for-character
+-- 'Nadia Okafor', the same as m1, and is flagged rather than merged.
+select crm.val('W23 an EXACT NAME match is flagged, never auto-merged (DECISION 1)',
+  $$select public.screen_for_duplicates(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000004') ->> 'auto_merge_winner_id'$$, '<null>');
+select crm.val('W24 ...and it IS in the queue, as fuzzy_name',
+  $$select reason from public.merge_candidates
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'
+       and duplicate_id='4d000000-0000-0000-0000-000000000004'
+       and keep_id='4d000000-0000-0000-0000-000000000001'$$, 'fuzzy_name');
+-- TENANT BREAKOUT. The BETA contact shares the email exactly and must never be
+-- proposed, flagged, or reachable.
+select crm.val('W25 TENANT BREAKOUT: the BETA contact with the same email is never flagged',
+  $$select count(*)::text from public.merge_candidates
+     where keep_id='4d00000b-0000-0000-0000-00000000000b'
+        or duplicate_id='4d00000b-0000-0000-0000-00000000000b'$$, '0');
+select crm.try('W26 TENANT BREAKOUT: merging a BETA record into an ALPHA one is refused',
+  $$select public.merge_records(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000001',
+      '4d00000b-0000-0000-0000-00000000000b')$$, 'denied(42501)');
+select crm.try('W27 TENANT BREAKOUT: ...and tagging the merge with BETA''s id is refused',
+  format($$select public.merge_records(%L,'contact',
+      '4d000000-0000-0000-0000-000000000001',
+      '4d000000-0000-0000-0000-000000000002')$$, :'beta_org'), 'denied(42501)');
+select crm.try('W28 TENANT BREAKOUT: screening a BETA record from org-merge is refused',
+  $$select public.screen_for_duplicates(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d00000b-0000-0000-0000-00000000000b')$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- THE PERMISSION BOUNDARY. booker holds manage_contacts and NOT merge_records.
+set role authenticated;
+set request.jwt.claims = :'pbooker_c';
+select crm.try('W29 booker may screen (manage_contacts) ...',
+  $$select public.screen_for_duplicates(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')$$, 'ok(1)');
+select crm.try('W29b ...and may NOT merge (no merge_records)',
+  $$select public.merge_records(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000001',
+      '4d000000-0000-0000-0000-000000000002')$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select crm.try('W29c read_only may not even screen',
+  $$select public.screen_for_duplicates(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- W30-W39. THE MERGE ITSELF -- obligations (a) and (b).
+-- ---------------------------------------------------------------------------
+select crm.val('W30 PRECONDITION: both contacts hold a primary company link',
+  $$select count(*)::text from public.contact_companies
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a' and is_primary$$, '2');
+select crm.val('W31 PRECONDITION: and both link the SAME company',
+  $$select count(*)::text from public.contact_companies
+     where company_id='4c000000-0000-0000-0000-000000000001'$$, '2');
+select crm.val('W32 PRECONDITION: the loser holds two custom field values',
+  $$select count(*)::text from public.custom_field_values
+     where entity_id='4d000000-0000-0000-0000-000000000002'$$, '2');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+-- OBLIGATION (a): this is the statement that raises 23505 if the demote and the
+-- duplicate-drop do not happen first, twice over.
+select crm.try('W33 the merge applies -- no 23505 from either unique index',
+  $$select public.merge_records(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000001',
+      '4d000000-0000-0000-0000-000000000002',
+      '{"title":"winner"}'::jsonb)$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select crm.val('W34 exactly ONE primary link survives',
+  $$select count(*)::text from public.contact_companies
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a' and is_primary$$, '1');
+select crm.val('W35 ...and it is the WINNER''s, on the company it named',
+  $$select company_id::text from public.contact_companies
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a' and is_primary$$,
+  '4c000000-0000-0000-0000-000000000001');
+select crm.val('W36 the duplicate link was dropped, not repointed into a 23505',
+  $$select count(*)::text from public.contact_companies
+     where contact_id='4d000000-0000-0000-0000-000000000001'$$, '2');
+select crm.val('W37 the loser is SOFT-deleted, not gone',
+  $$select (deleted_at is not null)::text from public.contacts
+     where id='4d000000-0000-0000-0000-000000000002'$$, 'true');
+-- OBLIGATION (b): the sweep, and the carry-over that has to happen first.
+select crm.val('W38 the loser''s custom field values are swept',
+  $$select count(*)::text from public.custom_field_values
+     where entity_id='4d000000-0000-0000-0000-000000000002'$$, '0');
+select crm.val('W39 ...the winner KEPT its own value where it had one',
+  $$select value #>> '{}' from public.custom_field_values
+     where entity_id='4d000000-0000-0000-0000-000000000001'
+       and field_id='4b000000-0000-0000-0000-000000000001'$$, 'winner rider');
+select crm.val('W39b ...and GAINED the one only the loser had (not discarded)',
+  $$select value #>> '{}' from public.custom_field_values
+     where entity_id='4d000000-0000-0000-0000-000000000001'
+       and field_id='4b000000-0000-0000-0000-000000000002'$$, 'CARRIED-DEAL');
+select crm.val('W39c the discarded value is recorded, not lost',
+  $$select (field_resolution -> 'custom_fields' -> 'values'
+              -> '4b000000-0000-0000-0000-000000000001' ->> 'loser')
+     from public.merges where loser_id='4d000000-0000-0000-0000-000000000002'$$,
+  'DISCARDED-RIDER');
+select crm.val('W39d the winner''s explicit field choice was applied and the loser''s value recorded',
+  $$select (field_resolution -> 'fields' -> 'title' ->> 'discarded')
+     from public.merges where loser_id='4d000000-0000-0000-0000-000000000002'$$,
+  'DISCARDED-TITLE');
+
+-- ---------------------------------------------------------------------------
+-- W40-W43. THE ORDERING CONSTRAINT, REPRODUCED.
+--
+-- FOLLOW-UPS records the sweep's ordering constraint as binding only on a HARD
+-- delete: "A merge that soft-deletes the loser is unaffected." That stopped
+-- being true when 20260829011000 added private.entity_is_live() to
+-- custom_field_values_delete_via_entity. These three assertions are the
+-- reproduction: a value on a SOFT-deleted entity cannot be deleted by any
+-- client role, so a merge that soft-deleted first would leave orphans nobody
+-- can remove.
+-- ---------------------------------------------------------------------------
+insert into public.custom_field_values
+  (id, organisation_id, field_id, entity_type, entity_id, value)
+values ('4b0f0000-0000-0000-0000-000000000001','a0a00000-0000-0000-0000-00000000000a',
+        '4b000000-0000-0000-0000-000000000001','contact',
+        '4d000000-0000-0000-0000-000000000003','"orphan probe"'::jsonb);
+update public.contacts set deleted_at = now()
+ where id='4d000000-0000-0000-0000-000000000003';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('W40 ORDERING: a value on a SOFT-deleted entity cannot be swept',
+  $$delete from public.custom_field_values
+     where id='4b0f0000-0000-0000-0000-000000000001'$$, 'ok(0)');
+select crm.val('W41 ...so it is still there -- the orphan the sweep exists to prevent',
+  $$select count(*)::text from public.custom_field_values
+     where id='4b0f0000-0000-0000-0000-000000000001'$$, '1');
+reset role; reset request.jwt.claims;
+update public.contacts set deleted_at = null
+ where id='4d000000-0000-0000-0000-000000000003';
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('W42 POSITIVE: restored, the same DELETE applies',
+  $$delete from public.custom_field_values
+     where id='4b0f0000-0000-0000-0000-000000000001'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- W44-W49. THE ARTIST SIDE OF OBLIGATION (a).
+-- ---------------------------------------------------------------------------
+select crm.val('W44 PRECONDITION: both artists hold a CURRENT primary representation',
+  $$select count(*)::text from public.artist_representations
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'
+       and is_primary and ended_at is null and deleted_at is null$$, '2');
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('W45 the artist merge applies -- no 23505 on the partial primary index',
+  $$select public.merge_records(
+      'a0a00000-0000-0000-0000-00000000000a','artist',
+      '4a000000-0000-0000-0000-000000000001',
+      '4a000000-0000-0000-0000-000000000002')$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+select crm.val('W46 exactly one CURRENT primary survives',
+  $$select count(*)::text from public.artist_representations
+     where artist_id='4a000000-0000-0000-0000-000000000001'
+       and is_primary and ended_at is null and deleted_at is null$$, '1');
+select crm.val('W47 ...and it is the WINNER''s agency',
+  $$select agency_id::text from public.artist_representations
+     where artist_id='4a000000-0000-0000-0000-000000000001'
+       and is_primary and ended_at is null and deleted_at is null$$,
+  '4e000000-0000-0000-0000-000000000001');
+-- The demote carries the index's predicate exactly, so an ENDED primary keeps
+-- its flag. A demote that ignored ended_at would rewrite the artist's history.
+select crm.val('W48 the loser''s ENDED primary keeps its flag -- history is not rewritten',
+  $$select (is_primary)::text from public.artist_representations
+     where id='4f000000-0000-0000-0000-000000000003'$$, 'true');
+select crm.val('W49 every representation now hangs off the winner',
+  $$select count(*)::text from public.artist_representations
+     where artist_id='4a000000-0000-0000-0000-000000000001'$$, '3');
+
+-- ---------------------------------------------------------------------------
+-- W50-W56. merges IS APPEND-ONLY, FOR EVERY ROLE (obligation (g)).
+--
+-- E9/E10 assert it for one role. The brief asks for every role, because "no
+-- UPDATE grant" is a property of the table and a reader should not have to
+-- infer that it holds for roles nobody drove it with.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select crm.try('W50 owner UPDATEs a merges row',
+  $$update public.merges set field_resolution='{}'::jsonb
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'$$, 'denied(42501)');
+select crm.try('W51 owner DELETEs a merges row',
+  $$delete from public.merges
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'$$, 'denied(42501)');
+select crm.try('W52 owner INSERTs a merges row directly (no grant since Task 6)',
+  $$insert into public.merges (organisation_id, entity_type, winner_id, loser_id, merged_by)
+     values ('a0a00000-0000-0000-0000-00000000000a','contact',
+             '4d000000-0000-0000-0000-000000000001',
+             '4d000000-0000-0000-0000-000000000004',(select auth.uid()))$$, 'denied(42501)');
+select crm.try('W52b owner INSERTs a merge_candidates row directly (no grant, no policy)',
+  $$insert into public.merge_candidates
+      (organisation_id, entity_type, keep_id, duplicate_id, label, reason)
+     values ('a0a00000-0000-0000-0000-00000000000a','contact',
+             '4d000000-0000-0000-0000-000000000001',
+             '4d000000-0000-0000-0000-000000000004','forged','fuzzy_name')$$,
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('W53 manager UPDATEs a merges row',
+  $$update public.merges set field_resolution='{}'::jsonb
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'$$, 'denied(42501)');
+select crm.try('W54 manager DELETEs a merges row',
+  $$delete from public.merges
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.try('W55 standard_user UPDATEs a merges row',
+  $$update public.merges set field_resolution='{}'::jsonb$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select crm.try('W56 read_only DELETEs a merges row',
+  $$delete from public.merges$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- W60-W67. THE QUEUE: BOTH SIDES VISIBLE (obligation (f)), AND WHO MAY ACT.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.val('W60 CONTROL: pstd1 can see their own two contacts',
+  $$select count(*)::text from public.contacts
+     where id in ('4d000000-0000-0000-0000-000000000003',
+                  '4d000000-0000-0000-0000-000000000004')$$, '2');
+select crm.val('W61 CONTROL: ...and cannot see the manager''s',
+  $$select count(*)::text from public.contacts
+     where id='4d000000-0000-0000-0000-000000000001'$$, '0');
+-- Both open candidates pair one of pstd1's records with a manager's, so a
+-- record-scoped reader sees neither -- and the `label` copied from one of them
+-- does not leak either.
+-- EVERY candidate touching one of the manager's two records is invisible --
+-- three of the five -- because the SELECT policy requires BOTH sides. The
+-- fourth and fifth pair two records pstd1 owns and W62b proves those ARE
+-- visible, so the control is record scope rather than "the queue is hidden".
+select crm.val('W62 a candidate pairing a record outside their scope is invisible',
+  $$select count(*)::text from public.merge_candidates
+     where keep_id in ('4d000000-0000-0000-0000-000000000001',
+                       '4d000000-0000-0000-0000-000000000002')
+        or duplicate_id in ('4d000000-0000-0000-0000-000000000001',
+                            '4d000000-0000-0000-0000-000000000002')$$, '0');
+select crm.val('W62b NOT OVER-CLOSED: a candidate pairing two of their OWN records is visible',
+  $$select count(*)::text from public.merge_candidates
+     where keep_id='4d000000-0000-0000-0000-000000000003'
+       and duplicate_id='4d000000-0000-0000-0000-000000000004'$$, '1');
+select crm.val('W63 ...and no row belonging to the manager leaks by any path',
+  format($$select count(*)::text from public.merge_candidates
+     where keep_owner_user_id=%L or duplicate_owner_user_id=%L$$,
+    :'pmanager', :'pmanager'), '0');
+select crm.val('W64 a MERGE whose loser was outside their scope is invisible too',
+  $$select count(*)::text from public.merges
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'$$, '0');
+select crm.val('W65 ...and no discarded value leaks by any path',
+  $$select count(*)::text from public.merges
+     where field_resolution::text like '%DISCARDED%'$$, '0');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('W66 POSITIVE: a full-scope reader sees the queue',
+  $$select (count(*) > 0)::text from public.merge_candidates
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- Who may resolve a candidate. read_only and booker lack merge_records, so the
+-- UPDATE policy filters the row out -- a SILENT zero-row result, not a 42501,
+-- because a USING clause that matches nothing is not an error. That is the
+-- mechanism lib/crm/write.ts exists for, asserted as the mechanism it is.
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select crm.try('W67 read_only dismisses a candidate -> filtered, ok(0) not 42501',
+  format($$update public.merge_candidates
+     set deleted_at = now(), resolution='dismissed', resolved_by=(select auth.uid())
+     where organisation_id=%L$$, 'a0a00000-0000-0000-0000-00000000000a'), 'ok(0)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pbooker_c';
+select crm.try('W68 booker dismisses a candidate -> filtered, ok(0)',
+  $$update public.merge_candidates
+     set deleted_at = now(), resolution='dismissed', resolved_by=(select auth.uid())
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('W69 manager forges resolved_by -> refused by WITH CHECK',
+  format($$update public.merge_candidates
+     set deleted_at = now(), resolution='dismissed', resolved_by=%L
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'$$, :'padmin'),
+  'denied(42501)');
+select crm.try('W70 manager repoints a candidate at a different pair -> immutable',
+  $$update public.merge_candidates
+     set duplicate_id='4d000000-0000-0000-0000-000000000003'
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'
+       and deleted_at is null$$, 'denied(42501)');
+select crm.try('W71 POSITIVE: manager dismisses the remaining candidates',
+  $$update public.merge_candidates
+     set deleted_at = now(), resolution='dismissed', resolved_by=(select auth.uid())
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'
+       and deleted_at is null$$, 'ok(2)');
+select crm.val('W72 ...and the queue is empty while the history is not',
+  $$select (select count(*) from public.merge_candidates
+             where organisation_id='a0a00000-0000-0000-0000-00000000000a'
+               and deleted_at is null)::text || '/' ||
+           (select count(*) from public.merge_candidates
+             where organisation_id='a0a00000-0000-0000-0000-00000000000a')::text$$,
+  '0/5');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- W80-W83. THE MERGE ITSELF IS ATOMIC AND ITS REFUSALS ARE LOUD.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('W80 merging a record into ITSELF is refused',
+  $$select public.merge_records(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000001',
+      '4d000000-0000-0000-0000-000000000001')$$, 'denied(22023)');
+select crm.try('W81 merging an ALREADY-MERGED (soft-deleted) loser is refused',
+  $$select public.merge_records(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000001',
+      '4d000000-0000-0000-0000-000000000002')$$, 'denied(42501)');
+select crm.try('W82 an unknown entity_type is refused, not silently ignored',
+  $$select public.merge_records(
+      'a0a00000-0000-0000-0000-00000000000a','event',
+      '4d000000-0000-0000-0000-000000000001',
+      '4d000000-0000-0000-0000-000000000004')$$, 'denied(22023)');
+reset role; reset request.jwt.claims;
+-- AS POSTGRES. audit_events is superuser-readable only, so running this inside
+-- the impersonated block above would have returned 0 and read as a missing
+-- audit trail. Two merges, two rows each: the trigger's `records.merged` and
+-- record_merge()'s `records.merged.fields`.
+select crm.val('W83 each of the two merges wrote BOTH audit rows',
+  $$select count(*)::text from public.audit_events
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'
+       and action in ('records.merged','records.merged.fields')$$, '4');
+select crm.val('W84 ...and the field-level row carries NAMES, never values',
+  $$select (bool_and(after::text not like '%DISCARDED%'))::text
+     from public.audit_events
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'
+       and action='records.merged.fields'$$, 'true');
 
 -- ===========================================================================
 -- Results
