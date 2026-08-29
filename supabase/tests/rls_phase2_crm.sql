@@ -4044,6 +4044,480 @@ select crm.try('T38a OWNER NEGATIVE CONTROL: cannot create an artist in BETA''s 
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
+-- U. THE CUSTOM FIELD DEFINITION: soft delete, and the tier limit (Task 5)
+-- ===========================================================================
+-- Three things are being measured and they are independent:
+--
+--   1. The SOFT DELETE 20260828121000 design note (f) deferred to this task.
+--      There is still no DELETE policy and no DELETE grant -- removing a field
+--      is an UPDATE that sets `deleted_at` -- so the composite FK's cascade
+--      remains unreachable from every client role and the VALUES survive.
+--   2. The TIER LIMIT, in the database, because the anon key ships in the
+--      browser and a Server Action is not on an attacker's path. It is a
+--      BEFORE trigger rather than a WITH CHECK because it has to gate the
+--      RESTORE of a soft-deleted definition too, which needs OLD.
+--   3. The ORACLE GUARD that trigger needs. A BEFORE ROW trigger fires before
+--      the RLS WITH CHECK, so without a guard a stranger could POST a
+--      definition naming any organisation and read that organisation's limit
+--      state out of which refusal came back. U12/U12b measure the guard by the
+--      MESSAGE, because both refusals are 42501 and a sqlstate cannot tell
+--      them apart.
+--
+-- A FRESH ORGANISATION, on purpose. Sections C, F, N and O all add and remove
+-- definitions in org-alpha, so a count-based assertion there would depend on
+-- everything above it. org-limit has exactly the rows this section puts in it.
+-- ---------------------------------------------------------------------------
+
+-- The message-shape helper. crm.try records only the sqlstate, which is 42501
+-- for both a policy refusal and a limit refusal -- and telling those apart is
+-- the whole of U12.
+create function crm.errkind(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_actual text;
+begin
+  begin
+    execute p_sql;
+    v_actual := 'no error';
+  exception when others then
+    v_actual := case
+      when sqlerrm like '%custom field limit%' then 'limit message'
+      else 'policy refusal'
+    end;
+  end;
+  perform crm.record(p_label, p_expected, v_actual);
+end $$;
+grant execute on function crm.errkind(text,text,text) to authenticated, anon, service_role;
+
+insert into public.organisations (id, name, slug)
+values ('0000000c-5000-0000-0000-00000000c500', 'Org Limit', 'org-limit');
+select id as limit_org from public.organisations where slug='org-limit' \gset
+
+insert into public.organisation_memberships
+  (organisation_id, user_id, role, status, joined_at)
+values (:'limit_org'::uuid, :'padmin', 'admin', 'active', now()),
+       (:'limit_org'::uuid, :'pmanager', 'manager', 'active', now());
+
+-- Starter: custom_field_limit = 5, PER ENTITY TYPE.
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'limit_org'::uuid, 'starter', 'monthly', 1, 'active', now() + interval '30 days');
+
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+
+select crm.try('U1  admin fills the Starter allowance: five contact fields',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    select %L,'contact','u'||g,'U'||g,'text' from generate_series(1,5) g$$,
+    :'limit_org'), 'ok(5)');
+-- THE ASSERTION THIS SECTION EXISTS FOR. A Server Action alone would not be
+-- enforcement; this is the statement PostgREST would run.
+select crm.try('U2  ...and the SIXTH is refused by the database',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','u6','U6','text')$$, :'limit_org'), 'denied(42501)');
+-- PER ENTITY TYPE, not per organisation (CLAUDE.md § Subscription tiers:
+-- "Starter gets 5 on contacts AND 5 on companies"). Without this, U2 is
+-- satisfied by a limit that is simply wrong.
+select crm.try('U3  POSITIVE CONTROL: a VENUE field still fits -- the limit is per entity type',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'venue','u_venue','U Venue','text')$$, :'limit_org'), 'ok(1)');
+-- A MULTI-ROW INSERT IS ONE STATEMENT, and a BEFORE ROW trigger counting its
+-- own table could plausibly not see the rows the same statement has already
+-- inserted -- which would make an array the bypass, and PostgREST accepts a
+-- JSON array. MEASURED rather than reasoned about, here and over HTTP.
+select crm.try('U3a a SIX-ROW insert in ONE statement is refused too (no bulk bypass)',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    select %L,'agency','bulk'||g,'Bulk'||g,'text' from generate_series(1,6) g$$,
+    :'limit_org'), 'denied(42501)');
+select crm.val('U3b ...and it rolled back whole -- no partial five',
+  format($$select count(*)::text from public.custom_field_definitions
+     where organisation_id=%L and entity_type='agency'$$, :'limit_org'), '0');
+
+-- The soft delete, and founder decision Q12: it FREES the slot.
+select crm.try('U4  admin REMOVES a field -- an UPDATE, because there is no DELETE grant',
+  format($$update public.custom_field_definitions set deleted_at = now()
+     where organisation_id=%L and key='u5'$$, :'limit_org'), 'ok(1)');
+select crm.try('U5  a hard DELETE is still unreachable (no grant, no policy)',
+  format($$delete from public.custom_field_definitions
+     where organisation_id=%L and key='u5'$$, :'limit_org'), 'denied(42501)');
+select crm.val('U6  ...so the removed definition is still THERE, and still readable',
+  format($$select (deleted_at is not null)::text
+     from public.custom_field_definitions
+    where organisation_id=%L and key='u5'$$, :'limit_org'), 'true');
+-- The other half of Q12, and the reason the unique constraint was deliberately
+-- NOT made partial: the removed field's KEY stays reserved, so restoring it can
+-- never collide with a field created in its place.
+--
+-- IT RUNS BEFORE U8 ON PURPOSE. The BEFORE trigger fires ahead of the unique
+-- index, so with the freed slot already taken this statement would answer
+-- 42501 (the limit) and never reach the constraint -- and the assertion would
+-- silently stop measuring the reservation. Measured, not reasoned about: the
+-- first draft had these two the other way round and U7 came back
+-- denied(42501).
+select crm.try('U7  the removed field''s KEY is still reserved -- 23505, not a second u5',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','u5','U5 again','text')$$, :'limit_org'), 'denied(23505)');
+select crm.try('U8  Q12: the removed field FREED its slot, so a sixth now fits',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','u6','U6','text')$$, :'limit_org'), 'ok(1)');
+
+-- RESTORE IS A SLOT-CONSUMING WRITE, which is why the limit is a trigger and
+-- not a WITH CHECK: a WITH CHECK cannot see OLD and so cannot tell a restore
+-- from an ordinary edit.
+select crm.try('U9  restoring the removed field is refused -- the slot it freed is taken',
+  format($$update public.custom_field_definitions set deleted_at = null
+     where organisation_id=%L and key='u5'$$, :'limit_org'), 'denied(42501)');
+-- AND THE STATE NOBODY BUILDS A FIXTURE FOR: at the limit, everything that is
+-- not a count increase still works. CLAUDE.md: a downgrade "makes features
+-- read-only or limited; it must never silently delete data".
+select crm.try('U10 AT THE LIMIT: an ordinary label edit still applies',
+  format($$update public.custom_field_definitions set label='Renamed at the limit'
+     where organisation_id=%L and key='u1'$$, :'limit_org'), 'ok(1)');
+select crm.try('U11 AT THE LIMIT: retyping a field still applies',
+  format($$update public.custom_field_definitions set field_type='number'
+     where organisation_id=%L and key='u1'$$, :'limit_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ---- THE ORACLE GUARD ------------------------------------------------------
+-- Both of these are 42501, so crm.try cannot separate them. crm.errkind reads
+-- the MESSAGE: the guard's job is that a caller with no manage_custom_fields in
+-- the TARGET organisation learns nothing about its limit state.
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select crm.errkind('U12 a NON-MEMBER at the limit gets the POLICY''s refusal, not the limit''s',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','probe','Probe','text')$$, :'limit_org'), 'policy refusal');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+-- A MEMBER without manage_custom_fields is the same case: the guard keys on the
+-- permission, not on membership.
+select crm.errkind('U12a a member WITHOUT manage_custom_fields likewise learns nothing',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','probe2','Probe','text')$$, :'limit_org'), 'policy refusal');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+-- POSITIVE CONTROL. Without it "policy refusal" above is satisfied by a
+-- trigger that never speaks to anyone.
+select crm.errkind('U12b POSITIVE CONTROL: the ADMIN at the limit does get the limit''s message',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','probe3','Probe','text')$$, :'limit_org'), 'limit message');
+reset role; reset request.jwt.claims;
+
+-- ---- PRO IS UNLIMITED, FREE IS ZERO ---------------------------------------
+update public.organisation_subscriptions set plan_id='pro'
+ where organisation_id = :'limit_org'::uuid;
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select crm.try('U13 PRO: custom_field_limit is NULL, so the sixth, seventh and eighth fit',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    select %L,'contact','p'||g,'P'||g,'text' from generate_series(1,3) g$$,
+    :'limit_org'), 'ok(3)');
+reset role; reset request.jwt.claims;
+
+-- THE DOWNGRADE. Pro at 8 contact fields moves to Starter, whose limit is 5.
+-- Nothing is deleted, everything stays readable, values stay editable, and only
+-- a NEW definition is refused. This is the over-limit state § 3 of the brief
+-- names as the one nobody builds a fixture for.
+update public.organisation_subscriptions set plan_id='starter'
+ where organisation_id = :'limit_org'::uuid;
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select crm.val('U14 DOWNGRADED to Starter: all EIGHT contact fields are still there',
+  format($$select count(*)::text from public.custom_field_definitions
+     where organisation_id=%L and entity_type='contact' and deleted_at is null$$,
+    :'limit_org'), '8');
+select crm.try('U15 DOWNGRADED: editing one of them still works',
+  format($$update public.custom_field_definitions set label='Still editable'
+     where organisation_id=%L and key='p1'$$, :'limit_org'), 'ok(1)');
+select crm.try('U16 DOWNGRADED: creating a ninth is refused',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','p9','P9','text')$$, :'limit_org'), 'denied(42501)');
+select crm.try('U17 DOWNGRADED: removing one still works -- a downgrade is not a lock',
+  format($$update public.custom_field_definitions set deleted_at = now()
+     where organisation_id=%L and key='p3'$$, :'limit_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- FREE. Its limit is 0, and CLAUDE.md gives it crm_writes = No as well -- so
+-- BOTH controls refuse, and this pair records WHICH one speaks. It matters
+-- because § N's N10 ("FREE: admin DEFINEs a custom field -> denied(42501)")
+-- was written when the entitlement policy was the only control; as of
+-- 20260829010500 the trigger now answers first, and N10 stays green for a
+-- reason its own comment does not name. Recorded rather than left to be
+-- rediscovered.
+update public.organisation_subscriptions set plan_id='free'
+ where organisation_id = :'limit_org'::uuid;
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select crm.errkind('U18 FREE: the LIMIT answers first (the trigger runs before WITH CHECK)',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','free_probe','Free','text')$$, :'limit_org'), 'limit message');
+select crm.val('U19 FREE: a downgrade to Free deletes nothing -- the seven live fields remain',
+  format($$select count(*)::text from public.custom_field_definitions
+     where organisation_id=%L and entity_type='contact' and deleted_at is null$$,
+    :'limit_org'), '7');
+reset role; reset request.jwt.claims;
+
+-- Leave the probe organisation on Starter, which is what section V writes in.
+update public.organisation_subscriptions set plan_id='starter'
+ where organisation_id = :'limit_org'::uuid;
+
+-- ===========================================================================
+-- V. CUSTOM FIELD VALUES: the RPC, the two nulls, and a deleted parent
+-- ===========================================================================
+insert into public.contacts (id, organisation_id, name)
+values ('222200c5-0000-0000-0000-0000000000c5', :'limit_org'::uuid, 'Values Probe');
+
+select id as v_text from public.custom_field_definitions
+ where organisation_id = :'limit_org'::uuid and key = 'u2' \gset
+select id as v_num from public.custom_field_definitions
+ where organisation_id = :'limit_org'::uuid and key = 'u3' \gset
+select id as v_gone from public.custom_field_definitions
+ where organisation_id = :'limit_org'::uuid and key = 'p3' \gset
+-- A definition with NO value row yet, so V8's INSERT reaches the policy rather
+-- than the (field_id, entity_id) unique index -- RLS is evaluated first, so a
+-- collision here would answer 42501 for the wrong reason.
+select id as v_free from public.custom_field_definitions
+ where organisation_id = :'limit_org'::uuid and key = 'u4' \gset
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+
+-- A MANAGER, WHO DOES NOT HOLD manage_custom_fields (A3). Filling in a value is
+-- an ordinary CRM write on the record, gated by the ENTITY's key -- § F asserts
+-- the booker/venue_manager halves of the same rule; this asserts it through the
+-- RPC the panel actually calls.
+select crm.val('V1  a manager (NO manage_custom_fields) saves two values through the RPC',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'"hello"'::jsonb, %L,'12'::jsonb))::text$$,
+    :'limit_org', :'v_text', :'v_num'), '2');
+select crm.val('V1a ...and the rows are really there, with the jsonb TYPES intact',
+  $$select string_agg(jsonb_typeof(value), ',' order by jsonb_typeof(value))
+     from public.custom_field_values
+    where entity_id='222200c5-0000-0000-0000-0000000000c5'$$, 'number,string');
+
+-- JSON null IS THE CLEAR INSTRUCTION, and it is never stored: clearing DELETES
+-- the row, which is what the DELETE grant on this table is for.
+select crm.val('V2  JSON null in the payload CLEARS -- and the row is gone, not nulled',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'null'::jsonb, %L,'99'::jsonb))::text$$,
+    :'limit_org', :'v_text', :'v_num'), '2');
+select crm.val('V2a ...leaving exactly ONE row, and no SQL NULL and no jsonb null behind',
+  $$select count(*)::text from public.custom_field_values
+    where entity_id='222200c5-0000-0000-0000-0000000000c5'$$, '1');
+
+-- A REMOVED definition must not accept new values, or "remove this field" means
+-- nothing. The RPC raises rather than silently writing fewer rows -- the
+-- shortfall check.
+select crm.val('V3  a REMOVED definition refuses new values, and the whole call rolls back',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'"revived"'::jsonb))::text$$,
+    :'limit_org', :'v_gone'), 'denied(42501)');
+
+-- ANOTHER TENANT'S DEFINITION. The composite FK on
+-- (field_id, organisation_id, entity_type) is what makes this a REFERENTIAL
+-- failure rather than a policy answer -- schema_invariants A8 measures it as
+-- postgres; this measures it as an authenticated caller who passes every
+-- policy term on the way in.
+select crm.try('V4  a value against ANOTHER tenant''s definition -> 23503, not 42501',
+  format($$insert into public.custom_field_values
+      (organisation_id, field_id, entity_type, entity_id, value)
+    values (%L,'aaaa0000-0000-0000-0000-000000000002','contact',
+            '222200c5-0000-0000-0000-0000000000c5','"cross tenant"'::jsonb)$$,
+    :'limit_org'), 'denied(23503)');
+reset role; reset request.jwt.claims;
+
+-- ---- THE TWO NULLS, PLANTED DIRECTLY ---------------------------------------
+-- Neither is producible through the write path. Both are reachable by a direct
+-- PostgREST insert, and 20260827232512 left keeping them apart to Task 5.
+-- PostgREST cannot distinguish them on the way OUT -- measured:
+-- `select row_to_json(t) from (select null::jsonb a, 'null'::jsonb b) t` is
+-- {"a":null,"b":null} -- so what is asserted here is the property that IS
+-- true: a round trip never converts one into the other, because the write path
+-- writes neither.
+insert into public.custom_field_values
+  (id, organisation_id, field_id, entity_type, entity_id, value)
+values ('bbbb00c5-0000-0000-0000-0000000000a1', :'limit_org'::uuid,
+        :'v_text'::uuid, 'contact', '222200c5-0000-0000-0000-0000000000c5', null),
+       ('bbbb00c5-0000-0000-0000-0000000000a2', :'limit_org'::uuid,
+        (select id from public.custom_field_definitions
+          where organisation_id=:'limit_org'::uuid and key='u1'),
+        'contact', '222200c5-0000-0000-0000-0000000000c5', 'null'::jsonb);
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+-- Save an UNRELATED field. Neither planted row is named in the payload, so
+-- neither may change.
+select crm.val('V5  a save of an unrelated field leaves both planted rows alone',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'42'::jsonb))::text$$,
+    :'limit_org', :'v_num'), '1');
+reset role; reset request.jwt.claims;
+select crm.val('V5a SQL NULL is still SQL NULL after the round trip',
+  $$select (value is null)::text from public.custom_field_values
+     where id='bbbb00c5-0000-0000-0000-0000000000a1'$$, 'true');
+select crm.val('V5b jsonb ''null'' is still jsonb ''null'' -- NOT converted to SQL NULL',
+  $$select (value is not null and jsonb_typeof(value) = 'null')::text
+     from public.custom_field_values
+     where id='bbbb00c5-0000-0000-0000-0000000000a2'$$, 'true');
+
+-- ---- A DELETED PARENT ------------------------------------------------------
+-- 20260829011000 puts private.entity_is_live() into the three WRITE policies
+-- and deliberately not into the SELECT one: the restore path needs a deleted
+-- record's page to render, values included.
+update public.contacts set deleted_at = now()
+ where id = '222200c5-0000-0000-0000-0000000000c5';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('V6  DELETED CONTACT: its custom field values are still READABLE',
+  $$select (count(*) > 0)::text from public.custom_field_values
+     where entity_id='222200c5-0000-0000-0000-0000000000c5'$$, 'true');
+select crm.val('V7  DELETED CONTACT: the RPC refuses -- the DB backs the parent end',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'"while deleted"'::jsonb))::text$$,
+    :'limit_org', :'v_num'), 'denied(42501)');
+select crm.try('V8  DELETED CONTACT: a direct INSERT is a LOUD 403, not a silent no-op',
+  format($$insert into public.custom_field_values
+      (organisation_id, field_id, entity_type, entity_id, value)
+    values (%L,%L,'contact','222200c5-0000-0000-0000-0000000000c5','"planted"'::jsonb)$$,
+    :'limit_org', :'v_free'), 'denied(42501)');
+-- An UPDATE refused by a USING clause matches NOTHING and answers 204 over
+-- HTTP -- the entire reason lib/crm/write.ts exists. Asserted as the DIFFERENT
+-- mechanism it is.
+select crm.try('V9  DELETED CONTACT: an UPDATE matches nothing -- ok(0), a silent 204',
+  $$update public.custom_field_values set value='"pwned"'::jsonb
+     where entity_id='222200c5-0000-0000-0000-0000000000c5'$$, 'ok(0)');
+select crm.try('V10 DELETED CONTACT: a DELETE likewise matches nothing',
+  $$delete from public.custom_field_values
+     where entity_id='222200c5-0000-0000-0000-0000000000c5'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+
+update public.contacts set deleted_at = null
+ where id = '222200c5-0000-0000-0000-0000000000c5';
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('V11 RESTORED: the same save applies again',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'"after restore"'::jsonb))::text$$,
+    :'limit_org', :'v_text'), '1');
+reset role; reset request.jwt.claims;
+
+-- ---- THE WORKSPACE TERM ON THE RPC -----------------------------------------
+-- RLS answers "may this caller write this row"; p_organisation_id answers "is
+-- this row the one this URL is about". For pmulti -- an admin of BOTH alpha and
+-- beta -- those diverge, which is the case 20260828234500 exists for.
+set role authenticated;
+set request.jwt.claims = :'pmulti_c';
+select crm.val('V12 the RIGHT rows with the WRONG organisation id -> refused',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'"wrong workspace"'::jsonb))::text$$,
+    :'beta_org', :'v_text'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ---- A READ_ONLY CALLER ----------------------------------------------------
+-- pro holds view_crm and no manage key. The empty state must not lie: they SEE
+-- the definitions and the values and cannot write either.
+insert into public.organisation_memberships
+  (organisation_id, user_id, role, status, joined_at)
+values (:'limit_org'::uuid, :'pro', 'read_only', 'active', now());
+-- The probe contact becomes THEIRS, so V14 measures the read path rather than
+-- record scope refusing it. V14a is the other half.
+update public.contacts set owner_user_id = :'pro'
+ where id = '222200c5-0000-0000-0000-0000000000c5';
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select crm.val('V13 read_only SEES the workspace''s definitions -- the empty state must not lie',
+  format($$select (count(*) >= 7)::text from public.custom_field_definitions
+     where organisation_id=%L$$, :'limit_org'), 'true');
+-- RECORD SCOPE STILL APPLIES TO THE VALUES, and the first draft of this pair
+-- got it wrong in the reassuring direction: it asserted `true` for a
+-- record-scoped caller against a contact with NO owner, and the suite returned
+-- `false`. That is the SELECT policy working --
+-- custom_field_values_select_via_entity resolves through
+-- private.entity_is_visible(), which carries the record-scope term -- so the
+-- honest statement is that a read_only user sees the values of records IN
+-- THEIR SCOPE and no others. The definitions (V13) are not record-scoped and
+-- must not be: withholding them would leave a user looking at values with no
+-- field names.
+select crm.val('V14 read_only SEES the values on a record THEY OWN',
+  $$select (count(*) > 0)::text from public.custom_field_values
+     where entity_id='222200c5-0000-0000-0000-0000000000c5'$$, 'true');
+select crm.val('V14a ...and NOT on one outside their scope -- record scope survives the panel',
+  $$select count(*)::text from public.custom_field_values
+     where entity_id='22220000-0000-0000-0000-000000000002'$$, '0');
+select crm.val('V15 ...and the RPC refuses them',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'"read only"'::jsonb))::text$$,
+    :'limit_org', :'v_text'), 'denied(42501)');
+select crm.try('V16 ...and so does a direct definition INSERT',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','ro_probe','RO','text')$$, :'limit_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ---- A SUSPENDED WORKSPACE (founder decision Q6) ---------------------------
+-- Read-only, not closed. The reads above stay open; every write closes, and the
+-- MECHANISM differs per verb -- which is the thing lib/crm/write.ts has to be
+-- able to tell apart.
+update public.organisations set deleted_at = now() where id = :'limit_org'::uuid;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('V17 SUSPENDED: values are still READABLE',
+  $$select (count(*) > 0)::text from public.custom_field_values
+     where entity_id='222200c5-0000-0000-0000-0000000000c5'$$, 'true');
+select crm.val('V18 SUSPENDED: the RPC refuses -- 42501, not a silent success',
+  format($$select public.set_custom_field_values(
+      %L,'contact','222200c5-0000-0000-0000-0000000000c5',
+      jsonb_build_object(%L,'"suspended"'::jsonb))::text$$,
+    :'limit_org', :'v_text'), 'denied(42501)');
+select crm.try('V19 SUSPENDED: a direct value UPDATE matches nothing -- ok(0), the 204 shape',
+  $$update public.custom_field_values set value='"suspended"'::jsonb
+     where entity_id='222200c5-0000-0000-0000-0000000000c5'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select crm.try('V20 SUSPENDED: a definition INSERT is a LOUD 42501',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type)
+    values (%L,'contact','susp','Susp','text')$$, :'limit_org'), 'denied(42501)');
+select crm.try('V21 SUSPENDED: removing a field matches nothing -- ok(0)',
+  format($$update public.custom_field_definitions set deleted_at = now()
+     where organisation_id=%L and key='u2'$$, :'limit_org'), 'ok(0)');
+reset role; reset request.jwt.claims;
+update public.organisations set deleted_at = null where id = :'limit_org'::uuid;
+
+-- POSITIVE CONTROL for the whole suspension block: the same statements against
+-- the reinstated workspace. Without it, "refused while suspended" is satisfied
+-- by a policy that refuses always.
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select crm.try('V22 REINSTATED: removing a field applies again',
+  format($$update public.custom_field_definitions set deleted_at = now()
+     where organisation_id=%L and key='u2'$$, :'limit_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o

@@ -1165,6 +1165,274 @@ else
 fi
 p2_sub "update public.organisations set deleted_at = null where id='$ALPHA_ORG';"
 
+
+echo
+echo "=== Custom fields: the tier limit at the API surface (Task 5) ==="
+#
+# THE POINT OF THIS BLOCK. CLAUDE.md § Permissions: "Entitlements are enforced
+# server-side -- hiding UI is not enforcement", and the anon key ships in the
+# browser bundle by design. So a Server Action that counts definitions before
+# inserting is not the control; these requests never touch the Next.js app.
+# The psql section U drives the same trigger through `authenticated` + claims,
+# which is the same mechanism -- this is the same rule at the TRANSPORT, and
+# this phase has twice found a defect that only the HTTP layer showed.
+#
+# `company` is the entity type used throughout: the psql suite defines fields
+# on artist, contact and venue in org-alpha and none on company, so the
+# starting count is zero and every number below is this block's own.
+
+cf_start=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select count(*) from public.custom_field_definitions
+    where organisation_id='$ALPHA_ORG' and entity_type='company'" | tr -d '[:space:]')
+if [ "$cf_start" = "0" ]; then
+  printf '  PASS  %-58s %s\n' "company custom fields start at zero (non-vacuous)" "$cf_start"
+else
+  printf '  FAIL  %-58s got %s want 0\n' \
+         "company custom fields start at zero (non-vacuous)" "$cf_start"
+  api_fails=$((api_fails+1))
+fi
+
+# Starter: custom_field_limit = 5, per entity type. Written with psql because
+# organisation_subscriptions is superuser-only over the API by design
+# (Foundation design note (g): an org-scoped write path there is a free
+# upgrade to Pro).
+p2_sub "insert into public.organisation_subscriptions
+          (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+        values ('$ALPHA_ORG','starter','monthly',1,'active', now() + interval '30 days')
+        on conflict (organisation_id) do update set plan_id='starter', status='active',
+          current_period_end = now() + interval '30 days';"
+
+# The allowance, in one request. PostgREST accepts a JSON array, which is one
+# INSERT statement with five rows.
+p2_code "STARTER: the aal2 OWNER POSTs the five it allows" 201 POST \
+  "custom_field_definitions" \
+  "[{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"company\",\"key\":\"h1\",\"label\":\"H1\",\"field_type\":\"text\"},
+    {\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"company\",\"key\":\"h2\",\"label\":\"H2\",\"field_type\":\"number\"},
+    {\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"company\",\"key\":\"h3\",\"label\":\"H3\",\"field_type\":\"date\"},
+    {\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"company\",\"key\":\"h4\",\"label\":\"H4\",\"field_type\":\"boolean\"},
+    {\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"company\",\"key\":\"h5\",\"label\":\"H5\",\"field_type\":\"url\"}]" \
+  "$OWN2"
+
+# THE ASSERTION THE WHOLE TASK TURNS ON: a direct PostgREST insert past the
+# limit, with the public anon key and a real session, is refused by the
+# DATABASE.
+p2_code "STARTER: the SIXTH is refused by the database, not by the app" 403 POST \
+  "custom_field_definitions" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"company\",\"key\":\"h6\",\"label\":\"H6\",\"field_type\":\"text\"}" \
+  "$OWN2"
+
+# A BULK POST IS ONE STATEMENT, AND A BEFORE ROW TRIGGER COUNTING ITS OWN
+# TABLE COULD PLAUSIBLY NOT SEE THE ROWS THE SAME STATEMENT ALREADY INSERTED --
+# which would make an array the bypass. MEASURED RATHER THAN REASONED ABOUT:
+# eight rows in one request against a limit of five is refused, so the count a
+# BEFORE trigger sees does include the statement's earlier rows.
+p2_code "an ARRAY of six in ONE request is refused too (no bulk bypass)" 403 POST \
+  "custom_field_definitions" \
+  "[{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"agency\",\"key\":\"b1\",\"label\":\"B1\",\"field_type\":\"text\"},
+    {\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"agency\",\"key\":\"b2\",\"label\":\"B2\",\"field_type\":\"text\"},
+    {\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"agency\",\"key\":\"b3\",\"label\":\"B3\",\"field_type\":\"text\"},
+    {\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"agency\",\"key\":\"b4\",\"label\":\"B4\",\"field_type\":\"text\"},
+    {\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"agency\",\"key\":\"b5\",\"label\":\"B5\",\"field_type\":\"text\"},
+    {\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"agency\",\"key\":\"b6\",\"label\":\"B6\",\"field_type\":\"text\"}]" \
+  "$OWN2"
+
+# PER ENTITY TYPE. Without this, the 403 above is satisfied by a limit that is
+# simply wrong -- and CLAUDE.md § Subscription tiers is explicit that Starter
+# gets five on contacts AND five on companies.
+p2_code "POSITIVE CONTROL: an AGENCY field still fits -- the limit is per type" 201 POST \
+  "custom_field_definitions" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"agency\",\"key\":\"b1\",\"label\":\"B1\",\"field_type\":\"text\"}" \
+  "$OWN2"
+
+# THE SOFT DELETE, over HTTP. There is no DELETE grant on this table -- the
+# composite FK's cascade would take every value with it -- so removing a field
+# is a PATCH, and the row count is the only honest signal that it applied.
+p2_range_written "removing a field is a PATCH of deleted_at, and writes a row" 1 PATCH \
+  "custom_field_definitions?organisation_id=eq.$ALPHA_ORG&entity_type=eq.company&key=eq.h5" \
+  "{\"deleted_at\":\"2026-08-29T00:00:00Z\"}" "$OWN2"
+p2_code "a hard DELETE is refused -- no grant, so the cascade is unreachable" 403 DELETE \
+  "custom_field_definitions?organisation_id=eq.$ALPHA_ORG&entity_type=eq.company&key=eq.h5" \
+  "" "$OWN2"
+
+# FOUNDER DECISION Q12, at the transport: a removed definition frees its slot.
+p2_code "Q12: the removed field freed its slot, so the sixth now fits" 201 POST \
+  "custom_field_definitions" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"company\",\"key\":\"h6\",\"label\":\"H6\",\"field_type\":\"text\"}" \
+  "$OWN2"
+# ...and the other half: RESTORING it is a slot-consuming write, which is why
+# the limit is a trigger and not a WITH CHECK -- a WITH CHECK cannot see OLD.
+#
+# A LOUD 403, NOT A SILENT 204, AND THIS WAS MEASURED RATHER THAN ASSUMED. The
+# first version of this check used p2_range_written expecting a row count of 0,
+# on the reasoning that "an UPDATE a policy refuses matches nothing" -- the rule
+# lib/crm/write.ts exists for. It came back with NO Content-Range header at all,
+# because this refusal is not a policy filtering rows: the trigger RAISES 42501,
+# which PostgREST answers 403. The distinction matters to the client -- one is a
+# silent no-op and the other is an error -- so it is asserted as the mechanism it
+# actually is.
+p2_code "restoring it is refused -- the freed slot is taken (a LOUD 403)" 403 PATCH \
+  "custom_field_definitions?organisation_id=eq.$ALPHA_ORG&entity_type=eq.company&key=eq.h5" \
+  "{\"deleted_at\":null}" "$OWN2"
+
+# AT THE LIMIT, EVERYTHING THAT IS NOT A COUNT INCREASE STILL WORKS. This is
+# the over-limit/at-limit state a downgrade produces, and CLAUDE.md is explicit
+# that it must be limited rather than broken.
+p2_range_written "AT THE LIMIT: an ordinary label edit still applies" 1 PATCH \
+  "custom_field_definitions?organisation_id=eq.$ALPHA_ORG&entity_type=eq.company&key=eq.h1" \
+  '{"label":"Renamed at the limit"}' "$OWN2"
+
+# THE PERMISSION SPLIT. manage_custom_fields is Owner/Admin only; a Manager
+# holds every other CRM key and not this one, and a Read Only user holds none.
+p2_code "a MANAGER cannot define a field (manage_custom_fields: no)" 403 POST \
+  "custom_field_definitions" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"venue\",\"key\":\"mgr\",\"label\":\"Mgr\",\"field_type\":\"text\"}" \
+  "$MGR"
+p2_code "a READ_ONLY caller cannot either" 403 POST \
+  "custom_field_definitions" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"venue\",\"key\":\"ro\",\"label\":\"RO\",\"field_type\":\"text\"}" \
+  "$RO"
+# ...but a MANAGER CAN read them, because a definition is not a record: it is
+# the label and type that make a value renderable, and withholding it would
+# leave a Standard User looking at values with no field names.
+cf_read=$(curl -s "$API/rest/v1/custom_field_definitions?select=id&organisation_id=eq.$ALPHA_ORG&entity_type=eq.company" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $MGR" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+if [ "$cf_read" -ge 5 ] 2>/dev/null; then
+  printf '  PASS  %-58s %s\n' "a manager READS every definition (view_crm)" "$cf_read"
+else
+  printf '  FAIL  %-58s got %s want >=5\n' \
+         "a manager READS every definition (view_crm)" "$cf_read"
+  api_fails=$((api_fails+1))
+fi
+
+# THE OPTIONS CONTRACT, enforced by a CHECK constraint rather than only in
+# TypeScript: a select field whose options are not [{key,label}] would render
+# an input the entity form cannot build, in a table the form has no choice but
+# to read. 400 rather than 403 -- it is a constraint violation, not a refusal.
+p2_code "malformed select OPTIONS are refused by the constraint (400)" 400 POST \
+  "custom_field_definitions" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"venue\",\"key\":\"badopts\",\"label\":\"Bad\",\"field_type\":\"single_select\",\"options\":[1,2,3]}" \
+  "$OWN2"
+p2_code "POSITIVE CONTROL: well-formed options are accepted" 201 POST \
+  "custom_field_definitions" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"venue\",\"key\":\"goodopts\",\"label\":\"Good\",\"field_type\":\"single_select\",\"options\":[{\"key\":\"a\",\"label\":\"Alpha\"}]}" \
+  "$OWN2"
+
+# FREE. Its custom_field_limit is 0, and CLAUDE.md also gives it crm_writes =
+# No -- so both controls refuse and the request is closed either way. The READ
+# stays open, because a downgrade must never hide a customer's existing data.
+p2_sub "update public.organisation_subscriptions set plan_id='free'
+        where organisation_id='$ALPHA_ORG';"
+p2_code "FREE: no custom fields at all -- the sixth company field is refused" 403 POST \
+  "custom_field_definitions" \
+  "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_type\":\"company\",\"key\":\"free1\",\"label\":\"Free\",\"field_type\":\"text\"}" \
+  "$OWN2"
+cf_free=$(curl -s "$API/rest/v1/custom_field_definitions?select=id&organisation_id=eq.$ALPHA_ORG&entity_type=eq.company" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $OWN2" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+if [ "$cf_free" -ge 5 ] 2>/dev/null; then
+  printf '  PASS  %-58s %s\n' "FREE: the fields it already has stay readable" "$cf_free"
+else
+  printf '  FAIL  %-58s got %s want >=5\n' \
+         "FREE: the fields it already has stay readable" "$cf_free"
+  api_fails=$((api_fails+1))
+fi
+
+# Restore the shipped state: no subscription row, so the gate is inert again --
+# the same clean-up the entitlement block above performs for the same reason.
+p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
+
+echo
+echo "=== Custom field VALUES at the API surface (Task 5) ==="
+#
+# The RPC is what the panel calls, and it is the one write in this task that
+# cannot be a single statement -- a form with six fields would otherwise be six
+# PostgREST requests and could half-save. p_organisation_id is mandatory and
+# there is no overload without it (20260828234500): PostgREST resolves by
+# ARGUMENT NAME, so an unscoped variant would be one omitted key away.
+
+CF_TEXT=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select id from public.custom_field_definitions
+    where organisation_id='$ALPHA_ORG' and entity_type='company' and key='h1'" | tr -d '[:space:]')
+H_COMPANY=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select id from public.companies
+    where organisation_id='$ALPHA_ORG' and deleted_at is null limit 1" | tr -d '[:space:]')
+
+cf_rpc() { # name want_http org entity_type entity_id values_json token
+  local name="$1" want="$2" org="$3" et="$4" eid="$5" vals="$6" tok="$7" code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "$API/rest/v1/rpc/set_custom_field_values" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+    -H "Content-Type: application/json" \
+    -d "{\"p_organisation_id\":$org,\"p_entity_type\":\"$et\",\"p_entity_id\":\"$eid\",\"p_values\":$vals}")
+  if [ "$code" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$code"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$code" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+cf_rpc "LIVE CONTROL: a manager saves a value through the RPC" 200 \
+  "\"$ALPHA_ORG\"" company "$H_COMPANY" "{\"$CF_TEXT\":\"filled in\"}" "$MGR"
+# THE WORKSPACE TERM. RLS answers "may this caller write this row"; the
+# organisation argument answers "is this row the one this URL is about", and
+# for a multi-org member those diverge. A real uuid, so the statement is
+# well-formed and the refusal is the predicate rather than a parse error.
+cf_rpc "the RIGHT rows with the WRONG organisation id -> refused" 403 \
+  "\"$BETA_ORG\"" company "$H_COMPANY" "{\"$CF_TEXT\":\"wrong workspace\"}" "$MGR"
+cf_rpc "a read_only caller is refused -> 403, not a 200 carrying 0" 403 \
+  "\"$ALPHA_ORG\"" company "$H_COMPANY" "{\"$CF_TEXT\":\"read only\"}" "$RO"
+# JSON null IS THE CLEAR INSTRUCTION, and it is never stored: clearing deletes
+# the row, so SQL NULL and jsonb 'null' are both unreachable through this path.
+cf_rpc "JSON null in the payload CLEARS the value" 200 \
+  "\"$ALPHA_ORG\"" company "$H_COMPANY" "{\"$CF_TEXT\":null}" "$MGR"
+cf_cleared=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select count(*) from public.custom_field_values where field_id='$CF_TEXT'" | tr -d '[:space:]')
+if [ "$cf_cleared" = "0" ]; then
+  printf '  PASS  %-58s %s\n' "...and the ROW is gone, not set to null" "$cf_cleared rows"
+else
+  printf '  FAIL  %-58s got %s want 0\n' "...and the ROW is gone, not set to null" "$cf_cleared"
+  api_fails=$((api_fails+1))
+fi
+
+# Omitting the organisation finds NO function at all, rather than an unscoped
+# one. There is deliberately no 3-argument overload to fall back to.
+code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+  "$API/rest/v1/rpc/set_custom_field_values" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $MGR" -H "Content-Type: application/json" \
+  -d "{\"p_entity_type\":\"company\",\"p_entity_id\":\"$H_COMPANY\",\"p_values\":{}}")
+if [ "$code" = "404" ]; then
+  printf '  PASS  %-58s %s\n' "omitting p_organisation_id finds NO function" "$code"
+else
+  printf '  FAIL  %-58s got %s want 404\n' "omitting p_organisation_id finds NO function" "$code"
+  api_fails=$((api_fails+1))
+fi
+
+# A DELETED PARENT. 20260829011000 puts private.entity_is_live() into the three
+# custom_field_values WRITE policies and deliberately not into the SELECT one:
+# a deleted record's page still has to render, because that is the restore path.
+p2_sub "update public.companies set deleted_at = now() where id='$H_COMPANY';"
+cf_rpc "DELETED COMPANY: the RPC refuses -- the DB backs the parent end" 403 \
+  "\"$ALPHA_ORG\"" company "$H_COMPANY" "{\"$CF_TEXT\":\"while deleted\"}" "$MGR"
+p2_sub "update public.companies set deleted_at = null where id='$H_COMPANY';"
+cf_rpc "RESTORED: the same save applies again" 200 \
+  "\"$ALPHA_ORG\"" company "$H_COMPANY" "{\"$CF_TEXT\":\"after restore\"}" "$MGR"
+
+# A SUSPENDED WORKSPACE is READ-ONLY (founder decision Q6), and the read half
+# is what makes it read-only rather than closed.
+p2_sub "update public.organisations set deleted_at = now() where id='$ALPHA_ORG';"
+cf_rpc "SUSPENDED: the RPC refuses -> 403, not a silent 200" 403 \
+  "\"$ALPHA_ORG\"" company "$H_COMPANY" "{\"$CF_TEXT\":\"suspended\"}" "$MGR"
+cf_susp=$(curl -s "$API/rest/v1/custom_field_values?select=id&organisation_id=eq.$ALPHA_ORG" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $MGR" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+if [ "$cf_susp" -ge 1 ] 2>/dev/null; then
+  printf '  PASS  %-58s %s\n' "SUSPENDED: values are still READABLE" "$cf_susp"
+else
+  printf '  FAIL  %-58s got %s want >=1\n' "SUSPENDED: values are still READABLE" "$cf_susp"
+  api_fails=$((api_fails+1))
+fi
+p2_sub "update public.organisations set deleted_at = null where id='$ALPHA_ORG';"
+cf_rpc "REINSTATED: the same save applies again (positive control)" 200 \
+  "\"$ALPHA_ORG\"" company "$H_COMPANY" "{\"$CF_TEXT\":\"reinstated\"}" "$MGR"
+
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2
   http_status=1
