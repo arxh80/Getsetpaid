@@ -207,7 +207,10 @@ export async function updateVenueAction(
   const org = auth.org;
 
   const venueId = field(formData, "venueId");
-  if (!venueId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: the same omission representation-panel.tsx's create form
+  // had, on a hidden field this time -- effectively unreachable through the
+  // rendered form, but the same line.
+  if (!venueId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const parsed = readVenue(formData);
   if (!parsed.ok) return parsed.state;
@@ -268,7 +271,8 @@ export async function deleteVenueAction(
   const org = auth.org;
 
   const venueId = field(formData, "venueId");
-  if (!venueId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden field, same line.
+  if (!venueId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const result = await commitWrite(`delete venue ${venueId}`, () =>
@@ -306,7 +310,8 @@ export async function restoreVenueAction(
   const org = auth.org;
 
   const venueId = field(formData, "venueId");
-  if (!venueId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden field, same line.
+  if (!venueId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const result = await commitWrite(`restore venue ${venueId}`, () =>
@@ -414,7 +419,8 @@ export async function addRoomAction(
   const org = auth.org;
 
   const venueId = field(formData, "venueId");
-  if (!venueId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden field, same line.
+  if (!venueId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const name = field(formData, "roomName");
   const problem = checkName(name);
@@ -477,7 +483,10 @@ export async function renameRoomAction(
 
   const venueId = field(formData, "venueId");
   const roomId = field(formData, "roomId");
-  if (!venueId || !roomId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden fields, same line.
+  if (!venueId || !roomId) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
 
   const name = field(formData, "roomName");
   const problem = checkName(name);
@@ -539,7 +548,10 @@ export async function closeRoomAction(
 
   const venueId = field(formData, "venueId");
   const roomId = field(formData, "roomId");
-  if (!venueId || !roomId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden fields, same line.
+  if (!venueId || !roomId) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
 
   const supabase = await createClient();
   const blocked = refusedEndState(
@@ -572,7 +584,10 @@ export async function reopenRoomAction(
 
   const venueId = field(formData, "venueId");
   const roomId = field(formData, "roomId");
-  if (!venueId || !roomId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden fields, same line.
+  if (!venueId || !roomId) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
 
   const supabase = await createClient();
   const blocked = refusedEndState(

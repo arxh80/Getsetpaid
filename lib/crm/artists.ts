@@ -237,7 +237,9 @@ export async function updateArtistAction(
   const org = auth.org;
 
   const artistId = field(formData, "artistId");
-  if (!artistId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: the same omission, on a hidden field this time -- so
+  // effectively unreachable through the rendered form, but the same line.
+  if (!artistId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const parsed = readArtist(formData);
   if (!parsed.ok) return parsed.state;
@@ -305,7 +307,8 @@ export async function deleteArtistAction(
   const org = auth.org;
 
   const artistId = field(formData, "artistId");
-  if (!artistId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden field, same line.
+  if (!artistId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const result = await commitWrite(`delete artist ${artistId}`, () =>
@@ -340,7 +343,8 @@ export async function restoreArtistAction(
   const org = auth.org;
 
   const artistId = field(formData, "artistId");
-  if (!artistId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden field, same line.
+  if (!artistId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const result = await commitWrite(`restore artist ${artistId}`, () =>
@@ -532,8 +536,24 @@ export async function createRepresentationAction(
 
   const artistId = field(formData, "artistId");
   const agencyId = field(formData, "agencyId");
-  if (!artistId) return { fieldErrors: { artistId: "Choose an artist." } };
-  if (!agencyId) return { fieldErrors: { agencyId: "Choose an agency." } };
+  // fix round 1, I-2: BOTH REFUSALS CARRY `values` BACK. "Submitted without
+  // picking an agency" is the ordinary first mistake on this form -- the
+  // picker defaults to an empty option -- and without this every other typed
+  // field (role, territory, named agent, both dates, exclusivity) came back
+  // empty too, the exact defect lib/crm/actions.ts's `authoriseOrg` comment
+  // states in capitals for every OTHER refusal on this form.
+  if (!artistId) {
+    return {
+      fieldErrors: { artistId: "Choose an artist." },
+      values: echoedValues(formData),
+    };
+  }
+  if (!agencyId) {
+    return {
+      fieldErrors: { agencyId: "Choose an agency." },
+      values: echoedValues(formData),
+    };
+  }
 
   const parsed = readRepresentation(formData);
   if (!parsed.ok) return parsed.state;
@@ -601,7 +621,10 @@ export async function updateRepresentationAction(
   const artistId = field(formData, "artistId");
   const agencyId = field(formData, "agencyId");
   const representationId = field(formData, "representationId");
-  if (!artistId || !representationId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden fields, same line.
+  if (!artistId || !representationId) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
 
   const parsed = readRepresentation(formData);
   if (!parsed.ok) return parsed.state;
@@ -680,7 +703,10 @@ export async function deleteRepresentationAction(
   const artistId = field(formData, "artistId");
   const agencyId = field(formData, "agencyId");
   const representationId = field(formData, "representationId");
-  if (!artistId || !representationId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden fields, same line.
+  if (!artistId || !representationId) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
 
   const supabase = await createClient();
   const blocked = refusedEndState(
@@ -748,7 +774,10 @@ export async function restoreRepresentationAction(
   const artistId = field(formData, "artistId");
   const agencyId = field(formData, "agencyId");
   const representationId = field(formData, "representationId");
-  if (!artistId || !representationId) return { error: FAILED_MESSAGE };
+  // fix round 1, I-2: same omission, hidden fields, same line.
+  if (!artistId || !representationId) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
 
   const supabase = await createClient();
   const blocked = refusedEndState(
