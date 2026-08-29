@@ -313,6 +313,33 @@ function applyCursor(
 }
 
 /** Everything that narrows the set, shared by the page query and the count. */
+/**
+ * The tables that genuinely have no `deleted_at`, and are therefore the only
+ * ones this file will read without a soft-delete predicate.
+ *
+ * ===========================================================================
+ * NOT AN OPTION, AND DELIBERATELY NOT ONE
+ * ===========================================================================
+ * `scope`'s own note says there is no value of it that omits the clause,
+ * because a list with no soft-delete predicate cannot use either partial index
+ * and would show deleted records among live ones. That rule is about tables
+ * that HAVE a soft delete. `public.merges` does not and must not: it is
+ * append-only by design -- no UPDATE grant, no DELETE grant, no updated_at,
+ * and merged_at is the creation timestamp (20260827232512). Asking PostgREST
+ * to filter a column that does not exist is a 400, and this page would render
+ * "unavailable" forever.
+ *
+ * Written as a SET KEYED ON THE TABLE rather than a caller-supplied flag, so
+ * the escape cannot be pointed at `contacts` by a copied spec. Adding a table
+ * here is a decision somebody has to write down in this file, next to the
+ * reason.
+ *
+ * BOUND TO THE DATABASE by tests/integration/list/soft-delete-tables-match-db,
+ * which fails if a table listed here grows a `deleted_at`, or if a table this
+ * repository lists reads without one.
+ */
+const TABLES_WITHOUT_SOFT_DELETE = new Set(["merges"]);
+
 function applyScope<TRow, TSort extends string, TFilter extends string>(
   query: ListQuery,
   options: FetchListPageOptions<TRow, TSort, TFilter>,
@@ -320,11 +347,21 @@ function applyScope<TRow, TSort extends string, TFilter extends string>(
   const { spec, params, organisationId, applyFilters } = options;
 
   let q = query.eq("organisation_id", organisationId);
-  // Always one of the two, never neither. See `scope`'s note above.
-  q =
-    options.scope === "deleted"
-      ? q.filter("deleted_at", "not.is", null)
-      : q.is("deleted_at", null);
+  // Always one of the two, never neither -- unless the table HAS no
+  // soft-delete column at all. See TABLES_WITHOUT_SOFT_DELETE.
+  if (!TABLES_WITHOUT_SOFT_DELETE.has(options.table)) {
+    q =
+      options.scope === "deleted"
+        ? q.filter("deleted_at", "not.is", null)
+        : q.is("deleted_at", null);
+  } else if (options.scope === "deleted") {
+    // Unreachable from any spec in this repository and cheap to make loud: a
+    // "deleted" view of a table with no deleted_at would silently render the
+    // whole table as if every row were deleted.
+    throw new Error(
+      `[list] ${options.table} has no soft-delete column, so scope: "deleted" is meaningless.`,
+    );
+  }
 
   if (params.q !== "") {
     // A top-level filter, so the value is literal -- no quoting, by

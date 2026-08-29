@@ -37,6 +37,7 @@ import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { authoriseOrg, liveInOrg, refusedEndState, stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
+import { screenAfterCreate } from "@/lib/crm/dedup";
 import {
   checkCapacity,
   checkLongText,
@@ -195,6 +196,30 @@ export async function createVenueAction(
   if (!data) return { error: FAILED_MESSAGE };
 
   revalidatePath(`/${org.slug}/venues`);
+  // DUPLICATE SCREENING, ON CREATE AND NOWHERE ELSE.
+  //
+  // On create rather than on edit, because the destructive half of it -- the
+  // auto-merge -- is bounded here to a record nobody has worked in yet, and on
+  // an edit it would destroy months of history as a side effect of fixing a
+  // typo in an email address. 20260829020000's DECISION 2 has the full
+  // argument.
+  //
+  // AFTER the insert and BEFORE the redirect: it needs the id, and its result
+  // decides where the user lands. `screenAfterCreate` never throws and never
+  // fails the create -- the record is already saved and the user has already
+  // been told so, and a missed screening is a missed hint rather than lost
+  // data.
+  const screened = await screenAfterCreate(org.id, "venue", data.id as string);
+
+  // AUTO-MERGED AWAY. The record just created shared an email address, exactly
+  // and case-insensitively, with an older one -- so it no longer exists as a
+  // separate record and redirecting to its own page would be a 404 the user
+  // caused by saving a form. They go to the record their data is now on.
+  if (screened.mergedInto) {
+    revalidatePath(`/${org.slug}/venues`);
+    redirect(`/${org.slug}/venues/${screened.mergedInto}`);
+  }
+
   redirect(`/${org.slug}/venues/${data.id as string}`);
 }
 

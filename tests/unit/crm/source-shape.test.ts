@@ -729,3 +729,98 @@ describe("the values RPC is called with the workspace, and every refusal echoes"
     expect(actions).not.toContain("return { error: REFUSED_MESSAGE };");
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK 6. The merge is the most destructive write in the phase, so the census
+// covers it too -- and the two properties below are the ones nothing else can
+// see. `pnpm typecheck` catches the missing switch arm; the RLS suite catches
+// the policy; only this catches the merge going round lib/crm/write.ts, or a
+// create quietly losing its screening call.
+// ---------------------------------------------------------------------------
+describe("the merge path goes through the shared write vocabulary", () => {
+  const merge = read("lib/crm/merge.ts");
+
+  const dedup = read("lib/crm/dedup.ts");
+
+  it("both RPCs pass p_organisation_id from the resolved org", () => {
+    // No 2-argument overload exists, by design (20260828234500): PostgREST
+    // resolves by argument name, so an unscoped variant would be one missing
+    // key away. Omitting it is a 404, which is a worse failure than a refusal
+    // because it renders as "something went wrong".
+    expect(merge).toContain(`supabase.rpc("merge_records"`);
+    expect(dedup).toContain(`supabase.rpc("screen_for_duplicates"`);
+    expect(merge).toContain("p_organisation_id: org.id");
+    expect(dedup).toContain("p_organisation_id: organisationId");
+  });
+
+  it("screenAfterCreate is NOT exported from the \"use server\" module", () => {
+    // A module carrying "use server" exports every function in it as a public
+    // HTTP endpoint, and this one takes a raw organisation uuid rather than a
+    // slug it re-resolves. The database refuses a workspace the caller is not
+    // in either way; the convention exists so nobody has to make that argument
+    // at each call site.
+    expect(merge.startsWith('"use server"')).toBe(true);
+    expect(merge).not.toContain("export async function screenAfterCreate");
+    expect(dedup).not.toContain('"use server"');
+    expect(dedup).toContain("export async function screenAfterCreate");
+  });
+
+  it("every write is classified rather than assumed", () => {
+    // A merge that reports success without applying is the worst instance of
+    // the 204 defect class in this phase -- it has destroyed one of two
+    // records. Two call sites here (the merge and the dismissal) and one in
+    // lib/crm/dedup.ts (the auto-merge).
+    expect(merge.match(/await commitWrite\(/g)).toHaveLength(2);
+    expect(dedup.match(/await commitWrite\(/g)).toHaveLength(1);
+    // And the dismissal is a PATCH, so it needs the row count for real.
+    expect(merge).toContain(`count: "exact"`);
+  });
+
+  it("every refusal carries the submitted values back", () => {
+    const bare = merge.match(/return \{ error: [A-Z_]+ \};/g);
+    expect(bare, "a refusal with no `values` discards the user's work").toBeNull();
+  });
+
+  it("the outcome switch has no default arm", () => {
+    const body = merge.slice(
+      merge.indexOf("function failureState("),
+      merge.indexOf("const PAIR_GONE_MESSAGE"),
+    );
+    expect(body).toContain("switch (result.outcome)");
+    expect(
+      body,
+      "a `default` arm turns a new WriteResult member from a compile error " +
+        "into a wrong sentence shown to somebody who has just merged two records",
+    ).not.toContain("default:");
+  });
+
+  it("the field choices are read from an allowlist, never from the form's keys", () => {
+    // A `choice_organisation_id=duplicate` in a forged submit must not be read
+    // at all. `readChoices` iterates the allowlist and looks each key up, which
+    // is the opposite of iterating the FormData.
+    expect(merge).toContain("MERGEABLE_COLUMNS[entityType]");
+    expect(merge).toContain("for (const key of keys)");
+  });
+});
+
+describe("every create screens for duplicates", () => {
+  // Screening is one line per create action and its absence is completely
+  // silent: the record saves, the user is happy, and the duplicate is never
+  // flagged. Five entity modules, five chances to omit it in a copied file.
+  for (const file of [
+    "lib/crm/contacts.ts",
+    "lib/crm/companies.ts",
+    "lib/crm/artists.ts",
+    "lib/crm/agencies.ts",
+    "lib/crm/venues.ts",
+  ]) {
+    it(`${file} calls screenAfterCreate and honours an auto-merge`, () => {
+      const source = read(file);
+      expect(source).toContain("screenAfterCreate(org.id,");
+      // AND redirects to the surviving record. Without this branch a contact
+      // that auto-merged away redirects to its own page, which is now a
+      // soft-deleted record -- a 404 the user caused by saving a form.
+      expect(source).toContain("if (screened.mergedInto)");
+    });
+  }
+});

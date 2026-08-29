@@ -61,6 +61,7 @@ import {
   UNKNOWN_MESSAGE,
   type WriteResult,
 } from "@/lib/crm/write";
+import { screenAfterCreate } from "@/lib/crm/dedup";
 import {
   checkEmail,
   checkName,
@@ -339,6 +340,30 @@ export async function createContactAction(
 
   revalidatePath(`/${org.slug}/contacts`);
   // Outside any try/catch: redirect() works by throwing.
+  // DUPLICATE SCREENING, ON CREATE AND NOWHERE ELSE.
+  //
+  // On create rather than on edit, because the destructive half of it -- the
+  // auto-merge -- is bounded here to a record nobody has worked in yet, and on
+  // an edit it would destroy months of history as a side effect of fixing a
+  // typo in an email address. 20260829020000's DECISION 2 has the full
+  // argument.
+  //
+  // AFTER the insert and BEFORE the redirect: it needs the id, and its result
+  // decides where the user lands. `screenAfterCreate` never throws and never
+  // fails the create -- the record is already saved and the user has already
+  // been told so, and a missed screening is a missed hint rather than lost
+  // data.
+  const screened = await screenAfterCreate(org.id, "contact", data.id as string);
+
+  // AUTO-MERGED AWAY. The record just created shared an email address, exactly
+  // and case-insensitively, with an older one -- so it no longer exists as a
+  // separate record and redirecting to its own page would be a 404 the user
+  // caused by saving a form. They go to the record their data is now on.
+  if (screened.mergedInto) {
+    revalidatePath(`/${org.slug}/contacts`);
+    redirect(`/${org.slug}/contacts/${screened.mergedInto}`);
+  }
+
   redirect(`/${org.slug}/contacts/${data.id as string}`);
 }
 

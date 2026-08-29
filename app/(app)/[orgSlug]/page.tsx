@@ -147,6 +147,49 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
         ) : null}
       </section>
 
+      {/* HOUSEKEEPING, LINKED FOR EVERYONE WHO CAN READ IT.
+          Same rule as CRM_AREAS above and for the same reason: both pages are
+          READABLE by every role that reaches this one (they hold view_crm),
+          and each says on its own face who can act on what it shows. Hiding a
+          link because the viewer cannot WRITE there is the "hidden loses the
+          explanation" mistake components/crm/write-gate.tsx exists to avoid,
+          applied to a read -- and it is worse here than on a list, because a
+          Booker who cannot find the queue also cannot tell anybody that two
+          records need merging. */}
+      <section className="border border-rule bg-surface p-5">
+        <h2 className="text-xl font-bold text-ink">Keeping the records clean</h2>
+        <p className="mt-2 max-w-prose text-base text-ink-muted">
+          Two copies of the same venue is how a booking ends up on the wrong
+          one. New records are checked as they are created.
+        </p>
+        <ul className="mt-4 flex flex-col border-t border-rule">
+          <li className="border-b border-rule py-3">
+            <Link
+              href={`/${org.slug}/duplicates`}
+              className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+            >
+              Possible duplicates
+            </Link>
+            <p className="mt-1 max-w-prose text-base text-ink-muted">
+              Pairs that look like the same record, waiting for somebody to
+              decide. An Owner, Admin or Manager can merge them.
+            </p>
+          </li>
+          <li className="border-b border-rule py-3">
+            <Link
+              href={`/${org.slug}/merges`}
+              className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+            >
+              Merge history
+            </Link>
+            <p className="mt-1 max-w-prose text-base text-ink-muted">
+              What was merged into what, and every value the merge discarded.
+              Permanent — merges cannot be edited or removed.
+            </p>
+          </li>
+        </ul>
+      </section>
+
       {others.length > 0 ? (
         <section className="flex flex-col gap-4">
           <h2 className="text-xl font-bold text-ink">Your other workspaces</h2>
