@@ -1,6 +1,11 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { buildListHref, narrowedBy, type ListParams } from "@/lib/list/params";
+import {
+  buildListHref,
+  narrowedBy,
+  type ListParams,
+  type RawSearchParams,
+} from "@/lib/list/params";
 import type { ListPage, RecoveryReason } from "@/lib/list/query";
 import type { ListColumn, ListSpec } from "@/lib/list/spec";
 import { ListPager } from "./list-pager";
@@ -46,6 +51,12 @@ interface EntityListProps<TRow, TSort extends string, TFilter extends string> {
    * their colleagues. See the Contacts page for why this is not optional.
    */
   scopeNote?: ReactNode;
+  /**
+   * The page's whole `searchParams`, on a page that carries a SECOND list.
+   * See HrefOverrides.preserve. Only the artist detail page passes it today;
+   * absent, every href this component builds is byte-identical to before.
+   */
+  preserve?: RawSearchParams;
 }
 
 export function EntityList<TRow, TSort extends string, TFilter extends string>({
@@ -58,6 +69,7 @@ export function EntityList<TRow, TSort extends string, TFilter extends string>({
   narrowed,
   emptyState,
   scopeNote,
+  preserve,
 }: EntityListProps<TRow, TSort, TFilter>) {
   // A FAILED QUERY IS NOT AN EMPTY LIST. Foundation shipped exactly that on
   // the members page and it is still in FOLLOW-UPS.md; the brief names it as
@@ -202,6 +214,7 @@ export function EntityList<TRow, TSort extends string, TFilter extends string>({
                       spec={spec}
                       params={params}
                       basePath={basePath}
+                      preserve={preserve}
                     />
                   ))}
                 </tr>
@@ -233,6 +246,7 @@ export function EntityList<TRow, TSort extends string, TFilter extends string>({
             lastCursor={page.lastCursor}
             shown={rows.length}
             noun={spec.noun}
+            preserve={preserve}
           />
         </>
       )}
@@ -293,11 +307,13 @@ function HeaderCell<TRow, TSort extends string, TFilter extends string>({
   spec,
   params,
   basePath,
+  preserve,
 }: {
   column: ListColumn<TRow, TSort>;
   spec: ListSpec<TSort, TFilter>;
   params: ListParams<TSort, TFilter>;
   basePath: string;
+  preserve?: RawSearchParams;
 }) {
   const base =
     "px-3 py-2 text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase " +
@@ -334,6 +350,7 @@ function HeaderCell<TRow, TSort extends string, TFilter extends string>({
     >
       <Link
         href={buildListHref(spec, basePath, params, {
+          preserve,
           sort: column.sortKey,
           dir: nextDirection,
         })}

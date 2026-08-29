@@ -1,5 +1,9 @@
 import Link from "next/link";
-import { buildListHref, type ListParams } from "@/lib/list/params";
+import {
+  buildListHref,
+  type ListParams,
+  type RawSearchParams,
+} from "@/lib/list/params";
 import type { Cursor } from "@/lib/list/cursor";
 import type { ListSpec } from "@/lib/list/spec";
 
@@ -81,6 +85,11 @@ interface ListPagerProps<TSort extends string, TFilter extends string> {
   /** Rows on this page, for the "showing n" label. */
   shown: number;
   noun: { one: string; many: string };
+  /**
+   * The page's whole `searchParams`, on a page that carries a SECOND list.
+   * See HrefOverrides.preserve; absent, nothing changes.
+   */
+  preserve?: RawSearchParams;
 }
 
 export function ListPager<TSort extends string, TFilter extends string>({
@@ -93,8 +102,10 @@ export function ListPager<TSort extends string, TFilter extends string>({
   lastCursor,
   shown,
   noun,
+  preserve,
 }: ListPagerProps<TSort, TFilter>) {
   const selfHref = buildListHref(spec, basePath, params, {
+    preserve,
     cursor: params.cursor
       ? { direction: params.cursorDirection ?? "after", cursor: params.cursor }
       : null,
@@ -103,6 +114,7 @@ export function ListPager<TSort extends string, TFilter extends string>({
   const previousHref =
     hasPrevious && firstCursor
       ? buildListHref(spec, basePath, params, {
+          preserve,
           cursor: { direction: "before", cursor: firstCursor },
         })
       : selfHref;
@@ -110,6 +122,7 @@ export function ListPager<TSort extends string, TFilter extends string>({
   const nextHref =
     hasNext && lastCursor
       ? buildListHref(spec, basePath, params, {
+          preserve,
           cursor: { direction: "after", cursor: lastCursor },
         })
       : selfHref;

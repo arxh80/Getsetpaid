@@ -106,7 +106,44 @@ export interface ListSpec<
   readonly sort: Readonly<Record<TSort, SortOption>>;
   readonly defaultSort: TSort;
   readonly filters: Readonly<Record<TFilter, FilterDefinition>>;
+  /**
+   * A QUERY-STRING NAMESPACE FOR EVERY KEY THIS SPEC OWNS, for a page that
+   * carries TWO list surfaces.
+   *
+   * Added by Task 7 because the artist detail page already had one -- the fee
+   * history (`ARTIST_FEE_LIST`) -- and the activity timeline made it two. Both
+   * read `after` and `before` off the same `searchParams`, so without this the
+   * timeline's cursor would be handed to the fee list, which would compare a
+   * timestamp against `occurred_on`, get a PostgREST 400, and render "we
+   * couldn't load" on a page where nothing is wrong. That is the exact failure
+   * `Cursor.sort` was added to close, reached through a second list on one page
+   * rather than through a stale link -- and `Cursor.sort` does NOT close it,
+   * because the two specs' sort keys are different strings and either could
+   * legitimately be the one in the cursor.
+   *
+   * Prepended verbatim to `q`, `sort`, `dir`, `size`, `after`, `before` and to
+   * every filter key, by `parseListParams` and `buildListHref` together. Omit
+   * it and every key is bare, which is what the five entity lists, the two
+   * duplicate queues, the merge history and the fee history all still do --
+   * so this field changes nothing anywhere it is not set.
+   *
+   * INCLUDE THE SEPARATOR. It is a prefix, not a segment: write
+   * `"activity_"`, not `"activity"`. `defineListSpec` refuses a value that
+   * would not survive a round trip.
+   */
+  readonly paramPrefix?: string;
 }
+
+/**
+ * The shape a prefix must have.
+ *
+ * Lower-case, and ending in the separator so the caller cannot half-write it.
+ * The characters are the ones that need no percent-encoding in a query key,
+ * because a prefix that encodes differently in `buildListHref` than the
+ * browser sends it back would make every prefixed list read page one forever
+ * and nothing would error.
+ */
+const PARAM_PREFIX = /^[a-z][a-z0-9]*_$/;
 
 /**
  * Query-string keys lib/list/params.ts owns.
@@ -158,6 +195,14 @@ export function defineListSpec<TSort extends string, TFilter extends string>(
         `[list] ${spec.entity}: filter "${key}" collides with a reserved query parameter (${RESERVED_PARAMS.join(", ")}). Rename the filter.`,
       );
     }
+  }
+  if (
+    spec.paramPrefix !== undefined &&
+    !PARAM_PREFIX.test(spec.paramPrefix)
+  ) {
+    throw new Error(
+      `[list] ${spec.entity}: paramPrefix "${spec.paramPrefix}" must be lower-case alphanumerics ending in "_" (e.g. "activity_").`,
+    );
   }
   if (!Object.hasOwn(spec.sort, spec.defaultSort)) {
     // Unreachable through the types; reachable through a cast or a JS caller,

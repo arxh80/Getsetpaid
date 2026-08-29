@@ -29,7 +29,7 @@ import {
   type Cursor,
   type CursorDirection,
 } from "./cursor";
-import type { ListSpec, SortDirection } from "./spec";
+import { RESERVED_PARAMS, type ListSpec, type SortDirection } from "./spec";
 
 /**
  * Server-side page-size ceiling. CLAUDE.md § Non-negotiable rules: "no
@@ -122,6 +122,22 @@ export function isNarrowed<TSort extends string, TFilter extends string>(
   return by.search || by.filters;
 }
 
+/**
+ * The query-string key this spec uses for one of its own parameters.
+ *
+ * ONE FUNCTION, USED BY BOTH THE PARSER AND THE BUILDER, because the failure
+ * mode of two copies is silent: a builder that writes `activity_after` against
+ * a parser that reads `after` produces a link that always renders page one,
+ * with no error anywhere. See ListSpec.paramPrefix for why the namespace
+ * exists at all.
+ */
+function paramKey<TSort extends string, TFilter extends string>(
+  spec: ListSpec<TSort, TFilter>,
+  key: string,
+): string {
+  return spec.paramPrefix ? `${spec.paramPrefix}${key}` : key;
+}
+
 function first(value: string | string[] | undefined): string | null {
   // A repeated parameter (`?sort=name&sort=email`) arrives as an array. Taking
   // the first and ignoring the rest is deliberate: the alternative is to
@@ -154,21 +170,23 @@ export function parseListParams<TSort extends string, TFilter extends string>(
   // that admits every member of Object.prototype. That is a real bypass of a
   // control whose entire job is to be un-bypassable, and it is the reason
   // tests/unit/list/params.test.ts probes the prototype keys by name.
-  const rawSort = first(raw.sort);
+  const rawSort = first(raw[paramKey(spec, "sort")]);
   const sort: TSort =
     rawSort !== null && Object.hasOwn(spec.sort, rawSort)
       ? (rawSort as TSort)
       : spec.defaultSort;
 
   // ---- direction -----------------------------------------------------
-  const rawDir = first(raw.dir);
+  const rawDir = first(raw[paramKey(spec, "dir")]);
   const dir: SortDirection =
     rawDir === "asc" || rawDir === "desc"
       ? rawDir
       : spec.sort[sort].defaultDirection;
 
   // ---- search --------------------------------------------------------
-  const q = (first(raw.q) ?? "").trim().slice(0, MAX_SEARCH_LENGTH);
+  const q = (first(raw[paramKey(spec, "q")]) ?? "")
+    .trim()
+    .slice(0, MAX_SEARCH_LENGTH);
 
   // ---- filters -------------------------------------------------------
   // Two allowlists, not one: the KEY must be a filter this entity declares,
@@ -178,7 +196,7 @@ export function parseListParams<TSort extends string, TFilter extends string>(
   const filters = {} as Record<TFilter, string>;
   for (const key of Object.keys(spec.filters) as TFilter[]) {
     const definition = spec.filters[key];
-    const candidate = first(raw[key]);
+    const candidate = first(raw[paramKey(spec, key)]);
     const known = definition.choices.some((c) => c.value === candidate);
     filters[key] = known && candidate !== null
       ? candidate
@@ -199,7 +217,7 @@ export function parseListParams<TSort extends string, TFilter extends string>(
   //
   // A number this DOES understand is still clamped, so the ceiling is enforced
   // by the clamp and not by the parse: `?size=10000` is 50, not 10000.
-  const rawSizeText = first(raw.size) ?? "";
+  const rawSizeText = first(raw[paramKey(spec, "size")]) ?? "";
   const rawSize = /^\d+$/.test(rawSizeText) ? Number(rawSizeText) : Number.NaN;
   const pageSize =
     Number.isFinite(rawSize) && rawSize > 0
@@ -209,8 +227,10 @@ export function parseListParams<TSort extends string, TFilter extends string>(
   // ---- cursor --------------------------------------------------------
   // `after` wins if both are present. They cannot both be meaningful, and
   // preferring one deterministically beats erroring on a hand-edited URL.
-  const after = decodeCursor(first(raw.after));
-  const before = after ? null : decodeCursor(first(raw.before));
+  const after = decodeCursor(first(raw[paramKey(spec, "after")]));
+  const before = after
+    ? null
+    : decodeCursor(first(raw[paramKey(spec, "before")]));
   const decoded = after ?? before;
 
   // A CURSOR MADE UNDER A DIFFERENT SORT IS DISCARDED, not used. Its `value`
@@ -238,6 +258,25 @@ export function parseListParams<TSort extends string, TFilter extends string>(
 }
 
 export interface HrefOverrides<TSort extends string, TFilter extends string> {
+  /**
+   * QUERY PARAMETERS BELONGING TO SOMETHING ELSE ON THIS PAGE, carried
+   * through instead of dropped.
+   *
+   * Hand it the page's whole `searchParams`; this builder removes its own keys
+   * from it before re-emitting the rest, so it is safe to pass everything and
+   * a caller cannot leak a stale cursor of its own back into the URL.
+   *
+   * WITHOUT IT, TWO LISTS ON ONE PAGE FIGHT. `buildListHref` builds from
+   * scratch -- deliberately, so a sort change cannot carry a cursor from an
+   * ordering that no longer exists -- and on the artist detail page that meant
+   * paging the activity timeline silently returned the fee history to its
+   * first page, and the reverse. Neither is an error and neither says
+   * anything, which is what makes it worth fixing rather than documenting.
+   *
+   * Only pages with two list surfaces pass it. Absent, this builder behaves
+   * exactly as it did before Task 7.
+   */
+  readonly preserve?: RawSearchParams;
   readonly q?: string;
   readonly sort?: TSort;
   readonly dir?: SortDirection;
@@ -268,29 +307,52 @@ export function buildListHref<TSort extends string, TFilter extends string>(
 ): string {
   const search = new URLSearchParams();
 
+  // FOREIGN KEYS FIRST, so this spec's own values below overwrite rather than
+  // duplicate if `preserve` happens to contain one. `ownKeys` is built from
+  // the same paramKey() the writes below use, so a namespaced spec strips its
+  // namespaced keys and a bare one strips bare keys.
+  if (overrides.preserve) {
+    const ownKeys = new Set<string>([
+      ...RESERVED_PARAMS.map((key) => paramKey(spec, key)),
+      ...Object.keys(spec.filters).map((key) => paramKey(spec, key)),
+    ]);
+    for (const [key, value] of Object.entries(overrides.preserve)) {
+      if (ownKeys.has(key)) continue;
+      // A repeated parameter arrives as an array; carry the first, for the
+      // same reason `first()` reads the first -- the alternative is to decide
+      // what a duplicate MEANS for a key this spec does not own.
+      const single = Array.isArray(value) ? value[0] : value;
+      if (typeof single === "string") search.set(key, single);
+    }
+  }
+
   const q = overrides.q ?? params.q;
-  if (q !== "") search.set("q", q);
+  if (q !== "") search.set(paramKey(spec, "q"), q);
 
   const sort = overrides.sort ?? params.sort;
-  if (sort !== spec.defaultSort) search.set("sort", sort);
+  if (sort !== spec.defaultSort) search.set(paramKey(spec, "sort"), sort);
 
   const dir = overrides.dir ?? (overrides.sort ? undefined : params.dir);
   const effectiveDir = dir ?? spec.sort[sort].defaultDirection;
   if (effectiveDir !== spec.sort[sort].defaultDirection) {
-    search.set("dir", effectiveDir);
+    search.set(paramKey(spec, "dir"), effectiveDir);
   }
 
   for (const key of Object.keys(spec.filters) as TFilter[]) {
     const value = overrides.filters?.[key] ?? params.filters[key];
-    if (value !== spec.filters[key].choices[0].value) search.set(key, value);
+    if (value !== spec.filters[key].choices[0].value) {
+      search.set(paramKey(spec, key), value);
+    }
   }
 
   const pageSize = overrides.pageSize ?? params.pageSize;
-  if (pageSize !== DEFAULT_PAGE_SIZE) search.set("size", String(pageSize));
+  if (pageSize !== DEFAULT_PAGE_SIZE) {
+    search.set(paramKey(spec, "size"), String(pageSize));
+  }
 
   if (overrides.cursor) {
     search.set(
-      overrides.cursor.direction,
+      paramKey(spec, overrides.cursor.direction),
       encodeCursor(overrides.cursor.cursor),
     );
   }
