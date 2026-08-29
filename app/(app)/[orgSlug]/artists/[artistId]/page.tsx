@@ -33,6 +33,7 @@ import { deleteArtistAction, restoreArtistAction } from "@/lib/crm/artists";
 import { loadCustomFieldPanel } from "@/lib/crm/custom-field-queries";
 import { CustomFieldsPanel } from "@/components/crm/custom-fields-panel";
 import { Alert } from "@/components/ui/alert";
+import { MergedIntoNotice } from "@/components/crm/merged-notice";
 import {
   DeleteRecordForm,
   RestoreRecordForm,
@@ -96,6 +97,10 @@ export default async function ArtistDetailPage({
   searchParams,
 }: PageProps<"/[orgSlug]/artists/[artistId]">) {
   const { orgSlug, artistId } = await params;
+  // `?merged=1` -- see components/crm/merged-notice.tsx. A FLAG, never the
+  // merged-away record's name: that name is personal data and a query string is
+  // logged, bookmarked and pasted into support tickets.
+  const justMerged = (await searchParams).merged === "1";
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
@@ -170,6 +175,9 @@ export default async function ArtistDetailPage({
 
   return (
     <div className="flex flex-col gap-8">
+      {justMerged ? (
+        <MergedIntoNotice noun="artist" historyHref={`/${org.slug}/merges`} />
+      ) : null}
       <div className="flex flex-col gap-3">
         <p className="text-sm text-ink-muted">
           <Link

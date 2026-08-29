@@ -7,7 +7,7 @@ import { isRecordScopedRole } from "@/lib/crm/record-scope";
 import {
   columnLabel,
   entityHref,
-  entityLabel,
+  entityNoun,
   mapMerge,
   MERGE_LIST,
   MERGE_SELECT,
@@ -211,7 +211,7 @@ function mergeColumns(
               that is the right trade: a merges row whose subject has since been
               hard-deleted still renders, which is the case this history exists
               for. */}
-          {row.winnerName ?? `This ${entityLabel(row.entityType).toLowerCase()}`}
+          {row.winnerName ?? `This ${entityNoun(row.entityType)}`}
         </Link>
       ),
     },

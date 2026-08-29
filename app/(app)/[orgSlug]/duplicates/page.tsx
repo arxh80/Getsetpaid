@@ -9,8 +9,9 @@ import {
   CANDIDATE_SELECT,
   DUPLICATE_LIST,
   entityHref,
-  entityLabel,
+  entityNoun,
   mapCandidate,
+  mergeBlockedExplanation,
   reasonLabel,
   type CandidateFilterKey,
   type CandidateRow,
@@ -122,9 +123,10 @@ export default async function DuplicatesPage({
             explanation belongs where the rows are. */}
         {access.canWrite ? null : (
           <p className="max-w-prose border border-rule bg-surface px-3 py-3 text-sm text-ink-muted">
-            <span className="font-semibold text-ink">You can read this queue,</span>{" "}
-            and merging records isn’t something your role in this workspace can
-            do. {access.explanation}
+            <span className="font-semibold text-ink">
+              You can read this queue, and not act on it.
+            </span>{" "}
+            {mergeBlockedExplanation(access)}
           </p>
         )}
       </div>
@@ -245,7 +247,7 @@ function candidateColumns(
             {row.label}
           </Link>
           <span className="text-sm text-ink-muted">
-            two {entityLabel(row.entityType).toLowerCase()} records
+            two {entityNoun(row.entityType)} records
           </span>
         </span>
       ),

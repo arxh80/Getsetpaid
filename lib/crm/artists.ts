@@ -247,7 +247,7 @@ export async function createArtistAction(
   // caused by saving a form. They go to the record their data is now on.
   if (screened.mergedInto) {
     revalidatePath(`/${org.slug}/artists`);
-    redirect(`/${org.slug}/artists/${screened.mergedInto}`);
+    redirect(`/${org.slug}/artists/${screened.mergedInto}?merged=1`);
   }
 
   redirect(`/${org.slug}/artists/${data.id as string}`);

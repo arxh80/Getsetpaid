@@ -361,7 +361,7 @@ export async function createContactAction(
   // caused by saving a form. They go to the record their data is now on.
   if (screened.mergedInto) {
     revalidatePath(`/${org.slug}/contacts`);
-    redirect(`/${org.slug}/contacts/${screened.mergedInto}`);
+    redirect(`/${org.slug}/contacts/${screened.mergedInto}?merged=1`);
   }
 
   redirect(`/${org.slug}/contacts/${data.id as string}`);

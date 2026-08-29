@@ -209,7 +209,7 @@ export async function createCompanyAction(
   // caused by saving a form. They go to the record their data is now on.
   if (screened.mergedInto) {
     revalidatePath(`/${org.slug}/companies`);
-    redirect(`/${org.slug}/companies/${screened.mergedInto}`);
+    redirect(`/${org.slug}/companies/${screened.mergedInto}?merged=1`);
   }
 
   redirect(`/${org.slug}/companies/${data.id as string}`);

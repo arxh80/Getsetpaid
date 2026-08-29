@@ -7,13 +7,13 @@ import {
   columnLabel,
   displayValue,
   entityHref,
-  entityLabel,
+  entityNoun,
   loadMergePair,
+  mergeBlockedExplanation,
   MERGEABLE_COLUMNS,
   reasonLabel,
 } from "@/lib/crm/dedup";
 import { MergeForm, type MergeFieldRow } from "@/components/crm/merge-form";
-import { WriteBlockedNote } from "@/components/crm/write-gate";
 
 // One flagged pair, side by side.
 //
@@ -80,7 +80,25 @@ export default async function ReviewDuplicatePage({
     })),
   ];
 
-  const label = entityLabel(entityType).toLowerCase();
+  const noun = entityNoun(entityType);
+
+  // ===========================================================================
+  // TWO RECORDS WITH THE SAME NAME IS THE CASE THIS SCREEN IS FOR
+  // ===========================================================================
+  // Found in a browser, on an exact-name duplicate -- which is the commonest
+  // thing the queue holds, because an exact name match never auto-merges and
+  // always lands here. Every field row said "from Ines Duarte" twice, and the
+  // summary sentence read "Ines Duarte will be deleted and merged into Ines
+  // Duarte." The screen was asking the user to choose between two sides it gave
+  // no way to tell apart.
+  //
+  // The disambiguator is the ONLY thing that reliably differs: when they were
+  // added. Applied only when the names collide, because "Ines Duarte (added 20
+  // Aug 2026)" on every row is noise in the common case where the names already
+  // distinguish them.
+  const sameName = keep.name === duplicate.name;
+  const sideName = (record: typeof keep): string =>
+    sameName ? `${record.name} (added ${formatDate(record.createdAt)})` : record.name;
 
   return (
     <div className="flex flex-col gap-6">
@@ -97,7 +115,7 @@ export default async function ReviewDuplicatePage({
           {keep.name}
         </h1>
         <p className="max-w-prose text-base text-ink-muted">
-          Two {label} records that look like the same one.
+          Two {noun} records that look like the same one.
           {candidate ? ` Flagged because: ${reasonLabel(candidate.reason).toLowerCase()}.` : ""}
         </p>
       </div>
@@ -106,7 +124,20 @@ export default async function ReviewDuplicatePage({
           five disabled buttons each repeating "this workspace is suspended" is
           noise on screen and a wall between a screen-reader user and the
           records. The form below is rendered inert by the same flag. */}
-      <WriteBlockedNote access={access} id="merge-blocked" />
+      {/* NOT WriteBlockedNote. Its sentence comes from getCrmWriteAccess(),
+          which for reason "permission" says "your role can view records but not
+          change them" -- true of manage_contacts and false of merge_records,
+          which a Standard User lacks while changing records all day. See
+          mergeBlockedExplanation(). */}
+      {access.canWrite ? null : (
+        <p
+          id="merge-blocked"
+          className="max-w-prose border border-rule bg-surface px-3 py-3 text-sm text-ink-muted"
+        >
+          <span className="font-semibold text-ink">Read-only.</span>{" "}
+          {mergeBlockedExplanation(access)}
+        </p>
+      )}
 
       {access.canWrite ? (
         <MergeForm
@@ -114,13 +145,13 @@ export default async function ReviewDuplicatePage({
           entityType={entityType}
           keep={{
             id: keep.id,
-            name: keep.name,
+            name: sideName(keep),
             createdAt: keep.createdAt,
             href: entityHref(org.slug, entityType, keep.id),
           }}
           duplicate={{
             id: duplicate.id,
-            name: duplicate.name,
+            name: sideName(duplicate),
             createdAt: duplicate.createdAt,
             href: entityHref(org.slug, entityType, duplicate.id),
           }}
@@ -135,7 +166,11 @@ export default async function ReviewDuplicatePage({
         // the honest version of that, and it is the same information the merge
         // form shows -- with the values side by side, which is the useful part
         // even when the decision belongs to somebody else.
-        <ReadOnlyComparison keepName={keep.name} duplicateName={duplicate.name} rows={rows} />
+        <ReadOnlyComparison
+          keepName={sideName(keep)}
+          duplicateName={sideName(duplicate)}
+          rows={rows}
+        />
       )}
     </div>
   );
@@ -217,4 +252,14 @@ function Absent() {
       <span className="sr-only">Not recorded</span>
     </span>
   );
+}
+
+/** en-GB and Europe/London explicitly -- CLAUDE.md § Non-functional targets. */
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "Europe/London",
+  });
 }

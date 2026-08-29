@@ -217,7 +217,7 @@ export async function createVenueAction(
   // caused by saving a form. They go to the record their data is now on.
   if (screened.mergedInto) {
     revalidatePath(`/${org.slug}/venues`);
-    redirect(`/${org.slug}/venues/${screened.mergedInto}`);
+    redirect(`/${org.slug}/venues/${screened.mergedInto}?merged=1`);
   }
 
   redirect(`/${org.slug}/venues/${data.id as string}`);

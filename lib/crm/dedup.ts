@@ -29,6 +29,7 @@ import {
   type CustomFieldEntityType,
   type CustomFieldDefinition,
 } from "@/lib/crm/custom-fields";
+import type { CrmWriteAccess } from "@/lib/crm/write-access";
 import { defineListSpec } from "@/lib/list/spec";
 import { commitWrite } from "@/lib/crm/write";
 import { createClient } from "@/lib/supabase/server";
@@ -118,6 +119,62 @@ export function entityHref(
 
 export function entityLabel(entityType: MergeEntityType): string {
   return ENTITY_TYPE_LABELS[entityType];
+}
+
+/**
+ * The SINGULAR noun, lower case, for prose about a pair of records.
+ *
+ * ENTITY_TYPE_LABELS is plural -- it names the tab strip on the custom-fields
+ * settings screen ("Contacts", "Venues"), which is a list of sections and is
+ * right to be. Lower-casing it for a sentence produced "two contacts records"
+ * on the review queue and "Two contacts records that look like the same one"
+ * on the merge screen, on every row and every pair. Found in a browser; not
+ * visible to tsc, eslint or any test, because both strings are grammatical
+ * TypeScript.
+ */
+const ENTITY_NOUN: Readonly<Record<MergeEntityType, string>> = {
+  company: "company",
+  contact: "contact",
+  agency: "agency",
+  artist: "artist",
+  venue: "venue",
+};
+
+export function entityNoun(entityType: MergeEntityType): string {
+  return ENTITY_NOUN[entityType];
+}
+
+/**
+ * Why this caller cannot merge, in a sentence that is TRUE OF MERGING.
+ *
+ * ===========================================================================
+ * getCrmWriteAccess()'s OWN SENTENCE IS WRONG HERE, AND WAS SHOWN TO A USER
+ * ===========================================================================
+ * `CrmWriteAccess.explanation` for `reason: "permission"` reads "Your role in
+ * this workspace can view records but not change them." That is exactly right
+ * for `manage_contacts` -- the key it was written for. Passed
+ * `merge_records`, which the same function happily accepts, it renders that
+ * sentence to a STANDARD USER, who can create, edit and delete records all day
+ * and cannot merge two of them. Seen in a browser on the review queue; the
+ * behaviour was correct (no controls, the write refused) and the sentence was
+ * a false statement about the reader's own account.
+ *
+ * The other two reasons are untouched, because they ARE true of merging: a
+ * suspended workspace is read-only for everything, and a Free-tier workspace
+ * has no CRM writes at all.
+ *
+ * Kept beside the queue rather than pushed into lib/crm/write-access.ts on
+ * purpose. That module's explanations are keyed on WHY a write is blocked, not
+ * on WHICH write -- adding a per-permission dimension to it would mean every
+ * caller choosing a phrasing, which is how the five entity modules would drift
+ * apart. One permission needs a different sentence; one permission gets one.
+ */
+export function mergeBlockedExplanation(access: CrmWriteAccess): string {
+  return access.canWrite
+    ? ""
+    : access.reason === "permission"
+      ? "Merging two records is something an Owner, an Admin or a Manager does — ask one of them, or send them a link to this page."
+      : access.explanation;
 }
 
 // ---------------------------------------------------------------------------

@@ -137,7 +137,7 @@ export async function createAgencyAction(
   // caused by saving a form. They go to the record their data is now on.
   if (screened.mergedInto) {
     revalidatePath(`/${org.slug}/agencies`);
-    redirect(`/${org.slug}/agencies/${screened.mergedInto}`);
+    redirect(`/${org.slug}/agencies/${screened.mergedInto}?merged=1`);
   }
 
   redirect(`/${org.slug}/agencies/${data.id as string}`);

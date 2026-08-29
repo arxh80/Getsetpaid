@@ -6,7 +6,7 @@ import { getCurrentOrg } from "@/lib/auth";
 import { isRecordScopedRole } from "@/lib/crm/record-scope";
 import {
   entityHref,
-  entityLabel,
+  entityNoun,
   mapResolvedCandidate,
   reasonLabel,
   RESOLVED_LIST,
@@ -194,7 +194,7 @@ function resolvedColumns(
             {row.label}
           </Link>
           <span className="text-sm text-ink-muted">
-            two {entityLabel(row.entityType).toLowerCase()} records
+            two {entityNoun(row.entityType)} records
           </span>
         </span>
       ),
