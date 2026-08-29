@@ -5162,11 +5162,24 @@ select crm.val('W39b ...and GAINED the one only the loser had (not discarded)',
   $$select value #>> '{}' from public.custom_field_values
      where entity_id='4d000000-0000-0000-0000-000000000001'
        and field_id='4b000000-0000-0000-0000-000000000002'$$, 'CARRIED-DEAL');
+-- THE DEFAULT DIRECTION: no choice given, both records hold the field, so the
+-- winner keeps its own and the loser's is the one discarded. `->> 'discarded'`
+-- rather than `->> 'loser'` since 20260829030000, which gives custom fields the
+-- same {from, chosen, discarded} shape the ordinary columns already had.
 select crm.val('W39c the discarded value is recorded, not lost',
   $$select (field_resolution -> 'custom_fields' -> 'values'
-              -> '4b000000-0000-0000-0000-000000000001' ->> 'loser')
+              -> '4b000000-0000-0000-0000-000000000001' ->> 'discarded')
      from public.merges where loser_id='4d000000-0000-0000-0000-000000000002'$$,
   'DISCARDED-RIDER');
+select crm.val('W39c2 ...and it says which side the survivor came from',
+  $$select (field_resolution -> 'custom_fields' -> 'values'
+              -> '4b000000-0000-0000-0000-000000000001' ->> 'from')
+     from public.merges where loser_id='4d000000-0000-0000-0000-000000000002'$$,
+  'winner');
+select crm.val('W39c3 ...and field_resolution is at version 2',
+  $$select (field_resolution ->> 'version')
+     from public.merges where loser_id='4d000000-0000-0000-0000-000000000002'$$,
+  '2');
 select crm.val('W39d the winner''s explicit field choice was applied and the loser''s value recorded',
   $$select (field_resolution -> 'fields' -> 'title' ->> 'discarded')
      from public.merges where loser_id='4d000000-0000-0000-0000-000000000002'$$,
@@ -5412,6 +5425,103 @@ select crm.val('W83 each of the two merges wrote BOTH audit rows',
        and action in ('records.merged','records.merged.fields')$$, '4');
 select crm.val('W84 ...and the field-level row carries NAMES, never values',
   $$select (bool_and(after::text not like '%DISCARDED%'))::text
+     from public.audit_events
+     where organisation_id='a0a00000-0000-0000-0000-00000000000a'
+       and action='records.merged.fields'$$, 'true');
+
+
+-- ---------------------------------------------------------------------------
+-- W90-W97. REVIEW FINDING I-1: CHOOSING THE LOSER'S VALUE FOR A FIELD THE
+-- WINNER ALSO HOLDS.
+--
+-- The carry-over ends `on conflict (field_id, entity_id) do update set value =
+-- excluded.value`, so this path OVERWRITES a value the winner had. Until
+-- 20260829030000 the record of it was built from the loser's rows alone --
+-- {"<field id>": {"loser": …}} -- so the winner's overwritten value appeared
+-- nowhere: no `from`, no `chosen`, no `discarded`. W39c asserts the DEFAULT
+-- direction and cannot see this one, which is why it needs its own pair.
+--
+-- Its own records, at the END of the section, so nothing above shifts: W83
+-- counts the audit rows of the two merges before it and this adds a third.
+-- ---------------------------------------------------------------------------
+insert into public.contacts
+  (id, organisation_id, owner_user_id, name, created_at)
+values ('4d000000-0000-0000-0000-00000000000a','a0a00000-0000-0000-0000-00000000000a',
+        :'pmanager','Overwrite Winner', now() - interval '4 days'),
+       ('4d000000-0000-0000-0000-00000000000b','a0a00000-0000-0000-0000-00000000000a',
+        :'pmanager','Overwrite Loser', now());
+-- BOTH records hold BOTH fields. `rider` is the one the merge is told to take
+-- from the loser; `deal` is the control that is left to the default.
+insert into public.custom_field_values (organisation_id, field_id, entity_type, entity_id, value)
+values ('a0a00000-0000-0000-0000-00000000000a','4b000000-0000-0000-0000-000000000001',
+        'contact','4d000000-0000-0000-0000-00000000000a','"WINNER-RIDER-OVERWRITTEN"'::jsonb),
+       ('a0a00000-0000-0000-0000-00000000000a','4b000000-0000-0000-0000-000000000001',
+        'contact','4d000000-0000-0000-0000-00000000000b','"LOSER-RIDER-CHOSEN"'::jsonb),
+       ('a0a00000-0000-0000-0000-00000000000a','4b000000-0000-0000-0000-000000000002',
+        'contact','4d000000-0000-0000-0000-00000000000a','"WINNER-DEAL-KEPT"'::jsonb),
+       ('a0a00000-0000-0000-0000-00000000000a','4b000000-0000-0000-0000-000000000002',
+        'contact','4d000000-0000-0000-0000-00000000000b','"LOSER-DEAL-DISCARDED"'::jsonb);
+
+select crm.val('W90 PRECONDITION: both records hold both custom fields',
+  $$select count(*)::text from public.custom_field_values
+     where entity_id in ('4d000000-0000-0000-0000-00000000000a',
+                         '4d000000-0000-0000-0000-00000000000b')$$, '4');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('W91 the merge takes ONE custom field from the loser explicitly',
+  $$select public.merge_records(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-00000000000a',
+      '4d000000-0000-0000-0000-00000000000b',
+      '{}'::jsonb,
+      '{"4b000000-0000-0000-0000-000000000001":"loser"}'::jsonb)$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select crm.val('W92 the winner now holds the LOSER''s value for that field',
+  $$select value #>> '{}' from public.custom_field_values
+     where entity_id='4d000000-0000-0000-0000-00000000000a'
+       and field_id='4b000000-0000-0000-0000-000000000001'$$, 'LOSER-RIDER-CHOSEN');
+-- THE ASSERTION THE FINDING IS ABOUT. Before 20260829030000 this returned
+-- <null>: the winner's value was overwritten and recorded nowhere, so the
+-- support path in 20260829020000's DECISION 5 -- which re-files the loser's
+-- values over the winner's -- had nothing to put back.
+select crm.val('W93 ...and the WINNER''s overwritten value is in field_resolution',
+  $$select (field_resolution -> 'custom_fields' -> 'values'
+              -> '4b000000-0000-0000-0000-000000000001' ->> 'discarded')
+     from public.merges where loser_id='4d000000-0000-0000-0000-00000000000b'$$,
+  'WINNER-RIDER-OVERWRITTEN');
+select crm.val('W94 ...with `from` naming the side that survived',
+  $$select (field_resolution -> 'custom_fields' -> 'values'
+              -> '4b000000-0000-0000-0000-000000000001' ->> 'from')
+     from public.merges where loser_id='4d000000-0000-0000-0000-00000000000b'$$,
+  'loser');
+select crm.val('W95 ...and `chosen` naming the value that survived',
+  $$select (field_resolution -> 'custom_fields' -> 'values'
+              -> '4b000000-0000-0000-0000-000000000001' ->> 'chosen')
+     from public.merges where loser_id='4d000000-0000-0000-0000-00000000000b'$$,
+  'LOSER-RIDER-CHOSEN');
+-- POSITIVE CONTROL, in the SAME merge: the field with no choice went the other
+-- way, so W93-W95 are measuring the choice and not a function that always
+-- reports 'loser'.
+select crm.val('W96 CONTROL: the unchosen field kept the winner''s value',
+  $$select value #>> '{}' from public.custom_field_values
+     where entity_id='4d000000-0000-0000-0000-00000000000a'
+       and field_id='4b000000-0000-0000-0000-000000000002'$$, 'WINNER-DEAL-KEPT');
+select crm.val('W97 CONTROL: ...and recorded the loser''s as discarded, from the winner',
+  $$select (field_resolution -> 'custom_fields' -> 'values'
+              -> '4b000000-0000-0000-0000-000000000002' ->> 'from') || '/' ||
+           (field_resolution -> 'custom_fields' -> 'values'
+              -> '4b000000-0000-0000-0000-000000000002' ->> 'discarded')
+     from public.merges where loser_id='4d000000-0000-0000-0000-00000000000b'$$,
+  'winner/LOSER-DEAL-DISCARDED');
+-- The sweep still ran, and the audit payload still carries no values.
+select crm.val('W98 the loser''s values were still swept',
+  $$select count(*)::text from public.custom_field_values
+     where entity_id='4d000000-0000-0000-0000-00000000000b'$$, '0');
+select crm.val('W99 ...and neither value reached audit_events',
+  $$select (bool_and(after::text not like '%RIDER%'
+                     and after::text not like '%DEAL%'))::text
      from public.audit_events
      where organisation_id='a0a00000-0000-0000-0000-00000000000a'
        and action='records.merged.fields'$$, 'true');
