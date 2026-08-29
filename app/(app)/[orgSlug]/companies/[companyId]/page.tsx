@@ -1,3 +1,9 @@
+import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import {
+  activityIsScoped,
+  activityParams,
+  fetchActivityPage,
+} from "@/lib/crm/activity";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -32,8 +38,9 @@ const MANAGE_NOTE = "company-manage-blocked";
 
 // One company. The other side of the contact_companies join.
 //
-// Task 7's activity timeline lands below the People panel, same as on a
-// contact. No placeholder -- see the contact detail page's header for why.
+// The Task 7 activity timeline sits below the People panel, same as on a
+// contact -- one shared component over public.activity_events. See the contact
+// detail page's header, and lib/crm/activity.ts for the contract.
 
 export async function generateMetadata({
   params,
@@ -117,6 +124,19 @@ export default async function CompanyDetailPage({
         ? null
         : access.explanation;
   const basePath = `/${org.slug}/companies`;
+
+  // THE TIMELINE'S OWN PAGE OF ITS OWN LIST. `activityParams` reads only keys
+  // beginning `activity_`, and not even `activity_q` -- there is no search
+  // control on this surface (lib/crm/activity.ts). So it cannot be confused by
+  // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
+  // later phase adds to this route.
+  const activityListParams = activityParams(await searchParams);
+  const activity = await fetchActivityPage(
+    org.id,
+    "company",
+    company.id,
+    activityListParams,
+  );
 
   return (
     <div className="flex flex-col gap-8">
@@ -221,7 +241,18 @@ export default async function CompanyDetailPage({
         />
       )}
 
-      {/* Task 7's activity timeline goes here. */}
+      {/* THE SHARED ACTIVITY TIMELINE (Task 7). One component, five pages,
+          and every later phase's sources arrive as branches of
+          public.activity_events rather than as a second component --
+          lib/crm/activity.ts's header is the contract. */}
+      <ActivityTimeline
+        orgSlug={org.slug}
+        subjectType="company"
+        page={activity}
+        params={activityListParams}
+        basePath={`${basePath}/${company.id}`}
+        recordScoped={activityIsScoped(org.role)}
+      />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">
         <h2 className="text-xl font-bold text-ink">Manage</h2>

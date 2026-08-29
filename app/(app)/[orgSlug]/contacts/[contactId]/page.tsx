@@ -1,3 +1,9 @@
+import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import {
+  activityIsScoped,
+  activityParams,
+  fetchActivityPage,
+} from "@/lib/crm/activity";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -29,17 +35,18 @@ import { ContactCompanyPanel } from "@/components/crm/link-panel";
 // One contact.
 //
 // ===========================================================================
-// WHERE TASK 7'S TIMELINE GOES, AND WHY THERE IS A GAP RATHER THAN A STUB
+// THE ACTIVITY TIMELINE (Task 7), BELOW THE JOIN PANEL
 // ===========================================================================
-// The activity timeline (notes, tasks, meetings, email activity) is Task 7 and
-// belongs at the bottom of this page, below the join panel, as a full-width
-// section. The layout is already the two-column-on-wide/stacked-on-narrow
-// shape it needs, and nothing here has to move for it to land.
+// One shared component on all five detail pages, over ONE relation --
+// public.activity_events, a security_invoker view that unions the CRM tables
+// into a uniform event row. Phase 3, 4 and 5 add their sources as BRANCHES of
+// that view rather than as a second timeline; lib/crm/activity.ts's header is
+// the contract, and 20260829040000 is the view.
 //
-// There is deliberately NO placeholder heading. "Activity — coming soon" is a
-// dead affordance of the same class the Foundation review caught three times,
-// and an empty <section> is a thing someone later has to work out the purpose
-// of. A comment costs nothing and says more.
+// It is fetched with a plain await rather than inside a <Suspense>, matching
+// the serial style this page already has for loadContact, the join panel and
+// the custom fields. It costs ~8-10 ms; see the Task 7 report, which records
+// that as a choice rather than an oversight.
 //
 // ===========================================================================
 // A DELETED CONTACT RENDERS, AND THAT IS THE RESTORE PATH
@@ -144,6 +151,19 @@ export default async function ContactDetailPage({
         ? null
         : access.explanation;
   const basePath = `/${org.slug}/contacts`;
+
+  // THE TIMELINE'S OWN PAGE OF ITS OWN LIST. `activityParams` reads only keys
+  // beginning `activity_`, and not even `activity_q` -- there is no search
+  // control on this surface (lib/crm/activity.ts). So it cannot be confused by
+  // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
+  // later phase adds to this route.
+  const activityListParams = activityParams(await searchParams);
+  const activity = await fetchActivityPage(
+    org.id,
+    "contact",
+    contact.id,
+    activityListParams,
+  );
 
   return (
     <div className="flex flex-col gap-8">
@@ -335,7 +355,18 @@ export default async function ContactDetailPage({
         />
       )}
 
-      {/* Task 7's activity timeline goes here. See the file header. */}
+      {/* THE SHARED ACTIVITY TIMELINE (Task 7). One component, five pages,
+          and every later phase's sources arrive as branches of
+          public.activity_events rather than as a second component --
+          lib/crm/activity.ts's header is the contract. */}
+      <ActivityTimeline
+        orgSlug={org.slug}
+        subjectType="contact"
+        page={activity}
+        params={activityListParams}
+        basePath={`${basePath}/${contact.id}`}
+        recordScoped={activityIsScoped(org.role)}
+      />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">
         <h2 className="text-xl font-bold text-ink">Manage</h2>

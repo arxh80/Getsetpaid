@@ -1,3 +1,9 @@
+import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import {
+  activityIsScoped,
+  activityParams,
+  fetchActivityPage,
+} from "@/lib/crm/activity";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -125,6 +131,19 @@ export default async function VenueDetailPage({
         ? null
         : access.explanation;
   const basePath = `/${org.slug}/venues`;
+
+  // THE TIMELINE'S OWN PAGE OF ITS OWN LIST. `activityParams` reads only keys
+  // beginning `activity_`, and not even `activity_q` -- there is no search
+  // control on this surface (lib/crm/activity.ts). So it cannot be confused by
+  // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
+  // later phase adds to this route.
+  const activityListParams = activityParams(await searchParams);
+  const activity = await fetchActivityPage(
+    org.id,
+    "venue",
+    venue.id,
+    activityListParams,
+  );
 
   return (
     <div className="flex flex-col gap-8">
@@ -290,7 +309,18 @@ export default async function VenueDetailPage({
         />
       )}
 
-      {/* Task 7's activity timeline goes here. */}
+      {/* THE SHARED ACTIVITY TIMELINE (Task 7). One component, five pages,
+          and every later phase's sources arrive as branches of
+          public.activity_events rather than as a second component --
+          lib/crm/activity.ts's header is the contract. */}
+      <ActivityTimeline
+        orgSlug={org.slug}
+        subjectType="venue"
+        page={activity}
+        params={activityListParams}
+        basePath={`${basePath}/${venue.id}`}
+        recordScoped={activityIsScoped(org.role)}
+      />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">
         <h2 className="text-xl font-bold text-ink">Manage</h2>

@@ -1,3 +1,9 @@
+import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import {
+  activityIsScoped,
+  activityParams,
+  fetchActivityPage,
+} from "@/lib/crm/activity";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -58,7 +64,9 @@ import {
 // both panels would offer them a panel that refuses. T22h-T22k measure both
 // halves on the same session.
 //
-// Task 7's activity timeline lands below the representation panel.
+// The Task 7 activity timeline sits below the representation panel -- the same
+// shared component the other four detail pages mount, over
+// public.activity_events. See lib/crm/activity.ts for the contract.
 
 export async function generateMetadata({
   params,
@@ -165,6 +173,19 @@ export default async function AgencyDetailPage({
         : access.explanation;
   const basePath = `/${org.slug}/agencies`;
 
+  // THE TIMELINE'S OWN PAGE OF ITS OWN LIST. `activityParams` reads only keys
+  // beginning `activity_`, and not even `activity_q` -- there is no search
+  // control on this surface (lib/crm/activity.ts). So it cannot be confused by
+  // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
+  // later phase adds to this route.
+  const activityListParams = activityParams(await searchParams);
+  const activity = await fetchActivityPage(
+    org.id,
+    "agency",
+    agency.id,
+    activityListParams,
+  );
+
   return (
     <div className="flex flex-col gap-8">
       {justMerged ? (
@@ -270,9 +291,18 @@ export default async function AgencyDetailPage({
         />
       )}
 
-      {/* Task 7's activity timeline goes here. No placeholder heading: a dead
-          affordance is worse than a comment, and an empty <section> is a thing
-          someone later has to work out the purpose of. */}
+      {/* THE SHARED ACTIVITY TIMELINE (Task 7). One component, five pages,
+          and every later phase's sources arrive as branches of
+          public.activity_events rather than as a second component --
+          lib/crm/activity.ts's header is the contract. */}
+      <ActivityTimeline
+        orgSlug={org.slug}
+        subjectType="agency"
+        page={activity}
+        params={activityListParams}
+        basePath={`${basePath}/${agency.id}`}
+        recordScoped={activityIsScoped(org.role)}
+      />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">
         <h2 className="text-xl font-bold text-ink">Manage</h2>

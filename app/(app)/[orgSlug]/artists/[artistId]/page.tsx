@@ -1,3 +1,9 @@
+import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import {
+  activityIsScoped,
+  activityParams,
+  fetchActivityPage,
+} from "@/lib/crm/activity";
 import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -172,6 +178,21 @@ export default async function ArtistDetailPage({
 
   const raw = (await searchParams) as RawSearchParams;
   const feeParams = parseListParams(ARTIST_FEE_LIST, raw);
+
+  // THE ONLY PAGE IN THIS PHASE WITH TWO LISTS ON IT, and the reason
+  // ACTIVITY_LIST carries `paramPrefix: "activity_"`. Without the namespace
+  // both `parseListParams` calls would read the same `after`, and the fee list
+  // would compare the timeline's timestamp against `occurred_on` -- a
+  // PostgREST 400 rendered as "we couldn't load fees" on a page where nothing
+  // is wrong. `raw` is passed to BOTH as `preserve` below, so paging either
+  // one leaves the other where it was.
+  const activityListParams = activityParams(raw);
+  const activity = await fetchActivityPage(
+    org.id,
+    "artist",
+    artist.id,
+    activityListParams,
+  );
 
   return (
     <div className="flex flex-col gap-8">
@@ -355,6 +376,7 @@ export default async function ArtistDetailPage({
             artistId={artist.id}
             listParams={feeParams}
             basePath={`${basePath}/${artist.id}`}
+            preserve={raw}
           />
         </Suspense>
       </section>
@@ -378,8 +400,19 @@ export default async function ArtistDetailPage({
         />
       )}
 
-      {/* Task 7's activity timeline goes here. No placeholder heading: a dead
-          affordance is worse than a comment. */}
+      {/* THE SHARED ACTIVITY TIMELINE (Task 7). One component, five pages,
+          and every later phase's sources arrive as branches of
+          public.activity_events rather than as a second component --
+          lib/crm/activity.ts's header is the contract. */}
+      <ActivityTimeline
+        orgSlug={org.slug}
+        subjectType="artist"
+        page={activity}
+        params={activityListParams}
+        basePath={`${basePath}/${artist.id}`}
+        recordScoped={activityIsScoped(org.role)}
+        preserve={raw}
+      />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">
         <h2 className="text-xl font-bold text-ink">Manage</h2>
@@ -425,11 +458,19 @@ async function FeeHistory({
   artistId,
   listParams,
   basePath,
+  preserve,
 }: {
   organisationId: string;
   artistId: string;
   listParams: ListParams<ArtistFeeSortKey, ArtistFeeFilterKey>;
   basePath: string;
+  /**
+   * The page's whole query string. THIS PAGE HAS A SECOND LIST -- the activity
+   * timeline -- and without this every fee-history link would rebuild the URL
+   * without the timeline's cursor and quietly send it back to its first page.
+   * See HrefOverrides.preserve.
+   */
+  preserve: RawSearchParams;
 }) {
   const page = await fetchListPage<
     ArtistFeeRow,
@@ -464,6 +505,7 @@ async function FeeHistory({
       columns={feeColumns()}
       rowKey={(row) => row.id}
       narrowed={isNarrowed(ARTIST_FEE_LIST, listParams)}
+      preserve={preserve}
       emptyState={
         <div className="border border-rule bg-surface p-5">
           <h2 className="text-xl font-bold text-ink">No fees recorded</h2>

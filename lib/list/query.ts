@@ -337,8 +337,33 @@ function applyCursor(
  * BOUND TO THE DATABASE by tests/integration/list/soft-delete-tables-match-db,
  * which fails if a table listed here grows a `deleted_at`, or if a table this
  * repository lists reads without one.
+ *
+ * ADDED BY TASK 7: `public.activity_events`. It is a VIEW, so it has no
+ * columns of its own to soft-delete with -- each branch decides for itself
+ * what a deleted row means, and they do not agree, which is why one column
+ * could not express it:
+ *
+ *   * the five entity branches DO NOT filter their subject's `deleted_at`,
+ *     deliberately. The detail route serves a soft-deleted record -- that is
+ *     how restore is reached -- and a timeline that vanished on that page
+ *     would take the record's own deletion entry with it.
+ *   * `record_deleted` exists BECAUSE the subject is deleted. Filtering it
+ *     would remove the one entry that is only ever true of a deleted record.
+ *   * `link_removed` is the same shape on the two join tables that have a
+ *     `deleted_at`.
+ *
+ * FOUND IN A BROWSER, WITH EVERY GATE GREEN. Omitting this entry does not fail
+ * to compile, lint, or any of the 813 unit and integration tests, 843 psql
+ * assertions or 174 HTTP checks that were green at the moment it was found --
+ * none of them calls `fetchListPage` against this view. It renders
+ * "We couldn't load this contact's activity just now" on every detail page in
+ * the product, with `column activity_events.deleted_at does not exist` in the
+ * server log. tests/integration/list/soft-delete-tables-match-db.test.ts now
+ * asserts the OTHER direction too -- every relation a `fetchListPage` call
+ * names is either soft-deletable or listed here -- so the next omission is red
+ * before it is a browser finding.
  */
-const TABLES_WITHOUT_SOFT_DELETE = new Set(["merges"]);
+const TABLES_WITHOUT_SOFT_DELETE = new Set(["merges", "activity_events"]);
 
 function applyScope<TRow, TSort extends string, TFilter extends string>(
   query: ListQuery,
