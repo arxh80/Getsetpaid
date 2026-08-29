@@ -1500,6 +1500,13 @@ MERGE_ORG="b0b00000-0000-0000-0000-00000000000b"
 HM_W="4d0000ff-0000-0000-0000-000000000001"   # older -> the winner
 HM_L="4d0000ff-0000-0000-0000-000000000002"   # newer -> the loser
 HM_N="4d0000ff-0000-0000-0000-000000000003"   # a fuzzy-name match, pstd1's
+# The OWNER's own pair. Separate records, because the aal1 refusal and the aal2
+# success have to be the SAME caller on the SAME pair to be a controlled pair,
+# and a merge consumes the pair it runs on -- so it cannot be the one the
+# manager's positive control at the bottom needs. Named nothing like "Ines", so
+# they do not turn up in the fuzzy screening the checks above count.
+HM_OW="4d0000ff-0000-0000-0000-000000000004"  # older -> the Owner's winner
+HM_OL="4d0000ff-0000-0000-0000-000000000005"  # newer -> the Owner's loser
 
 p2_sub "insert into public.organisations (id, name, slug)
         values ('$MERGE_ORG','Org HTTP Merge','org-http-merge')
@@ -1517,7 +1524,11 @@ p2_sub "insert into public.organisations (id, name, slug)
                 'INES@http.test', now() - interval '2 days'),
                ('$HM_L','$MERGE_ORG','${P2ID[pmanager]}','Ines Duarte',
                 'ines@http.test', now()),
-               ('$HM_N','$MERGE_ORG','${P2ID[pstd1]}','Ines Duart', null, now())
+               ('$HM_N','$MERGE_ORG','${P2ID[pstd1]}','Ines Duart', null, now()),
+               ('$HM_OW','$MERGE_ORG','${P2ID[powner]}','Bella Nkemelu',
+                null, now() - interval '2 days'),
+               ('$HM_OL','$MERGE_ORG','${P2ID[powner]}','Bella Nkemelu',
+                null, now())
         on conflict (id) do nothing;"
 
 # SCHEMA PLACEMENT. The unscoped probe is the function that would hand a
@@ -1589,12 +1600,48 @@ p2_code "read_only merges (no merge_records)"           403 POST "rpc/merge_reco
         "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$RO"
 p2_code "standard_user merges (no merge_records)"       403 POST "rpc/merge_records" \
         "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$STD"
-# $OWN2, NOT $OWN. Owner is an MFA-required role, so an aal1 owner session holds
-# no merge_records at all -- the refusal would be the MFA gate rather than
-# anything this task built, and the check would pass for the wrong reason.
-p2_code "aal1 OWNER merges -> refused by the MFA gate, not by this task" 403 POST \
+# ----------------------------------------------------------------------------
+# THE OWNER, AT BOTH ASSURANCE LEVELS, ON THE SAME PAIR.
+#
+# Review finding I-2 was that this block carried the comment "$OWN2, NOT $OWN
+# ... the check would pass for the wrong reason" above a check that then passed
+# $OWN -- so the only Owner check in the whole Task 6 block was an aal1 refusal
+# under a header describing an aal2 one, and nothing anywhere proved an Owner
+# can merge at all. The rule the brief states is that Owner over HTTP uses
+# $OWN2; the rule this file lives by is that a comment describes what the line
+# under it does.
+#
+# So both are here, and they are a CONTROLLED PAIR: same user, same two records,
+# same request body, and the only difference is the assurance level of the
+# token. That is what makes the 403 attributable to the aal gate rather than to
+# a merge that refuses everybody -- which is precisely what a lone refusal
+# cannot establish.
+#
+# $OWN is aal1 by construction ("$OWN keeps its aal1 meaning; $OWN2 is the
+# elevated session", :637) and $OWN2 is a REAL TOTP elevation, asserted to be
+# aal2 at :732 before any of these run -- so if the elevation ever silently
+# fails, that check goes red rather than these two quietly measuring the same
+# session twice.
+p2_code "aal1 OWNER merges -> 403, and this is the MFA gate refusing" 403 POST \
         "rpc/merge_records" \
-        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$OWN"
+        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_OW\",\"p_loser_id\":\"$HM_OL\"}" "$OWN"
+p2_code "aal2 OWNER merges the SAME pair -> 200: an Owner CAN merge" 200 POST \
+        "rpc/merge_records" \
+        "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_OW\",\"p_loser_id\":\"$HM_OL\"}" "$OWN2"
+# A 200 from a PostgREST RPC is not proof that anything moved -- merge_records()
+# returns a uuid, and a function that did nothing and returned one would look
+# identical from here. So the outcome is read out of the database.
+hm_owner=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select (select count(*) from public.contacts where id='$HM_OL' and deleted_at is not null)
+        ||'/'|| (select count(*) from public.merges
+                  where loser_id='$HM_OL' and merged_by='${P2ID[powner]}')" | tr -d '[:space:]')
+if [ "$hm_owner" = "1/1" ]; then
+  printf '  PASS  %-58s %s\n' "...the Owner's loser is soft-deleted and attributed" "$hm_owner"
+else
+  printf '  FAIL  %-58s got %s want 1/1\n' \
+         "...the Owner's loser is soft-deleted and attributed" "$hm_owner"
+  api_fails=$((api_fails+1))
+fi
 # TENANT BREAKOUT, over HTTP: the request an attacker actually sends.
 p2_code "TENANT BREAKOUT: merging an ALPHA record from org-http-merge" 403 POST \
         "rpc/merge_records" \
@@ -1631,7 +1678,7 @@ p2_code "REINSTATED: the manager's merge applies (positive control)" 200 POST \
         "{\"p_organisation_id\":\"$MERGE_ORG\",\"p_entity_type\":\"contact\",\"p_winner_id\":\"$HM_W\",\"p_loser_id\":\"$HM_L\"}" "$MGR"
 hm_after=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
   "select (select count(*) from public.contacts where id='$HM_L' and deleted_at is not null)
-        ||'/'|| (select count(*) from public.merges where organisation_id='$MERGE_ORG')
+        ||'/'|| (select count(*) from public.merges where loser_id='$HM_L')
         ||'/'|| (select count(*) from public.merge_candidates
                   where organisation_id='$MERGE_ORG' and deleted_at is null)" | tr -d '[:space:]')
 if [ "$hm_after" = "1/1/0" ]; then
