@@ -1,0 +1,50 @@
+-- Phase 2 (Core CRM), Task 5: correct a comment that cited a test which does
+-- not exist.
+--
+-- Additive and behaviour-free: this migration re-issues one `comment on
+-- function` and changes nothing else. No existing migration file is edited --
+-- the same treatment 20260828190000_correct_list_index_notes.sql and
+-- 20260828200000_correct_leakproofness_clause_and_write_cost.sql already gave
+-- to comments that turned out to be wrong.
+--
+-- ===========================================================================
+-- WHAT WAS WRONG
+-- ===========================================================================
+-- 20260829010000 grants `authenticated` EXECUTE on
+-- private.custom_field_options_valid(), because a CHECK constraint's
+-- expression is evaluated as the INSERTing role and without the grant every
+-- client insert into custom_field_definitions would fail with a PRIVILEGE
+-- error from the constraint rather than with a constraint violation -- a
+-- refusal nobody could diagnose. That reasoning is correct.
+--
+-- The comment beside the grant then said:
+--
+--     "Measured on this stack rather than assumed -- see schema_invariants.sql
+--      V2, which inserts as `authenticated` and expects a constraint
+--      violation, not a privilege one."
+--
+-- THERE IS NO V2 IN schema_invariants.sql. That test was never written. The
+-- sentence is the exact failure mode this phase's ledger keeps recording --
+-- a claim about behaviour, written instead of run, wrong in the reassuring
+-- direction -- and it is worse than an unsupported claim because it names a
+-- specific test a reader could go and look for.
+--
+-- ===========================================================================
+-- WHAT ACTUALLY MEASURES IT, AND WHAT THAT MEASUREMENT SHOWS
+-- ===========================================================================
+-- Two real checks, both added by the same task:
+--
+--   * rls_phase2_crm.sql U20/U20a -- as `authenticated` with real claims,
+--     malformed options are denied(23514) (a CHECK violation) and well-formed
+--     options are ok(1). A missing EXECUTE grant would be 42501, which is a
+--     different string in the same column.
+--   * run-rls-tests.sh, "malformed select OPTIONS are refused by the
+--     constraint (400)" against its 201 positive control. Over HTTP a
+--     constraint violation is 400 and a privilege error is 403, so the two
+--     are distinguishable at the transport as well.
+--
+-- The grant itself is unchanged and still correct. Only the sentence about
+-- what proved it was false.
+
+comment on function private.custom_field_options_valid(jsonb) is
+  'The element shape 20260827232512 left to Task 5: options is a jsonb array of {key, label} objects, key matching ^[a-z][a-z0-9_]{0,62}$ (it is stored verbatim in custom_field_values.value and submitted as a form value), label non-blank, keys unique within the definition. Called from a CHECK constraint, which is why it is a function at all -- a CHECK may not contain a subquery (0A000) and jsonb_array_elements needs one. GRANTED to `authenticated` because a CHECK expression is evaluated as the inserting role; rls_phase2_crm.sql U20/U20a measure that a client insert gets a CHECK violation (23514) and not a privilege error (42501), and the HTTP suite measures the same distinction as 400 versus 403. 20260829010000''s inline comment cited a "schema_invariants.sql V2" for this, which never existed -- see 20260829011500. NOTE: Postgres does not revalidate existing rows when this body changes, so tightening the rule here tightens it for NEW rows only; a migration that means to tighten it for all rows must revalidate the constraint as well.';

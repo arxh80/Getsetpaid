@@ -4181,6 +4181,32 @@ select crm.try('U10 AT THE LIMIT: an ordinary label edit still applies',
 select crm.try('U11 AT THE LIMIT: retyping a field still applies',
   format($$update public.custom_field_definitions set field_type='number'
      where organisation_id=%L and key='u1'$$, :'limit_org'), 'ok(1)');
+
+-- ---- THE `options` ELEMENT SHAPE, AS AN AUTHENTICATED CALLER ---------------
+-- 20260829010000 pins options to [{key,label}] with a CHECK backed by an
+-- IMMUTABLE helper, because a CHECK may not contain a subquery. A CHECK
+-- expression is evaluated as the INSERTING role, so the helper is granted to
+-- `authenticated` -- and the sqlstate is what proves the grant is there: 23514
+-- is the constraint refusing the value, 42501 would be the constraint being
+-- unable to run at all. That distinction is the whole point of U20, and the
+-- comment in 20260829010000 cited a test for it that was never written (see
+-- 20260829011500). This is the test.
+select crm.try('U20 malformed select options are refused -- 23514, a CHECK violation',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type, options)
+    values (%L,'venue','bad_opts','Bad','single_select','[1,2,3]'::jsonb)$$,
+    :'limit_org'), 'denied(23514)');
+select crm.try('U20a ...and NOT 42501, so the helper really is executable by the caller',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type, options)
+    values (%L,'venue','good_opts','Good','single_select',
+            '[{"key":"a","label":"Alpha"}]'::jsonb)$$, :'limit_org'), 'ok(1)');
+select crm.try('U20b duplicate option keys are refused too -- they resolve non-deterministically',
+  format($$insert into public.custom_field_definitions
+      (organisation_id, entity_type, key, label, field_type, options)
+    values (%L,'venue','dup_opts','Dup','single_select',
+            '[{"key":"a","label":"Alpha"},{"key":"a","label":"Beta"}]'::jsonb)$$,
+    :'limit_org'), 'denied(23514)');
 reset role; reset request.jwt.claims;
 
 -- ---- THE ORACLE GUARD ------------------------------------------------------
