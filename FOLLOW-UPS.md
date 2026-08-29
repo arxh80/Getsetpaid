@@ -87,12 +87,17 @@ These become live the moment a real tenant table exists.
   "make company B the primary" is two statements in one transaction, not one
   `UPDATE`. This is the cost that was paid for it, recorded where the write
   path will be built.
-- **`artist_representations_one_current_primary_per_artist` enforces one
-  *open-ended* primary, not one *current* one.** A representation with a
-  future-dated `ended_at` is excluded from the index and so slips past it. The
-  index cannot say otherwise — `current_date` is not `IMMUTABLE`, so it cannot
-  appear in a partial index predicate. Either the write path rejects
-  future-dated `ended_at`, or the name is wrong. Task 4 owns the call.
+- ~~**`artist_representations_one_current_primary_per_artist` enforces one
+  *open-ended* primary, not one *current* one.**~~ **DECIDED, Phase 2 Task 4b**
+  (fix round 1, I-4): option 2, accept the gap. A future-dated `ended_at` is a
+  real industry fact people record ahead of it taking effect, so the write
+  path does not forbid it — `20260829000000`'s closing note argues why, and
+  `set_artist_primary_representation()`'s promote is scoped so the write path
+  cannot itself create a second "current" primary. `PrimaryState` in
+  `lib/crm/queries.ts` is the tie-break a reader uses when it finds more than
+  one `is_primary` row (`current` / `scheduled-end` / `past`, and only
+  `current` is ever labelled "Primary"). `task-4b-report.md` § 2 has the full
+  argument and the measurement; `rls_phase2_crm.sql` T15-T15d assert it.
 - **Task 6's merge must resolve `is_primary` collisions before repointing.**
   The same two indexes break the merge, not just the edit form, and that was
   recorded against Task 4 only. If the winner and the loser each have a
@@ -249,17 +254,22 @@ These become live the moment a real tenant table exists.
   § Non-negotiable rules) satisfied by a cap rather than by a design. The real
   answer is a search-backed picker with its own keyset page; it needs a
   measured design and Task 4 did not have one, so the cap is deliberate and
-  named rather than guessed at. Task 4b copies this shape five more times.
+  named rather than guessed at. **Task 4b copied it, not built the search-backed
+  picker (fix round 1, I-4 recorded this update): it now also caps the three
+  new panels `loadRepresentationsForArtist`, `loadRepresentationsForAgency` and
+  `loadRoomsForVenue` (`lib/crm/queries.ts`), plus the agency/artist/contact
+  `<select>`s on the representation form itself.** The search-backed picker is
+  still not built and this is still the same deliberate stopgap, one workspace
+  wider.
 
-- **`artist_representations_one_current_primary_per_artist` still enforces one
+- ~~**`artist_representations_one_current_primary_per_artist` still enforces one
   *open-ended* primary rather than one *current* one** — pre-existing, restated
-  because Task 4's `is_primary` decision does not close it.
-  `20260828230000`'s column comment now tells Task 4b that the demote half of
-  its write path must be scoped to `ended_at is null`, or changing an artist's
-  primary agency rewrites history. The residual gap is unchanged: a
-  future-dated `ended_at` slips out of the index's predicate, and no index can
-  say otherwise because `current_date` is not `IMMUTABLE`. Either the write
-  path rejects a future-dated `ended_at` or the index name is wrong.
+  because Task 4's `is_primary` decision does not close it.~~ **DECIDED, Phase 2
+  Task 4b** (fix round 1, I-4) — see the earlier entry against this same index
+  in the "Phase 2 — Core CRM" section above, which carries the pointer to the
+  migration header, `PrimaryState` and `task-4b-report.md` § 2. Restated here
+  only to close the duplicate rather than leave two open items for one decided
+  question.
 
 ### Opened by Task 3 (the shared list surface) — carried into Task 4
 
