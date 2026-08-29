@@ -98,7 +98,17 @@ These become live the moment a real tenant table exists.
   one `is_primary` row (`current` / `scheduled-end` / `past`, and only
   `current` is ever labelled "Primary"). `task-4b-report.md` § 2 has the full
   argument and the measurement; `rls_phase2_crm.sql` T15-T15d assert it.
-- **Task 6's merge must resolve `is_primary` collisions before repointing.**
+- ~~**Task 6's merge must resolve `is_primary` collisions before repointing.**~~
+  **DONE, Phase 2 Task 6** (`20260829020000`, `public.merge_records()`). All
+  three 23505s were reproduced before the fix rather than assumed --
+  `contact_companies_one_primary_per_contact`,
+  `contact_companies_contact_company_unique` and
+  `artist_representations_one_current_primary_per_artist`, each from the plain
+  repoint, and the demote-first version applying. The merge drops the colliding
+  rows, demotes, promotes the winner's own row when the winner had no primary
+  and the loser's was the one dropped (not in the original note, and the case
+  that would otherwise leave a contact with no primary company), then repoints.
+  `rls_phase2_crm.sql` W30-W36 and W44-W49. The original text follows.
   The same two indexes break the merge, not just the edit form, and that was
   recorded against Task 4 only. If the winner and the loser each have a
   primary — both legal rows — then
@@ -194,13 +204,112 @@ These become live the moment a real tenant table exists.
   must make definitions over the limit read-only/inactive instead, and should
   consider `deleted_at` on `custom_field_definitions` so "deactivate" is
   expressible at all.
-- **Task 6's dedup helpers must schema-qualify the trigram operators.**
+- ~~**Task 6's dedup helpers must schema-qualify the trigram operators.**~~
+  **DONE, Phase 2 Task 6**: `private.duplicate_probe()` writes the operator
+  schema-qualified and `extensions.similarity(...)` under `set search_path = ''`.
+  The original text follows.
   `pg_trgm` is installed in `extensions`, so `%` resolves as `extensions.%`.
   PostgREST supplies that search_path, so ordinary API queries work — but
   `SECURITY.md` §2 requires `SECURITY DEFINER` functions to have `search_path`
   locked, and the standard hardening (`set search_path = ''`, which every
   Foundation helper uses) makes `name % $1` fail with "operator does not exist".
   Write `name operator(extensions.%) $1` and `extensions.similarity(...)`.
+
+### Opened by Task 6 (dedup detection and the merge workflow)
+
+- **`CLAUDE.md` § Architecture still says "exact matches (email/name)
+  auto-merge" and the product does not.** Founder decision Q11 (closed) makes
+  auto-merge **email-only, case-insensitive**; every name match, exact or fuzzy,
+  goes to the manual review queue. `20260829020000`'s DECISION 1 carries the
+  measurement that makes it more than a preference: **four of the five entity
+  types have no email column at all** (`companies`, `agencies`, `artists`,
+  `venues` are name-only), so "exact match on normalised name" is not a
+  secondary rule for them, it is the ONLY rule -- and two venues called "The
+  Social" in two cities are two venues. **CLAUDE.md is updated when Phase 2
+  merges, not by Task 6.** The practical shape to write there: auto-merge exists
+  for contacts and for nothing else.
+
+- **`private.record_merge()` is granted to `authenticated`, which
+  `private.log_audit_event()` is not.** The merges INSERT grant and policy are
+  gone (Task 2 shipped the no-UPDATE/DELETE half and not this one), so the
+  function is the sole writer and restates the dropped policy term for term. It
+  has to be granted, because its caller `public.merge_records()` is
+  `SECURITY INVOKER` and must stay that way -- a definer merge would run every
+  CRM statement as `postgres`. **The residual is a DIRECT DATABASE SESSION as
+  `authenticated`**, which could write a merges row without merging anything;
+  PostgREST exposes `public` only, so it is not reachable from the product's
+  client surface (asserted: `rpc/record_merge` is a 404). Strictly narrower than
+  the table grant it replaces, which WAS reachable over HTTP. Close it properly
+  if the merge is ever moved behind a server-side-only path.
+
+- **`field_resolution.links` records COUNTS, not which rows moved.** Enough to
+  reconstruct both records by hand (task-6-report § 2 walks the support request
+  through), and NOT enough to know exactly which `contact_companies` rows were
+  repointed when `dropped > 0`. An undo feature -- explicitly out of Phase 2 --
+  needs the row ids, which means either an array in `field_resolution` or a real
+  undo table. Decide with the undo, not before it.
+
+- **The two denormalised owner columns on `merges` go stale.**
+  `winner_owner_user_id` / `loser_owner_user_id` are a snapshot taken at merge
+  time and are a PRE-FILTER in front of `entity_is_visible()`, never a
+  replacement for it -- so a stale value can only narrow, never grant.
+  Deliberate consequence, asserted by Q5b/Q6b: a merge whose record is later
+  reassigned TO a record-scoped user is no longer visible to them, and a merges
+  row written before Task 6 (NULL in both) is invisible to them entirely. If a
+  record-reassignment feature ever ships, decide then whether it back-fills
+  these; the fail-safe direction is to leave them alone.
+
+- **Rows whose PARENT is soft-deleted are STRANDED by a merge, by design.**
+  `contact_companies` (via its contact), `artist_representations` and
+  `venue_rooms` (via their artist and venue) all gate UPDATE on the parent being
+  live. When a merge repoints the OTHER end -- a company merge moving
+  `company_id`, an agency merge moving `agency_id`, a contact merge moving
+  `artist_representations.contact_id` -- rows under a soft-deleted parent are
+  visible and not updatable. Raising would make an agency unmergeable forever
+  because one artist who once used it has since been deleted, so they keep
+  pointing at the (soft-deleted) loser and the count is recorded in
+  `field_resolution.links.<table>.stranded`. Revisit with the restore story:
+  restoring that parent brings back a child pointing at a merged-away record.
+
+- **`lib/list/query.ts` now has ONE table that reads without a soft-delete
+  predicate, and it is `merges`.** `TABLES_WITHOUT_SOFT_DELETE`, keyed on the
+  table rather than on an option a spec can pass, because `merges` has no
+  `deleted_at` and must not grow one (append-only by design) -- measured, the
+  filter `lib/list` would otherwise send is a 400: `42703, column
+  merges.deleted_at does not exist`. Bound to the catalogue by
+  `tests/integration/list/soft-delete-tables-match-db.test.ts`, which fails if a
+  listed table grows the column or if `merges` gains a grant beyond SELECT. **A
+  Phase 3+ table belongs on that list only with the same argument written down
+  next to it.**
+
+- **`merge_candidates.resolved_by` has no `ON DELETE` clause**, matching
+  `merges.merged_by` and `audit_events.actor_user_id` for the same reason: GDPR
+  erasure must anonymise rather than delete. **All three are one decision, not
+  three** -- whatever the Phase 7+ erasure workflow does about one it must do
+  about all of them in the same change.
+
+- **The dedup similarity threshold is 0.6 and lives in ONE function.**
+  `private.dedup_similarity_threshold()`. A per-organisation setting is a change
+  to that signature (add `p_organisation_id`, read a column) and to nothing
+  else, because every call site already has an organisation id in hand and no
+  query text changes. Deliberately not a UI setting at MVP: nobody has tenant
+  data to tune it against.
+
+- **`private.dedup_mergeable_columns()` is written twice**, in SQL and as
+  `MERGEABLE_COLUMNS` in `lib/crm/dedup.ts`, because the merge screen has to
+  draw the rows before the function runs. Bound by
+  `tests/integration/crm/mergeable-columns-match-db.test.ts`, which also asserts
+  every listed column exists on its table and that none of `id`,
+  `organisation_id`, `owner_user_id` or the timestamps is ever offered. **A new
+  column on a CRM entity is not mergeable until someone adds it to both.**
+
+- **A `read_only` user's view of a NON-EMPTY review queue was never rendered in
+  a browser.** Task 6's walkthrough fixture gave `read_only` no records of its
+  own, so record scope made the queue empty and the empty state is what was
+  seen. The banner copy and the `Compare`-rather-than-`Review` link on that path
+  are the same code `standard_user` exercises (which WAS seen, with the banner)
+  and W67 asserts the silent `ok(0)` dismissal in psql. One render inferred
+  rather than looked at.
 
 ### Opened by Task 4 (CRUD on contacts and companies)
 
@@ -593,6 +702,19 @@ These become live the moment a real tenant table exists.
   above) and give "remove this field" the soft-delete shape; only then does a
   DELETE policy make sense, if at all. **The cost is real and is accepted for
   now: a mistyped field key is permanent until Task 5 lands.**
+- **CORRECTED BY TASK 6: THE ORDERING CONSTRAINT BINDS ON A SOFT DELETE TOO.**
+  The entry below says "Soft delete leaves the row in place, so the ordinary
+  path is unaffected -- this only bites on a genuine hard delete". That stopped
+  being true when `20260829011000` (Task 5) added `private.entity_is_live()` to
+  `custom_field_values_delete_via_entity`: a soft-deleted entity is not live, so
+  its values become undeletable by every client role the instant it is
+  soft-deleted -- the exact orphan state the sweep exists to prevent, reached by
+  the path this note calls safe. Reproduced as `rls_phase2_crm.sql` W40-W42
+  (`ok(0)` while deleted, the row still present, `ok(1)` after a restore).
+  `public.merge_records()` therefore carries values over, sweeps, and THEN
+  soft-deletes, and `20260829020000`'s DECISION 4 says so on the migration.
+  **Phase 7's organisation deletion and the DSR erasure inherit the corrected
+  rule, not the one below.** The original text follows.
 - **Task 4 and Task 6's orphan sweep must delete `custom_field_values` BEFORE
   the entity row is hard-deleted.** The DELETE policy resolves `entity_id`
   against the live entity row, so once the entity is gone the values are
@@ -662,8 +784,18 @@ These become live the moment a real tenant table exists.
   `table: "<crm table>"` and on importing `lib/list/query` at all, which is the
   form that will survive Task 4 routing four more entities through the same
   helper.
-- **Task 6: a record-scoped `merges` list is ~2.3 s per page at 20k rows, and no
-  policy can fix it.** `merges_select_via_winner` is the one CRM SELECT policy
+- ~~**Task 6: a record-scoped `merges` list is ~2.3 s per page at 20k rows, and
+  no policy can fix it.**~~ **DONE, Phase 2 Task 6**, with two corrections to
+  the design this entry proposed. (1) IT HAS TO BE BOTH SIDES: a
+  `winner_owner_user_id` term alone would re-open the IMP-2 leak the both-sides
+  policy exists for. (2) IT CANNOT REPLACE THE DISPATCH, only narrow it -- the
+  columns are a snapshot and a stale snapshot must never GRANT -- so the two
+  equalities are AND-ed in FRONT of `entity_is_visible()`, which remains the
+  authority. Measured on 20,000 merges over 20,000 contacts with 200 visible to
+  the record-scoped reader, 50-row page: **602.463 ms -> 39.859 ms (15.1x)**,
+  same plan, same 4851 rows removed by filter, 50 rows returned in both. The
+  full-scope reader is unchanged (0.599 -> 1.098 ms) and H15 still passes. The
+  original text follows. `merges_select_via_winner` is the one CRM SELECT policy
   whose predicate calls a function with COLUMN arguments, so the polymorphic
   dispatch cannot be hoisted. Fix round 3 (`20260828160000`, New-2) put the
   hoistable `full_scope_organisations()` term in front, which takes the
@@ -799,6 +931,13 @@ These become live the moment a real tenant table exists.
      it, a suspended organisation's member could not read the record at all, so
      no edit form could exist to submit. Now one can, and a naive save path
      would tell them it worked.
+- **STILL TRUE AFTER TASK 6, and extended.** The record-scoped branch now leads
+  with the two denormalised owner equalities and evaluates `entity_is_visible()`
+  on both sides behind them; `rls_phase2_crm.sql` W62-W65 assert the guarantee
+  directly, including that no discarded value leaks by any path. THE COROLLARY
+  DOES NOT ARISE TODAY: Task 6's merge SOFT-deletes the loser, so no merge this
+  product performs makes its own record invisible. It still arises for a Phase 7
+  hard delete. The original text follows.
 - **Task 6: `merges` SELECT now requires BOTH sides visible, not just the
   winner.** Changed in fix round 1 (`20260828140500`) because
   `field_resolution` copies both records' values verbatim and a record-scoped
