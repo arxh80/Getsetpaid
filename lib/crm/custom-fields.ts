@@ -665,10 +665,28 @@ export function readCustomFieldValue(
  * JSON value. The RPC's half -- that a key it is not given is left untouched --
  * is asserted in rls_phase2_crm.sql § V against the deployed function.
  *
- * AN EXHAUSTIVE SWITCH WITH NO `default`, for the reason lib/crm/actions.ts's
- * `failureState` has one: a fourth outcome added later is a compile error here
- * rather than a value silently dropped from the payload. `pnpm typecheck` is
- * what runs it.
+ * ===========================================================================
+ * THE SWITCH IS EXHAUSTIVE, AND WHAT ENFORCES THAT IS THE `default` ARM
+ * ===========================================================================
+ * A `never` assignment (`const unhandled: never = read`), which compiles only
+ * while every member of the union has a case. Delete one and `pnpm typecheck`
+ * fails with TS2322 on that line. It assigns the narrowed RESULT rather than
+ * the discriminant, because a `switch` on a discriminant narrows the object --
+ * see the arm itself.
+ *
+ * AN EARLIER VERSION OF THIS COMMENT CLAIMED THE GUARD CAME FROM HAVING NO
+ * `default`, "the same guard lib/crm/actions.ts's `failureState` has". That
+ * was false, and it is the third comment in this task to assert behaviour the
+ * code did not have. `failureState`'s arms all RETURN, inside a function with
+ * a declared return type, so removing one leaves a path that falls off the end
+ * and TS2366 fires. THIS switch is in a `for` loop and every arm `break`s, so
+ * removing a case compiled clean and the field silently behaved like `skip` --
+ * measured, `pnpm typecheck` exit 0 with the `clear` case deleted.
+ *
+ * `readCustomFieldValue`'s switch over the seven field types genuinely does
+ * have `failureState`'s shape (every arm returns, no code after it), so it
+ * needs no `default` and deliberately has none. The two are different
+ * mechanisms and only one of them was ever real here.
  */
 export function buildCustomFieldPayload(
   definitions: readonly CustomFieldDefinition[],
@@ -704,6 +722,42 @@ export function buildCustomFieldPayload(
         // and upserts only the ids it is given a value for, so an absent key
         // leaves whatever is stored exactly where it is.
         break;
+      default: {
+        // THE EXHAUSTIVENESS GUARD, AND IT HAS TO BE WRITTEN OUT HERE.
+        //
+        // `read` -- the whole result object, not the discriminant -- narrows
+        // to `never` in this arm only while all three cases above are present,
+        // so the assignment compiles today and stops compiling the moment one
+        // is deleted or a fourth is added:
+        //     Type '{ ok: true; outcome: "clear"; }' is not assignable
+        //     to type 'never'.                                       (TS2322)
+        //
+        // It assigns `read` and NOT `read.outcome`, which was the first
+        // attempt: a `switch` on a discriminant narrows the OBJECT, so in this
+        // arm `read` is already `never` and `read.outcome` is an error on
+        // `never` (TS2339) rather than the exhaustiveness check. Measured, not
+        // reasoned about -- that version failed typecheck with the union
+        // intact, which is the guard misfiring rather than working.
+        //
+        // WITHOUT IT THIS SWITCH HAD NO GUARD AT ALL, and the comment that
+        // used to sit on this function claimed otherwise by pointing at
+        // lib/crm/actions.ts's `failureState`. That precedent does not
+        // transfer: `failureState`'s arms all RETURN, inside a function with a
+        // declared return type, so deleting one leaves a path that falls off
+        // the end and TS2366 fires. This switch sits in a `for` loop and every
+        // arm `break`s, so deleting a case just... does nothing, and the field
+        // silently behaves like `skip`. Measured on this repository before the
+        // fix: `pnpm typecheck` with the `clear` case deleted exited 0.
+        //
+        // The throw is unreachable while the types hold. It is a throw rather
+        // than a silent `break` because the failure it would report is a field
+        // dropped from a save -- the user is told nothing changed rather than
+        // being told it saved while a value went missing.
+        const unhandled: never = read;
+        throw new Error(
+          `buildCustomFieldPayload: unhandled outcome ${JSON.stringify(unhandled)}`,
+        );
+      }
     }
   }
 
