@@ -5527,6 +5527,306 @@ select crm.val('W99 ...and neither value reached audit_events',
        and action='records.merged.fields'$$, 'true');
 
 -- ===========================================================================
+-- SECTION X. THE ACTIVITY TIMELINE'S AGGREGATION (Task 7)
+-- ===========================================================================
+-- `public.activity_events` is a `security_invoker` view over the CRM tables.
+-- It carries NO policy of its own, so what is asserted here is not a new
+-- control -- it is that the view INHERITS the controls the base tables already
+-- have, and that the ordering key a keyset page depends on is total and
+-- stable.
+--
+-- Four things, and the fourth is the one no other section can cover:
+--
+--   X1-X3   the grant surface. SELECT only, and the view is not writable.
+--   X10-X19 visibility: tenant isolation, record scope, and the ASYMMETRY --
+--           a record-scoped reader who can see a record can still be unable to
+--           see a merge it survived, because merges_select_via_winner wants
+--           BOTH sides. That is the fact the timeline's scope note exists for,
+--           and asserting it is what stops the note becoming decoration.
+--   X20-X24 the kinds a record's own row produces, including the two that are
+--           conditional (record_updated only after a real edit; record_deleted
+--           only while deleted).
+--   X30-X35 THE ORDERING KEY. `occurred_at` is not unique across source
+--           tables -- the fixture below makes a contact and its company link
+--           share one timestamp to the microsecond, which is what happens
+--           whenever a create and a link land in one transaction. Every
+--           assertion is against a tie that is asserted to exist first.
+-- ---------------------------------------------------------------------------
+
+-- ---- fixture -------------------------------------------------------------
+-- ONE TIMESTAMP REUSED, on purpose: contact T-A and its link to company T-C
+-- are created at the same instant, so the two events they produce collide on
+-- the sort column and only the synthetic id separates them.
+insert into public.companies (id, organisation_id, owner_user_id, name, created_at, updated_at)
+values ('7a000000-0000-0000-0000-000000000010', :'alpha_org', :'pmanager',
+        'T Timeline Co', timestamptz '2026-03-01 10:00:00+00',
+        timestamptz '2026-03-01 10:00:00+00');
+
+insert into public.contacts (id, organisation_id, owner_user_id, name, created_at, updated_at)
+values
+  -- Never edited: created_at = updated_at, so NO record_updated (X21).
+  ('7a000000-0000-0000-0000-000000000001', :'alpha_org', :'pmanager',
+   'T Timeline Winner', timestamptz '2026-03-01 10:00:00+00',
+   timestamptz '2026-03-01 10:00:00+00'),
+  -- Owned by a RECORD-SCOPED user, for X15-X17.
+  ('7a000000-0000-0000-0000-000000000002', :'alpha_org', :'pstd1',
+   'T Timeline Std1', timestamptz '2026-03-02 10:00:00+00',
+   timestamptz '2026-03-02 10:00:00+00');
+
+-- THE TIE. Same instant as the contact's own created_at above.
+insert into public.contact_companies
+  (organisation_id, contact_id, company_id, is_primary, created_at, updated_at)
+values (:'alpha_org', '7a000000-0000-0000-0000-000000000001',
+        '7a000000-0000-0000-0000-000000000010', true,
+        timestamptz '2026-03-01 10:00:00+00', timestamptz '2026-03-01 10:00:00+00');
+
+-- Two merges, hand-written rather than run through merge_records(): this
+-- section is about what the VIEW does with a merges row, and section W already
+-- proves the function writes one. The owner columns are what
+-- merges_select_via_winner reads, and they are what X16/X17 turn on.
+insert into public.contacts (id, organisation_id, owner_user_id, name, deleted_at, created_at, updated_at)
+values ('7a000000-0000-0000-0000-000000000003', :'alpha_org', :'pmanager',
+        'T Timeline Loser', timestamptz '2026-03-03 09:00:00+00',
+        timestamptz '2026-02-01 09:00:00+00', timestamptz '2026-03-03 09:00:00+00'),
+       ('7a000000-0000-0000-0000-000000000004', :'alpha_org', :'pmanager',
+        'T Std1 Merge Loser', timestamptz '2026-03-04 09:00:00+00',
+        timestamptz '2026-02-01 09:00:00+00', timestamptz '2026-03-04 09:00:00+00');
+
+insert into public.merges
+  (id, organisation_id, entity_type, winner_id, loser_id, merged_by, merged_at,
+   field_resolution, winner_owner_user_id, loser_owner_user_id)
+values
+  ('7a000000-0000-0000-0000-0000000000f1', :'alpha_org', 'contact',
+   '7a000000-0000-0000-0000-000000000001', '7a000000-0000-0000-0000-000000000003',
+   :'pmanager', timestamptz '2026-03-03 09:00:00+00',
+   jsonb_build_object(
+     'version', 2,
+     'winner', jsonb_build_object('before', jsonb_build_object('name','T Timeline Winner')),
+     'loser',  jsonb_build_object('before', jsonb_build_object('name','T Timeline Loser')),
+     'fields', jsonb_build_object(
+        'email', jsonb_build_object('from','loser','chosen','a','discarded','b'),
+        'phone', jsonb_build_object('from','winner','chosen','a','discarded','b'))),
+   :'pmanager', :'pmanager'),
+  -- THE ASYMMETRY. pstd1 owns the WINNER and not the LOSER, so pstd1 can read
+  -- the winning contact and cannot read this merges row.
+  ('7a000000-0000-0000-0000-0000000000f2', :'alpha_org', 'contact',
+   '7a000000-0000-0000-0000-000000000002', '7a000000-0000-0000-0000-000000000004',
+   :'pmanager', timestamptz '2026-03-04 09:00:00+00',
+   jsonb_build_object('version', 2, 'fields', '{}'::jsonb),
+   :'pstd1', :'pmanager');
+
+-- ---- X1-X3. The grant surface --------------------------------------------
+select crm.val('X1 activity_events grants authenticated SELECT and nothing else',
+  $$select coalesce(string_agg(privilege_type, ',' order by privilege_type), '<none>')
+      from information_schema.role_table_grants
+     where table_schema='public' and table_name='activity_events'
+       and grantee='authenticated'$$, 'SELECT');
+select crm.val('X2 ...and anon gets nothing at all',
+  $$select coalesce(string_agg(privilege_type, ','), '<none>')
+      from information_schema.role_table_grants
+     where table_schema='public' and table_name='activity_events'
+       and grantee='anon'$$, '<none>');
+select crm.val('X3 it really is security_invoker, so RLS is the caller''s',
+  $$select (c.reloptions::text like '%security_invoker=true%')::text
+      from pg_class c join pg_namespace n on n.oid=c.relnamespace
+     where n.nspname='public' and c.relname='activity_events'$$, 'true');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+-- Not merely ungranted: a view over a UNION with a lateral is not
+-- auto-updatable, so Postgres itself refuses the write.
+select crm.try('X4 the view is not writable, by anybody',
+  $$insert into public.activity_events (id, organisation_id, subject_type,
+        subject_id, occurred_at, kind, actor_user_id, actor_name, detail)
+    values (gen_random_uuid(), '00000000-0000-4000-8000-000000000000', 'contact',
+            '7a000000-0000-0000-0000-000000000001', now(), 'planted', null, null,
+            '{}'::jsonb)$$, 'denied(55000)');
+reset role; reset request.jwt.claims;
+
+-- ---- X10-X19. Visibility, inherited ---------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+-- THE ORGANISATION ID IS INTERPOLATED, NOT WRITTEN OUT. The first draft of
+-- this section hardcoded 'a0a00000-...', which is section W's org-merge and not
+-- the org-alpha these fixtures live in: T10 returned <null>, and X32/X33/X35 --
+-- all three of which answer 0 or true on an empty set -- passed over nothing at
+-- all. Three green assertions measuring the wrong workspace is the exact
+-- failure the positive controls in this file exist to catch, and it took two of
+-- them to notice.
+select crm.val('X10 a full-scope reader sees the winner''s three events',
+  format($$select string_agg(kind, ',' order by kind)
+      from public.activity_events
+     where organisation_id=%L
+       and subject_type='contact'
+       and subject_id='7a000000-0000-0000-0000-000000000001'$$, :'alpha_org'),
+  'link_added,merge_absorbed,record_created');
+select crm.val('X11 ...and the merge carries the ACTOR, the only source that does',
+  $$select actor_name from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'
+       and kind='merge_absorbed'$$, 'P Manager');
+select crm.val('X12 ...and the fields the merge took, ordinary columns only',
+  $$select (detail->'fields')::text from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'
+       and kind='merge_absorbed'$$, '["email"]');
+select crm.val('X13 the LOSER''s own timeline shows the deletion and the merge',
+  $$select string_agg(kind, ',' order by kind)
+      from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000003'$$,
+  'merge_into,record_created,record_deleted,record_updated');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select crm.val('X14 TENANT BOUNDARY: Org Beta''s owner sees none of it',
+  $$select count(*)::text from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'$$, '0');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select crm.val('X15 RECORD SCOPE: std1 sees nothing on a record that is not theirs',
+  $$select count(*)::text from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'$$, '0');
+-- THE ASYMMETRY THE SCOPE NOTE IS ABOUT. std1 owns this contact, so its own
+-- row is visible -- and the merge it survived is NOT, because the loser was
+-- somebody else's. A timeline that said nothing about this would be showing a
+-- record's history with an entry silently missing.
+select crm.val('X16 ...sees their OWN record''s creation',
+  $$select string_agg(kind, ',' order by kind)
+      from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000002'$$, 'record_created');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('X17 CONTROL: the merge std1 could not see IS there for a full-scope reader',
+  $$select string_agg(kind, ',' order by kind)
+      from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000002'$$,
+  'merge_absorbed,record_created');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select crm.val('X18 a read_only user who owns nothing sees an EMPTY timeline',
+  $$select count(*)::text from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'$$, '0');
+reset role; reset request.jwt.claims;
+
+-- ---- X20-X24. What the record's own row produces --------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('X20 a never-edited record emits NO record_updated',
+  $$select count(*)::text from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'
+       and kind='record_updated'$$, '0');
+reset role; reset request.jwt.claims;
+
+-- The edit itself, as postgres: this section is about the view, and
+-- 20260828121500's trigger is what moves updated_at.
+update public.contacts set name = 'T Timeline Winner Edited'
+ where id='7a000000-0000-0000-0000-000000000001';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('X21 ...and ONE appears after a real edit, not two',
+  $$select count(*)::text from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'
+       and kind='record_updated'$$, '1');
+select crm.val('X22 a link to a company the reader can see names it',
+  $$select detail->>'other_name' from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'
+       and kind='link_added'$$, 'T Timeline Co');
+reset role; reset request.jwt.claims;
+
+-- A SOFT DELETE THAT IS UNDONE TAKES ITS EVENT WITH IT. `record_deleted` reads
+-- deleted_at, so restoring the record makes the entry disappear -- which is
+-- correct, and is the one place this view is state-shaped rather than
+-- append-only.
+update public.contacts set deleted_at = null
+ where id='7a000000-0000-0000-0000-000000000003';
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('X23 restoring a record removes its record_deleted entry',
+  $$select count(*)::text from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000003'
+       and kind='record_deleted'$$, '0');
+reset role; reset request.jwt.claims;
+update public.contacts set deleted_at = timestamptz '2026-03-03 09:00:00+00'
+ where id='7a000000-0000-0000-0000-000000000003';
+
+-- ---- X30-X35. THE ORDERING KEY --------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+
+-- NON-VACUOUS FIRST. Every assertion below is about a tie, so the tie has to
+-- be proved to exist before anything is claimed about how it pages.
+select crm.val('X30 THE TIE EXISTS: two events on one record share an instant',
+  $$select count(*)::text from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'
+       and occurred_at = timestamptz '2026-03-01 10:00:00+00'$$, '2');
+select crm.val('X31 ...and they come from DIFFERENT source tables',
+  $$select string_agg(kind, ',' order by kind) from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'
+       and occurred_at = timestamptz '2026-03-01 10:00:00+00'$$,
+  'link_added,record_created');
+select crm.val('X32 the sort key is TOTAL: no two events share (occurred_at, id)',
+  format($$select count(*)::text from (
+      select occurred_at, id from public.activity_events
+       where organisation_id=%L
+       group by occurred_at, id having count(*) > 1) d$$, :'alpha_org'), '0');
+-- CONTROL for X32 and X33, and it is not optional: both answer the wanted value
+-- on an empty set, and the first draft of this section handed them one.
+select crm.val('X32b CONTROL: that ran over the whole workspace, not nothing',
+  format($$select (count(*) > 100)::text from public.activity_events
+     where organisation_id=%L$$, :'alpha_org'), 'true');
+select crm.val('X33 the synthetic id is unique across every branch in the tenant',
+  format($$select (count(*) = count(distinct id))::text
+      from public.activity_events
+     where organisation_id=%L$$, :'alpha_org'), 'true');
+select crm.val('X34 the order is STABLE: the same query twice gives the same order',
+  $$with a as (select string_agg(id::text, ',' order by occurred_at desc, id desc) s
+                 from public.activity_events
+                where subject_id='7a000000-0000-0000-0000-000000000001'),
+        b as (select string_agg(id::text, ',' order by occurred_at desc, id desc) s
+                 from public.activity_events
+                where subject_id='7a000000-0000-0000-0000-000000000001')
+   select (a.s = b.s)::text from a, b$$, 'true');
+
+-- THE ASSERTION THIS SECTION EXISTS FOR. lib/list/query.ts's `applyCursor`
+-- steps from one row to the next with
+--     col <= v  AND (col < v OR (col = v AND id < i))
+-- reading descending. If that step ever lands anywhere other than the next row
+-- of the plain ordering, a keyset page skips or repeats -- and across a
+-- timestamp tie is exactly where it would. Checked at EVERY position, not just
+-- the tie, and the answer wanted is zero mismatches.
+select crm.val('X35 every keyset step lands on the next row -- across the tie included',
+  format($$with plain as (
+      select id, occurred_at,
+             row_number() over (order by occurred_at desc, id desc) rn
+        from public.activity_events
+       where organisation_id=%1$L
+         and subject_type='contact'
+         and subject_id='7a000000-0000-0000-0000-000000000001')
+    select count(*)::text from plain p
+     where (select n.id from public.activity_events n
+             where n.organisation_id=%1$L
+               and n.subject_type='contact'
+               and n.subject_id='7a000000-0000-0000-0000-000000000001'
+               and n.occurred_at <= p.occurred_at
+               and (n.occurred_at < p.occurred_at
+                    or (n.occurred_at = p.occurred_at and n.id < p.id))
+             order by n.occurred_at desc, n.id desc limit 1)
+           is distinct from
+           (select q.id from plain q where q.rn = p.rn + 1)$$, :'alpha_org'), '0');
+-- CONTROL for X35: it is counting over a real, multi-row ordering rather than
+-- passing on an empty set.
+select crm.val('X35b CONTROL: X35 walked four events, not zero',
+  $$select count(*)::text from public.activity_events
+     where subject_id='7a000000-0000-0000-0000-000000000001'$$, '4');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o

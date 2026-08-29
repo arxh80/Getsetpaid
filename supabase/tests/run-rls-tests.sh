@@ -1688,6 +1688,153 @@ else
   api_fails=$((api_fails+1))
 fi
 
+# ---------------------------------------------------------------------------
+# THE ACTIVITY TIMELINE OVER POSTGREST (Task 7)
+#
+# The psql section X asserts what the view RETURNS. This block asserts that the
+# request lib/list/query.ts actually builds reaches it -- which is a different
+# claim, and the one that has caught things in this phase twice. Two parts of
+# that request only exist at the transport:
+#
+#   * the keyset predicate is a REDUNDANT RANGE BOUND plus a LOGIC TREE
+#     (`occurred_at=lte.X` and `or=(occurred_at.lt.X,and(occurred_at.eq.X,
+#     id.lt.Y))`). PostgREST's logic-tree grammar is not SQL, the two halves
+#     quote differently, and a view is not a table -- none of that is visible
+#     from psql.
+#   * `count=exact` on a view. `fetchListPage` renders the total from the
+#     Content-Range header, and a view that could not be counted would render a
+#     page with no total and log nothing.
+#
+# TL_* are section X's fixtures. TL_TIE is the instant the contact's own
+# creation and its company link share -- the tie the ordering key exists for.
+# ---------------------------------------------------------------------------
+echo
+echo "=== The activity timeline at the API surface (Task 7) ==="
+
+# The Org Beta owner's token is fetched here rather than at the top: this is
+# the only block that needs it, and a token nobody uses is a token nobody
+# notices going stale.
+BOWN=$(p2_token pbowner); [ -n "$BOWN" ] || { echo "no token for pbowner" >&2; exit 1; }
+
+TL_REC='7a000000-0000-0000-0000-000000000001'   # T Timeline Winner (alpha)
+TL_STD='7a000000-0000-0000-0000-000000000002'   # T Timeline Std1   (alpha)
+TL_TIE='2026-03-01T10:00:00%2B00:00'            # %2B: a bare + in a query string is a space
+TL_SCOPE="activity_events?organisation_id=eq.$ALPHA_ORG&subject_type=eq.contact"
+
+p2_rows "a manager reads the whole timeline of one record" 4 \
+  "$TL_SCOPE&subject_id=eq.$TL_REC&select=id,occurred_at,kind,actor_name,detail&order=occurred_at.desc,id.desc" "$MGR"
+
+# THE COUNT ROUND TRIP. Same shape hm_range uses for the merge history: the
+# total comes out of Content-Range, and `head=true` is how fetchListPage asks.
+tl_total() { # name want path token
+  local name="$1" want="$2" path="$3" tok="$4" range
+  range=$(curl -s -o /dev/null -D - -X HEAD "$API/rest/v1/$3" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+    -H "Prefer: count=exact" | tr -d '\r' | awk 'tolower($1)=="content-range:"{print $2}')
+  if [ "${range##*/}" = "$want" ]; then
+    printf '  PASS  %-58s %s\n' "$name" "$range"
+  else
+    printf '  FAIL  %-58s got %s want */%s\n' "$name" "${range:-<none>}" "$want"
+    api_fails=$((api_fails+1))
+  fi
+}
+tl_total "count=exact works on the view, so the total is real" 4 \
+  "$TL_SCOPE&subject_id=eq.$TL_REC&select=id" "$MGR"
+
+# THE CURSOR GRAMMAR, ISSUED EXACTLY AS applyCursor() BUILDS IT. A 200 with one
+# row is the assertion; a 400 here is what a cursor that cannot be expressed
+# against a view would look like, and no psql assertion can produce one.
+p2_code "the keyset predicate is accepted against the view (200, not 400)" 200 GET \
+  "$TL_SCOPE&subject_id=eq.$TL_REC&select=id,occurred_at,kind&occurred_at=lte.$TL_TIE&or=(occurred_at.lt.$TL_TIE,and(occurred_at.eq.$TL_TIE,id.lt.ffffffff-ffff-4fff-8fff-ffffffffffff))&order=occurred_at.desc,id.desc&limit=1" \
+  "" "$MGR"
+
+# PAGING THROUGH THE TIE, ONE ROW AT A TIME, over the real transport. Four
+# single-row pages must yield the four events, each exactly once -- which is
+# the property a tie breaks when the sort key is not total. Done in python
+# because each page's cursor comes out of the previous page's last row, which
+# is precisely what the application does.
+tl_walk=$(TL_API="$API" TL_ANON="$ANON" TL_TOK="$MGR" \
+          TL_PATH="$TL_SCOPE&subject_id=eq.$TL_REC" python - <<'PYEOF'
+import json, os, urllib.parse, urllib.request
+
+api, anon, tok, path = (os.environ[k] for k in
+                        ("TL_API", "TL_ANON", "TL_TOK", "TL_PATH"))
+
+def get(url):
+    req = urllib.request.Request(url, headers={
+        "apikey": anon, "Authorization": "Bearer " + tok})
+    with urllib.request.urlopen(req) as r:
+        return json.load(r)
+
+seen, cursor = [], None
+for _ in range(8):                      # bounded: 4 expected, 8 catches a loop
+    url = "%s/rest/v1/%s&select=id,occurred_at,kind&order=occurred_at.desc,id.desc&limit=1" % (api, path)
+    if cursor:
+        ts, rid = cursor
+        q = urllib.parse.quote(ts, safe="")
+        url += "&occurred_at=lte.%s&or=(occurred_at.lt.%s,and(occurred_at.eq.%s,id.lt.%s))" % (q, q, q, rid)
+    rows = get(url)
+    if not rows:
+        break
+    row = rows[0]
+    seen.append(row["id"])
+    cursor = (row["occurred_at"], row["id"])
+
+print("%d/%d" % (len(seen), len(set(seen))))
+PYEOF
+)
+if [ "$tl_walk" = "4/4" ]; then
+  printf '  PASS  %-58s %s\n' "one-row pages walk the tie, each event exactly once" "$tl_walk"
+else
+  printf '  FAIL  %-58s got %s want 4/4\n' "one-row pages walk the tie, each event exactly once" "$tl_walk"
+  api_fails=$((api_fails+1))
+fi
+
+# VISIBILITY, AT THE TRANSPORT. The psql section asserts the same three facts
+# through the policies directly; these assert that nothing about going through
+# PostgREST -- which reads the view as `authenticated`, not as postgres --
+# loosens them.
+p2_rows "TENANT: the Beta owner reads none of it" 0 \
+  "$TL_SCOPE&subject_id=eq.$TL_REC&select=id" "$BOWN"
+p2_rows "RECORD SCOPE: a standard_user sees nothing on another's record" 0 \
+  "$TL_SCOPE&subject_id=eq.$TL_REC&select=id" "$STD"
+# ...and the SAME token on the SAME view sees their own record, so the 0 above
+# is the policy and not a broken request.
+#
+# NARROWED TO ONE KIND, NOT COUNTED AS ROWS. The first draft asserted "1 row"
+# and got 2: an earlier block in this file PATCHes contacts across org-alpha,
+# which moves updated_at and gives every contact in the workspace a
+# `record_updated` entry. A bare row count here is a hostage to every block
+# above it, and the kind is what this assertion is actually about.
+p2_rows "POSITIVE CONTROL: the same token sees their OWN record's creation" 1 \
+  "$TL_SCOPE&subject_id=eq.$TL_STD&kind=eq.record_created&select=id" "$STD"
+# THE ASYMMETRY, AT THE TRANSPORT. std1 owns this contact and NOT the record
+# it absorbed, so merges_select_via_winner -- which wants both -- hides the
+# merge while the contact itself stays readable. This is the entry the
+# timeline's scope note exists to warn the reader about.
+p2_rows "...but NOT the merge it survived, whose loser was another user's" 0 \
+  "$TL_SCOPE&subject_id=eq.$TL_STD&kind=eq.merge_absorbed&select=id" "$STD"
+p2_rows "CONTROL: a full-scope reader DOES see that same merge" 1 \
+  "$TL_SCOPE&subject_id=eq.$TL_STD&kind=eq.merge_absorbed&select=id" "$MGR"
+p2_rows "a read_only caller who owns nothing gets 0 rows, not an error" 0 \
+  "$TL_SCOPE&subject_id=eq.$TL_REC&select=id" "$RO"
+
+# NOT WRITABLE -- AND THE CODE IS A 500, MEASURED RATHER THAN WISHED FOR.
+# Postgres rejects the statement at rewrite time ("Views containing UNION,
+# INTERSECT, or EXCEPT are not automatically updatable", SQLSTATE 55000),
+# which happens BEFORE any privilege check -- so the missing INSERT grant
+# never gets the chance to produce the 403 this would otherwise return. The
+# write is refused either way; what the status code cannot show is WHICH
+# refusal fired, so the grant surface is asserted separately, in the
+# database, at X1/X2.
+#
+# Recorded as a finding rather than smoothed over: a refused write that
+# answers 500 looks like a server fault to anything watching error rates.
+p2_code "the view refuses an INSERT over PostgREST (55000, not the grant)" 500 \
+  POST "activity_events" "{\"kind\":\"planted\"}" "$MGR"
+p2_code "...and a PATCH, refused the same way" 500 \
+  PATCH "activity_events?kind=eq.record_created" "{\"kind\":\"planted\"}" "$MGR"
+
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2
   http_status=1
