@@ -28,7 +28,13 @@ import { describe, expect, it } from "vitest";
 // WHAT WOULD BREAK IT, WHICH IS THE POINT
 // ===========================================================================
 //   * a page that reads `searchParams.after` itself instead of through
-//     `parseListParams`
+//     `parseListParams` -- ASSERTED BELOW. It is the one bullet the first
+//     version of this file named without implementing (Task 8 review,
+//     Important #3), and it matters more than the other two: a list that
+//     hand-rolls a keyset query and never calls `fetchListPage` is invisible
+//     to the >= 15 floor, to the pairing check and to the `.range(`/`offset:`
+//     ban, so without this assertion the census's blind spot is exactly the
+//     defect the brief names ("a second, weaker cursor in the codebase").
 //   * a page that calls `.range(` or builds an `offset` -- a second pagination
 //     MODEL, not just a second implementation
 //   * a module outside `lib/list` importing `decodeCursor`, which is how a
@@ -88,6 +94,36 @@ describe("every paginated list shares one implementation", () => {
     // second, unvalidated cursor gets in.
     const unpaired = fetchers.filter((path) => !parsers.includes(path));
     expect(unpaired).toEqual([]);
+  });
+
+  it("no module outside lib/list reads a cursor param off the query string", () => {
+    // THE HAND-ROLLED KEYSET. `fetchListPage` and `parseListParams` are paired
+    // above, but a list that calls NEITHER -- `.gt("id", searchParams.after)`
+    // with its own `.limit(n)` -- passes every other assertion in this file:
+    // the >= 15 floor cannot see it, the pairing check never considers it, and
+    // it uses neither `.range(` nor `offset:`. `lib/list/params.ts` owns the
+    // names `after` and `before` (it reads `paramKey(spec, "after")` at line
+    // 230) and is the only place allowed to take them off a query string.
+    //
+    // SCOPED TO A PARAMS-SHAPED RECEIVER, not to the bare word. A blanket ban
+    // on `.before` is a false positive, and that is measured rather than
+    // guessed: the first draft of this assertion caught `lib/crm/dedup.ts:345`,
+    // `(record as Record<string, unknown>).before`, which reads a merge
+    // `field_resolution` snapshot and has nothing to do with pagination.
+    //
+    // Covered: `searchParams.after`, `params["before"]`, and the destructured
+    // `const { after } = await searchParams`. Comment lines are stripped by
+    // `code()` first, which matters here -- a dozen files discuss `after` in
+    // prose (the artist detail page, the activity timeline, the artists list)
+    // and none of them reads it.
+    const reads = [
+      /\b(?:searchParams|params|query|raw)\s*(?:\.\s*|\[\s*["'`]\s*)(?:after|before)\b/,
+      /\{[^}]*\b(?:after|before)\b[^}]*\}\s*=\s*(?:await\s+)?(?:searchParams|params|query|raw)\b/,
+    ];
+    const readers = SOURCES.filter((f) =>
+      reads.some((re) => re.test(code(f.text))),
+    );
+    expect(readers.map((f) => f.path)).toEqual([]);
   });
 
   it("no module outside lib/list encodes or decodes a cursor itself", () => {
