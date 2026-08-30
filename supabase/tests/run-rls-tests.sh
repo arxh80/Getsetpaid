@@ -241,9 +241,11 @@ fi
 # ============================================================================
 docker cp "$HERE/rls_phase3_events.sql" "$CTR:/tmp/rls_phase3_events.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off   "${P2VARS[@]}" -f /tmp/rls_phase3_events.sql
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P2VARS[@]}" -f /tmp/rls_phase3_events.sql
 
-p3_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc            "select count(*) from ev.results where not pass" | tr -d '[:space:]')
+p3_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from ev.results where not pass" | tr -d '[:space:]')
 if [ "$p3_fails" != "0" ]; then
   echo "PHASE 3 EVENTS SUITE FAILED: $p3_fails failing assertion(s)" >&2
   echo "  A failure in section EB, EF or EK is a REOPENED TENANT BOUNDARY -- treat as Sev1." >&2
@@ -816,53 +818,67 @@ EV_BETA='ee11000b-0000-0000-0000-00000000000b'    # Beta Secret Event
 # anon: the two tables must not be reachable logged out at all.
 p2_code "anon GET events"                        401 GET  "events?select=id"
 p2_code "anon GET event_lineup"                  401 GET  "event_lineup?select=id"
-p2_code "anon POST events"                       401 POST "events"         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"anon\",\"starts_at\":\"2026-12-01T20:00:00Z\"}"
+p2_code "anon POST events"                       401 POST "events" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"anon\",\"starts_at\":\"2026-12-01T20:00:00Z\"}"
 
 # Tenant boundary, aimed directly at the other tenant's org id -- the request
 # an attacker actually sends, since the org id is in every URL.
-p2_rows "manager GET events of org BETA (expect 0)"       0         "events?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
-p2_rows "manager GET event_lineup of org BETA (expect 0)" 0         "event_lineup?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
-p2_code "manager POSTs an event into org BETA"          403 POST "events"         "{\"organisation_id\":\"$BETA_ORG\",\"name\":\"planted\",\"starts_at\":\"2026-12-01T20:00:00Z\"}" "$MGR"
+p2_rows "manager GET events of org BETA (expect 0)"       0 \
+        "events?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+p2_rows "manager GET event_lineup of org BETA (expect 0)" 0 \
+        "event_lineup?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+p2_code "manager POSTs an event into org BETA"          403 POST "events" \
+        "{\"organisation_id\":\"$BETA_ORG\",\"name\":\"planted\",\"starts_at\":\"2026-12-01T20:00:00Z\"}" "$MGR"
 # POSITIVE CONTROL for the two zeros above: the same token, the same table,
 # their own tenant. Without it a 0 is satisfied by a dead endpoint or a policy
 # that denies everybody.
-p2_rows "CONTROL: the same manager GETs ALPHA's Manager Event"  1         "events?select=id&id=eq.$EV_ALPHA" "$MGR"
+p2_rows "CONTROL: the same manager GETs ALPHA's Manager Event"  1 \
+        "events?select=id&id=eq.$EV_ALPHA" "$MGR"
 
 # The role matrix, over HTTP. Booker holds manage_events; read_only does not.
-p2_code "booker POSTs an event (has manage_events)"     201 POST "events"         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"http booker event\",\"starts_at\":\"2026-12-02T20:00:00Z\"}" "$BKR"
-p2_code "read_only POSTs an event"                      403 POST "events"         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"http ro event\",\"starts_at\":\"2026-12-03T20:00:00Z\"}" "$RO"
+p2_code "booker POSTs an event (has manage_events)"     201 POST "events" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"http booker event\",\"starts_at\":\"2026-12-02T20:00:00Z\"}" "$BKR"
+p2_code "read_only POSTs an event"                      403 POST "events" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"http ro event\",\"starts_at\":\"2026-12-03T20:00:00Z\"}" "$RO"
 
 # The absent DELETE grant is absent at the HTTP layer too, which is the only
 # place a missing grant and a denying policy look different.
-p2_code "manager DELETEs an event (no DELETE grant)"    403 DELETE         "events?id=eq.$EV_ALPHA" "" "$MGR"
-p2_code "manager DELETEs a lineup row (no DELETE grant)" 403 DELETE         "event_lineup?event_id=eq.$EV_ALPHA" "" "$MGR"
+p2_code "manager DELETEs an event (no DELETE grant)"    403 DELETE \
+        "events?id=eq.$EV_ALPHA" "" "$MGR"
+p2_code "manager DELETEs a lineup row (no DELETE grant)" 403 DELETE \
+        "event_lineup?event_id=eq.$EV_ALPHA" "" "$MGR"
 
 # THE COUNT CHECK. A cross-tenant PATCH is a silent 204; only the header says
 # it wrote nothing. Both spellings are asserted -- the bare request, where the
 # RANGE half is `*`, and `Prefer: count=exact`, where the TOTAL is 0.
-p2_code "manager PATCHes a BETA event -> silent 204, not 403"  204 PATCH         "events?id=eq.$EV_BETA" '{"name":"rewritten over http"}' "$MGR"
-p2_range_shape "...and with NO Prefer header the range IS '*'" none PATCH         "events?id=eq.$EV_BETA" '{"name":"rewritten over http"}' "$MGR"
-p2_range_written "...and count=exact reports the 0 the 204 hid" 0 PATCH         "events?id=eq.$EV_BETA" '{"name":"rewritten over http"}' "$MGR"
+p2_code "manager PATCHes a BETA event -> silent 204, not 403"  204 PATCH \
+        "events?id=eq.$EV_BETA" '{"name":"rewritten over http"}' "$MGR"
+p2_range_shape "...and with NO Prefer header the range IS '*'" none PATCH \
+        "events?id=eq.$EV_BETA" '{"name":"rewritten over http"}' "$MGR"
+p2_range_written "...and count=exact reports the 0 the 204 hid" 0 PATCH \
+        "events?id=eq.$EV_BETA" '{"name":"rewritten over http"}' "$MGR"
 # THE LIVE CONTROL for the three above: the identical PATCH on their OWN
 # tenant's event writes a row and says so. Without it a `*/0` is satisfied by a
 # PATCH that never works for anybody.
-p2_range_written "CONTROL: the same PATCH on an ALPHA event writes rows" ">=1" PATCH         "events?id=eq.$EV_ALPHA" '{"notes":"http control"}' "$MGR"
-p2_range_shape "CONTROL: ...and its range is not '*'" rows PATCH         "events?id=eq.$EV_ALPHA" '{"notes":"http control"}' "$MGR"
+p2_range_written "CONTROL: the same PATCH on an ALPHA event writes rows" ">=1" PATCH \
+        "events?id=eq.$EV_ALPHA" '{"notes":"http control"}' "$MGR"
+p2_range_shape "CONTROL: ...and its range is not '*'" rows PATCH \
+        "events?id=eq.$EV_ALPHA" '{"notes":"http control"}' "$MGR"
 
 # RECORD SCOPE, over HTTP: every event row pstd1 gets back is one pstd1 owns.
 # The unowned `T Alpha Event` (rls_phase2_crm.sql § T32) is in this table and
 # is exactly what a broken record-scope term would hand over.
-STD_EV=$(curl -s "$API/rest/v1/events?select=id,owner_user_id"   -H "apikey: $ANON" -H "Authorization: Bearer $STD"   | python -c "
+STD_EV=$(curl -s "$API/rest/v1/events?select=id,owner_user_id" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $STD" \
+  | python -c "
 import sys,json
 d=json.load(sys.stdin)
 print(-1 if not isinstance(d,list) else
       '%d/%d' % (len(d), sum(1 for r in d if r['owner_user_id']!='${P2ID[pstd1]}')))")
 if [ "${STD_EV#*/}" = "0" ] && [ "${STD_EV%/*}" -ge 1 ] 2>/dev/null; then
-  printf '  PASS  %-58s %s
-' "standard_user GETs only events they own" "$STD_EV"
+  printf '  PASS  %-58s %s\n' "standard_user GETs only events they own" "$STD_EV"
 else
-  printf '  FAIL  %-58s got %s want <n>=1/0
-' "standard_user GETs only events they own" "$STD_EV"
+  printf '  FAIL  %-58s got %s want <n>=1/0\n' "standard_user GETs only events they own" "$STD_EV"
   api_fails=$((api_fails+1))
 fi
 

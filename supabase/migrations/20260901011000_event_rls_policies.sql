@@ -1,4 +1,4 @@
--- Phase 3 (Events), Task 2b: the seven RLS policies on public.events and
+-- Phase 3 (Events), Task 2b: the six RLS policies on public.events and
 -- public.event_lineup, and the `event_lineup` arm of
 -- private.entity_org_unchanged() that one of them calls.
 --
@@ -11,8 +11,16 @@
 -- silenced.
 --
 -- ADDITIVE. `create policy`, never `alter`, because there is nothing to alter:
--- these seven are new. `create or replace policy` does not exist in PostgreSQL
+-- these six are new. `create or replace policy` does not exist in PostgreSQL
 -- (42601 on the pinned 17.6) -- 20260828122000's header records the same.
+--
+-- SIX, NOT SEVEN. The task brief said seven and this header said it too until
+-- fix round 1. Three per table -- SELECT, INSERT, UPDATE -- which is exactly
+-- the venues / venue_rooms shape they are copied from, and there is no DELETE
+-- policy because there is no DELETE grant. The seven is an arithmetic slip
+-- over schema_invariants.sql D11b's 21, which counts policy EXPRESSIONS
+-- rather than policies: UPDATE contributes two (USING and WITH CHECK), so
+-- event_lineup's three policies are four expressions, 17 + 4 = 21.
 --
 -- ===========================================================================
 -- THE SHAPE IS COPIED, NOT INVENTED
