@@ -86,14 +86,20 @@ describe("I-10: nothing outside lib/format/ defines a date formatter", () => {
     expect(sources.length).toBeGreaterThanOrEqual(60);
   });
 
-  for (const file of sources) {
-    if (file === "lib/format/date.ts") continue;
-    it(`${file} imports the formatters rather than defining them`, () => {
-      const match = DEFINITION.exec(readFileSync(root + file, "utf8"));
-      expect(
-        match?.[0] ?? null,
-        "a second copy of a date formatter is how one page starts showing UTC",
-      ).toBeNull();
-    });
-  }
+  it("no second definition anywhere under app/, components/ or lib/", () => {
+    // ONE ASSERTION LISTING THE OFFENDERS, not one test per file: there are
+    // ~150 source files and a per-file `it` would be 150 near-identical rows in
+    // every run for a property with a single failure mode. The message names
+    // the file and the line, which is what a reader of a red run needs.
+    const offenders = sources
+      .filter((file) => file !== "lib/format/date.ts")
+      .flatMap((file) => {
+        const match = DEFINITION.exec(readFileSync(root + file, "utf8"));
+        return match ? [`${file}: ${match[0]}`] : [];
+      });
+    expect(
+      offenders,
+      "a second copy of a date formatter is how one page starts showing UTC",
+    ).toEqual([]);
+  });
 });
