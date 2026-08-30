@@ -67,3 +67,95 @@ export const EVENT_TYPES = [
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];
+
+// ===========================================================================
+// THE PRESENTATION LAYER, ADDED BY PHASE 3 TASK 3
+// ===========================================================================
+// The header above says this file is "DELIBERATELY DATA ONLY -- no labels, no
+// tones, no React. Phase 3 Task 3 owns the presentation layer ... and adds it
+// to this file." This is that addition, and the promise it kept is that the
+// constants and their labels ship in one module: the status FILTER's choices
+// (lib/crm/events-list.ts), the status CHIP (components/crm/status-chip.tsx)
+// and, from Task 4, the create/edit form's <select> all read the same three
+// records rather than each writing out eight strings.
+//
+// STILL NO REACT HERE. `STATUS_TONE` names a tone, not a class; the chip maps
+// tone -> Tailwind token. That keeps this module importable from a Server
+// Component, a Client Component and a vitest file alike, and it keeps
+// DESIGN.md's token contract in one component rather than in a data table.
+//
+// EVERY ONE IS A `Record` KEYED ON THE UNION, WHICH IS THE POINT. Add a ninth
+// status to the CHECK constraint and to `EVENT_STATUSES` and TypeScript makes
+// the missing label and the missing tone compile errors here, at the
+// definition, rather than `undefined` rendering as an empty chip in a browser
+// nobody opened. tests/unit/crm/event-status.test.ts adds the runtime half
+// (non-empty values, and the key COUNTS -- 8, 6, 8 -- as the denominator,
+// because a `Record` type assertion passes vacuously against `{}` once
+// something casts).
+
+/**
+ * The eight statuses as a human reads them.
+ *
+ * Sentence case, not Title Case: these appear inside a filter's option list
+ * and inside a chip, and DESIGN.md's voice is plain. `on_sale` is "On sale"
+ * rather than "On Sale" for the same reason.
+ */
+export const STATUS_LABELS: Record<EventStatus, string> = {
+  draft: "Draft",
+  planned: "Planned",
+  hold: "Hold",
+  confirmed: "Confirmed",
+  on_sale: "On sale",
+  sold_out: "Sold out",
+  completed: "Completed",
+  cancelled: "Cancelled",
+};
+
+/** The six types as a human reads them. */
+export const TYPE_LABELS: Record<EventType, string> = {
+  club_night: "Club night",
+  rave: "Rave",
+  tour_date: "Tour date",
+  festival: "Festival",
+  private_hire: "Private hire",
+  other: "Other",
+};
+
+/**
+ * The tone a status carries, as a NAME rather than a colour.
+ *
+ * Four tones over eight statuses, and the collisions are deliberate:
+ *
+ *   muted     draft, completed    -- nothing to do. One has not started being
+ *                                   real yet and the other has stopped being
+ *                                   urgent; neither wants the eye.
+ *   ink       planned             -- real, in the diary, not yet committed.
+ *   warning   hold                -- SOMEBODY IS WAITING. A hold is the one
+ *                                   status with a clock on it.
+ *   success   confirmed, on_sale,
+ *             sold_out            -- the booking happened. `sold_out` is a
+ *                                   success and not a warning: a promoter
+ *                                   selling out is the good outcome, and the
+ *                                   thing a warning tone would imply (act now)
+ *                                   is false.
+ *   danger    cancelled           -- the only one.
+ *
+ * NEVER COLOUR ALONE. DESIGN.md § Working palette: "Status must never be
+ * colour-only -- always pair with a text label or shape." The chip renders
+ * `STATUS_LABELS[status]` unconditionally, so the tone is redundant
+ * reinforcement and the label is the information. That is also why this is a
+ * five-value union rather than a hex: a tone with no token behind it does not
+ * compile in the chip.
+ */
+export const STATUS_TONE: Record<EventStatus, EventStatusTone> = {
+  draft: "muted",
+  planned: "ink",
+  hold: "warning",
+  confirmed: "success",
+  on_sale: "success",
+  sold_out: "success",
+  completed: "muted",
+  cancelled: "danger",
+};
+
+export type EventStatusTone = "muted" | "ink" | "success" | "warning" | "danger";
