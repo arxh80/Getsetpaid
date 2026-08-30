@@ -6,7 +6,13 @@ import {
   DELETED_RECORD_EXPLANATION,
   getCrmWriteAccess,
 } from "@/lib/crm/write-access";
-import { loadEvent } from "@/lib/crm/queries";
+import {
+  loadArtistsForPicker,
+  loadEvent,
+  loadLineupForEvent,
+} from "@/lib/crm/queries";
+import type { RawSearchParams } from "@/lib/list/params";
+import { LineupPanel } from "@/components/crm/lineup-panel";
 import { deleteEventAction, restoreEventAction } from "@/lib/crm/events";
 import { StatusChip } from "@/components/crm/status-chip";
 import { TYPE_LABELS } from "@/lib/crm/event-status";
@@ -57,14 +63,15 @@ import { formatDateTime } from "@/lib/format/date";
 // tasks. Their slots are marked below rather than left to be re-derived, so
 // neither task has to restructure this page to land:
 //
-//   Task 5   the LINEUP panel, after the details and before the custom
-//            fields. Its write controls take `disabledReason` in the same
-//            shape RoomPanel does on the venue page -- `DELETED_RECORD_EXPLANATION`
-//            when the event is deleted, `access.explanation` when the caller
-//            cannot write, null otherwise -- which is why `panelBlocked` is
-//            computed here already.
+//   Task 5   LANDED. The lineup panel is below, between the details and the
+//            custom-fields slot, taking `panelBlocked` in the shape this note
+//            predicted. It brings the page's FIRST namespaced list
+//            (`lineup_`), which is why `searchParams` is now read here.
 //   Task 6   the CUSTOM FIELDS panel ('event' is a custom-field entity type as
-//            of 20260901001000) and the ACTIVITY TIMELINE.
+//            of 20260901001000) and the ACTIVITY TIMELINE. The timeline is the
+//            page's SECOND list and must be given `activity_` and the same
+//            `raw` as `preserve` -- see lib/crm/lineup-list.ts's header for
+//            what happens to both lists if it is not.
 
 export async function generateMetadata({
   params,
@@ -86,6 +93,7 @@ const MANAGE_NOTE = "event-manage-blocked";
 
 export default async function EventDetailPage({
   params,
+  searchParams,
 }: PageProps<"/[orgSlug]/events/[eventId]">) {
   const { orgSlug, eventId } = await params;
   const org = await getCurrentOrg(orgSlug);
@@ -113,6 +121,38 @@ export default async function EventDetailPage({
     event.venueId !== null && event.venueName !== null && !event.venueDeleted
       ? `/${org.slug}/venues/${event.venueId}`
       : null;
+
+  // THE LINEUP PANEL'S GATE, the expression Task 4's slot comment spelled out.
+  // A deleted event's lineup is READABLE and not WRITABLE, and as of
+  // 20260901011000 that second half is a policy term (`p.deleted_at is null`
+  // in all three event_lineup write policies), not only an application check
+  // -- so this is the explanation rather than the enforcement.
+  const panelBlocked =
+    event.deletedAt !== null
+      ? DELETED_RECORD_EXPLANATION
+      : access.canWrite
+        ? null
+        : access.explanation;
+
+  // THE FIRST PAGE IN THIS PHASE WITH A NAMESPACED LIST ON IT, and Task 6 adds
+  // the second (the activity timeline, `activity_`). `lineupParams` reads only
+  // keys beginning `lineup_`, so the two never see each other's cursor; `raw`
+  // is passed to the panel as `preserve` so paging this list does not rebuild
+  // the URL without the other one's state. lib/crm/lineup-list.ts's header and
+  // the artist detail page carry both halves.
+  const raw = (await searchParams) as RawSearchParams;
+  const [lineup, artistOptions] = await Promise.all([
+    // THE RAW QUERY STRING GOES IN and the parsed params come back: the loader
+    // owns LINEUP_LIST's namespace and the `lineup_q` drop, so this page
+    // cannot get either wrong. See `loadLineupForEvent`.
+    loadLineupForEvent(org.id, event.id, raw),
+    // ONLY WHEN THERE IS A FORM TO PUT THEM IN. A blocked panel renders
+    // disabled controls with no options, so fetching a hundred artist names
+    // for it would be a round trip nobody can see.
+    panelBlocked === null
+      ? loadArtistsForPicker(org.id)
+      : Promise.resolve([] as { id: string; name: string }[]),
+  ]);
 
   return (
     <div className="flex flex-col gap-8">
@@ -254,21 +294,21 @@ export default async function EventDetailPage({
         </section>
       ) : null}
 
-      {/* ===================================================================
-          SLOT: THE LINEUP PANEL (Phase 3 Task 5).
-          Goes here, between the details and the custom fields. Its
-          `disabledReason` is the same expression RoomPanel takes on the venue
-          page and is deliberately NOT computed above -- an unused local is a
-          lint error, and a `void` to silence one is worse than a sentence:
-
-            event.deletedAt !== null
-              ? DELETED_RECORD_EXPLANATION
-              : access.canWrite ? null : access.explanation
-
-          Deliberately a comment and not an empty box: an empty bordered panel
-          labelled "Lineup" would tell a user with a full bill that they have
-          none, which is the one thing an empty state must never do.
-          =================================================================== */}
+      {/* THE LINEUP (Phase 3 Task 5), in the slot Task 4 marked for it.
+          `panelBlocked` is the expression that comment spelled out, computed
+          above now that there is a consumer for it. */}
+      <LineupPanel
+        orgSlug={org.slug}
+        eventId={event.id}
+        page={lineup.page}
+        params={lineup.params}
+        basePath={`${basePath}/${event.id}`}
+        removed={lineup.removed}
+        artistNames={lineup.artists}
+        artistOptions={artistOptions}
+        disabledReason={panelBlocked}
+        preserve={raw}
+      />
 
       {/* ===================================================================
           SLOT: THE CUSTOM FIELDS PANEL and THE ACTIVITY TIMELINE
