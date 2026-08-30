@@ -357,12 +357,25 @@ function Bill({
  * the client bundle does not need the Intl machinery in lib/format/date.ts --
  * and so both halves of the conversion sit in modules that already import it.
  *
- * `billing` falls back to `other` when the database holds a value this build
- * does not know, because a `<select>` whose `defaultValue` matches no option
- * selects the FIRST one -- which would silently rewrite an unknown billing to
- * "headliner" on the next save of any other field. `other` is the honest
- * landing place and it is visible in the row summary above the form, which
- * shows the raw value.
+ * ===========================================================================
+ * `billing` FALLS BACK TO `other`, AND THAT REWRITES THE RECORD ON THE NEXT
+ * SAVE. SAID PLAINLY BECAUSE IT IS A LOSS, NOT A DISPLAY CHOICE.
+ * ===========================================================================
+ * When the database holds a billing this build does not know, saving ANY field
+ * on that row writes `other` over it. The alternative is worse, not better: a
+ * `<select>` whose `defaultValue` matches no option selects the FIRST one, so
+ * doing nothing rewrites it to "headliner" -- a plausible value, silently
+ * wrong, where `other` at least reads as "we do not know". The row summary
+ * above the form shows the RAW stored value, so the user can see what is there
+ * before they touch it.
+ *
+ * REACHABLE ONLY DURING A ROLLING DEPLOY that widens the CHECK before this
+ * bundle ships, or through an import. THE CORRECT LONG-RUN ANSWER IS TO RENDER
+ * THE UNKNOWN VALUE AS AN OPTION OF ITS OWN -- marked, and selected -- so a
+ * save preserves it and there is no fallback at all. Not built here because it
+ * needs copy for a value the product cannot name, and it is not worth guessing
+ * that copy for a window measured in minutes. Recorded rather than
+ * rediscovered; fix round 1, Minor 6.
  */
 function storedFields(row: LineupRow): SlotFieldValues {
   return {

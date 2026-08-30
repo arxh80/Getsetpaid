@@ -1752,25 +1752,49 @@ corrections are the useful part. Each now says what was actually done.
   (`LINEUP_DUPLICATE_ARTIST`) instead. If the picker ever becomes search-backed,
   exclusion becomes cheap and should be revisited then.
 
-- **`event_lineup_insert_via_event`'s record-scope disjunction cannot be
-  observed on its own, because the parent's SELECT policy already covers it.**
-  Measured over HTTP as `pstd1` (a standard_user) POSTing a slot on the
-  manager's event:
+- **CLOSED IN FIX ROUND 1: the record-scope disjunctions in the two
+  `event_lineup` write policies now have assertions, and here is what still
+  holds.** The original entry said the terms could not be observed at all. That
+  was true of the suite as shipped and is no longer true of the suite:
+  `rls_phase3_events.sql` § EF20-EF29 lifts the two masking SELECT policies
+  (`events_select_view_crm`, then `event_lineup_select_via_event`) inside one
+  transaction, asks the write policies on their own, restores both and asserts
+  the restores structurally and behaviourally. Measured: removing the INSERT
+  policy's disjunction now turns **EF21** red (`denied(42501)` → `ok(1)`);
+  removing the UPDATE policy's turns **EF24** and **EF26** red.
 
-  | schema | result |
+  **What remains true, and is the part worth keeping:** the terms are each
+  other's backstop, so **no single-policy mutation can turn the HTTP probe
+  red** —
+
+  | schema | `pstd1` POSTs a slot on pmanager's event |
   |---|---|
   | shipped | **403** |
   | record scope removed from `event_lineup_insert_via_event` only | **403** |
   | record scope removed from `events_select_view_crm` only | **403** |
-  | removed from BOTH | **201** — the slot lands on somebody else's bill |
+  | removed from **both** | **201** — the slot lands |
 
-  The child policy's `exists (select 1 from public.events p …)` is evaluated AS
-  THE CALLER, so the parent's own record-scope term filters it before the
-  child's disjunction is reached. Both terms are therefore genuinely
-  belt-and-braces, each sufficient alone — which is the right shape and is worth
-  writing down, because it also means **no single-policy mutation can turn the
-  HTTP probe red**, and a reader who tries one and sees green may conclude the
-  probe is toothless. It is not; it takes two.
+  A reader who mutates one policy, sees the HTTP block green and concludes the
+  probe is toothless is reading it wrong: the probe measures the composition,
+  and the psql lift is what measures each term alone. Recorded because the same
+  masking applies to every child table in this schema, and § ED11-ED16 plus
+  § EF20-EF29 are now two worked examples of the technique.
+
+- **`20260901021000`'s header sends a reader to the wrong file for
+  `applyFilters`.** It says "`applyFilters` in lib/crm/lineup-list.ts pins the
+  event by equality". The claim is true about the query and false about the
+  file: `LINEUP_LIST` has `filters: {}` and the string does not appear in that
+  module at all — the callback is in `loadLineupForEvent`, `lib/crm/queries.ts`.
+  This repository treats a migration comment as load-bearing and a reader who
+  greps the named file finds nothing.
+
+  **Not corrected in place**, because no existing migration is edited — the same
+  discipline 20260901011000 followed when it found a stale file reference in
+  20260901001000's deployed comment. § EL2's header in
+  `supabase/tests/rls_phase3_events.sql` (a test file, not a migration) carries
+  the correction now and names the misattribution explicitly; the next migration
+  with business on `public.event_lineup` should restate the index comment with
+  the right file.
 
 - **A permanent Playwright spec for events is STILL owed** — Task 3 filed it,
   Task 4 re-filed it, and this task re-files it again.

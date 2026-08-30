@@ -112,6 +112,24 @@ export function isBilling(value: string | null): value is Billing {
 export const MIN_POSITION = 0;
 export const MAX_POSITION = 999;
 
+/**
+ * The cap on a slot's notes, in the same module as the position bounds and for
+ * the same reason: the `maxLength` on the control and the length check on the
+ * server must not be able to disagree.
+ *
+ * It lived in lib/crm/events.ts as `MAX_LINEUP_NOTES` with the number typed a
+ * second time into `components/crm/lineup-forms.tsx` -- fix round 1's Minor 3.
+ * `MIN_POSITION`/`MAX_POSITION` were put here precisely so that could not
+ * happen and the source-shape block asserts that pairing; this one had neither,
+ * so a change to the server cap would have left the browser silently truncating
+ * at the old one.
+ *
+ * A cue line -- "on at 23:00, needs two CDJs" -- not the event's running sheet,
+ * which is `events.notes` at 5,000. The column is unbounded `text`; this is the
+ * only thing between it and a pasted megabyte.
+ */
+export const MAX_LINEUP_NOTES = 2000;
+
 /** The one message a bad `position` gets. */
 export const POSITION_PROBLEM =
   "Position must be a whole number between 0 and 999.";

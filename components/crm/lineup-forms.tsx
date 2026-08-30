@@ -10,6 +10,7 @@ import {
 import {
   BILLING_LABELS,
   BILLING_VALUES,
+  MAX_LINEUP_NOTES,
   MAX_POSITION,
   MIN_POSITION,
 } from "@/lib/crm/lineup-list";
@@ -270,7 +271,10 @@ function SlotFields({
           id={`${idPrefix}-notes`}
           name="notes"
           rows={2}
-          maxLength={2000}
+          // THE CONSTANT, NOT THE NUMBER. `readLineup` in lib/crm/events.ts
+          // checks the same one; a literal here would let the browser truncate
+          // at a length the server no longer enforces (fix round 1, Minor 3).
+          maxLength={MAX_LINEUP_NOTES}
           disabled={disabled}
           defaultValue={values.notes}
           aria-describedby={describe("notes", `${idPrefix}-notes-error`)}

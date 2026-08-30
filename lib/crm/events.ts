@@ -116,6 +116,7 @@ import type { FieldProblem } from "@/lib/crm/validate";
 // is exactly the shape of thing lib/crm/event-picker.ts was extracted for.
 import {
   isBilling,
+  MAX_LINEUP_NOTES,
   MIN_POSITION,
   POSITION_PROBLEM,
   readPosition,
@@ -666,14 +667,6 @@ export async function restoreEventAction(
 /** The 23505 this table can actually produce, and it is not a conflict. */
 const LINEUP_DUPLICATE_ARTIST = "That artist is already on this lineup.";
 
-/**
- * Lineup notes are a cue line -- "on at 23:00, needs two CDJs" -- not the
- * event's running sheet, which is `events.notes` at MAX_EVENT_NOTES (5,000).
- * The column is unbounded `text`; this is the only thing between it and a
- * pasted megabyte.
- */
-const MAX_LINEUP_NOTES = 2000;
-
 const SET_ENDS_NEEDS_A_START = "A set that ends needs a start time too.";
 
 interface LineupValues {
@@ -849,6 +842,23 @@ export async function addLineupEntryAction(
       return { error: LINEUP_DUPLICATE_ARTIST, values: echoedValues(formData) };
     }
     if (error.code === "42501") {
+      return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
+    }
+    // AN END WENT AWAY BETWEEN THE CHECK AND THE INSERT (fix round 1, Minor 5).
+    // `event_lineup_event_fkey` and `event_lineup_artist_fkey` are both
+    // composite and tenant-scoped, so a 23503 here means the event or the
+    // artist stopped being there in the microseconds since `liveInOrg` said it
+    // was -- or that a forged post named a row that never existed. Without this
+    // branch the user got FAILED_MESSAGE, which ends "Try again in a moment"
+    // for a condition that will never clear.
+    //
+    // REFUSED_MESSAGE RATHER THAN DELETED_RECORD_EXPLANATION, because the code
+    // does not say WHICH end and guessing wrong would print "Restore it first"
+    // about a record the user cannot see. That is exactly the discipline
+    // `joinEndExplanation` applies (lib/crm/write-access.ts): the sentence that
+    // ends with an instruction is only used when being deleted is the only
+    // thing that can be wrong.
+    if (error.code === "23503") {
       return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     }
     console.error("[crm] add lineup entry failed:", error.message);

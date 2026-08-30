@@ -1667,6 +1667,27 @@ describe("the lineup forms echo every field a refusal would otherwise wipe", () 
     expect(list).toContain('"Position must be a whole number between 0 and 999.";');
   });
 
+  it("the notes cap is ONE constant, read by the control and by the parser", () => {
+    // FIX ROUND 1, MINOR 3. `maxLength={2000}` was typed here and
+    // `MAX_LINEUP_NOTES = 2000` lived in lib/crm/events.ts, so a change to the
+    // server cap would have left the browser truncating at the old one -- the
+    // exact drift MIN_POSITION/MAX_POSITION were moved into the pure module to
+    // prevent, and the only one of the two that had no guard. The constant now
+    // lives beside them and BOTH sides import it.
+    expect(read("lib/crm/lineup-list.ts")).toContain(
+      "export const MAX_LINEUP_NOTES = 2000;",
+    );
+    expect(forms).toContain("maxLength={MAX_LINEUP_NOTES}");
+    expect(forms, "a literal here can drift from the server's cap").not.toMatch(
+      /maxLength=\{\d+\}/,
+    );
+    const events = read("lib/crm/events.ts");
+    expect(events).toContain("notes.length > MAX_LINEUP_NOTES");
+    expect(events, "the constant moved out of this module").not.toContain(
+      "const MAX_LINEUP_NOTES =",
+    );
+  });
+
   it("every write control is DISABLED with an explanation, never hidden", () => {
     // FOLLOW-UPS Q6: "Write controls disabled, not hidden and not
     // present-and-failing. Hidden loses the explanation; present-and-failing
@@ -1703,6 +1724,50 @@ describe("the lineup forms echo every field a refusal would otherwise wipe", () 
 
   it("the artist name links to the artist's own page", () => {
     expect(panel).toContain("href={`/${orgSlug}/artists/${artistId}`}");
+  });
+});
+
+describe("the event detail page wires the lineup list the way it has to be wired", () => {
+  // FIX ROUND 1, MINOR 4. `buildListHref`'s `preserve` MECHANICS are covered
+  // (tests/unit/list/param-prefix.test.ts § 4), and the WIRING was not -- and
+  // the brief names this as the one criterion where "nothing fails loudly when
+  // it is wrong".
+  //
+  // It cannot break visibly today, because the page carries one list. Task 6
+  // adds the timeline, at which point a dropped `preserve` silently returns
+  // whichever list you did not click to its first page: no error, no log, a
+  // wrong page. Only the throwaway browser walk covered it, and a throwaway is
+  // not a gate.
+  const page = read("app/(app)/[orgSlug]/events/[eventId]/page.tsx");
+
+  it("passes the whole query string as `preserve` to the lineup panel", () => {
+    expect(page).toContain("preserve={raw}");
+    // The whole `searchParams` is the RIGHT thing to hand over, not a leak of
+    // one list's keys into another's URL: `buildListHref` strips the keys the
+    // spec owns before re-emitting the rest (lib/list/params.ts).
+    expect(page).toContain("const raw = (await searchParams) as RawSearchParams;");
+  });
+
+  it("hands the loader the RAW query string, so the namespace cannot be bypassed", () => {
+    // `loadLineupForEvent` owns LINEUP_LIST's namespace and the `lineup_q`
+    // drop. A caller that parsed params itself and passed them in would lose
+    // the drop, and the symptom is "No lineup yet" on an event with a full
+    // bill.
+    expect(page).toContain("loadLineupForEvent(org.id, event.id, raw)");
+    expect(page).toContain("params={lineup.params}");
+    // And it does NOT parse them itself, which is the shape that would let the
+    // two drift.
+    expect(page).not.toContain("parseListParams(");
+    expect(page).not.toContain("lineupParams(");
+  });
+
+  it("TASK 6 WILL ADD A SECOND LIST, and the slot comment says what it owes", () => {
+    // This assertion is aimed at the next author rather than at this code: the
+    // moment a second lib/list/ surface lands on this page, BOTH need their own
+    // `paramPrefix` and BOTH need `preserve`. The instruction is in the page
+    // where they will be working.
+    expect(page).toContain("`activity_`");
+    expect(page).toContain("preserve");
   });
 });
 
