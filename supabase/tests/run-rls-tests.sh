@@ -226,6 +226,35 @@ else
 fi
 
 # ============================================================================
+# PHASE 3 (EVENTS) RLS / PERMISSION / RECORD-SCOPE SUITE.
+#
+# Runs AFTER the Phase 2 suite and REUSES ITS FIXTURES WHOLE -- the same twelve
+# users, the same two organisations, the same venues and artists -- so no new
+# auth.users rows are created here and P2VARS is handed straight over. That is
+# deliberate: a second cast of characters would be a second place for the role
+# matrix to drift, and what this phase is actually about is how events sit on
+# top of the Phase 2 record scope.
+#
+# It writes into its OWN `ev` schema rather than `crm`, so the count above
+# stays a statement about the Phase 2 suite alone and a Phase 3 failure is not
+# reported under a Phase 2 heading.
+# ============================================================================
+docker cp "$HERE/rls_phase3_events.sql" "$CTR:/tmp/rls_phase3_events.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off   "${P2VARS[@]}" -f /tmp/rls_phase3_events.sql
+
+p3_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc            "select count(*) from ev.results where not pass" | tr -d '[:space:]')
+if [ "$p3_fails" != "0" ]; then
+  echo "PHASE 3 EVENTS SUITE FAILED: $p3_fails failing assertion(s)" >&2
+  echo "  A failure in section EB, EF or EK is a REOPENED TENANT BOUNDARY -- treat as Sev1." >&2
+  echo "  A failure in EF10-EF12 means the FK LIFT did not put the schema back:" >&2
+  echo "  discard the run, reset the database, and do not trust anything after it." >&2
+  psql_status=1
+else
+  echo "Phase 3 events suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
