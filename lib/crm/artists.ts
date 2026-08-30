@@ -196,7 +196,7 @@ export async function createArtistAction(
   if (!parsed.ok) return parsed.state;
 
   const user = await getCurrentUser();
-  if (!user) return { error: FAILED_MESSAGE };
+  if (!user) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   // `owner_user_id` IS THE CREATOR, AND FOR A RECORD-SCOPED ROLE IT IS THE
@@ -219,11 +219,11 @@ export async function createArtistAction(
     .maybeSingle();
 
   if (error) {
-    if (error.code === "42501") return { error: REFUSED_MESSAGE };
+    if (error.code === "42501") return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     console.error("[crm] create artist failed:", error.message);
-    return { error: FAILED_MESSAGE };
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
-  if (!data) return { error: FAILED_MESSAGE };
+  if (!data) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   revalidatePath(`/${org.slug}/artists`);
   // DUPLICATE SCREENING, ON CREATE AND NOWHERE ELSE.
@@ -622,11 +622,11 @@ export async function createRepresentationAction(
   });
 
   if (error) {
-    if (error.code === "42501") return { error: REFUSED_MESSAGE };
+    if (error.code === "42501") return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     // 23503 is the tenant-scoped composite FK refusing an artist, agency or
     // contact that is not this workspace's. It is a refusal, not a fault: the
     // ids came from a form the caller can edit.
-    if (error.code === "23503") return { error: REFUSED_MESSAGE };
+    if (error.code === "23503") return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     console.error("[crm] create representation failed:", error.message);
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
@@ -873,7 +873,7 @@ export async function setPrimaryRepresentationAction(
 
   const artistId = field(formData, "artistId");
   const agencyId = field(formData, "agencyId");
-  if (!artistId) return { error: FAILED_MESSAGE };
+  if (!artistId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   // An absent representationId is "clear the primary", a legitimate request.
   const representationId = field(formData, "representationId");
 

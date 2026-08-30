@@ -169,7 +169,7 @@ export async function createVenueAction(
   if (!parsed.ok) return parsed.state;
 
   const user = await getCurrentUser();
-  if (!user) return { error: FAILED_MESSAGE };
+  if (!user) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -189,11 +189,11 @@ export async function createVenueAction(
     .maybeSingle();
 
   if (error) {
-    if (error.code === "42501") return { error: REFUSED_MESSAGE };
+    if (error.code === "42501") return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     console.error("[crm] create venue failed:", error.message);
-    return { error: FAILED_MESSAGE };
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
-  if (!data) return { error: FAILED_MESSAGE };
+  if (!data) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   revalidatePath(`/${org.slug}/venues`);
   // DUPLICATE SCREENING, ON CREATE AND NOWHERE ELSE.
@@ -488,8 +488,8 @@ export async function addRoomAction(
   });
 
   if (error) {
-    if (error.code === "42501") return { error: REFUSED_MESSAGE };
-    if (error.code === "23503") return { error: REFUSED_MESSAGE };
+    if (error.code === "42501") return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
+    if (error.code === "23503") return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     console.error("[crm] add room failed:", error.message);
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }

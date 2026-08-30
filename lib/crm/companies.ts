@@ -166,7 +166,7 @@ export async function createCompanyAction(
   if (!parsed.ok) return parsed.state;
 
   const user = await getCurrentUser();
-  if (!user) return { error: FAILED_MESSAGE };
+  if (!user) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -181,11 +181,11 @@ export async function createCompanyAction(
     .maybeSingle();
 
   if (error) {
-    if (error.code === "42501") return { error: REFUSED_MESSAGE };
+    if (error.code === "42501") return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     console.error("[crm] create company failed:", error.message);
-    return { error: FAILED_MESSAGE };
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
-  if (!data) return { error: FAILED_MESSAGE };
+  if (!data) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   revalidatePath(`/${org.slug}/companies`);
   // DUPLICATE SCREENING, ON CREATE AND NOWHERE ELSE.
@@ -224,7 +224,7 @@ export async function updateCompanyAction(
   const org = auth.org;
 
   const companyId = field(formData, "companyId");
-  if (!companyId) return { error: FAILED_MESSAGE };
+  if (!companyId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const parsed = readCompany(formData);
   if (!parsed.ok) return parsed.state;
@@ -259,7 +259,7 @@ export async function deleteCompanyAction(
   const org = auth.org;
 
   const companyId = field(formData, "companyId");
-  if (!companyId) return { error: FAILED_MESSAGE };
+  if (!companyId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const result = await commitWrite(`delete company ${companyId}`, () =>
@@ -293,7 +293,7 @@ export async function restoreCompanyAction(
   const org = auth.org;
 
   const companyId = field(formData, "companyId");
-  if (!companyId) return { error: FAILED_MESSAGE };
+  if (!companyId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const result = await commitWrite(`restore company ${companyId}`, () =>

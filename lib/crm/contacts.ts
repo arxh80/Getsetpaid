@@ -295,7 +295,7 @@ export async function createContactAction(
   if (!parsed.ok) return parsed.state;
 
   const user = await getCurrentUser();
-  if (!user) return { error: FAILED_MESSAGE };
+  if (!user) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
 
@@ -332,11 +332,11 @@ export async function createContactAction(
   // and the row count layer is not needed here. It is still the same
   // vocabulary: 42501 is a refusal, anything else is a fault.
   if (error) {
-    if (error.code === "42501") return { error: REFUSED_MESSAGE };
+    if (error.code === "42501") return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     console.error("[crm] create contact failed:", error.message);
-    return { error: FAILED_MESSAGE };
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
-  if (!data) return { error: FAILED_MESSAGE };
+  if (!data) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   revalidatePath(`/${org.slug}/contacts`);
   // Outside any try/catch: redirect() works by throwing.
@@ -379,7 +379,7 @@ export async function updateContactAction(
   const org = auth.org;
 
   const contactId = field(formData, "contactId");
-  if (!contactId) return { error: FAILED_MESSAGE };
+  if (!contactId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const parsed = readContact(formData);
   if (!parsed.ok) return parsed.state;
@@ -467,7 +467,7 @@ export async function deleteContactAction(
   const org = auth.org;
 
   const contactId = field(formData, "contactId");
-  if (!contactId) return { error: FAILED_MESSAGE };
+  if (!contactId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const result = await commitWrite(`delete contact ${contactId}`, () =>
@@ -501,7 +501,7 @@ export async function restoreContactAction(
   const org = auth.org;
 
   const contactId = field(formData, "contactId");
-  if (!contactId) return { error: FAILED_MESSAGE };
+  if (!contactId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const result = await commitWrite(`restore contact ${contactId}`, () =>
@@ -665,7 +665,7 @@ export async function linkCompanyAction(
 
   const contactId = field(formData, "contactId");
   const companyId = field(formData, "companyId");
-  if (!contactId) return { error: FAILED_MESSAGE };
+  if (!contactId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   if (!companyId) {
     return { fieldErrors: { companyId: "Choose a company to link." } };
   }
@@ -702,9 +702,9 @@ export async function linkCompanyAction(
     if (error.code === "23505") {
       return { fieldErrors: { companyId: "That company is already linked." } };
     }
-    if (error.code === "42501") return { error: REFUSED_MESSAGE };
+    if (error.code === "42501") return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     console.error("[crm] link company failed:", error.message);
-    return { error: FAILED_MESSAGE };
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
 
   revalidatePath(`/${org.slug}/contacts/${contactId}`);
@@ -722,7 +722,7 @@ export async function unlinkCompanyAction(
 
   const contactId = field(formData, "contactId");
   const companyId = field(formData, "companyId");
-  if (!contactId || !companyId) return { error: FAILED_MESSAGE };
+  if (!contactId || !companyId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   // BOTH ENDS LIVE. Removing a link is still changing the links of a deleted
@@ -805,7 +805,7 @@ export async function setPrimaryCompanyAction(
   const org = auth.org;
 
   const contactId = field(formData, "contactId");
-  if (!contactId) return { error: FAILED_MESSAGE };
+  if (!contactId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   // An absent companyId is "clear the primary", which is a legitimate request.
   const companyId = field(formData, "companyId");
 

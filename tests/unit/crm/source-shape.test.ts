@@ -537,15 +537,61 @@ describe("I-2: a refused write does not throw away what was typed", () => {
     });
   }
 
-  it("setPrimaryRepresentationAction's guard is the one instance NOT named by the review", () => {
-    // Recorded rather than silently matched: the review's I-2 paragraph names
-    // update/delete/restoreRepresentationAction specifically and does not
-    // list this action, whose own `if (!artistId) return { error:
-    // FAILED_MESSAGE }` is the identical shape. Left as-is to fix the finding
-    // as written; a bare (no `values`) guard is expected here on purpose.
+  it("setPrimaryRepresentationAction's guard now carries values too", () => {
+    // Task 4b fix round 1 left this one alone because the review's I-2
+    // paragraph did not name it. The final review's I-1 named the whole class
+    // instead, so the exception is gone: there is no action in lib/crm/ whose
+    // refusal is allowed to drop what was typed.
     const body = actionBody(artists, "setPrimaryRepresentationAction");
-    expect(body).toContain("if (!artistId) return { error: FAILED_MESSAGE };");
+    expect(body).toContain(
+      "if (!artistId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };",
+    );
   });
+});
+
+// ===========================================================================
+// FINAL REVIEW I-1 / L797 -- THE SAME OMISSION ON EVERY CREATE PATH
+// ===========================================================================
+//
+// Fix round 1 swept the EDIT paths (the block above). The final review found
+// the CREATE paths untouched: every `createXAction` in all five entity
+// modules, plus the child/join creates, returned `{ error: REFUSED_MESSAGE }`
+// or `{ error: FAILED_MESSAGE }` with no `values`, and React 19 resets a form
+// after a Server Action -- so an ordinary policy refusal (a role change
+// mid-session, a workspace suspended between page load and submit) threw away
+// the whole record the user had just typed.
+//
+// A per-action list would have missed them, twice now. This is the census
+// form instead: EVERY refusal return in EVERY lib/crm module must carry
+// `values`. A new module, or a new guard in an old one, is covered the day it
+// is written rather than the day someone re-reads the file.
+//
+// The regex is deliberately the narrow, literal shape -- `return { error: X };`
+// on one line, X being a SCREAMING_CASE constant -- because that is the exact
+// text the defect has taken all three times it was found, and a broader
+// pattern would start matching `failureState()`'s own construction.
+describe("I-1: no refusal in lib/crm/ discards what the user typed", () => {
+  const BARE_REFUSAL = /return \{ error: [A-Z_]+ \};/g;
+
+  it("finds refusal returns at all, so this cannot pass vacuously", () => {
+    // Every `return { error: CONST, values: ... }` across the modules. If a
+    // refactor renames the constants or moves every refusal behind a helper,
+    // this floor goes red and the guard below stops being a guard silently.
+    const withValues = CRM_SOURCES.flatMap(
+      (file) => file.text.match(/return \{ error: [A-Z_]+, values: /g) ?? [],
+    );
+    expect(withValues.length).toBeGreaterThanOrEqual(60);
+  });
+
+  for (const file of CRM_SOURCES) {
+    it(`${file.name} has no refusal without values`, () => {
+      const bare = file.text.match(BARE_REFUSAL);
+      expect(
+        bare,
+        `a refusal with no \`values\` discards the user's work: ${(bare ?? []).join(", ")}`,
+      ).toBeNull();
+    });
+  }
 });
 
 // ===========================================================================

@@ -47,7 +47,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
-import { field, type FormState } from "@/lib/forms";
+import { echoedValues, field, type FormState } from "@/lib/forms";
 import { authoriseOrg, stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { screenAfterCreate } from "@/lib/crm/dedup";
@@ -90,7 +90,7 @@ export async function createAgencyAction(
   if (!parsed.ok) return parsed.state;
 
   const user = await getCurrentUser();
-  if (!user) return { error: FAILED_MESSAGE };
+  if (!user) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   // `owner_user_id` IS THE CREATOR, AND FOR A RECORD-SCOPED ROLE IT IS THE
@@ -108,11 +108,11 @@ export async function createAgencyAction(
   // by WITH CHECK raises 42501 and PostgREST answers 403 -- unlike UPDATE and
   // DELETE, which match nothing and answer 204.
   if (error) {
-    if (error.code === "42501") return { error: REFUSED_MESSAGE };
+    if (error.code === "42501") return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     console.error("[crm] create agency failed:", error.message);
-    return { error: FAILED_MESSAGE };
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
-  if (!data) return { error: FAILED_MESSAGE };
+  if (!data) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   revalidatePath(`/${org.slug}/agencies`);
   // Outside any try/catch: redirect() works by throwing.
@@ -152,7 +152,7 @@ export async function updateAgencyAction(
   const org = auth.org;
 
   const agencyId = field(formData, "agencyId");
-  if (!agencyId) return { error: FAILED_MESSAGE };
+  if (!agencyId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const parsed = readAgency(formData);
   if (!parsed.ok) return parsed.state;
@@ -207,7 +207,7 @@ export async function deleteAgencyAction(
   const org = auth.org;
 
   const agencyId = field(formData, "agencyId");
-  if (!agencyId) return { error: FAILED_MESSAGE };
+  if (!agencyId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const result = await commitWrite(`delete agency ${agencyId}`, () =>
@@ -243,7 +243,7 @@ export async function restoreAgencyAction(
   const org = auth.org;
 
   const agencyId = field(formData, "agencyId");
-  if (!agencyId) return { error: FAILED_MESSAGE };
+  if (!agencyId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
   const supabase = await createClient();
   const result = await commitWrite(`restore agency ${agencyId}`, () =>
