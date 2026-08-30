@@ -180,12 +180,19 @@ export function stateFor(
  * whole set of parents the CRM checks.
  *
  * `events` was added by PHASE 3 TASK 1, when custom field values became
- * attachable to a sixth entity type (20260901001000). Nothing calls
- * liveInOrg("events", ...) yet -- there is no event write path until Phase 3
- * Task 3 -- but PARENT_TABLE in lib/crm/custom-field-actions.ts is keyed on
- * CustomFieldEntityType and has to be total over it, and a `Record` entry
- * naming a table this union does not have is exactly the typo this union
- * exists to catch.
+ * attachable to a sixth entity type (20260901001000). PARENT_TABLE in
+ * lib/crm/custom-field-actions.ts is keyed on CustomFieldEntityType and has to
+ * be total over it, and a `Record` entry naming a table this union does not
+ * have is exactly the typo this union exists to catch.
+ *
+ * THE EVENT WRITE PATH ARRIVED IN PHASE 3 TASK 4 and calls
+ * liveInOrg("venues", ...), not liveInOrg("events", ...) -- an event's ends
+ * are a venue and a room, and the event is nobody's parent yet. The first real
+ * caller of the `events` arm is Task 5's `event_lineup`, whose parent IS an
+ * event. Stated because this note used to say "there is no event write path
+ * until Phase 3 Task 3", which stopped being true without the arm gaining a
+ * caller, and a reader checking the claim would have concluded the union was
+ * wrong rather than early.
  */
 export type ParentTable =
   | "artists"

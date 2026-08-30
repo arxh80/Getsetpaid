@@ -146,7 +146,15 @@ describe("every mutating call in lib/crm/ asks for the row count", () => {
     //
     // A floor rather than an exact number so Task 4b adding call sites does
     // not turn this red for the wrong reason -- but deleting them all does.
-    expect(sites.length).toBeGreaterThanOrEqual(7);
+    // Phase 3 Task 4 raised this from SEVEN to TWENTY-NINE, counted rather
+    // than guessed, and the breakdown is the point of writing the number
+    // down: agencies 3, artists 6, companies 3, contacts 4,
+    // custom-field-actions 3, events 3, merge 1, venues 6. Task 4b's seven
+    // was the state of lib/crm/ before Task 5 and Task 6 landed and before
+    // this file's own directory scan started covering them; the three new
+    // ones are lib/crm/events.ts's update, soft-delete and restore (there is
+    // no DELETE policy on the table and no grant for one).
+    expect(sites.length).toBeGreaterThanOrEqual(29);
   });
 
   for (const site of sites) {
@@ -1112,4 +1120,233 @@ describe("every create screens for duplicates", () => {
       expect(source).toContain("if (screened.mergedInto)");
     });
   }
+});
+
+// ===========================================================================
+// PHASE 3 TASK 4 -- the event write path
+// ===========================================================================
+//
+// The `.update(` / `.delete(` census above already covers `lib/crm/events.ts`
+// without an edit: `CRM_SOURCES` reads the whole directory. What needed
+// raising is the FLOOR, whose stated job is that the suite cannot pass
+// vacuously -- see the assertion's own comment for the number and how it was
+// counted.
+
+describe("loadVenuesForPicker does not offer soft-deleted venues or rooms", () => {
+  // The same mutation as `loadLinkOptions` above (mutation 8 in the Task 4
+  // review's table: dropping the filter was invisible to the whole suite), one
+  // picker along -- and this one matters more, because the record it would
+  // start offering is a venue an event would then be SAVED against.
+  const queries = read("lib/crm/queries.ts");
+  const body = queries.slice(queries.indexOf("export async function loadVenuesForPicker"));
+
+  it("filters deleted_at in the query", () => {
+    expect(body).toContain(`.is("deleted_at", null)`);
+  });
+
+  it("scopes the query to one organisation", () => {
+    expect(body).toContain(`.eq("organisation_id", organisationId)`);
+  });
+
+  it("...and both filters are on the VENUES query, not only the rooms one", () => {
+    // The function runs two capped queries. A `.is("deleted_at", null)`
+    // anywhere in the body satisfies the two assertions above, so this one
+    // pins the half that decides which venues are offered.
+    const venuesQuery = body.slice(
+      body.indexOf(`.from("venues")`),
+      body.indexOf(`.limit(LINK_PANEL_LIMIT)`),
+    );
+    expect(venuesQuery).toContain(`.eq("organisation_id", organisationId)`);
+    expect(venuesQuery).toContain(`.is("deleted_at", null)`);
+  });
+
+  it("the two deliberate exceptions are the stored-value lookups, and they are named", () => {
+    // `lookupPlace` and the stored-room query must NOT filter `deleted_at`:
+    // their whole job is to find the deleted venue or closed room an event
+    // already names, so the `<select>` contains the stored value and editing
+    // another field does not silently clear it. Asserted so that "adding the
+    // filter everywhere" is a red rather than a silent data loss.
+    const lookup = queries.slice(
+      queries.indexOf("async function lookupPlace("),
+      queries.indexOf("/** One venue in the event form's picker"),
+    );
+    expect(lookup).toContain(`.select("name, deleted_at")`);
+    expect(lookup).not.toContain(`.is("deleted_at", null)`);
+  });
+});
+
+describe("loadEvent serves a soft-deleted event, so restore is reachable", () => {
+  // The same rule as every other detail loader, and the one a copy of a LIST
+  // query would get wrong: a 404 after deleting is the shape that makes people
+  // afraid of the delete button, and the restore list would link into nothing.
+  const queries = read("lib/crm/queries.ts");
+  const body = queries.slice(
+    queries.indexOf("export async function loadEvent("),
+    queries.indexOf("async function lookupPlace("),
+  );
+
+  it("selects deleted_at rather than filtering it", () => {
+    expect(body).toContain("deleted_at");
+    expect(body).not.toContain(`.is("deleted_at", null)`);
+  });
+
+  it("scopes to one organisation and renders the ticket link through safeHref", () => {
+    expect(body).toContain(`.eq("organisation_id", organisationId)`);
+    // The render-side half of the protocol rule. A stored `javascript:` --
+    // from an import, or a direct PostgREST PATCH with the anon key past the
+    // CHECK constraint's reach -- must reach the page as `null` and be
+    // rendered as inert text.
+    expect(body).toContain("ticketLinkHref: safeHref(");
+    expect(body).not.toContain("ticketLinkHref: data.ticket_link");
+  });
+});
+
+describe("the event writes refuse a soft-deleted venue", () => {
+  // THE ONE END THAT IS APPLICATION-ONLY. `events_venue_fkey` is composite on
+  // (venue_id, organisation_id), so the DATABASE holds the tenant half -- but
+  // there is no `deleted_at` term in the events write policies, deliberately,
+  // so nothing except these four lines refuses a save against a venue the
+  // workspace has deleted.
+  //
+  // A source assertion because a Server Action is not drivable from a node
+  // test in this repository (tests/unit is pure functions only, by the
+  // config's own rule). The behavioural half is the browser walk in the task
+  // report.
+  const events = read("lib/crm/events.ts");
+
+  function actionBody(name: string): string {
+    const start = events.indexOf(`export async function ${name}(`);
+    expect(start, `${name} not found`).toBeGreaterThan(-1);
+    const next = events.indexOf("\nexport async function ", start + 1);
+    return events.slice(start, next === -1 ? undefined : next);
+  }
+
+  const ACTIONS = [
+    "createEventAction",
+    "updateEventAction",
+    "deleteEventAction",
+    "restoreEventAction",
+  ] as const;
+
+  it("exactly the two WRITES check the venue end, and the two lifecycle actions do not", () => {
+    // The denominator, so this block cannot pass vacuously by nobody calling
+    // `liveInOrg` at all -- which is exactly what factoring the check into a
+    // helper would produce. Delete and restore touch no `venue_id`, and
+    // refusing to delete an event because somebody else deleted its venue
+    // would leave the user with a record they cannot remove.
+    const checking = ACTIONS.filter((name) => actionBody(name).includes("liveInOrg("));
+    expect(checking).toEqual(["createEventAction", "updateEventAction"]);
+  });
+
+  for (const action of ACTIONS) {
+    it(`${action} pairs liveInOrg with refusedEndState, or has neither`, () => {
+      const body = actionBody(action);
+      if (!body.includes("liveInOrg(")) {
+        expect(body).not.toContain("refusedEndState(");
+        return;
+      }
+      expect(body).toContain(`liveInOrg(supabase, "venues", org.id, parsed.values.venueId)`);
+      expect(body).toContain("refusedEndState(ends, formData)");
+    });
+  }
+
+  it("createEventAction does NOT screen for duplicates, and says why", () => {
+    // The inverse of "every create screens for duplicates" below, and it is a
+    // decision rather than an omission: 20260901001000 § (c) (Q30) gave
+    // private.dedup_entity_table() no 'event' arm, so the call would FAIL
+    // rather than return null -- unlike the four Phase 2 entities whose
+    // auto-merge branch is dead but harmless. There must also be no dead
+    // branch left behind pretending otherwise.
+    //
+    // OVER THE CODE, NOT THE PROSE. This file's header names both tokens in
+    // order to explain their absence, and `.toContain` cannot tell a sentence
+    // from a statement -- the same trap N-3 sprang on the census above, which
+    // counted a `.update(` in lib/crm/write.ts's header as a call site.
+    const code = events
+      .split("\n")
+      .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+      .join("\n");
+    expect(code).not.toContain("screenAfterCreate(");
+    expect(code).not.toContain("screened.mergedInto");
+    // The decision's name, in the prose, so the absence is explained and not
+    // merely true.
+    expect(events).toContain("20260901001000");
+  });
+
+  it("every write asks for the row count and pins the organisation", () => {
+    // Belt and braces over the directory-wide census above, because the three
+    // writes here are the ones a copied file loses first.
+    const writes = events.match(/\.update\(/g) ?? [];
+    expect(writes).toHaveLength(3);
+    for (const action of ["updateEventAction", "deleteEventAction", "restoreEventAction"]) {
+      const body = actionBody(action);
+      expect(body, action).toContain(`count: "exact"`);
+      expect(body, action).toContain(`.eq("organisation_id", org.id)`);
+      expect(body, action).toContain(`.eq("id", eventId)`);
+    }
+  });
+});
+
+describe("the event form echoes every field a refusal would otherwise wipe", () => {
+  // React 19 resets a `<form action>` once the action resolves, so an
+  // UNCONTROLLED form -- which this one is, deliberately, because it then works
+  // with JavaScript disabled -- puts every input back to its `defaultValue`.
+  // A field whose default does not read the echo comes back EMPTY after a
+  // refusal, and the user who mistyped one character loses the record they
+  // just entered. That is invisible to tsc, to lint, and to every other test
+  // here: no assertion on a pure function can see a `??` deleted from a .tsx
+  // file.
+  //
+  // ONE ECHO PER RENDERED FIELD, WRITTEN OUT RATHER THAN THROUGH A HELPER.
+  // components/crm/venue-form.tsx routes its defaults through a `shown()`
+  // closure, which is tidier and leaves exactly one `state.values?.` in the
+  // file -- so a field added without an echo is invisible to a census. Here
+  // the ten are literal, and the count below is the guard.
+  const form = read("components/crm/event-form.tsx");
+
+  const FIELDS = [
+    "name",
+    "startsAt",
+    "endsAt",
+    "eventType",
+    "status",
+    "venueId",
+    "venueRoomId",
+    "location",
+    "ticketLink",
+    "notes",
+  ] as const;
+
+  it("reads the echo for each of the ten fields, and for no others", () => {
+    const echoes = form.match(/state\.values\?\.[A-Za-z]+/g) ?? [];
+    expect(
+      [...echoes].sort(),
+      "a field rendered without `state.values?.<name> ??` loses what was typed",
+    ).toEqual(FIELDS.map((name) => `state.values?.${name}`).sort());
+    // The count as well as the set: a duplicated echo would pass the set
+    // comparison above while meaning a field is rendered twice.
+    expect(echoes).toHaveLength(FIELDS.length);
+    expect(FIELDS).toHaveLength(10);
+  });
+
+  it("every echo falls back to the stored value rather than to an empty string", () => {
+    // `state.values?.name ?? ""` on an EDIT form renders an empty input over a
+    // record that has a name -- the mirror-image defect, and the one a
+    // careless fix for the first would introduce.
+    for (const name of FIELDS) {
+      expect(form, name).toContain(`state.values?.${name} ?? values.${name}`);
+    }
+  });
+
+  it("carries NO checkbox-group marker, and says so", () => {
+    // Every other form in components/crm/ carries `groupMarkerName(...)`,
+    // because an unticked checkbox submits nothing and "none" then collides
+    // with "not asked" (lib/forms.ts). This form has no checkbox and no
+    // multi-select -- status and type are `<select>`s over closed
+    // vocabularies, which always submit -- so the marker would be dead code.
+    // Its ABSENCE is asserted with the explanation required beside it, because
+    // an unexplained absence here reads as the I-2 bug.
+    expect(form).not.toContain("groupMarkerName(");
+    expect(form).toContain("NO CHECKBOX GROUP ON THIS FORM");
+  });
 });

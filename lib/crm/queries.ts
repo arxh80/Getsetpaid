@@ -30,6 +30,7 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 import { parseSocials, safeHref, type SocialEntry } from "@/lib/crm/urls";
+import type { EventStatus, EventType } from "@/lib/crm/event-status";
 
 export type RecordResult<T> =
   | { readonly outcome: "found"; readonly record: T }
@@ -996,4 +997,352 @@ export async function loadVenueNames(
     return new Map();
   }
   return new Map(data.map((row) => [String(row.id), String(row.name)]));
+}
+
+// ===========================================================================
+// PHASE 3 TASK 4: events
+// ===========================================================================
+// The same three-way `RecordResult`, the same "deleted_at is selected and not
+// filtered" rule, and the same `safeHref` discipline as every loader above.
+// What is new is the picker, which has to offer rooms grouped by venue with no
+// JavaScript to cascade with -- see `loadVenuesForPicker`.
+
+export interface EventDetail {
+  id: string;
+  name: string;
+  eventType: EventType;
+  status: EventStatus;
+  /** An INSTANT. `timestamptz`, rendered through lib/format/date.ts. */
+  startsAt: string;
+  endsAt: string | null;
+  venueId: string | null;
+  /**
+   * Null when there is no venue AND when the caller cannot read the one this
+   * event names -- the same collision the events list makes deliberately (see
+   * `loadVenueNames`). Distinguishing them would confirm that a record exists
+   * and is out of reach.
+   */
+  venueName: string | null;
+  /** True when the venue is soft-deleted. The name is still shown; the link is not. */
+  venueDeleted: boolean;
+  venueRoomId: string | null;
+  roomName: string | null;
+  /** True when the room has been closed. A closed room stays on a past event. */
+  roomClosed: boolean;
+  location: string | null;
+  /**
+   * The raw column, rendered as TEXT when `ticketLinkHref` is null.
+   *
+   * `events_ticket_link_is_http` is a CHECK on the column and 20260901000000
+   * calls it "DEFENCE IN DEPTH, NOT THE CONTROL" in as many words, because it
+   * does not run on render: a row that predates it, an import, or a merge can
+   * carry anything. `safeHref()` below is the control.
+   */
+  ticketLink: string | null;
+  ticketLinkHref: string | null;
+  notes: string | null;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * One event, live or soft-deleted.
+ *
+ * DOES NOT FILTER `deleted_at`, like every other detail loader in this file:
+ * the route has to serve a deleted event with a notice and a Restore control
+ * rather than a 404, or the soft delete is a hard delete with extra steps and
+ * the restore list links into nothing.
+ *
+ * THE VENUE AND ROOM NAMES ARE TWO MORE ROUND TRIPS, NOT AN EMBED, for the
+ * reason `loadVenueNames` gives above: an embed of a row the caller cannot
+ * read comes back null anyway, so it buys one round trip and costs the same
+ * branch. Both are `maybeSingle()` lookups by primary key, and both are
+ * skipped when the column is null -- which it is for most events, since an
+ * event is routinely created before the venue is booked.
+ *
+ * NEITHER LOOKUP FILTERS `deleted_at` EITHER, and that is a departure from the
+ * LIST, which does. On a list a deleted venue's name would be the one place in
+ * the product showing a deleted record; on the DETAIL page of the event that
+ * names it, hiding the name would leave a dash where the user recorded
+ * something, and they cannot fix what they cannot see. So the name renders,
+ * marked, and only the link is withheld.
+ */
+export async function loadEvent(
+  organisationId: string,
+  eventId: string,
+): Promise<RecordResult<EventDetail>> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("events")
+    .select(
+      "id, name, event_type, status, starts_at, ends_at, venue_id, venue_room_id, location, ticket_link, notes, deleted_at, created_at, updated_at",
+    )
+    .eq("organisation_id", organisationId)
+    .eq("id", eventId)
+    .maybeSingle();
+
+  if (error) {
+    // 22P02 is an unparseable uuid in the URL: no such record, and there never
+    // could be. Anything else is a fault, and a fault is not a missing record.
+    if (error.code === "22P02") return { outcome: "missing" };
+    console.error(
+      `[crm] event lookup failed in organisation ${organisationId}:`,
+      error.message,
+    );
+    return { outcome: "unavailable" };
+  }
+  if (!data) return { outcome: "missing" };
+
+  const venueId = (data.venue_id as string | null) ?? null;
+  const venueRoomId = (data.venue_room_id as string | null) ?? null;
+  const [venue, room] = await Promise.all([
+    venueId === null
+      ? Promise.resolve(null)
+      : lookupPlace(supabase, "venues", organisationId, venueId),
+    venueRoomId === null
+      ? Promise.resolve(null)
+      : lookupPlace(supabase, "venue_rooms", organisationId, venueRoomId),
+  ]);
+
+  return {
+    outcome: "found",
+    record: {
+      id: String(data.id),
+      name: String(data.name),
+      eventType: data.event_type as EventType,
+      status: data.status as EventStatus,
+      startsAt: String(data.starts_at),
+      endsAt: (data.ends_at as string | null) ?? null,
+      venueId,
+      venueName: venue?.name ?? null,
+      venueDeleted: venue?.deleted === true,
+      venueRoomId,
+      roomName: room?.name ?? null,
+      roomClosed: room?.deleted === true,
+      location: (data.location as string | null) ?? null,
+      ticketLink: (data.ticket_link as string | null) ?? null,
+      // NOT the raw column. See the field's own comment: the CHECK constraint
+      // is defence in depth and does not run on render.
+      ticketLinkHref: safeHref(data.ticket_link as string | null),
+      notes: (data.notes as string | null) ?? null,
+      deletedAt: (data.deleted_at as string | null) ?? null,
+      createdAt: String(data.created_at),
+      updatedAt: String(data.updated_at),
+    },
+  };
+}
+
+/**
+ * The name and liveness of one venue or room, or null.
+ *
+ * Through the CALLER'S OWN client and pinned to the organisation, so this is
+ * not a privileged existence check: a record another workspace owns, or one
+ * outside a record-scoped caller's scope, returns null here and renders as
+ * "not recorded" -- the same collision the events list makes on purpose.
+ */
+async function lookupPlace(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  table: "venues" | "venue_rooms",
+  organisationId: string,
+  id: string,
+): Promise<{ name: string; deleted: boolean } | null> {
+  const { data, error } = await supabase
+    .from(table)
+    .select("name, deleted_at")
+    .eq("organisation_id", organisationId)
+    .eq("id", id)
+    .maybeSingle();
+  if (error || !data) {
+    if (error && error.code !== "22P02") {
+      console.error(`[crm] ${table} name lookup failed:`, error.message);
+    }
+    return null;
+  }
+  return { name: String(data.name), deleted: data.deleted_at !== null };
+}
+
+/** One venue in the event form's picker, with the rooms to nest under it. */
+export interface PickerVenue {
+  id: string;
+  name: string;
+  /**
+   * True when this venue is in the list ONLY because the event being edited
+   * already names it -- it is soft-deleted, so it is not offered to anything
+   * else. See `loadVenuesForPicker`.
+   */
+  unavailable: boolean;
+  rooms: PickerRoom[];
+}
+
+export interface PickerRoom {
+  id: string;
+  name: string;
+  /** True when the room is closed and is here only because the event names it. */
+  unavailable: boolean;
+}
+
+/**
+ * Rooms are capped separately from venues, and the number is derived.
+ *
+ * `LINK_PANEL_LIMIT` bounds the VENUES for the reason that constant gives. The
+ * rooms are a second list under them and one cap of 100 across the whole
+ * workspace would mean the alphabetically-last venues silently had no rooms
+ * offered -- 100 venues with eight rooms each is 800, which is a large but
+ * entirely ordinary workspace. Ten rooms a venue is past any real one, and
+ * deriving it from `LINK_PANEL_LIMIT` keeps one number to change.
+ *
+ * THE HONEST LIMIT, recorded rather than papered over, exactly as
+ * `LINK_PANEL_LIMIT` records its own: past this the picker offers the
+ * alphabetically first rooms and the server still accepts any room of the
+ * chosen venue, so a workspace that outgrows it needs a search-backed picker
+ * -- named in the task report and in FOLLOW-UPS.md, not guessed at here.
+ */
+const PICKER_ROOM_LIMIT = LINK_PANEL_LIMIT * 10;
+
+/**
+ * The venues and rooms the event form offers.
+ *
+ * ===========================================================================
+ * ONLY WHAT THE CALLER CAN READ, WHICH IS WHERE THE WRITE HALF IS CLOSED
+ * ===========================================================================
+ * The same rule as `loadLinkOptions` and for the same reason (20260828140500's
+ * write-half item): a picker that offers records the caller cannot see is how
+ * a record-scoped user creates a link to a record they cannot read. The query
+ * runs through the CALLER'S OWN client, so what comes back is exactly what
+ * their SELECT policy allows. It is a courtesy and not a control -- a forged
+ * form post naming a venue they cannot see is still decided by the database.
+ *
+ * ===========================================================================
+ * NO JAVASCRIPT CASCADE, SO EVERY ROOM IS RENDERED AT ONCE
+ * ===========================================================================
+ * The form works with JavaScript disabled, which means there is nothing to
+ * repopulate the room `<select>` when the venue `<select>` changes. So every
+ * live room in the workspace is returned, grouped by its venue, and the FORM
+ * renders each group as an `<optgroup label={venue.name}>` -- a native control
+ * a keyboard and a screen reader both already understand. The server refuses a
+ * room that is not in the chosen venue; that check is the correctness, and
+ * this is the affordance.
+ *
+ * ===========================================================================
+ * `includeVenueId` / `includeRoomId`: THE EDIT FORM'S STALE ENDS
+ * ===========================================================================
+ * A soft-deleted venue is offered to nobody -- but an event may already name
+ * one, and a `<select>` that does not contain the stored value silently
+ * submits a DIFFERENT one. Editing the event's NAME would then clear its
+ * venue, with nothing said. So the edit page passes the stored ids and they
+ * are looked up and appended, marked `unavailable`; the form labels them and
+ * the action then refuses the save with `DELETED_RECORD_EXPLANATION`, which is
+ * an explanation the user can act on rather than a silent rewrite.
+ *
+ * A CLOSED ROOM IS DIFFERENT FROM A DELETED VENUE, and the asymmetry is
+ * deliberate: `venue_rooms.deleted_at` exists precisely so a past event can go
+ * on naming a room that has closed (20260827232510), so the action ACCEPTS a
+ * closed room of the chosen venue. It is marked in the list so the user knows
+ * what they are looking at; it is not refused.
+ */
+export async function loadVenuesForPicker(
+  organisationId: string,
+  includeVenueId: string | null = null,
+  includeRoomId: string | null = null,
+): Promise<PickerVenue[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("venues")
+    .select("id, name")
+    .eq("organisation_id", organisationId)
+    .is("deleted_at", null)
+    // ORDER BY BEFORE LIMIT (final review I-6 / L771). Without it the hundred
+    // that survive the cap are a different hundred on every render.
+    .order("name", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(LINK_PANEL_LIMIT);
+
+  if (error) {
+    console.error("[crm] venue picker lookup failed:", error.message);
+    return [];
+  }
+
+  const venues: PickerVenue[] = (data ?? []).map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    unavailable: false,
+    rooms: [],
+  }));
+
+  // The stored venue, when it is not among the live ones. A deleted venue, a
+  // venue past the cap, or one this caller cannot read -- the first two are
+  // found here, the third is not, and not finding it is the correct answer.
+  if (includeVenueId !== null && !venues.some((v) => v.id === includeVenueId)) {
+    const stored = await lookupPlace(supabase, "venues", organisationId, includeVenueId);
+    if (stored) {
+      venues.push({
+        id: includeVenueId,
+        name: stored.name,
+        unavailable: stored.deleted,
+        rooms: [],
+      });
+    }
+  }
+
+  const byId = new Map(venues.map((venue) => [venue.id, venue]));
+  if (byId.size === 0) return venues;
+
+  const rooms = await supabase
+    .from("venue_rooms")
+    .select("id, name, venue_id")
+    .eq("organisation_id", organisationId)
+    .is("deleted_at", null)
+    .in("venue_id", [...byId.keys()])
+    // ORDER BY BEFORE LIMIT, same rule.
+    .order("name", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(PICKER_ROOM_LIMIT);
+
+  if (rooms.error) {
+    console.error("[crm] room picker lookup failed:", rooms.error.message);
+  } else {
+    for (const row of rooms.data ?? []) {
+      byId.get(String(row.venue_id))?.rooms.push({
+        id: String(row.id),
+        name: String(row.name),
+        unavailable: false,
+      });
+    }
+  }
+
+  // The stored room, when it is not among the live ones -- a closed room the
+  // event still names. It goes under its own venue, which is the venue the
+  // action will check it against.
+  const known = new Set(venues.flatMap((venue) => venue.rooms.map((r) => r.id)));
+  if (includeRoomId !== null && !known.has(includeRoomId)) {
+    const stored = await supabase
+      .from("venue_rooms")
+      .select("name, venue_id, deleted_at")
+      .eq("organisation_id", organisationId)
+      .eq("id", includeRoomId)
+      .maybeSingle();
+    if (stored.error && stored.error.code !== "22P02") {
+      console.error("[crm] stored room lookup failed:", stored.error.message);
+    }
+    const row = stored.data;
+    const parent = row ? byId.get(String(row.venue_id)) : undefined;
+    if (row && parent) {
+      parent.rooms.push({
+        id: includeRoomId,
+        name: String(row.name),
+        unavailable: row.deleted_at !== null,
+      });
+      parent.rooms.sort((a, b) =>
+        a.name.localeCompare(b.name, "en-GB", { numeric: true, sensitivity: "base" }),
+      );
+    }
+  }
+
+  // The appended venue, if there was one, was pushed past the sort the query
+  // did. Re-sorting in memory keeps the picker alphabetical rather than
+  // stranding a deleted venue at the bottom where nobody looks for it.
+  return venues.sort((a, b) =>
+    a.name.localeCompare(b.name, "en-GB", { numeric: true, sensitivity: "base" }),
+  );
 }
