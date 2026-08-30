@@ -923,6 +923,102 @@ select ev.val('EF12 ...and the planted row is gone',
 
 commit;
 
+-- ---------------------------------------------------------------------------
+-- EF13-EF18. ONE LIVE SLOT PER ARTIST PER EVENT, AND THE SOFT DELETE RELEASES
+-- IT (Phase 3 Task 5).
+--
+-- THE MUTATION: dropping `where deleted_at is null` from
+-- `event_lineup_event_artist_live_unique`. A TOTAL unique index passes EF13 --
+-- the duplicate is still refused -- and then REFUSES EF15, the legitimate
+-- re-add, because the soft-deleted row blocks the new one forever. That is a
+-- soft delete turned into a hard one by an index definition, and it is the
+-- trap 20260901000000's index comment names
+-- (`artist_representations_one_current_primary_per_artist` avoids the same
+-- thing temporally). EF15 is therefore the assertion that carries this block;
+-- EF13 alone would stay green under the mutation.
+--
+-- ev.try_con, NOT ev.try, AND THE CONSTRAINT NAME IS THE POINT. `denied(23505)`
+-- is ambiguous the moment a second unique index exists on this table -- and one
+-- more arrived with 20260901021000's list index, which is NOT unique but which
+-- a future "make position unique per event" edit would make so. A bare code
+-- would stay green if the duplicate started being refused by a different index
+-- for a different reason. `constraint_name` is populated for a unique INDEX
+-- violation as well as for a named constraint, which is why this reads back the
+-- index name rather than `<no constraint>` -- measured, not assumed.
+--
+-- IN AN EXPLICIT TRANSACTION, per this file's house style for a block that
+-- mutates the fixture: EF17 puts the lineup back exactly as §§ EG-EI expect to
+-- find it (one LIVE slot on ee11...0001, no extra rows), and an abort between
+-- the soft delete and the restore would otherwise leave the fixture short a
+-- row with every later count silently off by one.
+begin;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+-- The fixture's own slot: ff11...0001 is (ee11...0001, 44440000-...0002), live.
+select ev.try_con('EF13 a SECOND live slot for the same (event, artist) is refused',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id, position)
+           values (%L,'ee110000-0000-0000-0000-000000000001',
+                   '44440000-0000-0000-0000-000000000002', 4)$$, :'alpha_org'),
+  'denied(23505:event_lineup_event_artist_live_unique)');
+select ev.try('EF14 ...the slot is REMOVED, which is an UPDATE of deleted_at',
+  $$update public.event_lineup set deleted_at = now()
+     where id='ff110000-0000-0000-0000-000000000001'$$, 'ok(1)');
+select ev.try('EF15 POSITIVE: ...and the SAME artist can now be re-added',
+  format($$insert into public.event_lineup (id, organisation_id, event_id, artist_id, position)
+           values ('ff11dddd-0000-0000-0000-0000000000dd',%L,
+                   'ee110000-0000-0000-0000-000000000001',
+                   '44440000-0000-0000-0000-000000000002', 4)$$, :'alpha_org'),
+  'ok(1)');
+-- BOTH ROWS EXIST: the removed one and the new one. That is the state the
+-- partial index is FOR, and asserting it stops EF15 from being satisfied by an
+-- index that quietly hard-deletes the old row.
+select ev.val('EF16 CONTROL: the removed slot and the new one BOTH exist',
+  $$select count(*)::text from public.event_lineup
+     where event_id='ee110000-0000-0000-0000-000000000001'
+       and artist_id='44440000-0000-0000-0000-000000000002'$$, '2');
+-- AND RESTORING THE REMOVED ONE IS NOW A 23505, which is a different event
+-- from EF13 and gets a different sentence in the application:
+-- `restoreLineupEntryAction` lets it reach `classifyWrite` -> `conflict` ->
+-- CONFLICT_MESSAGE ("somebody else changed this record"), because here that is
+-- true -- the artist really has been re-added since.
+select ev.try_con('EF17 ...and putting the removed one BACK is refused while the new one lives',
+  $$update public.event_lineup set deleted_at = null
+     where id='ff110000-0000-0000-0000-000000000001'$$,
+  'denied(23505:event_lineup_event_artist_live_unique)');
+reset role; reset request.jwt.claims;
+
+-- Put the fixture back exactly as §§ EG-EI expect it: the re-added row goes,
+-- and the original comes back live.
+delete from public.event_lineup where id='ff11dddd-0000-0000-0000-0000000000dd';
+update public.event_lineup set deleted_at = null
+ where id='ff110000-0000-0000-0000-000000000001';
+
+select ev.val('EF18 the fixture is restored: ONE live slot for that pair, and no extra row',
+  $$select (select count(*) from public.event_lineup
+              where event_id='ee110000-0000-0000-0000-000000000001'
+                and artist_id='44440000-0000-0000-0000-000000000002'
+                and deleted_at is null)::text
+        || '/' ||
+           (select count(*) from public.event_lineup
+              where id='ff11dddd-0000-0000-0000-0000000000dd')::text$$,
+  '1/0');
+
+commit;
+
+-- ---------------------------------------------------------------------------
+-- EF19. THE INDEX ITSELF IS PARTIAL, read out of the catalogue.
+--
+-- EF13-EF18 are behavioural and would all stay green under a TOTAL unique
+-- index right up to EF15 -- which is the one that flips, and which is one
+-- assertion. This is the structural half, in the style of § EX: the predicate
+-- is what makes the re-add possible, so it is asserted as text rather than
+-- inferred from a single behaviour.
+select ev.val('EF19 the live-slot unique index really is partial on deleted_at is null',
+  $$select pg_catalog.pg_get_indexdef(c.oid) from pg_catalog.pg_class c
+     where c.relname = 'event_lineup_event_artist_live_unique'$$,
+  'CREATE UNIQUE INDEX event_lineup_event_artist_live_unique ON public.event_lineup USING btree (event_id, artist_id) WHERE (deleted_at IS NULL)');
+
 -- ===========================================================================
 -- EG. A SOFT-DELETED PARENT -- readable, not writable
 -- ===========================================================================
@@ -1359,6 +1455,69 @@ select ev.val('EX6 POSITIVE CONTROL: a plausible name that was never created fin
   $$select count(*)::text from pg_catalog.pg_class c
       join pg_catalog.pg_index i on i.indexrelid = c.oid
      where c.relname = 'events_org_ends_at_id_live_idx'$$, '0');
+
+-- ===========================================================================
+-- EL. THE INDEX lib/crm/lineup-list.ts NAMES IN `backedBy` EXISTS, AND HAS THE
+--     SHAPE THAT MAKES THE NAMING TRUE (Phase 3 Task 5)
+-- ===========================================================================
+-- § EX's argument, one table along. `lib/list/spec.ts` says `backedBy` is
+-- "required to be a real index name", and a unit test can only read the string
+-- out of the spec (tests/unit/crm/lineup-list.test.ts § 3 does); only the
+-- database can say whether an index of that name exists. Without this the
+-- lineup pager silently goes back to reading and RLS-checking every live slot
+-- on the event from the first one -- measured at 1,741 buffers and 180 parent
+-- lookups for a deep page against 320 and 26 (20260901021000's header).
+--
+-- THE DENOMINATOR IS ONE. LINEUP_LIST declares exactly one sort, so there is
+-- exactly one `backedBy` name to check. EL4 is the control in the other
+-- direction: a plausible name that was never created must find nothing, so EL1
+-- is not passing because every string matches.
+--
+-- Run as `postgres`. pg_class and pg_index carry no RLS and this section makes
+-- no claim about who can see what.
+reset role; reset request.jwt.claims;
+
+select ev.val('EL1 the `backedBy` name exists as an index on public.event_lineup',
+  $$select count(*)::text from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+      join pg_catalog.pg_class t on t.oid = i.indrelid
+      join pg_catalog.pg_namespace n on n.oid = t.relnamespace
+     where n.nspname = 'public' and t.relname = 'event_lineup'
+       and c.relkind = 'i'
+       and c.relname = 'event_lineup_org_event_position_id_live_idx'$$, '1');
+
+-- THE SHAPE, NOT ONLY THE NAME. An index of the right name over the wrong
+-- columns satisfies EL1 and serves nothing. Every part is load-bearing:
+-- `organisation_id` LEADS because lib/list/query.ts pins it by equality;
+-- `event_id` is second because LINEUP_LIST's applyFilters pins that too;
+-- `position` is the sort; `id` is last because keyset pagination compares
+-- `(position, id)` and `position` is deliberately NOT unique, so the tie-break
+-- carries real weight here; and the partial predicate has to match the clause
+-- lib/list/query.ts always writes or the index cannot be used at all.
+--
+-- NO `INCLUDE (owner_user_id)`, unlike the three events indexes § EX3 checks --
+-- public.event_lineup has no such column, because a slot's record scope is its
+-- parent event's. The regex therefore has no INCLUDE clause in it, and that
+-- absence is asserted rather than merely permitted.
+select ev.val('EL2 it is (organisation_id, event_id, position, id) WHERE deleted_at IS NULL, with no INCLUDE',
+  $$select pg_catalog.pg_get_indexdef(c.oid) from pg_catalog.pg_class c
+     where c.relname = 'event_lineup_org_event_position_id_live_idx'$$,
+  'CREATE INDEX event_lineup_org_event_position_id_live_idx ON public.event_lineup USING btree (organisation_id, event_id, "position", id) WHERE (deleted_at IS NULL)');
+
+-- The claim the header of 20260901021000 makes about WHY there is no INCLUDE,
+-- asserted from the catalogue rather than trusted: public.event_lineup really
+-- has no owner_user_id. If a later migration adds one, this goes red and the
+-- index comment stops being true in the same commit.
+select ev.val('EL3 public.event_lineup has no owner_user_id, which is why there is no INCLUDE',
+  $$select count(*)::text from pg_catalog.pg_attribute a
+     where a.attrelid = 'public.event_lineup'::regclass
+       and a.attname = 'owner_user_id' and a.attnum > 0 and not a.attisdropped$$,
+  '0');
+
+select ev.val('EL4 POSITIVE CONTROL: a plausible name that was never created finds nothing',
+  $$select count(*)::text from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+     where c.relname = 'event_lineup_org_event_created_at_id_live_idx'$$, '0');
 
 -- ===========================================================================
 -- Results

@@ -814,6 +814,13 @@ echo "=== Phase 3 events at the API surface ==="
 
 EV_ALPHA='ee110000-0000-0000-0000-000000000001'   # Alpha Manager Event
 EV_BETA='ee11000b-0000-0000-0000-00000000000b'    # Beta Secret Event
+EV_STD1='ee110000-0000-0000-0000-000000000002'    # Std1 Event, owned by pstd1
+# T Std1 Artist -- owned by pstd1, so a record-scoped caller can read it, and
+# NOT already on EV_STD1's bill. The psql suite books 4444...0001 (fixture),
+# ...0002 (EF3) and ...000f (EH2) there, so any of those would meet
+# event_lineup_event_artist_live_unique instead of the policy and the control
+# below would be measuring the wrong refusal.
+ART_STD1='444400b0-0000-0000-0000-0000000000b1'
 
 # anon: the two tables must not be reachable logged out at all.
 p2_code "anon GET events"                        401 GET  "events?select=id"
@@ -847,6 +854,29 @@ p2_code "manager DELETEs an event (no DELETE grant)"    403 DELETE \
         "events?id=eq.$EV_ALPHA" "" "$MGR"
 p2_code "manager DELETEs a lineup row (no DELETE grant)" 403 DELETE \
         "event_lineup?event_id=eq.$EV_ALPHA" "" "$MGR"
+
+# RECORD SCOPE ON THE CHILD, OVER HTTP (Phase 3 Task 5). A lineup slot has no
+# owner_user_id of its own -- its scope is its EVENT's -- so this is the one
+# request that tells "the child inherits the parent's scope" apart from "the
+# child is unscoped": pstd1 is a standard_user who owns EV_STD1 and not
+# EV_ALPHA, and the row they are POSTing is perfectly well formed apart from
+# whose event it names. A 403 here is event_lineup_insert_via_event's EXISTS
+# failing to find an event pstd1 may write; a 201 would be a slot planted on
+# somebody else's bill through a URL, with no Server Action guard in the way.
+#
+# 403 AND NOT 204: an INSERT policy has only WITH CHECK, so PostgREST raises
+# rather than silently matching nothing. That asymmetry with PATCH is why the
+# count checks above exist for the UPDATE path and not for this one.
+p2_code "standard_user POSTs a lineup row on an event they do not own" 403 POST \
+        "event_lineup" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"event_id\":\"$EV_ALPHA\",\"artist_id\":\"$ART_STD1\"}" "$STD"
+# THE POSITIVE CONTROL, and it is mandatory here: without it the 403 above is
+# satisfied by a policy that refuses pstd1 every lineup INSERT, or by a table
+# nobody can write at all. Same token, same table, same body shape -- their
+# OWN event, and an artist not already on that bill.
+p2_code "CONTROL: ...and CAN POST one on their own event" 201 POST \
+        "event_lineup" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"event_id\":\"$EV_STD1\",\"artist_id\":\"$ART_STD1\"}" "$STD"
 
 # THE COUNT CHECK. A cross-tenant PATCH is a silent 204; only the header says
 # it wrote nothing. Both spellings are asserted -- the bare request, where the
