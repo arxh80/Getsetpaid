@@ -32,7 +32,7 @@ import { describe, expect, it } from "vitest";
 //     version of this file named without implementing (Task 8 review,
 //     Important #3), and it matters more than the other two: a list that
 //     hand-rolls a keyset query and never calls `fetchListPage` is invisible
-//     to the >= 15 floor, to the pairing check and to the `.range(`/`offset:`
+//     to the >= 17 floor, to the pairing check and to the `.range(`/`offset:`
 //     ban, so without this assertion the census's blind spot is exactly the
 //     defect the brief names ("a second, weaker cursor in the codebase").
 //   * a page that calls `.range(` or builds an `offset` -- a second pagination
@@ -99,21 +99,25 @@ describe("every paginated list shares one implementation", () => {
   const parsers = callers("parseListParams(");
 
   it("finds the CALL SITES at all, so this suite cannot pass vacuously", () => {
-    // FIFTEEN at the time of writing: contacts, companies, artists, agencies,
-    // venues and their five `deleted` twins (10), the duplicates queue and its
-    // `resolved` twin (12), merge history (13), the artist fee list (14) and
-    // the activity timeline in `lib/crm/activity.ts` (15).
+    // SEVENTEEN as of Phase 3 Task 3, raised from fifteen: contacts,
+    // companies, artists, agencies, venues and their five `deleted` twins
+    // (10), the duplicates queue and its `resolved` twin (12), merge history
+    // (13), the artist fee list (14), the activity timeline in
+    // `lib/crm/activity.ts` (15), and now the events list (16) and the deleted
+    // events list (17).
     //
-    // COUNTED AS OCCURRENCES, NOT AS FILES (L1143). Today the two happen to be
-    // the same number -- fifteen files, one call each -- which is exactly why
-    // the mismatch between this assertion and the sentence above it went
-    // unnoticed. A second list added to a file that already has one would not
-    // move a file count.
+    // RAISING IT IS THE OBLIGATION, not paperwork. It is a FLOOR, so Task 3
+    // could have added two lists and left it at fifteen and nothing would have
+    // gone red -- and the census would then have been satisfied by a codebase
+    // that had deleted two of the lists it is meant to be counting. The floor
+    // only has teeth at the number the tree actually holds.
     //
-    // A FLOOR, not an exact count, so Phase 3 adding events and lineups does
-    // not turn this red for the right reason -- but deleting the shared path
-    // does.
-    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(15);
+    // COUNTED AS OCCURRENCES, NOT AS FILES (L1143). Today the two still happen
+    // to be the same number -- seventeen files, one call each -- which is
+    // exactly why the mismatch between this assertion and the sentence above
+    // it went unnoticed. A second list added to a file that already has one
+    // would not move a file count.
+    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(17);
   });
 
   it("every fetchListPage caller also parses its params through lib/list", () => {
@@ -128,7 +132,7 @@ describe("every paginated list shares one implementation", () => {
     // THE HAND-ROLLED KEYSET. `fetchListPage` and `parseListParams` are paired
     // above, but a list that calls NEITHER -- `.gt("id", searchParams.after)`
     // with its own `.limit(n)` -- passes every other assertion in this file:
-    // the >= 15 floor cannot see it, the pairing check never considers it, and
+    // the >= 17 floor cannot see it, the pairing check never considers it, and
     // it uses neither `.range(` nor `offset:`. `lib/list/params.ts` owns the
     // names `after` and `before` (it reads `paramKey(spec, "after")` at line
     // 230) and is the only place allowed to take them off a query string.
