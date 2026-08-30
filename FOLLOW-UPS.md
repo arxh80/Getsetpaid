@@ -1494,6 +1494,71 @@ corrections are the useful part. Each now says what was actually done.
   Whoever takes it should grep for other multi-line `toContain` assertions
   over source text first.
 
+### Opened by Task 3 (the events list surface)
+
+- **`include (owner_user_id)` bought NOTHING measurable on the events list page
+  query, and Phase 2's headline number for it does not reproduce.**
+  `20260829000000` and the Task 3 brief both justify the INCLUDE with "without
+  it a Standard User's page costs a heap fetch per candidate row (measured
+  3.170 ms vs 1.545 ms in Phase 2)". Re-measured for real on 24,998 live events
+  in one tenant, as `authenticated` with a record-scoped claim set, the same
+  index with and without the INCLUDE, each run twice warm:
+
+  | | exec | buffers | plan |
+  |---|---|---|---|
+  | without `include` | 0.566 ms | shared hit=14 | Index Scan Backward |
+  | with `include`    | 0.484 ms | shared hit=14 | Index Scan Backward |
+
+  Identical plan, identical buffer count, and the difference is inside the
+  run-to-run noise. The mechanism is why: an INCLUDE column only avoids a heap
+  fetch in an **Index Only Scan**, and `EVENT_SELECT` names nine columns, so
+  the heap tuple is fetched for the output regardless and the record-scope qual
+  is evaluated on a row that is already in hand. The INCLUDE is kept anyway,
+  for shape consistency with the five Phase 2 entities and because a narrower
+  future query (a `count`, an existence probe) could still use it — but it
+  costs ~1.9 MB of index on 25k rows and the justification in three files is
+  currently stronger than the measurement.
+
+  **What to do:** re-measure the Phase 2 contacts claim the same way. Either it
+  reproduces on a query shape this one does not have (in which case say which),
+  or the sentence should be corrected in `20260828180000`, `20260829000000`,
+  `lib/list/spec.ts` and `20260901020000` together. Do not drop the INCLUDEs on
+  the strength of this one measurement.
+
+- **`§ EX` guards the events indexes only. The other five entities' `backedBy`
+  names are still unasserted.** `lib/list/spec.ts` has required `backedBy` to
+  be "a real index name" since Phase 2 and nothing checked it until Task 3;
+  `supabase/tests/rls_phase3_events.sql` § EX now checks the four that
+  `lib/crm/events-list.ts` names. The fifteen names in `contacts-list.ts`,
+  `companies-list.ts`, `artists-list.ts`, `agencies-list.ts` and
+  `venues-list.ts` have the same exposure — a rename in a later migration
+  leaves every gate green and the list back to a Seq Scan plus a top-N sort of
+  the whole tenant. § EX is written so the same six assertions parameterise
+  over a table name; the cheap version is to lift them into
+  `rls_phase2_crm.sql` for the other five.
+
+- **The count query beside every list page is still O(tenant), and these
+  indexes do not change that** — re-measured on the events fixture with all
+  four in place: 7.42 ms / 478 buffers for `count(*)` over 12,373 visible rows,
+  against 8.72 ms / 478 before them. Same Seq Scan, same buffers. This is
+  already recorded in `lib/list/query.ts` ("it is the one part of this page
+  that is O(tenant)"); it is repeated here because the page query's 20x
+  improvement makes it easy to conclude the whole page is now indexed, and the
+  count is what will dominate a large tenant's list. It runs in parallel with
+  the page and fails independently, so the ceiling is latency, not a broken
+  page.
+
+- **`/{orgSlug}/events/new` does not exist yet, so the "New event" button on a
+  writer's list is a link to a 404.** Task 4 creates the form. Nothing is
+  reachable that should not be — the button is only a `<Link>` for a caller who
+  holds `manage_events`, and the INSERT policy (`20260901011000`, asserted at
+  `rls_phase3_events.sql` EC9 for `read_only` and EC4/EC7 for finance and
+  marketing) is what actually refuses the write from any client. The Task 3
+  brief's acceptance criterion "'New event' must be refused at the route, not
+  only hidden" therefore has no route to assert against in this task; when Task
+  4 adds it, it must repeat `golden-path.spec.ts:114`'s shape ("a read-only
+  member cannot reach the create form, not just the button") for events.
+
 ## Phase 3 — members management with a real UI
 
 - **Inviting an address that already has an account sends no email**, while the
