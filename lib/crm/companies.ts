@@ -203,10 +203,23 @@ export async function createCompanyAction(
   // data.
   const screened = await screenAfterCreate(org.id, "company", data.id as string);
 
-  // AUTO-MERGED AWAY. The record just created shared an email address, exactly
-  // and case-insensitively, with an older one -- so it no longer exists as a
-  // separate record and redirecting to its own page would be a 404 the user
-  // caused by saving a form. They go to the record their data is now on.
+  // AUTO-MERGE: THIS BRANCH CANNOT FIRE FOR A COMPANY, AND IS KEPT DELIBERATELY.
+  //
+  // The comment here used to describe a live behaviour ("the record just
+  // created shared an email address ... they go to the record their data is
+  // now on"), which was a false claim -- final review L946. `company` has no
+  // `email` column: MERGEABLE_COLUMNS lists `["name", "type"]` for it (lib/crm/dedup.ts:64),
+  // and `screen_for_duplicates` labels a pair `exact_email` only when both
+  // rows carry a non-null, case-insensitively equal email
+  // (20260829020000:383-385). A company therefore only ever screens as `fuzzy_name`,
+  // which is flagged for review and never merged -- so `screened.mergedInto`
+  // is always null here.
+  //
+  // The branch stays rather than being deleted for two reasons: the day
+  // companies gain an email column, the redirect is already correct, and
+  // deleting it would make the five create actions differ from each other for
+  // a reason no reader could see. `screened.mergedInto` is null, so it costs
+  // one comparison.
   if (screened.mergedInto) {
     revalidatePath(`/${org.slug}/companies`);
     redirect(`/${org.slug}/companies/${screened.mergedInto}?merged=1`);

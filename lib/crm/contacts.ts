@@ -360,6 +360,12 @@ export async function createContactAction(
   // and case-insensitively, with an older one -- so it no longer exists as a
   // separate record and redirecting to its own page would be a 404 the user
   // caused by saving a form. They go to the record their data is now on.
+  //
+  // CONTACTS ARE THE ONLY ENTITY WHERE THIS CAN ACTUALLY HAPPEN. `contact` is
+  // the one member of MERGEABLE_COLUMNS with an `email` column
+  // (lib/crm/dedup.ts:65), and `screen_for_duplicates` proposes an auto-merge
+  // only for an `exact_email` pair. The identical branch in the other four
+  // create actions is a fail-safe that cannot fire -- see the comment there.
   if (screened.mergedInto) {
     revalidatePath(`/${org.slug}/contacts`);
     redirect(`/${org.slug}/contacts/${screened.mergedInto}?merged=1`);
