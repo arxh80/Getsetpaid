@@ -607,62 +607,29 @@ describe("I-1: no refusal in lib/crm/ discards what the user typed", () => {
 // TASK 5 -- the custom fields engine
 // ===========================================================================
 
-describe("PERMISSION_FOR_ENTITY mirrors private.entity_is_manageable()", () => {
-  // A FIFTH COPY OF A MAPPING THAT LIVES IN SQL, and this is what binds it.
-  // The SQL function is the ENFORCEMENT -- every custom field value write is
-  // decided by it through the three write policies -- while the TypeScript
-  // table only decides which sentence a blocked user reads and whether the
-  // panel renders controls. Getting it wrong here cannot open a write; it can
-  // show the wrong explanation, or hide a control from somebody who could have
-  // used it, which is the "hidden loses the explanation" mistake
-  // components/crm/write-gate.tsx exists to avoid.
-  //
-  // The live-catalogue half (every entity type HAS a branch at all) is
-  // tests/integration/crm/custom-field-entity-types-match-db.test.ts. This is
-  // the half that checks WHICH KEY each branch names, which is a fact about
-  // the source rather than about the deployed shape.
-  const helpers = read(
-    "supabase/migrations/20260828120500_crm_policy_helpers.sql",
-  );
-  const start = helpers.indexOf(
-    "create or replace function private.entity_is_manageable(",
-  );
-  const body = helpers.slice(
-    start,
-    helpers.indexOf("comment on function private.entity_is_manageable"),
-  );
-
-  it("finds the function body at all, so this cannot pass vacuously", () => {
-    expect(start).toBeGreaterThan(-1);
-    expect(body).toContain("when 'venue' then");
-  });
-
-  const EXPECTED: Record<string, string> = {
-    company: "manage_contacts",
-    contact: "manage_contacts",
-    agency: "manage_contacts",
-    artist: "manage_artists",
-    venue: "manage_venues",
-  };
-
-  for (const [entity, key] of Object.entries(EXPECTED)) {
-    it(`'${entity}' resolves to ${key} in SQL and in TypeScript`, () => {
-      // The branch text between this `when` and the next one.
-      const from = body.indexOf(`when '${entity}' then`);
-      expect(from, `no '${entity}' branch`).toBeGreaterThan(-1);
-      const nextWhen = body.indexOf("    when '", from + 10);
-      const branch = body.slice(from, nextWhen === -1 ? undefined : nextWhen);
-      expect(branch).toContain(`permitted_organisations('${key}')`);
-
-      const fields = read("lib/crm/custom-fields.ts");
-      const table = fields.slice(
-        fields.indexOf("export const PERMISSION_FOR_ENTITY"),
-        fields.indexOf("export const ENTITY_PATH_SEGMENT"),
-      );
-      expect(table).toContain(`${entity}: "${key}"`);
-    });
-  }
-});
+// PERMISSION_FOR_ENTITY's mirror MOVED TO
+// tests/integration/crm/permission-for-entity-matches-db.test.ts IN PHASE 3
+// TASK 2 (Task 1 fix round 1, review finding I-2). It does not belong in a
+// source-shape file, and being here is what made it wrong twice over:
+//
+//   * it iterated its OWN hardcoded five-entry EXPECTED map rather than
+//     PERMISSION_FOR_ENTITY itself, so Task 1's sixth entry
+//     (`event: "manage_events"`) was asserted in neither direction and adding
+//     it turned nothing red;
+//   * it read 20260828120500_crm_policy_helpers.sql AS TEXT -- the file that
+//     first CREATED private.entity_is_manageable(). `create or replace
+//     function` means that file stopped being what is deployed the moment
+//     20260901010000 replaced it, so it was mirroring a body the database no
+//     longer runs.
+//
+// The replacement iterates the real table, reads the deployed body through
+// pg_get_functiondef(), asserts the two key sets are EQUAL (so a seventh entry
+// on either side alone is red), checks every key it names exists in
+// public.permissions, and drives the dispatch behaviourally as a Booker --
+// who holds manage_events and manage_artists and NOT manage_venues, which is
+// the one role that can tell "the key is chosen per entity type" from "the
+// key is ignored". It needs the local stack, which is why it is an
+// integration test and not this one.
 
 describe("the custom fields panel carries the checkbox-group markers", () => {
   // Same defect as I-2, twice over: `multi_select` is a checkbox group and

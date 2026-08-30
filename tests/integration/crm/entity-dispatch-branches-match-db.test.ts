@@ -72,10 +72,19 @@ const EXPECTED: Record<string, readonly string[]> = {
   // "work" -- but a test asserting it would be asserting a coincidence rather
   // than a control. 20260901001000's header § (d) records the split.
   //
-  // PHASE 3 TASK 2 ADDS "event" TO THIS LINE, in the same commit as the
-  // migration that seeds the key and adds the arm. If this line still has five
-  // values after 20260901010000 has been applied, the arm was forgotten.
-  entity_is_manageable: ["company", "contact", "agency", "artist", "venue"],
+  // SIX SINCE PHASE 3 TASK 2. 20260901010000 seeds `manage_events` and adds
+  // this arm IN THE SAME FILE, so the key and the branch that names it cannot
+  // exist apart. Which KEY each arm names is bound separately, against the
+  // deployed catalogue, by permission-for-entity-matches-db.test.ts -- this
+  // census only asserts that the arm is there at all.
+  entity_is_manageable: [
+    "company",
+    "contact",
+    "agency",
+    "artist",
+    "venue",
+    "event",
+  ],
 
   entity_is_live: ["company", "contact", "agency", "artist", "venue", "event"],
 
@@ -86,9 +95,8 @@ const EXPECTED: Record<string, readonly string[]> = {
   // the Task 1 brief both listed seven; the live catalogue said eleven before
   // this phase and says twelve after.
   //
-  // `event_lineup` is NOT here: it has no UPDATE policy until Phase 3 Task 2,
-  // and 20260901010000 adds the arm and the policy together for the same
-  // reason entity_is_manageable's event arm waits.
+  // `event_lineup` is NOT here: it has no UPDATE policy until Phase 3 Task 2's
+  // 20260901011000, which adds the arm and the policy that calls it together.
   entity_org_unchanged: [
     "company",
     "contact",
