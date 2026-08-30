@@ -36,6 +36,29 @@ import { Alert } from "@/components/ui/alert";
 // them and names all ten.
 //
 // ===========================================================================
+// AND A `defaultValue` IS NOT ENOUGH ON A `<select>` -- MEASURED IN A BROWSER
+// ===========================================================================
+// The four `<select>`s carry a `key` as well as a `defaultValue`, and it is
+// load-bearing rather than tidy. React syncs a text input's `defaultValue` to
+// the DOM `defaultValue` property on every update, so `form.reset()` restores
+// the echoed value. It does NOT do the equivalent for a `<select>`: the
+// default lives in the `selected` ATTRIBUTE of an `<option>`, which React
+// writes at MOUNT and then leaves alone unless `multiple` changes. So the
+// reset restores the option the select had when the page first rendered.
+//
+// Measured on the first Rule 17 walk of this form, and it is the exact defect
+// lib/forms.ts exists for wearing different clothes: type a name, pick "Club
+// night", "On sale", a venue and a room, mistype the ticket link, submit --
+// the four text fields come back correctly and all four SELECTS snap back to
+// "Other", "Draft" and no venue. Retrying the submit then saves a record with
+// four fields the user did not choose, which is worse than losing them.
+//
+// The `key` forces a remount when the shown value changes, so the new element
+// mounts with the right `selected` option. Same mechanism, same reason, as
+// components/crm/merge-form.tsx keying its field rows on the survivor (final
+// review I-2): uncontrolled DOM state does not follow a re-render.
+//
+// ===========================================================================
 // NO CHECKBOX GROUP ON THIS FORM, SO NO `groupMarkerName` MARKER
 // ===========================================================================
 // Every other form in components/crm/ carries one, because an unticked
@@ -100,6 +123,21 @@ export function EventForm({
     EMPTY_FORM_STATE,
   );
 
+  // THE TEN ECHOES. One local per rendered field, so a field added without one
+  // is visible to a census (tests/unit/crm/source-shape.test.ts counts them and
+  // names all ten). The echo wins when there is one -- it is newer than the
+  // record the page loaded with.
+  const name = state.values?.name ?? values.name;
+  const startsAt = state.values?.startsAt ?? values.startsAt;
+  const endsAt = state.values?.endsAt ?? values.endsAt;
+  const eventType = state.values?.eventType ?? values.eventType;
+  const status = state.values?.status ?? values.status;
+  const venueId = state.values?.venueId ?? values.venueId;
+  const venueRoomId = state.values?.venueRoomId ?? values.venueRoomId;
+  const location = state.values?.location ?? values.location;
+  const ticketLink = state.values?.ticketLink ?? values.ticketLink;
+  const notes = state.values?.notes ?? values.notes;
+
   const rooms = venues.filter((venue) => venue.rooms.length > 0);
 
   return (
@@ -114,7 +152,7 @@ export function EventForm({
         <Field
           label="Name"
           name="name"
-          defaultValue={state.values?.name ?? values.name}
+          defaultValue={name}
           autoComplete="off"
           required
           maxLength={200}
@@ -126,7 +164,7 @@ export function EventForm({
           label="Starts"
           name="startsAt"
           type="datetime-local"
-          defaultValue={state.values?.startsAt ?? values.startsAt}
+          defaultValue={startsAt}
           required
           hint="UK time. Doors, not load-in — an event with no date agreed yet is a draft with a placeholder."
           error={state.fieldErrors?.startsAt}
@@ -137,16 +175,17 @@ export function EventForm({
           label="Ends"
           name="endsAt"
           type="datetime-local"
-          defaultValue={state.values?.endsAt ?? values.endsAt}
+          defaultValue={endsAt}
           hint="Leave it blank if the finish isn’t announced. It has to be after the start."
           error={state.fieldErrors?.endsAt}
           className="tabular-nums"
         />
 
         <SelectField
+          key={`eventType:${eventType}`}
           label="Type"
           name="eventType"
-          defaultValue={state.values?.eventType ?? values.eventType}
+          defaultValue={eventType}
           required
           hint="“Other” is a complete answer — nothing here forces a night into the wrong box."
           error={state.fieldErrors?.eventType}
@@ -159,24 +198,26 @@ export function EventForm({
         </SelectField>
 
         <SelectField
+          key={`status:${status}`}
           label="Status"
           name="status"
-          defaultValue={state.values?.status ?? values.status}
+          defaultValue={status}
           required
           hint="Where the night has got to. “Hold” and “Confirmed” are labels on this record, not a contracts workflow."
           error={state.fieldErrors?.status}
         >
-          {EVENT_STATUSES.map((status) => (
-            <option key={status} value={status}>
-              {STATUS_LABELS[status]}
+          {EVENT_STATUSES.map((value) => (
+            <option key={value} value={value}>
+              {STATUS_LABELS[value]}
             </option>
           ))}
         </SelectField>
 
         <SelectField
+          key={`venueId:${venueId}`}
           label="Venue"
           name="venueId"
-          defaultValue={state.values?.venueId ?? values.venueId}
+          defaultValue={venueId}
           hint="Only venues you can see are listed. Leave it blank until the venue is booked and use Location below."
           error={state.fieldErrors?.venueId}
         >
@@ -189,9 +230,10 @@ export function EventForm({
         </SelectField>
 
         <SelectField
+          key={`venueRoomId:${venueRoomId}`}
           label="Room"
           name="venueRoomId"
-          defaultValue={state.values?.venueRoomId ?? values.venueRoomId}
+          defaultValue={venueRoomId}
           hint="Grouped by venue. Pick one from the venue you chose above — a room from anywhere else is refused when you save."
           error={state.fieldErrors?.venueRoomId}
         >
@@ -210,7 +252,7 @@ export function EventForm({
         <Field
           label="Location"
           name="location"
-          defaultValue={state.values?.location ?? values.location}
+          defaultValue={location}
           autoComplete="off"
           maxLength={200}
           hint="Free text, for when the venue isn’t a record yet — “TBC, south London”."
@@ -221,7 +263,7 @@ export function EventForm({
           label="Ticket link"
           name="ticketLink"
           type="url"
-          defaultValue={state.values?.ticketLink ?? values.ticketLink}
+          defaultValue={ticketLink}
           autoComplete="off"
           inputMode="url"
           hint="ra.co/events/1234 works — it is stored as https://ra.co/events/1234. Only http:// and https:// links are kept."
@@ -231,7 +273,7 @@ export function EventForm({
         <TextAreaField
           label="Notes"
           name="notes"
-          defaultValue={state.values?.notes ?? values.notes}
+          defaultValue={notes}
           maxLength={5000}
           hint="Door times, guest list, who is bringing the CDJs. Plain text."
           error={state.fieldErrors?.notes}

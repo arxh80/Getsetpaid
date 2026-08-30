@@ -1338,6 +1338,24 @@ describe("the event form echoes every field a refusal would otherwise wipe", () 
     }
   });
 
+  it("every <select> is keyed on its shown value, not only defaultValued", () => {
+    // MEASURED IN A BROWSER, first Rule 17 walk of this form. React syncs a
+    // text input's `defaultValue` to the DOM property on every update, so
+    // `form.reset()` after a Server Action restores the ECHOED value. It does
+    // NOT do the equivalent for a `<select>`, whose default lives in an
+    // `<option>`'s `selected` attribute -- written at mount and then left
+    // alone. Without the key, a refused submit snapped all four selects back
+    // to the options the page first rendered with ("Other", "Draft", no venue,
+    // no room), and retrying saved four values the user never chose.
+    //
+    // Nothing else in the repository can see this: it needs a DOM, a render
+    // and a re-render, and tests/unit is pure functions only. Same mechanism
+    // and same guard shape as the merge screen's survivor key (I-2 above).
+    for (const name of ["eventType", "status", "venueId", "venueRoomId"]) {
+      expect(form, name).toContain("key={`" + name + ":${" + name + "}`}");
+    }
+  });
+
   it("carries NO checkbox-group marker, and says so", () => {
     // Every other form in components/crm/ carries `groupMarkerName(...)`,
     // because an unticked checkbox submits nothing and "none" then collides
