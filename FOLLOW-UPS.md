@@ -1313,38 +1313,133 @@ corrections are the useful part. Each now says what was actually done.
   Task 3 owns adding them, and `rls_phase2_crm.sql` § X is where the
   assertions go.
 
-- **`private.entity_is_visible()`'s `'event'` branch has no behavioural test
-  through a real session.** `tests/integration/crm/entity-dispatch-branches-match-db.test.ts`
-  drives `entity_is_live` and `entity_org_unchanged` against a real event row,
-  but `entity_is_visible` carries a `view_crm` term and a record-scope term,
-  both of which read `auth.uid()` — NULL for `postgres`, so it would answer
-  false for every entity type including the five that have worked since Phase
-  2, and a `false` would prove nothing. It needs the § E treatment in
-  `rls_phase2_crm.sql`, with a real JWT. **Phase 3 Task 2 owns it**, because
-  Task 2 is what ships the policies that call the function with `'event'` and
-  therefore the first thing that depends on the answer.
+- ~~**`private.entity_is_visible()`'s `'event'` branch has no behavioural test
+  through a real session.**~~ **DONE, Phase 3 Task 2**, and it grew a second
+  half on the way. `supabase/tests/rls_phase3_events.sql` § EK drives *both*
+  `entity_is_visible` and `entity_is_manageable` with `'event'` under real
+  JWTs — `pstd1` gets `true/true` on their own event, `false/false` on
+  `pstd2`'s and on a BETA one, and `false` when their own event is named
+  under the wrong organisation id (the cross-tenant hole no foreign key can
+  reach, `SECURITY.md` § 10); `pmanager` is the full-scope positive control on
+  the same row § EK2 refused.
 
-- **PHASE 3 TASK 2 OWES `PERMISSION_FOR_ENTITY.event` A TRIPWIRE.** (Task 1
-  fix round 1, review finding I-2.) `lib/crm/custom-fields.ts` gained
-  `event: "manage_events"` in Task 1 and it is bound to nothing: the one test
-  that mirrors that table into SQL,
-  `tests/unit/crm/source-shape.test.ts`'s "PERMISSION_FOR_ENTITY mirrors
-  private.entity_is_manageable()", iterates its own hardcoded **five**-entry
-  `EXPECTED` map and reads `20260828120500_crm_policy_helpers.sql` as text
-  rather than the deployed catalogue — so the sixth entry is asserted in
-  neither direction, and nothing compares `PERMISSION_FOR_ENTITY` against
-  `public.permissions` either. It could not have been closed in Task 1: the
-  key does not exist until Task 2 seeds it.
+  **The assertion that carries the most is EK6, and it was not in the brief.**
+  `pfinance` is full-scope and holds `view_crm` and NOT `manage_events`, so
+  they get `visible=true, manageable=false` **on the same row** — which is
+  only possible if the two dispatches really consult different keys. A
+  dispatch that ignored the key, or that copy-pasted `view_crm` into the
+  manageable arm, answers `true/true` and goes red there and nowhere else.
 
-  **In the same commit that seeds `manage_events` and adds
-  `private.entity_is_manageable()`'s `'event'` arm**, add
-  `event: "manage_events"` to that `EXPECTED` map — and, since that test reads
-  the *original* migration file, point it at whichever file carries the
-  deployed body (`20260901010000`) or at `pg_get_functiondef`, which is what
-  the rest of this repository's mirrors do. Blast radius is small — that
-  file's own comment says getting it wrong "cannot open a write" — but this is
-  exactly the "five places, not three" class of omission Task 1 exists to make
-  impossible, and leaving it to memory is how it survives.
+- ~~**PHASE 3 TASK 2 OWES `PERMISSION_FOR_ENTITY.event` A TRIPWIRE.**~~
+  **DONE, Phase 3 Task 2**, in the same commit that seeds `manage_events` and
+  adds `private.entity_is_manageable()`'s `'event'` arm, as this entry
+  required.
+
+  **It was MOVED, not extended, and the reason is the second half of the
+  finding.** The old mirror lived in `tests/unit/crm/source-shape.test.ts` and
+  had two independent blind spots: it iterated its OWN hardcoded five-entry
+  map rather than `PERMISSION_FOR_ENTITY` (so Task 1's sixth entry was
+  asserted in neither direction), and it read
+  `20260828120500_crm_policy_helpers.sql` **as text** — the file that first
+  *created* the function, which stopped being what is deployed the moment
+  `20260901010000` replaced it with `create or replace`. Extending the map
+  would have closed the first and left the second.
+
+  The replacement is
+  `tests/integration/crm/permission-for-entity-matches-db.test.ts`. It
+  iterates the real table; reads the deployed body through
+  `pg_get_functiondef()`; asserts the two key sets are **equal**, so a seventh
+  entity type added to either side alone is red; checks every key it names
+  exists in `public.permissions` (a typo in either mirror fails *closed*, which
+  is the invisible direction); asserts `manage_events` is granted to exactly
+  the six roles Q29 named; and drives the dispatch **behaviourally** as a
+  Booker — who holds `manage_events` and `manage_artists` and not
+  `manage_venues`, and is therefore the one role that can tell "the key is
+  chosen per entity type" from "the key is ignored". A comment block stands
+  where the old describe was, saying all of this, so nobody re-adds it.
+
+- **THE ARTIST END OF A LINEUP ROW HAS NO DATABASE GUARD AGAINST A
+  SOFT-DELETED ARTIST, DELIBERATELY — and the application half does not exist
+  yet.** `20260901011000`'s three `event_lineup` write policies check the
+  EVENT and never `public.artists`, for `20260828235000`'s reason: a policy
+  predicate is evaluated as the caller, so an `artists.deleted_at` term would
+  collapse "the artist is deleted" into "I cannot see the artist" and start
+  refusing legitimate writes by a record-scoped user who owns the event and
+  not the artist. `rls_phase3_events.sql` § EH measures exactly that: `pstd1`
+  cannot even *see* the artist (EH1), books them anyway (EH2), and the artist
+  is soft-deleted (EH4).
+
+  Cross-tenant is covered — `event_lineup_artist_fkey` is composite and
+  refuses it for every writer including `postgres` (§ EF4b). **Soft-deleted is
+  not, and nothing but `lib/crm/events.ts`'s `liveInOrg(supabase, "artists",
+  org.id, artistId)` will ever refuse it. Phase 3 Task 5 owns writing that
+  call, and until it lands the product has no guard at all.** Do not delete
+  that call later believing a policy is behind it; § EH is the assertion that
+  says so out loud, and EH5 asserts structurally that no lineup policy
+  expression mentions `artists`.
+
+- **`public.events` and `public.event_lineup` have FK-covering indexes only,
+  and Task 2 measured what that costs.** `EXPLAIN (analyze, buffers)` as a
+  record-scoped user (`pstd1`), on the suite's fixtures — 11 ALPHA events, 8
+  ALPHA lineup rows:
+
+  * a 50-row page of `events` ordered `starts_at desc, id desc` takes an
+    **Index Scan on `events_organisation_id_idx` followed by a Sort**, with
+    `Rows Removed by Filter: 9`. No index can serve the ordering, so every
+    page is a full sort of the tenant's events.
+  * the `event_lineup` page's parent check is a **hashed SubPlan containing a
+    Seq Scan on `events`** (`Rows Removed by Filter: 12`). The lineup's own
+    access happened to use `event_lineup_event_artist_live_unique`, whose
+    leading column is `event_id` — an accident of that partial unique index,
+    not a list index.
+
+  The **good** half is the half that was designed: every
+  `permitted_organisations` / `full_scope_organisations` set appears as a
+  **hashed SubPlan or InitPlan**, evaluated once per statement, never per row.
+  That is the property `rls_phase3_events.sql` EB12-EB14 guard structurally.
+
+  Phase 3 Task 3 owns the `(organisation_id, <sort>, id) include
+  (owner_user_id) where deleted_at is null` set, declares the sorts and can
+  measure against this baseline.
+
+- **THE RECORD-SCOPE TERM IN AN UPDATE POLICY CANNOT BE MEASURED WHILE THE
+  SELECT POLICY CARRIES ITS OWN COPY — and the five Phase 2 entity tables have
+  no assertion that can see theirs.** Found in Phase 3 Task 2's mutation run:
+  removing the disjunction from BOTH clauses of
+  `events_update_manage_events` left the whole suite green (999 psql
+  assertions, 195 HTTP checks, zero failures). Measured on this stack:
+
+  ```
+  UPDATE policy mutated, SELECT intact, new owner = pstd2    -> 42501
+  UPDATE policy mutated, SELECT intact, new owner = pmanager -> 42501
+  BOTH policies mutated, new owner = pstd2                   -> UPDATE 1
+  ```
+
+  PostgreSQL applies the SELECT policies both to the rows an UPDATE reads and
+  to the NEW row it writes, so `events_select_view_crm`'s copy of the term was
+  answering the whole time. `rls_phase3_events.sql` ED11–ED16 now lift the
+  SELECT policy's disjunction for four statements and ask the UPDATE policy
+  alone, restoring and asserting the restore — the § Y / P11 discipline.
+
+  **`companies`, `contacts`, `agencies`, `artists` and `venues` have exactly
+  the same policy pair and no equivalent lift** (`rls_phase2_crm.sql` § D and
+  § G are written the same way § ED was). Their UPDATE policies' record-scope
+  terms are therefore untested in isolation today. This is NOT a live defect —
+  the terms are present and the SELECT policy backstops them — but it is five
+  more places where a "simplification" would pass every gate. One
+  parameterised lift over all six tables would close it; whoever writes it
+  should make it fail first, on each table, before believing it.
+
+- **`20260901001000`'s comment on `private.entity_org_unchanged()` named the
+  wrong migration for the `event_lineup` arm, and the correction is a
+  re-issued `comment on function` rather than an edit.** It said the arm would
+  arrive in `20260901010000`; it arrived in `20260901011000`, with
+  `event_lineup_update_via_event`, which is the only thing that calls it —
+  "with the policy that needs it" is the rule and the policy is there.
+  `20260901010000` is the file the permission KEY had to be in. Task 1's
+  migration was not edited (it must not be); `20260901011000` re-issues the
+  comment with the correction written into it. Nothing to do — this entry
+  exists so the next reader does not "fix" the comment back.
 
 - ~~**`tests/unit/crm/source-shape.test.ts` is RED on any CRLF checkout, and
   was red at Phase 3 Task 1's starting commit (`00a4790`) before that task
