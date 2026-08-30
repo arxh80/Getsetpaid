@@ -254,8 +254,19 @@ select ev.val('EA5 CONTROL: those same three roles DO hold view_crm',
 -- ===========================================================================
 -- EB. Tenant isolation, and the SHAPE of the policies that provide it
 -- ===========================================================================
--- The mutation: dropping `organisation_id in (select ...)` from
--- events_select_view_crm.
+-- The mutation: dropping `organisation_id in (select
+-- private.permitted_organisations('view_crm'))` from events_select_view_crm,
+-- leaving only the record-scope disjunction.
+--
+-- MEASURED: EB1-EB11 DO NOT CATCH THAT, and the reason is worth knowing before
+-- reading them. `private.full_scope_organisations()` is itself membership-
+-- scoped, so with the permission term gone a manager still sees no BETA row --
+-- the tenant boundary holds on the surviving term alone. What the mutation
+-- actually removes is the PERMISSION and MFA half of the read gate, and the
+-- two assertions that go red are EB13 below (structurally: the policy no
+-- longer names permitted_organisations at all) and § EJ1 (behaviourally: an
+-- aal1 Owner, who holds no permission, reads 9 events instead of 0). Both are
+-- in this suite; neither is in this section, which is why this note is.
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 
@@ -485,6 +496,96 @@ select ev.try('ED9 POSITIVE: soft-delete their own',
 select ev.try('ED10 POSITIVE: ...and restore it, which is why SELECT ignores deleted_at',
   $$update public.events set deleted_at=null
      where id='ee110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- THE RECORD-SCOPE TERM IN `events_update_manage_events`, ASKED WITH THE
+-- SELECT POLICY'S COPY OF IT LIFTED.
+--
+-- ADDED BECAUSE THE MUTATION RUN PROVED ED1-ED10 COULD NOT SEE IT. Removing
+-- the record-scope disjunction from BOTH clauses of
+-- events_update_manage_events left the ENTIRE suite green -- 999 psql
+-- assertions and 195 HTTP checks, zero failures. That is the same class of
+-- gap § Y and P11 exist for, and the cause was measured on this stack rather
+-- than guessed:
+--
+--   * ED2's `ok(0)` survived because PostgreSQL applies the SELECT policies to
+--     the rows an UPDATE reads, and events_select_view_crm still carried the
+--     disjunction -- so pstd2's event was invisible to the statement whatever
+--     the UPDATE policy said.
+--   * ED3's `denied(42501)` survived because PostgreSQL ALSO applies the
+--     SELECT policy to the NEW row of an UPDATE. Measured three ways:
+--       UPDATE policy mutated, SELECT intact, new owner = pstd2   -> 42501
+--       UPDATE policy mutated, SELECT intact, new owner = pmanager-> 42501
+--       BOTH mutated, new owner = pstd2                           -> UPDATE 1
+--     The third line is the one that identifies the mechanism: with the SELECT
+--     policy's copy of the term gone too, the give-away succeeds.
+--
+-- So the two policies are each other's backstop on this exact term, and
+-- neither can be measured while the other holds. The SELECT policy's
+-- disjunction comes off for the length of four statements, the UPDATE policy
+-- is asked on its own, and the SELECT policy is put back and compared against
+-- what was there.
+--
+-- SAFETY. ED11 proves the lift really happened, so ED12/ED13 are the UPDATE
+-- policy answering and not the old visibility rule. ED15/ED16 assert the
+-- restore structurally and behaviourally; if either fails the schema is dirty
+-- and the run must be discarded and the database reset.
+-- ---------------------------------------------------------------------------
+set search_path = 'pg_catalog, public';
+select ev.note('ed_select_qual', (select qual from pg_policies
+  where schemaname='public' and tablename='events' and cmd='SELECT'));
+reset search_path;
+
+alter policy "events_select_view_crm" on public.events
+  using ( organisation_id in (select private.permitted_organisations('view_crm')) );
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('ED11 CONTROL: with the SELECT term lifted, pstd1 can now SEE pstd2''s event',
+  $$select count(*)::text from public.events
+     where id='ee110000-0000-0000-0000-000000000003'$$, '1');
+-- ok(0) STILL, and now it is the UPDATE policy's USING clause saying it --
+-- nothing else is left to. Under the mutation this becomes ok(1).
+select ev.try('ED12 ...and STILL cannot claim it -- the UPDATE policy''s USING, alone',
+  format($$update public.events set owner_user_id=%L
+            where id='ee110000-0000-0000-0000-000000000003'$$, :'pstd1'), 'ok(0)');
+-- 42501 STILL, and now it is the UPDATE policy's WITH CHECK saying it. This is
+-- THE assertion the record-scope mutation flips.
+select ev.try('ED13 ...and STILL cannot give their own away -- the WITH CHECK, alone',
+  format($$update public.events set owner_user_id=%L
+            where id='ee110000-0000-0000-0000-000000000002'$$, :'pstd2'), 'denied(42501)');
+select ev.try('ED14 POSITIVE: ...while an ordinary edit of their own still works',
+  $$update public.events set notes='still mine'
+     where id='ee110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+alter policy "events_select_view_crm" on public.events
+  using (
+    organisation_id in (select private.permitted_organisations('view_crm'))
+    and (
+      organisation_id in (select private.full_scope_organisations())
+      or owner_user_id = (select auth.uid())
+    )
+  );
+
+select ev.val('ED15 the SELECT policy is restored EXACTLY as the migration made it',
+  $$select ((select qual from pg_policies
+               where schemaname='public' and tablename='events' and cmd='SELECT')
+            = (select v from ev.notes where k='ed_select_qual'))::text$$, 'true');
+select ev.val('ED15a CONTROL: and that is the record-scoped expression, not any expression',
+  -- Without this, ED15 is satisfied by two identical WRONG expressions, since
+  -- both sides are read from the same live schema.
+  $$select (select v from ev.notes where k='ed_select_qual')$$,
+  '((organisation_id IN ( SELECT private.permitted_organisations(''view_crm''::text) AS permitted_organisations)) AND ((organisation_id IN ( SELECT private.full_scope_organisations() AS full_scope_organisations)) OR (owner_user_id = ( SELECT auth.uid() AS uid))))');
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+-- TWO NAMES, NOT ONE: ED6 created `Std1 Created Event` earlier in this
+-- section, and it is theirs. ED1 ran before that and is the one-name form.
+select ev.val('ED16 ...and behaviourally: pstd1 is back to seeing only their own events',
+  $$select coalesce(string_agg(name,',' order by name),'<none>') from public.events$$,
+  'Std1 Created Event,Std1 Event');
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
