@@ -116,9 +116,19 @@ export default async function EditEventPage({
           values={{
             id: event.id,
             name: event.name,
-            // INSTANT -> UK WALL CLOCK, because that is what the input speaks.
-            // The action converts back with the inverse, so a save that
-            // changes nothing else leaves `starts_at` byte-identical.
+            // INSTANT -> UK WALL CLOCK, because that is what the input
+            // speaks. The action converts back with the inverse, so a save
+            // that changes nothing else leaves `starts_at` byte-identical
+            // FOR ANY INSTANT THIS FORM WROTE.
+            //
+            // The qualifier is load-bearing (fix round 1, M-6):
+            // `instantToLondonWallClock` drops SECONDS by design, because
+            // `datetime-local` without a `step` cannot display them, so an
+            // instant written with non-zero seconds by an import or through
+            // `psql` is rounded down to `:00` on the next save of any other
+            // field. Nothing this form can create has non-zero seconds, so
+            // there is no path from the product into that state today --
+            // which is why it is a narrower comment rather than a fix.
             startsAt: instantToLondonWallClock(event.startsAt),
             endsAt: event.endsAt === null ? "" : instantToLondonWallClock(event.endsAt),
             eventType: event.eventType,

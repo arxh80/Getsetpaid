@@ -66,7 +66,23 @@
 //              (venue_room_id, venue_id, organisation_id), so the DATABASE
 //              refuses a room that is not in the chosen venue with 23503. The
 //              check below exists to produce a sentence next to the field
-//              instead, and the 23503 handler is the belt behind it.
+//              instead.
+//
+//              THE 23503 HANDLER IS ON THE CREATE PATH ONLY, and fix round 1's
+//              M-3 is right that the sentence used to imply otherwise. It is
+//              reachable only when `roomIsInVenue` has FAILED OPEN on a lookup
+//              error (see that function), which is a fault rather than a
+//              mistyped form; on create the FK violation is then rendered as
+//              the room sentence, and on update it reaches `classifyWrite`,
+//              which maps anything that is not 42501/23505 to
+//              `{outcome:"failed"}` and shows FAILED_MESSAGE attached to no
+//              field. NOT EQUALISED, deliberately: the update path goes
+//              through `commitWrite`, whose `MutationResponse` carries no
+//              error CODE (lib/crm/write.ts), so handling 23503 there means
+//              either widening that contract for one branch of one action or
+//              going round the helper every write in the CRM uses. The
+//              residue is a generic sentence on a fault that has already
+//              failed a lookup. Recorded rather than hidden.
 //
 // A CLOSED ROOM IS ACCEPTED. `venue_rooms.deleted_at` was added
 // (20260827232510) precisely so a past event can go on naming a room that has

@@ -114,20 +114,35 @@ describe("I-10: nothing outside lib/format/ defines a date formatter", () => {
 // PHASE 3 TASK 4 -- THE FORM DIRECTION
 // ===========================================================================
 //
-// THE MUTATION THESE EXIST FOR, stated plainly because it is the whole reason
-// the file grew: replace `londonWallClockToInstant`'s body with
+// WHAT THE ASSERTIONS IN THIS BLOCK DO AND DO NOT GUARD, stated first because
+// the first version of this header claimed more than it delivered and fix
+// round 1's Important 2 measured the gap.
+//
+// Every expected value below is an absolute UTC instant, so a reader can check
+// it by hand and it does not vary with `TZ`. What it does NOT do is force the
+// implementation to be zone-independent: the obvious wrong implementation,
 //
 //     return new Date(value).toISOString();
 //
-// and on a machine set to Europe/London the July and January cases still pass.
-// They are the two a reviewer would have written, and they are the two that
-// prove nothing. What that mutant CANNOT do is the two transition days, where
-// the offset is not a function of the date alone -- and on a CI box running
-// UTC (which is every CI box) it fails all four.
+// asks the same tz database the same question when the machine's own zone IS
+// Europe/London, and therefore agrees with `londonWallClockToInstant` on ALL
+// EIGHT rows here -- both transition days included, the ambiguous 01:30 and the
+// non-existent 01:30 with them. Measured, on this machine, at fix round 1.
 //
-// Every assertion below is an absolute UTC instant computed from
-// `Intl.DateTimeFormat`'s own transition data, so this file's result does not
-// depend on `TZ` where it runs. That is the point: so is the implementation's.
+// So THE ZONE-INDEPENDENCE GUARD IS THE `process.env.TZ` BLOCK AT THE BOTTOM OF
+// THIS FILE, not these assertions. It runs in `pnpm test` and in CI's
+// `vitest run tests/unit` like everything else here -- it is not report-only --
+// and it is what turns "the answer is right" into "the answer is right
+// wherever this runs".
+//
+// These assertions still earn their place twice over: they are the readable
+// statement of what the four brief-nominated dates mean, and the three
+// `what it refuses` cases below DO catch the naive mutant on their own,
+// because it loses the shape, calendar and year checks. That is a parsing
+// property, not a timezone one, and it is worth being clear which is which --
+// a mutant that keeps the validation and replaces only the offset resolution
+// leaves this whole block GREEN (measured: 0 of 57 red here, 20 of 57 red in
+// the moved-TZ block).
 //
 // The four dates are the brief's: a BST date, a GMT date, and both 2026
 // transitions -- 29 March (01:00 UTC, clocks forward, 01:00-02:00 local does
@@ -291,7 +306,7 @@ describe("instantToLondonWallClock -- filling the edit form back in", () => {
 });
 
 // ===========================================================================
-// THE MUTATION GUARD, AND WHY THE BLOCK ABOVE IS NOT ONE ON ITS OWN
+// THE ZONE-INDEPENDENCE GUARD, AND WHY THE BLOCK ABOVE IS NOT ONE
 // ===========================================================================
 //
 // The brief predicted that a naive `return new Date(value).toISOString()`
@@ -316,8 +331,33 @@ describe("instantToLondonWallClock -- filling the edit form back in", () => {
 // re-reads TZ for local-time `Date` behaviour after start (verified: the same
 // literal yields 19:00Z under Europe/London, 20:00Z under UTC and 00:00Z the
 // next day under America/New_York), while `Intl.DateTimeFormat` with an
-// EXPLICIT `timeZone` is untouched -- which is the whole design. Under UTC the
-// naive mutant fails every row here, including July and January.
+// EXPLICIT `timeZone` is untouched -- which is the whole design.
+//
+// ===========================================================================
+// WHAT THE MUTANT ACTUALLY DOES, PER ZONE -- COUNTED, NOT ESTIMATED
+// ===========================================================================
+// The first version of this comment said "under UTC the naive mutant fails
+// every row here, including July and January." It does not, and fix round 1's
+// Important 2 caught it. Re-run per zone against the eight rows below:
+//
+//   ambient (Europe/London)   0 / 8   agrees on everything
+//   TZ=UTC                    4 / 8   fails 2026-07-01T20:00, 2026-03-29T12:00,
+//                                     2026-10-25T00:30 and 2026-10-25T01:30.
+//                                     JANUARY PASSES -- London is UTC then, so
+//                                     a UTC box is right about it by accident,
+//                                     which is exactly the trap. 2026-03-29T00:30
+//                                     and 2026-10-25T02:30 pass for the same
+//                                     reason (both are GMT-side), and the
+//                                     non-existent 2026-03-29T01:30 passes
+//                                     because both implementations land on
+//                                     01:30Z from opposite directions.
+//   TZ=America/New_York       8 / 8
+//   TZ=Australia/Sydney       8 / 8
+//
+// A CI box running UTC therefore catches this mutant on half these rows, not
+// on all of them -- and on none of them without this block. New_York and
+// Sydney are where the block's real strength is, which is why it is three
+// zones and not one.
 //
 // TZ is restored in afterAll, and vitest.config.ts sets `fileParallelism:
 // false`, so no other suite observes the change.
