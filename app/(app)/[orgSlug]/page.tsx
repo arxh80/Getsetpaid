@@ -223,19 +223,25 @@ function roleLabel(key: string): string {
 }
 
 /**
- * The five CRM areas, in the order the workflow uses them.
+ * The six CRM areas, in the order the workflow uses them.
  *
- * DATA RATHER THAN FIVE COPIES OF THE SAME JSX, so the sixth (events, Phase 3)
- * is one line here instead of a paragraph somebody has to match to the other
- * five.
+ * DATA RATHER THAN SIX COPIES OF THE SAME JSX. This comment used to say "the
+ * sixth (events, Phase 3) is one line here instead of a paragraph somebody has
+ * to match to the other five", and Phase 3 Task 3 collected on it: adding
+ * Events was one entry in the array below and nothing else in this file.
  *
  * NOT FILTERED BY PERMISSION, deliberately. Every role in the Q2 matrix that
- * can reach this page holds `view_crm`, so all five lists are READABLE by all
+ * can reach this page holds `view_crm`, so all six lists are READABLE by all
  * of them -- and each list already explains, in its own empty state, why a
  * record-scoped user is seeing fewer rows than their colleagues. Hiding a link
  * because the viewer cannot WRITE there would be the "hidden loses the
  * explanation" mistake components/crm/write-gate.tsx exists to avoid, applied
  * to a read.
+ *
+ * Events is the sixth and it obeys the same rule: `view_crm` is what the
+ * SELECT policy in 20260901011000 requires, and a Finance or Marketing user
+ * holds it while holding no `manage_events` at all. They can read the list;
+ * the "New event" control on it explains itself.
  */
 const CRM_AREAS = [
   {
@@ -267,5 +273,14 @@ const CRM_AREAS = [
     label: "Venues",
     blurb:
       "Where the events happen, and the rooms inside them events can be assigned to.",
+  },
+  // LAST, because the workflow arrives here: CLAUDE.md's core sequence is
+  // `relationship -> enquiry/hold -> booking/event -> delivery -> settlement`,
+  // and an event is the thing the five above get attached to.
+  {
+    path: "events",
+    label: "Events",
+    blurb:
+      "The nights you are putting on. A date, a venue and a lineup, with everything above it hanging off one record.",
   },
 ] as const;

@@ -926,3 +926,74 @@ export async function loadRoomsForVenue(
       });
     });
 }
+
+/**
+ * Venue names for one page of events, keyed by venue id.
+ *
+ * ===========================================================================
+ * A SECOND QUERY, NOT A PostgREST EMBED, AND THE EMBED IS THE OBVIOUS CHOICE
+ * ===========================================================================
+ * `EVENT_SELECT` carries `venue_id` and the events list renders a venue NAME.
+ * `select=...,venues(name)` would do it in one round trip and it is rejected
+ * for two reasons, both mechanical:
+ *
+ *   1. `fetchListPage` (lib/list/query.ts) runs a COUNT query beside the page
+ *      query, and up to two `limit 1` boundary probes. An embed changes the
+ *      shape of the request PostgREST plans, and `count=exact` over a request
+ *      carrying an embed counts something this list would then have to reason
+ *      about. The count line is a claim about how many events match; nothing
+ *      about a venue should be able to move it.
+ *   2. Under RLS an embed of a row the caller cannot read comes back as
+ *      `null`, so the null case has to be handled anyway -- see `toLinkRows()`
+ *      above, which drops exactly that row for exactly that reason. The embed
+ *      therefore buys one round trip and costs the same branch.
+ *
+ * A VENUE THE CALLER CANNOT READ IS SIMPLY NOT IN THE MAP, and the cell then
+ * renders the same em-dash `Absent` marker as "no venue recorded". THAT
+ * COLLISION IS THE POINT AND NOT A LIMITATION: rendering "(unavailable)" would
+ * confirm that a record exists and is out of reach, which is the oracle
+ * `toLinkRows()` above already refuses to build and the same one
+ * `getCurrentOrg()` refuses for slugs. A record-scoped user seeing a dash
+ * learns nothing about their colleagues' venues.
+ *
+ * The query runs through the CALLER'S OWN client, so RLS decides what comes
+ * back; `organisation_id` is pinned anyway, because multi-org membership means
+ * RLS alone would allow the other workspace's rows.
+ *
+ * BOUNDED BY CONSTRUCTION. The caller passes the venue ids of ONE page, so at
+ * most `MAX_PAGE_SIZE` = 50 distinct ids (lib/list/params.ts enforces the
+ * ceiling server-side). `.in()` with 50 uuids is a ~2KB query string, which is
+ * why this is safe to do per page and would not be safe over a whole tenant.
+ */
+export async function loadVenueNames(
+  organisationId: string,
+  venueIds: readonly string[],
+): Promise<ReadonlyMap<string, string>> {
+  const unique = [...new Set(venueIds)];
+  // No ids means no query. `.in("id", [])` is a legal request that returns
+  // nothing, but it is still a round trip on every page of a workspace whose
+  // events have no venues yet -- which is most of them at the start.
+  if (unique.length === 0) return new Map();
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("venues")
+    .select("id, name")
+    .eq("organisation_id", organisationId)
+    .in("id", unique)
+    // RLS DOES NOT DO THIS (lib/list/query.ts clause 2, and Phase 2 Task 2
+    // § 4.1 decided it deliberately). Without it a soft-deleted venue's name
+    // renders on a live event as though nothing had happened, and the list
+    // would be the one surface in the product that shows deleted records.
+    .is("deleted_at", null);
+
+  if (error || !data) {
+    if (error) console.error("[crm] venue name lookup failed:", error.message);
+    // An empty map, not a throw. The venue column degrades to dashes and the
+    // rest of the page renders -- the failure of a decorative lookup must not
+    // take down a list of events. A caller that needs to distinguish "no
+    // venue" from "lookup failed" should not be using this function.
+    return new Map();
+  }
+  return new Map(data.map((row) => [String(row.id), String(row.name)]));
+}
