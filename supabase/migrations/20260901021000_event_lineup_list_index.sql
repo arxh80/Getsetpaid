@@ -1,0 +1,109 @@
+-- Phase 3 (Events), Task 5: the one index the lineup panel needs.
+--
+-- ADDITIVE ONLY. One `create index` and one comment; no existing migration is
+-- edited, no policy changes, no grants. 20260901000000 created
+-- `public.event_lineup` with three FK/tenancy indexes
+-- (`event_lineup_organisation_id_idx`, `event_lineup_event_id_org_idx`,
+-- `event_lineup_artist_id_org_idx`) and the partial unique index
+-- `event_lineup_event_artist_live_unique (event_id, artist_id) where
+-- deleted_at is null`. None of them can serve an ORDERED page, which is what
+-- this file is for.
+--
+-- ===========================================================================
+-- THE SHAPE
+-- ===========================================================================
+--   create index event_lineup_org_event_position_id_live_idx
+--     on public.event_lineup (organisation_id, event_id, position, id)
+--     where deleted_at is null;
+--
+--   * organisation_id LEADING, because lib/list/query.ts always pins it by
+--     equality (clause 1 of that file's header) and that is what makes the
+--     index reachable at all;
+--   * event_id second, because `applyFilters` in lib/crm/lineup-list.ts pins
+--     the event by equality too -- the same two-equality-columns shape
+--     artist_fee_history_org_artist_occurred_id_idx has;
+--   * position third: LINEUP_LIST's only sort;
+--   * id as the last key column, because keyset pagination compares
+--     `(position, id)` against the previous page's last row and the tie-break
+--     has to be in the index. `position` is deliberately NOT unique
+--     (20260901000000's table comment), so ties are ordinary here in a way
+--     they are not on a name or a timestamp;
+--   * the partial predicate, because lib/list/query.ts always writes
+--     `deleted_at is null` on a live list (RLS deliberately does not) and a
+--     partial index is both smaller and the only one the plan can use.
+--
+-- ASCENDING ONLY. `organisation_id` and `event_id` are pinned by equality and
+-- a btree scans backwards, so one index serves both direction labels.
+--
+-- ===========================================================================
+-- **NO `include (owner_user_id)`**, AND THAT IS NOT AN OMISSION
+-- ===========================================================================
+-- The three list indexes in 20260901020000 carry `include (owner_user_id)`
+-- because the SELECT policy's record-scope term reads that column ON THE SAME
+-- ROW. `public.event_lineup` HAS NO SUCH COLUMN, by design -- 20260827232510
+-- convention (2), restated in 20260901000000: "a slot's scope is its event's
+-- scope". `event_lineup_select_via_event` reads `p.owner_user_id` on the
+-- PARENT, through an `exists (select 1 from public.events p ...)`, so the
+-- record-scope check is a lookup into `events` per candidate row whatever this
+-- index contains. That cost is STRUCTURAL and this index does not buy it away;
+-- what it does is decide HOW MANY candidate rows the check runs on. Measured
+-- below: 180 parent lookups per deep page without it, 26 with it.
+--
+-- Adding an `owner_user_id` column to `event_lineup` to make an INCLUDE
+-- possible would denormalise the parent's scope into the child and give the
+-- two a way to disagree. Not done, and named here so the absence reads as a
+-- decision.
+--
+-- ===========================================================================
+-- MEASURED FIRST -- 90,270 LINEUP ROWS ACROSS 3,000 EVENTS IN ONE TENANT
+-- ===========================================================================
+-- As the `authenticated` role with a real `request.jwt.claims` set (pmanager,
+-- full scope, aal2), after `analyze`, warm, median of three runs each way. The
+-- statements are the ones `fetchListPage` issues: the page
+-- (`order by position asc, id asc limit 26`), the `count=exact` head request,
+-- and a deep keyset page. Full plans are in
+-- .superpowers/sdd/phase-3-events/task-5-report.md § 2.
+--
+--   PAGE ONE of an ordinary 27-slot lineup
+--     without   5.305 ms   shared hit=635    Sort (quicksort, 27 rows)
+--                                            -> Index Scan using
+--                                               event_lineup_event_artist_live_unique
+--     with      4.578 ms   shared hit=629    Index Scan using this index,
+--                                            NO Sort node
+--
+--   COUNT of the same lineup
+--     without   3.338 ms   shared hit=183    Index Scan
+--     with      4.014 ms   shared hit=158    Index ONLY Scan
+--
+--   PAGE FIVE of a 298-slot lineup -- THE MEASUREMENT THAT DECIDES IT
+--     without   7.392 ms   shared hit=1741   Bitmap Heap Scan of the WHOLE
+--                                            event, then a top-N heapsort;
+--                                            the RLS parent EXISTS runs
+--                                            **180 times** (Rows Removed by
+--                                            Filter: 118)
+--     with      1.999 ms   shared hit=320    Index Scan straight to the
+--                                            cursor; the parent EXISTS runs
+--                                            **26 times**, once per row on
+--                                            the page
+--
+-- 3.7x on time and 5.4x on buffers, and the SHAPE is the finding rather than
+-- the ratio: without this index a keyset page reads and RLS-checks every live
+-- row of the lineup from the FIRST one, so its cost grows with how deep the
+-- page is -- which is offset pagination's failure mode reappearing inside the
+-- thing keyset exists to avoid (lib/list/query.ts, `applyCursor`). Page one of
+-- an ordinary lineup is inside the noise either way; that is not the case this
+-- index is for.
+--
+-- THE HONEST CAVEAT: a 298-artist bill is not a real event, and a real one --
+-- twenty slots at most -- fits on one page and never reaches the deep-page
+-- plan. The index is cheap (one btree over a narrow, partial row set) and the
+-- alternative is a `backedBy` string pointing at an index whose columns are
+-- (event_id, organisation_id) and which therefore cannot supply the ordering
+-- lib/list/spec.ts requires that field to name. Both halves are why it ships.
+
+create index event_lineup_org_event_position_id_live_idx
+  on public.event_lineup (organisation_id, event_id, position, id)
+  where deleted_at is null;
+
+comment on index public.event_lineup_org_event_position_id_live_idx is
+  'Keyset pagination for the lineup panel on an event''s detail page. lib/crm/lineup-list.ts names this index in `backedBy` and lib/list/spec.ts makes that field required, so the sort is not allowed to exist without it. Two leading equality columns (organisation_id from lib/list/query.ts, event_id from LINEUP_LIST''s applyFilters), then `position`, then `id` as the keyset tie-break -- `position` is deliberately not unique, so the tie-break carries real weight here. NO include (owner_user_id): public.event_lineup has no such column, because a slot''s record scope is its parent event''s (20260827232510 convention (2)); event_lineup_select_via_event reads p.owner_user_id on public.events through an EXISTS, so that lookup is structural. What this index changes is how many rows it runs on -- measured at 180 parent lookups per deep page without it against 26 with it.';
