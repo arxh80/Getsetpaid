@@ -215,6 +215,99 @@ These become live the moment a real tenant table exists.
   Foundation helper uses) makes `name % $1` fail with "operator does not exist".
   Write `name operator(extensions.%) $1` and `extensions.similarity(...)`.
 
+### Opened by Task 8 (the phase exit gate)
+
+- **NOTHING IN THE PRODUCT ENFORCES `SECURITY.md` § 5, AND SEARCH IS THE
+  SURFACE THAT MATTERS.** A codebase-wide grep for
+  `rate.?limit|ratelimit|throttl` returns one hit, `ACTIVITY_WRITE_THROTTLE_MS`
+  in `lib/auth/idle-timeout.ts`, which throttles a `sessionStorage` write. The
+  only real rate limiting anywhere is GoTrue's own
+  (`supabase/config.toml:264,266`: `sign_in_sign_ups = 30`,
+  `token_verifications = 30`, both per 5 minutes **per IP**), which does not
+  meet § 5's Login row either -- that asks for 5 / 15 min per IP **and per
+  account**, and no per-account limit exists. Search asks for 60/min/user and
+  has none: fifteen list specs carry a `searchColumn`, and Task 3 measured that
+  path at roughly **75 ms of database time per search at 20,000 rows**, growing
+  linearly, because a non-leakproof operator cannot become an index qual for a
+  caller RLS applies to. An authenticated member can issue those as fast as they
+  like. **Needs an owner and a phase before deployment** -- it is cross-cutting
+  infrastructure, not Core CRM, which is why Task 8 did not build it.
+- **The merge history says "No fields taken" when a field WAS taken.**
+  `fieldsFromLoser()` (`lib/crm/dedup.ts:351`) reads only
+  `field_resolution.fields`; custom fields taken in a merge live under
+  `field_resolution.custom_fields.values` and are not counted, so
+  `app/(app)/[orgSlug]/merges/page.tsx:238` renders "No fields taken" on a merge
+  that carried one across. Reproduced through the UI: merge two contacts where
+  only the loser has a custom-field value; the value transfers (verified in
+  `custom_field_values`), the merge row records
+  `{"from":"loser","chosen":"legitimate"}`, and the history denies it. The
+  omission IS documented, in a code comment
+  (`components/crm/activity-timeline.tsx:486`) -- but a page whose stated purpose
+  is "which fields were taken from it" makes a false positive statement about an
+  audited action, and a comment is not where a reader of that page will look.
+- **Both merge-rendering paths are tested only against hand-written fixture
+  rows.** Nine of eleven rows on `/merges` render as "This contact / the deleted
+  record" because the names come from a snapshot in
+  `field_resolution.<side>.before.name` that only `merge_records()` writes, and
+  the psql and HTTP suites insert `merges` rows directly. A real merge through
+  the UI renders both names correctly, so this is a fixture artefact and not a
+  product defect -- but it means a change to what `merge_records()` writes would
+  break the merge history AND the timeline's merge entries with every suite
+  green. This is the Task 7 deferred minor ("no assertion binds the view's
+  `field_resolution` paths to what `merge_records()` writes") on a second
+  surface. **Fix the fixtures, not the screens.**
+- **Every in-app 404 renders TWO `main` landmarks, one nested inside the
+  other.** Measured on a signed-in tenant-breakout refusal:
+  `document.querySelectorAll("main").length === 2`, `"main main" === 1`.
+  `app/(app)/layout.tsx:150` opens `<main id="main">` and `app/not-found.tsx:21`
+  opens its own `<main>` inside it. Nested `<main>` is invalid HTML and two
+  `main` landmarks is a real screen-reader defect -- and this is the page every
+  refused cross-tenant read lands on, so it is not a corner case. Not fixed by
+  Task 8 because the same file serves the unauthenticated 404, where its
+  `<main>` is correct; the fix is an `app/(app)/not-found.tsx` variant.
+- **`.github/workflows/ci.yml` has never executed.** Written by Task 8 in an
+  environment with no CI runner. `pnpm audit --audit-level high` and
+  `pnpm exec vitest run tests/unit` were run locally and are clean; the YAML was
+  not run and was not even parsed by a YAML parser. Treat the first failure on
+  the first triggering push as a bug in the file. It also covers only lint,
+  typecheck, unit tests and the two scans -- the 852 psql assertions, 174 HTTP
+  checks, integration tests and 9 Playwright tests all need a running Supabase
+  stack and still run only on a developer's machine.
+- **NO SCREEN READER HAS EVER BEEN USED ON THIS PRODUCT.** Tasks 3, 7 and 8 have
+  each deferred it for want of a tool. The keyboard half is done and passes
+  (visible focus rings, logical order, a working "Skip to content" link); the
+  assistive-technology half is untouched, and `CLAUDE.md` § Legal names the
+  Equality Act 2010 behind the WCAG 2.2 AA requirement. Task 7's deferred
+  `<ol>`-without-`role="list"` minor could NOT be reproduced on the surfaces
+  Task 8 walked -- the contacts list exposes no `ol`/`ul` at all and the contact
+  detail page's socials list IS exposed as a `list` -- so it stays open on
+  principle rather than on evidence, and needs a real screen reader (and a
+  Safari) to settle.
+- **`service_role` cannot write the tenant tables, and that is deliberate.**
+  `POST /rest/v1/organisations` with the service-role key returns
+  `42501 permission denied`: the default-privileges baseline
+  (`20260827232507`, invariant D7) revoked the stock grants and nothing granted
+  them back. RLS bypass is irrelevant when the GRANT is missing. Written down
+  because the opposite is universally assumed, and any future server-side job
+  that "just uses the service key" will hit it and be tempted to grant it back.
+- **The trigram indexes are size-dependent and their `comment on index` does not
+  say so.** `contacts_name_trgm_idx` is chosen at 40,001 rows (Bitmap Index Scan,
+  0.709 ms) and NOT chosen at 5,001 (Seq Scan, 7.9 ms). Correct planning, not a
+  broken index -- but "CONSUMER SHIPPED ... reaches it" is true at realistic
+  tenant sizes and false at toy ones, and the next person to run `EXPLAIN` on a
+  small fixture will conclude the keep decision was wrong.
+- **`CLAUDE.md` § Architecture is WRONG about auto-merge.** It says "exact
+  matches (email/name) auto-merge"; the shipped behaviour is **email only**,
+  because contacts are the only entity with an email column
+  (`20260829020000` DECISION 1). It is the file Phase 3's author reads first.
+- **"Read Only" reads nothing unless records are assigned to it.**
+  `private.full_scope_organisations()` excludes `read_only`, so a Read Only
+  member of a five-contact workspace sees zero contacts and the empty state
+  "No contacts assigned to you -- ask an Owner or Admin to assign some to you."
+  Asserted deliberately (C23) and defensible; also surprising for a role whose
+  name promises read-everything-write-nothing. **A founder decision, not a bug**,
+  and it should be made before Phase 3 builds more record-scoped surfaces.
+
 ### Opened by Task 7 (the shared activity timeline)
 
 - **A record-scoped read of `merges` still pays the polymorphic dispatch, and
