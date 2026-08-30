@@ -1521,9 +1521,19 @@ corrections are the useful part. Each now says what was actually done.
 
   **What to do:** re-measure the Phase 2 contacts claim the same way. Either it
   reproduces on a query shape this one does not have (in which case say which),
-  or the sentence should be corrected in `20260828180000`, `20260829000000`,
-  `lib/list/spec.ts` and `20260901020000` together. Do not drop the INCLUDEs on
-  the strength of this one measurement.
+  or the sentence should be corrected in **`20260828180000`, `20260829000000`
+  and `lib/list/spec.ts`** together. Do not drop the INCLUDEs on the strength of
+  this one measurement.
+
+  **`20260901020000` is NOT on that list** (fix round 1, review Important 2).
+  The first version of this item listed it — a file this task wrote in the same
+  series of commits, whose header at the time pasted an AFTER plan with a
+  `Heap Fetches: 0` line that an `Index Scan Backward` cannot emit, and asserted
+  the very benefit the table above measures as absent. That header has since
+  been corrected in place (a comment-only edit to an unpushed migration; the
+  four `create index` statements are byte-identical) and now carries the real
+  plan and the real INCLUDE finding. It is the one file in the family that
+  already says the measured thing.
 
 - **`§ EX` guards the events indexes only. The other five entities' `backedBy`
   names are still unasserted.** `lib/list/spec.ts` has required `backedBy` to
