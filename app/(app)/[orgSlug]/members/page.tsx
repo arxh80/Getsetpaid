@@ -5,6 +5,7 @@ import { getCurrentOrg, hasPermission } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { InviteForm } from "@/components/org/invite-form";
 import { RuledList, RuledRow, StatusChip } from "@/components/ui/ruled-row";
+import { formatDate } from "@/lib/format/date";
 
 export const metadata: Metadata = { title: "Members · GetSetPaid" };
 
@@ -260,14 +261,4 @@ function roleLabel(key: string): string {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-/** en-GB and Europe/London explicitly -- see the note in the invites page. */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "Europe/London",
-  });
 }

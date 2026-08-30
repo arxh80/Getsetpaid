@@ -1,0 +1,182 @@
+# The first CI this repository has had.
+#
+# ===========================================================================
+# READ THIS BEFORE TRUSTING IT
+# ===========================================================================
+# THIS FILE'S FIRST THREE RUNS ALL FAILED, and the failure was in this file,
+# not in the project. Task 8 wrote it in an environment with no CI runner and
+# said so; GitHub then ran it on every Task 8 push -- runs 33304352488,
+# 33305110034 and 33305705916 -- and both jobs died in `actions/setup-node`
+# before a single gate executed:
+#
+#   warn: This version of pnpm requires at least Node.js v22.13
+#   warn: The current version of Node.js is v20.20.2
+#   Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite
+#
+# `packageManager` pins pnpm 11.24.0, which loads `node:sqlite` and therefore
+# needs Node >= 22.13; the old `node-version: 20` gave it 20.20.2. Fixed in
+# Task 8 fix round 1 by asking for Node 24 (the version this project is
+# developed on locally, 24.18.0) in both jobs. The lesson the original header
+# was reaching for still stands and is now evidenced: an unexecuted workflow is
+# an untested claim.
+#
+# ===========================================================================
+# WHAT IT COVERS, AND THE MUCH LARGER PART IT DOES NOT
+# ===========================================================================
+# `CLAUDE.md` § Testing gates asks for "dependency and secret scanning in CI".
+# There was no CI at all, which is the finding Task 8 raised; this closes the
+# smallest honest version of it and NOT the rest:
+#
+#   COVERED HERE          lint, typecheck, the unit tests, a dependency audit,
+#                         a secret scan.
+#   NOT COVERED HERE      `vitest run tests/integration`, the 850 psql
+#                         assertions, the 174 HTTP checks and the 9 Playwright
+#                         tests. Every one of those needs a running Supabase
+#                         stack (`npx supabase start` plus `db reset`), which
+#                         is a container pull and several minutes per run and a
+#                         deliberate decision somebody has to make about CI
+#                         minutes. It is scoped in the Task 8 exit document,
+#                         not smuggled in here.
+#
+# So a green tick on this workflow is NOT a green phase. It is four of the
+# project's gates and the two scans, and the tenant-boundary suites -- the ones
+# `CLAUDE.md` says "matter most" -- still run only on a developer's machine.
+name: CI
+
+# EVERY PR RAN BOTH JOBS TWICE (deferred-minor L1145). `push: ["**"]` fires on
+# the branch push and `pull_request` fires on the same commit, so a branch with
+# an open PR paid for two identical runs of everything below.
+#
+# `push` is narrowed to the default branch, which is the one case a PR event
+# does not cover -- a merge, or a direct commit to `main`. Feature branches are
+# covered by `pull_request`, once.
+#
+# THE CONSEQUENCE, STATED SO IT IS NOT A SURPRISE: a push to a branch with NO
+# open pull request now runs nothing at all. That is the intended trade -- CI
+# on a branch nobody has proposed merging is not a gate, it is a bill -- but it
+# means "open the PR" is now part of getting a branch checked, and a branch
+# worked on for a day before its PR exists has no CI on it until then.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: lint, typecheck, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 11.24.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # >= 22.13 IS A HARD FLOOR, NOT A PREFERENCE. `packageManager` pins
+          # pnpm 11.24.0, which requires Node >= 22.13 and crashes on
+          # `node:sqlite` below it -- that is what killed this workflow's first
+          # three runs. 24 is what this project is developed on locally.
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      # REQUIRED BEFORE `tsc`, AND CI IS THE PLACE IT BITES HARDEST.
+      # `PageProps<"/some/route">` and `LayoutProps` are not exported by any
+      # package -- Next generates them into `.next/types/` from a route
+      # manifest. On a developer's machine `pnpm dev` has already written it;
+      # a clean checkout has nothing, so `tsc` reports "Cannot find name
+      # 'PageProps'" once per page. That is exactly what this workflow's
+      # fourth run did (33308499085), the first run that got far enough to try.
+      # `CLAUDE.md` § Current state already tells a human to run this before
+      # `pnpm typecheck`.
+      - name: Generate Next.js route types
+        run: npx next typegen
+
+      # NOT REDUNDANT WITH THE EDITOR. `CLAUDE.md` § Current state: nothing
+      # else on a developer's machine runs `tsc`, and the exhaustive `switch`
+      # over write outcomes in every Server Action is a compile-time guard
+      # only. Skipping typecheck skips those entirely.
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # UNIT ONLY. `pnpm test` also runs tests/integration, which talks to a
+      # real local Supabase stack over HTTP and fails without one. Naming the
+      # directory here rather than adding a `--exclude` keeps the failure mode
+      # obvious: a new integration test does not silently start being skipped.
+      - name: Unit tests
+        run: pnpm exec vitest run tests/unit
+
+  scan:
+    name: dependency and secret scanning
+    runs-on: ubuntu-latest
+    # JOB-LEVEL OVERRIDE OF THE WORKFLOW'S `contents: read`. gitleaks-action,
+    # on a `pull_request` event, calls `GET /repos/<owner>/<repo>/pulls/<n>/commits`
+    # to list the commits it needs to scan, which requires `pull-requests: read`
+    # on the job's `GITHUB_TOKEN` -- without it the call 403s with "Resource not
+    # accessible by integration" and the Secret scan step fails before it scans
+    # anything. Kept job-scoped rather than moved to the workflow level so the
+    # `gates` job stays at the narrower `contents: read` from above.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Gitleaks needs history to scan commits, not just the tree. A secret
+          # committed and then removed is still a leaked secret.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 11.24.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # >= 22.13 IS A HARD FLOOR, NOT A PREFERENCE. `packageManager` pins
+          # pnpm 11.24.0, which requires Node >= 22.13 and crashes on
+          # `node:sqlite` below it -- that is what killed this workflow's first
+          # three runs. 24 is what this project is developed on locally.
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # HIGH AND ABOVE FAILS. Moderate advisories in a dev-only transitive
+      # dependency should not block a branch; a high or critical one should be
+      # looked at the day it appears.
+      - name: Dependency audit
+        run: pnpm audit --audit-level high
+
+      # SECRET SCAN. `CLAUDE.md` § Git workflow: "Never commit secrets, .env
+      # files, Supabase service-role keys". The service-role key bypasses RLS
+      # entirely (SECURITY.md § 2), so a leaked one is a total tenant breach and
+      # not merely an embarrassment.
+      #
+      # PINNED TO A COMMIT SHA, not to a tag. `@v2` is the moving major and
+      # `@v2.3.9` is a tag the publisher can re-point at any time; only a SHA
+      # is immutable. An action that scans for secrets is an action with
+      # access to every secret in the repository, so this is the one step
+      # where a supply-chain swap is worst. Every other `uses:` in this file
+      # is pinned the same way for consistency -- SHAs verified against
+      # `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` on 2026-08-30, with
+      # pnpm/action-setup's annotated tag dereferenced through
+      # `git/tags/<sha>`. To bump one: look the new SHA up the same way and
+      # update the `# vX.Y.Z` trailer with it.
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -45,6 +45,21 @@ export interface CurrentOrg {
   slug: string;
   /** The caller's own role in this organisation. Never another user's. */
   role: string;
+  /**
+   * The organisation is soft-deleted, i.e. SUSPENDED BY THE PLATFORM.
+   *
+   * DECISIONS-QUEUE Q6 (founder, 2026-08-28) makes suspension READ-ONLY, not a
+   * lockout: members keep `view_crm` and lose every write, which
+   * 20260828210000 enforces. Consumers must render the workspace and disable
+   * its write controls -- see lib/crm/write-access.ts, which turns this into
+   * an answer with an explanation attached, and components/org/suspended-banner.tsx.
+   *
+   * It is NOT the enforcement. `private.crm_write_organisations()` carries its
+   * own `o.deleted_at is null`, and `public.permissions.survives_suspension`
+   * gates the read side. This flag exists so the customer is told, not so the
+   * rule holds.
+   */
+  isSuspended: boolean;
 }
 
 /**
@@ -177,11 +192,54 @@ export const getCurrentOrg = cache(
     // organisations_select_member gates this: an org the caller is not an
     // ACTIVE member of returns zero rows, so the .eq() on slug is a lookup
     // within what the caller may already see, not an access decision.
+    //
+    // THE `.is("deleted_at", null)` FILTER THAT USED TO BE HERE IS GONE, AND
+    // THE THREE THINGS THAT REPLACED IT SHIPPED IN THE SAME CHANGE.
+    //
+    // DECISIONS-QUEUE Q6 (founder, 2026-08-28) made suspension READ-ONLY
+    // rather than a lockout, and Task 3a implemented it in the database
+    // (20260828210000): a suspended organisation's members keep `view_crm` and
+    // lose every write, proven by rls_phase2_crm.sql § P. The filter returned
+    // null for such a slug, so every route under it rendered the
+    // tenant-isolation 404 while the switcher still listed the workspace --
+    // the exact outcome Q6 reversed, and the reason Q6 was recorded as
+    // "database half done, UI half owed".
+    //
+    // Task 3a deliberately did NOT fix it by deleting the line, and the review
+    // measured why. The failure mode of deleting it alone is not "every write
+    // 403s with no explanation". An INSERT is a loud 403; an UPDATE is refused
+    // by the USING clause, matches no rows, and PostgREST answers 204 NO
+    // CONTENT -- byte-identical IN THE STATUS LINE to a PATCH that changed
+    // fifteen rows:
+    //
+    //     LIVE:      manager PATCHes contacts   204   (15 rows changed)
+    //     SUSPENDED: manager PATCHes contacts   204   ( 0 rows changed)
+    //
+    // A normal-looking workspace, a form that submits, and a 2xx, with the
+    // edit discarded. Not a UX problem: false confirmation that data was
+    // saved. So the 404 stayed until the three things below existed, which is
+    // what makes deleting the filter safe NOW and would not have then:
+    //
+    //   1. `isSuspended` on the returned object, from the `deleted_at` this
+    //      query now selects. Read by lib/crm/write-access.ts.
+    //   2. A persistent banner and disabled write controls
+    //      (components/org/suspended-banner.tsx, and every form on a CRM
+    //      route). Hiding UI is not enforcement -- the database is the
+    //      enforcement -- this is about not lying to the user.
+    //   3. lib/crm/write.ts, which asks for the ROW COUNT on every mutating
+    //      request and treats zero as a refusal. THAT is the item the old
+    //      comment here existed for, and it is the one that still matters when
+    //      the UI is bypassed: PostgREST is reachable from the browser with
+    //      the anon key regardless of what any button renders.
+    //
+    // Reading a suspended organisation's row needs no policy change:
+    // organisations_select_member is `private.is_active_member(id)` with no
+    // deleted_at term (verified in pg_policies), which is why the read half of
+    // Q6 works at all.
     const { data: org, error } = await supabase
       .from("organisations")
-      .select("id, name, slug")
+      .select("id, name, slug, deleted_at")
       .eq("slug", slug)
-      .is("deleted_at", null)
       .maybeSingle();
 
     if (error || !org) return null;
@@ -215,6 +273,7 @@ export const getCurrentOrg = cache(
       name: org.name as string,
       slug: org.slug as string,
       role: membership.role as string,
+      isSuspended: (org.deleted_at as string | null) !== null,
     };
   },
 );
