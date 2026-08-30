@@ -88,15 +88,19 @@ const EXPECTED: Record<string, readonly string[]> = {
 
   entity_is_live: ["company", "contact", "agency", "artist", "venue", "event"],
 
-  // TWELVE. This one is NOT keyed on CRM entity types alone -- 20260828140000
+  // THIRTEEN. This one is NOT keyed on CRM entity types alone -- 20260828140000
   // (IMP-3) added the five child/join tables that carry an UPDATE policy,
   // named after the TABLE rather than after an entity type, plus
   // custom_field_definition for organisation configuration. FOLLOW-UPS.md and
   // the Task 1 brief both listed seven; the live catalogue said eleven before
-  // this phase and says twelve after.
+  // this phase, twelve after Task 1, and thirteen after Task 2.
   //
-  // `event_lineup` is NOT here: it has no UPDATE policy until Phase 3 Task 2's
-  // 20260901011000, which adds the arm and the policy that calls it together.
+  // `event_lineup` arrived in 20260901011000 -- the file that writes
+  // event_lineup_update_via_event, which is the only caller. Task 1 wrote
+  // "20260901010000" for it in the function's own comment; that comment is
+  // corrected in 20260901011000, which is where the arm actually lands,
+  // because "with the policy that needs it" is the rule and the policy is
+  // there.
   entity_org_unchanged: [
     "company",
     "contact",
@@ -110,6 +114,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     "artist_fee",
     "venue_room",
     "custom_field_value",
+    "event_lineup",
   ],
 
   // DELIBERATELY WITHOUT 'event' -- events are not mergeable in Phase 3.
