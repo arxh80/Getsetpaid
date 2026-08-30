@@ -5118,6 +5118,90 @@ select crm.try('W11 ...nor with p_scoped => true',
 reset role; reset request.jwt.claims;
 
 -- ---------------------------------------------------------------------------
+-- W11a-W11g. AN EMPTY OR BLANK EMAIL IS NOT AN EXACT EMAIL MATCH.
+--
+-- Final review I-5 (deferred-minor L945). The predicate was
+-- `subject.email is not null and lower(e.email) = lower(subject.email)`, and
+-- '''' satisfies it: '''' is not null, and lower('''') = lower(''''). Two
+-- contacts both holding an empty email were labelled `exact_email`, sorted
+-- FIRST by the ORDER BY (same predicate), and `screen_for_duplicates` proposed
+-- them for auto-merge -- which lib/crm/dedup.ts performs UNATTENDED. It is the
+-- one path in Phase 2 that soft-deletes a record and rewrites another with no
+-- human confirming it.
+--
+-- Two layers, asserted separately because they cover different states:
+--   W11a  the CHECK makes '''' unrepresentable at all;
+--   W11c  the matcher ignores an all-WHITESPACE address, which the CHECK
+--         deliberately still permits.
+-- W11e/W11f are the non-vacuity controls: a REAL matching pair must still be
+-- labelled exact_email and must still sort first, or "nothing is ever
+-- exact_email" is satisfied by a predicate that is simply broken.
+-- ---------------------------------------------------------------------------
+select crm.try('W11a an empty-string email is refused by the CHECK',
+  $$insert into public.contacts (id, organisation_id, owner_user_id, name, email)
+    values ('4d0000e0-0000-0000-0000-0000000000e0',
+            'a0a00000-0000-0000-0000-00000000000a', null, 'Blank One', '')$$,
+  'denied(23514)');
+select crm.val('W11b CONTROL: the same insert with a real address is accepted',
+  $$with i as (
+      insert into public.contacts (id, organisation_id, owner_user_id, name, email)
+      values ('4d0000e0-0000-0000-0000-0000000000e1',
+              'a0a00000-0000-0000-0000-00000000000a', null, 'Blank Control',
+              'blank.control@merge.test')
+      returning 1)
+    select count(*)::text from i$$, '1');
+
+-- WHITESPACE-ONLY, which the CHECK permits on purpose (lib/forms.ts's field()
+-- normalises "" and nothing else, so a constraint that also rejected '   '
+-- would reject more than the application does). Two of them, same name shape
+-- so they are within the trigram threshold of each other -- which is the point:
+-- they SHOULD be found, as `fuzzy_name`, and must NOT be found as exact_email.
+insert into public.contacts
+  (id, organisation_id, owner_user_id, name, email, created_at)
+values
+ ('4d0000e0-0000-0000-0000-0000000000e2','a0a00000-0000-0000-0000-00000000000a',
+  :'pmanager','Wilhelmina Blankspace','   ', now() - interval '2 days'),
+ ('4d0000e0-0000-0000-0000-0000000000e3','a0a00000-0000-0000-0000-00000000000a',
+  :'pmanager','Wilhelmina Blankspace','   ', now());
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('W11c two blank-email contacts are NOT an exact_email match',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d0000e0-0000-0000-0000-0000000000e3')
+     where reason='exact_email'$$, '0');
+select crm.val('W11d CONTROL: ...they ARE found, as a fuzzy name match',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d0000e0-0000-0000-0000-0000000000e3')
+     where id='4d0000e0-0000-0000-0000-0000000000e2'
+       and reason='fuzzy_name'$$, '1');
+select crm.val('W11e NON-VACUITY: a real matching pair is still exact_email',
+  $$select count(*)::text from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002')
+     where reason='exact_email'$$, '1');
+select crm.val('W11f NON-VACUITY: ...and still sorts first',
+  -- The ORDER BY carries the same predicate and had to be guarded too, or the
+  -- auto-merge candidate (which is simply the first row) changes.
+  $$select reason from private.duplicate_matches(
+      'a0a00000-0000-0000-0000-00000000000a','contact',
+      '4d000000-0000-0000-0000-000000000002') limit 1$$, 'exact_email');
+reset role; reset request.jwt.claims;
+
+-- The blank pair is left in place: it is a fuzzy pair like the ones already
+-- here, and the sections below count exact_email rows and merges, not contacts.
+-- The control row from W11b is removed so it cannot join a later name search.
+delete from public.contacts where id='4d0000e0-0000-0000-0000-0000000000e1';
+
+select crm.val('W11g the CHECK is on the shipped table, not only in a migration',
+  $$select count(*)::text from pg_catalog.pg_constraint
+     where conname='contacts_email_not_empty'
+       and conrelid='public.contacts'::regclass
+       and contype='c'$$, '1');
+
+-- ---------------------------------------------------------------------------
 -- W12-W16. Q6: A SUSPENDED WORKSPACE IS READ-ONLY, NOT LOCKED OUT.
 --
 -- FOLLOW-UPS' spec for this function once required "called for a soft-deleted
@@ -5985,6 +6069,31 @@ reset role; reset request.jwt.claims;
 -- trigger and only `set_updated_at`, so the plant and the delete leave nothing
 -- behind for the HTTP sections (which count BETA venue_rooms and expect 0).
 -- ===========================================================================
+-- RECORDED BEFORE THE DROP, COMPARED AFTER THE RE-ADD (final review L1141).
+-- Y4 used to assert `array_length(conkey,1) = 2`, which any two-column FK
+-- satisfies -- a re-add naming the wrong two columns, the wrong referenced
+-- table or the wrong ON DELETE would have passed. And the re-add dropped the
+-- constraint's COMMENT on the floor, so a suite whose stated safety property
+-- is "the schema is put back" was leaving it different from what the
+-- migrations produce. Both are taken from the live schema here rather than
+-- typed out, so this compares against 20260828001132 itself.
+--
+-- UNDER crm.val'S OWN search_path, BECAUSE pg_get_constraintdef() RENDERS
+-- AGAINST IT. `crm.val` runs its SQL with `search_path = 'pg_catalog, public'`
+-- and the referenced table comes back schema-qualified there
+-- (`REFERENCES public.venues(...)`) while the psql session's default renders it
+-- bare. Capturing the note under a different path than the comparison would
+-- have made Y4 fail for a reason that has nothing to do with the schema --
+-- measured, not guessed: it did, on the first run of this assertion.
+set search_path = 'pg_catalog, public';
+select crm.note('y_fkey_def', (select pg_catalog.pg_get_constraintdef(oid)
+  from pg_catalog.pg_constraint
+ where conname='venue_rooms_venue_fkey' and connamespace='public'::regnamespace));
+select crm.note('y_fkey_comment', (select pg_catalog.obj_description(oid, 'pg_constraint')
+  from pg_catalog.pg_constraint
+ where conname='venue_rooms_venue_fkey' and connamespace='public'::regnamespace));
+reset search_path;
+
 alter table public.venue_rooms drop constraint venue_rooms_venue_fkey;
 
 -- An ALPHA venue's room, tagged with BETA's organisation_id. The composite FK
@@ -6027,13 +6136,38 @@ alter table public.venue_rooms
   foreign key (venue_id, organisation_id)
   references public.venues(id, organisation_id) on delete cascade;
 
-select crm.val('Y4  the composite FK is restored and the planted row is gone',
-  $$select (select array_length(conkey,1)::text from pg_catalog.pg_constraint
-             where conname='venue_rooms_venue_fkey'
-               and connamespace='public'::regnamespace)
-        || '/' ||
-           (select count(*)::text from public.venue_rooms
-             where id='6666ffff-0000-0000-0000-0000000000ff')$$, '2/0');
+-- THE COMMENT COMES BACK TOO. `alter table ... add constraint` creates a bare
+-- constraint, and the text below is 20260828001132:177-178 verbatim -- the
+-- migration this suite is supposed to leave the schema identical to. Y4b
+-- compares it against what was actually there before the drop, so a drift in
+-- either direction is red.
+comment on constraint venue_rooms_venue_fkey on public.venue_rooms is
+  'Tenant-scoped: a room can only name a venue that agrees with it about which organisation it belongs to. Replaces a single-column venue_id FK under which an attacker could insert a room into another tenant''s venue -- proven end to end, see this migration''s header.';
+
+-- Y4 COMPARES THE WHOLE DEFINITION, not the column count. `array_length(
+-- conkey,1) = 2` is satisfied by any two-column FK -- the wrong two columns,
+-- a different referenced table, a missing ON DELETE CASCADE all passed it.
+-- `pg_get_constraintdef` is the definition Postgres itself would dump.
+select crm.val('Y4  the composite FK is restored EXACTLY as the migration made it',
+  $$select ((select pg_catalog.pg_get_constraintdef(oid)
+               from pg_catalog.pg_constraint
+              where conname='venue_rooms_venue_fkey'
+                and connamespace='public'::regnamespace)
+            = (select v from crm.notes where k='y_fkey_def'))::text$$, 'true');
+select crm.val('Y4a CONTROL: that definition is the composite one, not any FK',
+  -- Without this the comparison above is satisfied by two identical WRONG
+  -- definitions, since both sides are read from the same live schema.
+  $$select (select v from crm.notes where k='y_fkey_def')$$,
+  'FOREIGN KEY (venue_id, organisation_id) REFERENCES public.venues(id, organisation_id) ON DELETE CASCADE');
+select crm.val('Y4b the constraint COMMENT is restored too',
+  $$select ((select pg_catalog.obj_description(oid, 'pg_constraint')
+               from pg_catalog.pg_constraint
+              where conname='venue_rooms_venue_fkey'
+                and connamespace='public'::regnamespace)
+            = (select v from crm.notes where k='y_fkey_comment'))::text$$, 'true');
+select crm.val('Y4c ...and the planted row is gone',
+  $$select count(*)::text from public.venue_rooms
+     where id='6666ffff-0000-0000-0000-0000000000ff'$$, '0');
 
 -- ===========================================================================
 -- Results
