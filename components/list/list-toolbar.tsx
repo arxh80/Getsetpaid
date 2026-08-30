@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   buildListHref,
   DEFAULT_PAGE_SIZE,
+  toolbarParamNames,
   type ListParams,
 } from "@/lib/list/params";
 import type { ListSpec } from "@/lib/list/spec";
@@ -64,6 +65,12 @@ export function ListToolbar<TSort extends string, TFilter extends string>({
   const formRef = useRef<HTMLFormElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const searchId = useId();
+  // EVERY `name` GOES THROUGH THE SPEC'S NAMESPACE (final review I-4 / L1039).
+  // These were hardcoded -- "sort", "dir", "size", "q" and the raw filter key
+  // -- so the no-JS `<form method="get">` fallback wrote un-prefixed keys into
+  // the URL, and the JS path read them back the same way. See
+  // `toolbarParamNames` for why that is a trap rather than a typo.
+  const names = toolbarParamNames(spec);
 
   // Keep the box in step with the URL WITHOUT making it a controlled input.
   //
@@ -87,12 +94,12 @@ export function ListToolbar<TSort extends string, TFilter extends string>({
     const data = new FormData(event.currentTarget);
     const filters: Partial<Record<TFilter, string>> = {};
     for (const key of Object.keys(spec.filters) as TFilter[]) {
-      const value = data.get(key);
+      const value = data.get(names.filters[key]);
       if (typeof value === "string") filters[key] = value;
     }
     router.push(
       buildListHref(spec, basePath, params, {
-        q: String(data.get("q") ?? "").trim(),
+        q: String(data.get(names.q) ?? "").trim(),
         filters,
       }),
     );
@@ -123,13 +130,13 @@ export function ListToolbar<TSort extends string, TFilter extends string>({
           three inputs and the three things `buildListHref` preserves are the
           same list, and they have to stay the same list. */}
       {params.sort !== spec.defaultSort ? (
-        <input type="hidden" name="sort" value={params.sort} />
+        <input type="hidden" name={names.sort} value={params.sort} />
       ) : null}
       {params.dir !== spec.sort[params.sort].defaultDirection ? (
-        <input type="hidden" name="dir" value={params.dir} />
+        <input type="hidden" name={names.dir} value={params.dir} />
       ) : null}
       {params.pageSize !== DEFAULT_PAGE_SIZE ? (
-        <input type="hidden" name="size" value={String(params.pageSize)} />
+        <input type="hidden" name={names.size} value={String(params.pageSize)} />
       ) : null}
 
       <div className="flex min-w-0 flex-1 basis-64 flex-col gap-2">
@@ -142,7 +149,7 @@ export function ListToolbar<TSort extends string, TFilter extends string>({
         <input
           ref={searchRef}
           id={searchId}
-          name="q"
+          name={names.q}
           type="search"
           defaultValue={params.q}
           autoComplete="off"
@@ -168,7 +175,7 @@ export function ListToolbar<TSort extends string, TFilter extends string>({
         return (
           <FilterSelect
             key={key}
-            name={key}
+            name={names.filters[key]}
             label={definition.label}
             value={params.filters[key]}
             choices={definition.choices}

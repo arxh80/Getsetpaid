@@ -9,7 +9,11 @@
 // reproduces what an unprefixed second list does to the first, and everything
 // after it is what the prefix and `preserve` change about that.
 import { describe, expect, it } from "vitest";
-import { buildListHref, parseListParams } from "@/lib/list/params";
+import {
+  buildListHref,
+  parseListParams,
+  toolbarParamNames,
+} from "@/lib/list/params";
 import { encodeCursor } from "@/lib/list/cursor";
 import { defineListSpec } from "@/lib/list/spec";
 
@@ -208,5 +212,112 @@ describe("4. defineListSpec refuses a prefix that would not round-trip", () => {
     expect(() =>
       defineListSpec({ ...base, paramPrefix: "activity_" }),
     ).not.toThrow();
+  });
+});
+
+// ===========================================================================
+// § 5 -- THE TOOLBAR'S OWN `name` ATTRIBUTES (final review I-4 / L1039)
+// ===========================================================================
+//
+// `components/list/list-toolbar.tsx` hardcoded `name="sort"`, `name="dir"`,
+// `name="size"`, `name="q"` and `name={key}`, bypassing `paramKey()`. The JS
+// submit path was fine -- it calls `buildListHref` -- but the
+// `<form method="get">` fallback wrote the un-namespaced keys straight into
+// the URL, so a no-JS search on a namespaced list would have rewritten the
+// OTHER list's state on the same route. Not live at the time, because
+// ACTIVITY_LIST is the only prefixed spec and it renders no toolbar; live the
+// moment Phase 3 gives a namespaced list a search box.
+//
+// The toolbar is a Client Component and there is no React Testing Library
+// here, so the derivation is the unit under test and the toolbar consumes it.
+// tests/unit/crm/source-shape.test.ts asserts that it actually does.
+
+const FILTERED = defineListSpec({
+  entity: "filtered-fixture",
+  noun: { one: "row", many: "rows" },
+  searchColumn: "name",
+  searchLabel: "Search rows",
+  sort: {
+    name: {
+      column: "name",
+      label: "Name",
+      defaultDirection: "asc",
+      directionLabels: { asc: "A–Z", desc: "Z–A" },
+      notNull: true,
+      backedBy: "fixture_idx",
+    },
+  },
+  defaultSort: "name",
+  filters: {
+    status: {
+      label: "Status",
+      choices: [
+        { value: "", label: "Any" },
+        { value: "live", label: "Live" },
+      ],
+    },
+  },
+  paramPrefix: "activity_",
+});
+
+describe("§ 5 toolbarParamNames", () => {
+  it("prefixes every one of the five names on a namespaced spec", () => {
+    expect(toolbarParamNames(FILTERED)).toEqual({
+      q: "activity_q",
+      sort: "activity_sort",
+      dir: "activity_dir",
+      size: "activity_size",
+      filters: { status: "activity_status" },
+    });
+  });
+
+  it("leaves them bare on a spec with no prefix, so nothing else changes", () => {
+    expect(toolbarParamNames(FEES)).toEqual({
+      q: "q",
+      sort: "sort",
+      dir: "dir",
+      size: "size",
+      filters: {},
+    });
+  });
+
+  it("agrees with what parseListParams reads back", () => {
+    // THE POINT OF THE WHOLE FIX. A no-JS submit posts these names; the parser
+    // reads the prefixed ones. If the two ever disagree the search silently
+    // does nothing and the URL grows a key nobody reads -- no error anywhere.
+    const names = toolbarParamNames(FILTERED);
+    const parsed = parseListParams(FILTERED, {
+      [names.q]: "brighton",
+      [names.sort]: "name",
+      [names.dir]: "desc",
+      [names.size]: "50",
+      [names.filters.status]: "live",
+    });
+    expect(parsed.q).toBe("brighton");
+    expect(parsed.dir).toBe("desc");
+    expect(parsed.pageSize).toBe(50);
+    expect(parsed.filters.status).toBe("live");
+  });
+
+  it("un-prefixed keys are ignored by a namespaced spec -- the defect, stated", () => {
+    // What the old toolbar actually wrote. The prefixed spec does not see it,
+    // and the UNPREFIXED list sharing the route does.
+    const parsed = parseListParams(FILTERED, {
+      q: "brighton",
+      status: "live",
+    });
+    expect(parsed.q).toBe("");
+    expect(parsed.filters.status).toBe("");
+    expect(parseListParams(FEES, { q: "brighton" }).q).toBe("brighton");
+  });
+
+  it("agrees with buildListHref, which is the JS path", () => {
+    const names = toolbarParamNames(FILTERED);
+    const href = buildListHref(FILTERED, "/acme/artists/1", parseListParams(FILTERED, {}), {
+      q: "brighton",
+      filters: { status: "live" },
+    });
+    expect(href).toContain(`${names.q}=brighton`);
+    expect(href).toContain(`${names.filters.status}=live`);
   });
 });

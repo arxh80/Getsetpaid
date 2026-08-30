@@ -131,11 +131,62 @@ export function isNarrowed<TSort extends string, TFilter extends string>(
  * with no error anywhere. See ListSpec.paramPrefix for why the namespace
  * exists at all.
  */
-function paramKey<TSort extends string, TFilter extends string>(
+export function paramKey<TSort extends string, TFilter extends string>(
   spec: ListSpec<TSort, TFilter>,
   key: string,
 ): string {
   return spec.paramPrefix ? `${spec.paramPrefix}${key}` : key;
+}
+
+/**
+ * The `name` attribute of every input the toolbar renders, for one spec.
+ *
+ * ===========================================================================
+ * WHY THIS EXISTS RATHER THAN paramKey() CALLS INSIDE THE TOOLBAR
+ * ===========================================================================
+ * Final review I-4 (deferred-minor L1039). `components/list/list-toolbar.tsx`
+ * hardcoded `name="sort"`, `name="dir"`, `name="size"`, `name="q"` and
+ * `name={key}`, bypassing `paramKey()` entirely. The JS submit path was fine
+ * -- it calls `buildListHref`, which applies the prefix -- but the
+ * `<form method="get">` fallback wrote the UN-NAMESPACED keys straight into
+ * the URL, and the JS path's own `new FormData()` read them back by the
+ * unprefixed name too.
+ *
+ * Not live at the time: `ACTIVITY_LIST` is the only spec with a `paramPrefix`
+ * and it deliberately renders no toolbar. It becomes live the moment a
+ * namespaced list on a shared route gets a search box -- at which point one
+ * list's toolbar rewrites the other list's state, silently, with no error.
+ * `lib/list` is the template every later entity list reuses, so a component in
+ * it that violates the library's own namespace contract is a trap laid for the
+ * next author.
+ *
+ * A function returning the whole set, rather than five `paramKey()` calls in
+ * the component, so the property is unit-testable without a DOM: this
+ * repository has no React Testing Library and tests/unit is pure functions by
+ * vitest.config.ts's own rule.
+ */
+export interface ToolbarParamNames<TFilter extends string> {
+  readonly q: string;
+  readonly sort: string;
+  readonly dir: string;
+  readonly size: string;
+  readonly filters: Readonly<Record<TFilter, string>>;
+}
+
+export function toolbarParamNames<TSort extends string, TFilter extends string>(
+  spec: ListSpec<TSort, TFilter>,
+): ToolbarParamNames<TFilter> {
+  const filters = {} as Record<TFilter, string>;
+  for (const key of Object.keys(spec.filters) as TFilter[]) {
+    filters[key] = paramKey(spec, key);
+  }
+  return {
+    q: paramKey(spec, "q"),
+    sort: paramKey(spec, "sort"),
+    dir: paramKey(spec, "dir"),
+    size: paramKey(spec, "size"),
+    filters,
+  };
 }
 
 function first(value: string | string[] | undefined): string | null {

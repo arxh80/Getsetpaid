@@ -993,6 +993,39 @@ describe("I-2: the merge screen's field rows are keyed on the survivor", () => {
   });
 });
 
+// ===========================================================================
+// FINAL REVIEW I-4 / L1039 -- THE TOOLBAR'S name ATTRIBUTES
+// ===========================================================================
+//
+// The derivation is unit-tested in tests/unit/list/param-prefix.test.ts § 5.
+// This asserts the toolbar actually USES it: the whole defect was a component
+// that computed the right answer one way (buildListHref) and wrote a different
+// one into the DOM, so the guard has to be on the DOM half.
+describe("I-4: no hardcoded query key in the list toolbar", () => {
+  const toolbar = read("components/list/list-toolbar.tsx");
+
+  it("every name= goes through toolbarParamNames", () => {
+    expect(toolbar).toContain("const names = toolbarParamNames(spec);");
+    for (const bare of [
+      'name="q"',
+      'name="sort"',
+      'name="dir"',
+      'name="size"',
+      "name={key}",
+    ]) {
+      expect(toolbar, `${bare} bypasses the spec's namespace`).not.toContain(bare);
+    }
+  });
+
+  it("the JS submit reads the same names it wrote", () => {
+    // The other half, and the one a no-JS test would not catch: FormData is
+    // keyed by the rendered `name`, so reading `data.get("q")` after writing
+    // `name={names.q}` finds nothing on a prefixed spec.
+    expect(toolbar).toContain("data.get(names.q)");
+    expect(toolbar).toContain("data.get(names.filters[key])");
+  });
+});
+
 describe("every create screens for duplicates", () => {
   // Screening is one line per create action and its absence is completely
   // silent: the record saves, the user is happy, and the duplicate is never
