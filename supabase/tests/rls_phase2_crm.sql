@@ -1664,19 +1664,64 @@ end $$;
 -- THE ASSERTION. The rule is EXACT-KEY equality, so a probe that is not a
 -- catalogue key must answer no, whatever pattern language it is written in.
 -- The probes below cover LIKE (`%`, `_`) and regex (`.`, `.*`, `^`) spellings.
--- BOTH SPELLINGS WERE RUN, not assumed: `LIKE` turns this red with 23 of 88
--- probes granted, and the same mutation written `~` turns it red with 15. The
--- assertion is behavioural rather than a ban on naming an operator, so
--- `similar to` and any future pattern function are covered by the same probes
--- -- though only `LIKE` and `~` have actually been measured against it.
+-- BOTH SPELLINGS WERE RUN, not assumed. Re-measured in Task 8 fix round 1 after
+-- the sample below became every user rather than a nondeterministic eight, by
+-- applying the mutation as a throwaway `create or replace function` in a psql
+-- session (never a migration) on a freshly reset database:
+--
+--   unmutated                     M1m PASS, 0 of 187 probes granted
+--   `rp.permission_key LIKE ...`  M1m FAIL, 64 of 187 granted
+--   `rp.permission_key ~ ...`     M1m FAIL, 42 of 187 granted
+--
+-- (the earlier counts, 23 of 88 and 15 of 88, were the same two mutations
+-- against the eight-user sample). The assertion is behavioural rather than a
+-- ban on naming an operator, so `similar to` and any future pattern function
+-- are covered by the same probe SHAPES -- though only `LIKE` and `~` have
+-- actually been measured against it.
+--
+-- M1n IS THE DENOMINATOR, AND IT IS LOAD-BEARING TOO. It used to assert
+-- `ctrl > 0`: one holder among however many users the sample happened to
+-- contain. Proven inadequate by pointing the control at `manage_members`, a key
+-- 3 of the 11 ALPHA members hold, while the denominator still asked about
+-- `view_crm`: the assertion now reads `3 of 11` against `11 of 11` and goes
+-- FAIL, where `ctrl > 0` would have passed.
 -- ---------------------------------------------------------------------------
 do $$
 declare
   u record; probe text; n int := 0; bad int := 0; ctrl int := 0;
   v_scalar boolean; v_set boolean; v_org uuid;
+  v_members int; v_expect int;
 begin
   select id into v_org from public.organisations where slug = 'org-alpha';
-  for u in select id from auth.users limit 8 loop
+
+  -- THE DENOMINATOR, computed from the CATALOGUE rather than from either
+  -- function under test. `v_members` is how many of the users about to be
+  -- probed are active members of org-alpha at all; `v_expect` is how many of
+  -- those hold the exact key `view_crm` by the rule the tables state. The
+  -- session below is aal2 and org-alpha is live at this point, so neither the
+  -- MFA term nor the suspension term can subtract from it.
+  select count(*) into v_members
+    from auth.users au
+   where exists (select 1 from public.organisation_memberships m
+                  where m.user_id = au.id and m.organisation_id = v_org
+                    and m.status = 'active');
+  select count(*) into v_expect
+    from auth.users au
+   where exists (select 1
+                   from public.organisation_memberships m
+                   join public.role_permissions rp
+                     on rp.role_key = m.role and rp.permission_key = 'view_crm'
+                  where m.user_id = au.id and m.organisation_id = v_org
+                    and m.status = 'active');
+
+  -- EVERY user, not a sample. This loop used to read `limit 8` with no ORDER
+  -- BY, which is a nondeterministic eight out of however many the fixtures
+  -- happen to have created -- and up to seven of them could have been
+  -- non-members of ALPHA, for whom every probe answers false for the trivial
+  -- reason, while M1n's old `ctrl > 0` was satisfied by the remaining one. The
+  -- sibling sweep M1i-M1l immediately above already iterates all of
+  -- `auth.users`; this now matches it.
+  for u in select id from auth.users loop
     perform pg_catalog.set_config('request.jwt.claims',
       pg_catalog.json_build_object('sub', u.id, 'role', 'authenticated', 'aal', 'aal2')::text,
       true);
@@ -1689,9 +1734,12 @@ begin
       n := n + 1;
       if v_scalar is not false or v_set is not false then bad := bad + 1; end if;
     end loop;
-    -- CONTROL, in the same loop and against the same organisation: the exact
-    -- key `view_crm` is held by every one of these members, so a run in which
-    -- the probes pass because NOTHING is ever granted would show ctrl = 0.
+    -- CONTROL, in the same loop and against the same organisation. A run in
+    -- which the probes pass because NOTHING is ever granted has to be loud,
+    -- and `ctrl > 0` was not loud enough: one holder among any number of
+    -- probed users satisfied it. The comparison is now against the count the
+    -- catalogue predicts, so a fixture change that fills the probe set with
+    -- non-members of ALPHA drops `ctrl` below `v_expect` and goes red.
     if public.has_permission(v_org, 'view_crm')
        and v_org in (select private.permitted_organisations('view_crm'))
     then ctrl := ctrl + 1; end if;
@@ -1703,9 +1751,12 @@ begin
       || n || ' probes',
     '0 grants', bad || ' grants');
   perform crm.record(
-    'M1n CONTROL: the same members DO hold the exact key view_crm',
-    'at least 1 holder', case when ctrl > 0 then 'at least 1 holder'
-                              else ctrl || ' holders' end);
+    'M1n CONTROL: every ALPHA member probed holds the exact key view_crm',
+    v_expect || ' of ' || v_members || ' ALPHA members hold view_crm',
+    case when v_expect = 0
+         then 'CONTROL VACUOUS: no ALPHA member holds view_crm'
+         else ctrl || ' of ' || v_members || ' ALPHA members hold view_crm'
+    end);
 end $$;
 
 -- MIN-4: M1 sweeps only non-NULL organisations, and a NULL organisation is the
