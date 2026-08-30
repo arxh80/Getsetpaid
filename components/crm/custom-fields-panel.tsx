@@ -368,6 +368,13 @@ function MultiSelectControl({
   const id = useId();
   const error = state.fieldErrors?.[name];
   const ticked = selectedInGroup(state.values, name, cell.inputKeys);
+  // I-12 / L858. The error <p> below carried an id and NOTHING REFERENCED IT,
+  // so a screen-reader user was never told why the group was refused -- and
+  // axe cannot see that, because an unreferenced paragraph is valid markup.
+  // There is no single control to describe here, so every checkbox in the
+  // group points at it: whichever one the user lands on, the error is read.
+  const errorId = `${id}-error`;
+  const describedBy = error ? errorId : undefined;
 
   return (
     <fieldset className="flex flex-col gap-2 border-0 p-0">
@@ -395,6 +402,8 @@ function MultiSelectControl({
               name={name}
               value={option.key}
               defaultChecked={ticked.includes(option.key)}
+              aria-invalid={error ? true : undefined}
+              aria-describedby={describedBy}
               className="size-5 border border-rule accent-primary"
             />
             {option.label}
@@ -402,7 +411,7 @@ function MultiSelectControl({
         ))}
       </div>
       {error ? (
-        <p id={`${id}-error`} role="alert" className="text-sm font-semibold text-danger">
+        <p id={errorId} role="alert" className="text-sm font-semibold text-danger">
           {error}
         </p>
       ) : null}

@@ -675,6 +675,64 @@ describe("the custom fields panel carries the checkbox-group markers", () => {
   });
 });
 
+// ===========================================================================
+// FINAL REVIEW I-12 / L858, L859 -- THREE DEFECTS AXE CANNOT SEE
+// ===========================================================================
+//
+// The axe run reported ZERO violations on the custom-fields settings page,
+// including on this component, which is the whole point of asserting the
+// markup here instead:
+//
+//   * an error rendered INSIDE a <label> becomes part of the control's
+//     accessible name rather than a separately announced error;
+//   * an error <p> that nothing references by aria-describedby is announced to
+//     nobody -- it is valid markup, so an automated scan is content;
+//   * a <form> inside a <span> is invalid (phrasing content cannot contain
+//     flow content) and a scanner treats it as a parse quirk, not a violation.
+//
+// components/ui/field.tsx implements the correct pattern for all three.
+describe("I-12: the custom-field editor's accessibility wiring", () => {
+  const editor = read("components/crm/custom-field-editor.tsx");
+  const panel = read("components/crm/custom-fields-panel.tsx");
+
+  it("the type select is bound by htmlFor/id, not by wrapping", () => {
+    expect(editor).toContain('<label htmlFor={typeId}');
+    expect(editor).toContain("id={typeId}");
+    expect(editor).toContain("aria-describedby={typeError ? typeErrorId : undefined}");
+  });
+
+  it("the type error is a <p role=\"alert\"> OUTSIDE the label", () => {
+    // The label element must now contain nothing but its text.
+    const label = editor.slice(
+      editor.indexOf("<label htmlFor={typeId}"),
+      editor.indexOf("</label>", editor.indexOf("<label htmlFor={typeId}")),
+    );
+    expect(label).not.toContain("typeError");
+    expect(editor).toContain("id={typeErrorId}");
+  });
+
+  it("RemoveField and RestoreField do not put a <form> inside a <span>", () => {
+    // Both wrappers, and the two message elements in each.
+    expect(editor).not.toContain('<span className="flex flex-col items-end gap-1">');
+    expect(
+      editor.match(/<div className="flex flex-col items-end gap-1">/g),
+    ).toHaveLength(2);
+    expect(editor).not.toContain('<span role="alert"');
+    expect(editor).not.toContain('<span role="status"');
+  });
+
+  it("MultiSelectControl's error is referenced by every checkbox in the group", () => {
+    const control = panel.slice(
+      panel.indexOf("function MultiSelectControl("),
+      panel.indexOf("/** One field, rendered as text."),
+    );
+    expect(control).toContain("const errorId = ");
+    expect(control).toContain("aria-describedby={describedBy}");
+    expect(control).toContain("aria-invalid={error ? true : undefined}");
+    expect(control).toContain("<p id={errorId} role=\"alert\"");
+  });
+});
+
 describe("the definition writes carry the entity type as well as the id", () => {
   // A forged `fieldId` naming a definition on a DIFFERENT entity type in the
   // same workspace is permitted by the policy -- it asks whether the caller

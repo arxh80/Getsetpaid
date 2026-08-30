@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useId } from "react";
 import {
   createCustomFieldAction,
   deleteCustomFieldAction,
@@ -239,14 +239,27 @@ function TypeAndOptions({
   typeError?: string;
   optionsError?: string;
 }) {
+  // I-12 / L858. The error used to sit INSIDE the <label>, which makes it part
+  // of the select's accessible name -- so the control announces as "Kind of
+  // field Choose a kind of field, combo box" and there is no separately
+  // announced error at all. The pattern here is the one components/ui/field.tsx
+  // implements: a bound <label>, the error BELOW the control in its own <p>,
+  // referenced by aria-describedby and carrying role="alert".
+  const typeId = useId();
+  const typeErrorId = `${typeId}-error`;
+
   return (
     <>
-      <label className="flex flex-col gap-2 text-sm font-semibold text-ink">
-        Kind of field
+      <div className="flex flex-col gap-2">
+        <label htmlFor={typeId} className="text-sm font-semibold text-ink">
+          Kind of field
+        </label>
         <select
+          id={typeId}
           name="fieldType"
           defaultValue={fieldType}
           aria-invalid={typeError ? true : undefined}
+          aria-describedby={typeError ? typeErrorId : undefined}
           className={
             "h-11 w-full min-w-0 border bg-surface px-3 text-base font-normal text-ink " +
             (typeError
@@ -261,11 +274,15 @@ function TypeAndOptions({
           ))}
         </select>
         {typeError ? (
-          <span role="alert" className="text-sm text-danger">
+          <p
+            id={typeErrorId}
+            role="alert"
+            className="text-sm font-semibold text-danger"
+          >
             {typeError}
-          </span>
+          </p>
         ) : null}
-      </label>
+      </div>
 
       <details className="border border-rule px-3 py-2">
         <summary className="cursor-pointer text-sm font-semibold text-ink">
@@ -459,8 +476,13 @@ function RemoveField({
     deleteCustomFieldAction,
     EMPTY_FORM_STATE,
   );
+  // I-12 / L859. This wrapper was a <span>, and a <span> cannot legally
+  // contain a <form>: phrasing content cannot contain flow content. Both
+  // parents are already flex <div>/<li> containers, so a <div> is a drop-in
+  // and the layout is unchanged. The two messages become <p role="alert"> and
+  // <p role="status">, matching components/ui/field.tsx.
   return (
-    <span className="flex flex-col items-end gap-1">
+    <div className="flex flex-col items-end gap-1">
       <form action={formAction}>
         <input type="hidden" name="orgSlug" value={orgSlug} />
         <input type="hidden" name="entityType" value={entityType} />
@@ -475,16 +497,16 @@ function RemoveField({
         </Button>
       </form>
       {state.error ? (
-        <span role="alert" className="max-w-prose text-sm text-danger">
+        <p role="alert" className="max-w-prose text-sm font-semibold text-danger">
           {state.error}
-        </span>
+        </p>
       ) : null}
       {state.message ? (
-        <span role="status" className="max-w-prose text-sm text-ink-muted">
+        <p role="status" className="max-w-prose text-sm text-ink-muted">
           {state.message}
-        </span>
+        </p>
       ) : null}
-    </span>
+    </div>
   );
 }
 
@@ -501,8 +523,13 @@ function RestoreField({
     restoreCustomFieldAction,
     EMPTY_FORM_STATE,
   );
+  // I-12 / L859. This wrapper was a <span>, and a <span> cannot legally
+  // contain a <form>: phrasing content cannot contain flow content. Both
+  // parents are already flex <div>/<li> containers, so a <div> is a drop-in
+  // and the layout is unchanged. The two messages become <p role="alert"> and
+  // <p role="status">, matching components/ui/field.tsx.
   return (
-    <span className="flex flex-col items-end gap-1">
+    <div className="flex flex-col items-end gap-1">
       <form action={formAction}>
         <input type="hidden" name="orgSlug" value={orgSlug} />
         <input type="hidden" name="entityType" value={entityType} />
@@ -517,15 +544,15 @@ function RestoreField({
         </Button>
       </form>
       {state.error ? (
-        <span role="alert" className="max-w-prose text-sm text-danger">
+        <p role="alert" className="max-w-prose text-sm font-semibold text-danger">
           {state.error}
-        </span>
+        </p>
       ) : null}
       {state.message ? (
-        <span role="status" className="max-w-prose text-sm text-ink-muted">
+        <p role="status" className="max-w-prose text-sm text-ink-muted">
           {state.message}
-        </span>
+        </p>
       ) : null}
-    </span>
+    </div>
   );
 }
