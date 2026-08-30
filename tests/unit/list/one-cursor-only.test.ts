@@ -94,6 +94,31 @@ function callSites(needle: string): string[] {
   });
 }
 
+/** One file's source, by the path `callers()` reports. */
+function byPath(path: string): string {
+  const found = SOURCES.find((f) => f.path === path);
+  if (!found) throw new Error(`[one-cursor-only] no source for ${path}`);
+  return found.text;
+}
+
+/**
+ * The spec-level wrappers around `parseListParams`, and where each is defined.
+ *
+ * A wrapper exists only where a surface has to REFUSE one of its own query
+ * keys -- a spec must declare a real `searchColumn` (a fake one is a PostgREST
+ * 400), and a surface with no search control must then make sure a
+ * hand-edited `?<prefix>q=zzz` cannot narrow it silently. Both entries below
+ * do exactly that and nothing else.
+ *
+ * This list is data for the two assertions above, not an exemption: the second
+ * one drives each wrapper's own module and requires it to call
+ * `parseListParams` and to drop a key.
+ */
+const SPEC_PARAM_WRAPPERS = [
+  { call: "activityParams", module: "lib/crm/activity.ts" },
+  { call: "lineupParams", module: "lib/crm/lineup-list.ts" },
+] as const;
+
 describe("every paginated list shares one implementation", () => {
   const fetchers = callers("fetchListPage<");
   const parsers = callers("parseListParams(");
@@ -124,8 +149,58 @@ describe("every paginated list shares one implementation", () => {
     // The pairing is the point. `fetchListPage` with hand-rolled params is a
     // page that reads `after` off the query string itself, which is where a
     // second, unvalidated cursor gets in.
-    const unpaired = fetchers.filter((path) => !parsers.includes(path));
+    //
+    // =======================================================================
+    // ONE INDIRECTION IS ALLOWED, AND IT IS TRANSITIVE RATHER THAN AN
+    // ALLOWLIST (Phase 3 Task 5)
+    // =======================================================================
+    // A spec that DROPS a query key -- `activityParams` drops `activity_q`,
+    // `lineupParams` drops `lineup_q`, both because the surface declares a
+    // real `searchColumn` and renders no search control -- has to own a
+    // wrapper around `parseListParams`, and its callers then call the wrapper
+    // rather than the parser.
+    //
+    // `lib/crm/activity.ts` happens to hold both halves in one file, so it
+    // passed this assertion by accident of layout. `lineupParams` cannot: it
+    // lives in `lib/crm/lineup-list.ts` because it must stay PURE (the client
+    // panel imports the spec and the vocabulary from that module, and a
+    // `server-only` import there would break the bundle) and because
+    // `tests/unit` can then drive it -- tests/unit/crm/lineup-list.test.ts's
+    // § 1 and § 2 are the only assertions in the repository that see the
+    // prefix collision and the dropped `q` at all. Its `fetchListPage` caller
+    // is `loadLineupForEvent` in `lib/crm/queries.ts`, which is server-only.
+    //
+    // So a file also satisfies the pairing by calling a wrapper WHOSE OWN
+    // MODULE calls `parseListParams`. That is checked here, not assumed: the
+    // wrapper names are resolved to their defining module and that module is
+    // required to be a `parseListParams` caller. A hand-rolled
+    // `myParams(raw)` that never touches lib/list therefore does NOT satisfy
+    // it, which is the whole property.
+    const unpaired = fetchers.filter(
+      (path) => !parsers.includes(path) && !SPEC_PARAM_WRAPPERS.some(
+        (wrapper) =>
+          code(byPath(path)).includes(`${wrapper.call}(`) &&
+          parsers.includes(wrapper.module),
+      ),
+    );
     expect(unpaired).toEqual([]);
+  });
+
+  it("every spec params wrapper really does go through parseListParams", () => {
+    // The other half of the transitive rule above, asserted on its own so that
+    // emptying a wrapper's body cannot quietly satisfy the pairing check. TWO
+    // is the denominator: `activityParams` and `lineupParams`, and a third
+    // added without a row here is a wrapper the pairing check cannot see.
+    expect(SPEC_PARAM_WRAPPERS).toHaveLength(2);
+    for (const wrapper of SPEC_PARAM_WRAPPERS) {
+      const body = code(byPath(wrapper.module));
+      expect(body, wrapper.call).toContain(`export function ${wrapper.call}(`);
+      expect(body, wrapper.call).toContain("parseListParams(");
+      // And it drops a key rather than merely forwarding: that is the only
+      // reason a wrapper is allowed to exist instead of the parser being
+      // called directly.
+      expect(body, wrapper.call).toContain("]: undefined,");
+    }
   });
 
   it("no module outside lib/list reads a cursor param off the query string", () => {

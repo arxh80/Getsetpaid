@@ -35,6 +35,22 @@ import type { EventStatus, EventType } from "@/lib/crm/event-status";
 // it. See lib/crm/event-picker.ts's header: fix round 1's Important 1 was a
 // defect in thirty lines this module could not expose to any test.
 import { assemblePicker, type PickerVenue } from "@/lib/crm/event-picker";
+// PHASE 3 TASK 5. The lineup panel is the first CHILD panel in this file that
+// is a real lib/list/ surface rather than a `LINK_PANEL_LIMIT` cap -- see
+// lib/crm/lineup-list.ts's header for the argument, and `loadLineupForEvent`
+// at the bottom of this file for the three queries it takes.
+import {
+  LINEUP_LIST,
+  LINEUP_SELECT,
+  lineupParams,
+  mapLineupRow,
+  type LineupFilterKey,
+  type LineupParams,
+  type LineupRow,
+  type LineupSortKey,
+} from "@/lib/crm/lineup-list";
+import type { RawSearchParams } from "@/lib/list/params";
+import { fetchListPage, type ListPage, type ListQuery } from "@/lib/list/query";
 
 // Re-exported so the shape the picker returns is nameable from the module that
 // loads it, as every other reader in this file names its own.
@@ -1345,4 +1361,218 @@ export async function loadVenuesForPicker(
     storedVenue,
     storedRoom,
   });
+}
+
+// ===========================================================================
+// PHASE 3 TASK 5: the lineup
+// ===========================================================================
+// Two readers, and one of them is deliberately a delegation rather than a
+// query. What is new here is that a CHILD PANEL is a real lib/list/ surface --
+// see lib/crm/lineup-list.ts's header for why a lineup pages where a room or a
+// representation is capped.
+
+/** An artist as the lineup panel needs to render them. */
+export interface LineupArtist {
+  name: string;
+  /**
+   * Soft-deleted. NAMED AND NOT LINKED, exactly as `loadEvent` treats a
+   * deleted venue: the name is what the user recorded and hiding it would
+   * leave a dash they cannot act on.
+   */
+  deleted: boolean;
+}
+
+/** One removed slot, for the disclosure that makes restore reachable. */
+export interface RemovedLineupRow {
+  id: string;
+  artistId: string;
+  position: number;
+  deletedAt: string;
+}
+
+/**
+ * One event's lineup: a page of it, the removed rows under it, and the names.
+ *
+ * ===========================================================================
+ * THREE QUERIES, AND EACH ONE ANSWERS A DIFFERENT QUESTION
+ * ===========================================================================
+ *   1. `fetchListPage` over `event_lineup`, keyset-paginated, live rows only
+ *      (`applyScope` writes `deleted_at is null`), ordered by `position` then
+ *      `id` and filtered to this event. That is the BILL.
+ *   2. A capped read of the REMOVED rows. Not paginated, deliberately: a
+ *      second lib/list/ surface on this page would need a third query-string
+ *      namespace and a third pager for a tail nobody scrolls. It is bounded by
+ *      `LINK_PANEL_LIMIT` for the reason that constant gives, ordered before
+ *      it caps (final review I-6), and the honest limit is that an event with
+ *      more than 100 removed slots shows the 100 most recently removed.
+ *   3. The artist NAMES, for the union of both sets' artist ids.
+ *
+ * ===========================================================================
+ * NAMES ARE A SECOND QUERY, NOT A PostgREST EMBED -- `loadVenueNames`' REASONS
+ * ===========================================================================
+ * `select=...,artists(name)` would do it in one round trip and is rejected for
+ * the two mechanical reasons that function records: `fetchListPage` runs a
+ * `count=exact` head request and up to two boundary probes beside the page
+ * query, and nothing about an artist should be able to move the count line;
+ * and under RLS an embed of a row the caller cannot read comes back `null`
+ * anyway, so the branch is owed either way.
+ *
+ * WHERE THIS DIVERGES FROM `loadVenueNames`: **`deleted_at` IS SELECTED, NOT
+ * FILTERED.** That function filters it so the events LIST is not the one
+ * surface in the product showing deleted records. This is a DETAIL page, and
+ * `loadEvent`'s own place lookups already make the opposite choice there for
+ * the same reason -- on the page of the event that books them, hiding a
+ * deleted artist's name leaves a row the user cannot act on. So the name
+ * renders, marked, and only the LINK is withheld.
+ *
+ * AN ARTIST THE CALLER CANNOT READ IS SIMPLY NOT IN THE MAP, and the panel
+ * then renders "An artist outside your access" rather than a name. That is the
+ * same accepted IDENTIFIER disclosure lib/crm/event-picker.ts records: the
+ * caller already holds `artist_id` -- `event_lineup_select_via_event` returns
+ * the whole slot row and PostgREST is reachable from a browser with the anon
+ * key -- and no ATTRIBUTE crosses the boundary, because no name is fetched.
+ *
+ * BOUNDED BY CONSTRUCTION. At most `MAX_PAGE_SIZE` (50) live ids plus
+ * `LINK_PANEL_LIMIT` (100) removed ones, so 150 uuids at the very worst --
+ * roughly 6KB of GET query string, the same budget `loadVenuesForPicker`
+ * records for its 101.
+ */
+export async function loadLineupForEvent(
+  organisationId: string,
+  eventId: string,
+  raw: RawSearchParams,
+): Promise<{
+  params: LineupParams;
+  page: ListPage<LineupRow>;
+  removed: readonly RemovedLineupRow[];
+  artists: ReadonlyMap<string, LineupArtist>;
+}> {
+  // THE RAW QUERY STRING IN, THE PARSED PARAMS BACK OUT, rather than the
+  // parsed params in. Two reasons, and the first is the one that made this
+  // signature change rather than a preference:
+  //
+  //   * tests/unit/list/one-cursor-only.test.ts requires every
+  //     `fetchListPage` caller to parse its params through lib/list, so that
+  //     a list cannot arrive here with a cursor somebody read off the query
+  //     string by hand. Taking a pre-parsed `LineupParams` would have left
+  //     that pairing to a caller nobody checks.
+  //   * `lineupParams` applies LINEUP_LIST's namespace AND drops `lineup_q`
+  //     (see its doc-block). A caller that built params some other way would
+  //     silently lose the drop -- and the symptom is "No lineup yet" on an
+  //     event with a full bill, which is exactly the lie the drop exists to
+  //     prevent.
+  //
+  // The parsed params come back because the PAGER needs them, and they must
+  // be the same object this read used or the links describe a different page
+  // from the one on screen.
+  const params = lineupParams(raw);
+  const supabase = await createClient();
+
+  const [page, removedResult] = await Promise.all([
+    fetchListPage<LineupRow, LineupSortKey, LineupFilterKey>({
+      spec: LINEUP_LIST,
+      params,
+      organisationId,
+      table: "event_lineup",
+      select: LINEUP_SELECT,
+      mapRow: mapLineupRow,
+      // THE SECOND EQUALITY COLUMN. `fetchListPage` pins organisation_id
+      // itself; this pins the event, and 20260901021000's index is built as
+      // (organisation_id, event_id, position, id) to match. The id comes from
+      // the resolved route, never from the query string.
+      applyFilters: (query: ListQuery) => query.eq("event_id", eventId),
+    }),
+    supabase
+      .from("event_lineup")
+      .select("id, artist_id, position, deleted_at")
+      .eq("organisation_id", organisationId)
+      .eq("event_id", eventId)
+      // ORDER BY BEFORE LIMIT (final review I-6 / L771). Without it the
+      // hundred that survive the cap are a different hundred on every render.
+      // Most recently removed first, because that is the one a user is looking
+      // for when they open the disclosure; `id` closes the tie.
+      .filter("deleted_at", "not.is", null)
+      .order("deleted_at", { ascending: false })
+      .order("id", { ascending: true })
+      .limit(LINK_PANEL_LIMIT),
+  ]);
+
+  if (removedResult.error) {
+    console.error(
+      "[crm] removed lineup lookup failed:",
+      removedResult.error.message,
+    );
+  }
+  const removed: RemovedLineupRow[] = (removedResult.data ?? []).map((row) => ({
+    id: String(row.id),
+    artistId: String(row.artist_id),
+    position: Number(row.position),
+    deletedAt: String(row.deleted_at),
+  }));
+
+  const ids = new Set<string>(removed.map((row) => row.artistId));
+  if (page.outcome === "loaded") {
+    for (const row of page.rows) ids.add(row.artistId);
+  }
+
+  const artists = new Map<string, LineupArtist>();
+  if (ids.size > 0) {
+    const { data, error } = await supabase
+      .from("artists")
+      .select("id, name, deleted_at")
+      .eq("organisation_id", organisationId)
+      .in("id", [...ids]);
+    if (error) {
+      // An empty map, not a throw. The panel degrades to "An artist outside
+      // your access" and the rest of the page renders -- the failure of a name
+      // lookup must not take down the bill it decorates. Same disposition as
+      // `loadVenueNames`.
+      console.error("[crm] artist name lookup failed:", error.message);
+    } else {
+      for (const row of data ?? []) {
+        artists.set(String(row.id), {
+          name: String(row.name),
+          deleted: row.deleted_at !== null,
+        });
+      }
+    }
+  }
+
+  return { params, page, removed, artists };
+}
+
+/**
+ * Candidates for the lineup panel's artist picker.
+ *
+ * ===========================================================================
+ * A DELEGATION, NOT A SECOND COPY OF THE SAME QUERY
+ * ===========================================================================
+ * The brief names this function, and what it asks for -- live artists of this
+ * workspace, ordered by name, bounded at `LINK_PANEL_LIMIT` -- is EXACTLY what
+ * `loadLinkOptions("artists", ...)` already is. Writing the four clauses out
+ * again would put `.is("deleted_at", null)` in two places with only one of
+ * them guarded: `tests/unit/crm/source-shape.test.ts` asserts that filter
+ * against `loadLinkOptions` by name (review mutation 8 -- dropping it is
+ * invisible to the whole suite and starts offering records the product says
+ * are deleted), and the copy would sit outside that assertion.
+ *
+ * `exclude` IS EMPTY, and that is a decision rather than a default. The
+ * obvious move is to leave out the artists already on this bill, and it cannot
+ * be done honestly here, because the panel is PAGINATED: the caller holds one
+ * page of the lineup, not all of it, so an exclusion list built from it would
+ * hide artists that are on the bill and offer others that are, arbitrarily by
+ * page. The duplicate is refused instead -- by
+ * `event_lineup_event_artist_live_unique`, and by a sentence
+ * (`LINEUP_DUPLICATE_ARTIST` in lib/crm/events.ts) rather than by a silently
+ * shorter list.
+ *
+ * THE CAP IS THE SAME NAMED STOPGAP `LINK_PANEL_LIMIT` records: past 100
+ * artists the picker offers the alphabetically first 100, and the real answer
+ * is a search-backed picker with its own keyset page, which needs a measured
+ * design and is in FOLLOW-UPS.md rather than guessed at here.
+ */
+export async function loadArtistsForPicker(
+  organisationId: string,
+): Promise<{ id: string; name: string }[]> {
+  return loadLinkOptions("artists", organisationId, []);
 }
