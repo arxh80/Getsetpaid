@@ -1630,6 +1630,84 @@ begin
      + (select count(*) from public.role_permissions where permission_key = k))::text || ' rows');
 end $$;
 
+-- ---------------------------------------------------------------------------
+-- M1m / M1n -- THE FOURTH EVASION, FOUND BY TASK 8 AND CLOSED HERE.
+--
+-- WHAT GOT THROUGH. `rp.permission_key = p_permission` was changed to
+-- `rp.permission_key LIKE p_permission` in `public.has_permission` alone, and
+-- the ENTIRE suite stayed green -- 850 psql assertions and 174 HTTP checks,
+-- zero failures. It clears every existing guard, and it clears each of them for
+-- a reason worth writing down, because the next evasion will look like this
+-- one:
+--
+--   M1c   the suspension clause is character-identical. Untouched.
+--   M1d   `LIKE` introduces no string literal, so `deleted_at`,
+--         `survives_suspension` and `'active'` all still count 1/1/active.
+--   M1d2  `LIKE` is an OPERATOR. `canon_deps` reads pg_depend for pg_class and
+--         pg_proc; an operator's implementation function is not a dependency of
+--         the view, so the recorded tables and functions do not change.
+--   M1/M1b/M1i-M1l  every key those sweeps pass is an EXACT key, and on an
+--         exact key `LIKE` and `=` agree. The behavioural half never asks the
+--         question that separates them.
+--
+-- WHAT IT BUYS, measured over real HTTP with a real password session for a
+-- standard_user in ALPHA (Task 8 report § 1):
+--
+--   has_permission(alpha,'manage_members') -> false     (correct)
+--   has_permission(alpha,'%')              -> TRUE
+--   has_permission(alpha,'manage_%')       -> TRUE
+--
+-- `public.has_permission` is PostgREST-routable and is the gate Foundation's
+-- policies and the app layer both use, so that is privilege escalation reachable
+-- by anyone holding a session token.
+--
+-- THE ASSERTION. The rule is EXACT-KEY equality, so a probe that is not a
+-- catalogue key must answer no, whatever pattern language it is written in.
+-- The probes below cover LIKE (`%`, `_`) and regex (`.`, `.*`, `^`) spellings.
+-- BOTH SPELLINGS WERE RUN, not assumed: `LIKE` turns this red with 23 of 88
+-- probes granted, and the same mutation written `~` turns it red with 15. The
+-- assertion is behavioural rather than a ban on naming an operator, so
+-- `similar to` and any future pattern function are covered by the same probes
+-- -- though only `LIKE` and `~` have actually been measured against it.
+-- ---------------------------------------------------------------------------
+do $$
+declare
+  u record; probe text; n int := 0; bad int := 0; ctrl int := 0;
+  v_scalar boolean; v_set boolean; v_org uuid;
+begin
+  select id into v_org from public.organisations where slug = 'org-alpha';
+  for u in select id from auth.users limit 8 loop
+    perform pg_catalog.set_config('request.jwt.claims',
+      pg_catalog.json_build_object('sub', u.id, 'role', 'authenticated', 'aal', 'aal2')::text,
+      true);
+    foreach probe in array array[
+      '%', 'manage_%', '%_crm', '________', 'view_crm_', '_iew_crm',
+      '.', '.*', '^manage', 'view.crm', 'view_crm%'
+    ] loop
+      v_scalar := public.has_permission(v_org, probe);
+      v_set    := (v_org in (select private.permitted_organisations(probe)));
+      n := n + 1;
+      if v_scalar is not false or v_set is not false then bad := bad + 1; end if;
+    end loop;
+    -- CONTROL, in the same loop and against the same organisation: the exact
+    -- key `view_crm` is held by every one of these members, so a run in which
+    -- the probes pass because NOTHING is ever granted would show ctrl = 0.
+    if public.has_permission(v_org, 'view_crm')
+       and v_org in (select private.permitted_organisations('view_crm'))
+    then ctrl := ctrl + 1; end if;
+  end loop;
+  perform pg_catalog.set_config('request.jwt.claims', '', true);
+
+  perform crm.record(
+    'M1m WILDCARD: neither form grants a pattern that is not a catalogue key, '
+      || n || ' probes',
+    '0 grants', bad || ' grants');
+  perform crm.record(
+    'M1n CONTROL: the same members DO hold the exact key view_crm',
+    'at least 1 holder', case when ctrl > 0 then 'at least 1 holder'
+                              else ctrl || ' holders' end);
+end $$;
+
 -- MIN-4: M1 sweeps only non-NULL organisations, and a NULL organisation is the
 -- ONE input on which the two forms genuinely disagree -- which makes it the one
 -- input the equivalence test most needed to state.
