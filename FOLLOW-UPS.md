@@ -1324,29 +1324,27 @@ corrections are the useful part. Each now says what was actually done.
   Task 2 is what ships the policies that call the function with `'event'` and
   therefore the first thing that depends on the answer.
 
-- **`tests/unit/crm/source-shape.test.ts` is RED on any CRLF checkout, and was
-  red at Phase 3 Task 1's starting commit (`00a4790`) before that task touched
-  anything.** The assertion is
-  `expect(body).toContain('fieldErrors: { artistId: "Choose an artist." },
-      values: echoedValues(formData),')`
-  — a literal `
-` matched against a file Git checks out with `
-` on
-  Windows (`.gitattributes` sets no `text` policy and `core.autocrlf` is on).
-  `lib/crm/artists.ts` is correct; the test cannot see it. Everything else in
-  the repository's source-shape assertions is single-line, which is why this is
-  the only one affected.
+- ~~**`tests/unit/crm/source-shape.test.ts` is RED on any CRLF checkout, and
+  was red at Phase 3 Task 1's starting commit (`00a4790`) before that task
+  touched anything.**~~ **THE LOCAL HALF IS DONE, Phase 3 Task 1.** That
+  file's single multi-line `toContain` assertion matched an escaped
+  newline against source Git checks out with CRLF on Windows (`.gitattributes` sets no
+  `text` policy and `core.autocrlf` is on), so it failed against perfectly
+  correct `lib/crm/artists.ts`. Its `read()` helper now normalises `\r\n`
+  to `\n` before any assertion sees the source, which weakens nothing --
+  no assertion in that file is about line endings -- and `pnpm test` is
+  green again (927/927).
 
-  **Not fixed in Phase 3 Task 1**, because the fix is a repository-wide
-  decision rather than a one-liner — either a `.gitattributes` line normalising
-  checkouts (which rewrites every file's line endings in one commit) or a
-  `read()` helper in the test file that normalises `
-` to `
-` (which is
-  local, and is probably the right answer). Whoever takes it should also grep
-  for other multi-line `toContain` assertions before deciding. Until then
-  `pnpm test` is 1 red / 907 green on a Windows checkout and green in CI, which
-  is exactly the shape of failure a developer learns to ignore.
+  **THE REPOSITORY-WIDE HALF IS STILL OPEN, and it is the one that will
+  bite again.** Nothing stops the next multi-line source-text assertion in
+  a different file hitting exactly this, and the underlying cause is
+  unchanged: with no `text` policy in `.gitattributes`, what is on disk
+  depends on each developer's `core.autocrlf`, so a test can be green in
+  CI and red on a laptop with nothing wrong in either. The fix is a
+  `.gitattributes` line, which rewrites every file's line endings in one
+  commit and therefore wants to be its own change with nothing else in it.
+  Whoever takes it should grep for other multi-line `toContain` assertions
+  over source text first.
 
 ## Phase 3 — members management with a real UI
 
