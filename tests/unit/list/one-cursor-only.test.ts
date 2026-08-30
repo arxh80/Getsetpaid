@@ -72,20 +72,48 @@ function code(text: string): string {
 const callers = (needle: string) =>
   SOURCES.filter((f) => code(f.text).includes(needle)).map((f) => f.path);
 
+/**
+ * Every OCCURRENCE of `needle`, as `path#n` -- not every file containing one.
+ *
+ * Deferred-minor L1143. The floor below used `callers("fetchListPage<").length`
+ * and the prose around it called the result "call sites". Fifteen files each
+ * holding exactly one call made the two numbers identical, which is why nobody
+ * noticed -- and a sixteenth list added to an EXISTING file (a detail page
+ * already carrying one, which is how the artist page got its fee list) would
+ * not move a file count at all. Counting occurrences makes the assertion say
+ * what its comment says.
+ */
+function callSites(needle: string): string[] {
+  return SOURCES.flatMap((f) => {
+    const body = code(f.text);
+    const out: string[] = [];
+    for (let at = body.indexOf(needle); at !== -1; at = body.indexOf(needle, at + 1)) {
+      out.push(`${f.path}#${out.length + 1}`);
+    }
+    return out;
+  });
+}
+
 describe("every paginated list shares one implementation", () => {
   const fetchers = callers("fetchListPage<");
   const parsers = callers("parseListParams(");
 
-  it("finds the list pages at all, so this suite cannot pass vacuously", () => {
+  it("finds the CALL SITES at all, so this suite cannot pass vacuously", () => {
     // FIFTEEN at the time of writing: contacts, companies, artists, agencies,
     // venues and their five `deleted` twins (10), the duplicates queue and its
     // `resolved` twin (12), merge history (13), the artist fee list (14) and
     // the activity timeline in `lib/crm/activity.ts` (15).
     //
+    // COUNTED AS OCCURRENCES, NOT AS FILES (L1143). Today the two happen to be
+    // the same number -- fifteen files, one call each -- which is exactly why
+    // the mismatch between this assertion and the sentence above it went
+    // unnoticed. A second list added to a file that already has one would not
+    // move a file count.
+    //
     // A FLOOR, not an exact count, so Phase 3 adding events and lineups does
     // not turn this red for the right reason -- but deleting the shared path
     // does.
-    expect(fetchers.length).toBeGreaterThanOrEqual(15);
+    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(15);
   });
 
   it("every fetchListPage caller also parses its params through lib/list", () => {
