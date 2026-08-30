@@ -25,8 +25,19 @@
 --   * THE `(event_id)` COLUMN LIST ON SET NULL IS NOT OPTIONAL. A bare
 --     `on delete set null` on a composite key nulls EVERY referencing column
 --     including organisation_id, which is NOT NULL, so deleting any referenced
---     event would fail outright with 23502. 20260828001132's header records
---     the measurement on artist_representations; it is the same mechanism.
+--     event would fail outright with 23502.
+--
+--     THIS CONSTRAINT WAS NOT ITSELF MUTATED TO PROVE THAT. The measurement
+--     taken in this task was on the sibling events_venue_fkey
+--     (20260901000000), where dropping the column list and deleting a
+--     referenced venue produced
+--     `23502 null value in column "organisation_id"` with the CONTEXT line
+--     showing `SET "venue_id" = NULL, "organisation_id" = NULL`;
+--     20260828001132's header holds the earlier one on
+--     artist_representations. Same mechanism, same composite shape, two
+--     independent measurements -- but the claim here is inherited rather than
+--     first-hand, and it is labelled that way so nobody reads it as a guard
+--     somebody ran on this constraint.
 --
 -- ===========================================================================
 -- (b) TWO OF THE THREE entity_type CHECK ALLOWLISTS GAIN 'event'

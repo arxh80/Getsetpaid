@@ -1685,17 +1685,29 @@ p2_json "the REAL merge's loser.before.name survives to the API" \
         "Bella Nkemelu" \
         "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
         "field_resolution.loser.before.name"
-p2_json "...and the winner side, which the timeline reads" \
-        "Bella Nkemelu" \
+# THE SIDES HAVE TO BE TOLD APART BY SOMETHING THAT DIFFERS BETWEEN THEM, and
+# the name is not it: this fixture pair is two records with the SAME name
+# (:1523-1531, which is the point of a dedup fixture), so a probe expecting
+# "Bella Nkemelu" on each side passes even if merge_records() swapped the two
+# snapshots. The psql half catches that -- § Z's pairs are named
+# "Real Merge Winner …"/"Real Merge Loser …" precisely so Z6 and Z7 cannot
+# agree by accident -- but the assertion here has to stand on its own. The ids
+# differ, so they are what pins the sides.
+p2_json "...and it is the LOSER's row, not the winner's, under 'loser'" \
+        "$HM_OL" \
         "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
-        "field_resolution.winner.before.name"
-# THE PAIRED NEGATIVE. Without it both probes above are satisfied by a helper
+        "field_resolution.loser.before.id"
+p2_json "...and the winner side, which the timeline reads, is the winner's" \
+        "$HM_OW" \
+        "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
+        "field_resolution.winner.before.id"
+# THE PAIRED NEGATIVE. Without it every probe above is satisfied by a helper
 # that prints its own `want`: this asks for a key that has never existed and
 # must come back <null>.
 p2_json "CONTROL: a path that does not exist reads <null>, not a value" \
         "<null>" \
         "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
-        "field_resolution.loser.prior.name" 
+        "field_resolution.loser.prior.name"
 # TENANT BREAKOUT, over HTTP: the request an attacker actually sends.
 p2_code "TENANT BREAKOUT: merging an ALPHA record from org-http-merge" 403 POST \
         "rpc/merge_records" \

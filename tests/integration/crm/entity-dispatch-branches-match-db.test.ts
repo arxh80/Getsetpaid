@@ -122,15 +122,32 @@ const EXPECTED: Record<string, readonly string[]> = {
 };
 
 /**
- * Every `when '<literal>' then` arm in a function definition, in order.
+ * Every `when '<literal>' then` arm of the `case p_entity_type` block.
  *
- * Matches on the `when '...' then` shape rather than on every quoted run,
- * because these bodies also contain quoted permission keys
- * (`permitted_organisations('view_crm')`) and quoted table names, and a blunt
- * literal scrape would collect those too.
+ * TWO NARROWINGS, EACH FOR A DIFFERENT FALSE POSITIVE:
+ *
+ *   1. It matches the `when '...' then` SHAPE rather than every quoted run.
+ *      These bodies also contain quoted permission keys
+ *      (`permitted_organisations('view_crm')`) and quoted table names, and a
+ *      blunt literal scrape would collect those as arms.
+ *   2. It is SLICED to the `case p_entity_type` block first. Every one of the
+ *      six live definitions has exactly one `case`, so today the slice changes
+ *      nothing -- but a body that later grew a second, unrelated
+ *      `case … when '…' then` would inject phantom arms and fail this census
+ *      for the wrong reason, in a file whose entire value is that its failure
+ *      message is accurate.
+ *
+ * The slice runs to the LAST `end` in the definition rather than to a matched
+ * one: `case` blocks do not nest in these functions, and a paren/keyword
+ * matcher here would be more machinery than the thing it guards. If a future
+ * body nests them, `expectedArms` will disagree loudly rather than silently.
  */
 function arms(definition: string): string[] {
-  return [...definition.matchAll(/when\s+'([^']*)'\s+then/gi)].map((m) => m[1]);
+  const from = definition.indexOf("case p_entity_type");
+  if (from === -1) return [];
+  const to = definition.lastIndexOf("end");
+  const block = definition.slice(from, to === -1 ? undefined : to);
+  return [...block.matchAll(/when\s+'([^']*)'\s+then/gi)].map((m) => m[1]);
 }
 
 async function dispatches(): Promise<Map<string, string>> {

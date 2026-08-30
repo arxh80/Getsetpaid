@@ -501,6 +501,71 @@ select invariants.val('E5  ...and it nulled venue_id WITHOUT nulling organisatio
      from public.events where id='a7000000-0000-0000-0000-0000000000a4'$$,
   'true/true');
 
+-- ---------------------------------------------------------------------------
+-- E6-E9. THE SAME DELETE, BUT THE EVENT NAMES A ROOM TOO (fix round 1, I-1).
+--
+-- E4's fixture event names a venue and NO room, so it never exercised the one
+-- combination where two correct constraints fight. MEASURED before the fix:
+--
+--   ERROR:  new row for relation "events" violates check constraint
+--           "events_room_needs_a_venue"
+--   CONTEXT: SQL statement "UPDATE ONLY "public"."events"
+--            SET "venue_id" = NULL WHERE $1 = "venue_id" AND ..."
+--
+-- events_venue_fkey's `on delete set null (venue_id)` nulls venue_id while
+-- venue_room_id is still set, and a row-level CHECK is evaluated immediately
+-- rather than at end of statement, so it fires on the intermediate row. Such a
+-- venue could not be hard-deleted at all. The two-column SET NULL list that
+-- would fix it inside the constraint is refused by Postgres -- "column
+-- venue_room_id referenced in ON DELETE SET action must be part of foreign
+-- key", also measured -- so 20260901002000 clears the room in a BEFORE DELETE
+-- trigger on public.venues instead, which is the one place the executor
+-- guarantees runs before any referential action the delete causes.
+--
+-- Self-contained fixtures rather than reusing section B's, because this pair
+-- of assertions destroys what it plants and the B rows are load-bearing for
+-- section D.
+-- ---------------------------------------------------------------------------
+insert into public.venues (id, organisation_id, name) values
+  ('a0000000-0000-0000-0000-0000000000a3','11110000-0000-0000-0000-000000000001','A Venue 3'),
+  ('a0000000-0000-0000-0000-0000000000a4','11110000-0000-0000-0000-000000000001','A Venue 4');
+insert into public.venue_rooms (id, organisation_id, venue_id, name) values
+  ('a6000000-0000-0000-0000-0000000000a3','11110000-0000-0000-0000-000000000001',
+   'a0000000-0000-0000-0000-0000000000a3','A Venue 3 Room'),
+  ('a6000000-0000-0000-0000-0000000000a4','11110000-0000-0000-0000-000000000001',
+   'a0000000-0000-0000-0000-0000000000a4','A Venue 4 Room');
+insert into public.events (id, organisation_id, name, starts_at, venue_id, venue_room_id) values
+  ('a7000000-0000-0000-0000-0000000000a5','11110000-0000-0000-0000-000000000001',
+   'A Room-Bearing Event', timestamptz '2026-09-04 20:00+00',
+   'a0000000-0000-0000-0000-0000000000a3','a6000000-0000-0000-0000-0000000000a3'),
+  ('a7000000-0000-0000-0000-0000000000a6','11110000-0000-0000-0000-000000000001',
+   'A Room-Bearing Event 2', timestamptz '2026-09-05 20:00+00',
+   'a0000000-0000-0000-0000-0000000000a4','a6000000-0000-0000-0000-0000000000a4');
+
+-- THE REGRESSION. Without the trigger this is denied(23514), not ok(1).
+select invariants.try('E6  deleting a venue an event names WITH ONE OF ITS ROOMS succeeds',
+  $$delete from public.venues where id='a0000000-0000-0000-0000-0000000000a3'$$,
+  'ok(1)');
+
+select invariants.val('E7  ...and BOTH columns are null, with organisation_id intact',
+  $$select (venue_id is null)::text || '/' || (venue_room_id is null)::text || '/' ||
+           (organisation_id is not null)::text
+     from public.events where id='a7000000-0000-0000-0000-0000000000a5'$$,
+  'true/true/true');
+
+-- THE PAIRED POSITIVE CONTROL, and it is not decoration: a trigger that nulled
+-- venue_id as well, or one that fired on the wrong table, would satisfy E6 and
+-- E7 while silently unbooking every event whose ROOM was removed. Deleting the
+-- room alone must still touch venue_room_id and nothing else.
+select invariants.try('E8  CONTROL: deleting the ROOM alone still succeeds',
+  $$delete from public.venue_rooms where id='a6000000-0000-0000-0000-0000000000a4'$$,
+  'ok(1)');
+
+select invariants.val('E9  ...and nulled ONLY venue_room_id -- the venue survives',
+  $$select (venue_id is null)::text || '/' || (venue_room_id is null)::text
+     from public.events where id='a7000000-0000-0000-0000-0000000000a6'$$,
+  'false/true');
+
 -- ===========================================================================
 -- D. STRUCTURAL INVARIANTS over the twelve Phase 2 tables.
 --

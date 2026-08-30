@@ -1324,6 +1324,28 @@ corrections are the useful part. Each now says what was actually done.
   Task 2 is what ships the policies that call the function with `'event'` and
   therefore the first thing that depends on the answer.
 
+- **PHASE 3 TASK 2 OWES `PERMISSION_FOR_ENTITY.event` A TRIPWIRE.** (Task 1
+  fix round 1, review finding I-2.) `lib/crm/custom-fields.ts` gained
+  `event: "manage_events"` in Task 1 and it is bound to nothing: the one test
+  that mirrors that table into SQL,
+  `tests/unit/crm/source-shape.test.ts`'s "PERMISSION_FOR_ENTITY mirrors
+  private.entity_is_manageable()", iterates its own hardcoded **five**-entry
+  `EXPECTED` map and reads `20260828120500_crm_policy_helpers.sql` as text
+  rather than the deployed catalogue — so the sixth entry is asserted in
+  neither direction, and nothing compares `PERMISSION_FOR_ENTITY` against
+  `public.permissions` either. It could not have been closed in Task 1: the
+  key does not exist until Task 2 seeds it.
+
+  **In the same commit that seeds `manage_events` and adds
+  `private.entity_is_manageable()`'s `'event'` arm**, add
+  `event: "manage_events"` to that `EXPECTED` map — and, since that test reads
+  the *original* migration file, point it at whichever file carries the
+  deployed body (`20260901010000`) or at `pg_get_functiondef`, which is what
+  the rest of this repository's mirrors do. Blast radius is small — that
+  file's own comment says getting it wrong "cannot open a write" — but this is
+  exactly the "five places, not three" class of omission Task 1 exists to make
+  impossible, and leaving it to memory is how it survives.
+
 - ~~**`tests/unit/crm/source-shape.test.ts` is RED on any CRLF checkout, and
   was red at Phase 3 Task 1's starting commit (`00a4790`) before that task
   touched anything.**~~ **THE LOCAL HALF IS DONE, Phase 3 Task 1.** That
