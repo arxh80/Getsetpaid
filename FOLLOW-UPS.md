@@ -287,14 +287,21 @@ These become live the moment a real tenant table exists.
   All three are disabled BY NAME and only on this page in
   `tests/e2e/accessibility.spec.ts` (`NESTED_MAIN`), with a control that fails
   if the page ever stops being red -- so the exclusion cannot outlive the fix.
-- **`.github/workflows/ci.yml` has never executed.** Written by Task 8 in an
-  environment with no CI runner. `pnpm audit --audit-level high` and
-  `pnpm exec vitest run tests/unit` were run locally and are clean; the YAML was
-  not run and was not even parsed by a YAML parser. Treat the first failure on
-  the first triggering push as a bug in the file. It also covers only lint,
-  typecheck, unit tests and the two scans -- the 852 psql assertions, 174 HTTP
-  checks, integration tests and 9 Playwright tests all need a running Supabase
-  stack and still run only on a developer's machine.
+- **`.github/workflows/ci.yml` DID execute, and its first three runs all failed
+  in the workflow file rather than in the project.** ~~Never executed~~ —
+  corrected in fix round 1. GitHub ran it on every Task 8 push (runs
+  `33304352488`, `33305110034`, `33305705916`) and both jobs died in
+  `actions/setup-node` before a single gate ran: `packageManager` pins pnpm
+  11.24.0, which loads `node:sqlite` and needs Node >= 22.13, and the workflow
+  asked for `node-version: 20`, so `pnpm store path` crashed with
+  `ERR_UNKNOWN_BUILTIN_MODULE: No such built-in module: node:sqlite`. Fixed by
+  pinning Node 24 in both jobs. **The lesson stands and is now evidenced rather
+  than predicted:** an unexecuted workflow is an untested claim, and the very
+  first thing this one proved was that it did not work. The YAML is now also
+  parsed by a real parser (PyYAML) as part of editing it. It still covers only
+  lint, typecheck, unit tests and the two scans -- the 852 psql assertions, 174
+  HTTP checks, integration tests and 12 Playwright tests all need a running
+  Supabase stack and run only on a developer's machine.
 - **NO SCREEN READER HAS EVER BEEN USED ON THIS PRODUCT.** Tasks 3, 7 and 8 have
   each deferred it for want of a tool. The keyboard half is done and passes
   (visible focus rings, logical order, a working "Skip to content" link); the
@@ -318,10 +325,14 @@ These become live the moment a real tenant table exists.
   broken index -- but "CONSUMER SHIPPED ... reaches it" is true at realistic
   tenant sizes and false at toy ones, and the next person to run `EXPLAIN` on a
   small fixture will conclude the keep decision was wrong.
-- **`CLAUDE.md` § Architecture is WRONG about auto-merge.** It says "exact
-  matches (email/name) auto-merge"; the shipped behaviour is **email only**,
-  because contacts are the only entity with an email column
-  (`20260829020000` DECISION 1). It is the file Phase 3's author reads first.
+- ~~**`CLAUDE.md` § Architecture is WRONG about auto-merge.**~~ **FIXED in fix
+  round 1.** It said "exact matches (email/name) auto-merge"; the shipped
+  behaviour is an exact case-insensitive **email** match only
+  (`supabase/migrations/20260829020000_dedup_detection_and_merge_workflow.sql:385`
+  labels every other pair `fuzzy_name`; `lib/crm/dedup.ts:704` merges only on the
+  ids the database proposes), and in practice contacts only, because `contact`
+  is the sole entry in `MERGEABLE_COLUMNS` with an `email` column
+  (`lib/crm/dedup.ts:65`). Both § Architecture and § Decisions log now say so.
 - **"Read Only" reads nothing unless records are assigned to it.**
   `private.full_scope_organisations()` excludes `read_only`, so a Read Only
   member of a five-contact workspace sees zero contacts and the empty state

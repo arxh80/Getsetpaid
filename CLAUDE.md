@@ -17,18 +17,33 @@ The PRD is a binary docx and no text version is committed. To read it, run `pyth
 
 The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrastructure, core CRM writes). The PRD, the design and security docs and the pinned agent skills (`skills-lock.json` + `.agents/skills/`) sit alongside them.
 
-**The gates. Run all four before claiming a change is done:**
+**The gates. Run all five before claiming a change is done:**
 
 | Command | What it is |
 |---|---|
 | `pnpm lint` | ESLint (`eslint`). |
-| `pnpm typecheck` | `tsc --noEmit`. **Nothing else runs `tsc`** — there is no CI, no git hook, and `pnpm build` is forbidden in a worktree pointed at the local stack. Several exhaustiveness guards (the `switch` with no `default` in `lib/crm/contacts.ts`, `lib/crm/companies.ts` and `lib/crm/actions.ts`) are compile-time only, so skipping this is skipping them entirely. |
+| `pnpm typecheck` | `tsc --noEmit`. CI runs this too (below), but **nothing on this machine does** — there is no git hook, and `pnpm build` is forbidden in a worktree pointed at the local stack. Several exhaustiveness guards (the `switch` with no `default` in `lib/crm/contacts.ts`, `lib/crm/companies.ts` and `lib/crm/actions.ts`) are compile-time only, so skipping this locally means finding out on a push at best. |
 | `pnpm test` | Vitest, unit and integration (`vitest run`). |
 | `pnpm test:rls` | The RLS integration tests (`vitest run tests/integration/rls`), included in `pnpm test`. |
+| `pnpm test:e2e` | Playwright (`playwright test`) — the golden path, tenant breakout and the axe accessibility scan, against a real browser and the local stack. **Prerequisite:** `npx playwright install chromium` once per machine. It starts its own dev server; set `PLAYWRIGHT_REUSE_SERVER=1` only to reuse one on port 3000 that you know is current. |
 
 The psql/HTTP RLS suite is separate and needs a fresh database:
 `npx supabase db reset --local` then `bash supabase/tests/run-rls-tests.sh`. It
 refuses to run twice without a reset in between.
+
+**CI runs a subset, and knowing which subset is the point.**
+`.github/workflows/ci.yml` runs on every push and pull request, in two jobs:
+`pnpm lint`, `pnpm typecheck` and `pnpm exec vitest run tests/unit`; and
+`pnpm audit --audit-level high` plus a gitleaks secret scan. It does **not**
+run `tests/integration`, the psql/HTTP suite or Playwright — all three need a
+running Supabase stack (`npx supabase start` plus a reset), which is a
+container pull and minutes per run, and is a deliberate decision nobody has
+made yet. **So a green tick on CI is not a green phase**, and the
+tenant-boundary suites `CLAUDE.md` § Testing gates calls the ones that "matter
+most" still run only on a developer's machine. Every action in that workflow is
+pinned to a full commit SHA; bump one by looking the new SHA up with
+`gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and updating the `# vX.Y.Z`
+trailer beside it.
 
 `pnpm build` and `pnpm start` resolve to the **hosted** project and must not be
 run from a worktree that is deliberately unlinked from it.
@@ -78,7 +93,7 @@ Organisation, User, Contact, Company, Artist/DJ, Agency, Venue (+ rooms), Suppli
 
 Full baseline table list is in PRD §11.
 
-**Duplicate contacts/companies:** exact matches (email/name) auto-merge; fuzzy matches are flagged for manual review, never auto-merged silently. Every merge is audited.
+**Duplicate contacts/companies:** an **exact, case-insensitive email match auto-merges**; everything else — including an exact name match — is flagged for manual review and never auto-merged silently. Every merge is audited. Name is only ever a *fuzzy* signal: `screen_for_duplicates()` labels a pair `exact_email` only when both emails are non-null and equal case-insensitively, and `fuzzy_name` otherwise (`supabase/migrations/20260829020000_dedup_detection_and_merge_workflow.sql:385`), and the application merges only on the ids the database proposes for that first case (`lib/crm/dedup.ts:704`, "AUTO-MERGE IS EMAIL-ONLY AND FIRES ONLY WHEN THE DATABASE PROPOSES IT"). In practice that means **contacts only**, because `contact` is the one entity in `MERGEABLE_COLUMNS` with an `email` column (`lib/crm/dedup.ts:65`).
 
 ### Permissions
 
@@ -234,7 +249,7 @@ Resolved 2026-08-26 (founder sign-off):
 - **Availability SLO:** 99.9% excluding planned maintenance.
 - **Backup targets:** RPO 24h / RTO 4h.
 - **Data residency:** UK/EU Supabase region only.
-- **Dedup/merge:** exact matches auto-merge, fuzzy matches flagged for manual review.
+- **Dedup/merge:** an exact email match auto-merges (contacts only, since they are the only entity with an email); every other match, name included, is flagged for manual review. See § Architecture.
 - **Custom field limits:** tier-gated (free: none, paid: more).
 - **Network profile verification:** deferred past MVP.
 
