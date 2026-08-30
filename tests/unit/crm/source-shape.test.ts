@@ -1226,11 +1226,33 @@ describe("the event writes refuse a soft-deleted venue", () => {
   // report.
   const events = read("lib/crm/events.ts");
 
+  /**
+   * OVER THE CODE, NOT THE PROSE, and this is a correction Phase 3 Task 5
+   * forced rather than a tidy-up.
+   *
+   * A body runs from its own `export async function` to the next one, so the
+   * LAST action in the file absorbs everything after it -- and Task 5 added a
+   * section header below `restoreEventAction` that explains, in prose, which
+   * lineup write checks which end. It names `liveInOrg(` and
+   * `refusedEndState(` in order to explain them, which flipped
+   * `restoreEventAction` into the "checks the venue end" list and turned two
+   * assertions red about a function that had not changed.
+   *
+   * The same trap N-3 sprang on the `.update(` census, and the same fix:
+   * a line whose first non-space characters are `//` is prose, not a
+   * statement. Stripping cannot make a real call site invisible -- a call
+   * inside a comment is not a call -- so this strengthens the guard rather
+   * than relaxing it.
+   */
   function actionBody(name: string): string {
     const start = events.indexOf(`export async function ${name}(`);
     expect(start, `${name} not found`).toBeGreaterThan(-1);
     const next = events.indexOf("\nexport async function ", start + 1);
-    return events.slice(start, next === -1 ? undefined : next);
+    return events
+      .slice(start, next === -1 ? undefined : next)
+      .split("\n")
+      .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+      .join("\n");
   }
 
   const ACTIONS = [
@@ -1286,10 +1308,22 @@ describe("the event writes refuse a soft-deleted venue", () => {
   });
 
   it("every write asks for the row count and pins the organisation", () => {
-    // Belt and braces over the directory-wide census above, because the three
-    // writes here are the ones a copied file loses first.
+    // Belt and braces over the directory-wide census above, because the writes
+    // here are the ones a copied file loses first.
+    //
+    // SIX SINCE PHASE 3 TASK 5, counted rather than guessed: the three EVENT
+    // writes (update, soft-delete, restore -- there is no DELETE policy on the
+    // table and no grant for one) plus the three LINEUP writes
+    // (updateLineupEntryAction, removeLineupEntryAction,
+    // restoreLineupEntryAction). `addLineupEntryAction` inserts and so has
+    // none, exactly as `createEventAction` does not.
+    //
+    // AN EXACT NUMBER RATHER THAN A FLOOR, deliberately, because this block's
+    // job is the DENOMINATOR the directory census cannot supply: a seventh
+    // `.update(` appearing here is either a new write that needs its own row
+    // in the loop below or a copy nobody meant to make.
     const writes = events.match(/\.update\(/g) ?? [];
-    expect(writes).toHaveLength(3);
+    expect(writes).toHaveLength(6);
     for (const action of ["updateEventAction", "deleteEventAction", "restoreEventAction"]) {
       const body = actionBody(action);
       expect(body, action).toContain(`count: "exact"`);
@@ -1380,3 +1414,277 @@ describe("the event form echoes every field a refusal would otherwise wipe", () 
     expect(form).toContain("NO CHECKBOX GROUP ON THIS FORM");
   });
 });
+
+// ===========================================================================
+// PHASE 3 TASK 5 -- the lineup builder
+// ===========================================================================
+//
+// The directory-wide `.update(` census above already covers the three new
+// lineup writes without an edit (`CRM_SOURCES` reads the whole of lib/crm/),
+// and the events-specific census in the block above was raised from three to
+// six with the breakdown written down. What is below is the part no census can
+// reach: WHICH ends each lineup action checks, and whether the panel hands
+// back what the user typed.
+
+describe("the lineup writes check the ends they have, and only those", () => {
+  // TWO ENDS WITH DIFFERENT AMOUNTS OF DATABASE BEHIND THEM, which is why this
+  // block asserts the denominator and not just the presence:
+  //
+  //   event   the parent, checked on ALL FOUR writes. ALSO a policy term
+  //           (`p.deleted_at is null` in all three event_lineup write
+  //           policies, 20260901011000), so this check buys the SENTENCE --
+  //           DELETED_RECORD_EXPLANATION instead of an `ok(0)` rendered as
+  //           REFUSED_MESSAGE.
+  //   artist  checked ONLY on the add, because it is the only write that names
+  //           an artist. For the SOFT-DELETED half this is the only control in
+  //           the system: rls_phase3_events.sql § EH5 asserts that no lineup
+  //           policy expression mentions public.artists, and § EH2 asserts a
+  //           record-scoped user really can book an artist they cannot see.
+  //           Delete the liveInOrg call and nothing else catches it.
+  //
+  // A source assertion because a Server Action is not drivable from a node
+  // test in this repository (tests/unit is pure functions only, by the
+  // config's own rule). The behavioural half is the browser walk in the task
+  // report and § EF/§ EG of the psql suite.
+  const events = read("lib/crm/events.ts");
+
+  function actionBody(name: string): string {
+    const start = events.indexOf(`export async function ${name}(`);
+    expect(start, `${name} not found`).toBeGreaterThan(-1);
+    const next = events.indexOf("\nexport async function ", start + 1);
+    // Comment lines stripped, for the reason the block above now strips them.
+    return events
+      .slice(start, next === -1 ? undefined : next)
+      .split("\n")
+      .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+      .join("\n");
+  }
+
+  const LINEUP_ACTIONS = [
+    "addLineupEntryAction",
+    "updateLineupEntryAction",
+    "removeLineupEntryAction",
+    "restoreLineupEntryAction",
+  ] as const;
+
+  it("all four check the EVENT end and pair it with refusedEndState", () => {
+    for (const action of LINEUP_ACTIONS) {
+      const body = actionBody(action);
+      expect(body, action).toContain(
+        `liveInOrg(supabase, "events", org.id, eventId)`,
+      );
+      expect(body, action).toContain("refusedEndState(ends, formData)");
+    }
+  });
+
+  it("exactly ONE of them checks the ARTIST end -- the add", () => {
+    // The denominator. Without it this passes vacuously the day somebody
+    // factors the two calls into a `lineupEnds()` helper, which is the change
+    // lib/crm/events.ts's § 4 refuses for this exact reason.
+    const checking = LINEUP_ACTIONS.filter((name) =>
+      actionBody(name).includes(`liveInOrg(supabase, "artists"`),
+    );
+    expect(checking).toEqual(["addLineupEntryAction"]);
+    expect(actionBody("addLineupEntryAction")).toContain(
+      `liveInOrg(supabase, "artists", org.id, artistId)`,
+    );
+  });
+
+  it("the artist end says, in the file, that no policy is behind it", () => {
+    // The one comment in this repository whose deletion would be a security
+    // regression rather than a documentation one: a reader who assumes RLS
+    // covers the artist end deletes four lines and a soft-deleted artist
+    // becomes bookable, with every gate green.
+    expect(events).toContain("rls_phase3_events.sql § EH");
+    expect(events).toContain(
+      "DO NOT DELETE THE liveInOrg CALL",
+    );
+  });
+
+  it("every lineup UPDATE carries count: \"exact\" and pins org, event and row", () => {
+    // A 204 IS NOT A SAVE (lib/crm/write.ts). The directory census covers the
+    // first half; the three `.eq(` are this block's own, because a lineup
+    // write that pinned only `id` would be a cross-event write for anyone who
+    // can forge a form post -- the policy would still refuse a cross-TENANT
+    // one, and would not refuse moving a slot between two events of the same
+    // tenant that the caller can write.
+    for (const action of [
+      "updateLineupEntryAction",
+      "removeLineupEntryAction",
+      "restoreLineupEntryAction",
+    ]) {
+      const body = actionBody(action);
+      expect(body, action).toContain(`count: "exact"`);
+      expect(body, action).toContain(`.eq("organisation_id", org.id)`);
+      expect(body, action).toContain(`.eq("event_id", eventId)`);
+      expect(body, action).toContain(`.eq("id", lineupId)`);
+    }
+  });
+
+  it("the duplicate artist is answered before classifyWrite sees it", () => {
+    const body = actionBody("addLineupEntryAction");
+    // 23505 handled inline, like `linkCompanyAction`'s. Reaching
+    // `classifyWrite` would map it to CONFLICT_MESSAGE -- "somebody else
+    // changed this record while you were editing it" -- about a person who
+    // does not exist.
+    expect(body).toContain(`error.code === "23505"`);
+    expect(body).toContain(
+      "return { error: LINEUP_DUPLICATE_ARTIST, values: echoedValues(formData) };",
+    );
+    expect(events).toContain(
+      'const LINEUP_DUPLICATE_ARTIST = "That artist is already on this lineup.";',
+    );
+  });
+});
+
+describe("the lineup panel echoes every field a refusal would otherwise wipe", () => {
+  // React 19 resets a `<form action>` once the action resolves, so an
+  // UNCONTROLLED form -- which every form in this panel is, deliberately,
+  // because they then work with JavaScript disabled -- puts every input back
+  // to its `defaultValue`. A field whose default does not read the echo comes
+  // back EMPTY after a refusal. Invisible to tsc, to lint and to every other
+  // test here: no assertion on a pure function can see a `??` deleted from a
+  // .tsx file.
+  const panel = read("components/crm/lineup-panel.tsx");
+
+  // SIX, NOT FIVE. The brief names five -- the fields a SLOT has -- and the
+  // add form carries a sixth of its own, `artistId`, which is the one whose
+  // loss is worst: a refused add that snapped the picker back to its first
+  // option would book somebody the user never chose on the retry.
+  const SHARED_FIELDS = [
+    "position",
+    "billing",
+    "setStartsAt",
+    "setEndsAt",
+    "notes",
+  ] as const;
+  const FIELDS = [...SHARED_FIELDS, "artistId"] as const;
+
+  it("reads the echo for each of the six fields, and for no others", () => {
+    const echoes = form_echoes(panel);
+    expect(
+      [...new Set(echoes)].sort(),
+      "a field rendered without `state.values?.<name> ??` loses what was typed",
+    ).toEqual([...FIELDS].map((name) => `state.values?.${name}`).sort());
+    // TWELVE OCCURRENCES, not six: the five shared fields are echoed twice --
+    // once in `SlotRow` (falling back to the stored row) and once in `AddSlot`
+    // (falling back to a blank or to the column default) -- plus `artistId`
+    // and `billing`'s add-form copy. Counted rather than guessed, and asserted
+    // as a floor per NAME below so a duplicated echo cannot hide a missing one
+    // the way an exact total could.
+    for (const name of FIELDS) {
+      const count = echoes.filter(
+        (echo) => echo === `state.values?.${name}`,
+      ).length;
+      expect(count, `${name} is echoed at least once`).toBeGreaterThanOrEqual(1);
+    }
+    expect(SHARED_FIELDS).toHaveLength(5);
+  });
+
+  it("the row form's echoes fall back to the STORED value, not to an empty string", () => {
+    // `state.values?.position ?? ""` on the row form renders an empty input
+    // over a slot that has a position -- the mirror-image defect, and the one
+    // a careless fix for the first would introduce. The add form is the
+    // opposite case and is allowed its blanks: there is no stored row.
+    expect(panel).toContain("state.values?.position ?? String(row.position)");
+    expect(panel).toContain("state.values?.billing ?? (row.billing ?? \"other\")");
+    expect(panel).toContain("state.values?.notes ?? (row.notes ?? \"\")");
+    expect(panel).toContain("instantToLondonWallClock(row.setStartsAt)");
+    expect(panel).toContain("instantToLondonWallClock(row.setEndsAt)");
+  });
+
+  it("every <select> is keyed on its shown value, not only defaultValued", () => {
+    // MEASURED IN A BROWSER by Task 4, on the event form. React syncs a text
+    // input's `defaultValue` to the DOM property on every update, so
+    // `form.reset()` after a Server Action restores the ECHOED value. It does
+    // NOT do the equivalent for a `<select>`, whose default lives in an
+    // `<option>`'s `selected` attribute -- written at mount and then left
+    // alone. Without the key, a refused submit snaps the select back to the
+    // option the page first rendered with, and retrying saves a value the user
+    // never chose.
+    //
+    // The denominator matters here: this panel has exactly TWO selects
+    // (`billing`, shared by the row and add forms, and `artistId` on the add
+    // form), so a third one added without a key is caught by the count as well
+    // as by the names.
+    //
+    // COUNTED OVER THE CODE, NOT THE PROSE. This file's header explains the
+    // `<select>` mechanism in words, and `.match()` cannot tell a sentence
+    // from an element -- the same trap N-3 sprang on the `.update(` census.
+    const selects = stripLineComments(panel).match(/<select\b/g) ?? [];
+    expect(selects).toHaveLength(2);
+    for (const name of ["billing", "artistId"]) {
+      expect(panel, name).toContain("key={`" + name + ":${" + name + "}`}");
+    }
+  });
+
+  it("no <form> is nested inside a <span>", () => {
+    // The Task 5 deferred minor from Phase 2, found by review finding I-12 in
+    // a panel where axe reported ZERO violations: `<span><form>…</form></span>`
+    // is valid markup and an invalid content model, and browsers repair it by
+    // moving the form. Asserted structurally rather than by eye, because the
+    // repair is silent.
+    expect(panel).not.toMatch(/<span[^>]*>\s*(\{[^}]*\}\s*)?<form/);
+    // And the positive control: there ARE forms in this file, so the negative
+    // above is not satisfied by a panel with no forms at all.
+    expect((panel.match(/<form\b/g) ?? []).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("the position input carries the CHECK's bounds and the CHECK's sentence", () => {
+    // `event_lineup`'s CHECK is `position >= 0 and position <= 999`. The input
+    // attributes are the browser's half and are NOT the control -- a form post
+    // ignores them -- so the server-side parser is asserted beside them.
+    expect(panel).toContain('type="number"');
+    expect(panel).toContain("min={MIN_POSITION}");
+    expect(panel).toContain("max={MAX_POSITION}");
+    expect(panel).toContain("step={1}");
+    const list = read("lib/crm/lineup-list.ts");
+    expect(list).toContain("export const MIN_POSITION = 0;");
+    expect(list).toContain("export const MAX_POSITION = 999;");
+    expect(list).toContain(
+      '"Position must be a whole number between 0 and 999.";',
+    );
+  });
+
+  it("every write control is DISABLED with an explanation, never hidden", () => {
+    // FOLLOW-UPS Q6: "Write controls disabled, not hidden and not
+    // present-and-failing. Hidden loses the explanation; present-and-failing
+    // produces a 403 the user cannot interpret." The panel renders one note
+    // for the group and points every disabled control at it.
+    expect(panel).toContain('const noteId = "lineup-blocked";');
+    // Five controls: Save, Remove, Put back, Add, and the artist select. Each
+    // takes `disabled` from the same boolean and describes itself with the
+    // same id.
+    const disabled = panel.match(/disabled=\{!editable\}/g) ?? [];
+    expect(disabled.length).toBeGreaterThanOrEqual(4);
+    const described = panel.match(/aria-describedby=\{editable \? undefined : noteId\}/g) ?? [];
+    expect(described.length).toBeGreaterThanOrEqual(4);
+    // And NOT hidden: no `editable ? <control/> : null` anywhere.
+    expect(panel).not.toMatch(/editable \? \(?\s*<(Button|form)/);
+  });
+
+  it("the artist name links to the artist's own page", () => {
+    expect(panel).toContain("href={`/${orgSlug}/artists/${artistId}`}");
+  });
+});
+
+/** Every `state.values?.<name>` in a component, in source order. */
+function form_echoes(source: string): string[] {
+  return source.match(/state\.values\?\.[A-Za-z]+/g) ?? [];
+}
+
+/**
+ * Source with `//` lines blanked, for assertions that count ELEMENTS.
+ *
+ * The same rule `callArguments` applies, extracted because Task 5 needed it in
+ * a .tsx census too: a file that explains its own markup in prose otherwise
+ * counts its explanation. A `/* *\/` block comment would still be counted,
+ * which is a false RED and therefore safe -- this file's header says being
+ * noisy is the intended failure direction.
+ */
+function stripLineComments(source: string): string {
+  return source
+    .split("\n")
+    .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+    .join("\n");
+}
