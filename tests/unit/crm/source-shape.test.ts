@@ -1168,10 +1168,22 @@ describe("loadVenuesForPicker does not offer soft-deleted venues or rooms", () =
     // filter everywhere" is a red rather than a silent data loss.
     const lookup = queries.slice(
       queries.indexOf("async function lookupPlace("),
-      queries.indexOf("/** One venue in the event form's picker"),
+      queries.indexOf("const PICKER_ROOM_LIMIT"),
     );
     expect(lookup).toContain(`.select("name, deleted_at")`);
     expect(lookup).not.toContain(`.is("deleted_at", null)`);
+  });
+
+  it("hands its rows to assemblePicker rather than assembling them inline", () => {
+    // FIX ROUND 1, I-1. The assembly used to live between the four queries in
+    // this function, where `tests/unit` cannot reach it -- and the defect it
+    // hid was a stored venue the caller cannot read being dropped from the
+    // options, which the browser then submits as `venue_id = null` on the next
+    // save of any other field. `assemblePicker` is pure and is driven directly
+    // by tests/unit/crm/event-picker.test.ts; this assertion is what keeps the
+    // real code path going through the tested one.
+    expect(body).toContain("return assemblePicker({");
+    expect(body).not.toContain("venues.push(");
   });
 });
 

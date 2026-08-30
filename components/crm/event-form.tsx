@@ -10,7 +10,7 @@ import {
   STATUS_LABELS,
   TYPE_LABELS,
 } from "@/lib/crm/event-status";
-import type { PickerVenue } from "@/lib/crm/queries";
+import type { PickerRoom, PickerVenue } from "@/lib/crm/event-picker";
 import { Field, SelectField, TextAreaField } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
@@ -103,6 +103,34 @@ export interface EventFormValues {
   location: string;
   ticketLink: string;
   notes: string;
+}
+
+/**
+ * What an option in the venue picker says.
+ *
+ * THREE STATES, AND THE THIRD HAS NO NAME TO SHOW. `unreadable` means the
+ * event names a venue this caller's SELECT policy does not return -- so the
+ * option carries the stored id and a label that describes the SITUATION rather
+ * than the record. It is here so the value round-trips: an option missing from
+ * the list is a `venue_id = null` written by a save the user thought was about
+ * the event's name (fix round 1, I-1; lib/crm/event-picker.ts has the full
+ * argument, including why this discloses nothing new).
+ *
+ * The copy lives in the component, where copy belongs, and the ORDERING is the
+ * server's -- `assemblePicker` puts the nameless entry last rather than
+ * sorting it to the top on an empty string.
+ */
+function venueLabel(venue: PickerVenue): string {
+  if (venue.state === "unreadable") return "A venue outside your access";
+  return venue.state === "deleted" ? `${venue.name} (deleted)` : venue.name;
+}
+
+function roomLabel(room: PickerRoom): string {
+  if (room.state === "unreadable") return "A room outside your access";
+  // A closed room stays valid on the event that already names it -- that is
+  // what `venue_rooms.deleted_at` was added for (20260827232510) -- so this is
+  // a label, not a warning.
+  return room.state === "deleted" ? `${room.name} (closed)` : room.name;
 }
 
 export function EventForm({
@@ -224,7 +252,7 @@ export function EventForm({
           <option value="">No venue yet</option>
           {venues.map((venue) => (
             <option key={venue.id} value={venue.id}>
-              {venue.unavailable ? `${venue.name} (deleted)` : venue.name}
+              {venueLabel(venue)}
             </option>
           ))}
         </SelectField>
@@ -239,10 +267,10 @@ export function EventForm({
         >
           <option value="">No particular room</option>
           {rooms.map((venue) => (
-            <optgroup key={venue.id} label={venue.name}>
+            <optgroup key={venue.id} label={venueLabel(venue)}>
               {venue.rooms.map((room) => (
                 <option key={room.id} value={room.id}>
-                  {room.unavailable ? `${room.name} (closed)` : room.name}
+                  {roomLabel(room)}
                 </option>
               ))}
             </optgroup>
