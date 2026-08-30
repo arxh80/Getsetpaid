@@ -217,6 +217,20 @@ These become live the moment a real tenant table exists.
 
 ### Opened by Task 8 (the phase exit gate)
 
+- **The automated accessibility scan now exists, and the WCAG tag set alone
+  could not see the defect this project already knew about.** Task 8 fix round 1
+  added `@axe-core/playwright` and `tests/e2e/accessibility.spec.ts`, which scans
+  the login page, seven signed-in golden-path surfaces and the in-app 404. Run
+  at HEAD: with the five mandated tags (`wcag2a`, `wcag2aa`, `wcag21a`,
+  `wcag21aa`, `wcag22aa`) it reported **zero violations on every page,
+  including the 404 whose nested `<main>` is filed two entries below**. axe
+  classifies every `landmark-*` rule as `best-practice` rather than as a WCAG
+  success criterion, so the mandated tag set is blind to it. `best-practice` was
+  added to the tag set and the 404 then reported three rules; every other page
+  stayed clean. **Two things follow for Phase 3:** a WCAG-tagged axe run is not
+  a complete automated pass, and "0 violations" from any scanner is worth
+  exactly as much as its rule set (the spec carries a `passes.length > 0`
+  non-vacuity control for the same reason).
 - **NOTHING IN THE PRODUCT ENFORCES `SECURITY.md` § 5, AND SEARCH IS THE
   SURFACE THAT MATTERS.** A codebase-wide grep for
   `rate.?limit|ratelimit|throttl` returns one hit, `ACTIVITY_WRITE_THROTTLE_MS`
@@ -265,6 +279,14 @@ These become live the moment a real tenant table exists.
   refused cross-tenant read lands on, so it is not a corner case. Not fixed by
   Task 8 because the same file serves the unauthenticated 404, where its
   `<main>` is correct; the fix is an `app/(app)/not-found.tsx` variant.
+  **Now confirmed by a scanner, not only by hand** (fix round 1): axe reports
+  `landmark-main-is-top-level` on `.max-w-md` ("The main landmark is contained
+  in another landmark"), `landmark-no-duplicate-main` on `#main` ("Document has
+  more than one main landmark") and `landmark-unique` on `#main` ("The landmark
+  must have a unique aria-label, aria-labelledby, or title"), all `moderate`.
+  All three are disabled BY NAME and only on this page in
+  `tests/e2e/accessibility.spec.ts` (`NESTED_MAIN`), with a control that fails
+  if the page ever stops being red -- so the exclusion cannot outlive the fix.
 - **`.github/workflows/ci.yml` has never executed.** Written by Task 8 in an
   environment with no CI runner. `pnpm audit --audit-level high` and
   `pnpm exec vitest run tests/unit` were run locally and are clean; the YAML was
