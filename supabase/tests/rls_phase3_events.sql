@@ -6,6 +6,8 @@
 --   20260901010000_manage_events_permission.sql   (the key, and the sixth
 --                                                  entity_is_manageable arm)
 --   20260901011000_event_rls_policies.sql         (the six policies)
+--   20260901020000_event_list_indexes.sql         (the four list indexes --
+--                                                  § EX, added by Task 3)
 --
 -- RUN IT WITH:  supabase/tests/run-rls-tests.sh
 --   It runs AFTER rls_phase2_crm.sql and reuses that suite's fixtures whole --
@@ -1242,6 +1244,112 @@ select ev.val('EK6 pfinance: VISIBLE but NOT MANAGEABLE -- the two keys really d
              private.entity_is_manageable('event','ee110000-0000-0000-0000-000000000003',%L)::text$$,
          :'alpha_org', :'alpha_org'), 'true/false');
 reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EX. THE FOUR INDEXES lib/crm/events-list.ts NAMES IN `backedBy` EXIST, AND
+--     HAVE THE SHAPE THAT MAKES THE NAMING TRUE
+-- ===========================================================================
+-- Phase 2 STATED this rule and never asserted it. `lib/list/spec.ts` says
+-- `backedBy` is "Required, and required to be a real index name, because the
+-- alternative is what was measured before 20260828180000 existed" -- and
+-- nothing anywhere checked that the string is a real index name. A rename in a
+-- later migration, or a typo in a copied spec, leaves `backedBy` pointing at
+-- nothing, every gate green, and the list back to a Seq Scan plus a top-N sort
+-- of every live row in the tenant. Measured in Task 3 on 24,998 events: 9.95 ms
+-- and 478 buffers unindexed against 0.60 ms and 14 indexed, and the SHAPE is
+-- O(tenant) per page click, so it looks fine in every fixture in this file.
+--
+-- WHY HERE AND NOT IN VITEST. A unit test can read the four strings out of the
+-- spec (tests/unit/crm/events-list.test.ts does, and checks their shape); only
+-- the database can say whether an index of that name exists. This section is
+-- the half that needs a database.
+--
+-- THE DENOMINATOR IS FOUR. Every assertion below counts over the same list of
+-- four `backedBy` names -- `events_org_starts_at_id_live_idx`,
+-- `events_org_name_id_live_idx`, `events_org_updated_at_id_live_idx` (the live
+-- list's three sorts) and `events_org_deleted_at_id_idx` (the restore view's
+-- one). EX1 fixes that four, so nothing below can pass by inspecting an empty
+-- set. EX6 is the positive control in the other direction: a name that is NOT
+-- one of them finds nothing, so EX1 is not passing because every string
+-- matches.
+--
+-- Run as `postgres`. pg_class and pg_index carry no RLS and this section makes
+-- no claim about who can see what -- every other section in this file does
+-- that. Deliberately structural.
+reset role; reset request.jwt.claims;
+
+select ev.val('EX1 all four `backedBy` names exist as indexes on public.events',
+  $$select count(*)::text from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+      join pg_catalog.pg_class t on t.oid = i.indrelid
+      join pg_catalog.pg_namespace n on n.oid = t.relnamespace
+     where n.nspname = 'public' and t.relname = 'events'
+       and c.relkind = 'i'
+       and c.relname in ('events_org_starts_at_id_live_idx',
+                         'events_org_name_id_live_idx',
+                         'events_org_updated_at_id_live_idx',
+                         'events_org_deleted_at_id_idx')$$, '4');
+
+-- The names themselves, not just how many. A count of four could in principle
+-- be four copies of one name; it cannot, but reading the set back is free and
+-- it is what turns a failure into a message that names the missing index.
+select ev.val('EX2 ...and they are those four exactly',
+  $$select string_agg(c.relname, ',' order by c.relname)
+      from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+      join pg_catalog.pg_class t on t.oid = i.indrelid
+      join pg_catalog.pg_namespace n on n.oid = t.relnamespace
+     where n.nspname = 'public' and t.relname = 'events' and c.relkind = 'i'
+       and c.relname like 'events\_org\_%'
+       and c.relname not in ('events_organisation_id_idx')$$,
+  'events_org_deleted_at_id_idx,events_org_name_id_live_idx,events_org_starts_at_id_live_idx,events_org_updated_at_id_live_idx');
+
+-- THE SHAPE, NOT ONLY THE NAME. An index of the right name over the wrong
+-- columns satisfies EX1 and serves nothing: `organisation_id` has to LEAD (the
+-- list pins it by equality and that is what makes the index reachable at all --
+-- 7x on contacts, 20260828180000), `id` has to be the last key column (keyset
+-- pagination compares `(sort column, id)` and the tie-break has to be in the
+-- index), and the partial predicate has to match the clause lib/list/query.ts
+-- always writes, or the index cannot be used at all.
+select ev.val('EX3 the three LIVE indexes are (organisation_id, <sort>, id) INCLUDE (owner_user_id) WHERE deleted_at IS NULL',
+  $$select count(*)::text from pg_catalog.pg_class c
+     where c.relname in ('events_org_starts_at_id_live_idx',
+                         'events_org_name_id_live_idx',
+                         'events_org_updated_at_id_live_idx')
+       and pg_get_indexdef(c.oid) ~
+           '^CREATE INDEX \w+ ON public\.events USING btree \(organisation_id, \w+, id\) INCLUDE \(owner_user_id\) WHERE \(deleted_at IS NULL\)$'$$,
+  '3');
+
+select ev.val('EX4 the RESTORE index is the same shape with the predicate inverted',
+  $$select pg_get_indexdef(c.oid) from pg_catalog.pg_class c
+     where c.relname = 'events_org_deleted_at_id_idx'$$,
+  'CREATE INDEX events_org_deleted_at_id_idx ON public.events USING btree (organisation_id, deleted_at, id) INCLUDE (owner_user_id) WHERE (deleted_at IS NOT NULL)');
+
+-- The sort COLUMN of each live index is the column its spec entry declares.
+-- EX3 accepts any middle column; this pins which. Without it, three indexes
+-- over `starts_at` would pass EX1, EX2 and EX3 together, and two of the three
+-- sorts would be back to a top-N sort of the tenant.
+select ev.val('EX5 each live index'' middle key column is the one its sort declares',
+  $$select string_agg(c.relname || '=' || a.attname, ',' order by c.relname)
+      from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+      join pg_catalog.pg_attribute a
+        on a.attrelid = i.indrelid and a.attnum = i.indkey[1]
+     where c.relname in ('events_org_starts_at_id_live_idx',
+                         'events_org_name_id_live_idx',
+                         'events_org_updated_at_id_live_idx')$$,
+  'events_org_name_id_live_idx=name,events_org_starts_at_id_live_idx=starts_at,events_org_updated_at_id_live_idx=updated_at');
+
+-- POSITIVE CONTROL, in the direction that matters: EX1 counts names it is
+-- handed, so it would report 4 for any four strings that happened to exist.
+-- This asks for a name in the same family that deliberately does NOT exist --
+-- `ends_at` is the sort lib/crm/events-list.ts refuses to declare because the
+-- column is nullable -- and requires 0. If this returns 1, the lookup above is
+-- matching something other than the name it was given.
+select ev.val('EX6 POSITIVE CONTROL: a plausible name that was never created finds nothing',
+  $$select count(*)::text from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+     where c.relname = 'events_org_ends_at_id_live_idx'$$, '0');
 
 -- ===========================================================================
 -- Results
