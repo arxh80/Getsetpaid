@@ -515,6 +515,91 @@ select invariants.val('D10 all 13 tables carry a NOT NULL organisation_id',
   '13');
 
 -- ---------------------------------------------------------------------------
+-- D11. THE CHILD POLICIES' OWN TENANT CORRELATION.
+--
+-- ADDED BY TASK 8 (the phase exit gate) BECAUSE A MUTATION PROVED THE GAP.
+-- `venue_rooms_select_via_venue` was rewritten with its
+-- `p.organisation_id = venue_rooms.organisation_id` term removed, and the whole
+-- suite stayed green: 843 psql assertions and 174 HTTP checks, zero failures.
+--
+-- It stayed green for a real reason. The composite FK
+-- `venue_rooms_venue_fkey (venue_id, organisation_id)` makes those two columns
+-- agree by construction, so while the FK holds the policy term cannot change an
+-- answer. Measured on this stack, four ways, with the cross-tenant row planted
+-- as `postgres` and read back as an ALPHA manager:
+--
+--   composite FK + correlation      plant refused (23503)
+--   composite FK, NO correlation    plant refused (23503)
+--   single-column FK + correlation  planted, ALPHA reads 0  -- policy holds
+--   single-column FK, NO correlation planted, ALPHA reads 1  -- BREAKOUT
+--
+-- So the FK and the policy term are each other's ONLY backstop. D8 asserts the
+-- FK is still composite. Until this assertion, nothing asserted the policy was
+-- still correlated -- and C1, the proven cross-tenant read this whole file
+-- exists for, was one ordinary-looking policy edit plus one ordinary-looking
+-- `alter table` away from being reachable again.
+--
+-- READ BACK THROUGH THE PARSER, NOT OFF THE SOURCE TEXT. `pg_get_expr` deparses
+-- the stored node tree, so dollar quotes, comments, casing and whitespace are
+-- all normalised before the comparison sees them -- the same technique the
+-- permission-catalogue guards M1c/M1d settled on after three source-text
+-- regexes were evaded. What it does NOT prove is semantics: a policy could
+-- carry the correlation and still be wrong some other way. That is section Y of
+-- rls_phase2_crm.sql's job, which asks the policy behaviourally with the FK
+-- lifted.
+-- ---------------------------------------------------------------------------
+create view invariants.child_parent as
+  select * from (values
+    ('venue_rooms',            'venues'),
+    ('contact_companies',      'contacts'),
+    ('artist_representations', 'artists'),
+    ('artist_fee_history',     'artists')
+  ) as v(child, parent);
+
+select invariants.val('D11 every via-parent policy correlates parent.organisation_id with the child''s',
+  $$select count(*)::text
+      from invariants.child_parent cp
+      join pg_catalog.pg_class c on c.relname = cp.child
+       and c.relnamespace='public'::regnamespace
+      join pg_catalog.pg_policy p on p.polrelid = c.oid
+      cross join lateral (values
+        (coalesce(pg_catalog.pg_get_expr(p.polqual,      p.polrelid), '')),
+        (coalesce(pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid), ''))
+      ) as e(expr)
+     where e.expr ~ ('FROM (public\.)?' || cp.parent || ' ')
+       and e.expr not like '%.organisation_id = ' || cp.child || '.organisation_id%'$$,
+  '0');
+
+-- NON-VACUITY CONTROL. D11 counts violations, so it also passes against a
+-- database in which no policy joins to a parent at all -- a `FROM` that got
+-- renamed, a view that replaced a table, a typo in the pair list above. This
+-- counts the expressions D11 actually inspected. Seventeen: four on
+-- venue_rooms (select, insert, update x2), five on contact_companies (the same
+-- plus delete), and four each on artist_representations and artist_fee_history.
+--
+-- IT EARNED ITS KEEP ON THE FIRST RUN. D11's predicate was originally
+-- `like '%FROM ' || parent || ' %'`, written against the deparse psql shows
+-- you. Inside `invariants.val` the search_path is pinned to
+-- 'pg_catalog, public', so `public` is not the first schema and the deparser
+-- SCHEMA-QUALIFIES the relation -- `FROM public.venues p`, not `FROM venues p`.
+-- The pattern matched nothing, D11 counted zero violations out of zero
+-- expressions, and it PASSED. Only this control failed. The predicate is now a
+-- regex that accepts either form, because which one you get depends on a GUC
+-- and not on anything about the policy.
+select invariants.val('D11b CONTROL: D11 inspected 17 policy expressions, not zero',
+  $$select count(*)::text
+      from invariants.child_parent cp
+      join pg_catalog.pg_class c on c.relname = cp.child
+       and c.relnamespace='public'::regnamespace
+      join pg_catalog.pg_policy p on p.polrelid = c.oid
+      cross join lateral (values
+        (coalesce(pg_catalog.pg_get_expr(p.polqual,      p.polrelid), '')),
+        (coalesce(pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid), ''))
+      ) as e(expr)
+     where e.expr ~ ('FROM (public\.)?' || cp.parent || ' ')$$,
+  '17');
+
+-- ---------------------------------------------------------------------------
 -- Teardown. Cascades through every fixture row; rls_foundation.sql runs next
 -- and assumes an empty public schema.
 -- ---------------------------------------------------------------------------

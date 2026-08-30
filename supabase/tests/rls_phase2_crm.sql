@@ -5827,6 +5827,86 @@ select crm.val('X35b CONTROL: X35 walked four events, not zero',
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
+-- Y. DEFENCE IN DEPTH: THE CHILD POLICIES ASKED WITHOUT THEIR FOREIGN KEY
+--
+-- ADDED BY TASK 8 (the phase exit gate) BECAUSE A MUTATION PROVED THE GAP.
+-- Removing `p.organisation_id = venue_rooms.organisation_id` from
+-- `venue_rooms_select_via_venue` left the ENTIRE suite green -- 843 psql
+-- assertions, 174 HTTP checks, zero failures. The composite FK
+-- `venue_rooms_venue_fkey (venue_id, organisation_id)` makes the two columns
+-- agree by construction, so while it holds the policy term cannot change an
+-- answer, and nothing here could tell the difference.
+--
+-- schema_invariants.sql D11 now asserts the term is PRESENT, structurally.
+-- This section asserts it WORKS, by taking away the thing that was hiding it:
+-- the FK is dropped for the length of three statements, the row it would have
+-- refused is planted as `postgres`, and the policy is asked on its own.
+--
+-- Measured before writing this, all four combinations, on this stack:
+--
+--   composite FK + correlation       plant refused (23503)
+--   composite FK, NO correlation     plant refused (23503)
+--   single-column FK + correlation   planted, ALPHA reads 0   <- Y1 asserts this
+--   single-column FK, NO correlation planted, ALPHA reads 1   <- the breakout
+--
+-- SAFETY. Y0 proves the plant landed, so Y1's zero is the policy answering and
+-- not a failed insert. The row is deleted and the FK restored immediately
+-- afterwards, and Y4 asserts both -- if Y4 fails the schema is dirty and the
+-- run must be discarded and the database reset. venue_rooms carries no audit
+-- trigger and only `set_updated_at`, so the plant and the delete leave nothing
+-- behind for the HTTP sections (which count BETA venue_rooms and expect 0).
+-- ===========================================================================
+alter table public.venue_rooms drop constraint venue_rooms_venue_fkey;
+
+-- An ALPHA venue's room, tagged with BETA's organisation_id. The composite FK
+-- is the only thing that refuses this, which is why it had to come off first.
+insert into public.venue_rooms (id, organisation_id, venue_id, name)
+select '6666ffff-0000-0000-0000-0000000000ff', o.id,
+       '55550000-0000-0000-0000-000000000002', 'CROSS-TENANT ROOM'
+from public.organisations o where o.slug='org-beta';
+
+select crm.val('Y0  CONTROL: the cross-tenant row really was planted',
+  $$select count(*)::text from public.venue_rooms
+     where id='6666ffff-0000-0000-0000-0000000000ff'$$, '1');
+
+-- pmanager holds view_crm in ALPHA and full record scope there, so the parent
+-- venue clears every OTHER term in the policy. The correlation is the only
+-- thing left standing between them and a row tagged BETA.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.val('Y1  a room in an ALPHA venue but TAGGED BETA is invisible to ALPHA',
+  $$select count(*)::text from public.venue_rooms
+     where id='6666ffff-0000-0000-0000-0000000000ff'$$, '0');
+select crm.val('Y2  CONTROL: the same reader still sees ALPHA''s own rooms',
+  $$select (count(*) > 0)::text from public.venue_rooms$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- The other direction. BETA's owner is the org the row is TAGGED with and
+-- still must not see it, because the venue it hangs off is not theirs. This
+-- one does not discriminate the mutation (both forms answer 0); it is here so
+-- the row is proved invisible to everybody, not just to ALPHA.
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select crm.val('Y3  ...and invisible to BETA too, whose id it carries',
+  $$select count(*)::text from public.venue_rooms
+     where id='6666ffff-0000-0000-0000-0000000000ff'$$, '0');
+reset role; reset request.jwt.claims;
+
+delete from public.venue_rooms where id='6666ffff-0000-0000-0000-0000000000ff';
+alter table public.venue_rooms
+  add constraint venue_rooms_venue_fkey
+  foreign key (venue_id, organisation_id)
+  references public.venues(id, organisation_id) on delete cascade;
+
+select crm.val('Y4  the composite FK is restored and the planted row is gone',
+  $$select (select array_length(conkey,1)::text from pg_catalog.pg_constraint
+             where conname='venue_rooms_venue_fkey'
+               and connamespace='public'::regnamespace)
+        || '/' ||
+           (select count(*)::text from public.venue_rooms
+             where id='6666ffff-0000-0000-0000-0000000000ff')$$, '2/0');
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o
