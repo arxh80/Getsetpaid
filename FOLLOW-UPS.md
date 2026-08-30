@@ -1297,8 +1297,14 @@ corrections are the useful part. Each now says what was actually done.
   `tests/integration/crm/entity-dispatch-branches-match-db.test.ts`, which
   checks the ABSENCE of the two branches deliberately.
 
-- **`ENTITY_PATH_SEGMENT.event` points at `/[orgSlug]/events`, which does not
-  exist until Phase 3 Task 3.** A known dangling link, added in Task 1 because
+- ~~**`ENTITY_PATH_SEGMENT.event` points at `/[orgSlug]/events`, which does not
+  exist until Phase 3 Task 3.**~~ **DONE** — Task 3 landed the list and Task 4
+  the detail page, so both the segment and the `/{orgSlug}/events/{id}` shape
+  `entityHref()` builds now resolve. (`public.activity_events` still emits no
+  event rows; that is the separate bullet below and is Task 6's.) The original
+  entry follows.
+
+  It was a known dangling link, added in Task 1 because
   `otherHref()` (`lib/crm/activity.ts`) and `entityHref()` (`lib/crm/dedup.ts`)
   are total over that record and a missing key would put `undefined` in a URL
   rather than produce a 404. Nothing reaches it today: the only route in is a
@@ -1558,9 +1564,17 @@ corrections are the useful part. Each now says what was actually done.
   the page and fails independently, so the ceiling is latency, not a broken
   page.
 
-- **NEITHER events route has a working destination yet: `/{orgSlug}/events/new`
-  AND `/{orgSlug}/events/{id}` both 404 until Task 4.** The create route is the
-  obvious half — the "New event" button is a `<Link>` for a caller who holds
+- ~~**NEITHER events route has a working destination yet:
+  `/{orgSlug}/events/new` AND `/{orgSlug}/events/{id}` both 404 until
+  Task 4.**~~ **DONE, Phase 3 Task 4**, which landed `/events/new`,
+  `/events/{id}` and `/events/{id}/edit`. The read-only-at-the-route
+  assertion the Task 3 brief asked for and had nowhere to run was walked in a
+  browser and is recorded in `task-4-report.md` § 4. **THE PERMANENT SPEC IS
+  STILL OWED** — see "A permanent Playwright spec for events" below, which is
+  where that third debt now lives rather than inside a struck-through item.
+  The original entry follows.
+
+  The create route was the obvious half — the "New event" button is a `<Link>` for a caller who holds
   `manage_events`. The larger half, corrected in fix round 1 (review Minor 3),
   is that **every row's Name link on both routes** points at the detail page
   that does not exist, so on a populated workspace the dead surface is 25 links
@@ -1582,6 +1596,77 @@ corrections are the useful part. Each now says what was actually done.
   temporary spec (kept at
   `.superpowers/sdd/phase-3-events/task-3-browser-walk.spec.ts` for
   reproducibility) and its findings live only in a report.
+
+### Opened by Task 4 (the event write path and the detail page)
+
+- **A `<select>`'s `defaultValue` DOES NOT SURVIVE REACT 19'S POST-ACTION FORM
+  RESET, and five other selects in `components/crm/` are written the way the
+  event form was before it was fixed.** Measured in a browser on the event
+  form: type a name, pick "Club night", "On sale", a venue and a room, mistype
+  the ticket link, submit — the four text fields come back correctly and all
+  four selects snap back to the options the page first rendered with ("Other",
+  "Draft", no venue, no room). Retrying the submit then SAVES four values the
+  user never chose, which is worse than the text-field version of this defect
+  (`lib/forms.ts`'s header): losing what you typed is visible, silently saving
+  something else is not.
+
+  **The mechanism, so nobody has to re-derive it.** React syncs an
+  `<input>`'s `defaultValue` prop to the DOM `defaultValue` PROPERTY on every
+  update, so `form.reset()` restores the echoed value. A `<select>` has no such
+  property: its default is the `selected` ATTRIBUTE on an `<option>`, which
+  React writes at MOUNT and then leaves alone unless `multiple` changes. So the
+  reset restores the mount-time option no matter what the echo says. The fix on
+  the event form is a `key` on the select that includes its shown value,
+  forcing a remount — the same mechanism as `merge-form.tsx` keying its field
+  rows on the survivor (final review I-2).
+
+  **THE FIVE THAT ARE STILL WRITTEN THE OLD WAY**, found by grep and NOT
+  re-measured in a browser one by one — the mechanism is identical and the
+  markup is the same shape, so this is inferred rather than observed for each:
+
+  | file | control | what a refusal loses |
+  |---|---|---|
+  | `representation-panel.tsx:588` | `contactId` (add form) | the named agent |
+  | `representation-panel.tsx:826` | `contactId` (edit form) | the named agent |
+  | `link-panel.tsx:322` | the record to link | the chosen record |
+  | `custom-field-editor.tsx:257` | `fieldType` | the field type |
+  | `custom-fields-panel.tsx:328` | a `select` custom field's value | that value |
+
+  Deliberately NOT fixed here: it is a diff across four reviewed Phase 2
+  components for a defect this task did not introduce, and each needs its own
+  browser walk to confirm the before and the after. It is a real, live defect
+  in shipped code and it should be taken as one change with one walk, not
+  folded into a feature.
+
+- **A permanent Playwright spec for events is still owed.** Task 3's walk was
+  temporary and Task 4's is too — `.superpowers/sdd/phase-3-events/task-4-browser-walk.spec.ts`,
+  kept for reproducibility and deliberately outside `tests/e2e/` because one of
+  its five tests DROPS AND RE-ADDS `events_ticket_link_is_http` (the only way
+  to observe the render path for a value the CHECK refuses) and because it logs
+  more than it asserts. So the five acceptance criteria — the echo, the
+  soft-delete/restore round trip, `read_only` refused at the route, the no-JS
+  submit, and the inert `javascript:` link — are green in a transcript in a
+  report and in no gate. The permanent version asserts rather than logs, does
+  not reshape the schema, and belongs beside `golden-path.spec.ts`.
+
+- **The room picker offers every live room in the workspace, bounded at
+  `LINK_PANEL_LIMIT * 10` = 1,000, and there is no cascade.** With JavaScript
+  off there is nothing to repopulate the room `<select>` when the venue changes,
+  so the honest control is every room grouped under its venue with `<optgroup>`
+  and a server-side refusal for a mismatch. That is correct and it does not
+  scale: a workspace with 100 venues and eight rooms each renders an 800-option
+  select. The right answer is the same search-backed picker `LINK_PANEL_LIMIT`
+  already names as owed, plus a progressive JavaScript enhancement that filters
+  the groups live — an enhancement, never the only way the control works.
+
+- **`loadEvent` costs up to three round trips.** The row, then the venue name,
+  then the room name, each a `maybeSingle()` by primary key and each skipped
+  when the column is null. A PostgREST embed would do it in one and was
+  rejected for `loadVenueNames`' reason (an embed of a row the caller cannot
+  read comes back null anyway, so it buys a round trip and costs the same
+  branch). Worth revisiting only if the detail page's latency is ever measured
+  and found wanting; it is recorded so nobody concludes the second and third
+  queries were an oversight.
 
 ## Phase 3 — members management with a real UI
 
