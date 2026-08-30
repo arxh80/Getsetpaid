@@ -37,8 +37,15 @@ import { signIn } from "./support/sign-in";
 // hand and filed as F-4. axe classifies every `landmark-*` rule as
 // best-practice, not as a WCAG success criterion, so a WCAG-tagged run cannot
 // see a real defect this project already knows about. Adding the tag turned
-// that page red with three rules (enumerated below) and left every other page
+// that page red with three rules -- `landmark-main-is-top-level`,
+// `landmark-no-duplicate-main`, `landmark-unique` -- and left every other page
 // green, so the tag costs nothing and buys the one finding that mattered.
+//
+// THOSE THREE ARE NOW FIXED (final review I-8: `app/(app)/not-found.tsx`
+// renders the 404's markup in a `<div>` instead of a second `<main>`), so the
+// per-page exclusion list they justified is gone and every page in this file
+// is asserted at zero violations. The tag STAYS: it is what found them, and it
+// is the only reason a landmark regression in Phase 3 would be visible at all.
 const WCAG_TAGS = [
   "wcag2a",
   "wcag2aa",
@@ -143,46 +150,32 @@ test("the golden-path pages have no automated accessibility violations", async (
   }
 });
 
-// THE THREE RULES THE 404 PAGE BREAKS, all one defect: `app/(app)/layout.tsx`
-// opens `<main id="main">` and `app/not-found.tsx` opens its own `<main>`
-// inside it. Enumerated rather than skipped wholesale, and disabled ONLY on
-// this page -- they stay armed on every other surface above, which is what
-// stops the pattern spreading.
-const NESTED_MAIN: Deferred[] = [
-  {
-    rule: "landmark-main-is-top-level",
-    why: "FOLLOW-UPS: Opened by Task 8 -- nested <main> on the in-app 404 (F-4). Fix is a (app)/not-found.tsx variant; Phase 3.",
-  },
-  {
-    rule: "landmark-no-duplicate-main",
-    why: "FOLLOW-UPS: Opened by Task 8 -- the same defect seen from the outer landmark.",
-  },
-  {
-    rule: "landmark-unique",
-    why: "FOLLOW-UPS: Opened by Task 8 -- consequence of the same nested <main>: two landmarks with role=main and no distinguishing label.",
-  },
-];
-
-test("the in-app 404 -- where every refusal lands -- has only the known nested-main violations", async ({
+test("the in-app 404 -- where every refusal lands -- is clean, exclusions and all", async ({
   page,
 }) => {
   // NOT AN AFTERTHOUGHT. This is the page a tenant-breakout refusal, a
   // record-scope refusal and a soft-deleted record all render
   // (tenant-breakout.spec.ts), so it is the most-reached error surface in the
   // product.
+  //
+  // THIS TEST USED TO CARRY AN EXCLUSION LIST. `app/(app)/layout.tsx` opens
+  // `<main id="main">` and `app/not-found.tsx` opened its own `<main>` inside
+  // it, which axe reported as `landmark-main-is-top-level`,
+  // `landmark-no-duplicate-main` and `landmark-unique`. The three rules were
+  // disabled for this page and this page only, with a red control asserting
+  // that they still fired -- so the exclusions could not outlive the defect.
+  //
+  // Final review I-8 fixed it with `app/(app)/not-found.tsx`, which renders the
+  // same markup in a `<div>`. The control went red, as it was designed to, and
+  // the exclusions are deleted. What is left is the assertion the control was
+  // protecting: ZERO violations, with no list to be excluded by.
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}/contacts/${world.otherOrgContactId}`);
   await expect(page.locator("body")).toContainText("Page not found");
 
-  // CONTROL, so the exclusion list cannot quietly outlive the defect: with the
-  // three rules armed this page IS red, and if a Phase 3 fix makes it green
-  // this assertion fails and the exclusions get deleted rather than lingering.
-  const unfiltered = await new AxeBuilder({ page })
-    .withTags(WCAG_TAGS)
-    .analyze();
-  expect(unfiltered.violations.map((v) => v.id).sort()).toEqual(
-    NESTED_MAIN.map((d) => d.rule).sort(),
-  );
+  // Explicitly, not only through `scan`: the whole point of I-8 is that this
+  // page has exactly ONE `main` landmark, and it is the shell's.
+  await expect(page.locator("main")).toHaveCount(1);
 
-  await scan(page, "in-app 404", NESTED_MAIN);
+  await scan(page, "in-app 404");
 });

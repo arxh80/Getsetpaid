@@ -1,6 +1,12 @@
 import Link from "next/link";
 
-// 404, per DESIGN.md § Error pages.
+// The UNAUTHENTICATED 404, per DESIGN.md § Error pages.
+//
+// Anything under the `(app)` route group renders `app/(app)/not-found.tsx`
+// instead -- same markup in a `<div>`, because that group's layout already
+// opens the document's `<main>` and two of them is invalid HTML and three axe
+// violations (final review I-8). This file keeps its `<main>` because out here
+// there is no shell and this page IS the document's main content.
 //
 // Layout is fixed by that section: centred on the shell, large display numeral
 // in --text-5xl, one short sentence, one primary action out. No illustration,
