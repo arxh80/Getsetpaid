@@ -1,0 +1,120 @@
+# The first CI this repository has had.
+#
+# ===========================================================================
+# READ THIS BEFORE TRUSTING IT
+# ===========================================================================
+# THIS WORKFLOW HAS NEVER RUN. It was written by Phase 2 Task 8 in an
+# environment with no CI runner, so the first push that triggers it is its
+# first execution. Treat a failure on that run as a bug in this file until
+# proven otherwise. Everything else in the Task 8 report was measured; this was
+# not, and the report says so.
+#
+# ===========================================================================
+# WHAT IT COVERS, AND THE MUCH LARGER PART IT DOES NOT
+# ===========================================================================
+# `CLAUDE.md` § Testing gates asks for "dependency and secret scanning in CI".
+# There was no CI at all, which is the finding Task 8 raised; this closes the
+# smallest honest version of it and NOT the rest:
+#
+#   COVERED HERE          lint, typecheck, the unit tests, a dependency audit,
+#                         a secret scan.
+#   NOT COVERED HERE      `vitest run tests/integration`, the 850 psql
+#                         assertions, the 174 HTTP checks and the 9 Playwright
+#                         tests. Every one of those needs a running Supabase
+#                         stack (`npx supabase start` plus `db reset`), which
+#                         is a container pull and several minutes per run and a
+#                         deliberate decision somebody has to make about CI
+#                         minutes. It is scoped in the Task 8 exit document,
+#                         not smuggled in here.
+#
+# So a green tick on this workflow is NOT a green phase. It is four of the
+# project's gates and the two scans, and the tenant-boundary suites -- the ones
+# `CLAUDE.md` says "matter most" -- still run only on a developer's machine.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: lint, typecheck, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      # NOT REDUNDANT WITH THE EDITOR. `CLAUDE.md` § Current state: nothing
+      # else in this project runs `tsc`, and the exhaustive `switch` over write
+      # outcomes in every Server Action is a compile-time guard only. Skipping
+      # typecheck skips those entirely.
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # UNIT ONLY. `pnpm test` also runs tests/integration, which talks to a
+      # real local Supabase stack over HTTP and fails without one. Naming the
+      # directory here rather than adding a `--exclude` keeps the failure mode
+      # obvious: a new integration test does not silently start being skipped.
+      - name: Unit tests
+        run: pnpm exec vitest run tests/unit
+
+  scan:
+    name: dependency and secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Gitleaks needs history to scan commits, not just the tree. A secret
+          # committed and then removed is still a leaked secret.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # HIGH AND ABOVE FAILS. Moderate advisories in a dev-only transitive
+      # dependency should not block a branch; a high or critical one should be
+      # looked at the day it appears.
+      - name: Dependency audit
+        run: pnpm audit --audit-level high
+
+      # SECRET SCAN. `CLAUDE.md` § Git workflow: "Never commit secrets, .env
+      # files, Supabase service-role keys". The service-role key bypasses RLS
+      # entirely (SECURITY.md § 2), so a leaked one is a total tenant breach and
+      # not merely an embarrassment.
+      #
+      # Pinned to a tag rather than a moving major: an action that scans for
+      # secrets is an action with access to every secret in the repository.
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
