@@ -843,6 +843,44 @@ describe("the merge path goes through the shared write vocabulary", () => {
   });
 });
 
+// ===========================================================================
+// FINAL REVIEW I-6 / L771 -- A CAP WITHOUT AN ORDER IS A RANDOM CAP
+// ===========================================================================
+//
+// Five capped child readers in lib/crm/queries.ts carried `.limit(100)` with
+// no `ORDER BY`. Postgres returns rows in whatever order it likes, so above
+// the cap the hundred that came back were a different hundred on every render.
+// The RENDERED order was never at risk -- every one of them sorts again in
+// memory -- which is exactly why nothing caught it: the defect is invisible
+// until a record crosses 100 children.
+//
+// A source assertion because reproducing it needs 101 rows on one parent and a
+// planner willing to change its mind. Blunt on purpose, like the rest of this
+// file.
+describe("I-6: every capped reader in lib/crm/queries.ts orders before it caps", () => {
+  const queries = read("lib/crm/queries.ts");
+  const lines = queries.split(/\r?\n/);
+  const caps = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => line.includes(".limit(") && !line.trimStart().startsWith("//"));
+
+  it("finds the capped readers at all, so this cannot pass vacuously", () => {
+    // Six today: two link panels, two representation panels, the rooms panel
+    // and the link picker. A floor, so Phase 3 adding one is not a red for the
+    // wrong reason -- but deleting them all is.
+    expect(caps.length).toBeGreaterThanOrEqual(6);
+  });
+
+  for (const { line, index } of caps) {
+    it(`the .limit( at queries.ts:${index + 1} is preceded by .order(`, () => {
+      // The line immediately above it, in a chained builder, is the last
+      // clause before the cap. `.order()` after `.limit()` would be a
+      // different query and PostgREST would not apply it to the truncation.
+      expect(lines[index - 1], line.trim()).toContain(".order(");
+    });
+  }
+});
+
 describe("every create screens for duplicates", () => {
   // Screening is one line per create action and its absence is completely
   // silent: the record saves, the user is happy, and the duplicate is never

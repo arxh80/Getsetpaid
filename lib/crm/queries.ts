@@ -217,7 +217,18 @@ export async function loadCompaniesForContact(
     .from("contact_companies")
     .select("company_id, is_primary, companies ( id, name, deleted_at )")
     .eq("organisation_id", organisationId)
+    // ORDER BY BEFORE LIMIT (final review I-6 / L771). Without it Postgres
+    // returns rows in whatever order it likes, so above LINK_PANEL_LIMIT the
+    // hundred that come back are a different hundred on every render. The
+    // rendered order was never at risk -- `toLinkRows` sorts the rows again in
+    // memory -- so what this fixes is WHICH rows survive the cap, not the
+    // sequence they appear in. `is_primary` leads it so the primary link is
+    // the one row that can never be truncated away; `id` closes the tie so
+    // two rows created in the same transaction do not swap places.
     .eq("contact_id", contactId)
+    .order("is_primary", { ascending: false })
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
     .limit(LINK_PANEL_LIMIT);
 
   if (error || !data) {
@@ -238,7 +249,18 @@ export async function loadContactsForCompany(
     .from("contact_companies")
     .select("contact_id, is_primary, contacts ( id, name, deleted_at )")
     .eq("organisation_id", organisationId)
+    // ORDER BY BEFORE LIMIT (final review I-6 / L771). Without it Postgres
+    // returns rows in whatever order it likes, so above LINK_PANEL_LIMIT the
+    // hundred that come back are a different hundred on every render. The
+    // rendered order was never at risk -- `toLinkRows` sorts the rows again in
+    // memory -- so what this fixes is WHICH rows survive the cap, not the
+    // sequence they appear in. `is_primary` leads it so the primary link is
+    // the one row that can never be truncated away; `id` closes the tie so
+    // two rows created in the same transaction do not swap places.
     .eq("company_id", companyId)
+    .order("is_primary", { ascending: false })
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
     .limit(LINK_PANEL_LIMIT);
 
   if (error || !data) {
@@ -754,9 +776,13 @@ function sortRepresentations(rows: RepresentationRow[]): RepresentationRow[] {
  * panel is a list endpoint that does not look like one, and CLAUDE.md
  * § Non-negotiable rules has no exception for panels. The honest limit,
  * recorded rather than papered over: an artist with more than 100
- * representations shows the first 100 in this order. That is far past any real
- * record; the real answer is a paginated panel, and the fee-history section on
- * the same page is what one looks like.
+ * representations shows 100 of them. WHICH 100 is decided by the query's own
+ * `ORDER BY` -- primary first, then oldest first -- and NOT by
+ * `sortRepresentations`, which only reorders whatever the cap already let
+ * through. Before final review I-6 there was no `ORDER BY` at all and the
+ * truncation set was a different hundred on every render. That is far past any
+ * real record; the real answer is a paginated panel, and the fee-history
+ * section on the same page is what one looks like.
  */
 export async function loadRepresentationsForArtist(
   organisationId: string,
@@ -767,7 +793,18 @@ export async function loadRepresentationsForArtist(
     .from("artist_representations")
     .select(REPRESENTATION_SELECT)
     .eq("organisation_id", organisationId)
+    // ORDER BY BEFORE LIMIT (final review I-6 / L771). Without it Postgres
+    // returns rows in whatever order it likes, so above LINK_PANEL_LIMIT the
+    // hundred that come back are a different hundred on every render. The
+    // rendered order was never at risk -- `sortRepresentations` sorts the rows again in
+    // memory -- so what this fixes is WHICH rows survive the cap, not the
+    // sequence they appear in. `is_primary` leads it so the primary link is
+    // the one row that can never be truncated away; `id` closes the tie so
+    // two rows created in the same transaction do not swap places.
     .eq("artist_id", artistId)
+    .order("is_primary", { ascending: false })
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
     .limit(LINK_PANEL_LIMIT);
 
   if (error || !data) {
@@ -799,7 +836,18 @@ export async function loadRepresentationsForAgency(
     .from("artist_representations")
     .select(REPRESENTATION_SELECT)
     .eq("organisation_id", organisationId)
+    // ORDER BY BEFORE LIMIT (final review I-6 / L771). Without it Postgres
+    // returns rows in whatever order it likes, so above LINK_PANEL_LIMIT the
+    // hundred that come back are a different hundred on every render. The
+    // rendered order was never at risk -- `sortRepresentations` sorts the rows again in
+    // memory -- so what this fixes is WHICH rows survive the cap, not the
+    // sequence they appear in. `is_primary` leads it so the primary link is
+    // the one row that can never be truncated away; `id` closes the tie so
+    // two rows created in the same transaction do not swap places.
     .eq("agency_id", agencyId)
+    .order("is_primary", { ascending: false })
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
     .limit(LINK_PANEL_LIMIT);
 
   if (error || !data) {
@@ -848,7 +896,13 @@ export async function loadRoomsForVenue(
     .from("venue_rooms")
     .select("id, name, deleted_at")
     .eq("organisation_id", organisationId)
+    // ORDER BY BEFORE LIMIT (final review I-6 / L771). `venue_rooms` carries
+    // its own `name`, so the cap keeps the alphabetically first hundred rather
+    // than an arbitrary hundred. The rendered order is still decided in memory
+    // below (open rooms first, then closed); this decides which rows are read.
     .eq("venue_id", venueId)
+    .order("name", { ascending: true })
+    .order("id", { ascending: true })
     .limit(LINK_PANEL_LIMIT);
 
   if (error || !data) {
