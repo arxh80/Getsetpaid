@@ -128,6 +128,33 @@ begin
   perform ev.record(p_label, p_expected, v_actual);
 end $$;
 
+-- THE CONSTRAINT-NAMING VARIANT (fix round 1, review finding F.8). Identical
+-- to ev.try except that a refusal records WHICH constraint raised it, as
+-- `denied(<sqlstate>:<conname>)`.
+--
+-- It exists because `denied(23503)` is ambiguous on public.event_lineup: BOTH
+-- event_lineup_event_fkey and event_lineup_artist_fkey are composite and
+-- tenant-scoped, so either could produce that SQLSTATE, and an assertion that
+-- accepted the bare code would stay green if the write started being refused
+-- by the OTHER end. `CONSTRAINT_NAME` is populated for integrity violations;
+-- `<no constraint>` is recorded when it is not, rather than a NULL that would
+-- silently compare equal to nothing.
+create function ev.try_con(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_rows bigint; v_actual text; v_con text;
+begin
+  begin
+    execute p_sql;
+    get diagnostics v_rows = row_count;
+    v_actual := 'ok(' || v_rows || ')';
+  exception when others then
+    get stacked diagnostics v_con = constraint_name;
+    v_actual := 'denied(' || sqlstate || ':'
+             || coalesce(nullif(v_con, ''), '<no constraint>') || ')';
+  end;
+  perform ev.record(p_label, p_expected, v_actual);
+end $$;
+
 create function ev.val(p_label text, p_sql text, p_expected text)
 returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
 declare v_actual text;
@@ -146,6 +173,7 @@ grant execute on function ev.record(text,text,text) to authenticated, anon, serv
 grant execute on function ev.note(text,text)        to authenticated, anon, service_role;
 grant select  on ev.notes                           to authenticated, anon, service_role;
 grant execute on function ev.try(text,text,text)    to authenticated, anon, service_role;
+grant execute on function ev.try_con(text,text,text) to authenticated, anon, service_role;
 grant execute on function ev.val(text,text,text)    to authenticated, anon, service_role;
 
 \o /dev/null
@@ -263,10 +291,23 @@ select ev.val('EA5 CONTROL: those same three roles DO hold view_crm',
 -- scoped, so with the permission term gone a manager still sees no BETA row --
 -- the tenant boundary holds on the surviving term alone. What the mutation
 -- actually removes is the PERMISSION and MFA half of the read gate, and the
--- two assertions that go red are EB13 below (structurally: the policy no
--- longer names permitted_organisations at all) and § EJ1 (behaviourally: an
--- aal1 Owner, who holds no permission, reads 9 events instead of 0). Both are
--- in this suite; neither is in this section, which is why this note is.
+-- assertions that go red are EB13 below (structurally: the policy no longer
+-- names permitted_organisations at all), § EJ1 (an aal1 Owner, who holds no
+-- permission, reads 9 events instead of 0) and -- ADDED IN FIX ROUND 1 --
+-- EB15-EB20 below, which put the case IN this section.
+--
+-- EB15-EB20 EXIST BECAUSE THE MUTATION OPENS A WIDENING NO OTHER ASSERTION IN
+-- ANY SUITE COVERS. The surviving disjunct is
+--
+--     organisation_id in (select private.full_scope_organisations())
+--     or owner_user_id = (select auth.uid())
+--
+-- and the SECOND HALF OF THAT CARRIES NO ORGANISATION OR MEMBERSHIP TERM AT
+-- ALL. `permitted_organisations('view_crm')` is the only thing in this policy
+-- that asks whether the caller is still a member. Take it away and a user
+-- whose membership has been REVOKED goes on reading every event they own --
+-- the live ex-employee read path. EB1-EB11 all run as current, active members,
+-- so not one of them can express it however it is counted.
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 
@@ -349,6 +390,68 @@ select ev.val('EB13 every Phase 3 policy is built on the hoistable set form',
 select ev.val('EB14 CONTROL: EB12/EB13 inspected 6 policies, not zero',
   $$select count(*)::text from pg_policies
      where schemaname='public' and tablename in ('events','event_lineup')$$, '6');
+
+-- ---------------------------------------------------------------------------
+-- EB15-EB20. THE REVOKED MEMBER (fix round 1, review finding F.1).
+--
+-- The one reader for whom `owner_user_id = (select auth.uid())` is true and
+-- membership is not. `pstd1`'s ALPHA membership is flipped to `revoked` for
+-- the length of three statements and put back; `organisation_memberships`
+-- carries no trigger but `set_updated_at`, and this is the only place in the
+-- suite that touches it.
+--
+-- IN AN EXPLICIT TRANSACTION so an abort between the flip and the restore
+-- cannot leave the local database with a revoked fixture user. Same reason as
+-- the two schema lifts in §§ ED and EF.
+--
+-- WHY IT DISCRIMINATES, traced against the deployed expression before it was
+-- written: unmutated, `permitted_organisations('view_crm')` requires
+-- `status = 'active'`, so a revoked pstd1 gets an empty set and the whole
+-- conjunction is false -> 0 rows. Under the mutation that term is gone,
+-- `full_scope_organisations()` (also active-only) is empty, and
+-- `owner_user_id = auth.uid()` is TRUE for their own event -> they read it.
+-- EB16 is the assertion that flips; EB20 is the positive control that the zero
+-- is the revocation talking and not a broken fixture.
+-- ---------------------------------------------------------------------------
+begin;
+
+update public.organisation_memberships
+   set status = 'revoked'
+ where user_id = :'pstd1' and organisation_id = :'alpha_org';
+
+select ev.val('EB15 CONTROL: pstd1''s ALPHA membership really is revoked',
+  format($$select status from public.organisation_memberships
+            where user_id=%L and organisation_id=%L$$, :'pstd1', :'alpha_org'),
+  'revoked');
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EB16 a REVOKED member reads ZERO events -- including the one they OWN',
+  $$select count(*)::text from public.events$$, '0');
+select ev.val('EB17 ...and zero lineup rows',
+  $$select count(*)::text from public.event_lineup$$, '0');
+select ev.try('EB18 ...and cannot write one either',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'Revoked Event', now())$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+update public.organisation_memberships
+   set status = 'active'
+ where user_id = :'pstd1' and organisation_id = :'alpha_org';
+
+select ev.val('EB19 CONTROL: the membership is restored to active',
+  format($$select status from public.organisation_memberships
+            where user_id=%L and organisation_id=%L$$, :'pstd1', :'alpha_org'),
+  'active');
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EB20 POSITIVE: reinstated, they read their own event again',
+  $$select coalesce(string_agg(name,',' order by name),'<none>') from public.events$$,
+  'Std1 Event');
+reset role; reset request.jwt.claims;
+
+commit;
 
 -- ===========================================================================
 -- EC. The role matrix, cell by cell
@@ -527,11 +630,20 @@ reset role; reset request.jwt.claims;
 -- is asked on its own, and the SELECT policy is put back and compared against
 -- what was there.
 --
--- SAFETY. ED11 proves the lift really happened, so ED12/ED13 are the UPDATE
--- policy answering and not the old visibility rule. ED15/ED16 assert the
--- restore structurally and behaviourally; if either fails the schema is dirty
--- and the run must be discarded and the database reset.
+-- SAFETY, TWO LAYERS. ED11 proves the lift really happened, so ED12/ED13 are
+-- the UPDATE policy answering and not the old visibility rule. ED15/ED16
+-- assert the restore structurally and behaviourally.
+--
+-- AND THE WHOLE LIFT RUNS INSIDE AN EXPLICIT TRANSACTION (fix round 1, review
+-- finding F.7). `\set ON_ERROR_STOP on` guarantees an abort between the
+-- `alter policy` and its restore is reachable, and the previous version left
+-- that case to a comment telling the reader to reset the database. Policy DDL
+-- is transactional in PostgreSQL and `set role` / `set request.jwt.claims`
+-- work inside a transaction block, so an abort now rolls the weakened policy
+-- back on its own. ev.record's writes commit with it.
 -- ---------------------------------------------------------------------------
+begin;
+
 set search_path = 'pg_catalog, public';
 select ev.note('ed_select_qual', (select qual from pg_policies
   where schemaname='public' and tablename='events' and cmd='SELECT'));
@@ -587,6 +699,8 @@ select ev.val('ED16 ...and behaviourally: pstd1 is back to seeing only their own
   $$select coalesce(string_agg(name,',' order by name),'<none>') from public.events$$,
   'Std1 Created Event,Std1 Event');
 reset role; reset request.jwt.claims;
+
+commit;
 
 -- ===========================================================================
 -- EE. Cross-tenant record transfer -- private.entity_org_unchanged()
@@ -672,11 +786,19 @@ reset role; reset request.jwt.claims;
 
 -- As postgres: no policy is in the way, so this reaches the constraint layer.
 -- A single-column event_lineup_event_fkey would let this row land.
-select ev.try('EF4b ...and as postgres, where no policy is in the way, the FK refuses it -- 23503',
+--
+-- ev.try_con, NOT ev.try, AND THE CONSTRAINT NAME IS THE POINT (fix round 1,
+-- review finding F.8). This row names a BETA event AND an ALPHA artist, and
+-- BOTH event_lineup_event_fkey and event_lineup_artist_fkey are composite and
+-- tenant-scoped -- either could raise 23503. A bare `denied(23503)` would stay
+-- green if the EVENT foreign key were narrowed to a single column and the
+-- ARTIST one started doing the refusing instead, which is the exact
+-- substitution this assertion exists to notice.
+select ev.try_con('EF4b ...and as postgres, where no policy is in the way, the EVENT FK refuses it',
   format($$insert into public.event_lineup (organisation_id, event_id, artist_id)
            values (%L,'ee11000b-0000-0000-0000-00000000000b',
                    '44440000-0000-0000-0000-000000000001')$$, :'alpha_org'),
-  'denied(23503)');
+  'denied(23503:event_lineup_event_fkey)');
 select ev.try('EF4c CONTROL: the same postgres INSERT against an ALPHA event lands',
   format($$insert into public.event_lineup (organisation_id, event_id, artist_id, position)
            values (%L,'ee110000-0000-0000-0000-000000000003',
@@ -704,16 +826,24 @@ reset role; reset request.jwt.claims;
 -- which would make EF7's zero mean "nothing was planted" rather than "the
 -- policy refused it". Measured, not assumed: that is what the first draft did.
 --
--- SAFETY. EF6 proves the plant landed, so EF7's zero is the policy answering.
--- The row is deleted and the FK (and its comment) restored immediately
--- afterwards; EF10-EF12 assert both. If EF10-EF12 fail the schema is dirty and
--- the run must be discarded and the database reset.
+-- SAFETY, TWO LAYERS. EF6 proves the plant landed, so EF7's zero is the policy
+-- answering. The row is deleted and the FK (and its comment) restored
+-- immediately afterwards; EF10-EF12 assert both.
+--
+-- AND THE WHOLE LIFT RUNS INSIDE AN EXPLICIT TRANSACTION (fix round 1, review
+-- finding F.7), for the reason § ED's does: constraint DDL is transactional in
+-- PostgreSQL, so an abort between `drop constraint` and its re-add rolls back
+-- rather than leaving public.event_lineup without its composite foreign key.
+-- The ACCESS EXCLUSIVE lock the drop takes is held to commit, which costs
+-- nothing here -- this suite is one session.
 --
 -- UNDER ev.val'S OWN search_path, because pg_get_constraintdef() renders
 -- against it -- § Y measured that capturing the note under a different path
 -- than the comparison makes the restore assertion fail for a reason that has
 -- nothing to do with the schema.
 -- ---------------------------------------------------------------------------
+begin;
+
 set search_path = 'pg_catalog, public';
 select ev.note('ef_fkey_def', (select pg_catalog.pg_get_constraintdef(oid)
   from pg_catalog.pg_constraint
@@ -788,6 +918,8 @@ select ev.val('EF11 the constraint COMMENT is restored too',
 select ev.val('EF12 ...and the planted row is gone',
   $$select count(*)::text from public.event_lineup
      where id='ff11ffff-0000-0000-0000-0000000000ff'$$, '0');
+
+commit;
 
 -- ===========================================================================
 -- EG. A SOFT-DELETED PARENT -- readable, not writable
