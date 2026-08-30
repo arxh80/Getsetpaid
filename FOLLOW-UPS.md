@@ -244,8 +244,12 @@ These become live the moment a real tenant table exists.
   path at roughly **75 ms of database time per search at 20,000 rows**, growing
   linearly, because a non-leakproof operator cannot become an index qual for a
   caller RLS applies to. An authenticated member can issue those as fast as they
-  like. **Needs an owner and a phase before deployment** -- it is cross-cutting
-  infrastructure, not Core CRM, which is why Task 8 did not build it.
+  like. **SCHEDULED 2026-08-30 (final review I-9).** Owner: **the founder**.
+  Implementation: **Phase 7 -- admin/security**, below. Pre-deployment gate:
+  **Phase 10 -- launch hardening**, below, which refuses to ship without it.
+  It is cross-cutting infrastructure, not Core CRM, which is why Task 8 did not
+  build it -- but "recorded" is not "scheduled", and the Task 8 exit document's
+  own merge condition 1 asked for the second.
 - **The merge history says "No fields taken" when a field WAS taken.**
   `fieldsFromLoser()` (`lib/crm/dedup.ts:351`) reads only
   `field_resolution.fields`; custom fields taken in a merge live under
@@ -284,9 +288,15 @@ These become live the moment a real tenant table exists.
   in another landmark"), `landmark-no-duplicate-main` on `#main` ("Document has
   more than one main landmark") and `landmark-unique` on `#main` ("The landmark
   must have a unique aria-label, aria-labelledby, or title"), all `moderate`.
-  All three are disabled BY NAME and only on this page in
+  All three were disabled BY NAME and only on this page in
   `tests/e2e/accessibility.spec.ts` (`NESTED_MAIN`), with a control that fails
-  if the page ever stops being red -- so the exclusion cannot outlive the fix.
+  if the page ever stops being red -- so the exclusion could not outlive the fix.
+  **CLOSED 2026-08-30 (final review I-8).** `app/(app)/not-found.tsx` renders
+  the same markup in a `<div>`; `app/not-found.tsx` keeps its `<main>` because
+  it serves the unauthenticated 404 where the page IS the document's main
+  content. The control went red exactly as designed, `NESTED_MAIN` and the
+  control are deleted, and that test now asserts ZERO violations under
+  `best-practice` plus `main` count 1. Playwright 12/12 green at the fix.
 - **`.github/workflows/ci.yml` DID execute, and its first three runs all failed
   in the workflow file rather than in the project.** ~~Never executed~~ —
   corrected in fix round 1. GitHub ran it on every Task 8 push (runs
@@ -1144,8 +1154,27 @@ These become live the moment a real tenant table exists.
 
 ## Phase 3 — events
 
-Both carried out of Phase 2 Task 1, and both are one-line additions to the
-migration that creates `public.events`. Neither is optional: until they happen,
+- **FIRST TEST TASK OF PHASE 3 (added 2026-08-30, final review I-7): the merge
+  fixtures must call `merge_records()`.** `merges.field_resolution` is written
+  by exactly one function, `public.merge_records()`, and BOTH surfaces that read
+  it -- `/merges` (`lib/crm/dedup.ts` `mapMerge`/`snapshotName`) and the
+  activity timeline (`20260829040000:246,277`, reading
+  `field_resolution -> 'loser' -> 'before' ->> 'name'`) -- are asserted only
+  against `merges` rows the psql and HTTP suites `INSERT` by hand, which never
+  set the `<side>.before` snapshot. A change to what `merge_records()` writes
+  would break both screens with every suite green; Task 8 observed the symptom
+  directly (nine of eleven merge-history rows rendered anonymously in the
+  browser). It is a fixture artefact and NOT a product defect -- a real merge
+  through the UI renders correctly -- which is exactly why it will survive
+  unless it is scheduled. Fix: the psql and HTTP merge fixtures call
+  `merge_records()` for at least one pair per entity type instead of
+  hand-writing `merges` rows. Owner: whoever takes Phase 3's first task.
+  Roughly half a day. This is the same item as § "Opened by Task 8"'s "Both
+  merge-rendering paths are tested only against hand-written fixture rows", with
+  a date and a position in the queue.
+
+Both of the following are carried out of Phase 2 Task 1, and both are one-line
+additions to the migration that creates `public.events`. Neither is optional: until they happen,
 Phase 2 ships a column and three allowlists that Phase 3 silently invalidates.
 
 - **`artist_fee_history.event_id` needs a TENANT-SCOPED foreign key, and is
@@ -1208,6 +1237,29 @@ Phase 2 ships a column and three allowlists that Phase 3 silently invalidates.
 - **`RecordCurrentOrg` costs a database round trip per in-app navigation**, not
   only on cross-organisation switches. Intentional, per the sliding-expiry
   design. Revisit only if navigation volume becomes a cost.
+
+## Phase 7 — admin/security
+
+- **RATE LIMITING. Owner: the founder. Scheduled here 2026-08-30 (final review
+  I-9), discharging the Task 8 exit document's merge condition 1.** The full
+  finding, with the measurements behind it, is in § "Opened by Task 8" above:
+  nothing in the product enforces `SECURITY.md` § 5; the only real limiting
+  anywhere is GoTrue's own per-IP `sign_in_sign_ups = 30` /
+  `token_verifications = 30` per 5 minutes (`supabase/config.toml:264,266`),
+  which does not meet § 5's Login row (5 / 15 min per IP **and per account** --
+  no per-account limit exists); and search asks for 60/min/user and has none
+  across fifteen list specs, on a path Task 3 measured at ~75 ms of database
+  time per search at 20,000 rows, growing linearly, because a non-leakproof
+  operator cannot become an index qual for a caller RLS applies to. An
+  authenticated member can issue those as fast as they like.
+
+  Phase 7 because it is cross-cutting infrastructure that belongs with the
+  admin/security surface rather than with any one entity, and because the
+  superuser dashboard's incident alerting (`CLAUDE.md` § Superuser dashboard)
+  is the natural consumer of whatever counters this produces.
+
+  **This is not the deadline.** The deadline is the Phase 10 gate below. If
+  Phase 7 slips, the gate still holds.
 
 ## Phase 7 — superuser dashboard
 
@@ -1373,6 +1425,28 @@ before the first real consumer exists rather than alongside it.
 
 ## Phase 10 — launch hardening
 
+- **PRE-DEPLOYMENT GATE: rate limiting must be implemented before this product
+  is deployed. Owner: the founder. Added 2026-08-30 (final review I-9).** This
+  is a refusal, not a reminder: if `SECURITY.md` § 5 is still unenforced when
+  launch is otherwise ready, launch does not proceed. The implementation is
+  scheduled in § "Phase 7 — admin/security" above and the evidence is in
+  § "Opened by Task 8"; this entry exists so that a slip in Phase 7 cannot turn
+  into a ship. `SECURITY.md` § 1 makes security an acceptance criterion rather
+  than something applied afterwards, and the Task 8 exit document was explicit
+  that closing this as "accepted" rather than scheduled would have blocked the
+  Phase 2 merge.
+- **SCREEN-READER PASS. Owner: the founder (or a nominee). Due: before Phase 10
+  exit. Script: `task-8-report.md` § 3.** Added 2026-08-30 (final review I-13).
+  No screen-reader pass has ever been run on this product -- it has now been
+  deferred by Tasks 3, 7 and 8, in each case because the environment has no
+  NVDA/JAWS/VoiceOver. Final review I-12 is the direct evidence that the
+  automated half does not substitute for it: axe reported ZERO violations on the
+  custom-fields settings page while an error `<p>` there was referenced by no
+  `aria-describedby` at all, which is an error a screen-reader user could not
+  hear. `CLAUDE.md` § Legal and regulatory compliance names the Equality Act
+  2010 obligation behind it. Walk `task-8-report.md` § 3's golden path as each
+  of its five roles, plus the custom-field editor, the merge screen and the
+  in-app 404.
 - **A real assistive-technology pass has never been run.** No NVDA, JAWS or
   VoiceOver was available at any point during Foundation; accessibility-tree
   and DOM/spec-level evidence was used instead and disclosed each time. The
