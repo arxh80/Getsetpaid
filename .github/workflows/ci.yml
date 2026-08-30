@@ -61,13 +61,13 @@ jobs:
     name: lint, typecheck, unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 11.24.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # >= 22.13 IS A HARD FLOOR, NOT A PREFERENCE. `packageManager` pins
           # pnpm 11.24.0, which requires Node >= 22.13 and crashes on
@@ -99,17 +99,17 @@ jobs:
     name: dependency and secret scanning
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # Gitleaks needs history to scan commits, not just the tree. A secret
           # committed and then removed is still a leaked secret.
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
           version: 11.24.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # >= 22.13 IS A HARD FLOOR, NOT A PREFERENCE. `packageManager` pins
           # pnpm 11.24.0, which requires Node >= 22.13 and crashes on
@@ -131,9 +131,17 @@ jobs:
       # entirely (SECURITY.md § 2), so a leaked one is a total tenant breach and
       # not merely an embarrassment.
       #
-      # Pinned to a tag rather than a moving major: an action that scans for
-      # secrets is an action with access to every secret in the repository.
+      # PINNED TO A COMMIT SHA, not to a tag. `@v2` is the moving major and
+      # `@v2.3.9` is a tag the publisher can re-point at any time; only a SHA
+      # is immutable. An action that scans for secrets is an action with
+      # access to every secret in the repository, so this is the one step
+      # where a supply-chain swap is worst. Every other `uses:` in this file
+      # is pinned the same way for consistency -- SHAs verified against
+      # `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` on 2026-08-30, with
+      # pnpm/action-setup's annotated tag dereferenced through
+      # `git/tags/<sha>`. To bump one: look the new SHA up the same way and
+      # update the `# vX.Y.Z` trailer with it.
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
