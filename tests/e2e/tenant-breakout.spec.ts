@@ -24,26 +24,52 @@ test.afterAll(async () => {
   if (world) await tearDownWorld(world);
 });
 
-// ASSERTED AGAINST <body>, NOT <main>, AND THAT IS A FINDING NOT A PREFERENCE.
-// A 404 raised inside the app shell renders TWO `main` landmarks, one nested in
-// the other: `app/(app)/layout.tsx:150` opens `<main id="main">` and
-// `app/not-found.tsx:21` opens its own `<main>` inside it. Measured on this
-// stack -- `document.querySelectorAll("main").length` is 2 and
-// `"main main"` is 1 on exactly the page every refusal below lands on.
-// Nested `<main>` is invalid HTML and two `main` landmarks is a real
-// screen-reader defect; it is reported in the Task 8 exit document rather than
-// fixed here, because the same file serves the unauthenticated 404 where its
-// `<main>` is correct. `body` is used so these assertions measure the REFUSAL
-// and do not go red for the landmark bug as well.
+// ASSERTED AGAINST <body>, NOT <main>. It used to be a workaround: a 404 raised
+// inside the app shell rendered TWO `main` landmarks, one nested in the other
+// (`app/(app)/layout.tsx` opened `<main id="main">` and `app/not-found.tsx`
+// opened its own inside it), and `body` kept these assertions measuring the
+// REFUSAL rather than going red for the landmark bug too. Final review I-8
+// fixed that -- `app/(app)/not-found.tsx` renders the same markup in a `<div>`
+// -- and `body` stays because it is the right locator for "this page refused
+// me" regardless of how the refusal is laid out.
 const REFUSED = (page: import("@playwright/test").Page) => page.locator("body");
+
+/**
+ * Go to a URL that must be refused, and assert the STATUS as well as the words.
+ *
+ * ===========================================================================
+ * WHY THE STATUS IS THE ASSERTION AND THE TEXT IS NOT ENOUGH
+ * ===========================================================================
+ * Final review I-11 (deferred-minor L1138). Every refusal here asserted
+ * `toContainText("Page not found")` and nothing else, while the Task 8 exit
+ * document recorded IDOR/BOLA as **Met** on the evidence "all 404, not 403 --
+ * no membership or record enumeration. Asserted in Playwright." The status
+ * code was not asserted anywhere in this file, so that row was argued rather
+ * than measured.
+ *
+ * The property is load-bearing, not cosmetic: `app/not-found.tsx`'s own header
+ * says in as many words that the page IS a security control and that a
+ * distinguishing 403 there would be an enumeration oracle for other tenants'
+ * slugs and ids. A future route that returns 403 for a cross-tenant id would
+ * keep rendering the same words through an error boundary and every assertion
+ * in this file would stay green.
+ */
+async function expectRefused(
+  page: import("@playwright/test").Page,
+  url: string,
+) {
+  const response = await page.goto(url);
+  expect(response?.status(), `${url} must refuse with 404, never 403`).toBe(404);
+  await expect(REFUSED(page)).toContainText("Page not found");
+}
 
 test("another tenant's workspace is not reachable by slug", async ({ page }) => {
   await signIn(page, world, "manager");
-  await page.goto(`/${world.otherOrgSlug}/contacts`);
   // 404 rather than 403: a 403 confirms the workspace exists, which is
   // membership enumeration. The manager is a full-scope member of their OWN
-  // workspace, so this is the tenant boundary and nothing else.
-  await expect(REFUSED(page)).toContainText("Page not found");
+  // workspace, so this is the tenant boundary and nothing else. The STATUS is
+  // asserted, not only the words -- see expectRefused.
+  await expectRefused(page, `/${world.otherOrgSlug}/contacts`);
   await expect(REFUSED(page)).not.toContainText("Other Tenant Secret");
 });
 
@@ -52,12 +78,13 @@ test("another tenant's record is not reachable by id, from either slug", async (
 }) => {
   await signIn(page, world, "manager");
   // Under the OTHER tenant's slug -- refused because the workspace is not ours.
-  await page.goto(`/${world.otherOrgSlug}/contacts/${world.otherOrgContactId}`);
-  await expect(REFUSED(page)).toContainText("Page not found");
+  await expectRefused(
+    page,
+    `/${world.otherOrgSlug}/contacts/${world.otherOrgContactId}`,
+  );
   // And under OUR OWN slug, which is the interesting one: the workspace is
   // ours, the id is a real row, and only the tenant filter separates them.
-  await page.goto(`/${world.orgSlug}/contacts/${world.otherOrgContactId}`);
-  await expect(REFUSED(page)).toContainText("Page not found");
+  await expectRefused(page, `/${world.orgSlug}/contacts/${world.otherOrgContactId}`);
   await expect(REFUSED(page)).not.toContainText("secret@other.test");
 });
 
@@ -70,8 +97,10 @@ test("record scope holds inside one tenant, on the list and on the record", asyn
   await signIn(page, world, "standard_user");
   await page.goto(`/${world.orgSlug}/contacts`);
   await expect(page.locator("main")).not.toContainText("Manager Only Contact");
-  await page.goto(`/${world.orgSlug}/contacts/${world.managerOwnedContactId}`);
-  await expect(REFUSED(page)).toContainText("Page not found");
+  await expectRefused(
+    page,
+    `/${world.orgSlug}/contacts/${world.managerOwnedContactId}`,
+  );
 });
 
 test("a stored javascript: or data: URL renders inert, never as a link", async ({
