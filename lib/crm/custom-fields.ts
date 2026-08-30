@@ -277,6 +277,48 @@ export function customFieldLimit(result: {
   return result.entitlements.customFieldLimit;
 }
 
+/**
+ * The sentence a definition write gets when the plan has no slot left.
+ *
+ * SPECIFIC, AND EARNED. lib/crm/write.ts's REFUSED_MESSAGE deliberately
+ * declines to guess why a write was refused, and it is right to: from the
+ * client, "the policy refused you" and "the row is gone" are the same fact.
+ * The limit is the one refusal this application KNOWS the reason for, because
+ * it can count the rows itself through the caller's own client -- and it does,
+ * before writing and again after a refusal, rather than translating a 42501
+ * into a guess.
+ *
+ * IT LIVES HERE, NOT IN lib/crm/custom-field-actions.ts, because that module
+ * carries "use server" and every export of one is a public HTTP endpoint. A
+ * pure string builder needs to be readable from a unit test, and this is the
+ * pure half of the engine.
+ *
+ * ===========================================================================
+ * TWO DEFECTS THE FINAL REVIEW FOUND IN ONE SENTENCE (L855, L856)
+ * ===========================================================================
+ * 1. It built the plural with `${entityType}s`, so an agency limit read
+ *    "5 custom fields on agencys". `ENTITY_TYPE_LABELS` was already imported
+ *    into three components for exactly this and was not used here.
+ * 2. At `limit === 0` -- a Free workspace, and also the indeterminate
+ *    entitlement case, which `customFieldLimit` deliberately floors to 0 --
+ *    it said "they are all in use. Remove one", which is an instruction the
+ *    user cannot carry out: there is nothing to remove. That is the rule the
+ *    phase set for DELETED_RECORD_EXPLANATION ("an instruction that will not
+ *    help is worse than no explanation"), applied inconsistently. A zero limit
+ *    gets the upgrade instruction and nothing else.
+ */
+export function customFieldLimitMessage(
+  limit: number,
+  entityType: CustomFieldEntityType,
+): string {
+  const plural = ENTITY_TYPE_LABELS[entityType].toLowerCase();
+  if (limit === 0) {
+    return `Your plan does not include custom fields on ${plural}. Ask an Owner to upgrade the workspace.`;
+  }
+  const fields = limit === 1 ? "field" : "fields";
+  return `Your plan allows ${limit} custom ${fields} on ${plural}, and they are all in use. Remove one, or ask an Owner to upgrade the workspace.`;
+}
+
 /** True when one more live definition fits. `limit === null` is unlimited. */
 export function slotAvailable(limit: number | null, used: number): boolean {
   if (limit === null) return true;

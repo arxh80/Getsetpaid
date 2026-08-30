@@ -5,7 +5,9 @@ import {
   CUSTOM_FIELD_TYPES,
   customFieldInputName,
   customFieldLimit,
+  customFieldLimitMessage,
   describeCustomFieldValue,
+  ENTITY_TYPE_LABELS,
   formatOptionsInput,
   MAX_CUSTOM_FIELD_NUMBER,
   MAX_CUSTOM_FIELD_OPTIONS,
@@ -130,6 +132,52 @@ describe("customFieldLimit mirrors private.custom_field_limit()", () => {
     expect(
       customFieldLimit({ status: "resolved", entitlements: { customFieldLimit: null } }),
     ).toBeNull();
+  });
+});
+
+describe("customFieldLimitMessage (L855, L856)", () => {
+  // Two defects in one sentence, both user-visible copy.
+  //
+  // L855: it built the plural as `${entityType}s`, with a special case for
+  // "company" and nothing else -- so an agency read "agencys". The correct
+  // plurals were already sitting in ENTITY_TYPE_LABELS, imported into three
+  // components for this exact purpose and not used here.
+  //
+  // L856: at limit 0 it said "they are all in use. Remove one", which is an
+  // instruction the user cannot carry out -- there is nothing to remove, and
+  // the only way out is an upgrade. The phase set that rule for
+  // DELETED_RECORD_EXPLANATION and did not apply it here.
+
+  it("pluralises every entity type the way ENTITY_TYPE_LABELS does", () => {
+    for (const type of CUSTOM_FIELD_ENTITY_TYPES) {
+      const message = customFieldLimitMessage(5, type);
+      expect(message, type).toContain(ENTITY_TYPE_LABELS[type].toLowerCase());
+    }
+    // The one that was actually wrong, named so a regression is unmistakable.
+    expect(customFieldLimitMessage(5, "agency")).toContain("on agencies");
+    expect(customFieldLimitMessage(5, "agency")).not.toContain("agencys");
+    // And the special case that WAS handled still is.
+    expect(customFieldLimitMessage(5, "company")).toContain("on companies");
+  });
+
+  it("does not tell a workspace with no slots at all to remove one", () => {
+    // A Free organisation's limit is 0, and so is the indeterminate
+    // entitlement case that `customFieldLimit` deliberately floors to 0.
+    const free = customFieldLimitMessage(0, "contact");
+    expect(free).not.toContain("Remove one");
+    expect(free).not.toContain("they are all in use");
+    expect(free).toContain("Ask an Owner to upgrade the workspace.");
+    expect(free).toContain("on contacts");
+  });
+
+  it("still tells a paid workspace that has filled its slots to remove one", () => {
+    const starter = customFieldLimitMessage(5, "contact");
+    expect(starter).toContain("Your plan allows 5 custom fields on contacts");
+    expect(starter).toContain("Remove one, or ask an Owner to upgrade the workspace.");
+  });
+
+  it("says `field`, singular, at a limit of one", () => {
+    expect(customFieldLimitMessage(1, "venue")).toContain("1 custom field on venues");
   });
 });
 

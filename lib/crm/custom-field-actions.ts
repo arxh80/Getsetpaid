@@ -99,6 +99,7 @@ import {
   isCustomFieldType,
   isSelectType,
   MAX_CUSTOM_FIELD_LABEL,
+  customFieldLimitMessage,
   parseOptionsInput,
   PERMISSION_FOR_ENTITY,
   slotAvailable,
@@ -112,21 +113,6 @@ const DEFINITION_PERMISSION = "manage_custom_fields";
 /** The definition editor's own page, per entity type. */
 function settingsPath(orgSlug: string, entityType: CustomFieldEntityType): string {
   return `/${orgSlug}/settings/custom-fields?entity=${entityType}`;
-}
-
-/**
- * The sentence a definition write gets when the plan has no slot left.
- *
- * SPECIFIC, AND EARNED. lib/crm/write.ts's REFUSED_MESSAGE deliberately
- * declines to guess why a write was refused, and it is right to: from the
- * client, "the policy refused you" and "the row is gone" are the same fact.
- * The limit is the one refusal this application KNOWS the reason for, because
- * it can count the rows itself through the caller's own client -- and it does,
- * before writing and again after a refusal, rather than translating a 42501
- * into a guess.
- */
-function limitMessage(limit: number, entityType: CustomFieldEntityType): string {
-  return `Your plan allows ${limit} custom ${limit === 1 ? "field" : "fields"} on ${entityType === "company" ? "companies" : `${entityType}s`}, and they are all in use. Remove one, or ask an Owner to upgrade the workspace.`;
 }
 
 const KEY_MESSAGE =
@@ -241,7 +227,7 @@ export async function createCustomFieldAction(
   const slots = await slotsLeft(org.id, entityType);
   if (!slots.ok) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   if (!slots.available && slots.limit !== null) {
-    return { error: limitMessage(slots.limit, entityType), values: echoedValues(formData) };
+    return { error: customFieldLimitMessage(slots.limit, entityType), values: echoedValues(formData) };
   }
 
   const supabase = await createClient();
@@ -273,7 +259,7 @@ export async function createCustomFieldAction(
       const again = await slotsLeft(org.id, entityType);
       if (again.ok && !again.available && again.limit !== null) {
         return {
-          error: limitMessage(again.limit, entityType),
+          error: customFieldLimitMessage(again.limit, entityType),
           values: echoedValues(formData),
         };
       }
@@ -421,7 +407,7 @@ export async function restoreCustomFieldAction(
   if (!slots.ok) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   if (!slots.available && slots.limit !== null) {
     return {
-      error: limitMessage(slots.limit, entityType),
+      error: customFieldLimitMessage(slots.limit, entityType),
       values: echoedValues(formData),
     };
   }
