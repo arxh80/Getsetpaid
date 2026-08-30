@@ -1358,6 +1358,37 @@ corrections are the useful part. Each now says what was actually done.
   chosen per entity type" from "the key is ignored". A comment block stands
   where the old describe was, saying all of this, so nobody re-adds it.
 
+  **AND THE MOVE COST A CI GATE — stated here because it was stated nowhere
+  when the move was made (fix round 1, review finding F.2).** CI runs
+  `pnpm exec vitest run tests/unit` and nothing else
+  (`.github/workflows/ci.yml`, "Unit tests"), so everything under
+  `tests/integration/` — which needs a live local Supabase stack over HTTP —
+  runs on a developer's machine via `pnpm test` and **on no pull request at
+  all**. Moving the mirror there made it better and made it invisible to the
+  gate that fires on every PR.
+
+  So the check is now **split, deliberately**, and neither half subsumes the
+  other:
+
+  * **unit, runs in CI on every PR** —
+    `tests/unit/crm/source-shape.test.ts`, "PERMISSION_FOR_ENTITY is total and
+    names only real permission keys": the TS table is total over
+    `CUSTOM_FIELD_ENTITY_TYPES`, and every key it names appears as a seeded
+    `('<key>', <bool>,` row in `supabase/migrations/`. That catches a typo, a
+    dropped entry, or a seventh entity type shipped without its mapping, on
+    the PR that introduces it. Measured: renaming the value to
+    `manage_evnets` fails it with the key named in the message. It
+    deliberately does **not** re-implement the mapping — a hardcoded expected
+    mapping here is exactly what was wrong before.
+  * **integration, runs locally** — the mirror above, which is the only half
+    that can ask whether the TS table and the **deployed** dispatch agree
+    about *which* key each entity type resolves to.
+
+  **The underlying gap is not this test's.** Nothing in `tests/integration/`,
+  the psql/HTTP suite or Playwright runs on a pull request, which `CLAUDE.md`
+  § Current state already records as "a deliberate decision nobody has made
+  yet". Wiring a Supabase stack into CI is that decision and its own change.
+
 - **THE ARTIST END OF A LINEUP ROW HAS NO DATABASE GUARD AGAINST A
   SOFT-DELETED ARTIST, DELIBERATELY — and the application half does not exist
   yet.** `20260901011000`'s three `event_lineup` write policies check the

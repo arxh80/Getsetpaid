@@ -1,6 +1,10 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import {
+  CUSTOM_FIELD_ENTITY_TYPES,
+  PERMISSION_FOR_ENTITY,
+} from "@/lib/crm/custom-fields";
 
 // SHAPE ASSERTIONS OVER SOURCE TEXT. Blunt on purpose.
 //
@@ -630,6 +634,86 @@ describe("I-1: no refusal in lib/crm/ discards what the user typed", () => {
 // the one role that can tell "the key is chosen per entity type" from "the
 // key is ignored". It needs the local stack, which is why it is an
 // integration test and not this one.
+//
+// ===========================================================================
+// AND THAT MOVE COST SOMETHING: **NO PULL-REQUEST GATE WATCHES
+// PERMISSION_FOR_ENTITY ANY MORE.**
+// ===========================================================================
+// CI runs `pnpm exec vitest run tests/unit` and nothing else
+// (`.github/workflows/ci.yml`, "Unit tests" -- deliberately named by directory
+// so a new integration test does not silently start being skipped). Everything
+// under tests/integration/ talks to a live local Supabase stack over HTTP, so
+// it runs on a developer's machine via `pnpm test` with the stack up, and on
+// no pull request at all.
+//
+// The replacement is strictly better than what it replaced -- but only where
+// it runs. So a CHEAP STATIC HALF stays here, below, and the split is:
+//
+//   unit (runs in CI, every PR)  -- the TS table is total over the entity
+//     vocabulary, and every key it names is a real seeded permission key. That
+//     catches a typo, a dropped entry, or a seventh entity type shipped
+//     without its mapping, on the PR that introduces it.
+//   integration (runs locally)   -- the TS table agrees with the DEPLOYED
+//     dispatch about WHICH key each entity type resolves to, and the dispatch
+//     really behaves that way. That cannot be asked without a database.
+//
+// Neither half subsumes the other, and the unit half deliberately does NOT
+// re-implement the mapping: it asserts totality and membership, never
+// `event -> manage_events`, because a hardcoded expected mapping here is
+// exactly the thing that was wrong before. Recorded in FOLLOW-UPS.md.
+
+describe("PERMISSION_FOR_ENTITY is total and names only real permission keys", () => {
+  // The CI-side half of the mirror. See the block above for the split.
+  const migrations = readdirSync(root + "supabase/migrations")
+    .filter((f) => f.endsWith(".sql"))
+    .map((f) => read("supabase/migrations/" + f))
+    .join("\n");
+
+  it("finds the permission seed statements at all, so this cannot pass vacuously", () => {
+    // Without this, a rename of the catalogue table would make every
+    // membership assertion below vacuously true -- there would simply be no
+    // seed text to fail against.
+    expect(migrations).toContain("insert into public.permissions");
+    expect(migrations).toMatch(/\('view_crm',\s+true,/);
+  });
+
+  it("is total over CUSTOM_FIELD_ENTITY_TYPES -- no entity type without a key", () => {
+    // `PERMISSION_FOR_ENTITY` is typed `Record<CustomFieldEntityType, string>`,
+    // so tsc already refuses a MISSING key -- but tsc does not run in every
+    // context this file does, and an entity type added to the tuple in the
+    // same commit as a `// @ts-expect-error` would slip. This is the runtime
+    // restatement, and it is what turns "six" into a number somebody chose.
+    expect([...Object.keys(PERMISSION_FOR_ENTITY)].sort()).toEqual(
+      [...CUSTOM_FIELD_ENTITY_TYPES].sort(),
+    );
+    expect(Object.keys(PERMISSION_FOR_ENTITY)).toHaveLength(6);
+  });
+
+  it("every key it names is a permission actually seeded by a migration", () => {
+    // THE TYPO CATCHER. A key absent from public.permissions is absent from
+    // the join inside private.permitted_organisations(), which returns no
+    // rows, which fails CLOSED -- so `manage_evnets` would deny every event
+    // write in the product and raise nothing anywhere. The seed row shape is
+    // `('<key>', <bool>,` in both 20260828210000 and 20260901010000.
+    const missing = [...new Set(Object.values(PERMISSION_FOR_ENTITY))].filter(
+      (key) =>
+        !new RegExp(String.raw`\('${key}',\s+(true|false),`).test(migrations),
+    );
+    expect(
+      missing,
+      `permission key(s) named by PERMISSION_FOR_ENTITY but seeded by no ` +
+        `migration: ${missing.join(", ")}. A key absent from ` +
+        `public.permissions fails CLOSED -- it denies every write of that ` +
+        `entity type and raises nothing.`,
+    ).toEqual([]);
+  });
+
+  it("...and the same check really can fail, on a key nobody seeded", () => {
+    // The paired negative. Without it the assertion above passes against a
+    // regexp that matches everything -- which is how a source-text guard dies.
+    expect(/\('manage_evnets',\s+(true|false),/.test(migrations)).toBe(false);
+  });
+});
 
 describe("the custom fields panel carries the checkbox-group markers", () => {
   // Same defect as I-2, twice over: `multi_select` is a checkbox group and
