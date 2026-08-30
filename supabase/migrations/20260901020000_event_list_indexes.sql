@@ -42,12 +42,21 @@
 -- Full plans are in .superpowers/sdd/phase-3-events/task-3-report.md § 2.
 --
 --   BEFORE, standard_user (record-scoped, 12,373 rows visible):
---     Limit -> Sort (top-N heapsort) -> Seq Scan on events, 12,891 rows
---     removed by filter.        9.952 ms, shared hit=478
---   AFTER:
---     Limit -> Index Scan Backward using events_org_starts_at_id_live_idx
---     Index Cond: (organisation_id = ...)   Heap Fetches: 0
---                               0.093 ms, shared hit=8
+--     Limit
+--       -> Sort  Sort Key: starts_at DESC, id DESC
+--            Sort Method: top-N heapsort  Memory: 32kB
+--          -> Seq Scan on events (rows=12373)
+--               Filter: deleted_at IS NULL AND organisation_id = ... AND <RLS>
+--               Rows Removed by Filter: 12891
+--     Buffers: shared hit=478          Execution Time: 9.952 ms
+--
+--   AFTER (re-measured at this commit, fix round 1):
+--     Limit
+--       -> Index Scan Backward using events_org_starts_at_id_live_idx on events
+--            Index Cond: (organisation_id = ...)
+--            Filter: <the RLS quals, as hashed SubPlans>
+--            Rows Removed by Filter: 26
+--     Buffers: shared hit=14           Execution Time: 0.539 ms
 --
 -- The SHAPE is the finding and it matches Phase 2's contacts result exactly:
 -- an unindexed list page is a sequential scan plus a top-N sort of every live
@@ -55,9 +64,47 @@
 -- fixture, linear in a customer's success. Phase 3 Task 2 § 2.5 recorded the
 -- same plan shape on an 11-row fixture and predicted this; the prediction held.
 --
--- `include (owner_user_id)` is what produces `Heap Fetches: 0` above. Dropped
--- from the definition and re-measured on the same rows, the standard_user page
--- becomes an Index Scan with a heap fetch per candidate row -- see the report.
+-- ===========================================================================
+-- `include (owner_user_id)`: KEPT FOR SHAPE, **NOT** FOR A MEASURED SAVING
+-- ===========================================================================
+-- THE FIRST VERSION OF THIS HEADER CLAIMED A MEASUREMENT NOBODY MADE, and the
+-- correction is left visible rather than quietly overwritten. It pasted an
+-- AFTER plan reading `Heap Fetches: 0 / 0.093 ms / shared hit=8` and concluded
+-- "`include (owner_user_id)` is what produces `Heap Fetches: 0` above". All of
+-- it was wrong: an `Index Scan Backward` NEVER emits a `Heap Fetches:` line --
+-- only an Index ONLY Scan does -- so that plan could not have come from any run
+-- of this statement, and the numbers disagreed with the ones this task's own
+-- report recorded for the same measurement.
+--
+-- WHAT WAS ACTUALLY MEASURED, dropping and rebuilding this index with and
+-- without the INCLUDE, same rows, same role, same statement, twice warm each:
+--
+--     without include   0.566 ms   shared hit=14   Index Scan Backward
+--     with include      0.484 ms   shared hit=14   Index Scan Backward
+--
+-- Identical plan, identical buffer count, difference inside the run-to-run
+-- noise, and no `Heap Fetches:` line in either. The mechanism is why: an
+-- INCLUDE column only avoids a heap fetch in an INDEX ONLY SCAN, and
+-- `EVENT_SELECT` (lib/crm/events-list.ts) names nine columns -- so the heap
+-- tuple is fetched for the output regardless, and the RLS record-scope qual is
+-- then evaluated against a row already in hand.
+--
+-- IT IS KEPT ANYWAY, for two reasons and neither is a heap fetch on this query:
+--   (1) SHAPE CONSISTENCY. FOLLOW-UPS.md fixes this index shape for every list
+--       in the product and 20260829000000 applied it to three more tables. One
+--       entity deviating is worse than one redundant column, because the next
+--       reader cannot tell a deliberate difference from an omission.
+--   (2) A narrower future query -- an existence probe, a `count` over `id` --
+--       could still get an Index Only Scan out of it, which is the case where
+--       the INCLUDE does what it is famous for.
+-- It costs ~1.9 MB of index at 25,000 rows.
+--
+-- 20260828180000, 20260829000000 and lib/list/spec.ts all repeat a Phase 2
+-- figure (3.170 ms -> 1.545 ms, `Heap Fetches: 0`) for this INCLUDE that did
+-- NOT reproduce here. That is filed in FOLLOW-UPS.md § "Opened by Task 3" --
+-- somebody should re-measure it on whatever query shape produced it and either
+-- name that shape or correct the sentence in all three. DO NOT drop the
+-- INCLUDEs on the strength of this one measurement.
 
 create index events_org_starts_at_id_live_idx
   on public.events (organisation_id, starts_at, id)
