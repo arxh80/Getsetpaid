@@ -174,9 +174,10 @@ export function stateFor(
  *
  * `companies` was added by Task 5: custom field values hang off all FIVE
  * entity types, and companies is the one this union did not already have --
- * Task 4 kept its company checks in lib/crm/contacts.ts's own copy of
- * liveInOrg rather than in this shared one. Adding a member is additive; every
- * existing call site is unchanged.
+ * Task 4 had kept its company checks in lib/crm/contacts.ts's own copy of
+ * liveInOrg rather than in this shared one. That copy is gone (final review
+ * I-3) and contacts.ts now imports this function, so the union really is the
+ * whole set of parents the CRM checks.
  */
 export type ParentTable =
   | "artists"
@@ -188,8 +189,10 @@ export type ParentTable =
 /**
  * Is this a LIVE row of THIS workspace, reachable by THIS caller?
  *
- * A copy of lib/crm/contacts.ts's `liveInOrg`, generalised over the table.
- * Everything that function's comment argues holds here; the short version:
+ * THE ONLY COPY. It began as lib/crm/contacts.ts's `liveInOrg` generalised
+ * over the table, and for one phase both existed byte-for-byte identical --
+ * final review I-3 deleted the private one, so every join and child write in
+ * the CRM now goes through this function.
  *
  * ===========================================================================
  * RLS ANSWERS A DIFFERENT QUESTION FROM THE ONE THE URL ASKS
@@ -230,6 +233,18 @@ export type ParentTable =
  *            and refuse a legitimate write. T28b measures the database still
  *            saying yes, so nobody deletes this check thinking a policy is
  *            behind it.
+ *   contacts as the contact end of a contact_companies link: ALSO enforced by
+ *            the database (20260828235000 puts `p.deleted_at is null` in the
+ *            three `contact_companies_*_via_contact` write policies, so a
+ *            direct PostgREST PATCH with the anon key is refused too).
+ *            Measured at S28.
+ *   companies as the OTHER end of that link: THIS FILE AND NOTHING ELSE, for
+ *            the same reason as agencies above -- a policy term reading the
+ *            company row would be evaluated as the caller, and a record-scoped
+ *            user is deliberately allowed to link a contact to a company they
+ *            cannot see. Measured at S28b; 20260828235000's header carries the
+ *            argument. Delete the company half of this check and nothing
+ *            catches it.
  *
  * Read through the CALLER'S OWN client, so this is not a privileged existence
  * check: a record outside the caller's scope returns nothing here and would

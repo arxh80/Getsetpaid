@@ -61,6 +61,7 @@ import {
   UNKNOWN_MESSAGE,
   type WriteResult,
 } from "@/lib/crm/write";
+import { liveInOrg } from "@/lib/crm/actions";
 import { screenAfterCreate } from "@/lib/crm/dedup";
 import {
   checkEmail,
@@ -540,97 +541,22 @@ export async function restoreContactAction(
 // database's decision and this file does not narrow it, because narrowing it
 // here and not there is drift that reads as a control.
 
-/**
- * Is this a LIVE row of THIS workspace, reachable by THIS caller?
- *
- * ===========================================================================
- * RLS ANSWERS A DIFFERENT QUESTION FROM THE ONE THE URL ASKS
- * ===========================================================================
- * `contact_companies_*_via_contact` asks "may this caller write this row".
- * The URL asks "is this row the one this workspace's page is about". For a
- * member of one organisation those coincide; multi-org membership ships at
- * MVP, so for an ordinary admin of two workspaces they do not -- and the
- * primary-company RPC, the only write in the task without an explicit
- * organisation term, let workspace A's URL promote a company on workspace B's
- * contact. Every other write in this file carries
- * `.eq("organisation_id", org.id)` for the same reason.
- *
- * ===========================================================================
- * AND ONLY ONE OF THEM ASKS WHETHER THE RECORD IS DELETED
- * ===========================================================================
- * The defect: the detail route serves deleted records on purpose (restore has
- * to be reachable) and it rendered the whole link panel next to the "Deleted"
- * notice. Reproduced in a browser -- a soft-deleted contact's primary company
- * was changed and the write applied. `updateContactAction` refuses the same
- * record with `.is("deleted_at", null)`; these three did not.
- *
- * WHAT IS BEHIND THIS CHECK, EXACTLY, AND WHAT IS NOT:
- *
- *   * THE CONTACT END IS ENFORCED BY THE DATABASE. 20260828235000 adds
- *     `p.deleted_at is null` to the three `contact_companies_*_via_contact`
- *     write policies, so a direct PostgREST PATCH by a member with
- *     'manage_contacts' and the anon key is refused too. Measured at S28.
- *     The first fix round argued a policy term was impossible here on design
- *     note (g); (g) is about SELECT on the row being restored, and restoring
- *     a contact does not touch this table. That reason was wrong.
- *
- *   * THE COMPANY END IS THIS FILE AND NOTHING ELSE. A `companies.deleted_at`
- *     term in the policy would have to read the company row as the caller,
- *     and under Q5 a record-scoped user may link their own contact to a
- *     company they cannot see -- so "deleted" would collapse into "invisible"
- *     and refuse a legitimate write. Left open deliberately, measured at S28b,
- *     and the reason is in 20260828235000's header. Delete the company half of
- *     this check and nothing catches it.
- *
- * Read through the CALLER'S OWN client, so this is not a privileged existence
- * check: a record outside the caller's scope returns nothing here and would
- * have been refused by the policy anyway.
- *
- * ===========================================================================
- * THREE ANSWERS, BECAUSE A BOOLEAN MADE THE PRODUCT LIE
- * ===========================================================================
- * This returned `boolean`, and `false` covered a soft-deleted record, a record
- * in another workspace, one outside a record-scoped user's scope and one that
- * does not exist -- all told "This record is deleted... Restore it first". The
- * re-review measured it: a `Make primary` form repointed at a LIVE company in
- * another workspace got that sentence. See `RecordPresence` in
- * lib/crm/write-access.ts for why "gone" is not an existence oracle, and
- * `joinEndExplanation()` for which sentence each case earns.
- *
- * NOTE THE MISSING `.is("deleted_at", null)`. It was the filter; it is now the
- * column being read. Filtering it here is what made "deleted" indistinguishable
- * from "not there", and SELECT on a soft-deleted row is permitted on purpose
- * (design note (g)) -- the restore route depends on it.
- */
-async function liveInOrg(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  table: "contacts" | "companies",
-  organisationId: string,
-  id: string,
-): Promise<RecordPresence> {
-  const { data, error } = await supabase
-    .from(table)
-    .select("deleted_at")
-    .eq("organisation_id", organisationId)
-    .eq("id", id)
-    .maybeSingle();
-  if (error) {
-    // 22P02 is an unparseable uuid from the form: no such record, and there
-    // never could be. Anything else is a fault, and a fault must not read as
-    // "the record is fine" -- fail closed, and fail into the sentence that
-    // claims the least.
-    if (error.code !== "22P02") {
-      console.error(`[crm] ${table} lookup for a join write failed:`, error.message);
-    }
-    return "gone";
-  }
-  // ONE BRANCH FOR FOUR SITUATIONS, DELIBERATELY. Another workspace, out of
-  // scope, and never existed are all `null` here through the caller's own
-  // client, and telling them apart would be the oracle this file is careful
-  // not to build.
-  if (data === null) return "gone";
-  return data.deleted_at === null ? "live" : "deleted";
-}
+// `liveInOrg` USED TO LIVE HERE, BYTE-FOR-BYTE IDENTICAL TO THE SHARED ONE.
+//
+// Final review I-3: `lib/crm/actions.ts` already exported a generalised copy
+// whose `ParentTable` union includes both `"contacts"` and `"companies"`,
+// and that file's own comment admitted the split ("Task 4 kept its company
+// checks in lib/crm/contacts.ts's own copy of liveInOrg rather than in this
+// shared one"). Two copies of the workspace-boundary check RLS deliberately
+// does NOT perform -- RLS answers "may this caller write this row",
+// `liveInOrg` answers "is this row the one this URL is about" -- is the exact
+// drift risk the phase built live mirror tests for elsewhere, and here there
+// was no mirror test, only duplication.
+//
+// The argument for the check itself, and the per-table note on what the
+// database enforces behind it and what THIS FILE AND NOTHING ELSE enforces
+// (the company end of a link, measured at S28b), moved with it: read
+// `liveInOrg`'s docblock in lib/crm/actions.ts.
 
 /**
  * The FormState a join write gets when an end is not live, or null when all

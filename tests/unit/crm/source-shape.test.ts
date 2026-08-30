@@ -195,21 +195,15 @@ describe("the join actions refuse a soft-deleted end (M-1)", () => {
     });
   }
 
-  it("liveInOrg reads deleted_at rather than FILTERING it, and scopes the organisation", () => {
-    // N-8. It used to carry `.is("deleted_at", null)` and return a boolean, so
-    // "soft-deleted" and "not there at all" were the same answer and got the
-    // same sentence -- one that tells the user to restore a record that may be
-    // live in another workspace. Reading the column is what separates them.
-    const helper = contacts.slice(
-      contacts.indexOf("async function liveInOrg("),
-      contacts.indexOf("function refusedEndState("),
-    );
-    expect(helper).toContain(`.select("deleted_at")`);
-    expect(helper).not.toContain(`.is("deleted_at", null)`);
-    expect(helper).toContain(`.eq("organisation_id", organisationId)`);
-    // The three answers, all present, and "gone" is the fail-closed one.
-    expect(helper).toContain(`return "gone"`);
-    expect(helper).toContain(`return data.deleted_at === null ? "live" : "deleted"`);
+  it("I-3: contacts.ts has NO private liveInOrg -- it imports the shared one", () => {
+    // Final review I-3. This file used to define its own `liveInOrg`,
+    // byte-for-byte identical to `lib/crm/actions.ts`'s, and there was no
+    // mirror test between them -- two copies of the workspace-boundary check
+    // RLS deliberately does not perform. What the surviving copy must do is
+    // asserted once, over lib/crm/actions.ts, in "the new child writes refuse
+    // a soft-deleted parent" below.
+    expect(contacts).not.toContain("async function liveInOrg(");
+    expect(contacts).toContain('import { liveInOrg } from "@/lib/crm/actions";');
   });
 
   it("only setPrimaryCompanyAction overrides the generic conflict sentence (N-9)", () => {
