@@ -3,11 +3,22 @@
 # ===========================================================================
 # READ THIS BEFORE TRUSTING IT
 # ===========================================================================
-# THIS WORKFLOW HAS NEVER RUN. It was written by Phase 2 Task 8 in an
-# environment with no CI runner, so the first push that triggers it is its
-# first execution. Treat a failure on that run as a bug in this file until
-# proven otherwise. Everything else in the Task 8 report was measured; this was
-# not, and the report says so.
+# THIS FILE'S FIRST THREE RUNS ALL FAILED, and the failure was in this file,
+# not in the project. Task 8 wrote it in an environment with no CI runner and
+# said so; GitHub then ran it on every Task 8 push -- runs 33304352488,
+# 33305110034 and 33305705916 -- and both jobs died in `actions/setup-node`
+# before a single gate executed:
+#
+#   warn: This version of pnpm requires at least Node.js v22.13
+#   warn: The current version of Node.js is v20.20.2
+#   Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite
+#
+# `packageManager` pins pnpm 11.24.0, which loads `node:sqlite` and therefore
+# needs Node >= 22.13; the old `node-version: 20` gave it 20.20.2. Fixed in
+# Task 8 fix round 1 by asking for Node 24 (the version this project is
+# developed on locally, 24.18.0) in both jobs. The lesson the original header
+# was reaching for still stands and is now evidenced: an unexecuted workflow is
+# an untested claim.
 #
 # ===========================================================================
 # WHAT IT COVERS, AND THE MUCH LARGER PART IT DOES NOT
@@ -58,7 +69,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # >= 22.13 IS A HARD FLOOR, NOT A PREFERENCE. `packageManager` pins
+          # pnpm 11.24.0, which requires Node >= 22.13 and crashes on
+          # `node:sqlite` below it -- that is what killed this workflow's first
+          # three runs. 24 is what this project is developed on locally.
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -96,7 +111,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # >= 22.13 IS A HARD FLOOR, NOT A PREFERENCE. `packageManager` pins
+          # pnpm 11.24.0, which requires Node >= 22.13 and crashes on
+          # `node:sqlite` below it -- that is what killed this workflow's first
+          # three runs. 24 is what this project is developed on locally.
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
