@@ -32,6 +32,7 @@ import {
   SecondaryRecordAction,
   WriteBlockedNote,
 } from "@/components/crm/write-gate";
+import { formatDateTime } from "@/lib/format/date";
 
 // One agency. The other side of artist_representations.
 //
@@ -342,17 +343,4 @@ export default async function AgencyDetailPage({
       </section>
     </div>
   );
-}
-
-/** en-GB and Europe/London explicitly -- CLAUDE.md § Non-functional targets:
- *  UTC in the database, UK local time in the UI with explicit handling. */
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "Europe/London",
-  });
 }

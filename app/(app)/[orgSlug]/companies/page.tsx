@@ -25,6 +25,7 @@ import { EntityList } from "@/components/list/entity-list";
 import { ListSkeleton } from "@/components/list/list-skeleton";
 import { ListToolbar } from "@/components/list/list-toolbar";
 import { NewRecordAction } from "@/components/crm/write-gate";
+import { formatDate } from "@/lib/format/date";
 
 // Companies.
 //
@@ -276,14 +277,4 @@ function companyColumns(
       ),
     },
   ];
-}
-
-/** en-GB and Europe/London explicitly -- CLAUDE.md § Non-functional targets. */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "Europe/London",
-  });
 }

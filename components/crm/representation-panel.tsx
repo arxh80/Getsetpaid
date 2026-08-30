@@ -20,6 +20,7 @@ import {
 } from "@/lib/crm/representation-primary";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { formatDateOnly } from "@/lib/format/date";
 
 // artist_representations, edited from EITHER SIDE by the same component.
 //
@@ -352,7 +353,7 @@ function PrimaryChip({
     return (
       <Chip tone="primary">
         {onArtist ? "Primary until " : "Primary for them until "}
-        {formatDate(endedAt as string)}
+        {formatDateOnly(endedAt as string)}
       </Chip>
     );
   }
@@ -373,31 +374,10 @@ function Chip({ tone, children }: { tone: "primary" | "muted"; children: React.R
     </span>
   );
 }
-
-/**
- * A `date` column as a date, with NO timezone conversion.
- *
- * `Date.UTC` in and `timeZone: "UTC"` out, so the day that comes back is the
- * day that was stored. `new Date("2026-03-03").toLocaleDateString("en-GB")` in
- * London during BST is 3 March; in Los Angeles it is 2 March -- the string is
- * parsed as UTC midnight and then rendered in the local zone. These are
- * calendar facts, not instants (20260827232510 convention (4)), so there is no
- * local zone to render them in.
- */
-function formatDate(value: string): string {
-  const [y, m, d] = value.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
-
 function formatPeriod(startedAt: string | null, endedAt: string | null): string | null {
-  if (startedAt && endedAt) return `${formatDate(startedAt)} – ${formatDate(endedAt)}`;
-  if (startedAt) return `From ${formatDate(startedAt)}`;
-  if (endedAt) return `Until ${formatDate(endedAt)}`;
+  if (startedAt && endedAt) return `${formatDateOnly(startedAt)} – ${formatDateOnly(endedAt)}`;
+  if (startedAt) return `From ${formatDateOnly(startedAt)}`;
+  if (endedAt) return `Until ${formatDateOnly(endedAt)}`;
   return null;
 }
 

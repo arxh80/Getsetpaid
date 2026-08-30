@@ -6,6 +6,7 @@ import { dismissCandidateAction, mergeRecordsAction } from "@/lib/crm/merge";
 import { EMPTY_FORM_STATE } from "@/lib/forms";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { formatDate } from "@/lib/format/date";
 
 // The field-resolution screen.
 //
@@ -376,14 +377,4 @@ function DismissForm({
       </form>
     </section>
   );
-}
-
-/** en-GB and Europe/London explicitly -- CLAUDE.md § Non-functional targets. */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "Europe/London",
-  });
 }

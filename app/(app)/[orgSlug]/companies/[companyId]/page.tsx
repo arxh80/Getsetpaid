@@ -32,6 +32,7 @@ import {
   SecondaryRecordAction,
   WriteBlockedNote,
 } from "@/components/crm/write-gate";
+import { formatDateTime } from "@/lib/format/date";
 
 /** The id of the single explanation the Manage section's controls point at. */
 const MANAGE_NOTE = "company-manage-blocked";
@@ -289,15 +290,4 @@ export default async function CompanyDetailPage({
       </section>
     </div>
   );
-}
-
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "Europe/London",
-  });
 }

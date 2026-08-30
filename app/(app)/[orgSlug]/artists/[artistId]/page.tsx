@@ -51,6 +51,7 @@ import {
   SecondaryRecordAction,
   WriteBlockedNote,
 } from "@/components/crm/write-gate";
+import { formatDateOnly, formatDateTime } from "@/lib/format/date";
 
 // One artist: the record, who represents them, and what they have been paid.
 //
@@ -598,37 +599,4 @@ function Absent() {
       <span className="sr-only">Not recorded</span>
     </span>
   );
-}
-
-/**
- * A `date` column as a date, with NO timezone conversion.
- *
- * `occurred_on` is `date`, not `timestamptz` -- a fee agreed on the 3rd was
- * agreed on the 3rd everywhere (20260827232510 convention (4)). Parsing it
- * with `new Date("2026-03-03")` reads UTC midnight and then renders it in the
- * viewer's zone, which is a day earlier west of Greenwich. `Date.UTC` in,
- * `timeZone: "UTC"` out, so the day that comes back is the day that was
- * stored.
- */
-function formatDateOnly(value: string): string {
-  const [y, m, d] = value.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
-
-/** en-GB and Europe/London explicitly -- these ARE instants. CLAUDE.md
- *  § Non-functional targets: UTC in the database, UK local time in the UI. */
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "Europe/London",
-  });
 }

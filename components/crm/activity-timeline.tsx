@@ -16,6 +16,7 @@ import { columnLabel } from "@/lib/crm/dedup";
 import type { RawSearchParams } from "@/lib/list/params";
 import type { ListPage, RecoveryReason } from "@/lib/list/query";
 import { ListPager } from "@/components/list/list-pager";
+import { formatDateTime } from "@/lib/format/date";
 
 // The shared activity timeline. One component, every entity, every phase.
 //
@@ -513,17 +514,4 @@ function mergeFootnote(
   const fields = detailStrings(row.detail, "fields");
   if (fields.length === 0) return by;
   return `${by} Kept from ${source}: ${fields.map(columnLabel).join(", ")}.`;
-}
-
-/** en-GB and Europe/London explicitly -- CLAUDE.md § Non-functional targets:
- *  UTC in the database, UK local time in the UI with explicit handling. */
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "Europe/London",
-  });
 }

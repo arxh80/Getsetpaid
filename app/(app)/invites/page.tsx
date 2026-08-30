@@ -4,6 +4,7 @@ import { getActiveMemberships, getCurrentUser, getPendingInvites } from "@/lib/a
 import { AcceptInviteForm } from "@/components/org/accept-invite-form";
 import { AccountSetupForm } from "@/components/auth/account-setup-form";
 import { RuledList, RuledRow, StatusChip } from "@/components/ui/ruled-row";
+import { formatDate } from "@/lib/format/date";
 
 export const metadata: Metadata = { title: "Invitations · GetSetPaid" };
 
@@ -137,19 +138,4 @@ function roleLabel(key: string): string {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-/**
- * en-GB, explicitly. CLAUDE.md § Non-functional targets: UTC in the database,
- * UK local time in the UI. Left to the default locale this renders as a US
- * date on a US-configured machine, and 03/04 is a different day depending on
- * where you are standing.
- */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "Europe/London",
-  });
 }

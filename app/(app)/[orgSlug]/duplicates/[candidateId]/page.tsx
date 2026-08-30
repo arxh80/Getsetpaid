@@ -14,6 +14,7 @@ import {
   reasonLabel,
 } from "@/lib/crm/dedup";
 import { MergeForm, type MergeFieldRow } from "@/components/crm/merge-form";
+import { formatDate } from "@/lib/format/date";
 
 // One flagged pair, side by side.
 //
@@ -252,14 +253,4 @@ function Absent() {
       <span className="sr-only">Not recorded</span>
     </span>
   );
-}
-
-/** en-GB and Europe/London explicitly -- CLAUDE.md § Non-functional targets. */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "Europe/London",
-  });
 }

@@ -22,6 +22,7 @@ import type { ListColumn } from "@/lib/list/spec";
 import { EntityList } from "@/components/list/entity-list";
 import { ListSkeleton } from "@/components/list/list-skeleton";
 import { ListToolbar } from "@/components/list/list-toolbar";
+import { formatDate } from "@/lib/format/date";
 
 // The restore queue for venues. See the agencies equivalent for why this is a
 // route rather than a filter on the live list.
@@ -207,13 +208,4 @@ function columnsFor(
       ),
     },
   ];
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "Europe/London",
-  });
 }

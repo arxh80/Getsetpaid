@@ -26,6 +26,7 @@ import type { ListColumn } from "@/lib/list/spec";
 import { EntityList } from "@/components/list/entity-list";
 import { ListSkeleton } from "@/components/list/list-skeleton";
 import { ListToolbar } from "@/components/list/list-toolbar";
+import { formatDate } from "@/lib/format/date";
 
 // The pairs that have already been decided.
 //
@@ -229,14 +230,4 @@ function resolvedColumns(
       ),
     },
   ];
-}
-
-/** en-GB and Europe/London explicitly -- CLAUDE.md § Non-functional targets. */
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "Europe/London",
-  });
 }
