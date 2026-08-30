@@ -108,11 +108,21 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
 
           UPDATED AGAIN IN TASK 4b, for the same reason and against the note
           Task 3 left here ("Task 4 turns this into real navigation once there
-          are five entity lists to navigate between"). There are five now, and
-          three of them had no link into them from anywhere in the product --
-          which is the identical defect, one release later. This is a LIST OF
-          LINKS rather than a paragraph with two of them in it, because five
+          are five entity lists to navigate between"). There are six now (Phase
+          3 added Events), and at the time this section was written three of the
+          five had no link into them from anywhere in the product -- which is
+          the identical defect, one release later. This is a LIST OF LINKS
+          rather than a paragraph with two of them in it, because six
           destinations in prose is a paragraph people scan past.
+
+          THE PARAGRAPH BELOW COUNTS THE LIST AND MUST BE EDITED WITH IT.
+          Phase 3 Task 3 added Events to CRM_AREAS and left the sentence saying
+          "the five record types ... Events, holds and settlements all point
+          back to one of them" -- so the page named Events as something that
+          points back to the list Events was now in, and the count was wrong.
+          Found in review, not in a browser. There is no test that counts the
+          list and reads the sentence, and writing one would be a test about
+          English; the guard is this comment.
 
           IT IS STILL NOT A NAVIGATION BAR. A persistent nav belongs in
           app/(app)/layout.tsx, where it would also have to answer what happens
@@ -122,8 +132,9 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
       <section className="border border-rule bg-surface p-5">
         <h2 className="text-xl font-bold text-ink">Where to start</h2>
         <p className="mt-2 max-w-prose text-base text-ink-muted">
-          The five record types this workspace is built on. Events, holds and
-          settlements all point back to one of them.
+          The six record types this workspace is built on. An event points at a
+          venue and the artists on its lineup; holds and settlements, when they
+          arrive, will point back here too.
         </p>
         <ul className="mt-4 flex flex-col border-t border-rule">
           {CRM_AREAS.map((area) => (
