@@ -178,13 +178,22 @@ export function stateFor(
  * liveInOrg rather than in this shared one. That copy is gone (final review
  * I-3) and contacts.ts now imports this function, so the union really is the
  * whole set of parents the CRM checks.
+ *
+ * `events` was added by PHASE 3 TASK 1, when custom field values became
+ * attachable to a sixth entity type (20260901001000). Nothing calls
+ * liveInOrg("events", ...) yet -- there is no event write path until Phase 3
+ * Task 3 -- but PARENT_TABLE in lib/crm/custom-field-actions.ts is keyed on
+ * CustomFieldEntityType and has to be total over it, and a `Record` entry
+ * naming a table this union does not have is exactly the typo this union
+ * exists to catch.
  */
 export type ParentTable =
   | "artists"
   | "agencies"
   | "venues"
   | "contacts"
-  | "companies";
+  | "companies"
+  | "events";
 
 /**
  * Is this a LIVE row of THIS workspace, reachable by THIS caller?

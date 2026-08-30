@@ -60,17 +60,24 @@ function submitted(
   return data;
 }
 
-describe("the entity-type list is the shape the three CHECK constraints hold", () => {
+describe("the entity-type list is the shape the two CHECK constraints hold", () => {
+  // TWO, not three, since Phase 3 Task 1: 20260901001000 added 'event' to the
+  // custom_field_definitions and custom_field_values allowlists and left
+  // merges_entity_type_allowed and merge_candidates_entity_type_allowed at
+  // five, because events are not mergeable at MVP. MERGE_ENTITY_TYPES in
+  // lib/crm/dedup.ts is the five-value list now.
+  //
   // The value-for-value comparison against the live catalogue is
   // tests/integration/crm/custom-field-entity-types-match-db.test.ts -- this
-  // is only the cheap half: the list exists, is five long, and is singular.
-  it("is the five singular values, in the migration's order", () => {
+  // is only the cheap half: the list exists, is six long, and is singular.
+  it("is the six singular values, in the migration's order", () => {
     expect([...CUSTOM_FIELD_ENTITY_TYPES]).toEqual([
       "company",
       "contact",
       "agency",
       "artist",
       "venue",
+      "event",
     ]);
   });
 

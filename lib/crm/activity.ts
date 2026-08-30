@@ -102,9 +102,20 @@ import {
 import { fetchListPage, type ListPage } from "@/lib/list/query";
 
 /**
- * The records a timeline can hang off: the same five as custom fields and
- * merges, and deliberately the same constant rather than a seventh copy.
- * Phase 3 adds 'event' in one place.
+ * The records a timeline can hang off: the same SIX as custom fields, and
+ * deliberately the same constant rather than another copy.
+ *
+ * IT IS NO LONGER "the same as merges" -- Phase 3 Task 1 widened the custom
+ * field allowlists to six and left the merge ones at five, so
+ * `MERGE_ENTITY_TYPES` in lib/crm/dedup.ts is now its own tuple. That does not
+ * affect this alias: a timeline hangs off a record, and an event is a record.
+ *
+ * `event` is in the union from 20260901001000. The VIEW does not emit event
+ * rows yet -- public.activity_events (20260829040000) unions the five Phase 2
+ * tables and Phase 3 Task 3 owns adding the sixth -- so today this widens the
+ * type and nothing else. That is the right order: the renderer's
+ * `Record<ActivityKind, ...>` and `SUBJECT_NOUN` are total over it before any
+ * row can arrive.
  */
 export type ActivitySubjectType = CustomFieldEntityType;
 
@@ -372,6 +383,7 @@ export const SUBJECT_NOUN: Readonly<Record<ActivitySubjectType, string>> = {
   agency: "agency",
   artist: "artist",
   venue: "venue",
+  event: "event",
 };
 
 /** Plural labels, reused from the custom-field tab strip. */
