@@ -11,10 +11,17 @@
 //      first" means "reset the database first", which means this suite could
 //      never run beside a dev session someone is using.
 //   2. Its fixtures are shaped for assertions, not for a walk -- contacts
-//      named "Deleted Contact" that are not deleted, ten merges written by
-//      hand rather than through `merge_records()`. A golden-path test that
-//      depends on those is a test that depends on another suite's incidental
-//      choices.
+//      named "Deleted Contact" that are not deleted, and merge rows in two
+//      different shapes. THE SECOND HALF OF THAT SENTENCE USED TO READ "ten
+//      merges written by hand rather than through `merge_records()`", and
+//      Phase 3 Task 1 made it half false: § Z of `rls_phase2_crm.sql` now
+//      plants five dedicated pairs and merges them through `merge_records()`
+//      for real, so the suite holds hand-written rows (no `<side>.before`
+//      snapshot) AND real ones (with it) side by side, on purpose. The
+//      hand-written ones were left alone because ~680 assertions are built on
+//      them. A golden-path test that depends on any of it is a test that
+//      depends on another suite's incidental choices, which is still the
+//      point.
 //
 // So this creates a disposable world with a unique slug per run and deletes it
 // afterwards, and it can run against a database anybody is already using.

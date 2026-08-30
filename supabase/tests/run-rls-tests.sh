@@ -414,6 +414,35 @@ p2_rows() { # name want_count path token
   else printf '  FAIL  %-58s got %s want %s\n' "$name" "$n" "$want"; api_fails=$((api_fails+1)); fi
 }
 
+# THE VALUE VARIANT OF p2_rows, ADDED IN PHASE 3 TASK 1 (final review I-7).
+#
+# p2_rows counts rows. That is enough for a visibility question -- "does this
+# tenant see the other tenant's contacts" -- and it is NOT enough for the one
+# this was added for: `merges.field_resolution` is written by exactly one
+# function, and a row coming back proves nothing about whether the snapshot the
+# /merges screen and the activity timeline both read is inside it. So this
+# walks a dotted path into the FIRST row's JSON and compares the value.
+#
+# `<null>` for an absent key or a null value, `<none>` for no rows at all, so
+# "the key is missing" and "the query matched nothing" are different failures.
+p2_json() { # name want path token dotted.key
+  local name="$1" want="$2" path="$3" tok="$4" key="$5" v
+  v=$(curl -s "$API/rest/v1/$path" -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+      | KEY="$key" python -c "
+import sys, json, os
+d = json.load(sys.stdin)
+if not isinstance(d, list) or not d:
+    print('<none>')
+else:
+    cur = d[0]
+    for part in os.environ['KEY'].split('.'):
+        cur = cur.get(part) if isinstance(cur, dict) else None
+    print('<null>' if cur is None else cur)
+")
+  if [ "$v" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$v"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$v" "$want"; api_fails=$((api_fails+1)); fi
+}
+
 MGR=$(p2_token pmanager);   [ -n "$MGR" ] || { echo "no token for pmanager" >&2; exit 1; }
 BKR=$(p2_token pbooker);    [ -n "$BKR" ] || { echo "no token for pbooker" >&2; exit 1; }
 STD=$(p2_token pstd1);      [ -n "$STD" ] || { echo "no token for pstd1" >&2; exit 1; }
@@ -1642,6 +1671,31 @@ else
          "...the Owner's loser is soft-deleted and attributed" "$hm_owner"
   api_fails=$((api_fails+1))
 fi
+# THE SNAPSHOT THE TWO MERGE SCREENS READ, OVER HTTP (final review I-7).
+#
+# The merge above is a REAL merge_records() call, so its field_resolution is
+# the real thing rather than a hand-written fixture -- which is exactly what
+# this suite had no assertion on. `merges?select=field_resolution` returning a
+# row proves the SELECT policy lets the Owner read it; only the value proves
+# the snapshot lib/crm/dedup.ts snapshotName() and 20260829040000:246 both
+# depend on is actually in there. The psql half is § Z of rls_phase2_crm.sql;
+# this is the same claim through PostgREST, where the column is serialised to
+# JSON and a shape change would show up differently.
+p2_json "the REAL merge's loser.before.name survives to the API" \
+        "Bella Nkemelu" \
+        "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
+        "field_resolution.loser.before.name"
+p2_json "...and the winner side, which the timeline reads" \
+        "Bella Nkemelu" \
+        "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
+        "field_resolution.winner.before.name"
+# THE PAIRED NEGATIVE. Without it both probes above are satisfied by a helper
+# that prints its own `want`: this asks for a key that has never existed and
+# must come back <null>.
+p2_json "CONTROL: a path that does not exist reads <null>, not a value" \
+        "<null>" \
+        "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
+        "field_resolution.loser.prior.name" 
 # TENANT BREAKOUT, over HTTP: the request an attacker actually sends.
 p2_code "TENANT BREAKOUT: merging an ALPHA record from org-http-merge" 403 POST \
         "rpc/merge_records" \

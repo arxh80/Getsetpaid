@@ -1211,11 +1211,16 @@ select crm.val('L5  every table carrying updated_at has the trigger',
       and not exists (select 1 from pg_trigger t
                       where t.tgrelid=c.oid and not t.tgisinternal
                         and t.tgname='set_updated_at')$$, '0');
-select crm.val('L6  ...and that is 18 tables (merge_candidates joined in Task 6)',
+-- TWENTY SINCE PHASE 3 TASK 1: public.events and public.event_lineup, whose
+-- triggers 20260901000000 adds by hand. They are named `set_updated_at` like
+-- every other one, because L5 above asserts exactly that name -- a per-table
+-- prefix would put both tables in violation of the guard that exists to notice
+-- a new table arriving without a trigger.
+select crm.val('L6  ...and that is 20 tables (events + event_lineup in Phase 3)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '18');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '20');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together
@@ -4244,16 +4249,64 @@ select crm.val('T32b finance READS fee history (view_crm) even though it cannot 
   $$select count(*)::text from public.artist_fee_history
      where artist_id='444400b0-0000-0000-0000-0000000000b1'$$, '2');
 reset role; reset request.jwt.claims;
+-- PHASE 3 TASK 1: two events, one per tenant, for T32e-T32g. Planted as
+-- postgres because public.events has RLS enabled and NO POLICIES until Task 2
+-- -- an authenticated INSERT here would be refused, and the claim under test
+-- is the foreign key on artist_fee_history, not the events write path.
+insert into public.events (id, organisation_id, name, starts_at)
+select 'e0e00000-0000-0000-0000-0000000000e1', o.id, 'T Alpha Event',
+       timestamptz '2026-09-10 20:00+00'
+from public.organisations o where o.slug='org-alpha';
+insert into public.events (id, organisation_id, name, starts_at)
+select 'e0e0000b-0000-0000-0000-00000000000b', o.id, 'T Beta Event',
+       timestamptz '2026-09-11 20:00+00'
+from public.organisations o where o.slug='org-beta';
+
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 select crm.try('T32c THE WRITE PATH EXISTS IN THE DATABASE -- the form''s absence is a product decision',
   $$update public.artist_fee_history set note = 'edited'
      where id='999900b0-0000-0000-0000-0000000000f1'$$, 'ok(1)');
-select crm.try('T32d ...and event_id is still held NULL until Phase 3 adds the FK',
+-- REWRITTEN BY PHASE 3 TASK 1. T32d used to read "...and event_id is still
+-- held NULL until Phase 3 adds the FK" and expect denied(23514), which is what
+-- 20260828001134's temporary CHECK produced. 20260901001000 dropped that CHECK
+-- and added the COMPOSITE artist_fee_history_event_fkey, so the column is
+-- writable now and the control changes shape: the SQLSTATE moves 23514 ->
+-- 23503, and what is being asserted moves from "nobody can write this" to
+-- "only a real event OF THIS TENANT can be written here".
+--
+-- THIS IS THE CLIENT-PATH HALF. schema_invariants.sql A14/B11/C4/C4b assert
+-- the same constraint with no session at all, which is the stronger statement
+-- (a foreign key binds every writer). What only this section can add is that
+-- the write reaches the constraint at all -- an RLS policy that refused first
+-- would give denied(42501) and the FK would never be consulted.
+select crm.try('T32d ...and event_id refuses an event that does not exist (was 23514, now the FK)',
   $$update public.artist_fee_history
       set event_id = '00000000-0000-0000-0000-0000000000ee'
-     where id='999900b0-0000-0000-0000-0000000000f1'$$, 'denied(23514)');
+     where id='999900b0-0000-0000-0000-0000000000f1'$$, 'denied(23503)');
+
+select crm.try('T32e ...and an event of ANOTHER TENANT, which is the composite half',
+  $$update public.artist_fee_history
+      set event_id = 'e0e0000b-0000-0000-0000-00000000000b'
+     where id='999900b0-0000-0000-0000-0000000000f1'$$, 'denied(23503)');
+
+-- THE POSITIVE CONTROL. Without it T32d and T32e are satisfied by a column
+-- that is still unwritable for some other reason -- which is exactly the state
+-- Phase 3 was supposed to end, and it would look identical from here.
+select crm.try('T32f POSITIVE CONTROL: an event of THIS tenant writes',
+  $$update public.artist_fee_history
+      set event_id = 'e0e00000-0000-0000-0000-0000000000e1'
+     where id='999900b0-0000-0000-0000-0000000000f1'$$, 'ok(1)');
+
+select crm.val('T32g ...and it is really stored, not merely accepted',
+  $$select event_id::text from public.artist_fee_history
+     where id='999900b0-0000-0000-0000-0000000000f1'$$,
+  'e0e00000-0000-0000-0000-0000000000e1');
 reset role; reset request.jwt.claims;
+
+-- Put it back, so nothing downstream inherits a fee row pointing at an event.
+update public.artist_fee_history set event_id = null
+ where id='999900b0-0000-0000-0000-0000000000f1';
 
 -- --------------------------------------------------------------------------
 -- T33-T38a. THE OWNER, THE ROLE THIS SUITE NEVER EXERCISED (fix round 1,
@@ -6168,6 +6221,182 @@ select crm.val('Y4b the constraint COMMENT is restored too',
 select crm.val('Y4c ...and the planted row is gone',
   $$select count(*)::text from public.venue_rooms
      where id='6666ffff-0000-0000-0000-0000000000ff'$$, '0');
+
+-- ===========================================================================
+-- Z. THE MERGE FIXTURES GO THROUGH public.merge_records() (final review I-7)
+-- ===========================================================================
+-- WHAT WAS WRONG, AND WHY EVERY SUITE STAYED GREEN THROUGH IT.
+--
+-- `merges.field_resolution` is written by exactly ONE function,
+-- public.merge_records(). BOTH surfaces that read it --
+--
+--   /merges          lib/crm/dedup.ts mapMerge()/snapshotName()
+--   the timeline     20260829040000:246,277, reading
+--                    field_resolution -> 'loser' -> 'before' ->> 'name'
+--
+-- -- were asserted only against `merges` rows this suite and run-rls-tests.sh
+-- INSERT BY HAND, which never set the `<side>.before` snapshot at all. So a
+-- change to what merge_records() writes would break both screens with every
+-- assertion in this file still passing. Phase 2 Task 8 saw the symptom in a
+-- browser (nine of eleven merge-history rows rendered anonymously) and
+-- correctly diagnosed it as a FIXTURE artefact rather than a product defect --
+-- which is exactly why it survived until it was scheduled.
+--
+-- THE EXISTING HAND-WRITTEN ROWS ARE NOT CONVERTED, deliberately.
+-- merge_records() soft-deletes the loser and repoints its join rows, so
+-- rewriting cccc0000-...-000000000002 in place would perturb the ~680
+-- assertions built on top of it. NEW pairs are planted instead, in a fresh id
+-- range (ccce0000 winners / ccce1000 losers) so nothing existing shifts.
+--
+-- AND THEY ARE PLANTED HERE, IN § Z, RATHER THAN IN THE FIXTURE BLOCK AT THE
+-- TOP. That is a deviation from the task brief and it is the point of the
+-- section: this file is full of assertions that COUNT rows in org ALPHA -- the
+-- record-scope sections, the list sections, § P's suspended-workspace reads --
+-- and ten more contacts, companies, agencies, artists and venues in the
+-- fixture block would move a number in most of them. § Z is the last section
+-- in the file, so a row created here is seen by nothing but § Z.
+--
+-- pmanager is the actor because A3 has already proved they hold merge_records,
+-- and because manager is one of the roles MFA is OPTIONAL for -- so the aal1
+-- fixture session is a fully working one and no elevation is needed.
+
+insert into public.contacts (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, :'pmanager', v.nm from public.organisations o, (values
+  ('ccce0000-0000-0000-0000-000000000001','Real Merge Winner Contact'),
+  ('ccce1000-0000-0000-0000-000000000001','Real Merge Loser Contact')
+) as v(id, nm) where o.slug='org-alpha';
+
+insert into public.companies (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, :'pmanager', v.nm from public.organisations o, (values
+  ('ccce0000-0000-0000-0000-000000000002','Real Merge Winner Company'),
+  ('ccce1000-0000-0000-0000-000000000002','Real Merge Loser Company')
+) as v(id, nm) where o.slug='org-alpha';
+
+insert into public.agencies (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, :'pmanager', v.nm from public.organisations o, (values
+  ('ccce0000-0000-0000-0000-000000000003','Real Merge Winner Agency'),
+  ('ccce1000-0000-0000-0000-000000000003','Real Merge Loser Agency')
+) as v(id, nm) where o.slug='org-alpha';
+
+insert into public.artists (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, :'pmanager', v.nm from public.organisations o, (values
+  ('ccce0000-0000-0000-0000-000000000004','Real Merge Winner Artist'),
+  ('ccce1000-0000-0000-0000-000000000004','Real Merge Loser Artist')
+) as v(id, nm) where o.slug='org-alpha';
+
+insert into public.venues (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, :'pmanager', v.nm from public.organisations o, (values
+  ('ccce0000-0000-0000-0000-000000000005','Real Merge Winner Venue'),
+  ('ccce1000-0000-0000-0000-000000000005','Real Merge Loser Venue')
+) as v(id, nm) where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+
+select crm.try('Z1  a REAL contact merge through merge_records()',
+  format($$select public.merge_records(
+      (select id from public.organisations where slug='org-alpha'),
+      'contact', %L, %L, '{}'::jsonb, '{}'::jsonb)$$,
+      'ccce0000-0000-0000-0000-000000000001',
+      'ccce1000-0000-0000-0000-000000000001'), 'ok(1)');
+
+select crm.try('Z2  a REAL company merge through merge_records()',
+  format($$select public.merge_records(
+      (select id from public.organisations where slug='org-alpha'),
+      'company', %L, %L, '{}'::jsonb, '{}'::jsonb)$$,
+      'ccce0000-0000-0000-0000-000000000002',
+      'ccce1000-0000-0000-0000-000000000002'), 'ok(1)');
+
+select crm.try('Z3  a REAL agency merge through merge_records()',
+  format($$select public.merge_records(
+      (select id from public.organisations where slug='org-alpha'),
+      'agency', %L, %L, '{}'::jsonb, '{}'::jsonb)$$,
+      'ccce0000-0000-0000-0000-000000000003',
+      'ccce1000-0000-0000-0000-000000000003'), 'ok(1)');
+
+select crm.try('Z4  a REAL artist merge through merge_records()',
+  format($$select public.merge_records(
+      (select id from public.organisations where slug='org-alpha'),
+      'artist', %L, %L, '{}'::jsonb, '{}'::jsonb)$$,
+      'ccce0000-0000-0000-0000-000000000004',
+      'ccce1000-0000-0000-0000-000000000004'), 'ok(1)');
+
+select crm.try('Z5  a REAL venue merge through merge_records()',
+  format($$select public.merge_records(
+      (select id from public.organisations where slug='org-alpha'),
+      'venue', %L, %L, '{}'::jsonb, '{}'::jsonb)$$,
+      'ccce0000-0000-0000-0000-000000000005',
+      'ccce1000-0000-0000-0000-000000000005'), 'ok(1)');
+
+reset role; reset request.jwt.claims;
+
+-- THE ASSERTIONS THE SCREENS ACTUALLY DEPEND ON. Z6 is the exact jsonb path
+-- lib/crm/dedup.ts snapshotName() reads; Z7 is the winner side the same helper
+-- reads on the merge detail; Z8 binds the ACTIVITY VIEW's own path
+-- (20260829040000:246) to the function's output, which is the pair nothing
+-- connected before this section existed.
+--
+-- THE MUTATION THEY MUST CATCH, run in Phase 3 Task 1 and recorded in its
+-- report: rename 'before' to 'prior' in merge_records()' snapshot write (or
+-- delete the winner/loser snapshot block entirely) and Z6, Z7 and Z8 go red
+-- while every pre-existing assertion in this file stays green.
+select crm.val('Z6  merge_records() writes loser.before.name, which /merges renders',
+  $$select field_resolution -> 'loser' -> 'before' ->> 'name'
+      from public.merges
+     where loser_id = 'ccce1000-0000-0000-0000-000000000001'$$,
+  'Real Merge Loser Contact');
+
+select crm.val('Z7  merge_records() writes winner.before.name, which the timeline renders',
+  $$select field_resolution -> 'winner' -> 'before' ->> 'name'
+      from public.merges
+     where winner_id = 'ccce0000-0000-0000-0000-000000000001'$$,
+  'Real Merge Winner Contact');
+
+select crm.val('Z8  and the activity view surfaces it as other_name',
+  $$select detail ->> 'other_name' from public.activity_events
+     where kind='merge_absorbed' and subject_id='ccce0000-0000-0000-0000-000000000001'$$,
+  'Real Merge Loser Contact');
+
+select crm.val('Z9  field_resolution version is 2, not 1',
+  $$select field_resolution ->> 'version' from public.merges
+     where loser_id = 'ccce1000-0000-0000-0000-000000000001'$$, '2');
+
+-- THE OTHER FOUR ENTITY TYPES, so Z1-Z5 are not four statements whose only
+-- assertion is that they returned a row. One value each, on the path the
+-- screens read, is enough: the shape is written once in merge_records() and
+-- what differs per entity type is the column list, which
+-- tests/integration/crm/mergeable-columns-match-db.test.ts owns.
+select crm.val('Z10 ...the same snapshot exists for company, agency, artist and venue',
+  $$select string_agg(field_resolution -> 'loser' -> 'before' ->> 'name', '|'
+                      order by loser_id)
+      from public.merges
+     where loser_id in ('ccce1000-0000-0000-0000-000000000002',
+                        'ccce1000-0000-0000-0000-000000000003',
+                        'ccce1000-0000-0000-0000-000000000004',
+                        'ccce1000-0000-0000-0000-000000000005')$$,
+  'Real Merge Loser Company|Real Merge Loser Agency|Real Merge Loser Artist|Real Merge Loser Venue');
+
+-- THE DENOMINATOR. Z6-Z10 read five specific rows; this counts them, so a
+-- merge that silently did not happen shows as a missing row rather than as a
+-- NULL that some future edit might expect.
+select crm.val('Z11 CONTROL: all five real merges are in public.merges',
+  $$select count(*)::text from public.merges
+     where winner_id::text like 'ccce0000-%'$$, '5');
+
+-- ...and the losers really were soft-deleted, which is the half of
+-- merge_records() the field_resolution assertions cannot see.
+select crm.val('Z12 CONTROL: all five losers are soft-deleted',
+  $$select ((select count(*) from public.contacts
+              where id='ccce1000-0000-0000-0000-000000000001' and deleted_at is not null)
+          + (select count(*) from public.companies
+              where id='ccce1000-0000-0000-0000-000000000002' and deleted_at is not null)
+          + (select count(*) from public.agencies
+              where id='ccce1000-0000-0000-0000-000000000003' and deleted_at is not null)
+          + (select count(*) from public.artists
+              where id='ccce1000-0000-0000-0000-000000000004' and deleted_at is not null)
+          + (select count(*) from public.venues
+              where id='ccce1000-0000-0000-0000-000000000005' and deleted_at is not null))::text$$,
+  '5');
 
 -- ===========================================================================
 -- Results
