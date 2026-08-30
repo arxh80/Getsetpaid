@@ -364,9 +364,14 @@ export default async function ArtistDetailPage({
           recorded against the booking they belong to, which arrives with
           events.
         </p>
-        {/* The key covers what would change the SET of rows. Nothing on this
-            page changes it today (the fee list has no toolbar), so this is the
-            same shape the list pages use rather than a different one. */}
+        {/* The key deliberately does NOT cover everything that changes the
+            set of rows -- `feeParams.cursor` does too, and it is left out for
+            the reason the contacts page measured: keying on the cursor
+            remounts the pager on every page click and drops focus to <body>.
+            What is left is the toolbar's half of the shape the list pages use,
+            and the fee list has no toolbar today, so in practice this key
+            never changes. It is here so that giving fees a search box later is
+            one line rather than a bug. */}
         <Suspense
           key={JSON.stringify([feeParams.q, feeParams.pageSize])}
           fallback={<ListSkeleton columns={3} />}
