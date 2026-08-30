@@ -81,10 +81,22 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # REQUIRED BEFORE `tsc`, AND CI IS THE PLACE IT BITES HARDEST.
+      # `PageProps<"/some/route">` and `LayoutProps` are not exported by any
+      # package -- Next generates them into `.next/types/` from a route
+      # manifest. On a developer's machine `pnpm dev` has already written it;
+      # a clean checkout has nothing, so `tsc` reports "Cannot find name
+      # 'PageProps'" once per page. That is exactly what this workflow's
+      # fourth run did (33308499085), the first run that got far enough to try.
+      # `CLAUDE.md` § Current state already tells a human to run this before
+      # `pnpm typecheck`.
+      - name: Generate Next.js route types
+        run: npx next typegen
+
       # NOT REDUNDANT WITH THE EDITOR. `CLAUDE.md` § Current state: nothing
-      # else in this project runs `tsc`, and the exhaustive `switch` over write
-      # outcomes in every Server Action is a compile-time guard only. Skipping
-      # typecheck skips those entirely.
+      # else on a developer's machine runs `tsc`, and the exhaustive `switch`
+      # over write outcomes in every Server Action is a compile-time guard
+      # only. Skipping typecheck skips those entirely.
       - name: Typecheck
         run: pnpm typecheck
 

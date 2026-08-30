@@ -33,8 +33,11 @@ refuses to run twice without a reset in between.
 
 **CI runs a subset, and knowing which subset is the point.**
 `.github/workflows/ci.yml` runs on every push and pull request, in two jobs:
-`pnpm lint`, `pnpm typecheck` and `pnpm exec vitest run tests/unit`; and
-`pnpm audit --audit-level high` plus a gitleaks secret scan. It does **not**
+`pnpm lint`, `npx next typegen`, `pnpm typecheck` and
+`pnpm exec vitest run tests/unit`; and `pnpm audit --audit-level high` plus a
+gitleaks secret scan. (`next typegen` is there for the same reason it is named
+above — a clean checkout has no `.next/types/`, so `tsc` cannot find
+`PageProps`.) It does **not**
 run `tests/integration`, the psql/HTTP suite or Playwright — all three need a
 running Supabase stack (`npx supabase start` plus a reset), which is a
 container pull and minutes per run, and is a deliberate decision nobody has
