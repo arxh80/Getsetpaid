@@ -1548,16 +1548,30 @@ corrections are the useful part. Each now says what was actually done.
   the page and fails independently, so the ceiling is latency, not a broken
   page.
 
-- **`/{orgSlug}/events/new` does not exist yet, so the "New event" button on a
-  writer's list is a link to a 404.** Task 4 creates the form. Nothing is
-  reachable that should not be — the button is only a `<Link>` for a caller who
-  holds `manage_events`, and the INSERT policy (`20260901011000`, asserted at
-  `rls_phase3_events.sql` EC9 for `read_only` and EC4/EC7 for finance and
-  marketing) is what actually refuses the write from any client. The Task 3
-  brief's acceptance criterion "'New event' must be refused at the route, not
-  only hidden" therefore has no route to assert against in this task; when Task
-  4 adds it, it must repeat `golden-path.spec.ts:114`'s shape ("a read-only
-  member cannot reach the create form, not just the button") for events.
+- **NEITHER events route has a working destination yet: `/{orgSlug}/events/new`
+  AND `/{orgSlug}/events/{id}` both 404 until Task 4.** The create route is the
+  obvious half — the "New event" button is a `<Link>` for a caller who holds
+  `manage_events`. The larger half, corrected in fix round 1 (review Minor 3),
+  is that **every row's Name link on both routes** points at the detail page
+  that does not exist, so on a populated workspace the dead surface is 25 links
+  per page rather than one button. It is worst for `read_only`, who gets no
+  "New event" link at all and for whom therefore *every* interactive element on
+  both routes is currently dead.
+
+  Nothing is reachable that should not be, and nothing is writable: the INSERT
+  policy (`20260901011000`, asserted at `rls_phase3_events.sql` EC9 for
+  `read_only`, EC4/EC7 for finance and marketing) refuses the write from any
+  client regardless. The columns are brief-mandated and Task 4 owns both routes;
+  what was wrong was the disclosure, not the links.
+
+  **Task 4 owes three things here:** the two routes; a repeat of
+  `golden-path.spec.ts:114`'s shape ("a read-only member cannot reach the create
+  form, not just the button") for events, which is the assertion the Task 3
+  brief asked for and that had no route to run against; and a permanent
+  Playwright spec covering the events list, since Task 3's browser walk was a
+  temporary spec (kept at
+  `.superpowers/sdd/phase-3-events/task-3-browser-walk.spec.ts` for
+  reproducibility) and its findings live only in a report.
 
 ## Phase 3 — members management with a real UI
 

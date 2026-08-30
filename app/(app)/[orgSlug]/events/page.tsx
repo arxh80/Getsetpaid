@@ -167,6 +167,17 @@ async function EventResults({
   // AND IT IS NOT FROM THE REQUEST. There is no `?when=after:2020-01-01` and
   // there must not be: the filter's whole vocabulary is `all | upcoming |
   // past`, and the instant that separates the last two is this line.
+  //
+  // CONSISTENT WITHIN A REQUEST, NOT ACROSS ONE (fix round 1, review Minor 6).
+  // The next request recomputes it, so an event whose `starts_at` crosses the
+  // wall clock between a "Next" click and a "Previous" click moves between the
+  // `upcoming` and `past` windows underneath the keyset cursor -- and the two
+  // page-ones can then legitimately differ by that one row. The window is
+  // seconds wide and the alternative (pinning the bound into the cursor, or
+  // into the URL) would make a shared link mean "upcoming as of whenever the
+  // sender loaded it", which is worse and is the thing the paragraph above
+  // refuses. Stated because the comment otherwise reads as though the bound
+  // were stable for the life of a session.
   const now = new Date().toISOString();
 
   const page = await fetchListPage<EventRow, EventSortKey, EventFilterKey>({
@@ -179,6 +190,12 @@ async function EventResults({
       id: String(row.id),
       name: String(row.name),
       startsAt: String(row.starts_at),
+      // NO COLUMN RENDERS `endsAt` OR `eventType` YET -- Task 4's detail page
+      // does, and `TYPE_LABELS` exists for it. They are mapped here rather than
+      // dropped so `EventRow` stays a faithful projection of `EVENT_SELECT`
+      // (which is the brief's literal and carries both), instead of a third
+      // shape a reader has to diff against the select list. See the note on
+      // the interface in lib/crm/events-list.ts.
       endsAt: (row.ends_at as string | null) ?? null,
       status: row.status as EventStatus,
       eventType: row.event_type as EventType,

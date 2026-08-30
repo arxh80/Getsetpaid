@@ -1290,9 +1290,19 @@ select ev.val('EX1 all four `backedBy` names exist as indexes on public.events',
                          'events_org_updated_at_id_live_idx',
                          'events_org_deleted_at_id_idx')$$, '4');
 
--- The names themselves, not just how many. A count of four could in principle
--- be four copies of one name; it cannot, but reading the set back is free and
--- it is what turns a failure into a message that names the missing index.
+-- The names themselves, not just how many. EX1 counts names it is handed, so
+-- it cannot see an index this task did NOT create sitting in the same
+-- namespace; this reads the whole `events_org_%` family back and requires it to
+-- be exactly the four. That is the half that goes red when a later migration
+-- adds a fifth list index without a spec entry to justify it.
+--
+-- `\_` ESCAPES THE UNDERSCORE, so the pattern is `events_org_` literally.
+-- Fix round 1, review Minor 5: this query used to carry
+-- `and c.relname not in ('events_organisation_id_idx')`, which never once
+-- fired -- there is no underscore after `org` in `events_organisation_id_idx`,
+-- so the escaped LIKE already excludes it -- and a dead exclusion reads as a
+-- guard doing work. Removed rather than commented, because the escape is the
+-- real mechanism and the exclusion was hiding it.
 select ev.val('EX2 ...and they are those four exactly',
   $$select string_agg(c.relname, ',' order by c.relname)
       from pg_catalog.pg_class c
@@ -1300,8 +1310,7 @@ select ev.val('EX2 ...and they are those four exactly',
       join pg_catalog.pg_class t on t.oid = i.indrelid
       join pg_catalog.pg_namespace n on n.oid = t.relnamespace
      where n.nspname = 'public' and t.relname = 'events' and c.relkind = 'i'
-       and c.relname like 'events\_org\_%'
-       and c.relname not in ('events_organisation_id_idx')$$,
+       and c.relname like 'events\_org\_%'$$,
   'events_org_deleted_at_id_idx,events_org_name_id_live_idx,events_org_starts_at_id_live_idx,events_org_updated_at_id_live_idx');
 
 -- THE SHAPE, NOT ONLY THE NAME. An index of the right name over the wrong

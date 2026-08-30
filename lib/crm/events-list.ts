@@ -48,12 +48,26 @@ import {
 export const EVENT_SELECT =
   "id, name, starts_at, ends_at, status, event_type, venue_id, owner_user_id, updated_at";
 
+/**
+ * One mapped row of the live list.
+ *
+ * A FAITHFUL PROJECTION OF `EVENT_SELECT`, INCLUDING THE TWO FIELDS NO COLUMN
+ * RENDERS. `endsAt` and `eventType` have no consumer until Task 4's detail page
+ * (and `TYPE_LABELS` has none either, for the same reason). They are kept
+ * because `EVENT_SELECT` is the brief's literal and carries both columns
+ * regardless: dropping them from this interface would not take a byte off the
+ * wire, and it would leave the row type and the select list as two shapes a
+ * reader has to diff. Flagged in fix round 1 (review Minor 4) and kept
+ * deliberately rather than silently.
+ */
 export interface EventRow {
   id: string;
   name: string;
   startsAt: string;
+  /** Nullable, and the reason it is not a sort. See the sort block below. */
   endsAt: string | null;
   status: EventStatus;
+  /** Rendered by Task 4's detail page, through `TYPE_LABELS`. */
   eventType: EventType;
   venueId: string | null;
   updatedAt: string;
