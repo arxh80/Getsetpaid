@@ -88,10 +88,19 @@ test("the Phase 2 golden path, end to end, as a manager", async ({ page }) => {
   // defect that shipped past every other gate ("we couldn't load this
   // contact's activity") was on exactly this surface.
   await page.goto(contactUrl);
-  const timeline = page.getByRole("region", { name: /activity/i });
-  const activity = (await timeline.count())
-    ? timeline
-    : page.locator("main");
+  // UNCONDITIONAL (deferred-minor L1139). This used to fall back to
+  // `page.locator("main")` when the region was not found, which quietly
+  // degraded the three assertions below from "the activity timeline says this"
+  // to "somewhere on the page says this" -- and the timeline is a <section
+  // aria-labelledby> whose accessible name coming loose is precisely the kind
+  // of regression this step exists to catch. The region is asserted to exist
+  // FIRST, so a missing landmark fails here with a clear message instead of
+  // silently widening every assertion after it.
+  const activity = page.getByRole("region", { name: /activity/i });
+  await expect(
+    activity,
+    "the activity timeline must be a named region, not just markup in <main>",
+  ).toHaveCount(1);
   await expect(activity).toContainText("CREATED", { ignoreCase: true });
   await expect(activity).toContainText("LINKED", { ignoreCase: true });
   await expect(activity).toContainText("Golden Path Promotions");
