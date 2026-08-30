@@ -38,8 +38,23 @@ import { describe, expect, it } from "vitest";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 
+// LINE ENDINGS ARE NORMALISED, AND THAT IS NOT COSMETIC.
+//
+// Several assertions in this file are multi-line `toContain` checks against
+// source text -- the I-2 block below is the clearest, matching a string that
+// contains an escaped newline followed by six spaces. The repository sets no
+// `text` policy in `.gitattributes`, so a Windows checkout with
+// `core.autocrlf` on has CRLF in every file, and every one of those
+// assertions then fails against perfectly correct source. It was red at
+// Phase 3 Task 1's starting commit for exactly that reason, on a test whose
+// subject had nothing wrong with it.
+//
+// Normalising here rather than in `.gitattributes` keeps the fix local: a
+// repository-wide `text=auto` rewrites every file's line endings in one
+// commit, which is a decision for its own change (filed in FOLLOW-UPS.md).
+// Nothing this file asserts is ABOUT line endings, so nothing is weakened.
 function read(relative: string): string {
-  return readFileSync(root + relative, "utf8");
+  return readFileSync(root + relative, "utf8").replace(/\r\n/g, "\n");
 }
 
 /**

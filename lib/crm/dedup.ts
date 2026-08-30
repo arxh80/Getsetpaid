@@ -20,13 +20,17 @@ import "server-only";
 // the RESOLVED queue. `merge_candidates.deleted_at` is set when a candidate is
 // merged or dismissed, so "off the queue" and "soft-deleted" are the same
 // state and the two views are one surface with two scopes.
+// NOTE THE THREE IMPORTS THAT ARE NO LONGER HERE. Until Phase 3 Task 1 this
+// file re-exported CUSTOM_FIELD_ENTITY_TYPES, isCustomFieldEntityType and
+// CustomFieldEntityType under merge-flavoured names. 20260901001000 widened
+// the custom-field allowlists to six and left the merge ones at five, so
+// MERGE_ENTITY_TYPES below is its own tuple with its own type and its own
+// guard, and importing the custom-field versions here would only invite
+// someone to re-alias them.
 import {
-  CUSTOM_FIELD_ENTITY_TYPES,
   ENTITY_PATH_SEGMENT,
   ENTITY_TYPE_LABELS,
-  isCustomFieldEntityType,
   parseOptions,
-  type CustomFieldEntityType,
   type CustomFieldDefinition,
 } from "@/lib/crm/custom-fields";
 import type { CrmWriteAccess } from "@/lib/crm/write-access";

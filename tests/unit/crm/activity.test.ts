@@ -161,7 +161,7 @@ describe("activityParams refuses a search it has no control for", () => {
 });
 
 describe("otherHref", () => {
-  it("builds a record's own page for the five entity types", () => {
+  it("builds a record's own page for the six entity types", () => {
     expect(otherHref("acme", "company", UUID)).toBe(`/acme/companies/${UUID}`);
     expect(otherHref("acme", "contact", UUID)).toBe(`/acme/contacts/${UUID}`);
     expect(otherHref("acme", "agency", UUID)).toBe(`/acme/agencies/${UUID}`);
@@ -169,12 +169,29 @@ describe("otherHref", () => {
     expect(otherHref("acme", "venue", UUID)).toBe(`/acme/venues/${UUID}`);
   });
 
+  // `event` MOVED SIDES IN PHASE 3 TASK 1, and the move is the assertion.
+  //
+  // It used to sit in the "unknown type" case below -- the natural choice at
+  // the time, because there was no event entity. 20260901001000 added it to
+  // CUSTOM_FIELD_ENTITY_TYPES and lib/crm/custom-fields.ts gave
+  // ENTITY_PATH_SEGMENT an `event: "events"` entry, so otherHref now resolves
+  // it. Asserted here on its own rather than folded into the five above,
+  // because the ROUTE DOES NOT EXIST until Phase 3 Task 3: this link is
+  // deliberately dangling for one task. Omitting the ENTITY_PATH_SEGMENT entry
+  // instead would have put `undefined` in the URL rather than produce a 404,
+  // which is why the entry is there. Nothing reaches it today -- the only way
+  // in is a timeline entry on an event, and public.activity_events does not
+  // union public.events until Task 3 either.
+  it("resolves an event too, at a route Task 3 has not shipped yet", () => {
+    expect(otherHref("acme", "event", UUID)).toBe(`/acme/events/${UUID}`);
+  });
+
   // A ROOM HAS NO PAGE. The view emits `other_type: 'room'` for venue_rooms so
   // the timeline can name it; there is nowhere to send a click, and a link to
   // `/acme/undefined/<id>` is worse than plain text.
   it("returns null for a room, an unknown type and a missing id", () => {
     expect(otherHref("acme", "room", UUID)).toBeNull();
-    expect(otherHref("acme", "event", UUID)).toBeNull();
+    expect(otherHref("acme", "tour", UUID)).toBeNull();
     expect(otherHref("acme", "company", null)).toBeNull();
     expect(otherHref("acme", null, UUID)).toBeNull();
   });
