@@ -6,6 +6,7 @@ import { getCrmWriteAccess } from "@/lib/crm/write-access";
 import {
   columnLabel,
   displayValue,
+  valuesAgree,
   entityHref,
   entityNoun,
   loadMergePair,
@@ -64,6 +65,13 @@ export default async function ReviewDuplicatePage({
   // private.dedup_mergeable_columns() by an integration test, so a column the
   // database will merge and this screen does not offer is a red test rather
   // than a field nobody was asked about.
+  //
+  // `agreed` IS COMPUTED FROM THE STORED VALUES, NOT THE RENDERED ONES (final
+  // review I-2 / L948). The screen used to decide which fields to hide by
+  // comparing `keepValue === duplicateValue`, i.e. two `displayValue` strings
+  // -- and `displayValue` is lossy on purpose, so `""` vs `null` and `0` vs
+  // `"0"` were classified as "they agree", folded behind a disclosure, and the
+  // user was never offered a choice that `merge_records()` then made for them.
   const rows: MergeFieldRow[] = [
     ...MERGEABLE_COLUMNS[entityType].map((column) => ({
       key: column,
@@ -71,6 +79,7 @@ export default async function ReviewDuplicatePage({
       keepValue: displayValue(keep.values[column]),
       duplicateValue: displayValue(duplicate.values[column]),
       custom: false,
+      agreed: valuesAgree(keep.values[column], duplicate.values[column]),
     })),
     ...definitions.map((definition) => ({
       key: definition.id,
@@ -78,6 +87,7 @@ export default async function ReviewDuplicatePage({
       keepValue: displayValue(keep.custom[definition.id]),
       duplicateValue: displayValue(duplicate.custom[definition.id]),
       custom: true,
+      agreed: valuesAgree(keep.custom[definition.id], duplicate.custom[definition.id]),
     })),
   ];
 

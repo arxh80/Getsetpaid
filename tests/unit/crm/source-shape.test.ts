@@ -939,6 +939,60 @@ describe("I-6: every capped reader in lib/crm/queries.ts orders before it caps",
   }
 });
 
+// ===========================================================================
+// FINAL REVIEW I-2 / L948 -- THE KEYING HALF
+// ===========================================================================
+//
+// The "agreed" half is tested as a pure function in merge-agreement.test.ts.
+// This half is not reachable from a node test: the defect is that React does
+// not reset an UNCONTROLLED input's DOM state on re-render, which needs a DOM,
+// a render and a re-render -- and this repository has no React Testing Library
+// (tests/unit is pure functions only, by vitest.config.ts's own rule).
+//
+// So the assertion is over the source, like the rest of this file. The
+// property is exactly one character wide and entirely load-bearing: the field
+// rows must be keyed on the SURVIVOR as well as the column, or a swap leaves
+// every radio where it was while the default the screen claims to be showing
+// has moved underneath it.
+describe("I-2: the merge screen's field rows are keyed on the survivor", () => {
+  const form = read("components/crm/merge-form.tsx");
+
+  it("FieldRow's key includes the survivor, not just the column", () => {
+    expect(form).toContain("key={`${survivor}:${row.key}`}");
+    // The FieldRow element specifically -- `key={row.key}` also appears on the
+    // AGREED list's <li>, which is read-only markup with no radios in it and
+    // is correct as it stands.
+    const element = form.slice(form.indexOf("<FieldRow"), form.indexOf("/>", form.indexOf("<FieldRow")));
+    expect(element).toContain("key={`${survivor}:${row.key}`}");
+  });
+
+  it("the survivor selector is still controlled, so the key can change", () => {
+    // The key is only useful because `survivor` is React state. If the
+    // selector ever became uncontrolled too, this whole fix would be inert.
+    expect(form).toContain('const [survivor, setSurvivor] = useState<"keep" | "duplicate">("keep")');
+    expect(form).toContain("checked={survivor === value}");
+  });
+
+  it("the agreed/differing split reads row.agreed, never the rendered strings", () => {
+    expect(form).toContain("rows.filter((row) => !row.agreed)");
+    expect(form).toContain("rows.filter((row) => row.agreed)");
+    expect(
+      form,
+      "comparing displayValue strings is the defect I-2 named",
+    ).not.toContain("row.keepValue !== row.duplicateValue");
+  });
+
+  it("the page computes `agreed` with valuesAgree, over the STORED values", () => {
+    const page = read("app/(app)/[orgSlug]/duplicates/[candidateId]/page.tsx");
+    expect(page).toContain(
+      "agreed: valuesAgree(keep.values[column], duplicate.values[column])",
+    );
+    expect(page).toContain(
+      "agreed: valuesAgree(keep.custom[definition.id], duplicate.custom[definition.id])",
+    );
+  });
+});
+
 describe("every create screens for duplicates", () => {
   // Screening is one line per create action and its absence is completely
   // silent: the record saves, the user is happy, and the duplicate is never

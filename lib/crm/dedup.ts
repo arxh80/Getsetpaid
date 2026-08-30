@@ -611,6 +611,65 @@ export function displayValue(value: unknown): string | null {
   return null;
 }
 
+/**
+ * Do two stored values agree, for the purpose of hiding a field from the merge
+ * screen?
+ *
+ * ===========================================================================
+ * WHY THIS IS NOT `displayValue(a) === displayValue(b)`
+ * ===========================================================================
+ * Final review I-2 (deferred-minor L948). The merge screen folded a field
+ * behind the "Show the N fields they agree on" disclosure whenever the two
+ * RENDERED strings matched -- and `displayValue` is lossy on purpose, because
+ * its job is to read well:
+ *
+ *   * `""` and `null` both render as `null` ("Not recorded"), and they are
+ *     different stored values -- one is an answer, the other is the absence of
+ *     one;
+ *   * `0` and `"0"` both render as `"0"`;
+ *   * an object drops its empty entries, so `{ x: "", y: "1" }` and
+ *     `{ y: "1" }` render identically.
+ *
+ * In every one of those the user was never offered the choice, and
+ * `merge_records()` picked a side for them. A merge is the phase's one
+ * destructive workflow, so the comparison that decides whether to ASK has to
+ * be over what is stored, not over what it looks like.
+ *
+ * Structural equality, because these come out of jsonb and PostgREST: null,
+ * string, number, boolean, array and plain object are the whole domain.
+ * Arrays compare IN ORDER -- `["a","b"]` and `["b","a"]` are different stored
+ * values and `displayValue` already renders them differently, so folding them
+ * would be the same defect in the other direction. Object key order does NOT
+ * matter, because JSON object key order carries no meaning.
+ */
+export function valuesAgree(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  // NaN is not a value any of these columns can hold, and `a === b` has
+  // already covered every other primitive, so a difference in type from here
+  // is a difference in value.
+  if (a === null || b === null || a === undefined || b === undefined) {
+    // `null` and `undefined` are both "no value stored": PostgREST omits a
+    // null jsonb key rather than sending it, so the two arrive interchangeably
+    // for the same absent field.
+    return (a ?? null) === (b ?? null);
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    return a.every((item, index) => valuesAgree(item, b[index]));
+  }
+  if (typeof a === "object" && typeof b === "object") {
+    const ae = Object.entries(a as Record<string, unknown>);
+    const be = b as Record<string, unknown>;
+    if (ae.length !== Object.keys(be).length) return false;
+    return ae.every(
+      ([key, value]) =>
+        Object.prototype.hasOwnProperty.call(be, key) && valuesAgree(value, be[key]),
+    );
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Screening, on create.
 //

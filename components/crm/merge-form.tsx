@@ -53,6 +53,18 @@ export interface MergeFieldRow {
   readonly keepValue: string | null;
   readonly duplicateValue: string | null;
   readonly custom: boolean;
+  /**
+   * Do the two STORED values agree? `valuesAgree()`, not string equality on
+   * the two rendered values.
+   *
+   * Final review I-2 / L948: this screen used to fold a field behind the
+   * "fields they agree on" disclosure whenever the two rendered strings
+   * matched, and `displayValue` is lossy on purpose -- `""` and `null` both
+   * render as "Not recorded", `0` and `"0"` both render as "0". The user was
+   * never asked, and `merge_records()` picked a side. The comparison that
+   * decides whether to ASK has to be over what is stored.
+   */
+  readonly agreed: boolean;
 }
 
 export interface MergeSideSummary {
@@ -90,8 +102,10 @@ export function MergeForm({
   const winner = survivor === "keep" ? keep : duplicate;
   const loser = survivor === "keep" ? duplicate : keep;
 
-  const differing = rows.filter((row) => row.keepValue !== row.duplicateValue);
-  const agreed = rows.filter((row) => row.keepValue === row.duplicateValue);
+  // `row.agreed` is computed from the STORED values, not from these two
+  // strings -- see MergeFieldRow.agreed for what string equality collapsed.
+  const differing = rows.filter((row) => !row.agreed);
+  const agreed = rows.filter((row) => row.agreed);
 
   return (
     <div className="flex flex-col gap-6">
@@ -189,8 +203,23 @@ export function MergeForm({
           {differing.length > 0 ? (
             <ul className="border-t border-rule">
               {differing.map((row) => (
+                // KEYED ON THE SURVIVOR, WHICH IS THE FIX AND NOT A
+                // MICRO-OPTIMISATION. The two choice radios are UNCONTROLLED
+                // (`defaultChecked`), and React does not reset an uncontrolled
+                // input's DOM state on re-render. `defaultSide` below depends
+                // on `survivor`, so before this key a user who swapped the
+                // direction kept every radio where it was while the default
+                // the screen CLAIMS to show -- "what the database would do" --
+                // had moved underneath them. Changing the key remounts the
+                // rows, so the radios re-read the new defaults.
+                //
+                // The cost is deliberate and small: swapping the direction
+                // discards per-field choices made before the swap. That is the
+                // documented rule of this screen ("the default is the
+                // survivor's own value"), and it is strictly better than a
+                // screen whose stated default is not the one shown.
                 <FieldRow
-                  key={row.key}
+                  key={`${survivor}:${row.key}`}
                   row={row}
                   survivor={survivor}
                   keepName={keep.name}
@@ -270,10 +299,24 @@ function FieldRow({
   const fallbackSide = survivor === "keep" ? "duplicate" : "keep";
   const defaultSide = survivorValue === null ? fallbackSide : survivor;
 
+  // A row reaches here with two choices that RENDER identically when the two
+  // STORED values differ but `displayValue` flattens both -- `""` on one side
+  // and nothing at all on the other, say. It is a real choice (one of the two
+  // stored values survives and the other goes into the merge history), but two
+  // identical-looking options with no explanation would be worse than the fold
+  // this replaced, so the difference is named.
+  const looksIdentical = row.keepValue === row.duplicateValue;
+
   return (
     <li className="border-b border-rule py-4">
       <fieldset>
         <legend className="text-sm font-semibold text-ink">{row.label}</legend>
+        {looksIdentical ? (
+          <p className="mt-1 max-w-prose text-sm text-ink-muted">
+            These read the same but are not stored the same — one of them is an
+            empty entry. Whichever you pick is the one that survives.
+          </p>
+        ) : null}
         <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:gap-4">
           <Choice
             name={name}
