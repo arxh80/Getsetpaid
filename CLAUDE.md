@@ -32,7 +32,8 @@ The psql/HTTP RLS suite is separate and needs a fresh database:
 refuses to run twice without a reset in between.
 
 **CI runs a subset, and knowing which subset is the point.**
-`.github/workflows/ci.yml` runs on every push and pull request, in two jobs:
+`.github/workflows/ci.yml` runs on every pull request, and on pushes to
+`main` only, in two jobs:
 `pnpm lint`, `npx next typegen`, `pnpm typecheck` and
 `pnpm exec vitest run tests/unit`; and `pnpm audit --audit-level high` plus a
 gitleaks secret scan. (`next typegen` is there for the same reason it is named

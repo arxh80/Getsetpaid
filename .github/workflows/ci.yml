@@ -43,9 +43,22 @@
 # `CLAUDE.md` says "matter most" -- still run only on a developer's machine.
 name: CI
 
+# EVERY PR RAN BOTH JOBS TWICE (deferred-minor L1145). `push: ["**"]` fires on
+# the branch push and `pull_request` fires on the same commit, so a branch with
+# an open PR paid for two identical runs of everything below.
+#
+# `push` is narrowed to the default branch, which is the one case a PR event
+# does not cover -- a merge, or a direct commit to `main`. Feature branches are
+# covered by `pull_request`, once.
+#
+# THE CONSEQUENCE, STATED SO IT IS NOT A SURPRISE: a push to a branch with NO
+# open pull request now runs nothing at all. That is the intended trade -- CI
+# on a branch nobody has proposed merging is not a gate, it is a bill -- but it
+# means "open the PR" is now part of getting a branch checked, and a branch
+# worked on for a day before its PR exists has no CI on it until then.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 # Least privilege: nothing here writes to the repository.
