@@ -123,6 +123,16 @@ jobs:
   scan:
     name: dependency and secret scanning
     runs-on: ubuntu-latest
+    # JOB-LEVEL OVERRIDE OF THE WORKFLOW'S `contents: read`. gitleaks-action,
+    # on a `pull_request` event, calls `GET /repos/<owner>/<repo>/pulls/<n>/commits`
+    # to list the commits it needs to scan, which requires `pull-requests: read`
+    # on the job's `GITHUB_TOKEN` -- without it the call 403s with "Resource not
+    # accessible by integration" and the Secret scan step fails before it scans
+    # anything. Kept job-scoped rather than moved to the workflow level so the
+    # `gates` job stays at the narrower `contents: read` from above.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
