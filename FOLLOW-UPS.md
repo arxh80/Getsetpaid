@@ -1154,31 +1154,49 @@ These become live the moment a real tenant table exists.
 
 ## Phase 3 — events
 
-- **FIRST TEST TASK OF PHASE 3 (added 2026-08-30, final review I-7): the merge
-  fixtures must call `merge_records()`.** `merges.field_resolution` is written
-  by exactly one function, `public.merge_records()`, and BOTH surfaces that read
-  it -- `/merges` (`lib/crm/dedup.ts` `mapMerge`/`snapshotName`) and the
-  activity timeline (`20260829040000:246,277`, reading
-  `field_resolution -> 'loser' -> 'before' ->> 'name'`) -- are asserted only
-  against `merges` rows the psql and HTTP suites `INSERT` by hand, which never
-  set the `<side>.before` snapshot. A change to what `merge_records()` writes
-  would break both screens with every suite green; Task 8 observed the symptom
-  directly (nine of eleven merge-history rows rendered anonymously in the
-  browser). It is a fixture artefact and NOT a product defect -- a real merge
-  through the UI renders correctly -- which is exactly why it will survive
-  unless it is scheduled. Fix: the psql and HTTP merge fixtures call
-  `merge_records()` for at least one pair per entity type instead of
-  hand-writing `merges` rows. Owner: whoever takes Phase 3's first task.
-  Roughly half a day. This is the same item as § "Opened by Task 8"'s "Both
-  merge-rendering paths are tested only against hand-written fixture rows", with
-  a date and a position in the queue.
+- ~~**FIRST TEST TASK OF PHASE 3 (added 2026-08-30, final review I-7): the
+  merge fixtures must call `merge_records()`.**~~ **DONE, Phase 3 Task 1**
+  (`rls_phase2_crm.sql` § Z, `run-rls-tests.sh`'s `p2_json` probes). Five
+  dedicated pairs -- one per mergeable entity type, ids `ccce0000-…` /
+  `ccce1000-…` -- are merged through `public.merge_records()` as `pmanager`,
+  and Z6/Z7/Z8 assert the exact jsonb paths the two screens read, including
+  the activity view's `field_resolution -> 'loser' -> 'before' ->> 'name'`.
+  Mutation-tested: renaming `'before'` to `'prior'` in `merge_records()`'
+  snapshot write turns Z6-Z8, Z10 and three HTTP probes red while every
+  pre-existing assertion stays green.
 
-Both of the following are carried out of Phase 2 Task 1, and both are one-line
-additions to the migration that creates `public.events`. Neither is optional: until they happen,
-Phase 2 ships a column and three allowlists that Phase 3 silently invalidates.
+  **TWO DEVIATIONS FROM THE PLAN, both deliberate and both still true of the
+  suite today.** (1) The existing hand-written `merges` rows were NOT
+  converted -- `merge_records()` soft-deletes the loser and repoints its join
+  rows, and ~680 assertions are built on `cccc0000-…-000000000002`. So the
+  suite now holds merge rows in two shapes on purpose: hand-written ones with
+  no `<side>.before` snapshot, and real ones with it. (2) The new pairs are
+  planted **in § Z**, not in the fixture block at the top of the file, because
+  this file counts rows in org ALPHA in a dozen places and ten more records
+  would have moved most of those numbers. § Z is the last section, so nothing
+  else sees them. Anyone adding a sixth pair should add it there too.
 
-- **`artist_fee_history.event_id` needs a TENANT-SCOPED foreign key, and is
-  held NULL until it gets one.** It could not have one in Phase 2 —
+The following are carried out of Phase 2 Task 1 into the migration that creates
+`public.events`. **ALL DISCHARGED IN PHASE 3 TASK 1
+(`20260901001000_event_entity_type_widening.sql`)** -- the original text is kept
+below because two of the four were wrong about their own scope, and the
+corrections are the useful part. Each now says what was actually done.
+
+- ~~**`artist_fee_history.event_id` needs a TENANT-SCOPED foreign key, and is
+  held NULL until it gets one.**~~ **DONE, Phase 3 Task 1.**
+  `20260901001000` drops `artist_fee_history_event_id_unwritable_until_phase_3`
+  and adds `artist_fee_history_event_fkey`, composite and with the
+  `on delete set null (event_id)` column list, plus the covering index D3
+  requires. Both traps this entry names were obeyed and both were re-measured
+  on this stack rather than taken on trust: with the column list removed,
+  deleting a venue an event names raises
+  `23502 null value in column "organisation_id"`, and the CONTEXT line shows
+  Postgres nulling `organisation_id` alongside the intended column.
+  Regression tests: `schema_invariants.sql` A14 (cross-tenant), B11
+  (positive), C4 (dangling uuid, `23503`), C4b (the Phase 2 CHECK is really
+  gone), E4/E5 (the SET NULL column list, on `events_venue_fkey`); and
+  `rls_phase2_crm.sql` T32d-T32g through a real session. The original text
+  follows. It could not have one in Phase 2 —
   `public.events` does not exist yet — so `20260828001134` added
   `check (event_id is null)` rather than leaving an unvalidated uuid lying
   around. The reason that matters: `ADD CONSTRAINT ... FOREIGN KEY` validates
@@ -1205,12 +1223,31 @@ Phase 2 ships a column and three allowlists that Phase 3 silently invalidates.
   deleting any referenced event fail outright. Both traps are written onto the
   CHECK constraint's own comment in the database, which Phase 3 has to read in
   order to drop it.
-- **`'event'` is missing from three `entity_type` allowlists AND from two
-  policy helpers — that is five places, not three.** The three CHECK
-  constraints on `custom_field_definitions`, `custom_field_values` and `merges`
-  each constrain it to the five Phase 2 entities. Custom fields on events (PRD
-  §6.5 lists them explicitly) and event dedup do not work until all three are
-  widened in the same migration.
+- ~~**`'event'` is missing from three `entity_type` allowlists AND from two
+  policy helpers — that is five places, not three.**~~ **DONE, Phase 3 Task 1,
+  AND THE COUNT IN THIS HEADLINE WAS WRONG IN BOTH HALVES.** Measured out of
+  the catalogue rather than by hand:
+
+  * there are **FOUR** `entity_type` CHECK constraints, not three --
+    `merge_candidates_entity_type_allowed` was never written down anywhere;
+  * there are **SIX** `case p_entity_type` dispatches in `private`, not two --
+    `entity_is_visible`, `entity_is_manageable`, `entity_is_live`,
+    `entity_org_unchanged`, `dedup_entity_table`, `dedup_mergeable_columns`.
+    `entity_org_unchanged` alone carries twelve arms.
+
+  So the true count was **ten places, not five**, and the way to find that out
+  is a catalogue query, which is now
+  `tests/integration/crm/entity-dispatch-branches-match-db.test.ts` -- a census
+  that asserts the exact arm set of all six AND that the set of dispatches it
+  found equals the set it expects, so a seventh added later fails rather than
+  being skipped.
+
+  **WHAT WAS ACTUALLY WIDENED:** the two custom-field CHECKs, and
+  `entity_is_visible` / `entity_is_live` / `entity_org_unchanged`.
+  `entity_is_manageable` is Task 2's, in the same migration that seeds
+  `manage_events`. The two merge CHECKs and the two dedup helpers were
+  DELIBERATELY NOT widened -- see the open decision below. The original text
+  follows.
 
   **The two that Task 2 added, and that the original entry could not know
   about:** `private.entity_is_visible()` and `private.entity_is_manageable()`
@@ -1222,6 +1259,94 @@ Phase 2 ships a column and three allowlists that Phase 3 silently invalidates.
   exists to close. Add the branch in the same migration, using `view_crm` for
   the visible half and whichever key Phase 3 defines for event writes.
   `SECURITY.md` § 10 carries the same warning where a pentester will see it.
+
+- **OPEN DECISION, taken by Phase 3 Task 1 and re-filed here rather than
+  closed: `merges.entity_type` and `merge_candidates.entity_type` were NOT
+  widened to include `'event'`. Events are not dedup-screened and not
+  mergeable at MVP.** The entry above asked for three CHECKs; two were
+  widened and the third was refused, with the argument written onto
+  `merges_entity_type_allowed` and `private.dedup_entity_table()` in the
+  database so nobody has to find this file first. The argument:
+
+  * `20260829020000`'s DECISION 1 already established that a name is only ever
+    a **fuzzy** signal — "two venues called The Social in two cities are two
+    venues";
+  * an event's name is weaker still: a recurring club night shares its name
+    with every previous instalment **by design**, so a name match on events is
+    close to noise;
+  * `public.events` has no `email` column, so `exact_email` — the only branch
+    that can ever auto-merge — is unreachable for events by construction.
+    Every candidate pair would be `fuzzy_name`, and a review queue full of
+    noise trains users to dismiss it;
+  * widening the allowlist without wiring a reachable merge path would ship a
+    permission the product can never exercise, which reads as a working
+    control and is worse than a narrow allowlist.
+
+  **Consequences, all carried out in Task 1 rather than left implied:**
+  `private.dedup_entity_table` and `private.dedup_mergeable_columns` get no
+  `'event'` branch (and their comments, one of which promised one, are
+  corrected); `lib/crm/dedup.ts`'s `MERGEABLE_COLUMNS` gains no entry;
+  `MERGE_ENTITY_TYPES` stopped being an alias of `CUSTOM_FIELD_ENTITY_TYPES`
+  and is now its own five-value tuple; and the Phase 3 event create action
+  must **not** call `screenAfterCreate`.
+
+  **What would change the answer:** a duplicate-event problem reported by a
+  real customer, or an event gaining a natural identity key (a ticketing
+  provider's event id, say) that is exact rather than fuzzy. Revisit then, as
+  a product decision with a diff — not as a fix for a red test. Asserted by
+  `tests/integration/crm/entity-dispatch-branches-match-db.test.ts`, which
+  checks the ABSENCE of the two branches deliberately.
+
+- **`ENTITY_PATH_SEGMENT.event` points at `/[orgSlug]/events`, which does not
+  exist until Phase 3 Task 3.** A known dangling link, added in Task 1 because
+  `otherHref()` (`lib/crm/activity.ts`) and `entityHref()` (`lib/crm/dedup.ts`)
+  are total over that record and a missing key would put `undefined` in a URL
+  rather than produce a 404. Nothing reaches it today: the only route in is a
+  timeline entry on an event, and `public.activity_events` does not union
+  `public.events` until Task 3 either. Delete this bullet when the route lands.
+
+- **`public.activity_events` does not know about events yet.**
+  `20260829040000` unions the five Phase 2 tables. Task 1 widened
+  `ActivitySubjectType` (it is an alias of `CustomFieldEntityType`) and gave
+  `SUBJECT_NOUN` its `event` entry, so the renderer is total over the union
+  before any row can arrive — but the view emits no event rows. Phase 3
+  Task 3 owns adding them, and `rls_phase2_crm.sql` § X is where the
+  assertions go.
+
+- **`private.entity_is_visible()`'s `'event'` branch has no behavioural test
+  through a real session.** `tests/integration/crm/entity-dispatch-branches-match-db.test.ts`
+  drives `entity_is_live` and `entity_org_unchanged` against a real event row,
+  but `entity_is_visible` carries a `view_crm` term and a record-scope term,
+  both of which read `auth.uid()` — NULL for `postgres`, so it would answer
+  false for every entity type including the five that have worked since Phase
+  2, and a `false` would prove nothing. It needs the § E treatment in
+  `rls_phase2_crm.sql`, with a real JWT. **Phase 3 Task 2 owns it**, because
+  Task 2 is what ships the policies that call the function with `'event'` and
+  therefore the first thing that depends on the answer.
+
+- **`tests/unit/crm/source-shape.test.ts` is RED on any CRLF checkout, and was
+  red at Phase 3 Task 1's starting commit (`00a4790`) before that task touched
+  anything.** The assertion is
+  `expect(body).toContain('fieldErrors: { artistId: "Choose an artist." },
+      values: echoedValues(formData),')`
+  — a literal `
+` matched against a file Git checks out with `
+` on
+  Windows (`.gitattributes` sets no `text` policy and `core.autocrlf` is on).
+  `lib/crm/artists.ts` is correct; the test cannot see it. Everything else in
+  the repository's source-shape assertions is single-line, which is why this is
+  the only one affected.
+
+  **Not fixed in Phase 3 Task 1**, because the fix is a repository-wide
+  decision rather than a one-liner — either a `.gitattributes` line normalising
+  checkouts (which rewrites every file's line endings in one commit) or a
+  `read()` helper in the test file that normalises `
+` to `
+` (which is
+  local, and is probably the right answer). Whoever takes it should also grep
+  for other multi-line `toContain` assertions before deciding. Until then
+  `pnpm test` is 1 red / 907 green on a Windows checkout and green in CI, which
+  is exactly the shape of failure a developer learns to ignore.
 
 ## Phase 3 — members management with a real UI
 
