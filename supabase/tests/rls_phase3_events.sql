@@ -1019,6 +1019,203 @@ select ev.val('EF19 the live-slot unique index really is partial on deleted_at i
      where c.relname = 'event_lineup_event_artist_live_unique'$$,
   'CREATE UNIQUE INDEX event_lineup_event_artist_live_unique ON public.event_lineup USING btree (event_id, artist_id) WHERE (deleted_at IS NULL)');
 
+-- ---------------------------------------------------------------------------
+-- EF20-EF29. THE RECORD-SCOPE DISJUNCTIONS INSIDE THE TWO event_lineup WRITE
+-- POLICIES, ASKED WITH THE SELECT POLICIES THAT MASK THEM LIFTED.
+--
+-- ADDED IN FIX ROUND 1 BECAUSE THE MUTATION RUN PROVED NOTHING COULD SEE THEM.
+-- Removing `(p.organisation_id in full_scope or p.owner_user_id = auth.uid())`
+-- from event_lineup_insert_via_event left the ENTIRE suite green -- 1029 psql
+-- assertions and 197 HTTP checks, zero failures, measured. That is the same
+-- class of gap § ED11-ED16 exists for on public.events, and the cause is the
+-- same mechanism one table down:
+--
+--   * A POLICY PREDICATE IS EVALUATED AS THE CALLER. The child's
+--     `exists (select 1 from public.events p ...)` reads public.events THROUGH
+--     events_select_view_crm, which carries its own copy of the record-scope
+--     term -- so for a record-scoped caller the parent row is invisible and
+--     the EXISTS is false before the child's own disjunction is reached. EF2's
+--     `denied(42501)` therefore survives the mutation.
+--   * The UPDATE half is masked twice over: PostgreSQL applies
+--     event_lineup_select_via_event to the rows an UPDATE reads, and THAT
+--     policy carries a third copy of the term.
+--
+-- Measured over HTTP as pstd1 POSTing a slot on to pmanager's event, which is
+-- the same statement EF21 makes below:
+--
+--     shipped schema                                    403
+--     record scope removed from the CHILD insert only   403
+--     record scope removed from events_select only      403
+--     removed from BOTH                                 201  -- the slot lands
+--
+-- So the terms are each other's backstop and neither can be measured while the
+-- other holds. Both masking SELECT policies come off for the length of seven
+-- statements, the write policies are asked on their own, and both are put back
+-- and compared against what was there.
+--
+-- SAFETY, TWO LAYERS, EXACTLY AS § ED DOES IT. EF20 and EF23 prove each lift
+-- really happened, so EF21/EF24/EF26 are the WRITE policies answering and not
+-- the old visibility rule. EF27-EF29 assert both restores structurally, with
+-- ED15a's literal control on each so the comparison cannot be satisfied by two
+-- identical WRONG expressions.
+--
+-- WHITESPACE IS NORMALISED IN THE LITERAL CONTROLS. `pg_policies.qual` renders
+-- the child policy's EXISTS across several lines with indentation, so the
+-- comparison is made over `regexp_replace(qual, '\s+', ' ', 'g')`. The
+-- STRUCTURAL comparison (EF27/EF29 against ev.notes) is byte-for-byte and is
+-- unaffected; only the human-written literal is normalised, and it has to be,
+-- or the assertion would be about pg_get_expr's line breaking.
+--
+-- AND THE WHOLE LIFT RUNS INSIDE AN EXPLICIT TRANSACTION, for § ED's reason:
+-- `\set ON_ERROR_STOP on` makes an abort between an `alter policy` and its
+-- restore reachable, policy DDL is transactional in PostgreSQL, and `set role`
+-- / `set request.jwt.claims` work inside a transaction block -- so an abort
+-- rolls the weakened policies back on its own rather than leaving the database
+-- open and a comment telling the next reader to reset it.
+-- ---------------------------------------------------------------------------
+begin;
+
+set search_path = 'pg_catalog, public';
+select ev.note('ef_events_select_qual', (select qual from pg_policies
+  where schemaname='public' and tablename='events' and cmd='SELECT'));
+select ev.note('ef_lineup_select_qual', (select qual from pg_policies
+  where schemaname='public' and tablename='event_lineup' and cmd='SELECT'));
+reset search_path;
+
+-- LIFT 1: the PARENT's SELECT record scope. This is what makes the child
+-- INSERT policy's own disjunction the only thing left standing.
+alter policy "events_select_view_crm" on public.events
+  using ( organisation_id in (select private.permitted_organisations('view_crm')) );
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EF20 CONTROL: with the parent SELECT term lifted, pstd1 can now SEE pmanager''s event',
+  $$select count(*)::text from public.events
+     where id='ee110000-0000-0000-0000-000000000001'$$, '1');
+-- 42501 STILL, and now it is event_lineup_insert_via_event's OWN record-scope
+-- disjunction saying it -- nothing else is left to. THIS IS THE ASSERTION THE
+-- MUTATION FLIPS: with that disjunction removed it becomes ok(1), and a
+-- standard_user plants a slot on somebody else's bill.
+select ev.try('EF21 ...and STILL cannot add a slot to it -- the INSERT policy''s disjunction, alone',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id)
+           values (%L,'ee110000-0000-0000-0000-000000000001',
+                   '44440000-0000-0000-0000-000000000001')$$, :'alpha_org'),
+  'denied(42501)');
+select ev.try('EF22 POSITIVE: ...while adding one to their OWN event still works',
+  format($$insert into public.event_lineup (id, organisation_id, event_id, artist_id, position)
+           values ('ff11aaaa-0000-0000-0000-0000000000aa',%L,
+                   'ee110000-0000-0000-0000-000000000002',
+                   '444400b0-0000-0000-0000-0000000000b2', 6)$$, :'alpha_org'),
+  'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- LIFT 2: the CHILD's own SELECT record scope, on top of the first. Without
+-- this the UPDATE assertions below measure visibility again rather than
+-- event_lineup_update_via_event -- PostgreSQL applies the SELECT policy to the
+-- rows an UPDATE reads AND to the row it writes.
+alter policy "event_lineup_select_via_event" on public.event_lineup
+  using (
+    exists (
+      select 1 from public.events p
+      where p.id = event_lineup.event_id
+        and p.organisation_id = event_lineup.organisation_id
+        and p.organisation_id in (select private.permitted_organisations('view_crm'))
+    )
+  );
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EF23 CONTROL: with BOTH SELECT terms lifted, pstd1 can now SEE the slot on pmanager''s event',
+  $$select count(*)::text from public.event_lineup
+     where id='ff110000-0000-0000-0000-000000000001'$$, '1');
+-- ok(0), and now it is event_lineup_update_via_event's USING clause saying it.
+-- Under the mutation this becomes ok(1) -- a standard_user re-billing an
+-- artist on a night that is not theirs.
+select ev.try('EF24 ...and STILL cannot edit it -- the UPDATE policy''s USING, alone',
+  $$update public.event_lineup set billing='opener'
+     where id='ff110000-0000-0000-0000-000000000001'$$, 'ok(0)');
+select ev.try('EF25 POSITIVE: ...while editing a slot on their OWN event still works',
+  $$update public.event_lineup set billing='headliner'
+     where id='ff110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+-- THE WITH CHECK HALF, which is a different statement from EF24: this row
+-- passes the USING clause (it is on their own event) and fails on the NEW
+-- event_id. entity_org_unchanged and the composite FK are both satisfied --
+-- same organisation, real event -- so the only thing that can refuse it is the
+-- record-scope disjunction in the WITH CHECK.
+select ev.try('EF26 ...nor MOVE their own slot on to somebody else''s event -- the WITH CHECK, alone',
+  $$update public.event_lineup set event_id='ee110000-0000-0000-0000-000000000001'
+     where id='ff110000-0000-0000-0000-000000000002'$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- Both policies back, verbatim from 20260901011000 and 20260828121000.
+alter policy "event_lineup_select_via_event" on public.event_lineup
+  using (
+    exists (
+      select 1 from public.events p
+      where p.id = event_lineup.event_id
+        and p.organisation_id = event_lineup.organisation_id
+        and p.organisation_id in (select private.permitted_organisations('view_crm'))
+        and (
+          p.organisation_id in (select private.full_scope_organisations())
+          or p.owner_user_id = (select auth.uid())
+        )
+    )
+  );
+
+alter policy "events_select_view_crm" on public.events
+  using (
+    organisation_id in (select private.permitted_organisations('view_crm'))
+    and (
+      organisation_id in (select private.full_scope_organisations())
+      or owner_user_id = (select auth.uid())
+    )
+  );
+
+-- The row EF22 planted goes, so §§ EG-EI and the HTTP block meet the fixture
+-- as described. `ART_STD1` in run-rls-tests.sh deliberately uses a DIFFERENT
+-- artist on this same event, so leaving this row would turn that probe's
+-- positive control into a 23505.
+delete from public.event_lineup where id='ff11aaaa-0000-0000-0000-0000000000aa';
+
+select ev.val('EF27 the parent SELECT policy is restored EXACTLY as the migration made it',
+  $$select ((select qual from pg_policies
+               where schemaname='public' and tablename='events' and cmd='SELECT')
+            = (select v from ev.notes where k='ef_events_select_qual'))::text$$, 'true');
+select ev.val('EF28 the CHILD SELECT policy is restored EXACTLY too',
+  $$select ((select qual from pg_policies
+               where schemaname='public' and tablename='event_lineup' and cmd='SELECT')
+            = (select v from ev.notes where k='ef_lineup_select_qual'))::text$$, 'true');
+select ev.val('EF28a CONTROL: and that is the record-scoped expression, not any expression',
+  -- ED15a's control, one table down. Without it EF28 is satisfied by two
+  -- identical WRONG expressions, since both sides are read from the same live
+  -- schema.
+  --
+  -- TWO NORMALISATIONS, AND BOTH WERE MEASURED RATHER THAN ASSUMED.
+  --   * WHITESPACE: pg_policies renders this EXISTS across several lines with
+  --     indentation, so the comparison is over `regexp_replace(qual, '\s+',
+  --     ' ', 'g')`. EF28 above is byte-for-byte and is unaffected; only this
+  --     human-written literal is normalised, and it has to be, or the
+  --     assertion would be about pg_get_expr's line breaking.
+  --   * `public.events`, NOT `events`. The literal is written the way the
+  --     capture actually renders it, which is schema-qualified even under
+  --     `search_path = 'pg_catalog, public'` -- the first draft assumed the
+  --     unqualified form (§ ED15a's literal has no table reference at all, so
+  --     that section never met this) and the assertion went red on the run
+  --     that added it. The measured form is the one that ships.
+  $$select regexp_replace((select v from ev.notes where k='ef_lineup_select_qual'),
+                          '\s+', ' ', 'g')$$,
+  '(EXISTS ( SELECT 1 FROM public.events p WHERE ((p.id = event_lineup.event_id) AND (p.organisation_id = event_lineup.organisation_id) AND (p.organisation_id IN ( SELECT private.permitted_organisations(''view_crm''::text) AS permitted_organisations)) AND ((p.organisation_id IN ( SELECT private.full_scope_organisations() AS full_scope_organisations)) OR (p.owner_user_id = ( SELECT auth.uid() AS uid))))))');
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EF29 ...and behaviourally: pstd1 is back to seeing only their own event''s lineup',
+  $$select coalesce(string_agg(distinct event_id::text,','),'<none>')
+      from public.event_lineup$$,
+  'ee110000-0000-0000-0000-000000000002');
+reset role; reset request.jwt.claims;
+
+commit;
+
 -- ===========================================================================
 -- EG. A SOFT-DELETED PARENT -- readable, not writable
 -- ===========================================================================
@@ -1489,7 +1686,12 @@ select ev.val('EL1 the `backedBy` name exists as an index on public.event_lineup
 -- THE SHAPE, NOT ONLY THE NAME. An index of the right name over the wrong
 -- columns satisfies EL1 and serves nothing. Every part is load-bearing:
 -- `organisation_id` LEADS because lib/list/query.ts pins it by equality;
--- `event_id` is second because LINEUP_LIST's applyFilters pins that too;
+-- `event_id` is second because `loadLineupForEvent`'s `applyFilters` callback
+-- in lib/crm/queries.ts pins that too (NOT lineup-list.ts -- LINEUP_LIST has
+-- `filters: {}` and the string does not appear in that file at all; fix round
+-- 1, Minor 2, and 20260901021000's header carries the same misattribution,
+-- which is left for the next migration that touches this table because no
+-- existing migration is edited);
 -- `position` is the sort; `id` is last because keyset pagination compares
 -- `(position, id)` and `position` is deliberately NOT unique, so the tie-break
 -- carries real weight here; and the partial predicate has to match the clause
