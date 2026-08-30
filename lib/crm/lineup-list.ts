@@ -43,25 +43,41 @@ import {
 // deferred, so a swap becomes two statements in one transaction plus a 23505
 // path -- the cost `contact_companies_one_primary_per_contact` imposed on
 // Phase 2 -- and duplicate positions are legal precisely so that never has to
-// be paid. Ties break on `(created_at, id)`; `id` is what `fetchListPage` adds
-// to every sort and what makes the keyset order total.
+// be paid.
+//
+// TIES BREAK ON `id`, NOT ON `created_at`, AND THAT IS MEASURED RATHER THAN
+// INTENDED. `public.event_lineup`'s table comment (20260901000000) says the
+// ordering is `(position, created_at, id)`, and the RENDERED order cannot be:
+// `fetchListPage` orders by `spec.sort[...].column` and then by `id`, full
+// stop -- one sort column plus the primary key is the whole shape a keyset
+// cursor can carry (lib/list/query.ts, `buildPage`). So a tie is broken by a
+// `gen_random_uuid()`, which is TOTAL and PERMANENT -- the list does not
+// reshuffle between reloads, which is the property the panel actually needs --
+// and is NOT insertion order. Measured in the Rule 17 walk: two slots both at
+// position 0, added B-then-A, render A first and go on doing so.
+//
+// The migration's comment therefore overstates it. It is not edited (no
+// existing migration is) and the divergence is in FOLLOW-UPS.md.
 
 /**
  * PostgREST select list. A literal, never assembled from a request.
  *
- * `created_at` is selected and NOT rendered, deliberately: it is half of the
- * tie-break `public.event_lineup`'s table comment names, so a reader diffing
- * this list against the rendered row would otherwise conclude the ordering
- * claim is unfounded.
+ * `created_at` IS NOT HERE, and its absence is the correction the browser walk
+ * forced. The first version selected it and said it was "half the documented
+ * tie-break" -- which the walk measured to be false: the rendered order is
+ * `(position, id)` and nothing reads `created_at` at all (see the header). A
+ * column selected to support a claim that turned out not to hold is a column
+ * on the wire for nothing.
  *
- * `deleted_at` is NOT here. `fetchListPage` writes `deleted_at is null` on
+ * `deleted_at` is NOT here either. `fetchListPage` writes `deleted_at is null` on
  * every live list (lib/list/query.ts, `applyScope`), so every row this list
  * returns is live by construction, and a column that is always null is not
- * worth the wire. The REMOVED rows are read separately -- see
- * `loadRemovedLineup` in lib/crm/queries.ts.
+ * worth the wire. The REMOVED rows are read by a second, capped query inside
+ * `loadLineupForEvent` (lib/crm/queries.ts), which selects `deleted_at`
+ * because the disclosure renders when each one was removed.
  */
 export const LINEUP_SELECT =
-  "id, artist_id, position, billing, set_starts_at, set_ends_at, notes, created_at";
+  "id, artist_id, position, billing, set_starts_at, set_ends_at, notes";
 
 /** The six values `event_lineup`'s billing CHECK allows, in bill order. */
 export const BILLING_VALUES = [
@@ -132,8 +148,6 @@ export interface LineupRow {
   setStartsAt: string | null;
   setEndsAt: string | null;
   notes: string | null;
-  /** Selected, not rendered: the first half of the documented tie-break. */
-  createdAt: string;
 }
 
 export function mapLineupRow(raw: Record<string, unknown>): LineupRow {
@@ -147,7 +161,6 @@ export function mapLineupRow(raw: Record<string, unknown>): LineupRow {
     setStartsAt: (raw.set_starts_at as string | null) ?? null,
     setEndsAt: (raw.set_ends_at as string | null) ?? null,
     notes: (raw.notes as string | null) ?? null,
-    createdAt: String(raw.created_at),
   };
 }
 

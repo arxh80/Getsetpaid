@@ -997,10 +997,18 @@ describe("I-6: every capped reader in lib/crm/queries.ts orders before it caps",
     .filter(({ line }) => line.includes(".limit(") && !line.trimStart().startsWith("//"));
 
   it("finds the capped readers at all, so this cannot pass vacuously", () => {
-    // Six today: two link panels, two representation panels, the rooms panel
-    // and the link picker. A floor, so Phase 3 adding one is not a red for the
-    // wrong reason -- but deleting them all is.
-    expect(caps.length).toBeGreaterThanOrEqual(6);
+    // NINE, COUNTED RATHER THAN GUESSED, and raising this number is the
+    // obligation rather than paperwork -- a floor left at six would be
+    // satisfied by a tree that had deleted three of the readers it is meant to
+    // be counting. The comment said "six today" through Phase 3 Task 4, which
+    // had already made it eight.
+    //
+    // Two link panels (contact/company, both directions), the link picker, two
+    // representation panels, the rooms panel, the venue picker's venues and its
+    // rooms (Task 4), and the lineup panel's REMOVED slots (Task 5). The live
+    // lineup itself is NOT here: it is a real lib/list/ surface with a keyset
+    // pager, not a capped read.
+    expect(caps.length).toBeGreaterThanOrEqual(9);
   });
 
   for (const { line, index } of caps) {
@@ -1537,20 +1545,31 @@ describe("the lineup writes check the ends they have, and only those", () => {
   });
 });
 
-describe("the lineup panel echoes every field a refusal would otherwise wipe", () => {
+describe("the lineup forms echo every field a refusal would otherwise wipe", () => {
   // React 19 resets a `<form action>` once the action resolves, so an
   // UNCONTROLLED form -- which every form in this panel is, deliberately,
-  // because they then work with JavaScript disabled -- puts every input back
-  // to its `defaultValue`. A field whose default does not read the echo comes
-  // back EMPTY after a refusal. Invisible to tsc, to lint and to every other
-  // test here: no assertion on a pure function can see a `??` deleted from a
-  // .tsx file.
+  // because they then work with JavaScript disabled -- puts every input back to
+  // its `defaultValue`. A field whose default does not read the echo comes back
+  // EMPTY after a refusal. Invisible to tsc, to lint and to every other test
+  // here: no assertion on a pure function can see a `??` deleted from a .tsx
+  // file.
+  //
+  // TWO FILES, AND THE SPLIT IS ITSELF LOAD-BEARING. `lineup-panel.tsx` is a
+  // SERVER component; `lineup-forms.tsx` is the only client code in the
+  // surface. The first version had one `"use client"` file, which pulled
+  // `components/list/list-pager.tsx` into the browser bundle, where
+  // `encodeCursor`'s `Buffer.from(...).toString("base64url")` throws
+  // `Unknown encoding: base64url` DURING HYDRATION and takes the whole page's
+  // client tree with it. Measured in the Rule 17 walk; the panel still worked,
+  // because uncontrolled forms post natively, which is exactly why nothing else
+  // caught it. The penultimate assertion in this block is the guard.
   const panel = read("components/crm/lineup-panel.tsx");
+  const forms = read("components/crm/lineup-forms.tsx");
 
-  // SIX, NOT FIVE. The brief names five -- the fields a SLOT has -- and the
-  // add form carries a sixth of its own, `artistId`, which is the one whose
-  // loss is worst: a refused add that snapped the picker back to its first
-  // option would book somebody the user never chose on the retry.
+  // SIX, NOT FIVE. The brief names five -- the fields a SLOT has -- and the add
+  // form carries a sixth of its own, `artistId`, which is the one whose loss is
+  // worst: a refused add that snapped the picker back to its first option would
+  // book somebody the user never chose on the retry.
   const SHARED_FIELDS = [
     "position",
     "billing",
@@ -1561,106 +1580,125 @@ describe("the lineup panel echoes every field a refusal would otherwise wipe", (
   const FIELDS = [...SHARED_FIELDS, "artistId"] as const;
 
   it("reads the echo for each of the six fields, and for no others", () => {
-    const echoes = form_echoes(panel);
+    const echoes = form_echoes(forms);
     expect(
       [...new Set(echoes)].sort(),
       "a field rendered without `state.values?.<name> ??` loses what was typed",
     ).toEqual([...FIELDS].map((name) => `state.values?.${name}`).sort());
-    // TWELVE OCCURRENCES, not six: the five shared fields are echoed twice --
-    // once in `SlotRow` (falling back to the stored row) and once in `AddSlot`
-    // (falling back to a blank or to the column default) -- plus `artistId`
-    // and `billing`'s add-form copy. Counted rather than guessed, and asserted
-    // as a floor per NAME below so a duplicated echo cannot hide a missing one
-    // the way an exact total could.
+    // Per NAME rather than as a total: the five shared fields are echoed twice
+    // -- once in `SlotEditForm`, once in `AddSlotForm` -- and an exact total
+    // would let a duplicated echo hide a missing one.
     for (const name of FIELDS) {
-      const count = echoes.filter(
-        (echo) => echo === `state.values?.${name}`,
-      ).length;
+      const count = echoes.filter((echo) => echo === `state.values?.${name}`).length;
       expect(count, `${name} is echoed at least once`).toBeGreaterThanOrEqual(1);
     }
     expect(SHARED_FIELDS).toHaveLength(5);
+    // And the SERVER half holds none of them: an echo there would be a value
+    // read out of a `state` that component does not have.
+    expect(form_echoes(panel)).toEqual([]);
   });
 
   it("the row form's echoes fall back to the STORED value, not to an empty string", () => {
     // `state.values?.position ?? ""` on the row form renders an empty input
-    // over a slot that has a position -- the mirror-image defect, and the one
-    // a careless fix for the first would introduce. The add form is the
-    // opposite case and is allowed its blanks: there is no stored row.
-    expect(panel).toContain("state.values?.position ?? String(row.position)");
-    expect(panel).toContain("state.values?.billing ?? (row.billing ?? \"other\")");
-    expect(panel).toContain("state.values?.notes ?? (row.notes ?? \"\")");
+    // over a slot that has a position -- the mirror-image defect, and the one a
+    // careless fix for the first would introduce. The add form is the opposite
+    // case and is allowed its blanks: there is no stored row.
+    for (const name of SHARED_FIELDS) {
+      expect(forms, name).toContain(`state.values?.${name} ?? stored.${name}`);
+    }
+    // And the panel is what builds `stored`, converting both instants to the
+    // wall clock the input speaks.
     expect(panel).toContain("instantToLondonWallClock(row.setStartsAt)");
     expect(panel).toContain("instantToLondonWallClock(row.setEndsAt)");
+    // A billing this build does not know falls back to `other` rather than to
+    // the FIRST option, which a `<select>` would otherwise select silently.
+    expect(panel).toContain('billing: row.billing ?? "other"');
   });
 
   it("every <select> is keyed on its shown value, not only defaultValued", () => {
-    // MEASURED IN A BROWSER by Task 4, on the event form. React syncs a text
-    // input's `defaultValue` to the DOM property on every update, so
-    // `form.reset()` after a Server Action restores the ECHOED value. It does
-    // NOT do the equivalent for a `<select>`, whose default lives in an
-    // `<option>`'s `selected` attribute -- written at mount and then left
-    // alone. Without the key, a refused submit snaps the select back to the
-    // option the page first rendered with, and retrying saves a value the user
-    // never chose.
+    // MEASURED IN A BROWSER by Task 4 on the event form, and re-measured here
+    // on the duplicate-artist refusal. React syncs a text input's
+    // `defaultValue` to the DOM property on every update, so `form.reset()`
+    // after a Server Action restores the ECHOED value. It does NOT do the
+    // equivalent for a `<select>`, whose default lives in an `<option>`'s
+    // `selected` attribute -- written at mount and then left alone.
     //
-    // The denominator matters here: this panel has exactly TWO selects
-    // (`billing`, shared by the row and add forms, and `artistId` on the add
-    // form), so a third one added without a key is caught by the count as well
-    // as by the names.
-    //
-    // COUNTED OVER THE CODE, NOT THE PROSE. This file's header explains the
-    // `<select>` mechanism in words, and `.match()` cannot tell a sentence
-    // from an element -- the same trap N-3 sprang on the `.update(` census.
-    const selects = stripLineComments(panel).match(/<select\b/g) ?? [];
+    // The denominator matters: this file has exactly TWO selects (`billing`,
+    // shared by both forms, and `artistId` on the add form), so a third added
+    // without a key is caught by the count as well as by the names. COUNTED
+    // OVER THE CODE, NOT THE PROSE -- the headers explain the `<select>`
+    // mechanism in words, and `.match()` cannot tell a sentence from an element
+    // (the trap N-3 sprang on the `.update(` census).
+    const selects = stripLineComments(forms).match(/<select\b/g) ?? [];
     expect(selects).toHaveLength(2);
-    for (const name of ["billing", "artistId"]) {
-      expect(panel, name).toContain("key={`" + name + ":${" + name + "}`}");
-    }
+    expect(forms).toContain("key={`billing:${values.billing}`}");
+    expect(forms).toContain("key={`artistId:${artistId}`}");
   });
 
   it("no <form> is nested inside a <span>", () => {
-    // The Task 5 deferred minor from Phase 2, found by review finding I-12 in
-    // a panel where axe reported ZERO violations: `<span><form>…</form></span>`
+    // The Task 5 deferred minor from Phase 2, found by review finding I-12 in a
+    // panel where axe reported ZERO violations: `<span><form>…</form></span>`
     // is valid markup and an invalid content model, and browsers repair it by
     // moving the form. Asserted structurally rather than by eye, because the
-    // repair is silent.
-    expect(panel).not.toMatch(/<span[^>]*>\s*(\{[^}]*\}\s*)?<form/);
-    // And the positive control: there ARE forms in this file, so the negative
-    // above is not satisfied by a panel with no forms at all.
-    expect((panel.match(/<form\b/g) ?? []).length).toBeGreaterThanOrEqual(4);
+    // repair is silent. Both files, because the panel places the forms and the
+    // forms place themselves.
+    for (const [label, source] of [
+      ["panel", panel],
+      ["forms", forms],
+    ] as const) {
+      expect(source, label).not.toMatch(/<span[^>]*>\s*(\{[^}]*\}\s*)?<form/);
+    }
+    // The positive control: there ARE forms, so the negative above is not
+    // satisfied by a file with none.
+    expect((forms.match(/<form\b/g) ?? []).length).toBeGreaterThanOrEqual(4);
   });
 
   it("the position input carries the CHECK's bounds and the CHECK's sentence", () => {
     // `event_lineup`'s CHECK is `position >= 0 and position <= 999`. The input
     // attributes are the browser's half and are NOT the control -- a form post
     // ignores them -- so the server-side parser is asserted beside them.
-    expect(panel).toContain('type="number"');
-    expect(panel).toContain("min={MIN_POSITION}");
-    expect(panel).toContain("max={MAX_POSITION}");
-    expect(panel).toContain("step={1}");
+    expect(forms).toContain('type="number"');
+    expect(forms).toContain("min={MIN_POSITION}");
+    expect(forms).toContain("max={MAX_POSITION}");
+    expect(forms).toContain("step={1}");
     const list = read("lib/crm/lineup-list.ts");
     expect(list).toContain("export const MIN_POSITION = 0;");
     expect(list).toContain("export const MAX_POSITION = 999;");
-    expect(list).toContain(
-      '"Position must be a whole number between 0 and 999.";',
-    );
+    expect(list).toContain('"Position must be a whole number between 0 and 999.";');
   });
 
   it("every write control is DISABLED with an explanation, never hidden", () => {
     // FOLLOW-UPS Q6: "Write controls disabled, not hidden and not
     // present-and-failing. Hidden loses the explanation; present-and-failing
-    // produces a 403 the user cannot interpret." The panel renders one note
-    // for the group and points every disabled control at it.
-    expect(panel).toContain('const noteId = "lineup-blocked";');
-    // Five controls: Save, Remove, Put back, Add, and the artist select. Each
-    // takes `disabled` from the same boolean and describes itself with the
-    // same id.
-    const disabled = panel.match(/disabled=\{!editable\}/g) ?? [];
-    expect(disabled.length).toBeGreaterThanOrEqual(4);
-    const described = panel.match(/aria-describedby=\{editable \? undefined : noteId\}/g) ?? [];
+    // produces a 403 the user cannot interpret." The panel renders ONE note for
+    // the group and hands its id down; every control takes `disabled` from the
+    // same boolean and describes itself with that id.
+    expect(panel).toContain('const NOTE_ID = "lineup-blocked";');
+    expect(panel).toContain("const disabled = disabledReason !== null;");
+    const disabledProps = forms.match(/disabled=\{disabled\}/g) ?? [];
+    expect(disabledProps.length).toBeGreaterThanOrEqual(5);
+    const described = forms.match(/aria-describedby=\{disabled \? noteId : undefined\}/g) ?? [];
     expect(described.length).toBeGreaterThanOrEqual(4);
-    // And NOT hidden: no `editable ? <control/> : null` anywhere.
-    expect(panel).not.toMatch(/editable \? \(?\s*<(Button|form)/);
+    // And NOT hidden: no control is rendered behind a `disabled ? null : …`.
+    expect(panel).not.toMatch(/disabled \? null :/);
+    expect(forms).not.toMatch(/disabled \? null :/);
+  });
+
+  it("the panel is a SERVER component, so ListPager never reaches the browser", () => {
+    // THE DEFECT THIS SPLIT EXISTS FOR, guarded from both ends. A `"use client"`
+    // on lineup-panel.tsx puts `ListPager` -> `buildListHref` -> `encodeCursor`
+    // -> `Buffer.from(...).toString("base64url")` into the browser bundle,
+    // where it throws at hydration and the page's whole client tree dies
+    // silently -- the forms still post natively, so the surface LOOKS fine and
+    // the pager's links do nothing.
+    //
+    // OVER THE CODE, NOT THE PROSE: both headers name `ListPager` and
+    // `lib/list/` in order to explain the split.
+    expect(panel.startsWith('"use client"')).toBe(false);
+    expect(stripLineComments(panel)).toContain("ListPager");
+    expect(forms.startsWith('"use client"')).toBe(true);
+    expect(stripLineComments(forms)).not.toContain("ListPager");
+    expect(stripLineComments(forms)).not.toContain("@/lib/list/");
   });
 
   it("the artist name links to the artist's own page", () => {

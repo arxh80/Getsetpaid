@@ -1668,6 +1668,120 @@ corrections are the useful part. Each now says what was actually done.
   and found wanting; it is recorded so nobody concludes the second and third
   queries were an oversight.
 
+### Opened by Task 5 (the lineup builder)
+
+- **`lib/list/cursor.ts` IS SERVER-ONLY IN PRACTICE AND NOTHING SAYS SO: any
+  Client Component that renders `ListPager` throws at hydration.** Measured in
+  the Rule 17 walk, in the browser console:
+
+  ```
+  [browser] Uncaught TypeError: Unknown encoding: base64url
+  ```
+
+  `ListPager` → `buildListHref` → `encodeCursor` →
+  `Buffer.from(...).toString("base64url")`, and the `Buffer` shim in the client
+  bundle does not implement that encoding. It throws while React is hydrating,
+  so **the whole page's client tree never hydrates** — every `useActionState`
+  pending state, every in-place update, and every `<Link>` on the page stop
+  working.
+
+  **It is invisible for the worst possible reason.** Every form in
+  `components/crm/` is uncontrolled by design, so it posts natively and React 19
+  falls back to a full round trip; the surface still SAVES, still shows field
+  errors, still echoes values. What breaks is the pager — a click on "Next" does
+  nothing at all — which is how the walk found it, and nothing else in the
+  repository could have.
+
+  **Fixed for the lineup by splitting the panel** (`lineup-panel.tsx` is a
+  Server Component; `lineup-forms.tsx` holds the four forms), and guarded by
+  `tests/unit/crm/source-shape.test.ts`'s "the panel is a SERVER component"
+  assertion — which is specific to that one panel.
+
+  **THE GENERAL TRAP IS STILL OPEN.** `lib/list/params.ts` deliberately is NOT
+  `server-only`, because `components/list/list-toolbar.tsx` is a Client
+  Component that imports `buildListHref` — and it gets away with it only
+  because it never passes a `cursor` override, so `encodeCursor` is never
+  reached. The next author who renders a pager inside a client panel, or who
+  gives a prefixed list a toolbar that carries a cursor, meets the same throw.
+
+  Two candidate fixes, neither taken here because each is a change to a
+  well-tested shared module and deserves its own diff:
+
+  1. Make the codec isomorphic — `toString("base64")` plus the three-character
+     URL-safe substitution, and the mirror on the way in. Cheap, and it removes
+     the hazard entirely. `tests/unit/list/cursor.test.ts`'s 56 tamper cases are
+     the safety net.
+  2. Make the failure LOUD instead — split the cursor codec into its own
+     `server-only` module so a client import is a build error. Bigger, and it
+     needs `buildListHref` to stop calling `encodeCursor` unconditionally.
+
+- **`public.event_lineup`'s table comment overstates the ordering, and the
+  migration cannot be edited to say so.** 20260901000000 says the ordering is
+  `(position, created_at, id)`. The RENDERED order is `(position, id)`, and it
+  cannot be anything else: `fetchListPage` orders by the spec's one sort column
+  and then by the primary key, which is the whole shape a keyset cursor can
+  carry (`lib/list/query.ts`, `buildPage`).
+
+  Measured in the walk: two slots both at position 0, added B-then-A, render A
+  first, and go on doing so across three reloads. So the tie-break is a
+  `gen_random_uuid()` — **total and permanent, and not insertion order**.
+  Stability is the property the panel needs and it holds; the comment is the
+  part that is wrong.
+
+  `lib/crm/lineup-list.ts` and `components/crm/lineup-panel.tsx` both say this
+  in as many words, and `LINEUP_SELECT` deliberately does NOT select
+  `created_at` any more (it was selected to support the claim). The migration's
+  comment should be corrected by the next migration that has business with this
+  table — never by editing 20260901000000.
+
+- **The lineup's REMOVED rows are capped at `LINK_PANEL_LIMIT` = 100 with no
+  pager.** The live bill is a real keyset surface; the `<details>` under it is a
+  capped read, ordered most-recently-removed first. Past a hundred removals on
+  one event the disclosure shows the hundred most recent and says so. A second
+  paginated surface would need a third query-string namespace on a page that
+  already has two, for a tail nobody scrolls — recorded rather than built.
+
+- **The artist picker offers the alphabetically first 100 live artists and does
+  not exclude the ones already on the bill.** The cap is `LINK_PANEL_LIMIT`'s
+  own named stopgap and the answer is the search-backed picker that constant
+  already says is owed. The exclusion is a separate decision and is deliberate:
+  the panel is PAGINATED, so an exclusion list built from the page in hand would
+  hide artists that are on the bill and offer others that are, arbitrarily by
+  page. The duplicate is refused by
+  `event_lineup_event_artist_live_unique` and by a sentence
+  (`LINEUP_DUPLICATE_ARTIST`) instead. If the picker ever becomes search-backed,
+  exclusion becomes cheap and should be revisited then.
+
+- **`event_lineup_insert_via_event`'s record-scope disjunction cannot be
+  observed on its own, because the parent's SELECT policy already covers it.**
+  Measured over HTTP as `pstd1` (a standard_user) POSTing a slot on the
+  manager's event:
+
+  | schema | result |
+  |---|---|
+  | shipped | **403** |
+  | record scope removed from `event_lineup_insert_via_event` only | **403** |
+  | record scope removed from `events_select_view_crm` only | **403** |
+  | removed from BOTH | **201** — the slot lands on somebody else's bill |
+
+  The child policy's `exists (select 1 from public.events p …)` is evaluated AS
+  THE CALLER, so the parent's own record-scope term filters it before the
+  child's disjunction is reached. Both terms are therefore genuinely
+  belt-and-braces, each sufficient alone — which is the right shape and is worth
+  writing down, because it also means **no single-policy mutation can turn the
+  HTTP probe red**, and a reader who tries one and sees green may conclude the
+  probe is toothless. It is not; it takes two.
+
+- **A permanent Playwright spec for events is STILL owed** — Task 3 filed it,
+  Task 4 re-filed it, and this task re-files it again.
+  `.superpowers/sdd/phase-3-events/task-5-browser-walk.spec.ts` is the third
+  throwaway. It is better than its predecessors in one respect worth keeping
+  when the permanent version is written: it resets the lineup in `beforeEach`
+  and plants what each test needs, so no criterion depends on an earlier one
+  passing — the first draft did, and two of its five "failures" were that
+  coupling rather than the product. It still logs more than it asserts, which is
+  what the permanent version must not do.
+
 ## Phase 3 — members management with a real UI
 
 - **Inviting an address that already has an account sends no email**, while the

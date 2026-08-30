@@ -240,7 +240,6 @@ describe("§ 6. mapLineupRow is total over what the database can return", () => 
         set_starts_at: "2026-10-01T22:00:00+00:00",
         set_ends_at: null,
         notes: "needs two CDJs",
-        created_at: "2026-09-01T10:00:00+00:00",
       }),
     ).toEqual({
       id: "ff110000-0000-0000-0000-000000000001",
@@ -251,7 +250,6 @@ describe("§ 6. mapLineupRow is total over what the database can return", () => 
       setStartsAt: "2026-10-01T22:00:00+00:00",
       setEndsAt: null,
       notes: "needs two CDJs",
-      createdAt: "2026-09-01T10:00:00+00:00",
     });
   });
 
@@ -270,19 +268,23 @@ describe("§ 6. mapLineupRow is total over what the database can return", () => 
       set_starts_at: null,
       set_ends_at: null,
       notes: null,
-      created_at: "c",
     });
     expect(row.billing).toBeNull();
     expect(row.rawBilling).toBe("b2b");
   });
 
-  it("selects created_at, which is half the documented tie-break", () => {
-    // `public.event_lineup`'s table comment says the ordering is
-    // `(position, created_at, id)`. A select list that omitted `created_at`
-    // would leave that claim unverifiable from the row the panel renders.
-    expect(LINEUP_SELECT).toContain("created_at");
-    // And NOT `deleted_at`: `fetchListPage` writes `deleted_at is null` on
-    // every live list, so the column is always null in these rows.
+  it("selects neither created_at nor deleted_at, and the reasons differ", () => {
+    // `deleted_at`: `fetchListPage` writes `deleted_at is null` on every live
+    // list, so the column is always null in these rows.
     expect(LINEUP_SELECT).not.toContain("deleted_at");
+    // `created_at`: NOTHING READS IT, and the browser walk is why. The first
+    // version selected it and called it "half the documented tie-break" --
+    // `public.event_lineup`'s table comment says `(position, created_at, id)`
+    // -- and the rendered order cannot be that, because a keyset page carries
+    // one sort column plus the primary key. The tie really breaks on a random
+    // uuid: total and permanent, but not insertion order. Asserted as an
+    // ABSENCE so re-adding the column re-opens the question rather than
+    // quietly restoring a false claim.
+    expect(LINEUP_SELECT).not.toContain("created_at");
   });
 });
