@@ -7,10 +7,10 @@ import { isRecordScopedRole } from "@/lib/crm/record-scope";
 import { getCrmWriteAccess, type CrmWriteAccess } from "@/lib/crm/write-access";
 import { loadVenueNames } from "@/lib/crm/queries";
 import { StatusChip } from "@/components/crm/status-chip";
-import type { EventStatus, EventType } from "@/lib/crm/event-status";
 import {
   EVENT_LIST,
   EVENT_SELECT,
+  mapEventRow,
   type EventFilterKey,
   type EventRow,
   type EventSortKey,
@@ -186,22 +186,14 @@ async function EventResults({
     organisationId,
     table: "events",
     select: EVENT_SELECT,
-    mapRow: (row) => ({
-      id: String(row.id),
-      name: String(row.name),
-      startsAt: String(row.starts_at),
-      // NO COLUMN RENDERS `endsAt` OR `eventType` YET -- Task 4's detail page
-      // does, and `TYPE_LABELS` exists for it. They are mapped here rather than
-      // dropped so `EventRow` stays a faithful projection of `EVENT_SELECT`
-      // (which is the brief's literal and carries both), instead of a third
-      // shape a reader has to diff against the select list. See the note on
-      // the interface in lib/crm/events-list.ts.
-      endsAt: (row.ends_at as string | null) ?? null,
-      status: row.status as EventStatus,
-      eventType: row.event_type as EventType,
-      venueId: (row.venue_id as string | null) ?? null,
-      updatedAt: String(row.updated_at),
-    }),
+    // THE SHARED MAPPER, moved to lib/crm/events-list.ts by Phase 3 Task 7.
+    // It was written out here while this page was the only reader of
+    // `EVENT_SELECT`; the venue and artist event histories are the second and
+    // third, and three copies of one mapper over one literal is three chances
+    // for a column added to the literal to be read back in only two of them.
+    // It still maps `endsAt` and `eventType`, which no COLUMN on this page
+    // renders -- see the note on `EventRow` for why that is deliberate.
+    mapRow: mapEventRow,
     applyFilters: (query: ListQuery, filters) => {
       let q = query;
       // THREE ALLOWLISTED OPERATIONS AND NOTHING ELSE. Each `filters.*` value
