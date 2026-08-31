@@ -2306,6 +2306,78 @@ corrections are the useful part. Each now says what was actually done.
   answering "no". This entry is the scheduled home the Task 8 exit document's
   condition 3 points at; it is not a reminder, it is a gate on Phase 4's start.
 
+## Phase 4 — operations
+
+Opened by Phase 4 Task 1 (the operations schema — `tasks`, `meetings`, `notes`,
+`documents`, dormant `document_versions`, and the four `*_links` tables), which
+was deliberately schema-only: no policies, no write paths, no UI. These are the
+debts it carried forward.
+
+- **The nine operations tables ship with RLS ON and ZERO policies — Task 2 owes
+  every one of them a policy, and until then `schema_invariants.sql` D4/D5/D11b
+  are RED by design.** This is the identical safe-order interval Phase 3 Task 1
+  opened for events. Measured at Task 1 exit: D4 actual `9` (nine tables with no
+  policy), D5 actual `25` (24 select/insert/update grants on the eight writable
+  tables + one select grant on the read-only `document_versions`, none with a
+  policy behind it), D11b actual `22` against an expected `39`. **D11b's `39` is
+  a PREDICTION of Task 2's policy shapes** — 22 existing + 16 (four `*_links` ×
+  select/insert/update×2, mirroring `venue_rooms`) + 1 (`document_versions`
+  SELECT-only via-documents) — computed in Task 1 and confirmed when Task 2
+  turns it green. If Task 2's design differs (a link table needing a delete
+  policy, `document_versions` policed directly rather than via-parent), Task 2
+  corrects the `39`; that is the assertion working, not a Task 1 defect. **Owner:
+  Phase 4 Task 2**, which must check these three went GREEN, not that they were
+  silenced. `public.document_versions` specifically owes a SELECT-only policy on
+  `view_crm` and NO write grant/policy (it is dormant — file versioning is
+  Release 1.1).
+
+- **The custom-field entity_type allowlists were DELIBERATELY NOT widened to the
+  operational entities (Q47), and that is a decision, not an oversight.**
+  `custom_field_definitions_entity_type_allowed` and
+  `custom_field_values_entity_type_allowed` stay at the six CRM entities: tasks,
+  meetings, notes and documents do not get custom fields at MVP. Recorded on
+  `20260902003000`'s header and in the census test's `dedup`/custom-field
+  expectations (unchanged). The reversal is additive and cheap (a drop-and-add
+  ALTER per constraint plus the mirror in `lib/crm/custom-fields.ts`), and is a
+  product decision if the founder ever wants it — not a red-test fix. Because
+  `ActivitySubjectType = CustomFieldEntityType` is unchanged, `SUBJECT_NOUN`
+  (`lib/crm/activity.ts`) needed no new entry either, and `LINK_ENTITY_TYPES`
+  equals that same six-value set by construction — the three are kept as
+  separate constants on purpose (their equalities are independent), so a future
+  divergence touches one and not all three.
+
+- **`ParentTable` (`lib/crm/actions.ts`) gained `tasks`/`meetings`/`notes`/
+  `documents` BEFORE any caller.** The `*_links` write paths (later Phase 4
+  tasks) will call `liveInOrg(supabase, "tasks", …)` etc. to refuse a link whose
+  parent is soft-deleted or out of workspace — exactly the role the `events` arm
+  was added for in Phase 3 Task 1 ahead of its first caller. A union member with
+  no caller is harmless (nothing switches exhaustively on `ParentTable`); the
+  obligation this creates is that whoever writes the link paths uses it rather
+  than re-deriving the check. **Owner: the Phase 4 task that ships the link write
+  path.**
+
+- **The `<select>` pre-hydration and post-hydration defects, the no-JS submit
+  gate, and the multi-org picker e2e assertion were scheduled against "Phase 4's
+  first task" by Phase 3 Task 8 — but Phase 4's first task is schema-only, so
+  they move to the first Phase 4 task that ships a form.** They are UI changes to
+  the shared form primitives (`components/crm/`) and to `tests/e2e/`, and have
+  nothing to do with the schema. See the four entries under `## Phase 3 — events`
+  → "Opened by Task 8" and "Found in a browser": the five stale `<select>`s, the
+  value-set-before-hydration discard, the no-JavaScript submit, and the
+  five-and-sixth-picker multi-org e2e assertion. **Owner: Phase 4's first
+  form-bearing task**, which is the change that has to build a `<select>`-bearing
+  panel and the golden-path "add a task" step anyway.
+
+- **`20260901031000:180`'s needless `grant execute` and the § EG soft-deleted-
+  event assertion remain owed to a Phase 4 SQL task, and were NOT taken by the
+  schema-only Task 1.** The grant cleanup is a one-line new migration plus a
+  `schema_invariants.sql` assertion that no `private` `SECURITY DEFINER` trigger
+  function is executable by `authenticated`; the § EG assertion adds a
+  soft-deleted-event custom-field-write refusal to `rls_phase3_events.sql`. Both
+  are additive and neither is a live defect. **Owner: a Phase 4 SQL task (Task 2
+  is the natural home — it is already writing policies and can add both
+  assertions beside them).**
+
 ## Phase 7 — admin/security
 
 - **RATE LIMITING. Owner: the founder. Scheduled here 2026-08-30 (final review
