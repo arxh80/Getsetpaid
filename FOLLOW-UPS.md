@@ -2087,6 +2087,27 @@ before the first real consumer exists rather than alongside it.
   upgrades, and a bug in it fails every future deploy — and its permissions on
   the hosted side are unverified from here.
 
+## Found in a browser, Phase 3 Task 6
+
+- **A Free-tier workspace is told to add a custom field it cannot add.** On
+  `Settings > Custom fields` at a zero limit the page renders three sentences in
+  a row, and the third contradicts the first two: "Your plan doesn't include
+  custom fields. An Owner can upgrade the workspace to add some." then "No
+  custom fields on events yet. **Add one** and it appears on every event record
+  in this workspace." then "Your plan doesn't include adding or editing
+  records." The middle one is `CustomFieldEditor`'s ordinary empty state, which
+  does not know about the limit — it is reached whenever `live.length === 0`,
+  and at a Free tier that is always. This is the rule the phase set for
+  `DELETED_RECORD_EXPLANATION` ("an instruction that will not help is worse than
+  no explanation") and for `customFieldLimitMessage` (which was fixed for
+  exactly this at `limit === 0`), applied inconsistently one component along.
+  **Not events-specific and not this task's code** — it is Phase 2 copy and it
+  reads the same on all six entity types, which is why it is filed rather than
+  fixed here. The fix is one condition: suppress the "Add one" empty state when
+  `limit === 0`, because the gate sentence above it already says everything
+  true. Observed in `.superpowers/sdd/phase-3-events/task-6-browser-walk.spec.ts`
+  test 6, whose log carries the verbatim page text.
+
 ## Standing lesson from Foundation
 
 Three defects shipped past a source-only review and were caught only by running
