@@ -1823,6 +1823,91 @@ corrections are the useful part. Each now says what was actually done.
   coupling rather than the product. It still logs more than it asserts, which is
   what the permanent version must not do.
 
+### Opened by Task 7 (the cross-entity event surfaces)
+
+- **AN ARTIST ON MORE THAN 50 EVENTS DOES NOT SEE THEM ALL, and the panel does
+  not say so.** `loadEventsForArtist` (`lib/crm/queries.ts`) is a TWO-STEP read:
+  it takes the artist's live `event_lineup` rows ordered `created_at desc, id`
+  and capped at `MAX_PAGE_SIZE` (50), then pages `public.events` with
+  `.in("id", ids)`. So the panel shows a stable 50-slot WINDOW, paged 25 at a
+  time — and it is not "the 50 most recent events", because the date lives on
+  `events` and step one cannot order by it.
+
+  **Why it is shaped that way rather than fixed now.** `fetchListPage` reads ONE
+  relation. A PostgREST embed filter (`events?event_lineup.artist_id=eq.…`) is
+  not reachable through its single-relation contract — the `count=exact` head
+  request and the two boundary probes all change shape with an embed, which is
+  the same refusal `loadVenueNames` records. Paging `event_lineup` separately is
+  a SECOND CURSOR over a second relation ordered by something that is not the
+  date the panel sorts by, and `lib/crm/activity.ts`'s header states the rule
+  outright: "a second cursor in one codebase is a defect."
+
+  **THE SAME CLASS OF NAMED STOPGAP AS `LINK_PANEL_LIMIT`** (this file's Phase 2
+  entries), and it is worse in one respect and better in another: worse because
+  a busy resident DJ crosses 50 events in a couple of seasons, where 100 linked
+  companies on one contact is rare; better because the window is deterministic
+  and stable between reloads rather than "whatever Postgres returned".
+
+  **The shape of the real fix — decide it with the feature, not now.** Two
+  candidates, both migrations:
+
+  1. **A `security definer` list function** returning `public.events` rows for
+     an artist, joining `event_lineup` inside the function so the caller sees
+     ONE keyset-pageable relation. Keeps one cursor. Costs a function that has
+     to re-implement the tenant filter and the record-scope term itself, which
+     is the thing RLS exists to stop anybody re-implementing — so it needs its
+     own psql suite section.
+  2. **A denormalised `artist_ids uuid[]` on `public.events`** with a GIN index,
+     maintained by a trigger on `event_lineup`. Keeps the read a plain
+     `fetchListPage` over one table with a `cs.{…}` filter, and makes the sort
+     index reachable. Costs a denormalisation that can drift, so it needs a
+     reconciliation check the way any cached column does.
+
+  Neither is guessed at here. Both want measuring against a real booking
+  history, and the feature that needs it (an artist's full history, probably
+  with its own screen) is the right place to choose.
+
+- **The venue's "Events here" list is O(tenant between cursors), not O(page).**
+  `VENUE_EVENTS_LIST.sort.starts.backedBy` names
+  `events_org_starts_at_id_live_idx`, which is `(organisation_id, starts_at, id)
+  WHERE deleted_at is null` — so the ORDER BY and the keyset range ARE index
+  conditions, and `venue_id = $1` is a FILTER applied over that range. Fine for a
+  venue holding a normal share of a workspace's nights; not fine for a workspace
+  where one venue holds a small fraction of them, because the scan has to walk
+  every event between the cursor and a page's worth of THIS venue's.
+
+  `events_venue_id_org_idx` (20260901000000) exists and leads on `venue_id`, so
+  it cannot serve the ordering — naming it in `backedBy` would have been the
+  dishonest choice, and `lib/list/spec.ts` requires that field to name the index
+  that makes the sort O(page).
+
+  **The fix is one `create index`:** `(organisation_id, venue_id, starts_at, id)
+  WHERE deleted_at is null`, mirroring the four in 20260901020000. This task
+  ships no migration by its brief, and the number that would justify the ~2MB
+  per 25,000 rows has not been measured on a venue-heavy fixture — so it is
+  filed rather than added on a guess.
+
+- **A permanent Playwright spec for events is STILL owed**, and this task moves
+  the line rather than only re-filing it: FIVE of its assertions are now
+  permanent, in `tests/e2e/tenant-breakout.spec.ts` (the venue list, the
+  cross-tenant event 404 from both slugs, record scope on the list AND on the
+  record, the artist history through the lineup, and the workspace home).
+  `.superpowers/sdd/phase-3-events/task-7-browser-walk.spec.ts` is still a
+  throwaway, and what stays in it is the part a permanent assertion is the wrong
+  shape for — "paging one list leaves the other two alone", which is a claim
+  about three URLs at once and reads as a `console.log` walk rather than a test
+  name. A permanent version of THAT would want its own fixture with enough rows
+  to page without `?…_size=1`.
+
+- **`app/(app)/[orgSlug]/page.tsx`'s two older sections use a bare `<ul>`.** The
+  upcoming-events block added here carries `role="list"`, because Safari with
+  VoiceOver drops list semantics from a `ul` whose `list-style` is `none` and
+  these rows are ruled rather than bulleted. "Where to start" and "Keeping the
+  records clean" predate it and were left alone rather than swept into this
+  task's diff. Same one-line fix, three places, whenever that page is next
+  opened — `components/ui/ruled-row.tsx`'s `RuledList` has the same gap and is
+  the better place to fix it once.
+
 ## Phase 3 — members management with a real UI
 
 - **Inviting an address that already has an account sends no email**, while the
