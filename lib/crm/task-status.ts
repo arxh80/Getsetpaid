@@ -94,3 +94,120 @@ export const SCAN_STATUSES = [
 ] as const;
 
 export type ScanStatus = (typeof SCAN_STATUSES)[number];
+
+// ===========================================================================
+// PHASE 4 TASK 3: THE PRESENTATION LAYER
+// ===========================================================================
+// Labels and chip TONES for the four operations vocabularies, added to the
+// same file as the constants they describe -- exactly as event-status.ts holds
+// STATUS_LABELS/STATUS_TONE beside EVENT_STATUSES. Still NO REACT: a tone is a
+// NAME, and the chip components (components/crm/task-status-chip.tsx,
+// priority-chip.tsx) map the name to a DESIGN.md token. That keeps this module
+// importable from a Server Component, a Client Component and a vitest file
+// alike.
+//
+// EVERY MAP IS A `Record` KEYED ON ITS UNION, so a value added to the CHECK
+// constraint and to the constant above makes the missing label and the missing
+// tone a COMPILE error here rather than an empty chip in a browser nobody
+// opened. tests/unit/crm/task-status.test.ts adds the runtime half (non-empty
+// values, and the key COUNTS as the denominator -- a `Record` type passes
+// vacuously against `{}` once something casts).
+//
+// NO NEW COLOUR TOKEN. Every tone below is one DESIGN.md already measured
+// (`--accent` for borders, `--warning`, `--success`, `--danger`, `--rule` /
+// `--ink-muted` for the neutral ones), so `python scripts/contrast.py` gains
+// no row. The chips render the label unconditionally, so colour is never the
+// only signal -- DESIGN.md § Working palette.
+
+/**
+ * The chip tones an operations status/priority can carry, as NAMES.
+ *
+ * `active` is the accent rail (open/in_progress work still to do) — an accent
+ * BORDER with ink text, never accent text, which DESIGN.md forbids. `muted` is
+ * the hairline-and-grey neutral. The other three are the measured status
+ * tokens.
+ */
+export type OperationsTone =
+  | "active"
+  | "muted"
+  | "success"
+  | "warning"
+  | "danger";
+
+/** The five task statuses as a human reads them. Sentence case (DESIGN.md voice). */
+export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
+  open: "Open",
+  in_progress: "In progress",
+  blocked: "Blocked",
+  done: "Done",
+  cancelled: "Cancelled",
+};
+
+/**
+ * The tone a task status carries.
+ *
+ *   active    open, in_progress  -- live work. The accent rail draws the eye
+ *                                   to what is still to be done.
+ *   warning   blocked            -- SOMEBODY IS WAITING on something else.
+ *   success   done               -- finished, well.
+ *   muted     cancelled          -- finished, not done. Nothing to act on.
+ */
+export const TASK_STATUS_TONE: Record<TaskStatus, OperationsTone> = {
+  open: "active",
+  in_progress: "active",
+  blocked: "warning",
+  done: "success",
+  cancelled: "muted",
+};
+
+/** The four task priorities as a human reads them. */
+export const TASK_PRIORITY_LABELS: Record<TaskPriority, string> = {
+  low: "Low",
+  normal: "Normal",
+  high: "High",
+  urgent: "Urgent",
+};
+
+/**
+ * The tone a priority carries.
+ *
+ * `low` and `normal` are both `muted` and the collision is deliberate: the
+ * ordinary case wants no colour, and drawing the eye to "Normal" would spend
+ * the reader's attention on the thing that needs none. `high` earns a warning,
+ * `urgent` a danger — the two that should catch the eye down a list.
+ */
+export const TASK_PRIORITY_TONE: Record<TaskPriority, OperationsTone> = {
+  low: "muted",
+  normal: "muted",
+  high: "warning",
+  urgent: "danger",
+};
+
+/** The four meeting statuses as a human reads them. */
+export const MEETING_STATUS_LABELS: Record<MeetingStatus, string> = {
+  scheduled: "Scheduled",
+  held: "Held",
+  cancelled: "Cancelled",
+  no_show: "No show",
+};
+
+/**
+ * The tone a meeting status carries.
+ *
+ *   active    scheduled  -- in the diary, still to happen.
+ *   success   held       -- it happened.
+ *   muted     cancelled  -- called off in advance.
+ *   warning   no_show    -- it was in the diary and nobody came; worth the eye.
+ */
+export const MEETING_STATUS_TONE: Record<MeetingStatus, OperationsTone> = {
+  scheduled: "active",
+  held: "success",
+  cancelled: "muted",
+  no_show: "warning",
+};
+
+/** The two note visibilities as a human reads them. */
+export const NOTE_VISIBILITY_LABELS: Record<NoteVisibility, string> = {
+  private: "Private",
+  company: "Company",
+};
