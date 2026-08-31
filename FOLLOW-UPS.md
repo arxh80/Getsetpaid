@@ -261,7 +261,23 @@ These become live the moment a real tenant table exists.
   path at roughly **75 ms of database time per search at 20,000 rows**, growing
   linearly, because a non-leakproof operator cannot become an index qual for a
   caller RLS applies to. An authenticated member can issue those as fast as they
-  like. **SCHEDULED 2026-08-30 (final review I-9).** Owner: **the founder**.
+  like.
+
+  **RE-COUNTED AT THE END OF PHASE 3 (Task 8), because the fifteen is now
+  twenty.** Measured out of the source rather than estimated: **20 list specs
+  carry a `searchColumn`** (`EVENT_LIST`, `EVENT_DELETED_LIST`,
+  `VENUE_EVENTS_LIST`, `ARTIST_EVENTS_LIST` and `LINEUP_LIST` are the five
+  Phase 3 added, all in `lib/crm/events-list.ts` and `lib/crm/lineup-list.ts`),
+  and **15 pages render a `ListToolbar`** with a reachable search control, up
+  from 13 — `/{org}/events` and `/{org}/events/deleted` are the two new ones.
+  The other three Phase 3 specs DROP their `q` key deliberately
+  (`VENUE_EVENTS_SEARCH_PARAM`, `ARTIST_EVENTS_SEARCH_PARAM`,
+  `LINEUP_SEARCH_PARAM`), so they declare a `searchColumn` a PostgREST call
+  needs and expose no control — which limits the blast radius to a
+  hand-edited URL and does not remove it, because `spec.searchColumn` still
+  reaches PostgREST the moment `params.q !== ""`. **Both numbers are the ones
+  Phase 7 should build against: 20 unmetered `ilike` paths, 15 of them one
+  keystroke away.** **SCHEDULED 2026-08-30 (final review I-9).** Owner: **the founder**.
   Implementation: **Phase 7 -- admin/security**, below. Pre-deployment gate:
   **Phase 10 -- launch hardening**, below, which refuses to ship without it.
   It is cross-cutting infrastructure, not Core CRM, which is why Task 8 did not
@@ -1171,6 +1187,33 @@ These become live the moment a real tenant table exists.
 
 ## Phase 3 — events
 
+> **TRIAGED AT THE PHASE EXIT (Task 8, 2026-08-31).** This section mixes two
+> kinds of bullet and the difference matters to whoever reads it next.
+>
+> **OBLIGATIONS — each now carries an owner and a phase, in the bullet itself:**
+> the five Phase 2 `<select>`s and the pre-hydration sibling (Phase 4, first
+> task); the no-JavaScript submit (same change); the UPDATE-policy record-scope
+> blind spot on five Phase 2 tables (Phase 4, with the `*_links` tables); the
+> venue "Events here" index (Phase 5, or earlier, with the named measurement);
+> the artist 50-slot window (founder decision, with a one-line honest stopgap
+> owed sooner); `loadLinkOptions`'s untested `organisation_id` filter and the
+> `entity_is_live` CI blind spot (both § "Opened by Task 8 (the Phase 3 exit
+> gate)" below, Phase 4); the Free-tier "Add one" copy defect (Phase 3 fix
+> wave); `20260901031000`'s needless `grant execute` (Phase 4's first
+> migration).
+>
+> **RECORDED MEASUREMENTS, each with its decision already taken in-line and
+> nothing owed:** the `include (owner_user_id)` non-reproduction, `loadEvent`'s
+> three round trips, the count query's O(tenant) cost, `§ EX` covering events
+> only, the room and artist picker caps, `lib/list/cursor.ts` being server-only
+> in practice, the two comment-accuracy notes, and the events-are-not-mergeable
+> decision. They are kept because re-deriving them costs a day each; they are
+> not work items and should not be triaged as though they were.
+>
+> **Struck-through bullets are DONE** and are kept for the correction they
+> carry, which is usually the useful half.
+
+
 - ~~**FIRST TEST TASK OF PHASE 3 (added 2026-08-30, final review I-7): the
   merge fixtures must call `merge_records()`.**~~ **DONE, Phase 3 Task 1**
   (`rls_phase2_crm.sql` § Z, `run-rls-tests.sh`'s `p2_json` probes). Five
@@ -1328,7 +1371,15 @@ corrections are the useful part. Each now says what was actually done.
   timeline entry on an event, and `public.activity_events` does not union
   `public.events` until Task 3 either. Delete this bullet when the route lands.
 
-- **`public.activity_events` does not know about events yet.**
+- ~~**`public.activity_events` does not know about events yet.**~~ **DONE,
+  Phase 3 Task 6** — and by Task 6 rather than Task 3, which is what the
+  original text guessed. `20260901030000` adds FOUR sources (events in the
+  subjects CTE; `event_lineup` from the event side and from the artist side;
+  `events.venue_id` from the venue side) and `20260901031000` adds the
+  `status_changed` kind over `public.event_status_changes` (founder Q33).
+  Assertions are in `rls_phase3_events.sql` §§ EM-EQ, not in
+  `rls_phase2_crm.sql` § X. The original entry follows.
+
   `20260829040000` unions the five Phase 2 tables. Task 1 widened
   `ActivitySubjectType` (it is an alias of `CustomFieldEntityType`) and gave
   `SUBJECT_NOUN` its `event` entry, so the renderer is total over the union
@@ -1432,8 +1483,18 @@ corrections are the useful part. Each now says what was actually done.
   says so out loud, and EH5 asserts structurally that no lineup policy
   expression mentions `artists`.
 
-- **`public.events` and `public.event_lineup` have FK-covering indexes only,
-  and Task 2 measured what that costs.** `EXPLAIN (analyze, buffers)` as a
+- ~~**`public.events` and `public.event_lineup` have FK-covering indexes only,
+  and Task 2 measured what that costs.**~~ **DISCHARGED, Phase 3 Tasks 3 and
+  5.** `20260901020000` adds the four `(organisation_id, <sort>, id) include
+  (owner_user_id) where deleted_at is null` indexes the events list declares in
+  `backedBy`, and `20260901021000` adds the lineup's. `rls_phase3_events.sql`
+  §§ EX and EL look every one of them up in `pg_class` and assert the shape, so
+  a `backedBy` naming an index that does not exist is red. **Two honest
+  residues, both filed with owners elsewhere in this file:** the
+  `include (owner_user_id)` benefit did NOT reproduce when re-measured (Task 3),
+  and the venue's "Events here" list is O(tenant between cursors) because no
+  index leads on `venue_id` and can also serve the ordering. The Task 2
+  measurement follows, as the baseline those were measured against. `EXPLAIN (analyze, buffers)` as a
   record-scoped user (`pstd1`), on the suite's fixtures — 11 ALPHA events, 8
   ALPHA lineup rows:
 
@@ -1483,6 +1544,15 @@ corrections are the useful part. Each now says what was actually done.
   more places where a "simplification" would pass every gate. One
   parameterised lift over all six tables would close it; whoever writes it
   should make it fail first, on each table, before believing it.
+
+  **OWNER: Phase 4's first task, alongside the `*_links` tables it is about to
+  add** (scheduled by Phase 3 Task 8, 2026-08-31). Phase 4 adds five more
+  child tables with the same policy pair, so the parameterised lift is worth
+  writing when it can cover eleven tables rather than six, and writing it any
+  later means writing it over more. **It is not a live defect and it does not
+  block this phase's merge** -- the terms are present and the SELECT policy
+  backstops them; what is missing is the assertion that would notice their
+  removal.
 
 - **`20260901001000`'s comment on `private.entity_org_unchanged()` named the
   wrong migration for the `event_lineup` arm, and the correction is a
@@ -1655,8 +1725,58 @@ corrections are the useful part. Each now says what was actually done.
   in shipped code and it should be taken as one change with one walk, not
   folded into a feature.
 
-- **A permanent Playwright spec for events is still owed.** Task 3's walk was
-  temporary and Task 4's is too — `.superpowers/sdd/phase-3-events/task-4-browser-walk.spec.ts`,
+  **OWNER: Phase 4's first task, as its opening change** (scheduled by Phase 3
+  Task 8, 2026-08-31). Phase 4 builds tasks/meetings/notes and therefore builds
+  more `<select>`-bearing panels of exactly this shape; fixing the five before
+  writing the sixth is the only ordering in which the fix is cheap and the
+  walk is one walk. It is NOT Phase 7 -- there is nothing entitlement- or
+  admin-shaped about it -- and it is not "whenever someone opens the file",
+  which is what this entry said for a phase and which produced no fix.
+
+- **A `<select>` VALUE SET BEFORE HYDRATION IS DISCARDED, which is the entry
+  above one step earlier in the lifecycle -- measured in a browser, Phase 3
+  Task 8.** The `key` fix means React MOUNTS the select with the right
+  `selected` option; it also means that anything which set the DOM value
+  between the server-rendered markup arriving and that mount is overwritten.
+
+  **Measured, twice, on `/events/{id}/edit`.** Interacting with the three
+  `<select>`s (venue, room, status) the instant the markup arrived: the form
+  posted the LAST value set and reverted the first two -- the event's venue and
+  room were unchanged while its status changed, from a submit in which all
+  three had been chosen. Repeating the identical walk with one `await` for a
+  server-rendered value before the first selection: the form posted
+  `venueId=E2E Basement room="" status=sold_out` and all three applied.
+  Transcript in `.superpowers/sdd/phase-3-events/task-8-browser-walk.spec.ts`
+  (WALK 1) -- the `await` is in the file with the finding written on it.
+
+  **Why it is filed and not fixed.** The two obvious fixes are both worse than
+  the defect. Removing the `key` reintroduces Task 4's measured defect (a
+  refused submit silently saving four values the user did not choose), and
+  making the form controlled abandons the property these forms exist to have
+  -- they work with JavaScript disabled (`components/crm/event-form.tsx`'s
+  header). The honest fix is to not accept input before hydration: disable the
+  selects until mount, or render them from a component that does not remount.
+  Both are a change to the shared form primitives, not to one form.
+
+  **How likely is a human to hit it?** Less likely than an automated script and
+  not impossible: it needs an interaction inside the hydration window, which on
+  a cold route over a slow connection is measured in whole seconds, and a user
+  who tabs straight to a `<select>` and presses a letter key is doing exactly
+  what the script did. **It is silent when it happens**, which is what makes it
+  worth an entry: the form posts a value the user did not choose and shows them
+  a saved record.
+
+  **OWNER: Phase 4's first task, in the same change as the five selects above**
+  -- the mechanism is the same and the walk is the same walk.
+
+- ~~**A permanent Playwright spec for events is still owed.**~~ **DONE, Phase 3
+  Task 8** — `tests/e2e/events.spec.ts`. Four of the five acceptance criteria
+  named below are now permanent assertions (the soft-delete/restore round trip
+  is in `tests/e2e/tenant-breakout.spec.ts`); the fifth, the no-JS submit, is
+  NOT and is the one thing this entry leaves open — see the note at the end.
+  The original entry follows.
+
+  Task 3's walk was temporary and Task 4's is too — `.superpowers/sdd/phase-3-events/task-4-browser-walk.spec.ts`,
   kept for reproducibility and deliberately outside `tests/e2e/` because one of
   its five tests DROPS AND RE-ADDS `events_ticket_link_is_http` (the only way
   to observe the render path for a value the CHECK refuses) and because it logs
@@ -1665,6 +1785,15 @@ corrections are the useful part. Each now says what was actually done.
   submit, and the inert `javascript:` link — are green in a transcript in a
   report and in no gate. The permanent version asserts rather than logs, does
   not reshape the schema, and belongs beside `golden-path.spec.ts`.
+
+  **WHAT IS STILL NOT IN A GATE: the no-JavaScript submit.** Every form in
+  `components/crm/` is uncontrolled precisely so it works with scripting off,
+  and no test anywhere runs with it off — Playwright's
+  `javaScriptEnabled: false` context option would do it and is one line, but a
+  page whose Server Actions are progressive-enhancement-only needs its own
+  assertions rather than a flag on the existing suite. **Owner: Phase 4's
+  first task**, in the change that fixes the five `<select>`s above — that is
+  the change that has to prove the no-JS path still works anyway.
 
 - **The room picker offers every live room in the workspace, bounded at
   `LINK_PANEL_LIMIT * 10` = 1,000, and there is no cascade.** With JavaScript
@@ -1878,6 +2007,19 @@ corrections are the useful part. Each now says what was actually done.
   history, and the feature that needs it (an artist's full history, probably
   with its own screen) is the right place to choose.
 
+  **OWNER: the founder, as a product decision; IMPLEMENTATION: deferred to the
+  phase that builds an artist's full booking history** (scheduled by Phase 3
+  Task 8, 2026-08-31). **It is not scheduled to a phase number on purpose, and
+  that is a decision rather than a gap:** both candidate fixes are migrations
+  with real costs (a `security definer` list function that re-implements the
+  tenant filter, or a denormalised `artist_ids uuid[]` that can drift), and
+  choosing between them on an empty database is guessing. **What IS owed
+  before then, and is cheap:** the count line currently reads "50 events" for
+  an artist on 200, which a user cannot tell from a genuine 50 --
+  `ListPage` already supports `total: null`, so suppressing the total on this
+  one surface is a one-line honest stopgap. Take that at the next sight of the
+  file; take the migration with the feature.
+
 - **Nothing tests that a FAILED upcoming-events query renders the error rather
   than "Nothing coming up"** (review fix round 1, M-1). `loadUpcomingEvents`
   returns a three-way result and `app/(app)/[orgSlug]/page.tsx` renders the
@@ -1916,9 +2058,32 @@ corrections are the useful part. Each now says what was actually done.
   per 25,000 rows has not been measured on a venue-heavy fixture — so it is
   filed rather than added on a guess.
 
-- **A permanent Playwright spec for events is STILL owed**, and this task moves
-  the line rather than only re-filing it: FIVE of its assertions are now
-  permanent, in `tests/e2e/tenant-breakout.spec.ts` (the venue list, the
+  **OWNER: whoever ships the next `public.events` migration; SCHEDULED: Phase 5
+  (finance sits on events and will touch this table), or earlier if a
+  venue-heavy tenant appears first** (scheduled by Phase 3 Task 8,
+  2026-08-31). **The measurement it is waiting on is named, so it cannot stall
+  indefinitely:** `EXPLAIN (analyze, buffers)` of `VENUE_EVENTS_LIST`'s second
+  page against a fixture of ~25,000 events in one tenant where the venue under
+  test holds under 2% of them. If that comes back O(page) after all, close this
+  entry with the number; if it does not, the index is one additive migration
+  and `backedBy` moves to it in the same change. **Not a merge blocker for
+  Phase 3:** `backedBy` names the index that really serves the ordering, which
+  is the honest declaration `lib/list/spec.ts` requires, and the cost is a
+  scan length rather than a wrong answer.
+
+- ~~**A permanent Playwright spec for events is STILL owed**~~ **DONE, Phase 3
+  Task 8.** `tests/e2e/events.spec.ts` walks create event -> add an artist to
+  the bill -> change the venue -> read the activity timeline as a manager, in
+  one ordered test, plus four independent ones (the route refusing `read_only`
+  at `/events/new`, the standard user's scope note, the status chip's text
+  label, and a stored ticket link rendering inert). `tests/e2e/tenant-breakout.spec.ts`
+  gained the three pickers and a soft-deleted event on its own fixture row.
+  Playwright is 17 -> 34. The throwaway named below is superseded by
+  `task-8-browser-walk.spec.ts`, which is the per-role transcript rather than a
+  gate. The original entry follows.
+
+  This task moves the line rather than only re-filing it: FIVE of its
+  assertions are now permanent, in `tests/e2e/tenant-breakout.spec.ts` (the venue list, the
   cross-tenant event 404 from both slugs, record scope on the list AND on the
   record, the artist history through the lineup, and the workspace home).
   `.superpowers/sdd/phase-3-events/task-7-browser-walk.spec.ts` is still a
@@ -1928,7 +2093,19 @@ corrections are the useful part. Each now says what was actually done.
   name. A permanent version of THAT would want its own fixture with enough rows
   to page without `?…_size=1`.
 
-- **The axe golden-path test has no time headroom, and now says so.**
+- ~~**The axe golden-path test has no time headroom, and now says so.**~~
+  **DONE, Phase 3 Task 8 — the durable fix was taken rather than the budget
+  raised again.** `tests/e2e/accessibility.spec.ts` is now one test per page
+  (twelve pages, four of them Phase 3's), `test.slow()` is deleted, and the
+  slowest page in the cold run that followed was 4.1s against its own 60s
+  budget. It became mandatory rather than optional the moment this task added
+  four pages: eleven pages under one budget is the same failure with more
+  headroom spent. **And splitting it paid for itself immediately** — the
+  event detail page, scanned on its own for the first time, reported
+  `landmark-unique`. See § "Opened by Task 8" below. The original entry
+  follows.
+
+  **The axe golden-path test has no time headroom, and now says so.**
   `tests/e2e/accessibility.spec.ts`'s seven-page scan measured **49.6s against
   the config's 60s budget** on a fully warm dev server at this task's HEAD.
   Cold, inside a full `pnpm test:e2e`, it exceeds the budget and fails with
@@ -1959,6 +2136,117 @@ corrections are the useful part. Each now says what was actually done.
   opened — `components/ui/ruled-row.tsx`'s `RuledList` has the same gap and is
   the better place to fix it once.
 
+### Opened by Task 8 (the Phase 3 exit gate)
+
+- ~~**Two `navigation` landmarks on one page shared the accessible name
+  "Pagination".**~~ **FOUND AND FIXED IN THE SAME TASK (Phase 3 Task 8).**
+  Recorded rather than dropped, because the way it was found is the reusable
+  part. The event detail page is the first in the product to carry two
+  `lib/list/` surfaces on one record, so it renders two pagers; axe reported
+  `landmark-unique` on `section[aria-labelledby="lineup-heading"] > nav`, and
+  a screen-reader user meets that as two landmark-list entries that cannot be
+  told apart. The artist detail page has THREE pagers and the venue detail page
+  two, so this was never a corner case — it was invisible until the scan was
+  pointed at a page that has them. Fixed in `components/list/list-pager.tsx`
+  (the label became "Pagination for " plus the spec's own plural noun), which is unique wherever two
+  pagers share a page today (lineup entries/entries; fees/events/entries;
+  events/entries); `tests/e2e/tenant-breakout.spec.ts` asserts the specific
+  name so it cannot revert to a shared literal silently.
+
+  **THE TWO THINGS TO CARRY FORWARD.** (1) It was caught only because the scan
+  runs `best-practice` beside the five WCAG tags — axe classifies every
+  `landmark-*` rule as best-practice, so the mandated tag set reports ZERO
+  violations on that page. That is the second time the same blind spot has hit
+  this project (Phase 2's nested `<main>` was the first). (2) A page rendering
+  two pagers over the SAME spec would collide again; nothing does today, and
+  the scan is what would say so.
+
+- **`loadLinkOptions()`'s `organisation_id` filter is asserted by NOTHING, and
+  Task 8 measured that rather than suspecting it.** Removing
+  `.eq("organisation_id", organisationId)` from `lib/crm/queries.ts:392` — the
+  one query behind the artist picker, the company picker, the contact picker
+  and the agency picker — left **every gate green**: vitest 1129/1129, psql
+  1083/0, HTTP 197/0, Playwright 34/34.
+
+  **Why nothing sees it.** RLS answers identically for a caller who belongs to
+  one organisation, and every user in every fixture that exercises a picker
+  belongs to exactly one. The loader's own filter is defence in depth against
+  the day a caller is a member of two — which the product supports from MVP
+  (`CLAUDE.md` § Tenancy model: the workspace switcher ships at launch), so
+  this is not a hypothetical role.
+
+  **THE PROPOSED ASSERTION, which is a fixture change and not a new test file.**
+  `tests/e2e/support/fixtures.ts` already builds two organisations; add a FIFTH
+  user who is an active member of BOTH (the psql suite's `pmulti` is the same
+  idea and is the precedent), sign in as them, and assert that the event form's
+  artist picker on org A's slug offers org A's artist and NOT
+  `OTHER_ARTIST_NAME`. That single assertion covers all four pickers, because
+  they are one query. **Do it in Phase 4's first task**, which adds
+  `task_links` and therefore a fifth and sixth picker over the same helper.
+  Owner: Phase 4.
+
+  **A weaker unit-level version exists and is not a substitute:** a
+  `source-shape.test.ts` census that every `from(<table>)` in `lib/crm/queries.ts`
+  is followed by `.eq("organisation_id"` would go red on this mutation and
+  would be cheap. It asserts the TEXT rather than the behaviour, which is the
+  thing `tests/integration/crm/permission-for-entity-matches-db.test.ts`'s own
+  history warns about — take it as a stopgap if Phase 4 slips, not instead.
+
+- **The psql/HTTP suite is blind to `private.entity_is_live()`'s `'event'`
+  arm, and the only thing that catches it does not run in CI.** Measured:
+  deleting the `when 'event' then ...` branch left the psql suite at 1083/0 and
+  the HTTP checks at 197/0, and turned exactly ONE file red —
+  `tests/integration/crm/entity-dispatch-branches-match-db.test.ts` (2 tests).
+  That file lives under `tests/integration/`, and `.github/workflows/ci.yml`
+  runs `pnpm exec vitest run tests/unit` and nothing else, so the branch is
+  guarded on a developer's machine and on no pull request.
+
+  This is the CI split already recorded against `PERMISSION_FOR_ENTITY`,
+  showing up on a second control — which makes it a pattern rather than an
+  incident. **The consequence is concrete:** `entity_is_live('event', …)` is
+  what makes a soft-deleted event's custom-field values read-only, so removing
+  the arm silently reopens writes to them, and the suite that exists to prove
+  event policies would not notice.
+
+  **The cheap half, owed to Phase 4:** `rls_phase3_events.sql` § EG (a
+  soft-deleted parent) already has the fixtures — add an assertion there that
+  a `custom_field_values` INSERT against a soft-deleted EVENT is refused, with
+  the live event as the positive control. **The real half is unchanged and is
+  bigger than this entry:** nothing in `tests/integration/`, the psql/HTTP
+  suite or Playwright runs on a pull request, which `CLAUDE.md` § Current state
+  already records as "a deliberate decision nobody has made yet". Owner: the
+  founder for the CI decision; Phase 4 for the § EG assertion.
+
+- **`20260901031000:180` issues a `grant execute` on
+  `private.record_event_status_change()` that nothing needs** (Task 6 deferred
+  minor, re-filed here with an owner). It is a trigger function; `authenticated`
+  never calls it by name, and Task 6's reviewer measured that it is not
+  exploitable. **The fix is deleting one line in a NEW migration** — the
+  original is pushed and must not be edited — and the assertion worth adding
+  beside it is a `schema_invariants.sql` one: no `private` `SECURITY DEFINER`
+  trigger function is executable by `authenticated`. That assertion is the
+  reason to do it at all, because it closes the class rather than the instance.
+  Owner: Phase 4's first migration. Not a live defect.
+
+- **A comment in `components/crm/activity-timeline.tsx:403-406` documents the
+  wrong entry.** "THE LABEL, NEVER THE VALUE" belongs to `custom_field_set` and
+  now sits above `status_changed`, which was inserted between them (Task 6
+  deferred minor). Cosmetic, wrong, and in the file a reader goes to in order
+  to learn the rule. One-line fix at next sight of the file.
+
+- **`public.events.ticket_link` cannot hold a `javascript:` value at all, and
+  `SECURITY.md` § 3 now says so.** Task 8 tried to plant one as `postgres` for
+  a render assertion and could not: `events_ticket_link_is_http` is a
+  *validated* CHECK, so it binds every writer, and the table was created with
+  it, so there are no older rows. (Task 4's browser walk reached the render
+  path by DROPPING and re-adding the constraint, which is why that walk is a
+  throwaway outside `tests/e2e/`.) The permanent assertion instead plants a
+  value the CHECK admits and `safeHref()` refuses, which measures the property
+  that actually protects the render. **Nothing to do** — this entry exists so
+  the constraint's own "a row written before it … is still possible" comment is
+  not read as describing a reachable state on this column, and so nobody
+  weakens `safeHref()` on the strength of it.
+
 ## Phase 3 — members management with a real UI
 
 - **Inviting an address that already has an account sends no email**, while the
@@ -1984,10 +2272,13 @@ corrections are the useful part. Each now says what was actually done.
   `token_verifications = 30` per 5 minutes (`supabase/config.toml:264,266`),
   which does not meet § 5's Login row (5 / 15 min per IP **and per account** --
   no per-account limit exists); and search asks for 60/min/user and has none
-  across fifteen list specs, on a path Task 3 measured at ~75 ms of database
-  time per search at 20,000 rows, growing linearly, because a non-leakproof
-  operator cannot become an index qual for a caller RLS applies to. An
-  authenticated member can issue those as fast as they like.
+  across **twenty** list specs (fifteen at the end of Phase 2; Phase 3 added
+  five, and fifteen of the twenty are reachable from a rendered search box --
+  re-counted by Task 8, evidence in § "Opened by Task 8" above), on a path
+  Task 3 measured at ~75 ms of database time per search at 20,000 rows, growing
+  linearly, because a non-leakproof operator cannot become an index qual for a
+  caller RLS applies to. An authenticated member can issue those as fast as
+  they like.
 
   Phase 7 because it is cross-cutting infrastructure that belongs with the
   admin/security surface rather than with any one entity, and because the
@@ -2164,7 +2455,12 @@ before the first real consumer exists rather than alongside it.
 - **PRE-DEPLOYMENT GATE: rate limiting must be implemented before this product
   is deployed. Owner: the founder. Added 2026-08-30 (final review I-9).** This
   is a refusal, not a reminder: if `SECURITY.md` § 5 is still unenforced when
-  launch is otherwise ready, launch does not proceed. The implementation is
+  launch is otherwise ready, launch does not proceed. **The surface grew in
+  Phase 3 and the gate is restated over the new number:** 20 list specs carry a
+  `searchColumn` and 15 pages render a search control (13 and 15 at the Phase 2
+  exit), so the unmetered `ilike` path this gate is about is a third wider than
+  it was when the gate was written. Re-count it again at each phase exit rather
+  than inheriting this sentence. The implementation is
   scheduled in § "Phase 7 — admin/security" above and the evidence is in
   § "Opened by Task 8"; this entry exists so that a slip in Phase 7 cannot turn
   into a ship. `SECURITY.md` § 1 makes security an acceptance criterion rather
@@ -2183,6 +2479,37 @@ before the first real consumer exists rather than alongside it.
   2010 obligation behind it. Walk `task-8-report.md` § 3's golden path as each
   of its five roles, plus the custom-field editor, the merge screen and the
   in-app 404.
+
+  **EXTENDED BY PHASE 3 (Task 8). Four more surfaces, and the first three are
+  new component shapes rather than more of the same page:**
+
+  1. **The event STATUS CHIP** (`components/crm/status-chip.tsx`). A `<span>`
+     with a border and an uppercase label, inline beside the `<h1>` and again
+     in every row of the events list table. Ask: is the label announced as part
+     of the row, or lost between the name and the date? It is the one place in
+     the product where a *state* is rendered as decoration-adjacent text, and
+     DESIGN.md forbids colour being the only signal — the automated half can
+     only confirm the text exists, not that it is reachable in reading order.
+  2. **The LINEUP PANEL** (`components/crm/lineup-panel.tsx`). A
+     `<ul role="list">` whose `role` is explicit *because* Tailwind's preflight
+     drops list semantics in Safari/VoiceOver — so the specific question is
+     whether VoiceOver announces "list, 3 items" here, which is exactly what
+     the `role` was added to buy and what nothing has ever verified. Each row
+     also carries its own form with a number input and two `<select>`s, and the
+     Save button's accessible name includes the artist.
+  3. **THREE lib/list/ SURFACES ON ONE PAGE.** The event detail page carries
+     the lineup panel, the custom-fields panel and the activity timeline; the
+     artist detail page carries the fee history, the event history and the
+     timeline. Each has its own pager. Phase 3 Task 8 found by scanner that two
+     of those pagers had the IDENTICAL accessible name ("Pagination") and fixed
+     it (`Pagination for ${noun.many}`) — the screen-reader question that
+     remains is whether the landmark list is now *usable*, not merely unique.
+  4. **The MFA ENROL GATE as an OWNER sees it.** Walk 4 of
+     `task-8-browser-walk.spec.ts` records that signing in as an Owner replaces
+     the whole application shell with "Set up two-factor authentication". A
+     shell that is REPLACED rather than navigated to is the shape most likely
+     to leave focus somewhere stale, and it is the first screen a paying
+     customer's Owner ever sees.
 - **A real assistive-technology pass has never been run.** No NVDA, JAWS or
   VoiceOver was available at any point during Foundation; accessibility-tree
   and DOM/spec-level evidence was used instead and disclosed each time. The
@@ -2237,6 +2564,15 @@ before the first real consumer exists rather than alongside it.
   `DELETED_RECORD_EXPLANATION` ("an instruction that will not help is worse than
   no explanation") and for `customFieldLimitMessage` (which was fixed for
   exactly this at `limit === 0`), applied inconsistently one component along.
+
+  **OWNER: the Phase 3 fix wave (controller-flagged 2026-08-31, carried into
+  the Phase 3 final review as a named item). SCHEDULED: before the Phase 3
+  branch merges** — it is one condition in one Phase 2 component, it is on a
+  settings page every Free-tier workspace lands on, and it is the only known
+  copy defect in the phase's browser evidence. If the final review does not
+  take it, it moves to Phase 7 with the rest of the entitlement work and this
+  line must be rewritten to say so; leaving it "recorded" is the failure mode
+  Phase 2's exit document was sent back for.
   **Not events-specific and not this task's code** — it is Phase 2 copy and it
   reads the same on all six entity types, which is why it is filed rather than
   fixed here. The fix is one condition: suppress the "Add one" empty state when
