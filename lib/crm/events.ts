@@ -534,6 +534,33 @@ export async function deleteEventAction(
   // deleted would leave the user with a record they cannot remove and an
   // instruction ("restore the venue first") about a decision somebody else
   // made. The venue is an end of the SAVE, not of the lifecycle.
+  //
+  // =========================================================================
+  // AND NO CUSTOM-FIELD SWEEP EITHER -- Phase 3 Task 6, and this is the
+  // CORRECTED reading of FOLLOW-UPS.md's orphan item, not a skipped chore
+  // =========================================================================
+  // That item says "every entity delete (Task 4) ... must
+  // `delete from public.custom_field_values where entity_type = $1 and
+  // entity_id = $2`". Applied to a SOFT delete it is wrong twice over:
+  //
+  //   1. IT WOULD NOT WORK. 20260829011000 put private.entity_is_live() into
+  //      custom_field_values_delete_via_entity, so the values of a
+  //      soft-deleted entity are UNDELETABLE by the application the instant it
+  //      is deleted. A sweep issued after this UPDATE deletes nothing and
+  //      reports success; a sweep issued before it would delete the values of
+  //      a record that is still live if the UPDATE then fails.
+  //   2. IT WOULD BE WRONG IF IT DID. A soft delete is reversible -- the
+  //      Restore control is on the very page this action returns to -- and a
+  //      restored event whose custom fields had been swept would come back
+  //      with the dates and the lineup intact and the workspace's own fields
+  //      silently blank. Nothing would say so.
+  //
+  // The sweep belongs to a HARD delete, and this product performs none: the
+  // one place that legitimately sweeps is a merge, which carries the values
+  // over FIRST and then soft-deletes the loser. So the orphan problem is real
+  // and it is a RETENTION/ERASURE problem for the Phase 7+ DSR workflow, which
+  // is where FOLLOW-UPS.md now files it -- alongside the other five entity
+  // types, and now events.
   const supabase = await createClient();
   const result = await commitWrite(`delete event ${eventId}`, () =>
     supabase

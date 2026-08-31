@@ -195,6 +195,23 @@ These become live the moment a real tenant table exists.
   — `custom_field_values_entity_idx` already makes that an index lookup — and
   the same sweep belongs on the GDPR erasure checklist (CLAUDE.md § Legal,
   30-day DSR).
+
+  **CORRECTED BY PHASE 3 TASK 6 — the "every entity delete" half is wrong, and
+  the DSR half is the whole item.** 20260829011000 put `private.entity_is_live()`
+  into `custom_field_values_delete_via_entity`, so a soft-deleted entity's
+  values are *undeletable by the application* from the instant it is deleted: a
+  sweep after the soft delete deletes nothing and reports success, and a sweep
+  before it strands the values of a record whose delete then fails. It would
+  also be wrong if it worked — a soft delete is reversible, and a restored
+  record whose custom fields had been swept comes back with everything except
+  the workspace's own fields, silently. **So no entity soft-delete sweeps, and
+  `lib/crm/events.ts` `deleteEventAction` carries that reasoning at the call
+  site.** The one legitimate sweep is a MERGE, which carries values over first
+  and then soft-deletes the loser (that half of this item stands and shipped).
+  What is left is a hard-delete/erasure obligation on **all six entity types —
+  `company`, `contact`, `agency`, `artist`, `venue` and now `event`** — for the
+  Phase 7+ DSR/erasure workflow, which is the only thing in this product that
+  ever hard-deletes.
 - **A subscription downgrade must never delete a custom field definition.**
   `custom_field_values_definition_fkey` is `ON DELETE CASCADE`, which is right
   for referential integrity and dangerous for the tier path: CLAUDE.md

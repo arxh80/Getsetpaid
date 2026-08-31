@@ -149,12 +149,11 @@ export const ENTITY_PATH_SEGMENT: Readonly<
   agency: "agencies",
   artist: "artists",
   venue: "venues",
-  // A KNOWN DANGLING LINK UNTIL PHASE 3 TASK 3 SHIPS /[orgSlug]/events.
-  // Omitting the entry is not the fix: `otherHref()` in lib/crm/activity.ts
-  // and `entityHref()` in lib/crm/dedup.ts are total over this record, and a
-  // missing key would be a runtime `undefined` in a URL rather than a 404.
-  // Nothing links here yet -- the only route in is a timeline entry on an
-  // event, and events have no timeline until Task 3 either.
+  // NO LONGER DANGLING. This entry was added by Phase 3 Task 1 ahead of the
+  // route, and said so; /[orgSlug]/events/[eventId] shipped in Task 3 and
+  // Task 6 built the two things that actually follow this link -- the artist
+  // timeline's `other_type: 'event'` entries and the venue timeline's, both
+  // branches of public.activity_events (20260901030000).
   event: "events",
 };
 
