@@ -207,7 +207,12 @@ test("the pager announces an unavailable direction rather than removing it", asy
   // and leaving two live-looking links.
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}/contacts`);
-  const pager = page.getByRole("navigation", { name: "Pagination" });
+  // NAMED AFTER WHAT IT PAGES (Task 8). The label was the bare word
+  // "Pagination" until the event detail page put two pagers on one record and
+  // axe reported `landmark-unique`; components/list/list-pager.tsx carries the
+  // measurement. Asserting the SPECIFIC name here means the fix cannot be
+  // reverted to a shared literal without this going red.
+  const pager = page.getByRole("navigation", { name: "Pagination for contacts" });
   await expect(pager).toBeVisible();
   // The fixture has fewer contacts than one page, so BOTH directions are dead.
   await expect(pager.getByText("Previous")).toHaveAttribute(

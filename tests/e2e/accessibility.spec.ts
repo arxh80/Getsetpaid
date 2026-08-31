@@ -121,56 +121,65 @@ test("the signed-out login page has no automated accessibility violations", asyn
   await scan(page, "/login");
 });
 
-test("the golden-path pages have no automated accessibility violations", async ({
-  page,
-}) => {
-  // ===========================================================================
-  // THE ONE TEST IN THIS SUITE WITH NO TIME HEADROOM, AND IT IS DECLARED
-  // ===========================================================================
-  // Seven pages, an axe scan each, against a DEV server -- so every page in the
-  // list below pays a first-hit Turbopack compile the first time this suite
-  // touches it. Measured at Phase 3 Task 7 on a fully warm server (every route
-  // already compiled): 49.6s against the config's 60s budget. Cold, inside a
-  // full `pnpm test:e2e` run, it exceeds it and fails with
-  // "Test timeout of 60000ms exceeded" -- an EMPTY failure with no violation
-  // attached, which reads exactly like an accessibility regression and is not
-  // one. It failed that way twice in Task 7's gate runs and passed every time
-  // it was run on its own.
-  //
-  // `test.slow()` triples the budget for this test alone rather than raising
-  // `timeout` in playwright.config.ts, because every other test in the suite
-  // finishes in seconds and a global raise would hide a real hang in one of
-  // them. WHAT IT DOES NOT DO IS MAKE THE SUITE FASTER: the cost is real, it
-  // grows with every page added to the list below, and the durable fix is to
-  // split this into one test per page so a slow page is named rather than
-  // averaged. Filed in FOLLOW-UPS.md.
-  test.slow();
+// ===========================================================================
+// ONE TEST PER PAGE -- THE DURABLE FIX, TAKEN (Phase 3 Task 8)
+// ===========================================================================
+// This used to be ONE test that walked seven pages under one 60s budget, with
+// `test.slow()` tripling it. Task 7 measured that test at 49.6s against 60s on
+// a fully WARM dev server and recorded the papering-over honestly: cold, inside
+// a full `pnpm test:e2e`, it exceeded the budget and failed with "Test timeout
+// of 60000ms exceeded" -- an EMPTY failure with no violation attached, which
+// reads exactly like an accessibility regression and is not one. The follow-up
+// said the durable fix is one test per page, "worth doing the next time that
+// file is opened".
+//
+// Task 8 opens it and adds FOUR more pages, which is what makes the split
+// mandatory rather than tidy: eleven pages under one budget is the same failure
+// with more headroom spent. Split, each page pays its own first-hit Turbopack
+// compile inside its own 60s and a slow page is NAMED in the report instead of
+// being averaged into a total. `test.slow()` is gone.
+//
+// THE COST IS A SIGN-IN PER TEST. Each test gets a fresh browser context, so
+// the session does not carry across; a password sign-in is a form POST and a
+// redirect, which is seconds against a first-hit compile of tens of seconds.
+// Paying it buys a report that says WHICH page is slow.
+const SIGNED_IN_PAGES: [string, (w: E2eWorld) => string][] = [
+  ["contacts list", (w) => `/${w.orgSlug}/contacts`],
+  ["new contact", (w) => `/${w.orgSlug}/contacts/new`],
+  [
+    "contact detail + timeline",
+    (w) => `/${w.orgSlug}/contacts/${w.managerOwnedContactId}`,
+  ],
+  ["companies list", (w) => `/${w.orgSlug}/companies`],
+  ["new company", (w) => `/${w.orgSlug}/companies/new`],
+  ["new artist", (w) => `/${w.orgSlug}/artists/new`],
+  ["new venue", (w) => `/${w.orgSlug}/venues/new`],
+  // ---- PHASE 3'S FOUR SURFACES (Task 8 brief § 3) ------------------------
+  // The list, the create form, a detail page and the deleted list -- the same
+  // four shapes the Phase 2 entries above cover, on the entity this phase
+  // added. The DETAIL page is the one that earns its place twice over: it is
+  // the only page in the product carrying three lib/list/ surfaces at once (the
+  // lineup panel, the custom-fields panel and the activity timeline), plus the
+  // status chip, so it is where a duplicate `id`, an orphaned
+  // `aria-describedby` or a second `role="list"` with no accessible name would
+  // land first.
+  ["events list", (w) => `/${w.orgSlug}/events`],
+  ["new event", (w) => `/${w.orgSlug}/events/new`],
+  [
+    "event detail + lineup + timeline",
+    (w) => `/${w.orgSlug}/events/${w.managerOwnedEventId}`,
+  ],
+  ["deleted events", (w) => `/${w.orgSlug}/events/deleted`],
+];
 
-  await signIn(page, world, "manager");
-
-  // The same surfaces golden-path.spec.ts walks: a list, a create form, a
-  // detail page with the activity timeline on it, and one create form per
-  // remaining entity, because they are separate components rather than one
-  // shared form.
-  const pages: [string, string][] = [
-    ["contacts list", `/${world.orgSlug}/contacts`],
-    ["new contact", `/${world.orgSlug}/contacts/new`],
-    [
-      "contact detail + timeline",
-      `/${world.orgSlug}/contacts/${world.managerOwnedContactId}`,
-    ],
-    ["companies list", `/${world.orgSlug}/companies`],
-    ["new company", `/${world.orgSlug}/companies/new`],
-    ["new artist", `/${world.orgSlug}/artists/new`],
-    ["new venue", `/${world.orgSlug}/venues/new`],
-  ];
-
-  for (const [label, url] of pages) {
-    await page.goto(url);
+for (const [label, url] of SIGNED_IN_PAGES) {
+  test(`${label} has no automated accessibility violations`, async ({ page }) => {
+    await signIn(page, world, "manager");
+    await page.goto(url(world));
     await expect(page.locator("main").first()).toBeVisible();
     await scan(page, label);
-  }
-});
+  });
+}
 
 test("the in-app 404 -- where every refusal lands -- is clean, exclusions and all", async ({
   page,

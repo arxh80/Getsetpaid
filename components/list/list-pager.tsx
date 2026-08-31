@@ -129,7 +129,34 @@ export function ListPager<TSort extends string, TFilter extends string>({
 
   return (
     <nav
-      aria-label="Pagination"
+      // ===================================================================
+      // NAMED AFTER WHAT IT PAGES, NOT "Pagination" -- AND A SCANNER FOUND
+      // WHY (Phase 3 Task 8)
+      // ===================================================================
+      // This used to be the literal string "Pagination", which was unique for
+      // as long as no page carried two pagers. The event detail page is the
+      // first that does -- the lineup panel and the activity timeline are both
+      // lib/list/ surfaces on one record -- and axe reported
+      // `landmark-unique` on `section[aria-labelledby="lineup-heading"] > nav`:
+      // two `navigation` landmarks with the identical accessible name
+      // "Pagination", which a screen-reader user meets as two entries in the
+      // landmark list that cannot be told apart. The artist detail page has
+      // THREE and the venue detail page two, so this was not a corner case; it
+      // was simply invisible until Phase 3 Task 8 pointed the scan at the
+      // pages that have them.
+      //
+      // Caught only because `tests/e2e/accessibility.spec.ts` runs axe with
+      // `best-practice` as well as the five WCAG tags -- axe classifies every
+      // `landmark-*` rule as best-practice, so the mandated tag set reports
+      // ZERO violations on this page. That is the same blind spot the nested
+      // `<main>` fell into in Phase 2, found the same way.
+      //
+      // `noun.many` is the spec's own plural, so the label is unique wherever
+      // two pagers share a page today (lineup entries / entries; fees / events
+      // / entries; events / entries) and it reads as a sentence rather than as
+      // an id. A page that ever renders two pagers over the SAME spec would
+      // collide again -- nothing does, and the scan is what would say so.
+      aria-label={`Pagination for ${noun.many}`}
       className="flex flex-wrap items-center justify-between gap-3 pt-4"
     >
       <p className="text-sm text-ink-muted">
