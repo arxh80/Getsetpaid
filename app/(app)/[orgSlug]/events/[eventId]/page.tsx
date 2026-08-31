@@ -13,6 +13,14 @@ import {
 } from "@/lib/crm/queries";
 import type { RawSearchParams } from "@/lib/list/params";
 import { LineupPanel } from "@/components/crm/lineup-panel";
+import { loadCustomFieldPanel } from "@/lib/crm/custom-field-queries";
+import { CustomFieldsPanel } from "@/components/crm/custom-fields-panel";
+import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import {
+  activityIsScoped,
+  activityParams,
+  fetchActivityPage,
+} from "@/lib/crm/activity";
 import { deleteEventAction, restoreEventAction } from "@/lib/crm/events";
 import { StatusChip } from "@/components/crm/status-chip";
 import { TYPE_LABELS } from "@/lib/crm/event-status";
@@ -67,11 +75,15 @@ import { formatDateTime } from "@/lib/format/date";
 //            custom-fields slot, taking `panelBlocked` in the shape this note
 //            predicted. It brings the page's FIRST namespaced list
 //            (`lineup_`), which is why `searchParams` is now read here.
-//   Task 6   the CUSTOM FIELDS panel ('event' is a custom-field entity type as
-//            of 20260901001000) and the ACTIVITY TIMELINE. The timeline is the
-//            page's SECOND list and must be given `activity_` and the same
-//            `raw` as `preserve` -- see lib/crm/lineup-list.ts's header for
-//            what happens to both lists if it is not.
+//   Task 6   LANDED. The CUSTOM FIELDS panel ('event' has been a custom-field
+//            entity type since 20260901001000, and the engine is Phase 2's
+//            unchanged -- no new limit, no new message) and the ACTIVITY
+//            TIMELINE, in that order, exactly as on the venue page. The
+//            timeline is the page's SECOND lib/list/ surface: it carries the
+//            `activity_` namespace and gets the same `raw` as `preserve` that
+//            the lineup panel does, which is what stops paging one from
+//            returning the other to page one. See lib/crm/lineup-list.ts's
+//            header for both halves.
 
 export async function generateMetadata({
   params,
@@ -141,7 +153,14 @@ export default async function EventDetailPage({
   // the URL without the other one's state. lib/crm/lineup-list.ts's header and
   // the artist detail page carry both halves.
   const raw = (await searchParams) as RawSearchParams;
-  const [lineup, artistOptions] = await Promise.all([
+
+  // THE TIMELINE'S OWN PAGE OF ITS OWN LIST. `activityParams` reads only keys
+  // beginning `activity_` and drops `activity_q` (there is no search control on
+  // that surface), so this and `loadLineupForEvent`'s `lineup_` parsing cannot
+  // see each other's cursor.
+  const activityListParams = activityParams(raw);
+
+  const [lineup, artistOptions, customFields, activity] = await Promise.all([
     // THE RAW QUERY STRING GOES IN and the parsed params come back: the loader
     // owns LINEUP_LIST's namespace and the `lineup_q` drop, so this page
     // cannot get either wrong. See `loadLineupForEvent`.
@@ -152,6 +171,13 @@ export default async function EventDetailPage({
     panelBlocked === null
       ? loadArtistsForPicker(org.id)
       : Promise.resolve([] as { id: string; name: string }[]),
+    // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
+    // the panel is a Client Component and this is the only place with an
+    // RLS-scoped server client. The loader returns the values of REMOVED
+    // definitions too, which is what makes "removing a field keeps what was
+    // filled in" visible rather than merely true (20260829010000, decision 1).
+    loadCustomFieldPanel(org.id, "event", event.id),
+    fetchActivityPage(org.id, "event", event.id, activityListParams),
   ]);
 
   return (
@@ -310,13 +336,49 @@ export default async function EventDetailPage({
         preserve={raw}
       />
 
-      {/* ===================================================================
-          SLOT: THE CUSTOM FIELDS PANEL and THE ACTIVITY TIMELINE
-          (Phase 3 Task 6). `event` became a custom-field entity type in
-          20260901001000, and lib/crm/activity.ts's header is the contract for
-          the timeline. Both go here, in that order, exactly as on the venue
-          page.
-          =================================================================== */}
+      {/* A FAILED QUERY IS NOT AN EMPTY PANEL. Rendering nothing here would
+          tell a user with forty custom fields on their events that they have
+          none, which is the one thing the empty state must never do. */}
+      {customFields.outcome === "unavailable" ? (
+        <Alert tone="error">
+          We couldn’t load this event’s custom fields just now. Refresh the page
+          to try again — nothing has been changed.
+        </Alert>
+      ) : (
+        // `disabledReason={panelBlocked}` IS THE SAME EXPRESSION THE LINEUP
+        // GETS, and deliberately the same variable rather than a second copy:
+        // a custom field value is an ordinary CRM write on this record, so
+        // `manage_events` governs it (private.entity_is_manageable maps the
+        // 'event' arm to that key, and lib/crm/custom-fields.ts's
+        // PERMISSION_FOR_ENTITY mirrors it for the sentence), and a DELETED
+        // event's values are read-only as a POLICY term
+        // (private.entity_is_live() in the three custom_field_values write
+        // policies, 20260829011000) rather than only as an application check.
+        // So this is the explanation, not the enforcement.
+        <CustomFieldsPanel
+          orgSlug={org.slug}
+          entityType="event"
+          entityId={event.id}
+          live={customFields.panel.live}
+          removed={customFields.panel.removed}
+          disabledReason={panelBlocked}
+        />
+      )}
+
+      {/* THE SHARED ACTIVITY TIMELINE (Phase 2 Task 7, six pages since Phase 3
+          Task 6). One component; the event's sources arrived as branches of
+          public.activity_events (20260901030000, 20260901031000) rather than
+          as a second component -- lib/crm/activity.ts's header is the
+          contract. `preserve={raw}` for the reason the lineup panel has it. */}
+      <ActivityTimeline
+        orgSlug={org.slug}
+        subjectType="event"
+        page={activity}
+        params={activityListParams}
+        basePath={`${basePath}/${event.id}`}
+        recordScoped={activityIsScoped(org.role)}
+        preserve={raw}
+      />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">
         <h2 className="text-xl font-bold text-ink">Manage</h2>

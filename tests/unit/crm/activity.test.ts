@@ -5,6 +5,7 @@
 // column will grow branches in Phase 3, 4 and 5, and every renderer in
 // components/crm/activity-timeline.tsx reads it. A reader that assumes a
 // string is one property access away from taking out a record page.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   ACTIVITY_KINDS,
@@ -17,7 +18,9 @@ import {
   isActivityKind,
   mapActivity,
   otherHref,
+  SUBJECT_NOUN,
 } from "@/lib/crm/activity";
+import { CUSTOM_FIELD_ENTITY_TYPES } from "@/lib/crm/custom-fields";
 
 const UUID = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
 
@@ -202,5 +205,138 @@ describe("otherHref", () => {
     // `/acme/function toString() { [native code] }/<id>`.
     expect(otherHref("acme", "toString", UUID)).toBeNull();
     expect(otherHref("acme", "constructor", UUID)).toBeNull();
+  });
+});
+
+// ===========================================================================
+// PHASE 3 TASK 6: the event sources
+// ===========================================================================
+// Five branches landed on public.activity_events (20260901030000: events in
+// the subjects CTE, both directions of event_lineup, the venue side of
+// events.venue_id; 20260901031000: event_status_changes) and exactly ONE new
+// kind came with them. Everything below is a DENOMINATOR assertion -- a count
+// or an exact set -- because the failure this file is guarding against is a
+// later phase adding a source and leaving one of the three totals behind, and
+// a "contains" assertion cannot see that.
+
+describe("SUBJECT_NOUN is total over the subject types", () => {
+  it("has one entry per entity type, and six of them", () => {
+    // SIX IS THE DENOMINATOR. `ActivitySubjectType` is an alias of
+    // `CustomFieldEntityType`, so a seventh entity type in Phase 4 widens the
+    // union and TypeScript makes the missing noun a compile error -- but a
+    // `Record` type assertion passes vacuously against `{}` once something
+    // casts, which is the hole event-status.test.ts's key counts also close.
+    expect(Object.keys(SUBJECT_NOUN).sort()).toEqual(
+      [...CUSTOM_FIELD_ENTITY_TYPES].sort(),
+    );
+    expect(Object.keys(SUBJECT_NOUN)).toHaveLength(6);
+  });
+
+  it("every noun is a non-empty singular used in prose", () => {
+    for (const type of CUSTOM_FIELD_ENTITY_TYPES) {
+      const noun = SUBJECT_NOUN[type];
+      expect(noun, type).toBeTruthy();
+      // Singular: the component writes "this ${noun}" and "against this
+      // ${noun} yet". A plural here reads as a grammar bug on six pages.
+      expect(noun.endsWith("s"), `${type} noun is plural`).toBe(false);
+    }
+  });
+
+  it("names an event 'event'", () => {
+    expect(SUBJECT_NOUN.event).toBe("event");
+  });
+});
+
+describe("ACTIVITY_KINDS gained exactly one member in Task 6", () => {
+  it("is nine kinds, and status_changed is the ninth", () => {
+    // EIGHT BEFORE, NINE NOW. The number is written out so that a tenth kind
+    // arrives with a decision rather than by accident: every kind is a string
+    // the database can emit and a sentence somebody has to write.
+    expect(ACTIVITY_KINDS).toHaveLength(9);
+    expect(ACTIVITY_KINDS).toContain("status_changed");
+    expect(isActivityKind("status_changed")).toBe(true);
+  });
+
+  it("did NOT gain a lineup-shaped kind", () => {
+    // The rule 20260829040000's venue_rooms branch set, asserted rather than
+    // trusted: both lineup branches and the venue branch REUSE link_added /
+    // link_removed. These are the names a later author would reach for.
+    for (const invented of [
+      "lineup_added",
+      "lineup_removed",
+      "artist_booked",
+      "venue_booked",
+      "event_linked",
+    ]) {
+      expect(isActivityKind(invented), invented).toBe(false);
+    }
+  });
+});
+
+describe("the renderer record is total over ACTIVITY_KINDS", () => {
+  // THE COMPILER IS THE REAL GUARD -- `Record<ActivityKind, KindRenderer>` in
+  // components/crm/activity-timeline.tsx makes a missing entry a `tsc` error,
+  // and `pnpm typecheck` is the gate that runs it. This is the runtime half,
+  // and it reads the SOURCE rather than importing it because vitest's
+  // `include` is `tests/**/*.test.ts` and this project's unit suite is pure
+  // TypeScript with no JSX transform -- the same reason source-shape.test.ts
+  // asserts over text.
+  const component = readFileSync(
+    new URL("../../../components/crm/activity-timeline.tsx", import.meta.url),
+    "utf8",
+  );
+  const record = component.slice(
+    component.indexOf("> = {", component.indexOf("const RENDER")),
+  );
+
+  it("has a key for every kind", () => {
+    for (const kind of ACTIVITY_KINDS) {
+      expect(record.includes(`
+  ${kind}: (`), kind).toBe(true);
+    }
+  });
+
+  it("renders status_changed through STATUS_LABELS, as text", () => {
+    // DESIGN.md § Working palette: "status must never be colour-only". The
+    // entry names both statuses in words; there is no chip on this surface and
+    // no tone token in this component.
+    expect(component).toContain('import { STATUS_LABELS');
+    expect(component).toContain("Status changed from");
+    expect(component).not.toContain("STATUS_TONE");
+  });
+});
+
+describe("ACTIVITY_LIST.sort.occurred.backedBy names the new branches' indexes", () => {
+  // `backedBy` is "required to be a real index name" (lib/list/spec.ts), and a
+  // view has no index of its own -- so this spec names the PER-BRANCH set. A
+  // unit test can only check the strings are there; whether an index of that
+  // name exists is rls_phase3_events.sql's job (§§ EX, EL) because only a
+  // database can answer it.
+  const backedBy = ACTIVITY_LIST.sort.occurred.backedBy;
+
+  it("carries all four Phase 3 Task 6 names", () => {
+    for (const name of [
+      "event_lineup_event_id_org_idx",
+      "event_lineup_artist_id_org_idx",
+      "events_venue_id_org_idx",
+      "event_status_changes_event_id_org_changed_at_idx",
+    ]) {
+      expect(backedBy, name).toContain(name);
+    }
+  });
+
+  it("still carries every Phase 2 name, so this was an addition and not a rewrite", () => {
+    for (const name of [
+      "merges_entity_winner_idx",
+      "merges_entity_loser_idx",
+      "contact_companies_contact_company_unique",
+      "contact_companies_company_id_idx",
+      "artist_representations_artist_id_idx",
+      "artist_representations_agency_id_idx",
+      "venue_rooms_venue_id_idx",
+      "custom_field_values_entity_idx",
+    ]) {
+      expect(backedBy, name).toContain(name);
+    }
   });
 });

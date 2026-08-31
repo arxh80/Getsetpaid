@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { STATUS_LABELS, type EventStatus } from "@/lib/crm/event-status";
 import {
   detailStrings,
   detailText,
@@ -55,11 +56,17 @@ import { formatDateTime } from "@/lib/format/date";
 // ===========================================================================
 // WHAT THE COPY MUST NOT CLAIM
 // ===========================================================================
-// Two of the eight kinds are LAST-CHANGED MARKERS, not log entries -- one row
+// Two of the nine kinds are LAST-CHANGED MARKERS, not log entries -- one row
 // per record (`record_updated`) or per field (`custom_field_set`) whose
 // timestamp moves on every edit. The schema keeps no per-edit history
 // (20260829040000's header). So neither sentence says "edited" as though it
 // were one event among several; both say "last".
+//
+// `status_changed` IS THE ONE KIND THAT MAY SAY MORE, and the copy is allowed
+// to be specific precisely because public.event_status_changes really does
+// keep every transition (20260901031000). It names both statuses in TEXT --
+// DESIGN.md's "status must never be colour-only" applies to a timeline entry
+// as much as to a chip, and there is no chip here.
 //
 // And nothing outside `merge_absorbed` / `merge_into` names a person, because
 // nothing outside `merges` records one. `owner_user_id` is the record-scope
@@ -397,6 +404,34 @@ const RENDER: Record<
   // sensitive thing on a record, and a timeline that reprinted it would put a
   // second copy of it on the page in a surface with different controls. The
   // panel above shows the value; this says when it last changed.
+  // BOTH STATUSES BY NAME, AS TEXT. `STATUS_LABELS` is the same record the
+  // chip and the filter read (lib/crm/event-status.ts), so a ninth status
+  // added to the vocabulary reaches this sentence with no edit here.
+  //
+  // AND IT FALLS BACK RATHER THAN THROWING. `detail` is jsonb and the accessor
+  // contract in lib/crm/activity.ts is that every reader is total: a value
+  // outside EVENT_STATUSES cannot be produced by the branch today (two CHECK
+  // constraints stand between it and the table) but `STATUS_LABELS[x]` on an
+  // unknown key is `undefined`, which React renders as nothing -- an entry
+  // reading "Status changed from to Confirmed". `statusLabel` returns the raw
+  // string instead, which is ugly and true.
+  status_changed: (row) => ({
+    label: "Status",
+    body: (
+      <>
+        Status changed from{" "}
+        <span className="font-semibold">
+          {statusLabel(detailText(row.detail, "from"))}
+        </span>{" "}
+        to{" "}
+        <span className="font-semibold">
+          {statusLabel(detailText(row.detail, "to"))}
+        </span>
+        .
+      </>
+    ),
+  }),
+
   custom_field_set: (row) => ({
     label: "Custom field",
     body: (
@@ -409,6 +444,20 @@ const RENDER: Record<
       "Only the most recent value is kept — earlier values aren’t recorded.",
   }),
 };
+
+/**
+ * One end of a status change, as a human reads it.
+ *
+ * NULL IS REACHABLE FOR `from`, in exactly one way: Branch 5 of the view
+ * filters `from_status is not null`, so the create-time row never arrives --
+ * but a row whose payload lost the key (a hand-written insert, a future branch)
+ * would. "an earlier status" is the honest rendering of "we do not know", and
+ * it keeps the sentence grammatical instead of leaving a hole in it.
+ */
+function statusLabel(value: string | null): string {
+  if (value === null) return "an earlier status";
+  return STATUS_LABELS[value as EventStatus] ?? value;
+}
 
 /**
  * A kind the database emits and this build has no copy for.
