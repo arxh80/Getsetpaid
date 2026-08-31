@@ -72,6 +72,42 @@ import {
   type RawSearchParams,
 } from "@/lib/list/params";
 import { fetchListPage, type ListPage, type ListQuery } from "@/lib/list/query";
+// PHASE 4 TASK 3. Operations detail loaders, the entity-link display, and the
+// three related-panel reverse reads.
+import type {
+  MeetingStatus,
+  NoteVisibility,
+  TaskPriority,
+  TaskStatus,
+} from "@/lib/crm/task-status";
+import {
+  TASK_SELECT,
+  mapTaskRow,
+  type TaskRow,
+} from "@/lib/crm/tasks-list";
+import {
+  NOTE_SELECT,
+  mapNoteRow,
+  type NoteRow,
+} from "@/lib/crm/notes-list";
+import {
+  DOCUMENT_SELECT,
+  mapDocumentRow,
+  RELATED_DOCS_LIST,
+  RELATED_NOTES_LIST,
+  RELATED_TASKS_LIST,
+  relatedDocsParams,
+  relatedNotesParams,
+  relatedTasksParams,
+  type DocumentRow,
+  type RelatedDocsFilterKey,
+  type RelatedDocsSortKey,
+  type RelatedNotesFilterKey,
+  type RelatedNotesSortKey,
+  type RelatedTasksFilterKey,
+  type RelatedTasksSortKey,
+} from "@/lib/crm/related-list";
+import { LINK_ENTITY_TYPES, type LinkEntityType } from "@/lib/crm/links";
 
 // Re-exported so the shape the picker returns is nameable from the module that
 // loads it, as every other reader in this file names its own.
@@ -381,10 +417,14 @@ function toLinkRows(
  * Task 4 shipped, and it is additive: no existing caller's behaviour changes.
  */
 export async function loadLinkOptions(
-  table: "companies" | "contacts" | "agencies" | "artists",
+  table: "companies" | "contacts" | "agencies" | "artists" | "venues" | "events",
   organisationId: string,
   exclude: readonly string[],
 ): Promise<{ id: string; name: string }[]> {
+  // `venues` and `events` were added by PHASE 4 TASK 3 for the entity-link
+  // picker (a task/meeting/note links to any of the six CRM types). Both have a
+  // `name` column, so the same query serves them; the widening is additive and
+  // no existing caller changes.
   const supabase = await createClient();
   const { data, error } = await supabase
     .from(table)
@@ -1894,4 +1934,520 @@ export async function loadUpcomingEvents(organisationId: string): Promise<
       rows.flatMap((row) => (row.venueId ? [row.venueId] : [])),
     ),
   };
+}
+
+// ===========================================================================
+// PHASE 4 TASK 3 -- OPERATIONS: tasks, meetings, notes and their entity links
+// ===========================================================================
+// The three detail loaders serve a SOFT-DELETED record (deleted_at selected,
+// never filtered) so the restore route is reachable -- the same rule
+// `loadEvent` and every other detail loader states. The link display and the
+// three related-panel reverse reads are below them.
+
+export interface TaskDetail {
+  id: string;
+  title: string;
+  detail: string | null;
+  status: TaskStatus;
+  priority: TaskPriority;
+  dueAt: string | null;
+  reminderAt: string | null;
+  completedAt: string | null;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function loadTask(
+  organisationId: string,
+  taskId: string,
+): Promise<RecordResult<TaskDetail>> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("tasks")
+    .select(
+      "id, title, detail, status, priority, due_at, reminder_at, completed_at, deleted_at, created_at, updated_at",
+    )
+    .eq("organisation_id", organisationId)
+    .eq("id", taskId)
+    .maybeSingle();
+
+  if (error) {
+    if (error.code === "22P02") return { outcome: "missing" };
+    console.error(`[crm] task lookup failed in organisation ${organisationId}:`, error.message);
+    return { outcome: "unavailable" };
+  }
+  if (!data) return { outcome: "missing" };
+  return {
+    outcome: "found",
+    record: {
+      id: String(data.id),
+      title: String(data.title),
+      detail: (data.detail as string | null) ?? null,
+      status: data.status as TaskStatus,
+      priority: data.priority as TaskPriority,
+      dueAt: (data.due_at as string | null) ?? null,
+      reminderAt: (data.reminder_at as string | null) ?? null,
+      completedAt: (data.completed_at as string | null) ?? null,
+      deletedAt: (data.deleted_at as string | null) ?? null,
+      createdAt: String(data.created_at),
+      updatedAt: String(data.updated_at),
+    },
+  };
+}
+
+export interface MeetingDetail {
+  id: string;
+  title: string;
+  startsAt: string;
+  endsAt: string | null;
+  location: string | null;
+  meetingUrl: string | null;
+  /** safeHref()'s answer for `meetingUrl`, or null to render it as inert text. */
+  meetingUrlHref: string | null;
+  attendees: string | null;
+  notes: string | null;
+  status: MeetingStatus;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function loadMeeting(
+  organisationId: string,
+  meetingId: string,
+): Promise<RecordResult<MeetingDetail>> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("meetings")
+    .select(
+      "id, title, starts_at, ends_at, location, meeting_url, attendees, notes, status, deleted_at, created_at, updated_at",
+    )
+    .eq("organisation_id", organisationId)
+    .eq("id", meetingId)
+    .maybeSingle();
+
+  if (error) {
+    if (error.code === "22P02") return { outcome: "missing" };
+    console.error(`[crm] meeting lookup failed in organisation ${organisationId}:`, error.message);
+    return { outcome: "unavailable" };
+  }
+  if (!data) return { outcome: "missing" };
+  return {
+    outcome: "found",
+    record: {
+      id: String(data.id),
+      title: String(data.title),
+      startsAt: String(data.starts_at),
+      endsAt: (data.ends_at as string | null) ?? null,
+      location: (data.location as string | null) ?? null,
+      meetingUrl: (data.meeting_url as string | null) ?? null,
+      // NOT the raw column: the CHECK is defence in depth and does not run on
+      // render. A `javascript:` written by an import or a direct PATCH renders
+      // as inert text, never an anchor.
+      meetingUrlHref: safeHref(data.meeting_url as string | null),
+      attendees: (data.attendees as string | null) ?? null,
+      notes: (data.notes as string | null) ?? null,
+      status: data.status as MeetingStatus,
+      deletedAt: (data.deleted_at as string | null) ?? null,
+      createdAt: String(data.created_at),
+      updatedAt: String(data.updated_at),
+    },
+  };
+}
+
+export interface NoteDetail {
+  id: string;
+  body: string;
+  visibility: NoteVisibility;
+  ownerUserId: string;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function loadNote(
+  organisationId: string,
+  noteId: string,
+): Promise<RecordResult<NoteDetail>> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("notes")
+    .select("id, body, visibility, owner_user_id, deleted_at, created_at, updated_at")
+    .eq("organisation_id", organisationId)
+    .eq("id", noteId)
+    .maybeSingle();
+
+  if (error) {
+    if (error.code === "22P02") return { outcome: "missing" };
+    console.error(`[crm] note lookup failed in organisation ${organisationId}:`, error.message);
+    return { outcome: "unavailable" };
+  }
+  if (!data) return { outcome: "missing" };
+  return {
+    outcome: "found",
+    record: {
+      id: String(data.id),
+      body: String(data.body),
+      visibility: data.visibility as NoteVisibility,
+      ownerUserId: String(data.owner_user_id),
+      deletedAt: (data.deleted_at as string | null) ?? null,
+      createdAt: String(data.created_at),
+      updatedAt: String(data.updated_at),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The entity-link display -- the CRM records a task/meeting/note is linked to
+// ---------------------------------------------------------------------------
+
+/** The link parent's table -> its link table. */
+const LINK_TABLE_FOR_PARENT = {
+  tasks: "task_links",
+  meetings: "meeting_links",
+  notes: "note_links",
+  documents: "document_links",
+} as const;
+
+export type LinkParentTable = keyof typeof LINK_TABLE_FOR_PARENT;
+
+/** A link target's entity type -> the table its name lives in. */
+const TABLE_FOR_ENTITY: Record<LinkEntityType, string> = {
+  company: "companies",
+  contact: "contacts",
+  agency: "agencies",
+  artist: "artists",
+  venue: "venues",
+  event: "events",
+};
+
+/** One CRM record a task/meeting/note is linked to. */
+export interface LinkedEntity {
+  /** The link ROW's id, for removeLinkAction. */
+  linkId: string;
+  entityType: LinkEntityType;
+  entityId: string;
+  /** Null when the caller cannot read the target -- see `loadVenueNames`. */
+  name: string | null;
+  /** The target is soft-deleted (still shown, not hidden). */
+  isDeleted: boolean;
+}
+
+/**
+ * The live links hanging off one task/meeting/note, with their targets' names.
+ *
+ * TWO STEPS AND A NAME RESOLVE. Step one reads the live link rows (capped at
+ * LINK_PANEL_LIMIT, for the reason that constant gives -- a detail panel is not
+ * a paginated surface). Step two resolves the targets' names, one query per
+ * entity_type present, through the CALLER'S OWN client -- so a target the
+ * caller cannot read comes back nameless (`name === null`) and the component
+ * renders it as "a record outside your access", disclosing no attribute, the
+ * same collision every other name lookup in this file makes.
+ *
+ * A DELETED TARGET IS KEPT AND FLAGGED, not filtered: the link still exists and
+ * hiding the target would make the record look unlinked while the row says
+ * otherwise. `entity_is_visible` (the link's own SELECT policy) has no
+ * `deleted_at` term (Task 2 § OF3), so a link to a soft-deleted-but-visible
+ * target is returned by the database and shown here.
+ */
+export async function loadLinksFor(
+  parentTable: LinkParentTable,
+  organisationId: string,
+  parentId: string,
+): Promise<LinkedEntity[]> {
+  const supabase = await createClient();
+  const table = LINK_TABLE_FOR_PARENT[parentTable];
+  const { data, error } = await supabase
+    .from(table)
+    .select("id, entity_type, entity_id")
+    .eq("organisation_id", organisationId)
+    .eq("parent_id", parentId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(LINK_PANEL_LIMIT);
+
+  if (error || !data) {
+    if (error && error.code !== "22P02") {
+      console.error(`[crm] ${table} lookup failed:`, error.message);
+    }
+    return [];
+  }
+
+  // Group the ids by type, so each target table is read once.
+  const idsByType = new Map<LinkEntityType, Set<string>>();
+  for (const row of data) {
+    const type = String(row.entity_type) as LinkEntityType;
+    if (!LINK_ENTITY_TYPES.includes(type)) continue;
+    if (!idsByType.has(type)) idsByType.set(type, new Set());
+    idsByType.get(type)!.add(String(row.entity_id));
+  }
+
+  // `${type}:${id}` -> { name, deleted }.
+  const names = new Map<string, { name: string; deleted: boolean }>();
+  await Promise.all(
+    [...idsByType.entries()].map(async ([type, ids]) => {
+      const { data: rows, error: err } = await supabase
+        .from(TABLE_FOR_ENTITY[type])
+        .select("id, name, deleted_at")
+        .eq("organisation_id", organisationId)
+        .in("id", [...ids]);
+      if (err) {
+        console.error(`[crm] link target ${type} name lookup failed:`, err.message);
+        return;
+      }
+      for (const r of rows ?? []) {
+        names.set(`${type}:${String(r.id)}`, {
+          name: String(r.name),
+          deleted: r.deleted_at !== null,
+        });
+      }
+    }),
+  );
+
+  return data.flatMap((row) => {
+    const type = String(row.entity_type) as LinkEntityType;
+    if (!LINK_ENTITY_TYPES.includes(type)) return [];
+    const entityId = String(row.entity_id);
+    const resolved = names.get(`${type}:${entityId}`);
+    return [
+      {
+        linkId: String(row.id),
+        entityType: type,
+        entityId,
+        name: resolved?.name ?? null,
+        isDeleted: resolved?.deleted === true,
+      },
+    ];
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The related panel -- the tasks/notes/documents linked TO one CRM record
+// ---------------------------------------------------------------------------
+//
+// The REVERSE of loadLinksFor: read from a contact/company/event page, "what
+// operational objects point at me". Each is the two-step read `loadEventsForArtist`
+// established -- read a page's worth of parent ids off the reverse-lookup index
+// (`<x>_links_target_idx`, 20260902002000, confirmed to cover this in
+// 20260902020000's header), then page the parent table with `.in("id", ids)`.
+// One cursor, one relation, a bounded query string.
+
+/** How many linked-parent ids the reverse read considers. A page's worth. */
+const RELATED_ID_CAP = MAX_PAGE_SIZE;
+
+/** Read a page's worth of parent ids for a reverse link lookup, ordered/capped. */
+async function reverseLinkIds(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  linkTable: string,
+  organisationId: string,
+  entityType: LinkEntityType,
+  entityId: string,
+): Promise<string[] | null> {
+  const { data, error } = await supabase
+    .from(linkTable)
+    .select("parent_id")
+    .eq("organisation_id", organisationId)
+    .eq("entity_type", entityType)
+    .eq("entity_id", entityId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: true })
+    .limit(RELATED_ID_CAP);
+  if (error) {
+    console.error(`[crm] ${linkTable} reverse lookup failed:`, error.message);
+    return null;
+  }
+  return [...new Set((data ?? []).map((row) => String(row.parent_id)))];
+}
+
+/** The empty page a reverse read returns when nothing links to the record. */
+function emptyRelatedPage<T>(): ListPage<T> {
+  return {
+    outcome: "loaded",
+    rows: [],
+    hasNext: false,
+    hasPrevious: false,
+    total: 0,
+    firstCursor: null,
+    lastCursor: null,
+    recovered: null,
+  };
+}
+
+export async function loadTasksForEntity(
+  organisationId: string,
+  entityType: LinkEntityType,
+  entityId: string,
+  raw: RawSearchParams,
+): Promise<{
+  params: ListParams<RelatedTasksSortKey, RelatedTasksFilterKey>;
+  page: ListPage<TaskRow>;
+}> {
+  const params = relatedTasksParams(raw);
+  const supabase = await createClient();
+  const ids = await reverseLinkIds(supabase, "task_links", organisationId, entityType, entityId);
+  if (ids === null) return { params, page: { outcome: "unavailable" } };
+  if (ids.length === 0) return { params, page: emptyRelatedPage<TaskRow>() };
+  const page = await fetchListPage<TaskRow, RelatedTasksSortKey, RelatedTasksFilterKey>({
+    spec: RELATED_TASKS_LIST,
+    params,
+    organisationId,
+    table: "tasks",
+    select: TASK_SELECT,
+    mapRow: mapTaskRow,
+    applyFilters: (query: ListQuery) => query.in("id", ids),
+  });
+  return { params, page };
+}
+
+export async function loadNotesForEntity(
+  organisationId: string,
+  entityType: LinkEntityType,
+  entityId: string,
+  raw: RawSearchParams,
+): Promise<{
+  params: ListParams<RelatedNotesSortKey, RelatedNotesFilterKey>;
+  page: ListPage<NoteRow>;
+}> {
+  const params = relatedNotesParams(raw);
+  const supabase = await createClient();
+  const ids = await reverseLinkIds(supabase, "note_links", organisationId, entityType, entityId);
+  if (ids === null) return { params, page: { outcome: "unavailable" } };
+  if (ids.length === 0) return { params, page: emptyRelatedPage<NoteRow>() };
+  const page = await fetchListPage<NoteRow, RelatedNotesSortKey, RelatedNotesFilterKey>({
+    spec: RELATED_NOTES_LIST,
+    params,
+    organisationId,
+    table: "notes",
+    select: NOTE_SELECT,
+    mapRow: mapNoteRow,
+    applyFilters: (query: ListQuery) => query.in("id", ids),
+  });
+  return { params, page };
+}
+
+export async function loadDocumentsForEntity(
+  organisationId: string,
+  entityType: LinkEntityType,
+  entityId: string,
+  raw: RawSearchParams,
+): Promise<{
+  params: ListParams<RelatedDocsSortKey, RelatedDocsFilterKey>;
+  page: ListPage<DocumentRow>;
+}> {
+  // READ-ONLY IN TASK 3, and there are no document rows until Task 6's upload
+  // path -- so this returns an empty page in practice. It is a real reverse
+  // read anyway, so rule 10's "three lists page independently" holds and the
+  // panel renders its own "no documents" empty state rather than a special case.
+  const params = relatedDocsParams(raw);
+  const supabase = await createClient();
+  const ids = await reverseLinkIds(supabase, "document_links", organisationId, entityType, entityId);
+  if (ids === null) return { params, page: { outcome: "unavailable" } };
+  if (ids.length === 0) return { params, page: emptyRelatedPage<DocumentRow>() };
+  const page = await fetchListPage<DocumentRow, RelatedDocsSortKey, RelatedDocsFilterKey>({
+    spec: RELATED_DOCS_LIST,
+    params,
+    organisationId,
+    table: "documents",
+    select: DOCUMENT_SELECT,
+    mapRow: mapDocumentRow,
+    applyFilters: (query: ListQuery) => query.in("id", ids),
+  });
+  return { params, page };
+}
+
+// ---------------------------------------------------------------------------
+// The workspace home's "My open tasks" strip
+// ---------------------------------------------------------------------------
+
+/** How many open tasks the workspace home shows. A capped read, not a list. */
+export const OPEN_TASKS_COUNT = 5;
+
+export interface OpenTaskRow {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  dueAt: string | null;
+}
+
+export type OpenTasksResult =
+  | { readonly outcome: "loaded"; readonly rows: OpenTaskRow[] }
+  | { readonly outcome: "unavailable" };
+
+/**
+ * The current user's own not-yet-finished tasks, soonest due first.
+ *
+ * A CAPPED READ, NOT A LIST SURFACE -- `.limit(OPEN_TASKS_COUNT)` with an
+ * explicit order and no cursor, exactly as `loadUpcomingEvents`. The "See all
+ * tasks" link is the page-2; tests/unit/list/one-cursor-only.test.ts permits
+ * this bounded shape.
+ *
+ * `owner_user_id = userId` PINS IT TO THE VIEWER even for a full-scope role:
+ * "My open tasks" is the viewer's own list, not the workspace's, so it filters
+ * on the user rather than leaning on RLS record scope (which an Admin does not
+ * have). `deleted_at is null` is written out -- nothing writes it for this
+ * query. NULLS LAST on due_at so a dated task sorts ahead of an undated one
+ * rather than the reverse (Postgres orders NULLs first on `asc` by default).
+ */
+export async function loadOpenTasksForUser(
+  organisationId: string,
+  userId: string,
+): Promise<OpenTasksResult> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("tasks")
+    .select("id, title, status, priority, due_at")
+    .eq("organisation_id", organisationId)
+    .eq("owner_user_id", userId)
+    .is("deleted_at", null)
+    .in("status", ["open", "in_progress", "blocked"])
+    .order("due_at", { ascending: true, nullsFirst: false })
+    .order("id", { ascending: true })
+    .limit(OPEN_TASKS_COUNT);
+
+  if (error) {
+    console.error("[crm] open tasks lookup failed:", error.message);
+    return { outcome: "unavailable" };
+  }
+  return {
+    outcome: "loaded",
+    rows: (data ?? []).map((row) => ({
+      id: String(row.id),
+      title: String(row.title),
+      status: row.status as TaskStatus,
+      priority: row.priority as TaskPriority,
+      dueAt: (row.due_at as string | null) ?? null,
+    })),
+  };
+}
+
+/**
+ * The six entity-link picker groups: each CRM type's visible records, bounded.
+ *
+ * One `loadLinkOptions` per type, run in parallel. Each is capped at
+ * LINK_PANEL_LIMIT and read through the caller's own client, so what comes back
+ * is exactly what their SELECT policy allows -- a courtesy over the picker, not
+ * a control (a forged post naming a record they cannot see is still refused by
+ * the link's own INSERT policy). The type -> table map is the inverse of
+ * TABLE_FOR_ENTITY above.
+ */
+export async function loadLinkOptionGroups(
+  organisationId: string,
+): Promise<{ entityType: LinkEntityType; records: { id: string; name: string }[] }[]> {
+  const tableFor: Record<LinkEntityType, "companies" | "contacts" | "agencies" | "artists" | "venues" | "events"> = {
+    company: "companies",
+    contact: "contacts",
+    agency: "agencies",
+    artist: "artists",
+    venue: "venues",
+    event: "events",
+  };
+  return Promise.all(
+    LINK_ENTITY_TYPES.map(async (entityType) => ({
+      entityType,
+      records: await loadLinkOptions(tableFor[entityType], organisationId, []),
+    })),
+  );
 }
