@@ -1,4 +1,4 @@
-// THE TWO EVENT VOCABULARIES, WRITTEN TWICE, BOUND HERE.
+// THE TWO EVENT VOCABULARIES, WRITTEN FOUR TIMES IN SQL, BOUND HERE.
 //
 // `events_status_check` and `events_event_type_check`
 // (supabase/migrations/20260901000000_events_and_lineup.sql) are the
@@ -16,6 +16,17 @@
 //                                          23514 on submit. The user picked a
 //                                          legal-looking value and got an
 //                                          error with no field attached.
+//
+// FOUR CHECK CONSTRAINTS SINCE PHASE 3 TASK 6, NOT TWO. 20260901031000 gives
+// public.event_status_changes its own `to_status` and `from_status`
+// allowlists, so the eight statuses now exist in FOUR places in the schema
+// (events.status, those two, and EVENT_STATUSES here). That is a deliberate
+// copy -- the status table has to agree with `events.status` as it is today,
+// which is a CHECK and not a domain or a lookup table -- and this file is what
+// stops the copies drifting. `from_status` is NULLABLE (the row written at an
+// event's creation has no previous status), so its constraint reads
+// `from_status IS NULL OR from_status = ANY (ARRAY[...])`; the value SET it
+// lists is still exactly EVENT_STATUSES, which is what is asserted.
 //
 // READ OUT OF THE LIVE CATALOGUE (pg_get_constraintdef), not out of the
 // migration text: a later migration can drop and re-add a constraint, and what
@@ -48,58 +59,83 @@ function literals(definition: string): string[] {
     .filter((value) => value !== "text");
 }
 
-async function constraintDef(conname: string): Promise<string | null> {
+async function constraintDef(
+  relname: string,
+  conname: string,
+): Promise<string | null> {
   const { rows } = await pool.query<{ def: string }>(
     `select pg_get_constraintdef(c.oid) as def
        from pg_constraint c
        join pg_class t on t.oid = c.conrelid
        join pg_namespace n on n.oid = t.relnamespace
       where n.nspname = 'public'
-        and t.relname = 'events'
-        and c.conname = $1`,
-    [conname],
+        and t.relname = $1
+        and c.conname = $2`,
+    [relname, conname],
   );
   return rows.length === 1 ? rows[0].def : null;
 }
 
 const CASES = [
   {
+    relname: "events",
     conname: "events_status_check",
     constant: "EVENT_STATUSES",
     values: EVENT_STATUSES as readonly string[],
   },
   {
+    relname: "events",
     conname: "events_event_type_check",
     constant: "EVENT_TYPES",
     values: EVENT_TYPES as readonly string[],
   },
+  // PHASE 3 TASK 6. The status history's own two copies. Named explicitly
+  // rather than discovered, because a constraint that was DROPPED must fail
+  // the first assertion below rather than quietly leave two fewer cases.
+  {
+    relname: "event_status_changes",
+    conname: "event_status_changes_to_status_check",
+    constant: "EVENT_STATUSES",
+    values: EVENT_STATUSES as readonly string[],
+  },
+  {
+    relname: "event_status_changes",
+    conname: "event_status_changes_from_status_check",
+    constant: "EVENT_STATUSES",
+    values: EVENT_STATUSES as readonly string[],
+  },
 ] as const;
 
 describe("the event vocabularies agree with their CHECK constraints", () => {
-  it("finds both constraints on public.events, so this cannot pass vacuously", async () => {
-    // The names are Postgres' own, generated from `<table>_<column>_check` for
-    // the inline column CHECKs. Asserted as a set rather than looked up one at
-    // a time, so a constraint that was renamed (or attached to the wrong
-    // table) fails here rather than making the two comparisons below silently
-    // skip.
-    const { rows } = await pool.query<{ conname: string }>(
-      `select c.conname
+  it("finds all four constraints, on the two tables that carry them, so this cannot pass vacuously", async () => {
+    // The first two names are Postgres' own, generated from
+    // `<table>_<column>_check` for the inline column CHECKs; the second two are
+    // written out in 20260901031000 in that same shape so the family reads as
+    // one. Asserted as a set of (table, constraint) PAIRS rather than looked up
+    // one at a time, so a constraint that was renamed -- or attached to the
+    // wrong table, which is the mistake a copy-pasted status allowlist would
+    // actually make -- fails here rather than making a comparison below
+    // silently skip.
+    const { rows } = await pool.query<{ relname: string; conname: string }>(
+      `select t.relname, c.conname
          from pg_constraint c
          join pg_class t on t.oid = c.conrelid
          join pg_namespace n on n.oid = t.relnamespace
-        where n.nspname = 'public' and t.relname = 'events'
-          and c.conname = any($1::text[])`,
+        where n.nspname = 'public' and c.conname = any($1::text[])`,
       [CASES.map((c) => c.conname)],
     );
-    expect(rows.map((r) => r.conname).sort()).toEqual(
-      CASES.map((c) => c.conname).sort(),
+    expect(rows.map((r) => `${r.relname}.${r.conname}`).sort()).toEqual(
+      CASES.map((c) => `${c.relname}.${c.conname}`).sort(),
     );
+    // THE DENOMINATOR, written out. Two before Phase 3 Task 6, four after; a
+    // fifth copy of a status vocabulary arrives with an edit here.
+    expect(rows).toHaveLength(4);
   });
 
-  for (const { conname, constant, values } of CASES) {
+  for (const { relname, conname, constant, values } of CASES) {
     it(`${conname} lists exactly ${constant}`, async () => {
-      const def = await constraintDef(conname);
-      expect(def, `${conname} not found on public.events`).not.toBeNull();
+      const def = await constraintDef(relname, conname);
+      expect(def, `${conname} not found on public.${relname}`).not.toBeNull();
 
       // Sorted, because the constraint's order is a migration detail and the
       // TypeScript tuple's order is a UI one -- it decides the order of the
@@ -121,8 +157,8 @@ describe("the event vocabularies agree with their CHECK constraints", () => {
     // ONLY if the constants were emptied in the same change. This asserts the
     // SQL side is non-empty on its own terms, which is the half the
     // comparison cannot check about itself.
-    for (const { conname } of CASES) {
-      const def = await constraintDef(conname);
+    for (const { relname, conname } of CASES) {
+      const def = await constraintDef(relname, conname);
       expect(literals(def as string).length, conname).toBeGreaterThan(1);
     }
   });
@@ -189,6 +225,94 @@ describe("the event vocabularies agree with their CHECK constraints", () => {
            values ('ee110000-0000-0000-0000-0000000000e2', 'Bad', now(), 'not_a_type')`,
         ),
         "events_event_type_check accepted a value outside EVENT_TYPES",
+      ).rejects.toMatchObject({ code: "23514" });
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
+  // THE SAME BEHAVIOURAL HALF FOR THE STATUS HISTORY (Phase 3 Task 6). The two
+  // comparisons above are about TEXT and would both pass against constraints
+  // that had been dropped -- the paired negative is what closes that, and it
+  // has to be written for the new table too because its rows arrive by a
+  // TRIGGER and never by an application write.
+  //
+  // As `postgres`, inside a rolled-back transaction. public.event_status_changes
+  // has no INSERT grant for anybody, so this is the only role that can drive
+  // the constraint at all -- and the constraint binds every writer including
+  // the trigger, which is the claim under test.
+  it("the status history's own CHECKs accept the vocabulary and nothing else", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `insert into public.organisations (id, name, slug)
+         values ('ee110000-0000-0000-0000-0000000000e3', 'Vocab Org 3', 'vocab-org-3')`,
+      );
+      await client.query(
+        `insert into public.events (id, organisation_id, name, starts_at, status)
+         values ('ee110000-0000-0000-0000-0000000000f1',
+                 'ee110000-0000-0000-0000-0000000000e3', 'Hist', now(), 'draft')`,
+      );
+
+      // THE TRIGGER'S OWN ROW IS THE POSITIVE CONTROL. Creating the event
+      // above wrote one row with from_status NULL -- which is the case
+      // `event_status_changes_from_status_check` exists to permit, and the one
+      // a naive `check (from_status in (...))` would have refused, breaking
+      // every event create in the product.
+      const { rows } = await client.query<{ n: string; from_status: string | null }>(
+        `select count(*)::text as n, min(from_status) as from_status
+           from public.event_status_changes
+          where event_id = 'ee110000-0000-0000-0000-0000000000f1'`,
+      );
+      expect(rows[0].n).toBe("1");
+      expect(rows[0].from_status).toBeNull();
+
+      for (const status of EVENT_STATUSES) {
+        await expect(
+          client.query(
+            `insert into public.event_status_changes
+               (organisation_id, event_id, from_status, to_status)
+             values ('ee110000-0000-0000-0000-0000000000e3',
+                     'ee110000-0000-0000-0000-0000000000f1', $1, $1)`,
+            [status],
+          ),
+          `'${status}' is in EVENT_STATUSES but a status-history CHECK refuses it`,
+        ).resolves.toBeDefined();
+      }
+
+      await expect(
+        client.query(
+          `insert into public.event_status_changes
+             (organisation_id, event_id, to_status)
+           values ('ee110000-0000-0000-0000-0000000000e3',
+                   'ee110000-0000-0000-0000-0000000000f1', 'not_a_status')`,
+        ),
+        "event_status_changes_to_status_check accepted a value outside " +
+          "EVENT_STATUSES -- the constraint is gone",
+      ).rejects.toMatchObject({ code: "23514" });
+      await client.query("rollback");
+
+      await client.query("begin");
+      await client.query(
+        `insert into public.organisations (id, name, slug)
+         values ('ee110000-0000-0000-0000-0000000000e4', 'Vocab Org 4', 'vocab-org-4')`,
+      );
+      await client.query(
+        `insert into public.events (id, organisation_id, name, starts_at)
+         values ('ee110000-0000-0000-0000-0000000000f2',
+                 'ee110000-0000-0000-0000-0000000000e4', 'Hist 2', now())`,
+      );
+      await expect(
+        client.query(
+          `insert into public.event_status_changes
+             (organisation_id, event_id, from_status, to_status)
+           values ('ee110000-0000-0000-0000-0000000000e4',
+                   'ee110000-0000-0000-0000-0000000000f2', 'not_a_status', 'draft')`,
+        ),
+        "event_status_changes_from_status_check accepted a value outside " +
+          "EVENT_STATUSES",
       ).rejects.toMatchObject({ code: "23514" });
     } finally {
       await client.query("rollback");

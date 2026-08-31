@@ -1721,6 +1721,509 @@ select ev.val('EL4 POSITIVE CONTROL: a plausible name that was never created fin
       join pg_catalog.pg_index i on i.indexrelid = c.oid
      where c.relname = 'event_lineup_org_event_created_at_id_live_idx'$$, '0');
 
+
+-- ===========================================================================
+-- EM. THE EVENT'S OWN TIMELINE, AND THE STATUS HISTORY BEHIND IT
+--     (Phase 3 Task 6; migrations 20260901030000 and 20260901031000)
+-- ===========================================================================
+-- SECTION LETTERS. The Task 6 brief named these five sections EK, EL, EM, EN
+-- and EO. EK and EL were TAKEN by Tasks 2 and 5 while the brief was being
+-- written (EK is entity_is_visible/_is_manageable for 'event', EL is the
+-- lineup index's `backedBy`), so they are EM, EN, EO, EP and EQ here, in the
+-- brief's order. The Task 6 report carries the mapping.
+--
+-- WHAT IS BEING ASSERTED, AND WHY IT IS ASSERTED AS A SET OF KINDS.
+-- public.activity_events is a nine-column view over thirteen top-level
+-- branches, five of which arrived in this task. A COUNT of its rows would go
+-- green for the wrong reasons in both directions -- a branch that emits twice
+-- and a branch that emits nothing look identical to a total. So the assertion
+-- is `string_agg(distinct kind)`, sorted: it names every kind the event's
+-- timeline carries and it is red the moment one is missing OR one is invented.
+--
+-- THIS SECTION BUILDS ITS OWN EVENT rather than reusing the fixture's. Sections
+-- EF, EG and EI mutate the fixture events by design (EF22 plants and deletes a
+-- lineup row, EG deletes and restores, EI creates two more), so an assertion
+-- about "exactly these kinds" written against one of them would be an
+-- assertion about the order this file's sections happen to run in.
+--
+-- FIXTURE, planted as postgres so ownership is exactly what the assertions
+-- need. `Timeline Event` is pmanager's, in ALPHA, at `draft`.
+reset role; reset request.jwt.claims;
+
+insert into public.events
+  (id, organisation_id, owner_user_id, name, starts_at, venue_id, status)
+select 'ee110000-0000-0000-0000-0000000000e6', o.id, :'pmanager', 'Timeline Event',
+       timestamptz '2026-12-01 20:00+00',
+       '55550000-0000-0000-0000-000000000002', 'draft'
+from public.organisations o where o.slug='org-alpha';
+
+-- ONE SOFT-DELETED LINEUP ROW IS BOTH HALVES OF THE LINK STORY. The branch
+-- cross-joins a two-row VALUES list on (created_at, deleted_at), so a single
+-- removed slot emits link_added AND link_removed -- which is why one row here
+-- covers what the brief calls "one lineup add and one lineup remove".
+insert into public.event_lineup
+  (id, organisation_id, event_id, artist_id, position, billing, deleted_at)
+select 'ff110000-0000-0000-0000-0000000000e6', o.id,
+       'ee110000-0000-0000-0000-0000000000e6',
+       '44440000-0000-0000-0000-000000000001', 0, 'headliner', now()
+from public.organisations o where o.slug='org-alpha';
+
+-- THE CUSTOM FIELD BRANCH IS POLYMORPHIC AND WAS NEVER TOUCHED BY THIS TASK.
+-- `custom_field_set` keys on `cfv.entity_type`, so 'event' arrives with no new
+-- branch -- 20260901001000 widened the CHECK and that was the whole change.
+-- This is the assertion that turns that claim from a reading into a
+-- measurement.
+insert into public.custom_field_definitions
+  (id, organisation_id, entity_type, key, label, field_type)
+select 'aaaa0000-0000-0000-0000-000000000004', o.id, 'event', 'stage_plan',
+       'Stage plan', 'text'
+from public.organisations o where o.slug='org-alpha';
+
+insert into public.custom_field_values
+  (id, organisation_id, field_id, entity_type, entity_id, value)
+select 'bbbb0000-0000-0000-0000-000000000004', o.id,
+       'aaaa0000-0000-0000-0000-000000000004', 'event',
+       'ee110000-0000-0000-0000-0000000000e6', '"two decks and a mixer"'::jsonb
+from public.organisations o where o.slug='org-alpha';
+
+-- THE CREATE-TIME ROW EXISTS IN THE TABLE. It is the honest start of the
+-- history and the table is the history; Branch 5 is what keeps it off the
+-- timeline (EM8). Written as one row with a NULL from_status -- and `<null>`
+-- rather than an empty string, because ev.val coalesces and an empty result
+-- would otherwise compare equal to a missing row.
+select ev.val('EM1  creating an event wrote ONE status row, with from_status NULL',
+  $$select count(*)::text || '/' || coalesce(min(from_status),'<null>')
+      from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '1/<null>');
+
+-- THE ACTOR. Planted as postgres, so auth.uid() was NULL -- which the trigger
+-- records rather than refusing (a status change that really happened must not
+-- be lost because nobody was signed in). EM4 is the paired positive: a change
+-- made through a real session carries that session's user.
+select ev.val('EM2  ...and changed_by is NULL, because postgres has no auth.uid()',
+  $$select coalesce(changed_by::text,'<null>') from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '<null>');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.try('EM3  pmanager changes the status',
+  $$update public.events set status='confirmed'
+     where id='ee110000-0000-0000-0000-0000000000e6'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select ev.val('EM4  ...and the trigger wrote a SECOND row, draft->confirmed, actored',
+  format($$select count(*)::text || '/' ||
+             (select from_status || '->' || to_status
+                from public.event_status_changes
+               where event_id='ee110000-0000-0000-0000-0000000000e6'
+                 and from_status is not null) || '/' ||
+             (select (changed_by = %L)::text
+                from public.event_status_changes
+               where event_id='ee110000-0000-0000-0000-0000000000e6'
+                 and from_status is not null)
+          from public.event_status_changes
+         where event_id='ee110000-0000-0000-0000-0000000000e6'$$, :'pmanager'),
+  '2/draft->confirmed/true');
+
+-- THE GUARD, AND THE MUTATION IT CATCHES. Removing
+-- `old.status is distinct from new.status` from
+-- private.record_event_status_change() makes EM6 read '3' -- a spurious
+-- "Status changed from Confirmed to Confirmed" entry on the timeline for every
+-- save that touches anything else.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.try('EM5  ...an edit that does NOT touch status still succeeds',
+  $$update public.events set notes='an ordinary edit'
+     where id='ee110000-0000-0000-0000-0000000000e6'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select ev.val('EM6  ...and wrote NO status row -- the trigger''s distinct-from guard',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '2');
+
+-- THE WHOLE TIMELINE, AS A SET OF KINDS. Six of them, one per source that can
+-- speak about this event:
+--   record_created / record_updated   the subjects CTE (Branch 1)
+--   status_changed                    event_status_changes (Branch 5)
+--   link_added / link_removed         event_lineup, event side (Branch 2)
+--   custom_field_set                  the POLYMORPHIC branch, untouched
+-- and NOT record_deleted, because the event is live.
+--
+-- MUTATION: deleting the `public.events` arm from the subjects CTE drops
+-- record_created and record_updated from this string.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EM7  the event''s timeline carries exactly the six kinds its sources can emit',
+  $$select string_agg(distinct kind, ',' order by kind)
+      from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e6'$$,
+  'custom_field_set,link_added,link_removed,record_created,record_updated,status_changed');
+
+-- THE CREATE-TIME ROW IS IN THE TABLE (EM1) AND NOT ON THE TIMELINE. Branch 5
+-- filters `from_status is not null` for one reason: `record_created` already
+-- carries that instant, and the two would tie on occurred_at and be separated
+-- only by the md5 tie-break, which is noise.
+--
+-- MUTATION: removing that filter makes this read '2', and the timeline grows a
+-- "Status changed from an earlier status to Draft" entry beside every
+-- "Created".
+select ev.val('EM8  ...and exactly ONE status_changed entry -- the create row is skipped',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e6'
+       and kind='status_changed'$$, '1');
+
+select ev.val('EM9  ...whose detail carries both ends by name',
+  $$select (detail->>'from') || '->' || (detail->>'to')
+      from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e6'
+       and kind='status_changed'$$, 'draft->confirmed');
+
+-- THE VIEW-WIDE NULL GUARD. Every branch either reads a NOT NULL column or
+-- filters `occurred_at is not null`, and lib/crm/activity.ts's spec declares
+-- `notNull: true` on that sort. A null sort value does not error -- it drops a
+-- whole BAND of rows out of a keyset page silently (lib/list/spec.ts).
+--
+-- MUTATION: deleting `where e.occurred_at is not null` from either lineup
+-- branch makes this non-zero, and nothing else in this suite notices.
+select ev.val('EM10 NO row anywhere in the view has a null occurred_at',
+  $$select count(*)::text from public.activity_events where occurred_at is null$$,
+  '0');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- public.event_status_changes IS READ-ONLY TO EVERY SESSION.
+--
+-- Not "the policy refuses the row" -- there is no INSERT, UPDATE or DELETE
+-- GRANT at all, so the statement never reaches a policy. That is why the
+-- expectation is denied(42501) on all three and not ok(0): ok(0) would be the
+-- signature of a USING clause filtering the target out, which would mean a
+-- write path exists and merely found nothing.
+--
+-- THIS IS THE ASSERTION THAT GOES RED IF SOMEBODY "COMPLETES" THE TABLE with a
+-- write grant and a policy to match. schema_invariants.sql D5 would go red
+-- too, from the other direction.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.try('EM11 authenticated cannot INSERT a status row directly',
+  format($$insert into public.event_status_changes
+             (organisation_id, event_id, from_status, to_status)
+           values (%L,'ee110000-0000-0000-0000-0000000000e6','draft','cancelled')$$,
+         :'alpha_org'), 'denied(42501)');
+select ev.try('EM12 ...nor UPDATE one',
+  $$update public.event_status_changes set to_status='cancelled'
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, 'denied(42501)');
+select ev.try('EM13 ...nor DELETE one',
+  $$delete from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, 'denied(42501)');
+-- POSITIVE CONTROL for EM11-EM13: the same session CAN read them. Without it
+-- the three denials above are satisfied by a table nobody can touch at all,
+-- which would be a different bug and would look identical from here.
+select ev.val('EM14 POSITIVE CONTROL: ...but CAN read them',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '2');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- RECORD SCOPE ON THE STATUS TABLE. Its one SELECT policy reaches the parent
+-- event for both the permission and the record-scope terms, so a standard_user
+-- sees the history of their own events and none of anybody else's -- inherited
+-- from events_select_view_crm rather than restated, which is the property
+-- worth asserting because a policy that restated it could drift.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.try('EM15 pstd1 changes the status of their OWN event',
+  $$update public.events set status='on_sale'
+     where id='ee110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+select ev.val('EM16 ...and reads its status rows',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-000000000002'$$, '2');
+select ev.val('EM17 ...and ZERO rows of pmanager''s event -- record scope, via the parent',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '0');
+select ev.val('EM18 ...and ZERO of BETA''s -- tenant',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee11000b-0000-0000-0000-00000000000b'$$, '0');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EN. THE TIMELINE ITSELF IS RECORD-SCOPED, and that is INHERITED
+-- ===========================================================================
+-- public.activity_events is `security_invoker`, so every branch reads its base
+-- table under the caller's own policies and this view grants nothing. That
+-- inheritance IS the access control for this surface -- there is no policy on
+-- the view and there is nothing else to get right -- which is exactly why it
+-- is asserted here rather than assumed from the `with (security_invoker=true)`
+-- in the migration.
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EN1  pstd1 reads their OWN event''s timeline',
+  $$select (count(*) > 0)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-000000000002'$$, 'true');
+select ev.val('EN2  ...and it now carries a status_changed entry of their own',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-000000000002'
+       and kind='status_changed'$$, '1');
+select ev.val('EN3  ...and ZERO rows for pmanager''s event',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e6'$$, '0');
+select ev.val('EN4  ...and ZERO for BETA''s event',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee11000b-0000-0000-0000-00000000000b'$$, '0');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EN5  POSITIVE CONTROL: pmanager, full scope, reads the SAME subject_id EN3 refused',
+  $$select (count(*) > 0)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e6'$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EO. THE ARTIST SIDE OF THE LINEUP -- PRD 6.3's booking history
+-- ===========================================================================
+-- One event_lineup row is an entry on BOTH records, and Branch 3 is the half
+-- that makes an artist's page answer "where have they played". Its own event
+-- and artist, for section EM's reason.
+reset role; reset request.jwt.claims;
+
+insert into public.artists (id, organisation_id, owner_user_id, name)
+select '44440000-0000-0000-0000-0000000000e1', o.id, :'pmanager', 'Timeline Artist'
+from public.organisations o where o.slug='org-alpha';
+
+insert into public.events (id, organisation_id, owner_user_id, name, starts_at)
+select 'ee110000-0000-0000-0000-0000000000e8', o.id, :'pmanager',
+       'Artist Side Event', timestamptz '2026-12-02 20:00+00'
+from public.organisations o where o.slug='org-alpha';
+
+insert into public.event_lineup
+  (id, organisation_id, event_id, artist_id, position, billing)
+select 'ff110000-0000-0000-0000-0000000000e8', o.id,
+       'ee110000-0000-0000-0000-0000000000e8',
+       '44440000-0000-0000-0000-0000000000e1', 0, 'headliner'
+from public.organisations o where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EO1  the ARTIST''s timeline carries link_added naming the event',
+  $$select kind || '/' || (detail->>'other_type') || '/' || (detail->>'other_name')
+      from public.activity_events
+     where subject_type='artist'
+       and subject_id='44440000-0000-0000-0000-0000000000e1'
+       and detail->>'other_type'='event'$$,
+  'link_added/event/Artist Side Event');
+-- THE OTHER DIRECTION OF THE SAME SOURCE ROW, so the pair is asserted rather
+-- than one side inferred from the other. Different synthetic ids (the
+-- subject_type is in the digest), same event_lineup row.
+select ev.val('EO2  ...and the EVENT''s timeline carries the mirror, naming the artist',
+  $$select kind || '/' || (detail->>'other_type') || '/' || (detail->>'other_name')
+      from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e8'
+       and detail->>'other_type'='artist'$$,
+  'link_added/artist/Timeline Artist');
+select ev.val('EO3  ...and the two entries have DIFFERENT ids, so neither can shadow the other',
+  $$select (count(distinct id) = 2)::text from public.activity_events
+     where detail->>'other_type' in ('artist','event')
+       and subject_id in ('44440000-0000-0000-0000-0000000000e1',
+                          'ee110000-0000-0000-0000-0000000000e8')$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- THE CROSS-TENANT READ. The row is real and it is ALPHA's; BETA's owner must
+-- see nothing of it, from either side. There is no such row to plant in BETA,
+-- so the probe is the ALPHA subject_id read by a BETA session -- which is the
+-- shape an IDOR attempt actually takes (a uuid out of a URL).
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select ev.val('EO4  BETA''s owner reads ZERO rows for the ALPHA artist',
+  $$select count(*)::text from public.activity_events
+     where subject_type='artist'
+       and subject_id='44440000-0000-0000-0000-0000000000e1'$$, '0');
+select ev.val('EO5  ...and ZERO for the ALPHA event',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e8'$$, '0');
+-- POSITIVE CONTROL: the same session DOES see its own tenant's lineup entry,
+-- so EO4 and EO5 are not passing because the branch is broken for everybody.
+select ev.val('EO6  POSITIVE CONTROL: ...but DOES see BETA''s own artist-side entry',
+  $$select count(*)::text from public.activity_events
+     where subject_type='artist'
+       and subject_id='4444000b-0000-0000-0000-00000000000b'
+       and kind='link_added' and detail->>'other_type'='event'$$, '1');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EP. THE TIE-BREAK, ON A CONSTRUCTED TIE (the T7-T9 technique)
+-- ===========================================================================
+-- `occurred_at` is not unique ACROSS branches or WITHIN one: two rows written
+-- in a single transaction share `now()` to the microsecond, which is not a
+-- rare tie but the ordinary case for a create that also links. lib/list/'s
+-- cursor is `[value, id, sort]`, so the view's synthetic md5 id has to make
+-- the order TOTAL and STABLE -- not meaningful, which an md5 digest is not.
+--
+-- Two lineup rows, one transaction, same event.
+reset role; reset request.jwt.claims;
+
+begin;
+insert into public.artists (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, :'pmanager', v.nm
+from public.organisations o, (values
+  ('44440000-0000-0000-0000-0000000000e2','Tie Artist One'),
+  ('44440000-0000-0000-0000-0000000000e3','Tie Artist Two')
+) as v(id, nm) where o.slug='org-alpha';
+
+insert into public.event_lineup
+  (id, organisation_id, event_id, artist_id, position, billing)
+select v.id::uuid, o.id, 'ee110000-0000-0000-0000-0000000000e8', v.ar::uuid,
+       v.pos::int, 'support'
+from public.organisations o, (values
+  ('ff110000-0000-0000-0000-0000000000e2','44440000-0000-0000-0000-0000000000e2','1'),
+  ('ff110000-0000-0000-0000-0000000000e3','44440000-0000-0000-0000-0000000000e3','2')
+) as v(id, ar, pos) where o.slug='org-alpha';
+commit;
+
+select ev.val('EP1  the two slots really do share created_at -- the tie is constructed, not hoped for',
+  $$select (count(distinct created_at) = 1)::text from public.event_lineup
+     where id in ('ff110000-0000-0000-0000-0000000000e2',
+                  'ff110000-0000-0000-0000-0000000000e3')$$, 'true');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EP2  both tied entries are on the timeline -- neither is lost to the tie',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e8'
+       and kind='link_added'
+       and detail->>'other_name' like 'Tie Artist%'$$, '2');
+
+-- THE STABILITY, MEASURED THE WAY T7-T9 MEASURE IT: capture the order once,
+-- ask again, compare. A tie-break that were NOT total would be free to return
+-- the two rows either way round, and keyset pagination would then drop or
+-- repeat one across a page boundary.
+select ev.note('ep_tie_order', (
+  select string_agg(detail->>'other_name', ',' order by occurred_at desc, id desc)
+    from public.activity_events
+   where subject_type='event'
+     and subject_id='ee110000-0000-0000-0000-0000000000e8'
+     and kind='link_added'
+     and detail->>'other_name' like 'Tie Artist%'));
+
+select ev.val('EP3  ...and the SAME query returns them in the SAME order a second time',
+  $$select ((select string_agg(detail->>'other_name', ',' order by occurred_at desc, id desc)
+               from public.activity_events
+              where subject_type='event'
+                and subject_id='ee110000-0000-0000-0000-0000000000e8'
+                and kind='link_added'
+                and detail->>'other_name' like 'Tie Artist%')
+            = (select v from ev.notes where k='ep_tie_order'))::text$$, 'true');
+
+-- NON-VACUITY for EP3: the captured order must actually name both rows. Two
+-- NULLs compare equal, and so would two identical wrong answers.
+select ev.val('EP3b CONTROL: the captured order names both, not zero',
+  $$select (select (v like '%Tie Artist One%' and v like '%Tie Artist Two%')::text
+              from ev.notes where k='ep_tie_order')$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EQ. THE VENUE SIDE, AND ITS ACCEPTED LIMITATION
+--     (founder Q34, 2026-08-30)
+-- ===========================================================================
+-- Branch 4 gives a venue's timeline the events booked into it. `events.venue_id`
+-- is a COLUMN, not a join row: it has no timestamp of its own and no
+-- `deleted_at`. So the entry is dated at the EVENT'S created_at and it MOVES
+-- when the venue changes -- off the old venue's timeline entirely, on to the
+-- new one's, still carrying the old date.
+--
+-- EQ5 IS THAT LIMITATION, ASSERTED. It is not a bug this suite failed to
+-- notice; it is the trade the founder took in exchange for a venue timeline
+-- that shows its events at all, and asserting it is what stops the next reader
+-- discovering it in a browser and "fixing" it into a branch that lies about
+-- when the booking happened.
+reset role; reset request.jwt.claims;
+
+insert into public.venues (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, :'pmanager', v.nm
+from public.organisations o, (values
+  ('55550000-0000-0000-0000-0000000000e1','Timeline Venue A'),
+  ('55550000-0000-0000-0000-0000000000e2','Timeline Venue B')
+) as v(id, nm) where o.slug='org-alpha';
+
+insert into public.events
+  (id, organisation_id, owner_user_id, name, starts_at, venue_id)
+select 'ee110000-0000-0000-0000-0000000000e9', o.id, :'pmanager',
+       'Venue Side Event', timestamptz '2026-12-03 20:00+00',
+       '55550000-0000-0000-0000-0000000000e1'
+from public.organisations o where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EQ1  venue A''s timeline carries link_added naming the event',
+  $$select kind || '/' || (detail->>'other_type') || '/' || (detail->>'other_name')
+      from public.activity_events
+     where subject_type='venue'
+       and subject_id='55550000-0000-0000-0000-0000000000e1'
+       and detail->>'other_type'='event'$$,
+  'link_added/event/Venue Side Event');
+
+-- THE DATE IS THE EVENT'S, not the venue's and not the moment of booking.
+-- This is the honest half of the limitation and it is asserted so the branch
+-- cannot quietly start using `updated_at`, which would make the entry move in
+-- TIME on every unrelated edit as well as moving between venues.
+select ev.val('EQ2  ...dated at events.created_at exactly',
+  $$select (a.occurred_at = e.created_at)::text
+      from public.activity_events a
+      join public.events e on e.id='ee110000-0000-0000-0000-0000000000e9'
+     where a.subject_type='venue'
+       and a.subject_id='55550000-0000-0000-0000-0000000000e1'
+       and a.detail->>'other_type'='event'$$, 'true');
+
+select ev.val('EQ3  ...and there is NO link_removed arm on the venue side',
+  $$select count(*)::text from public.activity_events
+     where subject_type='venue'
+       and subject_id='55550000-0000-0000-0000-0000000000e1'
+       and kind='link_removed'
+       and detail->>'other_type'='event'$$, '0');
+
+select ev.try('EQ4  the event moves to venue B',
+  $$update public.events set venue_id='55550000-0000-0000-0000-0000000000e2'
+     where id='ee110000-0000-0000-0000-0000000000e9'$$, 'ok(1)');
+
+-- THE ACCEPTED LIMITATION, BOTH HALVES.
+select ev.val('EQ5  LIMITATION: venue A''s timeline LOSES the entry entirely',
+  $$select count(*)::text from public.activity_events
+     where subject_type='venue'
+       and subject_id='55550000-0000-0000-0000-0000000000e1'
+       and detail->>'other_type'='event'$$, '0');
+select ev.val('EQ6  LIMITATION: venue B''s shows it, still dated at the event''s created_at',
+  $$select (a.occurred_at = e.created_at)::text
+      from public.activity_events a
+      join public.events e on e.id='ee110000-0000-0000-0000-0000000000e9'
+     where a.subject_type='venue'
+       and a.subject_id='55550000-0000-0000-0000-0000000000e2'
+       and a.detail->>'other_type'='event'$$, 'true');
+
+-- AN EVENT WITH NO VENUE EMITS NOTHING FROM THIS BRANCH. `venue_id is not
+-- null` is not an optimisation: without it every venue-less event would emit a
+-- row with a NULL subject_id, which no reader can filter to and which would
+-- sit in the view forever. `Artist Side Event` (section EO) has no venue.
+select ev.val('EQ7  an event with NO venue emits no venue-side entry at all',
+  $$select count(*)::text from public.activity_events
+     where subject_type='venue'
+       and detail->>'other_id'='ee110000-0000-0000-0000-0000000000e8'$$, '0');
+select ev.val('EQ8  ...and no row in the whole view has a NULL subject_id',
+  $$select count(*)::text from public.activity_events where subject_id is null$$,
+  '0');
+reset role; reset request.jwt.claims;
+
 -- ===========================================================================
 -- Results
 -- ===========================================================================
