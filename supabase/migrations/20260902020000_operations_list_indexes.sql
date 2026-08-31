@@ -118,6 +118,22 @@ create index notes_org_updated_at_id_live_idx
   include (owner_user_id)
   where deleted_at is null;
 
+-- The documents default-sort index, created HERE rather than in Task 6.
+--
+-- Task 3 ships no documents LIST surface (that is Task 6, with DOCUMENT_LIST),
+-- but the RELATED PANEL carries a read-only "documents linked to this record"
+-- surface whose one sort is `created_at` (lib/crm/related-list.ts's
+-- RELATED_DOCS_LIST). rule 9 makes `backedBy` name a REAL index, so this is
+-- that index -- the same proven (organisation_id, created_at, id) live-partial
+-- shape, brought forward one task so the sort is not naming an index nobody
+-- created. Task 6 reuses this name for the org-wide list and does not
+-- re-create it. There are no document rows in Task 3, so this index is empty;
+-- its shape is inherited from the three measured above, not re-measured.
+create index documents_org_created_at_id_live_idx
+  on public.documents (organisation_id, created_at, id)
+  include (owner_user_id)
+  where deleted_at is null;
+
 -- The restore views. One sort each -- "most recently deleted first" is the only
 -- ordering a restore queue is read in. `notNull: true` on that sort is true OF
 -- THE ROWS THIS INDEX COVERS (the predicate below constrains it), not of the
