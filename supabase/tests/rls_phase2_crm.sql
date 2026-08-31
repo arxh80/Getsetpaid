@@ -1226,11 +1226,19 @@ select crm.val('L5  every table carrying updated_at has the trigger',
 -- every other one, because L5 above asserts exactly that name -- a per-table
 -- prefix would put both tables in violation of the guard that exists to notice
 -- a new table arriving without a trigger.
-select crm.val('L6  ...and that is 20 tables (events + event_lineup in Phase 3)',
+--
+-- TWENTY-EIGHT SINCE PHASE 4 TASK 1: tasks, meetings, notes, documents and the
+-- four *_links tables each get a `set_updated_at` trigger by hand
+-- (20260902000000-002000) -- eight new ones. public.document_versions is the
+-- one operations table with NO updated_at column (versioning is dormant, and a
+-- version is immutable once written), so it gets NO trigger and L5 above must
+-- not expect one -- confirmed: L5 counts zero violations because it only looks
+-- at tables that HAVE an updated_at column.
+select crm.val('L6  ...and that is 28 tables (+8 operations tables in Phase 4)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '20');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '28');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together
