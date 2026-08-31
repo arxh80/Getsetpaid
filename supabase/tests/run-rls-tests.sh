@@ -257,6 +257,33 @@ else
 fi
 
 # ============================================================================
+# PHASE 4 (OPERATIONS) RLS / PERMISSION / TENANT-BOUNDARY SUITE.
+#
+# Runs AFTER the Phase 3 events suite and REUSES THE SAME FIXTURES WHOLE -- the
+# twelve users, orgs ALPHA and BETA, and the Phase 2 contacts / companies /
+# venues that the *_links target end points at. Only operational rows (tasks,
+# meetings, notes, documents, links) are created, in its OWN `op` schema, so the
+# count below is a statement about the Phase 4 suite alone.
+# ============================================================================
+docker cp "$HERE/rls_phase4_operations.sql" "$CTR:/tmp/rls_phase4_operations.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P2VARS[@]}" -f /tmp/rls_phase4_operations.sql
+
+p4_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from op.results where not pass" | tr -d '[:space:]')
+if [ "$p4_fails" != "0" ]; then
+  echo "PHASE 4 OPERATIONS SUITE FAILED: $p4_fails failing assertion(s)" >&2
+  echo "  A failure in OC, OD, OE or OF is a REOPENED TENANT BOUNDARY or a" >&2
+  echo "  broken note-visibility / link-target control -- treat as Sev1." >&2
+  echo "  A failure in OE3/OE3b means the FK LIFT did not put the schema back:" >&2
+  echo "  discard the run, reset the database, and do not trust anything after it." >&2
+  psql_status=1
+else
+  echo "Phase 4 operations suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -2055,6 +2082,56 @@ p2_code "the view refuses an INSERT over PostgREST (55000, not the grant)" 500 \
   POST "activity_events" "{\"kind\":\"planted\"}" "$MGR"
 p2_code "...and a PATCH, refused the same way" 500 \
   PATCH "activity_events?kind=eq.record_created" "{\"kind\":\"planted\"}" "$MGR"
+
+echo
+echo "=== Phase 4 operations at the API surface (Task 2) ==="
+# The psql suite proves the policies through set-by-hand claims. This proves the
+# same tenant boundary and the note-visibility predicate through REAL password
+# sessions and PostgREST -- the highest-value paths only.
+#
+# Fixture ids planted by rls_phase4_operations.sql (as postgres):
+P4_NOTE_COMPANY='70000000-0000-0000-0000-000000000002'   # company, owner pmanager
+P4_NOTE_PRIVATE='70000000-0000-0000-0000-000000000001'   # private, owner pstd1
+P4_DOC_ALPHA='d0000000-0000-0000-0000-000000000001'      # clean, owner pmanager
+P4_MGR_TASK='7a000000-0000-0000-0000-000000000002'       # Manager Task (ALPHA)
+P4_BETA_TASK='7a00000b-0000-0000-0000-00000000000b'      # Beta Task (BETA)
+P4_UNOWNED_CONTACT='22220000-0000-0000-0000-000000000003'
+P4_BETA_CO='1111000b-0000-0000-0000-00000000000b'
+
+# anon: the tables are not reachable logged out at all.
+p2_code "anon GET tasks"      401 GET "tasks?select=id"
+p2_code "anon GET notes"      401 GET "notes?select=id"
+p2_code "anon GET documents"  401 GET "documents?select=id"
+
+# Tenant boundary, aimed at the other tenant's org id -- notes and documents
+# come back as [] for a member of the wrong tenant.
+p2_rows "manager GET notes of org BETA (expect 0)"     0 \
+        "notes?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+p2_rows "manager GET documents of org BETA (expect 0)" 0 \
+        "documents?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+# POSITIVE CONTROL: the same token reads an ALPHA company note it may see.
+p2_rows "CONTROL: manager GETs an ALPHA company note" 1 \
+        "notes?select=id&id=eq.$P4_NOTE_COMPANY" "$MGR"
+
+# NOTE VISIBILITY over HTTP. A 'private' note is absent for a non-author even a
+# full-scope Admin, and present for its author -- the § OD predicate at the API.
+p2_rows "a full-scope Admin does NOT see another user's PRIVATE note" 0 \
+        "notes?select=id&id=eq.$P4_NOTE_PRIVATE" "$MGR"
+p2_rows "CONTROL: the note's AUTHOR sees their own private note" 1 \
+        "notes?select=id&id=eq.$P4_NOTE_PRIVATE" "$STD"
+
+# DOCUMENT cross-tenant: BETA's owner cannot read an ALPHA document.
+p2_rows "pbowner (BETA) GETs an ALPHA document (expect 0)" 0 \
+        "documents?select=id&id=eq.$P4_DOC_ALPHA" "$BOWN"
+
+# CROSS-TENANT LINK INSERT: a manager POSTing a task_link into BETA is refused
+# (403, an INSERT policy has only WITH CHECK so PostgREST raises).
+p2_code "manager POSTs a task_link into org BETA" 403 POST "task_links" \
+        "{\"organisation_id\":\"$BETA_ORG\",\"parent_id\":\"$P4_BETA_TASK\",\"entity_type\":\"company\",\"entity_id\":\"$P4_BETA_CO\"}" "$MGR"
+# POSITIVE CONTROL: the same manager links their OWN ALPHA task to a contact they
+# can see -- 201, so the 403 above is the boundary and not a dead endpoint.
+p2_code "CONTROL: manager links their own ALPHA task to a visible contact" 201 POST "task_links" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"parent_id\":\"$P4_MGR_TASK\",\"entity_type\":\"contact\",\"entity_id\":\"$P4_UNOWNED_CONTACT\"}" "$MGR"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2
