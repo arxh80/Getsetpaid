@@ -247,6 +247,21 @@ test("a venue page lists that venue's events, and only this tenant's", async ({
   // still look right on this page, which is why the direct-id assertions below
   // exist beside it.
   await expect(page.locator("main")).not.toContainText(EVENT_NAMES.otherTenant);
+  // Nor the soft-deleted one. Here the clause is `applyScope`'s rather than
+  // hand-written, so this is the cheap confirmation that the shared machinery
+  // is doing for this list what the home block has to do for itself.
+  //
+  // SCOPED TO THE SECTION, and the reason is worth reading before widening it.
+  // The venue's TIMELINE legitimately names that event -- "Linked to Deleted
+  // Night A." -- because the activity view's branches deliberately do not
+  // filter the subject's or the other record's `deleted_at`
+  // (lib/list/query.ts, TABLES_WITHOUT_SOFT_DELETE), which is the same choice
+  // `loadEvent` makes for a deleted venue's name on a live event: on a detail
+  // page the name renders, marked, and only the LINK is withheld. Asserting
+  // over `main` would therefore measure the timeline's copy and go red for a
+  // reason that has nothing to do with this list.
+  const here = page.locator("section").filter({ hasText: "Events here" });
+  await expect(here).not.toContainText(EVENT_NAMES.softDeleted);
 });
 
 test("another tenant's event is not reachable by id, from either slug", async ({
@@ -299,15 +314,31 @@ test("an artist's event history comes from the lineup, not from a column", async
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}/artists/${world.artistId}`);
 
-  // The artist is on the manager-owned event's bill and on nothing else, so
-  // this is the two-step read (`event_lineup` -> ids -> `events`) working end
-  // to end: the name can only be on this page if BOTH queries ran and agreed.
-  await expect(page.locator("main")).toContainText(EVENT_NAMES.managerOwned);
-  // The other event at the same venue is NOT on their bill, so it must not be
-  // here -- the assertion that separates "reads the lineup" from "reads every
-  // event at the venue this artist once played".
-  await expect(page.locator("main")).not.toContainText(EVENT_NAMES.standardOwned);
-  await expect(page.locator("main")).not.toContainText(EVENT_NAMES.otherTenant);
+  // SCOPED TO THE SECTION, NOT TO `main` (fix round 1). This route carries the
+  // activity timeline as well, and the timeline renders a `link_removed` entry
+  // naming the other record -- "Standard Night A is no longer linked to this
+  // one." So an absence assertion over the whole page would be measuring the
+  // timeline's copy rather than the history list, and would go red for a
+  // reason that has nothing to do with the two-step read.
+  const history = page.locator("section").filter({ hasText: "Event history" });
+
+  // The artist is on the manager-owned event's bill, so this is the two-step
+  // read (`event_lineup` -> ids -> `events`) working end to end: the name can
+  // only be here if BOTH queries ran and agreed.
+  await expect(history).toContainText(EVENT_NAMES.managerOwned);
+
+  // AND NOT THE EVENT THEY WERE UNBOOKED FROM (M-3). The fixture puts a
+  // SOFT-DELETED `event_lineup` row on Standard Night A for this artist, so
+  // this absence is now a test of step one's hand-written
+  // `.is("deleted_at", null)` -- drop that clause and a removed slot puts the
+  // event back into the artist's history. It doubles as the assertion that
+  // separates "reads the lineup" from "reads every event at a venue this
+  // artist once played".
+  await expect(history).not.toContainText(EVENT_NAMES.standardOwned);
+  await expect(history).not.toContainText(EVENT_NAMES.otherTenant);
+  // And the soft-deleted event is not here either -- step two's `deleted_at`
+  // filter, which `applyScope` writes for every `fetchListPage` list.
+  await expect(history).not.toContainText(EVENT_NAMES.softDeleted);
 });
 
 test("the workspace home shows this tenant's upcoming events and no other's", async ({
@@ -317,11 +348,22 @@ test("the workspace home shows this tenant's upcoming events and no other's", as
   await page.goto(`/${world.orgSlug}`);
 
   await expect(page.locator("main")).toContainText("Upcoming events");
-  // Both of this tenant's events are in the future, so both are inside the
-  // block's five.
+  // Both of this tenant's LIVE events are in the future, so both are inside
+  // the block's five.
   await expect(page.locator("main")).toContainText(EVENT_NAMES.managerOwned);
   await expect(page.locator("main")).toContainText(EVENT_NAMES.standardOwned);
   await expect(page.locator("main")).not.toContainText(EVENT_NAMES.otherTenant);
+
+  // AND NOT THE SOFT-DELETED ONE, which is the assertion this test was missing.
+  //
+  // `loadUpcomingEvents` is not a `fetchListPage` call, so `applyScope` does
+  // NOT write `deleted_at is null` for it -- the loader writes the clause by
+  // hand, and nothing errors if somebody deletes the line. The fixture's
+  // deleted event starts SOONER than either live one, so an unfiltered query
+  // would put it at the top of the five rather than somewhere a short fixture
+  // might not reach. This is the one surface where a soft-delete leak lands on
+  // the first screen a user sees.
+  await expect(page.locator("main")).not.toContainText(EVENT_NAMES.softDeleted);
   // The venue name is a LINK, not a bare string: the block joins two tables
   // and this is the assertion that the second query ran as this caller.
   await expect(

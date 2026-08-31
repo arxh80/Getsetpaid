@@ -132,6 +132,13 @@ export const EVENT_NAMES = {
   managerOwned: "Manager Night A",
   standardOwned: "Standard Night A",
   otherTenant: "Other Tenant Night",
+  // FIX ROUND 1 (I-1). A FUTURE event that is SOFT-DELETED. It exists for one
+  // assertion -- that the workspace home's upcoming block does not show it --
+  // and that assertion exists because `loadUpcomingEvents` writes
+  // `deleted_at is null` BY HAND (nothing else writes it for that query) and
+  // the Task 7 mutation table recorded, correctly, that deleting the clause
+  // turned nothing red. It is on the first screen a user sees.
+  softDeleted: "Deleted Night A",
 } as const;
 
 export const VENUE_NAME = "E2E Warehouse";
@@ -184,6 +191,9 @@ export interface E2eWorld {
   standardOwnedEventId: string;
   /** An artist in this tenant, on the manager-owned event's lineup. */
   artistId: string;
+  /** A FUTURE event in this tenant that is soft-deleted. It must appear on no
+   *  surface at all -- the workspace home's upcoming block least of all. */
+  softDeletedEventId: string;
   /** An event in the OTHER tenant. Its id is a valid uuid that must 404. */
   otherOrgEventId: string;
 
@@ -359,6 +369,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
   const venueId = randomUUID();
   const managerOwnedEventId = randomUUID();
   const standardOwnedEventId = randomUUID();
+  const softDeletedEventId = randomUUID();
   const artistId = randomUUID();
   const otherOrgVenueId = randomUUID();
   const otherOrgEventId = randomUUID();
@@ -415,14 +426,44 @@ export async function setUpWorld(): Promise<E2eWorld> {
     ],
   );
 
+  // ---- FIX ROUND 1 (I-1): a soft-deleted FUTURE event.
+  //
+  // SOONER THAN EITHER LIVE ONE (+7 days against +14 and +21), deliberately: if
+  // the upcoming block ever stopped filtering `deleted_at`, this row would sort
+  // to the TOP of the five rather than to a position a short fixture might not
+  // reach. `deleted_at` is set in the same statement, so there is no window in
+  // which the world holds a live event nobody meant to create.
+  await sql(
+    `insert into public.events
+       (id, organisation_id, owner_user_id, venue_id, name, starts_at, status,
+        deleted_at)
+     values ($1,$2,$3,$4,$5, now() + interval '7 days', 'planned', now())`,
+    [
+      softDeletedEventId,
+      orgId,
+      users.manager.id,
+      venueId,
+      EVENT_NAMES.softDeleted,
+    ],
+  );
+
   // The artist is on the manager-owned event's bill, which is what the artist
   // page's "Event history" reads -- through `event_lineup`, not through a
   // column on `events`.
+  //
+  // AND A REMOVED SLOT ON THE OTHER EVENT (fix round 1, M-3). `deleted_at` on
+  // `event_lineup` is the OTHER hand-written soft-delete clause this task
+  // added -- step one of `loadEventsForArtist` -- and it had no test either.
+  // With this row, "the artist page does not show Standard Night A" stops
+  // being a statement about an artist who was never booked and becomes a
+  // statement about one who was UNBOOKED: drop the clause and the event comes
+  // back into their history.
   await sql(
     `insert into public.event_lineup
-       (organisation_id, event_id, artist_id, position, billing)
-     values ($1,$2,$3,0,'headliner')`,
-    [orgId, managerOwnedEventId, artistId],
+       (organisation_id, event_id, artist_id, position, billing, deleted_at)
+     values ($1,$2,$3,0,'headliner', null),
+            ($1,$4,$3,1,'support', now())`,
+    [orgId, managerOwnedEventId, artistId, standardOwnedEventId],
   );
 
   return {
@@ -436,6 +477,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
     venueId,
     managerOwnedEventId,
     standardOwnedEventId,
+    softDeletedEventId,
     artistId,
     otherOrgEventId,
     users,
