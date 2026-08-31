@@ -422,7 +422,11 @@ export default async function ArtistDetailPage({
             the cursor is not in it. */}
         <Suspense
           key={JSON.stringify([artist.id])}
-          fallback={<ListSkeleton columns={3} />}
+          // FOUR, matching `artistEventColumns` below -- Name, Date, Venue,
+          // Status. The venue page's is three because that surface drops the
+          // Venue column. A skeleton narrower than the table it stands in for
+          // makes the columns jump when the boundary resolves.
+          fallback={<ListSkeleton columns={4} />}
         >
           <EventHistory
             organisationId={org.id}

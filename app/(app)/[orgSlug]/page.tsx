@@ -169,10 +169,21 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
           </>
         ) : (
           <>
+            {/* THE NUMBER ONLY WHEN IT IS TRUE. With two events on the books
+                "The next 5 by date" claims three that do not exist -- a small
+                lie on the first screen a user sees, and the same class as an
+                empty state that says "no records" to a record-scoped user.
+                Below the cap the ordering is the only thing worth saying. */}
             <p className="mt-2 max-w-prose text-base text-ink-muted">
-              The next{" "}
-              <span className="tabular-nums">{UPCOMING_EVENT_COUNT}</span> by
-              date, soonest first.
+              {upcoming.rows.length === UPCOMING_EVENT_COUNT ? (
+                <>
+                  The next{" "}
+                  <span className="tabular-nums">{UPCOMING_EVENT_COUNT}</span>{" "}
+                  by date, soonest first.
+                </>
+              ) : (
+                <>Soonest first.</>
+              )}
             </p>
             {recordScoped ? <ScopeNote /> : null}
             <ul role="list" className="mt-4 flex flex-col border-t border-rule">

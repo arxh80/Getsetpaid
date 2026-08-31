@@ -1902,6 +1902,70 @@ describe("Task 7: every list on a shared detail route is namespaced AND preserve
     expect(artist).toContain("loadEventsForArtist(");
   });
 
+  it("both new capped readers name the COLUMNS they order by, not just any order", () => {
+    // FIX ROUND 1, M-4. The I-6 guard above proves an `.order(` sits above
+    // every `.limit(` in `lib/crm/queries.ts`. That is the clause that stops
+    // the cap returning a different subset on every render -- but it says
+    // nothing about WHICH columns, and both of this task's readers make a
+    // claim that depends on the columns specifically:
+    //
+    //   * the artist window is "stable between reloads" only because the sort
+    //     is TOTAL. `created_at desc` alone is not: two slots added in one
+    //     transaction share `created_at` to the microsecond, and the 50 that
+    //     survive the cap could then differ between two identical requests.
+    //     `id asc` is what closes it, and dropping that one line leaves the
+    //     I-6 guard green and the documented property false.
+    //   * the upcoming block's "soonest first" is `starts_at asc`, and its own
+    //     tie-break is `id asc` for the same reason -- two events starting at
+    //     the same instant must not swap places between reloads.
+    //
+    // Asserted over the lines ABOVE each cap, in order, so a reordering is red
+    // too. Line-based like its I-6 neighbour, for the same reason: this is a
+    // census of a chained builder, and the chain's order is the property.
+    const lines = read("lib/crm/queries.ts").split(/\r?\n/);
+
+    const CAPS = [
+      {
+        cap: ".limit(ARTIST_EVENTS_ID_CAP)",
+        above: ['.order("id"', '.order("created_at"'],
+      },
+      {
+        cap: ".limit(UPCOMING_EVENT_COUNT)",
+        above: ['.order("id"', '.order("starts_at"'],
+      },
+    ] as const;
+
+    for (const { cap, above } of CAPS) {
+      // COMMENT LINES ARE NOT CALLS, and BOTH comment shapes have to go --
+      // the same correction the I-6 guard above needed, and needed for the
+      // same file: `loadUpcomingEvents`' doc-block quotes its own
+      // `.limit(UPCOMING_EVENT_COUNT)` while explaining why the function is a
+      // capped read, and the first draft of this assertion found that sentence
+      // instead of the call.
+      const at = lines.findIndex((line) => {
+        if (!line.includes(cap)) return false;
+        const trimmed = line.trimStart();
+        return (
+          !trimmed.startsWith("//") &&
+          !trimmed.startsWith("*") &&
+          !trimmed.startsWith("/*")
+        );
+      });
+      // Non-vacuity: the cap has to BE there, or the loop below reads
+      // `lines[-1]` and `lines[-2]` and asserts nothing.
+      expect(at, `${cap} is present`).toBeGreaterThan(0);
+      above.forEach((clause, back) => {
+        expect(lines[at - 1 - back], `${cap}: ${back + 1} line(s) above`).toContain(
+          clause,
+        );
+      });
+    }
+    // TWO is the denominator -- the two capped readers this task added. A
+    // third added without a row here is a window whose stability nothing
+    // checks.
+    expect(CAPS).toHaveLength(2);
+  });
+
   it("the workspace home's upcoming block is a capped read, not a fourth list", () => {
     // The one surface in this task that is deliberately NOT a lib/list/ list.
     // A pager on the workspace home would be a fourth query-string namespace

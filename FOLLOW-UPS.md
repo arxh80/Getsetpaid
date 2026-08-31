@@ -1848,6 +1848,17 @@ corrections are the useful part. Each now says what was actually done.
   companies on one contact is rare; better because the window is deterministic
   and stable between reloads rather than "whatever Postgres returned".
 
+  **THE ON-SCREEN CONSEQUENCE IS A NUMBER THAT IS CONFIDENTLY WRONG, not merely
+  a short list** (review fix round 1, M-2). `EntityList` renders `total`
+  (`components/list/entity-list.tsx`), and `count=exact` runs over the *capped*
+  `id IN (…)` set — `applyScope` reaches the count query as well as the page
+  query — so an artist on 200 events gets a count line reading **"50 events"**.
+  A user cannot tell that from a genuine 50. Two ways out when this is fixed
+  properly: either the real fix above (the count becomes true), or suppress
+  `total` on this one surface so the line reads "N events on this page", which
+  `ListPage` already supports via `total: null`. Not done now, because
+  suppressing it makes the honest surfaces worse to protect the dishonest edge.
+
   **The shape of the real fix — decide it with the feature, not now.** Two
   candidates, both migrations:
 
@@ -1866,6 +1877,24 @@ corrections are the useful part. Each now says what was actually done.
   Neither is guessed at here. Both want measuring against a real booking
   history, and the feature that needs it (an artist's full history, probably
   with its own screen) is the right place to choose.
+
+- **Nothing tests that a FAILED upcoming-events query renders the error rather
+  than "Nothing coming up"** (review fix round 1, M-1). `loadUpcomingEvents`
+  returns a three-way result and `app/(app)/[orgSlug]/page.tsx` renders the
+  `Alert` for `unavailable` — the rule this codebase opens `lib/crm/queries.ts`
+  with, because "you have nothing on" is a claim about the customer's data and
+  making it when the database was unreachable reads as deletion. Collapsing
+  that branch into an empty `loaded` turns **nothing** red.
+
+  **Unlike its sibling gap (the hand-written `deleted_at is null`, closed in fix
+  round 1 with a soft-deleted fixture row), this one is not cheap**: it needs an
+  injected query failure, and this repository has no mechanism for one — no
+  network-level fault injection in the Playwright suite, and `tests/unit` is
+  pure functions by `vitest.config.ts`'s own rule, so it cannot reach a module
+  that imports `@/lib/supabase/server`. The honest options are a seam for
+  fault injection (worth having, and a decision bigger than one loader) or
+  leaving it reviewed rather than measured. Filed so it is owed to something
+  durable rather than to a task report.
 
 - **The venue's "Events here" list is O(tenant between cursors), not O(page).**
   `VENUE_EVENTS_LIST.sort.starts.backedBy` names
