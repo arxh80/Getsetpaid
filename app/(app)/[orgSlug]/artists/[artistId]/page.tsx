@@ -1,4 +1,5 @@
 import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import { RelatedPanel } from "@/components/crm/related-panel";
 import {
   activityIsScoped,
   activityParams,
@@ -457,6 +458,19 @@ export default async function ArtistDetailPage({
           disabledReason={customFieldsBlocked}
         />
       )}
+
+      {/* THE RELATED PANEL (Phase 4 Task 3). This route already carried three
+          lib/list/ surfaces (fee history, event history, timeline); the panel
+          adds three more (`rel_tasks_`/`rel_notes_`/`rel_docs_`), all passed
+          preserve (rule 10). */}
+      <RelatedPanel
+        orgSlug={org.slug}
+        organisationId={org.id}
+        entityType="artist"
+        entityId={artist.id}
+        basePath={`${basePath}/${artist.id}`}
+        raw={raw}
+      />
 
       {/* THE SHARED ACTIVITY TIMELINE (Task 7). One component, five pages,
           and every later phase's sources arrive as branches of

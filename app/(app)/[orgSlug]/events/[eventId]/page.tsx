@@ -16,6 +16,7 @@ import { LineupPanel } from "@/components/crm/lineup-panel";
 import { loadCustomFieldPanel } from "@/lib/crm/custom-field-queries";
 import { CustomFieldsPanel } from "@/components/crm/custom-fields-panel";
 import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import { RelatedPanel } from "@/components/crm/related-panel";
 import {
   activityIsScoped,
   activityParams,
@@ -364,6 +365,20 @@ export default async function EventDetailPage({
           disabledReason={panelBlocked}
         />
       )}
+
+      {/* THE RELATED PANEL (Phase 4 Task 3): tasks, notes and documents linked
+          to this event. `rel_tasks_`/`rel_notes_`/`rel_docs_` join the existing
+          `lineup_` and `activity_` surfaces -- four lib/list/ surfaces now,
+          each passed preserve (rule 10). This is the page the browser walk
+          proves rule 10 on. */}
+      <RelatedPanel
+        orgSlug={org.slug}
+        organisationId={org.id}
+        entityType="event"
+        entityId={event.id}
+        basePath={`${basePath}/${event.id}`}
+        raw={raw}
+      />
 
       {/* THE SHARED ACTIVITY TIMELINE (Phase 2 Task 7, six pages since Phase 3
           Task 6). One component; the event's sources arrived as branches of

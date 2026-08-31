@@ -1,13 +1,23 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getActiveMemberships, getCurrentOrg, hasPermission } from "@/lib/auth";
+import {
+  getActiveMemberships,
+  getCurrentOrg,
+  getCurrentUser,
+  hasPermission,
+} from "@/lib/auth";
 import { isRecordScopedRole } from "@/lib/crm/record-scope";
 import {
+  loadOpenTasksForUser,
   loadUpcomingEvents,
+  OPEN_TASKS_COUNT,
   UPCOMING_EVENT_COUNT,
+  type OpenTaskRow,
   type UpcomingEventRow,
 } from "@/lib/crm/queries";
+import { TaskStatusChip } from "@/components/crm/task-status-chip";
+import { PriorityChip } from "@/components/crm/priority-chip";
 import { formatDateTime } from "@/lib/format/date";
 import { Alert } from "@/components/ui/alert";
 import { RuledList, RuledRow } from "@/components/ui/ruled-row";
@@ -38,7 +48,8 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [canManageMembers, canManageCustomFields, memberships, upcoming] =
+  const user = await getCurrentUser();
+  const [canManageMembers, canManageCustomFields, memberships, upcoming, openTasks] =
     await Promise.all([
       hasPermission(org.id, "manage_members"),
       hasPermission(org.id, "manage_custom_fields"),
@@ -47,6 +58,10 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
       // read, not a list surface -- see `loadUpcomingEvents` for why this page
       // gets `.limit(5)` and a link rather than a fourth pager.
       loadUpcomingEvents(org.id),
+      // "MY OPEN TASKS" -- the viewer's own unfinished tasks, another capped
+      // read (not a list surface). Pinned to the user, not the workspace, so it
+      // is the same short list for an Admin as for a Standard User.
+      user ? loadOpenTasksForUser(org.id, user.id) : Promise.resolve(null),
     ]);
 
   const others = memberships.filter((m) => m.organisationId !== org.id);
@@ -204,6 +219,64 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
         )}
       </section>
 
+      {/* ===================================================================
+          MY OPEN TASKS (Phase 4 Task 3)
+          ===================================================================
+          The viewer's own unfinished tasks, soonest due first. A capped read
+          like Upcoming events -- five, a link to the full list, no pager. It is
+          the viewer's list, not the workspace's, so an Admin sees only their
+          own here (the tasks LIST is where the whole workspace's are). */}
+      <section className="border border-rule bg-surface p-5">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+          <h2 className="text-xl font-bold text-ink">My open tasks</h2>
+          <Link
+            href={`/${org.slug}/tasks`}
+            className="text-base text-primary underline underline-offset-4 hover:text-ink"
+          >
+            See all tasks
+          </Link>
+        </div>
+
+        {openTasks === null || openTasks.outcome === "unavailable" ? (
+          // A FAILED QUERY IS NOT AN EMPTY LIST. Rendering "Nothing on your
+          // plate" here would tell someone with ten open tasks they have none.
+          <div className="mt-4">
+            <Alert tone="error">
+              We couldn’t load your tasks just now. Refresh the page to try
+              again — nothing has been deleted.
+            </Alert>
+          </div>
+        ) : openTasks.rows.length === 0 ? (
+          <>
+            <h3 className="mt-4 text-base font-semibold text-ink">
+              Nothing on your plate
+            </h3>
+            <p className="mt-1 max-w-prose text-base text-ink-muted">
+              Tasks assigned to you that are still open will appear here.
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="mt-2 max-w-prose text-base text-ink-muted">
+              {openTasks.rows.length === OPEN_TASKS_COUNT ? (
+                <>
+                  Your next{" "}
+                  <span className="tabular-nums">{OPEN_TASKS_COUNT}</span>, by due
+                  date.
+                </>
+              ) : (
+                <>By due date.</>
+              )}
+            </p>
+            <ul role="list" className="mt-4 flex flex-col border-t border-rule">
+              {openTasks.rows.map((task) => (
+                <OpenTask key={task.id} task={task} orgSlug={org.slug} />
+              ))}
+            </ul>
+          </>
+        )}
+      </section>
+
       {/* An honest empty state rather than invented dashboard tiles. It names
           what is coming and what can be done now -- DESIGN.md: "empty states
           that teach the workflow".
@@ -265,6 +338,36 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
             This workspace is set up and ready — bring your colleagues in.
           </p>
         ) : null}
+      </section>
+
+      {/* DAY TO DAY (Phase 4 Task 3). The operational layer that hangs off the
+          six record types above: tasks to do, meetings held, notes kept. Linked
+          for everyone who can read the page, same rule as CRM_AREAS -- every
+          role here holds view_crm, and each list explains on its own face who
+          can write. There is no persistent navbar to add these to (the app
+          shell is a header and a workspace switcher), and building one is a
+          design this task does not take -- so, like the six record types, these
+          are discovered from the workspace home. */}
+      <section className="border border-rule bg-surface p-5">
+        <h2 className="text-xl font-bold text-ink">Day to day</h2>
+        <p className="mt-2 max-w-prose text-base text-ink-muted">
+          The work around the records: what needs doing, who you met, and what
+          you want kept. Each can be linked to the contacts, events and everyone
+          else above.
+        </p>
+        <ul className="mt-4 flex flex-col border-t border-rule">
+          {OPERATIONS_AREAS.map((area) => (
+            <li key={area.path} className="border-b border-rule py-3">
+              <Link
+                href={`/${org.slug}/${area.path}`}
+                className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+              >
+                {area.label}
+              </Link>
+              <p className="mt-1 max-w-prose text-base text-ink-muted">{area.blurb}</p>
+            </li>
+          ))}
+        </ul>
       </section>
 
       {/* HOUSEKEEPING, LINKED FOR EVERYONE WHO CAN READ IT.
@@ -387,6 +490,33 @@ function UpcomingEvent({
   );
 }
 
+/**
+ * One open task on the workspace home: what it is, its status and priority, and
+ * when it is due. The due date is a `<time>` with the raw instant in `dateTime`
+ * and tabular figures (DESIGN.md § Numerals applies to a column of dates).
+ */
+function OpenTask({ task, orgSlug }: { task: OpenTaskRow; orgSlug: string }) {
+  return (
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-rule py-3">
+      <Link
+        href={`/${orgSlug}/tasks/${task.id}`}
+        className="font-semibold break-words text-primary underline underline-offset-4 hover:text-ink"
+      >
+        {task.title}
+      </Link>
+      <TaskStatusChip status={task.status} />
+      <PriorityChip priority={task.priority} />
+      {task.dueAt !== null ? (
+        <time dateTime={task.dueAt} className="text-base tabular-nums text-ink-muted">
+          due {formatDateTime(task.dueAt)}
+        </time>
+      ) : (
+        <span className="text-base text-ink-muted">no due date</span>
+      )}
+    </li>
+  );
+}
+
 /** The one sentence a record-scoped viewer needs beside a short list. */
 function ScopeNote() {
   return (
@@ -464,5 +594,33 @@ const CRM_AREAS = [
     label: "Events",
     blurb:
       "The nights you are putting on. A date, a venue and a lineup, with everything above it hanging off one record.",
+  },
+] as const;
+
+/**
+ * The three operational areas (Phase 4 Task 3), in the order they are used:
+ * a task is planned, a meeting is held, a note is kept. Data rather than three
+ * copies of the same JSX, exactly as CRM_AREAS. Not filtered by permission --
+ * every role that reaches this page holds `view_crm` and each list explains its
+ * own write rules.
+ */
+const OPERATIONS_AREAS = [
+  {
+    path: "tasks",
+    label: "Tasks",
+    blurb:
+      "What needs doing — chase a contract, confirm a rider, call the venue. With a due date, a priority and the record it is about.",
+  },
+  {
+    path: "meetings",
+    label: "Meetings",
+    blurb:
+      "Calls and get-togethers, with a time, who came and what was agreed.",
+  },
+  {
+    path: "notes",
+    label: "Notes",
+    blurb:
+      "Free-form text kept with a record. Private to you, or shared with the workspace.",
   },
 ] as const;
