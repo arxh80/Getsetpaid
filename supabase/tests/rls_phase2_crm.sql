@@ -406,18 +406,25 @@ select crm.val('A2  admin holds all seven CRM keys',
   $$select count(*)::text from public.role_permissions
     where role_key='admin' and permission_key in
     ('view_crm','manage_contacts','manage_artists','manage_venues','manage_custom_fields','merge_records','manage_events')$$, '7');
-select crm.val('A3  manager holds six, NOT manage_custom_fields',
+-- A3-A5 / A8 enumerate the FULL set per role, so they break by design whenever a
+-- key is granted -- which is the point (an accidental grant is caught here).
+-- PHASE 4 TASK 2 added the four operational write keys (manage_tasks,
+-- manage_meetings, manage_notes, manage_documents) to the same six roles that
+-- hold manage_events, so each of these four strings gains those four keys in
+-- sorted order. The "NOT manage_custom_fields" / "no venue key" / "no artist
+-- key" claims each still hold.
+select crm.val('A3  manager holds the manage set + operations, NOT manage_custom_fields',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='manager'$$,
-  'manage_artists,manage_contacts,manage_events,manage_venues,merge_records,view_crm');
-select crm.val('A4  booker: no venue key, no merge key -- but manage_events',
+  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,merge_records,view_crm');
+select crm.val('A4  booker: no venue key, no merge key -- but manage_events + operations',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='booker'$$,
-  'manage_artists,manage_contacts,manage_events,view_crm');
-select crm.val('A5  venue_manager: no artist key -- but manage_events',
+  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,view_crm');
+select crm.val('A5  venue_manager: no artist key -- but manage_events + operations',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='venue_manager'$$,
-  'manage_contacts,manage_events,manage_venues,view_crm');
+  'manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,view_crm');
 select crm.val('A6  finance is read-only over the CRM',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='finance'$$, 'view_crm');
@@ -428,7 +435,7 @@ select crm.val('A7  marketing: contacts, not artists',
 select crm.val('A8  standard_user holds the manage keys (scope is the policy''s job)',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='standard_user'$$,
-  'manage_artists,manage_contacts,manage_events,manage_venues,view_crm');
+  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,view_crm');
 select crm.val('A9  read_only holds view_crm and nothing else',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='read_only'$$, 'view_crm');
