@@ -994,10 +994,22 @@ describe("I-6: every capped reader in lib/crm/queries.ts orders before it caps",
   const lines = queries.split(/\r?\n/);
   const caps = lines
     .map((line, index) => ({ line, index }))
-    .filter(({ line }) => line.includes(".limit(") && !line.trimStart().startsWith("//"));
+    .filter(({ line }) => {
+      if (!line.includes(".limit(")) return false;
+      // COMMENT LINES ARE NOT CALLS, and both comment SHAPES have to be
+      // excluded. `//` was excluded from the start; the `*` continuation of a
+      // `/** */` block was not, and Phase 3 Task 7 is where that cost
+      // something: `loadUpcomingEvents`' doc-block explains why the function
+      // is a bounded `.limit(...)` rather than a fourth pager, and the guard
+      // read those two sentences as two capped readers with no `.order()`
+      // above them. A false RED, which is the safe direction -- but a guard
+      // that goes red at prose is a guard people start editing prose around.
+      const trimmed = line.trimStart();
+      return !trimmed.startsWith("//") && !trimmed.startsWith("*") && !trimmed.startsWith("/*");
+    });
 
   it("finds the capped readers at all, so this cannot pass vacuously", () => {
-    // NINE, COUNTED RATHER THAN GUESSED, and raising this number is the
+    // ELEVEN, COUNTED RATHER THAN GUESSED, and raising this number is the
     // obligation rather than paperwork -- a floor left at six would be
     // satisfied by a tree that had deleted three of the readers it is meant to
     // be counting. The comment said "six today" through Phase 3 Task 4, which
@@ -1008,7 +1020,14 @@ describe("I-6: every capped reader in lib/crm/queries.ts orders before it caps",
     // rooms (Task 4), and the lineup panel's REMOVED slots (Task 5). The live
     // lineup itself is NOT here: it is a real lib/list/ surface with a keyset
     // pager, not a capped read.
-    expect(caps.length).toBeGreaterThanOrEqual(9);
+    //
+    // PHASE 3 TASK 7 ADDS TWO, and they are the two that most need this guard
+    // because neither is a join panel: the artist event history's STEP ONE
+    // (the 50 `event_lineup` rows whose ids step two pages, where an unordered
+    // cap would be a different 50 on every render), and the workspace home's
+    // upcoming-events block (five rows, ordered by date, on the first screen a
+    // user sees).
+    expect(caps.length).toBeGreaterThanOrEqual(11);
   });
 
   for (const { line, index } of caps) {
@@ -1791,3 +1810,136 @@ function stripLineComments(source: string): string {
     .map((line) => (line.trimStart().startsWith("//") ? "" : line))
     .join("\n");
 }
+
+describe("Task 7: every list on a shared detail route is namespaced AND preserved", () => {
+  // THE SAME MECHANISM THE EVENT DETAIL PAGE'S BLOCK ABOVE USES, EXTENDED
+  // RATHER THAN REPLACED. `buildListHref`'s `preserve` MECHANICS are covered
+  // behaviourally in tests/unit/list/param-prefix.test.ts; what no behavioural
+  // test can see is a PAGE that forgets to pass it, because the failure is a
+  // silent return to page one on a surface nobody is looking at.
+  //
+  // Phase 3 Task 7 made the venue page a TWO-list route and the artist page a
+  // THREE-list one, which is the most exposed route in the product:
+  //
+  //   venue    VENUE_EVENTS_LIST (`venueevents_`) + ACTIVITY_LIST (`activity_`)
+  //   artist   ARTIST_FEE_LIST (bare) + ARTIST_EVENTS_LIST (`artistevents_`)
+  //            + ACTIVITY_LIST (`activity_`)
+  //
+  // A SOURCE CENSUS, with this file's usual limit: it says the wiring is
+  // present, not that it works. The Rule 17 browser walk is what measured that
+  // paging one surface leaves the others where they were.
+  const venue = read("app/(app)/[orgSlug]/venues/[venueId]/page.tsx");
+  const artist = read("app/(app)/[orgSlug]/artists/[artistId]/page.tsx");
+
+  const PAGES = [
+    { name: "venue", source: venue, lists: 2 },
+    { name: "artist", source: artist, lists: 3 },
+  ] as const;
+
+  it("each page reads its query string ONCE, into `raw`", () => {
+    // TWO `await searchParams` CALLS IS THE SHAPE THAT DRIFTS. The venue page
+    // used to call it twice -- once for `?merged=1` and once for the timeline
+    // -- and a third caller parsing its own copy is how one surface ends up
+    // reading a query string the others do not. One `raw`, handed to every
+    // parser and to every `preserve`.
+    for (const page of PAGES) {
+      expect(page.source, page.name).toContain(
+        "const raw = (await searchParams) as RawSearchParams;",
+      );
+    }
+    expect(PAGES).toHaveLength(2);
+  });
+
+  it("every list surface on each page is passed `preserve={raw}`", () => {
+    // THE DENOMINATOR IS THE LIST COUNT, and it is the assertion that catches
+    // the mutation this block exists for: adding a fourth surface to the
+    // artist page and wiring only three. `preserve={raw}` is counted as
+    // OCCURRENCES, over comment-stripped source, so the prose above each one
+    // is not counted as one.
+    for (const page of PAGES) {
+      const occurrences =
+        stripLineComments(page.source).match(/preserve=\{raw\}/g) ?? [];
+      expect(occurrences.length, `${page.name}: preserve={raw}`).toBe(
+        page.lists,
+      );
+    }
+  });
+
+  it("the venue page's two surfaces are the ones named, and no other", () => {
+    // NAMED, not merely counted: two `preserve={raw}` would also pass the
+    // assertion above if somebody wired the same list twice.
+    expect(venue).toContain("VENUE_EVENTS_LIST");
+    expect(venue).toContain("<ActivityTimeline");
+    // And the ROOM panel is deliberately not one of them: it is a
+    // LINK_PANEL_LIMIT capped read with no pager and no query keys, so passing
+    // it `preserve` would be wiring a namespace it does not have.
+    expect(venue).toContain("<RoomPanel");
+    expect(stripLineComments(venue)).not.toContain("preserve={raw}\n        rooms");
+  });
+
+  it("the artist page's three surfaces are the ones named", () => {
+    expect(artist).toContain("ARTIST_FEE_LIST");
+    expect(artist).toContain("ARTIST_EVENTS_LIST");
+    expect(artist).toContain("<ActivityTimeline");
+  });
+
+  it("neither page parses list params by hand", () => {
+    // The namespace AND the `q` drop live in the loader's wrapper
+    // (`venueEventsParams` / `artistEventsParams`, lib/crm/events-list.ts), and
+    // a page that built params some other way would silently lose the drop --
+    // `loadLineupForEvent`'s signature note states the same rule for the same
+    // reason. The venue page must not call `parseListParams` at all; the
+    // artist page calls it exactly once, for the fee history, which has no
+    // wrapper because it drops nothing.
+    expect(stripLineComments(venue)).not.toContain("parseListParams(");
+    const artistParses =
+      stripLineComments(artist).match(/parseListParams\(/g) ?? [];
+    expect(artistParses).toHaveLength(1);
+    expect(artist).toContain("parseListParams(ARTIST_FEE_LIST, raw)");
+    // The two event surfaces reach their params through the loaders, which own
+    // the wrappers.
+    expect(venue).toContain("loadEventsForVenue(");
+    expect(artist).toContain("loadEventsForArtist(");
+  });
+
+  it("the workspace home's upcoming block is a capped read, not a fourth list", () => {
+    // The one surface in this task that is deliberately NOT a lib/list/ list.
+    // A pager on the workspace home would be a fourth query-string namespace
+    // on a page with no list vocabulary at all; the "See all events" link is
+    // the page-2. Asserted here so that "make it paginated" is a decision
+    // somebody has to undo this test for.
+    const home = read("app/(app)/[orgSlug]/page.tsx");
+    expect(home).toContain("loadUpcomingEvents(org.id)");
+    expect(home).toContain("See all events");
+    expect(stripLineComments(home)).not.toContain("fetchListPage");
+    expect(stripLineComments(home)).not.toContain("parseListParams(");
+    // The empty state's two strings, verbatim. They are the brief's copy and
+    // the one thing on this block a reader cannot infer from the query.
+    expect(home).toContain("Nothing coming up");
+    expect(home).toContain(
+      "Events you create will appear here once they have a date in the future.",
+    );
+    // A LIST WITH ITS ROLE RESTORED. Safari + VoiceOver drops list semantics
+    // from a `ul` whose list-style is none, and these rows are ruled.
+    expect(home).toContain('<ul role="list"');
+  });
+
+  it("the upcoming block states its own scope for a record-scoped role", () => {
+    // An empty block means "nothing is booked" for a full-scope viewer and
+    // "nothing assigned to you is booked" for a Standard User, and only the
+    // role tells the page which is true. Same failure Phase 2 Task 3 shipped
+    // on the contacts list ("No contacts yet" on a 71-contact workspace).
+    const home = read("app/(app)/[orgSlug]/page.tsx");
+    expect(home).toContain("isRecordScopedRole(org.role)");
+    expect(home).toContain(
+      "You’re seeing events assigned to you. Others in this workspace may see",
+    );
+  });
+
+  it("the two event surfaces on the detail pages state their scope too", () => {
+    for (const page of PAGES) {
+      expect(page.source, page.name).toContain("isRecordScopedRole(org.role)");
+      expect(page.source, page.name).toContain("scopeNote=");
+    }
+  });
+});
