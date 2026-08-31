@@ -891,6 +891,17 @@ These become live the moment a real tenant table exists.
   is unaffected). `tests/integration/rls/support/env.ts` already contains the
   loopback assertion to reuse.
 
+- **PARTLY DISCHARGED (Task 3a / Phase 2), one residual open — verified at HEAD
+  by Task 8, 2026-08-31.** `getCurrentOrg()` NO LONGER filters `deleted_at`
+  (`lib/auth/index.ts:196` documents the removal), so a suspended workspace no
+  longer 404s when selected — it resolves to the read-only banner state
+  (`isSuspended` at `:276`, `app/(app)/layout.tsx:146`). **The residual is the
+  switcher half only:** `getActiveMemberships()` (`:135`) still does not select
+  `organisations.deleted_at` and `components/org/workspace-switcher.tsx` renders
+  no read-only marker, so the workspace is listed without a badge — a missing
+  marker, not a broken link. Owner: Phase 3-members. The original entry follows;
+  its "wrongly 404s" conclusion is the part that is now stale.
+
 - **A soft-deleted organisation still appears in the workspace switcher.** Not
   Task 3's code; found by the reviewer while building fixtures.
   `getActiveMemberships()` filters on membership `status` but not on
@@ -1054,12 +1065,18 @@ These become live the moment a real tenant table exists.
   does exactly that — `rls_phase2_crm.sql` § P proves a manager reads all 13
   contacts of a suspended organisation and cannot insert, update or delete a
   single row on any of the eight surfaces. **The application never gets that
-  far.** `getCurrentOrg()` (`lib/auth/index.ts:184`) filters
-  `.is("deleted_at", null)`, so a suspended slug resolves to `null` and every
-  route under it renders the tenant-isolation 404 — indistinguishable from
-  another tenant's slug. Meanwhile `getActiveMemberships()` filters on `status`
-  only, so the switcher still **lists** the workspace and sends the user
-  straight into that 404.
+  far.** — **CORRECTED AT HEAD (Task 8, 2026-08-31): this is no longer true.**
+  `getCurrentOrg()` (`lib/auth/index.ts:196`) NO LONGER filters `deleted_at`;
+  the filter was removed and replaced by an `isSuspended` flag (`:276`), the
+  read-only banner (`app/(app)/layout.tsx:146`) and the write gate. **Points
+  1, 2, 3 and 5 of the specification below SHIPPED** — the flag, the banner, the
+  disabled-and-explained controls, and the `count: "exact"` failed-write signal
+  on the save path (asserted by `source-shape.test.ts`). **Point 4 is the sole
+  residual:** `getActiveMemberships()` filters on `status` only, so the switcher
+  still lists a suspended workspace, now WITHOUT a read-only marker — selecting
+  it lands on the banner state, not a 404. Owner: Phase 3-members. The original
+  (pre-fix) description follows so the specification is preserved; its 404
+  premise is discharged.
 
   This was previously written up here as "not a security issue — the database
   denies either way". **That is no longer true and it is the reason this entry
@@ -2096,7 +2113,7 @@ corrections are the useful part. Each now says what was actually done.
 - ~~**The axe golden-path test has no time headroom, and now says so.**~~
   **DONE, Phase 3 Task 8 — the durable fix was taken rather than the budget
   raised again.** `tests/e2e/accessibility.spec.ts` is now one test per page
-  (twelve pages, four of them Phase 3's), `test.slow()` is deleted, and the
+  (13 pages, four of them Phase 3's), `test.slow()` is deleted, and the
   slowest page in the cold run that followed was 4.1s against its own 60s
   budget. It became mandatory rather than optional the moment this task added
   four pages: eleven pages under one budget is the same failure with more
@@ -2261,6 +2278,33 @@ corrections are the useful part. Each now says what was actually done.
 - **`RecordCurrentOrg` costs a database round trip per in-app navigation**, not
   only on cross-organisation switches. Intentional, per the sliding-expiry
   design. Revisit only if navigation volume becomes a cost.
+
+## Phase 4 — CI decision (blocks Phase 4's start)
+
+- **DECIDE WHETHER CI RUNS THE STACK-DEPENDENT SUITES. Owner: the founder.
+  Due: before Phase 4 starts. Added 2026-08-31 (Task 8 exit, condition 3;
+  `DECISIONS-QUEUE.md` Q41).** `.github/workflows/ci.yml` runs `pnpm lint`,
+  `next typegen`, `pnpm typecheck`, `vitest run tests/unit` and the two scans,
+  and **nothing else** — the 1083 psql assertions, 197 HTTP probes, every
+  `tests/integration/` file and all 34 Playwright tests need a running Supabase
+  stack and run only on a developer's machine, which `CLAUDE.md` § Current state
+  already records as "a deliberate decision nobody has made yet".
+
+  **Why it is dated to a boundary rather than left open.** Task 8's mutation M-7
+  is the first *measured* cost of the split: deleting `private.entity_is_live`'s
+  `'event'` arm — which makes a soft-deleted event's custom-field values
+  read-only — left the psql suite at 1083/0 and the HTTP probes at 197/0, and
+  the only red was one `tests/integration/` file CI does not run. Phase 4 adds
+  five more child tables (`*_links`) whose only guards will be integration
+  tests, so the number of controls that no pull request checks grows the moment
+  Phase 4 ships. The decision must be made before that, not after.
+
+  **The decision may legitimately be "no"** — a Supabase stack in CI is a
+  container pull and minutes per run. But if it is "no", the M-7 class of gap
+  needs a psql or HTTP assertion each time a control's only guard would
+  otherwise be an integration test, and that obligation is the real cost of
+  answering "no". This entry is the scheduled home the Task 8 exit document's
+  condition 3 points at; it is not a reminder, it is a gate on Phase 4's start.
 
 ## Phase 7 — admin/security
 
@@ -2457,7 +2501,7 @@ before the first real consumer exists rather than alongside it.
   is a refusal, not a reminder: if `SECURITY.md` § 5 is still unenforced when
   launch is otherwise ready, launch does not proceed. **The surface grew in
   Phase 3 and the gate is restated over the new number:** 20 list specs carry a
-  `searchColumn` and 15 pages render a search control (13 and 15 at the Phase 2
+  `searchColumn` and 15 pages render a search control (15 and 13 at the Phase 2
   exit), so the unmetered `ilike` path this gate is about is a third wider than
   it was when the gate was written. Re-count it again at each phase exit rather
   than inheriting this sentence. The implementation is
@@ -2565,14 +2609,16 @@ before the first real consumer exists rather than alongside it.
   no explanation") and for `customFieldLimitMessage` (which was fixed for
   exactly this at `limit === 0`), applied inconsistently one component along.
 
-  **OWNER: the Phase 3 fix wave (controller-flagged 2026-08-31, carried into
-  the Phase 3 final review as a named item). SCHEDULED: before the Phase 3
-  branch merges** — it is one condition in one Phase 2 component, it is on a
-  settings page every Free-tier workspace lands on, and it is the only known
-  copy defect in the phase's browser evidence. If the final review does not
-  take it, it moves to Phase 7 with the rest of the entitlement work and this
-  line must be rewritten to say so; leaving it "recorded" is the failure mode
-  Phase 2's exit document was sent back for.
+  **OWNER: Phase 7, with the rest of the custom-field / entitlement copy work.
+  SCHEDULED: Phase 7 — it does NOT block the Phase 3 branch** (Task 8 exit
+  document § 6/§ 7, corrected 2026-08-31). Measured, so the call is made rather
+  than deferred by default: it is Phase 2 copy in `CustomFieldEditor` that reads
+  identically on all six entity types, so it is neither events-specific nor
+  introduced by Phase 3, and its blast radius is a Free-tier settings page, not
+  the golden path. The earlier draft of this entry said "before the Phase 3
+  branch merges", which contradicted the exit document listing it as a
+  non-condition; this line is the reconciliation, and the exit document is the
+  authority.
   **Not events-specific and not this task's code** — it is Phase 2 copy and it
   reads the same on all six entity types, which is why it is filed rather than
   fixed here. The fix is one condition: suppress the "Add one" empty state when

@@ -38,9 +38,12 @@ export async function signIn(
 
 /** Sign out, so the next test's sign-in starts from nothing. */
 export async function signOut(page: Page): Promise<void> {
-  const button = page.getByRole("button", { name: "Sign out" });
-  if (await button.count()) {
-    await button.first().click();
-    await expect(page).toHaveURL(/\/login/);
-  }
+  // NO CONDITIONAL LOCATOR (Task 8 fix round 1). This used to be
+  // `if (await button.count())`, which silently did nothing when the button was
+  // absent -- the exact shape the "no conditional locators" rule forbids. Every
+  // caller invokes it from a signed-in page, so the button is asserted present
+  // and then clicked; a missing "Sign out" is now a failure, not a skip.
+  await expect(page.getByRole("button", { name: "Sign out" }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Sign out" }).first().click();
+  await expect(page).toHaveURL(/\/login/);
 }

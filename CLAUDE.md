@@ -25,7 +25,7 @@ The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrast
 | `pnpm typecheck` | `tsc --noEmit`. CI runs this too (below), but **nothing on this machine does** — there is no git hook, and `pnpm build` is forbidden in a worktree pointed at the local stack. Several exhaustiveness guards (the `switch` with no `default` in `lib/crm/contacts.ts`, `lib/crm/companies.ts` and `lib/crm/actions.ts`) are compile-time only, so skipping this locally means finding out on a push at best. |
 | `pnpm test` | Vitest, unit and integration (`vitest run`). |
 | `pnpm test:rls` | The RLS integration tests (`vitest run tests/integration/rls`), included in `pnpm test`. |
-| `pnpm test:e2e` | Playwright (`playwright test`) — the Phase 2 and Phase 3 golden paths, tenant breakout and record scope, and the axe accessibility scan (one test per page, twelve pages), against a real browser and the local stack. **Prerequisite:** `npx playwright install chromium` once per machine. It starts its own dev server; set `PLAYWRIGHT_REUSE_SERVER=1` only to reuse one on port 3000 that you know is current. |
+| `pnpm test:e2e` | Playwright (`playwright test`) — the Phase 2 and Phase 3 golden paths, tenant breakout and record scope, and the axe accessibility scan (one test per page, 13 pages), against a real browser and the local stack. **Prerequisite:** `npx playwright install chromium` once per machine. It starts its own dev server; set `PLAYWRIGHT_REUSE_SERVER=1` only to reuse one on port 3000 that you know is current. |
 
 The psql/HTTP RLS suite is separate and needs a fresh database:
 `npx supabase db reset --local` then `bash supabase/tests/run-rls-tests.sh`. It

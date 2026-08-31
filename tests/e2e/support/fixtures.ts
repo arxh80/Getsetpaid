@@ -168,9 +168,11 @@ export const OTHER_ARTIST_NAME = "Other Tenant Headliner";
  * writer -- `postgres` included, which is the connection this file uses. There
  * is no `javascript:` row to plant, in this suite or in the product.
  *
- * That is a finding rather than a convenience: the constraint's own comment
- * calls itself "DEFENCE IN DEPTH, NOT THE CONTROL" and says "a row written
- * before it, by an import, or by a direct PostgREST PATCH is still possible".
+ * That is a finding rather than a convenience. The constraint's own comment
+ * (20260901000000) calls itself "DEFENCE IN DEPTH, NOT THE CONTROL"; the phrase
+ * "a row written before it, by an import, or by a direct PostgREST PATCH is
+ * still possible" is the DETAIL PAGE's comment
+ * (app/(app)/[orgSlug]/events/[eventId]/page.tsx), not the constraint's.
  * On `public.events` none of those three is possible today -- the table was
  * created WITH the constraint, so there are no older rows, and PostgREST goes
  * through the same CHECK. The sentence describes the shape of the risk
