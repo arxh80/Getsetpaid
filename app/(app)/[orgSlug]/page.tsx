@@ -2,6 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getActiveMemberships, getCurrentOrg, hasPermission } from "@/lib/auth";
+import { isRecordScopedRole } from "@/lib/crm/record-scope";
+import {
+  loadUpcomingEvents,
+  UPCOMING_EVENT_COUNT,
+  type UpcomingEventRow,
+} from "@/lib/crm/queries";
+import { formatDateTime } from "@/lib/format/date";
+import { Alert } from "@/components/ui/alert";
 import { RuledList, RuledRow } from "@/components/ui/ruled-row";
 
 export async function generateMetadata({
@@ -30,13 +38,23 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [canManageMembers, canManageCustomFields, memberships] = await Promise.all([
-    hasPermission(org.id, "manage_members"),
-    hasPermission(org.id, "manage_custom_fields"),
-    getActiveMemberships(),
-  ]);
+  const [canManageMembers, canManageCustomFields, memberships, upcoming] =
+    await Promise.all([
+      hasPermission(org.id, "manage_members"),
+      hasPermission(org.id, "manage_custom_fields"),
+      getActiveMemberships(),
+      // THE FIRST THING ON THIS PAGE THAT READS TENANT DATA. It is a capped
+      // read, not a list surface -- see `loadUpcomingEvents` for why this page
+      // gets `.limit(5)` and a link rather than a fourth pager.
+      loadUpcomingEvents(org.id),
+    ]);
 
   const others = memberships.filter((m) => m.organisationId !== org.id);
+  // WHY THE ROLE AND NOT ONLY THE COUNT. An empty block means "nothing is
+  // booked" for a full-scope viewer and "nothing assigned to you is booked"
+  // for a record-scoped one, and only the role tells the page which sentence
+  // is true. Same argument, same wording, as the events list's scope note.
+  const recordScoped = isRecordScopedRole(org.role);
 
   return (
     <div className="flex flex-col gap-8">
@@ -94,6 +112,86 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
           ) : null}
         </div>
       </div>
+
+      {/* ===================================================================
+          UPCOMING EVENTS -- THE ONE PIECE OF REAL DATA ON THE WORKSPACE HOME
+          ===================================================================
+          FIRST, ABOVE "Where to start", because it is the only section that
+          answers a question somebody actually opened this page with. The two
+          sections below it are navigation.
+
+          NOT A lib/list/ SURFACE, and that is the decision rather than an
+          omission: a fixed five with an explicit `order`, no cursor, no
+          toolbar, no pager, and a link to the real list. `loadUpcomingEvents`
+          carries the argument; `tests/unit/list/one-cursor-only.test.ts` is
+          the guard that a bounded `.limit()` is allowed and a second cursor is
+          not.
+
+          A `<ul role="list">` RATHER THAN THE BARE `<ul>` the two sections
+          below use. Safari with VoiceOver drops list semantics from a `ul`
+          whose `list-style` is `none`, and this list's rows are ruled rather
+          than bulleted, so the role is restored explicitly. The other two
+          sections predate this and are left alone rather than swept in. */}
+      <section className="border border-rule bg-surface p-5">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+          <h2 className="text-xl font-bold text-ink">Upcoming events</h2>
+          <Link
+            href={`/${org.slug}/events`}
+            className="text-base text-primary underline underline-offset-4 hover:text-ink"
+          >
+            See all events
+          </Link>
+        </div>
+
+        {upcoming.outcome === "unavailable" ? (
+          // A FAILED QUERY IS NOT AN EMPTY DIARY. Rendering "Nothing coming
+          // up" here would tell a promoter with a full month that they have
+          // nothing on, which is the one thing an empty state must never do.
+          <div className="mt-4">
+            <Alert tone="error">
+              We couldn’t load your upcoming events just now. Refresh the page
+              to try again — nothing has been deleted.
+            </Alert>
+          </div>
+        ) : upcoming.rows.length === 0 ? (
+          <>
+            <h3 className="mt-4 text-base font-semibold text-ink">
+              Nothing coming up
+            </h3>
+            {/* ONE LINE IN THE SOURCE, deliberately: this is the brief's copy
+                verbatim and tests/unit/crm/source-shape.test.ts asserts the
+                whole sentence. Wrapped across two source lines it renders
+                identically and the assertion cannot see it. */}
+            <p className="mt-1 max-w-prose text-base text-ink-muted">
+              Events you create will appear here once they have a date in the future.
+            </p>
+            {recordScoped ? <ScopeNote /> : null}
+          </>
+        ) : (
+          <>
+            <p className="mt-2 max-w-prose text-base text-ink-muted">
+              The next{" "}
+              <span className="tabular-nums">{UPCOMING_EVENT_COUNT}</span> by
+              date, soonest first.
+            </p>
+            {recordScoped ? <ScopeNote /> : null}
+            <ul role="list" className="mt-4 flex flex-col border-t border-rule">
+              {upcoming.rows.map((event) => (
+                <UpcomingEvent
+                  key={event.id}
+                  event={event}
+                  orgSlug={org.slug}
+                  venueName={
+                    event.venueId
+                      ? (upcoming.venueNames.get(event.venueId) ?? null)
+                      : null
+                  }
+                />
+              ))}
+            </ul>
+          </>
+        )}
+      </section>
 
       {/* An honest empty state rather than invented dashboard tiles. It names
           what is coming and what can be done now -- DESIGN.md: "empty states
@@ -223,6 +321,68 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
         </section>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * One upcoming night: what it is called, when it is, and where.
+ *
+ * THE DATE IS A `<time>` WITH THE RAW INSTANT IN `dateTime` and the UK-local
+ * rendering as its text, and it carries `tabular-nums` -- DESIGN.md § Numerals
+ * applies to "every date column", and five dates stacked in a column is a
+ * column whether or not it is inside a `<table>`.
+ */
+function UpcomingEvent({
+  event,
+  orgSlug,
+  venueName,
+}: {
+  event: UpcomingEventRow;
+  orgSlug: string;
+  /** Null when there is no venue AND when the caller cannot read the one this
+   *  event names -- see `loadVenueNames` for why those collapse deliberately. */
+  venueName: string | null;
+}) {
+  return (
+    <li className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-rule py-3">
+      <Link
+        href={`/${orgSlug}/events/${event.id}`}
+        className="font-semibold break-words text-primary underline underline-offset-4 hover:text-ink"
+      >
+        {event.name}
+      </Link>
+      <time
+        dateTime={event.startsAt}
+        className="text-base tabular-nums text-ink-muted"
+      >
+        {formatDateTime(event.startsAt)}
+      </time>
+      {venueName && event.venueId ? (
+        <Link
+          href={`/${orgSlug}/venues/${event.venueId}`}
+          className="text-base text-primary underline underline-offset-4 hover:text-ink"
+        >
+          {venueName}
+        </Link>
+      ) : (
+        // NOT AN EM DASH IN A ROW OF LINKS. "No venue yet" is the true and
+        // actionable sentence for the common case (an event is routinely
+        // created before the venue is booked), and it is the same sentence
+        // when the venue is one this caller cannot read -- which is the
+        // collision `loadVenueNames` makes on purpose.
+        <span className="text-base text-ink-muted">No venue yet</span>
+      )}
+    </li>
+  );
+}
+
+/** The one sentence a record-scoped viewer needs beside a short list. */
+function ScopeNote() {
+  return (
+    <p className="mt-2 text-sm text-ink-muted">
+      You’re seeing events assigned to you. Others in this workspace may see
+      more.
+    </p>
   );
 }
 
