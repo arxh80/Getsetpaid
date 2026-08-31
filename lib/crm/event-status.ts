@@ -9,11 +9,15 @@
 // input, before any statement runs.
 //
 // BOUND TO THE DATABASE, NOT TRUSTED:
-// tests/integration/crm/event-vocabularies-match-db.test.ts reads both CHECK
-// definitions out of pg_constraint and asserts each set equals the tuple
-// below. Adding a value in a migration without adding it here turns that test
-// red naming this file, and adding it here without the migration turns it red
-// the other way. Same treatment as CUSTOM_FIELD_ENTITY_TYPES, the tier table,
+// tests/integration/crm/event-vocabularies-match-db.test.ts reads all four
+// CHECK definitions -- `events_status_check`, `events_event_type_check`,
+// `event_status_changes_to_status_check` and
+// `event_status_changes_from_status_check` (the latter two added by Phase 3
+// Task 6, supabase/migrations/20260901031000_event_status_changes.sql) -- out
+// of pg_constraint and asserts each set equals the tuple below. Adding a
+// value in a migration without adding it here turns that test red naming
+// this file, and adding it here without the migration turns it red the other
+// way. Same treatment as CUSTOM_FIELD_ENTITY_TYPES, the tier table,
 // MFA_REQUIRED_ROLES and PAST_DUE_GRACE_DAYS.
 //
 // DELIBERATELY DATA ONLY -- no labels, no tones, no React. Phase 3 Task 3 owns
