@@ -124,6 +124,28 @@ test("the signed-out login page has no automated accessibility violations", asyn
 test("the golden-path pages have no automated accessibility violations", async ({
   page,
 }) => {
+  // ===========================================================================
+  // THE ONE TEST IN THIS SUITE WITH NO TIME HEADROOM, AND IT IS DECLARED
+  // ===========================================================================
+  // Seven pages, an axe scan each, against a DEV server -- so every page in the
+  // list below pays a first-hit Turbopack compile the first time this suite
+  // touches it. Measured at Phase 3 Task 7 on a fully warm server (every route
+  // already compiled): 49.6s against the config's 60s budget. Cold, inside a
+  // full `pnpm test:e2e` run, it exceeds it and fails with
+  // "Test timeout of 60000ms exceeded" -- an EMPTY failure with no violation
+  // attached, which reads exactly like an accessibility regression and is not
+  // one. It failed that way twice in Task 7's gate runs and passed every time
+  // it was run on its own.
+  //
+  // `test.slow()` triples the budget for this test alone rather than raising
+  // `timeout` in playwright.config.ts, because every other test in the suite
+  // finishes in seconds and a global raise would hide a real hang in one of
+  // them. WHAT IT DOES NOT DO IS MAKE THE SUITE FASTER: the cost is real, it
+  // grows with every page added to the list below, and the durable fix is to
+  // split this into one test per page so a slow page is named rather than
+  // averaged. Filed in FOLLOW-UPS.md.
+  test.slow();
+
   await signIn(page, world, "manager");
 
   // The same surfaces golden-path.spec.ts walks: a list, a create form, a

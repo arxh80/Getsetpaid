@@ -1899,6 +1899,28 @@ corrections are the useful part. Each now says what was actually done.
   name. A permanent version of THAT would want its own fixture with enough rows
   to page without `?…_size=1`.
 
+- **The axe golden-path test has no time headroom, and now says so.**
+  `tests/e2e/accessibility.spec.ts`'s seven-page scan measured **49.6s against
+  the config's 60s budget** on a fully warm dev server at this task's HEAD.
+  Cold, inside a full `pnpm test:e2e`, it exceeds the budget and fails with
+  "Test timeout of 60000ms exceeded" — an EMPTY failure with no violation
+  attached, which reads exactly like an accessibility regression and is not
+  one. It failed that way twice in this task's gate runs and passed every time
+  it was run alone.
+
+  **This task is a contributing cause and not the root one.** `lib/crm/queries.ts`
+  grew by ~300 lines and now imports `lib/crm/events-list.ts`, and every CRM
+  page imports `queries.ts` — so each of the seven first-hit Turbopack compiles
+  got marginally more expensive. The root cause is a single test that does
+  seven pages' work under one 60s budget.
+
+  **Papered over deliberately, with `test.slow()` on that one test** (tripling
+  its budget, rather than raising `timeout` globally and hiding a real hang in
+  one of the fast tests). **The durable fix is to split it into one test per
+  page**, so a slow page is named rather than averaged and adding an eighth
+  page does not silently spend another test's headroom. Worth doing the next
+  time that file is opened.
+
 - **`app/(app)/[orgSlug]/page.tsx`'s two older sections use a bare `<ul>`.** The
   upcoming-events block added here carries `role="list"`, because Safari with
   VoiceOver drops list semantics from a `ul` whose `list-style` is `none` and
