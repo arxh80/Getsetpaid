@@ -1,6 +1,11 @@
 import { expect, test } from "@playwright/test";
 import {
+  ALT_VENUE_NAME,
+  ARTIST_NAME,
   EVENT_NAMES,
+  OTHER_ARTIST_NAME,
+  ROOM_NAME,
+  VENUE_NAME,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
@@ -369,4 +374,101 @@ test("the workspace home shows this tenant's upcoming events and no other's", as
   await expect(
     page.locator(`main a[href="/${world.orgSlug}/venues/${world.venueId}"]`).first(),
   ).toBeVisible();
+});
+
+// ===========================================================================
+// PHASE 3 TASK 8: THE PICKERS, AND THE OTHER TENANT'S LINEUP
+// ===========================================================================
+// Until Task 8's fixtures the other tenant's `event_lineup` was EMPTY, so every
+// cross-tenant event assertion above was satisfied by there being no lineup to
+// leak. `event_lineup` has its own three policies (20260901011000) reached
+// through `event_lineup_select_via_event`, which is a different expression from
+// `events_select_view_crm`, and no assertion made from a browser could tell the
+// two apart. It now has an artist and a slot.
+//
+// AND PICKERS ARE THE SHAPE THAT ESCAPES A LIST ASSERTION. Phase 2's Task 4
+// review found it on `loadLinkOptions`: a `<select>` is a SECOND query with its
+// own filters, and dropping one is invisible to every assertion made about the
+// list the same page renders. The event form has three of them (venue, room,
+// artist) and every one is a fresh chance to make it.
+
+test("the event form's pickers offer this tenant's records and no other's", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}/events/new`);
+
+  const venuePicker = page.locator('select[name="venueId"]');
+  await expect(venuePicker).toHaveCount(1);
+  const venueOptions = await venuePicker.locator("option").allTextContents();
+  // NON-VACUITY FIRST, and with a denominator: "No venue yet" plus this
+  // tenant's two venues is three, so an empty picker cannot satisfy the
+  // absences below.
+  expect(venueOptions).toHaveLength(3);
+  expect(venueOptions.join("\n")).toContain(VENUE_NAME);
+  expect(venueOptions.join("\n")).toContain(ALT_VENUE_NAME);
+  expect(venueOptions.join("\n")).not.toContain("Other Tenant Venue");
+
+  const roomPicker = page.locator('select[name="venueRoomId"]');
+  await expect(roomPicker).toHaveCount(1);
+  const roomOptions = await roomPicker.locator("option").allTextContents();
+  // "No particular room" plus the one live room in this tenant.
+  expect(roomOptions).toHaveLength(2);
+  expect(roomOptions.join("\n")).toContain(ROOM_NAME);
+
+  // THE ARTIST PICKER LIVES ON THE RECORD, NOT ON THE CREATE FORM -- the
+  // lineup is added on the event's own page, so this half is asserted there.
+  await page.goto(`/${world.orgSlug}/events/${world.managerOwnedEventId}`);
+  const artistPicker = page.locator('select[name="artistId"]');
+  await expect(artistPicker).toHaveCount(1);
+  const artistOptions = await artistPicker.locator("option").allTextContents();
+  // "Choose an artist" plus this tenant's one artist.
+  expect(artistOptions).toHaveLength(2);
+  expect(artistOptions.join("\n")).toContain(ARTIST_NAME);
+  expect(artistOptions.join("\n")).not.toContain(OTHER_ARTIST_NAME);
+
+  // AND THE OTHER TENANT'S ARTIST IS NOT REACHABLE BY ID EITHER, which is the
+  // half a picker assertion cannot make: a picker that filters correctly and a
+  // detail route that does not is the IDOR shape.
+  await expectRefused(page, `/${world.orgSlug}/artists/${world.otherOrgArtistId}`);
+  await expect(REFUSED(page)).not.toContainText(OTHER_ARTIST_NAME);
+});
+
+test("a soft-deleted event is on the deleted screen and nowhere else", async ({
+  page,
+}) => {
+  // ITS OWN FIXTURE EVENT, NEVER A RECORD ANOTHER TEST NEEDS LIVE (Task 8
+  // brief § 1). Deleting a shared record inside a test makes every later test
+  // in the file depend on the order this one ran in, and that hidden ordering
+  // dependency is a known Phase 2 defect -- reproducing it here would be
+  // self-inflicted. `EVENT_NAMES.softDeleted` is planted already deleted, in
+  // the same statement that creates it, so there is no window in which the
+  // world holds a live event nobody meant to create.
+  await signIn(page, world, "manager");
+
+  // 1. Not on the live list.
+  await page.goto(`/${world.orgSlug}/events`);
+  await expect(page.locator("main")).not.toContainText(EVENT_NAMES.softDeleted);
+  // Non-vacuity: the live list is not empty, so the absence above is a filter
+  // working rather than a page that failed to render.
+  await expect(page.locator("main")).toContainText(EVENT_NAMES.managerOwned);
+
+  // 2. On the deleted list.
+  await page.goto(`/${world.orgSlug}/events/deleted`);
+  await expect(page.locator("main")).toContainText(EVENT_NAMES.softDeleted);
+  // And that screen shows ONLY deleted events, which is the assertion that
+  // stops it being "every event with a different heading".
+  await expect(page.locator("main")).not.toContainText(EVENT_NAMES.managerOwned);
+
+  // 3. AND ITS OWN PAGE STILL SERVES IT, with the restore control -- `loadEvent`
+  //    deliberately does not filter `deleted_at`, because the restore queue
+  //    links straight here and a 404 after deleting is the shape that makes
+  //    people afraid of the delete button.
+  await page.goto(`/${world.orgSlug}/events/${world.softDeletedEventId}`);
+  await expect(
+    page.getByRole("heading", { name: EVENT_NAMES.softDeleted, level: 1 }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Restore event/i }),
+  ).toHaveCount(1);
 });
