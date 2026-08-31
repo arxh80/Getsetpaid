@@ -35,8 +35,26 @@ import "server-only";
 //      plan time on every read of a different entity type; a polymorphic one
 //      is not, and executes on all of them. Measured, and both are fine: see
 //      20260829050000, which corrects 20260829040000's header on this --
-//      pruning is PARTIAL, 10 of the view's 13 branch scans, not all of them.
-//      Every branch shipped today reaches an index that already existed.
+//      pruning is PARTIAL, and the numbers moved in Phase 3 Task 6.
+//
+//      MEASURED AGAIN IN TASK 6, on 20,018 events / 40,054 lineup rows /
+//      40,320 status rows, VACUUM ANALYZEd, as a real `authenticated` role.
+//      The view is now 13 top-level branches, the first a CTE unioning 6
+//      entity tables, so the planner considers 18 branch scans. FIFTEEN emit a
+//      literal subject_type and are eliminated at plan time; the same THREE
+//      are polymorphic and are not. Every one of the three reads executes
+//      exactly SIX of the 18:
+//        event   events (CTE) + merges x2 + custom_field_values
+//                + event_lineup (event side)  -> event_lineup_event_id_org_idx
+//                + event_status_changes       -> event_status_changes_event_id_org_changed_at_idx
+//        artist  artists (CTE) + merges x2 + custom_field_values
+//                + artist_representations + event_lineup (artist side)
+//                                             -> event_lineup_artist_id_org_idx
+//        venue   venues (CTE) + merges x2 + custom_field_values
+//                + venue_rooms + events (venue side)
+//                                             -> events_venue_id_org_idx
+//      Every branch shipped today reaches an index that already existed,
+//      except the status table's own, which ships with it.
 //
 // WHAT THE CONTRACT DOES NOT PROMISE, and a Phase 4 source must not assume:
 //   * NOT O(page). The union has no covering index, so each page SORTS every

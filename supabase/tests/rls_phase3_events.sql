@@ -1825,11 +1825,32 @@ select ev.val('EM4  ...and the trigger wrote a SECOND row, draft->confirmed, act
          where event_id='ee110000-0000-0000-0000-0000000000e6'$$, :'pmanager'),
   '2/draft->confirmed/true');
 
--- THE GUARD, AND THE MUTATION IT CATCHES. Removing
--- `old.status is distinct from new.status` from
--- private.record_event_status_change() makes EM6 read '3' -- a spurious
--- "Status changed from Confirmed to Confirmed" entry on the timeline for every
--- save that touches anything else.
+-- TWO LAYERS KEEP A SPURIOUS ROW OFF THIS TABLE, AND THEY CATCH DIFFERENT
+-- STATEMENTS. Measured in Task 6 by removing each one and running this suite,
+-- not reasoned about:
+--
+--   `after insert or update OF STATUS`   the column list. An UPDATE that does
+--                                        not MENTION status never fires the
+--                                        trigger at all -- so EM5/EM6 below
+--                                        stay green even with the body's guard
+--                                        removed. (First draft of this file
+--                                        expected EM6 to be the assertion that
+--                                        catches it; the mutation run said
+--                                        otherwise, 0 assertions red.)
+--   `old.status is distinct from new.status`   the body's guard. This is what
+--                                        catches an UPDATE that DOES mention
+--                                        status and does not change it -- and
+--                                        that is not a contrived statement: a
+--                                        PostgREST PATCH sends every column the
+--                                        client was holding, so the edit form
+--                                        saving a name change ships
+--                                        `status=<unchanged>` with it. Without
+--                                        the guard, every save through the edit
+--                                        form would grow a "Status changed from
+--                                        Confirmed to Confirmed" entry.
+--
+-- EM6 is the first layer's assertion; EM6b is the second's, and EM6b is the one
+-- the mutation flips.
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 select ev.try('EM5  ...an edit that does NOT touch status still succeeds',
@@ -1837,7 +1858,21 @@ select ev.try('EM5  ...an edit that does NOT touch status still succeeds',
      where id='ee110000-0000-0000-0000-0000000000e6'$$, 'ok(1)');
 reset role; reset request.jwt.claims;
 
-select ev.val('EM6  ...and wrote NO status row -- the trigger''s distinct-from guard',
+select ev.val('EM6  ...and wrote NO status row -- the trigger''s `of status` column list',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '2');
+
+-- THE EDIT FORM'S ACTUAL STATEMENT: status IS in the SET list and is unchanged,
+-- which is what a PostgREST PATCH of a whole row looks like. The trigger fires;
+-- the body's guard is the only thing that stops it writing.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.try('EM5b ...and a save that RE-SENDS the same status succeeds too',
+  $$update public.events set status='confirmed', notes='saved again'
+     where id='ee110000-0000-0000-0000-0000000000e6'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select ev.val('EM6b ...and STILL wrote no row -- the `is distinct from` guard, alone',
   $$select count(*)::text from public.event_status_changes
      where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '2');
 
