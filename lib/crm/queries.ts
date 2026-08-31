@@ -49,7 +49,28 @@ import {
   type LineupRow,
   type LineupSortKey,
 } from "@/lib/crm/lineup-list";
-import type { RawSearchParams } from "@/lib/list/params";
+// PHASE 3 TASK 7. The two DERIVED events specs -- the same table as the events
+// list, read from a venue's page and from an artist's, each with its own
+// query-string namespace. See lib/crm/events-list.ts for why they are separate
+// spec objects rather than a reuse of EVENT_LIST.
+import {
+  ARTIST_EVENTS_LIST,
+  artistEventsParams,
+  EVENT_SELECT,
+  mapEventRow,
+  VENUE_EVENTS_LIST,
+  venueEventsParams,
+  type ArtistEventsFilterKey,
+  type ArtistEventsSortKey,
+  type EventRow,
+  type VenueEventsFilterKey,
+  type VenueEventsSortKey,
+} from "@/lib/crm/events-list";
+import {
+  MAX_PAGE_SIZE,
+  type ListParams,
+  type RawSearchParams,
+} from "@/lib/list/params";
 import { fetchListPage, type ListPage, type ListQuery } from "@/lib/list/query";
 
 // Re-exported so the shape the picker returns is nameable from the module that
@@ -1575,4 +1596,302 @@ export async function loadArtistsForPicker(
   organisationId: string,
 ): Promise<{ id: string; name: string }[]> {
   return loadLinkOptions("artists", organisationId, []);
+}
+
+// ===========================================================================
+// PHASE 3 TASK 7: THE THREE CROSS-ENTITY EVENT SURFACES
+// ===========================================================================
+// PRD § 6.4 wants a venue's event history on the venue's page, § 6.3 wants an
+// artist's on the artist's page, and the workspace home wants the next five
+// nights. All three read `public.events`; none of them is the events LIST.
+//
+// The first two are `fetchListPage` over derived specs (VENUE_EVENTS_LIST and
+// ARTIST_EVENTS_LIST, lib/crm/events-list.ts) and are paginated like every
+// other list in the product. The third is a fixed five with `.limit(5)` and no
+// cursor at all -- see `loadUpcomingEvents` for why that is a capped read
+// rather than a fourth pager.
+//
+// THE ROW SHAPE IS `EventRow` AND THE SELECT IS `EVENT_SELECT`, unchanged and
+// deliberately: a second projection of the same table would be a second thing
+// to keep in step with the column list. `mapEventRow` (lib/crm/events-list.ts)
+// is the one mapper all of them share, extracted from the events list page by
+// this task for exactly that reason.
+
+/**
+ * The events at one venue -- PRD § 6.4's "event history".
+ *
+ * AN ORDINARY SECOND EQUALITY COLUMN, exactly like `ARTIST_FEE_LIST`'s
+ * `artist_id` on the artist page: `fetchListPage` pins `organisation_id` and
+ * writes `deleted_at is null` itself, and `applyFilters` pins the venue. The
+ * id comes from the resolved route, never from the query string.
+ *
+ * THE RAW QUERY STRING IN, THE PARSED PARAMS BACK OUT, for
+ * `loadLineupForEvent`'s two reasons: `tests/unit/list/one-cursor-only.test.ts`
+ * requires every `fetchListPage` caller to parse through lib/list, and
+ * `venueEventsParams` owns both this spec's namespace AND the `venueevents_q`
+ * drop -- a caller that parsed its own params would silently lose the drop.
+ *
+ * IT DOES NOT LOAD VENUE NAMES. Every row is at THIS venue, whose name is the
+ * page's own heading; a Venue column would be the same string on every line.
+ * That is the one column this surface drops relative to the events list.
+ */
+export async function loadEventsForVenue(
+  organisationId: string,
+  venueId: string,
+  raw: RawSearchParams,
+): Promise<{
+  params: ListParams<VenueEventsSortKey, VenueEventsFilterKey>;
+  page: ListPage<EventRow>;
+}> {
+  const params = venueEventsParams(raw);
+  const page = await fetchListPage<
+    EventRow,
+    VenueEventsSortKey,
+    VenueEventsFilterKey
+  >({
+    spec: VENUE_EVENTS_LIST,
+    params,
+    organisationId,
+    table: "events",
+    select: EVENT_SELECT,
+    mapRow: mapEventRow,
+    applyFilters: (query: ListQuery) => query.eq("venue_id", venueId),
+  });
+  return { params, page };
+}
+
+/**
+ * How many of an artist's slots the two-step read below will consider.
+ *
+ * `MAX_PAGE_SIZE` (50), and it is that number rather than a new one because it
+ * is the ceiling on a page: taking more ids than a page can hold would buy rows
+ * the pager could never reach through THIS candidate set anyway, since step two
+ * rebuilds the set on every request.
+ */
+const ARTIST_EVENTS_ID_CAP = MAX_PAGE_SIZE;
+
+/**
+ * The events an artist is on -- PRD § 6.3's "booking/event history".
+ *
+ * ===========================================================================
+ * TWO STEPS, BECAUSE `fetchListPage` READS ONE RELATION
+ * ===========================================================================
+ * The relation that knows which events an artist is on is `event_lineup`, and
+ * the rows this surface must RENDER are `events`. Three shapes were available:
+ *
+ *   1. A PostgREST embed filter -- `events?event_lineup.artist_id=eq....`.
+ *      Not reachable: `fetchListPage` takes one `table` and one `select`
+ *      literal and runs a `count=exact` head request and up to two boundary
+ *      probes beside the page query, and an embed changes the shape of all
+ *      four. `loadVenueNames` records the same refusal for the same reason.
+ *   2. Page `event_lineup` and read the events for each slot. That is a SECOND
+ *      CURSOR over a second relation, ordered by something that is not the date
+ *      the panel sorts by -- and lib/crm/activity.ts's header states the rule
+ *      outright: "a second cursor in one codebase is a defect".
+ *   3. THIS. Read the artist's slots, bounded and ordered, collect at most
+ *      `ARTIST_EVENTS_ID_CAP` event ids, and page `events` with
+ *      `.in("id", ids)`. One cursor, one relation, a bounded query string.
+ *
+ * ===========================================================================
+ * THE CAP IS REAL, AND THIS IS WHAT IT COSTS
+ * ===========================================================================
+ * AN ARTIST ON MORE THAN 50 EVENTS DOES NOT SHOW THEM ALL. Step one takes the
+ * 50 most recently ADDED slots (`created_at desc, id asc` -- ordered before it
+ * caps, which is the defect `loadLineupForEvent` was corrected for at review
+ * I-6), and step two then pages those 50 by DATE, 25 at a time. So the panel is
+ * honest about what it shows -- a window over the artist's slots, stable
+ * between reloads -- and it is NOT "the 50 most recent events", because the
+ * date lives on `events` and step one cannot order by it.
+ *
+ * THE SAME CLASS OF NAMED STOPGAP AS `LINK_PANEL_LIMIT`, and it is in
+ * FOLLOW-UPS.md § "Opened by Task 7" with the shape of the real fix: either a
+ * `security definer` list function that joins the two tables and exposes one
+ * keyset-pageable relation, or a denormalised artist-id array on `events` with
+ * a GIN index. Both are migrations, both want measuring against a real booking
+ * history, and the choice belongs with the feature that needs it.
+ *
+ * FEWER THAN 50 ROWS IS ORDINARY AND NOT A BUG: a slot on a SOFT-DELETED event
+ * is still live (the event's deletion does not cascade to its bill -- that is
+ * what makes restore restore the whole night), so its id reaches step two and
+ * `fetchListPage`'s own `deleted_at is null` drops it.
+ */
+export async function loadEventsForArtist(
+  organisationId: string,
+  artistId: string,
+  raw: RawSearchParams,
+): Promise<{
+  params: ListParams<ArtistEventsSortKey, ArtistEventsFilterKey>;
+  page: ListPage<EventRow>;
+  venueNames: ReadonlyMap<string, string>;
+}> {
+  const params = artistEventsParams(raw);
+  const supabase = await createClient();
+
+  // STEP ONE. The caller's own client, so RLS decides which slots come back;
+  // `organisation_id` is pinned anyway, because multi-org membership means RLS
+  // alone would allow the other workspace's rows (lib/list/query.ts clause 1).
+  const { data, error } = await supabase
+    .from("event_lineup")
+    .select("event_id")
+    .eq("organisation_id", organisationId)
+    .eq("artist_id", artistId)
+    // A REMOVED SLOT IS NOT A BOOKING. `fetchListPage` writes this clause for
+    // the lists it runs; this query is not one of those, so it is written out.
+    .is("deleted_at", null)
+    // ORDER BEFORE THE CAP, or the 50 that survive it are a different 50 on
+    // every render. `id` closes the tie, so the window is total and stable.
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: true })
+    .limit(ARTIST_EVENTS_ID_CAP);
+
+  if (error) {
+    console.error("[crm] artist event history lookup failed:", error.message);
+    // A FAILED QUERY IS NOT AN EMPTY HISTORY. `EntityList` renders "we couldn't
+    // load events" for this outcome, which is the true statement.
+    return { params, page: { outcome: "unavailable" }, venueNames: new Map() };
+  }
+
+  const ids = [...new Set((data ?? []).map((row) => String(row.event_id)))];
+  if (ids.length === 0) {
+    // NO IDS MEANS NO QUERY, for `loadVenueNames`' reason and one more:
+    // `.in("id", [])` is `id=in.()` on the wire, which is a request whose
+    // acceptance is PostgREST's business rather than this module's. An artist
+    // with no bookings is the ordinary state of a new record, so this is the
+    // common path, not the edge.
+    return {
+      params,
+      page: {
+        outcome: "loaded",
+        rows: [],
+        hasNext: false,
+        hasPrevious: false,
+        total: 0,
+        firstCursor: null,
+        lastCursor: null,
+        recovered: null,
+      },
+      venueNames: new Map(),
+    };
+  }
+
+  // STEP TWO. One relation, one cursor, the shared implementation.
+  const page = await fetchListPage<
+    EventRow,
+    ArtistEventsSortKey,
+    ArtistEventsFilterKey
+  >({
+    spec: ARTIST_EVENTS_LIST,
+    params,
+    organisationId,
+    table: "events",
+    select: EVENT_SELECT,
+    mapRow: mapEventRow,
+    applyFilters: (query: ListQuery) => query.in("id", ids),
+  });
+
+  // The venue names for THIS page's rows only -- at most one page's worth of
+  // ids, and usually far fewer. See `loadVenueNames` for why this is a second
+  // query and for what a missing entry means.
+  const venueNames =
+    page.outcome === "loaded"
+      ? await loadVenueNames(
+          organisationId,
+          page.rows.flatMap((row) => (row.venueId ? [row.venueId] : [])),
+        )
+      : new Map<string, string>();
+
+  return { params, page, venueNames };
+}
+
+/** How many events the workspace home's "Upcoming events" block shows. */
+export const UPCOMING_EVENT_COUNT = 5;
+
+/** One row of the workspace home's upcoming-events block. */
+export interface UpcomingEventRow {
+  id: string;
+  name: string;
+  startsAt: string;
+  venueId: string | null;
+}
+
+/**
+ * The next few events in this workspace, soonest first.
+ *
+ * ===========================================================================
+ * A CAPPED READ, NOT A LIST SURFACE, AND THAT IS THE DECISION
+ * ===========================================================================
+ * `.limit(UPCOMING_EVENT_COUNT)` with an explicit `order` and no cursor. It is
+ * NOT a `fetchListPage` call and must not become one: a pager on the workspace
+ * home would be a fourth query-string namespace on a page that has no list
+ * vocabulary at all, for a block whose whole job is to be five lines and a link
+ * to the real list. `tests/unit/list/one-cursor-only.test.ts` allows exactly
+ * this shape -- "a bounded `.limit()` with no cursor, which is a capped read
+ * rather than a paginated one ... What it is not is a page-2, which is why
+ * nothing offers one." The "See all events" link is the page-2.
+ *
+ * ORDER BEFORE THE CAP, and `id` closes the tie so two events starting at the
+ * same instant do not swap places between reloads.
+ *
+ * THE BOUND IS THE SERVER'S CLOCK, taken once, here -- never off the query
+ * string. The events list makes the same choice for its `when` filter and
+ * states the same honest limit: the next request recomputes it, so an event
+ * crossing the wall clock between two loads legitimately leaves the block.
+ *
+ * `deleted_at is null` IS WRITTEN OUT. Nothing writes it for this query --
+ * `applyScope` is `fetchListPage`'s and this is not one of its calls -- and a
+ * missing soft-delete predicate here would make the workspace home the one
+ * surface in the product showing deleted records, on the FIRST screen a user
+ * sees.
+ *
+ * RECORD SCOPE IS THE POLICY'S, NOT THIS QUERY'S: a Standard User's block is
+ * short because `events_select_*` returns their own rows, which is why the
+ * caller renders a scope note beside it rather than letting the shortness speak
+ * for itself.
+ */
+export async function loadUpcomingEvents(organisationId: string): Promise<
+  | {
+      readonly outcome: "loaded";
+      readonly rows: readonly UpcomingEventRow[];
+      readonly venueNames: ReadonlyMap<string, string>;
+    }
+  | { readonly outcome: "unavailable" }
+> {
+  const supabase = await createClient();
+  const now = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("events")
+    .select("id, name, starts_at, venue_id")
+    .eq("organisation_id", organisationId)
+    .is("deleted_at", null)
+    .filter("starts_at", "gte", now)
+    .order("starts_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(UPCOMING_EVENT_COUNT);
+
+  if (error || !data) {
+    if (error) {
+      console.error("[crm] upcoming events lookup failed:", error.message);
+    }
+    // A FAILED QUERY IS NOT AN EMPTY DIARY. "Nothing coming up" is a claim
+    // about the customer's data, and making it because the database was
+    // unreachable reads as deletion -- the rule this whole file opens with.
+    return { outcome: "unavailable" };
+  }
+
+  const rows: UpcomingEventRow[] = data.map((row) => ({
+    id: String(row.id),
+    name: String(row.name),
+    startsAt: String(row.starts_at),
+    venueId: (row.venue_id as string | null) ?? null,
+  }));
+
+  return {
+    outcome: "loaded",
+    rows,
+    venueNames: await loadVenueNames(
+      organisationId,
+      rows.flatMap((row) => (row.venueId ? [row.venueId] : [])),
+    ),
+  };
 }

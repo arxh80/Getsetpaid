@@ -117,6 +117,16 @@ function byPath(path: string): string {
 const SPEC_PARAM_WRAPPERS = [
   { call: "activityParams", module: "lib/crm/activity.ts" },
   { call: "lineupParams", module: "lib/crm/lineup-list.ts" },
+  // PHASE 3 TASK 7. The venue page's "Events here" and the artist page's
+  // "Event history" are the third and fourth surfaces in the product that
+  // declare a real `searchColumn` and render no search control, so each drops
+  // its own `<prefix>q`. Both `fetchListPage` callers are in
+  // `lib/crm/queries.ts` (server-only); both wrappers are in
+  // `lib/crm/events-list.ts`, which stays pure so tests/unit can drive them --
+  // and TWO WRAPPERS SHARING ONE MODULE is new, which is why the loop below
+  // resolves per wrapper rather than per module.
+  { call: "venueEventsParams", module: "lib/crm/events-list.ts" },
+  { call: "artistEventsParams", module: "lib/crm/events-list.ts" },
 ] as const;
 
 describe("every paginated list shares one implementation", () => {
@@ -124,12 +134,17 @@ describe("every paginated list shares one implementation", () => {
   const parsers = callers("parseListParams(");
 
   it("finds the CALL SITES at all, so this suite cannot pass vacuously", () => {
-    // SEVENTEEN as of Phase 3 Task 3, raised from fifteen: contacts,
+    // TWENTY as of Phase 3 Task 7, raised from seventeen: contacts,
     // companies, artists, agencies, venues and their five `deleted` twins
     // (10), the duplicates queue and its `resolved` twin (12), merge history
     // (13), the artist fee list (14), the activity timeline in
-    // `lib/crm/activity.ts` (15), and now the events list (16) and the deleted
-    // events list (17).
+    // `lib/crm/activity.ts` (15), the events list (16), the deleted events
+    // list (17), the lineup panel in `lib/crm/queries.ts` (18), and now the
+    // venue page's "Events here" (19) and the artist page's "Event history"
+    // (20) -- BOTH ADDED TO `lib/crm/queries.ts`, WHICH ALREADY HELD ONE. A
+    // file count would have moved by zero for this task; L1143 changed this to
+    // occurrences for exactly that case, and this is the first task to
+    // collect on it.
     //
     // RAISING IT IS THE OBLIGATION, not paperwork. It is a FLOOR, so Task 3
     // could have added two lists and left it at fifteen and nothing would have
@@ -142,7 +157,7 @@ describe("every paginated list shares one implementation", () => {
     // exactly why the mismatch between this assertion and the sentence above
     // it went unnoticed. A second list added to a file that already has one
     // would not move a file count.
-    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(17);
+    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(20);
   });
 
   it("every fetchListPage caller also parses its params through lib/list", () => {
@@ -188,10 +203,11 @@ describe("every paginated list shares one implementation", () => {
 
   it("every spec params wrapper really does go through parseListParams", () => {
     // The other half of the transitive rule above, asserted on its own so that
-    // emptying a wrapper's body cannot quietly satisfy the pairing check. TWO
-    // is the denominator: `activityParams` and `lineupParams`, and a third
-    // added without a row here is a wrapper the pairing check cannot see.
-    expect(SPEC_PARAM_WRAPPERS).toHaveLength(2);
+    // emptying a wrapper's body cannot quietly satisfy the pairing check. FOUR
+    // is the denominator -- `activityParams`, `lineupParams`,
+    // `venueEventsParams` and `artistEventsParams` -- and a fifth added
+    // without a row here is a wrapper the pairing check cannot see.
+    expect(SPEC_PARAM_WRAPPERS).toHaveLength(4);
     for (const wrapper of SPEC_PARAM_WRAPPERS) {
       const body = code(byPath(wrapper.module));
       expect(body, wrapper.call).toContain(`export function ${wrapper.call}(`);
@@ -279,6 +295,17 @@ describe("the list specs that differ from the others say how", () => {
         "utf8",
       ),
     ).toContain("activity_events");
+  });
+
+  it("both Task 7 surfaces namespace their keys, because they share a page", () => {
+    // The venue page carries two lib/list/ surfaces and the artist page three,
+    // so a missing prefix on either of these is two lists reading one `after`.
+    // The VALUES, their distinctness and the cardinality of the whole set are
+    // asserted in tests/unit/crm/events-list.test.ts § 1; this is the census's
+    // own cheap check that the field is present at all.
+    const events = readFileSync(root + "lib/crm/events-list.ts", "utf8");
+    expect(events).toContain('paramPrefix: "venueevents_"');
+    expect(events).toContain('paramPrefix: "artistevents_"');
   });
 
   it("the timeline namespaces its query keys, because it shares a page", () => {
