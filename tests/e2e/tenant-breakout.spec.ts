@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { setUpWorld, tearDownWorld, type E2eWorld } from "./support/fixtures";
+import {
+  EVENT_NAMES,
+  setUpWorld,
+  tearDownWorld,
+  type E2eWorld,
+} from "./support/fixtures";
 import { signIn } from "./support/sign-in";
 
 // TENANT BREAKOUT AND RECORD SCOPE, THROUGH THE BROWSER.
@@ -205,4 +210,121 @@ test("the pager announces an unavailable direction rather than removing it", asy
     "true",
   );
   await expect(pager.getByText("Next")).toHaveAttribute("aria-disabled", "true");
+});
+
+// ===========================================================================
+// PHASE 3 TASK 7: THE CROSS-ENTITY EVENT SURFACES
+// ===========================================================================
+// Three new page-level reads of `public.events` land on pages that are ABOUT
+// something else -- a venue, an artist, the workspace itself -- and each one
+// is a fresh chance to make the mistake this file exists to catch: a query
+// that trusts a path parameter, or a list that reads without the tenant
+// filter because RLS "will handle it". The psql suite proves the POLICIES on
+// `events`; only a page can prove the page.
+//
+// THE STATUS IS ASSERTED ON THESE, through `expectRefused`. The Task 7 brief
+// asked for `expect(response.status()).toBe(404)` on the new assertions
+// because the existing ones "assert body text only" -- which was true when it
+// was written and is no longer: final review I-11 put the status assertion
+// into `expectRefused` above and every refusal in this file now goes through
+// it. So the new assertions inherit it rather than adding a second copy.
+
+test("a venue page lists that venue's events, and only this tenant's", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}/venues/${world.venueId}`);
+
+  // NON-VACUITY FIRST. Both of this tenant's events are at this venue, so a
+  // page that rendered nothing at all would satisfy every absence below.
+  await expect(page.locator("main")).toContainText(EVENT_NAMES.managerOwned);
+  await expect(page.locator("main")).toContainText(EVENT_NAMES.standardOwned);
+
+  // AND THE OTHER TENANT'S EVENT IS NOT ON IT. The other tenant's event is at
+  // the other tenant's venue, so this is the tenant filter and the venue
+  // equality both -- and the point is that neither is enough on its own: an
+  // `applyFilters` that pinned `venue_id` and dropped `organisation_id` would
+  // still look right on this page, which is why the direct-id assertions below
+  // exist beside it.
+  await expect(page.locator("main")).not.toContainText(EVENT_NAMES.otherTenant);
+});
+
+test("another tenant's event is not reachable by id, from either slug", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+  // Under the OTHER tenant's slug -- refused because the workspace is not ours.
+  await expectRefused(page, `/${world.otherOrgSlug}/events/${world.otherOrgEventId}`);
+  // And under OUR OWN slug, which is the interesting one: the workspace is
+  // ours, the id is a real row, and only the tenant filter separates them.
+  // `loadEvent` takes `organisation_id` as an argument and does not read it
+  // off the path; this is the assertion that says so from outside.
+  await expectRefused(page, `/${world.orgSlug}/events/${world.otherOrgEventId}`);
+  await expect(REFUSED(page)).not.toContainText(EVENT_NAMES.otherTenant);
+});
+
+test("record scope holds on the venue's event list and on the event", async ({
+  page,
+}) => {
+  // A standard user is a MEMBER here, so nothing about the TENANT refuses
+  // them. `private.full_scope_organisations()` excluding their role is the
+  // only control -- a different control from the one above, on a surface that
+  // did not exist when the contacts version of this test was written.
+  await signIn(page, world, "standard_user");
+  await page.goto(`/${world.orgSlug}/venues/${world.venueId}`);
+
+  // Their own event is there...
+  await expect(page.locator("main")).toContainText(EVENT_NAMES.standardOwned);
+  // ...and the manager's, at the same venue in the same workspace, is not.
+  await expect(page.locator("main")).not.toContainText(EVENT_NAMES.managerOwned);
+  // The list says WHY it is short, rather than leaving the shortness to speak
+  // for itself -- the copy failure Phase 2 Task 3 shipped on the contacts list
+  // and a browser found ("No contacts yet" on a 71-contact workspace).
+  await expect(page.locator("main")).toContainText(
+    "You’re seeing events assigned to you",
+  );
+
+  // And the record itself refuses them, which is the half a list assertion
+  // cannot make: a list that filters correctly and a detail route that does
+  // not is exactly the IDOR shape.
+  await expectRefused(
+    page,
+    `/${world.orgSlug}/events/${world.managerOwnedEventId}`,
+  );
+});
+
+test("an artist's event history comes from the lineup, not from a column", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}/artists/${world.artistId}`);
+
+  // The artist is on the manager-owned event's bill and on nothing else, so
+  // this is the two-step read (`event_lineup` -> ids -> `events`) working end
+  // to end: the name can only be on this page if BOTH queries ran and agreed.
+  await expect(page.locator("main")).toContainText(EVENT_NAMES.managerOwned);
+  // The other event at the same venue is NOT on their bill, so it must not be
+  // here -- the assertion that separates "reads the lineup" from "reads every
+  // event at the venue this artist once played".
+  await expect(page.locator("main")).not.toContainText(EVENT_NAMES.standardOwned);
+  await expect(page.locator("main")).not.toContainText(EVENT_NAMES.otherTenant);
+});
+
+test("the workspace home shows this tenant's upcoming events and no other's", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}`);
+
+  await expect(page.locator("main")).toContainText("Upcoming events");
+  // Both of this tenant's events are in the future, so both are inside the
+  // block's five.
+  await expect(page.locator("main")).toContainText(EVENT_NAMES.managerOwned);
+  await expect(page.locator("main")).toContainText(EVENT_NAMES.standardOwned);
+  await expect(page.locator("main")).not.toContainText(EVENT_NAMES.otherTenant);
+  // The venue name is a LINK, not a bare string: the block joins two tables
+  // and this is the assertion that the second query ran as this caller.
+  await expect(
+    page.locator(`main a[href="/${world.orgSlug}/venues/${world.venueId}"]`).first(),
+  ).toBeVisible();
 });

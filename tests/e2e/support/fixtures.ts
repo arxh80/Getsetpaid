@@ -120,6 +120,23 @@ export function localStack(): LocalStack {
 
 export const PASSWORD = "Test-Passw0rd!-e2e";
 
+/**
+ * The names the Task 7 assertions look for, in one place.
+ *
+ * WRITTEN AS CONSTANTS BECAUSE THEY ARE ASSERTED AS ABSENCES. A
+ * `not.toContainText("Manger Night")` typo passes forever and silently, and an
+ * absence assertion is exactly the kind that cannot fail loudly on its own --
+ * the same reason `expectRefused` asserts a STATUS as well as words.
+ */
+export const EVENT_NAMES = {
+  managerOwned: "Manager Night A",
+  standardOwned: "Standard Night A",
+  otherTenant: "Other Tenant Night",
+} as const;
+
+export const VENUE_NAME = "E2E Warehouse";
+export const ARTIST_NAME = "E2E Headliner";
+
 /** Roles this suite signs in as. */
 export type E2eRole = "manager" | "standard_user" | "read_only";
 
@@ -143,6 +160,33 @@ export interface E2eWorld {
   /** A contact carrying values that a `javascript:`-rejecting form would never
    *  have accepted, planted directly so the RENDER path is what is measured. */
   hostileContactId: string;
+
+  // =========================================================================
+  // PHASE 3 TASK 7: THE CROSS-ENTITY EVENT SURFACES
+  // =========================================================================
+  // A venue with two events at it -- one owned by the manager, one by the
+  // standard user -- and an artist on the bill of the manager's. That shape is
+  // the minimum that can tell the three failures apart on the new surfaces:
+  //
+  //   tenant boundary   the other tenant's event must 404 from BOTH slugs
+  //   record scope      the standard user's venue page must show THEIR event
+  //                     and not the manager's, inside one tenant
+  //   non-vacuity       the manager's page must show BOTH, or "it shows
+  //                     nothing" would satisfy every assertion above
+  //
+  // Both events are in the FUTURE, so they are also what the workspace home's
+  // upcoming block reads.
+  /** A venue in THIS tenant. Its detail page carries the "Events here" list. */
+  venueId: string;
+  /** An event at that venue, owned by the manager. */
+  managerOwnedEventId: string;
+  /** An event at that venue, owned by the standard user. */
+  standardOwnedEventId: string;
+  /** An artist in this tenant, on the manager-owned event's lineup. */
+  artistId: string;
+  /** An event in the OTHER tenant. Its id is a valid uuid that must 404. */
+  otherOrgEventId: string;
+
   users: Record<E2eRole, E2eUser>;
 }
 
@@ -299,6 +343,88 @@ export async function setUpWorld(): Promise<E2eWorld> {
     ],
   );
 
+  // =========================================================================
+  // PHASE 3 TASK 7'S ROWS
+  // =========================================================================
+  // `starts_at` is NOT NULL (20260901000000) and both of this tenant's events
+  // are in the FUTURE, deliberately: the same two rows are what the venue
+  // page's "Events here" list pages and what the workspace home's upcoming
+  // block reads, so one fixture serves both and there is no second set of
+  // dates to keep in step.
+  //
+  // `owner_user_id` IS WRITTEN EXPLICITLY rather than left to the column's
+  // `default auth.uid()`: this connection is `postgres`, not a session, so the
+  // default would return NULL and every event would be a record NOBODY can see
+  // -- which would make the record-scope assertion pass for the wrong reason.
+  const venueId = randomUUID();
+  const managerOwnedEventId = randomUUID();
+  const standardOwnedEventId = randomUUID();
+  const artistId = randomUUID();
+  const otherOrgVenueId = randomUUID();
+  const otherOrgEventId = randomUUID();
+
+  await sql(
+    `insert into public.venues (id, organisation_id, owner_user_id, name)
+     values ($1,$2,$3,$4), ($5,$6,$7,$8)`,
+    [
+      venueId,
+      orgId,
+      // OWNED BY THE STANDARD USER, AND THAT IS THE WHOLE RECORD-SCOPE TEST.
+      // Venues are record-scoped like every other top-level entity, so a
+      // manager-owned venue 404s for the standard user and the "their venue
+      // page shows their event and not the manager's" assertion could never
+      // run -- it failed exactly that way on the first e2e run. The MANAGER is
+      // full-scope (`private.full_scope_organisations()` excludes only
+      // standard_user and read_only), so they still see this venue and both
+      // events at it.
+      users.standard_user.id,
+      VENUE_NAME,
+      otherOrgVenueId,
+      otherOrgId,
+      otherOwner.id,
+      "Other Tenant Venue",
+    ],
+  );
+
+  await sql(
+    `insert into public.artists (id, organisation_id, owner_user_id, name)
+     values ($1,$2,$3,$4)`,
+    [artistId, orgId, users.manager.id, ARTIST_NAME],
+  );
+
+  await sql(
+    `insert into public.events
+       (id, organisation_id, owner_user_id, venue_id, name, starts_at, status)
+     values ($1,$2,$3,$4,$5, now() + interval '14 days', 'confirmed'),
+            ($6,$2,$7,$4,$8, now() + interval '21 days', 'planned'),
+            ($9,$10,$11,$12,$13, now() + interval '10 days', 'confirmed')`,
+    [
+      managerOwnedEventId,
+      orgId,
+      users.manager.id,
+      venueId,
+      EVENT_NAMES.managerOwned,
+      standardOwnedEventId,
+      users.standard_user.id,
+      EVENT_NAMES.standardOwned,
+      otherOrgEventId,
+      otherOrgId,
+      otherOwner.id,
+      otherOrgVenueId,
+      EVENT_NAMES.otherTenant,
+    ],
+  );
+
+  // The artist is on the manager-owned event's bill, which is what the artist
+  // page's "Event history" reads -- through `event_lineup`, not through a
+  // column on `events`.
+  await sql(
+    `insert into public.event_lineup
+       (organisation_id, event_id, artist_id, position, billing)
+     values ($1,$2,$3,0,'headliner')`,
+    [orgId, managerOwnedEventId, artistId],
+  );
+
   return {
     orgSlug,
     orgId,
@@ -307,6 +433,11 @@ export async function setUpWorld(): Promise<E2eWorld> {
     otherOrgContactId,
     managerOwnedContactId,
     hostileContactId,
+    venueId,
+    managerOwnedEventId,
+    standardOwnedEventId,
+    artistId,
+    otherOrgEventId,
     users,
   };
 }
@@ -315,7 +446,9 @@ export async function setUpWorld(): Promise<E2eWorld> {
  * Delete the world.
  *
  * Deleting the two organisations cascades to every tenant row -- contacts,
- * companies, artists, venues, rooms, links, custom field values. Auth users are
+ * companies, artists, venues, rooms, links, custom field values, and (since
+ * Phase 3 Task 7) events and their lineup rows, both of which carry
+ * `organisation_id ... on delete cascade`. Auth users are
  * removed separately, through the Admin API, because nothing cascades into
  * `auth.users` and this suite must not be the thing that teaches the codebase
  * to delete from it by hand.
