@@ -679,14 +679,15 @@ create view invariants.phase2_tables as
     'custom_field_definitions','custom_field_values','merges',
     'merge_candidates','events','event_lineup','event_status_changes',
     'tasks','meetings','notes','documents','document_versions',
-    'task_links','meeting_links','note_links','document_links'
+    'task_links','meeting_links','note_links','document_links',
+    'financial_entries'
   ]) as relname;
 
-select invariants.val('D1  all 25 CRM/events/operations tables exist',
+select invariants.val('D1  all 26 CRM/events/operations/finance tables exist',
   $$select count(*)::text from invariants.phase2_tables t
      join pg_catalog.pg_class c on c.relname=t.relname
       and c.relnamespace='public'::regnamespace and c.relkind='r'$$,
-  '25');
+  '26');
 
 -- RLS on EVERY table in public, not just the twelve: the cheapest possible
 -- guard against the next entity table shipping without it.
@@ -723,7 +724,7 @@ select invariants.val('D3  every FK in public has its leading column indexed',
 -- operations tables (tasks, meetings, notes, documents, document_versions and
 -- the four *_links) have zero policies until Phase 4 Task 2. Same interval,
 -- same safe direction.
-select invariants.val('D4  all 25 tables have policies, and none is FOR ALL',
+select invariants.val('D4  all 26 tables have policies, and none is FOR ALL',
   $$select count(*)::text from (
       select c.relname,
              count(p.oid)                                  as npol,
@@ -754,7 +755,7 @@ select invariants.val('D4  all 25 tables have policies, and none is FOR ALL',
 -- INSERT and UPDATE grants on each of the eight writable operations tables (24)
 -- plus the single SELECT grant on the read-only document_versions, none with a
 -- policy behind it yet. Same safe direction; Task 2's reviewer checks it is '0'.
-select invariants.val('D5  every grant on the 25 is justified by a policy, and vice versa',
+select invariants.val('D5  every grant on the 26 is justified by a policy, and vice versa',
   $$with granted as (
       select distinct c.relname, g.privilege_type::text as op
         from invariants.phase2_tables t
@@ -881,13 +882,13 @@ select invariants.val('D9b CONTROL: both of those constraint names still exist',
 -- Every Phase 2 table must have a row -> organisation path. CLAUDE.md
 -- § Tenancy model makes this a requirement, and every RLS policy Task 2 writes
 -- depends on it.
-select invariants.val('D10 all 25 tables carry a NOT NULL organisation_id',
+select invariants.val('D10 all 26 tables carry a NOT NULL organisation_id',
   $$select count(*)::text from invariants.phase2_tables t
      join pg_catalog.pg_class c on c.relname=t.relname
       and c.relnamespace='public'::regnamespace
      join pg_catalog.pg_attribute a on a.attrelid=c.oid and a.attname='organisation_id'
      where a.attnotnull$$,
-  '25');
+  '26');
 
 -- ---------------------------------------------------------------------------
 -- D11. THE CHILD POLICIES' OWN TENANT CORRELATION.
@@ -947,7 +948,12 @@ create view invariants.child_parent as
     ('meeting_links',          'meetings'),
     ('note_links',             'notes'),
     ('document_links',         'documents'),
-    ('document_versions',      'documents')
+    ('document_versions',      'documents'),
+    -- PHASE 5 TASK 1: financial_entries' INSERT and UPDATE write policies read
+    -- public.events (the live-parent check), so its two write-check expressions
+    -- must carry `e.organisation_id = financial_entries.organisation_id`. Its
+    -- SELECT policy does not read events, so it contributes no expression here.
+    ('financial_entries',      'events')
   ) as v(child, parent);
 
 select invariants.val('D11 every via-parent policy correlates parent.organisation_id with the child''s',
@@ -1004,7 +1010,7 @@ select invariants.val('D11 every via-parent policy correlates parent.organisatio
 -- has a policy yet. If Task 2's policy design differs (a link table needing a
 -- delete policy, say), Task 2 corrects this number -- that is the assertion
 -- doing its job, not a Task 1 defect.
-select invariants.val('D11b CONTROL: D11 inspected 39 policy expressions, not zero',
+select invariants.val('D11b CONTROL: D11 inspected 41 policy expressions, not zero',
   $$select count(*)::text
       from invariants.child_parent cp
       join pg_catalog.pg_class c on c.relname = cp.child
@@ -1015,7 +1021,7 @@ select invariants.val('D11b CONTROL: D11 inspected 39 policy expressions, not ze
         (coalesce(pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid), ''))
       ) as e(expr)
      where e.expr ~ ('FROM (public\.)?' || cp.parent || ' ')$$,
-  '39');
+  '41');
 
 -- ---------------------------------------------------------------------------
 -- Teardown. Cascades through every fixture row; rls_foundation.sql runs next

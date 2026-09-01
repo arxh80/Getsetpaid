@@ -108,6 +108,11 @@ const EXPECTED: Record<string, readonly string[]> = {
   // the arm and the policy that needs it are one task apart here (the guard is
   // safe with no caller), which is acceptable because the arm cannot let a
   // write through -- it only tightens one.
+  //
+  // TWENTY-TWO SINCE PHASE 5 TASK 1 (20260903000000): `financial_entry`, named
+  // after the entity, arrived alongside financial_entries_update_manage_finance
+  // -- its only caller. financial_entries has no owner column, so this guard is
+  // the ONLY thing pinning (id, organisation_id) against a two-org admin.
   entity_org_unchanged: [
     "company",
     "contact",
@@ -130,6 +135,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     "meeting_link",
     "note_link",
     "document_link",
+    "financial_entry",
   ],
 
   // DELIBERATELY WITHOUT 'event' -- events are not mergeable in Phase 3.
