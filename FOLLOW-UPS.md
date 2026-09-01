@@ -2401,6 +2401,82 @@ debts it carried forward.
   is the natural home — it is already writing policies and can add both
   assertions beside them).**
 
+### Opened by Task 8 (the phase exit gate)
+
+- **The Task 1 RLS-interval debt is DISCHARGED.** D4/D5/D11b were RED-by-design
+  while the nine operations tables carried RLS-on/zero-policies; Task 2 turned
+  all three GREEN (D11b's predicted `39` confirmed) and the psql/HTTP suite is
+  **1191 / 0 and 211 / 0 at HEAD** after a fresh `db reset`. No silencing: the
+  Task 8 mutation table reddens these controls on demand (M-1 reopens A15/D8 and
+  § OE; M-11 reopens § OB; M-12 reopens the storage fence). Recorded closed so a
+  reader does not mistake the Task 1 bullet above for an open interval.
+
+- **MERGE CONDITION 1 — a real malware scanner (Q42). Owner: the founder. Gate:
+  Phase 10.** The pipeline is proven end to end by the EICAR stub
+  (`documents.spec.ts`, `tests/integration/documents/upload-scan-download.test.ts`,
+  file_access § A/B/C) — **but the stub proves the pipeline, not detection.** No
+  real engine runs anywhere in this codebase; `clamav`/SaaS names throw. A real
+  scanner must be chosen, wired and tested against EICAR in a real integration
+  before launch. Full finding: § "Opened by Task 4" (Q42). Also owed to that
+  same scanner-wiring task: the **stuck `pending`/`error` re-scan sweep**
+  (§ "Opened by Task 5") — no security hole (fail-closed, no URL ever issued),
+  a reachability gap.
+
+- **MERGE CONDITION 2 — rate limiting, now over a wider surface. Owner: the
+  founder. Build: Phase 7. Gate: Phase 10.** Nothing enforces `SECURITY.md` § 5,
+  and Phase 4 grew the surface again: **four** new searchable list specs
+  (`TASK_LIST`, `MEETING_LIST`, `NOTE_LIST`, `DOCUMENT_LIST`) **plus a new
+  write endpoint that no other entity has — the document upload action**, which
+  reads bytes, sniffs, and runs a synchronous scan per call with no limiter. The
+  re-count at this exit is **24 list specs carrying a `searchColumn`** (20 at the
+  Phase 3 exit) and the upload endpoint on top. The gate in § "Phase 10 — launch
+  hardening" and the build in § "Phase 7 — admin/security" are restated over
+  these numbers. Scheduled as **Q55** (DECISIONS-QUEUE).
+
+- **MERGE CONDITION 3 — the screen-reader pass, extended by Phase 4's new
+  component shapes. Owner: the founder (or a nominee). Gate: Phase 10.** No
+  assistive-technology pass has ever run on this product. Phase 4 adds four
+  shapes to the Phase 10 script: the **task priority chip**, the **document scan
+  chip** (`Ready`/`Scanning…`/`Quarantined`, a state rendered as decoration-
+  adjacent text), the **entity-link picker** (a grouped `<select>` whose option
+  value is `entity_type:id`), and the **three-list related panel** (Tasks, notes
+  & documents on one entity page, each list with its own pager). The axe pass is
+  clean over all 19 pages and is **worth exactly its rule set** — it cannot hear
+  any of these. The Phase 10 screen-reader script is extended. Scheduled as
+  **Q56** (DECISIONS-QUEUE).
+
+- **MERGE CONDITION 4 — the CI stack-suite decision, now overdue and escalated.
+  Owner: the founder. Due: before Phase 5 starts. Scheduled as Q57 (was tracked
+  as Q41).** Phase 4 shipped **eight file-security controls with no source-only
+  guard** (enumerated in § "Phase 4 — CI decision"): a source-only CI leaves
+  every one shippable-green, and the Task 8 mutation table is the proof — M-1,
+  M-2, M-3, M-4, M-5, M-11 and M-12 each reproduce a real regression that
+  `lint`/`tsc`/`vitest run tests/unit` cannot see. This was gated "before Phase 4
+  starts" and Phase 4 has now shipped without the decision being made; it must be
+  answered before Phase 5 builds on the same split. If the answer is "no", the
+  M-4-SELECT gap below is the standing cost — a control whose only guard would be
+  a stack suite needs a psql/HTTP assertion added by hand each time.
+
+- **The M-4 SELECT-side link-target check has NO test — a measured coverage gap
+  (Task 8 mutation table). Owner: a Phase 4 fast-follow SQL task.** Switching the
+  INSERT policy's target check (`task_links_insert_via_task` `with_check`) from
+  `private.entity_is_visible` to `entity_is_manageable` is caught by
+  `rls_phase4_operations.sql` § OF (OF1 goes `ok(1)` → `denied(42501)`). Switching
+  the **SELECT** policy's target check (`task_links_select_via_task` `using`) the
+  same way reddens **nothing** — no assertion reads a link whose target is
+  see-but-not-manage. Not a live defect (the read-side check is more permissive,
+  not less), but an untested one. **Proposed assertion:** a § OF-read cell that
+  plants a task-link to a venue the booker can SEE but not MANAGE and asserts the
+  link ROW is still visible on select (the positive that a manageable-only SELECT
+  predicate would drop), across all four `*_links` select policies.
+
+- **A document restore is not audited while its delete is (minor).** Carried from
+  § "Opened by Task 6"; deliberate (the audited set is byte-actions + the
+  quarantine verdict), a one-line additive widening if delete/restore symmetry is
+  wanted. Owner: whoever revisits the document audit surface. **No filename sort
+  on the org-wide documents list (minor):** carried from § "Opened by Task 6", a
+  one-index + one-sort fast-follow if asked for.
+
 ## Phase 7 — admin/security
 
 - **RATE LIMITING. Owner: the founder. Scheduled here 2026-08-30 (final review
@@ -2594,12 +2670,15 @@ before the first real consumer exists rather than alongside it.
 - **PRE-DEPLOYMENT GATE: rate limiting must be implemented before this product
   is deployed. Owner: the founder. Added 2026-08-30 (final review I-9).** This
   is a refusal, not a reminder: if `SECURITY.md` § 5 is still unenforced when
-  launch is otherwise ready, launch does not proceed. **The surface grew in
-  Phase 3 and the gate is restated over the new number:** 20 list specs carry a
-  `searchColumn` and 15 pages render a search control (15 and 13 at the Phase 2
-  exit), so the unmetered `ilike` path this gate is about is a third wider than
-  it was when the gate was written. Re-count it again at each phase exit rather
-  than inheriting this sentence. The implementation is
+  launch is otherwise ready, launch does not proceed. **The surface grew again in
+  Phase 4 and the gate is restated over the new number:** **24** list specs carry
+  a `searchColumn` (20 at the Phase 3 exit; Phase 4 added `TASK_LIST`,
+  `MEETING_LIST`, `NOTE_LIST`, `DOCUMENT_LIST`) **and Phase 4 added the first
+  write endpoint that does real per-call work — the document upload action (byte
+  read + magic-byte sniff + synchronous malware scan) — which has no limiter
+  either.** The unmetered `ilike` path this gate is about is now a fifth wider
+  again than at the Phase 3 exit. Re-count it at each phase exit rather than
+  inheriting this sentence. (Task 8 exit condition 1; DECISIONS-QUEUE Q55.) The implementation is
   scheduled in § "Phase 7 — admin/security" above and the evidence is in
   § "Opened by Task 8"; this entry exists so that a slip in Phase 7 cannot turn
   into a ship. `SECURITY.md` § 1 makes security an acceptance criterion rather
@@ -2649,6 +2728,27 @@ before the first real consumer exists rather than alongside it.
      shell that is REPLACED rather than navigated to is the shape most likely
      to leave focus somewhere stale, and it is the first screen a paying
      customer's Owner ever sees.
+
+  **EXTENDED BY PHASE 4 (Task 8). Four more shapes, three of them new:**
+
+  1. **The task PRIORITY CHIP** (`components/crm/priority-chip.tsx`) and the
+     **document SCAN CHIP** (`components/crm/scan-status-chip.tsx`:
+     `Ready`/`Scanning…`/`Quarantined`). Both render a *state* as
+     decoration-adjacent text, and DESIGN.md forbids colour being the only
+     signal — the automated half confirms the text exists, not that it is in
+     reading order or announced as part of the row it labels.
+  2. **The ENTITY-LINK PICKER** (`components/crm/entity-link-picker.tsx`). A
+     grouped `<select>` whose `<optgroup>`s are entity types and whose option
+     value is `entity_type:id`; the Link button's accessible name and the
+     resulting "Unlink <name>" control are the question — is the picked target
+     announced, and is the unlink reversible by keyboard.
+  3. **THE THREE-LIST RELATED PANEL** (`components/crm/related-panel.tsx`).
+     "Tasks, notes & documents" on one entity page: three lists, each with its
+     own pager (`rel_tasks_`/`rel_notes_`/`rel_docs_`). The same landmark-list
+     usability question Phase 3 asked of the event detail's three surfaces, now
+     on every CRM record. The documents sub-list additionally carries a Detach
+     control per row and inert (non-link) filenames for non-`clean` files —
+     "Quarantined — cannot be opened" must be *spoken*, not only shown.
 - **A real assistive-technology pass has never been run.** No NVDA, JAWS or
   VoiceOver was available at any point during Foundation; accessibility-tree
   and DOM/spec-level evidence was used instead and disclosed each time. The
