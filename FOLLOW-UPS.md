@@ -2801,3 +2801,35 @@ walkthrough as part of the definition of done, not as optional diligence.
   with no verdict). **Owner: the task that wires the real scanner (Q42), which
   needs the same webhook/verdict plumbing.** Recorded here so a stuck upload is
   understood as a known gap with a safe failure mode, not a silent one.
+
+### Opened by Task 6 (the documents UI and cross-entity attachment)
+
+- **A document restore is not audited, while its soft-delete is.**
+  `deleteDocumentAction` writes a `document_deleted` audit row;
+  `restoreDocumentAction` writes none, because `public.audit_document_action`'s
+  closed action set (`20260902031000`) carries no restore verb and restore is a
+  metadata-only flip (no bytes touched, no signed URL minted). The asymmetry is
+  deliberate — the audited set is "byte-actions plus the quarantine verdict" —
+  but a `document_restored` row would be a one-line additive widening of that
+  RPC's `in (...)` check if a later phase wants delete/restore symmetry in the
+  log. **Owner: whoever revisits the document audit surface (audit-viewer work,
+  or the scanner-wiring task that already touches `20260902031000`).** Not a
+  live defect: the delete is on the record, and a restore returns it to exactly
+  the audited-uploaded state.
+
+- **The related panel can attach a document to a record but cannot detach one.**
+  The panel's Documents surface uploads-and-attaches (a `document_links` row)
+  and lists what is attached, but offers no "remove from this record" control —
+  `removeLinkAction` exists for `document_links` and is wired for tasks/notes on
+  their own detail pages, but documents have no detail page, so their only link
+  UI is this panel. To un-attach a document today you delete it from `/documents`
+  (which cascades its links) and re-upload/re-attach. A per-row detach in the
+  panel (or an "attached to" editor) is the clean fix. **Owner: a documents fast-
+  follow.** Low urgency — deleting and re-attaching is a working, if blunt, path.
+
+- **The org-wide documents list offers no `filename` sort.** Only `created_at`,
+  because `filename`/`updated_at` have no `(organisation_id, <col>, id)` live
+  index and rule 9 forbids a sort naming an index nobody created. If sorting the
+  file list by name is wanted, it is one `documents_org_filename_id_live_idx`
+  migration plus a sort entry — the same shape as the events list's name sort.
+  **Owner: a documents fast-follow, if the sort is asked for.**
