@@ -66,7 +66,13 @@
 // LOCAL ONLY. `localStack()` refuses anything that is not loopback.
 import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
+// RELATIVE, NOT `@/tests/support/totp`. This file is loaded by Playwright's own
+// transform, which does not resolve the `@/` alias vitest's config sets up --
+// the same reason `localStack()` below is a copy of the integration suite's env
+// helper rather than an import of it.
+import { totpCode } from "../../support/totp";
 
 export interface LocalStack {
   apiUrl: string;
@@ -218,8 +224,105 @@ export const DOCUMENT_NAMES = {
  */
 export const HOSTILE_TICKET_LINK = "https://exa mple.com/tickets";
 
+// ===========================================================================
+// PHASE 5 TASK 5: THE FINANCE FIXTURE VOCABULARY
+// ===========================================================================
+// CONSTANTS FOR THE SAME REASON `EVENT_NAMES` AND `NOTE_BODIES` ARE: the
+// role/tier/tenant breakout assertions are ABSENCES, and a typo'd literal in an
+// absence assertion passes forever and silently. The BOOKER assertions in
+// tenant-breakout.spec.ts are made against every string below that belongs to
+// the Pro org's ledger event, and the cross-tenant one against `otherTenant` --
+// those are the strings a browser holding a session without `view_finance` must
+// never render.
+//
+// `formatted` IS THE RENDERED STRING, NOT A SECOND SOURCE OF TRUTH. It is what
+// `formatGbp(amountMinor)` produces (lib/format/money.ts, Intl en-GB GBP), so a
+// test can assert the money a user actually reads. If the formatter changes,
+// these go red naming the amount -- which is the point: money on a page is what
+// this phase exists to get right.
+export const FINANCE_EVENT_NAMES = {
+  /** The GOLDEN PATH's event. Deliberately carries NO planted finance lines:
+   *  the walk adds both of them, so the summary it reads afterwards is a
+   *  statement about exactly what it wrote and nothing else. */
+  goldenPath: "Pro Finance Night",
+  /** The Pro org's SECOND event, planted with a full ledger (a budgeted fee, an
+   *  actual income and a soft-deleted line). The Booker breakout and the axe
+   *  scan read this one, so neither depends on the golden path having run. */
+  proLedger: "Pro Ledger Night",
+  /** The STARTER org's event. One planted line, which is the Q67 payoff: a
+   *  downgraded workspace keeps READING its finance. */
+  starter: "Starter Downgrade Night",
+} as const;
+
+/** The artist and supplier contact the Pro org's planted lines link, so the
+ *  panel's linked-name render path is exercised by a browser (and scanned by
+ *  axe) rather than only by a unit test. */
+export const PRO_ARTIST_NAME = "E2E Ledger Headliner";
+export const PRO_SUPPLIER_NAME = "E2E Ledger Supplier";
+
+interface FinanceLineFixture {
+  readonly description: string;
+  readonly amountMinor: number;
+  /** What `formatGbp(amountMinor)` renders -- the string a user reads. */
+  readonly formatted: string;
+}
+
+export const FINANCE_LINES: Record<
+  "fixtureFee" | "fixtureIncome" | "removed" | "starter" | "otherTenant",
+  FinanceLineFixture
+> = {
+  /** BUDGETED FEE on the Pro ledger event -> the budgeted EXPENSE column. */
+  fixtureFee: {
+    description: "Fixture Fee Line — headline artist",
+    amountMinor: 150000,
+    formatted: "£1,500.00",
+  },
+  /** ACTUAL INCOME on the same event -> the actual GROSS column. */
+  fixtureIncome: {
+    description: "Fixture Income Line — box office",
+    amountMinor: 400000,
+    formatted: "£4,000.00",
+  },
+  /** SOFT-DELETED on the same event. In the "Removed from this list"
+   *  disclosure, and in NEITHER summary column -- the view filters
+   *  `deleted_at is null`. */
+  removed: {
+    description: "Fixture Removed Line — cancelled support",
+    amountMinor: 25000,
+    formatted: "£250.00",
+  },
+  /** The STARTER org's one line. Readable after the downgrade (Q67), and the
+   *  denominator for "the refused write added nothing". */
+  starter: {
+    description: "Starter Line — readable after a downgrade",
+    amountMinor: 99900,
+    formatted: "£999.00",
+  },
+  /** A finance line in the OTHER tenant, on that tenant's event. Must appear on
+   *  no surface any session in this suite can reach. */
+  otherTenant: {
+    description: "Other Tenant Secret Finance Line",
+    amountMinor: 777700,
+    formatted: "£7,777.00",
+  },
+};
+
 /** Roles this suite signs in as. */
-export type E2eRole = "manager" | "standard_user" | "read_only";
+export type E2eRole =
+  | "manager"
+  | "standard_user"
+  | "read_only"
+  // ---- PHASE 5 TASK 5 -----------------------------------------------------
+  // `finance` is the FIRST role this suite signs in as that CLAUDE.md
+  // § Session security requires MFA for (`private.role_requires_mfa('finance')`
+  // is true, so BOTH finance keys are aal2-gated inside has_permission()). Its
+  // browser sign-in therefore walks the real per-sign-in TOTP challenge -- see
+  // `financeTotpSecret` below and `signIn` in ./sign-in.ts.
+  | "finance"
+  // `booker` holds view_crm and seven manage_* keys and NOT view_finance
+  // (20260903002000), which is exactly the shape the finance render gate has to
+  // refuse: a fully-privileged CRM user who may not see the money.
+  | "booker";
 
 export interface E2eUser {
   id: string;
@@ -320,6 +423,62 @@ export interface E2eWorld {
    *  filename must never appear on this tenant's document list. */
   otherOrgDocumentId: string;
 
+  // =========================================================================
+  // PHASE 5 TASK 5: THE FINANCE ORGANISATIONS
+  // =========================================================================
+  // TWO MORE TENANTS, AND THE TIER IS THE WHOLE REASON THEY EXIST.
+  //
+  // The main organisation deliberately has NO `organisation_subscriptions` row
+  // (see the insert in `setUpWorld`), so `private.finance_module_organisations()`'s
+  // "not yet billed => not yet gated" escape applies to it and a finance write
+  // there would prove nothing about the Pro gate. These two carry REAL
+  // subscription rows:
+  //
+  //   proOrg      plan_id 'pro',     status 'active'  -> finance_module TRUE
+  //   starterOrg  plan_id 'starter', status 'active'  -> finance_module FALSE
+  //
+  // So the golden path's write is permitted BY THE TIER TERM rather than by an
+  // escape hatch, and the Starter org is the Q67 payoff: reads stay open,
+  // writes refuse.
+  /** The Pro-tier workspace. The finance golden path is walked here. */
+  proOrgSlug: string;
+  proOrgId: string;
+  /** The Starter-tier workspace. Same finance user, no finance module. */
+  starterOrgSlug: string;
+  starterOrgId: string;
+  /** The Pro org's GOLDEN-PATH event: no planted finance lines, so the summary
+   *  the walk reads is a statement about the two lines the walk wrote. */
+  proEventId: string;
+  /** The Pro org's LEDGER event: a budgeted fee, an actual income and a
+   *  soft-deleted line, planted. The Booker breakout and the axe scan read it,
+   *  so neither depends on the golden path having run. */
+  proLedgerEventId: string;
+  /** The Starter org's event, carrying one planted line. */
+  starterEventId: string;
+  /** An artist and a contact in the Pro org, linked from the planted lines so
+   *  the panel's linked-name render path is walked in a browser. */
+  proArtistId: string;
+  proSupplierContactId: string;
+  /** The planted lines, by id -- addressable for a targeted assertion. */
+  proFeeEntryId: string;
+  proIncomeEntryId: string;
+  proRemovedEntryId: string;
+  starterEntryId: string;
+  /** A finance line in the OTHER tenant, on that tenant's event. The
+   *  cross-tenant finance assertion's subject. */
+  otherOrgFinanceEntryId: string;
+  /**
+   * The finance user's TOTP secret, base32, as `mfa.enroll()` returned it.
+   *
+   * NOT A SECRET WORTH PROTECTING: it belongs to a throwaway auth user this run
+   * created and `tearDownWorld` deletes. It is here because the finance role is
+   * MFA-required, so a browser sign-in has to present a real 6-digit code to
+   * the LIVE GoTrue verifier -- ./sign-in.ts generates it from this. Stubbing
+   * the challenge instead would prove nothing about the gate that decides
+   * whether the finance keys are held at all.
+   */
+  financeTotpSecret: string;
+
   users: Record<E2eRole, E2eUser>;
   /** The OTHER tenant's owner. Nothing signs in as them; they exist so the
    *  second organisation has a member, which is what makes its rows real
@@ -363,6 +522,76 @@ async function createUser(email: string): Promise<E2eUser> {
     throw new Error(`Could not create ${email}: ${JSON.stringify(body)}`);
   }
   return { id: body.id, email };
+}
+
+
+/**
+ * Give `email` a VERIFIED TOTP factor, and return its secret.
+ *
+ * ===========================================================================
+ * WHY A FIXTURE HAS TO DO THIS AT ALL (PHASE 5 TASK 5)
+ * ===========================================================================
+ * `finance` is an MFA-required role (CLAUDE.md § Session security), and
+ * 20260827210000 puts the requirement INSIDE `public.has_permission()`: a
+ * finance membership whose session has not presented a factor holds NEITHER
+ * `view_finance` NOR `manage_finance`. So a browser signed in with a password
+ * alone would find no finance panel and no finance write, and every assertion
+ * in the finance specs would pass or fail for the wrong reason.
+ *
+ * The fix is to make the FIXTURE realistic rather than to relax anything: a
+ * real Finance user holds a real factor, so this one does too. The enrolment
+ * runs through the LIVE GoTrue verifier with a real RFC 6238 code -- the same
+ * shape `elevateToAal2` in tests/integration/rls/support/fixtures.ts uses, and
+ * the opposite of stubbing the challenge.
+ *
+ * ONLY THE ENROLMENT HAPPENS HERE. The per-sign-in CHALLENGE is walked in the
+ * browser, on the real gate screen (components/auth/mfa-challenge-gate.tsx),
+ * by `signIn` in ./sign-in.ts -- which is the half that proves a password alone
+ * does not reach aal2.
+ *
+ * MEASURED BEFORE RELYING ON IT: three separate sessions verified with the SAME
+ * 30-second window's code against this local stack, and all three reached aal2
+ * -- so several browser sign-ins inside one Playwright run do not need to wait
+ * out a TOTP step. A hosted GoTrue with replay protection would; nothing here
+ * runs against one (`localStack()` refuses anything but loopback).
+ */
+async function enrolTotp(email: string): Promise<string> {
+  const { apiUrl, anonKey } = localStack();
+  const client = createClient(apiUrl, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const signedIn = await client.auth.signInWithPassword({ email, password: PASSWORD });
+  if (signedIn.error) {
+    throw new Error(`Fixture: could not sign in as ${email}: ${signedIn.error.message}`);
+  }
+  const enrolled = await client.auth.mfa.enroll({ factorType: "totp" });
+  if (enrolled.error || !enrolled.data) {
+    throw new Error(
+      `Fixture: could not enrol TOTP for ${email}: ${enrolled.error?.message}`,
+    );
+  }
+  const secret = enrolled.data.totp.secret;
+  const verified = await client.auth.mfa.challengeAndVerify({
+    factorId: enrolled.data.id,
+    code: totpCode(secret),
+  });
+  if (verified.error) {
+    throw new Error(
+      `Fixture: TOTP enrolment challenge failed for ${email}: ${verified.error.message}`,
+    );
+  }
+  // Assert the elevation rather than trusting a silent success -- otherwise a
+  // regression surfaces as a baffling missing panel two files away.
+  const { data: aal } = await client.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (aal?.currentLevel !== "aal2") {
+    throw new Error(
+      `Fixture: ${email} is still ${aal?.currentLevel ?? "unknown"} after a successful TOTP challenge`,
+    );
+  }
+  // LOCAL scope: this clears THIS client only. A global sign-out would revoke
+  // every session for the user, including one a browser is about to open.
+  await client.auth.signOut({ scope: "local" });
+  return secret;
 }
 
 let pool: Pool | undefined;
@@ -410,6 +639,14 @@ export async function setUpWorld(): Promise<E2eWorld> {
     manager: await createUser(`e2e-manager-${suffix}@test.local`),
     standard_user: await createUser(`e2e-std-${suffix}@test.local`),
     read_only: await createUser(`e2e-ro-${suffix}@test.local`),
+    // ---- PHASE 5 TASK 5 ---------------------------------------------------
+    // The finance user is a member of BOTH finance organisations (Pro and
+    // Starter), which is not a convenience: multi-org membership is an MVP
+    // feature (CLAUDE.md § Tenancy model), and one person holding the same
+    // role in a Pro and a Starter workspace is the cleanest way to show the
+    // tier -- not the role -- is what refuses the Starter write.
+    finance: await createUser(`e2e-finance-${suffix}@test.local`),
+    booker: await createUser(`e2e-booker-${suffix}@test.local`),
   };
   // The other tenant's owner. Never signed in as -- they exist so the second
   // organisation has a member, which is what makes its rows real rather than
@@ -781,6 +1018,165 @@ export async function setUpWorld(): Promise<E2eWorld> {
     ],
   );
 
+  // =========================================================================
+  // PHASE 5 TASK 5'S FINANCE WORLD
+  // =========================================================================
+  // TWO ORGANISATIONS THAT EXIST FOR THEIR SUBSCRIPTION ROWS.
+  //
+  // The main organisation above has none on purpose, so
+  // `private.finance_module_organisations()` exempts it ("not yet billed => not
+  // yet gated") and a finance write there would be permitted by the ESCAPE
+  // rather than by the tier. These two carry real rows -- 'pro' and 'starter',
+  // both `active` with a period end in the future, so neither is inside the
+  // past_due grace branch -- which makes the Pro gate's OPEN and CLOSED states
+  // both reachable from a browser for the first time.
+  const proOrgId = randomUUID();
+  const starterOrgId = randomUUID();
+  const proOrgSlug = `e2e-pro-${suffix}`;
+  const starterOrgSlug = `e2e-starter-${suffix}`;
+
+  await sql(
+    `insert into public.organisations (id, name, slug) values ($1,$2,$3), ($4,$5,$6)`,
+    [
+      proOrgId,
+      `E2E Pro ${suffix}`,
+      proOrgSlug,
+      starterOrgId,
+      `E2E Starter ${suffix}`,
+      starterOrgSlug,
+    ],
+  );
+
+  await sql(
+    `insert into public.organisation_subscriptions
+       (organisation_id, plan_id, billing_cycle, seat_count, status,
+        current_period_end)
+     values ($1,'pro','monthly',3,'active', now() + interval '30 days'),
+            ($2,'starter','monthly',3,'active', now() + interval '30 days')`,
+    [proOrgId, starterOrgId],
+  );
+
+  // THE FINANCE USER IS IN BOTH; THE BOOKER IS IN THE PRO ONE ONLY.
+  // The booker's workspace is the one with a populated ledger, which is what
+  // makes "no finance panel" a statement about the render gate rather than
+  // about an empty workspace.
+  await sql(
+    `insert into public.organisation_memberships
+       (organisation_id, user_id, role, status, joined_at)
+     values ($1,$2,'finance','active',now()),
+            ($1,$3,'booker','active',now()),
+            ($4,$2,'finance','active',now())`,
+    [proOrgId, users.finance.id, users.booker.id, starterOrgId],
+  );
+
+  // The factor, enrolled ONCE per run. Must exist before any browser signs in
+  // as this user, or the app renders the ENROL gate instead of the CHALLENGE
+  // gate `signIn` walks.
+  const financeTotpSecret = await enrolTotp(users.finance.email);
+
+  const proEventId = randomUUID();
+  const proLedgerEventId = randomUUID();
+  const starterEventId = randomUUID();
+  const proArtistId = randomUUID();
+  const proSupplierContactId = randomUUID();
+
+  // NO VENUE ON ANY OF THE THREE. `events.venue_id` is nullable by design
+  // (CLAUDE.md § Architecture) and these events exist for their finance panel;
+  // giving them venues would add rows to surfaces other tests count.
+  await sql(
+    `insert into public.events
+       (id, organisation_id, owner_user_id, name, starts_at, status)
+     values ($1,$2,$3,$4, now() + interval '20 days','confirmed'),
+            ($5,$2,$3,$6, now() + interval '25 days','confirmed'),
+            ($7,$8,$3,$9, now() + interval '28 days','confirmed')`,
+    [
+      proEventId,
+      proOrgId,
+      users.finance.id,
+      FINANCE_EVENT_NAMES.goldenPath,
+      proLedgerEventId,
+      FINANCE_EVENT_NAMES.proLedger,
+      starterEventId,
+      starterOrgId,
+      FINANCE_EVENT_NAMES.starter,
+    ],
+  );
+
+  await sql(
+    `insert into public.artists (id, organisation_id, owner_user_id, name)
+     values ($1,$2,$3,$4)`,
+    [proArtistId, proOrgId, users.finance.id, PRO_ARTIST_NAME],
+  );
+  await sql(
+    `insert into public.contacts (id, organisation_id, owner_user_id, name)
+     values ($1,$2,$3,$4)`,
+    [proSupplierContactId, proOrgId, users.finance.id, PRO_SUPPLIER_NAME],
+  );
+
+  // FIVE PLANTED LINES, AND EACH ONE IS ANSWERING A QUESTION.
+  //
+  //   fee      budgeted, on the LEDGER event -> the budgeted EXPENSE cell, and
+  //            linked to an artist so `LinkedNames` renders
+  //   income   actual,   on the LEDGER event -> the actual GROSS cell, linked
+  //            to a supplier contact
+  //   removed  SOFT-DELETED on the LEDGER event -> the "Removed from this
+  //            list" disclosure, and NEITHER summary cell (the view filters
+  //            `deleted_at is null`)
+  //   starter  the Starter org's single line -> the Q67 payoff, read after a
+  //            downgrade, and the denominator for "the refused write added
+  //            nothing"
+  //   other    the OTHER tenant's line, on the OTHER tenant's event -> the
+  //            cross-tenant assertion's subject
+  //
+  // The GOLDEN-PATH event gets none: the walk writes its own two lines and
+  // reads a summary that is therefore a statement about exactly those.
+  //
+  // WRITTEN AS `postgres`, like every other row here -- an INSERT policy needs
+  // a session and this connection is not one (§ AND WHY SETUP IS `pg`). What
+  // the tests ASSERT on still goes through a real browser, a real anon-key
+  // session and, for the finance user, a real TOTP challenge.
+  const proFeeEntryId = randomUUID();
+  const proIncomeEntryId = randomUUID();
+  const proRemovedEntryId = randomUUID();
+  const starterEntryId = randomUUID();
+  const otherOrgFinanceEntryId = randomUUID();
+
+  await sql(
+    `insert into public.financial_entries
+       (id, organisation_id, event_id, category, status, amount_minor,
+        occurred_on, description, artist_id, supplier_contact_id, deleted_at)
+     values ($1,$2,$3,'fee','budgeted',$4, current_date - 3, $5, $6, null, null),
+            ($7,$2,$3,'income','actual',$8, current_date - 2, $9, null, $10, null),
+            ($11,$2,$3,'cost','budgeted',$12, current_date - 1, $13, null, null, now()),
+            ($14,$15,$16,'fee','budgeted',$17, current_date - 4, $18, null, null, null),
+            ($19,$20,$21,'income','actual',$22, current_date - 5, $23, null, null, null)`,
+    [
+      proFeeEntryId,
+      proOrgId,
+      proLedgerEventId,
+      FINANCE_LINES.fixtureFee.amountMinor,
+      FINANCE_LINES.fixtureFee.description,
+      proArtistId,
+      proIncomeEntryId,
+      FINANCE_LINES.fixtureIncome.amountMinor,
+      FINANCE_LINES.fixtureIncome.description,
+      proSupplierContactId,
+      proRemovedEntryId,
+      FINANCE_LINES.removed.amountMinor,
+      FINANCE_LINES.removed.description,
+      starterEntryId,
+      starterOrgId,
+      starterEventId,
+      FINANCE_LINES.starter.amountMinor,
+      FINANCE_LINES.starter.description,
+      otherOrgFinanceEntryId,
+      otherOrgId,
+      otherOrgEventId,
+      FINANCE_LINES.otherTenant.amountMinor,
+      FINANCE_LINES.otherTenant.description,
+    ],
+  );
+
   return {
     orgSlug,
     orgId,
@@ -808,6 +1204,21 @@ export async function setUpWorld(): Promise<E2eWorld> {
     otherOrgTaskId,
     otherOrgNoteId,
     otherOrgDocumentId,
+    proOrgSlug,
+    proOrgId,
+    starterOrgSlug,
+    starterOrgId,
+    proEventId,
+    proLedgerEventId,
+    starterEventId,
+    proArtistId,
+    proSupplierContactId,
+    proFeeEntryId,
+    proIncomeEntryId,
+    proRemovedEntryId,
+    starterEntryId,
+    otherOrgFinanceEntryId,
+    financeTotpSecret,
     users,
     otherOwner,
   };
@@ -826,8 +1237,12 @@ export async function setUpWorld(): Promise<E2eWorld> {
  */
 export async function tearDownWorld(world: E2eWorld): Promise<void> {
   const { serviceRoleKey } = localStack();
+  // FOUR ORGANISATIONS SINCE PHASE 5 TASK 5. Deleting each cascades to every
+  // tenant row it owns -- `financial_entries.organisation_id` carries
+  // `on delete cascade` like every other tenant column, and the two finance
+  // organisations' subscription rows go with them.
   await sql(`delete from public.organisations where id = any($1::uuid[])`, [
-    [world.orgId, world.otherOrgId],
+    [world.orgId, world.otherOrgId, world.proOrgId, world.starterOrgId],
   ]);
   // THE OTHER TENANT'S OWNER IS DELETED BY ID, LIKE EVERY OTHER USER
   // (Task 8; the deferred minor this closes).
