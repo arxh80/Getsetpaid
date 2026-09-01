@@ -5,6 +5,9 @@ import {
   MEETING_STATUS_TONE,
   NOTE_VISIBILITIES,
   NOTE_VISIBILITY_LABELS,
+  SCAN_STATUSES,
+  SCAN_STATUS_LABELS,
+  SCAN_STATUS_TONE,
   TASK_PRIORITIES,
   TASK_PRIORITY_LABELS,
   TASK_PRIORITY_TONE,
@@ -140,5 +143,39 @@ describe("NOTE_VISIBILITY_LABELS", () => {
     for (const v of NOTE_VISIBILITIES) {
       expect(NOTE_VISIBILITY_LABELS[v].trim(), `label for "${v}"`).not.toBe("");
     }
+  });
+});
+
+describe("SCAN_STATUS_LABELS and SCAN_STATUS_TONE", () => {
+  it("each has exactly one entry per scan status, and the count is the denominator", () => {
+    // FOUR. `documents_scan_status_check` — pending/clean/quarantined/error.
+    expect(SCAN_STATUSES).toHaveLength(4);
+    expect(Object.keys(SCAN_STATUS_LABELS)).toHaveLength(4);
+    expect(Object.keys(SCAN_STATUS_TONE)).toHaveLength(4);
+    expect(Object.keys(SCAN_STATUS_LABELS).sort()).toEqual([...SCAN_STATUSES].sort());
+    expect(Object.keys(SCAN_STATUS_TONE).sort()).toEqual([...SCAN_STATUSES].sort());
+  });
+
+  it("every label is non-empty and no two share one", () => {
+    for (const s of SCAN_STATUSES) {
+      expect(SCAN_STATUS_LABELS[s].trim(), `label for "${s}"`).not.toBe("");
+    }
+    const labels = SCAN_STATUSES.map((s) => SCAN_STATUS_LABELS[s]);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("every tone is one of the five the chip can render", () => {
+    for (const s of SCAN_STATUSES) {
+      expect(OPERATIONS_TONES, `tone for "${s}"`).toContain(SCAN_STATUS_TONE[s]);
+    }
+  });
+
+  it("only clean is a success; quarantined is danger; pending and error warn", () => {
+    // clean is the ONLY downloadable state (SECURITY.md § 6), so it is the only
+    // success. pending and error share warning and are told apart by the label.
+    expect(SCAN_STATUS_TONE.clean).toBe("success");
+    expect(SCAN_STATUS_TONE.quarantined).toBe("danger");
+    expect(SCAN_STATUS_TONE.pending).toBe("warning");
+    expect(SCAN_STATUS_TONE.error).toBe("warning");
   });
 });

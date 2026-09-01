@@ -211,3 +211,42 @@ export const NOTE_VISIBILITY_LABELS: Record<NoteVisibility, string> = {
   private: "Private",
   company: "Company",
 };
+
+/**
+ * The scan status as a human reads it ON A CHIP — NOT the raw enum value.
+ *
+ * The chip answers one question, "can I open this yet", so the words are the
+ * user's, not the column's: `pending` reads "Scanning…", `clean` reads "Ready".
+ * The raw `scan_status` value stays the database's business (SCAN_STATUSES,
+ * bound to the CHECK). SECURITY.md § 6: a document is downloadable only when it
+ * is `clean`, which is the one that says "Ready".
+ */
+export const SCAN_STATUS_LABELS: Record<ScanStatus, string> = {
+  pending: "Scanning…",
+  clean: "Ready",
+  quarantined: "Quarantined",
+  error: "Scan failed",
+};
+
+/**
+ * The tone a scan status carries.
+ *
+ *   warning   pending    -- in progress; not an error, but not openable yet.
+ *   success   clean       -- scanned and safe; the only downloadable state.
+ *   danger    quarantined -- the malware scan failed it. Withheld (feeds
+ *                            incident alerting, SECURITY.md § 12).
+ *   warning   error       -- the scan itself could not run; fail-closed, so the
+ *                            file is withheld and worth the eye, like pending.
+ *
+ * Every tone is an existing DESIGN.md token, so the scan chip adds no colour
+ * and `python scripts/contrast.py` gains no row. `pending` and `error` share
+ * the warning tone and are told apart by the LABEL ("Scanning…" vs
+ * "Scan failed") — DESIGN.md § Working palette forbids colour-only status, so
+ * the label is always the information and the tone only reinforces it.
+ */
+export const SCAN_STATUS_TONE: Record<ScanStatus, OperationsTone> = {
+  pending: "warning",
+  clean: "success",
+  quarantined: "danger",
+  error: "warning",
+};
