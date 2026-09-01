@@ -4,6 +4,8 @@ import {
   ARTIST_NAME,
   DOCUMENT_NAMES,
   EVENT_NAMES,
+  FINANCE_EVENT_NAMES,
+  FINANCE_LINES,
   NOTE_BODIES,
   OTHER_ARTIST_NAME,
   ROOM_NAME,
@@ -520,4 +522,107 @@ test("a soft-deleted event is on the deleted screen and nowhere else", async ({
   await expect(
     page.getByRole("button", { name: /Restore event/i }),
   ).toHaveCount(1);
+});
+
+// ===========================================================================
+// PHASE 5 TASK 5: THE FINANCE BREAKOUT -- ROLE, TIER AND TENANT
+// ===========================================================================
+// Finance is the most restricted surface in the product: a read needs
+// `view_finance`, a write needs `manage_finance` AND the Pro `finance_module`
+// entitlement, and aal2 is folded into both keys inside
+// `public.has_permission()` (20260827210000). Task 4 proves all three at the
+// database and PostgREST layers.
+//
+// WHAT IS LEFT FOR A BROWSER is the layer above them, and it is a different
+// control: the event page decides whether to MOUNT the panel at all
+// (`financeReadable &&`, app/(app)/[orgSlug]/events/[eventId]/page.tsx). A page
+// that mounted it for everybody would still leak nothing -- RLS returns no rows
+// -- but it would tell a Booker that this event has a finance sheet, show them
+// an all-zeros budget-vs-actuals table, and offer them an add form that 42501s.
+// That is a real defect no policy assertion can see, and the two tests below
+// are the only place in the suite that can.
+
+test("a Booker on the same event gets no finance panel and no finance data", async ({
+  page,
+}) => {
+  // THE BOOKER IS NOT A WEAK ROLE. They hold `view_crm` and seven `manage_*`
+  // keys (20260903002000's header: "a Booker builds lineups ... but neither
+  // runs the money"), they are FULL-SCOPE (`private.full_scope_organisations()`
+  // excludes only standard_user and read_only), and they are a member of the
+  // very workspace whose ledger this is. `view_finance` is the only thing they
+  // do not have, so it is the only thing this test can be measuring.
+  await signIn(page, world, "booker");
+  await page.goto(`/${world.proOrgSlug}/events/${world.proLedgerEventId}`);
+
+  // NON-VACUITY FIRST. The page rendered, and this session can see the event
+  // itself -- so every absence below is a gate closing rather than a 404, an
+  // empty workspace or a failed render.
+  await expect(
+    page.getByRole("heading", { name: FINANCE_EVENT_NAMES.proLedger, level: 1 }),
+  ).toBeVisible();
+  await expect(page.locator("main")).toContainText("Tasks, notes & documents");
+
+  // ---- NO PANEL. ASSERTED DIRECTLY, AT COUNT 0 (Constraint 15) ------------
+  // Never `if (await panel.count())`: a conditional locator turns into a no-op
+  // the day the thing it looks for is renamed, which is precisely when this
+  // assertion has to fire. Three handles on the same absence -- the region, its
+  // heading and the add control -- because a partial render is a real outcome:
+  // a panel whose <section> lost its label would still be a finance panel.
+  await expect(page.getByRole("region", { name: "Finance", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Finance", exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Budget versus actuals", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add finance line" })).toHaveCount(0);
+
+  // ---- AND NO FINANCE DATA ANYWHERE IN THE DOCUMENT ----------------------
+  // The second half, and a different control: the panel could be gone while a
+  // summary query still ran and printed a total somewhere. Asserted against
+  // <body> rather than <main>, so a figure smuggled into a header, a title or a
+  // hidden element counts as a leak.
+  for (const line of [
+    FINANCE_LINES.fixtureFee,
+    FINANCE_LINES.fixtureIncome,
+    FINANCE_LINES.removed,
+  ]) {
+    await expect(page.locator("body")).not.toContainText(line.description);
+    await expect(page.locator("body")).not.toContainText(line.formatted);
+  }
+});
+
+test("a Finance user cannot reach another tenant's finance, from either slug", async ({
+  page,
+}) => {
+  // THE SESSION HOLDS view_finance AND manage_finance, at aal2, in ITS OWN
+  // workspace -- which is what makes this a tenant test rather than a role one.
+  // The keys are held; the organisation is not theirs.
+  await signIn(page, world, "finance");
+
+  // NON-VACUITY: this session really can read finance where it is entitled to.
+  // Without this, every refusal below would be satisfied by a session that sees
+  // no finance anywhere -- exactly what an unpresented MFA factor would produce.
+  await page.goto(`/${world.proOrgSlug}/events/${world.proLedgerEventId}`);
+  await expect(
+    page.getByRole("region", { name: "Finance", exact: true }),
+  ).toHaveCount(1);
+  await expect(page.locator("main")).toContainText(FINANCE_LINES.fixtureFee.description);
+  await expect(page.locator("main")).toContainText(FINANCE_LINES.fixtureFee.formatted);
+
+  // ---- THE OTHER TENANT'S EVENT, UNDER THE OTHER TENANT'S SLUG -----------
+  await expectRefused(page, `/${world.otherOrgSlug}/events/${world.otherOrgEventId}`);
+  await expect(REFUSED(page)).not.toContainText(FINANCE_LINES.otherTenant.description);
+  await expect(REFUSED(page)).not.toContainText(FINANCE_LINES.otherTenant.formatted);
+
+  // ---- AND UNDER THIS SESSION'S OWN SLUG, WHICH IS THE INTERESTING ONE ----
+  // The workspace is ours, the id is a real row with real finance lines on it,
+  // and only the tenant filter separates them. This is the IDOR shape.
+  await expectRefused(page, `/${world.proOrgSlug}/events/${world.otherOrgEventId}`);
+  await expect(REFUSED(page)).not.toContainText(FINANCE_LINES.otherTenant.description);
+  await expect(REFUSED(page)).not.toContainText(FINANCE_LINES.otherTenant.formatted);
+
+  // ---- AND THE MAIN WORKSPACE, WHICH THIS USER IS NOT A MEMBER OF --------
+  // A third tenant, reached by slug rather than by id: 404, never 403, so
+  // nothing here enumerates workspaces either.
+  await expectRefused(page, `/${world.orgSlug}/events/${world.managerOwnedEventId}`);
+  await expect(REFUSED(page)).not.toContainText(EVENT_NAMES.managerOwned);
 });
