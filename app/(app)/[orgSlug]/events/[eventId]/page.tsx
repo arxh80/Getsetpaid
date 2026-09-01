@@ -10,7 +10,18 @@ import {
   loadArtistsForPicker,
   loadEvent,
   loadLineupForEvent,
+  loadLinkOptions,
 } from "@/lib/crm/queries";
+import {
+  getFinanceReadAccess,
+  getFinanceWriteAccess,
+} from "@/lib/crm/finance-access";
+import {
+  loadEventFinanceSummary,
+  loadFinancialEntriesForEvent,
+} from "@/lib/crm/finance-queries";
+import { ZERO_FINANCE_SUMMARY } from "@/lib/crm/finance-summary";
+import { FinancePanel } from "@/components/crm/finance-panel";
 import type { RawSearchParams } from "@/lib/list/params";
 import { LineupPanel } from "@/components/crm/lineup-panel";
 import { loadCustomFieldPanel } from "@/lib/crm/custom-field-queries";
@@ -112,9 +123,19 @@ export default async function EventDetailPage({
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [result, access] = await Promise.all([
+  const [result, access, financeReadable, financeAccess] = await Promise.all([
     loadEvent(org.id, eventId),
     getCrmWriteAccess(org, "manage_events"),
+    // THE FINANCE RENDER GATE: whether the panel shows at all. view_finance,
+    // resolved through has_permission (which folds in aal2 and suspension) --
+    // NOT tier-gated (Q67: a downgrade must not hide existing data). See
+    // getFinanceReadAccess.
+    getFinanceReadAccess(org),
+    // THE FINANCE WRITE GATE: tier (finance_module, Pro only) ∩ manage_finance
+    // ∩ aal2 ∩ not-suspended, as a CrmWriteAccess with the disabled-state
+    // sentence. Resolved here so the panel's disabledReason and the picker
+    // fetch below both have it.
+    getFinanceWriteAccess(org),
   ]);
 
   // A FAILED QUERY IS NOT A MISSING RECORD.
@@ -147,6 +168,19 @@ export default async function EventDetailPage({
         ? null
         : access.explanation;
 
+  // THE FINANCE PANEL'S WRITE GATE, the finance analogue of `panelBlocked`. A
+  // deleted event's finance is READABLE and not WRITABLE (the write policies
+  // carry the event-live term); otherwise it is the finance write access's
+  // sentence. Null means writable. The panel is only RENDERED at all when
+  // `financeReadable` (view_finance) -- computed below.
+  const financeDisabledReason =
+    event.deletedAt !== null
+      ? DELETED_RECORD_EXPLANATION
+      : financeAccess.canWrite
+        ? null
+        : financeAccess.explanation;
+  const financeCanWrite = financeDisabledReason === null;
+
   // THE FIRST PAGE IN THIS PHASE WITH A NAMESPACED LIST ON IT, and Task 6 adds
   // the second (the activity timeline, `activity_`). `lineupParams` reads only
   // keys beginning `lineup_`, so the two never see each other's cursor; `raw`
@@ -161,7 +195,16 @@ export default async function EventDetailPage({
   // see each other's cursor.
   const activityListParams = activityParams(raw);
 
-  const [lineup, artistOptions, customFields, activity] = await Promise.all([
+  const [
+    lineup,
+    artistOptions,
+    customFields,
+    activity,
+    finance,
+    financeSummary,
+    financeArtistOptions,
+    financeSupplierOptions,
+  ] = await Promise.all([
     // THE RAW QUERY STRING GOES IN and the parsed params come back: the loader
     // owns LINEUP_LIST's namespace and the `lineup_q` drop, so this page
     // cannot get either wrong. See `loadLineupForEvent`.
@@ -179,6 +222,28 @@ export default async function EventDetailPage({
     // filled in" visible rather than merely true (20260829010000, decision 1).
     loadCustomFieldPanel(org.id, "event", event.id),
     fetchActivityPage(org.id, "event", event.id, activityListParams),
+    // THE SIXTH lib/list/ SURFACE (`fin_`), and its summary -- fetched ONLY
+    // when the caller holds view_finance, mirroring the `panelBlocked ? [] :
+    // loadArtistsForPicker` skip: a caller without it never renders the panel,
+    // so the finance page and the security_invoker summary view (which would
+    // return no rows for them anyway) are a wasted round trip. `raw` carries
+    // every list's query state; loadFinancialEntriesForEvent owns the `fin_`
+    // namespace so this page cannot get it wrong.
+    financeReadable
+      ? loadFinancialEntriesForEvent(org.id, event.id, raw)
+      : Promise.resolve(null),
+    financeReadable
+      ? loadEventFinanceSummary(org.id, event.id)
+      : Promise.resolve(null),
+    // THE PICKERS, only when there is a form to put them in -- the same
+    // argument the lineup's artist fetch makes. Bounded live artists/contacts,
+    // by name, capped at 100 (loadLinkOptions).
+    financeCanWrite
+      ? loadArtistsForPicker(org.id)
+      : Promise.resolve([] as { id: string; name: string }[]),
+    financeCanWrite
+      ? loadLinkOptions("contacts", org.id, [])
+      : Promise.resolve([] as { id: string; name: string }[]),
   ]);
 
   return (
@@ -365,6 +430,31 @@ export default async function EventDetailPage({
           disabledReason={panelBlocked}
         />
       )}
+
+      {/* THE FINANCE PANEL (Phase 5 Task 2): budget-vs-actuals summary and the
+          line-item list. RENDERED ONLY WHEN `financeReadable` (view_finance) --
+          both jobs of Constraint 12: the UI is hidden AND the security_invoker
+          summary view refuses the rows to a caller without the permission. A
+          Booker (view_crm, no view_finance) sees nothing here. `fin_` is the
+          sixth namespaced surface; `preserve={raw}` keeps the other five's
+          state when this list pages (Constraint 10). */}
+      {financeReadable && finance !== null ? (
+        <FinancePanel
+          orgSlug={org.slug}
+          eventId={event.id}
+          basePath={`${basePath}/${event.id}`}
+          summary={financeSummary ?? ZERO_FINANCE_SUMMARY}
+          page={finance.page}
+          params={finance.params}
+          removed={finance.removed}
+          artistNames={finance.artistNames}
+          supplierNames={finance.supplierNames}
+          artistOptions={financeArtistOptions}
+          supplierOptions={financeSupplierOptions}
+          disabledReason={financeDisabledReason}
+          preserve={raw}
+        />
+      ) : null}
 
       {/* THE RELATED PANEL (Phase 4 Task 3): tasks, notes and documents linked
           to this event. `rel_tasks_`/`rel_notes_`/`rel_docs_` join the existing
