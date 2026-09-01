@@ -25,6 +25,7 @@ import { TaskStatusChip } from "@/components/crm/task-status-chip";
 import { PriorityChip } from "@/components/crm/priority-chip";
 import { ScanStatusChip } from "@/components/crm/scan-status-chip";
 import { DocumentDownloadLink } from "@/components/crm/document-row";
+import { DocumentDetachControl } from "@/components/crm/document-detach";
 import { DocumentUpload } from "@/components/crm/document-upload";
 import { WriteBlockedNote } from "@/components/crm/write-gate";
 import { humanFileSize } from "@/lib/format/bytes";
@@ -147,7 +148,12 @@ export async function RelatedPanel({
           params={documents.params}
           basePath={basePath}
           page={documents.page}
-          columns={documentColumns(orgSlug)}
+          columns={documentColumns(
+            orgSlug,
+            documents.linkIds,
+            !docAccess.canWrite,
+            docWriteNoteId,
+          )}
           rowKey={(row) => row.id}
           narrowed={isNarrowed(RELATED_DOCS_LIST, documents.params)}
           preserve={raw}
@@ -250,6 +256,9 @@ function noteColumns(
 
 function documentColumns(
   orgSlug: string,
+  linkIds: ReadonlyMap<string, string>,
+  blocked: boolean,
+  writeNoteId: string,
 ): readonly ListColumn<DocumentRow, RelatedDocsSortKey>[] {
   return [
     {
@@ -293,6 +302,28 @@ function documentColumns(
           {formatDateTime(row.createdAt)}
         </time>
       ),
+    },
+    {
+      key: "actions",
+      header: "Attached",
+      // DETACH — un-attach this document from THIS record, leaving the document
+      // and its other attachments alone (removeLinkAction on the one link row).
+      // A missing link id (a race where the document is on the page but its link
+      // just went) renders nothing rather than a broken control.
+      render: (row) => {
+        const linkId = linkIds.get(row.id);
+        if (!linkId) return null;
+        return (
+          <DocumentDetachControl
+            orgSlug={orgSlug}
+            documentId={row.id}
+            linkId={linkId}
+            filename={row.filename}
+            blocked={blocked}
+            describedBy={writeNoteId}
+          />
+        );
+      },
     },
   ];
 }

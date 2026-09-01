@@ -2817,15 +2817,15 @@ walkthrough as part of the definition of done, not as optional diligence.
   live defect: the delete is on the record, and a restore returns it to exactly
   the audited-uploaded state.
 
-- **The related panel can attach a document to a record but cannot detach one.**
-  The panel's Documents surface uploads-and-attaches (a `document_links` row)
-  and lists what is attached, but offers no "remove from this record" control —
-  `removeLinkAction` exists for `document_links` and is wired for tasks/notes on
-  their own detail pages, but documents have no detail page, so their only link
-  UI is this panel. To un-attach a document today you delete it from `/documents`
-  (which cascades its links) and re-upload/re-attach. A per-row detach in the
-  panel (or an "attached to" editor) is the clean fix. **Owner: a documents fast-
-  follow.** Low urgency — deleting and re-attaching is a working, if blunt, path.
+- **The related panel's document detach is a per-entity un-attach (DONE, review
+  fix round 1).** The panel's Documents surface now carries a per-row **Detach**
+  control that calls `removeLinkAction` on the one `document_links` row attaching
+  the document to that record — a per-entity un-attach that leaves the document
+  and its other attachments untouched. (The earlier note here recommended
+  "delete from /documents and re-upload" as the workaround; that was **wrong and
+  destructive** — a document soft-delete removes it from *every* linked entity,
+  not just one — and is removed. Deleting a document is deleting the document,
+  never a way to detach it from one record.) No follow-up remains.
 
 - **The org-wide documents list offers no `filename` sort.** Only `created_at`,
   because `filename`/`updated_at` have no `(organisation_id, <col>, id)` live

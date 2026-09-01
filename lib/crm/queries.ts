@@ -2335,16 +2335,49 @@ export async function loadDocumentsForEntity(
 ): Promise<{
   params: ListParams<RelatedDocsSortKey, RelatedDocsFilterKey>;
   page: ListPage<DocumentRow>;
+  /**
+   * document id -> the id of the LIVE document_links row attaching it to THIS
+   * record, so the panel can render a per-row detach control (Task 6, review
+   * fix round 1). The `document_links (parent_id, entity_type, entity_id)`
+   * live-unique index guarantees one live link per (document, target), so this
+   * is a function, not a multimap. `removeLinkAction` soft-deletes exactly this
+   * link — a per-entity detach that leaves the document and its OTHER
+   * attachments untouched, unlike deleting the document.
+   */
+  linkIds: ReadonlyMap<string, string>;
 }> {
-  // READ-ONLY IN TASK 3, and there are no document rows until Task 6's upload
-  // path -- so this returns an empty page in practice. It is a real reverse
-  // read anyway, so rule 10's "three lists page independently" holds and the
-  // panel renders its own "no documents" empty state rather than a special case.
   const params = relatedDocsParams(raw);
   const supabase = await createClient();
-  const ids = await reverseLinkIds(supabase, "document_links", organisationId, entityType, entityId);
-  if (ids === null) return { params, page: { outcome: "unavailable" } };
-  if (ids.length === 0) return { params, page: emptyRelatedPage<DocumentRow>() };
+
+  // Read the link rows directly (not via reverseLinkIds) so we keep the link
+  // id alongside its document id — the detach control needs the link id.
+  const { data, error } = await supabase
+    .from("document_links")
+    .select("id, parent_id")
+    .eq("organisation_id", organisationId)
+    .eq("entity_type", entityType)
+    .eq("entity_id", entityId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: true })
+    .limit(RELATED_ID_CAP);
+  if (error) {
+    console.error("[crm] document_links reverse lookup failed:", error.message);
+    return { params, page: { outcome: "unavailable" }, linkIds: new Map() };
+  }
+
+  const linkIds = new Map<string, string>();
+  for (const row of data ?? []) {
+    const documentId = String(row.parent_id);
+    // First (newest) live link wins; the live-unique index means there is only
+    // one anyway, so this is belt over an already-unique set.
+    if (!linkIds.has(documentId)) linkIds.set(documentId, String(row.id));
+  }
+  const ids = [...linkIds.keys()];
+  if (ids.length === 0) {
+    return { params, page: emptyRelatedPage<DocumentRow>(), linkIds };
+  }
+
   const page = await fetchListPage<DocumentRow, RelatedDocsSortKey, RelatedDocsFilterKey>({
     spec: RELATED_DOCS_LIST,
     params,
@@ -2354,7 +2387,7 @@ export async function loadDocumentsForEntity(
     mapRow: mapDocumentRow,
     applyFilters: (query: ListQuery) => query.in("id", ids),
   });
-  return { params, page };
+  return { params, page, linkIds };
 }
 
 // ---------------------------------------------------------------------------
