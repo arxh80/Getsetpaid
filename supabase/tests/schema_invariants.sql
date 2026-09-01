@@ -1024,6 +1024,120 @@ select invariants.val('D11b CONTROL: D11 inspected 41 policy expressions, not ze
   '41');
 
 -- ---------------------------------------------------------------------------
+-- F. PHASE 5 TASK 3: financial_entry IS THE SEVENTH CUSTOM-FIELD ENTITY TYPE.
+--
+-- 20260903020000_finance_custom_field_widening.sql widened the two
+-- custom-field allowlists and THREE dispatch functions -- entity_is_visible,
+-- entity_is_manageable AND entity_is_live, because every custom_field_values
+-- write policy ANDs the last two (20260829011000). The entity_is_live arm is
+-- the load-bearing one: drop it and every finance custom-field value write is
+-- silently refused ("else false"), while the app keeps rendering the inputs.
+-- The vitest census (entity-dispatch-branches-match-db.test.ts) binds the same
+-- facts but runs only on a developer's machine; these run with every psql
+-- suite, per Global Constraints' "every finance control additionally owes a
+-- psql/HTTP assertion".
+--
+-- The behavioural half -- a Finance user WRITES a financial_entry value, a
+-- Booker is refused, a Starter org can hold no line to hang one on -- lives in
+-- tests/integration/crm/finance-custom-field-values-rls.test.ts, and the
+-- role-matrix psql runs over the finance tables are Task 4's formal suite.
+-- What belongs HERE is the schema shape those tests assume.
+-- ---------------------------------------------------------------------------
+
+-- Both allowlists admit financial_entry...
+select invariants.val('F1  both custom-field allowlists admit financial_entry',
+  $$select count(*)::text from pg_catalog.pg_constraint
+     where connamespace='public'::regnamespace
+       and conname in ('custom_field_definitions_entity_type_allowed',
+                       'custom_field_values_entity_type_allowed')
+       and pg_catalog.pg_get_constraintdef(oid) like '%financial_entry%'$$,
+  '2');
+
+-- ...and each carries EXACTLY seven values -- the census half, counting one
+-- `::text` cast per array element, so a widening smuggled in alongside (an
+-- eighth type with no test) or a narrowing (financial_entry re-removed but the
+-- string surviving in a comment) is red even while F1 stays green.
+select invariants.val('F1b CONTROL: the two allowlists carry 7 values each (14 casts)',
+  $$select sum((length(pg_catalog.pg_get_constraintdef(oid))
+              - length(replace(pg_catalog.pg_get_constraintdef(oid), '::text', ''))) / 6)::text
+      from pg_catalog.pg_constraint
+     where connamespace='public'::regnamespace
+       and conname in ('custom_field_definitions_entity_type_allowed',
+                       'custom_field_values_entity_type_allowed')$$,
+  '14');
+
+-- All THREE dispatch functions carry the arm. Two would mean the
+-- entity_is_live widening regressed -- the silent-refusal failure mode above.
+select invariants.val('F2  all three dispatches carry a financial_entry arm',
+  $$select count(*)::text from pg_catalog.pg_proc p
+      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+     where n.nspname='private'
+       and p.proname in ('entity_is_visible','entity_is_manageable','entity_is_live')
+       and pg_catalog.pg_get_functiondef(p.oid) ~ 'when ''financial_entry'' then'$$,
+  '3');
+
+-- The arms name the FINANCE permission keys, not view_crm/manage_events --
+-- finance is the one entity where "view_crm reads everything" is deliberately
+-- false. Sliced with split_part, not a whole-body regexp: the first
+-- permitted_organisations() call AFTER the arm's `then` is that arm's own
+-- (every arm's expression contains its call before the next `when` begins).
+select invariants.val('F3  entity_is_visible: the financial_entry arm asks for view_finance',
+  $$select split_part(split_part(split_part(pg_catalog.pg_get_functiondef(p.oid),
+             'when ''financial_entry'' then', 2),
+             'permitted_organisations(''', 2), '''', 1)
+      from pg_catalog.pg_proc p
+      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+     where n.nspname='private' and p.proname='entity_is_visible'$$,
+  'view_finance');
+
+select invariants.val('F4  entity_is_manageable: the financial_entry arm asks for manage_finance',
+  $$select split_part(split_part(split_part(pg_catalog.pg_get_functiondef(p.oid),
+             'when ''financial_entry'' then', 2),
+             'permitted_organisations(''', 2), '''', 1)
+      from pg_catalog.pg_proc p
+      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+     where n.nspname='private' and p.proname='entity_is_manageable'$$,
+  'manage_finance');
+
+-- entity_is_live's arm calls no permitted_organisations -- liveness is not a
+-- permission -- so what is asserted is its own shape: it reads
+-- public.financial_entries and requires deleted_at is null.
+select invariants.val('F5  entity_is_live: the financial_entry arm checks financial_entries.deleted_at',
+  $$select (arm ~ 'financial_entries')::text || '/' || (arm ~ 'deleted_at is null')::text
+      from (select split_part(split_part(pg_catalog.pg_get_functiondef(p.oid),
+                     'when ''financial_entry'' then', 2), 'when ''', 1) as arm
+              from pg_catalog.pg_proc p
+              join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+             where n.nspname='private' and p.proname='entity_is_live') s$$,
+  'true/true');
+
+-- The CONSTRAINT LAYER, behaviourally: a financial_entry definition and value
+-- are accepted, the never-valid type is still 23514 on both tables. Run as
+-- postgres, so what is being measured is the CHECK constraint alone (the
+-- values row's entity_id is polymorphic and unconstrained by design -- the
+-- pairing with a LIVE row is RLS's job, proven in the vitest file above).
+-- Org A's cascade removes both rows at teardown (Z1 stays 0).
+select invariants.try('F6  a financial_entry custom-field DEFINITION passes the allowlist',
+  $$insert into public.custom_field_definitions (id, organisation_id, entity_type, key, label, field_type)
+    values ('a5000000-0000-0000-0000-0000000000f5','11110000-0000-0000-0000-000000000001',
+            'financial_entry','po_number','PO number','text')$$,
+  'ok(1)');
+select invariants.try('F6b ...and a financial_entry VALUE passes the values allowlist',
+  $$insert into public.custom_field_values (organisation_id, field_id, entity_type, entity_id, value)
+    values ('11110000-0000-0000-0000-000000000001','a5000000-0000-0000-0000-0000000000f5',
+            'financial_entry','fe000000-0000-0000-0000-0000000000f5','"PO-1"')$$,
+  'ok(1)');
+select invariants.try('F7  a never-valid entity_type is still refused on definitions (23514)',
+  $$insert into public.custom_field_definitions (organisation_id, entity_type, key, label, field_type)
+    values ('11110000-0000-0000-0000-000000000001','tour','k','K','text')$$,
+  'denied(23514)');
+select invariants.try('F7b ...and on values (23514)',
+  $$insert into public.custom_field_values (organisation_id, field_id, entity_type, entity_id, value)
+    values ('11110000-0000-0000-0000-000000000001','a5000000-0000-0000-0000-0000000000f5',
+            'tour','fe000000-0000-0000-0000-0000000000f5','"x"')$$,
+  'denied(23514)');
+
+-- ---------------------------------------------------------------------------
 -- Teardown. Cascades through every fixture row; rls_foundation.sql runs next
 -- and assumes an empty public schema.
 -- ---------------------------------------------------------------------------
