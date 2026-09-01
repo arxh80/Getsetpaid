@@ -166,10 +166,29 @@ const SIGNED_IN_PAGES: [string, (w: E2eWorld) => string][] = [
   ["events list", (w) => `/${w.orgSlug}/events`],
   ["new event", (w) => `/${w.orgSlug}/events/new`],
   [
-    "event detail + lineup + timeline",
+    // ALSO THE THREE-LIST RELATED PANEL (Task 8 brief § 3). The event detail
+    // page carries the "Tasks, notes & documents" RelatedPanel — three lists on
+    // one page, each with its own pager — and the operations fixtures now link a
+    // task and a document to this event, so the panel is POPULATED here rather
+    // than rendering three empty states. It is where a duplicate `id`, an
+    // orphaned `aria-describedby` on a scan/priority chip, or a second
+    // `role="list"` with no accessible name would land first.
+    "event detail + lineup + timeline + related panel",
     (w) => `/${w.orgSlug}/events/${w.managerOwnedEventId}`,
   ],
   ["deleted events", (w) => `/${w.orgSlug}/events/deleted`],
+  // ---- PHASE 4'S OPERATIONS SURFACES (Task 8 brief § 3) ------------------
+  // The list, the create form and a detail page for the operations entity
+  // (tasks), plus the notes list, the documents list and its deleted queue.
+  // The documents list is the one carrying the SCAN CHIP and the inline
+  // download/delete controls; the task detail carries the PRIORITY CHIP, the
+  // task-status chip and the entity-link picker.
+  ["tasks list", (w) => `/${w.orgSlug}/tasks`],
+  ["new task", (w) => `/${w.orgSlug}/tasks/new`],
+  ["task detail + link picker", (w) => `/${w.orgSlug}/tasks/${w.taskId}`],
+  ["notes list", (w) => `/${w.orgSlug}/notes`],
+  ["documents list + scan chips", (w) => `/${w.orgSlug}/documents`],
+  ["deleted documents", (w) => `/${w.orgSlug}/documents/deleted`],
 ];
 
 for (const [label, url] of SIGNED_IN_PAGES) {
