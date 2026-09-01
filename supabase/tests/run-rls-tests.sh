@@ -312,6 +312,37 @@ else
 fi
 
 # ============================================================================
+# PHASE 5 (FINANCE) RLS SUITE -- THE THREE-GATE BREAKOUT PROOF (Task 4).
+#
+# Runs LAST of the psql suites and REUSES THE SAME FIXTURES WHOLE -- the twelve
+# users and orgs org-alpha/org-beta, plus the P2VARS claims (it needs
+# `pfinance_c` AND `pfinance_c1`, the same user at aal2 and aal1, which is the
+# entire MFA half of the proof).
+#
+# It plants its own events and finance lines, and it deliberately DELETES the
+# one contact and the one artist it adds (its section FJ), so the HTTP block
+# below still meets the contact and artist censuses it was written against.
+# ============================================================================
+docker cp "$HERE/rls_phase5_finance.sql" "$CTR:/tmp/rls_phase5_finance.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P2VARS[@]}" -f /tmp/rls_phase5_finance.sql
+
+p5_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from fin.results where not pass" | tr -d '[:space:]')
+if [ "$p5_fails" != "0" ]; then
+  echo "PHASE 5 FINANCE SUITE FAILED: $p5_fails failing assertion(s)" >&2
+  echo "  A failure in FD is a BREACHED ROLE GATE (a non-finance role reads or" >&2
+  echo "  writes money); in FE, a BROKEN TIER GATE (a non-Pro org writes finance," >&2
+  echo "  or a downgrade hid existing data); in FF, a BROKEN MFA GATE (an aal1" >&2
+  echo "  session holds a finance key); in FG/FH, a REOPENED TENANT BOUNDARY." >&2
+  echo "  Every one of those is Sev1." >&2
+  psql_status=1
+else
+  echo "Phase 5 finance suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -2172,6 +2203,122 @@ p2_code "manager POSTs a task_link into org BETA" 403 POST "task_links" \
 # can see -- 201, so the 403 above is the boundary and not a dead endpoint.
 p2_code "CONTROL: manager links their own ALPHA task to a visible contact" 201 POST "task_links" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"parent_id\":\"$P4_MGR_TASK\",\"entity_type\":\"contact\",\"entity_id\":\"$P4_UNOWNED_CONTACT\"}" "$MGR"
+
+echo
+echo "=== Phase 5 finance at the API surface (Task 4) ==="
+# The psql suite above proves the three gates through claims set by hand. This
+# proves the ones an attacker can actually reach through the ANON KEY THAT SHIPS
+# IN EVERY BROWSER BUNDLE plus a REAL password session -- a request that never
+# touches the Next.js app, so no Server Action guard, no layout gate and no
+# getFinanceWriteAccess() call is anywhere on its path (Constraint 12: hiding
+# the panel and refusing the write are two separate jobs).
+#
+# Fixture ids planted by rls_phase5_finance.sql (as postgres):
+P5_EVENT_A='ef110000-0000-0000-0000-000000000001'   # ALPHA, 4 finance lines
+P5_LINE_A='fa110000-0000-0000-0000-000000000001'    # one of those four
+P5_BETA_EVENT='ef11000b-0000-0000-0000-00000000000b'
+# NOTE: Finance Event B (ef11...0002) does NOT exist here -- section FJ deletes
+# it to prove the cascade -- so every write below targets Finance Event A, and
+# the GET counts are stated as "of 4" against that event.
+
+# anon: the table is not reachable logged out at all.
+p2_code "anon GET financial_entries"  401 GET  "financial_entries?select=id"
+p2_code "anon POST financial_entries" 401 POST "financial_entries" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"event_id\":\"$P5_EVENT_A\",\"category\":\"fee\",\"amount_minor\":1}"
+
+# IDOR/BOLA, THE HEADLINE. A Booker is an active ALPHA member holding view_crm
+# and manage_events. They hold no finance key, so the id in the URL buys them
+# nothing: [] for the whole event, and [] for a line named directly.
+p2_rows "a BOOKER GETs an ALPHA event's finance lines (0 of 4)" 0 \
+        "financial_entries?select=id&event_id=eq.$P5_EVENT_A" "$BKR"
+p2_rows "...nor by naming one line's id outright (IDOR)" 0 \
+        "financial_entries?select=id&id=eq.$P5_LINE_A" "$BKR"
+p2_rows "...nor through the event_finance_summary view (security_invoker)" 0 \
+        "event_finance_summary?select=event_id&event_id=eq.$P5_EVENT_A" "$BKR"
+# POSITIVE CONTROL: the SAME token, the SAME event, the parent row -- so the
+# three zeros above are the finance policy and not a dead session.
+p2_rows "CONTROL: the same BOOKER token reads that parent EVENT" 1 \
+        "events?select=id&id=eq.$P5_EVENT_A" "$BKR"
+p2_code "a BOOKER POSTs a finance line" 403 POST "financial_entries" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"event_id\":\"$P5_EVENT_A\",\"category\":\"fee\",\"amount_minor\":1}" "$BKR"
+# ...and the tenant boundary from the other side, aimed at BETA's org id.
+p2_rows "a BOOKER GETs org BETA's finance lines (expect 0)" 0 \
+        "financial_entries?select=id&organisation_id=eq.$BETA_ORG" "$BKR"
+
+# THE MFA GATE OVER REAL HTTP. A password grant yields aal1, always (measured in
+# the MFA block near the top of this file), and role_requires_mfa('finance') is
+# true -- so the Finance user's ORDINARY session holds neither finance key. This
+# is the request the Layer-2 half of 20260827210000 exists for, aimed at money.
+FIN=$(p2_token pfinance); [ -n "$FIN" ] || { echo "no token for pfinance" >&2; exit 1; }
+fin_aal=$(p2_aal "$FIN")
+if [ "$fin_aal" = "aal1" ]; then
+  printf '  PASS  %-58s %s\n' "the FINANCE password session really is aal1" "$fin_aal"
+else
+  printf '  FAIL  %-58s got %s want aal1\n' "the FINANCE password session really is aal1" "$fin_aal"
+  api_fails=$((api_fails+1))
+fi
+p2_rows "an aal1 FINANCE session reads 0 of the 4 lines (MFA gate)" 0 \
+        "financial_entries?select=id&event_id=eq.$P5_EVENT_A" "$FIN"
+p2_code "...and its POST is refused" 403 POST "financial_entries" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"event_id\":\"$P5_EVENT_A\",\"category\":\"fee\",\"amount_minor\":1}" "$FIN"
+
+# THE ELEVATION. A real TOTP enrol + verify against this stack, the same journey
+# p2_totp_elevate walks for the Owner above. It happens HERE, after the aal1
+# checks, because verifying a user's first factor revokes their other sessions
+# -- so $FIN is spent from this line on and $FIN2 is the Finance user's session.
+FIN2=$(p2_totp_elevate "$FIN")
+fin2_aal=$(p2_aal "$FIN2")
+if [ "$fin2_aal" = "aal2" ]; then
+  printf '  PASS  %-58s %s\n' "the FINANCE session elevates to aal2 (real TOTP)" "$fin2_aal"
+else
+  printf '  FAIL  %-58s got "%s" want aal2\n' \
+         "the FINANCE session elevates to aal2 (real TOTP)" "$fin2_aal"
+  api_fails=$((api_fails+1))
+  echo "  (without an aal2 finance session the tier checks below would be" >&2
+  echo "   measuring the MFA gate instead -- failing loudly rather than hollow)" >&2
+fi
+p2_rows "POSITIVE: the aal2 FINANCE session reads all 4 lines" 4 \
+        "financial_entries?select=id&event_id=eq.$P5_EVENT_A" "$FIN2"
+p2_rows "POSITIVE: ...and the summary view returns its one row" 1 \
+        "event_finance_summary?select=event_id&event_id=eq.$P5_EVENT_A" "$FIN2"
+p2_rows "TENANT: ...and still none of org BETA's" 0 \
+        "financial_entries?select=id&organisation_id=eq.$BETA_ORG" "$FIN2"
+p2_code "TENANT: ...and its POST into a BETA event is refused" 403 POST "financial_entries" \
+        "{\"organisation_id\":\"$BETA_ORG\",\"event_id\":\"$P5_BETA_EVENT\",\"category\":\"fee\",\"amount_minor\":1}" "$FIN2"
+
+# THE TIER GATE OVER REAL HTTP. organisation_subscriptions has no org-scoped
+# write path at the API by design (Foundation design note (g): one would be a
+# free upgrade to Pro), so the plan is moved with psql -- the same way the CRM
+# entitlement block above does it.
+p2_sub "insert into public.organisation_subscriptions
+          (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+        values ('$ALPHA_ORG','pro','monthly',1,'active', now() + interval '30 days')
+        on conflict (organisation_id) do update set plan_id='pro', status='active';"
+p2_code "PRO: the aal2 FINANCE session POSTs a finance line" 201 POST "financial_entries" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"event_id\":\"$P5_EVENT_A\",\"category\":\"cost\",\"amount_minor\":4200}" "$FIN2"
+
+p2_sub "update public.organisation_subscriptions set plan_id='starter'
+        where organisation_id='$ALPHA_ORG';"
+p2_code "STARTER: the SAME POST is refused 403 (finance_module=false)" 403 POST "financial_entries" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"event_id\":\"$P5_EVENT_A\",\"category\":\"cost\",\"amount_minor\":4200}" "$FIN2"
+# Q67 AT THE TRANSPORT: the downgrade freezes the sheet, it does not hide it.
+# Five now, not four: the Pro-tier POST above added one.
+p2_rows "STARTER: ...while the READS still return all 5 lines (Q67)" 5 \
+        "financial_entries?select=id&event_id=eq.$P5_EVENT_A" "$FIN2"
+# ...and the refusal is the FINANCE MODULE, not the whole subscription: Starter
+# carries crm_writes, so a CRM write by another role succeeds in the same state.
+p2_code "STARTER CONTROL: a MANAGER's CRM write still succeeds (crm_writes=true)" 201 \
+        POST "contacts" "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"starter-era contact\"}" "$MGR"
+
+p2_sub "update public.organisation_subscriptions set plan_id='pro'
+        where organisation_id='$ALPHA_ORG';"
+p2_code "PRO AGAIN: the POST comes back (the gate is the plan, not a one-way door)" 201 \
+        POST "financial_entries" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"event_id\":\"$P5_EVENT_A\",\"category\":\"cost\",\"amount_minor\":4200}" "$FIN2"
+
+# Leave the fixture in the state every other block found it in: no subscription
+# row for ALPHA (the inert state the product actually ships in today).
+p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2
