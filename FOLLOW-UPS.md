@@ -2306,6 +2306,29 @@ corrections are the useful part. Each now says what was actually done.
   answering "no". This entry is the scheduled home the Task 8 exit document's
   condition 3 points at; it is not a reminder, it is a gate on Phase 4's start.
 
+  **Task 5 count (the strongest evidence yet, added 2026-09-01).** The
+  file-security pipeline (Task 5) is the clearest case, because none of its
+  controls is visible to `lint`/`tsc`/`vitest run tests/unit` — the whole point
+  of file security is runtime behaviour. **Eight** file-security controls have
+  **no** source-only guard and are caught only by a stack suite:
+  (1) the `documents_storage_key_shape` CHECK refusing a cross-tenant key
+  (psql, `file_access_phase4.sql` A2); (2) the `storage.objects` deny-all fence,
+  proven to hold even under a broad permissive grant (psql B1/B2 + HTTP);
+  (3) the scan-status transition guard freezing a terminal verdict (psql C1/C2);
+  (4) the quarantine download gate — a non-`clean` document yields no URL
+  (integration, EICAR to 409); (5) the download audit written *before* the URL —
+  every download logged (integration, deterministic count); (6) the cross-tenant
+  download to 404 through RLS (integration + HTTP); (7) the `audit_document_action`
+  RPC guard — `view_crm` + document-in-org, fail-closed (HTTP 403 probes +
+  integration); (8) the schema placement of the audit helper — `private` writer
+  unreachable, `public` wrapper guarded (HTTP probes). The **one** file-pipeline
+  mechanism that *does* have a source-only guard is the soft-delete's
+  `{ count: "exact" }`, caught by `tests/unit/crm/source-shape.test.ts`'s census.
+  So a source-only CI leaves **eight** file-security regressions shippable
+  green — every mutation this task reproduced red (remove the clean gate, issue
+  the URL without auditing, drop the storage-key CHECK, drop the deny-all fence)
+  is one CI would miss.
+
 ## Phase 4 — operations
 
 Opened by Phase 4 Task 1 (the operations schema — `tasks`, `meetings`, `notes`,
@@ -2725,14 +2748,14 @@ walkthrough as part of the definition of done, not as optional diligence.
   setting `MALWARE_SCANNER` in production so the throwing default cannot ship.
   **Owner: founder decision (Q42), then the task that wires it.**
 
-- **The upload is NOT audited yet — the audit call is a marked seam awaiting
-  Task 5's helper.** `SECURITY.md` § 6 requires every upload to be logged, but
-  `private.log_audit_event` is granted to no client role and the client-callable
-  wrapper is a migration (`20260902031000`) that belongs to Task 5. Task 4's
-  binding rule ("only `20260902030000` is new") meant it could not ship that
-  helper, so `uploadDocumentAction` carries a documented seam where the
-  `document.uploaded` audit event (actor, org, target document, scan verdict)
-  goes. **Owner: Phase 4 Task 5**, in the same change as the download-path audit.
+- ~~**The upload is NOT audited yet — the audit call is a marked seam awaiting
+  Task 5's helper.**~~ **DONE, Phase 4 Task 5.** `20260902031000` ships
+  `public.audit_document_action` (the guarded thin RPC over
+  `private.log_audit_event`), and `uploadDocumentAction` now writes
+  `document_uploaded` on a clean/error verdict and `document_quarantined` on a
+  malware hit, fail-closed (an audit fault does not report success). Download and
+  soft-delete are audited in the same change (`document_downloaded`,
+  `document_deleted`). See `SECURITY.md` § 7.
 
 - **A scanner FAULT stores the file at `scan_status='error'` and the pipeline is
   fail-closed on it — but there is no retry/re-scan path.** A thrown or `'error'`
@@ -2750,3 +2773,31 @@ walkthrough as part of the definition of done, not as optional diligence.
   relationship targets / OLE-embedded objects), that is a real unzip-and-parse
   step, a deliberate addition, not a tightening of the current sniff. Recorded so
   the sniff's scope is not mistaken for full OOXML validation.
+
+### Opened by Task 5 (the download half — authorised signed URLs, audit, soft-delete)
+
+- **Soft-delete does NOT purge the bytes — a byte-GC job is owed (Phase 8 /
+  retention).** `deleteDocumentAction` sets `deleted_at` and audits
+  `document_deleted`, but the object stays in the `documents` bucket by design
+  (soft-delete discipline — `CLAUDE.md` § Non-negotiable rules; a deleted row is
+  restorable, and a hard byte-delete is not). What is missing is a
+  **retention/GC job** that removes the bytes of documents whose rows are past
+  the retention window (7yr financial / 2yr other, pending legal sign-off), so
+  storage does not grow without bound. **Owner: Phase 8 (retention), or the DSR
+  erasure flow (`Data subject request`), whichever lands first — a GDPR erasure
+  of a document must purge its bytes, not only its row.** Until then, deleted
+  documents keep their storage footprint, and a tenant's storage-used metric
+  counts them.
+
+- **A stuck `pending` or `error` document has no re-scan/sweep.** Two ways a row
+  can sit un-terminal forever: an upload that crashes between the `pending`
+  insert and the terminal update (stuck `pending`), and a scanner fault that
+  lands `error` (carried from Task 4). Both are fail-closed — neither yields a
+  signed URL, because the download gate serves only `clean` — so this is a
+  reachability/cleanup gap, not a security hole. The scan-status transition guard
+  (`20260902031000`) deliberately does **not** block `pending`/`error` →
+  `clean`, so a future re-scan path is unobstructed; what is missing is the path
+  itself (re-run the scan, or a sweep that quarantines rows older than N hours
+  with no verdict). **Owner: the task that wires the real scanner (Q42), which
+  needs the same webhook/verdict plumbing.** Recorded here so a stuck upload is
+  understood as a known gap with a safe failure mode, not a silent one.
