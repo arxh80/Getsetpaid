@@ -338,6 +338,60 @@ select fin.val('FB13 authenticated holds SELECT/INSERT/UPDATE and NO DELETE (sof
      where table_schema='public' and table_name='financial_entries'
        and grantee='authenticated'$$, 'INSERT,SELECT,UPDATE');
 
+-- THE WRITE KEY, BY NAME. FB2 proves the policies use the SET FORM; it does not
+-- say WHICH key. Swapping manage_finance for view_crm on the INSERT policy is
+-- caught behaviourally at FD14/FD19 -- and nowhere a source review can see,
+-- which is the gap the CI note in the Global Constraints is about.
+select fin.val('FB14 BOTH write policies ask for manage_finance, by name',
+  $$select count(*)::text from pg_policies
+     where schemaname='public' and tablename='financial_entries'
+       and cmd in ('INSERT','UPDATE')
+       and coalesce(with_check,'') like '%permitted_organisations(''manage_finance''%'$$, '2');
+select fin.val('FB15 ...and NEITHER of them asks for view_crm',
+  $$select count(*)::text from pg_policies
+     where schemaname='public' and tablename='financial_entries'
+       and cmd in ('INSERT','UPDATE')
+       and coalesce(qual,'') || coalesce(with_check,'') like '%view_crm%'$$, '0');
+
+-- THE TIER HELPER'S BODY, read out of the DEPLOYED function. 20260903001000 was
+-- written by copying private.crm_write_organisations() and substituting
+-- p.crm_writes -> p.finance_module. A missed substitution is invisible to every
+-- behavioural assertion in this file EXCEPT section FE's Starter case (Starter
+-- carries crm_writes = true and finance_module = false), and invisible to a
+-- source review entirely. These two name both halves of the substitution.
+select fin.val('FB16 finance_module_organisations() reads p.finance_module...',
+  $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
+            like '%p.finance_module%')::text$$, 'true');
+select fin.val('FB17 ...and does NOT read crm_writes (the copy-paste this file guards)',
+  $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
+            like '%crm_writes%')::text$$, 'false');
+-- THE ESCAPE, AS A DELIBERATE TRIPWIRE. `s.organisation_id is null` is what
+-- makes the gate inert today, and Phase 7 removes it in the migration that
+-- backfills subscription rows. This assertion IS EXPECTED TO GO RED THEN, at
+-- which point section FE's FE1/FE12 change with it -- exactly as
+-- rls_phase2_crm.sql N1/N16 do for the CRM gate.
+select fin.val('FB18 ...and still carries the "not yet billed => not yet gated" escape',
+  $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
+            like '%s.organisation_id is null%')::text$$, 'true');
+
+-- THE SUMMARY VIEW. Its whole security story is `security_invoker=true`: it
+-- reads public.financial_entries as the CALLER, so financial_entries_select_
+-- view_finance is what filters it and the view adds no surface of its own.
+-- Dropping the option would make it read as its OWNER (postgres), which turns
+-- an aggregate over one tenant's money into an aggregate over everyone's. No
+-- test outside this file and Task 2's vitest integration test says so.
+select fin.val('FB19 event_finance_summary really is a security_invoker view',
+  $$select (c.reloptions::text like '%security_invoker=true%')::text
+     from pg_class c where c.oid='public.event_finance_summary'::regclass$$, 'true');
+select fin.val('FB20 CONTROL: ...and it IS a view, with SELECT and nothing else granted',
+  $$select (select relkind::text from pg_class
+             where oid='public.event_finance_summary'::regclass) || '|' ||
+           coalesce((select string_agg(distinct privilege_type,',' order by privilege_type)
+                       from information_schema.role_table_grants
+                      where table_schema='public'
+                        and table_name='event_finance_summary'
+                        and grantee='authenticated'),'<none>')$$, 'v|SELECT');
+
 -- ===========================================================================
 -- FC. THE THREE COMPOSITE FOREIGN KEYS, by column name and delete action
 -- ===========================================================================
