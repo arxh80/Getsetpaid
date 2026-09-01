@@ -59,11 +59,12 @@ import { getCurrentOrg, getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { createStorageClient } from "@/lib/supabase/storage";
 import { echoedValues, field, type FormState } from "@/lib/forms";
-import { authoriseOrg, failureState } from "@/lib/crm/actions";
+import { authoriseOrg, failureState, stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { sanitiseFilename, sniffAndAllow } from "@/lib/security/file-allowlist";
 import { buildStorageKey } from "@/lib/crm/storage-keys";
 import { getScanner, type ScanResult } from "@/lib/security/malware-scan";
+import { LINK_ENTITY_TYPES, type LinkEntityType } from "@/lib/crm/links";
 
 const PERMISSION = "manage_documents";
 
@@ -77,6 +78,8 @@ const QUARANTINED =
   "That file didn’t pass the malware scan, so it can’t be opened. It has been quarantined and not attached.";
 const SCAN_FAILED =
   "We couldn’t scan that file just now, so it hasn’t been made available. Try again in a moment.";
+const UPLOADED_NOT_ATTACHED =
+  "The file uploaded, but it couldn’t be attached to this record. You’ll find it in Documents.";
 
 /** The documents.scan_status value for a scanner verdict. */
 function statusForVerdict(verdict: ScanResult): "clean" | "quarantined" | "error" {
@@ -232,7 +235,72 @@ export async function uploadDocumentAction(
   if (scanStatus === "error") {
     return { error: SCAN_FAILED, values: echoedValues(formData) };
   }
+
+  // ATTACH, when the upload came from an entity's related panel. The panel's
+  // form carries hidden `entityType`/`entityId`; the org-wide /documents form
+  // carries neither, so this branch is skipped there. The document row exists
+  // and is `clean` by the time we reach here, so this is a single link INSERT,
+  // NOT a re-upload -- the "atomic-enough" shape the brief asks for: the file
+  // is safely stored and scanned first, then attached.
+  //
+  // ONLY A CLEAN DOCUMENT IS ATTACHED. A quarantined one returned above with
+  // "not attached" in its own copy; an `error` one is withheld and asks the
+  // user to retry, so neither reaches here. The document_links INSERT policy
+  // (20260902011000) validates the TARGET end via private.entity_is_visible, so
+  // a forged entityId the caller cannot see is refused by the database whatever
+  // this reads -- the app half is the good sentence, not the control (the same
+  // split as lib/crm/link-actions.ts).
+  const linkTarget = documentLinkTarget(formData);
+  if (linkTarget) {
+    const { error: linkError } = await supabase.from("document_links").insert({
+      organisation_id: org.id,
+      parent_id: documentId,
+      entity_type: linkTarget.entityType,
+      entity_id: linkTarget.entityId,
+    });
+    if (linkError) {
+      // The file is uploaded and clean; only the attach failed. Say so rather
+      // than claim the whole upload failed -- the document is real and findable
+      // in /documents. 42501/23514/23503 are refusals (target not visible or
+      // not a real tenant row); anything else is a transient fault.
+      console.error("[crm] document attach-on-upload failed:", linkError.message);
+      return { error: UPLOADED_NOT_ATTACHED, values: echoedValues(formData) };
+    }
+    // The target's detail page (its related panel) now shows the document.
+    revalidatePath(`/${org.slug}/${entitySegment(linkTarget.entityType)}/${linkTarget.entityId}`);
+    return { message: "Uploaded and attached." };
+  }
+
   return { message: "Uploaded." };
+}
+
+/**
+ * The entity a related-panel upload should attach the new document to, or null
+ * for an org-wide upload. The `entityType` is validated against the link
+ * allowlist here so a forged value is a null (skip the attach) rather than a
+ * string reaching the INSERT — belt over the database's own CHECK/dispatch.
+ */
+function documentLinkTarget(
+  formData: FormData,
+): { entityType: LinkEntityType; entityId: string } | null {
+  const entityType = field(formData, "entityType");
+  const entityId = field(formData, "entityId");
+  if (!entityType || !entityId) return null;
+  if (!(LINK_ENTITY_TYPES as readonly string[]).includes(entityType)) return null;
+  return { entityType: entityType as LinkEntityType, entityId };
+}
+
+/** The route segment for a link target type, for revalidation after an attach. */
+function entitySegment(entityType: LinkEntityType): string {
+  const SEGMENT: Record<LinkEntityType, string> = {
+    company: "companies",
+    contact: "contacts",
+    agency: "agencies",
+    artist: "artists",
+    venue: "venues",
+    event: "events",
+  };
+  return SEGMENT[entityType];
 }
 
 // ===========================================================================
@@ -406,5 +474,83 @@ export async function deleteDocumentAction(
   }
 
   revalidatePath(`/${org.slug}/documents`);
+  revalidatePath(`/${org.slug}/documents/deleted`);
   return { message: "Deleted." };
+}
+
+// ===========================================================================
+// FORM-SHAPED DELETE + RESTORE for the /documents list controls.
+//
+// deleteDocumentAction takes `orgSlug` as its first positional argument (Task
+// 5's contract, so the upload/scan/download integration test can drive it),
+// but useActionState in the list's DeleteRecordForm needs the `(prev, formData)`
+// shape and passes orgSlug as a hidden field. deleteDocumentFormAction is the
+// thin adapter; it changes no behaviour, only the calling convention.
+//
+// Documents have NO detail page (unlike every other soft-deleted entity, which
+// restores from its own record page), so delete happens inline on /documents
+// and restore inline on /documents/deleted -- these two form-shaped actions are
+// what those row controls bind.
+// ===========================================================================
+export async function deleteDocumentFormAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  return deleteDocumentAction(field(formData, "orgSlug"), formData);
+}
+
+/**
+ * Form-shaped upload, for the DocumentUpload component's useActionState.
+ * uploadDocumentAction takes `orgSlug` positionally (the integration test drives
+ * it that way); the form passes it as a hidden field. Same adapter reason as
+ * deleteDocumentFormAction.
+ */
+export async function uploadDocumentFormAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  return uploadDocumentAction(field(formData, "orgSlug"), formData);
+}
+
+/**
+ * Restore a soft-deleted document. Mirrors restoreEventAction: flip `deleted_at`
+ * back to null through commitWrite ({ count: "exact" } -- a 204 is not a save),
+ * with the mirror-of-delete predicate so restoring a LIVE document matches
+ * nothing rather than reporting a success that changed nothing.
+ *
+ * NOT AUDITED as a byte-action: restore touches no bytes and mints no signed
+ * URL -- it only un-hides metadata, and public.audit_document_action's closed
+ * action set (upload/download/delete/quarantine, 20260902031000) deliberately
+ * does not carry a restore verb. The soft-delete IS audited (document_deleted);
+ * a document_restored audit is a one-line additive widening if a later phase
+ * wants the symmetry (noted in FOLLOW-UPS).
+ */
+export async function restoreDocumentAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
+  if (!auth.ok) return auth.state;
+  const org = auth.org;
+
+  const documentId = field(formData, "documentId");
+  if (!documentId) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
+
+  const supabase = await createClient();
+  const result = await commitWrite(`document ${documentId} restore`, () =>
+    supabase
+      .from("documents")
+      .update({ deleted_at: null }, { count: "exact" })
+      .eq("organisation_id", org.id)
+      .eq("id", documentId)
+      .filter("deleted_at", "not.is", null),
+  );
+
+  if (result.outcome === "applied") {
+    revalidatePath(`/${org.slug}/documents`);
+    revalidatePath(`/${org.slug}/documents/deleted`);
+  }
+  return stateFor(result, "Restored. It is back in the documents list.", formData);
 }
