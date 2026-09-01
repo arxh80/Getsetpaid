@@ -42,7 +42,8 @@
 --
 -- SECTIONS (each negative paired with a positive control -- Constraint 14):
 --   FA  the permission catalogue + role_requires_mfa, read out of the database
---   FB  policy SHAPE guards over all three policies, with a denominator
+--   FB  SOURCE-SHAPE guards, with denominators: the three policies, the tier
+--       helper's body, and the summary view's security_invoker option
 --   FC  the three composite FKs, by column name and delete action
 --   FD  THE ROLE GATE (brief assertion 1) -- the headline
 --   FE  THE TIER GATE (brief assertion 2) -- the inert-machinery proof
