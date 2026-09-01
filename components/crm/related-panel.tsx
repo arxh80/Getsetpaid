@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { getCurrentOrg } from "@/lib/auth";
+import { getCrmWriteAccess } from "@/lib/crm/write-access";
 import {
   loadDocumentsForEntity,
   loadNotesForEntity,
@@ -21,6 +23,11 @@ import type { ListColumn } from "@/lib/list/spec";
 import { EntityList } from "@/components/list/entity-list";
 import { TaskStatusChip } from "@/components/crm/task-status-chip";
 import { PriorityChip } from "@/components/crm/priority-chip";
+import { ScanStatusChip } from "@/components/crm/scan-status-chip";
+import { DocumentDownloadLink } from "@/components/crm/document-row";
+import { DocumentUpload } from "@/components/crm/document-upload";
+import { WriteBlockedNote } from "@/components/crm/write-gate";
+import { humanFileSize } from "@/lib/format/bytes";
 import { formatDateTime } from "@/lib/format/date";
 
 // The reusable RELATED panel: the tasks, notes and documents linked TO one CRM
@@ -36,15 +43,20 @@ import { formatDateTime } from "@/lib/format/date";
 // `after` and page one silently returns the other two to page one (the artist
 // detail page's header states the same for its three surfaces).
 //
-// READ-ONLY. This panel shows what points at the record; the LINK is created
-// from the task/meeting/note's own page (components/crm/entity-link-picker.tsx).
-// The documents column is read-only until Task 6 (upload), so it renders a
-// "no documents" empty state over an always-empty list -- a real surface so the
-// three page independently, not a special case.
+// TASKS AND NOTES ARE READ-ONLY HERE; DOCUMENTS ARE WRITABLE (Task 6). The
+// panel shows what points at the record. For a task or a note, the LINK is
+// created from that record's own page (components/crm/entity-link-picker.tsx),
+// so this surface only lists them. A DOCUMENT has no detail page, so its attach
+// point is here: this panel carries an upload control that creates the document
+// AND the document_links row in one action (uploadDocumentAction with the
+// entity's hidden type/id), and lists what is attached with the scan chip and a
+// download link that resolves only for a `clean` file.
 //
 // AN ASYNC SERVER COMPONENT that does its own reads, so a detail page mounts it
 // with `<RelatedPanel ... />` and nothing else. Each loader is the two-step
-// reverse read in lib/crm/queries.ts.
+// reverse read in lib/crm/queries.ts. It also resolves manage_documents write
+// access itself (getCurrentOrg is cached, so this is not a second round trip),
+// so the six detail pages need no new prop.
 
 export async function RelatedPanel({
   orgSlug,
@@ -63,11 +75,16 @@ export async function RelatedPanel({
   /** The whole query string, passed to all three as `preserve` (rule 10). */
   raw: RawSearchParams;
 }) {
-  const [tasks, notes, documents] = await Promise.all([
+  const org = await getCurrentOrg(orgSlug);
+  const [tasks, notes, documents, docAccess] = await Promise.all([
     loadTasksForEntity(organisationId, entityType, entityId, raw),
     loadNotesForEntity(organisationId, entityType, entityId, raw),
     loadDocumentsForEntity(organisationId, entityType, entityId, raw),
+    org
+      ? getCrmWriteAccess(org, "manage_documents")
+      : Promise.resolve({ canWrite: false as const, reason: "permission" as const, explanation: "" }),
   ]);
+  const docWriteNoteId = "related-documents-write-note";
 
   return (
     <section className="flex flex-col gap-6 border-t border-rule pt-6">
@@ -113,19 +130,31 @@ export async function RelatedPanel({
 
       <div className="flex flex-col gap-3">
         <h3 className="text-base font-semibold text-ink">Documents</h3>
+        {/* WRITABLE (Task 6): upload attaches to this record in one action. A
+            writer gets the control; anyone else gets the explanation, never a
+            silent absence. The server refuses a forbidden upload regardless. */}
+        {docAccess.canWrite ? (
+          <DocumentUpload
+            orgSlug={orgSlug}
+            entity={{ type: entityType, id: entityId }}
+            compact
+          />
+        ) : (
+          <WriteBlockedNote access={docAccess} id={docWriteNoteId} />
+        )}
         <EntityList
           spec={RELATED_DOCS_LIST}
           params={documents.params}
           basePath={basePath}
           page={documents.page}
-          columns={documentColumns()}
+          columns={documentColumns(orgSlug)}
           rowKey={(row) => row.id}
           narrowed={isNarrowed(RELATED_DOCS_LIST, documents.params)}
           preserve={raw}
           emptyState={
             <p className="max-w-prose text-base text-ink-muted">
-              No documents. Uploading and attaching files arrives in a later
-              release.
+              No documents attached to this record yet.
+              {docAccess.canWrite ? " Attach one above." : ""}
             </p>
           }
         />
@@ -219,22 +248,39 @@ function noteColumns(
   ];
 }
 
-function documentColumns(): readonly ListColumn<DocumentRow, RelatedDocsSortKey>[] {
-  // Read-only until Task 6; the list is empty in this task, so these render for
-  // nobody yet. Kept so the surface is a real list (rule 10) and Task 6 fills
-  // in the download/scan controls.
+function documentColumns(
+  orgSlug: string,
+): readonly ListColumn<DocumentRow, RelatedDocsSortKey>[] {
   return [
-    { key: "filename", header: "File", render: (row) => <span className="break-words">{row.filename}</span> },
+    {
+      key: "filename",
+      header: "File",
+      // The download link resolves ONLY for a `clean` file; the rest render
+      // inert with a reason, and the Route Handler refuses them anyway (rule 12).
+      render: (row) => (
+        <DocumentDownloadLink
+          orgSlug={orgSlug}
+          documentId={row.id}
+          filename={row.filename}
+          scanStatus={row.scanStatus}
+        />
+      ),
+    },
+    {
+      key: "scan",
+      header: "Scan",
+      render: (row) => <ScanStatusChip status={row.scanStatus} />,
+    },
     {
       key: "size",
       header: "Size",
       numeric: true,
       secondary: true,
-      // A minimal inline size render -- lib/format/bytes.ts (humanFileSize)
-      // arrives with the document upload path in Task 6; this column renders
-      // for nobody until then (the list is empty in Task 3).
+      // DESIGN.md § Numerals: tabular figures on every file size.
       render: (row) => (
-        <span className="tabular-nums">{Math.ceil(row.sizeBytes / 1024)} KB</span>
+        <span className="tabular-nums text-ink-muted">
+          {humanFileSize(row.sizeBytes)}
+        </span>
       ),
     },
     {
