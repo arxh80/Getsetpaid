@@ -1,7 +1,9 @@
 "use server";
 
-// Documents: the upload half of the file-security pipeline. Download (the
-// signed-URL issue and its authorisation) is Task 5.
+// Documents: the file-security pipeline. Upload (authorise → sniff → store →
+// scan) is below; download (issueDownloadUrl, called by the download Route
+// Handler) and soft-delete (deleteDocumentAction) complete it. Every one of
+// the three byte-actions — upload, download, delete — writes an audit row.
 //
 // ===========================================================================
 // THE PIPELINE, IN ORDER, AND WHY EACH STEP IS WHERE IT IS
@@ -34,25 +36,30 @@
 //       signed URL (Task 5).
 //
 // ===========================================================================
-// AUDIT: A DELIBERATE SEAM, NOT AN OMISSION
+// AUDIT: APP-SIDE, VIA A GUARDED RPC — AND WHY NOT A TRIGGER
 // ===========================================================================
-// SECURITY.md § 6 requires every upload to be audited. The sole write path into
-// audit_events is private.log_audit_event, whose EXECUTE is granted to NO
-// client role (it is called only by other SECURITY DEFINER functions). There
-// is therefore no client-callable audit RPC in the schema today, and creating
-// one is a MIGRATION -- specifically 20260902031000, which is Task 5's file
-// (the storage-action audit helper). Task 4's binding rule is "only
-// 20260902030000 is new", so Task 4 cannot ship that helper, and calling
-// log_audit_event from here would raise 42501. The audit call therefore has a
-// marked seam below; Task 5 wires it when it ships the helper. Stated plainly
-// so the absence reads as sequencing, not as a forgotten control.
+// SECURITY.md § 6/§ 7 require every upload, download and soft-delete to be
+// audited. The sole write path into audit_events is private.log_audit_event,
+// granted to NO client role; 20260902031000 ships public.audit_document_action,
+// the thin RPC that reaches it, guarded so a caller can only write a row for an
+// org they can view and a document that is really theirs. Every audit here goes
+// through auditDocument() → that RPC on the caller's own RLS-bound client.
+//
+// This is APP-SIDE audit, unlike the Phase 2 hard-delete/merge TRIGGER
+// (20260828141000). There the anon key makes a raw PostgREST DELETE reachable
+// without the app, so the database is the only chokepoint. A document's BYTES
+// have no such path: storage.objects is deny-all fenced (20260902030000) and
+// service_role on the server is the only reader/writer, so the application is
+// the only path in and out and an app-side audit is sufficient. The download
+// audit in particular is written by the Route Handler BEFORE the signed URL is
+// issued — no audit, no URL. See SECURITY.md § 7.
 
 import { revalidatePath } from "next/cache";
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentOrg, getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { createStorageClient } from "@/lib/supabase/storage";
-import { echoedValues, type FormState } from "@/lib/forms";
-import { authoriseOrg } from "@/lib/crm/actions";
+import { echoedValues, field, type FormState } from "@/lib/forms";
+import { authoriseOrg, failureState } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { sanitiseFilename, sniffAndAllow } from "@/lib/security/file-allowlist";
 import { buildStorageKey } from "@/lib/crm/storage-keys";
@@ -207,10 +214,15 @@ export async function uploadDocumentAction(
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
 
-  // AUDIT SEAM -- Task 5 (see this file's header). The upload event
-  // (actor=user.id, org=org.id, target=documentId, action 'document.uploaded',
-  // plus the scan verdict) is recorded here once the client-callable audit
-  // helper ships in 20260902031000. Not audited in Task 4.
+  // AUDIT. Exactly one row per upload: a malware hit is a 'document_quarantined'
+  // event (it feeds incident alerting, SECURITY.md § 12), everything else is
+  // 'document_uploaded'. Fail-closed: an audit fault must not report success on
+  // an unaudited write, so it returns the fault sentence like any other.
+  const auditAction =
+    scanStatus === "quarantined" ? "document_quarantined" : "document_uploaded";
+  if (!(await auditDocument(supabase, auditAction, org.id, documentId))) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
 
   revalidatePath(`/${org.slug}/documents`);
 
@@ -221,4 +233,178 @@ export async function uploadDocumentAction(
     return { error: SCAN_FAILED, values: echoedValues(formData) };
   }
   return { message: "Uploaded." };
+}
+
+// ===========================================================================
+// AUDIT WRITER for the three byte-actions.
+//
+// One place, so upload, download and delete write the audit row the same way:
+// public.audit_document_action on the caller's OWN RLS-bound client, so the
+// actor is the signed-in user (log_audit_event forces auth.uid()) and the
+// RPC's own guards apply (the caller must view the org and own the document).
+// Returns false on a fault so every caller can fail closed -- an unaudited
+// byte-action must never be reported as a success (SECURITY.md § 7).
+// ===========================================================================
+type DocumentAuditAction =
+  | "document_uploaded"
+  | "document_downloaded"
+  | "document_deleted"
+  | "document_quarantined";
+
+async function auditDocument(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  action: DocumentAuditAction,
+  organisationId: string,
+  documentId: string,
+): Promise<boolean> {
+  const { error } = await supabase.rpc("audit_document_action", {
+    p_action: action,
+    p_org: organisationId,
+    p_document_id: documentId,
+  });
+  if (error) {
+    console.error(`[crm] document audit (${action}) failed:`, error.message);
+    return false;
+  }
+  return true;
+}
+
+// ===========================================================================
+// DOWNLOAD: issue a short-lived signed URL, but only after authorisation and
+// audit. Called by the download Route Handler.
+//
+// THE ORDER IS THE CONTROL (Global Constraint 12): load THROUGH RLS so a
+// cross-tenant or absent id returns nothing and yields a 404 with no leak of
+// existence; refuse anything but a `clean` verdict (the quarantine gate);
+// AUDIT; only then sign. The signed URL is issued last, never before the audit
+// -- no audit, no URL. Refusals are typed by the HTTP status the Route Handler
+// returns, so a quarantined file is a 409 (it exists, it is being withheld) and
+// an unreachable one is a 404 (as far as this caller is concerned it is not
+// there at all).
+// ===========================================================================
+
+/** Signed-URL TTL, seconds. 60s (Q51): long enough to follow the redirect,
+ *  short enough that a leaked URL is stale almost immediately. */
+const SIGNED_URL_TTL_SECONDS = 60;
+
+const STILL_UNAVAILABLE =
+  "That file isn’t available to open. It may still be scanning, or it didn’t pass the malware scan.";
+
+type DownloadOutcome =
+  | { readonly ok: true; readonly url: string; readonly expiresAt: string }
+  | { readonly ok: false; readonly status: 404 }
+  | { readonly ok: false; readonly status: 409; readonly reason: string }
+  | { readonly ok: false; readonly status: 500 };
+
+/**
+ * Resolve a document to a short-lived signed download URL, or a typed refusal.
+ *
+ * `documentId` is looked up through the caller's OWN client, so RLS decides
+ * visibility: another tenant's id, a soft-deleted row, or one this record-scoped
+ * user may not see all return nothing -> 404, indistinguishable from "never
+ * existed", which is the point (no existence oracle).
+ */
+export async function issueDownloadUrl(
+  orgSlug: string | null,
+  documentId: string,
+): Promise<DownloadOutcome> {
+  const user = await getCurrentUser();
+  if (!user) return { ok: false, status: 404 };
+  if (!orgSlug) return { ok: false, status: 404 };
+
+  // Membership: getCurrentOrg returns null for a slug the caller is not an
+  // active member of -- same 404 as a missing document, no existence leak.
+  const org = await getCurrentOrg(orgSlug);
+  if (!org) return { ok: false, status: 404 };
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("documents")
+    .select("storage_key, scan_status")
+    .eq("organisation_id", org.id)
+    .eq("id", documentId)
+    .is("deleted_at", null)
+    .maybeSingle();
+
+  if (error) {
+    // 22P02 is an unparseable uuid in the URL: no such document, and there
+    // never could be -- a 404, not a 500. Anything else is a real fault.
+    if (error.code === "22P02") return { ok: false, status: 404 };
+    console.error("[crm] document download lookup failed:", error.message);
+    return { ok: false, status: 500 };
+  }
+  if (!data) return { ok: false, status: 404 };
+
+  // THE QUARANTINE GATE. A pending/quarantined/error document never yields a
+  // URL -- the byte is withheld until the scan says `clean`.
+  if (data.scan_status !== "clean") {
+    return { ok: false, status: 409, reason: STILL_UNAVAILABLE };
+  }
+
+  // AUDIT BEFORE THE URL. Every download is logged, and a logging fault
+  // withholds the file rather than serving it unlogged.
+  if (!(await auditDocument(supabase, "document_downloaded", org.id, documentId))) {
+    return { ok: false, status: 500 };
+  }
+
+  // SIGN. Service-role, because the bucket is client-fenced. The URL is minted
+  // only now, after authorisation (RLS) and audit.
+  const storage = createStorageClient();
+  const signed = await storage.storage
+    .from("documents")
+    .createSignedUrl(data.storage_key, SIGNED_URL_TTL_SECONDS);
+  if (signed.error || !signed.data?.signedUrl) {
+    console.error(
+      "[crm] createSignedUrl failed:",
+      signed.error?.message ?? "no signed URL returned",
+    );
+    return { ok: false, status: 500 };
+  }
+
+  const expiresAt = new Date(
+    Date.now() + SIGNED_URL_TTL_SECONDS * 1000,
+  ).toISOString();
+  return { ok: true, url: signed.data.signedUrl, expiresAt };
+}
+
+// ===========================================================================
+// SOFT-DELETE. The row's deleted_at is set; the BYTES are deliberately NOT
+// removed from the bucket -- soft-delete discipline (CLAUDE.md § Non-negotiable
+// rules). A retention/GC job that purges the bytes of rows past retention is a
+// documented Phase 8 follow-up (FOLLOW-UPS.md), not built here. { count:
+// "exact" } because a 204 is not a save (lib/crm/write.ts), and audit after the
+// row really moves.
+// ===========================================================================
+export async function deleteDocumentAction(
+  orgSlug: string | null,
+  formData: FormData,
+): Promise<FormState> {
+  const auth = await authoriseOrg(orgSlug, formData, PERMISSION);
+  if (!auth.ok) return auth.state;
+  const org = auth.org;
+
+  const documentId = field(formData, "documentId");
+  if (!documentId) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
+
+  const supabase = await createClient();
+  const result = await commitWrite(`document ${documentId} soft-delete`, () =>
+    supabase
+      .from("documents")
+      .update({ deleted_at: new Date().toISOString() }, { count: "exact" })
+      .eq("organisation_id", org.id)
+      .eq("id", documentId)
+      .is("deleted_at", null),
+  );
+  if (result.outcome !== "applied") {
+    return failureState(result, formData);
+  }
+
+  if (!(await auditDocument(supabase, "document_deleted", org.id, documentId))) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
+
+  revalidatePath(`/${org.slug}/documents`);
+  return { message: "Deleted." };
 }
