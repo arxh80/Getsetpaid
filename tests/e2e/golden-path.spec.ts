@@ -5,8 +5,11 @@ import { signIn } from "./support/sign-in";
 // THE PHASE 2 GOLDEN PATH, WALKED.
 //
 // `CLAUDE.md` names it as "create contact -> create event -> add artist -> add
-// venue -> add task -> view activity". Events are Phase 3 and tasks are
-// Phase 4, so the Phase 2 shape (Task 8 brief § 4) is:
+// venue -> add task -> view activity". This file walks the Phase 2 stretch;
+// `events.spec.ts` walks the events stretch, and `operations.spec.ts` — added
+// in Phase 4 Task 8 — walks the "add a task -> view activity" step against a
+// real event's timeline. The three are siblings by design: whoever extends the
+// sentence adds a spec, never rewrites another. The Phase 2 shape here is:
 //
 //     create contact -> create company -> link them -> add artist
 //                    -> add venue -> add a room -> view the activity timeline
