@@ -2708,3 +2708,45 @@ test suite.
 
 Any task that ships a screen needs someone to open it. Treat a browser
 walkthrough as part of the definition of done, not as optional diligence.
+
+### Opened by Task 4 (the file-security pipeline core)
+
+- **Q42 — WHICH PRODUCTION MALWARE SCANNER, AND AT WHAT COST — remains a founder
+  decision.** Task 4 built the `MalwareScanner` seam (`lib/security/malware-scan.ts`)
+  and a local `EicarStubScanner` that makes quarantine exercisable end to end,
+  but **no real engine runs anywhere in this codebase.** `getScanner()` reads
+  `MALWARE_SCANNER` (default `stub`); `clamav` and any SaaS name resolve to an
+  **unconfigured adapter that throws "not configured"** rather than silently
+  passing a file unscanned. Wiring the real scanner is a future task that owns:
+  the adapter implementation, the credential/DPA (a scanning SaaS is a
+  sub-processor — `CLAUDE.md` § Sub-processor register), whether scanning moves
+  to a **webhook** (a real SaaS is not synchronous — the upload action's
+  synchronous scan is an MVP stub property, noted in `lib/crm/documents.ts`), and
+  setting `MALWARE_SCANNER` in production so the throwing default cannot ship.
+  **Owner: founder decision (Q42), then the task that wires it.**
+
+- **The upload is NOT audited yet — the audit call is a marked seam awaiting
+  Task 5's helper.** `SECURITY.md` § 6 requires every upload to be logged, but
+  `private.log_audit_event` is granted to no client role and the client-callable
+  wrapper is a migration (`20260902031000`) that belongs to Task 5. Task 4's
+  binding rule ("only `20260902030000` is new") meant it could not ship that
+  helper, so `uploadDocumentAction` carries a documented seam where the
+  `document.uploaded` audit event (actor, org, target document, scan verdict)
+  goes. **Owner: Phase 4 Task 5**, in the same change as the download-path audit.
+
+- **A scanner FAULT stores the file at `scan_status='error'` and the pipeline is
+  fail-closed on it — but there is no retry/re-scan path.** A thrown or `'error'`
+  scanner verdict lands the row `error` (never `clean`), so no signed URL is ever
+  issued (Task 5), which is the safe direction. What is missing is a way to
+  RE-SCAN an `error` row once the scanner is healthy again — today it is stuck.
+  Not needed for the stub (which never errors unbidden); owed by whoever wires
+  the real scanner alongside the webhook decision above.
+
+- **The OOXML macro check keys on plaintext ZIP markers (`vbaProject.bin`, a
+  `macroEnabled` content type), not a full unzip.** This is correct because a
+  ZIP stores entry names uncompressed in every header, so the markers appear
+  verbatim without decompression — but it is a substring scan, not a parser. If
+  a future requirement needs deeper OOXML validation (e.g. rejecting external
+  relationship targets / OLE-embedded objects), that is a real unzip-and-parse
+  step, a deliberate addition, not a tightening of the current sniff. Recorded so
+  the sniff's scope is not mistaken for full OOXML validation.
