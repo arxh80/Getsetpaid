@@ -340,8 +340,9 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
         ) : null}
       </section>
 
-      {/* DAY TO DAY (Phase 4 Task 3). The operational layer that hangs off the
-          six record types above: tasks to do, meetings held, notes kept. Linked
+      {/* DAY TO DAY (Phase 4). The operational layer that hangs off the six
+          record types above: tasks to do, meetings held, notes kept, files
+          filed (documents, Task 6). Linked
           for everyone who can read the page, same rule as CRM_AREAS -- every
           role here holds view_crm, and each list explains on its own face who
           can write. There is no persistent navbar to add these to (the app
@@ -351,9 +352,9 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
       <section className="border border-rule bg-surface p-5">
         <h2 className="text-xl font-bold text-ink">Day to day</h2>
         <p className="mt-2 max-w-prose text-base text-ink-muted">
-          The work around the records: what needs doing, who you met, and what
-          you want kept. Each can be linked to the contacts, events and everyone
-          else above.
+          The work around the records: what needs doing, who you met, what you
+          want kept, and the files that go with them. Each can be linked to the
+          contacts, events and everyone else above.
         </p>
         <ul className="mt-4 flex flex-col border-t border-rule">
           {OPERATIONS_AREAS.map((area) => (
@@ -598,11 +599,11 @@ const CRM_AREAS = [
 ] as const;
 
 /**
- * The three operational areas (Phase 4 Task 3), in the order they are used:
- * a task is planned, a meeting is held, a note is kept. Data rather than three
- * copies of the same JSX, exactly as CRM_AREAS. Not filtered by permission --
- * every role that reaches this page holds `view_crm` and each list explains its
- * own write rules.
+ * The four operational areas (Phase 4), in the order they are used: a task is
+ * planned, a meeting is held, a note is kept, a file is filed. Data rather than
+ * four copies of the same JSX, exactly as CRM_AREAS. Not filtered by permission
+ * -- every role that reaches this page holds `view_crm` and each list explains
+ * its own write rules. Documents was added by Task 6.
  */
 const OPERATIONS_AREAS = [
   {
@@ -622,5 +623,11 @@ const OPERATIONS_AREAS = [
     label: "Notes",
     blurb:
       "Free-form text kept with a record. Private to you, or shared with the workspace.",
+  },
+  {
+    path: "documents",
+    label: "Documents",
+    blurb:
+      "Contracts, riders and artwork. Scanned before they can be opened, and attached to the records they are about.",
   },
 ] as const;
