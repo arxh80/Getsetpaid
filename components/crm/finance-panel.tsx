@@ -197,8 +197,19 @@ function SummaryTable({ summary }: { summary: EventFinanceSummary }) {
         <caption className="sr-only">Budget versus actuals for this event</caption>
         <thead>
           <tr className="border-b border-rule-strong">
+            {/* THE CORNER CELL, AND IT IS NOT BLANK ANY MORE.
+                Phase 5 Task 5's axe scan of this page (the first time a browser
+                ran axe over a session holding `view_finance`) reported
+                `empty-table-header` here: this was `&nbsp;`, which is a `<th>`
+                with no accessible text. A screen reader navigating the column
+                announced nothing for it, and the three row headers under it
+                (Gross / Expense / Net) had no column to belong to. The label is
+                visually hidden -- the corner of a two-column money table reads
+                better empty -- and present for assistive technology, which is
+                the whole point of `sr-only` and the same treatment the
+                `<caption>` below already had. */}
             <th scope="col" className="px-3 py-2 text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase first:pl-0">
-              &nbsp;
+              <span className="sr-only">Measure</span>
             </th>
             <th scope="col" className="px-3 py-2 text-right text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase tabular-nums">
               Budgeted
