@@ -726,6 +726,105 @@ select op.val('OH3 CONTROL: the quarantined row''s scan_status is readable and s
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
+-- OI. THE ACTIVITY TIMELINE -- the four Task 7 branches on activity_events
+-- ===========================================================================
+-- 20260902040000 adds four POLYMORPHIC sources (task_links, meeting_links,
+-- note_links, document_links), each read FROM the link table so its subject is
+-- the CRM record the operational object hangs off. The security-critical one is
+-- note_added: the view is security_invoker, so a 'private' note the reader did
+-- NOT author is filtered by notes_select_by_visibility AT THE JOIN and never
+-- reaches a third party's timeline. OI3 (a full-scope non-author sees 0) vs OI4
+-- (the author sees 1) on the SAME subject is that proof -- if the view were ever
+-- switched to security_definer, OI3 would go red.
+--
+-- Fixtures reused: pstd1's 'Std1 Task' (task_link -> Std1 Contact 2222..0001);
+-- pstd1's PRIVATE note 'Std1 private' (note_link -> Std1 Contact 2222..0001);
+-- pstd1's COMPANY note 'Std1 company' (note_link -> Manager Contact 2222..0002);
+-- pmanager's 'manager.pdf' (document_link -> 2222..0002); pmanager's 'Manager
+-- Meeting' (meeting_link -> 2222..0002).
+
+-- Complete pstd1's task so the task_completed arm has a completed_at to fire on.
+-- As postgres: "done" is an application transition the write path owns and this
+-- suite has none; the branch only READS completed_at.
+update public.tasks
+   set status='done', completed_at = timestamptz '2026-09-15 10:00+00'
+ where id='7a000000-0000-0000-0000-000000000001';
+
+-- The four backedBy names (lib/crm/activity.ts) are REAL indexes -- the half a
+-- psql suite can prove; tests/unit/crm/activity.test.ts asserts the spec names
+-- them. Same shape as rls_phase3_events.sql §§ EX/EL for the Phase 3 branches.
+select op.val('OI0a task_links_target_idx is a real index',
+  $$select count(*)::text from pg_indexes where schemaname='public'
+     and indexname='task_links_target_idx'$$, '1');
+select op.val('OI0b meeting_links_target_idx is a real index',
+  $$select count(*)::text from pg_indexes where schemaname='public'
+     and indexname='meeting_links_target_idx'$$, '1');
+select op.val('OI0c note_links_target_idx is a real index',
+  $$select count(*)::text from pg_indexes where schemaname='public'
+     and indexname='note_links_target_idx'$$, '1');
+select op.val('OI0d document_links_target_idx is a real index',
+  $$select count(*)::text from pg_indexes where schemaname='public'
+     and indexname='document_links_target_idx'$$, '1');
+
+-- pmanager is FULL-SCOPE and a THIRD PARTY to pstd1's private note.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select op.val('OI1 the linked task appears on the contact timeline (link_added, named)',
+  $$select count(*)::text from public.activity_events
+     where subject_type='contact' and subject_id='22220000-0000-0000-0000-000000000001'
+       and kind='link_added' and detail->>'other_name'='Std1 Task'$$, '1');
+select op.val('OI2 the completed task appears (task_completed, named)',
+  $$select count(*)::text from public.activity_events
+     where subject_type='contact' and subject_id='22220000-0000-0000-0000-000000000001'
+       and kind='task_completed' and detail->>'other_name'='Std1 Task'$$, '1');
+-- THE SECURITY ASSERTION. pstd1's PRIVATE note is linked to this contact, but
+-- pmanager did not author it and full scope does NOT override 'private', so its
+-- note_added is filtered by notes_select_by_visibility through the join.
+select op.val('OI3 SECURITY: a private note authored by someone else is NOT on a third party''s timeline',
+  $$select count(*)::text from public.activity_events
+     where subject_type='contact' and subject_id='22220000-0000-0000-0000-000000000001'
+       and kind='note_added'$$, '0');
+select op.val('OI3a CONTROL: pmanager CAN read this contact (so OI3''s 0 is the note filtered, not the record invisible)',
+  $$select count(*)::text from public.activity_events
+     where subject_type='contact' and subject_id='22220000-0000-0000-0000-000000000001'
+       and kind='record_created'$$, '1');
+-- NO NULL-SORTED BAND. The link branches fold their arms into a lateral whose
+-- `where e.occurred_at is not null` drops the arm whose timestamp is absent (an
+-- open task's completed_at, a live link's deleted_at). Removing that filter --
+-- the brief's mutation -- would emit a link_removed/task_completed row with a
+-- NULL occurred_at, which `notNull:true` on the sort assumes cannot exist and
+-- which drops a band out of a keyset page. Std1 Task's link is LIVE (deleted_at
+-- null) and OPEN-then-completed, so the mutation surfaces a null row here.
+select op.val('OI3b no timeline row for this contact has a NULL occurred_at (the null filter holds)',
+  $$select count(*)::text from public.activity_events
+     where subject_type='contact' and subject_id='22220000-0000-0000-0000-000000000001'
+       and occurred_at is null$$, '0');
+
+-- pstd1 is the AUTHOR of that private note.
+set request.jwt.claims = :'pstd1_c';
+select op.val('OI4 POSITIVE: the AUTHOR sees their own private note''s note_added on the same subject',
+  $$select count(*)::text from public.activity_events
+     where subject_type='contact' and subject_id='22220000-0000-0000-0000-000000000001'
+       and kind='note_added'$$, '1');
+
+-- The remaining three branches, proven to produce a row where they should
+-- (on Manager Contact 2222..0002), read as pmanager who can see it (full scope).
+set request.jwt.claims = :'pmanager_c';
+select op.val('OI5 a COMPANY note appears (note_added) on its linked contact',
+  $$select count(*)::text from public.activity_events
+     where subject_type='contact' and subject_id='22220000-0000-0000-0000-000000000002'
+       and kind='note_added'$$, '1');
+select op.val('OI6 an attached document appears (document_attached, named by filename)',
+  $$select count(*)::text from public.activity_events
+     where subject_type='contact' and subject_id='22220000-0000-0000-0000-000000000002'
+       and kind='document_attached' and detail->>'other_name'='manager.pdf'$$, '1');
+select op.val('OI7 a linked meeting appears (link_added, named)',
+  $$select count(*)::text from public.activity_events
+     where subject_type='contact' and subject_id='22220000-0000-0000-0000-000000000002'
+       and kind='link_added' and detail->>'other_name'='Manager Meeting'$$, '1');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o
