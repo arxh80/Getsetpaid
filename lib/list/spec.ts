@@ -137,13 +137,20 @@ export interface ListSpec<
 /**
  * The shape a prefix must have.
  *
- * Lower-case, and ending in the separator so the caller cannot half-write it.
- * The characters are the ones that need no percent-encoding in a query key,
- * because a prefix that encodes differently in `buildListHref` than the
- * browser sends it back would make every prefixed list read page one forever
- * and nothing would error.
+ * Lower-case, starting with a letter, and ending in the separator so the caller
+ * cannot half-write it. The characters are the ones that need no
+ * percent-encoding in a query key, because a prefix that encodes differently in
+ * `buildListHref` than the browser sends it back would make every prefixed list
+ * read page one forever and nothing would error.
+ *
+ * AN INTERNAL `_` IS ALLOWED (Phase 4 Task 3), so a two-part namespace like
+ * `rel_tasks_` reads as one -- the underscore needs no percent-encoding, so it
+ * round-trips like every other permitted character. The leading char is still
+ * required to be a letter (not `_`), the whole thing lower-case, and a trailing
+ * `_` mandatory; tests/unit/list/param-prefix.test.ts's rejection set
+ * ("activity", "Activity_", "activity-", "a b_", "_") is unaffected.
  */
-const PARAM_PREFIX = /^[a-z][a-z0-9]*_$/;
+const PARAM_PREFIX = /^[a-z][a-z0-9_]*_$/;
 
 /**
  * Query-string keys lib/list/params.ts owns.
@@ -201,7 +208,7 @@ export function defineListSpec<TSort extends string, TFilter extends string>(
     !PARAM_PREFIX.test(spec.paramPrefix)
   ) {
     throw new Error(
-      `[list] ${spec.entity}: paramPrefix "${spec.paramPrefix}" must be lower-case alphanumerics ending in "_" (e.g. "activity_").`,
+      `[list] ${spec.entity}: paramPrefix "${spec.paramPrefix}" must start with a lower-case letter, use only lower-case alphanumerics and "_", and end in "_" (e.g. "activity_" or "rel_tasks_").`,
     );
   }
   if (!Object.hasOwn(spec.sort, spec.defaultSort)) {

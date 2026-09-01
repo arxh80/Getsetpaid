@@ -213,6 +213,14 @@ describe("4. defineListSpec refuses a prefix that would not round-trip", () => {
       defineListSpec({ ...base, paramPrefix: "activity_" }),
     ).not.toThrow();
   });
+  it("accepts a two-part namespace with an internal underscore (Phase 4 Task 3)", () => {
+    // The related panel's `rel_tasks_`/`rel_notes_`/`rel_docs_` prefixes carry
+    // an internal `_`, which round-trips like every other permitted character.
+    // A leading `_` (in the rejection set above) is still refused.
+    for (const good of ["rel_tasks_", "rel_notes_", "rel_docs_"]) {
+      expect(() => defineListSpec({ ...base, paramPrefix: good })).not.toThrow();
+    }
+  });
 });
 
 // ===========================================================================
