@@ -171,8 +171,16 @@ import { fetchListPage, type ListPage } from "@/lib/list/query";
  * widened the type and nothing else -- which was the right order, because the
  * renderer's `Record<ActivityKind, ...>` and `SUBJECT_NOUN` were total over
  * `event` before any row could arrive.
+ *
+ * `financial_entry` IS EXCLUDED (Phase 5 Task 3). It joined
+ * CUSTOM_FIELD_ENTITY_TYPES because finance lines carry custom fields, but a
+ * finance line is NOT an activity subject -- it has no detail page and no
+ * timeline, and public.activity_events emits no rows for it. Excluding it here
+ * keeps SUBJECT_NOUN and the renderer's `Record<...>` total over exactly the
+ * subjects that exist, rather than forcing a noun and a renderer for a type no
+ * row can ever carry.
  */
-export type ActivitySubjectType = CustomFieldEntityType;
+export type ActivitySubjectType = Exclude<CustomFieldEntityType, "financial_entry">;
 
 /**
  * Every kind the view can emit.

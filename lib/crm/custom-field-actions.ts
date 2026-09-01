@@ -446,6 +446,13 @@ const PARENT_TABLE: Readonly<Record<CustomFieldEntityType, ParentTable>> = {
   // liveInOrg reads as "gone", the fail-closed direction. No screen reaches
   // it before Task 3 in any case.
   event: "events",
+  // PHASE 5 TASK 3. NEVER DEREFERENCED: saveCustomFieldValuesAction refuses
+  // `financial_entry` at its first line (finance custom-field values are
+  // written by lib/crm/finance.ts, inside the finance add/edit form, not
+  // through this generic panel). The entry exists only to keep this map total
+  // over CustomFieldEntityType; the value is the honest parent table all the
+  // same.
+  financial_entry: "financial_entries",
 };
 
 /**
@@ -481,6 +488,20 @@ export async function saveCustomFieldValuesAction(
 ): Promise<FormState> {
   const entityType = readEntityType(formData);
   if (entityType === null) {
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
+
+  // FINANCE IS WRITTEN ELSEWHERE, SO THIS ENDPOINT REFUSES IT (Phase 5 Task 3).
+  // A finance line has no standalone detail route, so the generic panel is
+  // never mounted for it: its custom-field values are written by
+  // lib/crm/finance.ts inside the finance add/edit form, which revalidates the
+  // event page directly. Refusing here makes that a guarantee rather than a
+  // convention -- it means ENTITY_PATH_SEGMENT['financial_entry'] (a sentinel,
+  // no real route) and PARENT_TABLE['financial_entry'] are provably never
+  // dereferenced on this path, so a forged POST cannot revalidate a bogus path
+  // or slip past the finance-specific write. FAILED_MESSAGE, not REFUSED: a
+  // client reaching this with `financial_entry` is malformed, not unauthorised.
+  if (entityType === "financial_entry") {
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
 

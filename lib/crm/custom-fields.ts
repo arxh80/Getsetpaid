@@ -53,17 +53,26 @@ import { groupMarkerName } from "@/lib/forms";
 import { normaliseWebsite, safeHref } from "@/lib/crm/urls";
 
 /**
- * The six CRM entities a custom field can be attached to.
+ * The seven entities a custom field can be attached to.
  *
- * SIX SINCE PHASE 3 TASK 1 (`20260901001000_event_entity_type_widening.sql`).
- * That migration widened `custom_field_definitions_entity_type_allowed` and
- * `custom_field_values_entity_type_allowed` to six and DELIBERATELY LEFT
+ * SIX SINCE PHASE 3 TASK 1 (`20260901001000_event_entity_type_widening.sql`),
+ * SEVEN SINCE PHASE 5 TASK 3 (`20260903020000_finance_custom_field_widening.sql`,
+ * which added `financial_entry`). Those migrations widened
+ * `custom_field_definitions_entity_type_allowed` and
+ * `custom_field_values_entity_type_allowed` and DELIBERATELY LEFT
  * `merges_entity_type_allowed` AND `merge_candidates_entity_type_allowed` AT
- * FIVE -- events are not dedup-screened and not mergeable at MVP. So this list
- * is no longer the merge list too: `MERGE_ENTITY_TYPES` in lib/crm/dedup.ts is
- * its own five-value tuple from that change onwards, and stopped being an
- * alias of this one. The reason is on `merges_entity_type_allowed`'s comment
- * in the database and in `20260901001000`'s header § (c).
+ * FIVE -- neither events nor financial entries are dedup-screened or mergeable
+ * at MVP (no email, no identifying name). So this list is no longer the merge
+ * list too: `MERGE_ENTITY_TYPES` in lib/crm/dedup.ts is its own five-value
+ * tuple. The reason is on `merges_entity_type_allowed`'s comment in the
+ * database and in `20260901001000`'s § (c) / `20260903020000`'s § (b).
+ *
+ * `financial_entry` IS THE ODD ONE OUT in two ways this file records below: it
+ * is the only type gated on a finance key (view_finance / manage_finance)
+ * rather than a CRM key, and the only one with NO standalone detail route --
+ * finance lines live on the event page, so its values are written by
+ * lib/crm/finance.ts (inside the finance add/edit form) and NOT by the generic
+ * saveCustomFieldValuesAction. See ENTITY_PATH_SEGMENT.
  */
 export const CUSTOM_FIELD_ENTITY_TYPES = [
   "company",
@@ -72,6 +81,7 @@ export const CUSTOM_FIELD_ENTITY_TYPES = [
   "artist",
   "venue",
   "event",
+  "financial_entry",
 ] as const;
 
 export type CustomFieldEntityType = (typeof CUSTOM_FIELD_ENTITY_TYPES)[number];
@@ -90,6 +100,7 @@ export const ENTITY_TYPE_LABELS: Readonly<Record<CustomFieldEntityType, string>>
   artist: "Artists",
   venue: "Venues",
   event: "Events",
+  financial_entry: "Financial entries",
 };
 
 /**
@@ -131,6 +142,14 @@ export const PERMISSION_FOR_ENTITY: Readonly<
   // private.entity_is_manageable() gains its own `event` arm in the same
   // migration that seeds the key, so the two can never exist apart.
   event: "manage_events",
+  // PHASE 5 TASK 3. The WRITE key for a finance line's custom fields is
+  // `manage_finance` (seeded by Task 1, 20260903000000), which is what
+  // private.entity_is_manageable()'s `financial_entry` arm names
+  // (20260903020000). Bound to the deployed dispatch by
+  // tests/integration/crm/permission-for-entity-matches-db.test.ts. A Finance
+  // user fills in a line's custom fields via manage_finance, never via
+  // manage_custom_fields (which governs the DEFINITION only).
+  financial_entry: "manage_finance",
 };
 
 /**
@@ -140,6 +159,23 @@ export const PERMISSION_FOR_ENTITY: Readonly<
  * back to it. It is the plural of the entity_type value in every case, but it
  * is written out rather than derived: `agency` -> `agencies` is not a suffix
  * rule, and a helper that gets four right and one wrong is worse than a table.
+ *
+ * ===========================================================================
+ * `financial_entry` IS A SENTINEL, NEVER DEREFERENCED FOR FINANCE
+ * ===========================================================================
+ * A finance line has NO standalone detail route -- it lives on its event's
+ * page (`/[orgSlug]/events/[eventId]`), keyed by the EVENT id, not the entry
+ * id -- so there is no correct `.../{segment}/{entryId}` URL to put here. The
+ * generic `saveCustomFieldValuesAction`, which is the ONLY consumer that
+ * dereferences this map for a values save, refuses `financial_entry` at its
+ * first line for exactly that reason: finance custom-field values are written
+ * by lib/crm/finance.ts inside the finance add/edit form, which revalidates
+ * `/${orgSlug}/events/${eventId}` DIRECTLY. So this value is unreachable by
+ * any finance code path, and the string below is a deliberate non-route: if it
+ * were ever built into a URL (it is not) it would 404 rather than mislead. The
+ * map stays total over CustomFieldEntityType so nothing else has to learn
+ * about the exclusion; the guard in saveCustomFieldValuesAction is what makes
+ * "never dereferenced" a guarantee rather than a convention.
  */
 export const ENTITY_PATH_SEGMENT: Readonly<
   Record<CustomFieldEntityType, string>
@@ -155,6 +191,8 @@ export const ENTITY_PATH_SEGMENT: Readonly<
   // timeline's `other_type: 'event'` entries and the venue timeline's, both
   // branches of public.activity_events (20260901030000).
   event: "events",
+  // SENTINEL -- see this map's header. Never dereferenced for finance.
+  financial_entry: "__financial_entry_has_no_standalone_route__",
 };
 
 // ---------------------------------------------------------------------------

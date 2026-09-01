@@ -701,7 +701,9 @@ describe("PERMISSION_FOR_ENTITY is total and names only real permission keys", (
     expect([...Object.keys(PERMISSION_FOR_ENTITY)].sort()).toEqual(
       [...CUSTOM_FIELD_ENTITY_TYPES].sort(),
     );
-    expect(Object.keys(PERMISSION_FOR_ENTITY)).toHaveLength(6);
+    // SEVEN SINCE PHASE 5 TASK 3 (financial_entry -> manage_finance). Was six
+    // after Phase 3 Task 1 added event.
+    expect(Object.keys(PERMISSION_FOR_ENTITY)).toHaveLength(7);
   });
 
   it("every key it names is a permission actually seeded by a migration", () => {

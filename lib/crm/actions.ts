@@ -212,7 +212,16 @@ export type ParentTable =
   | "tasks"
   | "meetings"
   | "notes"
-  | "documents";
+  | "documents"
+  // PHASE 5 TASK 3: financial_entries is the parent table of a finance line's
+  // custom-field values. It is the honest value for PARENT_TABLE.financial_entry
+  // in custom-field-actions.ts, though that entry is never dereferenced --
+  // saveCustomFieldValuesAction refuses `financial_entry` before reading the
+  // map, because finance values are written by lib/crm/finance.ts, not the
+  // generic panel. Union-widening ahead of (or without) a caller is harmless:
+  // nothing switches exhaustively on ParentTable. Same shape as the Phase 4
+  // operational arms above.
+  | "financial_entries";
 
 /**
  * Is this a LIVE row of THIS workspace, reachable by THIS caller?

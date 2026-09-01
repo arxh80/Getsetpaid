@@ -69,8 +69,12 @@ describe("the entity-type list is the shape the two CHECK constraints hold", () 
   //
   // The value-for-value comparison against the live catalogue is
   // tests/integration/crm/custom-field-entity-types-match-db.test.ts -- this
-  // is only the cheap half: the list exists, is six long, and is singular.
-  it("is the six singular values, in the migration's order", () => {
+  // is only the cheap half: the list exists, is seven long, and is singular.
+  //
+  // SEVEN SINCE PHASE 5 TASK 3: 20260903020000 added 'financial_entry' to the
+  // custom_field_definitions and custom_field_values allowlists (and, for the
+  // same reason as 'event', still NOT to the two merge allowlists).
+  it("is the seven singular values, in the migration's order", () => {
     expect([...CUSTOM_FIELD_ENTITY_TYPES]).toEqual([
       "company",
       "contact",
@@ -78,6 +82,7 @@ describe("the entity-type list is the shape the two CHECK constraints hold", () 
       "artist",
       "venue",
       "event",
+      "financial_entry",
     ]);
   });
 
