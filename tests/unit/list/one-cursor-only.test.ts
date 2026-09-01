@@ -325,6 +325,22 @@ describe("the list specs that differ from the others say how", () => {
     expect(events).toContain('paramPrefix: "artistevents_"');
   });
 
+  it("the three related-panel surfaces set distinct, non-empty prefixes", () => {
+    // The related panel carries THREE lib/list/ surfaces on one detail page, so
+    // a missing or duplicated prefix is two of them reading one `after`. The
+    // VALUES are asserted here (the census's cheap structural check); the
+    // wrapper pairing is covered above.
+    const related = readFileSync(root + "lib/crm/related-list.ts", "utf8");
+    const prefixes = [
+      'paramPrefix: "rel_tasks_"',
+      'paramPrefix: "rel_notes_"',
+      'paramPrefix: "rel_docs_"',
+    ];
+    for (const p of prefixes) expect(related, p).toContain(p);
+    // Distinct: three literal strings, three of them.
+    expect(new Set(prefixes).size).toBe(3);
+  });
+
   it("the timeline namespaces its query keys, because it shares a page", () => {
     // Two `parseListParams` calls on one route (the artist detail page carries
     // both `ARTIST_FEE_LIST` and the timeline) would otherwise read the SAME
