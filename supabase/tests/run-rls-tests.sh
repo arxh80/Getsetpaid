@@ -284,6 +284,34 @@ else
 fi
 
 # ============================================================================
+# PHASE 4 FILE-ACCESS SUITE (Task 5).
+#
+# The download half of the file-security pipeline at the DB layer: the
+# storage-key invariant, the storage.objects deny-all fence (proven to hold even
+# under a broad permissive grant), and the scan-status transition guard. Runs
+# AFTER the phase 4 operations suite, reuses the same fixtures (orgs
+# org-alpha/org-beta and the P2VARS claims), and tears down every row it plants
+# so the HTTP checks below start clean.
+# ============================================================================
+docker cp "$HERE/file_access_phase4.sql" "$CTR:/tmp/file_access_phase4.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P2VARS[@]}" -f /tmp/file_access_phase4.sql
+
+fa_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from fa.results where not pass" | tr -d '[:space:]')
+if [ "$fa_fails" != "0" ]; then
+  echo "PHASE 4 FILE-ACCESS SUITE FAILED: $fa_fails failing assertion(s)" >&2
+  echo "  A failure in A is a BROKEN storage-key invariant (a cross-tenant" >&2
+  echo "  file is now insertable); in B, a BREACHED storage.objects fence" >&2
+  echo "  (a client can read the private bytes); in C, a scan-status guard" >&2
+  echo "  that no longer holds (a verdict can be rolled back). Treat as Sev1." >&2
+  psql_status=1
+else
+  echo "Phase 4 file-access suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -328,6 +356,18 @@ probe "private helper is_active_member not an RPC"               404 "rpc/is_act
 probe "private helper shares_active_organisation not an RPC"     404 "rpc/shares_active_organisation"
 probe "private helper log_audit_event not an RPC"                404 "rpc/log_audit_event"
 probe "private helper handle_new_user not an RPC"                404 "rpc/handle_new_user"
+# Task 5: private.audit_document_action and the scan-status guard trigger fn are
+# not in `public` and must never be an RPC (rpc/audit_document_action resolves
+# to the PUBLIC thin wrapper, tested below; there is no private path at the API).
+probe "private helper guard_document_scan_status not an RPC"     404 "rpc/guard_document_scan_status"
+# public.audit_document_action IS the client-callable thin RPC, and it is
+# GUARDED: a null org and a forged arbitrary org both fail closed (42501 -> 403),
+# so it is reachable (not 404) yet cannot mint an audit row for an org the caller
+# has no relationship with. The actor is always forced to auth.uid().
+probe "audit_document_action IS routable and fails closed on a null org"   403 \
+      "rpc/audit_document_action" '{"p_action":"document_downloaded","p_org":null,"p_document_id":null}'
+probe "audit_document_action refuses a forged org the caller cannot view"  403 \
+      "rpc/audit_document_action" '{"p_action":"document_downloaded","p_org":"00000000-0000-0000-0000-0000000000aa","p_document_id":"00000000-0000-0000-0000-0000000000bb"}'
 # The two DEFINER functions that ARE meant to be client endpoints stay routable
 # (400 = reached it, rejected the deliberately invalid slug / null id).
 probe "create_organisation IS routable (positive control)"       400 \
