@@ -24,6 +24,7 @@ import {
   type FinanceFieldValues,
   type PickerOption,
 } from "@/components/crm/finance-forms";
+import type { CustomFieldCell } from "@/lib/crm/custom-fields";
 import { formatGbp } from "@/lib/format/money";
 import { formatDateOnly, formatDateTime } from "@/lib/format/date";
 
@@ -68,6 +69,14 @@ interface FinancePanelProps {
    *  Empty when the caller cannot write (no form to put them in). */
   artistOptions: readonly PickerOption[];
   supplierOptions: readonly PickerOption[];
+  /** The live `financial_entry` custom fields as EMPTY cells: the add form's
+   *  inputs, and the fallback for any edit row that has no stored value.
+   *  Empty when the org has defined none. */
+  customFieldCells: readonly CustomFieldCell[];
+  /** entryId -> that line's custom fields described from its stored values.
+   *  Only lines with at least one stored value appear; the rest fall back to
+   *  `customFieldCells`. */
+  customFieldCellsByEntry: ReadonlyMap<string, readonly CustomFieldCell[]>;
   /** Null when the caller may write; otherwise the reason the controls explain. */
   disabledReason: string | null;
   /** The page's whole searchParams, so this list's links keep the other five
@@ -87,6 +96,8 @@ export function FinancePanel({
   supplierNames,
   artistOptions,
   supplierOptions,
+  customFieldCells,
+  customFieldCellsByEntry,
   disabledReason,
   preserve,
 }: FinancePanelProps) {
@@ -136,6 +147,8 @@ export function FinancePanel({
           supplierNames={supplierNames}
           artistOptions={artistOptions}
           supplierOptions={supplierOptions}
+          customFieldCells={customFieldCells}
+          customFieldCellsByEntry={customFieldCellsByEntry}
           disabled={disabled}
           preserve={preserve}
         />
@@ -155,6 +168,7 @@ export function FinancePanel({
         eventId={eventId}
         artistOptions={artistOptions}
         supplierOptions={supplierOptions}
+        customFieldCells={customFieldCells}
         disabled={disabled}
         noteId={NOTE_ID}
       />
@@ -280,6 +294,8 @@ function LineItems({
   supplierNames,
   artistOptions,
   supplierOptions,
+  customFieldCells,
+  customFieldCellsByEntry,
   disabled,
   preserve,
 }: {
@@ -292,6 +308,8 @@ function LineItems({
   supplierNames: ReadonlyMap<string, LinkedName>;
   artistOptions: readonly PickerOption[];
   supplierOptions: readonly PickerOption[];
+  customFieldCells: readonly CustomFieldCell[];
+  customFieldCellsByEntry: ReadonlyMap<string, readonly CustomFieldCell[]>;
   disabled: boolean;
   preserve?: RawSearchParams;
 }) {
@@ -389,6 +407,9 @@ function LineItems({
                     stored={storedFields(row)}
                     artistOptions={artistOptions}
                     supplierOptions={supplierOptions}
+                    // The line's own stored custom-field values, or the empty
+                    // cells when it has none filled in yet.
+                    customFieldCells={customFieldCellsByEntry.get(row.id) ?? customFieldCells}
                     storedArtist={storedLink(row.artistId, artistNames)}
                     storedSupplier={storedLink(row.supplierContactId, supplierNames)}
                     disabled={disabled}

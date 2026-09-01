@@ -46,6 +46,21 @@
 // an exact integer -- the list mapper reads amount_minor back as a number, so
 // a value it could not represent must never be stored). The CHECK
 // `amount_minor >= 0` is the database floor behind the negative rejection.
+//
+// ===========================================================================
+// 4. THE LINE CARRIES CUSTOM FIELDS, WRITTEN HERE (Phase 5 Task 3)
+// ===========================================================================
+// `financial_entry` is the seventh custom-field entity type, running through
+// the UNCHANGED Phase 2 engine (lib/crm/custom-fields.ts + set_custom_field_
+// values). The one difference from the other six: a finance line has no detail
+// page, so its custom-field inputs live in the finance add/edit form and are
+// written HERE rather than by the generic saveCustomFieldValuesAction (which
+// refuses `financial_entry` for exactly this reason). Values are validated
+// BEFORE the line is written -- so a bad custom field never leaves an orphan
+// line -- and written by the same set_custom_field_values RPC every other
+// entity uses, whose SECURITY INVOKER policies enforce manage_finance (via
+// entity_is_manageable) and the line's live-ness (via entity_is_live)
+// independently on every statement.
 
 import { revalidatePath } from "next/cache";
 import { getCurrentUser, getCurrentOrg, type CurrentOrg } from "@/lib/auth";
@@ -61,10 +76,20 @@ import {
   type FinanceCategory,
   type FinanceStatus,
 } from "@/lib/crm/finance-category";
+import {
+  buildCustomFieldPayload,
+  type CustomFieldJson,
+} from "@/lib/crm/custom-fields";
+import { loadCustomFieldDefinitions } from "@/lib/crm/custom-field-queries";
 import type { FieldProblem } from "@/lib/crm/validate";
 
 /** The optional free-text label, e.g. "Headliner fee". Not a paragraph. */
 const MAX_DESCRIPTION = 200;
+
+/** Shown when a line updated but its custom-field values did not save. Safe to
+ *  retry -- both the UPDATE and the set_custom_field_values RPC are idempotent. */
+const FINANCE_CUSTOM_FIELDS_FAILED =
+  "The line was saved, but its custom fields didn’t. Try saving again.";
 
 /**
  * The largest amount, in pence, this application will store.
@@ -297,6 +322,83 @@ async function financeEnds(
 }
 
 // ---------------------------------------------------------------------------
+// Custom fields on the line -- the seventh custom-field entity type
+// ---------------------------------------------------------------------------
+
+/** field id -> value, or `null` meaning CLEAR. The RPC's payload shape. */
+type CustomFieldPayload = Record<string, CustomFieldJson | null>;
+
+/**
+ * Read and validate the line's custom-field inputs, BEFORE the line is written.
+ *
+ * Front-loaded on purpose: a bad custom field (a mistyped number, an unknown
+ * select option) is a field error the user can fix, and validating it before
+ * the INSERT means a rejected value never leaves an orphan finance line behind.
+ * Reuses the exact Phase 2 helpers -- loadCustomFieldDefinitions for the live
+ * `financial_entry` fields and buildCustomFieldPayload for the parse -- so
+ * there is no second copy of the validation the generic panel already has. An
+ * org with no finance custom fields gets an empty payload and this costs one
+ * definitions query returning nothing.
+ */
+async function readFinanceCustomFields(
+  organisationId: string,
+  formData: FormData,
+): Promise<
+  | { readonly ok: true; readonly payload: CustomFieldPayload }
+  | { readonly ok: false; readonly state: FormState }
+> {
+  const definitions = await loadCustomFieldDefinitions(
+    organisationId,
+    "financial_entry",
+  );
+  if (definitions.outcome === "unavailable") {
+    return { ok: false, state: { error: FAILED_MESSAGE, values: echoedValues(formData) } };
+  }
+  const built = buildCustomFieldPayload(definitions.definitions, formData);
+  if (!built.ok) {
+    // Keyed by the `cf_<id>` input name, which the finance form's reused
+    // CustomFieldControl renders its error beside.
+    return { ok: false, state: { fieldErrors: built.fieldErrors, values: echoedValues(formData) } };
+  }
+  return { ok: true, payload: built.payload };
+}
+
+/**
+ * Write the validated custom-field payload against a saved line, in one RPC.
+ *
+ * The SAME set_custom_field_values every entity uses: SECURITY INVOKER, so all
+ * three custom_field_values write policies decide every statement -- the
+ * manage_finance term (entity_is_manageable) and the line-live term
+ * (entity_is_live) both run here, independently of the finance-line write that
+ * preceded it. Skips the round trip entirely when there is nothing to write.
+ * Returns the RPC's error (null on success) for the caller to act on; it does
+ * NOT decide what a failure means, because create and update differ (see their
+ * call sites).
+ */
+async function writeFinanceCustomFields(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  organisationId: string,
+  entryId: string,
+  payload: CustomFieldPayload,
+): Promise<{ readonly failed: boolean }> {
+  if (Object.keys(payload).length === 0) return { failed: false };
+  const { error } = await supabase.rpc("set_custom_field_values", {
+    p_organisation_id: organisationId,
+    p_entity_type: "financial_entry",
+    p_entity_id: entryId,
+    p_values: payload,
+  });
+  if (error) {
+    console.error(
+      `[crm] set custom field values on financial_entry ${entryId} failed:`,
+      error.message,
+    );
+    return { failed: true };
+  }
+  return { failed: false };
+}
+
+// ---------------------------------------------------------------------------
 // The four actions
 // ---------------------------------------------------------------------------
 
@@ -328,6 +430,12 @@ export async function createFinancialEntryAction(
     formData,
   );
   if (blocked) return blocked;
+
+  // CUSTOM FIELDS VALIDATED BEFORE THE INSERT. A bad custom field is a field
+  // error the user fixes; validating first means a rejected value never leaves
+  // an orphan finance line.
+  const customFields = await readFinanceCustomFields(org.id, formData);
+  if (!customFields.ok) return customFields.state;
 
   // `created_by` EXPLICITLY, though the column defaults to auth.uid(): the same
   // discipline events.ts applies to owner_user_id -- a write and a policy that
@@ -367,6 +475,16 @@ export async function createFinancialEntryAction(
   }
   if (!data) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
+  // WRITE THE CUSTOM FIELDS AGAINST THE NEW LINE. On failure we LOG and still
+  // report success, deliberately: the line is saved, and surfacing an error
+  // here would invite a retry that creates a SECOND line (an INSERT is not
+  // idempotent). The RPC is unreachable-by-refusal for the user who just
+  // created this line -- they hold manage_finance and finance_module and the
+  // line is live -- so a raise is a genuine fault, logged, and the fields
+  // remain fillable by editing the line. UPDATE surfaces the same failure
+  // because its retry is safe; CREATE cannot.
+  await writeFinanceCustomFields(supabase, org.id, data.id, customFields.payload);
+
   revalidatePath(`/${org.slug}/events/${parsed.values.eventId}`);
   return { message: "Saved." };
 }
@@ -396,6 +514,10 @@ export async function updateFinancialEntryAction(
   );
   if (blocked) return blocked;
 
+  // CUSTOM FIELDS VALIDATED BEFORE THE UPDATE, same reason as create.
+  const customFields = await readFinanceCustomFields(org.id, formData);
+  if (!customFields.ok) return customFields.state;
+
   const result = await commitWrite(`update financial entry ${entryId}`, () =>
     supabase
       .from("financial_entries")
@@ -419,6 +541,21 @@ export async function updateFinancialEntryAction(
   );
 
   if (result.outcome === "applied") {
+    // WRITE THE CUSTOM FIELDS ONLY ONCE THE LINE ITSELF UPDATED. Unlike create,
+    // a failure here IS surfaced: an UPDATE (and the set_custom_field_values
+    // RPC) is idempotent, so the user can safely retry, and telling them the
+    // custom fields did not save is more honest than a silent "Saved". The RPC
+    // is otherwise unreachable-by-refusal here (manage_finance + live line), so
+    // a raise is a fault, already logged by the helper.
+    const written = await writeFinanceCustomFields(
+      supabase,
+      org.id,
+      entryId,
+      customFields.payload,
+    );
+    if (written.failed) {
+      return { error: FINANCE_CUSTOM_FIELDS_FAILED, values: echoedValues(formData) };
+    }
     revalidatePath(`/${org.slug}/events/${parsed.values.eventId}`);
   }
   return stateFor(result, "Saved.", formData);

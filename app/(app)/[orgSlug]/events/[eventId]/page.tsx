@@ -24,7 +24,14 @@ import { ZERO_FINANCE_SUMMARY } from "@/lib/crm/finance-summary";
 import { FinancePanel } from "@/components/crm/finance-panel";
 import type { RawSearchParams } from "@/lib/list/params";
 import { LineupPanel } from "@/components/crm/lineup-panel";
-import { loadCustomFieldPanel } from "@/lib/crm/custom-field-queries";
+import {
+  loadCustomFieldCellsForEntities,
+  loadCustomFieldPanel,
+} from "@/lib/crm/custom-field-queries";
+import {
+  describeCustomFieldValue,
+  type CustomFieldCell,
+} from "@/lib/crm/custom-fields";
 import { CustomFieldsPanel } from "@/components/crm/custom-fields-panel";
 import { ActivityTimeline } from "@/components/crm/activity-timeline";
 import { RelatedPanel } from "@/components/crm/related-panel";
@@ -246,6 +253,38 @@ export default async function EventDetailPage({
       : Promise.resolve([] as { id: string; name: string }[]),
   ]);
 
+  // THE FINANCE LINES' CUSTOM FIELDS (Phase 5 Task 3). Loaded AFTER the main
+  // Promise.all because the per-line values are keyed by the entry ids the
+  // finance list just produced. Only when the panel renders at all
+  // (financeReadable) -- the same skip as the pickers. `financial_entry` is the
+  // seventh custom-field entity type, running through the unchanged Phase 2
+  // engine; the difference from the other six is only that its inputs live in
+  // the finance add/edit form rather than the standalone CustomFieldsPanel,
+  // because a finance line has no detail page. A batched two-round-trip loader
+  // (definitions + one `entity_id in (...)` values read), NOT one call per line.
+  const financeEntryIds =
+    finance !== null && finance.page.outcome === "loaded"
+      ? finance.page.rows.map((row) => row.id)
+      : [];
+  const financeCustomFields = financeReadable
+    ? await loadCustomFieldCellsForEntities(org.id, "financial_entry", financeEntryIds)
+    : null;
+  // A FAILED CUSTOM-FIELD LOAD DEGRADES TO "NO CUSTOM FIELDS", not a broken
+  // finance panel: the line list is the primary content, and the fields are an
+  // addition to it. The empty cells (definitions described against `undefined`)
+  // are the add form's inputs and the fallback for any line with none filled in.
+  const financeDefinitions =
+    financeCustomFields?.outcome === "loaded"
+      ? financeCustomFields.fields.definitions
+      : [];
+  const financeCustomFieldCells = financeDefinitions.map((definition) =>
+    describeCustomFieldValue(definition, undefined),
+  );
+  const financeCustomFieldCellsByEntry =
+    financeCustomFields?.outcome === "loaded"
+      ? financeCustomFields.fields.cellsByEntity
+      : new Map<string, readonly CustomFieldCell[]>();
+
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-3">
@@ -451,6 +490,8 @@ export default async function EventDetailPage({
           supplierNames={finance.supplierNames}
           artistOptions={financeArtistOptions}
           supplierOptions={financeSupplierOptions}
+          customFieldCells={financeCustomFieldCells}
+          customFieldCellsByEntry={financeCustomFieldCellsByEntry}
           disabledReason={financeDisabledReason}
           preserve={raw}
         />

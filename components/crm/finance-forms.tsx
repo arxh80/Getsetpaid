@@ -14,6 +14,8 @@ import {
   FINANCE_STATUS_LABELS,
 } from "@/lib/crm/finance-category";
 import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
+import type { CustomFieldCell } from "@/lib/crm/custom-fields";
+import { CustomFieldControl } from "@/components/crm/custom-fields-panel";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 
@@ -144,6 +146,7 @@ function FinanceFields({
   values,
   artistOptions,
   supplierOptions,
+  customFieldCells,
   disabled,
   noteId,
 }: {
@@ -152,6 +155,11 @@ function FinanceFields({
   values: FinanceFieldValues;
   artistOptions: readonly PickerOption[];
   supplierOptions: readonly PickerOption[];
+  /** The live `financial_entry` custom fields, as cells. Empty when the org has
+   *  defined none -- the common case, in which nothing extra renders. Reuses
+   *  the SAME control every entity uses (CustomFieldControl), inside this form
+   *  rather than a standalone panel because a finance line has no detail page. */
+  customFieldCells: readonly CustomFieldCell[];
   disabled: boolean;
   noteId: string;
 }) {
@@ -332,6 +340,30 @@ function FinanceFields({
           message={state.fieldErrors?.description}
         />
       </div>
+
+      {/* THE LIVE `financial_entry` CUSTOM FIELDS, reusing the shared control.
+          Only rendered when the org has defined some, so a workspace with none
+          sees exactly the seven-field form it always did. `disabled` follows
+          the rest of the form (read-only for a deleted event, a non-Pro tier or
+          a role without manage_finance). The whole finance <form> posts these
+          `cf_<id>` inputs to createFinancialEntryAction / updateFinancialEntry
+          Action, which write them to custom_field_values in one RPC after the
+          line itself is saved. */}
+      {customFieldCells.length > 0 ? (
+        <div className="flex flex-col gap-4 border-t border-rule pt-4 sm:col-span-2">
+          <h4 className="text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase">
+            Custom fields
+          </h4>
+          {customFieldCells.map((cell) => (
+            <CustomFieldControl
+              key={cell.definition.id}
+              cell={cell}
+              state={state}
+              disabled={disabled}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -341,6 +373,7 @@ export function AddFinanceForm({
   eventId,
   artistOptions,
   supplierOptions,
+  customFieldCells,
   disabled,
   noteId,
 }: {
@@ -348,6 +381,9 @@ export function AddFinanceForm({
   eventId: string;
   artistOptions: readonly PickerOption[];
   supplierOptions: readonly PickerOption[];
+  /** The live `financial_entry` definitions as EMPTY cells (a new line has no
+   *  stored values yet). Empty array when the org has defined none. */
+  customFieldCells: readonly CustomFieldCell[];
   disabled: boolean;
   noteId: string;
 }) {
@@ -387,6 +423,7 @@ export function AddFinanceForm({
         values={values}
         artistOptions={artistOptions}
         supplierOptions={supplierOptions}
+        customFieldCells={customFieldCells}
         disabled={disabled}
         noteId={noteId}
       />
@@ -415,6 +452,7 @@ export function FinanceEditForm({
   stored,
   artistOptions,
   supplierOptions,
+  customFieldCells,
   storedArtist,
   storedSupplier,
   disabled,
@@ -428,6 +466,9 @@ export function FinanceEditForm({
   stored: FinanceFieldValues;
   artistOptions: readonly PickerOption[];
   supplierOptions: readonly PickerOption[];
+  /** This line's live `financial_entry` custom fields, described from its
+   *  stored values (so an edit shows what is already filled in). */
+  customFieldCells: readonly CustomFieldCell[];
   /** The line's stored artist/supplier, so the picker keeps it if it is deleted
    *  or past the 100-record cap. Null when the line links none. */
   storedArtist: PickerOption | null;
@@ -464,6 +505,7 @@ export function FinanceEditForm({
         values={values}
         artistOptions={withStored(artistOptions, storedArtist)}
         supplierOptions={withStored(supplierOptions, storedSupplier)}
+        customFieldCells={customFieldCells}
         disabled={disabled}
         noteId={noteId}
       />
