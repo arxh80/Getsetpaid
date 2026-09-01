@@ -2358,6 +2358,141 @@ export async function loadDocumentsForEntity(
 }
 
 // ---------------------------------------------------------------------------
+// The org-wide documents list's two decorating reads: WHO uploaded each row,
+// and WHAT each row is linked to. Both are bounded to one page's worth of
+// document ids (at most MAX_PAGE_SIZE = 50) and both degrade to an empty map on
+// failure — a decorative lookup must not take down the list (loadVenueNames'
+// rule).
+// ---------------------------------------------------------------------------
+
+/**
+ * Uploader display names for a page's document rows.
+ *
+ * The members page's two-query pattern (there is no FK from owner_user_id to
+ * profiles — owner_user_id references auth.users and profiles.id references it
+ * separately, so a PostgREST embed is a PGRST200). Runs on the CALLER'S client,
+ * so profiles_select_own + profiles_select_shared_organisation decide which
+ * names come back: a name appears for the caller and for people active
+ * alongside them; anyone else resolves to absent, which the column renders as
+ * a neutral dash rather than an oracle.
+ */
+export async function loadUploaderNames(
+  userIds: readonly (string | null)[],
+): Promise<ReadonlyMap<string, string>> {
+  const unique = [...new Set(userIds.filter((id): id is string => id !== null))];
+  if (unique.length === 0) return new Map();
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, full_name")
+    .in("id", unique);
+  if (error || !data) {
+    if (error) console.error("[crm] uploader name lookup failed:", error.message);
+    return new Map();
+  }
+  const out = new Map<string, string>();
+  for (const row of data) {
+    const name = row.full_name as string | null;
+    if (name) out.set(String(row.id), name);
+  }
+  return out;
+}
+
+/** One record a document is linked to, for the "Linked to" column. */
+export interface DocumentLinkTarget {
+  entityType: LinkEntityType;
+  entityId: string;
+  /** Null when the caller cannot read the target — shown as "a record outside your access". */
+  name: string | null;
+  isDeleted: boolean;
+}
+
+/** How many links per document the list column considers. A handful is all it shows. */
+const DOCUMENT_LINKS_CAP = 200;
+
+/**
+ * The CRM records each document on the page is linked to.
+ *
+ * The forward direction of loadDocumentsForEntity: read document_links for this
+ * page's parent ids, then resolve each target to a name (grouped by type so
+ * each target table is read once — loadLinksFor's shape, widened from one
+ * parent to a page's worth). Bounded: at most MAX_PAGE_SIZE document ids in,
+ * DOCUMENT_LINKS_CAP link rows considered. Returns a map keyed by document id;
+ * a document with no links is simply absent from it.
+ */
+export async function loadDocumentLinks(
+  organisationId: string,
+  documentIds: readonly string[],
+): Promise<ReadonlyMap<string, DocumentLinkTarget[]>> {
+  const unique = [...new Set(documentIds)];
+  if (unique.length === 0) return new Map();
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("document_links")
+    .select("parent_id, entity_type, entity_id")
+    .eq("organisation_id", organisationId)
+    .in("parent_id", unique)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(DOCUMENT_LINKS_CAP);
+  if (error || !data) {
+    if (error) console.error("[crm] document links lookup failed:", error.message);
+    return new Map();
+  }
+
+  // Group the target ids by type, so each target table is read once.
+  const idsByType = new Map<LinkEntityType, Set<string>>();
+  for (const row of data) {
+    const type = String(row.entity_type) as LinkEntityType;
+    if (!LINK_ENTITY_TYPES.includes(type)) continue;
+    if (!idsByType.has(type)) idsByType.set(type, new Set());
+    idsByType.get(type)!.add(String(row.entity_id));
+  }
+
+  // `${type}:${id}` -> { name, deleted }.
+  const names = new Map<string, { name: string; deleted: boolean }>();
+  await Promise.all(
+    [...idsByType.entries()].map(async ([type, ids]) => {
+      const { data: rows, error: err } = await supabase
+        .from(TABLE_FOR_ENTITY[type])
+        .select("id, name, deleted_at")
+        .eq("organisation_id", organisationId)
+        .in("id", [...ids]);
+      if (err) {
+        console.error(`[crm] document link target ${type} lookup failed:`, err.message);
+        return;
+      }
+      for (const r of rows ?? []) {
+        names.set(`${type}:${String(r.id)}`, {
+          name: String(r.name),
+          deleted: r.deleted_at !== null,
+        });
+      }
+    }),
+  );
+
+  const byDocument = new Map<string, DocumentLinkTarget[]>();
+  for (const row of data) {
+    const type = String(row.entity_type) as LinkEntityType;
+    if (!LINK_ENTITY_TYPES.includes(type)) continue;
+    const entityId = String(row.entity_id);
+    const resolved = names.get(`${type}:${entityId}`);
+    const parentId = String(row.parent_id);
+    const list = byDocument.get(parentId) ?? [];
+    list.push({
+      entityType: type,
+      entityId,
+      name: resolved?.name ?? null,
+      isDeleted: resolved?.deleted === true,
+    });
+    byDocument.set(parentId, list);
+  }
+  return byDocument;
+}
+
+// ---------------------------------------------------------------------------
 // The workspace home's "My open tasks" strip
 // ---------------------------------------------------------------------------
 
