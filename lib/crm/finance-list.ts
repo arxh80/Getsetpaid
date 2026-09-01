@@ -1,5 +1,10 @@
 import { defineListSpec } from "@/lib/list/spec";
 import {
+  parseListParams,
+  type ListParams,
+  type RawSearchParams,
+} from "@/lib/list/params";
+import {
   FINANCE_CATEGORIES,
   FINANCE_STATUSES,
   FINANCE_CATEGORY_LABELS,
@@ -144,10 +149,63 @@ export const FINANCIAL_ENTRY_LIST = defineListSpec({
       ],
     },
   },
+
+  // ADDED BY TASK 2, WHEN THE LIST LANDED ON THE EVENT DETAIL PAGE. That page
+  // already carries five lib/list/ surfaces (`lineup_`, `activity_`,
+  // `rel_tasks_`, `rel_notes_`, `rel_docs_`); the finance list is the sixth,
+  // and without a namespace it would read the same `after`/`before` as the
+  // others and page one silently return the rest to page one (lib/list/spec.ts
+  // § paramPrefix, Constraint 10). Bare until Task 1 because a standalone
+  // finance route would be the only surface on its page.
+  paramPrefix: "fin_",
 });
 
 export type FinancialEntrySortKey = keyof (typeof FINANCIAL_ENTRY_LIST)["sort"];
 export type FinancialEntryFilterKey = keyof (typeof FINANCIAL_ENTRY_LIST)["filters"];
+export type FinancialEntryParams = ListParams<
+  FinancialEntrySortKey,
+  FinancialEntryFilterKey
+>;
+
+/**
+ * The one query-string key the finance PANEL refuses to honour.
+ *
+ * `FINANCIAL_ENTRY_LIST.paramPrefix` ("fin_") + the spec's search key. Written
+ * out rather than built from the spec so that renaming the prefix without
+ * renaming this is a mismatch a reader can see. Same shape as
+ * `LINEUP_SEARCH_PARAM`.
+ */
+export const FINANCE_SEARCH_PARAM = "fin_q";
+
+/**
+ * The finance list's parameters, out of the event detail page's query string.
+ *
+ * THE WHOLE OBJECT IS SAFE TO PASS, because `FINANCIAL_ENTRY_LIST.paramPrefix`
+ * ("fin_") means `parseListParams` reads only keys beginning `fin_` -- the
+ * lineup's `lineup_after`, the timeline's `activity_after` and the related
+ * panel's three namespaces are invisible to it.
+ *
+ * ===========================================================================
+ * `fin_q` IS DROPPED, FOR `lineupParams()`'s REASON
+ * ===========================================================================
+ * The spec declares a `searchColumn` ("description") because a spec that names
+ * a column that does not exist is a 400 the moment `params.q !== ""`, and the
+ * finance PANEL renders no search control and ONE empty state ("No finance
+ * lines yet") rather than EntityList's narrowed/un-narrowed pair. So a
+ * hand-crafted `?fin_q=zzz` would narrow through `ilike(description, ...)` and
+ * show "No finance lines yet" on an event with a full sheet -- the same lie the
+ * lineup drop exists to prevent, reached through a query parameter. The
+ * category/status FILTERS are dormant on this surface for the same reason (the
+ * loader pins only `event_id` and does not apply them); a standalone finance
+ * list route with a real toolbar is where the spec's search and filters come
+ * alive. `parseListParams` still applies the spec's own defaults for them.
+ */
+export function financeParams(raw: RawSearchParams): FinancialEntryParams {
+  return parseListParams(FINANCIAL_ENTRY_LIST, {
+    ...raw,
+    [FINANCE_SEARCH_PARAM]: undefined,
+  });
+}
 
 /**
  * The restore view's spec. Mirrors EVENT_DELETED_LIST.

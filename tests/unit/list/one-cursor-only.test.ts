@@ -137,6 +137,14 @@ const SPEC_PARAM_WRAPPERS = [
   // resolves per wrapper rather than per module.
   { call: "venueEventsParams", module: "lib/crm/events-list.ts" },
   { call: "artistEventsParams", module: "lib/crm/events-list.ts" },
+  // PHASE 5 TASK 2. The finance panel on the event detail page is the sixth
+  // lib/list/ surface there. It declares a real `searchColumn` ("description")
+  // and renders no search control, and like the lineup it shows ONE empty
+  // state, so `financeParams` drops `fin_q`. The wrapper lives in
+  // `lib/crm/finance-list.ts` (pure, so tests/unit can drive it and the client
+  // forms can import the vocabulary); its `fetchListPage` caller is
+  // `loadFinancialEntriesForEvent` in `lib/crm/finance-queries.ts` (server-only).
+  { call: "financeParams", module: "lib/crm/finance-list.ts" },
 ] as const;
 
 describe("every paginated list shares one implementation", () => {
@@ -173,7 +181,9 @@ describe("every paginated list shares one implementation", () => {
     // loadTasksForEntity, loadNotesForEntity, loadDocumentsForEntity (3). Nine
     // more, counted rather than guessed. The floor has teeth only at the number
     // the tree holds; raising it is the obligation.
-    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(29);
+    // THIRTY as of Phase 5 Task 2: the finance list on the event detail page,
+    // loaded by loadFinancialEntriesForEvent in lib/crm/finance-queries.ts.
+    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(30);
   });
 
   it("every fetchListPage caller also parses its params through lib/list", () => {
@@ -219,12 +229,12 @@ describe("every paginated list shares one implementation", () => {
 
   it("every spec params wrapper really does go through parseListParams", () => {
     // The other half of the transitive rule above, asserted on its own so that
-    // emptying a wrapper's body cannot quietly satisfy the pairing check. SEVEN
+    // emptying a wrapper's body cannot quietly satisfy the pairing check. EIGHT
     // is the denominator -- `activityParams`, `lineupParams`,
-    // `venueEventsParams`, `artistEventsParams` and the three related-panel
-    // wrappers -- and an eighth added without a row here is a wrapper the
-    // pairing check cannot see.
-    expect(SPEC_PARAM_WRAPPERS).toHaveLength(7);
+    // `venueEventsParams`, `artistEventsParams`, the three related-panel
+    // wrappers, and `financeParams` -- and a ninth added without a row here is a
+    // wrapper the pairing check cannot see.
+    expect(SPEC_PARAM_WRAPPERS).toHaveLength(8);
     for (const wrapper of SPEC_PARAM_WRAPPERS) {
       const body = code(byPath(wrapper.module));
       expect(body, wrapper.call).toContain(`export function ${wrapper.call}(`);
