@@ -377,7 +377,63 @@ function applyCursor(
  * names is either soft-deletable or listed here -- so the next omission is red
  * before it is a browser finding.
  */
-const TABLES_WITHOUT_SOFT_DELETE = new Set(["merges", "activity_events"]);
+const TABLES_WITHOUT_SOFT_DELETE = new Set([
+  "merges",
+  "activity_events",
+  // ADDED BY PHASE 6 TASK 1 (fix round 1, review finding I3).
+  // `public.network_directory` is a masking VIEW over network_profiles and
+  // projects eleven columns, none of them `deleted_at` -- the view's own
+  // `where p.deleted_at is null` is what removes soft-deleted profiles, once,
+  // for every reader. Filtering a column it does not project is a PostgREST
+  // 400, which is the `activity_events` finding above repeating one phase
+  // later. `scope: "deleted"` over it is meaningless and throws below: a
+  // soft-deleted network profile is not restorable from the DIRECTORY, it is
+  // restorable from its owner's own list over the base table.
+  "network_directory",
+]);
+
+/**
+ * The relations a list reads that carry NO `organisation_id` at all.
+ *
+ * ===========================================================================
+ * THIS IS THE TENANT CLAUSE, SO THE ESCAPE IS NARROWER THAN THE ONE ABOVE
+ * ===========================================================================
+ * `applyScope` puts `.eq("organisation_id", organisationId)` on every query
+ * this application's list surface makes, and that is the single most important
+ * line in this file: it is the application half of the tenant boundary, with
+ * RLS as the half that actually enforces it.
+ *
+ * ADDED BY PHASE 6 TASK 1 (fix round 1, review finding I3) FOR EXACTLY ONE
+ * RELATION, and the reason it is safe is the reason it is needed:
+ * `public.network_directory` is THE ONE LIST IN THE PRODUCT THAT IS NOT
+ * ORGANISATION-SCOPED. Discovery spans every tenant by design (CLAUDE.md
+ * § The private/network split), and the view deliberately does not project
+ * `organisation_id` -- a discovery result identifies a PROFILE, never a
+ * tenant, so Task 3's UI has no tenant id to leak. Filtering a column it does
+ * not project is a PostgREST 400.
+ *
+ * ===========================================================================
+ * WHAT STOPS THIS BECOMING A TENANT-BOUNDARY ESCAPE HATCH
+ * ===========================================================================
+ * Three things, and the second is the one that makes it structural rather than
+ * a promise:
+ *
+ *   1. IT IS A SET KEYED ON THE RELATION, NOT A FLAG A SPEC CAN PASS -- the
+ *      same shape as TABLES_WITHOUT_SOFT_DELETE, and for the same reason: a
+ *      copied file cannot point it at `contacts`.
+ *   2. A TENANT TABLE CANNOT LEGALLY BE ADDED TO IT. Every tenant-owned
+ *      relation in this schema carries a NOT NULL `organisation_id`
+ *      (schema_invariants D10), so
+ *      tests/integration/list/soft-delete-tables-match-db.test.ts asserts that
+ *      every relation named here genuinely HAS NO SUCH COLUMN. Adding
+ *      `contacts` is red on the next run, before it is a breakout.
+ *   3. RLS IS UNAFFECTED. Dropping the client-side predicate does not widen
+ *      what the caller may read by one row: `network_directory` is
+ *      `security_invoker`, so its rows are exactly what
+ *      `network_profiles_select_published_directory` permits -- published,
+ *      live, and only to an active member of some organisation.
+ */
+const RELATIONS_WITHOUT_ORGANISATION_ID = new Set(["network_directory"]);
 
 function applyScope<TRow, TSort extends string, TFilter extends string>(
   query: ListQuery,
@@ -385,7 +441,12 @@ function applyScope<TRow, TSort extends string, TFilter extends string>(
 ): ListQuery {
   const { spec, params, organisationId, applyFilters } = options;
 
-  let q = query.eq("organisation_id", organisationId);
+  // THE TENANT CLAUSE. Applied to everything except the one cross-tenant
+  // relation named above; see that set's comment for why the exemption cannot
+  // be pointed at a tenant table.
+  let q = RELATIONS_WITHOUT_ORGANISATION_ID.has(options.table)
+    ? query
+    : query.eq("organisation_id", organisationId);
   // Always one of the two, never neither -- unless the table HAS no
   // soft-delete column at all. See TABLES_WITHOUT_SOFT_DELETE.
   if (!TABLES_WITHOUT_SOFT_DELETE.has(options.table)) {
