@@ -19,6 +19,7 @@ import {
 import { TaskStatusChip } from "@/components/crm/task-status-chip";
 import { PriorityChip } from "@/components/crm/priority-chip";
 import { formatDateTime } from "@/lib/format/date";
+import { countPendingReceivedRequests } from "@/lib/network/requests-list";
 import { Alert } from "@/components/ui/alert";
 import { RuledList, RuledRow } from "@/components/ui/ruled-row";
 
@@ -56,6 +57,7 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
     memberships,
     upcoming,
     openTasks,
+    pendingReceivedRequests,
   ] = await Promise.all([
       hasPermission(org.id, "manage_members"),
       hasPermission(org.id, "manage_custom_fields"),
@@ -76,6 +78,15 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
       // read (not a list surface). Pinned to the user, not the workspace, so it
       // is the same short list for an Admin as for a Standard User.
       user ? loadOpenTasksForUser(org.id, user.id) : Promise.resolve(null),
+      // TASK 4: THE NETWORK CARD'S PENDING-RECEIVED COUNT. Unconditional, same
+      // as `upcoming`/`openTasks` above -- the query is cheap (a `head: true`
+      // count) and RLS-safe for a suspended workspace regardless (view_network
+      // is closed, so the query answers 0 rather than leaking anything); only
+      // the RENDER below is gated on `canViewNetwork`. This is the ONE other
+      // discovery surface besides app/(app)/[orgSlug]/network/requests --
+      // there is no notification of any kind (Q45/Q75, CLAUDE.md's
+      // `reminder_at` precedent).
+      countPendingReceivedRequests(org.id),
     ]);
 
   const others = memberships.filter((m) => m.organisationId !== org.id);
@@ -472,6 +483,39 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
               <p className="mt-1 max-w-prose text-base text-ink-muted">
                 Create, edit and publish network identities for your own
                 records — draft and published alike.
+              </p>
+            </li>
+            {/* TASK 4: the requests inbox/outbox, with the pending-received
+                count -- tabular-nums (DESIGN.md's numeral rule) and the ONE
+                other discovery surface besides the requests page itself,
+                since there is no notification of any kind (Q45/Q75). */}
+            <li className="border-b border-rule py-3">
+              <Link
+                href={`/${org.slug}/network/requests`}
+                className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+              >
+                Connection requests
+                {pendingReceivedRequests > 0 ? (
+                  <span className="ml-2 tabular-nums text-ink-muted">
+                    ({pendingReceivedRequests} pending)
+                  </span>
+                ) : null}
+              </Link>
+              <p className="mt-1 max-w-prose text-base text-ink-muted">
+                Requests to connect, sent and received. There is no other
+                notification — check here.
+              </p>
+            </li>
+            <li className="py-3">
+              <Link
+                href={`/${org.slug}/network/links`}
+                className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+              >
+                Linked records
+              </Link>
+              <p className="mt-1 max-w-prose text-base text-ink-muted">
+                Your own private records, explicitly linked to network
+                identities other workspaces have published.
               </p>
             </li>
           </ul>

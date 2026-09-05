@@ -4,14 +4,22 @@ import { notFound } from "next/navigation";
 import { getCurrentOrg } from "@/lib/auth";
 import { getNetworkReadAccess, getNetworkConnectionAccess } from "@/lib/network/access";
 import { loadNetworkProfileForViewer, type NetworkProfileForViewer } from "@/lib/network/discovery";
-import { loadNetworkProfileById, type NetworkProfileDetail } from "@/lib/network/entities";
-import { NETWORK_ENTITY_KIND_LABELS } from "@/lib/network/fields";
+import {
+  loadNetworkProfileById,
+  loadOwnPublishedProfiles,
+  type NetworkProfileDetail,
+  type OwnPublishedProfile,
+} from "@/lib/network/entities";
+import {
+  NETWORK_ENTITY_KIND_LABELS,
+  NETWORK_ENTITY_URL_SEGMENT,
+} from "@/lib/network/fields";
 import type { NetworkDirectoryRow } from "@/lib/network/discovery-list";
 import type { CrmWriteAccess } from "@/lib/crm/write-access";
 import { ProfileCard } from "@/components/network/profile-card";
 import { ProfileStatusChip } from "@/components/network/profile-status-chip";
+import { ConnectButton } from "@/components/network/connect-button";
 import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 
 // Task 3: a published profile, as ONE caller may see it -- the discovery
 // area's detail page. Read path only.
@@ -106,22 +114,26 @@ export default async function NetworkProfileViewPage({
     notFound();
   }
 
-  const connectAccess = await getNetworkConnectionAccess(org);
+  // TASK 4: real access AND the sender's own published profiles, both needed
+  // by ConnectButton -- loaded in parallel, since neither depends on the
+  // other and `ownProfiles` is a plain read of THIS organisation's own rows
+  // (never a cross-tenant query).
+  const [connectAccess, ownProfiles] = await Promise.all([
+    getNetworkConnectionAccess(org),
+    loadOwnPublishedProfiles(org.id),
+  ]);
   return (
     <div className="flex flex-col gap-8">
       {backLink}
-      <PublicProfileView viewer={viewer} connectAccess={connectAccess} />
+      <PublicProfileView
+        orgSlug={org.slug}
+        viewer={viewer}
+        connectAccess={connectAccess}
+        ownProfiles={ownProfiles}
+      />
     </div>
   );
 }
-
-/** The URL segment each entity kind's own detail pages live under. */
-const ENTITY_LINK_SEGMENT: Record<NetworkProfileDetail["entityKind"], string> = {
-  company: "companies",
-  artist: "artists",
-  venue: "venues",
-  agency: "agencies",
-};
 
 function OwnProfileView({
   orgSlug,
@@ -164,7 +176,7 @@ function OwnProfileView({
           {NETWORK_ENTITY_KIND_LABELS[own.entityKind]}
           {" · "}
           <Link
-            href={`/${orgSlug}/${ENTITY_LINK_SEGMENT[own.entityKind]}/${own.entityId}`}
+            href={`/${orgSlug}/${NETWORK_ENTITY_URL_SEGMENT[own.entityKind]}/${own.entityId}`}
             className="text-primary underline underline-offset-4 hover:text-ink"
           >
             View the record
@@ -190,30 +202,18 @@ function OwnProfileView({
   );
 }
 
-const NOT_WIRED_NOTE_ID = "network-connect-not-wired";
-
 function PublicProfileView({
+  orgSlug,
   viewer,
   connectAccess,
+  ownProfiles,
 }: {
+  orgSlug: string;
   viewer: NetworkProfileForViewer;
   connectAccess: CrmWriteAccess;
+  ownProfiles: readonly OwnPublishedProfile[];
 }) {
   const { row, source } = viewer;
-
-  // THE SHELL'S EXPLANATION. Task 4 wires the control's ACTION; this task
-  // ships the DISABLED SHELL, unconditionally, for every tier -- there is no
-  // sanctioned way to send a request from this screen yet regardless of plan.
-  // The SENTENCE still tells the truth about WHY, and for a Free-tier caller
-  // that truth is `getNetworkConnectionAccess`'s own tier explanation, which
-  // names the plan and says an Owner can change it -- the exact acceptance
-  // criterion this task owes. A caller who WOULD be permitted to write (a
-  // paid tier, holding manage_network_connections) gets the honest "not built
-  // here yet" sentence instead of a claim that they are blocked by their plan
-  // or role, which would be false.
-  const connectExplanation = connectAccess.canWrite
-    ? "Sending a connection request from here isn’t available in this release yet — check back soon."
-    : connectAccess.explanation;
 
   return (
     <div className="flex flex-col gap-8">
@@ -241,25 +241,22 @@ function PublicProfileView({
 
       <ProfileCard row={row} />
 
-      {/* THE REQUEST CONTROL. RENDERED AND DISABLED, NEVER HIDDEN
-          (Constraint 12; CLAUDE.md's Free-tier honesty rule). Task 4 gives it
-          a real `action`; until then this is a stable, named target -- a
-          `<form>` wrapping one `<button>` with an accessible name of "Request
-          connection" -- for a future e2e walk to find and strip the
-          `disabled` attribute from (the `tests/e2e/finance.spec.ts:265-287`
-          strip-and-submit pattern), which is the only kind of test that proves "hiding a
-          button is not enforcement" rather than merely restating it. */}
-      <form className="flex flex-col gap-2 border-t border-rule pt-6">
-        <h2 className="text-xl font-bold text-ink">Connect</h2>
-        <p id={NOT_WIRED_NOTE_ID} className="max-w-prose text-sm text-ink-muted">
-          {connectExplanation}
-        </p>
-        <div>
-          <Button type="submit" disabled aria-describedby={NOT_WIRED_NOTE_ID}>
-            Request connection
-          </Button>
-        </div>
-      </form>
+      {/* THE REQUEST CONTROL. Task 3 shipped it rendered-and-disabled, never
+          hidden (Constraint 12); this is where Task 4 gives it a real
+          `action`. `ConnectButton` keeps the same three-state shape Task 3's
+          shell established (suspended/tier/permission -> "no published
+          profile" -> a real form), so a caller who strips the `disabled`
+          attribute from the FIRST two states still meets a real, database-
+          enforced refusal rather than a client-side no-op -- the
+          `tests/e2e/finance.spec.ts:265-287` strip-and-submit pattern this
+          task's own acceptance criteria name. */}
+      <ConnectButton
+        orgSlug={orgSlug}
+        toProfileId={row.id}
+        canWrite={connectAccess.canWrite}
+        explanation={connectAccess.canWrite ? undefined : connectAccess.explanation}
+        ownProfiles={ownProfiles}
+      />
     </div>
   );
 }

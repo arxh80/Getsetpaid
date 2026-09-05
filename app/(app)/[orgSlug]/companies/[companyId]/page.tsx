@@ -36,9 +36,13 @@ import {
 } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
 import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { LinkedIdentitySection } from "@/components/network/linked-identity-section";
 import { loadNetworkProfileForEntity } from "@/lib/network/entities";
+import { loadNetworkLinkForEntity } from "@/lib/network/links-list";
+import { loadNetworkProfileForViewer } from "@/lib/network/discovery";
 import { profileHasDrifted } from "@/lib/network/drift";
 import { getNetworkReadAccess } from "@/lib/network/access";
+import { getNetworkConnectionAccess } from "@/lib/network/access";
 
 /** The id of the single explanation the Manage section's controls point at. */
 const MANAGE_NOTE = "company-manage-blocked";
@@ -181,6 +185,25 @@ export default async function CompanyDetailPage({
       },
     );
 
+  // TASK 4 / GAP B (Q73/Q82): THE LINKED-IDENTITY SECTION. Gated on the same
+  // `canReadNetwork` as the row above and for the identical I2 reason -- a
+  // suspended workspace must not be told "not linked" about a record that IS
+  // genuinely linked. `connectAccess` is only needed to explain a DISABLED
+  // link picker (suspended/tier/permission); it is cheap enough (one
+  // `hasPermission` + one entitlements read, already cached per request by
+  // `lib/entitlements/policy.ts`) to resolve unconditionally rather than
+  // threading a second gate through this branch.
+  const [networkLink, connectAccess] = canReadNetwork
+    ? await Promise.all([
+        loadNetworkLinkForEntity(org.id, "company", company.id),
+        getNetworkConnectionAccess(org),
+      ])
+    : [null, null];
+  const linkedProfile =
+    networkLink !== null
+      ? await loadNetworkProfileForViewer(networkLink.networkProfileId)
+      : null;
+
   return (
     <div className="flex flex-col gap-8">
       {justMerged ? (
@@ -314,6 +337,18 @@ export default async function CompanyDetailPage({
         canRead={canReadNetwork}
         profile={networkProfile}
         drifted={networkDrifted}
+      />
+
+      <LinkedIdentitySection
+        orgSlug={org.slug}
+        canRead={canReadNetwork}
+        entityType="company"
+        entityId={company.id}
+        link={networkLink}
+        linkedProfile={linkedProfile}
+        pickerDisabledReason={
+          connectAccess === null ? null : connectAccess.canWrite ? null : connectAccess.explanation
+        }
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

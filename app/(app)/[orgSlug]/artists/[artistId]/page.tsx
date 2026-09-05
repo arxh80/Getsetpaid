@@ -61,8 +61,12 @@ import {
 } from "@/components/crm/write-gate";
 import { formatDateOnly, formatDateTime } from "@/lib/format/date";
 import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { LinkedIdentitySection } from "@/components/network/linked-identity-section";
 import { getNetworkReadAccess } from "@/lib/network/access";
+import { getNetworkConnectionAccess } from "@/lib/network/access";
 import { loadNetworkProfileForEntity } from "@/lib/network/entities";
+import { loadNetworkLinkForEntity } from "@/lib/network/links-list";
+import { loadNetworkProfileForViewer } from "@/lib/network/discovery";
 import { profileHasDrifted } from "@/lib/network/drift";
 
 // One artist: the record, who represents them, and what they have been paid.
@@ -246,6 +250,18 @@ export default async function ArtistDetailPage({
         websiteUrl: networkProfile.websiteUrl,
       },
     );
+
+  // TASK 4 / GAP B (Q73/Q82). See the companies page's identical comment.
+  const [networkLink, connectAccess] = canReadNetwork
+    ? await Promise.all([
+        loadNetworkLinkForEntity(org.id, "artist", artist.id),
+        getNetworkConnectionAccess(org),
+      ])
+    : [null, null];
+  const linkedProfile =
+    networkLink !== null
+      ? await loadNetworkProfileForViewer(networkLink.networkProfileId)
+      : null;
 
   return (
     <div className="flex flex-col gap-8">
@@ -518,6 +534,18 @@ export default async function ArtistDetailPage({
         canRead={canReadNetwork}
         profile={networkProfile}
         drifted={networkDrifted}
+      />
+
+      <LinkedIdentitySection
+        orgSlug={org.slug}
+        canRead={canReadNetwork}
+        entityType="artist"
+        entityId={artist.id}
+        link={networkLink}
+        linkedProfile={linkedProfile}
+        pickerDisabledReason={
+          connectAccess === null ? null : connectAccess.canWrite ? null : connectAccess.explanation
+        }
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

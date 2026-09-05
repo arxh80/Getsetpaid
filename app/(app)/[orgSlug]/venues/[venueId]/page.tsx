@@ -46,8 +46,12 @@ import {
 } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
 import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { LinkedIdentitySection } from "@/components/network/linked-identity-section";
 import { getNetworkReadAccess } from "@/lib/network/access";
+import { getNetworkConnectionAccess } from "@/lib/network/access";
 import { loadNetworkProfileForEntity } from "@/lib/network/entities";
+import { loadNetworkLinkForEntity } from "@/lib/network/links-list";
+import { loadNetworkProfileForViewer } from "@/lib/network/discovery";
 import { profileHasDrifted } from "@/lib/network/drift";
 
 // One venue, with its rooms managed inline.
@@ -218,6 +222,18 @@ export default async function VenueDetailPage({
         websiteUrl: networkProfile.websiteUrl,
       },
     );
+
+  // TASK 4 / GAP B (Q73/Q82). See the companies page's identical comment.
+  const [networkLink, connectAccess] = canReadNetwork
+    ? await Promise.all([
+        loadNetworkLinkForEntity(org.id, "venue", venue.id),
+        getNetworkConnectionAccess(org),
+      ])
+    : [null, null];
+  const linkedProfile =
+    networkLink !== null
+      ? await loadNetworkProfileForViewer(networkLink.networkProfileId)
+      : null;
 
   return (
     <div className="flex flex-col gap-8">
@@ -447,6 +463,18 @@ export default async function VenueDetailPage({
         canRead={canReadNetwork}
         profile={networkProfile}
         drifted={networkDrifted}
+      />
+
+      <LinkedIdentitySection
+        orgSlug={org.slug}
+        canRead={canReadNetwork}
+        entityType="venue"
+        entityId={venue.id}
+        link={networkLink}
+        linkedProfile={linkedProfile}
+        pickerDisabledReason={
+          connectAccess === null ? null : connectAccess.canWrite ? null : connectAccess.explanation
+        }
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">
