@@ -8,9 +8,15 @@ import "server-only";
 // header, 20260904000000/20260904003000):
 //
 //   1. `NETWORK_LINKS_LIST` / `loadNetworkLinksList` -- a paginated "your
-//      linked records" surface, consumed by app/(app)/[orgSlug]/network/page.tsx
-//      alongside the directory (Constraint 10: distinct paramPrefix `link_`,
-//      the directory's is `net_`).
+//      linked records" surface, consumed by its OWN route,
+//      app/(app)/[orgSlug]/network/links/page.tsx -- NOT the directory route.
+//      A second list on the directory page (which already carries a
+//      ListToolbar with no `preserve` option) would have reintroduced
+//      Constraint 10's exact failure, so this list gets a route of its own
+//      rather than a `link_`/`net_` paramPrefix pairing on a shared one. Fix
+//      round 1, F2: three comments in this file used to describe the
+//      pre-deviation "second list on the directory" design; all three are
+//      corrected below to name the real, only caller.
 //   2. `loadNetworkLinkForEntity` -- the single-row lookup
 //      components/network/linked-identity.tsx needs on each of the four
 //      private record detail pages (companies/[id], artists/[id],
@@ -99,7 +105,12 @@ export const NETWORK_LINKS_LIST = defineListSpec<LinkSortKey, LinkFilterKey>({
     },
   },
 
-  // Constraint 10: shares a route with NETWORK_DIRECTORY_LIST (`net_`).
+  // ITS OWN ROUTE (app/(app)/[orgSlug]/network/links/page.tsx), not a second
+  // list sharing NETWORK_DIRECTORY_LIST's route -- see this file's header.
+  // `paramPrefix` is still set even though nothing on this route needs to be
+  // told apart from a sibling list, for the same reason every other spec in
+  // this codebase sets one: retrofitting a prefix later would silently
+  // invalidate every bookmarked URL.
   paramPrefix: "link_",
 });
 
@@ -107,8 +118,9 @@ export type NetworkLinkSortKey = keyof (typeof NETWORK_LINKS_LIST)["sort"];
 export type NetworkLinkFilterKey = keyof (typeof NETWORK_LINKS_LIST)["filters"];
 
 /**
- * This organisation's own links, paginated -- the network hub's "Your linked
- * records" section (app/(app)/[orgSlug]/network/page.tsx).
+ * This organisation's own links, paginated -- consumed by its own route,
+ * app/(app)/[orgSlug]/network/links/page.tsx ("Linked records"), the only
+ * caller (`grep -rn NETWORK_LINKS_LIST` confirms it).
  */
 export async function loadNetworkLinksList(
   org: Pick<CurrentOrg, "id">,
