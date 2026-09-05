@@ -3103,3 +3103,102 @@ recorded for the history and the residual each leaves; the rest are open.
   should either name a `SECURITY.md`/`FOLLOW-UPS.md` reconciliation deliverable
   or state explicitly that none is owed, and should specify wiring, not just
   existence, for anything it asks to be built.**
+
+## Phase 6 — network
+
+### Opened by Task 3 (discovery) — Q86, the cost ceiling, measured
+
+- **Directory SEARCH is O(published profiles ACROSS THE WHOLE PLATFORM), not
+  O(tenant) — the one list in the product where that denominator is every
+  customer's published rows combined, not one workspace's.** Every other
+  list's search cost note (Task 3 of Phase 2, above) is about one tenant
+  growing large; this one is about the PLATFORM growing large, and it is
+  worse for exactly the reason `lib/list/query.ts`'s own header names:
+  `network_directory` carries no `organisation_id` predicate at all — Task 1's
+  deliberate Constraint 9 deviation — so there is no tenant boundary to narrow
+  the scan the way `contacts_organisation_id_idx` narrows the contacts case.
+
+  **Measured, as `authenticated`, on a LOCAL stack seeded with 20,000
+  published profiles across 3 organisations** (a throwaway `.sql` script —
+  `generate_series`, one `insert` per row, `analyze`, one throwaway
+  `auth.users` row + an active membership so the directory policy's "exists
+  an active membership" term is satisfiable — run against the local stack
+  only and never committed; `npx supabase db reset --local` afterwards, so
+  the suites that followed ran on a clean world):
+
+  | | plan | buffers | time |
+  |---|---|---|---|
+  | (i) browse, page 1 | `Index Scan using network_profiles_directory_idx`, `Index Cond: (status = 'published')` | 257 | **1.668 ms** |
+  | (ii) search ~4% (`Zephyr`, 800/20,000) — page | `Seq Scan on network_profiles`, `Rows Removed by Filter: 19200` | 505 | **52.420 ms** |
+  | (ii) search ~4% — count | same shape | 499 | **33.318 ms** |
+  | (iii) search matching ONE row (`Quillfeather`) — page | `Seq Scan on network_profiles`, `Rows Removed by Filter: 19999` | 499 | **21.901 ms** |
+  | (iii) search matching ONE row — count | same shape | 499 | **21.958 ms** |
+
+  **THE BROWSE PAGE IS FINE.** `network_profiles_directory_idx` (`status,
+  display_name, id`, Task 1) does exactly what its own comment promises: an
+  `Index Scan` ordered by `display_name`, no sort, sub-2ms regardless of how
+  many organisations have published. The ceiling is entirely in SEARCH.
+
+  **THE MECHANISM IS THE SAME ONE `lib/list/query.ts`'s header names for
+  `contacts`, and it is worth restating why it still applies here even though
+  the browse path uses a real index:** `ilike`/`~~*` is not `proleakproof`,
+  and Postgres will not promote a non-leakproof qual to an index qual on a
+  relation carrying RLS security quals for the current caller. So even though
+  `network_profiles_directory_idx` COULD in principle narrow the scan to
+  `status = 'published'` first, the planner's own cost estimate puts a plain
+  `Seq Scan` of the whole table (895) below an index-driven visit to the
+  ~15,000 published rows via that index (4025, visible in the browse plan
+  above) — ONE MORE reason a trigram index would not rescue this path even
+  if one existed: `network_profiles.display_name` has no trigram index at
+  all today, and adding a plain one would not change the leakproofness
+  problem, only which unusable index the planner declines to use.
+
+  **THE NUMBER THAT MATTERS: two sequential scans of the WHOLE PLATFORM'S
+  published-profile count per search** (the page and the count, run in
+  parallel by `fetchListPage` — sequential above only because EXPLAIN was run
+  one statement at a time). At 20,000 rows that is **~44–86 ms of database
+  time per search**, and it grows linearly with a number this phase does not
+  control the growth of: every paying customer's published identity, summed
+  across the whole product, not this one workspace's row count. 100,000
+  published profiles (a plausible multi-year outcome, not a stress-test
+  number) puts a single search in the **200–450 ms** range; 500,000 puts it
+  over a second. Nothing about that failure mode is visible from inside one
+  organisation's own usage — a workspace with three published profiles pays
+  the platform's whole cost on every search keystroke.
+
+  **NO SECURITY DEFINER SEARCH FUNCTION IS BUILT HERE, and that is Q86's own
+  answer, not an oversight this entry is quietly reopening.** The contacts
+  case's `private.contact_search(p_org, p_term)` pattern does not transfer
+  cleanly here regardless: its whole safety argument is "re-establish the
+  ENTIRE tenant policy inside the function body, because `SECURITY DEFINER`
+  skips RLS and the body is the only control left" — and the policy being
+  re-established there is a SINGLE-TENANT one
+  (`organisation_id = p_org` plus record scope). The network directory's real
+  policy is "every active member of every organisation, if the row is
+  published" — i.e. already close to unconditional for the read case — so a
+  `SECURITY DEFINER` wrapper here would not be re-implementing a narrow
+  tenant check, it would be re-implementing "is this caller logged in and a
+  member of something", which is a much smaller safety margin to get exactly
+  right in a function body that bypasses RLS, for a feature this phase's own
+  Global Constraints already flag as out of scope to build ahead into
+  (`Q86: do not add a SECURITY DEFINER search function regardless of the
+  numbers; a finding for the follow-up if they argue for one`). **This is
+  that finding, and the decision it asks a reviewer to make explicitly**:
+  either accept the linear-with-the-platform search cost as a known ceiling
+  (with the rate limiter below as the mitigant) until profile counts actually
+  approach the six-figure range, or scope a dedicated `SECURITY DEFINER`
+  search function as real Phase 7+ work with its own security review — not a
+  default reached for under time pressure inside a discovery task.
+
+  **THE 30/MIN RATE LIMITER (`SECURITY.md` § 5) IS PHASE 7'S, NOT THIS ONE's,
+  and its absence today is what makes the ceiling above a live exposure
+  rather than a theoretical one.** Nothing in this codebase throttles how
+  often one session can hit `/rest/v1/network_directory?display_name=ilike.*`
+  today — a script issuing one request per second against a 100,000-profile
+  platform costs the database ~300-450ms of Seq Scan time per request,
+  indefinitely, from a single authenticated session on any tier including
+  Free. **Owner: Phase 7's rate-limiting work, and it should name this
+  endpoint by name rather than rely on a generic per-user budget catching it
+  incidentally** — a generic budget sized for ordinary CRM list traffic (one
+  tenant, index-backed) would be many times too generous for a query whose
+  unit cost scales with the whole platform instead.
