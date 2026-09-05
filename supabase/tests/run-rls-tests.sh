@@ -2555,6 +2555,88 @@ p2_code "manager POSTs a network profile into org BETA"   403 POST "network_prof
 p2_code "manager DELETEs a network profile (no DELETE grant)" 403 DELETE \
         "network_profiles?id=eq.e0110000-0000-0000-0000-00000000000a" "" "$MGR"
 
+# ============================================================================
+# PHASE 6 NETWORK AT THE API SURFACE, TASK 4: THE SENDER-CANNOT-ACCEPT PROOF,
+# OVER REAL HTTP.
+#
+# The psql suite's NU1/NU3/NU4 already prove this at the policy layer. This is
+# the same finding through PostgREST, with the public anon key and no Next.js
+# app on the path -- the request an attacker (or a stray client) actually
+# sends, which never meets acceptConnectionRequestAction's own authorisation.
+#
+# A FRESH PAIR OF PROFILES AND A FRESH REQUEST, not a reuse of an earlier
+# section's rows: every request planted earlier in this script (by the psql
+# suites, which ran before this HTTP block on the same database) is already
+# terminal (accepted/declined/withdrawn) or belongs to a different pair, and
+# reusing one risks the transition guard pre-empting the POLICY this block is
+# about -- exactly the NU5 finding's own header warns against ("the expected
+# value was itself the tell").
+#
+# A BETA-SIDE ACTOR IS NEEDED THAT DOES NOT REQUIRE aal2. pbowner (BETA's
+# owner) and pmulti (admin in both orgs) both need MFA for manage_network_
+# connections, and a password grant over HTTP yields aal1 only (measured
+# earlier in this script's "MFA enforcement" block) -- so neither could ACCEPT
+# here even correctly. pstd2 already exists as an auth user (standard_user in
+# ALPHA) and gains a SECOND membership, as 'manager' in BETA, which is an
+# ordinary multi-org-membership shape (CLAUDE.md: "supported from MVP") and
+# does not disturb pstd2's existing ALPHA role or any earlier assertion that
+# used it -- this is the LAST HTTP block in the script.
+# ============================================================================
+echo
+echo "=== Phase 6 network at the API surface (Task 4): sender cannot accept ==="
+
+p2_sub "insert into public.organisation_memberships
+          (organisation_id, user_id, role, status, joined_at)
+        values ('$BETA_ORG', '${P2ID[pstd2]}', 'manager', 'active', now())
+        on conflict (organisation_id, user_id)
+        do update set role = 'manager', status = 'active';"
+
+ALPHA_H4_CO=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.companies (organisation_id, name) values ('$ALPHA_ORG','Task4 HTTP Alpha Co') returning id" | head -n1 | tr -d '[:space:]')
+BETA_H4_CO=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.companies (organisation_id, name) values ('$BETA_ORG','Task4 HTTP Beta Co') returning id" | head -n1 | tr -d '[:space:]')
+ALPHA_H4_PROFILE=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.network_profiles
+     (organisation_id, entity_kind, entity_id, status, display_name, field_visibility, published_at)
+   values ('$ALPHA_ORG','company','$ALPHA_H4_CO','published','Task4 HTTP Alpha Co','{}'::jsonb, now())
+   returning id" | head -n1 | tr -d '[:space:]')
+BETA_H4_PROFILE=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.network_profiles
+     (organisation_id, entity_kind, entity_id, status, display_name, field_visibility, published_at)
+   values ('$BETA_ORG','company','$BETA_H4_CO','published','Task4 HTTP Beta Co','{}'::jsonb, now())
+   returning id" | head -n1 | tr -d '[:space:]')
+H4_REQUEST=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.network_connection_requests
+     (from_organisation_id, from_network_profile_id, to_organisation_id, to_network_profile_id)
+   values ('$ALPHA_ORG','$ALPHA_H4_PROFILE','$BETA_ORG','$BETA_H4_PROFILE')
+   returning id" | head -n1 | tr -d '[:space:]')
+
+BETA_MGR=$(p2_token pstd2); [ -n "$BETA_MGR" ] || { echo "no token for pstd2 (BETA manager)" >&2; exit 1; }
+
+# THE FINDING: ALPHA (the SENDER, via its manager token) cannot accept its own
+# request. 403, not 204/0 -- the row IS visible to the sender through the
+# sender-withdraws policy's USING clause, so this is a WITH CHECK violation
+# (both matching policies' WITH CHECK fail: recipient-responds because
+# to_organisation_id is not ALPHA's, sender-withdraws because the landing
+# value is not 'withdrawn'), the same 42501 shape NU1 measures in psql.
+p2_code "SENDER (ALPHA) cannot PATCH its own request to accepted" 403 PATCH \
+        "network_connection_requests?id=eq.$H4_REQUEST" \
+        '{"status":"accepted","responded_at":"2026-09-05T00:00:00Z"}' "$MGR"
+
+# CONTROL: the request is still pending -- the refusal above changed nothing.
+p2_json "CONTROL: the request is still pending after the refused PATCH" "pending" \
+        "network_connection_requests?select=status&id=eq.$H4_REQUEST" "$MGR" "status"
+
+# THE POSITIVE CONTROL: the RECIPIENT (BETA), the identical statement, a
+# different actor -- 204, no body, PostgREST's ordinary successful-PATCH
+# response with no Prefer header.
+p2_code "POSITIVE CONTROL: the RECIPIENT (BETA) can PATCH the same request to accepted" 204 PATCH \
+        "network_connection_requests?id=eq.$H4_REQUEST" \
+        '{"status":"accepted","responded_at":"2026-09-05T00:00:01Z"}' "$BETA_MGR"
+
+p2_json "CONTROL: the request really is accepted now" "accepted" \
+        "network_connection_requests?select=status&id=eq.$H4_REQUEST" "$BETA_MGR" "status"
+
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2
   http_status=1
