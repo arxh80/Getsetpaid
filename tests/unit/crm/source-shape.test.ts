@@ -2123,3 +2123,93 @@ describe("the operations loaders filter deleted_at correctly (Task 3)", () => {
     expect(body).toContain(`.is("deleted_at", null)`);
   });
 });
+
+// ===========================================================================
+// I2: ONE MONEY PARSER, AND NOTHING CAN SEE A SECOND ONE COME BACK
+// ===========================================================================
+// The review found three implementations of the pounds<->pence boundary: the
+// tested one in lib/format/money.ts (whose only caller was its own test), the
+// untested one production ran (`parsePounds` in lib/crm/finance.ts), and a
+// third, module-private in components/crm/finance-panel.tsx, that rendered
+// every stored amount back into the edit form.
+//
+// This is a SOURCE assertion for the same reason the rest of this file is one:
+// `parsePounds` cannot be imported (every export of a `"use server"` module is
+// a server action), and a re-forked copy that happens to agree with the
+// canonical parser today is invisible to every behavioural test there is --
+// which is exactly the state the review found. The behaviour lives in
+// tests/unit/format/money.test.ts; this says only that there is still one
+// place for it to live.
+describe("I2: the money parser is not duplicated back into finance code", () => {
+  /**
+   * Source with every comment removed.
+   *
+   * PROSE IS NOT AN IMPLEMENTATION, and here it cuts both ways: lib/crm/
+   * finance.ts's header still EXPLAINS the MAX_SAFE_INTEGER ceiling (it should
+   * -- the reader needs to know where the ceiling is), and a `not.toContain`
+   * over the raw text would call that sentence a second parser. The same rule
+   * this file's own N-3 note records for `.update(`.
+   */
+  const code = (relative: string): string =>
+    read(relative)
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+
+  const money = code("lib/format/money.ts");
+  const financeAction = code("lib/crm/finance.ts");
+  const panel = code("components/crm/finance-panel.tsx");
+
+  // The pattern, the ceiling and the fraction assembly -- the three pieces a
+  // second implementation needs. Written as source fragments rather than as a
+  // regex over a regex, so a copy that reformats the literal still trips at
+  // least the ceiling and the assembly.
+  const PATTERN = String.raw`/^\d+(\.\d{1,2})?$/`;
+  const CEILING = "Number.MAX_SAFE_INTEGER";
+  const ASSEMBLY = `(fracPart + "00").slice(0, 2)`;
+
+  it("lib/format/money.ts is where all three pieces live (the denominator)", () => {
+    // Without this, every `not.toContain` below would pass against a repo that
+    // had deleted the parser outright.
+    expect(money, "the pattern").toContain(PATTERN);
+    expect(money, "the ceiling").toContain(CEILING);
+    expect(money, "the fraction assembly").toContain(ASSEMBLY);
+    expect(money).toContain("export function parseGbpDetailed(");
+    expect(money).toContain("export function minorToPoundsInput(");
+  });
+
+  it("lib/crm/finance.ts has none of them, and imports the parser instead", () => {
+    expect(financeAction, "a second pattern").not.toContain(PATTERN);
+    expect(financeAction, "a second ceiling").not.toContain(CEILING);
+    expect(financeAction, "a second assembly").not.toContain(ASSEMBLY);
+    expect(financeAction).toContain(`from "@/lib/format/money"`);
+    expect(financeAction).toContain("parseGbpDetailed(raw)");
+  });
+
+  it("components/crm/finance-panel.tsx imports minorToPoundsInput, does not define it", () => {
+    expect(panel).toContain(`minorToPoundsInput } from "@/lib/format/money"`);
+    expect(panel, "a third converter").not.toContain(
+      "function minorToPoundsInput(",
+    );
+    // The slicing idiom it used, so a rename of the function is not enough to
+    // smuggle the same body back in.
+    expect(panel).not.toContain(`digits.slice(0, -2)`);
+  });
+
+  it("no other app file parses pounds by hand", () => {
+    // A CENSUS, not a spot check: every .ts/.tsx under lib/, app/ and
+    // components/ is read, and exactly ONE of them may carry the pattern.
+    const dirs = ["lib", "app", "components"];
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(root + dir, { withFileTypes: true })) {
+        const path = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) walk(path);
+        else if (/\.tsx?$/.test(entry.name)) files.push(path);
+      }
+    };
+    for (const dir of dirs) walk(dir);
+    expect(files.length, "the census read some files").toBeGreaterThan(50);
+    const withPattern = files.filter((f) => code(f).includes(PATTERN));
+    expect(withPattern).toEqual(["lib/format/money.ts"]);
+  });
+});

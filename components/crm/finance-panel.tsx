@@ -13,7 +13,9 @@ import type {
 } from "@/lib/crm/finance-queries";
 import {
   netMinor,
+  ZERO_FINANCE_SUMMARY,
   type EventFinanceSummary,
+  type EventFinanceSummaryOutcome,
 } from "@/lib/crm/finance-summary";
 import { FinanceCategoryChip, FinanceStatusChip } from "@/components/crm/finance-chip";
 import {
@@ -25,7 +27,7 @@ import {
   type PickerOption,
 } from "@/components/crm/finance-forms";
 import type { CustomFieldCell } from "@/lib/crm/custom-fields";
-import { formatGbp } from "@/lib/format/money";
+import { formatGbp, minorToPoundsInput } from "@/lib/format/money";
 import { formatDateOnly, formatDateTime } from "@/lib/format/date";
 
 // The event finance panel: a budget-vs-actuals summary, the line-item list,
@@ -59,7 +61,9 @@ interface FinancePanelProps {
   eventId: string;
   /** The event's own URL. The pager builds its links from it. */
   basePath: string;
-  summary: EventFinanceSummary;
+  /** The summary read's OUTCOME, not a summary. A failed query renders an
+   *  error note; only "no row" renders zeros (review finding I3). */
+  summary: EventFinanceSummaryOutcome;
   page: ListPage<FinancialEntryRow>;
   params: FinancialEntryParams;
   removed: readonly RemovedFinancialEntry[];
@@ -122,7 +126,29 @@ export function FinancePanel({
         </p>
       ) : null}
 
-      <SummaryTable summary={summary} />
+      {/* AND £0.00 IS NOT AN EMPTY SHEET EITHER (review finding I3). The
+          summary read has the same three-way outcome the list does, and the
+          same disposition: a failure says so. Rendering zeros here on a failed
+          query put "Gross £0.00 · break-even" directly above a list of real
+          money -- a claim about the customer's finances that nothing had
+          measured. "No row" (an event with no lines) still renders zeros,
+          because that IS the summary of nothing. */}
+      {summary.outcome === "unavailable" ? (
+        <p
+          role="status"
+          className="border border-danger bg-surface px-3 py-3 text-base text-ink"
+        >
+          <span className="font-semibold text-danger">Error.</span> We couldn’t
+          load this event’s budget-vs-actuals summary just now. Refresh the page
+          to try again — the lines below are unaffected.
+        </p>
+      ) : (
+        <SummaryTable
+          summary={
+            summary.outcome === "loaded" ? summary.summary : ZERO_FINANCE_SUMMARY
+          }
+        />
+      )}
 
       {/* A FAILED QUERY IS NOT AN EMPTY SHEET. "This event has no finance lines"
           is a claim about the customer's data; making it because a query failed
@@ -459,7 +485,10 @@ function LineItems({
 
 /**
  * The stored row as the edit form shows it. `amount_minor` (pence) -> a plain
- * pounds string by STRING math, no float step -- the inverse of parseGbpToMinor.
+ * pounds string by STRING math, no float step: `minorToPoundsInput` is the
+ * inverse of lib/format/money.ts's parser and now lives beside it (review
+ * finding I2 -- it was module-private here, and therefore untested, while
+ * rendering every stored amount back into the edit form).
  */
 function storedFields(row: FinancialEntryRow): FinanceFieldValues {
   return {
@@ -471,14 +500,6 @@ function storedFields(row: FinancialEntryRow): FinanceFieldValues {
     artistId: row.artistId ?? "",
     supplierContactId: row.supplierContactId ?? "",
   };
-}
-
-/** `123456` -> `"1234.56"`. Integer pence to a decimal-pounds string with no
- *  floating-point division, so a large value cannot pick up rounding error. */
-function minorToPoundsInput(minor: number): string {
-  const digits = String(minor);
-  if (digits.length <= 2) return `0.${digits.padStart(2, "0")}`;
-  return `${digits.slice(0, -2)}.${digits.slice(-2)}`;
 }
 
 /** The stored link as a picker option, or null when the line links none. A

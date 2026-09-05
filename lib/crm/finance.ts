@@ -40,12 +40,15 @@
 // 3. THE AMOUNT IS A £ TEXT INPUT, PARSED TO MINOR UNITS
 // ===========================================================================
 // The column is `amount_minor bigint` (pence). The form field is pounds as a
-// human types them ("1,234.56", "£500"). `parsePounds` is the pure parser:
-// it rejects negatives, more than two decimal places, and any value above
+// human types them ("1,234.56", "£500"). The parsing is lib/format/money.ts's
+// `parseGbpDetailed` -- the ONE parser in the product since review finding I2 --
+// which rejects negatives, more than two decimal places, and any value above
 // Number.MAX_SAFE_INTEGER pence (the point past which a JS number stops being
 // an exact integer -- the list mapper reads amount_minor back as a number, so
 // a value it could not represent must never be stored). The CHECK
 // `amount_minor >= 0` is the database floor behind the negative rejection.
+// `parsePounds` below is now only the map from that parser's failure reason to
+// the sentence this form shows.
 //
 // ===========================================================================
 // 4. THE LINE CARRIES CUSTOM FIELDS, WRITTEN HERE (Phase 5 Task 3)
@@ -81,6 +84,7 @@ import {
   type CustomFieldJson,
 } from "@/lib/crm/custom-fields";
 import { loadCustomFieldDefinitions } from "@/lib/crm/custom-field-queries";
+import { parseGbpDetailed, type GbpParseFailure } from "@/lib/format/money";
 import type { FieldProblem } from "@/lib/crm/validate";
 
 /** The optional free-text label, e.g. "Headliner fee". Not a paragraph. */
@@ -90,17 +94,6 @@ const MAX_DESCRIPTION = 200;
  *  retry -- both the UPDATE and the set_custom_field_values RPC are idempotent. */
 const FINANCE_CUSTOM_FIELDS_FAILED =
   "The line was saved, but its custom fields didn’t. Try saving again.";
-
-/**
- * The largest amount, in pence, this application will store.
- *
- * Number.MAX_SAFE_INTEGER (9,007,199,254,740,991). Above it a JS number is no
- * longer an exact integer, and lib/crm/finance-list.ts reads amount_minor back
- * as a `Number` -- so a value that could not round-trip must be refused on the
- * way in rather than silently corrupted on the way out. That is ~£90 trillion,
- * comfortably above any real festival gross and still inside bigint.
- */
-const MAX_AMOUNT_MINOR = Number.MAX_SAFE_INTEGER;
 
 // ---------------------------------------------------------------------------
 // The finance-entry form
@@ -118,46 +111,43 @@ interface FinancialEntryValues {
 }
 
 /**
- * Parse a pounds-and-pence text input to minor units.
+ * The three sentences a rejected amount can produce, one per
+ * `GbpParseFailure`. Exhaustive over the union, so a fourth reason added to
+ * lib/format/money.ts is a compile error here rather than an amount that is
+ * refused with no message.
+ */
+const AMOUNT_MESSAGE: Record<GbpParseFailure, string> = {
+  empty: "Enter an amount.",
+  malformed:
+    "Enter an amount in pounds — digits only, up to two decimal places, no minus sign.",
+  "too-large": "That amount is too large.",
+};
+
+/**
+ * The finance form's amount field -> minor units, or the sentence to show.
  *
- * PURE. Strips a leading £, thousands commas and surrounding whitespace, then
- * requires a plain non-negative decimal with at most two fractional digits.
- * The minor-units value is assembled as a STRING (integer part followed by the
- * two-digit fraction) rather than by multiplying by 100, so no floating-point
- * step ever touches it; `Number.isSafeInteger` is the final ceiling.
+ * A THIN WRAPPER OVER `parseGbpDetailed` (lib/format/money.ts) AND NOTHING
+ * MORE -- review finding I2. It used to be a deliberately parallel
+ * implementation of the same regex, the same string assembly and the same
+ * MAX_SAFE_INTEGER ceiling, on the argument that this module is `"use server"`
+ * and must return a FieldProblem message rather than `null`. That argument
+ * justifies the MESSAGE MAP above; it never justified a second parser, and the
+ * claim the two headers made ("both reject the same set") was the one property
+ * nothing tested. The parsing now happens once, where a unit test can reach it.
  *
- *   ""            -> required
- *   "-5"          -> rejected (negative; the regex has no sign)
- *   "5.005"       -> rejected (more than two decimal places)
- *   "1e9"         -> rejected (not a plain decimal)
- *   "90000000000000000" -> rejected (over MAX_AMOUNT_MINOR once in pence)
- *   "1,234.5"     -> 123450
+ * It stays module-private: every export of a `"use server"` module is a server
+ * action, so this cannot be exported for a test to call. What a test CAN see
+ * is that no second regex or ceiling has grown back here --
+ * tests/unit/crm/source-shape.test.ts asserts exactly that.
  */
 function parsePounds(
   raw: string | null,
 ):
   | { readonly ok: true; readonly minor: number }
   | { readonly ok: false; readonly message: string } {
-  if (raw === null) {
-    return { ok: false, message: "Enter an amount." };
-  }
-  const cleaned = raw.replace(/[£,\s]/g, "");
-  if (!/^\d+(\.\d{1,2})?$/.test(cleaned)) {
-    return {
-      ok: false,
-      message:
-        "Enter an amount in pounds — digits only, up to two decimal places, no minus sign.",
-    };
-  }
-  const [intPart, fracPart = ""] = cleaned.split(".");
-  const frac = (fracPart + "00").slice(0, 2);
-  // Digits of the minor-units value, leading zeros trimmed (but not to empty).
-  const minorDigits = (intPart + frac).replace(/^0+(?=\d)/, "");
-  const minor = Number(minorDigits);
-  if (!Number.isSafeInteger(minor) || minor > MAX_AMOUNT_MINOR) {
-    return { ok: false, message: "That amount is too large." };
-  }
-  return { ok: true, minor };
+  const parsed = parseGbpDetailed(raw);
+  if (parsed.ok) return { ok: true, minor: parsed.minor };
+  return { ok: false, message: AMOUNT_MESSAGE[parsed.reason] };
 }
 
 /**
