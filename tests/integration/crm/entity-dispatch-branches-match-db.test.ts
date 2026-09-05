@@ -137,6 +137,22 @@ const EXPECTED: Record<string, readonly string[]> = {
   // after the entity, arrived alongside financial_entries_update_manage_finance
   // -- its only caller. financial_entries has no owner column, so this guard is
   // the ONLY thing pinning (id, organisation_id) against a two-org admin.
+  //
+  // TWENTY-THREE SINCE PHASE 6 TASK 1 (20260904000000): `network_profile`,
+  // named after the entity, arrived alongside
+  // network_profiles_update_manage_profile -- its only caller. Same reasoning
+  // as financial_entry (no owner column, so this guard is the only pin), and
+  // one degree worse in consequence: public.network_profiles is the ONE table
+  // another tenant can read, so a tenant-to-tenant transfer there would move a
+  // cross-tenant-readable row BETWEEN tenants.
+  //
+  // NEITHER network_links NOR network_connection_requests HAS AN ARM, and both
+  // omissions are deliberate. network_links' UPDATE policy is the soft-delete
+  // path and its own organisation_id is already pinned by that policy's USING
+  // clause reading the same column. network_connection_requests is BI-TENANT
+  // and has no single `organisation_id` column for this guard's signature to
+  // take at all; its equivalent protection is the pair of narrow UPDATE
+  // policies plus the BEFORE UPDATE transition guard (20260904003000).
   entity_org_unchanged: [
     "company",
     "contact",
@@ -160,6 +176,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     "note_link",
     "document_link",
     "financial_entry",
+    "network_profile",
   ],
 
   // DELIBERATELY WITHOUT 'event' -- events are not mergeable in Phase 3.
