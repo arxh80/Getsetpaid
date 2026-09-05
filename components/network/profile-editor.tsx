@@ -88,7 +88,29 @@ import { Alert } from "@/components/ui/alert";
 // from what was true AT MOUNT, not from a freshly rendered `defaultChecked`.
 
 const NOTE_ID = "network-editor-blocked";
-const HIDE_NOTE = "network-hide-warns";
+
+/**
+ * The quick-hide note's id, PER FIELD.
+ *
+ * FIX ROUND 1, I1. This used to be a bare module constant
+ * (`"network-hide-warns"`), and `QuickHideButton` renders once per field
+ * whose stored level is not `hidden` -- so with three fields published,
+ * three `<p id="network-hide-warns">` elements landed in the DOM at once,
+ * and EVERY "Hide … now" button's `aria-describedby` resolved to the
+ * FIRST one regardless of which field it belonged to: a screen-reader user
+ * pressing "Hide contact email now" was told "Hides Headline immediately
+ * and deletes its published value." Axe could not see it because the
+ * populated accessibility scan moved exactly one field off `hidden`, so
+ * only one such element was ever on the page being scanned; the
+ * source-shape census only asserted the attribute was PRESENT, never that
+ * its target was unique. `tests/unit/network/source-shape.test.ts`'s
+ * "every id this file renders is unique" test and
+ * `tests/e2e/accessibility.spec.ts`'s two-field populated scan are both
+ * now in this regression's reach.
+ */
+function hideNoteId(fieldName: PublishableField): string {
+  return `network-hide-warns-${fieldName}`;
+}
 
 export interface ProfileFieldValues {
   displayName: string;
@@ -252,9 +274,11 @@ function QuickHideButton({
     });
   };
 
+  const noteId = hideNoteId(fieldName);
+
   return (
     <div className="flex flex-col items-start gap-1">
-      <p id={HIDE_NOTE} className="sr-only">
+      <p id={noteId} className="sr-only">
         Hides {PUBLISHABLE_FIELD_LABELS[fieldName]} immediately and deletes its
         published value, without changing any other field.
       </p>
@@ -263,7 +287,7 @@ function QuickHideButton({
         variant="quiet"
         onClick={hideNow}
         disabled={disabled}
-        aria-describedby={disabled ? NOTE_ID : HIDE_NOTE}
+        aria-describedby={disabled ? NOTE_ID : noteId}
         pending={pending}
         pendingLabel="Hiding…"
       >

@@ -284,15 +284,42 @@ test("the network profile editor, populated, has no automated accessibility viol
   await page.getByRole("link", { name: "Axe Scan Company" }).click();
   await expect(page.getByRole("heading", { name: "Axe Scan Company", level: 1 })).toBeVisible();
 
-  // Fill a value and move it off `hidden`, so the "Hide now" quick action and
-  // the non-default publish-summary sentence are both on the page being
-  // scanned -- the NON-VACUITY half of this test.
+  // Fill TWO values and move BOTH off `hidden` -- fix round 1, I1. A single
+  // non-hidden field puts exactly one "Hide … now" quick-hide note on the
+  // page, which is why the FIRST version of this test could not have caught
+  // I1 (a duplicate `id` shared by every such note): with only one instance
+  // mounted, a duplicate id is indistinguishable from a correct one. Two
+  // fields is the minimum that puts the regression class within axe's reach.
   await page.locator("#headline").fill("Booking enquiries welcome");
   await page.getByRole("radio", { name: /Everyone on the network/i }).first().click();
+  const cityRow = page.locator("li", { has: page.locator("#city") });
+  await cityRow.locator("#city").fill("Manchester");
+  await cityRow.getByRole("radio", { name: /Everyone on the network/i }).click();
   await page.getByRole("button", { name: "Save" }).click();
-  // 3 of 9: the two always-shown fields (name, type) plus the one
-  // publishable field (headline) just set to `network`.
-  await expect(page.getByText(/3 of 9/)).toBeVisible();
+  // 4 of 9: the two always-shown fields (name, type) plus headline and city,
+  // both just set to `network`.
+  await expect(page.getByText(/4 of 9/)).toBeVisible();
+
+  // NON-VACUITY: both quick-hide buttons are really on the page being
+  // scanned, each with its OWN accessible name -- the two-instance state I1
+  // needed to be reachable at all.
+  const hideHeadline = page.getByRole("button", { name: "Hide headline now" });
+  const hideCity = page.getByRole("button", { name: "Hide city now" });
+  await expect(hideHeadline).toBeVisible();
+  await expect(hideCity).toBeVisible();
+
+  // THE BEHAVIOURAL HALF OF I1, IN A REAL BROWSER: each button's
+  // `aria-describedby` must point at ITS OWN note, not a shared one. Before
+  // the fix both resolved to the same id, so this pair of assertions would
+  // have failed with two identical strings.
+  const headlineDescribedBy = await hideHeadline.getAttribute("aria-describedby");
+  const cityDescribedBy = await hideCity.getAttribute("aria-describedby");
+  expect(headlineDescribedBy).not.toBeNull();
+  expect(cityDescribedBy).not.toBeNull();
+  expect(headlineDescribedBy).not.toBe(cityDescribedBy);
+  // ...and the sentence each points at genuinely names ITS OWN field.
+  await expect(page.locator(`#${headlineDescribedBy}`)).toContainText("Headline");
+  await expect(page.locator(`#${cityDescribedBy}`)).toContainText("City");
 
   await scan(page, "network profile editor");
 });
