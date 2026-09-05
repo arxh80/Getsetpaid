@@ -2398,9 +2398,10 @@ p2_code "anon GET network_links"                     401 GET "network_links?sele
 
 # THE POSITIVE CONTROL FOR ALL FIVE: the same directory URL, with a member's
 # token, returns the two published profiles the psql suite left behind.
-# THREE published live profiles survive the psql suite: ALPHA's one and BETA's
-# two (the second was added for section NR's withdraw-and-retry pair).
-p2_rows "CONTROL: a member's JWT GETs all three published profiles"  3 \
+# FOUR published live profiles survive the psql suite: ALPHA's one and BETA's
+# three (one for section NR's withdraw-and-retry pair, one for section NU5's
+# pending-row recipient-withdraw probe, added in fix round 1).
+p2_rows "CONTROL: a member's JWT GETs all four published profiles"  4 \
         "network_directory?select=id" "$MGR"
 
 # THE MASK, OVER REAL HTTP. ALPHA's contact_email is `connections`-level and
@@ -2446,7 +2447,7 @@ p2_sub "insert into public.organisation_subscriptions
 p2_code "FREE: a network profile POST is refused 403 (network_publish=false)" 403 POST \
         "network_profiles" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_kind\":\"artist\",\"entity_id\":\"44440000-0000-0000-0000-000000000001\",\"display_name\":\"Free HTTP Profile\"}" "$MGR"
-p2_rows "FREE: ...while browsing the directory still returns all 3 rows (view-only tier)" 3 \
+p2_rows "FREE: ...while browsing the directory still returns all 4 rows (view-only tier)" 4 \
         "network_directory?select=id" "$MGR"
 p2_sub "update public.organisation_subscriptions set plan_id='starter'
         where organisation_id='$ALPHA_ORG';"

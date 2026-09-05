@@ -328,41 +328,149 @@ reset role; reset request.jwt.claims;
 --
 -- Global Constraints N2: "No private table in a discovery path -- ENFORCED
 -- STRUCTURALLY, NOT BY REVIEW." Read out of pg_depend/pg_rewrite, which is the
--- planner's own record of what a view reads: a join added to either view puts
--- a name in this set whatever the SQL looks like.
+-- planner's own record of what a view reads.
+--
+-- ===========================================================================
+-- WIDENED IN FIX ROUND 1 (review finding I1), BECAUSE IT HAD A DEMONSTRATED
+-- BYPASS AND THIS COMMENT CLAIMED IT DID NOT
+-- ===========================================================================
+-- The first version filtered `t.relkind = 'r' and t.relnamespace = 'public'`,
+-- and this paragraph said "a join added to either view puts a name in this set
+-- whatever the SQL looks like". THAT WAS FALSE, and it was false about the
+-- phase's most load-bearing guard -- a Constraint 13 violation.
+--
+-- pg_depend records a view->VIEW dependency as the referenced VIEW's pg_class
+-- row (relkind 'v'), never transitively as that view's own base tables. So a
+-- relkind='r' filter cannot see one. A cross-SCHEMA join (auth.users, say) was
+-- invisible for the same reason. MEASURED on this stack, in a rolled-back
+-- transaction, with network_directory rewritten to
+-- `... left join public.activity_events a on a.organisation_id = p.organisation_id`:
+--
+--   OLD (relkind='r', public only)   network_profiles (1)              <- BLIND
+--   NEW (any relkind, any schema)    public.activity_events,
+--                                    public.network_profiles (2)       <- caught
+--
+-- That mattered: the schema's only other two `public` views are
+-- public.activity_events and public.event_finance_summary, and BOTH are views
+-- over tenant-private data -- precisely the class N2 exists to keep out of a
+-- discovery path. It was the one mutation the Task 1 mutation set did not try
+-- (M3 joined public.companies, which is a TABLE and therefore visible).
+--
+-- SO: no relkind filter and no namespace filter on the referenced object, and
+-- the name is reported SCHEMA-QUALIFIED so a same-named relation in another
+-- schema is a different string rather than a collision.
+--
+-- FUNCTIONS ARE COUNTED SEPARATELY (net.view_fn_deps below) rather than folded
+-- in: a view that calls a SECURITY DEFINER helper reading a private table is
+-- the same leak wearing a different hat, and the connected view legitimately
+-- calls one (private.permitted_organisations), so the two sets have different
+-- expected values and must not share an assertion.
 --
 -- THE PAIRED NON-VACUITY CONTROL is the same query over
--- public.event_finance_summary, which must return {financial_entries}. Without
--- it, a query that saw nothing at all would return the empty set for both
--- views and pass -- the exact vacuity D11b was added to catch elsewhere.
+-- public.event_finance_summary, which must return {public.financial_entries}.
+-- Without it, a query that saw nothing at all would return the empty set for
+-- both views and pass -- the exact vacuity D11b was added to catch elsewhere.
 -- ===========================================================================
 create view net.view_deps as
   select v.relname as viewname,
-         coalesce(string_agg(distinct t.relname, ',' order by t.relname), '<none>') as tables,
-         count(distinct t.relname)::text as n
+         coalesce(string_agg(distinct tn.nspname || '.' || t.relname, ','
+                             order by tn.nspname || '.' || t.relname), '<none>') as tables,
+         count(distinct tn.nspname || '.' || t.relname)::text as n
     from pg_catalog.pg_class v
     join pg_catalog.pg_rewrite rw on rw.ev_class = v.oid
     join pg_catalog.pg_depend d
       on d.objid = rw.oid and d.classid = 'pg_catalog.pg_rewrite'::regclass
-    join pg_catalog.pg_class t
-      on t.oid = d.refobjid and t.relkind = 'r'
-     and t.relnamespace = 'public'::regnamespace
-   where v.relnamespace = 'public'::regnamespace
+    -- NO relkind AND NO namespace FILTER. A view, a materialised view, a
+    -- foreign table, a partitioned table and a relation in `auth` are all
+    -- things a discovery view must not read, and every one of them was
+    -- invisible before fix round 1.
+    join pg_catalog.pg_class t on t.oid = d.refobjid
+    join pg_catalog.pg_namespace tn on tn.oid = t.relnamespace
+   -- The `net` schema is included on the VIEW side so ND3b's synthetic probe
+   -- below is reported by this exact query rather than by a second copy of it
+   -- that could drift.
+   where v.relnamespace in ('public'::regnamespace, 'net'::regnamespace)
      and v.relkind = 'v' and t.oid <> v.oid
    group by v.relname;
 
-select net.val('ND1 network_directory depends on EXACTLY {network_profiles}, cardinality 1',
+-- The FUNCTION half. A view's `pg_depend` rows include pg_proc entries for
+-- every function its definition calls.
+create view net.view_fn_deps as
+  select v.relname as viewname,
+         coalesce(string_agg(distinct pn.nspname || '.' || p.proname, ','
+                             order by pn.nspname || '.' || p.proname), '<none>') as fns,
+         count(distinct pn.nspname || '.' || p.proname)::text as n
+    from pg_catalog.pg_class v
+    join pg_catalog.pg_rewrite rw on rw.ev_class = v.oid
+    join pg_catalog.pg_depend d
+      on d.objid = rw.oid and d.classid = 'pg_catalog.pg_rewrite'::regclass
+     and d.refclassid = 'pg_catalog.pg_proc'::regclass
+    join pg_catalog.pg_proc p on p.oid = d.refobjid
+    join pg_catalog.pg_namespace pn on pn.oid = p.pronamespace
+   where v.relnamespace = 'public'::regnamespace and v.relkind = 'v'
+   group by v.relname;
+
+select net.val('ND1 network_directory depends on EXACTLY {public.network_profiles}, cardinality 1',
   $$select tables || ' (' || n || ')' from net.view_deps where viewname='network_directory'$$,
-  'network_profiles (1)');
+  'public.network_profiles (1)');
 
 select net.val('ND2 network_connected_profiles depends on EXACTLY those two, cardinality 2',
   $$select tables || ' (' || n || ')' from net.view_deps
      where viewname='network_connected_profiles'$$,
-  'network_connection_requests,network_profiles (2)');
+  'public.network_connection_requests,public.network_profiles (2)');
 
 select net.val('ND3 NON-VACUITY CONTROL: the same query sees event_finance_summary''s dependency',
   $$select tables || ' (' || n || ')' from net.view_deps where viewname='event_finance_summary'$$,
-  'financial_entries (1)');
+  'public.financial_entries (1)');
+
+-- ND3b IS THE CONTROL THAT PROVES THE WIDENING, AND IT IS SYNTHETIC ON
+-- PURPOSE.
+--
+-- ND1-ND3 cannot tell the widened query from the old one: every view in this
+-- schema reads only TABLES, so a relkind='r' filter returns the same answer for
+-- all three. The bypass finding I1 demonstrated needs a view that reads a VIEW,
+-- and the schema contains none -- which is exactly why the hole survived Task
+-- 1's whole mutation set.
+--
+-- So one is built here, pointed at public.activity_events (a view over
+-- tenant-private data, i.e. the real shape of the leak), and net.view_deps --
+-- THE SAME VIEW ND1-ND3 USE, not a copy -- is asked what it sees. Under the
+-- shipped query it reports the view. Under the old relkind='r' one it reported
+-- `<none> (0)`, which is what this assertion would then read.
+--
+-- It is dropped immediately below, so nothing downstream meets it.
+create view net.probe_view_over_view as
+  select a.id from public.activity_events a where false;
+
+select net.val('ND3b CONTROL: net.view_deps SEES a view->view dependency (the I1 bypass)',
+  $$select tables || ' (' || n || ')' from net.view_deps
+     where viewname='probe_view_over_view'$$,
+  'public.activity_events (1)');
+
+drop view net.probe_view_over_view;
+
+select net.val('ND3b2 ...and the probe is gone, so nothing downstream reads it',
+  $$select count(*)::text from pg_catalog.pg_class
+     where relname='probe_view_over_view'$$, '0');
+
+-- THE FUNCTION SET. The directory calls none; the connected view calls exactly
+-- one, and it is the permission helper its `exists` needs. A SECURITY DEFINER
+-- helper reading a private table would appear here and nowhere else.
+-- NOTE THE `coalesce` AND WHY IT IS OUTSIDE THE SUBQUERY. A view that calls no
+-- function has NO ROW in net.view_fn_deps at all -- the aggregate inside that
+-- view never runs for it -- so the scalar select returns NULL, not the
+-- '<none>' string_agg's own coalesce produces. Coalescing the ROW's absence is
+-- what makes "calls nothing" and "was not inspected" the same visible answer
+-- here; ND3d is the paired control that the query finds a function when there
+-- is one to find.
+select net.val('ND3c network_directory calls NO function at all',
+  $$select coalesce((select fns || ' (' || n || ')' from net.view_fn_deps
+                      where viewname='network_directory'), '<none> (0)')$$,
+  '<none> (0)');
+select net.val('ND3d network_connected_profiles calls EXACTLY private.permitted_organisations',
+  $$select fns || ' (' || n || ')' from net.view_fn_deps
+     where viewname='network_connected_profiles'$$,
+  'private.permitted_organisations (1)');
 
 -- security_invoker is what makes the base policy the SINGLE gate. Without it
 -- the views would run as their owner and become a second, independent access
@@ -823,9 +931,78 @@ select net.try('NU4 POSITIVE: the RECIPIENT can (the same statement, a different
   $$update public.network_connection_requests
        set status='accepted', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000003'$$, 'ok(1)');
-select net.try('NU5 ...but the recipient may NOT set `withdrawn` -- that is the sender''s word',
-  $$update public.network_connection_requests set status='withdrawn'
-     where id='c0110000-0000-0000-0000-000000000003'$$, 'denied(23514)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- NU5 -- THE RECIPIENT CANNOT WITHDRAW. REWRITTEN IN FIX ROUND 1 (I2), AND THE
+-- ORIGINAL WAS VACUOUS FOR THE ONE THING IT WAS CITED AS PROVING.
+-- ===========================================================================
+-- This is the behavioural guard for the deviation the Task 1 report calls its
+-- most important line: the sender-withdraws policy's WITH CHECK repeats
+-- `from_organisation_id`, because PostgreSQL ORs PERMISSIVE policies in the
+-- WITH CHECK clause as well as the USING clause, so a bare
+-- `status = 'withdrawn'` is satisfiable by a RECIPIENT whose USING passed
+-- through the OTHER policy.
+--
+-- THE FIRST VERSION RAN AGAINST `c...0003` IMMEDIATELY AFTER NU4 SET IT TO
+-- `accepted`. That row is TERMINAL, so the BEFORE UPDATE transition trigger
+-- raises 23514 before the WITH CHECK is ever evaluated -- the expected value
+-- was itself the tell, since a policy refusal is 42501 (as NU1/NU2 correctly
+-- expect). Reverting the WITH CHECK term left it GREEN: the trigger refused the
+-- statement either way. It asserted the trigger and was cited as asserting the
+-- policy.
+--
+-- SO IT RUNS ON A **PENDING** ROW NOW. The trigger permits every transition out
+-- of `pending`, which leaves the two policies as the only thing that can refuse
+-- -- and 42501, not 23514, is what a policy refusal looks like. The SENDER
+-- doing the same statement on the SAME row is the positive control: identical
+-- SQL, identical row, different actor, opposite outcome. That pair is the
+-- statement that distinguishes the shipped policy from the brief's.
+-- ===========================================================================
+insert into public.network_profiles
+  (id, organisation_id, entity_kind, entity_id, status, field_visibility,
+   display_name, published_at)
+select 'e0110000-0000-0000-0000-00000000000f', :'beta_org'::uuid,
+       'agency', '3333000b-0000-0000-0000-00000000000b', 'published',
+       '{}'::jsonb, 'Beta Withdraw Probe', now();
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select net.try('NU5a FIXTURE: a fresh PENDING request, so the trigger cannot pre-empt the policy',
+  format($$insert into public.network_connection_requests
+             (id, from_organisation_id, from_network_profile_id,
+              to_organisation_id, to_network_profile_id)
+           values ('c0110000-0000-0000-0000-000000000004', %L,
+                   'e0110000-0000-0000-0000-00000000000a',
+                   %L, 'e0110000-0000-0000-0000-00000000000f')$$,
+         :'alpha_org', :'beta_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select net.val('NU5b CONTROL: the RECIPIENT can see the row and it really is pending',
+  $$select status from public.network_connection_requests
+     where id='c0110000-0000-0000-0000-000000000004'$$, 'pending');
+select net.try('NU5 THE FINDING: the RECIPIENT cannot set `withdrawn` -- 42501, the POLICY refusing',
+  $$update public.network_connection_requests
+       set status='withdrawn', responded_at=now()
+     where id='c0110000-0000-0000-0000-000000000004'$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select net.try('NU5c POSITIVE CONTROL: the SENDER runs the IDENTICAL statement and it applies',
+  $$update public.network_connection_requests
+       set status='withdrawn', responded_at=now()
+     where id='c0110000-0000-0000-0000-000000000004'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ...and the mirror hole, on a pending row, so the pair is complete in both
+-- directions: NU1/NU2 already prove the sender cannot ACCEPT or DECLINE, and
+-- NU5/NU5c prove the recipient cannot WITHDRAW while the sender can.
+
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
 -- THE TRANSITION TRIGGER. Terminal means final: an accepted request cannot go
 -- back to pending, even though `pending` would otherwise just fail the WITH
 -- CHECK -- and, more to the point, cannot be flipped to another terminal value.
@@ -1103,7 +1280,7 @@ select net.val('NX2 the § NR/§ NU requests emitted requested / accepted / decl
            (select count(*) from public.audit_events where action='network_connection.accepted')::text
         || '/' ||
            (select count(*) from public.audit_events where action='network_connection.declined')::text$$,
-  '3/1/1');
+  '4/1/1');
 
 -- THE PAYLOAD DISCIPLINE. audit_events is superuser-readable, and CLAUDE.md
 -- § Superuser dashboard keeps tenant record content off that surface. The

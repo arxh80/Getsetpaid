@@ -113,11 +113,27 @@ function policyBody(name: string): string {
 }
 
 describe("N2: the masking views read the network tables and NOTHING ELSE", () => {
-  // The source-only half of the pg_depend assertion. That one is authoritative
-  // -- it reads the planner's own record, so it sees a join however it is
-  // written -- and it runs only locally. This one catches the same edit in CI,
-  // by the crude method of looking for any other `public.` table name in the
-  // view body.
+  // The source-only half of the pg_depend assertion (rls_phase6_network.sql
+  // § ND), which runs only on a developer's machine. This one catches the same
+  // edit in CI, by the crude method of looking for any other `public.` name in
+  // the view body.
+  //
+  // CORRECTED IN FIX ROUND 1 (review finding I1). This comment used to say the
+  // pg_depend assertion "is authoritative -- it reads the planner's own record,
+  // so it sees a join however it is written". THAT WAS FALSE WHEN IT WAS
+  // WRITTEN: § ND's query filtered `relkind = 'r'`, and pg_depend records a
+  // view->VIEW dependency as the referenced VIEW's pg_class row, never
+  // transitively as its base tables -- so a join to public.activity_events was
+  // invisible to it and visible to THIS file. § ND has since been widened to
+  // any relkind in any schema, plus a function census, so the sentence is true
+  // now; it is recorded as a correction rather than quietly rewritten, because
+  // for one review cycle the CI guard was the STRONGER of the two and the
+  // comment claimed the reverse.
+  //
+  // The division of labour that remains true: § ND reads the deployed catalog
+  // and so sees a dependency however the SQL is spelled, including one added by
+  // a later migration this file does not read; this file reads only the source
+  // of the six Task 1 migrations and so cannot see either.
   const ALLOWED = [
     "public.network_profiles",
     "public.network_connection_requests",
