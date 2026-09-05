@@ -57,7 +57,34 @@ async function createDraftProfile(page: Page, companyName: string): Promise<stri
 test("a Manager creates a profile, sets its visibility, publishes and unpublishes it", async ({
   page,
 }) => {
-  await createDraftProfile(page, "Network Golden Path Ltd");
+  await signIn(page, world, "manager");
+
+  // ---- THE PRIVATE RECORD, BEFORE ANY PROFILE EXISTS ----------------------
+  await page.goto(`/${world.orgSlug}/companies/new`);
+  await page.locator('input[name="name"]').fill("Network Golden Path Ltd");
+  await page.getByRole("button", { name: "Create company" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Network Golden Path Ltd", level: 1 }),
+  ).toBeVisible();
+  const companyUrl = page.url();
+  await expect(page.getByRole("heading", { name: "Network identity" })).toBeVisible();
+  await expect(page.locator("main")).toContainText("Not published to the network yet");
+
+  // ---- "PUBLISH A RECORD", FROM THE COMPANY PAGE'S OWN LINK ---------------
+  await page.getByRole("link", { name: "Publish this record" }).click();
+  await expect(page).toHaveURL(new RegExp(`/${world.orgSlug}/network/profiles$`));
+  await expect(page.getByRole("heading", { name: "Publish a record" })).toBeVisible();
+  await page
+    .locator("#publish-company-entity")
+    .selectOption({ label: "Network Golden Path Ltd" });
+  await page.locator("#publish-company-name").fill("Network Golden Path Ltd");
+  await page.getByRole("button", { name: "Create draft" }).first().click();
+  const link = page.getByRole("link", { name: "Network Golden Path Ltd" });
+  await expect(link).toBeVisible();
+  await link.click();
+  await expect(
+    page.getByRole("heading", { name: "Network Golden Path Ltd", level: 1 }),
+  ).toBeVisible();
 
   // Freshly created: a draft, and the summary already counts the two
   // always-shown fields (denominator 9).
@@ -93,7 +120,15 @@ test("a Manager creates a profile, sets its visibility, publishes and unpublishe
   await expect(page.getByText(/Published\./)).toBeVisible();
   await expect(page.getByText("Published", { exact: true }).first()).toBeVisible();
 
-  // ---- UNPUBLISH --------------------------------------------------------------
+  // ---- BACK ON THE COMPANY PAGE: THE IDENTITY ROW NOW SAYS PUBLISHED ------
+  await page.goto(companyUrl);
+  await expect(page.getByRole("heading", { name: "Network identity" })).toBeVisible();
+  await expect(page.locator("main")).not.toContainText("Not published to the network yet");
+  await expect(page.getByText("Published", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "Manage its network profile" })).toBeVisible();
+
+  // ---- BACK TO THE EDITOR: UNPUBLISH -----------------------------------------
+  await page.getByRole("link", { name: "Manage its network profile" }).click();
   await page.getByRole("button", { name: "Unpublish" }).click();
   await expect(page.getByText(/Unpublished\./)).toBeVisible();
   await expect(page.getByText("Draft", { exact: true }).first()).toBeVisible();
