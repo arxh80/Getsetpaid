@@ -342,22 +342,31 @@ test("the network directory and a foreign profile page have no automated accessi
 }) => {
   await signIn(page, world, "manager");
 
+  // FIX ROUND 1, M2: SUFFIXED, LIKE EVERY NETWORK-PROFILE NAME IN
+  // `fixtures.ts`. `world.orgSlug` already carries this run's random suffix
+  // (`e2e-<8 hex>`), so reusing it here is free -- and load-bearing for
+  // exactly the reason `fixtures.ts`'s own network-profile block gives: the
+  // directory this name is published into is the one list in the product
+  // with no per-run tenant boundary, so a bare literal collides with any
+  // other run's row of the same name, past or concurrent.
+  const companyName = `Axe Directory Company ${world.orgSlug}`;
+
   await page.goto(`/${world.orgSlug}/companies/new`);
-  await page.locator('input[name="name"]').fill("Axe Directory Company");
+  await page.locator('input[name="name"]').fill(companyName);
   await page.getByRole("button", { name: "Create company" }).click();
   await expect(
-    page.getByRole("heading", { name: "Axe Directory Company", level: 1 }),
+    page.getByRole("heading", { name: companyName, level: 1 }),
   ).toBeVisible();
 
   await page.goto(`/${world.orgSlug}/network/profiles`);
   await page
     .locator("#publish-company-entity")
-    .selectOption({ label: "Axe Directory Company" });
-  await page.locator("#publish-company-name").fill("Axe Directory Company");
+    .selectOption({ label: companyName });
+  await page.locator("#publish-company-name").fill(companyName);
   await page.getByRole("button", { name: "Create draft" }).first().click();
-  await page.getByRole("link", { name: "Axe Directory Company" }).click();
+  await page.getByRole("link", { name: companyName }).click();
   await expect(
-    page.getByRole("heading", { name: "Axe Directory Company", level: 1 }),
+    page.getByRole("heading", { name: companyName, level: 1 }),
   ).toBeVisible();
 
   await page.locator("#headline").fill("Booking enquiries welcome");
@@ -376,7 +385,7 @@ test("the network directory and a foreign profile page have no automated accessi
   // ---- SURFACE 1: THE DIRECTORY, POPULATED --------------------------------
   await page.goto(`/${world.orgSlug}/network`);
   await expect(page.getByRole("heading", { name: "Network", level: 1 })).toBeVisible();
-  const directoryLink = page.getByRole("link", { name: "Axe Directory Company" });
+  const directoryLink = page.getByRole("link", { name: companyName });
   await expect(directoryLink).toBeVisible();
   const profileHref = await directoryLink.getAttribute("href");
   expect(profileHref, "the directory row links somewhere").not.toBeNull();
@@ -392,7 +401,7 @@ test("the network directory and a foreign profile page have no automated accessi
   await signIn(page, world, "booker");
   await page.goto(`/${world.proOrgSlug}/network/${profileId}`);
   await expect(
-    page.getByRole("heading", { name: "Axe Directory Company", level: 1 }),
+    page.getByRole("heading", { name: companyName, level: 1 }),
   ).toBeVisible();
   // NON-VACUITY: the disabled shell -- the exact markup this scan exists to
   // cover -- is really on the page.

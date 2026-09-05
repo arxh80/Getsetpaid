@@ -246,8 +246,8 @@ function PublicProfileView({
           a real `action`; until then this is a stable, named target -- a
           `<form>` wrapping one `<button>` with an accessible name of "Request
           connection" -- for a future e2e walk to find and strip the
-          `disabled` attribute from (the `tests/e2e/finance.spec.ts:232`
-          pattern), which is the only kind of test that proves "hiding a
+          `disabled` attribute from (the `tests/e2e/finance.spec.ts:265-287`
+          strip-and-submit pattern), which is the only kind of test that proves "hiding a
           button is not enforcement" rather than merely restating it. */}
       <form className="flex flex-col gap-2 border-t border-rule pt-6">
         <h2 className="text-xl font-bold text-ink">Connect</h2>
