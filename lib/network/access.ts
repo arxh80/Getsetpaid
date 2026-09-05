@@ -247,11 +247,14 @@ export async function getNetworkReadAccess(org: CurrentOrg): Promise<boolean> {
 // manage_artists/manage_venues -- the marketing shape -- and asserts
 // getNetworkPublishAccess(org) stays true while
 // getNetworkPublishAccessForEntity(org, "artist") is refused with reason
-// "permission". tests/integration/network/entity-kind-permission-mismatch
-// .test.ts drives the same shape against the real database: a marketing
-// member's raw INSERT into network_profiles for an artist gets 42501 from the
-// policy, matching this function's prediction, with a company INSERT (same
-// membership, same manage_network_profile) as the positive control.
+// "permission". tests/integration/network/publish-editor-flow.test.ts's
+// "M4, at the database" describe block (:266-337 at the time this was
+// written; Constraint 13 -- if that block moves, fix this citation in the
+// same change rather than leaving it stale) drives the same shape against
+// the real database: a marketing member's raw INSERT into network_profiles
+// for an artist gets 42501 from the policy, matching this function's
+// prediction, with a company INSERT (same membership, same
+// manage_network_profile) as the positive control.
 
 const ENTITY_KIND_PLURAL: Record<NetworkEntityKind, string> = {
   company: "companies",

@@ -4,13 +4,14 @@
 // adds. This file is the CI-visible proof (tests/unit, not tests/integration
 // -- it runs in the `vitest run tests/unit` job CI actually executes).
 //
-// tests/integration/network/entity-kind-permission-mismatch.test.ts drives
-// the SAME shape against the real database (a real marketing membership, a
-// real artist row, a raw INSERT into network_profiles) for the mirror-test
-// discipline this codebase applies everywhere else a rule exists in two
-// languages: this file's mocked prediction and that file's measured result
-// must agree, and if a future migration changes who marketing is or what
-// entity_is_manageable dispatches to, one of the two goes red.
+// tests/integration/network/publish-editor-flow.test.ts's "M4, at the
+// database" describe block drives the SAME shape against the real database
+// (a real marketing membership, a real artist row, a raw INSERT into
+// network_profiles) for the mirror-test discipline this codebase applies
+// everywhere else a rule exists in two languages: this file's mocked
+// prediction and that block's measured result must agree, and if a future
+// migration changes who marketing is or what entity_is_manageable dispatches
+// to, one of the two goes red.
 //
 // PURE MOCKING, no database and no local stack required -- `hasPermission` is
 // the one seam both `getNetworkPublishAccess` and
