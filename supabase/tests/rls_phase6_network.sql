@@ -995,6 +995,53 @@ select net.try('NU5c POSITIVE CONTROL: the SENDER runs the IDENTICAL statement a
   $$update public.network_connection_requests
        set status='withdrawn', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000004'$$, 'ok(1)');
+
+-- ===========================================================================
+-- NU5d/NU5e/NU5f -- to_organisation_id IS DERIVED, NOT SUPPLIED (fix round 1,
+-- review finding I4).
+--
+-- The column is NOT NULL, and sendConnectionRequestAction used to require it
+-- from the form. NOTHING COULD SUPPLY IT: public.network_directory is the only
+-- sanctioned way to find a foreign profile and deliberately does not project
+-- organisation_id, and reading it off public.network_profiles for a foreign
+-- organisation is forbidden by that table's own directory policy. So the
+-- send-from-directory flow had no legal source for the value.
+--
+-- private.fill_connection_request_recipient() (20260904006000) derives it from
+-- to_network_profile_id when the caller OMITS it -- which the action now always
+-- does. NU5c has just withdrawn the request against this profile, so the
+-- live-pair index leaves the pair free for exactly this one retry.
+--
+-- NU5f is the half that keeps NR3 meaningful: the trigger fills only when NULL,
+-- so a SUPPLIED-and-wrong value is still the policy's problem and still 42501.
+-- An unconditional overwrite would have turned that forged insert into a silent
+-- success and deleted the assertion.
+-- ===========================================================================
+select net.try('NU5d I4: a request INSERT that OMITS to_organisation_id is ACCEPTED',
+  format($$insert into public.network_connection_requests
+             (id, from_organisation_id, from_network_profile_id,
+              to_network_profile_id)
+           values ('c0110000-0000-0000-0000-000000000005', %L,
+                   'e0110000-0000-0000-0000-00000000000a',
+                   'e0110000-0000-0000-0000-00000000000f')$$,
+         :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select net.val('NU5e ...and the trigger derived BETA''s organisation from the profile',
+  format($$select (to_organisation_id = %L)::text
+             from public.network_connection_requests
+            where id='c0110000-0000-0000-0000-000000000005'$$,
+         :'beta_org'), 'true');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select net.try('NU5f CONTROL: a SUPPLIED-and-wrong to_organisation_id is still refused (NR3 still means something)',
+  format($$insert into public.network_connection_requests
+             (from_organisation_id, from_network_profile_id,
+              to_organisation_id, to_network_profile_id)
+           values (%L,'e0110000-0000-0000-0000-00000000000a',
+                   %L,'e0110000-0000-0000-0000-00000000000b')$$,
+         :'alpha_org', :'alpha_org'), 'denied(42501)');
 reset role; reset request.jwt.claims;
 
 -- ...and the mirror hole, on a pending row, so the pair is complete in both
@@ -1280,7 +1327,7 @@ select net.val('NX2 the § NR/§ NU requests emitted requested / accepted / decl
            (select count(*) from public.audit_events where action='network_connection.accepted')::text
         || '/' ||
            (select count(*) from public.audit_events where action='network_connection.declined')::text$$,
-  '4/1/1');
+  '5/1/1');
 
 -- THE PAYLOAD DISCIPLINE. audit_events is superuser-readable, and CLAUDE.md
 -- § Superuser dashboard keeps tenant record content off that surface. The

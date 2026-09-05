@@ -232,15 +232,32 @@ function connectionErrorState(
  * is what makes `to_organisation_id` unforgeable: the profile named must really
  * belong to the organisation named.
  *
- * `to_organisation_id` IS STILL SENT BY THE CLIENT, and that is not a hole. The
- * INSERT policy resolves the owning organisation itself and refuses any pair
- * that does not agree, so a forged value is a 42501 rather than a planted row.
- * The reason the client sends it at all is that neither masking view projects
- * organisation_id (deliberately -- a discovery result identifies a profile,
- * never a tenant), so Task 3's UI never sees it; the value comes from the
- * caller's own connections list, where it is the caller's own side. A future
- * refinement could drop the column from the request and have a trigger fill it,
- * and would be strictly simpler; it is not needed for correctness.
+ * ===========================================================================
+ * THE RECIPIENT ORGANISATION IS NOT A PARAMETER (review finding I4)
+ * ===========================================================================
+ * `to_organisation_id` is NOT NULL on the table, and this action used to
+ * require it from the form. NOTHING COULD SUPPLY IT. The only sanctioned way
+ * to find a foreign profile is `public.network_directory`, which deliberately
+ * does not project `organisation_id` -- a discovery result identifies a
+ * PROFILE, never a tenant -- and selecting it from `public.network_profiles`
+ * for a foreign organisation is forbidden in as many words by that table's
+ * directory policy (20260904003000). So the send-from-directory flow Task 4
+ * inherits had no legal source for the value, and the doc comment that used to
+ * stand here ("the value comes from the caller's own connections list, where
+ * it is the caller's own side") was true of a REPLY and false of a first
+ * request. Constraint 19 makes that Task 1's defect, not Task 3's.
+ *
+ * IT IS NOW DERIVED IN THE DATABASE, by
+ * `private.fill_connection_request_recipient()` (20260904006000), a BEFORE
+ * INSERT trigger that fills the column from `to_network_profile_id` when the
+ * caller omits it -- which this action now always does. So the client sends
+ * exactly what the directory hands it: two profile ids.
+ *
+ * THE POLICY'S TERM (ii) IS UNCHANGED AND STILL DOES REAL WORK. The trigger
+ * fills only when the column is NULL, so a direct PostgREST caller who DOES
+ * supply a mismatched pair is still refused with 42501 -- which is what makes
+ * the column unforgeable for every writer, including one that never loads this
+ * application, and what rls_phase6_network.sql NR3 asserts.
  */
 export async function sendConnectionRequestAction(
   _prev: FormState,
@@ -252,8 +269,7 @@ export async function sendConnectionRequestAction(
 
   const fromProfileId = field(formData, "fromProfileId");
   const toProfileId = field(formData, "toProfileId");
-  const toOrganisationId = field(formData, "toOrganisationId");
-  if (!fromProfileId || !toProfileId || !toOrganisationId) {
+  if (!fromProfileId || !toProfileId) {
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
 
@@ -264,7 +280,9 @@ export async function sendConnectionRequestAction(
   const { error } = await supabase.from("network_connection_requests").insert({
     from_organisation_id: org.id,
     from_network_profile_id: fromProfileId,
-    to_organisation_id: toOrganisationId,
+    // NO `to_organisation_id`. Omitting it is what makes the trigger derive it
+    // (20260904006000); sending one would be sending a value this application
+    // has no honest way to obtain.
     to_network_profile_id: toProfileId,
     // `requested_by` explicitly, though the column defaults to auth.uid().
     requested_by: user.id,
@@ -272,9 +290,10 @@ export async function sendConnectionRequestAction(
 
   if (error) {
     // 42501 here has one likely cause a user can act on -- an end that is no
-    // longer published -- and several they cannot (tier, role, a forged
-    // to_organisation_id). The sentence names the actionable one without
-    // claiming to know which happened.
+    // longer published -- and two they cannot (tier, role). The sentence names
+    // the actionable one without claiming to know which happened. A forged
+    // to_organisation_id is no longer among them: this action does not send
+    // one.
     if (error.code === "42501") {
       return { error: UNREACHABLE_PROFILE, values: echoedValues(formData) };
     }
