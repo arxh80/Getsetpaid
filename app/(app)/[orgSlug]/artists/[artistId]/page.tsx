@@ -61,6 +61,7 @@ import {
 } from "@/components/crm/write-gate";
 import { formatDateOnly, formatDateTime } from "@/lib/format/date";
 import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { getNetworkReadAccess } from "@/lib/network/access";
 import { loadNetworkProfileForEntity } from "@/lib/network/entities";
 import { profileHasDrifted } from "@/lib/network/drift";
 
@@ -138,9 +139,11 @@ export default async function ArtistDetailPage({
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [result, access] = await Promise.all([
+  const [result, access, canReadNetwork] = await Promise.all([
     loadArtist(org.id, artistId),
     getCrmWriteAccess(org, "manage_artists"),
+    // FIX ROUND 1, I2 -- see the companies page's identical comment.
+    getNetworkReadAccess(org),
   ]);
 
   // A FAILED QUERY IS NOT A MISSING RECORD. "There is no such artist" is a
@@ -226,7 +229,12 @@ export default async function ArtistDetailPage({
   // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). An artist carries
   // country/city/website (20260827232510), so all three are comparable
   // against the published copy, unlike a company or an agency.
-  const networkProfile = await loadNetworkProfileForEntity(org.id, "artist", artist.id);
+  //
+  // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
+  // identical comment.
+  const networkProfile = canReadNetwork
+    ? await loadNetworkProfileForEntity(org.id, "artist", artist.id)
+    : null;
   const networkDrifted =
     networkProfile !== null &&
     profileHasDrifted(
@@ -507,6 +515,7 @@ export default async function ArtistDetailPage({
 
       <NetworkIdentityRow
         orgSlug={org.slug}
+        canRead={canReadNetwork}
         profile={networkProfile}
         drifted={networkDrifted}
       />

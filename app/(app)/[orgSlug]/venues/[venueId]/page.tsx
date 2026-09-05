@@ -46,6 +46,7 @@ import {
 } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
 import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { getNetworkReadAccess } from "@/lib/network/access";
 import { loadNetworkProfileForEntity } from "@/lib/network/entities";
 import { profileHasDrifted } from "@/lib/network/drift";
 
@@ -123,9 +124,11 @@ export default async function VenueDetailPage({
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [result, access] = await Promise.all([
+  const [result, access, canReadNetwork] = await Promise.all([
     loadVenue(org.id, venueId),
     getCrmWriteAccess(org, "manage_venues"),
+    // FIX ROUND 1, I2 -- see the companies page's identical comment.
+    getNetworkReadAccess(org),
   ]);
 
   // A FAILED QUERY IS NOT A MISSING RECORD.
@@ -199,7 +202,11 @@ export default async function VenueDetailPage({
   // but no `city`/`country` column (20260827232510's `location` free text is
   // not the same concept as a network `city`, so it is deliberately not
   // compared -- lib/network/drift.ts's header).
-  const networkProfile = await loadNetworkProfileForEntity(org.id, "venue", venue.id);
+  // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
+  // identical comment.
+  const networkProfile = canReadNetwork
+    ? await loadNetworkProfileForEntity(org.id, "venue", venue.id)
+    : null;
   const networkDrifted =
     networkProfile !== null &&
     profileHasDrifted(
@@ -437,6 +444,7 @@ export default async function VenueDetailPage({
 
       <NetworkIdentityRow
         orgSlug={org.slug}
+        canRead={canReadNetwork}
         profile={networkProfile}
         drifted={networkDrifted}
       />

@@ -38,6 +38,7 @@ import { formatDateTime } from "@/lib/format/date";
 import { NetworkIdentityRow } from "@/components/network/network-identity-row";
 import { loadNetworkProfileForEntity } from "@/lib/network/entities";
 import { profileHasDrifted } from "@/lib/network/drift";
+import { getNetworkReadAccess } from "@/lib/network/access";
 
 /** The id of the single explanation the Manage section's controls point at. */
 const MANAGE_NOTE = "company-manage-blocked";
@@ -76,9 +77,18 @@ export default async function CompanyDetailPage({
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [result, access] = await Promise.all([
+  const [result, access, canReadNetwork] = await Promise.all([
     loadCompany(org.id, companyId),
     getCrmWriteAccess(org, "manage_contacts"),
+    // FIX ROUND 1, I2. Resolved BEFORE the network profile lookup below, and
+    // that lookup is skipped entirely when this is false -- view_crm
+    // survives workspace suspension and view_network does not
+    // (lib/network/access.ts), so a suspended workspace could otherwise
+    // still reach this page while the (also suspension-gated)
+    // `loadNetworkProfileForEntity` quietly returned null for a record that
+    // is genuinely published, rendering the dishonest "Not published to the
+    // network yet." claim NetworkIdentityRow's state 0 exists to prevent.
+    getNetworkReadAccess(org),
   ]);
 
   if (result.outcome === "unavailable") {
@@ -151,11 +161,14 @@ export default async function CompanyDetailPage({
   // has no city/country/website columns (20260827232510), so the drift
   // comparison below has only `name` to check for a company -- the one field
   // every kind shares.
-  const networkProfile = await loadNetworkProfileForEntity(
-    org.id,
-    "company",
-    company.id,
-  );
+  //
+  // GATED ON `canReadNetwork` (FIX ROUND 1, I2). The lookup is not merely
+  // skipped for tidiness: running it anyway and getting `null` back for a
+  // suspended workspace is EXACTLY the dishonest state this closes, because
+  // `null` is indistinguishable from "genuinely never published".
+  const networkProfile = canReadNetwork
+    ? await loadNetworkProfileForEntity(org.id, "company", company.id)
+    : null;
   const networkDrifted =
     networkProfile !== null &&
     profileHasDrifted(
@@ -298,6 +311,7 @@ export default async function CompanyDetailPage({
 
       <NetworkIdentityRow
         orgSlug={org.slug}
+        canRead={canReadNetwork}
         profile={networkProfile}
         drifted={networkDrifted}
       />

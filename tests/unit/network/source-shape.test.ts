@@ -756,3 +756,137 @@ describe("every disabled control in the editor carries an aria-describedby", () 
     expect(EDITOR_COMPONENT).not.toMatch(/disabled \? null :/);
   });
 });
+
+// ===========================================================================
+// FIX ROUND 1, I1: THE QUICK-HIDE NOTE'S id IS PER FIELD, NOT A SHARED
+// MODULE CONSTANT
+// ===========================================================================
+// `QuickHideButton` renders once per field whose stored level is not
+// `hidden` -- with three fields published, three instances mount at once. A
+// bare `const HIDE_NOTE = "network-hide-warns";` rendered as `<p id=
+// {HIDE_NOTE}>` in every instance put three elements sharing one id in the
+// DOM, so every "Hide … now" button's `aria-describedby` resolved to the
+// FIRST field's note regardless of which field the button belonged to -- a
+// screen-reader user pressing "Hide contact email now" was told "Hides
+// Headline immediately…". The `aria-describedby=` CENSUS above could not see
+// this: it asserts the attribute is present, never that its target is
+// correct or unique. This block asserts the id is DERIVED from `fieldName`,
+// so a regression back to a bare constant reddens here even under a
+// populated scan that (like the one axe runs) happens to have only one
+// non-hidden field on the page at a time.
+describe("I1: the quick-hide note's id is derived per field, not a shared constant", () => {
+  it("there is no bare `const HIDE_NOTE = \"...\"` module constant", () => {
+    // The exact shape of the regression: a single string assigned once at
+    // module scope and reused by every QuickHideButton instance.
+    expect(EDITOR_COMPONENT_CODE).not.toMatch(/const HIDE_NOTE\s*=\s*"/);
+  });
+
+  it("hideNoteId() is a function of fieldName, and QuickHideButton calls it rather than a constant", () => {
+    expect(EDITOR_COMPONENT).toContain(
+      "function hideNoteId(fieldName: PublishableField): string {",
+    );
+    // The template literal must actually interpolate `fieldName` -- a
+    // function that ignored its argument and returned a fixed string would
+    // pass the two checks above and still reproduce the defect.
+    expect(EDITOR_COMPONENT).toMatch(/return `network-hide-warns-\$\{fieldName\}`;/);
+    expect(EDITOR_COMPONENT).toContain("const noteId = hideNoteId(fieldName);");
+  });
+
+  it("the rendered <p> and the button's aria-describedby both resolve through the per-field `noteId`, not a module constant", () => {
+    expect(EDITOR_COMPONENT).toContain('<p id={noteId} className="sr-only">');
+    expect(EDITOR_COMPONENT).toContain(
+      "aria-describedby={disabled ? NOTE_ID : noteId}",
+    );
+  });
+});
+
+// ===========================================================================
+// FIX ROUND 1, I2: THE NETWORK IDENTITY ROW IS GATED ON `view_network`, NOT
+// RENDERED FROM AN UNGUARDED LOOKUP
+// ===========================================================================
+// `view_crm` survives workspace suspension; `view_network` does not
+// (lib/network/access.ts). Before this fix, all four detail pages called
+// `loadNetworkProfileForEntity` unconditionally -- itself gated on the SAME
+// policy `getNetworkReadAccess` reads -- so a suspended workspace opening
+// (say) its own published company page got `null` back (the policy refused
+// the read) and NetworkIdentityRow rendered "Not published to the network
+// yet.": a false claim about a record that IS published, arrived at from
+// the opposite direction the brief's "never a hidden form or an empty page"
+// rule forbids. The fix threads `getNetworkReadAccess(org)` through as
+// `canReadNetwork`, skips the lookup entirely when it is false, and passes
+// it to `NetworkIdentityRow` as `canRead` so state 0 (an honest "can't
+// reach the network area right now") renders instead.
+//
+// This census pins the WIRING in the four detail pages themselves --
+// `network-identity-row.tsx`'s own component-level correctness (canRead
+// checked before profile) is a smaller, separate claim a unit test over the
+// component could make, but the defect that shipped was in the FOUR CALL
+// SITES agreeing to pass the right things, which only a per-page source
+// read can see.
+describe("I2: the four detail pages gate the network identity row on view_network", () => {
+  const PAGES: { label: string; path: string; kind: string }[] = [
+    {
+      label: "companies",
+      path: "app/(app)/[orgSlug]/companies/[companyId]/page.tsx",
+      kind: "company",
+    },
+    {
+      label: "artists",
+      path: "app/(app)/[orgSlug]/artists/[artistId]/page.tsx",
+      kind: "artist",
+    },
+    {
+      label: "venues",
+      path: "app/(app)/[orgSlug]/venues/[venueId]/page.tsx",
+      kind: "venue",
+    },
+    {
+      label: "agencies",
+      path: "app/(app)/[orgSlug]/agencies/[agencyId]/page.tsx",
+      kind: "agency",
+    },
+  ];
+
+  it("network-identity-row.tsx checks !canRead BEFORE profile === null, not after", () => {
+    // The component-level half of I2: `canRead` has to be the FIRST branch
+    // in the render, or a caller that (wrongly) passed a real lookup result
+    // alongside `canRead: false` would still show state 1 or 2 instead of
+    // the honest state 0.
+    const row = read("components/network/network-identity-row.tsx");
+    const canReadIndex = row.indexOf("!canRead ? (");
+    const profileNullIndex = row.indexOf("profile === null ? (");
+    expect(canReadIndex, "!canRead branch exists").toBeGreaterThan(-1);
+    expect(profileNullIndex, "profile === null branch exists").toBeGreaterThan(-1);
+    expect(canReadIndex).toBeLessThan(profileNullIndex);
+  });
+
+  for (const { label, path, kind } of PAGES) {
+    describe(label, () => {
+      const page = read(path);
+
+      it("imports and calls getNetworkReadAccess(org), assigned to canReadNetwork", () => {
+        expect(page).toContain('import { getNetworkReadAccess } from "@/lib/network/access";');
+        expect(page).toContain("getNetworkReadAccess(org)");
+        expect(page).toMatch(/canReadNetwork\]\s*=\s*await Promise\.all/);
+      });
+
+      it("the network profile lookup runs ONLY when canReadNetwork is true -- never an unconditional call", () => {
+        // The exact shape of the regression: an unconditional
+        // `await loadNetworkProfileForEntity(...)` with no ternary in front
+        // of it. The positive form asserts the guard exists; the negative
+        // form asserts the unguarded call is gone, so a partial revert (the
+        // ternary removed but `canReadNetwork` left unused elsewhere) still
+        // reddens here.
+        const guarded = `canReadNetwork\n    ? await loadNetworkProfileForEntity(org.id, "${kind}"`;
+        expect(page.replace(/\r\n/g, "\n")).toContain(guarded);
+        expect(page).not.toMatch(
+          new RegExp(`(?<!\\? )await loadNetworkProfileForEntity\\(org\\.id, "${kind}"`),
+        );
+      });
+
+      it("NetworkIdentityRow receives canRead={canReadNetwork}", () => {
+        expect(page).toMatch(/<NetworkIdentityRow\s*\n\s*orgSlug=\{org\.slug\}\s*\n\s*canRead=\{canReadNetwork\}/);
+      });
+    });
+  }
+});

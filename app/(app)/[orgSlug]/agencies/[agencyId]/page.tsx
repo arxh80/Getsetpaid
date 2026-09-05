@@ -36,6 +36,7 @@ import {
 } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
 import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { getNetworkReadAccess } from "@/lib/network/access";
 import { loadNetworkProfileForEntity } from "@/lib/network/entities";
 import { profileHasDrifted } from "@/lib/network/drift";
 
@@ -105,10 +106,12 @@ export default async function AgencyDetailPage({
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [result, access, artistAccess] = await Promise.all([
+  const [result, access, artistAccess, canReadNetwork] = await Promise.all([
     loadAgency(org.id, agencyId),
     getCrmWriteAccess(org, "manage_contacts"),
     getCrmWriteAccess(org, "manage_artists"),
+    // FIX ROUND 1, I2 -- see the companies page's identical comment.
+    getNetworkReadAccess(org),
   ]);
 
   // A FAILED QUERY IS NOT A MISSING RECORD -- same rule as the list surface.
@@ -196,7 +199,11 @@ export default async function AgencyDetailPage({
   // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). Agencies are name-only
   // (20260827232510: "Name-only at MVP"), so `name` is the only comparable
   // field.
-  const networkProfile = await loadNetworkProfileForEntity(org.id, "agency", agency.id);
+  // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
+  // identical comment.
+  const networkProfile = canReadNetwork
+    ? await loadNetworkProfileForEntity(org.id, "agency", agency.id)
+    : null;
   const networkDrifted =
     networkProfile !== null &&
     profileHasDrifted(
@@ -341,6 +348,7 @@ export default async function AgencyDetailPage({
 
       <NetworkIdentityRow
         orgSlug={org.slug}
+        canRead={canReadNetwork}
         profile={networkProfile}
         drifted={networkDrifted}
       />
