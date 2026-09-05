@@ -380,6 +380,14 @@ function applyCursor(
 const TABLES_WITHOUT_SOFT_DELETE = new Set([
   "merges",
   "activity_events",
+  // ADDED BY PHASE 6 TASK 4. `public.network_connection_requests` is a real
+  // TABLE, not a view, and genuinely has no `deleted_at` at all: 20260904000000's
+  // own header states it -- "a request is never deleted, it moves to a terminal
+  // status (Q79), which is a richer record than a tombstone".
+  // lib/network/requests-list.ts's two list specs (Received, Sent) both read
+  // this table and neither ever passes `scope: "deleted"` -- there is no
+  // deleted view of a request to restore, only a terminal `status` to read.
+  "network_connection_requests",
   // ADDED BY PHASE 6 TASK 1 (fix round 1, review finding I3).
   // `public.network_directory` is a masking VIEW over network_profiles and
   // projects eleven columns, none of them `deleted_at` -- the view's own
@@ -433,7 +441,22 @@ const TABLES_WITHOUT_SOFT_DELETE = new Set([
  *      `network_profiles_select_published_directory` permits -- published,
  *      live, and only to an active member of some organisation.
  */
-const RELATIONS_WITHOUT_ORGANISATION_ID = new Set(["network_directory"]);
+// ADDED BY PHASE 6 TASK 4, FOR A DIFFERENT REASON THAN network_directory'S.
+// `public.network_connection_requests` is BI-TENANT (Q83): it carries TWO
+// organisation columns, `from_organisation_id` and `to_organisation_id`, and
+// genuinely has no column named `organisation_id` at all -- so it passes the
+// same strict test network_directory does (neither column list contains that
+// exact name), for the opposite reason: network_directory has NO tenant at
+// all, this table has TWO. lib/network/requests-list.ts's two loaders
+// (Received, Sent) each supply the correct column -- `to_organisation_id` or
+// `from_organisation_id` -- through `applyFilters`, which `applyScope` still
+// calls for every one of the four queries a page issues (the page query, the
+// count, and both keyset probes), so the tenant clause is not weaker here,
+// only spelled differently.
+const RELATIONS_WITHOUT_ORGANISATION_ID = new Set([
+  "network_directory",
+  "network_connection_requests",
+]);
 
 function applyScope<TRow, TSort extends string, TFilter extends string>(
   query: ListQuery,
