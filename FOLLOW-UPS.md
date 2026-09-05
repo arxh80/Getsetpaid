@@ -2933,3 +2933,173 @@ walkthrough as part of the definition of done, not as optional diligence.
   file list by name is wanted, it is one `documents_org_filename_id_live_idx`
   migration plus a sort entry — the same shape as the events list's name sort.
   **Owner: a documents fast-follow, if the sort is asked for.**
+
+## Phase 5 — finance
+
+Opened by the Phase 5 whole-branch review (`d7fec54..2bee9b1`, 2026-09-01) and
+by its task-level reviews. **The phase's own working record —
+`.superpowers/sdd/phase-5-finance/` — is gitignored and disappears with the
+worktree, so anything from it that must outlive the branch is written here.**
+The three code findings below were FIXED in the post-review wave and are
+recorded for the history and the residual each leaves; the rest are open.
+
+### Fixed in the post-review fix wave, recorded for the residual
+
+- **The finance tier gate did not reach the custom-field VALUE write path
+  (review I1) — FIXED, `20260903030000`.** The `financial_entry` arm of
+  `private.entity_is_manageable()` carried no tier term, and the three deployed
+  `custom_field_values` write policies gate on
+  `private.crm_write_organisations()`, which **Starter passes**. A never-Pro
+  Starter organisation was safe only by accident (it can hold no
+  `financial_entries` row); a Pro organisation that **downgrades** keeps its
+  lines by design (Q67) and kept the ability to write custom-field values
+  against them. The fix adds `finance_module_organisations()` to that one arm.
+  **Residual worth knowing:** it was *inert* when found, because
+  `create_organisation()` writes no subscription row and the entitlement escape
+  branch matches every organisation — and the two tests that looked at it had
+  **baked the wrong assumption in** (the vitest case wrote against a nonexistent
+  line id, on the reasoning "no `financial_entries` row exists in a Starter
+  org"). **Owner of the general lesson: Phase 7,** when it removes the escape
+  branch. Every entitlement assertion written while the gate is inert should be
+  re-read then, not just re-run: an inert gate makes a wrong test green.
+
+- **Three implementations of the money parser, two untested (review I2) —
+  FIXED.** `lib/format/money.ts`'s `parseGbpToMinor` was dead (only its own test
+  called it) while every real write went through a parallel `parsePounds` in
+  `lib/crm/finance.ts` with no unit test, and a third converter
+  (`minorToPoundsInput`) rendered every stored amount back into the edit form
+  from inside `components/crm/finance-panel.tsx`, module-private and untestable.
+  Consolidated to one `parseGbpDetailed`. **Residual:** `parsePounds` still
+  cannot be imported by a test — every export of a `"use server"` module is a
+  server action — so its guard is a source-shape assertion, not a behavioural
+  one. Any future validator that lives in a `"use server"` module has the same
+  problem and needs the same split (pure logic outside, message mapping inside).
+
+- **A failed summary query rendered £0.00 / "break-even" (review I3) — FIXED.**
+  `loadEventFinanceSummary` collapsed "no row" and "query failed" into one
+  all-zeros return. It now returns a three-way outcome and the panel renders an
+  error note. **Residual:** the failure branch is **unreachable from the local
+  stack** — no fixture makes PostgREST error on a well-formed read the caller is
+  entitled to make — so it is covered by a faked client in
+  `tests/unit/crm/finance-summary-outcome.test.ts` and by nothing else. The same
+  is true of every other loader's `unavailable` branch in the product.
+
+### Open — Phase 5's own deferred debt
+
+- **Orphaned custom-field VALUES on a removed finance definition are invisible
+  and unclearable** (Task 3 review M6, routed here by its reviewer and by the
+  whole-branch review). Removing a `financial_entry` custom-field definition
+  keeps its stored values — deliberately, and the same as every other entity
+  (`20260829010000` decision 1: "removing a field keeps what was filled in").
+  The difference is that a finance line has **no detail page**, so the generic
+  `CustomFieldsPanel` — which is where a removed definition's orphaned value is
+  surfaced and cleared for the other six entity types — never renders for one.
+  The value is therefore stored, unreadable in the UI, and unclearable by the
+  user. **Not a leak** (it is the organisation's own data, behind
+  `view_finance`), and not a correctness bug; it is a data-hygiene gap with no
+  user-facing exit. **Owner: whichever phase gives finance lines a standalone
+  route** (the same route `ENTITY_PATH_SEGMENT`'s
+  `__financial_entry_has_no_standalone_route__` sentinel is a placeholder for),
+  or a settings-side "clear orphaned values" action if that route never arrives.
+
+- **Disabled custom-field controls in the finance form lose their
+  `aria-describedby` why-note** (Task 3 review M5). Every other field in the
+  same form points at the panel-wide "Read-only." explanation when it is
+  disabled; the custom-field inputs do not. It is a WCAG-adjacent inconsistency
+  *within a single form*, and **axe cannot see it** — the controls are validly
+  disabled and validly labelled, so nothing automated goes red. **Owner: the
+  next change that touches the finance form's disabled state.**
+
+- **The finance render gate has no source-only assertion.** The event page
+  mounts the panel only when the caller holds `view_finance`; that is
+  Constraint 12's first job, and it is proved by an e2e run and by the psql/HTTP
+  suites — none of which CI executes. A `source-shape.test.ts`-style assertion
+  that the panel's JSX is gated on `financeReadable` would be the CI-visible
+  half. **Owner: whoever next extends `tests/unit/crm/source-shape.test.ts`.**
+  (The same gap in general form is Phase 4's "CI decision" item above.)
+
+- **The finance panel has had no screen-reader pass.** Task 5's axe scan over
+  the event page *as a Finance user* found and fixed a real `empty-table-header`
+  defect on the summary table — the first time any browser ran axe over a
+  session holding `view_finance`, after nine prior page scans could not have.
+  That is the automated half only. The manual VoiceOver/NVDA spot check
+  `CLAUDE.md` § Testing gates asks for has not been done for the summary table,
+  the category/status chips or the removed-lines disclosure. **Owner: the
+  accessibility pass before launch** (`Phase 10 — launch hardening`).
+
+- **Q69 and the phase's other founder questions live only in the gitignored
+  queue.** Phase 5 raised Q58–Q69; the answered ones are recorded in the code
+  and its comments, but the queue file itself is not tracked, so the reasoning
+  behind each answer does not survive the worktree. **Owner: the founder-facing
+  decisions process** — if the queue is meant to outlive a branch, it needs a
+  tracked home.
+
+- **`FINANCIAL_ENTRY_DELETED_LIST` is dead, and an index exists only to back
+  it** (review N1). `lib/crm/finance-list.ts`'s deleted-list spec,
+  `DeletedFinancialEntryRow` and both `*DeletedSortKey` types have no callers —
+  the panel reads removed rows directly with `FINANCIAL_ENTRY_DELETED_SELECT`,
+  mirroring the lineup, which is the right pattern. The spec was a Task 1 plan
+  deliverable and `financial_entries_org_deleted_at_id_idx`
+  (`20260903000000:229`) was added specifically so its `backedBy` would name a
+  real index. Net: an unused spec plus a partial index nothing queries.
+  **Owner: either the standalone finance route (which would use both), or a
+  cleanup that deletes the spec and restates the index comment.**
+
+- **The `ENTITY_PATH_SEGMENT` sentinel turned a fail-closed guard into a
+  fail-open one** (review N2). `lib/crm/custom-fields.ts` maps `financial_entry`
+  to `"__financial_entry_has_no_standalone_route__"`; `otherHref`
+  (`lib/crm/activity.ts:500`) gates on `Object.hasOwn(ENTITY_PATH_SEGMENT, ...)`,
+  so what used to return `null` for an `other_type='financial_entry'` now
+  returns a link to that sentinel path. **Unreachable today** —
+  `activity_events` emits no finance rows (Q62) — but the guard that protected
+  it no longer does. Fix is one line: narrow `otherHref`'s lookup to
+  `ActivitySubjectType`, which already `Exclude`s `financial_entry`. **Owner:
+  whoever next touches the activity timeline's link building, or the phase that
+  gives finance a route.**
+
+- **The finance create path reports "Saved." when the custom-field RPC faulted**
+  (Task 3 review M2). The *update* path already returns a message saying the
+  line saved and its custom fields did not; the create path does not, so a user
+  can silently lose a typed custom-field value. The whole-branch review called
+  this the worst of the 22 deferred minors and endorsed it as a fast follow. The
+  update path proves the shape works without inviting a duplicate INSERT.
+  **Owner: a finance fast-follow.**
+
+- **`finance.spec.ts` uses `mode: "serial"`, so a golden-path failure SKIPS the
+  Starter tier test** (Task 5 review M2). The two tests are independent by the
+  author's own statement, and the skipped one is the browser proof of the money
+  tier gate — signal loss in exactly the suite that should not have any. One-line
+  change. **Owner: the next e2e touch.**
+
+- **Small stale prose and near-duplicate constants, all disclosed, none
+  load-bearing.** `rls_phase3_events.sql` EC4's "view_crm only" parenthetical is
+  stale now that `entity_is_visible` has a `view_finance` arm (the assertion
+  itself is still correct); `tests/e2e/fixtures.ts:1254` still says "four per
+  run" where `setUpWorld` now creates six auth users, and that number is
+  load-bearing to its own paragraph's argument; `MAX_DESCRIPTION = 200` is
+  duplicated between `lib/crm/finance.ts` and `components/crm/finance-forms.tsx`
+  (browser hint vs server enforcement — the same trade the lineup already
+  carries). **Owner: the next change that touches each file.**
+
+- **A Starter or Free organisation can spend custom-field definition slots on a
+  module it cannot use** (review N4). `CUSTOM_FIELD_ENTITY_TYPES` drives a
+  "Financial entries" tab in the custom-fields settings page for every tier, so
+  a Starter organisation can burn 2 of its 5 slots per entity type on fields no
+  row will ever carry. This is Q64's accepted consequence and correct as
+  specified — the module gate lands on the value, not the definition — but a
+  one-sentence tier hint on that tab would close it. **Owner: a settings-page
+  fast-follow.**
+
+### For the Phase 6 plan (a process defect, not a code one)
+
+- **Phase 5's plan carried Phase 4's Global Constraints forward verbatim but not
+  Phase 4's Task 8, "reconcile the reference docs with what the phase shipped".**
+  Consequence: `SECURITY.md` § 10's pentest-facing dispatch row still described a
+  six-entity, `view_crm`-only world, and `FOLLOW-UPS.md` gained nothing from a
+  phase that deferred 22 minors — this whole section is the late repayment.
+  The same plan also specified a `parseGbpToMinor` "for the form" without
+  specifying that the server action must **use** it, which is how review I2
+  happened: the deliverable shipped and the guarantee did not. **A Phase 6 plan
+  should either name a `SECURITY.md`/`FOLLOW-UPS.md` reconciliation deliverable
+  or state explicitly that none is owed, and should specify wiring, not just
+  existence, for anything it asks to be built.**
