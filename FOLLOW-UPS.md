@@ -3222,3 +3222,57 @@ recorded for the history and the residual each leaves; the rest are open.
   incidentally** — a generic budget sized for ordinary CRM list traffic (one
   tenant, index-backed) would be many times too generous for a query whose
   unit cost scales with the whole platform instead.
+
+### Opened by Task 4 (request-to-connect, the accept unlock, the link picker)
+
+- **There is no notification of any kind when a connection request is sent,
+  accepted, declined or withdrawn — this is the shipped design, not a gap.**
+  CLAUDE.md's own `reminder_at` precedent (Q45: a task's reminder is stored
+  and never delivered, because no notification subsystem exists at MVP) is
+  the same answer here, by the same reasoning, for a second feature. A
+  request is discovered exactly two ways: visiting
+  `/[orgSlug]/network/requests`, or the pending-received count on the
+  workspace hub's Network card
+  (`countPendingReceivedRequests`, `lib/network/requests-list.ts`). Nothing
+  else tells either side a request exists, was accepted, or was declined —
+  not email, not an in-app toast, not a badge outside those two surfaces.
+  **Recorded here because "we sent them a request and nothing happened" will
+  read as a bug report to anyone who has not read this entry**, exactly the
+  outcome the brief asked this file to head off. When a real notification
+  subsystem is eventually built (Phase 7+, alongside `reminder_at` delivery,
+  which has the identical shape and should very likely ship in the same
+  piece of work rather than as two separate features), connection-request
+  events are the second consumer this codebase already knows it owes one.
+
+- **A `"use server"` module that illegally exports a plain value breaks its
+  whole route at RUNTIME, and none of the five gates can see it coming.**
+  Found during Task 4's own browser walk: `lib/network/link-search.ts`
+  (a Server Action module) originally also exported
+  `EMPTY_LINK_PICKER_SEARCH_STATE`, a plain object, alongside its one async
+  action. Next.js refuses this with "A 'use server' file can only export
+  async functions, found object" — but only when the route is actually
+  requested by a browser. `tsc --noEmit`, `eslint`, `vitest run` (unit and
+  integration) and even a correct psql/HTTP RLS run all stay green against
+  this exact mistake, because none of them renders a Next.js route; and
+  `pnpm build` — the tool that WOULD catch it at compile time — is forbidden
+  in every worktree pointed at the local stack (this repo's own convention,
+  since `pnpm build`/`pnpm start` resolve to the hosted project). The fix
+  shipped in the same task: split the constant and its type into a plain
+  module (`lib/network/link-search-state.ts`) that both the action and the
+  client component import from, and the action module now exports nothing
+  but its one async function.
+
+  **No test guards this class of break**, and one is owed:
+  `tests/unit/crm/source-shape.test.ts:937-945` already has the pattern to
+  copy — it asserts a `"use server"` file's export surface for a different
+  module. The identical assertion, generalised to walk every file in `lib/`
+  carrying a `"use server"` directive and assert every one of its exports is
+  either a function declaration/expression or a `type`/`interface` (never a
+  `const` object, array or primitive), would make this class of break
+  CI-visible (`vitest run tests/unit`) instead of browser-only. **Owner:
+  whichever task next touches a `"use server"` module, or a dedicated
+  hardening pass** — flagged here rather than fixed inside Task 4's fix
+  round, since the guard's natural home is a shared, codebase-wide
+  source-shape assertion (`tests/unit/crm/source-shape.test.ts` or a network
+  equivalent), not a network-specific one, and scoping that properly is more
+  than a one-line fix.
