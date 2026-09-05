@@ -532,6 +532,10 @@ export interface E2eWorld {
    *  (Q78: a request needs a published profile on each end) -- nothing reads
    *  it directly. */
   networkBetaAnchorProfileId: string;
+  /** Its `display_name`, suffixed per run -- added by Task 4 alongside the
+   *  other exposed profile names, for tests that need to find it by label
+   *  rather than by id (e.g. the requests page's Sent row). */
+  networkBetaAnchorProfileName: string;
   /** An ACCEPTED connection between `orgId` and `proOrgId`, hand-planted
    *  (Task 4 -- the real send/accept UI -- does not exist yet). Its existence
    *  is what the "connected" half of the discovery walk asserts: BETA's
@@ -552,6 +556,28 @@ export interface E2eWorld {
    *  of this value; it is what the payload WOULD set `document.title` to if
    *  it fired. */
   networkHostileProfileName: string;
+
+  // =========================================================================
+  // PHASE 6 TASK 4: THE REQUEST-TO-CONNECT WORLD
+  // =========================================================================
+  // Two FRESH BETA (`proOrgId`) profiles, neither reused from Task 3's
+  // hand-planted `networkAcceptedRequestId` pair (that pair's live-pair
+  // index entry (orgId -> networkBetaAnchorProfileId) is already `accepted`,
+  // so sending to it again would 23505 rather than exercise anything). ALPHA
+  // sends to each of these from its OWN existing `networkAlphaProfileId` --
+  // no new ALPHA profile is needed, since Q78 only requires ONE published
+  // profile of the sender's and this world already has it.
+  /** BETA's published VENUE profile -- the walk's "accept" target. Carries a
+   *  `connections`-level field (`contact_email`) so the walk can prove BOTH
+   *  sides resolve the other's connections fields once accepted (Q80). */
+  networkBetaVenueProfileId: string;
+  networkBetaVenueProfileName: string;
+  /** BETA's second published profile -- the walk's "decline, then cannot
+   *  re-send" target. A separate profile from the accept target, so the two
+   *  request lifecycles (accepted vs. declined) never share one live-pair
+   *  slot. */
+  networkBetaDeclineProfileId: string;
+  networkBetaDeclineProfileName: string;
 }
 
 async function api(
@@ -1356,6 +1382,36 @@ export async function setUpWorld(): Promise<E2eWorld> {
     ],
   );
 
+  // =========================================================================
+  // PHASE 6 TASK 4's OWN ROWS -- request-to-connect and Gap B
+  // =========================================================================
+  const networkBetaVenueProfileId = randomUUID();
+  const networkBetaVenueProfileName = `Network Discovery Beta Venue ${suffix}`;
+  const networkBetaDeclineProfileId = randomUUID();
+  const networkBetaDeclineProfileName = `Network Discovery Beta Decline Target ${suffix}`;
+
+  await sql(
+    `insert into public.network_profiles
+       (id, organisation_id, entity_kind, entity_id, status, field_visibility,
+        display_name, headline, contact_email, published_at)
+     values ($1,$2,'venue',gen_random_uuid(),'published',
+             '{"headline":"network","contact_email":"connections"}'::jsonb,
+             $3,$4,$5, now())`,
+    [
+      networkBetaVenueProfileId,
+      proOrgId,
+      networkBetaVenueProfileName,
+      "Live music every weekend",
+      "beta-venue-connections@example.test",
+    ],
+  );
+  await sql(
+    `insert into public.network_profiles
+       (id, organisation_id, entity_kind, entity_id, status, field_visibility, display_name, published_at)
+     values ($1,$2,'company',gen_random_uuid(),'published','{}'::jsonb,$3, now())`,
+    [networkBetaDeclineProfileId, proOrgId, networkBetaDeclineProfileName],
+  );
+
   return {
     orgSlug,
     orgId,
@@ -1408,9 +1464,14 @@ export async function setUpWorld(): Promise<E2eWorld> {
     networkDraftProfileId,
     networkDraftProfileName,
     networkBetaAnchorProfileId,
+    networkBetaAnchorProfileName,
     networkAcceptedRequestId,
     networkHostileProfileId,
     networkHostileProfileName,
+    networkBetaVenueProfileId,
+    networkBetaVenueProfileName,
+    networkBetaDeclineProfileId,
+    networkBetaDeclineProfileName,
   };
 }
 

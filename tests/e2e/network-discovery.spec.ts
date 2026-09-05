@@ -114,12 +114,16 @@ test("a CONNECTED viewer sees the connections-level field resolve, and the conne
   // The network-level field is unaffected either way.
   await expect(page.locator("main")).toContainText("Bristol");
 
-  // Still disabled -- an accepted connection does not wire the request
-  // control's action; that is Task 4's. The sentence differs from the
-  // Free-tier one (this org COULD send a request, once the action exists),
-  // which is the honest one for this task to ship.
+  // NOW ENABLED (Task 4 wired the control's action) -- booker holds
+  // manage_network_connections in a Pro-tier workspace that already has a
+  // published profile of its own (`networkBetaAnchorProfileId`, planted by
+  // Task 3), so `getNetworkConnectionAccess` says yes and `ownProfiles` is
+  // non-empty. tests/e2e/network-connections.spec.ts is where the send/
+  // accept/decline walk itself lives; this test's own job stays the
+  // connections-field resolution above, updated only so it does not assert a
+  // now-false fact about the control's disabled state.
   const request = page.getByRole("button", { name: "Request connection" });
-  await expect(request).toBeDisabled();
+  await expect(request).toBeEnabled();
 });
 
 test("ALPHA's own DRAFT profile 404s for a foreign, unconnected viewer -- no existence leak", async ({

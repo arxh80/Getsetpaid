@@ -403,12 +403,38 @@ test("the network directory and a foreign profile page have no automated accessi
   await expect(
     page.getByRole("heading", { name: companyName, level: 1 }),
   ).toBeVisible();
-  // NON-VACUITY: the disabled shell -- the exact markup this scan exists to
-  // cover -- is really on the page.
+  // NON-VACUITY: the request control -- the exact markup this scan exists to
+  // cover -- is really on the page. ENABLED, not disabled: Task 4 wired the
+  // control's action, and booker (proOrgSlug, Pro tier, manage_network_
+  // connections, and an own published profile from Task 3's fixtures) is a
+  // genuinely capable sender regardless of whether it happens to be
+  // connected to THIS particular profile -- that question decides what the
+  // PROFILE shows, not whether the viewer may send a request at all.
   const requestButton = page.getByRole("button", { name: "Request connection" });
   await expect(requestButton).toBeVisible();
-  await expect(requestButton).toBeDisabled();
+  await expect(requestButton).toBeEnabled();
   await scan(page, "network profile page (foreign viewer)");
+});
+
+// PHASE 6 TASK 4: THE REQUESTS INBOX/OUTBOX.
+//
+// `world.orgSlug` ("ALPHA") already carries a real row to scan without any
+// extra setup here: Task 3's fixture hand-planted `networkAcceptedRequestId`
+// FROM orgId TO proOrgId, so the "Sent" list renders one ACCEPTED row (a
+// status chip, a counterparty link, a tabular-nums date) and "Received"
+// renders its real empty state -- both list states covered by one visit,
+// same economy the directory/foreign-profile test above uses.
+test("the connection requests page (received and sent) has no automated accessibility violations", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}/network/requests`);
+  await expect(
+    page.getByRole("heading", { name: "Connection requests", level: 1 }),
+  ).toBeVisible();
+  // NON-VACUITY: the Sent list's one accepted row is really on the page.
+  await expect(page.getByText(world.networkBetaAnchorProfileName)).toBeVisible();
+  await scan(page, "connection requests page");
 });
 
 test("the in-app 404 -- where every refusal lands -- is clean, exclusions and all", async ({
