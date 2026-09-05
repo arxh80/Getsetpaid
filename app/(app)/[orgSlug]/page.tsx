@@ -428,20 +428,40 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
         </ul>
       </section>
 
-      {/* NETWORK (Phase 6 Task 2). Gated on `canViewNetwork` -- the one
+      {/* NETWORK (Phase 6 Tasks 2-3). Gated on `canViewNetwork` -- the one
           section on this page that closes for a suspended workspace, since
           view_network is survives_suspension=false while view_crm is not
           (lib/network/access.ts). Everything CRM_AREAS-shaped stays
-          unconditional; this does not. */}
+          unconditional; this does not.
+
+          THE DIRECTORY LEADS (Task 3's IA decision). Discovering who else is
+          on the network is the point of an industry network; publishing your
+          own identity is something you do to get found, and it is demoted to
+          the second link. Free-tier honesty: `canViewNetwork` carries no tier
+          term (view_network is a browsing key every plan holds), so a Free
+          workspace sees this whole section, including "Browse the network",
+          exactly as a paid one does. */}
       {canViewNetwork ? (
         <section className="border border-rule bg-surface p-5">
           <h2 className="text-xl font-bold text-ink">Network</h2>
           <p className="mt-2 max-w-prose text-base text-ink-muted">
-            The industry network: publish a company, artist, venue or agency
-            record so other GetSetPaid workspaces can find it, and manage
-            what you have already published.
+            The industry network: discover who else has published, and
+            publish a company, artist, venue or agency record of your own so
+            other GetSetPaid workspaces can find it.
           </p>
           <ul className="mt-4 flex flex-col border-t border-rule">
+            <li className="border-b border-rule py-3">
+              <Link
+                href={`/${org.slug}/network`}
+                className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+              >
+                Browse the network
+              </Link>
+              <p className="mt-1 max-w-prose text-base text-ink-muted">
+                Search every published company, artist, venue and agency by
+                name, or filter by type.
+              </p>
+            </li>
             <li className="border-b border-rule py-3">
               <Link
                 href={`/${org.slug}/network/profiles`}
