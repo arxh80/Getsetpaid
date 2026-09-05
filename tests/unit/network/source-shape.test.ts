@@ -591,3 +591,168 @@ describe("Constraint 19: the directory list reads the VIEW, never the base table
     expect(NETWORK_DIRECTORY_LIST.searchColumn).toBe("display_name");
   });
 });
+
+// ===========================================================================
+// TASK 2: THE EDITOR'S RENDER GATE AND ITS DISABLED-CONTROL CENSUS
+// ===========================================================================
+// The brief's own two assertions for this file: "the editor's JSX is gated on
+// the access result rather than on a client-settable boolean, and every
+// disabled control in it carries an aria-describedby." This is the CI-visible
+// half of Constraint 12, and it is the assertion FOLLOW-UPS.md § Phase 5 says
+// the finance render gate still lacks -- written here so this phase does not
+// repeat that gap (the brief's own words, and Task 2's brief quotes them).
+
+const EDITOR_PAGE = read(
+  "app/(app)/[orgSlug]/network/profiles/[profileId]/page.tsx",
+);
+const EDITOR_COMPONENT = read("components/network/profile-editor.tsx");
+
+/** Line and block comments stripped, for an ABSENCE claim -- this file's own
+ *  header prose names the functions it forbids the component from calling,
+ *  which would otherwise trip the very check it explains. */
+function stripComments(code: string): string {
+  return code
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .map((line) => line.replace(/\/\/.*$/, ""))
+    .join("\n");
+}
+const EDITOR_COMPONENT_CODE = stripComments(EDITOR_COMPONENT);
+
+describe("the editor's render gate is the RESULT of a server call, not a client-settable boolean", () => {
+  it("the PAGE calls getNetworkPublishAccessForEntity and derives `disabled` from its own canWrite", () => {
+    // The M4-closing function, called with the profile's OWN entity_kind --
+    // not a hardcoded kind, not getNetworkPublishAccess alone (which cannot
+    // see the per-kind mismatch at all).
+    expect(EDITOR_PAGE).toContain(
+      "getNetworkPublishAccessForEntity(org, profile.entityKind)",
+    );
+    expect(EDITOR_PAGE).toContain("const disabled = !access.canWrite;");
+    // ...and the boolean travels to the editor AS A PROP, not recomputed.
+    expect(EDITOR_PAGE).toContain("disabled={disabled}");
+  });
+
+  it("the page does not accept a client-supplied override of that decision", () => {
+    // Constraint 12's failure mode, made concrete: a searchParam, a cookie or
+    // a hidden form field naming "disabled" or "canWrite" would let the
+    // RENDER decision be forged from outside the access check. There is
+    // exactly one assignment to `disabled` and it is the one above.
+    const assignments = Array.from(
+      EDITOR_PAGE.matchAll(/\bconst disabled\s*=\s*([^;]+);/g),
+      (m) => m[1]!.trim(),
+    );
+    expect(assignments).toEqual(["!access.canWrite"]);
+  });
+
+  it("the EDITOR COMPONENT never computes its own access -- it only reads the `disabled` prop", () => {
+    // The other half of "gated on the access result rather than on a
+    // client-settable boolean": the Client Component itself must not import
+    // or call anything that could let it re-derive (or override) the answer
+    // the server already decided -- hasPermission, getNetworkPublishAccess,
+    // getCurrentOrg, or a raw role/tier comparison.
+    for (const forbidden of [
+      "hasPermission(",
+      "getNetworkPublishAccess(",
+      "getNetworkPublishAccessForEntity(",
+      "getCurrentOrg(",
+      "org.role ===",
+      "org.role !==",
+    ]) {
+      expect(
+        EDITOR_COMPONENT_CODE,
+        `profile-editor.tsx re-derives access itself via ${forbidden}`,
+      ).not.toContain(forbidden);
+    }
+    // It DOES declare `disabled: boolean` as a prop of both exported forms.
+    const disabledPropDeclarations = Array.from(
+      EDITOR_COMPONENT.matchAll(/disabled: boolean;/g),
+    );
+    expect(disabledPropDeclarations.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("'use client' is the first line -- confirms this really is the Client Component half", () => {
+    expect(EDITOR_COMPONENT.startsWith('"use client";')).toBe(true);
+  });
+});
+
+describe("every disabled control in the editor carries an aria-describedby", () => {
+  /**
+   * Every JSX ELEMENT in `source`, as its opening-tag text (attributes and
+   * all), by matching from `<TagName` to the next unescaped `>`. A negated
+   * character class (`[^>]`), not `.`, so a tag's attributes are matched
+   * across line breaks -- the fieldset in VisibilityLadder opens on one line
+   * and its `>` closes several lines and several comments later.
+   *
+   * DELIBERATELY NAIVE, the same discipline every other regex-based census in
+   * this file applies: it cannot parse a `>` inside a string attribute, and
+   * there is none in this component -- className values, ids and labels here
+   * contain no literal `>`.
+   */
+  function jsxOpenTags(source: string): string[] {
+    return Array.from(source.matchAll(/<([A-Za-z][\w.]*)\b[^>]*?\/?>/g), (m) => m[0]);
+  }
+
+  it("every element carrying a REAL `disabled={disabled}` also carries `aria-describedby`", () => {
+    // "Real" excludes the two places `disabled={disabled}` is a PROP handed
+    // to a child COMPONENT (QuickHideForm, VisibilityLadder) rather than an
+    // HTML `disabled` attribute on a form control -- a component tag starts
+    // with an UPPER-CASE letter, an intrinsic element does not, which is
+    // exactly the distinction JSX itself makes.
+    const tags = jsxOpenTags(EDITOR_COMPONENT);
+    const withDisabled = tags.filter((tag) => tag.includes("disabled={disabled}"));
+    // The denominator, so this assertion cannot pass by finding nothing.
+    expect(withDisabled.length, "elements carrying disabled={disabled}").toBeGreaterThan(0);
+
+    const domControls = withDisabled.filter((tag) => {
+      const name = tag.match(/^<([A-Za-z][\w.]*)/)![1]!;
+      // A lower-case tag name IS an intrinsic HTML element. `Button` is the
+      // one upper-case exception: it renders a single real `<button>` and
+      // nothing else (components/ui/button.tsx), unlike QuickHideForm and
+      // VisibilityLadder, which are WRAPPER components -- their own `disabled`
+      // prop governs controls several elements further down, each of which is
+      // asserted separately (QuickHideForm's own Button is one of THIS
+      // census's Button entries; VisibilityLadder's fieldset is one of the
+      // lower-case ones).
+      return name[0] === name[0]!.toLowerCase() || name === "Button";
+    });
+    // Exactly the eight real controls: the fieldset, the quick-hide button,
+    // the name input, the bio textarea, the other-field input, the Save
+    // button and the two publish/unpublish buttons live in a SEPARATE
+    // function (PublishToggleForm) and are counted in the next test -- this
+    // one is scoped to ProfileEditor's own five plus QuickHideForm's one
+    // (rendered once per field, but the SOURCE occurrence is one line).
+    expect(domControls.length, "real DOM controls with disabled={disabled}").toBeGreaterThanOrEqual(6);
+
+    for (const tag of domControls) {
+      expect(
+        tag,
+        `a DOM control carries disabled={disabled} with no aria-describedby: ${tag.slice(0, 80)}…`,
+      ).toMatch(/aria-describedby=/);
+    }
+
+    // The two COMPONENT prop-passes are excluded from the DOM census above,
+    // and are named here so their exclusion is a decision, not a blind spot:
+    // QuickHideForm and VisibilityLadder both declare their OWN internal
+    // `disabled: boolean` prop (asserted above) and are gated by it in turn.
+    const componentPasses = withDisabled.filter((tag) => !domControls.includes(tag));
+    expect(componentPasses.some((t) => t.includes("<QuickHideForm"))).toBe(true);
+    expect(componentPasses.some((t) => t.includes("<VisibilityLadder"))).toBe(true);
+  });
+
+  it("PublishToggleForm's two buttons ALSO carry aria-describedby when disabled", () => {
+    const tags = jsxOpenTags(EDITOR_COMPONENT);
+    const publishButtons = tags.filter(
+      (tag) => tag.startsWith("<Button") && tag.includes("disabled={disabled}"),
+    );
+    // Save (ProfileEditor), Hide-now (QuickHideForm), Publish and Unpublish
+    // (PublishToggleForm) -- four `<Button disabled={disabled}` elements.
+    expect(publishButtons.length).toBe(4);
+    for (const tag of publishButtons) {
+      expect(tag).toMatch(/aria-describedby=/);
+    }
+  });
+
+  it("no control is HIDDEN when disabled -- rendered and inert, never absent (Constraint 12)", () => {
+    expect(EDITOR_COMPONENT).not.toMatch(/disabled \? null :/);
+  });
+});
