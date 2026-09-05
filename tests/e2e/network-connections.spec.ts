@@ -197,16 +197,38 @@ test("a Free-tier org's send is refused server-side, even with the disabled attr
   await expect(sendButton).toBeVisible();
   await expect(sendButton).toBeDisabled();
 
+  // NON-VACUOUS BASELINE (fix round 1, F1): exactly ONE element carries the
+  // tier explanation before the click -- the persistent note beside the
+  // control. If the count assertion below stayed at 1 after the click, this
+  // baseline is what proves it, rather than an assumption.
+  const paidFeatureText = page.getByText(/paid feature/);
+  await expect(paidFeatureText).toHaveCount(1);
+
   await sendButton.evaluate((el) => el.removeAttribute("disabled"));
   await expect(sendButton).toBeEnabled();
   await sendButton.click();
 
-  // THE SERVER, NOT THE BROWSER, REFUSES. The same tier explanation the
-  // disabled shell already showed -- lib/network/access.ts's EXPLANATION.tier
-  // -- because a submitted form and a disabled control must not disagree
-  // about why (Constraint 12). `.first()`: the persistent note beside the
-  // control and the returned error Alert now BOTH carry this sentence, so
-  // there are genuinely two matching elements on the page after the refusal.
-  await expect(page.getByText(/paid feature/).first()).toBeVisible();
-  await expect(page.getByText(/paid feature/).first()).toContainText("Owner");
+  // THE SERVER, NOT THE BROWSER, REFUSES -- asserted on the RETURNED ERROR
+  // ALERT SPECIFICALLY (role="alert", components/ui/alert.tsx's tone="error"
+  // shape), not `.first()` over a locator the persistent note already
+  // satisfied before the click. `.filter({ hasText: ... })` rather than a
+  // bare `getByRole("alert")`: Next.js's own hidden route announcer
+  // (`#__next-route-announcer__`) also carries `role="alert"` and is present
+  // on every page regardless of what happened, so a bare role locator is a
+  // two-element strict-mode violation the moment the real alert renders
+  // beside it -- filtering to the one that actually carries the refusal text
+  // is what makes this the discriminating assertion rather than a second
+  // vacuous one. FIX ROUND 1, F1: `.first()` on `/paid feature/` passed
+  // whether or not the stripped submit ever reached the server -- including
+  // against the exact ConnectButton defect this task fixed (a form with no
+  // `action` falling back to a same-page GET, which re-renders the identical
+  // persistent note and nothing else). Both assertions below fail on that
+  // regression: no `role="alert"` element contains "paid feature" at all, and
+  // the text count stays at 1 instead of growing to 2 -- verified by
+  // reintroducing the exact defect and confirming this test reddens, then
+  // reverting (recorded in the task report's Fix round 1 section).
+  const errorAlert = page.getByRole("alert").filter({ hasText: /paid feature/ });
+  await expect(errorAlert).toBeVisible();
+  await expect(errorAlert).toContainText("Owner");
+  await expect(paidFeatureText).toHaveCount(2);
 });
