@@ -491,6 +491,67 @@ export interface E2eWorld {
    *  time, and on a stack with more than 1000 users the page would not contain
    *  them and the teardown would silently leak a user every run. */
   otherOwner: E2eUser;
+
+  // =========================================================================
+  // PHASE 6 TASK 3: THE DISCOVERY WORLD
+  // =========================================================================
+  // A FIFTH ORGANISATION, ON A REAL `free` SUBSCRIPTION ROW -- the other four
+  // are all either unbilled (orgId, otherOrgId) or paid (proOrgId,
+  // starterOrgId), and Free-tier honesty ("Free users SEE the directory in
+  // full; only the request control is disabled") needs a workspace that is
+  // genuinely on the free plan rather than resting on the no-subscription
+  // escape (`entitlementsPermitNetworkPublish` treats "no subscription" as
+  // UNGATED -- lib/network/access.ts's own header -- so `orgId` would prove
+  // the wrong thing here).
+  /** The Free-tier workspace. */
+  freeOrgSlug: string;
+  freeOrgId: string;
+  /** A member of `freeOrgSlug` only, MFA-optional (role `manager`, so it can
+   *  also stand in for "any role" -- view_network is held by all nine).
+   *  Signed in by hand in the spec file rather than through `signIn()`,
+   *  because it is not one of the fixed `E2eRole` personas every other test
+   *  in this suite addresses by role. */
+  freeMember: E2eUser;
+
+  /** ALPHA's published company profile (`orgId`) -- `city` and `headline` at
+   *  `network`, `contact_email` at `connections`. The discovery walk's own
+   *  subject: found by name from `proOrgSlug`, opened, and read as exactly
+   *  the `network` fields until the accepted request below is planted. */
+  networkAlphaProfileId: string;
+  /** Its `display_name`, suffixed per run -- see the planting code's own
+   *  header for why a network profile name cannot be a bare literal. */
+  networkAlphaProfileName: string;
+  /** ALPHA's DRAFT profile (`orgId`), never published. Neither masking view
+   *  ever carries a draft, so this is what proves a foreign viewer gets the
+   *  same 404 a nonexistent id would -- no existence leak. */
+  networkDraftProfileId: string;
+  /** Its `display_name`, suffixed per run. */
+  networkDraftProfileName: string;
+  /** BETA's (`proOrgSlug`) own minimal published profile. It exists only to
+   *  satisfy `network_connection_requests.to_network_profile_id`'s NOT NULL
+   *  (Q78: a request needs a published profile on each end) -- nothing reads
+   *  it directly. */
+  networkBetaAnchorProfileId: string;
+  /** An ACCEPTED connection between `orgId` and `proOrgId`, hand-planted
+   *  (Task 4 -- the real send/accept UI -- does not exist yet). Its existence
+   *  is what the "connected" half of the discovery walk asserts: BETA's
+   *  booker sees `networkAlphaProfileId`'s `contact_email` (a
+   *  `connections`-level field) resolve, where an unconnected viewer would
+   *  see it masked to null. */
+  networkAcceptedRequestId: string;
+  /** ALPHA's published profile carrying values a `javascript:`-rejecting,
+   *  XSS-escaping form would never have accepted -- planted directly, so the
+   *  RENDER path (ProfileCard's `safeHref()` guard, and React's own escaping
+   *  of `display_name`/`headline`/`bio`) is what the walk measures, per the
+   *  `hostileContactId` pattern above. Every hostile field is set to
+   *  `network` visibility, so it resolves for any viewer without needing the
+   *  accepted connection above. */
+  networkHostileProfileId: string;
+  /** Its hostile `display_name`, suffixed per run -- the marker string
+   *  (`NETWORK-NAME-FIRED`) an executed `onerror` would produce is NOT part
+   *  of this value; it is what the payload WOULD set `document.title` to if
+   *  it fired. */
+  networkHostileProfileName: string;
 }
 
 async function api(
@@ -1177,6 +1238,124 @@ export async function setUpWorld(): Promise<E2eWorld> {
     ],
   );
 
+  // =========================================================================
+  // PHASE 6 TASK 3's OWN ROWS
+  // =========================================================================
+  const freeOrgId = randomUUID();
+  const freeOrgSlug = `e2e-free-${suffix}`;
+  const freeMember = await createUser(`e2e-freemember-${suffix}@test.local`);
+
+  await sql(`insert into public.organisations (id, name, slug) values ($1,$2,$3)`, [
+    freeOrgId,
+    `E2E Free ${suffix}`,
+    freeOrgSlug,
+  ]);
+  await sql(
+    `insert into public.organisation_memberships
+       (organisation_id, user_id, role, status, joined_at)
+     values ($1,$2,'manager','active',now())`,
+    [freeOrgId, freeMember.id],
+  );
+  await sql(
+    `insert into public.organisation_subscriptions
+       (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+     values ($1,'free','monthly',1,'active', now() + interval '30 days')`,
+    [freeOrgId],
+  );
+
+  const networkAlphaProfileId = randomUUID();
+  const networkDraftProfileId = randomUUID();
+  const networkBetaAnchorProfileId = randomUUID();
+  const networkHostileProfileId = randomUUID();
+
+  // EVERY DISPLAY NAME CARRIES `${suffix}`. The network directory is
+  // CROSS-TENANT BY DESIGN (Q86, this phase's own header) -- it is the one
+  // list in the product with no per-run tenant boundary to keep two runs'
+  // rows apart, so unlike a contact or company name (scoped to its own org
+  // and therefore already isolated by `orgId`), a hardcoded network profile
+  // name collides with any OTHER run's row of the same name, past or
+  // concurrent, and breaks a `getByRole(... { name })` lookup with a "strict
+  // mode violation: resolved to 2 elements" the moment two are ever alive at
+  // once. Exposed on the returned world (below) so the spec never re-embeds
+  // the literal string.
+  const networkAlphaProfileName = `Network Discovery Alpha Ltd ${suffix}`;
+  const networkDraftProfileName = `Network Discovery Alpha Draft ${suffix}`;
+  const networkBetaAnchorProfileName = `Network Discovery Beta Anchor ${suffix}`;
+  const networkHostileProfileName = `Hostile Network Venue ${suffix} <img src=x onerror="document.title='NETWORK-NAME-FIRED'">`;
+
+  await sql(
+    `insert into public.network_profiles
+       (id, organisation_id, entity_kind, entity_id, status, field_visibility,
+        display_name, headline, city, contact_email, published_at)
+     values ($1,$2,'company',gen_random_uuid(),'published',
+             '{"headline":"network","city":"network","contact_email":"connections"}'::jsonb,
+             $3,$4,$5,$6, now())`,
+    [
+      networkAlphaProfileId,
+      orgId,
+      networkAlphaProfileName,
+      "Booking enquiries welcome",
+      "Bristol",
+      "alpha-connections@example.test",
+    ],
+  );
+  await sql(
+    `insert into public.network_profiles
+       (id, organisation_id, entity_kind, entity_id, status, field_visibility, display_name)
+     values ($1,$2,'venue',gen_random_uuid(),'draft','{}'::jsonb,$3)`,
+    [networkDraftProfileId, orgId, networkDraftProfileName],
+  );
+  await sql(
+    `insert into public.network_profiles
+       (id, organisation_id, entity_kind, entity_id, status, field_visibility,
+        display_name, published_at)
+     values ($1,$2,'company',gen_random_uuid(),'published','{}'::jsonb,$3, now())`,
+    [networkBetaAnchorProfileId, proOrgId, networkBetaAnchorProfileName],
+  );
+
+  // THE VALUES A FORM WOULD REFUSE, WRITTEN PAST THE FORM -- the
+  // `hostileContactId` pattern, applied to a network profile. `[P6]`
+  // CLAUDE.md § Non-negotiable rules: "this is the phase where user content
+  // becomes cross-tenant" -- a published `website_url` and a published `bio`
+  // are written by one organisation and rendered in another's browser. Every
+  // hostile field is `network`-visibility, so it needs no connection to
+  // resolve for whoever views it.
+  await sql(
+    `insert into public.network_profiles
+       (id, organisation_id, entity_kind, entity_id, status, field_visibility,
+        display_name, headline, bio, website_url, published_at)
+     values ($1,$2,'venue',gen_random_uuid(),'published',
+             '{"headline":"network","bio":"network","website_url":"network"}'::jsonb,
+             $3,$4,$5,$6, now())`,
+    [
+      networkHostileProfileId,
+      orgId,
+      networkHostileProfileName,
+      `<img src=x onerror="document.title='NETWORK-HEADLINE-FIRED'">`,
+      `<script>document.title='NETWORK-BIO-FIRED'</script>`,
+      `javascript:document.title='NETWORK-HREF-FIRED'`,
+    ],
+  );
+
+  // THE ACCEPTED CONNECTION -- HAND-PLANTED (Task 4 does not exist yet). Q78's
+  // NOT NULL pair needs a published profile on each side; `networkAlpha
+  // ProfileId` and `networkBetaAnchorProfileId` are exactly the two this world
+  // already has.
+  const networkAcceptedRequestId = randomUUID();
+  await sql(
+    `insert into public.network_connection_requests
+       (id, from_organisation_id, from_network_profile_id, to_organisation_id,
+        to_network_profile_id, status, requested_at, responded_at)
+     values ($1,$2,$3,$4,$5,'accepted', now(), now())`,
+    [
+      networkAcceptedRequestId,
+      orgId,
+      networkAlphaProfileId,
+      proOrgId,
+      networkBetaAnchorProfileId,
+    ],
+  );
+
   return {
     orgSlug,
     orgId,
@@ -1221,6 +1400,17 @@ export async function setUpWorld(): Promise<E2eWorld> {
     financeTotpSecret,
     users,
     otherOwner,
+    freeOrgSlug,
+    freeOrgId,
+    freeMember,
+    networkAlphaProfileId,
+    networkAlphaProfileName,
+    networkDraftProfileId,
+    networkDraftProfileName,
+    networkBetaAnchorProfileId,
+    networkAcceptedRequestId,
+    networkHostileProfileId,
+    networkHostileProfileName,
   };
 }
 
@@ -1237,12 +1427,13 @@ export async function setUpWorld(): Promise<E2eWorld> {
  */
 export async function tearDownWorld(world: E2eWorld): Promise<void> {
   const { serviceRoleKey } = localStack();
-  // FOUR ORGANISATIONS SINCE PHASE 5 TASK 5. Deleting each cascades to every
-  // tenant row it owns -- `financial_entries.organisation_id` carries
-  // `on delete cascade` like every other tenant column, and the two finance
-  // organisations' subscription rows go with them.
+  // FIVE ORGANISATIONS SINCE PHASE 6 TASK 3 (`freeOrgId` joins the four from
+  // Phase 5 Task 5). Deleting each cascades to every tenant row it owns --
+  // `financial_entries.organisation_id` and `network_profiles.organisation_id`
+  // alike carry `on delete cascade`, so the finance subscription rows and the
+  // network profiles/connection request planted above go with their org.
   await sql(`delete from public.organisations where id = any($1::uuid[])`, [
-    [world.orgId, world.otherOrgId, world.proOrgId, world.starterOrgId],
+    [world.orgId, world.otherOrgId, world.proOrgId, world.starterOrgId, world.freeOrgId],
   ]);
   // THE OTHER TENANT'S OWNER IS DELETED BY ID, LIKE EVERY OTHER USER
   // (Task 8; the deferred minor this closes).
@@ -1254,8 +1445,9 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
   // suite creates four per run and the psql suite creates twelve), the owner
   // would not be on the first page, the `if` would never match, and teardown
   // would leak one auth user per run in silence. `world.otherOwner` is the id,
-  // so there is nothing left to search for.
-  for (const user of [...Object.values(world.users), world.otherOwner]) {
+  // so there is nothing left to search for. `world.freeMember` (Task 3) is the
+  // same shape: a standalone user, not one of the fixed `E2eRole` personas.
+  for (const user of [...Object.values(world.users), world.otherOwner, world.freeMember]) {
     await api(`/auth/v1/admin/users/${user.id}`, {
       key: serviceRoleKey,
       method: "DELETE",

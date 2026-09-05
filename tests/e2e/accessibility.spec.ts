@@ -6,7 +6,7 @@ import {
   tearDownWorld,
   type E2eWorld,
 } from "./support/fixtures";
-import { signIn } from "./support/sign-in";
+import { signIn, signOut } from "./support/sign-in";
 
 // THE AUTOMATED ACCESSIBILITY PASS THE PLAN ASKED FOR.
 //
@@ -322,6 +322,84 @@ test("the network profile editor, populated, has no automated accessibility viol
   await expect(page.locator(`#${cityDescribedBy}`)).toContainText("City");
 
   await scan(page, "network profile editor");
+});
+
+// ===========================================================================
+// TASK 3'S TWO SURFACES: THE DIRECTORY, AND A PROFILE VIEWED BY A FOREIGN
+// ORGANISATION
+// ===========================================================================
+// Both need a PUBLISHED profile with real content -- an empty directory or a
+// draft would miss the markup these two routes exist for: the sortable Name
+// column and ProfileCard's headline/location/website lines on the directory;
+// the "You're connected"-shaped alert slot, ProfileCard again, and the
+// disabled "Request connection" shell with its `aria-describedby` note on the
+// profile page. ONE TEST, covering both, so the profile this scan needs is
+// created and published once and the org switch (manager publishing in
+// `world.orgSlug`, then the Pro org's booker viewing it as a stranger) reads
+// as one continuous story rather than two tests racing a shared fixture.
+test("the network directory and a foreign profile page have no automated accessibility violations", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+
+  await page.goto(`/${world.orgSlug}/companies/new`);
+  await page.locator('input[name="name"]').fill("Axe Directory Company");
+  await page.getByRole("button", { name: "Create company" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Axe Directory Company", level: 1 }),
+  ).toBeVisible();
+
+  await page.goto(`/${world.orgSlug}/network/profiles`);
+  await page
+    .locator("#publish-company-entity")
+    .selectOption({ label: "Axe Directory Company" });
+  await page.locator("#publish-company-name").fill("Axe Directory Company");
+  await page.getByRole("button", { name: "Create draft" }).first().click();
+  await page.getByRole("link", { name: "Axe Directory Company" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Axe Directory Company", level: 1 }),
+  ).toBeVisible();
+
+  await page.locator("#headline").fill("Booking enquiries welcome");
+  await page.getByRole("radio", { name: /Everyone on the network/i }).first().click();
+  const cityRow = page.locator("li", { has: page.locator("#city") });
+  await cityRow.locator("#city").fill("Manchester");
+  await cityRow.getByRole("radio", { name: /Everyone on the network/i }).click();
+  const emailRow = page.locator("li", { has: page.locator("#contact_email") });
+  await emailRow.locator("#contact_email").fill("axe-scan@example.com");
+  await emailRow.getByRole("radio", { name: /Connections only/i }).click();
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText(/4 of 9/)).toBeVisible();
+  await page.getByRole("button", { name: "Publish to the network" }).click();
+  await expect(page.getByText(/Published\./)).toBeVisible();
+
+  // ---- SURFACE 1: THE DIRECTORY, POPULATED --------------------------------
+  await page.goto(`/${world.orgSlug}/network`);
+  await expect(page.getByRole("heading", { name: "Network", level: 1 })).toBeVisible();
+  const directoryLink = page.getByRole("link", { name: "Axe Directory Company" });
+  await expect(directoryLink).toBeVisible();
+  const profileHref = await directoryLink.getAttribute("href");
+  expect(profileHref, "the directory row links somewhere").not.toBeNull();
+  await scan(page, "network directory");
+
+  // ---- SURFACE 2: THE SAME PROFILE, VIEWED BY A STRANGER ORGANISATION -----
+  // `profileHref` is `/${world.orgSlug}/network/<id>` -- the id is what
+  // matters; the org SEGMENT in the URL names the VIEWER's own workspace, not
+  // the profile's, so this rebuilds it under the Pro org instead of reusing
+  // the manager's own segment.
+  const profileId = profileHref!.split("/").pop();
+  await signOut(page);
+  await signIn(page, world, "booker");
+  await page.goto(`/${world.proOrgSlug}/network/${profileId}`);
+  await expect(
+    page.getByRole("heading", { name: "Axe Directory Company", level: 1 }),
+  ).toBeVisible();
+  // NON-VACUITY: the disabled shell -- the exact markup this scan exists to
+  // cover -- is really on the page.
+  const requestButton = page.getByRole("button", { name: "Request connection" });
+  await expect(requestButton).toBeVisible();
+  await expect(requestButton).toBeDisabled();
+  await scan(page, "network profile page (foreign viewer)");
 });
 
 test("the in-app 404 -- where every refusal lands -- is clean, exclusions and all", async ({
