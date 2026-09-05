@@ -43,14 +43,45 @@ export interface EventFinanceSummary {
   actualExpenseMinor: number;
 }
 
-/** The all-zeros summary: an event with no finance lines, or the honest render
- *  a caller who holds view_finance gets when the view returns no row for it. */
+/** The all-zeros summary: an event with no finance lines, which is what a
+ *  caller who holds view_finance honestly sees when the view returns no row. */
 export const ZERO_FINANCE_SUMMARY: EventFinanceSummary = {
   budgetedGrossMinor: 0,
   budgetedExpenseMinor: 0,
   actualGrossMinor: 0,
   actualExpenseMinor: 0,
 };
+
+/**
+ * What a summary read produced. THREE states, not two -- review finding I3.
+ *
+ * ===========================================================================
+ * £0.00 AND "break-even" ARE CLAIMS ABOUT THE CUSTOMER'S MONEY
+ * ===========================================================================
+ * `loadEventFinanceSummary` used to collapse "the view returned no row" and
+ * "the query failed" into the same all-zeros object. The failure mode that
+ * produces is the worst one on the page: the LINE LIST below the summary has
+ * its own outcome and still renders the real lines, so a Finance user saw a
+ * populated sheet of money under a Gross/Expense/Net block reading
+ * £0.00 · break-even, with nothing to tell it apart from a genuinely empty
+ * event. The panel already takes the opposite disposition twelve lines away
+ * for the list -- "A FAILED QUERY IS NOT AN EMPTY SHEET" -- and this is the
+ * same rule applied to the block above it.
+ *
+ *   `loaded`       the view returned a row; render it.
+ *   `empty`        the view returned NO row, which is the ordinary case for an
+ *                  event with no finance lines. Renders zeros, honestly.
+ *   `unavailable`  the query failed. Says so; claims nothing about the money.
+ *
+ * `empty` is kept distinct from `loaded`-with-zeros even though they render
+ * identically, so the discrimination the loader makes is visible to a test and
+ * a future surface (a "no lines yet" teaching state, say) does not have to
+ * re-derive it by comparing four numbers to zero.
+ */
+export type EventFinanceSummaryOutcome =
+  | { readonly outcome: "loaded"; readonly summary: EventFinanceSummary }
+  | { readonly outcome: "empty" }
+  | { readonly outcome: "unavailable" };
 
 /**
  * Which summary bucket a category lands in.

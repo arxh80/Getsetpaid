@@ -19,10 +19,7 @@ import {
   type FinancialEntryFilterKey,
 } from "@/lib/crm/finance-list";
 import { LINK_PANEL_LIMIT } from "@/lib/crm/queries";
-import {
-  ZERO_FINANCE_SUMMARY,
-  type EventFinanceSummary,
-} from "@/lib/crm/finance-summary";
+import type { EventFinanceSummaryOutcome } from "@/lib/crm/finance-summary";
 import type { FinanceCategory, FinanceStatus } from "@/lib/crm/finance-category";
 
 // The event finance panel's reads: the line-item page (plus the removed rows
@@ -227,16 +224,26 @@ async function resolveNames(
  * already confirmed view_finance (Constraint 12) -- this function is the second
  * of the two jobs, not the gate.
  *
+ * ===========================================================================
+ * "NO ROW" AND "THE QUERY FAILED" ARE DIFFERENT ANSWERS (review finding I3)
+ * ===========================================================================
  * NO ROW is the ordinary case for an event with no finance lines (the view
- * `group by`s them away), and it is the same all-zeros this returns on a query
- * error: in both, the honest thing to show a view_finance holder is a summary
- * of nothing, which reads as zeros rather than as an error the user cannot act
- * on. A genuine load failure is logged.
+ * `group by`s them away) and returns `empty`, which the panel renders as
+ * zeros. A FAILURE returns `unavailable`, and the panel says so.
+ *
+ * They used to be the same all-zeros object, on the argument that "the honest
+ * thing to show a view_finance holder is a summary of nothing". That is honest
+ * for an empty event and a fabrication for a failed query: the line list below
+ * the summary has its own outcome and keeps rendering the real lines, so the
+ * user saw actual money listed under a Gross/Expense/Net block claiming
+ * £0.00 · break-even. Same rule as every list surface, and as the panel's own
+ * "A FAILED QUERY IS NOT AN EMPTY SHEET" note twelve lines away. The failure is
+ * still logged.
  */
 export async function loadEventFinanceSummary(
   organisationId: string,
   eventId: string,
-): Promise<EventFinanceSummary> {
+): Promise<EventFinanceSummaryOutcome> {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("event_finance_summary")
@@ -249,14 +256,17 @@ export async function loadEventFinanceSummary(
 
   if (error) {
     console.error("[crm] event finance summary lookup failed:", error.message);
-    return { ...ZERO_FINANCE_SUMMARY };
+    return { outcome: "unavailable" };
   }
-  if (!data) return { ...ZERO_FINANCE_SUMMARY };
+  if (!data) return { outcome: "empty" };
 
   return {
-    budgetedGrossMinor: Number(data.budgeted_gross_minor),
-    budgetedExpenseMinor: Number(data.budgeted_expense_minor),
-    actualGrossMinor: Number(data.actual_gross_minor),
-    actualExpenseMinor: Number(data.actual_expense_minor),
+    outcome: "loaded",
+    summary: {
+      budgetedGrossMinor: Number(data.budgeted_gross_minor),
+      budgetedExpenseMinor: Number(data.budgeted_expense_minor),
+      actualGrossMinor: Number(data.actual_gross_minor),
+      actualExpenseMinor: Number(data.actual_expense_minor),
+    },
   };
 }

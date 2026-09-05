@@ -20,7 +20,6 @@ import {
   loadEventFinanceSummary,
   loadFinancialEntriesForEvent,
 } from "@/lib/crm/finance-queries";
-import { ZERO_FINANCE_SUMMARY } from "@/lib/crm/finance-summary";
 import { FinancePanel } from "@/components/crm/finance-panel";
 import type { RawSearchParams } from "@/lib/list/params";
 import { LineupPanel } from "@/components/crm/lineup-panel";
@@ -482,7 +481,7 @@ export default async function EventDetailPage({
           orgSlug={org.slug}
           eventId={event.id}
           basePath={`${basePath}/${event.id}`}
-          summary={financeSummary ?? ZERO_FINANCE_SUMMARY}
+          summary={financeSummary ?? { outcome: "empty" }}
           page={finance.page}
           params={finance.params}
           removed={finance.removed}
