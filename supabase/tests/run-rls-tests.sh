@@ -2426,6 +2426,38 @@ p2_code "...nor entity_id"                                                 400 G
 p2_code "CONTROL: selecting a real column of the same view works"          200 GET \
         "network_directory?select=display_name" "" "$MGR"
 
+# ===========================================================================
+# TASK 3 LEAKAGE ASSERTION #1 -- THE BASE TABLE IS READABLE BY DESIGN, AND
+# THAT IS EXPECTED AND CORRECT.
+#
+# Paired with the source-shape assertion in
+# tests/unit/network/discovery-source-shape.test.ts that no application code
+# path (lib/network/discovery.ts, the directory page, the profile page) ever
+# selects from network_profiles for a foreign organisation. This half proves
+# the OTHER fact the pairing depends on: that the base table itself would
+# happily hand over the unmasked row if something did.
+# `network_profiles_select_published_directory`'s own comment: "the base
+# table is deliberately readable and the VIEW is the masking control;
+# organisation_id, entity_id and every field the publisher marked hidden are
+# reachable HERE and are absent from the view." $MGR (ALPHA's manager) is not
+# a member of BETA_ORG (see the tenant-boundary checks above) and BETA's
+# published profile ('...000b', "Beta Bookings") is not connected to ALPHA
+# through any request this HTTP block or the psql suite made -- so this is a
+# genuinely non-owning, unconnected read, straight off the base table.
+# ===========================================================================
+p2_json "LEAKAGE #1 (documented, by design): a non-owning manager reads BETA's organisation_id straight off network_profiles" \
+        "$BETA_ORG" \
+        "network_profiles?select=organisation_id&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR" "organisation_id"
+p2_json "...and BETA's entity_id, also unmasked (the view projects neither, ever)" \
+        "1111000b-0000-0000-0000-00000000000b" \
+        "network_profiles?select=entity_id&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR" "entity_id"
+p2_json "CONTROL: the same row's display_name, so this is a real row and not an empty result" \
+        "Beta Bookings" \
+        "network_profiles?select=display_name&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR" "display_name"
+
 # NO WRITE PATH THROUGH EITHER VIEW. Both project computed CASE expressions, so
 # they are not auto-updatable and Postgres itself refuses -- belt and braces
 # over the absent grant.
