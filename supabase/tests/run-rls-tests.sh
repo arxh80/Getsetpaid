@@ -2439,17 +2439,75 @@ p2_code "CONTROL: selecting a real column of the same view works"          200 G
 # `network_profiles_select_published_directory`'s own comment: "the base
 # table is deliberately readable and the VIEW is the masking control;
 # organisation_id, entity_id and every field the publisher marked hidden are
-# reachable HERE and are absent from the view." $MGR (ALPHA's manager) is not
-# a member of BETA_ORG (see the tenant-boundary checks above) and BETA's
-# published profile ('...000b', "Beta Bookings") is not connected to ALPHA
-# through any request this HTTP block or the psql suite made -- so this is a
-# genuinely non-owning, unconnected read, straight off the base table.
-# ===========================================================================
-p2_json "LEAKAGE #1 (documented, by design): a non-owning manager reads BETA's organisation_id straight off network_profiles" \
+# reachable HERE and are absent from the view."
+#
+# ---------------------------------------------------------------------------
+# FIX ROUND 1, I1: ALPHA AND BETA ARE CONNECTED BY THIS POINT, AND THAT IS
+# THE TRUE STATE -- STATED, NOT PAPERED OVER.
+# ---------------------------------------------------------------------------
+# The psql suites run BEFORE this HTTP section, on the SAME database, with no
+# reset between them (this script's own header, "the fixtures are
+# deliberately left standing for the HTTP sections to read"). rls_phase6_
+# network.sql's NR9/NU4 (:887-894, :930-933) accept a request FROM alpha_org
+# (profile '...000a') TO beta_org (profile '...000c', "Beta Second Room"),
+# and NU12 (:1115-1117) then asserts that $MGR -- ALPHA's own manager, the
+# EXACT token this block uses -- reads BETA's UNRELATED profile '...000b'
+# ("Beta Bookings") through public.network_connected_profiles. That works
+# ONLY because the connected view's `exists` clause is ORGANISATION TO
+# ORGANISATION, not profile to profile (20260904004000's own header): once
+# ANY accepted request stands between alpha_org and beta_org, every one of
+# BETA's published profiles becomes connections-visible to ALPHA, regardless
+# of which specific profile the request named. So ALPHA and BETA, as
+# organisations, ARE connected when this block runs -- an earlier version of
+# this comment said the opposite, which was false at HEAD (Constraint 13).
+#
+# THAT CONNECTION DOES NOT WEAKEN WHAT THIS PARTICULAR ASSERTION PROVES.
+# organisation_id and entity_id are structurally ABSENT from BOTH masking
+# views under every condition -- connected or not, `network` or
+# `connections` -- so reading them straight off network_profiles is a
+# leak regardless of the connection state; nothing about being connected
+# changes whether a column exists in a view's SELECT list. What connection
+# status DOES change is a `connections`-level VALUE's visibility through
+# `network_connected_profiles` specifically -- and this block never queries
+# that view, only the base table and, in the paired control below,
+# `network_directory`, whose `= 'network'` test does not vary with
+# connection status either (`network_directory` never resolves a
+# `connections`-level field for anyone, connected or not).
+#
+# ---------------------------------------------------------------------------
+# FIX ROUND 1, I2: A POPULATED MASKED VALUE, NOT JUST TWO ABSENT COLUMNS.
+# ---------------------------------------------------------------------------
+# The brief's own wording: "a hand-crafted GET ... returns rows WITH EVERY
+# MASKED COLUMN POPULATED". organisation_id/entity_id are masked by being
+# OMITTED FROM THE VIEW ENTIRELY -- they prove the view's column list is
+# narrower than the base table's, which is real but not what the brief asks
+# for. What it asks for is a `field_visibility`-masked VALUE: a `hidden`
+# field is NULL in the base column too (N3, `network_profiles_hidden_
+# fields_are_null`), so there is nothing to leak there by construction --
+# the only column that can be BOTH populated AND masked is one at
+# `connections`. BETA's `...000b` carries none (`field_visibility =
+# '{"city":"network"}'`, `rls_phase6_network.sql:149-155`), so it is given
+# one here, narrowly, for this block alone -- nothing later in this script
+# reads `...000b`'s `contact_email` or `field_visibility` (grepped).
+p2_sub "update public.network_profiles
+          set contact_email = 'leak-check@beta.test',
+              field_visibility = field_visibility || '{\"contact_email\":\"connections\"}'::jsonb
+        where id = 'e0110000-0000-0000-0000-00000000000b';"
+
+p2_json "LEAKAGE #1a (documented, by design): a connections-level VALUE is readable straight off network_profiles" \
+        "leak-check@beta.test" \
+        "network_profiles?select=contact_email&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR" "contact_email"
+p2_json "PAIRED CONTROL: the SAME field, through network_directory, is still masked to null (the view's \`= 'network'\` test does not vary with connection status)" \
+        "<null>" \
+        "network_directory?select=contact_email&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR" "contact_email"
+
+p2_json "LEAKAGE #1b: the same non-owning manager reads BETA's organisation_id straight off network_profiles" \
         "$BETA_ORG" \
         "network_profiles?select=organisation_id&id=eq.e0110000-0000-0000-0000-00000000000b" \
         "$MGR" "organisation_id"
-p2_json "...and BETA's entity_id, also unmasked (the view projects neither, ever)" \
+p2_json "...and BETA's entity_id, also unmasked (the view projects neither, ever, regardless of connection status)" \
         "1111000b-0000-0000-0000-00000000000b" \
         "network_profiles?select=entity_id&id=eq.e0110000-0000-0000-0000-00000000000b" \
         "$MGR" "entity_id"
