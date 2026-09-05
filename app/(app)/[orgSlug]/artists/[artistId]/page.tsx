@@ -60,6 +60,9 @@ import {
   WriteBlockedNote,
 } from "@/components/crm/write-gate";
 import { formatDateOnly, formatDateTime } from "@/lib/format/date";
+import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { loadNetworkProfileForEntity } from "@/lib/network/entities";
+import { profileHasDrifted } from "@/lib/network/drift";
 
 // One artist: the record, who represents them, and what they have been paid.
 //
@@ -219,6 +222,22 @@ export default async function ArtistDetailPage({
     artist.id,
     activityListParams,
   );
+
+  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). An artist carries
+  // country/city/website (20260827232510), so all three are comparable
+  // against the published copy, unlike a company or an agency.
+  const networkProfile = await loadNetworkProfileForEntity(org.id, "artist", artist.id);
+  const networkDrifted =
+    networkProfile !== null &&
+    profileHasDrifted(
+      { name: artist.name, country: artist.country, city: artist.city, website: artist.website },
+      {
+        displayName: networkProfile.displayName,
+        country: networkProfile.country,
+        city: networkProfile.city,
+        websiteUrl: networkProfile.websiteUrl,
+      },
+    );
 
   return (
     <div className="flex flex-col gap-8">
@@ -484,6 +503,12 @@ export default async function ArtistDetailPage({
         basePath={`${basePath}/${artist.id}`}
         recordScoped={activityIsScoped(org.role)}
         preserve={raw}
+      />
+
+      <NetworkIdentityRow
+        orgSlug={org.slug}
+        profile={networkProfile}
+        drifted={networkDrifted}
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

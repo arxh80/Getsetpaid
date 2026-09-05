@@ -45,6 +45,9 @@ import {
   WriteBlockedNote,
 } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
+import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { loadNetworkProfileForEntity } from "@/lib/network/entities";
+import { profileHasDrifted } from "@/lib/network/drift";
 
 // One venue, with its rooms managed inline.
 //
@@ -191,6 +194,23 @@ export default async function VenueDetailPage({
     venue.id,
     activityListParams,
   );
+
+  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). Venues carry `website`
+  // but no `city`/`country` column (20260827232510's `location` free text is
+  // not the same concept as a network `city`, so it is deliberately not
+  // compared -- lib/network/drift.ts's header).
+  const networkProfile = await loadNetworkProfileForEntity(org.id, "venue", venue.id);
+  const networkDrifted =
+    networkProfile !== null &&
+    profileHasDrifted(
+      { name: venue.name, website: venue.website },
+      {
+        displayName: networkProfile.displayName,
+        country: networkProfile.country,
+        city: networkProfile.city,
+        websiteUrl: networkProfile.websiteUrl,
+      },
+    );
 
   return (
     <div className="flex flex-col gap-8">
@@ -413,6 +433,12 @@ export default async function VenueDetailPage({
         // cursor and quietly send it back to page one. Nothing errors, which
         // is what makes it worth wiring rather than documenting.
         preserve={raw}
+      />
+
+      <NetworkIdentityRow
+        orgSlug={org.slug}
+        profile={networkProfile}
+        drifted={networkDrifted}
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

@@ -35,6 +35,9 @@ import {
   WriteBlockedNote,
 } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
+import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { loadNetworkProfileForEntity } from "@/lib/network/entities";
+import { profileHasDrifted } from "@/lib/network/drift";
 
 /** The id of the single explanation the Manage section's controls point at. */
 const MANAGE_NOTE = "company-manage-blocked";
@@ -141,6 +144,29 @@ export default async function CompanyDetailPage({
     company.id,
     activityListParams,
   );
+
+  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). A plain lookup of THIS
+  // organisation's own network_profiles row for THIS company -- never a join,
+  // never a cross-tenant read (lib/network/entities.ts's header). `companies`
+  // has no city/country/website columns (20260827232510), so the drift
+  // comparison below has only `name` to check for a company -- the one field
+  // every kind shares.
+  const networkProfile = await loadNetworkProfileForEntity(
+    org.id,
+    "company",
+    company.id,
+  );
+  const networkDrifted =
+    networkProfile !== null &&
+    profileHasDrifted(
+      { name: company.name },
+      {
+        displayName: networkProfile.displayName,
+        country: networkProfile.country,
+        city: networkProfile.city,
+        websiteUrl: networkProfile.websiteUrl,
+      },
+    );
 
   return (
     <div className="flex flex-col gap-8">
@@ -268,6 +294,12 @@ export default async function CompanyDetailPage({
         basePath={`${basePath}/${company.id}`}
         recordScoped={activityIsScoped(org.role)}
         preserve={raw}
+      />
+
+      <NetworkIdentityRow
+        orgSlug={org.slug}
+        profile={networkProfile}
+        drifted={networkDrifted}
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

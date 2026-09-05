@@ -35,6 +35,9 @@ import {
   WriteBlockedNote,
 } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
+import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { loadNetworkProfileForEntity } from "@/lib/network/entities";
+import { profileHasDrifted } from "@/lib/network/drift";
 
 // One agency. The other side of artist_representations.
 //
@@ -190,6 +193,22 @@ export default async function AgencyDetailPage({
     activityListParams,
   );
 
+  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). Agencies are name-only
+  // (20260827232510: "Name-only at MVP"), so `name` is the only comparable
+  // field.
+  const networkProfile = await loadNetworkProfileForEntity(org.id, "agency", agency.id);
+  const networkDrifted =
+    networkProfile !== null &&
+    profileHasDrifted(
+      { name: agency.name },
+      {
+        displayName: networkProfile.displayName,
+        country: networkProfile.country,
+        city: networkProfile.city,
+        websiteUrl: networkProfile.websiteUrl,
+      },
+    );
+
   return (
     <div className="flex flex-col gap-8">
       {justMerged ? (
@@ -318,6 +337,12 @@ export default async function AgencyDetailPage({
         basePath={`${basePath}/${agency.id}`}
         recordScoped={activityIsScoped(org.role)}
         preserve={raw}
+      />
+
+      <NetworkIdentityRow
+        orgSlug={org.slug}
+        profile={networkProfile}
+        drifted={networkDrifted}
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

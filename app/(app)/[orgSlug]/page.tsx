@@ -49,10 +49,24 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
   if (!org) notFound();
 
   const user = await getCurrentUser();
-  const [canManageMembers, canManageCustomFields, memberships, upcoming, openTasks] =
-    await Promise.all([
+  const [
+    canManageMembers,
+    canManageCustomFields,
+    canViewNetwork,
+    memberships,
+    upcoming,
+    openTasks,
+  ] = await Promise.all([
       hasPermission(org.id, "manage_members"),
       hasPermission(org.id, "manage_custom_fields"),
+      // THE NETWORK CARD'S OWN GATE (Phase 6 Task 2). Unlike CRM_AREAS and
+      // OPERATIONS_AREAS below -- which are never gated because every role
+      // that reaches this page holds view_crm and it never closes for
+      // suspension -- view_network DOES close for a suspended workspace
+      // (lib/network/access.ts: "survives_suspension=false, unlike
+      // view_crm"). So this card, alone on this page, is checked rather than
+      // assumed universal.
+      hasPermission(org.id, "view_network"),
       getActiveMemberships(),
       // THE FIRST THING ON THIS PAGE THAT READS TENANT DATA. It is a capped
       // read, not a list surface -- see `loadUpcomingEvents` for why this page
@@ -413,6 +427,36 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
           </li>
         </ul>
       </section>
+
+      {/* NETWORK (Phase 6 Task 2). Gated on `canViewNetwork` -- the one
+          section on this page that closes for a suspended workspace, since
+          view_network is survives_suspension=false while view_crm is not
+          (lib/network/access.ts). Everything CRM_AREAS-shaped stays
+          unconditional; this does not. */}
+      {canViewNetwork ? (
+        <section className="border border-rule bg-surface p-5">
+          <h2 className="text-xl font-bold text-ink">Network</h2>
+          <p className="mt-2 max-w-prose text-base text-ink-muted">
+            The industry network: publish a company, artist, venue or agency
+            record so other GetSetPaid workspaces can find it, and manage
+            what you have already published.
+          </p>
+          <ul className="mt-4 flex flex-col border-t border-rule">
+            <li className="border-b border-rule py-3">
+              <Link
+                href={`/${org.slug}/network/profiles`}
+                className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+              >
+                Your network profiles
+              </Link>
+              <p className="mt-1 max-w-prose text-base text-ink-muted">
+                Create, edit and publish network identities for your own
+                records — draft and published alike.
+              </p>
+            </li>
+          </ul>
+        </section>
+      ) : null}
 
       {others.length > 0 ? (
         <section className="flex flex-col gap-4">
