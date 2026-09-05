@@ -3126,13 +3126,29 @@ recorded for the history and the residual each leaves; the rest are open.
   only and never committed; `npx supabase db reset --local` afterwards, so
   the suites that followed ran on a clean world):
 
-  | | plan | buffers | time |
-  |---|---|---|---|
-  | (i) browse, page 1 | `Index Scan using network_profiles_directory_idx`, `Index Cond: (status = 'published')` | 257 | **1.668 ms** |
-  | (ii) search ~4% (`Zephyr`, 800/20,000) — page | `Seq Scan on network_profiles`, `Rows Removed by Filter: 19200` | 505 | **52.420 ms** |
-  | (ii) search ~4% — count | same shape | 499 | **33.318 ms** |
-  | (iii) search matching ONE row (`Quillfeather`) — page | `Seq Scan on network_profiles`, `Rows Removed by Filter: 19999` | 499 | **21.901 ms** |
-  | (iii) search matching ONE row — count | same shape | 499 | **21.958 ms** |
+  | | plan | planner cost | buffers | time |
+  |---|---|---|---|---|
+  | (i) browse, page 1 | `Index Scan using network_profiles_directory_idx`, `Index Cond: (status = 'published')` | `8.18..4025.36`, estimating 15,000 rows will match | 257 | **1.668 ms** |
+  | (ii) search ~4% (`Zephyr`, 800/20,000) — page | `Seq Scan on network_profiles`, `Rows Removed by Filter: 19200` | `7.77..895.94`, estimating 5 rows will match | 505 | **52.420 ms** |
+  | (ii) search ~4% — count | same shape | `7.77..895.76` | 499 | **33.318 ms** |
+  | (iii) search matching ONE row (`Quillfeather`) — page | `Seq Scan on network_profiles`, `Rows Removed by Filter: 19999` | `7.77..895.84`, estimating 2 rows will match | 499 | **21.901 ms** |
+  | (iii) search matching ONE row — count | same shape | `7.77..895.76` | 499 | **21.958 ms** |
+
+  *(Fix round 1, I3. Every planner row-estimate above is the number that
+  ACTUAL EXPLAIN output attaches to that plan node — it is the planner's
+  guess at how many rows will satisfy the node's own condition, not a claim
+  about the corpus. The corpus is, and stays, 20,000 published rows across 3
+  organisations — every seeded row was inserted `status='published'`, so the
+  true published count is 20,000, not 15,000. That the browse plan's own
+  Index Scan node estimates only 15,000 rows will have `status='published'`
+  is a `pg_statistic`/`ANALYZE`-sampling artefact — Postgres's row-count
+  estimator is not exact, and this run did not chase why it under-counts by a
+  quarter — recorded here as an observed number, not smoothed over or
+  reconciled into 20,000. The earlier version of this entry used "~15,000
+  published rows" as if it were an assertion about the corpus, which
+  contradicted the stated 20,000 and the Seq Scan arithmetic below; that was
+  wrong, and this correction is why the sentence changed rather than the
+  numbers.)*
 
   **THE BROWSE PAGE IS FINE.** `network_profiles_directory_idx` (`status,
   display_name, id`, Task 1) does exactly what its own comment promises: an
@@ -3146,12 +3162,16 @@ recorded for the history and the residual each leaves; the rest are open.
   relation carrying RLS security quals for the current caller. So even though
   `network_profiles_directory_idx` COULD in principle narrow the scan to
   `status = 'published'` first, the planner's own cost estimate puts a plain
-  `Seq Scan` of the whole table (895) below an index-driven visit to the
-  ~15,000 published rows via that index (4025, visible in the browse plan
-  above) — ONE MORE reason a trigram index would not rescue this path even
-  if one existed: `network_profiles.display_name` has no trigram index at
-  all today, and adding a plain one would not change the leakproofness
-  problem, only which unusable index the planner declines to use.
+  `Seq Scan` of the whole table (**895.94**, the search page's own row in the
+  table above) below an index-driven visit to the published rows via that
+  index (**4025.36**, the browse page's own row in the table above — the two
+  are different queries' plans, cited by their own recorded cost rather than
+  assumed equal, and the comparison is exactly what explains why the planner
+  picks a Seq Scan for search and an Index Scan for browse) — ONE MORE reason
+  a trigram index would not rescue this path even if one existed:
+  `network_profiles.display_name` has no trigram index at all today, and
+  adding a plain one would not change the leakproofness problem, only which
+  unusable index the planner declines to use.
 
   **THE NUMBER THAT MATTERS: two sequential scans of the WHOLE PLATFORM'S
   published-profile count per search** (the page and the count, run in
