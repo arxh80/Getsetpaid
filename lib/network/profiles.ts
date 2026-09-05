@@ -89,7 +89,10 @@ import {
   checkShortText,
   type FieldProblem,
 } from "@/lib/crm/validate";
-import { getNetworkPublishAccess } from "@/lib/network/access";
+import {
+  getNetworkPublishAccess,
+  getNetworkPublishAccessForEntity,
+} from "@/lib/network/access";
 import {
   isNetworkEntityKind,
   isPublishableField,
@@ -341,9 +344,24 @@ async function authoriseNetwork(
   return { ok: true, org };
 }
 
-/** The two paths that revalidate the same pair of routes. */
+/**
+ * The routes a network write can change, revalidated together.
+ *
+ * TASK 2 ADDITION: `/${orgSlug}/network/profiles` -- the "this organisation's
+ * own profiles" list Task 2 ships. Task 1 revalidated only `/${orgSlug}/
+ * network` (a hub route no task has built yet) and the one profile's own
+ * editor page, so a profile created or deleted here would not have shown up
+ * or disappeared from the list without a hard refresh: `revalidatePath` does
+ * not error on a route that has never been rendered, so the gap was silent
+ * rather than a thrown exception. The four private detail pages
+ * (companies/[id] etc.) are NOT revalidated from here: they read this
+ * organisation's OWN network_profiles row fresh on every request (no
+ * `fetch` cache and no static generation on a per-org route), so there is
+ * nothing there for `revalidatePath` to invalidate.
+ */
 function revalidateNetwork(orgSlug: string, profileId?: string) {
   revalidatePath(`/${orgSlug}/network`);
+  revalidatePath(`/${orgSlug}/network/profiles`);
   if (profileId) revalidatePath(`/${orgSlug}/network/profiles/${profileId}`);
 }
 
@@ -366,6 +384,22 @@ export async function createNetworkProfileAction(
   // correct, so it is FAILED_MESSAGE rather than a field error.
   if (!isNetworkEntityKind(entityKind) || !entityId) {
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
+
+  // THE M4 CLOSURE, AT THE WRITE PATH AS WELL AS THE RENDER GATE.
+  // `authoriseNetwork` above already checked manage_network_profile (the
+  // GENERAL gate); it cannot check the PER-KIND one because it does not know
+  // the entity kind yet. The database's INSERT policy enforces the per-kind
+  // key regardless (private.entity_is_manageable, 20260904003000) -- so this
+  // call cannot open a write the policy would refuse -- but without it a
+  // marketing user publishing an artist gets the generic REFUSED_MESSAGE from
+  // a 42501 instead of the specific "you can't manage artists" sentence the
+  // editor shows for the exact same caller. Same discipline as every other
+  // refusal in this file: the sentence next to a disabled control and the
+  // sentence after a submitted form must be the same string.
+  const entityAccess = await getNetworkPublishAccessForEntity(org, entityKind);
+  if (!entityAccess.canWrite) {
+    return { error: entityAccess.explanation, values: echoedValues(formData) };
   }
 
   const parsed = readProfile(formData);

@@ -67,6 +67,8 @@ import "server-only";
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import { hasPermission, type CurrentOrg } from "@/lib/auth";
 import type { CrmWriteAccess } from "@/lib/crm/write-access";
+import { PERMISSION_FOR_ENTITY } from "@/lib/crm/custom-fields";
+import { NETWORK_ENTITY_KINDS, type NetworkEntityKind } from "@/lib/network/fields";
 
 const EXPLANATION = {
   suspended:
@@ -203,4 +205,117 @@ export async function getNetworkConnectionAccess(
  */
 export async function getNetworkReadAccess(org: CurrentOrg): Promise<boolean> {
   return hasPermission(org.id, "view_network");
+}
+
+// ===========================================================================
+// TASK 2 REVIEW FINDING M4 -- CLOSED HERE
+// ===========================================================================
+// `manage_network_profile` is granted to owner/admin/manager/marketing
+// (20260904002000), but `network_profiles_insert_manage_profile` and
+// `network_profiles_update_manage_profile` (20260904003000) ALSO require
+// `private.entity_is_manageable(entity_kind, entity_id, organisation_id)`,
+// which DISPATCHES PER KIND to manage_contacts / manage_artists /
+// manage_venues -- keys `marketing` does not all hold (it holds
+// view_crm + manage_contacts and nothing else, 20260828120000). So a
+// marketing user can hold manage_network_profile and still be refused by the
+// database when the record is an artist or a venue: `getNetworkPublishAccess`
+// alone says canWrite:true, and the INSERT/UPDATE policy says 42501. A
+// rendered-enabled control the database refuses is a defect this plan's own
+// header names.
+//
+// getNetworkPublishAccess() cannot fix this on its own -- it has no entity to
+// ask about, by design, because most of its callers (publish/unpublish,
+// editing an existing profile's VALUES) do not change which private record is
+// involved. This function is the one that DOES have an entity_kind, and it is
+// the write gate Task 2's editor and "Publish a record" picker actually use.
+//
+// THE RECORD-SCOPE HALF OF entity_is_manageable NEEDS NO MIRROR HERE. That
+// function's per-kind branch is
+// `permitted_organisations('manage_<kind>') AND (full_scope OR owner_user_id =
+// auth.uid())`, and RECORD_SCOPED_ROLES (lib/crm/record-scope.ts) is exactly
+// {standard_user, read_only} -- NEITHER of which holds manage_network_profile
+// (owner/admin/manager/marketing). Every caller who can reach this function at
+// all is therefore ALWAYS full-scope, so the owner_user_id disjunction can
+// never be the reason entity_is_manageable disagrees with the permission key
+// alone. What is left, and what this closes, is the PERMISSION KEY per kind --
+// exactly PERMISSION_FOR_ENTITY, reused rather than re-invented (Constraint
+// 19's instruction: "there is an existing TS mirror of the dispatch... reuse
+// it, do not invent a second mapping").
+//
+// tests/unit/network/access.test.ts is the CI-visible proof: it mocks
+// hasPermission to answer true for manage_network_profile and false for
+// manage_artists/manage_venues -- the marketing shape -- and asserts
+// getNetworkPublishAccess(org) stays true while
+// getNetworkPublishAccessForEntity(org, "artist") is refused with reason
+// "permission". tests/integration/network/entity-kind-permission-mismatch
+// .test.ts drives the same shape against the real database: a marketing
+// member's raw INSERT into network_profiles for an artist gets 42501 from the
+// policy, matching this function's prediction, with a company INSERT (same
+// membership, same manage_network_profile) as the positive control.
+
+const ENTITY_KIND_PLURAL: Record<NetworkEntityKind, string> = {
+  company: "companies",
+  artist: "artists",
+  venue: "venues",
+  agency: "agencies",
+};
+
+/**
+ * Resolve NETWORK PROFILE write access for one organisation AND ONE ENTITY
+ * KIND -- the gate Task 2's editor and "Publish a record" picker actually use.
+ *
+ * Combines `getNetworkPublishAccess` (suspended -> tier -> manage_network_
+ * profile, unchanged) with the per-kind key `private.entity_is_manageable`
+ * dispatches to. A caller who fails the general gate never reaches the
+ * per-kind question -- that refusal's sentence (suspended/tier/the profile
+ * permission) is more useful than "and also you can't manage artists", which
+ * would be true but not the reason.
+ */
+export async function getNetworkPublishAccessForEntity(
+  org: CurrentOrg,
+  entityKind: NetworkEntityKind,
+): Promise<CrmWriteAccess> {
+  const base = await getNetworkPublishAccess(org);
+  if (!base.canWrite) return base;
+
+  const key = PERMISSION_FOR_ENTITY[entityKind];
+  const permitted = await hasPermission(org.id, key);
+  if (!permitted) {
+    return {
+      canWrite: false,
+      reason: "permission",
+      explanation: `Your role can publish to the network, but not manage ${ENTITY_KIND_PLURAL[entityKind]}. Ask an Owner, Admin or Manager.`,
+    };
+  }
+  return { canWrite: true };
+}
+
+/**
+ * The entity kinds this caller may publish -- i.e. `getNetworkPublishAccess
+ * ForEntity` would say yes for. Used to build the "Publish a record" picker's
+ * kind choices: a marketing user in a Starter workspace is offered `company`
+ * and `agency` and never sees `artist` or `venue` in the list at all, rather
+ * than picking one and being refused after typing a display name.
+ *
+ * Returns the empty set (not four refusals) when the general gate fails, so
+ * the picker can tell "nothing to publish because you can't publish anything"
+ * from "nothing to publish because your role can't manage any of the four
+ * kinds" -- both real, and getNetworkPublishAccess(org) is what the caller
+ * asks to tell them apart.
+ */
+export async function manageableNetworkEntityKinds(
+  org: CurrentOrg,
+): Promise<ReadonlySet<NetworkEntityKind>> {
+  const base = await getNetworkPublishAccess(org);
+  if (!base.canWrite) return new Set();
+
+  // One hasPermission call per DISTINCT key, not per kind -- company and
+  // agency share manage_contacts, so this is at most three round trips rather
+  // than four.
+  const keys = [...new Set(NETWORK_ENTITY_KINDS.map((k) => PERMISSION_FOR_ENTITY[k]))];
+  const results = await Promise.all(keys.map((key) => hasPermission(org.id, key)));
+  const permittedKeys = new Set(keys.filter((_, i) => results[i]));
+  return new Set(
+    NETWORK_ENTITY_KINDS.filter((k) => permittedKeys.has(PERMISSION_FOR_ENTITY[k])),
+  );
 }

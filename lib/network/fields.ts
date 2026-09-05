@@ -354,6 +354,53 @@ export function visibilityOf(
 }
 
 /**
+ * The count Task 2's `publish-summary.tsx` renders, in words, at the top of
+ * every editor: "3 of 9 fields are visible to the whole network; 1 more to
+ * accepted connections; 5 are hidden."
+ *
+ * THE DENOMINATOR IS 9, NOT 7. The seven PUBLISHABLE_FIELDS each carry a real
+ * level, and the two ALWAYS_NETWORK_FIELDS (display_name, entity_kind) have no
+ * level to set but ARE part of what leaves the building -- a profile with a
+ * name and nothing else still shows a name to the whole network, and the
+ * summary that ignored that would undercount by two on every profile that
+ * ever exists. So `network` starts at `ALWAYS_NETWORK_FIELDS.length` (2) and
+ * accumulates one more for every publishable field at `network`; `total` is
+ * fixed at 9 rather than computed from the argument, so a caller cannot
+ * shrink the denominator by handing in a partial map.
+ */
+export interface PublishSummary {
+  /** Fields visible to the whole network: the two always-shown fields plus
+   *  every publishable field at `network`. */
+  readonly network: number;
+  /** Publishable fields visible only to an accepted connection. */
+  readonly connections: number;
+  /** Publishable fields nobody outside this workspace can see. */
+  readonly hidden: number;
+  /** Always 9 -- the seven publishable fields plus the two always-shown ones. */
+  readonly total: number;
+}
+
+export function publishSummary(
+  visibility: FieldVisibility | null | undefined,
+): PublishSummary {
+  let network = ALWAYS_NETWORK_FIELDS.length;
+  let connections = 0;
+  let hidden = 0;
+  for (const name of PUBLISHABLE_FIELDS) {
+    const level = visibilityOf(visibility, name);
+    if (level === "network") network += 1;
+    else if (level === "connections") connections += 1;
+    else hidden += 1;
+  }
+  return {
+    network,
+    connections,
+    hidden,
+    total: PUBLISHABLE_FIELDS.length + ALWAYS_NETWORK_FIELDS.length,
+  };
+}
+
+/**
  * Read an arbitrary stored `field_visibility` value into the typed map.
  *
  * DEFENSIVE ABOUT SHAPE AS WELL AS VOCABULARY, for lib/crm/urls.ts's
