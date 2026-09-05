@@ -194,6 +194,16 @@ const SIGNED_IN_PAGES: [string, (w: E2eWorld) => string][] = [
   ["notes list", (w) => `/${w.orgSlug}/notes`],
   ["documents list + scan chips", (w) => `/${w.orgSlug}/documents`],
   ["deleted documents", (w) => `/${w.orgSlug}/documents/deleted`],
+  // ---- PHASE 6 (NETWORK), TASK 2 -----------------------------------------
+  // "This organisation's own profiles" -- empty for the manager's own
+  // workspace here (no company has been published to the network by this
+  // suite's fixtures), which is a real and common state: the "Publish a
+  // record" picker, the empty-state copy and the list toolbar all render
+  // over zero rows. The EDITOR page -- the most consequential screen in the
+  // product, with its nine-field publish summary and seven radio ladders --
+  // needs a real profile to scan and gets its own dedicated test below,
+  // the same shape the finance panel's dedicated test uses.
+  ["network profiles list", (w) => `/${w.orgSlug}/network/profiles`],
 ];
 
 for (const [label, url] of SIGNED_IN_PAGES) {
@@ -242,6 +252,49 @@ test("the event page WITH the finance panel has no automated accessibility viola
   await expect(page.getByRole("region", { name: "Finance", exact: true })).toHaveCount(1);
   await expect(page.locator("main")).toContainText(FINANCE_LINES.fixtureFee.description);
   await scan(page, "event detail + finance panel");
+});
+
+// ===========================================================================
+// PHASE 6'S SURFACE: THE PUBLISH-FIELD EDITOR, POPULATED
+// ===========================================================================
+// ITS OWN TEST, the same shape as the finance panel's above: no fixture in
+// this suite pre-seeds a company or a network profile, so this test creates
+// both through the real UI (create a company, then use the "Publish a
+// record" picker) before scanning -- otherwise the scan would find an empty
+// draft with every field at its default, missing the seven radio ladders,
+// the publish summary sentence and the "Hide now" quick actions that only
+// render once a field is not hidden.
+test("the network profile editor, populated, has no automated accessibility violations", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+
+  await page.goto(`/${world.orgSlug}/companies/new`);
+  await page.locator('input[name="name"]').fill("Axe Scan Company");
+  await page.getByRole("button", { name: "Create company" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Axe Scan Company", level: 1 }),
+  ).toBeVisible();
+
+  await page.goto(`/${world.orgSlug}/network/profiles`);
+  await page.locator("#publish-company-entity").selectOption({ label: "Axe Scan Company" });
+  await page.locator("#publish-company-name").fill("Axe Scan Company");
+  await page.getByRole("button", { name: "Create draft" }).first().click();
+  await expect(page.getByRole("link", { name: "Axe Scan Company" })).toBeVisible();
+  await page.getByRole("link", { name: "Axe Scan Company" }).click();
+  await expect(page.getByRole("heading", { name: "Axe Scan Company", level: 1 })).toBeVisible();
+
+  // Fill a value and move it off `hidden`, so the "Hide now" quick action and
+  // the non-default publish-summary sentence are both on the page being
+  // scanned -- the NON-VACUITY half of this test.
+  await page.locator("#headline").fill("Booking enquiries welcome");
+  await page.getByRole("radio", { name: /Everyone on the network/i }).first().click();
+  await page.getByRole("button", { name: "Save" }).click();
+  // 3 of 9: the two always-shown fields (name, type) plus the one
+  // publishable field (headline) just set to `network`.
+  await expect(page.getByText(/3 of 9/)).toBeVisible();
+
+  await scan(page, "network profile editor");
 });
 
 test("the in-app 404 -- where every refusal lands -- is clean, exclusions and all", async ({
