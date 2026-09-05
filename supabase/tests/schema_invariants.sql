@@ -672,6 +672,26 @@ select invariants.val('E9  ...and nulled ONLY venue_room_id -- the venue survive
 -- like merge_candidates and event_status_changes: it is read-only to the app
 -- (SELECT grant, SELECT-only policy in Task 2, no write path), which is exactly
 -- the shape D5 polices in its second direction.
+-- TWENTY-NINE SINCE PHASE 6 TASK 1: the three network tables join it --
+-- network_profiles, network_links and network_connection_requests
+-- (20260904000000). ALL THREE ARRIVE WITH NO POLICIES, ON PURPOSE, the same
+-- safe order events, operations and finance each used: RLS enabled in Task 1a,
+-- policies in Task 1d (20260904003000). SO D4 AND D5 FAIL FOR EXACTLY THAT ONE
+-- INTERVAL AGAIN -- the named interval -- with the counts each assertion below
+-- states (D4 '3', D5 '9'). D11b is UNCHANGED by this phase: none of the three
+-- joins to a parent named in invariants.child_parent, so no new expression
+-- enters that census.
+--
+-- TWO OF THE THREE CARRY A STATED EXEMPTION, and each has a replacement
+-- assertion rather than a silence:
+--   * network_connection_requests is BI-TENANT (Q83) and has NO single
+--     `organisation_id` column, so it is D10's one exemption -- D10's expected
+--     count is 28 OF 29, and D10b is the replacement: both of its organisation
+--     columns are NOT NULL with a cascading FK to public.organisations.
+--   * network_links.network_profile_id is a SINGLE-COLUMN FK on purpose (the
+--     profile is owned by a DIFFERENT tenant, which is the point of a link), so
+--     it is absent from D8/D8b's roster -- D8c is the replacement, asserting
+--     the FK exists, is single-column, and points where it claims to.
 create view invariants.phase2_tables as
   select unnest(array[
     'companies','contacts','contact_companies','agencies','artists',
@@ -680,14 +700,15 @@ create view invariants.phase2_tables as
     'merge_candidates','events','event_lineup','event_status_changes',
     'tasks','meetings','notes','documents','document_versions',
     'task_links','meeting_links','note_links','document_links',
-    'financial_entries'
+    'financial_entries',
+    'network_profiles','network_links','network_connection_requests'
   ]) as relname;
 
-select invariants.val('D1  all 26 CRM/events/operations/finance tables exist',
+select invariants.val('D1  all 29 CRM/events/operations/finance/network tables exist',
   $$select count(*)::text from invariants.phase2_tables t
      join pg_catalog.pg_class c on c.relname=t.relname
       and c.relnamespace='public'::regnamespace and c.relkind='r'$$,
-  '26');
+  '29');
 
 -- RLS on EVERY table in public, not just the twelve: the cheapest possible
 -- guard against the next entity table shipping without it.
@@ -724,7 +745,10 @@ select invariants.val('D3  every FK in public has its leading column indexed',
 -- operations tables (tasks, meetings, notes, documents, document_versions and
 -- the four *_links) have zero policies until Phase 4 Task 2. Same interval,
 -- same safe direction.
-select invariants.val('D4  all 26 tables have policies, and none is FOR ALL',
+-- EXPECTED RED BETWEEN PHASE 6 TASK 1a AND TASK 1d: actual '3' -- the three
+-- network tables have zero policies until 20260904003000. Same interval, same
+-- safe direction; the reviewer of that file checks this is back to '0'.
+select invariants.val('D4  all 29 tables have policies, and none is FOR ALL',
   $$select count(*)::text from (
       select c.relname,
              count(p.oid)                                  as npol,
@@ -755,7 +779,10 @@ select invariants.val('D4  all 26 tables have policies, and none is FOR ALL',
 -- INSERT and UPDATE grants on each of the eight writable operations tables (24)
 -- plus the single SELECT grant on the read-only document_versions, none with a
 -- policy behind it yet. Same safe direction; Task 2's reviewer checks it is '0'.
-select invariants.val('D5  every grant on the 26 is justified by a policy, and vice versa',
+-- EXPECTED RED BETWEEN PHASE 6 TASK 1a AND TASK 1d: actual '9' -- the SELECT,
+-- INSERT and UPDATE grants on each of the three network tables, none with a
+-- policy behind it yet. Same safe direction; back to '0' after 20260904003000.
+select invariants.val('D5  every grant on the 29 is justified by a policy, and vice versa',
   $$with granted as (
       select distinct c.relname, g.privilege_type::text as op
         from invariants.phase2_tables t
@@ -860,6 +887,45 @@ select invariants.val('D8b CONTROL: all 17 of those constraint names still exist
                        'document_versions_document_fkey')$$,
   '17');
 
+-- ---------------------------------------------------------------------------
+-- D8c. THE ONE STATED EXEMPTION TO D8/D8b, AND ITS REPLACEMENT ASSERTION.
+--
+-- STILL SEVENTEEN, NOT EIGHTEEN. Phase 6 Task 1 added a link table --
+-- public.network_links -- and its parent FK is NOT in the D8/D8b roster above,
+-- because it is deliberately SINGLE-COLUMN. Constraint 4 requires the composite
+-- (parent_id, organisation_id) -> parent (id, organisation_id) form everywhere,
+-- and this is the one exemption in the phase:
+--
+--   THE PROFILE A LINK POINTS AT IS OWNED BY A DIFFERENT TENANT. That is the
+--   entire point of a link. The composite form would resolve against
+--   network_profiles_id_org_unique and demand the profile belong to the LINKING
+--   organisation -- i.e. permit only self-links, which is not a feature.
+--
+-- An exemption with nothing in its place is just a hole, so this is what stands
+-- in for the composite FK. THREE facts in one string, so weakening any of them
+-- is red: the constraint exists, it spans exactly ONE column, and that column
+-- is network_profile_id pointing at public.network_profiles.
+--
+-- THE OTHER HALF OF THE REPLACEMENT GUARD IS NOT A CONSTRAINT AND IS NOT HERE:
+-- it is that the network_links policies read nothing from network_profiles but
+-- `id` and `status`, and that no policy grants a non-owning organisation any
+-- read. That is rls_phase6_network.sql § NS, which runs in the same script.
+-- Neither half is sufficient alone: this one says the FK was not quietly
+-- widened into a tenant claim it cannot make, § NS says the policies did not
+-- grow the branch the FK is no longer there to stop.
+-- ---------------------------------------------------------------------------
+select invariants.val('D8c EXEMPTION: network_links'' parent FK is single-column, on purpose, and points at network_profiles',
+  $$select coalesce((
+      select array_length(con.conkey,1)::text || '/' ||
+             (select a.attname from pg_catalog.pg_attribute a
+               where a.attrelid=con.conrelid and a.attnum=con.conkey[1]) || '/' ||
+             con.confrelid::regclass::text
+        from pg_catalog.pg_constraint con
+       where con.contype='f'
+         and con.conrelid='public.network_links'::regclass
+         and con.confrelid='public.network_profiles'::regclass), '<absent>')$$,
+  '1/network_profile_id/public.network_profiles');
+
 -- TWO THREE-COLUMN FKs SINCE PHASE 3 TASK 1. custom_field_values' definition
 -- FK pins (field_id, organisation_id, entity_type); events_venue_room_fkey
 -- pins (venue_room_id, venue_id, organisation_id), which is what makes A13 --
@@ -882,13 +948,43 @@ select invariants.val('D9b CONTROL: both of those constraint names still exist',
 -- Every Phase 2 table must have a row -> organisation path. CLAUDE.md
 -- § Tenancy model makes this a requirement, and every RLS policy Task 2 writes
 -- depends on it.
-select invariants.val('D10 all 26 tables carry a NOT NULL organisation_id',
+--
+-- 28 OF 29 SINCE PHASE 6 TASK 1, AND THE ONE EXEMPTION IS STATED RATHER THAN
+-- SILENCED. public.network_connection_requests is BI-TENANT (Q83): two
+-- organisations each own a side of a connection request, so it carries
+-- from_organisation_id AND to_organisation_id and NO column named
+-- `organisation_id` at all. It is the only such table in the schema, and
+-- lowering this number without D10b beside it would be indistinguishable from
+-- a table that simply lost its tenant path. D10b is the replacement assertion.
+select invariants.val('D10 28 of the 29 carry a NOT NULL organisation_id (network_connection_requests is bi-tenant)',
   $$select count(*)::text from invariants.phase2_tables t
      join pg_catalog.pg_class c on c.relname=t.relname
       and c.relnamespace='public'::regnamespace
      join pg_catalog.pg_attribute a on a.attrelid=c.oid and a.attname='organisation_id'
      where a.attnotnull$$,
-  '26');
+  '28');
+
+-- D10's REPLACEMENT ASSERTION FOR THE ONE EXEMPTION. The bi-tenant table still
+-- owes a reliable row -> organisation path (CLAUDE.md § Tenancy model); it owes
+-- TWO. Both columns NOT NULL, both with a foreign key to public.organisations,
+-- both cascading -- so a request cannot name an organisation that does not
+-- exist, cannot have either side null, and disappears with either tenant.
+-- Written as one string so a change to any of the four facts is red.
+select invariants.val('D10b network_connection_requests: BOTH org columns are NOT NULL with a cascading FK',
+  $$select (select count(*) from pg_catalog.pg_attribute a
+              where a.attrelid='public.network_connection_requests'::regclass
+                and a.attname in ('from_organisation_id','to_organisation_id')
+                and a.attnotnull)::text
+        || '/' ||
+           (select count(*) from pg_catalog.pg_constraint con
+              where con.contype='f'
+                and con.conrelid='public.network_connection_requests'::regclass
+                and con.confrelid='public.organisations'::regclass
+                and con.confdeltype='c'
+                and (select a.attname from pg_catalog.pg_attribute a
+                      where a.attrelid=con.conrelid and a.attnum=con.conkey[1])
+                    in ('from_organisation_id','to_organisation_id'))::text$$,
+  '2/2');
 
 -- ---------------------------------------------------------------------------
 -- D11. THE CHILD POLICIES' OWN TENANT CORRELATION.

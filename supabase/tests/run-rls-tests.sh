@@ -343,6 +343,58 @@ else
 fi
 
 # ============================================================================
+# PHASE 6 (NETWORK) RLS SUITE -- THE PRIVATE/NETWORK BOUNDARY PROOF (Task 1).
+#
+# Runs LAST of the psql suites and REUSES THE SAME FIXTURES WHOLE -- the twelve
+# users, orgs org-alpha/org-beta, and the Phase 2 companies and venues the
+# network profiles speak for. It creates ONLY network_* rows, so the contact,
+# artist and event censuses the HTTP block below was written against are
+# untouched. It plants and then removes one organisation_subscriptions row (its
+# § NT, the Free-tier gate) and asserts in § NZ that it left none behind, for
+# the same reason rls_phase5_finance.sql asserts its own housekeeping: a leak
+# would redden an assertion in the HTTP block whose text says nothing about the
+# network.
+#
+# CLAUDE.md § The private/network split calls this "the highest-risk boundary"
+# and § Testing gates calls network-leakage tests the ones that "matter most".
+# This is that suite.
+# ============================================================================
+docker cp "$HERE/rls_phase6_network.sql" "$CTR:/tmp/rls_phase6_network.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P2VARS[@]}" -f /tmp/rls_phase6_network.sql
+
+p6_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from net.results where not pass" | tr -d '[:space:]')
+if [ "$p6_fails" != "0" ]; then
+  echo "PHASE 6 NETWORK SUITE FAILED: $p6_fails failing assertion(s)" >&2
+  echo "  A failure in ND is a PRIVATE TABLE IN A DISCOVERY PATH (N2) -- a view" >&2
+  echo "  now reads something other than the network tables, which is the one" >&2
+  echo "  thing the whole private/network split forbids." >&2
+  echo "  In NC, a MASKING VIEW THAT PROJECTS TOO MUCH -- most likely" >&2
+  echo "  organisation_id or entity_id, which turns a profile into a tenant." >&2
+  echo "  In NM, A LEAK OF AN UNPUBLISHED FIELD across the tenant boundary, or" >&2
+  echo "  a hidden field whose value is still stored (N3)." >&2
+  echo "  In NG, a PUBLIC PROFILE: anon now holds something (N6/Q70)." >&2
+  echo "  In NT, a BROKEN TIER GATE -- and note the gate is INERT today, so a" >&2
+  echo "  green NT1 is expected until Phase 7 removes the escape, at which point" >&2
+  echo "  that assertion must be RE-READ and its expectation flipped rather" >&2
+  echo "  than re-run (FOLLOW-UPS.md: an inert gate makes a wrong test green)." >&2
+  echo "  In NU, THE SENDER CAN ACCEPT ITS OWN REQUEST -- the two UPDATE" >&2
+  echo "  policies have been merged into one with an \`or\`." >&2
+  echo "  In NL/NS4, THE Q82 LEAK: network_links now has a counterparty read" >&2
+  echo "  path, disclosing who has filed whom in their CRM." >&2
+  echo "  In NF, THE FORWARD RATINGS GUARD (N5) -- something on the network" >&2
+  echo "  surface now names a rating, which CLAUDE.md forbids permanently." >&2
+  echo "  In NX, an audit payload now carries a published field's VALUE onto" >&2
+  echo "  the superuser-readable surface." >&2
+  echo "  Every one of those is Sev1." >&2
+  psql_status=1
+else
+  echo "Phase 6 network suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -2319,6 +2371,98 @@ p2_code "PRO AGAIN: the POST comes back (the gate is the plan, not a one-way doo
 # Leave the fixture in the state every other block found it in: no subscription
 # row for ALPHA (the inert state the product actually ships in today).
 p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
+
+# ============================================================================
+# PHASE 6 NETWORK AT THE API SURFACE (Task 1).
+#
+# N6 / Q70 -- "No public, logged-out profiles at MVP" -- is enforced by the
+# GRANT, not by the absence of a route, and the psql § NG proves the ACL. THIS
+# proves the consequence at the layer it applies to: the anon key that ships in
+# every browser bundle, pointed straight at PostgREST, with no Next.js app on
+# its path. The psql assertion and this one fail for different reasons, which
+# is why both exist -- a grant could be right while the view was published to
+# the wrong schema, and vice versa.
+#
+# EVERY CHECK IS PAIRED. A 401 on its own is satisfied by a URL that does not
+# resolve, so each anon refusal is followed by the SAME URL with a real
+# member's JWT returning rows.
+# ============================================================================
+echo
+echo "=== Phase 6 network at the API surface (Task 1) ==="
+
+p2_code "anon GET network_directory"                 401 GET "network_directory?select=id"
+p2_code "anon GET network_connected_profiles"        401 GET "network_connected_profiles?select=id"
+p2_code "anon GET network_profiles"                  401 GET "network_profiles?select=id"
+p2_code "anon GET network_connection_requests"       401 GET "network_connection_requests?select=id"
+p2_code "anon GET network_links"                     401 GET "network_links?select=id"
+
+# THE POSITIVE CONTROL FOR ALL FIVE: the same directory URL, with a member's
+# token, returns the two published profiles the psql suite left behind.
+# THREE published live profiles survive the psql suite: ALPHA's one and BETA's
+# two (the second was added for section NR's withdraw-and-retry pair).
+p2_rows "CONTROL: a member's JWT GETs all three published profiles"  3 \
+        "network_directory?select=id" "$MGR"
+
+# THE MASK, OVER REAL HTTP. ALPHA's contact_email is `connections`-level and
+# BETA has not connected to ALPHA through any request the HTTP block made -- the
+# psql suite's accepted connection is between ALPHA and BETA, so read it as a
+# THIRD party would... except there is no third org in the fixtures. So this is
+# read as ALPHA's own manager, for whom the DIRECTORY view still masks it: the
+# view is column-masking, not caller-privileging, and that is the point.
+p2_json "the directory masks a connections-level field over HTTP" "<null>" \
+        "network_directory?select=contact_email&id=eq.e0110000-0000-0000-0000-00000000000a" \
+        "$MGR" "contact_email"
+p2_json "CONTROL: ...while a network-level field on the same row resolves" "Bristol" \
+        "network_directory?select=city&id=eq.e0110000-0000-0000-0000-00000000000a" \
+        "$MGR" "city"
+
+# organisation_id IS NOT A COLUMN, so PostgREST cannot be asked for it -- 400,
+# not an empty string. This is the transport-level form of the NC4 assertion.
+p2_code "the directory has no organisation_id to select (400, not a value)" 400 GET \
+        "network_directory?select=organisation_id" "" "$MGR"
+p2_code "...nor entity_id"                                                 400 GET \
+        "network_directory?select=entity_id" "" "$MGR"
+p2_code "CONTROL: selecting a real column of the same view works"          200 GET \
+        "network_directory?select=display_name" "" "$MGR"
+
+# NO WRITE PATH THROUGH EITHER VIEW. Both project computed CASE expressions, so
+# they are not auto-updatable and Postgres itself refuses -- belt and braces
+# over the absent grant.
+# 403, not 405: the view carries a SELECT grant and nothing else, so PostgREST
+# is refused at the PRIVILEGE layer before it ever reaches the question of
+# whether the view is auto-updatable. Both refusals are real; this is the one
+# that happens first, and asserting the other would be asserting a mechanism
+# that never runs.
+p2_code "a POST into the directory view is refused (no INSERT grant)"  403 POST "network_directory" \
+        '{"display_name":"planted"}' "$MGR"
+
+# THE TIER GATE AT THE TRANSPORT. The psql § NT proves it in-database; this is
+# the same gate through PostgREST, which is where a Free-tier customer's browser
+# actually meets it.
+p2_sub "insert into public.organisation_subscriptions
+          (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+        values ('$ALPHA_ORG','free','monthly',1,'active', now() + interval '30 days')
+        on conflict (organisation_id) do update set plan_id='free', status='active';"
+p2_code "FREE: a network profile POST is refused 403 (network_publish=false)" 403 POST \
+        "network_profiles" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_kind\":\"artist\",\"entity_id\":\"44440000-0000-0000-0000-000000000001\",\"display_name\":\"Free HTTP Profile\"}" "$MGR"
+p2_rows "FREE: ...while browsing the directory still returns all 3 rows (view-only tier)" 3 \
+        "network_directory?select=id" "$MGR"
+p2_sub "update public.organisation_subscriptions set plan_id='starter'
+        where organisation_id='$ALPHA_ORG';"
+p2_code "STARTER: the SAME POST is allowed (the gate is the plan, not a door)" 201 POST \
+        "network_profiles" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_kind\":\"artist\",\"entity_id\":\"44440000-0000-0000-0000-000000000001\",\"display_name\":\"Starter HTTP Profile\"}" "$MGR"
+p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
+
+# TENANT BOUNDARY, aimed at the other tenant's org id -- the request an attacker
+# sends, since the org id is in every URL.
+p2_rows "manager GET network_links of org BETA (expect 0)"  0 \
+        "network_links?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+p2_code "manager POSTs a network profile into org BETA"   403 POST "network_profiles" \
+        "{\"organisation_id\":\"$BETA_ORG\",\"entity_kind\":\"company\",\"entity_id\":\"1111000b-0000-0000-0000-00000000000b\",\"display_name\":\"planted\"}" "$MGR"
+p2_code "manager DELETEs a network profile (no DELETE grant)" 403 DELETE \
+        "network_profiles?id=eq.e0110000-0000-0000-0000-00000000000a" "" "$MGR"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

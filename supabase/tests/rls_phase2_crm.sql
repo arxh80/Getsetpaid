@@ -408,6 +408,17 @@ select crm.val('A2  admin holds all seven CRM keys',
     ('view_crm','manage_contacts','manage_artists','manage_venues','manage_custom_fields','merge_records','manage_events')$$, '7');
 -- A3-A5 / A8 enumerate the FULL set per role, so they break by design whenever a
 -- key is granted -- which is the point (an accidental grant is caught here).
+--
+-- PHASE 6 TASK 1 MOVES ALL SEVEN OF A3-A9, AND THAT IS THE ASSERTION WORKING.
+-- view_network went to ALL NINE roles (Free is a view-only network tier, so
+-- browsing is the one network act every role including read_only can do), which
+-- is why even A6, A7 and A9 -- the three whose strings survived the Phase 3 and
+-- Phase 4 grants untouched, as the paragraph above records -- move this time.
+-- manage_network_connections went to six roles and manage_network_profile to
+-- four (owner/admin/manager/marketing), which is why A7 (marketing) gains three
+-- keys where A4/A5 gain two and A8 (standard_user) gains only view_network.
+-- Q77. The TIER gate, not the role gate, is what makes Free view-only, and it
+-- lives on the write policies -- see rls_phase6_network.sql § NT.
 -- PHASE 4 TASK 2 added the four operational write keys (manage_tasks,
 -- manage_meetings, manage_notes, manage_documents) to the same six roles that
 -- hold manage_events, so each of these four strings gains those four keys in
@@ -416,15 +427,15 @@ select crm.val('A2  admin holds all seven CRM keys',
 select crm.val('A3  manager holds the manage set + operations, NOT manage_custom_fields',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='manager'$$,
-  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,merge_records,view_crm');
+  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_network_connections,manage_network_profile,manage_notes,manage_tasks,manage_venues,merge_records,view_crm,view_network');
 select crm.val('A4  booker: no venue key, no merge key -- but manage_events + operations',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='booker'$$,
-  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,view_crm');
+  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_network_connections,manage_notes,manage_tasks,view_crm,view_network');
 select crm.val('A5  venue_manager: no artist key -- but manage_events + operations',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='venue_manager'$$,
-  'manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,view_crm');
+  'manage_contacts,manage_documents,manage_events,manage_meetings,manage_network_connections,manage_notes,manage_tasks,manage_venues,view_crm,view_network');
 -- PHASE 5 TASK 1 gives the Finance role its first WRITE key. It is still
 -- read-only over the CRM (view_crm and no manage_* CRM key), but it now holds
 -- view_finance and manage_finance -- the finance module is the one surface it
@@ -433,18 +444,18 @@ select crm.val('A5  venue_manager: no artist key -- but manage_events + operatio
 select crm.val('A6  finance is read-only over the CRM, but writes the finance module',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='finance'$$,
-  'manage_finance,view_crm,view_finance');
+  'manage_finance,view_crm,view_finance,view_network');
 select crm.val('A7  marketing: contacts, not artists',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='marketing'$$,
-  'manage_contacts,view_crm');
+  'manage_contacts,manage_network_connections,manage_network_profile,view_crm,view_network');
 select crm.val('A8  standard_user holds the manage keys (scope is the policy''s job)',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='standard_user'$$,
-  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,view_crm');
+  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,view_crm,view_network');
 select crm.val('A9  read_only holds view_crm and nothing else',
   $$select string_agg(permission_key,',' order by permission_key)
-    from public.role_permissions where role_key='read_only'$$, 'view_crm');
+    from public.role_permissions where role_key='read_only'$$, 'view_crm,view_network');
 select crm.val('A10 no platform_superuser row exists anywhere',
   $$select count(*)::text from public.role_permissions where role_key='platform_superuser'$$, '0');
 
@@ -1249,11 +1260,17 @@ select crm.val('L5  every table carrying updated_at has the trigger',
 -- at tables that HAVE an updated_at column.
 -- TWENTY-NINE SINCE PHASE 5 TASK 1: public.financial_entries, whose trigger
 -- 20260903000000 adds by hand and names `set_updated_at` like every other one.
-select crm.val('L6  ...and that is 29 tables (+1 finance table in Phase 5)',
+-- 31 SINCE PHASE 6 TASK 1, up from 29. TWO added, not three: network_profiles
+-- and network_connection_requests carry `updated_at` and therefore a hand-added
+-- set_updated_at trigger (Constraint 8); public.network_links does NOT -- it has
+-- no updated_at column, because a link is created or soft-deleted and never
+-- edited. 29 + 2 = 31, and a reviewer of 20260904000000 checks that arithmetic
+-- against the three tables it creates.
+select crm.val('L6  ...and that is 31 tables (+2 network tables in Phase 6)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '29');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '31');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together

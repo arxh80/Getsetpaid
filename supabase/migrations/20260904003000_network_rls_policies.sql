@@ -329,17 +329,33 @@ create policy "network_connection_requests_update_recipient_responds"
 comment on policy "network_connection_requests_update_recipient_responds" on public.network_connection_requests is
   'PERMITS: the RECIPIENT organisation to answer a request -- accepted or declined, and nothing else. Requires manage_network_connections at aal2 (USING and WITH CHECK) and network_publish (WITH CHECK only, so the refusal is a loud 42501 rather than a silent 204). DOES NOT PERMIT: a FREE-tier organisation ACCEPTING (Q76 -- a Free org can see and decline-by-inaction, it cannot form a connection); the recipient setting `withdrawn`, which is the sender''s word; the recipient rolling a terminal status back to `pending` (the WITH CHECK excludes pending, and private.network_request_status_transition_guard below refuses it again as defence in depth). This is HALF of a deliberate two-policy split -- see network_connection_requests_update_sender_withdraws. A single policy with an `or` across the two organisation columns would let a SENDER mark its own request accepted, which is the whole point of the split.';
 
+-- DEVIATION FROM THE BRIEF, STATED, AND IT CLOSES A REAL HOLE (Constraint 13).
+--
+-- The brief specifies this policy's WITH CHECK as `status = 'withdrawn'` and
+-- nothing else. THAT IS NOT SAFE, because PostgreSQL ORs PERMISSIVE POLICIES
+-- TOGETHER IN BOTH CLAUSES -- the WITH CHECKs as well as the USINGs. So with a
+-- bare `status = 'withdrawn'` here, a RECIPIENT's UPDATE would pass USING
+-- through the recipient policy and then pass WITH CHECK through THIS one,
+-- because this one carries no term about who the caller is. Measured on this
+-- stack while writing the suite: the recipient could set `withdrawn`, which is
+-- the sender's word alone.
+--
+-- Repeating the USING term in WITH CHECK is what every other policy in this
+-- schema does, and it is what binds the actor to the transition -- which is the
+-- entire stated purpose of splitting this policy in two. rls_phase6_network.sql
+-- NU5 is the assertion; without this term it is red.
 create policy "network_connection_requests_update_sender_withdraws"
   on public.network_connection_requests for update to authenticated
   using (
     from_organisation_id in (select private.permitted_organisations('manage_network_connections'))
   )
   with check (
-    status = 'withdrawn'
+    from_organisation_id in (select private.permitted_organisations('manage_network_connections'))
+    and status = 'withdrawn'
   );
 
 comment on policy "network_connection_requests_update_sender_withdraws" on public.network_connection_requests is
-  'PERMITS: the SENDING organisation to withdraw its own request, and NOTHING ELSE -- the WITH CHECK pins status to exactly ''withdrawn''. DOES NOT PERMIT: the sender accepting or declining its own request (the whole reason this is a separate policy rather than an `or` branch of the recipient one); the sender reviving a request to pending; the sender withdrawing somebody else''s. NO network_publish TERM, DELIBERATELY: withdrawing is how a Free-tier organisation retracts a request it can no longer act on, and gating the retraction behind the tier would strand it. Withdrawing frees the pair for exactly one retry (Q79, network_connection_requests_live_pair). The BEFORE UPDATE transition guard below additionally refuses withdrawing an already-terminal request.';
+  'PERMITS: the SENDING organisation to withdraw its own request, and NOTHING ELSE -- the WITH CHECK pins status to exactly ''withdrawn'' AND repeats the from_organisation_id term. DOES NOT PERMIT: the sender accepting or declining its own request (the whole reason this is a separate policy rather than an `or` branch of the recipient one); the RECIPIENT withdrawing -- and that second one is why the WITH CHECK repeats the organisation term rather than carrying the status alone as the Task 1 brief specified. PostgreSQL ORs permissive policies in BOTH clauses, so a bare `status = ''withdrawn''` here would be satisfied by a recipient whose USING passed through the OTHER update policy; measured on this stack while writing the suite. NO network_publish TERM, DELIBERATELY: withdrawing is how a Free-tier organisation retracts a request it can no longer act on, and gating the retraction behind the tier would strand it. Withdrawing frees the pair for exactly one retry (Q79, network_connection_requests_live_pair). The BEFORE UPDATE transition guard below additionally refuses withdrawing an already-terminal request.';
 
 -- ---------------------------------------------------------------------------
 -- THE TRANSITION GUARD -- defence in depth behind the two WITH CHECKs.
