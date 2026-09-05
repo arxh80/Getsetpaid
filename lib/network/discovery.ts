@@ -174,3 +174,74 @@ export async function loadNetworkProfileForViewer(
   if (!directory.data) return null;
   return { row: mapNetworkDirectoryRow(directory.data), source: "directory" };
 }
+
+/**
+ * Task 4: batch-resolve several profile ids in exactly two round trips,
+ * regardless of how many ids are asked for -- the requests inbox/outbox's
+ * counterparty column (lib/network/requests-list.ts), and any future caller
+ * that needs to render a small, BOUNDED set of foreign profiles by id.
+ *
+ * SAME TWO VIEWS AS `loadNetworkProfileForViewer`, NEVER `network_profiles`.
+ * This is the batched form of that function's own rule (Constraint 19's
+ * network case): reads `network_connected_profiles` first, falls back to
+ * `network_directory` for whatever is left, and never selects from the base
+ * table for a foreign organisation.
+ *
+ * `ids` MUST BE BOUNDED BY THE CALLER -- `.in()` puts every value in the GET
+ * query string (lib/list/query.ts's `ListQuery.in` doc comment states the same
+ * rule). Every caller in this file reaches it from one page of an already
+ * page-size-capped list, so the bound is inherited rather than re-declared
+ * here.
+ *
+ * A profile id absent from the returned map is one neither view carries any
+ * more -- unpublished or soft-deleted since whatever pointed at it was
+ * created (a standing connection request is never re-validated against the
+ * profile it named). The caller renders that as "no longer available" rather
+ * than as an error.
+ */
+export async function loadNetworkProfileSummaries(
+  profileIds: readonly string[],
+): Promise<ReadonlyMap<string, NetworkProfileForViewer>> {
+  const ids = [...new Set(profileIds)];
+  const map = new Map<string, NetworkProfileForViewer>();
+  if (ids.length === 0) return map;
+
+  const supabase = await createClient();
+
+  const connected = await supabase
+    .from("network_connected_profiles")
+    .select(NETWORK_DIRECTORY_SELECT)
+    .in("id", ids);
+  if (connected.error) {
+    console.error(
+      "[network] batched connected-profile lookup failed:",
+      connected.error.message,
+    );
+    // Fail closed to the narrower view, same reasoning as the single-id
+    // function above: falling through to the directory lookup can only ever
+    // show LESS than the connected view would have.
+  } else {
+    for (const row of connected.data ?? []) {
+      map.set(String(row.id), { row: mapNetworkDirectoryRow(row), source: "connected" });
+    }
+  }
+
+  const remaining = ids.filter((id) => !map.has(id));
+  if (remaining.length === 0) return map;
+
+  const directory = await supabase
+    .from("network_directory")
+    .select(NETWORK_DIRECTORY_SELECT)
+    .in("id", remaining);
+  if (directory.error) {
+    console.error(
+      "[network] batched directory lookup failed:",
+      directory.error.message,
+    );
+    return map;
+  }
+  for (const row of directory.data ?? []) {
+    map.set(String(row.id), { row: mapNetworkDirectoryRow(row), source: "directory" });
+  }
+  return map;
+}

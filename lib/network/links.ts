@@ -54,7 +54,11 @@ import { echoedValues, field, type FormState } from "@/lib/forms";
 import { stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { getNetworkConnectionAccess } from "@/lib/network/access";
-import { isNetworkEntityKind } from "@/lib/network/fields";
+import {
+  isNetworkEntityKind,
+  NETWORK_ENTITY_URL_SEGMENT,
+  type NetworkEntityKind,
+} from "@/lib/network/fields";
 
 /**
  * Resolve the organisation and check CONNECTION write access.
@@ -83,6 +87,29 @@ async function authoriseLinks(
     return { ok: false, state: { error: access.explanation, values: echoed } };
   }
   return { ok: true, org };
+}
+
+/**
+ * Both routes a link write changes -- ADDED BY TASK 4.
+ *
+ * When this action module shipped in Task 1, the only place a link could be
+ * seen was the network hub (`/${org.slug}/network`), so that was the only
+ * path revalidated. Task 4 built the actual UI (`linked-identity.tsx` /
+ * `link-picker.tsx`) on the private record's OWN detail page instead
+ * (companies/[id], artists/[id], venues/[id], agencies/[id]) and on the hub's
+ * new "Your linked records" list -- so a link created or removed there now
+ * also revalidates the entity page whose identity row it changes.
+ * `NETWORK_ENTITY_URL_SEGMENT` is the same shared map the profile page and
+ * `linked-identity.tsx` use, so this cannot drift from where the UI actually
+ * lives (Constraint 19).
+ */
+function revalidateLinkSurfaces(
+  orgSlug: string,
+  entityType: NetworkEntityKind,
+  entityId: string,
+) {
+  revalidatePath(`/${orgSlug}/network`);
+  revalidatePath(`/${orgSlug}/${NETWORK_ENTITY_URL_SEGMENT[entityType]}/${entityId}`);
 }
 
 /**
@@ -158,7 +185,7 @@ export async function createNetworkLinkAction(
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
 
-  revalidatePath(`/${org.slug}/network`);
+  revalidateLinkSurfaces(org.slug, privateEntityType, privateEntityId);
   return {
     message: "Linked. This profile now shows against your own record.",
   };
@@ -187,6 +214,18 @@ export async function removeNetworkLinkAction(
   const linkId = field(formData, "linkId");
   if (!linkId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
+  // TASK 4, REVALIDATION ONLY -- NEVER AUTHORISATION. `linked-identity.tsx`
+  // (the only caller, rendered on the private record's own detail page) hands
+  // these back as hidden fields so the correct entity page can be
+  // revalidated without a second SELECT of the link row this action is about
+  // to soft-delete. The actual write below is still scoped by
+  // `organisation_id = org.id` and `id = linkId` alone -- these two values
+  // decide NOTHING about whether the write is permitted, only which extra
+  // path gets revalidated on success, and an invalid or absent pair simply
+  // means one fewer path is revalidated (the hub still is).
+  const entityType = field(formData, "privateEntityType");
+  const entityId = field(formData, "privateEntityId");
+
   const supabase = await createClient();
   const result = await commitWrite(`remove network link ${linkId}`, () =>
     supabase
@@ -197,7 +236,13 @@ export async function removeNetworkLinkAction(
       .is("deleted_at", null),
   );
 
-  if (result.outcome === "applied") revalidatePath(`/${org.slug}/network`);
+  if (result.outcome === "applied") {
+    if (isNetworkEntityKind(entityType) && entityId) {
+      revalidateLinkSurfaces(org.slug, entityType, entityId);
+    } else {
+      revalidatePath(`/${org.slug}/network`);
+    }
+  }
   return stateFor(
     result,
     "Unlinked. You can link them again at any time.",

@@ -235,6 +235,60 @@ export async function loadNetworkProfileById(
   };
 }
 
+/** One of this organisation's own PUBLISHED profiles, as the "Send from"
+ *  picker (components/network/connect-button.tsx, Task 4) needs it. */
+export interface OwnPublishedProfile {
+  id: string;
+  displayName: string;
+  entityKind: NetworkEntityKind;
+}
+
+/**
+ * This organisation's own live, PUBLISHED profiles -- Q78's "at least one
+ * published profile of the sender's". `connect-button.tsx` uses the length of
+ * this list to decide whether the request control is offered at all (empty
+ * means "publish one first", the refusal-that-teaches this task's brief
+ * requires), and its contents to build the "Send from" choice when there is
+ * more than one.
+ *
+ * DRAFTS EXCLUDED (`status = 'published'`): a draft profile is not a
+ * legitimate `from_network_profile_id` -- the INSERT policy's own inline
+ * `exists` requires `status = 'published'` on both ends (20260904003000), so
+ * offering a draft here would be a choice the database refuses a moment
+ * later. Reads `network_profiles` filtered to `organisation_id =
+ * organisationId`, the caller's own row through the SELECT (own) policy,
+ * exactly as `loadNetworkProfileForEntity` does -- never the directory.
+ */
+export async function loadOwnPublishedProfiles(
+  organisationId: string,
+): Promise<OwnPublishedProfile[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("network_profiles")
+    .select("id, display_name, entity_kind")
+    .eq("organisation_id", organisationId)
+    .eq("status", "published")
+    .is("deleted_at", null)
+    .order("display_name", { ascending: true });
+
+  if (error || !data) {
+    if (error) {
+      console.error(
+        `[network] own-published-profiles lookup failed for org ${organisationId}:`,
+        error.message,
+      );
+    }
+    // Fail closed to "nothing to send from" -- the safe direction for a
+    // control whose empty state is "publish a profile first", not a crash.
+    return [];
+  }
+  return data.map((row) => ({
+    id: String(row.id),
+    displayName: String(row.display_name),
+    entityKind: row.entity_kind as NetworkEntityKind,
+  }));
+}
+
 /**
  * This organisation's own private record's current `name`, for the editor's
  * "View the record" link -- a courtesy, not a control. `null` when the record

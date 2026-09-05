@@ -235,6 +235,24 @@ export const NETWORK_ENTITY_KIND_LABELS: Record<NetworkEntityKind, string> = {
   agency: "Agency",
 };
 
+/**
+ * The URL segment each entity kind's own detail pages live under.
+ *
+ * SHARED, ADDED BY TASK 4. Previously a private constant repeated inside
+ * app/(app)/[orgSlug]/network/[profileId]/page.tsx (Task 3's `ENTITY_LINK_
+ * SEGMENT`) -- Task 4 needs the identical mapping in three more places
+ * (lib/network/links.ts's revalidation, and the linked-identity/link-picker
+ * components' "View the record" links), so it lives here once rather than as
+ * a fourth private copy. Pure data, no React -- importable from a
+ * `"use server"` module as well as a component.
+ */
+export const NETWORK_ENTITY_URL_SEGMENT: Record<NetworkEntityKind, string> = {
+  company: "companies",
+  artist: "artists",
+  venue: "venues",
+  agency: "agencies",
+};
+
 /** The two profile states as a human reads them. Q81. */
 export const PROFILE_STATUS_LABELS: Record<ProfileStatus, string> = {
   draft: "Draft",
