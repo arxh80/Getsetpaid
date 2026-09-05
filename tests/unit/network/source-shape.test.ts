@@ -694,7 +694,7 @@ describe("every disabled control in the editor carries an aria-describedby", () 
 
   it("every element carrying a REAL `disabled={disabled}` also carries `aria-describedby`", () => {
     // "Real" excludes the two places `disabled={disabled}` is a PROP handed
-    // to a child COMPONENT (QuickHideForm, VisibilityLadder) rather than an
+    // to a child COMPONENT (QuickHideButton, VisibilityLadder) rather than an
     // HTML `disabled` attribute on a form control -- a component tag starts
     // with an UPPER-CASE letter, an intrinsic element does not, which is
     // exactly the distinction JSX itself makes.
@@ -707,10 +707,10 @@ describe("every disabled control in the editor carries an aria-describedby", () 
       const name = tag.match(/^<([A-Za-z][\w.]*)/)![1]!;
       // A lower-case tag name IS an intrinsic HTML element. `Button` is the
       // one upper-case exception: it renders a single real `<button>` and
-      // nothing else (components/ui/button.tsx), unlike QuickHideForm and
+      // nothing else (components/ui/button.tsx), unlike QuickHideButton and
       // VisibilityLadder, which are WRAPPER components -- their own `disabled`
       // prop governs controls several elements further down, each of which is
-      // asserted separately (QuickHideForm's own Button is one of THIS
+      // asserted separately (QuickHideButton's own Button is one of THIS
       // census's Button entries; VisibilityLadder's fieldset is one of the
       // lower-case ones).
       return name[0] === name[0]!.toLowerCase() || name === "Button";
@@ -719,7 +719,7 @@ describe("every disabled control in the editor carries an aria-describedby", () 
     // the name input, the bio textarea, the other-field input, the Save
     // button and the two publish/unpublish buttons live in a SEPARATE
     // function (PublishToggleForm) and are counted in the next test -- this
-    // one is scoped to ProfileEditor's own five plus QuickHideForm's one
+    // one is scoped to ProfileEditor's own five plus QuickHideButton's one
     // (rendered once per field, but the SOURCE occurrence is one line).
     expect(domControls.length, "real DOM controls with disabled={disabled}").toBeGreaterThanOrEqual(6);
 
@@ -732,10 +732,10 @@ describe("every disabled control in the editor carries an aria-describedby", () 
 
     // The two COMPONENT prop-passes are excluded from the DOM census above,
     // and are named here so their exclusion is a decision, not a blind spot:
-    // QuickHideForm and VisibilityLadder both declare their OWN internal
+    // QuickHideButton and VisibilityLadder both declare their OWN internal
     // `disabled: boolean` prop (asserted above) and are gated by it in turn.
     const componentPasses = withDisabled.filter((tag) => !domControls.includes(tag));
-    expect(componentPasses.some((t) => t.includes("<QuickHideForm"))).toBe(true);
+    expect(componentPasses.some((t) => t.includes("<QuickHideButton"))).toBe(true);
     expect(componentPasses.some((t) => t.includes("<VisibilityLadder"))).toBe(true);
   });
 
@@ -744,7 +744,7 @@ describe("every disabled control in the editor carries an aria-describedby", () 
     const publishButtons = tags.filter(
       (tag) => tag.startsWith("<Button") && tag.includes("disabled={disabled}"),
     );
-    // Save (ProfileEditor), Hide-now (QuickHideForm), Publish and Unpublish
+    // Save (ProfileEditor), Hide-now (QuickHideButton), Publish and Unpublish
     // (PublishToggleForm) -- four `<Button disabled={disabled}` elements.
     expect(publishButtons.length).toBe(4);
     for (const tag of publishButtons) {

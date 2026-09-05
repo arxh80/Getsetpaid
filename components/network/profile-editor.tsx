@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState, useTransition } from "react";
 import {
   updateNetworkProfileAction,
   publishNetworkProfileAction,
@@ -197,7 +197,7 @@ function VisibilityLadder({
         </p>
       ) : null}
       {storedLevel !== "hidden" ? (
-        <QuickHideForm
+        <QuickHideButton
           orgSlug={orgSlug}
           profileId={profileId}
           fieldName={name}
@@ -208,9 +208,25 @@ function VisibilityLadder({
   );
 }
 
-/** The one-click retraction: this field only, to `hidden`, right now --
- *  independent of whatever the surrounding whole-row form currently holds. */
-function QuickHideForm({
+/**
+ * The one-click retraction: this field only, to `hidden`, right now --
+ * independent of whatever the surrounding whole-row form currently holds.
+ *
+ * NOT A `<form>`. It lives inside VisibilityLadder's `<fieldset>`, which
+ * lives inside ProfileEditor's own `<form>` -- and HTML does not allow a
+ * `<form>` to nest inside another `<form>` at all (measured in a browser,
+ * Constraint 17: React logs "In HTML, <form> cannot be a descendant of
+ * <form>... This will cause a hydration error" the moment this WAS one, and
+ * the browser's own error-recovery parsing closes the OUTER form early,
+ * which would have put every field after the first hidden Save button
+ * outside the form it is meant to submit). A plain button calling the
+ * SAME exported Server Action directly -- `setFieldVisibilityAction` is
+ * `"use server"` and is callable as an ordinary async function, not only
+ * through a `<form action>` -- inside `startTransition`, which is what makes
+ * `pending` and the framework's own revalidation-on-completion behave
+ * identically to the `<form>` path everywhere else in this file.
+ */
+function QuickHideButton({
   orgSlug,
   profileId,
   fieldName,
@@ -221,23 +237,31 @@ function QuickHideForm({
   fieldName: PublishableField;
   disabled: boolean;
 }) {
-  const [state, formAction, pending] = useActionState(
-    setFieldVisibilityAction,
-    EMPTY_FORM_STATE,
-  );
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  const hideNow = () => {
+    const data = new FormData();
+    data.set("orgSlug", orgSlug);
+    data.set("profileId", profileId);
+    data.set("fieldName", fieldName);
+    data.set("level", "hidden");
+    startTransition(async () => {
+      const result = await setFieldVisibilityAction(EMPTY_FORM_STATE, data);
+      setError(result.error ?? null);
+    });
+  };
+
   return (
-    <form action={formAction} className="flex flex-col items-start gap-1">
-      <input type="hidden" name="orgSlug" value={orgSlug} />
-      <input type="hidden" name="profileId" value={profileId} />
-      <input type="hidden" name="fieldName" value={fieldName} />
-      <input type="hidden" name="level" value="hidden" />
+    <div className="flex flex-col items-start gap-1">
       <p id={HIDE_NOTE} className="sr-only">
         Hides {PUBLISHABLE_FIELD_LABELS[fieldName]} immediately and deletes its
         published value, without changing any other field.
       </p>
       <Button
-        type="submit"
+        type="button"
         variant="quiet"
+        onClick={hideNow}
         disabled={disabled}
         aria-describedby={disabled ? NOTE_ID : HIDE_NOTE}
         pending={pending}
@@ -245,8 +269,8 @@ function QuickHideForm({
       >
         Hide {PUBLISHABLE_FIELD_LABELS[fieldName].toLowerCase()} now
       </Button>
-      {state.error ? <Alert tone="error">{state.error}</Alert> : null}
-    </form>
+      {error ? <Alert tone="error">{error}</Alert> : null}
+    </div>
   );
 }
 
