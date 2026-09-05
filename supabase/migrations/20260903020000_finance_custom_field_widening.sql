@@ -78,15 +78,29 @@
 -- covers 'financial_entry' automatically. The finance MODULE gate is NOT
 -- duplicated onto definitions.
 --
--- It lands on VALUE writes instead, and it lands for free: a financial_entry
--- custom-field value can only be written for a row that entity_is_manageable()
--- and entity_is_live() both resolve to -- i.e. a LIVE public.financial_entries
--- row -- and such a row cannot exist without finance_module, because Task 1's
--- financial_entries INSERT policy gates on private.finance_module_organisations()
--- (20260903003000). A Starter org therefore has no financial_entries rows at
--- all, so its attempt to write a financial_entry value fails the manageable/
--- live terms (no such row) and is refused -- no bespoke gate required. Net:
--- custom finance fields are Pro-only in practice.
+-- It lands on VALUE writes instead, through the finance_module conjunct that
+-- 20260903030000 (post-review fix I1) adds to the entity_is_manageable
+-- 'financial_entry' arm below. A financial_entry custom-field value can only be
+-- written for a row that entity_is_manageable() and entity_is_live() both
+-- resolve to, and after that migration entity_is_manageable's finance arm
+-- requires manage_finance AND finance_module -- the same intersection Task 1's
+-- financial_entries INSERT/UPDATE policies use (20260903003000). Net: custom
+-- finance fields are Pro-only, on the write path, by an explicit term.
+--
+-- CORRECTED, 2026-09-04 (review finding I1). THIS PARAGRAPH ORIGINALLY CLAIMED
+-- THE GATE LANDED "FOR FREE", on the argument that "a Starter org therefore has
+-- no financial_entries rows at all", so no bespoke gate was required. That
+-- argument holds only for an organisation that was NEVER Pro. It is false for
+-- the case Q67 exists to describe: a Pro organisation that DOWNGRADES KEEPS its
+-- financial_entries rows (downgrading must never silently delete data), and the
+-- deployed custom_field_values write policies carry
+-- private.crm_write_organisations() as their tier term -- which Starter passes
+-- (crm_writes=t, finance_module=f). So before 20260903030000 a downgraded
+-- organisation could still write custom-field values against its surviving
+-- finance lines. Inert at the time (create_organisation() writes no
+-- subscription row, so the escape branch matched every org), but exactly the
+-- defect Phase 7 would have inherited when the escape is removed. The fix, its
+-- reasoning and its tests are in 20260903030000's header.
 
 -- ---------------------------------------------------------------------------
 -- (a) The two custom-field entity_type allowlists, six values -> seven.
@@ -256,6 +270,13 @@ as $$
     -- this is the shape financial_entries' own UPDATE policy uses. This is the
     -- arm the three custom_field_values write policies dispatch through for a
     -- financial_entry value.
+    --
+    -- SUPERSEDED BY 20260903030000 (review finding I1): this arm carries NO
+    -- tier term, which left a downgraded (Pro -> Starter) organisation able to
+    -- write finance custom-field values against its surviving lines. The
+    -- replacement body adds `and e.organisation_id in (select
+    -- private.finance_module_organisations())` here. This text is left as
+    -- shipped -- the file is history, not the deployed definition.
     when 'financial_entry' then exists (
       select 1 from public.financial_entries e
       where e.id = p_entity_id

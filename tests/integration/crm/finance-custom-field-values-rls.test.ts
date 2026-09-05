@@ -17,10 +17,14 @@
 //                 is about finance and not about the session.
 //   TIER (Q64)    a Starter org may DEFINE a `financial_entry` field (the
 //                 shared enforce_custom_field_limit trigger is the only gate on
-//                 definitions, and Starter has 5 slots per entity type) but has
-//                 no finance module, so it can hold no financial_entries row
-//                 and therefore no `financial_entry` VALUE. The module gate is
-//                 not duplicated onto the definition; it lands on the value.
+//                 definitions, and Starter has 5 slots per entity type) but the
+//                 finance MODULE gate lands on the VALUE write. Two cases, and
+//                 the second is the one that matters: a never-Pro Starter org
+//                 can hold no financial_entries row at all, and a Pro org that
+//                 DOWNGRADES keeps its lines (Q67) but loses the value write --
+//                 by the explicit finance_module conjunct 20260903030000 put on
+//                 entity_is_manageable's financial_entry arm (review finding
+//                 I1). Reads survive the downgrade; writes do not.
 //   THE ARM KEYS  private.entity_is_visible()'s `financial_entry` arm names
 //                 view_finance and entity_is_manageable()'s names
 //                 manage_finance, read out of the DEPLOYED bodies.
@@ -401,18 +405,35 @@ describe("financial_entry custom-field values are gated by the finance keys", ()
     }
   });
 
-  it("a Starter org's financial_entry VALUE write is refused, with a positive control", async () => {
-    // The second half of the chain. The paired positive runs FIRST because the
-    // refusal aborts the transaction: same org, same user, same RPC, on an
-    // `event` value -- which succeeds. So what is refused below is the finance
-    // dispatch, not a Starter org that cannot write custom-field values at all.
+  it("a DOWNGRADED org's financial_entry VALUE write is refused on a REAL surviving line", async () => {
+    // REVIEW FINDING I1, AND THE TEST THAT USED TO HIDE IT. The earlier version
+    // of this case wrote against a nonexistent entity id, on the argument that
+    // "no financial_entries row exists in a Starter org" -- which is true only
+    // of an org that was NEVER Pro, and false of the case Q67 exists to
+    // describe. A Pro org that DOWNGRADES keeps its finance lines (downgrading
+    // must never silently delete data), so it keeps a LIVE, MANAGEABLE finance
+    // row -- and before 20260903030000 it kept the ability to write
+    // custom-field values against it, because the deployed custom_field_values
+    // write policies gate on crm_write_organisations() and Starter has
+    // crm_writes = true.
+    //
+    // So this walks the real chain: subscribe PRO, write the line and its
+    // value, DOWNGRADE to starter, and then assert -- in that order, because a
+    // refusal aborts the transaction and everything that needs the session
+    // alive has to happen first:
+    //   1. the line and its value still READ (Q67, reads survive a downgrade);
+    //   2. an `event` custom-field value write by the SAME user in the SAME
+    //      instant still succeeds -- Starter keeps crm_writes, so this is what
+    //      makes the refusal below about the FINANCE MODULE rather than about a
+    //      Starter org that can write no custom-field values at all;
+    //   3. the financial_entry value write is REFUSED.
     const client = await pool.connect();
     try {
       await client.query("begin");
 
-      const org = await createOrg(client, "Starter value probe");
-      await subscribe(client, org, "starter");
-      const ownerUid = await createUser(client, "cfv-starter2-");
+      const org = await createOrg(client, "Downgraded value probe");
+      await subscribe(client, org, "pro");
+      const ownerUid = await createUser(client, "cfv-downgrade-");
       await client.query(
         `insert into public.organisation_memberships
            (organisation_id, user_id, role, status, joined_at)
@@ -420,10 +441,19 @@ describe("financial_entry custom-field values are gated by the finance keys", ()
         [org, ownerUid],
       );
       const {
-        rows: [ev],
-      } = await client.query<{ id: string }>(
-        `insert into public.events (organisation_id, owner_user_id, name, starts_at)
-         values ($1, $2, 'Starter event', now()) returning id`,
+        rows: [ids],
+      } = await client.query<{ ev: string; fe: string }>(
+        `with e as (
+           insert into public.events (organisation_id, owner_user_id, name, starts_at)
+           values ($1, $2, 'Downgrade event', now()) returning id
+         ), f as (
+           insert into public.financial_entries
+             (organisation_id, created_by, event_id, category, status,
+              amount_minor, currency, occurred_on)
+           select $1, $2, e.id, 'fee', 'budgeted', 100000, 'GBP', current_date
+             from e returning id
+         )
+         select (select id from e) as ev, (select id from f) as fe`,
         [org, ownerUid],
       );
 
@@ -446,24 +476,63 @@ describe("financial_entry custom-field values are gated by the finance keys", ()
         [org],
       );
 
+      // WHILE PRO: the finance value write works. This is the denominator --
+      // without it, the refusal after the downgrade could be a fixture that
+      // never worked in the first place.
       expect(
-        await setValue(client, org, "event", ev!.id, fields!.ev, "P-1"),
-        "the same Starter user writes an EVENT custom-field value fine",
+        await setValue(
+          client,
+          org,
+          "financial_entry",
+          ids!.fe,
+          fields!.fin,
+          "CC-PRO",
+        ),
+        "on Pro, the same user writes the same value on the same line",
       ).toBe(1);
 
+      // THE DOWNGRADE. Nothing else changes: finance_module goes false,
+      // crm_writes stays true.
+      await stopActing(client);
+      await client.query(
+        `update public.organisation_subscriptions set plan_id = 'starter'
+          where organisation_id = $1`,
+        [org],
+      );
+      await actAs(client, ownerUid, "aal2");
+
+      // 1. READS SURVIVE (Q67) -- the line and the value are both still there.
+      const {
+        rows: [lines],
+      } = await client.query<{ n: string }>(
+        `select count(*)::text as n from public.financial_entries where id = $1`,
+        [ids!.fe],
+      );
+      expect(lines!.n, "the downgrade deleted no finance line").toBe("1");
+      expect(
+        await readValues(client, org, "financial_entry", ids!.fe),
+        "and the custom-field value written on Pro still reads back",
+      ).toEqual(['"CC-PRO"']);
+
+      // 2. THE NON-VACUITY CONTROL, in the same session, after the downgrade.
+      expect(
+        await setValue(client, org, "event", ids!.ev, fields!.ev, "P-1"),
+        "Starter keeps crm_writes, so an EVENT custom-field value still writes",
+      ).toBe(1);
+
+      // 3. THE REFUSAL. Same user, same org, same RPC, same live line -- the
+      // only term that changed is finance_module.
       await expect(
         setValue(
           client,
           org,
           "financial_entry",
-          // No financial_entries row exists in a Starter org, so any id is the
-          // same id: entity_is_manageable() and entity_is_live() both resolve
-          // against a table with nothing in it for this workspace.
-          "00000000-0000-0000-0000-0000000000ff",
+          ids!.fe,
           fields!.fin,
-          "X-1",
+          "CC-STARTER",
         ),
-        "no line to hang it on -> the value write's manageable/live terms fail",
+        "the finance_module conjunct on entity_is_manageable's financial_entry " +
+          "arm refuses the write the downgrade should have closed",
       ).rejects.toThrow();
     } finally {
       await client.query("rollback").catch(() => {});

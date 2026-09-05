@@ -1044,6 +1044,128 @@ select fin.val('FI6 CONTROL: ...and reads that same value back',
        and entity_id='44440000-0000-0000-0000-000000000001'$$, 'booker rider');
 reset role; reset request.jwt.claims;
 
+-- ---------------------------------------------------------------------------
+-- FI7-FI18. THE TIER GATE ON THE VALUE PATH -- post-review fix I1.
+--
+-- WHAT THIS SECTION EXISTS TO CATCH. Until 20260903030000 the
+-- entity_is_manageable 'financial_entry' arm carried NO tier term, and the
+-- three deployed custom_field_values write policies carry
+-- private.crm_write_organisations() -- which STARTER PASSES (crm_writes=t,
+-- finance_module=f). A never-Pro Starter org was safe only by accident, because
+-- it can hold no financial_entries row for a value to hang on. A Pro org that
+-- DOWNGRADES keeps its lines (Q67, and "downgrading must never silently delete
+-- data"), so it kept a live, manageable finance row -- and with it the ability
+-- to INSERT/UPDATE/DELETE custom-field values against it. That is a finance
+-- write surviving a downgrade.
+--
+-- So this walks the real case: PRO -> write a value -> DOWNGRADE -> the READ
+-- survives (Q67) and the WRITE refuses. The Starter-era artist value in the
+-- same session is the non-vacuity control: Starter keeps crm_writes, so a
+-- refusal that were about the subscription rather than about the finance module
+-- would take that write down too.
+--
+-- TWO REFUSAL SHAPES, and both are asserted for what they really are. The
+-- INSERT policy names entity_is_manageable in WITH CHECK, so its refusal is a
+-- loud 42501. The UPDATE and DELETE policies name it in USING, so theirs is
+-- ok(0) -- nothing to match -- exactly the USING/WITH CHECK distinction section
+-- FE explains for financial_entries itself. Asserting 42501 there would be
+-- asserting a shape the schema does not have.
+-- ---------------------------------------------------------------------------
+-- The control's own definition, planted as postgres. A NEW artist field rather
+-- than the one FI5 used: that pair already carries a value, and a second INSERT
+-- of it would be a 23505 that has nothing to say about tiers.
+insert into public.custom_field_definitions
+  (id, organisation_id, entity_type, key, label, field_type)
+select 'aaaaf000-0000-0000-0000-0000000000a1', o.id, 'artist',
+       'tier_control_note', 'Tier control note', 'text'
+from public.organisations o where o.slug='org-alpha';
+
+-- PRO. finance_module = true, so the arm's new conjunct is satisfied.
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'alpha_org'::uuid, 'pro', 'monthly', 1, 'active', now() + interval '30 days')
+on conflict (organisation_id) do update set plan_id='pro', status='active';
+
+-- An OWNER at aal2: the exact caller the finding describes (Finance/Owner/Admin
+-- all hold manage_finance). An Owner also holds manage_artists, which is what
+-- lets the SAME session carry the non-vacuity control below.
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select fin.try('FI7 PRO: an OWNER writes a financial_entry custom-field VALUE',
+  format($$insert into public.custom_field_values
+             (organisation_id, field_id, entity_type, entity_id, value)
+           values (%L,'aaaaf000-0000-0000-0000-00000000000f','financial_entry',
+                   'fa110000-0000-0000-0000-000000000003','"CC-PRO"'::jsonb)$$,
+         :'alpha_org'), 'ok(1)');
+select fin.try('FI8 PRO: ...and UPDATES it (the denominator for FI14''s ok(0))',
+  $$update public.custom_field_values set value='"CC-PRO-2"'::jsonb
+     where entity_type='financial_entry'
+       and entity_id='fa110000-0000-0000-0000-000000000003'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- THE DOWNGRADE. Pro -> Starter, nothing else touched: the lines stay, the
+-- values stay, only finance_module goes false.
+update public.organisation_subscriptions set plan_id='starter'
+ where organisation_id = :'alpha_org'::uuid;
+
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select fin.val('FI9 DOWNGRADED: the finance LINE is still there (a downgrade deletes nothing)',
+  $$select count(*)::text from public.financial_entries
+     where id='fa110000-0000-0000-0000-000000000003'$$, '1');
+select fin.val('FI10 DOWNGRADED: ...and its custom-field VALUE still reads back (Q67, reads survive)',
+  $$select value #>> '{}' from public.custom_field_values
+     where entity_type='financial_entry'
+       and entity_id='fa110000-0000-0000-0000-000000000003'$$, 'CC-PRO-2');
+-- THE CONTROL THAT MAKES FI13-FI15 ABOUT THE FINANCE MODULE. Starter carries
+-- crm_writes, so a NON-finance custom-field value write by the SAME session in
+-- the same instant succeeds. Without it, "Starter refuses" is satisfied by a
+-- subscription row that refuses every custom-field value write there is.
+select fin.try('FI11 CONTROL: the SAME session writes an ARTIST custom-field value',
+  format($$insert into public.custom_field_values
+             (organisation_id, field_id, entity_type, entity_id, value)
+           values (%L,'aaaaf000-0000-0000-0000-0000000000a1','artist',
+                   '44440000-0000-0000-0000-000000000001','"starter-era artist note"'::jsonb)$$,
+         :'alpha_org'), 'ok(1)');
+select fin.val('FI12 CONTROL: ...and reads that same value back',
+  $$select value #>> '{}' from public.custom_field_values
+     where field_id='aaaaf000-0000-0000-0000-0000000000a1'$$, 'starter-era artist note');
+-- THE FIX ITSELF.
+select fin.try('FI13 DOWNGRADED: a NEW financial_entry custom-field value write is REFUSED (42501)',
+  format($$insert into public.custom_field_values
+             (organisation_id, field_id, entity_type, entity_id, value)
+           values (%L,'aaaaf000-0000-0000-0000-00000000000f','financial_entry',
+                   'fa110000-0000-0000-0000-000000000002','"CC-STARTER"'::jsonb)$$,
+         :'alpha_org'), 'denied(42501)');
+select fin.try('FI14 DOWNGRADED: the UPDATE of the surviving value matches nothing (USING, so ok(0))',
+  $$update public.custom_field_values set value='"CC-STARTER"'::jsonb
+     where entity_type='financial_entry'
+       and entity_id='fa110000-0000-0000-0000-000000000003'$$, 'ok(0)');
+select fin.try('FI15 DOWNGRADED: and so does the DELETE',
+  $$delete from public.custom_field_values
+     where entity_type='financial_entry'
+       and entity_id='fa110000-0000-0000-0000-000000000003'$$, 'ok(0)');
+select fin.val('FI16 ...so the value is still there, still unchanged',
+  $$select value #>> '{}' from public.custom_field_values
+     where entity_type='financial_entry'
+       and entity_id='fa110000-0000-0000-0000-000000000003'$$, 'CC-PRO-2');
+reset role; reset request.jwt.claims;
+
+-- Restore the shipped state: NO subscription row, exactly as section FE does.
+delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select fin.try('FI17 RESTORED: with the gate inert again, the refused INSERT succeeds',
+  format($$insert into public.custom_field_values
+             (organisation_id, field_id, entity_type, entity_id, value)
+           values (%L,'aaaaf000-0000-0000-0000-00000000000f','financial_entry',
+                   'fa110000-0000-0000-0000-000000000002','"CC-INERT"'::jsonb)$$,
+         :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select fin.val('FI18 CONTROL: and no subscription row survives this section either',
+  format($$select count(*)::text from public.organisation_subscriptions
+            where organisation_id=%L$$, :'alpha_org'), '0');
+
 -- ===========================================================================
 -- FJ. ON DELETE BEHAVIOUR -- brief assertion 6. LAST: it destroys fixtures.
 -- ===========================================================================

@@ -1099,6 +1099,45 @@ select invariants.val('F4  entity_is_manageable: the financial_entry arm asks fo
      where n.nspname='private' and p.proname='entity_is_manageable'$$,
   'manage_finance');
 
+-- ...and it ALSO carries the FINANCE MODULE tier term (post-review fix I1,
+-- 20260903030000). financial_entry is the one entity type whose module is
+-- tier-gated; without this conjunct a Pro organisation that downgraded to
+-- Starter kept the ability to write custom-field VALUES against its surviving
+-- finance lines, because the deployed custom_field_values write policies gate
+-- on crm_write_organisations() -- which Starter passes.
+--
+-- THE `event` ARM IS THE DENOMINATOR. A whole-body regexp would go green on a
+-- body that mentioned finance_module_organisations() anywhere at all; this
+-- slices each arm out with the same split_part idiom F3/F4 use and asserts
+-- true for finance and FALSE for event, so the term is proved to be in the
+-- one arm that should have it.
+select invariants.val('F4b entity_is_manageable: the financial_entry arm carries finance_module, the event arm does not',
+  $$select (fin ~ 'finance_module_organisations')::text || '/' ||
+           (ev  ~ 'finance_module_organisations')::text
+      from (select split_part(split_part(pg_catalog.pg_get_functiondef(p.oid),
+                     'when ''financial_entry'' then', 2), 'when ''', 1) as fin,
+                   split_part(split_part(pg_catalog.pg_get_functiondef(p.oid),
+                     'when ''event'' then', 2), 'when ''', 1) as ev
+              from pg_catalog.pg_proc p
+              join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+             where n.nspname='private' and p.proname='entity_is_manageable') s$$,
+  'true/false');
+
+-- READS SURVIVE A DOWNGRADE (Q67), so the tier term is on the WRITE dispatch
+-- ONLY. entity_is_visible's finance arm must NOT gain one -- putting it there
+-- would hide a downgraded organisation's own finance data, which is the
+-- failure "downgrading must never silently delete data" is about -- and
+-- entity_is_live carries no permission or entitlement term by design. This is
+-- the assertion that catches a well-meaning copy of F4b's conjunct into the
+-- other two bodies.
+select invariants.val('F4c CONTROL: neither entity_is_visible nor entity_is_live mentions finance_module',
+  $$select count(*)::text from pg_catalog.pg_proc p
+      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+     where n.nspname='private'
+       and p.proname in ('entity_is_visible','entity_is_live')
+       and pg_catalog.pg_get_functiondef(p.oid) ~ 'finance_module_organisations'$$,
+  '0');
+
 -- entity_is_live's arm calls no permitted_organisations -- liveness is not a
 -- permission -- so what is asserted is its own shape: it reads
 -- public.financial_entries and requires deleted_at is null.
