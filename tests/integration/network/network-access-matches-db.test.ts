@@ -434,6 +434,99 @@ describe("entitlementsPermitNetworkPublish mirrors private.network_publish_organ
     expect(r.networkTs, r.label).toBe(r.networkDb);
   });
 
+  it("agrees on EVERY plan x status the column permits -- nine cells, with the count as its denominator", async () => {
+    // PHASE 6 TASK 5. The tests above cover every plan at `active`, both sides
+    // of the past_due grace edge for `starter`, past_due for `free`, and
+    // `cancelled` for `pro`. That is eight of the nine cells the schema can
+    // hold and it took five tests to say so -- which means the ninth
+    // (`cancelled`/`starter`) was uncovered and nothing in the file made that
+    // visible.
+    //
+    // organisation_subscriptions.status is CHECK-constrained to exactly
+    // ('active','past_due','cancelled') (20260826151656:148) and TIER_KEYS is
+    // exactly (free, starter, pro), so the product is closed at nine and the
+    // count below is a real denominator rather than a number this test chose.
+    // The status list is asserted against the constraint itself, so a fourth
+    // status added to the column turns this red instead of silently going
+    // unswept.
+    const {
+      rows: [check],
+    } = await pool.query<{ src: string }>(
+      `select pg_get_constraintdef(c.oid) as src
+         from pg_constraint c
+         join pg_class t on t.oid = c.conrelid
+        where t.relname = 'organisation_subscriptions' and c.contype = 'c'
+          and pg_get_constraintdef(c.oid) like '%status%'`,
+    );
+    const statuses = ["active", "past_due", "cancelled"] as const;
+    for (const s of statuses) {
+      expect(check!.src, `the status CHECK no longer permits ${s}`).toContain(`'${s}'`);
+    }
+    expect(
+      Array.from(check!.src.matchAll(/'[a-z_]+'/g)).length,
+      `the status CHECK permits a status this test does not sweep: ${check!.src}`,
+    ).toBe(statuses.length);
+
+    const disagreements: string[] = [];
+    let cells = 0;
+    for (const plan of TIER_KEYS) {
+      for (const status of statuses) {
+        // The period end is in the FUTURE for every cell, so `past_due` here
+        // is INSIDE the grace window -- a subscription whose payment failed
+        // but whose paid-for period has not yet elapsed. That is the realistic
+        // shape of a card decline and it keeps the plan's entitlements; the
+        // EXPIRED side of the edge has its own two tests above.
+        const r = await bothSides({ plan, status, periodEndDays: 30 });
+        cells += 1;
+        if (r.networkDb !== r.networkTs) {
+          disagreements.push(`${r.label}: db=${r.networkDb} ts=${r.networkTs}`);
+        }
+        if (r.publishCanWrite !== r.networkDb) {
+          disagreements.push(
+            `${r.label}: db=${r.networkDb} getNetworkPublishAccess=${r.publishCanWrite}`,
+          );
+        }
+        if (r.connectCanWrite !== r.networkDb) {
+          disagreements.push(
+            `${r.label}: db=${r.networkDb} getNetworkConnectionAccess=${r.connectCanWrite}`,
+          );
+        }
+      }
+    }
+    expect(cells, "plan x status cells driven").toBe(TIER_KEYS.length * statuses.length);
+    expect(disagreements, disagreements.join("; ")).toEqual([]);
+  });
+
+  it("...and exactly FOUR of those nine cells permit publishing -- named, not counted", async () => {
+    // The naked fact underneath the agreement above, for the same reason the
+    // active-plan test carries one: "the two sides agree on nine cells" is
+    // satisfied by two sides that both say false nine times, which would deny
+    // every paying customer the feature they bought.
+    //
+    // MEASURED, AND THE TWO past_due CELLS ARE THE POINT. `past_due` with a
+    // period end 30 days in the FUTURE is a payment that failed inside a
+    // period the customer has already paid for, and
+    // isWithinPastDueGrace()/the SQL mirror both keep the PLAN's entitlements
+    // there. So a Starter workspace whose card bounced this morning can still
+    // publish, and a Free one still cannot -- grace preserves the plan, it
+    // does not upgrade it (the free/past_due test below says the same thing
+    // from the other side). Naming the four rather than counting them is what
+    // makes a future change to the grace branch land here as a legible diff.
+    const permitting: string[] = [];
+    for (const plan of TIER_KEYS) {
+      for (const status of ["active", "past_due", "cancelled"] as const) {
+        const r = await bothSides({ plan, status, periodEndDays: 30 });
+        if (r.networkDb) permitting.push(`${plan}/${status}`);
+      }
+    }
+    expect(permitting.sort(), "of 9 plan x status cells").toEqual([
+      "pro/active",
+      "pro/past_due",
+      "starter/active",
+      "starter/past_due",
+    ]);
+  });
+
   it("agrees on cancelled, with the period end still inside a grace window", async () => {
     // The period end is deliberately in the FUTURE, so only the status can deny
     // it. `cancelled` is something the customer chose, so it is honoured at
