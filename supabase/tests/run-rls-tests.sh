@@ -2746,6 +2746,175 @@ p2_code "POSITIVE CONTROL: the RECIPIENT (BETA) can PATCH the same request to ac
 p2_json "CONTROL: the request really is accepted now" "accepted" \
         "network_connection_requests?select=status&id=eq.$H4_REQUEST" "$BETA_MGR" "status"
 
+# ============================================================================
+# PHASE 6 NETWORK-LEAKAGE AT THE API SURFACE (Task 5).
+#
+# The psql suite proves the policies hold against a real counterparty. THIS
+# proves the same claims through the request an attacker actually sends: the
+# public anon key that ships in every browser bundle, a real access token from
+# a real password sign-in, pointed straight at PostgREST, with no Next.js app
+# on the path and therefore no Server Action guard, no layout gate and no
+# masking-view discipline in the client code.
+#
+# TWO CALLERS, AND THE DIFFERENCE BETWEEN THEM IS THE POINT:
+#   $UNCON  the manager of the third organisation network_leakage_phase6.sql
+#           § LA created -- never connected to anybody.
+#   $CONN   a manager of org BETA, which IS connected to ALPHA (accepted in
+#           rls_phase6_network.sql NR9/NU4 and again in the Task 4 block above).
+# Both are managers, so a password grant's aal1 session really does hold
+# view_network -- an owner or admin counterparty would hold nothing at aal1 and
+# every 0 below would be the MFA gate wearing the tenant boundary's clothes.
+#
+# PLACED LAST, deliberately: it is the only block that signs in as these two,
+# and the Task 4 block above already claims the "last block" slot for its own
+# BETA membership grant. Nothing here writes.
+# ============================================================================
+echo
+echo "=== Phase 6 network leakage at the API surface (Task 5) ==="
+
+# The ">= N" variant of p2_rows. A positive control's job is "this URL returns
+# SOMETHING for the tenant that owns the rows", and pinning it to an exact
+# count would hardcode a fixture size that four earlier suites all write into.
+p2_rows_min() { # name min_count path token
+  local name="$1" want="$2" path="$3" tok="$4" n
+  n=$(curl -s "$API/rest/v1/$path" -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+      | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+  if [ "${n:-x}" -ge "$want" ] 2>/dev/null; then
+    printf '  PASS  %-58s %s\n' "$name" "$n rows (>= $want)"
+  else
+    printf '  FAIL  %-58s got %s want >= %s\n' "$name" "$n" "$want"; api_fails=$((api_fails+1))
+  fi
+}
+
+UNCON=$(p2_token pgmgr); [ -n "$UNCON" ] || { echo "no token for pgmgr (unconnected counterparty)" >&2; exit 1; }
+CONN=$(p2_token pbmgr);  [ -n "$CONN" ]  || { echo "no token for pbmgr (connected counterparty)" >&2; exit 1; }
+
+ALPHA_PROFILE='e0110000-0000-0000-0000-00000000000a'
+ALPHA_DRAFT='e0110000-0000-0000-0000-00000000000d'
+
+# THE FIXTURE, RE-ASSERTED AT THIS LAYER. § LA pins it in psql; if the two
+# tokens below were minted for users who are not the members this block says
+# they are, every 0 that follows is meaningless -- and over HTTP the membership
+# is exactly what a token does NOT show you.
+p2_rows "FIXTURE: the unconnected counterparty reads exactly 1 organisation"  1 \
+        "organisations?select=slug" "$UNCON"
+p2_json "FIXTURE: ...and it is the third organisation, not ALPHA or BETA" "org-gamma-leak" \
+        "organisations?select=slug" "$UNCON" "slug"
+p2_rows "FIXTURE: the connected counterparty reads exactly 1 organisation"    1 \
+        "organisations?select=slug" "$CONN"
+p2_json "FIXTURE: ...and it is BETA" "org-beta" \
+        "organisations?select=slug" "$CONN" "slug"
+
+# ---- THE VIEW MATRIX, OVER HTTP -------------------------------------------
+p2_json "UNCONNECTED: ALPHA's published profile IS in the directory" "Alpha Promotions" \
+        "network_directory?select=display_name&id=eq.$ALPHA_PROFILE" "$UNCON" "display_name"
+p2_json "UNCONNECTED: a \`network\` field resolves (city)" "Bristol" \
+        "network_directory?select=city&id=eq.$ALPHA_PROFILE" "$UNCON" "city"
+p2_json "UNCONNECTED: a \`connections\` field is masked to null" "<null>" \
+        "network_directory?select=contact_email&id=eq.$ALPHA_PROFILE" "$UNCON" "contact_email"
+p2_rows "UNCONNECTED: the CONNECTED view returns 0 rows in total"             0 \
+        "network_connected_profiles?select=id" "$UNCON"
+
+p2_json "CONNECTED: the directory STILL masks it (the view's test does not vary)" "<null>" \
+        "network_directory?select=contact_email&id=eq.$ALPHA_PROFILE" "$CONN" "contact_email"
+p2_json "CONNECTED: the CONNECTED view resolves it -- the ONE thing accept changes" \
+        "bookings@alpha.test" \
+        "network_connected_profiles?select=contact_email&id=eq.$ALPHA_PROFILE" "$CONN" "contact_email"
+p2_rows_min "CONNECTED: ...and that view returns rows at all (the 0 above is a boundary)" 1 \
+        "network_connected_profiles?select=id" "$CONN"
+
+# ---- THE IDOR PROBE, AT THE TRANSPORT -------------------------------------
+# A draft profile id, guessed. It must come back as an EMPTY LIST -- the same
+# answer a nonexistent id gives -- from both distances, with the published id
+# as the paired control so "0 rows" is not "this URL never returns anything".
+p2_rows "IDOR: UNCONNECTED GET of ALPHA's DRAFT profile id"                  0 \
+        "network_directory?select=id&id=eq.$ALPHA_DRAFT" "$UNCON"
+p2_rows "IDOR: ...and off the BASE TABLE too (no existence leak)"            0 \
+        "network_profiles?select=id&id=eq.$ALPHA_DRAFT" "$UNCON"
+p2_rows "IDOR: CONNECTED GET of the same draft -- accept unlocks no draft"   0 \
+        "network_connected_profiles?select=id&id=eq.$ALPHA_DRAFT" "$CONN"
+p2_rows "IDOR: ...and the base table, connected"                             0 \
+        "network_profiles?select=id&id=eq.$ALPHA_DRAFT" "$CONN"
+p2_rows "IDOR CONTROL: the PUBLISHED id returns exactly 1 row for both"      1 \
+        "network_directory?select=id&id=eq.$ALPHA_PROFILE" "$UNCON"
+p2_rows "IDOR CONTROL: ...and for the connected caller"                      1 \
+        "network_directory?select=id&id=eq.$ALPHA_PROFILE" "$CONN"
+
+# ---- THE EMBED ATTACKS ----------------------------------------------------
+# SECURITY.md § 10's contact_companies lesson, applied to the new boundary: an
+# embed is the query shape a reviewer forgets and an attacker tries first.
+# PostgREST resolves an embed through a foreign key, and there is no foreign
+# key from a VIEW to anything -- so each of these is a 400, not an empty 200,
+# and the positive control below proves 400 means "no such relationship" rather
+# than "embeds are switched off".
+p2_code "EMBED: network_directory + network_profiles(*)"        400 GET \
+        "network_directory?select=*,network_profiles(*)" "" "$UNCON"
+p2_code "EMBED: network_directory + companies(*)"               400 GET \
+        "network_directory?select=*,companies(*)" "" "$UNCON"
+p2_code "EMBED: network_directory + network_profiles(organisation_id)" 400 GET \
+        "network_directory?select=*,network_profiles(organisation_id)" "" "$UNCON"
+p2_code "EMBED: the connected view + notes(*), from the connected caller" 400 GET \
+        "network_connected_profiles?select=*,notes(*)" "" "$CONN"
+p2_code "EMBED CONTROL: a REAL embed over a REAL FK works (events+event_lineup)" 200 GET \
+        "events?select=id,event_lineup(id)&limit=1" "" "$MGR"
+
+# ---- THE COLUMN LIST, ON THE CONNECTED VIEW -------------------------------
+# The Task 1 block above asserts this for network_directory. The connected view
+# had no equivalent, and it is the one an accepted connection actually widens.
+p2_code "the CONNECTED view has no organisation_id to select (400, not a value)" 400 GET \
+        "network_connected_profiles?select=organisation_id" "" "$CONN"
+p2_code "...nor entity_id"                                                      400 GET \
+        "network_connected_profiles?select=entity_id" "" "$CONN"
+p2_code "CONTROL: a real column of the same view selects fine"                  200 GET \
+        "network_connected_profiles?select=display_name" "" "$CONN"
+
+# ---- THE PRIVATE-RELATION SWEEP, OVER HTTP --------------------------------
+# Sixteen tenant-private relations, filtered by ALPHA's organisation id -- the
+# request an attacker sends, since the org id is in every URL and § LB proves a
+# counterparty can read it straight off network_profiles. Each is asserted 0
+# from BOTH distances and >= 1 for the tenant that owns it.
+#
+# TWO OF THE SIXTEEN GET THEIR POSITIVE CONTROL IN psql AND NOT HERE, and the
+# reason is measured rather than assumed:
+#   financial_entries  needs view_finance, which is aal2-gated; $OWN2 is the
+#                      one elevated session in this script and is used below.
+#   audit_events       is readable to NO tenant role at all -- not even ALPHA's
+#                      owner. network_leakage_phase6.sql LC5 measures that and
+#                      LC5b pairs it with the superuser, who can. So the
+#                      control here is the $OWN2 line asserting 0, labelled as
+#                      the measurement it is.
+for rel in contacts companies artists venues agencies events event_lineup \
+           tasks meetings notes documents custom_field_values \
+           activity_events network_links; do
+  p2_rows "UNCONNECTED reads 0 ALPHA $rel"  0 "$rel?select=id&organisation_id=eq.$ALPHA_ORG" "$UNCON"
+  p2_rows "CONNECTED reads 0 ALPHA $rel"    0 "$rel?select=id&organisation_id=eq.$ALPHA_ORG" "$CONN"
+  p2_rows_min "CONTROL: ALPHA's owner reads $rel"  1 \
+          "$rel?select=id&organisation_id=eq.$ALPHA_ORG" "$OWN2"
+done
+p2_rows "UNCONNECTED reads 0 ALPHA financial_entries"  0 \
+        "financial_entries?select=id&organisation_id=eq.$ALPHA_ORG" "$UNCON"
+p2_rows "CONNECTED reads 0 ALPHA financial_entries"    0 \
+        "financial_entries?select=id&organisation_id=eq.$ALPHA_ORG" "$CONN"
+p2_rows_min "CONTROL: ALPHA's aal2 owner reads financial_entries" 1 \
+        "financial_entries?select=id&organisation_id=eq.$ALPHA_ORG" "$OWN2"
+p2_rows "UNCONNECTED reads 0 ALPHA audit_events"       0 \
+        "audit_events?select=id&organisation_id=eq.$ALPHA_ORG" "$UNCON"
+p2_rows "CONNECTED reads 0 ALPHA audit_events"         0 \
+        "audit_events?select=id&organisation_id=eq.$ALPHA_ORG" "$CONN"
+p2_rows "MEASURED: ALPHA's own owner reads 0 audit_events too (superuser-only)" 0 \
+        "audit_events?select=id&organisation_id=eq.$ALPHA_ORG" "$OWN2"
+
+# THE UNFILTERED FORM, for the caller who does not know ALPHA's org id: the
+# tables are simply empty for them, so the filter above is not what produced
+# the zeros.
+p2_rows "UNCONNECTED reads 0 contacts with NO filter at all"   0 "contacts?select=id" "$UNCON"
+p2_rows "UNCONNECTED reads 0 events with NO filter at all"     0 "events?select=id" "$UNCON"
+p2_rows "UNCONNECTED reads 0 notes with NO filter at all"      0 "notes?select=id" "$UNCON"
+p2_rows "UNCONNECTED reads 0 network_links with NO filter"     0 "network_links?select=id" "$UNCON"
+p2_rows "CONNECTED reads 0 network_links with NO filter (Q82)" 0 "network_links?select=id" "$CONN"
+p2_rows_min "CONTROL: the CONNECTED caller DOES read its own BETA contacts" 1 \
+        "contacts?select=id&organisation_id=eq.$BETA_ORG" "$CONN"
+
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2
   http_status=1
