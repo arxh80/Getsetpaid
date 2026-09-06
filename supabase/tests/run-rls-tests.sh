@@ -395,6 +395,115 @@ else
 fi
 
 # ============================================================================
+# PHASE 6 NETWORK-LEAKAGE SUITE (Task 5) -- THE CONSOLIDATED ADVERSARIAL PROOF.
+#
+# The PRD exit criterion for this phase is "private/public boundaries proven by
+# tests". This is that proof, and it is a SEPARATE FILE from
+# rls_phase6_network.sql in the file_access_phase4.sql tradition: one boundary
+# that must never move, in a file of its own, so a reviewer can read the whole
+# of it without reading the surface that produced it.
+#
+# ===========================================================================
+# IT NEEDS TWO FIXTURE USERS THE OTHER SUITES DO NOT HAVE, AND THAT IS THE
+# POINT OF THE BLOCK BELOW
+# ===========================================================================
+# Every cross-tenant assertion in rls_phase6_network.sql runs as `pbowner`,
+# BETA's owner -- and by the time that file ends ALPHA and BETA are CONNECTED
+# (its NR9/NU4 accept a request between the two organisations, and the Task 3
+# HTTP block below says so at length). So there was, until Task 5, no psql
+# assertion anywhere in this repo run as an UNCONNECTED counterparty, and the
+# "unconnected" column of the network-leakage matrix could not be driven at all.
+#
+#   pgmgr  a manager of a THIRD organisation (created by the suite itself),
+#          which has never exchanged a connection request with anybody. THE
+#          UNCONNECTED COUNTERPARTY.
+#   pbmgr  a manager of org BETA. THE CONNECTED COUNTERPARTY -- and a manager
+#          rather than reusing pbowner because `owner` is MFA-required, so an
+#          aal1 owner session holds no network key and every 0 measured through
+#          one would be the MFA gate rather than the tenant boundary.
+#
+# CREATED HERE AND NOT IN THE P2 LOOP AT THE TOP, for the reason that loop's
+# own header gives: rls_phase2_crm.sql asserts over the whole of
+# public.profiles (`string_agg(full_name)` and a bare `count(*)`), and two more
+# auth.users rows -- each of which handle_new_user turns into a profile -- would
+# be reasoning about a different database than the one it was written against.
+# Creating them AFTER every suite that censuses profiles keeps those assertions
+# meaning what they meant. Nothing downstream of this point counts profiles or
+# organisations (grepped: the only membership count in the HTTP block is
+# alice's own, `>= 1`).
+#
+# P6VARS = P2VARS + the two new users + `super_c`. The superuser claim is
+# carried over from the top-of-file VARS because § LC's audit_events positive
+# control needs it: audit_events is readable to NO tenant role at all -- not
+# even ALPHA's owner, which that section MEASURES rather than assumes -- so the
+# superuser is its only positive control, exactly as the Task 5 matrix says.
+# ============================================================================
+declare -A P6AAL=( [pgmgr]=aal2 [pbmgr]=aal2 )
+declare -A P6ID
+for u in pgmgr pbmgr; do
+  resp=$(curl -s -X POST "$API/auth/v1/admin/users" \
+    -H "apikey: $SRK" -H "Authorization: Bearer $SRK" -H "Content-Type: application/json" \
+    -d "{\"email\":\"$u@test.local\",\"password\":\"Test-Passw0rd!\",\"email_confirm\":true}")
+  id=$(printf '%s' "$resp" | python -c "import sys,json;print(json.load(sys.stdin).get('id') or '')")
+  if [ -z "$id" ]; then
+    id=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+         "select id from auth.users where email='$u@test.local'" | tr -d '[:space:]')
+  fi
+  if [ -z "$id" ]; then echo "Could not create or find auth user $u: $resp" >&2; exit 1; fi
+  P6ID[$u]=$id
+done
+
+P6VARS=( "${P2VARS[@]}" )
+for u in pgmgr pbmgr; do
+  P6VARS+=( -v "$u=${P6ID[$u]}" )
+  P6VARS+=( -v "${u}_c={\"sub\":\"${P6ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"${P6AAL[$u]}\"}" )
+  P6VARS+=( -v "${u}_c1={\"sub\":\"${P6ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
+done
+P6VARS+=( -v "super=${ID[super]}" )
+P6VARS+=( -v "super_c={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal2\"}" )
+
+docker cp "$HERE/network_leakage_phase6.sql" "$CTR:/tmp/network_leakage_phase6.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P6VARS[@]}" -f /tmp/network_leakage_phase6.sql
+
+lk_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from leak.results where not pass" | tr -d '[:space:]')
+if [ "$lk_fails" != "0" ]; then
+  echo "PHASE 6 NETWORK-LEAKAGE SUITE FAILED: $lk_fails failing assertion(s)" >&2
+  echo "  In LA, THE FIXTURE ITSELF IS WRONG -- the counterparties are not the" >&2
+  echo "  members this suite says they are, or the third organisation is no" >&2
+  echo "  longer unconnected, and EVERY 0 below it then proves nothing." >&2
+  echo "  In LB, A MASKING FAILURE ACROSS THE TENANT BOUNDARY: a connections-" >&2
+  echo "  level field resolved for someone who is not connected, or a draft" >&2
+  echo "  became discoverable." >&2
+  echo "  In LC, THE HEADLINE FINDING -- A COUNTERPARTY CAN READ A TENANT-" >&2
+  echo "  PRIVATE RELATION. Read the label: it names the relation and the" >&2
+  echo "  denominator it read out of. This is the leak the whole phase exists" >&2
+  echo "  to prevent." >&2
+  echo "  In LD, THE Q82 LEAK: who has filed whom in their CRM is now" >&2
+  echo "  disclosed to the profile's owner." >&2
+  echo "  In LE, THE FORWARD RATINGS GUARD (N5/Q85) -- something on the network" >&2
+  echo "  surface now names a rating, which CLAUDE.md forbids permanently." >&2
+  echo "  In LF, A PRIVATE TABLE IS REACHABLE THROUGH A FUNCTION BODY a" >&2
+  echo "  masking view calls -- N2 defeated at a depth pg_depend cannot see." >&2
+  echo "  In LG/LH, AN IDENTIFIER DISCLOSURE: a discovery result now hands a" >&2
+  echo "  counterparty a primary key of a private row." >&2
+  echo "  In LI, A DOWNGRADE EITHER DELETED DATA OR STOPPED REFUSING WRITES." >&2
+  echo "  In LJ, SUSPENSION BEHAVIOUR CHANGED -- these expectations are a" >&2
+  echo "  RECORD of measured behaviour (see task-5-report.md), so a failure" >&2
+  echo "  here means re-measure and re-record, not relax." >&2
+  echo "  In LK, THE MFA GATE: an aal1 session now holds a network key." >&2
+  echo "  In LW, A COUNTERPARTY CAN WRITE INTO ANOTHER TENANT." >&2
+  echo "  In LZ, this suite left fixture state behind that the HTTP checks" >&2
+  echo "  below were not written against -- discard the run and reset." >&2
+  echo "  Treat as Sev1." >&2
+  psql_status=1
+else
+  echo "Phase 6 network-leakage suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
