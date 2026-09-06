@@ -3276,3 +3276,79 @@ recorded for the history and the residual each leaves; the rest are open.
   source-shape assertion (`tests/unit/crm/source-shape.test.ts` or a network
   equivalent), not a network-specific one, and scoping that properly is more
   than a one-line fix.
+
+### Opened by Task 5 (the consolidated network-leakage suite)
+
+- **THE SUSPENSION ANSWER, MEASURED: a counterparty STILL sees a suspended
+  organisation's published profile in the directory — nothing about org
+  suspension removes it from discovery. This needs a founder decision; the
+  suite RECORDS it and does not change it.** `network_leakage_phase6.sql` § LJ
+  suspends ALPHA (`organisations.deleted_at = now()`) and measures, from a real
+  counterparty session, what remains visible. The finding, in full:
+  - **An unconnected counterparty still reads the suspended org's published
+    profile and its `network` fields** (LJ1/LJ1b — `Alpha Promotions`,
+    `Bristol` still resolve). **A connected counterparty additionally still
+    resolves its `connections` fields** (LJ2 — `bookings@alpha.test`). The
+    cause is structural and one clause wide: `network_profiles_select_
+    published_directory` (20260904003000) is `status='published' AND deleted_at
+    IS NULL [on the PROFILE row] AND an active membership of ANY organisation`,
+    and **neither term consults `public.organisations.deleted_at`.** Org
+    suspension is invisible to the directory predicate.
+  - This plan's stated default was exactly this (the org row's `deleted_at` is
+    not in the directory predicate), so the measured behaviour is not a
+    regression — but it is a **product decision a reviewer should make
+    explicitly**: should suspending a workspace also pull its published
+    identities out of the industry directory? If yes, it is a one-clause change
+    — add `AND NOT EXISTS (select 1 from organisations o where o.id =
+    p.organisation_id and o.deleted_at is not null)` to the directory view's
+    predicate (and the connected view's), plus a founder sign-off that a
+    suspended customer disappears from discovery. If no, this entry is the
+    record that it was considered and left. **Do not change the policy without
+    that sign-off** — it is a Task 6 doc-reconciliation / founder-default item,
+    not a test's call.
+  - **SECONDARY, AND IT CONTRADICTS A SHIPPED COMMENT (Task 1 ledger M2/M3).**
+    The same directory policy means a suspended organisation's OWN members
+    **still browse the directory and still read their own PUBLISHED profiles**
+    through it (LJ5/LJ5b), while losing their `view_network`-gated keys — their
+    drafts (LJ4), their `network_links` (LJ4b) and their ability to write the
+    profile (LJ6). That directly contradicts the comment shipped at
+    `supabase/migrations/20260904002000_...:41-45`: *"a suspended
+    organisation's members cannot browse the directory or read their own
+    network profiles until the workspace is reinstated."* The comment is
+    wrong on both halves (browse, and read-own-published). **Owner: Task 6 doc
+    reconciliation** — either correct the comment to match the measured
+    behaviour, or, if the founder decides suspended members should indeed be
+    locked out of discovery, that is the same one-clause view change as above
+    plus a matching change to the directory policy's membership term. Recorded
+    here so the divergence is a decision on the record, not a latent surprise.
+
+- **M2 SURFACED A REAL SUITE HOLE, NOW CLOSED: nothing proved the directory
+  VIEW's own `deleted_at is null` predicate is load-bearing.** The mutation
+  battery's M2 (drop `deleted_at is null` from `network_directory`) reddened
+  NOTHING across the whole `run-rls-tests.sh` run. The reason is that a
+  soft-deleted published profile is kept out of discovery by TWO independent
+  terms — the `network_profiles_select_published_directory` RLS policy AND the
+  view — so for a COUNTERPARTY the RLS term is a backstop the view mutation
+  cannot get past, and every counterparty-driven assertion in the leak suite
+  and the network suite stayed green. The term still matters: an org's own
+  members hold `network_profiles_select_view_network` (org-scoped, and per
+  Constraint 7 not soft-delete-filtered), so the view's `deleted_at is null` is
+  the only thing keeping a profile the org has UNPUBLISHED out of that org's own
+  directory browsing. Closed in this task by `network_leakage_phase6.sql` § LB12
+  (plant a soft-deleted published profile, assert ALPHA's own member reads it as
+  0 in the directory view, with the base-table read and a live profile as the
+  two controls, then tear it down). This is the "a mutation that reddens nothing
+  is a hole you fix" discipline applied.
+
+- **M11 is caught STRUCTURALLY, not behaviourally, and that is worth a note.**
+  The battery's M11 (`network_connection_requests` SELECT policy →
+  `using (true)`) reddens `rls_phase6_network.sql` NS1 (the set-form census:
+  `using (true)` is not the `x in (select permitted_organisations(...))` form),
+  so the mutation IS caught. But no BEHAVIOURAL assertion proves a non-party
+  organisation reads zero connection requests — every request-read assertion
+  filters by a party's own org id (LA4/LA5b, NU3/NU5b). A subtler mutation that
+  KEPT the set form while widening it (`... or true`) would pass NS1 and leak.
+  Not fixed here (it is not the brief's M11 and not a reddens-nothing hole), but
+  recorded: a non-party unfiltered request-read assertion (GAMMA reads 0 total;
+  BETA ≥ 1) is the behavioural belt to NS1's structural braces, owed by whichever
+  task next touches the connection-request read path.
