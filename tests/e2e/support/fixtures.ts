@@ -333,7 +333,18 @@ export interface E2eWorld {
   /** Slug of the workspace the golden path is walked in. */
   orgSlug: string;
   orgId: string;
-  /** A SECOND tenant, for the breakout run. Nobody in `users` belongs to it. */
+  /**
+   * A SECOND tenant, for the breakout run.
+   *
+   * CORRECTED IN PHASE 6 TASK 5. This comment used to read "Nobody in `users`
+   * belongs to it", and that was true when it was written and is not now: the
+   * second tenant has always had `otherOwner`, and Task 5 added `otherMember`
+   * -- a manager of it that a browser actually signs in as. The distinction
+   * that survives is about `users`, the fixed `E2eRole` record: no persona
+   * addressed BY ROLE (`signIn(page, world, "manager")`) belongs to this
+   * tenant, and that is what keeps the breakout assertions meaningful. Its two
+   * members are addressed by id.
+   */
   otherOrgSlug: string;
   otherOrgId: string;
   /** A contact in the OTHER tenant. Its id is a valid uuid that must 404. */
@@ -491,6 +502,33 @@ export interface E2eWorld {
    *  time, and on a stack with more than 1000 users the page would not contain
    *  them and the teardown would silently leak a user every run. */
   otherOwner: E2eUser;
+
+  // =========================================================================
+  // PHASE 6 TASK 5: A REAL MEMBER OF THE COUNTERPARTY TENANT
+  // =========================================================================
+  // THE FIXTURE THE NETWORK-LEAKAGE PROOF NEEDED, AND WHY IT IS NEW WORK.
+  //
+  // This world could already drive a counterparty in ONE direction: ALPHA's
+  // personas looking at `otherOrgId`'s rows and getting 404s. It could not
+  // drive the other -- somebody signed in INSIDE the second tenant, looking
+  // back at ALPHA -- because the only member of that tenant was `otherOwner`,
+  // whom nothing signs in as, and `owner` is MFA-required so a plain browser
+  // sign-in would hold no key at all and every refusal would be the MFA gate
+  // rather than the tenant boundary.
+  //
+  // `otherMember` is a `manager`: MFA-optional, so a password sign-in really
+  // does hold `view_network` and `view_crm`, which is what makes a 404 on
+  // ALPHA's contact a statement about the boundary. It is also UNCONNECTED to
+  // ALPHA -- no connection request touches `otherOrgId` -- which is the
+  // browser half of the network-leakage matrix's "unconnected" column
+  // (`proOrgSlug`'s booker is its "connected" column, through the
+  // hand-planted `networkAcceptedRequestId`).
+  //
+  // Signed in by hand in the spec, like `freeMember`: it is not one of the
+  // fixed `E2eRole` personas `signIn()` addresses by role, and deliberately
+  // so -- adding it to `users` would put a member of the second tenant inside
+  // the record every breakout assertion in this suite reasons about.
+  otherMember: E2eUser;
 
   // =========================================================================
   // PHASE 6 TASK 3: THE DISCOVERY WORLD
@@ -739,6 +777,10 @@ export async function setUpWorld(): Promise<E2eWorld> {
   // organisation has a member, which is what makes its rows real rather than
   // orphaned.
   const otherOwner = await createUser(`e2e-otherowner-${suffix}@test.local`);
+  // PHASE 6 TASK 5. A real, signed-in-as member of the counterparty tenant --
+  // see the `otherMember` field's own header for why an owner could not do
+  // this job.
+  const otherMember = await createUser(`e2e-othermember-${suffix}@test.local`);
 
   await sql(
     `insert into public.organisations (id, name, slug) values ($1,$2,$3), ($4,$5,$6)`,
@@ -756,7 +798,8 @@ export async function setUpWorld(): Promise<E2eWorld> {
      values ($1,$2,'manager','active',now()),
             ($1,$3,'standard_user','active',now()),
             ($1,$4,'read_only','active',now()),
-            ($5,$6,'owner','active',now())`,
+            ($5,$6,'owner','active',now()),
+            ($5,$7,'manager','active',now())`,
     [
       orgId,
       users.manager.id,
@@ -764,6 +807,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
       users.read_only.id,
       otherOrgId,
       otherOwner.id,
+      otherMember.id,
     ],
   );
 
@@ -1456,6 +1500,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
     financeTotpSecret,
     users,
     otherOwner,
+    otherMember,
     freeOrgSlug,
     freeOrgId,
     freeMember,
@@ -1502,13 +1547,27 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
   // It used to be found by LISTING UP TO 1000 auth users and matching an email
   // this function re-derived from the slug. That was wrong twice over. It was
   // a lookup for an id `setUpWorld` already held and simply did not return --
-  // and on a stack whose `auth.users` has grown past a thousand rows (this
-  // suite creates four per run and the psql suite creates twelve), the owner
-  // would not be on the first page, the `if` would never match, and teardown
-  // would leak one auth user per run in silence. `world.otherOwner` is the id,
-  // so there is nothing left to search for. `world.freeMember` (Task 3) is the
-  // same shape: a standalone user, not one of the fixed `E2eRole` personas.
-  for (const user of [...Object.values(world.users), world.otherOwner, world.freeMember]) {
+  // and on a stack whose `auth.users` has grown past a thousand rows, the
+  // owner would not be on the first page, the `if` would never match, and
+  // teardown would leak one auth user per run in silence. `world.otherOwner`
+  // is the id, so there is nothing left to search for. `world.freeMember`
+  // (Task 3) and `world.otherMember` (Task 5) are the same shape: standalone
+  // users, not fixed `E2eRole` personas.
+  //
+  // THE COUNTS IN THIS PARAGRAPH ARE RE-COUNTED, NOT COPIED. It used to say
+  // "this suite creates four per run and the psql suite creates twelve", and
+  // both numbers had gone stale: `setUpWorld` creates EIGHT (five `E2eRole`
+  // personas, `otherOwner`, `freeMember`, `otherMember`) and
+  // `supabase/tests/run-rls-tests.sh` creates NINETEEN (five in its opening
+  // loop, twelve for the Phase 2 suite, and two counterparties for the Phase 6
+  // network-leakage suite). The thousand-row argument is unchanged and is why
+  // the numbers are worth keeping right rather than dropping.
+  for (const user of [
+    ...Object.values(world.users),
+    world.otherOwner,
+    world.freeMember,
+    world.otherMember,
+  ]) {
     await api(`/auth/v1/admin/users/${user.id}`, {
       key: serviceRoleKey,
       method: "DELETE",
