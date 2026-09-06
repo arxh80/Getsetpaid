@@ -365,6 +365,66 @@ select leak.val('LB11b CONTROL: ...and sees its OWN draft, which neither counter
      where id='e0110000-0000-0000-0000-00000000000d'$$, 'Alpha Draft Venue');
 reset role; reset request.jwt.claims;
 
+-- ---- THE DIRECTORY VIEW'S `deleted_at is null` PREDICATE IS LOAD-BEARING ---
+--
+-- ===========================================================================
+-- WHY THIS COULD NOT BE PROVEN FROM A COUNTERPARTY, AND WHY THE PREDICATE
+-- STILL MATTERS
+-- ===========================================================================
+-- A SOFT-DELETED published profile is kept out of discovery by TWO independent
+-- terms: the `network_profiles_select_published_directory` RLS policy carries
+-- `deleted_at is null`, AND the view carries it too. For a COUNTERPARTY the RLS
+-- term is the backstop -- drop it from the view and a counterparty still sees
+-- nothing, because the policy filters the row before the view is even reached.
+-- So no counterparty assertion in this file (or in rls_phase6_network.sql) can
+-- observe the view's own `deleted_at is null` being removed, and the mutation
+-- that removes it survives the whole suite unless THIS block exists.
+--
+-- The term still matters, and here is the exposure it closes: an organisation's
+-- OWN members hold `network_profiles_select_view_network`, which is
+-- organisation-scoped and -- per Constraint 7 -- does NOT filter soft-deletes.
+-- So a member reads its own soft-deleted profile straight off the base table,
+-- and the VIEW's `deleted_at is null` is the ONLY thing keeping a profile the
+-- org has UNPUBLISHED (soft-deleted) from reappearing in that org's own
+-- directory browsing. Drop it and a withdrawn identity is discoverable again to
+-- the very people who withdrew it. This block plants exactly that shape, driven
+-- as ALPHA's own member, with the base-table read and a live profile as the two
+-- controls that make the 0 the view predicate rather than an empty fixture.
+--
+-- Planted as postgres (RLS does not apply to the writer; the partial unique
+-- index is `where deleted_at is null` so a soft-deleted duplicate of an
+-- already-published entity is allowed) and TORN DOWN at the end of the block,
+-- so nothing downstream -- the LC sweep's denominators, LZ's "exactly 4
+-- published live", the HTTP block's profile counts -- meets a row this planted.
+-- ===========================================================================
+\o /dev/null
+insert into public.network_profiles
+  (id, organisation_id, entity_kind, entity_id, display_name, status,
+   field_visibility, published_at, deleted_at)
+values ('e0110000-0000-0000-0000-0000000000fd', :'alpha_org', 'company',
+        '11110000-0000-0000-0000-000000000002', 'Alpha Withdrawn', 'published',
+        '{"city":"network"}'::jsonb, now(), now())
+on conflict (id) do update set status='published', deleted_at=now();
+\o
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select leak.val('LB12 M2: ALPHA''s OWN soft-deleted published profile is EXCLUDED from the directory view',
+  $$select count(*)::text from public.network_directory
+     where id='e0110000-0000-0000-0000-0000000000fd'$$, '0');
+select leak.val('LB12b CONTROL: ...but ALPHA DOES read it off the base table (view_network ignores soft-delete)',
+  $$select (count(*) = 1)::text from public.network_profiles
+     where id='e0110000-0000-0000-0000-0000000000fd'$$, 'true');
+select leak.val('LB12c CONTROL: a LIVE published profile IS in the directory (LB12 is the deleted_at term, not an empty fixture)',
+  $$select count(*)::text from public.network_directory
+     where id='e0110000-0000-0000-0000-00000000000a'$$, '1');
+reset role; reset request.jwt.claims;
+\o /dev/null
+delete from public.network_profiles where id='e0110000-0000-0000-0000-0000000000fd';
+\o
+select leak.val('LB12d HOUSEKEEPING: the planted soft-deleted profile is gone (nothing downstream meets it)',
+  $$select count(*)::text from public.network_profiles
+     where id='e0110000-0000-0000-0000-0000000000fd'$$, '0');
+
 -- ===========================================================================
 -- LC. THE PRIVATE-RELATION SWEEP.
 --
