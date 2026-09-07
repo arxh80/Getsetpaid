@@ -45,7 +45,10 @@ export function NavGroup({
         id={labelId}
         className={
           expanded
-            ? "px-4 pt-5 pb-1 text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase"
+            ? // nowrap + clip so the label never wraps to a second line
+              // mid-width-tween (review finding 4's aside) -- the rail's own
+              // overflow keeps it from poking out, this keeps it one line.
+              "overflow-hidden px-4 pt-5 pb-1 text-xs font-semibold whitespace-nowrap tracking-[0.04em] text-ink-muted uppercase"
             : "sr-only"
         }
       >

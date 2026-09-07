@@ -56,8 +56,19 @@ export function NavItem({
       href={item.href}
       aria-current={active ? "page" : undefined}
       aria-label={expanded ? undefined : item.label}
+      // INSET FOCUS RING (`-outline-offset-2`), A NAMED DEVIATION FROM
+      // globals.css's `outline-offset: 2px` (review finding 4). The rail is a
+      // scroll container (`overflow-y-auto`, for workspaces whose groups
+      // outgrow a short screen), and per the CSS Overflow spec a scroll
+      // container clips on BOTH axes -- `overflow-x` cannot stay `visible`
+      // once `overflow-y` is `auto` -- so an outward ring on a full-width row
+      // loses its left/right segments to the clip no matter what classes the
+      // <nav> carries. Pulling the ring 2px INSIDE the row keeps all four
+      // segments visible at every scroll position; the rows are 44px tall, so
+      // the inset ring never touches the row's own text.
       className={
         "flex h-11 items-center gap-3 border-l-[3px] pl-[17px] pr-4 no-underline " +
+        "focus-visible:-outline-offset-2 " +
         "transition-colors duration-[var(--dur-fast)] ease-brand " +
         (active
           ? "border-accent bg-surface font-semibold text-ink"

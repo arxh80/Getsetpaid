@@ -279,6 +279,9 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
           aria-label="Pin navigation open"
           className={
             "flex size-8 shrink-0 items-center justify-center border transition-colors " +
+            // Inset ring, same reason as nav-item.tsx: the rail is a scroll
+            // container and clips an outward ring on both axes.
+            "focus-visible:-outline-offset-2 " +
             "duration-[var(--dur-fast)] ease-brand " +
             (pinned
               ? "border-accent bg-surface text-ink"
