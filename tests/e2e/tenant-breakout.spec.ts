@@ -1,13 +1,15 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import {
   ALT_VENUE_NAME,
   ARTIST_NAME,
+  countSentConnectionRequests,
   DOCUMENT_NAMES,
   EVENT_NAMES,
   FINANCE_EVENT_NAMES,
   FINANCE_LINES,
   NOTE_BODIES,
   OTHER_ARTIST_NAME,
+  PASSWORD,
   ROOM_NAME,
   VENUE_NAME,
   setUpWorld,
@@ -625,4 +627,127 @@ test("a Finance user cannot reach another tenant's finance, from either slug", a
   // nothing here enumerates workspaces either.
   await expectRefused(page, `/${world.orgSlug}/events/${world.managerOwnedEventId}`);
   await expect(REFUSED(page)).not.toContainText(EVENT_NAMES.managerOwned);
+});
+
+// ===========================================================================
+// PHASE 6 (NETWORK), TASK 6: THE NETWORK BREAKOUT BLOCK
+// ===========================================================================
+// The psql suite (`rls_phase6_network.sql`) and the consolidated adversarial
+// proof (`network_leakage_phase6.sql`, `tests/e2e/network-leakage.spec.ts`)
+// already prove the POLICIES and walk the browser leakage matrix in full --
+// this block does not repeat either. Its job, matching every other section of
+// this file, is narrower: the TENANT-ISOLATION angle specifically, through
+// this suite's own `otherOrgId`/`otherMember` pair (the second tenant every
+// other breakout test in this file already reasons about), plus the one
+// Constraint-12 proof the brief names by its own DB-row-count clause, which
+// no existing network spec asserts.
+//
+// `tests/e2e/network-discovery.spec.ts` already has a draft-404 test and a
+// disabled-request-control test, both using `world.freeMember` -- a
+// deliberately different fixture, chosen there for the TIER angle ("Free sees
+// the directory in full"). Reusing `otherMember` here instead is what makes
+// this the TENANT angle rather than a duplicate: `otherMember` is a plain
+// `manager` of `otherOrgId`, MFA-optional, holding `view_network` at aal1,
+// with no tier or suspension complication at all -- so a 404 here is provably
+// the tenant boundary and nothing else.
+
+/** Sign in as `world.otherMember` -- not one of the fixed `E2eRole` personas
+ *  `signIn()` addresses by role (deliberately: see fixtures.ts's own header on
+ *  `otherMember`, "adding it to `users` would put a member of the second
+ *  tenant inside the record every breakout assertion in this suite reasons
+ *  about"). The manual form walk, mirroring network-discovery.spec.ts's own
+ *  `signInAsFreeMember`. */
+async function signInAsOtherMember(page: Page): Promise<void> {
+  await page.goto("/login");
+  await page.locator('input[name="email"]').fill(world.otherMember.email);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).not.toHaveURL(/\/login/);
+}
+
+test("ALPHA's draft profile 404s for a foreign tenant, and ALPHA's draft never appears in that tenant's directory", async ({
+  page,
+}) => {
+  await signInAsOtherMember(page);
+
+  // ---- THE DIRECT ID: 404, NEVER 403 (no existence leak) -------------------
+  // Same discipline `expectRefused` already applies to every other entity in
+  // this file, over the SAME draft profile network-discovery.spec.ts uses for
+  // the tier-angle version of this claim (`world.networkDraftProfileId`,
+  // owned by `world.orgId` -- ALPHA in this file's own naming).
+  await expectRefused(page, `/${world.otherOrgSlug}/network/${world.networkDraftProfileId}`);
+  await expect(REFUSED(page)).not.toContainText(world.networkDraftProfileName);
+
+  // ---- THE DIRECTORY: SEARCHED BY THE DRAFT'S OWN NAME, ZERO RESULTS -------
+  // Neither masking view ever carries a `status = 'draft'` row (N2's own
+  // dependency set), so this is not "the search box is bad at finding it" --
+  // there is nothing in `network_directory` for it to find. Asserted with a
+  // direct search rather than scanning an unfiltered first page, so pagination
+  // and unrelated fixtures from every other spec file sharing this database
+  // (Constraint 15: no scanning-and-hoping) cannot make this pass by accident.
+  await page.goto(`/${world.otherOrgSlug}/network`);
+  await page.getByLabel("Search the network by name").fill(world.networkDraftProfileName);
+  await page.getByRole("button", { name: "Search" }).click();
+  await expect(page.getByRole("link", { name: world.networkDraftProfileName })).toHaveCount(0);
+  await expect(page.locator("main")).not.toContainText(world.networkDraftProfileName);
+});
+
+test("a Free-tier org's connection request is refused server-side even with disabled stripped, and its own sent-request row count in the database does not move", async ({
+  page,
+}) => {
+  // THE TARGET: ALPHA's own published profile (`networkAlphaProfileId`),
+  // reached from a genuinely FREE-TIER workspace (`freeOrgSlug`'s real
+  // `plan_id='free'` row -- not `world.orgSlug`'s no-subscription escape,
+  // which `entitlementsPermitNetworkPublish` treats as UNGATED). The same
+  // shape `network-connections.spec.ts`'s own Free-tier test walks against a
+  // DIFFERENT profile; this test's own contribution is the DB-row-count
+  // assertion neither that test nor `network-discovery.spec.ts`'s Free-tier
+  // test makes.
+  await page.goto("/login");
+  await page.locator('input[name="email"]').fill(world.freeMember.email);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).not.toHaveURL(/\/login/);
+
+  // ---- THE BASELINE, BEFORE ANY CLICK --------------------------------------
+  // A denominator for the "unchanged" claim below (Constraint 14): reading it
+  // AFTER the submit and finding "0" would prove nothing if it was already "0"
+  // before the fixture ever touched this organisation, or already nonzero for
+  // an unrelated reason. `freeOrgId` has sent no request of any kind in this
+  // world's fixture -- so the honest expectation is exactly 0, stated rather
+  // than assumed.
+  const before = await countSentConnectionRequests(world.freeOrgId);
+  expect(before, "the Free org has sent no connection request before this test").toBe(0);
+
+  await page.goto(`/${world.freeOrgSlug}/network/${world.networkAlphaProfileId}`);
+  await expect(
+    page.getByRole("heading", { name: world.networkAlphaProfileName, level: 1 }),
+  ).toBeVisible();
+
+  const sendButton = page.getByRole("button", { name: "Request connection" });
+  await expect(sendButton).toBeVisible();
+  await expect(sendButton).toBeDisabled();
+
+  // ---- HIDING UI IS NOT ENFORCEMENT (Constraint 12) ------------------------
+  // Strip the attribute and submit for real -- `components/network/
+  // connect-button.tsx`'s disabled branch carries a real `action`, precisely
+  // so a stripped submit reaches `sendConnectionRequestAction` rather than
+  // falling back to a same-page GET (the `tests/e2e/finance.spec.ts:265-287`
+  // pattern this task's own brief names by that citation).
+  await sendButton.evaluate((el) => el.removeAttribute("disabled"));
+  await expect(sendButton).toBeEnabled();
+  await sendButton.click();
+
+  // ---- THE REFUSAL CARRIES THE TIER SENTENCE -------------------------------
+  const errorAlert = page.getByRole("alert").filter({ hasText: /paid feature/ });
+  await expect(errorAlert).toBeVisible();
+  await expect(errorAlert).toContainText("Owner");
+
+  // ---- AND NOTHING WAS WRITTEN: THE ROW COUNT DID NOT MOVE -----------------
+  // Read straight out of Postgres, not through the same client whose refusal
+  // is being measured -- a refusal that returned the right sentence while the
+  // INSERT went through anyway is exactly the two-layer failure this
+  // assertion exists to catch, and the UI alone cannot rule it out.
+  const after = await countSentConnectionRequests(world.freeOrgId);
+  expect(after, "no row was inserted despite the stripped, submitted form").toBe(before);
 });

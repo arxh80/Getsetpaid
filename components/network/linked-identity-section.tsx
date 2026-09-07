@@ -56,10 +56,12 @@ export function LinkedIdentitySection({
           substring-matches case-insensitively by default, and that string
           contains "Network identity" verbatim, colliding with
           network-identity-row.tsx's OWN heading of that exact text on the
-          same four pages. tests/e2e/network.spec.ts's existing
-          `getByRole("heading", { name: "Network identity" })` started
-          resolving to two elements the moment this section shipped beside
-          it. "Linked profile" shares no substring with "Network identity". */}
+          same four pages. tests/e2e/network-profile-editor.spec.ts's
+          existing `getByRole("heading", { name: "Network identity" })`
+          (Task 2's file, renamed in Task 6 -- `network.spec.ts` is now the
+          phase golden path) started resolving to two elements the moment
+          this section shipped beside it. "Linked profile" shares no
+          substring with "Network identity". */}
       <h2 className="text-xl font-bold text-ink">Linked profile</h2>
       {!canRead ? (
         <p className="max-w-prose text-base text-ink-muted">

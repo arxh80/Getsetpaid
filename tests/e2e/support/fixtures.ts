@@ -747,6 +747,33 @@ export async function closeDb(): Promise<void> {
 }
 
 /**
+ * Count this organisation's OWN `network_connection_requests` rows,
+ * sender-side. TASK 6, Constraint 12's proof.
+ *
+ * A stripped-`disabled`-and-submitted form is a claim about the RENDER layer
+ * ("the button lied about being disabled"); the interesting failure mode
+ * `SECURITY.md` warns against is the two-layer one where the render lied AND
+ * the write went through anyway. `authoriseConnections`'s tier term is what
+ * the psql/HTTP suites already prove refuses the INSERT; this is the same
+ * claim read from the browser's own position, straight out of Postgres as
+ * `postgres` (bypassing RLS on purpose, the same as every other fixture
+ * helper in this file) rather than through a client that the tier gate could
+ * itself be hiding a false positive behind. Sender-side only
+ * (`from_organisation_id`) because Constraint 12's scenario is a Free
+ * ORGANISATION trying to SEND -- it is never the recipient of anything, so
+ * there is no `to_` case to count.
+ */
+export async function countSentConnectionRequests(
+  organisationId: string,
+): Promise<number> {
+  const result = await db().query<{ count: string }>(
+    "select count(*)::text as count from public.network_connection_requests where from_organisation_id = $1",
+    [organisationId],
+  );
+  return Number(result.rows[0]?.count ?? "0");
+}
+
+/**
  * Build the world. Returns everything a test needs to address it by id.
  *
  * The suffix is per-run rather than fixed, so a crashed run leaves rows that

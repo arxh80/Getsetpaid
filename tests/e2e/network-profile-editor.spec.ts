@@ -4,6 +4,21 @@ import { signIn, signOut } from "./support/sign-in";
 
 // PHASE 6 (NETWORK), TASK 2: THE PUBLISH-FIELD EDITOR, WALKED.
 //
+// RENAMED IN TASK 6, FROM `network.spec.ts`. Task 6's own brief names
+// `tests/e2e/network.spec.ts` as the network GOLDEN PATH -- the fifth
+// sibling to golden-path/events/operations/documents/finance -- but this
+// file had already claimed that filename for Task 2's own component walk,
+// which is a feature spec in the shape of `network-discovery.spec.ts` /
+// `network-connections.spec.ts` / `network-leakage.spec.ts`, not a phase-
+// level golden path. Renamed rather than merged: this file's own three
+// tests (create/publish/unpublish, two role-breakout reads) are a different
+// narrative from the golden path's single connected story (publish, find,
+// request, accept, link), and Constraint 13/19 both read better with the
+// two kept apart than folded into one file under a name that would then
+// describe neither test accurately. `git mv` preserved history; no test
+// body changed. `components/network/linked-identity-section.tsx`'s own
+// comment citing this file by its old name was updated in the same task.
+//
 // `world.orgSlug` carries NO `organisation_subscriptions` row (fixtures.ts's
 // own comment: "the main organisation deliberately has NO ... row on
 // purpose") -- which is exactly the acceptance criterion's own workspace
