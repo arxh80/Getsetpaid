@@ -161,7 +161,7 @@ export default async function NetworkProfilesPage({
 
       <Suspense
         key={JSON.stringify([listParams.q, listParams.filters, listParams.pageSize])}
-        fallback={<ListSkeleton columns={3} />}
+        fallback={<ListSkeleton columns={5} />}
       >
         <NetworkProfileResults
           organisationId={org.id}

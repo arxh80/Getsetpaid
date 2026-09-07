@@ -126,7 +126,7 @@ export default async function DocumentsPage({
 
       <Suspense
         key={JSON.stringify([listParams.q, listParams.filters, listParams.pageSize])}
-        fallback={<ListSkeleton columns={6} />}
+        fallback={<ListSkeleton columns={7} />}
       >
         <DocumentResults
           organisationId={org.id}

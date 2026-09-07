@@ -124,16 +124,25 @@ export function ListPageSkeleton({
   action = true,
   intro = false,
   eyebrow = true,
+  smallLink = true,
 }: {
   columns: number;
   filters?: number;
   action?: boolean;
   intro?: boolean;
   eyebrow?: boolean;
+  /** The "Deleted …" link line under the heading. Off for the network
+   *  surfaces, which have no deleted view (review finding I2). */
+  smallLink?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-6">
-      <PageHeaderSkeleton eyebrow={eyebrow} action={action} intro={intro} smallLink />
+      <PageHeaderSkeleton
+        eyebrow={eyebrow}
+        action={action}
+        intro={intro}
+        smallLink={smallLink}
+      />
       <ToolbarSkeleton filters={filters} />
       <ListSkeleton columns={columns} />
     </div>
@@ -164,11 +173,23 @@ export function DlSkeleton({ items = 8 }: { items?: number }) {
  * One ruled section: h2 bone, then rows on hairline rules (the RuledList /
  * linked-records / panel-list shape detail pages stack).
  */
-export function SectionSkeleton({ rows = 3 }: { rows?: number }) {
+export function SectionSkeleton({
+  rows = 3,
+  divider = true,
+}: {
+  rows?: number;
+  /** The top rule. Off when this stands where the real page's FIRST section
+   *  does, which follows the header with no rule (review finding I2). */
+  divider?: boolean;
+}) {
   return (
     <section
       aria-hidden="true"
-      className="flex flex-col gap-4 border-t border-rule pt-6"
+      className={
+        divider
+          ? "flex flex-col gap-4 border-t border-rule pt-6"
+          : "flex flex-col gap-4"
+      }
     >
       <Bone className="h-6 w-44" />
       <div className="flex flex-col border-t border-rule">
@@ -257,27 +278,56 @@ export function FieldSkeleton({ textarea = false }: { textarea?: boolean }) {
 }
 
 /**
+ * The bordered "Social" fieldset the contact, artist and venue forms all end
+ * with (components/crm/*-form.tsx): legend, one explanatory line, six
+ * label+input rows for SOCIAL_PLATFORMS. Review finding I2 -- the first cut
+ * flattened these into the plain stack, which undercounted every form that
+ * carries them.
+ */
+export function SocialFieldsetSkeleton() {
+  return (
+    <div className="flex flex-col gap-5 border border-rule p-5">
+      <Bone className="h-4 w-16" />
+      <Bone className="h-4 w-3/4 max-w-prose" />
+      {Array.from({ length: 6 }, (_, i) => (
+        <FieldSkeleton key={i} />
+      ))}
+    </div>
+  );
+}
+
+/**
  * A create/edit route: header (eyebrow, h1, the intro slot new-record pages
  * carry), then the field stack and the submit row. `textareaAt` marks the
- * zero-based field that renders tall (event notes, task details).
+ * zero-based field(s) that render tall (event notes, meeting attendees AND
+ * notes -- hence the array form); `social` appends the bordered Social
+ * fieldset after the plain stack.
  */
 export function FormPageSkeleton({
   fields,
   textareaAt,
   intro = true,
+  social = false,
 }: {
   fields: number;
-  textareaAt?: number;
+  textareaAt?: number | readonly number[];
   intro?: boolean;
+  social?: boolean;
 }) {
+  const tall = Array.isArray(textareaAt)
+    ? (textareaAt as readonly number[])
+    : textareaAt === undefined
+      ? []
+      : [textareaAt as number];
   return (
     <div className="flex flex-col gap-6">
       <LoadingStatus />
       <PageHeaderSkeleton intro={intro} />
       <div aria-hidden="true" className="flex flex-col gap-5">
         {Array.from({ length: fields }, (_, i) => (
-          <FieldSkeleton key={i} textarea={i === textareaAt} />
+          <FieldSkeleton key={i} textarea={tall.includes(i)} />
         ))}
+        {social ? <SocialFieldsetSkeleton /> : null}
         <div className="flex flex-wrap items-center gap-4">
           <Bone className="h-11 w-32" />
           <Bone className="h-5 w-16" />

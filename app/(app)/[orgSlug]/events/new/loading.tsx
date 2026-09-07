@@ -6,5 +6,5 @@ import { FormPageSkeleton } from "@/components/skeleton/page-skeletons";
 // components/skeleton/page-skeletons.tsx for the vocabulary and the
 // accessibility contract (one role="status" per surface, bones hidden).
 export default function Loading() {
-  return <FormPageSkeleton fields={9} textareaAt={8} />;
+  return <FormPageSkeleton fields={10} textareaAt={9} />;
 }

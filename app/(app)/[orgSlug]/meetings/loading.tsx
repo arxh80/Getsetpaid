@@ -6,5 +6,5 @@ import { ListPageSkeleton } from "@/components/skeleton/page-skeletons";
 // components/skeleton/page-skeletons.tsx for the vocabulary and the
 // accessibility contract (one role="status" per surface, bones hidden).
 export default function Loading() {
-  return <ListPageSkeleton columns={4} />;
+  return <ListPageSkeleton columns={4} filters={3} />;
 }

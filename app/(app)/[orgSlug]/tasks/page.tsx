@@ -91,7 +91,7 @@ export default async function TasksPage({
 
       <Suspense
         key={JSON.stringify([listParams.q, listParams.filters, listParams.pageSize])}
-        fallback={<ListSkeleton columns={4} />}
+        fallback={<ListSkeleton columns={5} />}
       >
         <TaskResults
           organisationId={org.id}
