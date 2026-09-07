@@ -3312,7 +3312,7 @@ recorded for the history and the residual each leaves; the rest are open.
     through it (LJ5/LJ5b), while losing their `view_network`-gated keys — their
     drafts (LJ4), their `network_links` (LJ4b) and their ability to write the
     profile (LJ6). That directly contradicts the comment shipped at
-    `supabase/migrations/20260904002000_...:41-45`: *"a suspended
+    `supabase/migrations/20260904002000_...:42-45`: *"a suspended
     organisation's members cannot browse the directory or read their own
     network profiles until the workspace is reinstated."* The comment is
     wrong on both halves (browse, and read-own-published). **Owner: Task 6 doc
@@ -3437,7 +3437,7 @@ phase next touches its file.
   once its target profile unpublishes, but the row can in fact still be
   soft-deleted; the comment overstates the lock. `20260904003000`.
 - **M2** — the directory policy is not suspension-gated, which contradicts the
-  comment shipped at `20260904002000:41-45` and `lib/network/access.ts:196-200`.
+  comment shipped at `20260904002000:42-45` and `lib/network/access.ts:196-200`.
   Q88 (Task 5) measured the actual behaviour and is the disposition of record;
   the false comment is corrected in this same task (see CLAUDE.md's own note
   below and the additive migration).
@@ -3566,7 +3566,23 @@ phase next touches its file.
   an ordering dependency rather than a self-contained fixture, flagged so a
   future reorder does not silently break it.
 
-### Q70-Q88, one line each, with the default taken
+### Opened by the Task 6 review (the phase's post-hoc task review)
+
+- **Four near-identical hand sign-ins across the e2e specs.** A
+  `signInAsOtherMember` helper is duplicated verbatim in
+  `tests/e2e/network.spec.ts` and `tests/e2e/tenant-breakout.spec.ts`, next to
+  `network-discovery.spec.ts`'s and `network-connections.spec.ts`'s
+  `signInAsFreeMember` twins. Promote one `signInAs(page, email)` into
+  `tests/e2e/support/sign-in.ts` and delete the four copies — a pure refactor
+  best done the next time a spec touches those files, not worth a churn-only
+  diff of four specs now.
+- **The measured suite baselines lived only in the untracked exit document,
+  and now live here.** `.superpowers/sdd/` is gitignored, so
+  `exit-document.md` dies with the worktree; `CLAUDE.md` tracks the Playwright
+  count (77) and nothing else. The Phase 6 exit baselines, for Phase 7's brief
+  to build against: **psql 1686/0, HTTP 338/0, vitest 1514 across 75 files,
+  Playwright 77, contrast 16** — all green at `f8b0f32`. Any change to a suite
+  updates this line in the same commit, the way CLAUDE.md's 77 is maintained.
 
 `DECISIONS-QUEUE.md` is gitignored and dies with the worktree — Phase 5 booked
 exactly this loss as an open item ("the reasoning behind each answer does not
@@ -3645,7 +3661,7 @@ worktree lasts; the exit document restates all nineteen in the same form.
 - **Q88 (suspended-org network visibility — found mid-phase, Task 5):** leave
   the behaviour as measured for MVP — a suspended org's published profile
   stays visible to a counterparty AND to the suspended org's own members —
-  and correct the false comment at `20260904002000:41-45` that claimed
+  and correct the false comment at `20260904002000:42-45` that claimed
   otherwise, rather than change the policy unilaterally. See CLAUDE.md's own
   "Network, as it actually shipped in Phase 6" section and this task's
   additive migration.

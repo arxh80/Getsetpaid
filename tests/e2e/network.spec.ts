@@ -105,9 +105,20 @@ async function signInAsOtherMember(page: Page): Promise<void> {
 test("ALPHA publishes a venue with two network fields and one connections field; BETA discovers it, connects, and links it to its own company", async ({
   page,
 }) => {
-  const venueName = "Network Golden Path Venue";
-  const companyName = "Network Golden Path Bookers Ltd";
-  const connectionsEmail = "golden-path-connections@example.test";
+  // ONE TEST, ELEVEN ROUTE VISITS, FOUR SIGN-IN CYCLES: the 60s default is the
+  // exact budget accessibility.spec.ts:130-146 records as the failure mode
+  // ("eleven pages under one budget"), so this test declares itself slow
+  // (triple budget) rather than trusting warm routes to stay warm.
+  test.slow();
+
+  // SUFFIXED WITH THE RUN'S OWN orgSlug, per fixtures.ts's directory-naming
+  // rule: the network directory is the one list in the product with no per-run
+  // tenant boundary, so a hardcoded profile name collides with a leftover row
+  // from any run that died before tearDownWorld and breaks the
+  // `getByRole("link", { name })` lookups below with a strict-mode violation.
+  const venueName = `Network Golden Path Venue ${world.orgSlug}`;
+  const companyName = `Network Golden Path Bookers Ltd ${world.orgSlug}`;
+  const connectionsEmail = `golden-path-connections-${world.orgSlug}@example.test`;
 
   // =========================================================================
   // ALPHA: CREATE THE VENUE, THEN PUBLISH IT FROM ITS OWN "Network identity"
@@ -162,11 +173,11 @@ test("ALPHA publishes a venue with two network fields and one connections field;
   // each row is scoped by that shared ancestor.
   // =========================================================================
   const headlineRow = page.locator("li", { has: page.locator("#headline") });
-  await headlineRow.locator("#headline").fill("Booking enquiries welcome");
+  await headlineRow.locator("#headline").fill("Golden-path enquiries welcome");
   await headlineRow.getByRole("radio", { name: /Everyone on the network/i }).click();
 
   const cityRow = page.locator("li", { has: page.locator("#city") });
-  await cityRow.locator("#city").fill("Bristol");
+  await cityRow.locator("#city").fill("Frome");
   await cityRow.getByRole("radio", { name: /Everyone on the network/i }).click();
 
   const emailRow = page.locator("li", { has: page.locator("#contact_email") });
@@ -184,7 +195,12 @@ test("ALPHA publishes a venue with two network fields and one connections field;
 
   await page.getByRole("button", { name: "Publish to the network" }).click();
   await expect(page.getByText(/Published\./)).toBeVisible();
-  await expect(page.getByText("Published", { exact: true }).first()).toBeVisible();
+  // THE STATUS CHIP, SCOPED TO ITS EXACT SLOT rather than `.first()`: the
+  // editor page renders ProfileStatusChip as the h1's immediate sibling
+  // (app/(app)/[orgSlug]/network/profiles/[profileId]/page.tsx), so `h1 + span`
+  // is that one chip and a second "Published" anywhere else can never satisfy
+  // this. `.first()` would keep passing on whichever sorted first.
+  await expect(page.locator("h1 + span")).toHaveText("Published");
 
   // =========================================================================
   // BETA: ITS OWN COMPANY, PUBLISHED MINIMALLY -- Q78's "one of the sender's
@@ -224,8 +240,8 @@ test("ALPHA publishes a venue with two network fields and one connections field;
   const directoryLink = page.getByRole("link", { name: venueName });
   await expect(directoryLink).toBeVisible();
   // THE TWO `network` FIELDS, RIGHT THERE IN THE DIRECTORY ROW.
-  await expect(page.locator("main")).toContainText("Booking enquiries welcome");
-  await expect(page.locator("main")).toContainText("Bristol");
+  await expect(page.locator("main")).toContainText("Golden-path enquiries welcome");
+  await expect(page.locator("main")).toContainText("Frome");
   // THE `connections` FIELD MUST NOT APPEAR ANYWHERE ON THIS PAGE -- BETA has
   // no accepted connection with ALPHA yet. This is the assertion the first
   // mutation test (un-mask one directory field) reddens.
@@ -233,8 +249,8 @@ test("ALPHA publishes a venue with two network fields and one connections field;
 
   await directoryLink.click();
   await expect(page.getByRole("heading", { name: venueName, level: 1 })).toBeVisible();
-  await expect(page.locator("main")).toContainText("Booking enquiries welcome");
-  await expect(page.locator("main")).toContainText("Bristol");
+  await expect(page.locator("main")).toContainText("Golden-path enquiries welcome");
+  await expect(page.locator("main")).toContainText("Frome");
   await expect(page.locator("main")).not.toContainText(connectionsEmail);
   await expect(page.getByText("You’re connected")).toHaveCount(0);
 
@@ -287,8 +303,8 @@ test("ALPHA publishes a venue with two network fields and one connections field;
   await expect(page.getByText("You’re connected")).toBeVisible();
   await expect(page.locator("main")).toContainText(connectionsEmail);
   // The two `network` fields are unaffected by the accept.
-  await expect(page.locator("main")).toContainText("Booking enquiries welcome");
-  await expect(page.locator("main")).toContainText("Bristol");
+  await expect(page.locator("main")).toContainText("Golden-path enquiries welcome");
+  await expect(page.locator("main")).toContainText("Frome");
 
   // =========================================================================
   // BETA LINKS THE PROFILE TO ITS OWN PRIVATE COMPANY RECORD (Q73/Q82) --
