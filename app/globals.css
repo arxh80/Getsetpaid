@@ -90,6 +90,13 @@
   /* ---- Structure ------------------------------------------------------- */
   --color-rule: #D6CBCB;
   --color-rule-strong: #14141C;
+  /* DESIGN.md § Tokens' --scrim, verbatim (ink at 40%): the overlay wash
+     behind a modal surface — DESIGN.md § Shape names it as the third depth
+     step for drawers and modals. First consumer: the command palette
+     (keyboard-a11y pass). Not a new colour — the token has been in DESIGN.md
+     since the palette section was written; this line makes `bg-scrim`
+     generatable. Decorative overlay, so no text-contrast pair applies. */
+  --color-scrim: rgb(20 20 28 / 0.4);
 
   /* ---- Status -- never the only signal, always paired with a label ------ */
   --color-success: #0E5F42;    /*  7.13:1 */

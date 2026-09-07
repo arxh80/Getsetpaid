@@ -28,6 +28,7 @@ import { WorkspaceSwitcher } from "@/components/org/workspace-switcher";
 import { SuspendedBanner } from "@/components/org/suspended-banner";
 import { Wordmark } from "@/components/wordmark";
 import { SkipLink } from "@/components/ui/skip-link";
+import { CommandPalette } from "@/components/palette/command-palette";
 
 // Shell for every signed-in screen.
 //
@@ -142,6 +143,17 @@ export default async function AppLayout({
           </Link>
 
           <div className="ml-auto flex items-center gap-4">
+            {/* The command palette (keyboard-a11y pass): Ctrl/Cmd-K anywhere,
+                or this header trigger. Mounted only when the request resolved
+                to a workspace AND no MFA gate holds — the same condition as
+                the rail, because the palette's sections ARE the rail's
+                permission-filtered groups and its record search is
+                org-scoped. currentOrg is non-null whenever sidebarGroups is,
+                but TypeScript cannot see that through the ternary, so both
+                are checked. */}
+            {sidebarGroups && currentOrg ? (
+              <CommandPalette orgSlug={currentOrg.slug} groups={sidebarGroups} />
+            ) : null}
             {/* Task 8: only rendered on an org-scoped page (currentOrg !==
                 null). A single-org user never sees the switcher at all -- a
                 control with exactly one destination is not a control, it is
