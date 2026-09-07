@@ -309,6 +309,22 @@ nav[aria-label="Primary"] :focus-visible {
   outline-offset: -2px;
 }
 
+/* THE MAIN LANDMARK IS A PROGRAMMATIC FOCUS TARGET, NOT A CONTROL.
+   Both layouts give <main id="main"> tabIndex={-1} (keyboard-a11y pass) so the
+   skip link and scripts that must relocate a lost focus (idle-timeout's "Stay
+   signed in" unmounts the element holding focus) have a real .focus() target.
+   Browsers apply :focus-visible heuristically to programmatic focus that
+   follows a key press, which would draw the 2px ink ring around the ENTIRE
+   content column -- a page-height rectangle, not a focus indicator. Suppressed
+   here, UNLAYERED, because an `outline-none` utility on the element sits in
+   @layer utilities and loses to the unlayered base ring above regardless of
+   specificity (the same cascade fact every rule in this block documents).
+   "Keyboard focus is never removed" (DESIGN.md) is about interactive controls;
+   main is a landmark no Tab press can reach. */
+main:focus-visible {
+  outline: none;
+}
+
 /* Removes the ~300ms tap delay mobile browsers hold in case a tap becomes a
    double-tap-to-zoom. Scoped to controls, so pinch-zoom on the page itself is
    untouched -- disabling that would be an accessibility failure. */

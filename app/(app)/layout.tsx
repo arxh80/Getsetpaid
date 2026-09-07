@@ -202,8 +202,16 @@ export default async function AppLayout({
           before it touches the content column's width. */}
       <div className="flex w-full flex-1 items-start">
         {sidebarGroups ? <Sidebar groups={sidebarGroups} /> : null}
+        {/* tabIndex={-1}: a programmatic focus target, reachable by script
+            and by the skip link but never by Tab. The skip link's fragment
+            navigation moves the sequential-focus start without it in modern
+            browsers, but a script (idle-timeout's "Stay signed in", which
+            unmounts the element holding focus) needs a real .focus() target
+            — and -1 makes the skip link's landing a genuine focus move
+            everywhere rather than a scroll in some browser/AT pairings. */}
         <main
           id="main"
+          tabIndex={-1}
           className="mx-auto w-full min-w-0 max-w-4xl flex-1 px-4 py-8 sm:py-12"
         >
           {mfaGate.kind === "enroll" ? (

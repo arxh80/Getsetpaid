@@ -28,7 +28,13 @@ export default function AuthLayout({
         </div>
       </header>
 
-      <main id="main" className="mx-auto w-full max-w-md flex-1 px-4 py-8 sm:py-12">
+      {/* tabIndex={-1}: programmatic/skip-link focus target, never tabbable —
+          same note as app/(app)/layout.tsx's main. */}
+      <main
+        id="main"
+        tabIndex={-1}
+        className="mx-auto w-full max-w-md flex-1 px-4 py-8 sm:py-12"
+      >
         {children}
       </main>
 

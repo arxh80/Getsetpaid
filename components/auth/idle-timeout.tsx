@@ -203,6 +203,16 @@ export function IdleTimeout({ userId }: { userId: string }) {
     recordActivity(now);
     setPhase("active");
     setRemaining(0);
+    // KEYBOARD FOCUS MUST GO SOMEWHERE (keyboard-a11y pass). This click
+    // unmounts the whole banner, "Stay signed in" included, and a focused
+    // element that unmounts drops focus to <body> — a keyboard user who
+    // tabbed up here would restart the page from the top with no signal.
+    // There is no "previous" position to restore (the banner appeared
+    // unbidden; the user travelled to it themselves), so the least-wrong
+    // target is the main landmark: reading continues from the content, the
+    // same place the skip link lands. #main carries tabIndex={-1} in both
+    // layouts for exactly this kind of programmatic move.
+    document.getElementById("main")?.focus();
   }, [recordActivity]);
 
   if (phase !== "warning") return null;
