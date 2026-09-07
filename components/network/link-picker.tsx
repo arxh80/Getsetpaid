@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
+import { useRevealFocus } from "@/components/ui/use-reveal-focus";
 import { EMPTY_FORM_STATE } from "@/lib/forms";
 import { createNetworkLinkAction } from "@/lib/network/links";
 import { searchNetworkDirectoryForLinkAction } from "@/lib/network/link-search";
@@ -61,6 +62,14 @@ export function LinkPicker({
   disabledReason: string | null;
 }) {
   const [open, setOpen] = useState(false);
+  // Keyboard-a11y pass: the trigger unmounts when the panel opens (and the
+  // panel when it closes), so without this both transitions dropped focus to
+  // <body>. Open → focus the search box (the panel's one job); close/Escape →
+  // back to the trigger. See use-reveal-focus.ts.
+  const { triggerRef, revealRef, onRevealKeyDown } = useRevealFocus<
+    HTMLInputElement,
+    HTMLButtonElement
+  >(open, () => setOpen(false));
   const [searchState, searchAction, searching] = useActionState(
     searchNetworkDirectoryForLinkAction,
     EMPTY_LINK_PICKER_SEARCH_STATE,
@@ -76,14 +85,22 @@ export function LinkPicker({
 
   if (!open) {
     return (
-      <Button type="button" variant="secondary" onClick={() => setOpen(true)}>
+      <Button
+        ref={triggerRef}
+        type="button"
+        variant="secondary"
+        onClick={() => setOpen(true)}
+      >
         Link to a network profile
       </Button>
     );
   }
 
   return (
-    <div className="flex flex-col gap-4 border border-rule bg-surface p-4">
+    <div
+      onKeyDown={onRevealKeyDown}
+      className="flex flex-col gap-4 border border-rule bg-surface p-4"
+    >
       {linkState.error ? <Alert tone="error">{linkState.error}</Alert> : null}
       {linkState.message ? <Alert tone="success">{linkState.message}</Alert> : null}
 
@@ -95,6 +112,7 @@ export function LinkPicker({
           {/* NO defaultValue OTHER THAN THE PRIOR SEARCH. Never the private
               record's own name -- see the header. */}
           <input
+            ref={revealRef}
             id="link-picker-q"
             name="q"
             type="text"

@@ -89,6 +89,10 @@ export function DocumentDeleteControl({
       action={deleteDocumentFormAction}
       hiddenFields={{ orgSlug, documentId }}
       label="Delete"
+      // One delete control PER ROW (documents have no detail page), so the
+      // accessible name must carry the filename or the page announces N
+      // identical "Delete" buttons — delete-restore.tsx's own label contract.
+      srSubject={filename}
       question={`Delete “${filename}”? You can restore it from Deleted documents.`}
       blocked={blocked}
       describedBy={describedBy}
@@ -99,11 +103,15 @@ export function DocumentDeleteControl({
 export function DocumentRestoreControl({
   orgSlug,
   documentId,
+  filename,
   blocked,
   describedBy,
 }: {
   orgSlug: string;
   documentId: string;
+  /** Per-row control — the filename disambiguates the accessible name, same
+   *  as DocumentDeleteControl. */
+  filename: string;
   blocked: boolean;
   describedBy: string;
 }) {
@@ -112,6 +120,7 @@ export function DocumentRestoreControl({
       action={restoreDocumentAction}
       hiddenFields={{ orgSlug, documentId }}
       label="Restore"
+      srSubject={filename}
       blocked={blocked}
       describedBy={describedBy}
     />

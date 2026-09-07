@@ -1,7 +1,13 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import {
+  useActionState,
+  useState,
+  type KeyboardEvent,
+  type Ref,
+} from "react";
 import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
+import { useRevealFocus } from "@/components/ui/use-reveal-focus";
 import {
   acceptConnectionRequestAction,
   declineConnectionRequestAction,
@@ -73,6 +79,8 @@ function Confirming({
   keepLabel,
   variant,
   onCancel,
+  questionRef,
+  onKeyDown,
 }: {
   action: (prev: FormState, data: FormData) => Promise<FormState>;
   orgSlug: string;
@@ -83,17 +91,29 @@ function Confirming({
   keepLabel: string;
   variant: "primary" | "danger" | "secondary";
   onCancel: () => void;
+  /** The reveal's focus target — see use-reveal-focus.ts. */
+  questionRef: Ref<HTMLParagraphElement>;
+  /** Escape-to-cancel, from the same hook. */
+  onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
 }) {
   const [state, formAction, pending] = useActionState(action, EMPTY_FORM_STATE);
   return (
-    <form action={formAction} className="flex flex-col gap-3">
+    <form action={formAction} onKeyDown={onKeyDown} className="flex flex-col gap-3">
       <input type="hidden" name="orgSlug" value={orgSlug} />
       <input type="hidden" name="requestId" value={requestId} />
       {state.error ? <Alert tone="error">{state.error}</Alert> : null}
       {state.message ? <Alert tone="success">{state.message}</Alert> : null}
       {/* THE TERMINAL WARNING (Decline) OR THE PLAIN QUESTION (Accept,
-          Withdraw), STATED BEFORE THE BUTTON THAT ACTS ON IT. */}
-      <p role="status" className="max-w-prose text-base text-ink">
+          Withdraw), STATED BEFORE THE BUTTON THAT ACTS ON IT — and the
+          reveal's focus target (tabIndex={-1}), so keyboard focus lands on
+          the question rather than being dropped to <body> when the trigger
+          unmounts, and never on a button a repeated Enter could fire. */}
+      <p
+        ref={questionRef}
+        tabIndex={-1}
+        role="status"
+        className="max-w-prose text-base text-ink"
+      >
         {question}
       </p>
       <div className="flex flex-wrap items-center gap-3">
@@ -111,15 +131,30 @@ function Confirming({
 export function AcceptRequestForm({
   orgSlug,
   requestId,
+  subject,
 }: {
   orgSlug: string;
   requestId: string;
+  /** The counterparty's display name — one Accept/Decline pair renders PER
+   *  ROW of the requests table, so without it the page announces N identical
+   *  "Accept" buttons. sr-only; the visible cell already shows the name. */
+  subject?: string;
 }) {
   const [asking, setAsking] = useState(false);
+  const { triggerRef, revealRef, onRevealKeyDown } = useRevealFocus<
+    HTMLParagraphElement,
+    HTMLButtonElement
+  >(asking, () => setAsking(false));
   if (!asking) {
     return (
-      <Button type="button" variant="primary" onClick={() => setAsking(true)}>
+      <Button
+        ref={triggerRef}
+        type="button"
+        variant="primary"
+        onClick={() => setAsking(true)}
+      >
         Accept
+        {subject ? <span className="sr-only"> — {subject}</span> : null}
       </Button>
     );
   }
@@ -128,6 +163,8 @@ export function AcceptRequestForm({
       action={acceptConnectionRequestAction}
       orgSlug={orgSlug}
       requestId={requestId}
+      questionRef={revealRef}
+      onKeyDown={onRevealKeyDown}
       question="Accept this connection? Fields they marked “Connections only” become visible to you, and yours become visible to them — both ways round."
       confirmLabel="Yes, accept"
       confirmingLabel="Accepting…"
@@ -141,15 +178,28 @@ export function AcceptRequestForm({
 export function DeclineRequestForm({
   orgSlug,
   requestId,
+  subject,
 }: {
   orgSlug: string;
   requestId: string;
+  /** @see AcceptRequestForm.subject */
+  subject?: string;
 }) {
   const [asking, setAsking] = useState(false);
+  const { triggerRef, revealRef, onRevealKeyDown } = useRevealFocus<
+    HTMLParagraphElement,
+    HTMLButtonElement
+  >(asking, () => setAsking(false));
   if (!asking) {
     return (
-      <Button type="button" variant="danger" onClick={() => setAsking(true)}>
+      <Button
+        ref={triggerRef}
+        type="button"
+        variant="danger"
+        onClick={() => setAsking(true)}
+      >
         Decline
+        {subject ? <span className="sr-only"> — {subject}</span> : null}
       </Button>
     );
   }
@@ -158,6 +208,8 @@ export function DeclineRequestForm({
       action={declineConnectionRequestAction}
       orgSlug={orgSlug}
       requestId={requestId}
+      questionRef={revealRef}
+      onKeyDown={onRevealKeyDown}
       // THE Q79 SENTENCE, STATED BEFORE THE CLICK (as changed 2026-09-07).
       question="Decline this request? This one can’t be reopened, but they’ll be able to send a new request to this profile later."
       confirmLabel="Yes, decline"
@@ -172,15 +224,28 @@ export function DeclineRequestForm({
 export function WithdrawRequestForm({
   orgSlug,
   requestId,
+  subject,
 }: {
   orgSlug: string;
   requestId: string;
+  /** @see AcceptRequestForm.subject */
+  subject?: string;
 }) {
   const [asking, setAsking] = useState(false);
+  const { triggerRef, revealRef, onRevealKeyDown } = useRevealFocus<
+    HTMLParagraphElement,
+    HTMLButtonElement
+  >(asking, () => setAsking(false));
   if (!asking) {
     return (
-      <Button type="button" variant="secondary" onClick={() => setAsking(true)}>
+      <Button
+        ref={triggerRef}
+        type="button"
+        variant="secondary"
+        onClick={() => setAsking(true)}
+      >
         Withdraw
+        {subject ? <span className="sr-only"> — {subject}</span> : null}
       </Button>
     );
   }
@@ -189,6 +254,8 @@ export function WithdrawRequestForm({
       action={withdrawConnectionRequestAction}
       orgSlug={orgSlug}
       requestId={requestId}
+      questionRef={revealRef}
+      onKeyDown={onRevealKeyDown}
       question="Withdraw this request? You can send another request to this profile afterwards."
       confirmLabel="Yes, withdraw"
       confirmingLabel="Withdrawing…"

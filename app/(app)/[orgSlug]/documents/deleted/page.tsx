@@ -232,6 +232,7 @@ function columnsFor(
         <DocumentRestoreControl
           orgSlug={orgSlug}
           documentId={row.id}
+          filename={row.filename}
           blocked={!access.canWrite}
           describedBy={WRITE_NOTE_ID}
         />
