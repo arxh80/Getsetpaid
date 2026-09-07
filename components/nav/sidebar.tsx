@@ -342,7 +342,15 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
       // road.
       className="sticky top-0 hidden max-h-dvh shrink-0 flex-col overflow-x-hidden overflow-y-auto border-r border-rule bg-shell md:flex"
     >
-      <div className="flex h-11 shrink-0 items-center justify-end px-2">
+      {/* Collapsed, the pin centres on the rail's 32px midline like every
+          nav icon below it (review finding 10); expanded, it sits at the
+          top-right corner where a pin control reads as chrome, not content. */}
+      <div
+        className={
+          "flex h-11 shrink-0 items-center " +
+          (expanded ? "justify-end px-2" : "justify-center")
+        }
+      >
         {/* A REAL <button>, aria-pressed rather than a re-worded label on
             toggle. WAI-ARIA's toggle-button pattern: the name stays constant
             ("Pin navigation open") and `aria-pressed` carries the state, so a

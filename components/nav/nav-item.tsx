@@ -72,8 +72,14 @@ export function NavItem({
       // <nav> carries. Pulling the ring 2px INSIDE the row keeps all four
       // segments visible at every scroll position; the rows are 44px tall, so
       // the inset ring never touches the row's own text.
+      // pl-[19px] CENTRES THE COLLAPSED ICON (review finding 9, arithmetic
+      // corrected): the rail is 64px and the icon 20px, so its left edge
+      // belongs at (64-20)/2 = 22px -- of which the always-present 3px
+      // border-l supplies 3, leaving 19px of padding. (The review proposed
+      // 21px, which double-counts by omitting the border.) h-11 = 44px is the
+      // WCAG 2.5.8-plus touch-target height DESIGN.md § Spacing now names.
       className={
-        "flex h-11 items-center gap-3 border-l-[3px] pl-[17px] pr-4 no-underline " +
+        "flex h-11 items-center gap-3 border-l-[3px] pl-[19px] pr-4 no-underline " +
         "focus-visible:-outline-offset-2 " +
         "transition-colors duration-[var(--dur-fast)] ease-brand " +
         (active
