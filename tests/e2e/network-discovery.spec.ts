@@ -133,7 +133,18 @@ test("ALPHA's own DRAFT profile 404s for a foreign, unconnected viewer -- no exi
   const response = await page.goto(
     `/${world.freeOrgSlug}/network/${world.networkDraftProfileId}`,
   );
-  expect(response?.status(), "a draft must refuse with 404, never 403").toBe(404);
+  // A record-level refusal under the viewer's own slug streams since the
+  // loading-skeletons pass: HTTP 200 + the identical not-found document (the
+  // page's notFound() lands after the loading boundary has flushed the status
+  // line). The contract is 404-or-200, never 403; the existence-oracle
+  // equality itself is measured by tenant-breakout.spec.ts's REFUSAL PARITY
+  // test and network-leakage.spec.ts's per-probe ghost comparison over this
+  // same draft id.
+  const status = response?.status() ?? -1;
+  expect(
+    [200, 404],
+    `a draft must refuse as 404 or a streamed not-found (200), never 403; got ${status}`,
+  ).toContain(status);
   await expect(
     page.getByRole("heading", { name: "Page not found." }),
   ).toBeVisible();

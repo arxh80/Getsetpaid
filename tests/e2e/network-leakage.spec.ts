@@ -17,7 +17,14 @@ import { signIn } from "./support/sign-in";
 // DATABASE refuses. Neither can prove what the APPLICATION does with a request
 // it is allowed to make: a route that resolves an id before it checks the
 // tenant, a page that renders a name out of a cache, a 403 where the product
-// promised a 404. Those are Next.js facts and only a browser sees them.
+// promised a refusal. Those are Next.js facts and only a browser sees them.
+// (Since the loading-skeletons pass a RECORD-level refusal under the viewer's
+// own slug streams as HTTP 200 + the identical not-found document -- the page's
+// notFound() lands after the loading boundary has flushed the status line --
+// while a WORKSPACE-level refusal still carries the literal 404. See
+// tenant-breakout.spec.ts's expectRefused header and its REFUSAL PARITY test;
+// here `expectRecordRefused` asserts the same contract plus per-probe parity
+// against a nonexistent id.)
 //
 // ===========================================================================
 // THE TWO DISTANCES, AND WHY EACH IS THE PERSONA IT IS
@@ -87,8 +94,43 @@ async function signInAsOtherMember(page: Page): Promise<void> {
  * session, and it always yields a response with a real status line.
  */
 async function statusOf(page: Page, path: string): Promise<number> {
-  const response = await page.request.get(path);
+  // maxRedirects: 0 so a bounce to /login shows up as its own 3xx status
+  // rather than a followed 200 -- status uniformity is part of the contract.
+  const response = await page.request.get(path, { maxRedirects: 0 });
   return response.status();
+}
+
+/** A well-formed UUID that matches no row anywhere. Deterministic on purpose. */
+const GHOST_ID = "00000000-0000-4000-8000-000000000000";
+
+/**
+ * The streaming-aware record refusal (see the header note): `path` is
+ * `<family>/<id>` under `slug`. Asserts the status is 404 or a streamed
+ * not-found 200 -- never 403, never a redirect -- AND that it equals the
+ * status of the same family probed with an id that matches nothing, which is
+ * the per-probe existence-oracle assertion the fixed 404 used to imply.
+ */
+async function expectRecordRefused(
+  page: Page,
+  slug: string,
+  path: string,
+  label: string,
+) {
+  const real = await statusOf(page, `/${slug}/${path}`);
+  const ghost = await statusOf(
+    page,
+    `/${slug}/${path.replace(/[^/]+$/, GHOST_ID)}`,
+  );
+  expect(
+    [200, 404],
+    `ALPHA's ${label} must refuse as 404 or a streamed not-found (200), ` +
+      `never 403 (a 403 confirms the row exists); got ${real}`,
+  ).toContain(real);
+  expect(
+    real,
+    `ALPHA's ${label}: a real foreign row and a nonexistent id must share ` +
+      `one status -- a difference is an existence oracle (got ${real} vs ${ghost})`,
+  ).toBe(ghost);
 }
 
 function alphaPrivateRoutes(w: E2eWorld): ReadonlyArray<readonly [string, string]> {
@@ -130,11 +172,7 @@ test("an UNCONNECTED counterparty, signed in for real, reaches none of ALPHA's p
   // sends (the org slug is in every URL and the record id is guessable from
   // nothing, but a leaked or enumerated one must still refuse).
   for (const [label, path] of alphaPrivateRoutes(world)) {
-    expect(
-      await statusOf(page, `/${world.otherOrgSlug}/${path}`),
-      `ALPHA's ${label} must 404 for an unconnected counterparty, never 403 ` +
-        "(a 403 confirms the row exists)",
-    ).toBe(404);
+    await expectRecordRefused(page, world.otherOrgSlug, path, label);
   }
 
   // THE FILE BYTES. The download Route Handler is the one path in the product
@@ -158,7 +196,9 @@ test("an UNCONNECTED counterparty, signed in for real, reaches none of ALPHA's p
   }
 
   // AND THROUGH ALPHA'S OWN SLUG, which is the other half of the same attack:
-  // knowing the victim's slug must not help either.
+  // knowing the victim's slug must not help either. A workspace this viewer
+  // is no member of refuses at the layout, above every loading boundary, so
+  // the literal 404 still holds here.
   expect(
     await statusOf(page, `/${world.orgSlug}/contacts/${world.managerOwnedContactId}`),
     "ALPHA's own slug does not admit a non-member",
@@ -181,12 +221,10 @@ test("a CONNECTED counterparty reaches none of them either -- accept unlocks fie
   await expect(page.getByText("You’re connected")).toBeVisible();
   await expect(page.locator("main")).toContainText("alpha-connections@example.test");
 
+  // An accepted connection grants no access to any tenant table (N4): the
+  // identical refusal-and-parity contract as the unconnected pass above.
   for (const [label, path] of alphaPrivateRoutes(world)) {
-    expect(
-      await statusOf(page, `/${world.proOrgSlug}/${path}`),
-      `ALPHA's ${label} must 404 for a CONNECTED counterparty too -- an ` +
-        "accepted connection grants no access to any tenant table (N4)",
-    ).toBe(404);
+    await expectRecordRefused(page, world.proOrgSlug, path, label);
   }
 
   for (const [label, id] of [
@@ -261,10 +299,16 @@ test("the IDOR probe, UNCONNECTED: ALPHA's DRAFT profile 404s, and the published
   // network-discovery.spec.ts drives this id from the FREE-tier viewer.
   // Neither of the two distances this file is about had ever driven it.
   await signInAsOtherMember(page);
-  const unconnected = await page.goto(
-    `/${world.otherOrgSlug}/network/${world.networkDraftProfileId}`,
+  // A record-level refusal under the viewer's own slug: streamed, so the
+  // contract is 404-or-200-never-403 plus parity against a nonexistent id
+  // (expectRecordRefused), then the rendered refusal itself.
+  await expectRecordRefused(
+    page,
+    world.otherOrgSlug,
+    `network/${world.networkDraftProfileId}`,
+    "draft profile",
   );
-  expect(unconnected?.status(), "a draft profile is a 404, never a 403").toBe(404);
+  await page.goto(`/${world.otherOrgSlug}/network/${world.networkDraftProfileId}`);
   await expect(page.getByRole("heading", { name: "Page not found." })).toBeVisible();
 
   // THE PAIRED CONTROL, same session, same route shape: the PUBLISHED id
@@ -287,13 +331,15 @@ test("the IDOR probe, CONNECTED: an accepted connection does not unlock the coun
   // published_directory` requires `status = 'published'` and no other policy
   // reaches another tenant's row at all.
   await signIn(page, world, "booker");
-  const connected = await page.goto(
-    `/${world.proOrgSlug}/network/${world.networkDraftProfileId}`,
+  // Same streamed refusal-and-parity contract as the unconnected probe: an
+  // accepted connection does not unlock the counterparty's DRAFT.
+  await expectRecordRefused(
+    page,
+    world.proOrgSlug,
+    `network/${world.networkDraftProfileId}`,
+    "draft profile (connected)",
   );
-  expect(
-    connected?.status(),
-    "an accepted connection does not unlock the counterparty's DRAFT",
-  ).toBe(404);
+  await page.goto(`/${world.proOrgSlug}/network/${world.networkDraftProfileId}`);
   await expect(page.getByRole("heading", { name: "Page not found." })).toBeVisible();
 
   // THE PAIRED CONTROL on the same session: the PUBLISHED profile renders, and
