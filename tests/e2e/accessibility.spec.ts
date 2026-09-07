@@ -6,7 +6,7 @@ import {
   tearDownWorld,
   type E2eWorld,
 } from "./support/fixtures";
-import { signIn } from "./support/sign-in";
+import { signIn, signOut } from "./support/sign-in";
 
 // THE AUTOMATED ACCESSIBILITY PASS THE PLAN ASKED FOR.
 //
@@ -194,6 +194,16 @@ const SIGNED_IN_PAGES: [string, (w: E2eWorld) => string][] = [
   ["notes list", (w) => `/${w.orgSlug}/notes`],
   ["documents list + scan chips", (w) => `/${w.orgSlug}/documents`],
   ["deleted documents", (w) => `/${w.orgSlug}/documents/deleted`],
+  // ---- PHASE 6 (NETWORK), TASK 2 -----------------------------------------
+  // "This organisation's own profiles" -- empty for the manager's own
+  // workspace here (no company has been published to the network by this
+  // suite's fixtures), which is a real and common state: the "Publish a
+  // record" picker, the empty-state copy and the list toolbar all render
+  // over zero rows. The EDITOR page -- the most consequential screen in the
+  // product, with its nine-field publish summary and seven radio ladders --
+  // needs a real profile to scan and gets its own dedicated test below,
+  // the same shape the finance panel's dedicated test uses.
+  ["network profiles list", (w) => `/${w.orgSlug}/network/profiles`],
 ];
 
 for (const [label, url] of SIGNED_IN_PAGES) {
@@ -242,6 +252,189 @@ test("the event page WITH the finance panel has no automated accessibility viola
   await expect(page.getByRole("region", { name: "Finance", exact: true })).toHaveCount(1);
   await expect(page.locator("main")).toContainText(FINANCE_LINES.fixtureFee.description);
   await scan(page, "event detail + finance panel");
+});
+
+// ===========================================================================
+// PHASE 6'S SURFACE: THE PUBLISH-FIELD EDITOR, POPULATED
+// ===========================================================================
+// ITS OWN TEST, the same shape as the finance panel's above: no fixture in
+// this suite pre-seeds a company or a network profile, so this test creates
+// both through the real UI (create a company, then use the "Publish a
+// record" picker) before scanning -- otherwise the scan would find an empty
+// draft with every field at its default, missing the seven radio ladders,
+// the publish summary sentence and the "Hide now" quick actions that only
+// render once a field is not hidden.
+test("the network profile editor, populated, has no automated accessibility violations", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+
+  await page.goto(`/${world.orgSlug}/companies/new`);
+  await page.locator('input[name="name"]').fill("Axe Scan Company");
+  await page.getByRole("button", { name: "Create company" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Axe Scan Company", level: 1 }),
+  ).toBeVisible();
+
+  await page.goto(`/${world.orgSlug}/network/profiles`);
+  await page.locator("#publish-company-entity").selectOption({ label: "Axe Scan Company" });
+  await page.locator("#publish-company-name").fill("Axe Scan Company");
+  await page.getByRole("button", { name: "Create draft" }).first().click();
+  await expect(page.getByRole("link", { name: "Axe Scan Company" })).toBeVisible();
+  await page.getByRole("link", { name: "Axe Scan Company" }).click();
+  await expect(page.getByRole("heading", { name: "Axe Scan Company", level: 1 })).toBeVisible();
+
+  // Fill TWO values and move BOTH off `hidden` -- fix round 1, I1. A single
+  // non-hidden field puts exactly one "Hide … now" quick-hide note on the
+  // page, which is why the FIRST version of this test could not have caught
+  // I1 (a duplicate `id` shared by every such note): with only one instance
+  // mounted, a duplicate id is indistinguishable from a correct one. Two
+  // fields is the minimum that puts the regression class within axe's reach.
+  await page.locator("#headline").fill("Booking enquiries welcome");
+  await page.getByRole("radio", { name: /Everyone on the network/i }).first().click();
+  const cityRow = page.locator("li", { has: page.locator("#city") });
+  await cityRow.locator("#city").fill("Manchester");
+  await cityRow.getByRole("radio", { name: /Everyone on the network/i }).click();
+  await page.getByRole("button", { name: "Save" }).click();
+  // 4 of 9: the two always-shown fields (name, type) plus headline and city,
+  // both just set to `network`.
+  await expect(page.getByText(/4 of 9/)).toBeVisible();
+
+  // NON-VACUITY: both quick-hide buttons are really on the page being
+  // scanned, each with its OWN accessible name -- the two-instance state I1
+  // needed to be reachable at all.
+  const hideHeadline = page.getByRole("button", { name: "Hide headline now" });
+  const hideCity = page.getByRole("button", { name: "Hide city now" });
+  await expect(hideHeadline).toBeVisible();
+  await expect(hideCity).toBeVisible();
+
+  // THE BEHAVIOURAL HALF OF I1, IN A REAL BROWSER: each button's
+  // `aria-describedby` must point at ITS OWN note, not a shared one. Before
+  // the fix both resolved to the same id, so this pair of assertions would
+  // have failed with two identical strings.
+  const headlineDescribedBy = await hideHeadline.getAttribute("aria-describedby");
+  const cityDescribedBy = await hideCity.getAttribute("aria-describedby");
+  expect(headlineDescribedBy).not.toBeNull();
+  expect(cityDescribedBy).not.toBeNull();
+  expect(headlineDescribedBy).not.toBe(cityDescribedBy);
+  // ...and the sentence each points at genuinely names ITS OWN field.
+  await expect(page.locator(`#${headlineDescribedBy}`)).toContainText("Headline");
+  await expect(page.locator(`#${cityDescribedBy}`)).toContainText("City");
+
+  await scan(page, "network profile editor");
+});
+
+// ===========================================================================
+// TASK 3'S TWO SURFACES: THE DIRECTORY, AND A PROFILE VIEWED BY A FOREIGN
+// ORGANISATION
+// ===========================================================================
+// Both need a PUBLISHED profile with real content -- an empty directory or a
+// draft would miss the markup these two routes exist for: the sortable Name
+// column and ProfileCard's headline/location/website lines on the directory;
+// the "You're connected"-shaped alert slot, ProfileCard again, and the
+// disabled "Request connection" shell with its `aria-describedby` note on the
+// profile page. ONE TEST, covering both, so the profile this scan needs is
+// created and published once and the org switch (manager publishing in
+// `world.orgSlug`, then the Pro org's booker viewing it as a stranger) reads
+// as one continuous story rather than two tests racing a shared fixture.
+test("the network directory and a foreign profile page have no automated accessibility violations", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+
+  // FIX ROUND 1, M2: SUFFIXED, LIKE EVERY NETWORK-PROFILE NAME IN
+  // `fixtures.ts`. `world.orgSlug` already carries this run's random suffix
+  // (`e2e-<8 hex>`), so reusing it here is free -- and load-bearing for
+  // exactly the reason `fixtures.ts`'s own network-profile block gives: the
+  // directory this name is published into is the one list in the product
+  // with no per-run tenant boundary, so a bare literal collides with any
+  // other run's row of the same name, past or concurrent.
+  const companyName = `Axe Directory Company ${world.orgSlug}`;
+
+  await page.goto(`/${world.orgSlug}/companies/new`);
+  await page.locator('input[name="name"]').fill(companyName);
+  await page.getByRole("button", { name: "Create company" }).click();
+  await expect(
+    page.getByRole("heading", { name: companyName, level: 1 }),
+  ).toBeVisible();
+
+  await page.goto(`/${world.orgSlug}/network/profiles`);
+  await page
+    .locator("#publish-company-entity")
+    .selectOption({ label: companyName });
+  await page.locator("#publish-company-name").fill(companyName);
+  await page.getByRole("button", { name: "Create draft" }).first().click();
+  await page.getByRole("link", { name: companyName }).click();
+  await expect(
+    page.getByRole("heading", { name: companyName, level: 1 }),
+  ).toBeVisible();
+
+  await page.locator("#headline").fill("Booking enquiries welcome");
+  await page.getByRole("radio", { name: /Everyone on the network/i }).first().click();
+  const cityRow = page.locator("li", { has: page.locator("#city") });
+  await cityRow.locator("#city").fill("Manchester");
+  await cityRow.getByRole("radio", { name: /Everyone on the network/i }).click();
+  const emailRow = page.locator("li", { has: page.locator("#contact_email") });
+  await emailRow.locator("#contact_email").fill("axe-scan@example.com");
+  await emailRow.getByRole("radio", { name: /Connections only/i }).click();
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByText(/4 of 9/)).toBeVisible();
+  await page.getByRole("button", { name: "Publish to the network" }).click();
+  await expect(page.getByText(/Published\./)).toBeVisible();
+
+  // ---- SURFACE 1: THE DIRECTORY, POPULATED --------------------------------
+  await page.goto(`/${world.orgSlug}/network`);
+  await expect(page.getByRole("heading", { name: "Network", level: 1 })).toBeVisible();
+  const directoryLink = page.getByRole("link", { name: companyName });
+  await expect(directoryLink).toBeVisible();
+  const profileHref = await directoryLink.getAttribute("href");
+  expect(profileHref, "the directory row links somewhere").not.toBeNull();
+  await scan(page, "network directory");
+
+  // ---- SURFACE 2: THE SAME PROFILE, VIEWED BY A STRANGER ORGANISATION -----
+  // `profileHref` is `/${world.orgSlug}/network/<id>` -- the id is what
+  // matters; the org SEGMENT in the URL names the VIEWER's own workspace, not
+  // the profile's, so this rebuilds it under the Pro org instead of reusing
+  // the manager's own segment.
+  const profileId = profileHref!.split("/").pop();
+  await signOut(page);
+  await signIn(page, world, "booker");
+  await page.goto(`/${world.proOrgSlug}/network/${profileId}`);
+  await expect(
+    page.getByRole("heading", { name: companyName, level: 1 }),
+  ).toBeVisible();
+  // NON-VACUITY: the request control -- the exact markup this scan exists to
+  // cover -- is really on the page. ENABLED, not disabled: Task 4 wired the
+  // control's action, and booker (proOrgSlug, Pro tier, manage_network_
+  // connections, and an own published profile from Task 3's fixtures) is a
+  // genuinely capable sender regardless of whether it happens to be
+  // connected to THIS particular profile -- that question decides what the
+  // PROFILE shows, not whether the viewer may send a request at all.
+  const requestButton = page.getByRole("button", { name: "Request connection" });
+  await expect(requestButton).toBeVisible();
+  await expect(requestButton).toBeEnabled();
+  await scan(page, "network profile page (foreign viewer)");
+});
+
+// PHASE 6 TASK 4: THE REQUESTS INBOX/OUTBOX.
+//
+// `world.orgSlug` ("ALPHA") already carries a real row to scan without any
+// extra setup here: Task 3's fixture hand-planted `networkAcceptedRequestId`
+// FROM orgId TO proOrgId, so the "Sent" list renders one ACCEPTED row (a
+// status chip, a counterparty link, a tabular-nums date) and "Received"
+// renders its real empty state -- both list states covered by one visit,
+// same economy the directory/foreign-profile test above uses.
+test("the connection requests page (received and sent) has no automated accessibility violations", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}/network/requests`);
+  await expect(
+    page.getByRole("heading", { name: "Connection requests", level: 1 }),
+  ).toBeVisible();
+  // NON-VACUITY: the Sent list's one accepted row is really on the page.
+  await expect(page.getByText(world.networkBetaAnchorProfileName)).toBeVisible();
+  await scan(page, "connection requests page");
 });
 
 test("the in-app 404 -- where every refusal lands -- is clean, exclusions and all", async ({

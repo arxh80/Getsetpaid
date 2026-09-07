@@ -40,16 +40,51 @@ afterAll(async () => {
  * makes the regex miss fails the "finds it at all" assertion below rather than
  * passing silently.
  */
-function tablesWithoutSoftDelete(): string[] {
-  const source = readFileSync(
+function listQuerySource(): string {
+  return readFileSync(
     fileURLToPath(new URL("../../../lib/list/query.ts", import.meta.url)),
     "utf8",
   );
+}
+
+/**
+ * The names inside one `new Set([...])` literal in lib/list/query.ts.
+ *
+ * COMMENT LINES ARE STRIPPED FIRST. Phase 6 gave both sets multi-line comments
+ * INSIDE the literal explaining each entry, and those comments name relations
+ * (`activity_events`, `contacts`, `network_profiles`) in prose. Reading the
+ * quoted strings without stripping them would pull `"contacts"` out of a
+ * sentence warning against adding it — a false entry that would then be
+ * asserted against the database and fail for a reason nothing is wrong with.
+ */
+function setLiteral(name: string): string[] {
+  const source = listQuerySource()
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("//"))
+    .join("\n");
   const match = source.match(
-    /const TABLES_WITHOUT_SOFT_DELETE = new Set\(\[([^\]]*)\]\)/,
+    new RegExp(`const ${name} = new Set\\(\\[([^\\]]*)\\]\\)`),
   );
   if (!match) return [];
-  return [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  return [...match[1]!.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+}
+
+function tablesWithoutSoftDelete(): string[] {
+  return setLiteral("TABLES_WITHOUT_SOFT_DELETE");
+}
+
+/**
+ * The relations `applyScope` does NOT tenant-scope.
+ *
+ * ADDED BY PHASE 6 TASK 1 (fix round 1, review finding I3). This is the TENANT
+ * clause's escape, so it gets a stricter assertion than the soft-delete one
+ * below: a relation named here must have NO `organisation_id` column at all.
+ * Every tenant-owned relation in this schema carries a NOT NULL
+ * `organisation_id` (schema_invariants D10), so that assertion is what makes
+ * adding `contacts` to the set impossible to do quietly.
+ */
+function relationsWithoutOrganisationId(): string[] {
+  return setLiteral("RELATIONS_WITHOUT_ORGANISATION_ID");
 }
 
 /** Repository root, for the source scan below. */
@@ -198,6 +233,75 @@ describe("TABLES_WITHOUT_SOFT_DELETE names exactly the tables that have none", (
         ).toBe(false);
       });
     }
+  });
+
+  // ==========================================================================
+  // THE TENANT CLAUSE'S ESCAPE (Phase 6 Task 1, fix round 1, finding I3)
+  // ==========================================================================
+  // `applyScope` also applies `.eq("organisation_id", organisationId)`, and
+  // that line is the application half of the tenant boundary. Phase 6 needed
+  // ONE exemption -- `public.network_directory` is the one list in the product
+  // that spans every tenant, and the view deliberately does not project
+  // `organisation_id`, so filtering it is a PostgREST 400.
+  //
+  // The assertion below is STRICTER than the soft-delete one, and deliberately
+  // so: a relation on this list must have NO `organisation_id` column AT ALL.
+  // Every tenant-owned relation carries a NOT NULL one (schema_invariants
+  // D10), so `contacts` cannot be added to the set without turning this red on
+  // the next run -- before it is a tenant breakout rather than after.
+  describe("RELATIONS_WITHOUT_ORGANISATION_ID names only relations that have none", () => {
+    it("finds the set at all, so this suite cannot pass vacuously", () => {
+      expect(
+        relationsWithoutOrganisationId(),
+        "RELATIONS_WITHOUT_ORGANISATION_ID was not found in lib/list/query.ts. " +
+          "If it was renamed, rename it here too -- an empty match would make " +
+          "every assertion below pass over nothing.",
+      ).not.toHaveLength(0);
+    });
+
+    for (const relation of relationsWithoutOrganisationId()) {
+      it(`public.${relation} exists and really has no organisation_id`, async () => {
+        const { rows } = await pool.query<{ column_name: string }>(
+          `select column_name from information_schema.columns
+            where table_schema = 'public' and table_name = $1`,
+          [relation],
+        );
+        expect(rows.length, `public.${relation} does not exist`).toBeGreaterThan(0);
+        expect(
+          rows.map((r) => r.column_name),
+          `public.${relation} HAS an organisation_id and is exempted from the ` +
+            "tenant clause in lib/list/query.ts. Every tenant-owned relation " +
+            "in this schema carries one (schema_invariants D10), so this is a " +
+            "tenant-owned relation whose list has just stopped being " +
+            "organisation-scoped in the application. RLS is still the " +
+            "enforcement, but the two halves must not disagree.",
+        ).not.toContain("organisation_id");
+      });
+    }
+
+    it("every relation a list reads either HAS organisation_id or is exempted", async () => {
+      // The other direction, and it is the one that would have caught I3
+      // before the reviewer did: a spec pointed at a relation with no
+      // organisation_id, not on the exemption list, 400s on every page load
+      // with `column X.organisation_id does not exist`.
+      const exempt = relationsWithoutOrganisationId();
+      const missing: string[] = [];
+      for (const table of fetchListPageTables()) {
+        const { rows } = await pool.query<{ column_name: string }>(
+          `select column_name from information_schema.columns
+            where table_schema = 'public' and table_name = $1`,
+          [table],
+        );
+        const hasColumn = rows.some((r) => r.column_name === "organisation_id");
+        if (!hasColumn && !exempt.includes(table)) missing.push(table);
+      }
+      expect(
+        missing,
+        `these relations are read by a fetchListPage call, have no ` +
+          "organisation_id, and are not in RELATIONS_WITHOUT_ORGANISATION_ID " +
+          "-- every query against them filters a column that does not exist.",
+      ).toEqual([]);
+    });
   });
 
   it("public.merges is still append-only, which is why it is on the list", async () => {

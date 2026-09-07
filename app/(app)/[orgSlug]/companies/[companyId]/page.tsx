@@ -35,6 +35,13 @@ import {
   WriteBlockedNote,
 } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
+import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { LinkedIdentitySection } from "@/components/network/linked-identity-section";
+import { loadNetworkProfileForEntity } from "@/lib/network/entities";
+import { loadNetworkLinkForEntity } from "@/lib/network/links-list";
+import { loadNetworkProfileForViewer } from "@/lib/network/discovery";
+import { profileHasDrifted } from "@/lib/network/drift";
+import { getNetworkConnectionAccess, getNetworkReadAccess } from "@/lib/network/access";
 
 /** The id of the single explanation the Manage section's controls point at. */
 const MANAGE_NOTE = "company-manage-blocked";
@@ -73,9 +80,18 @@ export default async function CompanyDetailPage({
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [result, access] = await Promise.all([
+  const [result, access, canReadNetwork] = await Promise.all([
     loadCompany(org.id, companyId),
     getCrmWriteAccess(org, "manage_contacts"),
+    // FIX ROUND 1, I2. Resolved BEFORE the network profile lookup below, and
+    // that lookup is skipped entirely when this is false -- view_crm
+    // survives workspace suspension and view_network does not
+    // (lib/network/access.ts), so a suspended workspace could otherwise
+    // still reach this page while the (also suspension-gated)
+    // `loadNetworkProfileForEntity` quietly returned null for a record that
+    // is genuinely published, rendering the dishonest "Not published to the
+    // network yet." claim NetworkIdentityRow's state 0 exists to prevent.
+    getNetworkReadAccess(org),
   ]);
 
   if (result.outcome === "unavailable") {
@@ -141,6 +157,52 @@ export default async function CompanyDetailPage({
     company.id,
     activityListParams,
   );
+
+  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). A plain lookup of THIS
+  // organisation's own network_profiles row for THIS company -- never a join,
+  // never a cross-tenant read (lib/network/entities.ts's header). `companies`
+  // has no city/country/website columns (20260827232510), so the drift
+  // comparison below has only `name` to check for a company -- the one field
+  // every kind shares.
+  //
+  // GATED ON `canReadNetwork` (FIX ROUND 1, I2). The lookup is not merely
+  // skipped for tidiness: running it anyway and getting `null` back for a
+  // suspended workspace is EXACTLY the dishonest state this closes, because
+  // `null` is indistinguishable from "genuinely never published".
+  //
+  // TASK 4 / GAP B (Q73/Q82): THE LINKED-IDENTITY SECTION shares this wave.
+  // All three reads are gated on the same `canReadNetwork` and for the
+  // identical I2 reason -- a suspended workspace must not be told "not linked"
+  // about a record that IS genuinely linked. `connectAccess` is only needed to
+  // explain a DISABLED link picker (suspended/tier/permission); it is cheap
+  // enough (one `hasPermission` + one entitlements read, already cached per
+  // request by `lib/entitlements/policy.ts`) to resolve unconditionally rather
+  // than threading a second gate through this branch. ONE Promise.all, not a
+  // profile-then-link waterfall: the three are independent of each other
+  // (final review, minor 5) -- only `loadNetworkProfileForViewer` below
+  // genuinely depends on a predecessor.
+  const [networkProfile, networkLink, connectAccess] = canReadNetwork
+    ? await Promise.all([
+        loadNetworkProfileForEntity(org.id, "company", company.id),
+        loadNetworkLinkForEntity(org.id, "company", company.id),
+        getNetworkConnectionAccess(org),
+      ])
+    : [null, null, null];
+  const networkDrifted =
+    networkProfile !== null &&
+    profileHasDrifted(
+      { name: company.name },
+      {
+        displayName: networkProfile.displayName,
+        country: networkProfile.country,
+        city: networkProfile.city,
+        websiteUrl: networkProfile.websiteUrl,
+      },
+    );
+  const linkedProfile =
+    networkLink !== null
+      ? await loadNetworkProfileForViewer(networkLink.networkProfileId)
+      : null;
 
   return (
     <div className="flex flex-col gap-8">
@@ -268,6 +330,25 @@ export default async function CompanyDetailPage({
         basePath={`${basePath}/${company.id}`}
         recordScoped={activityIsScoped(org.role)}
         preserve={raw}
+      />
+
+      <NetworkIdentityRow
+        orgSlug={org.slug}
+        canRead={canReadNetwork}
+        profile={networkProfile}
+        drifted={networkDrifted}
+      />
+
+      <LinkedIdentitySection
+        orgSlug={org.slug}
+        canRead={canReadNetwork}
+        entityType="company"
+        entityId={company.id}
+        link={networkLink}
+        linkedProfile={linkedProfile}
+        pickerDisabledReason={
+          connectAccess === null ? null : connectAccess.canWrite ? null : connectAccess.explanation
+        }
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

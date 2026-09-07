@@ -343,6 +343,170 @@ else
 fi
 
 # ============================================================================
+# PHASE 6 (NETWORK) RLS SUITE -- THE PRIVATE/NETWORK BOUNDARY PROOF (Task 1).
+#
+# Runs LAST of the psql suites and REUSES THE SAME FIXTURES WHOLE -- the twelve
+# users, orgs org-alpha/org-beta, and the Phase 2 companies and venues the
+# network profiles speak for. It creates only network_* rows plus the two ALPHA
+# venues § NX5's insert-as-published fixture needs (20260907001000), so the
+# contact, artist and event censuses the HTTP block below was written against
+# are untouched -- and every downstream VENUE assertion is a floor or a
+# foreign-tenant zero (LG0's `>= 50`, LC0's non-emptiness, the HTTP sweep's
+# p2_rows 0 / p2_rows_min 1), so two extra ALPHA venues move none of them. It plants and then removes one organisation_subscriptions row (its
+# § NT, the Free-tier gate) and asserts in § NZ that it left none behind, for
+# the same reason rls_phase5_finance.sql asserts its own housekeeping: a leak
+# would redden an assertion in the HTTP block whose text says nothing about the
+# network.
+#
+# CLAUDE.md § The private/network split calls this "the highest-risk boundary"
+# and § Testing gates calls network-leakage tests the ones that "matter most".
+# This is that suite.
+# ============================================================================
+docker cp "$HERE/rls_phase6_network.sql" "$CTR:/tmp/rls_phase6_network.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P2VARS[@]}" -f /tmp/rls_phase6_network.sql
+
+p6_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from net.results where not pass" | tr -d '[:space:]')
+if [ "$p6_fails" != "0" ]; then
+  echo "PHASE 6 NETWORK SUITE FAILED: $p6_fails failing assertion(s)" >&2
+  echo "  A failure in ND is a PRIVATE TABLE IN A DISCOVERY PATH (N2) -- a view" >&2
+  echo "  now reads something other than the network tables, which is the one" >&2
+  echo "  thing the whole private/network split forbids." >&2
+  echo "  In NC, a MASKING VIEW THAT PROJECTS TOO MUCH -- most likely" >&2
+  echo "  organisation_id or entity_id, which turns a profile into a tenant." >&2
+  echo "  In NM, A LEAK OF AN UNPUBLISHED FIELD across the tenant boundary, or" >&2
+  echo "  a hidden field whose value is still stored (N3)." >&2
+  echo "  In NG, a PUBLIC PROFILE: anon now holds something (N6/Q70)." >&2
+  echo "  In NT, a BROKEN TIER GATE -- and note the gate is INERT today, so a" >&2
+  echo "  green NT1 is expected until Phase 7 removes the escape, at which point" >&2
+  echo "  that assertion must be RE-READ and its expectation flipped rather" >&2
+  echo "  than re-run (FOLLOW-UPS.md: an inert gate makes a wrong test green)." >&2
+  echo "  In NU, THE SENDER CAN ACCEPT ITS OWN REQUEST -- the two UPDATE" >&2
+  echo "  policies have been merged into one with an \`or\`." >&2
+  echo "  In NL/NS4, THE Q82 LEAK: network_links now has a counterparty read" >&2
+  echo "  path, disclosing who has filed whom in their CRM." >&2
+  echo "  In NF, THE FORWARD RATINGS GUARD (N5) -- something on the network" >&2
+  echo "  surface now names a rating, which CLAUDE.md forbids permanently." >&2
+  echo "  In NX, an audit payload now carries a published field's VALUE onto" >&2
+  echo "  the superuser-readable surface." >&2
+  echo "  Every one of those is Sev1." >&2
+  psql_status=1
+else
+  echo "Phase 6 network suite: all assertions passed."
+fi
+
+# ============================================================================
+# PHASE 6 NETWORK-LEAKAGE SUITE (Task 5) -- THE CONSOLIDATED ADVERSARIAL PROOF.
+#
+# The PRD exit criterion for this phase is "private/public boundaries proven by
+# tests". This is that proof, and it is a SEPARATE FILE from
+# rls_phase6_network.sql in the file_access_phase4.sql tradition: one boundary
+# that must never move, in a file of its own, so a reviewer can read the whole
+# of it without reading the surface that produced it.
+#
+# ===========================================================================
+# IT NEEDS TWO FIXTURE USERS THE OTHER SUITES DO NOT HAVE, AND THAT IS THE
+# POINT OF THE BLOCK BELOW
+# ===========================================================================
+# Every cross-tenant assertion in rls_phase6_network.sql runs as `pbowner`,
+# BETA's owner -- and by the time that file ends ALPHA and BETA are CONNECTED
+# (its NR9/NU4 accept a request between the two organisations, and the Task 3
+# HTTP block below says so at length). So there was, until Task 5, no psql
+# assertion anywhere in this repo run as an UNCONNECTED counterparty, and the
+# "unconnected" column of the network-leakage matrix could not be driven at all.
+#
+#   pgmgr  a manager of a THIRD organisation (created by the suite itself),
+#          which has never exchanged a connection request with anybody. THE
+#          UNCONNECTED COUNTERPARTY.
+#   pbmgr  a manager of org BETA. THE CONNECTED COUNTERPARTY -- and a manager
+#          rather than reusing pbowner because `owner` is MFA-required, so an
+#          aal1 owner session holds no network key and every 0 measured through
+#          one would be the MFA gate rather than the tenant boundary.
+#
+# CREATED HERE AND NOT IN THE P2 LOOP AT THE TOP, for the reason that loop's
+# own header gives: rls_phase2_crm.sql asserts over the whole of
+# public.profiles (`string_agg(full_name)` and a bare `count(*)`), and two more
+# auth.users rows -- each of which handle_new_user turns into a profile -- would
+# be reasoning about a different database than the one it was written against.
+# Creating them AFTER every suite that censuses profiles keeps those assertions
+# meaning what they meant. Nothing downstream of this point counts profiles or
+# organisations (grepped: the only membership count in the HTTP block is
+# alice's own, `>= 1`).
+#
+# P6VARS = P2VARS + the two new users + `super_c`. The superuser claim is
+# carried over from the top-of-file VARS because § LC's audit_events positive
+# control needs it: audit_events is readable to NO tenant role at all -- not
+# even ALPHA's owner, which that section MEASURES rather than assumes -- so the
+# superuser is its only positive control, exactly as the Task 5 matrix says.
+# ============================================================================
+declare -A P6AAL=( [pgmgr]=aal2 [pbmgr]=aal2 )
+declare -A P6ID
+for u in pgmgr pbmgr; do
+  resp=$(curl -s -X POST "$API/auth/v1/admin/users" \
+    -H "apikey: $SRK" -H "Authorization: Bearer $SRK" -H "Content-Type: application/json" \
+    -d "{\"email\":\"$u@test.local\",\"password\":\"Test-Passw0rd!\",\"email_confirm\":true}")
+  id=$(printf '%s' "$resp" | python -c "import sys,json;print(json.load(sys.stdin).get('id') or '')")
+  if [ -z "$id" ]; then
+    id=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+         "select id from auth.users where email='$u@test.local'" | tr -d '[:space:]')
+  fi
+  if [ -z "$id" ]; then echo "Could not create or find auth user $u: $resp" >&2; exit 1; fi
+  P6ID[$u]=$id
+done
+
+P6VARS=( "${P2VARS[@]}" )
+for u in pgmgr pbmgr; do
+  P6VARS+=( -v "$u=${P6ID[$u]}" )
+  P6VARS+=( -v "${u}_c={\"sub\":\"${P6ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"${P6AAL[$u]}\"}" )
+  P6VARS+=( -v "${u}_c1={\"sub\":\"${P6ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
+done
+P6VARS+=( -v "super=${ID[super]}" )
+P6VARS+=( -v "super_c={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal2\"}" )
+
+docker cp "$HERE/network_leakage_phase6.sql" "$CTR:/tmp/network_leakage_phase6.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P6VARS[@]}" -f /tmp/network_leakage_phase6.sql
+
+lk_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from leak.results where not pass" | tr -d '[:space:]')
+if [ "$lk_fails" != "0" ]; then
+  echo "PHASE 6 NETWORK-LEAKAGE SUITE FAILED: $lk_fails failing assertion(s)" >&2
+  echo "  In LA, THE FIXTURE ITSELF IS WRONG -- the counterparties are not the" >&2
+  echo "  members this suite says they are, or the third organisation is no" >&2
+  echo "  longer unconnected, and EVERY 0 below it then proves nothing." >&2
+  echo "  In LB, A MASKING FAILURE ACROSS THE TENANT BOUNDARY: a connections-" >&2
+  echo "  level field resolved for someone who is not connected, or a draft" >&2
+  echo "  became discoverable." >&2
+  echo "  In LC, THE HEADLINE FINDING -- A COUNTERPARTY CAN READ A TENANT-" >&2
+  echo "  PRIVATE RELATION. Read the label: it names the relation and the" >&2
+  echo "  denominator it read out of. This is the leak the whole phase exists" >&2
+  echo "  to prevent." >&2
+  echo "  In LD, THE Q82 LEAK: who has filed whom in their CRM is now" >&2
+  echo "  disclosed to the profile's owner." >&2
+  echo "  In LE, THE FORWARD RATINGS GUARD (N5/Q85) -- something on the network" >&2
+  echo "  surface now names a rating, which CLAUDE.md forbids permanently." >&2
+  echo "  In LF, A PRIVATE TABLE IS REACHABLE THROUGH A FUNCTION BODY a" >&2
+  echo "  masking view calls -- N2 defeated at a depth pg_depend cannot see." >&2
+  echo "  In LG/LH, AN IDENTIFIER DISCLOSURE: a discovery result now hands a" >&2
+  echo "  counterparty a primary key of a private row." >&2
+  echo "  In LI, A DOWNGRADE EITHER DELETED DATA OR STOPPED REFUSING WRITES." >&2
+  echo "  In LJ, SUSPENSION BEHAVIOUR CHANGED -- these expectations are a" >&2
+  echo "  RECORD of measured behaviour (see task-5-report.md), so a failure" >&2
+  echo "  here means re-measure and re-record, not relax." >&2
+  echo "  In LK, THE MFA GATE: an aal1 session now holds a network key." >&2
+  echo "  In LW, A COUNTERPARTY CAN WRITE INTO ANOTHER TENANT." >&2
+  echo "  In LZ, this suite left fixture state behind that the HTTP checks" >&2
+  echo "  below were not written against -- discard the run and reset." >&2
+  echo "  Treat as Sev1." >&2
+  psql_status=1
+else
+  echo "Phase 6 network-leakage suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -2319,6 +2483,440 @@ p2_code "PRO AGAIN: the POST comes back (the gate is the plan, not a one-way doo
 # Leave the fixture in the state every other block found it in: no subscription
 # row for ALPHA (the inert state the product actually ships in today).
 p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
+
+# ============================================================================
+# PHASE 6 NETWORK AT THE API SURFACE (Task 1).
+#
+# N6 / Q70 -- "No public, logged-out profiles at MVP" -- is enforced by the
+# GRANT, not by the absence of a route, and the psql § NG proves the ACL. THIS
+# proves the consequence at the layer it applies to: the anon key that ships in
+# every browser bundle, pointed straight at PostgREST, with no Next.js app on
+# its path. The psql assertion and this one fail for different reasons, which
+# is why both exist -- a grant could be right while the view was published to
+# the wrong schema, and vice versa.
+#
+# EVERY CHECK IS PAIRED. A 401 on its own is satisfied by a URL that does not
+# resolve, so each anon refusal is followed by the SAME URL with a real
+# member's JWT returning rows.
+# ============================================================================
+echo
+echo "=== Phase 6 network at the API surface (Task 1) ==="
+
+p2_code "anon GET network_directory"                 401 GET "network_directory?select=id"
+p2_code "anon GET network_connected_profiles"        401 GET "network_connected_profiles?select=id"
+p2_code "anon GET network_profiles"                  401 GET "network_profiles?select=id"
+p2_code "anon GET network_connection_requests"       401 GET "network_connection_requests?select=id"
+p2_code "anon GET network_links"                     401 GET "network_links?select=id"
+
+# THE POSITIVE CONTROL FOR ALL FIVE: the same directory URL, with a member's
+# token, returns the two published profiles the psql suite left behind.
+# FOUR published live profiles survive the psql suite: ALPHA's one and BETA's
+# three (one for section NR's withdraw-and-retry pair, one for section NU5's
+# pending-row recipient-withdraw probe, added in fix round 1).
+p2_rows "CONTROL: a member's JWT GETs all four published profiles"  4 \
+        "network_directory?select=id" "$MGR"
+
+# THE MASK, OVER REAL HTTP. ALPHA's contact_email is `connections`-level and
+# BETA has not connected to ALPHA through any request the HTTP block made -- the
+# psql suite's accepted connection is between ALPHA and BETA, so read it as a
+# THIRD party would... except there is no third org in the fixtures. So this is
+# read as ALPHA's own manager, for whom the DIRECTORY view still masks it: the
+# view is column-masking, not caller-privileging, and that is the point.
+p2_json "the directory masks a connections-level field over HTTP" "<null>" \
+        "network_directory?select=contact_email&id=eq.e0110000-0000-0000-0000-00000000000a" \
+        "$MGR" "contact_email"
+p2_json "CONTROL: ...while a network-level field on the same row resolves" "Bristol" \
+        "network_directory?select=city&id=eq.e0110000-0000-0000-0000-00000000000a" \
+        "$MGR" "city"
+
+# organisation_id IS NOT A COLUMN, so PostgREST cannot be asked for it -- 400,
+# not an empty string. This is the transport-level form of the NC4 assertion.
+p2_code "the directory has no organisation_id to select (400, not a value)" 400 GET \
+        "network_directory?select=organisation_id" "" "$MGR"
+p2_code "...nor entity_id"                                                 400 GET \
+        "network_directory?select=entity_id" "" "$MGR"
+p2_code "CONTROL: selecting a real column of the same view works"          200 GET \
+        "network_directory?select=display_name" "" "$MGR"
+
+# ===========================================================================
+# TASK 3 LEAKAGE ASSERTION #1 -- THE BASE TABLE IS READABLE BY DESIGN, AND
+# THAT IS EXPECTED AND CORRECT.
+#
+# Paired with the source-shape assertion in
+# tests/unit/network/discovery-source-shape.test.ts that no application code
+# path (lib/network/discovery.ts, the directory page, the profile page) ever
+# selects from network_profiles for a foreign organisation. This half proves
+# the OTHER fact the pairing depends on: that the base table itself would
+# happily hand over the unmasked row if something did.
+# `network_profiles_select_published_directory`'s own comment: "the base
+# table is deliberately readable and the VIEW is the masking control;
+# organisation_id, entity_id and every field the publisher marked hidden are
+# reachable HERE and are absent from the view."
+#
+# ---------------------------------------------------------------------------
+# FIX ROUND 1, I1: ALPHA AND BETA ARE CONNECTED BY THIS POINT, AND THAT IS
+# THE TRUE STATE -- STATED, NOT PAPERED OVER.
+# ---------------------------------------------------------------------------
+# The psql suites run BEFORE this HTTP section, on the SAME database, with no
+# reset between them (this script's own header, "the fixtures are
+# deliberately left standing for the HTTP sections to read"). rls_phase6_
+# network.sql's NR9/NU4 (:887-894, :930-933) accept a request FROM alpha_org
+# (profile '...000a') TO beta_org (profile '...000c', "Beta Second Room"),
+# and NU12 (:1115-1117) then asserts that $MGR -- ALPHA's own manager, the
+# EXACT token this block uses -- reads BETA's UNRELATED profile '...000b'
+# ("Beta Bookings") through public.network_connected_profiles. That works
+# ONLY because the connected view's `exists` clause is ORGANISATION TO
+# ORGANISATION, not profile to profile (20260904004000's own header): once
+# ANY accepted request stands between alpha_org and beta_org, every one of
+# BETA's published profiles becomes connections-visible to ALPHA, regardless
+# of which specific profile the request named. So ALPHA and BETA, as
+# organisations, ARE connected when this block runs -- an earlier version of
+# this comment said the opposite, which was false at HEAD (Constraint 13).
+#
+# THAT CONNECTION DOES NOT WEAKEN WHAT THIS PARTICULAR ASSERTION PROVES.
+# organisation_id and entity_id are structurally ABSENT from BOTH masking
+# views under every condition -- connected or not, `network` or
+# `connections` -- so reading them straight off network_profiles is a
+# leak regardless of the connection state; nothing about being connected
+# changes whether a column exists in a view's SELECT list. What connection
+# status DOES change is a `connections`-level VALUE's visibility through
+# `network_connected_profiles` specifically -- and this block never queries
+# that view, only the base table and, in the paired control below,
+# `network_directory`, whose `= 'network'` test does not vary with
+# connection status either (`network_directory` never resolves a
+# `connections`-level field for anyone, connected or not).
+#
+# ---------------------------------------------------------------------------
+# FIX ROUND 1, I2: A POPULATED MASKED VALUE, NOT JUST TWO ABSENT COLUMNS.
+# ---------------------------------------------------------------------------
+# The brief's own wording: "a hand-crafted GET ... returns rows WITH EVERY
+# MASKED COLUMN POPULATED". organisation_id/entity_id are masked by being
+# OMITTED FROM THE VIEW ENTIRELY -- they prove the view's column list is
+# narrower than the base table's, which is real but not what the brief asks
+# for. What it asks for is a `field_visibility`-masked VALUE: a `hidden`
+# field is NULL in the base column too (N3, `network_profiles_hidden_
+# fields_are_null`), so there is nothing to leak there by construction --
+# the only column that can be BOTH populated AND masked is one at
+# `connections`. BETA's `...000b` carries none (`field_visibility =
+# '{"city":"network"}'`, `rls_phase6_network.sql:149-155`), so it is given
+# one here, narrowly, for this block alone -- nothing later in this script
+# reads `...000b`'s `contact_email` or `field_visibility` (grepped).
+p2_sub "update public.network_profiles
+          set contact_email = 'leak-check@beta.test',
+              field_visibility = field_visibility || '{\"contact_email\":\"connections\"}'::jsonb
+        where id = 'e0110000-0000-0000-0000-00000000000b';"
+
+p2_json "LEAKAGE #1a (documented, by design): a connections-level VALUE is readable straight off network_profiles" \
+        "leak-check@beta.test" \
+        "network_profiles?select=contact_email&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR" "contact_email"
+p2_json "PAIRED CONTROL: the SAME field, through network_directory, is still masked to null (the view's \`= 'network'\` test does not vary with connection status)" \
+        "<null>" \
+        "network_directory?select=contact_email&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR" "contact_email"
+
+p2_json "LEAKAGE #1b: the same non-owning manager reads BETA's organisation_id straight off network_profiles" \
+        "$BETA_ORG" \
+        "network_profiles?select=organisation_id&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR" "organisation_id"
+p2_json "...and BETA's entity_id, also unmasked (the view projects neither, ever, regardless of connection status)" \
+        "1111000b-0000-0000-0000-00000000000b" \
+        "network_profiles?select=entity_id&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR" "entity_id"
+p2_json "CONTROL: the same row's display_name, so this is a real row and not an empty result" \
+        "Beta Bookings" \
+        "network_profiles?select=display_name&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR" "display_name"
+
+# NO WRITE PATH THROUGH EITHER VIEW. Both project computed CASE expressions, so
+# they are not auto-updatable and Postgres itself refuses -- belt and braces
+# over the absent grant.
+# 403, not 405: the view carries a SELECT grant and nothing else, so PostgREST
+# is refused at the PRIVILEGE layer before it ever reaches the question of
+# whether the view is auto-updatable. Both refusals are real; this is the one
+# that happens first, and asserting the other would be asserting a mechanism
+# that never runs.
+p2_code "a POST into the directory view is refused (no INSERT grant)"  403 POST "network_directory" \
+        '{"display_name":"planted"}' "$MGR"
+
+# THE TIER GATE AT THE TRANSPORT. The psql § NT proves it in-database; this is
+# the same gate through PostgREST, which is where a Free-tier customer's browser
+# actually meets it.
+p2_sub "insert into public.organisation_subscriptions
+          (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+        values ('$ALPHA_ORG','free','monthly',1,'active', now() + interval '30 days')
+        on conflict (organisation_id) do update set plan_id='free', status='active';"
+p2_code "FREE: a network profile POST is refused 403 (network_publish=false)" 403 POST \
+        "network_profiles" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_kind\":\"artist\",\"entity_id\":\"44440000-0000-0000-0000-000000000001\",\"display_name\":\"Free HTTP Profile\"}" "$MGR"
+p2_rows "FREE: ...while browsing the directory still returns all 4 rows (view-only tier)" 4 \
+        "network_directory?select=id" "$MGR"
+p2_sub "update public.organisation_subscriptions set plan_id='starter'
+        where organisation_id='$ALPHA_ORG';"
+p2_code "STARTER: the SAME POST is allowed (the gate is the plan, not a door)" 201 POST \
+        "network_profiles" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"entity_kind\":\"artist\",\"entity_id\":\"44440000-0000-0000-0000-000000000001\",\"display_name\":\"Starter HTTP Profile\"}" "$MGR"
+p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
+
+# TENANT BOUNDARY, aimed at the other tenant's org id -- the request an attacker
+# sends, since the org id is in every URL.
+p2_rows "manager GET network_links of org BETA (expect 0)"  0 \
+        "network_links?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+p2_code "manager POSTs a network profile into org BETA"   403 POST "network_profiles" \
+        "{\"organisation_id\":\"$BETA_ORG\",\"entity_kind\":\"company\",\"entity_id\":\"1111000b-0000-0000-0000-00000000000b\",\"display_name\":\"planted\"}" "$MGR"
+p2_code "manager DELETEs a network profile (no DELETE grant)" 403 DELETE \
+        "network_profiles?id=eq.e0110000-0000-0000-0000-00000000000a" "" "$MGR"
+
+# ============================================================================
+# PHASE 6 NETWORK AT THE API SURFACE, TASK 4: THE SENDER-CANNOT-ACCEPT PROOF,
+# OVER REAL HTTP.
+#
+# The psql suite's NU1/NU3/NU4 already prove this at the policy layer. This is
+# the same finding through PostgREST, with the public anon key and no Next.js
+# app on the path -- the request an attacker (or a stray client) actually
+# sends, which never meets acceptConnectionRequestAction's own authorisation.
+#
+# A FRESH PAIR OF PROFILES AND A FRESH REQUEST, not a reuse of an earlier
+# section's rows: every request planted earlier in this script (by the psql
+# suites, which ran before this HTTP block on the same database) is already
+# terminal (accepted/declined/withdrawn) or belongs to a different pair, and
+# reusing one risks the transition guard pre-empting the POLICY this block is
+# about -- exactly the NU5 finding's own header warns against ("the expected
+# value was itself the tell").
+#
+# A BETA-SIDE ACTOR IS NEEDED THAT DOES NOT REQUIRE aal2. pbowner (BETA's
+# owner) and pmulti (admin in both orgs) both need MFA for manage_network_
+# connections, and a password grant over HTTP yields aal1 only (measured
+# earlier in this script's "MFA enforcement" block) -- so neither could ACCEPT
+# here even correctly. pstd2 already exists as an auth user (standard_user in
+# ALPHA) and gains a SECOND membership, as 'manager' in BETA, which is an
+# ordinary multi-org-membership shape (CLAUDE.md: "supported from MVP") and
+# does not disturb pstd2's existing ALPHA role or any earlier assertion that
+# used it -- this is the LAST HTTP block in the script.
+# ============================================================================
+echo
+echo "=== Phase 6 network at the API surface (Task 4): sender cannot accept ==="
+
+p2_sub "insert into public.organisation_memberships
+          (organisation_id, user_id, role, status, joined_at)
+        values ('$BETA_ORG', '${P2ID[pstd2]}', 'manager', 'active', now())
+        on conflict (organisation_id, user_id)
+        do update set role = 'manager', status = 'active';"
+
+ALPHA_H4_CO=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.companies (organisation_id, name) values ('$ALPHA_ORG','Task4 HTTP Alpha Co') returning id" | head -n1 | tr -d '[:space:]')
+BETA_H4_CO=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.companies (organisation_id, name) values ('$BETA_ORG','Task4 HTTP Beta Co') returning id" | head -n1 | tr -d '[:space:]')
+ALPHA_H4_PROFILE=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.network_profiles
+     (organisation_id, entity_kind, entity_id, status, display_name, field_visibility, published_at)
+   values ('$ALPHA_ORG','company','$ALPHA_H4_CO','published','Task4 HTTP Alpha Co','{}'::jsonb, now())
+   returning id" | head -n1 | tr -d '[:space:]')
+BETA_H4_PROFILE=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.network_profiles
+     (organisation_id, entity_kind, entity_id, status, display_name, field_visibility, published_at)
+   values ('$BETA_ORG','company','$BETA_H4_CO','published','Task4 HTTP Beta Co','{}'::jsonb, now())
+   returning id" | head -n1 | tr -d '[:space:]')
+H4_REQUEST=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.network_connection_requests
+     (from_organisation_id, from_network_profile_id, to_organisation_id, to_network_profile_id)
+   values ('$ALPHA_ORG','$ALPHA_H4_PROFILE','$BETA_ORG','$BETA_H4_PROFILE')
+   returning id" | head -n1 | tr -d '[:space:]')
+
+BETA_MGR=$(p2_token pstd2); [ -n "$BETA_MGR" ] || { echo "no token for pstd2 (BETA manager)" >&2; exit 1; }
+
+# THE FINDING: ALPHA (the SENDER, via its manager token) cannot accept its own
+# request. 403, not 204/0 -- the row IS visible to the sender through the
+# sender-withdraws policy's USING clause, so this is a WITH CHECK violation
+# (both matching policies' WITH CHECK fail: recipient-responds because
+# to_organisation_id is not ALPHA's, sender-withdraws because the landing
+# value is not 'withdrawn'), the same 42501 shape NU1 measures in psql.
+p2_code "SENDER (ALPHA) cannot PATCH its own request to accepted" 403 PATCH \
+        "network_connection_requests?id=eq.$H4_REQUEST" \
+        '{"status":"accepted","responded_at":"2026-09-05T00:00:00Z"}' "$MGR"
+
+# CONTROL: the request is still pending -- the refusal above changed nothing.
+p2_json "CONTROL: the request is still pending after the refused PATCH" "pending" \
+        "network_connection_requests?select=status&id=eq.$H4_REQUEST" "$MGR" "status"
+
+# THE POSITIVE CONTROL: the RECIPIENT (BETA), the identical statement, a
+# different actor -- 204, no body, PostgREST's ordinary successful-PATCH
+# response with no Prefer header.
+p2_code "POSITIVE CONTROL: the RECIPIENT (BETA) can PATCH the same request to accepted" 204 PATCH \
+        "network_connection_requests?id=eq.$H4_REQUEST" \
+        '{"status":"accepted","responded_at":"2026-09-05T00:00:01Z"}' "$BETA_MGR"
+
+p2_json "CONTROL: the request really is accepted now" "accepted" \
+        "network_connection_requests?select=status&id=eq.$H4_REQUEST" "$BETA_MGR" "status"
+
+# ============================================================================
+# PHASE 6 NETWORK-LEAKAGE AT THE API SURFACE (Task 5).
+#
+# The psql suite proves the policies hold against a real counterparty. THIS
+# proves the same claims through the request an attacker actually sends: the
+# public anon key that ships in every browser bundle, a real access token from
+# a real password sign-in, pointed straight at PostgREST, with no Next.js app
+# on the path and therefore no Server Action guard, no layout gate and no
+# masking-view discipline in the client code.
+#
+# TWO CALLERS, AND THE DIFFERENCE BETWEEN THEM IS THE POINT:
+#   $UNCON  the manager of the third organisation network_leakage_phase6.sql
+#           § LA created -- never connected to anybody.
+#   $CONN   a manager of org BETA, which IS connected to ALPHA (accepted in
+#           rls_phase6_network.sql NR9/NU4 and again in the Task 4 block above).
+# Both are managers, so a password grant's aal1 session really does hold
+# view_network -- an owner or admin counterparty would hold nothing at aal1 and
+# every 0 below would be the MFA gate wearing the tenant boundary's clothes.
+#
+# PLACED LAST, deliberately: it is the only block that signs in as these two,
+# and the Task 4 block above already claims the "last block" slot for its own
+# BETA membership grant. Nothing here writes.
+# ============================================================================
+echo
+echo "=== Phase 6 network leakage at the API surface (Task 5) ==="
+
+# The ">= N" variant of p2_rows. A positive control's job is "this URL returns
+# SOMETHING for the tenant that owns the rows", and pinning it to an exact
+# count would hardcode a fixture size that four earlier suites all write into.
+p2_rows_min() { # name min_count path token
+  local name="$1" want="$2" path="$3" tok="$4" n
+  n=$(curl -s "$API/rest/v1/$path" -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+      | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
+  if [ "${n:-x}" -ge "$want" ] 2>/dev/null; then
+    printf '  PASS  %-58s %s\n' "$name" "$n rows (>= $want)"
+  else
+    printf '  FAIL  %-58s got %s want >= %s\n' "$name" "$n" "$want"; api_fails=$((api_fails+1))
+  fi
+}
+
+UNCON=$(p2_token pgmgr); [ -n "$UNCON" ] || { echo "no token for pgmgr (unconnected counterparty)" >&2; exit 1; }
+CONN=$(p2_token pbmgr);  [ -n "$CONN" ]  || { echo "no token for pbmgr (connected counterparty)" >&2; exit 1; }
+
+ALPHA_PROFILE='e0110000-0000-0000-0000-00000000000a'
+ALPHA_DRAFT='e0110000-0000-0000-0000-00000000000d'
+
+# THE FIXTURE, RE-ASSERTED AT THIS LAYER. § LA pins it in psql; if the two
+# tokens below were minted for users who are not the members this block says
+# they are, every 0 that follows is meaningless -- and over HTTP the membership
+# is exactly what a token does NOT show you.
+p2_rows "FIXTURE: the unconnected counterparty reads exactly 1 organisation"  1 \
+        "organisations?select=slug" "$UNCON"
+p2_json "FIXTURE: ...and it is the third organisation, not ALPHA or BETA" "org-gamma-leak" \
+        "organisations?select=slug" "$UNCON" "slug"
+p2_rows "FIXTURE: the connected counterparty reads exactly 1 organisation"    1 \
+        "organisations?select=slug" "$CONN"
+p2_json "FIXTURE: ...and it is BETA" "org-beta" \
+        "organisations?select=slug" "$CONN" "slug"
+
+# ---- THE VIEW MATRIX, OVER HTTP -------------------------------------------
+p2_json "UNCONNECTED: ALPHA's published profile IS in the directory" "Alpha Promotions" \
+        "network_directory?select=display_name&id=eq.$ALPHA_PROFILE" "$UNCON" "display_name"
+p2_json "UNCONNECTED: a \`network\` field resolves (city)" "Bristol" \
+        "network_directory?select=city&id=eq.$ALPHA_PROFILE" "$UNCON" "city"
+p2_json "UNCONNECTED: a \`connections\` field is masked to null" "<null>" \
+        "network_directory?select=contact_email&id=eq.$ALPHA_PROFILE" "$UNCON" "contact_email"
+p2_rows "UNCONNECTED: the CONNECTED view returns 0 rows in total"             0 \
+        "network_connected_profiles?select=id" "$UNCON"
+
+p2_json "CONNECTED: the directory STILL masks it (the view's test does not vary)" "<null>" \
+        "network_directory?select=contact_email&id=eq.$ALPHA_PROFILE" "$CONN" "contact_email"
+p2_json "CONNECTED: the CONNECTED view resolves it -- the ONE thing accept changes" \
+        "bookings@alpha.test" \
+        "network_connected_profiles?select=contact_email&id=eq.$ALPHA_PROFILE" "$CONN" "contact_email"
+p2_rows_min "CONNECTED: ...and that view returns rows at all (the 0 above is a boundary)" 1 \
+        "network_connected_profiles?select=id" "$CONN"
+
+# ---- THE IDOR PROBE, AT THE TRANSPORT -------------------------------------
+# A draft profile id, guessed. It must come back as an EMPTY LIST -- the same
+# answer a nonexistent id gives -- from both distances, with the published id
+# as the paired control so "0 rows" is not "this URL never returns anything".
+p2_rows "IDOR: UNCONNECTED GET of ALPHA's DRAFT profile id"                  0 \
+        "network_directory?select=id&id=eq.$ALPHA_DRAFT" "$UNCON"
+p2_rows "IDOR: ...and off the BASE TABLE too (no existence leak)"            0 \
+        "network_profiles?select=id&id=eq.$ALPHA_DRAFT" "$UNCON"
+p2_rows "IDOR: CONNECTED GET of the same draft -- accept unlocks no draft"   0 \
+        "network_connected_profiles?select=id&id=eq.$ALPHA_DRAFT" "$CONN"
+p2_rows "IDOR: ...and the base table, connected"                             0 \
+        "network_profiles?select=id&id=eq.$ALPHA_DRAFT" "$CONN"
+p2_rows "IDOR CONTROL: the PUBLISHED id returns exactly 1 row for both"      1 \
+        "network_directory?select=id&id=eq.$ALPHA_PROFILE" "$UNCON"
+p2_rows "IDOR CONTROL: ...and for the connected caller"                      1 \
+        "network_directory?select=id&id=eq.$ALPHA_PROFILE" "$CONN"
+
+# ---- THE EMBED ATTACKS ----------------------------------------------------
+# SECURITY.md § 10's contact_companies lesson, applied to the new boundary: an
+# embed is the query shape a reviewer forgets and an attacker tries first.
+# PostgREST resolves an embed through a foreign key, and there is no foreign
+# key from a VIEW to anything -- so each of these is a 400, not an empty 200,
+# and the positive control below proves 400 means "no such relationship" rather
+# than "embeds are switched off".
+p2_code "EMBED: network_directory + network_profiles(*)"        400 GET \
+        "network_directory?select=*,network_profiles(*)" "" "$UNCON"
+p2_code "EMBED: network_directory + companies(*)"               400 GET \
+        "network_directory?select=*,companies(*)" "" "$UNCON"
+p2_code "EMBED: network_directory + network_profiles(organisation_id)" 400 GET \
+        "network_directory?select=*,network_profiles(organisation_id)" "" "$UNCON"
+p2_code "EMBED: the connected view + notes(*), from the connected caller" 400 GET \
+        "network_connected_profiles?select=*,notes(*)" "" "$CONN"
+p2_code "EMBED CONTROL: a REAL embed over a REAL FK works (events+event_lineup)" 200 GET \
+        "events?select=id,event_lineup(id)&limit=1" "" "$MGR"
+
+# ---- THE COLUMN LIST, ON THE CONNECTED VIEW -------------------------------
+# The Task 1 block above asserts this for network_directory. The connected view
+# had no equivalent, and it is the one an accepted connection actually widens.
+p2_code "the CONNECTED view has no organisation_id to select (400, not a value)" 400 GET \
+        "network_connected_profiles?select=organisation_id" "" "$CONN"
+p2_code "...nor entity_id"                                                      400 GET \
+        "network_connected_profiles?select=entity_id" "" "$CONN"
+p2_code "CONTROL: a real column of the same view selects fine"                  200 GET \
+        "network_connected_profiles?select=display_name" "" "$CONN"
+
+# ---- THE PRIVATE-RELATION SWEEP, OVER HTTP --------------------------------
+# Sixteen tenant-private relations, filtered by ALPHA's organisation id -- the
+# request an attacker sends, since the org id is in every URL and § LB proves a
+# counterparty can read it straight off network_profiles. Each is asserted 0
+# from BOTH distances and >= 1 for the tenant that owns it.
+#
+# TWO OF THE SIXTEEN GET THEIR POSITIVE CONTROL IN psql AND NOT HERE, and the
+# reason is measured rather than assumed:
+#   financial_entries  needs view_finance, which is aal2-gated; $OWN2 is the
+#                      one elevated session in this script and is used below.
+#   audit_events       is readable to NO tenant role at all -- not even ALPHA's
+#                      owner. network_leakage_phase6.sql LC5 measures that and
+#                      LC5b pairs it with the superuser, who can. So the
+#                      control here is the $OWN2 line asserting 0, labelled as
+#                      the measurement it is.
+for rel in contacts companies artists venues agencies events event_lineup \
+           tasks meetings notes documents custom_field_values \
+           activity_events network_links; do
+  p2_rows "UNCONNECTED reads 0 ALPHA $rel"  0 "$rel?select=id&organisation_id=eq.$ALPHA_ORG" "$UNCON"
+  p2_rows "CONNECTED reads 0 ALPHA $rel"    0 "$rel?select=id&organisation_id=eq.$ALPHA_ORG" "$CONN"
+  p2_rows_min "CONTROL: ALPHA's owner reads $rel"  1 \
+          "$rel?select=id&organisation_id=eq.$ALPHA_ORG" "$OWN2"
+done
+p2_rows "UNCONNECTED reads 0 ALPHA financial_entries"  0 \
+        "financial_entries?select=id&organisation_id=eq.$ALPHA_ORG" "$UNCON"
+p2_rows "CONNECTED reads 0 ALPHA financial_entries"    0 \
+        "financial_entries?select=id&organisation_id=eq.$ALPHA_ORG" "$CONN"
+p2_rows_min "CONTROL: ALPHA's aal2 owner reads financial_entries" 1 \
+        "financial_entries?select=id&organisation_id=eq.$ALPHA_ORG" "$OWN2"
+p2_rows "UNCONNECTED reads 0 ALPHA audit_events"       0 \
+        "audit_events?select=id&organisation_id=eq.$ALPHA_ORG" "$UNCON"
+p2_rows "CONNECTED reads 0 ALPHA audit_events"         0 \
+        "audit_events?select=id&organisation_id=eq.$ALPHA_ORG" "$CONN"
+p2_rows "MEASURED: ALPHA's own owner reads 0 audit_events too (superuser-only)" 0 \
+        "audit_events?select=id&organisation_id=eq.$ALPHA_ORG" "$OWN2"
+
+# THE UNFILTERED FORM, for the caller who does not know ALPHA's org id: the
+# tables are simply empty for them, so the filter above is not what produced
+# the zeros.
+p2_rows "UNCONNECTED reads 0 contacts with NO filter at all"   0 "contacts?select=id" "$UNCON"
+p2_rows "UNCONNECTED reads 0 events with NO filter at all"     0 "events?select=id" "$UNCON"
+p2_rows "UNCONNECTED reads 0 notes with NO filter at all"      0 "notes?select=id" "$UNCON"
+p2_rows "UNCONNECTED reads 0 network_links with NO filter"     0 "network_links?select=id" "$UNCON"
+p2_rows "CONNECTED reads 0 network_links with NO filter (Q82)" 0 "network_links?select=id" "$CONN"
+p2_rows_min "CONTROL: the CONNECTED caller DOES read its own BETA contacts" 1 \
+        "contacts?select=id&organisation_id=eq.$BETA_ORG" "$CONN"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

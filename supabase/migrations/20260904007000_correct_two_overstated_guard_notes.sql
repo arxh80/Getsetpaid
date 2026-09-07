@@ -1,0 +1,115 @@
+-- Phase 6 (Network), Task 1 fix round 1: correct TWO comments that overstated
+-- the guards behind them. Review findings I2 and I1.
+--
+-- Additive and behaviour-free: this migration re-issues one `comment on policy`
+-- and two `comment on view`, and changes nothing else. No existing migration
+-- file is edited -- the same treatment 20260829011500 gave to a comment that
+-- cited a test which did not exist, and 20260828190000 / 20260828200000 gave
+-- before it. The `--` block comments in 20260904003000 and 20260904004000
+-- therefore still carry their original wording; this file is the correction of
+-- record, and each re-issued object comment names it.
+--
+-- ===========================================================================
+-- WHAT WAS WRONG
+-- ===========================================================================
+-- 20260904003000 ships two UPDATE policies on
+-- public.network_connection_requests rather than one with an `or`, because
+-- PostgreSQL ORs PERMISSIVE policies in the WITH CHECK clause as well as the
+-- USING clause -- so a WITH CHECK of `status = 'withdrawn'` alone (which is
+-- what the Task 1 brief specified) is satisfiable by a RECIPIENT whose USING
+-- passed through the other policy. The shipped policy therefore REPEATS
+-- `from_organisation_id` in its WITH CHECK. That reasoning is correct and the
+-- fix is complete; the reviewer walked all four actor x verb combinations and
+-- found no residual hole.
+--
+-- The migration's block comment then said:
+--
+--     "rls_phase6_network.sql NU5 is the assertion; without this term it is
+--      red."
+--
+-- IT WAS NOT RED. As first written, NU5 ran `set status='withdrawn'` as the
+-- recipient against request `c...0003` -- a row the PRECEDING assertion (NU4)
+-- had just moved to `accepted`. `accepted` is TERMINAL, so
+-- private.network_request_status_transition_guard() raised 23514 BEFORE the
+-- WITH CHECK was ever evaluated. Removing the `from_organisation_id` term left
+-- NU5 GREEN, because the trigger refused the statement either way.
+--
+-- The expected value was itself the tell: NU5 asserted `denied(23514)`, and a
+-- POLICY refusal is 42501 -- which is what NU1 and NU2 correctly expect two
+-- lines above it. So the assertion measured the trigger while being cited, in
+-- the migration and in the task report, as measuring the policy. That is
+-- Constraint 13 ("comments must not name a guard nobody ran"), on the file the
+-- report calls the most important line of the phase.
+--
+-- ===========================================================================
+-- WHAT ACTUALLY MEASURES IT NOW
+-- ===========================================================================
+-- NU5 was rewritten in the same fix round to run on a PENDING request, planted
+-- for the purpose (NU5a) against a fresh BETA profile so no live-pair unique
+-- index is in the way. On a pending row the transition guard permits every
+-- transition out of `pending`, which leaves the two policies as the only thing
+-- that can refuse:
+--
+--   NU5b  CONTROL: the recipient can see the row and it really is `pending`.
+--   NU5   the RECIPIENT's `status='withdrawn'` -> denied(42501), a POLICY
+--         refusal.
+--   NU5c  POSITIVE CONTROL: the SENDER runs the IDENTICAL statement on the
+--         SAME row -> ok(1).
+--
+-- Identical SQL, identical row, different actor, opposite outcome. That pair is
+-- the statement that distinguishes the shipped policy from the brief's, and it
+-- IS red without the `from_organisation_id` term.
+--
+-- The trigger's own guard keeps its own assertions: NU6/NU7 still drive a
+-- terminal row, and NR10 still proves the trigger binds `postgres` too.
+
+comment on policy "network_connection_requests_update_sender_withdraws"
+  on public.network_connection_requests is
+  'PERMITS: the SENDING organisation to withdraw its own request, and NOTHING ELSE -- the WITH CHECK pins status to exactly ''withdrawn'' AND repeats the from_organisation_id term. DOES NOT PERMIT: the sender accepting or declining its own request (the whole reason this is a separate policy rather than an `or` branch of the recipient one); the RECIPIENT withdrawing -- and that second one is why the WITH CHECK repeats the organisation term rather than carrying the status alone as the Task 1 brief specified. PostgreSQL ORs permissive policies in BOTH clauses, so a bare `status = ''withdrawn''` here would be satisfied by a recipient whose USING passed through the OTHER update policy; measured on this stack. NO network_publish TERM, DELIBERATELY: withdrawing is how a Free-tier organisation retracts a request it can no longer act on, and gating the retraction behind the tier would strand it. Withdrawing frees the pair for exactly one retry (Q79, network_connection_requests_live_pair). The BEFORE UPDATE transition guard additionally refuses withdrawing an already-terminal request. THE BEHAVIOURAL GUARD IS rls_phase6_network.sql NU5/NU5c, ON A **PENDING** ROW: 20260904003000''s own block comment cited NU5 while NU5 ran against a row the previous assertion had just made terminal, so the transition TRIGGER refused it (23514) and the assertion stayed green with this term removed -- it measured the trigger, not the policy. See 20260904007000. NU5 now expects 42501 on a pending row with the SENDER''s identical statement as the positive control, and is red without this term.';
+
+-- ===========================================================================
+-- THE SECOND CORRECTION (review finding I1): THE N2 DEPENDENCY GUARD HAD A
+-- DEMONSTRATED BYPASS, AND THREE COMMENTS SAID IT DID NOT
+-- ===========================================================================
+-- 20260904004000's block comment said of the dependency set: "Nothing else,
+-- ever. rls_phase6_network.sql § ND reads pg_depend/pg_rewrite and asserts both
+-- sets". rls_phase6_network.sql's own § ND header said "a join added to either
+-- view puts a name in this set whatever the SQL looks like".
+--
+-- NEITHER WAS TRUE OF THE QUERY THAT SHIPPED. § ND's `net.view_deps` filtered
+-- `t.relkind = 'r' and t.relnamespace = 'public'`, and pg_depend records a
+-- view->VIEW dependency as the referenced VIEW's pg_class row (relkind 'v'),
+-- never transitively as that view's own base tables. A cross-SCHEMA join was
+-- invisible for the same reason. MEASURED on this stack in a rolled-back
+-- transaction, with public.network_directory rewritten to carry
+-- `left join public.activity_events a on a.organisation_id = p.organisation_id`:
+--
+--   OLD (relkind='r', public only)   network_profiles (1)               BLIND
+--   NEW (any relkind, any schema)    public.activity_events,
+--                                    public.network_profiles (2)        caught
+--
+-- That is not a hypothetical class: the schema's only other two `public` views
+-- are public.activity_events and public.event_finance_summary, and BOTH are
+-- views over tenant-private data -- exactly what N2 exists to keep out of a
+-- discovery path. It was also the one mutation Task 1's mutation set did not
+-- try (M3 joined public.companies, which is a TABLE and so was visible).
+--
+-- WHAT CHANGED, all of it in the test file rather than in the schema:
+--   * net.view_deps drops both filters and reports schema-qualified names, so
+--     a view, a materialised view, a foreign table or a relation in `auth` is
+--     now counted;
+--   * a new net.view_fn_deps counts the FUNCTIONS each view calls, because a
+--     view calling a SECURITY DEFINER helper that reads a private table is the
+--     same leak wearing a different hat (ND3c/ND3d);
+--   * ND3b builds a SYNTHETIC view over public.activity_events and asserts
+--     net.view_deps reports it -- the non-vacuity control for the widening
+--     itself, without which reverting it would be un-asserted rather than red.
+--
+-- Nothing about either view's definition or grants changes. The two comments
+-- below are re-issued only to name the corrected guard.
+
+comment on view public.network_directory is
+  'THE ONLY SANCTIONED READ PATH into another organisation''s published network data at the `network` level. Eleven columns: id, entity_kind and display_name (always visible, Q71), the seven publishable fields each masked by a `case when field_visibility->>''<field>'' = ''network''` test, and published_at. organisation_id and entity_id are DELIBERATELY NOT PROJECTED -- a discovery result identifies a PROFILE, never a tenant or a tenant''s private record, so Task 3''s UI has no tenant id to leak. security_invoker: row reachability is the caller''s own network_profiles SELECT policy (the published-directory one), so there is ONE gate rather than two that can drift. Its dependency set is exactly {public.network_profiles} and rls_phase6_network.sql § ND asserts that from pg_depend with a non-vacuity control -- joining a private table in here to resolve a nicer name is the most plausible future edit and is the one that assertion catches (N2). NOTE, CORRECTED BY 20260904007000: as first shipped that assertion filtered relkind=''r'' in the public schema, so it was BLIND to a join against another VIEW (public.activity_events, public.event_finance_summary -- both views over tenant-private data) and to any cross-schema join. It now counts any relkind in any schema, and counts the view''s FUNCTION dependencies separately. A field marked `hidden` is additionally NULL in the base column (network_profiles_hidden_fields_are_null, N3), so this mask is the second of two controls, not the only one.';
+
+comment on view public.network_connected_profiles is
+  'The same eleven columns as public.network_directory, resolved one level further: each of the seven publishable fields tests `in (''network'',''connections'')` rather than `= ''network''`, so a field the publisher marked connections-only becomes legible. AN ACCEPTED CONNECTION CHANGES EXACTLY THIS AND NOTHING ELSE (N4): it grants no access to any tenant table -- ratings (which do not exist and must not be reachable if they ever do), notes, financial entries, documents, events, activity, tasks and meetings are unreachable from a connected counterparty by construction, and Task 5 proves it query path by query path. The `exists` is Q80''s org-to-org symmetry, written BOTH WAYS ROUND because either side may have been the requester. organisation_id and entity_id are not projected here either. security_invoker, same single-gate reasoning as the directory view. Dependency set is exactly {public.network_profiles, public.network_connection_requests}, asserted from pg_depend (N2) -- and see 20260904007000 for the widening of that assertion, which as first shipped could not see a view-to-view or cross-schema dependency at all. Its one FUNCTION dependency is private.permitted_organisations, asserted by ND3d. PERFORMANCE, LABELLED AS INFERENCE AND NOT MEASURED HERE: the exists is a correlated subquery per row; at MVP profile counts a materialised connection table is not worth it and above some unmeasured size it will be.';

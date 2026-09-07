@@ -60,6 +60,13 @@ import {
   WriteBlockedNote,
 } from "@/components/crm/write-gate";
 import { formatDateOnly, formatDateTime } from "@/lib/format/date";
+import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { LinkedIdentitySection } from "@/components/network/linked-identity-section";
+import { getNetworkConnectionAccess, getNetworkReadAccess } from "@/lib/network/access";
+import { loadNetworkProfileForEntity } from "@/lib/network/entities";
+import { loadNetworkLinkForEntity } from "@/lib/network/links-list";
+import { loadNetworkProfileForViewer } from "@/lib/network/discovery";
+import { profileHasDrifted } from "@/lib/network/drift";
 
 // One artist: the record, who represents them, and what they have been paid.
 //
@@ -135,9 +142,11 @@ export default async function ArtistDetailPage({
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [result, access] = await Promise.all([
+  const [result, access, canReadNetwork] = await Promise.all([
     loadArtist(org.id, artistId),
     getCrmWriteAccess(org, "manage_artists"),
+    // FIX ROUND 1, I2 -- see the companies page's identical comment.
+    getNetworkReadAccess(org),
   ]);
 
   // A FAILED QUERY IS NOT A MISSING RECORD. "There is no such artist" is a
@@ -219,6 +228,37 @@ export default async function ArtistDetailPage({
     artist.id,
     activityListParams,
   );
+
+  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). An artist carries
+  // country/city/website (20260827232510), so all three are comparable
+  // against the published copy, unlike a company or an agency.
+  //
+  // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
+  // identical comment.
+  // TASK 4 / GAP B (Q73/Q82), one wave, not a waterfall. See the companies
+  // page's identical comment.
+  const [networkProfile, networkLink, connectAccess] = canReadNetwork
+    ? await Promise.all([
+        loadNetworkProfileForEntity(org.id, "artist", artist.id),
+        loadNetworkLinkForEntity(org.id, "artist", artist.id),
+        getNetworkConnectionAccess(org),
+      ])
+    : [null, null, null];
+  const networkDrifted =
+    networkProfile !== null &&
+    profileHasDrifted(
+      { name: artist.name, country: artist.country, city: artist.city, website: artist.website },
+      {
+        displayName: networkProfile.displayName,
+        country: networkProfile.country,
+        city: networkProfile.city,
+        websiteUrl: networkProfile.websiteUrl,
+      },
+    );
+  const linkedProfile =
+    networkLink !== null
+      ? await loadNetworkProfileForViewer(networkLink.networkProfileId)
+      : null;
 
   return (
     <div className="flex flex-col gap-8">
@@ -484,6 +524,25 @@ export default async function ArtistDetailPage({
         basePath={`${basePath}/${artist.id}`}
         recordScoped={activityIsScoped(org.role)}
         preserve={raw}
+      />
+
+      <NetworkIdentityRow
+        orgSlug={org.slug}
+        canRead={canReadNetwork}
+        profile={networkProfile}
+        drifted={networkDrifted}
+      />
+
+      <LinkedIdentitySection
+        orgSlug={org.slug}
+        canRead={canReadNetwork}
+        entityType="artist"
+        entityId={artist.id}
+        link={networkLink}
+        linkedProfile={linkedProfile}
+        pickerDisabledReason={
+          connectAccess === null ? null : connectAccess.canWrite ? null : connectAccess.explanation
+        }
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

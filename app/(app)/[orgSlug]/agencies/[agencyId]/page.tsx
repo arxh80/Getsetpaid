@@ -35,6 +35,13 @@ import {
   WriteBlockedNote,
 } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
+import { NetworkIdentityRow } from "@/components/network/network-identity-row";
+import { LinkedIdentitySection } from "@/components/network/linked-identity-section";
+import { getNetworkConnectionAccess, getNetworkReadAccess } from "@/lib/network/access";
+import { loadNetworkProfileForEntity } from "@/lib/network/entities";
+import { loadNetworkLinkForEntity } from "@/lib/network/links-list";
+import { loadNetworkProfileForViewer } from "@/lib/network/discovery";
+import { profileHasDrifted } from "@/lib/network/drift";
 
 // One agency. The other side of artist_representations.
 //
@@ -102,10 +109,12 @@ export default async function AgencyDetailPage({
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const [result, access, artistAccess] = await Promise.all([
+  const [result, access, artistAccess, canReadNetwork] = await Promise.all([
     loadAgency(org.id, agencyId),
     getCrmWriteAccess(org, "manage_contacts"),
     getCrmWriteAccess(org, "manage_artists"),
+    // FIX ROUND 1, I2 -- see the companies page's identical comment.
+    getNetworkReadAccess(org),
   ]);
 
   // A FAILED QUERY IS NOT A MISSING RECORD -- same rule as the list surface.
@@ -189,6 +198,36 @@ export default async function AgencyDetailPage({
     agency.id,
     activityListParams,
   );
+
+  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). Agencies are name-only
+  // (20260827232510: "Name-only at MVP"), so `name` is the only comparable
+  // field.
+  // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
+  // identical comment.
+  // TASK 4 / GAP B (Q73/Q82), one wave, not a waterfall. See the companies
+  // page's identical comment.
+  const [networkProfile, networkLink, connectAccess] = canReadNetwork
+    ? await Promise.all([
+        loadNetworkProfileForEntity(org.id, "agency", agency.id),
+        loadNetworkLinkForEntity(org.id, "agency", agency.id),
+        getNetworkConnectionAccess(org),
+      ])
+    : [null, null, null];
+  const networkDrifted =
+    networkProfile !== null &&
+    profileHasDrifted(
+      { name: agency.name },
+      {
+        displayName: networkProfile.displayName,
+        country: networkProfile.country,
+        city: networkProfile.city,
+        websiteUrl: networkProfile.websiteUrl,
+      },
+    );
+  const linkedProfile =
+    networkLink !== null
+      ? await loadNetworkProfileForViewer(networkLink.networkProfileId)
+      : null;
 
   return (
     <div className="flex flex-col gap-8">
@@ -318,6 +357,25 @@ export default async function AgencyDetailPage({
         basePath={`${basePath}/${agency.id}`}
         recordScoped={activityIsScoped(org.role)}
         preserve={raw}
+      />
+
+      <NetworkIdentityRow
+        orgSlug={org.slug}
+        canRead={canReadNetwork}
+        profile={networkProfile}
+        drifted={networkDrifted}
+      />
+
+      <LinkedIdentitySection
+        orgSlug={org.slug}
+        canRead={canReadNetwork}
+        entityType="agency"
+        entityId={agency.id}
+        link={networkLink}
+        linkedProfile={linkedProfile}
+        pickerDisabledReason={
+          connectAccess === null ? null : connectAccess.canWrite ? null : connectAccess.explanation
+        }
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

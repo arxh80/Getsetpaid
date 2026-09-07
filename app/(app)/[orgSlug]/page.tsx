@@ -19,6 +19,7 @@ import {
 import { TaskStatusChip } from "@/components/crm/task-status-chip";
 import { PriorityChip } from "@/components/crm/priority-chip";
 import { formatDateTime } from "@/lib/format/date";
+import { countPendingReceivedRequests } from "@/lib/network/requests-list";
 import { Alert } from "@/components/ui/alert";
 import { RuledList, RuledRow } from "@/components/ui/ruled-row";
 
@@ -49,10 +50,25 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
   if (!org) notFound();
 
   const user = await getCurrentUser();
-  const [canManageMembers, canManageCustomFields, memberships, upcoming, openTasks] =
-    await Promise.all([
+  const [
+    canManageMembers,
+    canManageCustomFields,
+    canViewNetwork,
+    memberships,
+    upcoming,
+    openTasks,
+    pendingReceivedRequests,
+  ] = await Promise.all([
       hasPermission(org.id, "manage_members"),
       hasPermission(org.id, "manage_custom_fields"),
+      // THE NETWORK CARD'S OWN GATE (Phase 6 Task 2). Unlike CRM_AREAS and
+      // OPERATIONS_AREAS below -- which are never gated because every role
+      // that reaches this page holds view_crm and it never closes for
+      // suspension -- view_network DOES close for a suspended workspace
+      // (lib/network/access.ts: "survives_suspension=false, unlike
+      // view_crm"). So this card, alone on this page, is checked rather than
+      // assumed universal.
+      hasPermission(org.id, "view_network"),
       getActiveMemberships(),
       // THE FIRST THING ON THIS PAGE THAT READS TENANT DATA. It is a capped
       // read, not a list surface -- see `loadUpcomingEvents` for why this page
@@ -62,6 +78,15 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
       // read (not a list surface). Pinned to the user, not the workspace, so it
       // is the same short list for an Admin as for a Standard User.
       user ? loadOpenTasksForUser(org.id, user.id) : Promise.resolve(null),
+      // TASK 4: THE NETWORK CARD'S PENDING-RECEIVED COUNT. Unconditional, same
+      // as `upcoming`/`openTasks` above -- the query is cheap (a `head: true`
+      // count) and RLS-safe for a suspended workspace regardless (view_network
+      // is closed, so the query answers 0 rather than leaking anything); only
+      // the RENDER below is gated on `canViewNetwork`. This is the ONE other
+      // discovery surface besides app/(app)/[orgSlug]/network/requests --
+      // there is no notification of any kind (Q45/Q75, CLAUDE.md's
+      // `reminder_at` precedent).
+      countPendingReceivedRequests(org.id),
     ]);
 
   const others = memberships.filter((m) => m.organisationId !== org.id);
@@ -413,6 +438,89 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
           </li>
         </ul>
       </section>
+
+      {/* NETWORK (Phase 6 Tasks 2-3). Gated on `canViewNetwork` -- the one
+          section on this page that closes for a suspended workspace, since
+          view_network is survives_suspension=false while view_crm is not
+          (lib/network/access.ts). Everything CRM_AREAS-shaped stays
+          unconditional; this does not.
+
+          THE DIRECTORY LEADS (Task 3's IA decision). Discovering who else is
+          on the network is the point of an industry network; publishing your
+          own identity is something you do to get found, and it is demoted to
+          the second link. Free-tier honesty: `canViewNetwork` carries no tier
+          term (view_network is a browsing key every plan holds), so a Free
+          workspace sees this whole section, including "Browse the network",
+          exactly as a paid one does. */}
+      {canViewNetwork ? (
+        <section className="border border-rule bg-surface p-5">
+          <h2 className="text-xl font-bold text-ink">Network</h2>
+          <p className="mt-2 max-w-prose text-base text-ink-muted">
+            The industry network: discover who else has published, and
+            publish a company, artist, venue or agency record of your own so
+            other GetSetPaid workspaces can find it.
+          </p>
+          <ul className="mt-4 flex flex-col border-t border-rule">
+            <li className="border-b border-rule py-3">
+              <Link
+                href={`/${org.slug}/network`}
+                className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+              >
+                Browse the network
+              </Link>
+              <p className="mt-1 max-w-prose text-base text-ink-muted">
+                Search every published company, artist, venue and agency by
+                name, or filter by type.
+              </p>
+            </li>
+            <li className="border-b border-rule py-3">
+              <Link
+                href={`/${org.slug}/network/profiles`}
+                className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+              >
+                Your network profiles
+              </Link>
+              <p className="mt-1 max-w-prose text-base text-ink-muted">
+                Create, edit and publish network identities for your own
+                records — draft and published alike.
+              </p>
+            </li>
+            {/* TASK 4: the requests inbox/outbox, with the pending-received
+                count -- tabular-nums (DESIGN.md's numeral rule) and the ONE
+                other discovery surface besides the requests page itself,
+                since there is no notification of any kind (Q45/Q75). */}
+            <li className="border-b border-rule py-3">
+              <Link
+                href={`/${org.slug}/network/requests`}
+                className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+              >
+                Connection requests
+                {pendingReceivedRequests > 0 ? (
+                  <span className="ml-2 tabular-nums text-ink-muted">
+                    ({pendingReceivedRequests} pending)
+                  </span>
+                ) : null}
+              </Link>
+              <p className="mt-1 max-w-prose text-base text-ink-muted">
+                Requests to connect, sent and received. There is no other
+                notification — check here.
+              </p>
+            </li>
+            <li className="py-3">
+              <Link
+                href={`/${org.slug}/network/links`}
+                className="font-semibold text-primary underline underline-offset-4 hover:text-ink"
+              >
+                Linked records
+              </Link>
+              <p className="mt-1 max-w-prose text-base text-ink-muted">
+                Your own private records, explicitly linked to network
+                identities other workspaces have published.
+              </p>
+            </li>
+          </ul>
+        </section>
+      ) : null}
 
       {others.length > 0 ? (
         <section className="flex flex-col gap-4">

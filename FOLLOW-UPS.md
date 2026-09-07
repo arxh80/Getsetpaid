@@ -3103,3 +3103,606 @@ recorded for the history and the residual each leaves; the rest are open.
   should either name a `SECURITY.md`/`FOLLOW-UPS.md` reconciliation deliverable
   or state explicitly that none is owed, and should specify wiring, not just
   existence, for anything it asks to be built.**
+
+## Phase 6 — network
+
+### Opened by Task 3 (discovery) — Q86, the cost ceiling, measured
+
+- **Directory SEARCH is O(published profiles ACROSS THE WHOLE PLATFORM), not
+  O(tenant) — the one list in the product where that denominator is every
+  customer's published rows combined, not one workspace's.** Every other
+  list's search cost note (Task 3 of Phase 2, above) is about one tenant
+  growing large; this one is about the PLATFORM growing large, and it is
+  worse for exactly the reason `lib/list/query.ts`'s own header names:
+  `network_directory` carries no `organisation_id` predicate at all — Task 1's
+  deliberate Constraint 9 deviation — so there is no tenant boundary to narrow
+  the scan the way `contacts_organisation_id_idx` narrows the contacts case.
+
+  **Measured, as `authenticated`, on a LOCAL stack seeded with 20,000
+  published profiles across 3 organisations** (a throwaway `.sql` script —
+  `generate_series`, one `insert` per row, `analyze`, one throwaway
+  `auth.users` row + an active membership so the directory policy's "exists
+  an active membership" term is satisfiable — run against the local stack
+  only and never committed; `npx supabase db reset --local` afterwards, so
+  the suites that followed ran on a clean world):
+
+  | | plan | planner cost | buffers | time |
+  |---|---|---|---|---|
+  | (i) browse, page 1 | `Index Scan using network_profiles_directory_idx`, `Index Cond: (status = 'published')` | `8.18..4025.36`, estimating 15,000 rows will match | 257 | **1.668 ms** |
+  | (ii) search ~4% (`Zephyr`, 800/20,000) — page | `Seq Scan on network_profiles`, `Rows Removed by Filter: 19200` | `7.77..895.94`, estimating 5 rows will match | 505 | **52.420 ms** |
+  | (ii) search ~4% — count | same shape | `7.77..895.76` | 499 | **33.318 ms** |
+  | (iii) search matching ONE row (`Quillfeather`) — page | `Seq Scan on network_profiles`, `Rows Removed by Filter: 19999` | `7.77..895.84`, estimating 2 rows will match | 499 | **21.901 ms** |
+  | (iii) search matching ONE row — count | same shape | `7.77..895.76` | 499 | **21.958 ms** |
+
+  *(Fix round 1, I3. Every planner row-estimate above is the number that
+  ACTUAL EXPLAIN output attaches to that plan node — it is the planner's
+  guess at how many rows will satisfy the node's own condition, not a claim
+  about the corpus. The corpus is, and stays, 20,000 published rows across 3
+  organisations — every seeded row was inserted `status='published'`, so the
+  true published count is 20,000, not 15,000. That the browse plan's own
+  Index Scan node estimates only 15,000 rows will have `status='published'`
+  is a `pg_statistic`/`ANALYZE`-sampling artefact — Postgres's row-count
+  estimator is not exact, and this run did not chase why it under-counts by a
+  quarter — recorded here as an observed number, not smoothed over or
+  reconciled into 20,000. The earlier version of this entry used "~15,000
+  published rows" as if it were an assertion about the corpus, which
+  contradicted the stated 20,000 and the Seq Scan arithmetic below; that was
+  wrong, and this correction is why the sentence changed rather than the
+  numbers.)*
+
+  **THE BROWSE PAGE IS FINE.** `network_profiles_directory_idx` (`status,
+  display_name, id`, Task 1) does exactly what its own comment promises: an
+  `Index Scan` ordered by `display_name`, no sort, sub-2ms regardless of how
+  many organisations have published. The ceiling is entirely in SEARCH.
+
+  **THE MECHANISM IS THE SAME ONE `lib/list/query.ts`'s header names for
+  `contacts`, and it is worth restating why it still applies here even though
+  the browse path uses a real index:** `ilike`/`~~*` is not `proleakproof`,
+  and Postgres will not promote a non-leakproof qual to an index qual on a
+  relation carrying RLS security quals for the current caller. So even though
+  `network_profiles_directory_idx` COULD in principle narrow the scan to
+  `status = 'published'` first, the planner's own cost estimate puts a plain
+  `Seq Scan` of the whole table (**895.94**, the search page's own row in the
+  table above) below an index-driven visit to the published rows via that
+  index (**4025.36**, the browse page's own row in the table above — the two
+  are different queries' plans, cited by their own recorded cost rather than
+  assumed equal, and the comparison is exactly what explains why the planner
+  picks a Seq Scan for search and an Index Scan for browse) — ONE MORE reason
+  a trigram index would not rescue this path even if one existed:
+  `network_profiles.display_name` has no trigram index at all today, and
+  adding a plain one would not change the leakproofness problem, only which
+  unusable index the planner declines to use.
+
+  **THE NUMBER THAT MATTERS: two sequential scans of the WHOLE PLATFORM'S
+  published-profile count per search** (the page and the count, run in
+  parallel by `fetchListPage` — sequential above only because EXPLAIN was run
+  one statement at a time). At 20,000 rows that is **~44–86 ms of database
+  time per search**, and it grows linearly with a number this phase does not
+  control the growth of: every paying customer's published identity, summed
+  across the whole product, not this one workspace's row count. 100,000
+  published profiles (a plausible multi-year outcome, not a stress-test
+  number) puts a single search in the **200–450 ms** range; 500,000 puts it
+  over a second. Nothing about that failure mode is visible from inside one
+  organisation's own usage — a workspace with three published profiles pays
+  the platform's whole cost on every search keystroke.
+
+  **NO SECURITY DEFINER SEARCH FUNCTION IS BUILT HERE, and that is Q86's own
+  answer, not an oversight this entry is quietly reopening.** The contacts
+  case's `private.contact_search(p_org, p_term)` pattern does not transfer
+  cleanly here regardless: its whole safety argument is "re-establish the
+  ENTIRE tenant policy inside the function body, because `SECURITY DEFINER`
+  skips RLS and the body is the only control left" — and the policy being
+  re-established there is a SINGLE-TENANT one
+  (`organisation_id = p_org` plus record scope). The network directory's real
+  policy is "every active member of every organisation, if the row is
+  published" — i.e. already close to unconditional for the read case — so a
+  `SECURITY DEFINER` wrapper here would not be re-implementing a narrow
+  tenant check, it would be re-implementing "is this caller logged in and a
+  member of something", which is a much smaller safety margin to get exactly
+  right in a function body that bypasses RLS, for a feature this phase's own
+  Global Constraints already flag as out of scope to build ahead into
+  (`Q86: do not add a SECURITY DEFINER search function regardless of the
+  numbers; a finding for the follow-up if they argue for one`). **This is
+  that finding, and the decision it asks a reviewer to make explicitly**:
+  either accept the linear-with-the-platform search cost as a known ceiling
+  (with the rate limiter below as the mitigant) until profile counts actually
+  approach the six-figure range, or scope a dedicated `SECURITY DEFINER`
+  search function as real Phase 7+ work with its own security review — not a
+  default reached for under time pressure inside a discovery task.
+
+  **THE 30/MIN RATE LIMITER (`SECURITY.md` § 5) IS PHASE 7'S, NOT THIS ONE's,
+  and its absence today is what makes the ceiling above a live exposure
+  rather than a theoretical one.** Nothing in this codebase throttles how
+  often one session can hit `/rest/v1/network_directory?display_name=ilike.*`
+  today — a script issuing one request per second against a 100,000-profile
+  platform costs the database ~300-450ms of Seq Scan time per request,
+  indefinitely, from a single authenticated session on any tier including
+  Free. **Owner: Phase 7's rate-limiting work, and it should name this
+  endpoint by name rather than rely on a generic per-user budget catching it
+  incidentally** — a generic budget sized for ordinary CRM list traffic (one
+  tenant, index-backed) would be many times too generous for a query whose
+  unit cost scales with the whole platform instead.
+
+### Opened by Task 4 (request-to-connect, the accept unlock, the link picker)
+
+- **There is no notification of any kind when a connection request is sent,
+  accepted, declined or withdrawn — this is the shipped design, not a gap.**
+  CLAUDE.md's own `reminder_at` precedent (Q45: a task's reminder is stored
+  and never delivered, because no notification subsystem exists at MVP) is
+  the same answer here, by the same reasoning, for a second feature. A
+  request is discovered exactly two ways: visiting
+  `/[orgSlug]/network/requests`, or the pending-received count on the
+  workspace hub's Network card
+  (`countPendingReceivedRequests`, `lib/network/requests-list.ts`). Nothing
+  else tells either side a request exists, was accepted, or was declined —
+  not email, not an in-app toast, not a badge outside those two surfaces.
+  **Recorded here because "we sent them a request and nothing happened" will
+  read as a bug report to anyone who has not read this entry**, exactly the
+  outcome the brief asked this file to head off. When a real notification
+  subsystem is eventually built (Phase 7+, alongside `reminder_at` delivery,
+  which has the identical shape and should very likely ship in the same
+  piece of work rather than as two separate features), connection-request
+  events are the second consumer this codebase already knows it owes one.
+
+- **A `"use server"` module that illegally exports a plain value breaks its
+  whole route at RUNTIME, and none of the five gates can see it coming.**
+  Found during Task 4's own browser walk: `lib/network/link-search.ts`
+  (a Server Action module) originally also exported
+  `EMPTY_LINK_PICKER_SEARCH_STATE`, a plain object, alongside its one async
+  action. Next.js refuses this with "A 'use server' file can only export
+  async functions, found object" — but only when the route is actually
+  requested by a browser. `tsc --noEmit`, `eslint`, `vitest run` (unit and
+  integration) and even a correct psql/HTTP RLS run all stay green against
+  this exact mistake, because none of them renders a Next.js route; and
+  `pnpm build` — the tool that WOULD catch it at compile time — is forbidden
+  in every worktree pointed at the local stack (this repo's own convention,
+  since `pnpm build`/`pnpm start` resolve to the hosted project). The fix
+  shipped in the same task: split the constant and its type into a plain
+  module (`lib/network/link-search-state.ts`) that both the action and the
+  client component import from, and the action module now exports nothing
+  but its one async function.
+
+  **No test guards this class of break**, and one is owed:
+  `tests/unit/crm/source-shape.test.ts:937-945` already has the pattern to
+  copy — it asserts a `"use server"` file's export surface for a different
+  module. The identical assertion, generalised to walk every file in `lib/`
+  carrying a `"use server"` directive and assert every one of its exports is
+  either a function declaration/expression or a `type`/`interface` (never a
+  `const` object, array or primitive), would make this class of break
+  CI-visible (`vitest run tests/unit`) instead of browser-only. **Owner:
+  whichever task next touches a `"use server"` module, or a dedicated
+  hardening pass** — flagged here rather than fixed inside Task 4's fix
+  round, since the guard's natural home is a shared, codebase-wide
+  source-shape assertion (`tests/unit/crm/source-shape.test.ts` or a network
+  equivalent), not a network-specific one, and scoping that properly is more
+  than a one-line fix.
+
+### Opened by Task 5 (the consolidated network-leakage suite)
+
+- **THE SUSPENSION ANSWER, MEASURED: a counterparty STILL sees a suspended
+  organisation's published profile in the directory — nothing about org
+  suspension removes it from discovery. This needs a founder decision; the
+  suite RECORDS it and does not change it.** `network_leakage_phase6.sql` § LJ
+  suspends ALPHA (`organisations.deleted_at = now()`) and measures, from a real
+  counterparty session, what remains visible. The finding, in full:
+  - **An unconnected counterparty still reads the suspended org's published
+    profile and its `network` fields** (LJ1/LJ1b — `Alpha Promotions`,
+    `Bristol` still resolve). **A connected counterparty additionally still
+    resolves its `connections` fields** (LJ2 — `bookings@alpha.test`). The
+    cause is structural and one clause wide: `network_profiles_select_
+    published_directory` (20260904003000) is `status='published' AND deleted_at
+    IS NULL [on the PROFILE row] AND an active membership of ANY organisation`,
+    and **neither term consults `public.organisations.deleted_at`.** Org
+    suspension is invisible to the directory predicate.
+  - This plan's stated default was exactly this (the org row's `deleted_at` is
+    not in the directory predicate), so the measured behaviour is not a
+    regression — but it is a **product decision a reviewer should make
+    explicitly**: should suspending a workspace also pull its published
+    identities out of the industry directory? If yes, it is a one-clause change
+    — add `AND NOT EXISTS (select 1 from organisations o where o.id =
+    p.organisation_id and o.deleted_at is not null)` to the directory view's
+    predicate (and the connected view's), plus a founder sign-off that a
+    suspended customer disappears from discovery. If no, this entry is the
+    record that it was considered and left. **Do not change the policy without
+    that sign-off** — it is a Task 6 doc-reconciliation / founder-default item,
+    not a test's call.
+  - **SECONDARY, AND IT CONTRADICTS A SHIPPED COMMENT (Task 1 ledger M2/M3).**
+    The same directory policy means a suspended organisation's OWN members
+    **still browse the directory and still read their own PUBLISHED profiles**
+    through it (LJ5/LJ5b), while losing their `view_network`-gated keys — their
+    drafts (LJ4), their `network_links` (LJ4b) and their ability to write the
+    profile (LJ6). That directly contradicts the comment shipped at
+    `supabase/migrations/20260904002000_...:42-45`: *"a suspended
+    organisation's members cannot browse the directory or read their own
+    network profiles until the workspace is reinstated."* The comment is
+    wrong on both halves (browse, and read-own-published). **Owner: Task 6 doc
+    reconciliation** — either correct the comment to match the measured
+    behaviour, or, if the founder decides suspended members should indeed be
+    locked out of discovery, that is the same one-clause view change as above
+    plus a matching change to the directory policy's membership term. Recorded
+    here so the divergence is a decision on the record, not a latent surprise.
+
+- **M2 SURFACED A REAL SUITE HOLE, NOW CLOSED: nothing proved the directory
+  VIEW's own `deleted_at is null` predicate is load-bearing.** The mutation
+  battery's M2 (drop `deleted_at is null` from `network_directory`) reddened
+  NOTHING across the whole `run-rls-tests.sh` run. The reason is that a
+  soft-deleted published profile is kept out of discovery by TWO independent
+  terms — the `network_profiles_select_published_directory` RLS policy AND the
+  view — so for a COUNTERPARTY the RLS term is a backstop the view mutation
+  cannot get past, and every counterparty-driven assertion in the leak suite
+  and the network suite stayed green. The term still matters: an org's own
+  members hold `network_profiles_select_view_network` (org-scoped, and per
+  Constraint 7 not soft-delete-filtered), so the view's `deleted_at is null` is
+  the only thing keeping a profile the org has UNPUBLISHED out of that org's own
+  directory browsing. Closed in this task by `network_leakage_phase6.sql` § LB12
+  (plant a soft-deleted published profile, assert ALPHA's own member reads it as
+  0 in the directory view, with the base-table read and a live profile as the
+  two controls, then tear it down). This is the "a mutation that reddens nothing
+  is a hole you fix" discipline applied.
+
+- **M11 is caught STRUCTURALLY, not behaviourally, and that is worth a note.**
+  The battery's M11 (`network_connection_requests` SELECT policy →
+  `using (true)`) reddens `rls_phase6_network.sql` NS1 (the set-form census:
+  `using (true)` is not the `x in (select permitted_organisations(...))` form),
+  so the mutation IS caught. But no BEHAVIOURAL assertion proves a non-party
+  organisation reads zero connection requests — every request-read assertion
+  filters by a party's own org id (LA4/LA5b, NU3/NU5b). A subtler mutation that
+  KEPT the set form while widening it (`... or true`) would pass NS1 and leak.
+  Not fixed here (it is not the brief's M11 and not a reddens-nothing hole), but
+  recorded: a non-party unfiltered request-read assertion (GAMMA reads 0 total;
+  BETA ≥ 1) is the behavioural belt to NS1's structural braces, owed by whichever
+  task next touches the connection-request read path.
+
+- **THE FUNCTION-BODY-DEPTH GUARD (§LF) IS A NAMED CI BLIND SPOT.** `leak.fn_closure`
+  (`network_leakage_phase6.sql`, walking `pg_get_functiondef()` recursively from
+  both masking views) is the only control in the whole leakage suite that
+  inspects a FUNCTION BODY rather than a view definition, a policy expression or
+  a rendered page — and it is psql-only, with no source-shape or unit-test
+  equivalent, because there is no TypeScript source to read for "does a Postgres
+  function transitively call another function that names a private table."
+  `.github/workflows/ci.yml` does not run `run-rls-tests.sh` (§ "Phase 4 — CI
+  decision", restated for this phase), so **a future migration that adds a
+  helper function reachable from `network_directory` or
+  `network_connected_profiles` and has that helper name a private relation
+  reddens nothing in CI** — only a developer's own `bash
+  supabase/tests/run-rls-tests.sh` run would catch it. Named here by Constraint
+  19's own CI-note requirement ("a control with only a stack-suite guard is
+  listed BY NAME in the exit document as a known CI blind spot, not left
+  unstated") rather than left implicit in LF1's passing assertion.
+
+### The readable base table, and the column-level-grants alternative not taken
+
+`public.network_profiles` is reachable, whole-row, by any active member of any
+organisation once a row is `published` and live —
+`network_profiles_select_published_directory` (§ SECURITY.md § 2, as-built) is
+deliberately a ROW policy, and a row policy cannot filter columns. The two
+masking views are the only thing standing between that base-table grant and a
+foreign caller seeing `organisation_id`, `entity_id` and every `hidden`/
+`connections`-level value column. That is a real residual, not a hypothetical
+one — Task 5's own `network_leakage_phase6.sql` § LB (IDOR/embed block) proves
+the current call sites in `lib/network/` never take that path, but nothing in
+Postgres itself refuses a *future* one.
+
+**The alternative this phase considered and did not take: PostgreSQL
+column-level `GRANT SELECT (col, col, ...)`,** revoking table-wide `SELECT` on
+`public.network_profiles` from `authenticated` and granting back only
+`id, entity_kind, display_name, status, published_at` (never the seven
+publishable value columns, never `organisation_id`/`entity_id`) at the GRANT
+layer itself, so a query that selected `contact_email` straight off the base
+table would 42501 regardless of which policy let the ROW through.
+
+**Argument for:** it would make "read the base table for a foreign
+organisation" fail at the SQL layer even for a query this phase never
+anticipated — the `no-private-table-in-network-path.test.ts` source-shape
+census only catches an in-repo caller, not a raw PostgREST request or a future
+Edge Function. A column grant is enforced by Postgres itself, the same
+class of control `documents.storage_key`'s CHECK constraint is (§ SECURITY.md
+§ 10, "the constraint layer binds every writer including `postgres`").
+
+**Argument against, and why it was not built this phase:** (1) it would also
+have to deny the OWNER's own columns for a foreign SELECT while permitting them
+for the owner's own read — column grants are not row-conditional, so the same
+grant applies to `network_profiles_select_view_network` (the owner's own-row
+policy, which legitimately needs every column including hidden ones) and to
+`network_profiles_select_published_directory` (the cross-tenant one) alike;
+splitting that would need two relations with different column grants layered
+under one logical table, which is most of the way to just building the views
+better rather than adding a second, harder-to-reason-about control beside
+them. (2) The application NEVER selects `public.network_profiles` for a
+foreign organisation today — every discovery/profile-detail read goes through
+the two views — so the marginal risk this closes is a future regression, not a
+present one, and the source-shape census (`no-private-table-in-network-path
+.test.ts`) already makes that regression CI-visible for any in-repo caller.
+(3) `network_profiles`'s own-organisation SELECT (`network_profiles_select_
+view_network`) already needs every column for the owning organisation's own
+editor, drafts included, so a column grant narrow enough to protect a foreign
+reader would be too narrow for the legitimate owner path without a second
+relation. **Recorded as a real hardening option for Phase 7, not dismissed** —
+worth revisiting if a future PostgREST-adjacent surface (a public API, an
+Edge Function) is ever added that reads `network_profiles` directly rather
+than through `lib/network/`.
+
+### Every minor deferred by a task review, Tasks 1-5 (the ledger's own list, consolidated)
+
+None of these is a live security hole — each was reviewed and deliberately
+deferred; see `.superpowers/sdd/phase-6-network/progress.md` for the review
+context each was raised in. T5-M1 is CLOSED (Task 6 reworded the false
+size-tie comment at `tests/unit/network/no-private-table-in-network-path
+.test.ts:196-204` (the assertion) and its module header — the guard itself was
+always correct). Every other item below is still open, routed to whichever
+phase next touches its file.
+
+**Task 1 (the three network tables, the publish helper, the boundary):**
+- **M1** — a policy comment claims a `network_links` row becomes unremovable
+  once its target profile unpublishes, but the row can in fact still be
+  soft-deleted; the comment overstates the lock. `20260904003000`.
+- **M2** — the directory policy is not suspension-gated, which contradicts the
+  comment shipped at `20260904002000:42-45` and `lib/network/access.ts:196-200`.
+  Q88 (Task 5) measured the actual behaviour and is the disposition of record;
+  the false comment is corrected in this same task (see CLAUDE.md's own note
+  below and the additive migration).
+- **M3** — a suspended organisation's own published profiles stay in the
+  directory. Same finding as M2/Q88, from the opposite direction; Task 5's
+  suspension probe (`network_leakage_phase6.sql` § LJ) is the measurement of
+  record.
+- **M4** — `manage_network_profile` is inert for a Marketing user on `artist`/
+  `venue` kinds (the per-kind `entity_is_manageable` dispatch refuses those
+  regardless of the general key), and `lib/network/access.ts` does not model
+  the distinction — a pointer Task 2 closed for the CREATE picker
+  (`manageableNetworkEntityKinds`, M4 in the Task 2 ledger entry) but the
+  general-purpose `getNetworkPublishAccess` helper still does not distinguish
+  per kind outside that one call site.
+- **M5** — a self-correcting header artefact at `20260904003000:17-21` (a
+  comment that describes an earlier draft of the migration rather than the
+  shipped one).
+- **M6** — `D8c` (schema_invariants.sql) uses a bare scalar subquery rather
+  than an `exists`, and `NF1b`'s ratings census excludes `audit_network_row`
+  from its sweep. Both cosmetic/coverage gaps, not incorrect assertions.
+
+**Task 2 (the publish-field editor):**
+- **T2-M1** — a dangling `aria-describedby` in `create-profile-form.tsx:168`
+  (points at an element only rendered in one of two branches).
+- **T2-M2** — the "publish a record" picker HIDES a kind the caller cannot
+  manage rather than rendering it disabled-with-a-reason (`:66-78`) — the one
+  place in the publish flow that does not follow Constraint 12's "hiding UI is
+  not enforcement, do both" to the letter, because there genuinely is no
+  write to refuse for a kind that was never offered.
+- **T2-M3** — four parallel `kind -> segment` maps exist across the network
+  module rather than one shared lookup (partially closed by Task 4's
+  `NETWORK_ENTITY_URL_SEGMENT`, `lib/network/fields.ts` — the remaining
+  duplication is smaller than the ledger entry originally found).
+- **T2-M4** — `fields.ts`'s "Always shown" rows (`ALWAYS_NETWORK_FIELD_LABELS`)
+  are exported but nothing renders them as a labelled row in the editor UI
+  today — dead code, not a functional gap (the editor's "Name (always shown)"
+  label is a separate hand-written string).
+- **T2-M5** — `ProfileFieldValues.visibility` is a dead field on the exported
+  interface (never read by the component that declares it).
+- **T2-M6** — the editor's several server-action round trips (save, publish,
+  quick-hide) run serially rather than inside one `Promise.all` where they
+  could — a performance nit, not a correctness one.
+- **T2-M7** — the per-kind manageability gate (M4's fix) is applied on the
+  CREATE action only; every other network-profile action (update, publish,
+  unpublish) relies on the database's own `entity_is_manageable` dispatch to
+  refuse rather than mirroring the gate client-side — correct (Constraint 12
+  is satisfied by the refused write), just asymmetric with the create path's
+  UI-level narrowing.
+- **T2-M8** — the disabled-editor note is dropped from the page when a field
+  validation error is also present, so the two states' copy can collide.
+- **T2-M9** — the read-gate copy on the profiles list/editor pages says
+  "suspended" as the reason for ANY `view_network` refusal, not only a genuine
+  suspension (there is no other reachable refusal reason today, so this is
+  latent rather than currently misleading).
+- **T2-M10** — the source-shape census that pins the render-gate discipline
+  (module header's own note) matches by literal string only, not by AST —
+  a rename that preserves the literal would pass unnoticed.
+
+**Task 3 (discovery — browse and search):**
+- **T3-M1** — `directory-results.tsx` re-parses `searchParams` three times
+  across the page/results split rather than parsing once and threading the
+  result.
+- **T3-M2** — the axe fixture's `"Axe Directory Company"` name (pre-fix-round)
+  carried a collision risk with concurrent runs on the shared local database;
+  fix round 1 suffixed it with `world.orgSlug`, closing the live risk — the
+  ledger item is the historical note.
+- **T3-M3** — a stale citation to `finance.spec.ts:232` (the real strip-and-
+  submit pattern is at `:265-287` as of the file's current line numbers) —
+  re-verified at HEAD for this task's own report (Constraint 16) rather than
+  fixed at the citing call site, since the citing comments are documentation
+  of a pattern, not load-bearing line references a test depends on.
+- **T3-M4** — `lib/network/access.ts:76`'s explanation copy says "Publishing"
+  beside what is actually the CONNECT button's disabled note — a copy/paste
+  residue from the publish-access helper, cosmetically confusing but not
+  incorrect (the underlying `canWrite` boolean is correct for each caller).
+- **T3-M5** — a profile's OWNER never sees their own profile's real
+  `publishedAt` timestamp on the owner-view branch (`OwnProfileView`
+  hardcodes it `null`) — `loadNetworkProfileById` does not currently select
+  the column, so the owner's own page is honest about omitting it rather than
+  wrong, but it is a missed row a future task could add cheaply.
+- **T3-M6** — `discovery.ts:72` uses an `organisationId: ""` sentinel in one
+  code path rather than an `Option<string>`/`null` — a style nit around a
+  value that is never actually read downstream in that branch.
+
+**Task 4 (request-to-connect, the accept unlock, the link picker):**
+- **T4-M1** — Q78's ORIGINAL disabled-request-control render was a plain
+  `<div>`, not a `<form>` — no strip-and-submit target existed at all, which
+  is the exact defect class Task 4's own fix round closed (F1) for the
+  Free-tier case; the ledger records the class name because the same mistake
+  (a disabled control with nothing behind it to strip) is one a future screen
+  could reintroduce independently. **CONFIRMED STILL LIVE, in the OTHER
+  disabled branch, by a Task 6 mutation test.** `ConnectButton` has TWO
+  disabled states — the tier/permission/suspended refusal (a real `<form>`,
+  F1's fix) and `ownProfiles.length === 0` ("publish a profile of your own
+  first"), which is a plain `<button type="button">` with no surrounding
+  `<form>` at all, i.e. the identical defect class F1 fixed for the FIRST
+  branch was never applied to the SECOND. Found by forcing
+  `getNetworkConnectionAccess`'s tier check off (Task 6's own mutation 2,
+  `exit-document.md`): a Free organisation can never hold a published profile
+  of its own (Q76), so bypassing the tier check does not enable the control —
+  it falls straight into this second, form-less disabled state, and a
+  stripped-and-submitted click reaches nothing. **Not a live security
+  hole** (the tier check is not actually broken — this was a deliberate
+  mutation, reverted), but a real gap in defence-in-depth: if the tier branch
+  were ever removed for `ownProfiles.length === 0`'s sake, this state would
+  give no visible sign of the removal because there is no `<form>` here to
+  redden either way. Owner: whichever task next touches `ConnectButton`
+  should give this branch the same `<form action>` treatment F1 gave the
+  other one, even though nothing currently strips-and-submits through it.
+- **T4-M2** — no codebase-wide census yet for "every `\"use server\"` module
+  exports only async functions" (the defect class the link-search.ts runtime
+  break belongs to, this section's own Task 4 entry above) — the pattern
+  exists narrowly at `tests/unit/crm/source-shape.test.ts:937` for one module;
+  generalising it is the owed work, not yet done.
+- **T4-M3** — one assertion hardcodes `toBe(1)` where a fixture-derived count
+  would be more robust to an unrelated fixture change.
+- **T4-M4** — `requests-list.ts` carries dead `searchColumn`/`searchLabel`
+  fields inherited from the generic list-spec shape that this particular list
+  does not use (it has no search box).
+- **T4-M5** — `loadEntityName` resolves a linked record's display name per row
+  rather than batched — bounded by the same page-size ceiling every list in
+  the product carries, so not a pagination-bypass risk, just an N+1 query
+  shape on an already-small page.
+- **T4-M6** — the `pstd2` (Standard User, second fixture org) BETA membership
+  grant in the psql suite is only safe as the LAST fixture block in its file —
+  an ordering dependency rather than a self-contained fixture, flagged so a
+  future reorder does not silently break it.
+
+### Opened by the Task 6 review (the phase's post-hoc task review)
+
+- **Four near-identical hand sign-ins across the e2e specs.** A
+  `signInAsOtherMember` helper is duplicated verbatim in
+  `tests/e2e/network.spec.ts` and `tests/e2e/tenant-breakout.spec.ts`, next to
+  `network-discovery.spec.ts`'s and `network-connections.spec.ts`'s
+  `signInAsFreeMember` twins. Promote one `signInAs(page, email)` into
+  `tests/e2e/support/sign-in.ts` and delete the four copies — a pure refactor
+  best done the next time a spec touches those files, not worth a churn-only
+  diff of four specs now.
+- **The measured suite baselines lived only in the untracked exit document,
+  and now live here.** `.superpowers/sdd/` is gitignored, so
+  `exit-document.md` dies with the worktree; `CLAUDE.md` tracks the Playwright
+  count (77) and nothing else. The Phase 6 exit baselines, for Phase 7's brief
+  to build against: **psql 1692/0, HTTP 338/0, vitest 1514 across 75 files,
+  Playwright 77, contrast 16** — psql was 1686 at `f8b0f32`; the Q79 change
+  (`20260907000000`) added NR6b/NR6c and the final-review audit fix
+  (`20260907001000`) added NX5-NX5d. Any change to a suite updates this line
+  in the same commit, the way CLAUDE.md's 77 is maintained.
+
+### Opened by the final whole-branch review (pre-PR)
+
+The review's one Important finding — publishing by direct INSERT emitted no
+`network_profile.published` audit row — is FIXED (`20260907001000` + psql
+NX5-NX5d), not booked. Two minors were deliberately left as work:
+
+- **The `network_connection_requests` list-tenant-clause exemption is asserted
+  structurally, not behaviourally.** `lib/list/query.ts` exempts the table
+  from the automatic `.eq("organisation_id", …)` clause and each loader in
+  `lib/network/requests-list.ts` supplies `to_/from_organisation_id` through
+  an OPTIONAL `applyFilters` closure; the binding test only asserts the
+  exempted relation has no `organisation_id` column, never that a reader
+  supplies a tenant predicate. RLS bounds the blast radius (the SELECT policy
+  is a from-OR-to disjunction), so a future omission is a *workspace*-scoping
+  bug for a multi-org user, not a cross-tenant leak — but nothing enforces the
+  "the tenant clause is only spelled differently" half of the comment's
+  argument. A source-shape guard (any `fetchListPage` caller on an exempted
+  relation with tenant columns must pass an `applyFilters` naming one) closes
+  it.
+- **The connect control never reflects a standing request.**
+  `components/network/connect-button.tsx` has three states and none consults
+  request status, so a caller with a live `pending` request sees an enabled
+  "Request connection" whose click returns the 23505 sentence. Pre-existing
+  and deliberate at Task 3 (the tenant-breakout argument for render-and-refuse
+  is sound); slightly more visible since the Q79 change, because a declined
+  row now sits beside a live one and the two behave differently on click. A
+  status-aware button is a Task-3-shaped UI change, not a policy one.
+
+### Q70-Q88, one line each, with the default taken
+
+`DECISIONS-QUEUE.md` is gitignored and dies with the worktree — Phase 5 booked
+exactly this loss as an open item ("the reasoning behind each answer does not
+survive the worktree"). This is the tracked record. Full argument for each
+lives in `~/.claude/plans/phase-6-network.md` § "Open decisions for the
+founder" and in `.superpowers/sdd/phase-6-network/DECISIONS-QUEUE.md` while the
+worktree lasts; the exit document restates all nineteen in the same form.
+
+- **Q70 (connection requests at MVP):** in-network request-to-connect SHIPS
+  between two logged-in customer orgs; public, logged-out profiles/requests do
+  not — enforced by the `anon` grant plus the directory policy's membership
+  term, not by route absence.
+- **Q71 (profile field schema):** one closed vocabulary of 9 fields for all
+  four kinds — `display_name`/`entity_kind` always shown, plus 7 opt-in
+  fields (`headline`, `bio`, `city`, `region`, `country`, `website_url`,
+  `contact_email`). No logo/avatar, genres, phone, socials, address, or
+  capacity/tech specs at MVP.
+- **Q72 (what an accepted connection unlocks):** nothing in any tenant table —
+  only the publisher's own `connections`-level PROFILE fields resolve.
+- **Q73 (private-record <-> network-identity matching):** explicit manual
+  link only, from a search the user runs and confirms; no fuzzy matching, no
+  auto-suggestion, no pre-filled search term.
+- **Q74 (publishable entity kinds):** four — company, artist, venue, agency;
+  one profile per (org, kind, entity id). Contacts (people) are never
+  publishable.
+- **Q75 (stored copy vs. source-column allowlist):** `network_profiles` stores
+  its OWN values, written only on explicit publish/edit; no sync trigger, no
+  join into private tables. Drift between the private record and the
+  published copy is correct behaviour, not a bug.
+- **Q76 (Free tier on the network):** browse/search/read only; publish,
+  send/accept and linking all carry the `network_publish` entitlement term
+  server-side. A Free org can be discovered by nobody and connect to nobody.
+- **Q77 (permission keys):** three, all `survives_suspension = false` —
+  `view_network` (all nine roles), `manage_network_profile` (owner/admin/
+  manager/marketing), `manage_network_connections` (owner/admin/manager/
+  booker/venue_manager/marketing).
+- **Q78 (what the recipient sees; request message):** the requester is
+  identified by one of its OWN published profiles, never a tenant/user name;
+  no free-text message at MVP.
+- **Q79 (request lifecycle / anti-abuse):** `pending | accepted | declined |
+  withdrawn`. AS SHIPPED, a declined pair was TERMINAL (no re-request) — the
+  one zero-cost anti-harassment control in a product with no blocking or
+  moderation. **CHANGED BY THE FOUNDER 2026-09-07** (`20260907000000`): a
+  declined pair MAY send a fresh request; the live-pair index now covers only
+  `('pending','accepted')`. The declined ROW stays immutable (transition guard
+  untouched — the re-request is a new row beside the old record), and
+  withdrawn behaviour is unchanged. **The residual this reopens:** a declined
+  organisation can be asked again immediately and indefinitely, and nothing
+  meters it — the mitigation is the Phase 7 network rate limiter (Q86/Q87),
+  NOT anything in the Phase 6 change, so that limiter is now more load-bearing
+  than when it was deferred.
+- **Q80 (connection scope):** organisation-to-organisation, symmetric, and
+  ORG-WIDE — accepting one request also resolves the requester org's other
+  published profiles' `connections`-level fields.
+- **Q81 (unpublish/soft-delete/downgrade):** unpublish sets `status='draft'`
+  and leaves discovery immediately; a downgrade to Free never unpublishes or
+  deletes, it only refuses further writes.
+- **Q82 (`network_links` visibility):** strictly private to the linking
+  organisation; the profile's publisher is never told who linked it. No
+  counterparty read path exists at all.
+- **Q83 (the bi-tenant request table):** an honest two-column shape
+  (`from_organisation_id`, `to_organisation_id`, both `NOT NULL`, both
+  indexed) rather than a single misleading `organisation_id`.
+- **Q84 (audit actions):** six — `network_profile.published/.unpublished/
+  .visibility_changed`, `network_connection.requested/.accepted/.declined`.
+  Payload is identifiers and the visibility mask only, never a published
+  value. `network_links` writes are not audited (private, reversible).
+- **Q85 (custom fields / activity timeline / ratings guard):** no
+  `network_profile` custom-field entity type, no activity-timeline source
+  rows; plus a FORWARD structural assertion that no network view, policy or
+  function body names `rating` in any form, live before a ratings table ever
+  exists.
+- **Q86 (discovery search cost + rate limit, opened by Task 3):** plain
+  PostgREST + RLS, no `SECURITY DEFINER` search function (that shape is the
+  one that leaks); keyset pagination with a server page ceiling; measure the
+  real cost on a seeded corpus and record it honestly. The 30 req/min limiter
+  named in `SECURITY.md` § 5 is deferred to Phase 7 and disclosed as
+  unimplemented, not left implied.
+- **Q87 (accept the linear search ceiling, or build a dedicated search path —
+  found mid-phase, Task 3):** accept the linear-with-the-platform search cost
+  for MVP (measured: 44-86ms at 20k profiles, growing with the WHOLE
+  platform's published-row count, not one tenant's), with the Phase 7 rate
+  limiter as the mitigant; a dedicated, separately-reviewed search path is
+  scoped future work rather than a default reached under time pressure.
+- **Q88 (suspended-org network visibility — found mid-phase, Task 5):** leave
+  the behaviour as measured for MVP — a suspended org's published profile
+  stays visible to a counterparty AND to the suspended org's own members —
+  and correct the false comment at `20260904002000:42-45` that claimed
+  otherwise, rather than change the policy unilaterally. See CLAUDE.md's own
+  "Network, as it actually shipped in Phase 6" section and this task's
+  additive migration.
