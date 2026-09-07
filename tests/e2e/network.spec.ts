@@ -235,7 +235,11 @@ test("ALPHA publishes a venue with two network fields and one connections field;
   await page.goto(`/${world.otherOrgSlug}/network`);
   await expect(page.getByRole("heading", { name: "Network", level: 1 })).toBeVisible();
   await page.getByLabel("Search the network by name").fill(venueName);
-  await page.getByRole("button", { name: "Search" }).click();
+  // exact: the keyboard-a11y pass put a command-palette trigger named
+  // "Search Ctrl K" in every workspace header, and getByRole's default
+  // substring match resolves both (strict-mode violation). Same at every
+  // directory-search click in this suite.
+  await page.getByRole("button", { name: "Search", exact: true }).click();
 
   const directoryLink = page.getByRole("link", { name: venueName });
   await expect(directoryLink).toBeVisible();
@@ -326,7 +330,7 @@ test("ALPHA publishes a venue with two network fields and one connections field;
 
   await page.getByRole("button", { name: "Link to a network profile" }).click();
   await page.getByLabel("Search the network by name").fill(venueName);
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   const linkRow = page.locator("li", { hasText: venueName });
   await expect(linkRow).toHaveCount(1);
   await linkRow.getByRole("button", { name: "Link" }).click();
