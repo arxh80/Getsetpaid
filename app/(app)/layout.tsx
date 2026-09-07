@@ -11,6 +11,7 @@ import {
   OPERATIONS_AREAS,
   NETWORK_ITEMS,
   ADMIN_ITEMS,
+  OVERVIEW_ITEM,
 } from "@/lib/nav/areas";
 import { Sidebar } from "@/components/nav/sidebar";
 import type { SidebarNavGroup } from "@/components/nav/types";
@@ -251,6 +252,15 @@ async function buildSidebarGroups(
     ]);
 
   return [
+    // The hub first (review finding 12): the rail's own way back to the
+    // workspace overview, and the item that lights up while you are on it --
+    // every other href is longer, so the longest-prefix active match only
+    // ever picks this one on /[orgSlug] itself.
+    {
+      id: "workspace",
+      heading: "Workspace",
+      items: [toNavItem(orgSlug, OVERVIEW_ITEM)],
+    },
     {
       id: "crm",
       heading: "CRM",
@@ -295,6 +305,8 @@ function toNavItem(
     path: area.path,
     label: area.label,
     sub: area.sub,
-    href: `/${orgSlug}/${area.path}`,
+    // OVERVIEW_ITEM's path is "" -- the hub itself -- and the template below
+    // would give it a trailing slash Next treats as a different URL.
+    href: area.path === "" ? `/${orgSlug}` : `/${orgSlug}/${area.path}`,
   };
 }

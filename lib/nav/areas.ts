@@ -45,6 +45,21 @@ export interface NavAreaWithBlurb extends NavArea {
 }
 
 /**
+ * The workspace hub itself (review finding 12): without this, no rail item
+ * matched `/[orgSlug]` -- the org-home page was unreachable FROM the rail and
+ * nothing on the rail lit up while you were on it. `path: ""` is the one
+ * empty path in the file, and the sidebar's toNavItem special-cases it to
+ * `/${orgSlug}` (no trailing slash). It never appears on the org-home card
+ * grid -- a card on the hub linking to the hub would be noise -- which is why
+ * it is a bare NavArea with no blurb.
+ */
+export const OVERVIEW_ITEM: NavArea = {
+  path: "",
+  label: "Overview",
+  sub: "The workspace at a glance",
+} as const;
+
+/**
  * The six CRM areas, in the order the workflow uses them.
  *
  * NOT FILTERED BY PERMISSION, deliberately -- carried over unchanged from

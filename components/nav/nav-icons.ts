@@ -1,4 +1,5 @@
 import {
+  House,
   Users,
   Building2,
   Music,
@@ -33,6 +34,9 @@ import {
  * the collapsed rail's sr-only text) actually announces.
  */
 export const NAV_ICONS: Record<string, LucideIcon> = {
+  // The workspace hub -- lib/nav/areas.ts's OVERVIEW_ITEM, whose path is the
+  // one empty string in the map.
+  "": House,
   contacts: Users,
   companies: Building2,
   artists: Music,
