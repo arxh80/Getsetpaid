@@ -27,19 +27,31 @@ const PIN_STORAGE_KEY = "gsp:sidebar-pinned";
  * components/auth/idle-timeout.tsx's `store.read()`/`write()`: private
  * browsing, a browser storage quota, or a policy that blocks all Storage
  * access can make either call throw, and none of that should crash the
- * sidebar or take the pin control down with it. A blocked/empty store just
- * means the pin does not survive a reload -- it still works for the session,
- * driven by React state either way.
+ * sidebar or take the pin control down with it.
+ *
+ * `memoryPinned` IS WHAT KEEPS THE PIN WORKING WHEN STORAGE IS BLOCKED
+ * (review finding 2). The pin's only state lives in this module-level store
+ * -- there is no separate React state; `useSyncExternalStore` reads whatever
+ * `readPinned()` returns. Before the fallback, a browser that throws on
+ * every Storage access made the pin button a silent no-op: the write was
+ * dropped, the read always came back `false`, and `aria-pressed` stuck. Now
+ * every write lands in `memoryPinned` FIRST and localStorage second, and a
+ * blocked read falls back to it -- so the pin works for the life of the
+ * page either way, and the only thing a blocked store costs is persistence
+ * across a reload.
  */
+let memoryPinned = false;
+
 function readPinned(): boolean {
   try {
     return window.localStorage.getItem(PIN_STORAGE_KEY) === "1";
   } catch {
-    return false;
+    return memoryPinned;
   }
 }
 
 function writePinned(pinned: boolean): void {
+  memoryPinned = pinned;
   try {
     if (pinned) {
       window.localStorage.setItem(PIN_STORAGE_KEY, "1");
@@ -47,7 +59,8 @@ function writePinned(pinned: boolean): void {
       window.localStorage.removeItem(PIN_STORAGE_KEY);
     }
   } catch {
-    // See readPinned() -- best-effort only.
+    // See the header comment -- memoryPinned already holds the value, so a
+    // dropped localStorage write only costs persistence across a reload.
   }
 }
 
