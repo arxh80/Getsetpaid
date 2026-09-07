@@ -3580,9 +3580,10 @@ phase next touches its file.
   and now live here.** `.superpowers/sdd/` is gitignored, so
   `exit-document.md` dies with the worktree; `CLAUDE.md` tracks the Playwright
   count (77) and nothing else. The Phase 6 exit baselines, for Phase 7's brief
-  to build against: **psql 1686/0, HTTP 338/0, vitest 1514 across 75 files,
-  Playwright 77, contrast 16** — all green at `f8b0f32`. Any change to a suite
-  updates this line in the same commit, the way CLAUDE.md's 77 is maintained.
+  to build against: **psql 1688/0, HTTP 338/0, vitest 1514 across 75 files,
+  Playwright 77, contrast 16** — psql was 1686 at `f8b0f32`; the Q79 change
+  (`20260907000000`) added NR6b/NR6c. Any change to a suite updates this line
+  in the same commit, the way CLAUDE.md's 77 is maintained.
 
 `DECISIONS-QUEUE.md` is gitignored and dies with the worktree — Phase 5 booked
 exactly this loss as an open item ("the reasoning behind each answer does not
@@ -3623,8 +3624,17 @@ worktree lasts; the exit document restates all nineteen in the same form.
   identified by one of its OWN published profiles, never a tenant/user name;
   no free-text message at MVP.
 - **Q79 (request lifecycle / anti-abuse):** `pending | accepted | declined |
-  withdrawn`; a declined pair is TERMINAL (no re-request); withdrawn frees one
-  retry.
+  withdrawn`. AS SHIPPED, a declined pair was TERMINAL (no re-request) — the
+  one zero-cost anti-harassment control in a product with no blocking or
+  moderation. **CHANGED BY THE FOUNDER 2026-09-07** (`20260907000000`): a
+  declined pair MAY send a fresh request; the live-pair index now covers only
+  `('pending','accepted')`. The declined ROW stays immutable (transition guard
+  untouched — the re-request is a new row beside the old record), and
+  withdrawn behaviour is unchanged. **The residual this reopens:** a declined
+  organisation can be asked again immediately and indefinitely, and nothing
+  meters it — the mitigation is the Phase 7 network rate limiter (Q86/Q87),
+  NOT anything in the Phase 6 change, so that limiter is now more load-bearing
+  than when it was deferred.
 - **Q80 (connection scope):** organisation-to-organisation, symmetric, and
   ORG-WIDE — accepting one request also resolves the requester org's other
   published profiles' `connections`-level fields.

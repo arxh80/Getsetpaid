@@ -123,10 +123,12 @@ export type ProfileStatus = (typeof PROFILE_STATUSES)[number];
 /**
  * The four states a connection request can be in. Q79.
  *
- * Mirrors `network_connection_requests_status_check`. `declined` is TERMINAL;
- * `withdrawn` frees the pair for exactly one retry. The transition guard
+ * Mirrors `network_connection_requests_status_check`. The transition guard
  * (private.network_request_status_transition_guard) makes all three terminal
- * states immutable once reached.
+ * states immutable once reached -- the ROW never changes again. The PAIR is a
+ * separate question: since 2026-09-07 (founder change to Q79, 20260907000000)
+ * a `declined` pair may send a fresh request, exactly as a `withdrawn` one
+ * always could; only a live `pending`/`accepted` request blocks the pair.
  */
 export const CONNECTION_STATUSES = [
   "pending",
@@ -286,7 +288,11 @@ export const CONNECTION_STATUS_LABELS: Record<ConnectionStatus, string> = {
  *   active   pending    -- waiting on somebody; the accent rail marks the row
  *                          that still needs an answer.
  *   success  accepted   -- the connection exists. THIS one IS an achievement.
- *   danger   declined   -- terminal, and the pair cannot be retried (Q79).
+ *   danger   declined   -- the answer was no. The row itself never changes
+ *                          again, though the sender may open a FRESH request
+ *                          (Q79 as changed 2026-09-07); danger stays because
+ *                          a refusal is worth noticing, not because it is
+ *                          irreversible.
  *   muted    withdrawn  -- retracted by the sender; the pair is free again.
  */
 export const CONNECTION_STATUS_TONE: Record<ConnectionStatus, NetworkTone> = {

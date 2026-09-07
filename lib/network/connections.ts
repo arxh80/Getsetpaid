@@ -206,8 +206,9 @@ function connectionErrorState(
   // sentence -- which is acceptable because the sentence tells them to reload
   // and the log line carries the real cause.
   if (code === "23514") return { error: ALREADY_ANSWERED, values };
-  // 23505: network_connection_requests_live_pair. A pending, accepted or
-  // declined request to this profile already stands (Q79).
+  // 23505: network_connection_requests_live_pair. A pending or accepted
+  // request to this profile already stands (Q79 as changed 2026-09-07: a
+  // declined pair no longer blocks -- 20260907000000).
   if (code === "23505") {
     return {
       error:
@@ -368,13 +369,15 @@ export async function declineConnectionRequestAction(
   );
 
   if (result.outcome === "applied") revalidateNetwork(org.slug);
-  // THE COPY SAYS declined IS TERMINAL, because it is (Q79): the live-pair
-  // unique index keeps a declined row in place, so the sender cannot ask again.
-  // A user declining a request should know they are closing the door rather
-  // than snoozing it.
+  // THE COPY SAYS THE SENDER MAY ASK AGAIN, because they may (Q79 as changed
+  // 2026-09-07, 20260907000000): the live-pair index no longer covers
+  // `declined`, so declining answers THIS request without closing the door on
+  // a future one. A user declining should know they may hear from this
+  // organisation again -- the old copy promised finality the product no
+  // longer provides, which is the same honesty rule in the other direction.
   return stateFor(
     result,
-    "Declined. They can’t send another request to this profile.",
+    "Declined. They can still send a new request to this profile later.",
     formData,
   );
 }
@@ -383,9 +386,10 @@ export async function declineConnectionRequestAction(
  * Withdraw a request you sent.
  *
  * NO TIER GATE (see `authoriseWithdraw`). Q79: withdrawing frees the pair for
- * exactly one retry, which is the one escape hatch in an otherwise terminal
- * state machine -- so the copy says so, or a user who withdrew by accident does
- * not know they can simply ask again.
+ * a fresh request -- so the copy says so, or a user who withdrew by accident
+ * does not know they can simply ask again. (Since the 2026-09-07 Q79 change a
+ * decline frees the pair too; withdraw is no longer the state machine's one
+ * escape hatch, just the sender-side one.)
  */
 export async function withdrawConnectionRequestAction(
   _prev: FormState,
@@ -419,7 +423,7 @@ export async function withdrawConnectionRequestAction(
   if (result.outcome === "applied") revalidateNetwork(org.slug);
   return stateFor(
     result,
-    "Withdrawn. You can send one more request to this profile.",
+    "Withdrawn. You can send another request to this profile whenever you’re ready.",
     formData,
   );
 }

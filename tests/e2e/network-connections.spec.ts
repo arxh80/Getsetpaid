@@ -19,6 +19,12 @@ import { signIn, signOut } from "./support/sign-in";
 // request from ALPHA and ALPHA cannot re-send; a Free-tier org's send is
 // refused server-side even with the `disabled` attribute removed."
 //
+// ONE CLAUSE OF THAT CRITERION HAS SINCE FLIPPED: the founder changed Q79 on
+// 2026-09-07 (20260907000000), so "ALPHA cannot re-send" became "ALPHA CAN
+// send a fresh request after a decline". The decline walk below proves the
+// as-changed behaviour; the quote above is the Task 4 brief's original text,
+// kept verbatim because the rest of it still governs this file.
+//
 //   ALPHA   = world.orgSlug / world.users.manager, sending from its EXISTING
 //             published company profile, `networkAlphaProfileId` (Task 3's
 //             own fixture -- Q78 needs only ONE published profile of the
@@ -33,8 +39,8 @@ import { signIn, signOut } from "./support/sign-in";
 //             the accepted and declined lifecycles never share one
 //             (from_organisation_id, to_network_profile_id) slot.
 //
-// Three tests, not one giant test: the accept walk, the decline-then-cannot-
-// resend walk, and the Free-tier server-side refusal, each independent so a
+// Three tests, not one giant test: the accept walk, the decline-then-fresh-
+// request walk (Q79 as changed), and the Free-tier server-side refusal, each independent so a
 // failure in one does not hide the other two. No `test.describe.serial` --
 // each test signs in and navigates fresh; none depends on another's browser
 // state (Constraint: no serial mode).
@@ -135,7 +141,7 @@ test("ALPHA sends to BETA's venue; BETA sees it in Received and accepts; both si
   await expect(page.locator("main")).toContainText("beta-venue-connections@example.test");
 });
 
-test("BETA declines a second request; ALPHA cannot re-send to the same profile", async ({
+test("BETA declines a second request; ALPHA can then send a fresh one (Q79 as changed 2026-09-07)", async ({
   page,
 }) => {
   // ---- ALPHA SENDS TO THE DECLINE TARGET -----------------------------------
@@ -148,7 +154,13 @@ test("BETA declines a second request; ALPHA cannot re-send to the same profile",
   await page.getByRole("button", { name: "Request connection" }).click();
   await expect(page.getByText("Request sent.")).toBeVisible();
 
-  // ---- BETA DECLINES, TOLD BEFORE THE CLICK THAT IT IS FINAL --------------
+  // ---- BETA DECLINES, TOLD BEFORE THE CLICK WHAT A DECLINE NOW MEANS ------
+  // Until the founder's 2026-09-07 Q79 change (20260907000000) this walk
+  // proved the opposite ending -- "Declining is final" in the confirmation,
+  // then ALPHA's re-send refused by the live-pair index with the
+  // "already have a connection request" sentence. Both halves flipped
+  // together: the confirmation now promises a fresh request is possible, and
+  // the final block below proves the database agrees.
   await signOut(page);
   await signIn(page, world, "booker");
   await page.goto(`/${world.proOrgSlug}/network/requests`);
@@ -159,26 +171,40 @@ test("BETA declines a second request; ALPHA cannot re-send to the same profile",
   const pendingRow = fromAlpha.filter({ hasText: "Pending" });
   await expect(pendingRow).toHaveCount(1);
   await pendingRow.getByRole("button", { name: "Decline" }).click();
-  // Q79, STATED BEFORE THE CLICK: the confirmation names the consequence.
-  await expect(page.getByText(/Declining is final/)).toBeVisible();
+  // Q79, STATED BEFORE THE CLICK: the confirmation names the consequence --
+  // this request is answered for good, the PAIR is not blocked.
+  await expect(
+    page.getByText(/they’ll be able to send a new request/),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Yes, decline" }).click();
   // The row's status is the confirmation -- see the accept test's own note on
   // why the transient `state.message` cannot reliably be observed here.
   await expect(fromAlpha.filter({ hasText: "Pending" })).toHaveCount(0);
   await expect(fromAlpha.filter({ hasText: "Declined" })).toHaveCount(1);
 
-  // ---- ALPHA CANNOT RE-SEND -------------------------------------------------
-  // The control is still ENABLED (this page does not track terminal request
-  // state), and the database's live-pair index refuses the second send -- a
-  // real, server-enforced refusal surfaced through the ordinary form error
-  // path, not a client-side guess.
+  // ---- ALPHA CAN RE-SEND ----------------------------------------------------
+  // The real, server-enforced proof: the narrowed live-pair index
+  // (20260907000000) no longer counts the declined row, so the identical send
+  // through the ordinary form path succeeds -- a fresh request beside the
+  // declined record, not a resurrection of it (the psql suite's NR6b asserts
+  // the two-rows shape; this walk asserts the user-visible half).
   await signOut(page);
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}/network/${world.networkBetaDeclineProfileId}`);
+  await page
+    .locator("#connect-from-profile")
+    .selectOption(world.networkAlphaProfileId);
   const resendButton = page.getByRole("button", { name: "Request connection" });
   await expect(resendButton).toBeEnabled();
   await resendButton.click();
-  await expect(page.getByText(/already have a connection request/)).toBeVisible();
+  await expect(page.getByText("Request sent.")).toBeVisible();
+
+  // ---- AND BETA SEES BOTH RECORDS: the old Declined, the new Pending ------
+  await signOut(page);
+  await signIn(page, world, "booker");
+  await page.goto(`/${world.proOrgSlug}/network/requests`);
+  await expect(fromAlpha.filter({ hasText: "Pending" })).toHaveCount(1);
+  await expect(fromAlpha.filter({ hasText: "Declined" })).toHaveCount(1);
 });
 
 test("a Free-tier org's send is refused server-side, even with the disabled attribute stripped", async ({

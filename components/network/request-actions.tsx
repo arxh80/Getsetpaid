@@ -27,14 +27,15 @@ import { Alert } from "@/components/ui/alert";
 // beyond a moment's inattention.
 //
 // ===========================================================================
-// DECLINE'S QUESTION SAYS "TERMINAL" BEFORE THE CLICK, BY NAME
+// DECLINE'S QUESTION STATES THE CONSEQUENCE BEFORE THE CLICK, BY NAME
 // ===========================================================================
-// Q79 + the brief: "The UI says so before the click, because a user who
-// declines expecting to be able to undo it has been misled by the product."
-// So DeclineRequestForm's confirmation sentence states the consequence in the
-// question itself, not as a footnote after the fact -- the same discipline
-// DeleteRecordForm uses for "you can restore it", inverted: this one is
-// honest that there is NO restoring it.
+// Q79 + the brief's discipline: the consequence lives in the question itself,
+// not as a footnote after the fact. Since the founder's 2026-09-07 Q79 change
+// (20260907000000) the consequence is the REVERSE of what first shipped: a
+// decline answers this request for good (the row is immutable) but no longer
+// blocks the pair -- the sender may open a fresh request later. The question
+// says so, because a user who declines expecting silence-forever has been
+// misled by the product exactly as surely as one who expected an undo.
 //
 // ===========================================================================
 // EACH FORM CARRIES ONLY `orgSlug` AND `requestId` AS HIDDEN FIELDS
@@ -157,8 +158,8 @@ export function DeclineRequestForm({
       action={declineConnectionRequestAction}
       orgSlug={orgSlug}
       requestId={requestId}
-      // THE Q79 SENTENCE, STATED BEFORE THE CLICK.
-      question="Decline this request? Declining is final — they won’t be able to send another request to this profile afterwards."
+      // THE Q79 SENTENCE, STATED BEFORE THE CLICK (as changed 2026-09-07).
+      question="Decline this request? This one can’t be reopened, but they’ll be able to send a new request to this profile later."
       confirmLabel="Yes, decline"
       confirmingLabel="Declining…"
       keepLabel="Keep pending"
@@ -188,7 +189,7 @@ export function WithdrawRequestForm({
       action={withdrawConnectionRequestAction}
       orgSlug={orgSlug}
       requestId={requestId}
-      question="Withdraw this request? You can send one more request to this profile afterwards."
+      question="Withdraw this request? You can send another request to this profile afterwards."
       confirmLabel="Yes, withdraw"
       confirmingLabel="Withdrawing…"
       keepLabel="Keep it pending"

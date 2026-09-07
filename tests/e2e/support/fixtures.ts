@@ -610,10 +610,10 @@ export interface E2eWorld {
    *  sides resolve the other's connections fields once accepted (Q80). */
   networkBetaVenueProfileId: string;
   networkBetaVenueProfileName: string;
-  /** BETA's second published profile -- the walk's "decline, then cannot
-   *  re-send" target. A separate profile from the accept target, so the two
-   *  request lifecycles (accepted vs. declined) never share one live-pair
-   *  slot. */
+  /** BETA's second published profile -- the walk's "decline, then a fresh
+   *  request" target (Q79 as changed 2026-09-07). A separate profile from the
+   *  accept target, so the two request lifecycles (accepted vs. declined)
+   *  never share one live-pair slot. */
   networkBetaDeclineProfileId: string;
   networkBetaDeclineProfileName: string;
 }

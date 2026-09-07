@@ -47,7 +47,7 @@
 --   NM  the masking assertion, BEHAVIOURALLY, across the tenant boundary
 --   NG  `anon` holds nothing (N6), five objects inspected
 --   NT  THE FREE-TIER GATE (Q76) -- the inert-machinery proof
---   NR  the self-request and declined-is-terminal guards
+--   NR  the self-request and live-pair lifecycle guards (Q79 as changed)
 --   NU  the TWO update policies, and the transition trigger behind them
 --   NL  network_links has no counterparty path (Q82)
 --   NS  SOURCE-SHAPE guards, with denominators
@@ -777,7 +777,13 @@ select net.try('NT8 a BOOKER''s profile UPDATE matches NOTHING -- ok(0), the USI
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
--- NR. THE SELF-REQUEST AND DECLINED-IS-TERMINAL GUARDS.
+-- NR. THE SELF-REQUEST AND LIVE-PAIR LIFECYCLE GUARDS.
+--
+-- Q79 AS CHANGED BY THE FOUNDER 2026-09-07 (20260907000000): a DECLINED pair
+-- may re-request. NR5/NR6 prove that flip; NR6b/NR6c prove what did NOT move
+-- (the old declined row survives beside the fresh one, and a LIVE pending row
+-- still blocks the pair). The declined ROW itself stays immutable -- that is
+-- the transition guard's half, and NR10 still proves it binds `postgres` too.
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -818,7 +824,11 @@ select net.try('NR4 a request may not be sent from a DRAFT profile (Q78)',
          :'alpha_org', :'beta_org'), 'denied(42501)');
 reset role; reset request.jwt.claims;
 
--- BETA DECLINES. Then ALPHA cannot ask again -- declined is TERMINAL (Q79).
+-- BETA DECLINES. Then ALPHA MAY ask again -- Q79 as changed 2026-09-07
+-- (20260907000000): a declined pair no longer occupies the live-pair slot.
+-- Until that migration this block asserted the opposite (denied(23505),
+-- "declined is terminal"), and flipping it red-to-green was the measurement
+-- that the narrowed index actually landed.
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
 select net.try('NR5 the RECIPIENT declines the request',
@@ -829,7 +839,27 @@ reset role; reset request.jwt.claims;
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NR6 Q79: a SECOND identical request is refused -- declined is terminal (23505)',
+select net.try('NR6 Q79 (changed 2026-09-07): a SECOND identical request after a DECLINE succeeds',
+  format($$insert into public.network_connection_requests
+             (id, from_organisation_id, from_network_profile_id,
+              to_organisation_id, to_network_profile_id)
+           values ('c0110000-0000-0000-0000-000000000006', %L,
+                   'e0110000-0000-0000-0000-00000000000a',
+                   %L, 'e0110000-0000-0000-0000-00000000000b')$$,
+         :'alpha_org', :'beta_org'), 'ok(1)');
+
+-- WHAT DID NOT MOVE, both halves. The re-request is a FRESH ROW beside the
+-- old declined record -- the decline is not resurrected, reopened or hidden
+-- (append-only, "a richer record than a tombstone") -- and the narrowed index
+-- still refuses a duplicate while a LIVE (pending) request stands, so the
+-- narrowing cannot drift into no uniqueness at all.
+select net.val('NR6b ...as a FRESH row: the pair now holds the declined record AND the new pending one',
+  format($$select string_agg(status, ',' order by status)
+             from public.network_connection_requests
+            where from_organisation_id=%L
+              and to_network_profile_id='e0110000-0000-0000-0000-00000000000b'$$,
+         :'alpha_org'), 'declined,pending');
+select net.try('NR6c ...and a THIRD request while the new PENDING one stands is still 23505',
   format($$insert into public.network_connection_requests
              (from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -838,8 +868,11 @@ select net.try('NR6 Q79: a SECOND identical request is refused -- declined is te
          :'alpha_org', :'beta_org'), 'denied(23505)');
 reset role; reset request.jwt.claims;
 
--- THE POSITIVE CONTROL FOR NR6: the WITHDRAWN path frees the pair for exactly
--- one retry (Q79).
+-- THE WITHDRAWN HALF OF THE LIFECYCLE (Q79): the sender retracts, and the
+-- pair is free again. (Before 20260907000000 this trio was "the positive
+-- control for NR6" -- withdrawn-frees vs. declined-blocks. The contrast is
+-- gone; the withdrawn path itself still needs proving through the REAL
+-- sender-withdraws policy.)
 --
 -- IT USES A SECOND BETA PROFILE, ON PURPOSE, and not the declined row above.
 -- The obvious shortcut -- flip c...0001 to `withdrawn` as postgres and retry --
@@ -884,7 +917,7 @@ select net.try('NR8b the SENDER withdraws it properly, through the real sender-w
   $$update public.network_connection_requests
        set status='withdrawn', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000002'$$, 'ok(1)');
-select net.try('NR9 CONTROL: once WITHDRAWN, the pair takes exactly one retry (Q79)',
+select net.try('NR9 CONTROL: once WITHDRAWN, the pair is free for a fresh request (Q79)',
   format($$insert into public.network_connection_requests
              (id, from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -1321,13 +1354,17 @@ select net.val('NX1 the visibility flip in § NM emitted a visibility_changed au
      where action='network_profile.visibility_changed'
        and target_id='e0110000-0000-0000-0000-00000000000a'$$, 'true');
 
+-- The `requested` count became 6 with the Q79 change (20260907000000): NR6's
+-- re-request-after-decline is a real INSERT now, so it audits like any other
+-- send -- which is itself worth having on the books, since the re-request is
+-- the write the Phase 7 rate limiter (Q86/Q87) will meter.
 select net.val('NX2 the § NR/§ NU requests emitted requested / accepted / declined rows',
   $$select (select count(*) from public.audit_events where action='network_connection.requested')::text
         || '/' ||
            (select count(*) from public.audit_events where action='network_connection.accepted')::text
         || '/' ||
            (select count(*) from public.audit_events where action='network_connection.declined')::text$$,
-  '5/1/1');
+  '6/1/1');
 
 -- THE PAYLOAD DISCIPLINE. audit_events is superuser-readable, and CLAUDE.md
 -- § Superuser dashboard keeps tenant record content off that surface. The
