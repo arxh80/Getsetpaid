@@ -2,6 +2,7 @@
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -109,6 +110,38 @@ function getPinnedServerSnapshot(): boolean {
   return false;
 }
 
+/**
+ * "Does this input actually hover?" (review finding 5b). A touch screen fires
+ * synthetic mouseenter on tap -- without this gate, tapping any rail icon on
+ * a hybrid laptop's touchscreen or a tablet would ALSO expand the rail and
+ * reflow the page under the finger mid-tap. `(hover: hover) and (pointer:
+ * fine)` is the standard capability pair for "a mouse-like primary input";
+ * read through `useSyncExternalStore` (same shape as the pin store above) so
+ * plugging a mouse into a tablet mid-session updates it live, and so the
+ * server render -- which cannot know -- consistently assumes `false`.
+ */
+const HOVER_CAPABLE_QUERY = "(hover: hover) and (pointer: fine)";
+
+/** ~120ms of dwell before the rail expands (review finding 5b): a pointer
+ *  travelling THROUGH the rail on its way to the content should not pay a
+ *  whole expand/collapse reflow as a toll. Deliberate hovers never notice a
+ *  delay this size; drive-bys stop triggering anything. */
+const HOVER_INTENT_MS = 120;
+
+function subscribeHoverCapability(listener: () => void): () => void {
+  const mql = window.matchMedia(HOVER_CAPABLE_QUERY);
+  mql.addEventListener("change", listener);
+  return () => mql.removeEventListener("change", listener);
+}
+
+function readHoverCapability(): boolean {
+  return window.matchMedia(HOVER_CAPABLE_QUERY).matches;
+}
+
+function getHoverCapabilityServerSnapshot(): boolean {
+  return false;
+}
+
 function setPinnedGlobal(next: boolean): void {
   writePinned(next);
   notifyPinnedListeners();
@@ -178,6 +211,42 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
     setPinnedGlobal(!readPinned());
   }, []);
 
+  // See HOVER_CAPABLE_QUERY / HOVER_INTENT_MS above (review finding 5b):
+  // expansion only arms on a genuinely hovering pointer, and only after a
+  // short dwell -- a pointer crossing the rail en route to the content, or a
+  // tap's synthetic mouseenter on a touch screen, expands nothing. Collapse
+  // stays immediate: leaving the rail is never ambiguous.
+  const hoverCapable = useSyncExternalStore(
+    subscribeHoverCapability,
+    readHoverCapability,
+    getHoverCapabilityServerSnapshot,
+  );
+  const hoverIntentRef = useRef<number | null>(null);
+
+  const cancelHoverIntent = useCallback(() => {
+    if (hoverIntentRef.current !== null) {
+      window.clearTimeout(hoverIntentRef.current);
+      hoverIntentRef.current = null;
+    }
+  }, []);
+
+  const handleMouseEnter = useCallback(() => {
+    if (!hoverCapable) return;
+    cancelHoverIntent();
+    hoverIntentRef.current = window.setTimeout(() => {
+      hoverIntentRef.current = null;
+      setHovered(true);
+    }, HOVER_INTENT_MS);
+  }, [hoverCapable, cancelHoverIntent]);
+
+  const handleMouseLeave = useCallback(() => {
+    cancelHoverIntent();
+    setHovered(false);
+  }, [cancelHoverIntent]);
+
+  // A timer armed at unmount must not fire into a gone component.
+  useEffect(() => cancelHoverIntent, [cancelHoverIntent]);
+
   // FOCUS-WITHIN, DONE BY HAND. There is a `:focus-within` CSS pseudo-class,
   // but the expand/collapse here is a JS-driven `width` tween (see the header
   // comment), not a CSS transition -- so the expanded/collapsed decision has
@@ -242,8 +311,8 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
     <motion.nav
       ref={navRef}
       aria-label="Primary"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       onFocus={handleFocus}
       onBlur={handleBlur}
       initial={false}
@@ -263,7 +332,15 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
       // `overflow-y-auto` lets the RAIL scroll internally on the rare
       // workspace with enough permitted groups to exceed a short screen,
       // rather than pushing the document's own scroll height taller.
-      className="sticky top-0 flex max-h-dvh shrink-0 flex-col overflow-x-hidden overflow-y-auto border-r border-rule bg-shell"
+      //
+      // `hidden md:flex` (review finding 5a): below md there is no width to
+      // pay -- even the 64px rail eats a sixth of a 375px phone, and the
+      // expanded rail would cover most of it. The org-home page already
+      // carries every rail destination (the CRM/Operations card grids, the
+      // Network section, the admin header links), so nothing becomes
+      // unreachable; the rail is the wide-screen accelerator, not the only
+      // road.
+      className="sticky top-0 hidden max-h-dvh shrink-0 flex-col overflow-x-hidden overflow-y-auto border-r border-rule bg-shell md:flex"
     >
       <div className="flex h-11 shrink-0 items-center justify-end px-2">
         {/* A REAL <button>, aria-pressed rather than a re-worded label on
