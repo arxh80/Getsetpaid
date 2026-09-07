@@ -342,15 +342,18 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
       // road.
       className="sticky top-0 hidden max-h-dvh shrink-0 flex-col overflow-x-hidden overflow-y-auto border-r border-rule bg-shell md:flex"
     >
-      {/* Collapsed, the pin centres on the rail's 32px midline like every
-          nav icon below it (review finding 10); expanded, it sits at the
-          top-right corner where a pin control reads as chrome, not content. */}
-      <div
-        className={
-          "flex h-11 shrink-0 items-center " +
-          (expanded ? "justify-end px-2" : "justify-center")
-        }
-      >
+      {/* pl-4 ANCHORS THE PIN ON THE ICON COLUMN'S 32px MIDLINE IN BOTH
+          STATES (review finding 10, taken further than the conditional
+          justify it proposed): a 32px button behind 16px of padding centres
+          on x=32 exactly like every nav icon below it, expanded or not. Not
+          merely cosmetic -- an earlier cut re-justified the button to the
+          rail's right edge on expansion, and the ~120ms hover-intent delay
+          meant expansion began exactly as an aimed click arrived: the button
+          slid out from under the pointer mid-click (caught by the pinned-rail
+          e2e test as an aria-pressed that never flipped). A control the rail
+          repositions while the user is clicking it is a moving target for
+          everyone, Playwright included; anchored, the race cannot exist. */}
+      <div className="flex h-11 shrink-0 items-center justify-start pl-4">
         {/* A REAL <button>, aria-pressed rather than a re-worded label on
             toggle. WAI-ARIA's toggle-button pattern: the name stays constant
             ("Pin navigation open") and `aria-pressed` carries the state, so a
