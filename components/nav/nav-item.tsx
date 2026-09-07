@@ -1,9 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { NAV_ICONS } from "@/components/nav/nav-icons";
-import { SIDEBAR_EASE, SIDEBAR_TRANSITION_SECONDS } from "@/components/nav/motion-tokens";
+import {
+  SIDEBAR_EASE,
+  SIDEBAR_LABEL_EXIT_SECONDS,
+  SIDEBAR_TRANSITION_SECONDS,
+} from "@/components/nav/motion-tokens";
 import type { SidebarNavItem } from "@/components/nav/types";
 
 /**
@@ -15,8 +19,10 @@ import type { SidebarNavItem } from "@/components/nav/types";
  * which is what keeps this safe from the double-announcement failure mode a
  * visible-but-sr-only label would risk once `aria-label` is added: expanded
  * and collapsed are mutually exclusive renders of the SAME element, driven by
- * one boolean, so there is no frame where both an aria-label and a labelled
- * child text node exist together.
+ * one boolean, so AT REST there is never both an aria-label and a labelled
+ * child text node. (The one exception is the ~120ms exit fade on collapse --
+ * see the AnimatePresence comment below -- during which `aria-label` wins the
+ * name computation outright, so the guarantee that matters holds throughout.)
  *
  * EXPANDED: the aria-label is dropped and the heading + subheading render as
  * real, visible text -- the link's accessible name is now computed from its
@@ -76,21 +82,38 @@ export function NavItem({
       }
     >
       {Icon ? <Icon aria-hidden="true" className="size-5 shrink-0" /> : null}
-      {expanded ? (
-        <motion.span
-          initial={{ opacity: 0, x: reducedMotion ? 0 : -6 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{
-            duration: reducedMotion ? 0 : SIDEBAR_TRANSITION_SECONDS * 0.75,
-            delay: reducedMotion ? 0 : Math.min(staggerIndex * 0.015, 0.18),
-            ease: SIDEBAR_EASE,
-          }}
-          className="flex min-w-0 flex-col overflow-hidden whitespace-nowrap"
-        >
-          <span className="text-base leading-tight">{item.label}</span>
-          <span className="text-xs leading-tight text-ink-muted">{item.sub}</span>
-        </motion.span>
-      ) : null}
+      {/* AnimatePresence so collapse FADES the label out (--dur-fast) instead
+          of snapping it away mid-width-tween (review finding 6). During the
+          ~120ms exit the aria-label (already applied, `expanded` having gone
+          false) and the departing text node briefly coexist -- harmless for
+          the double-announcement risk the header comment describes, because
+          `aria-label` wins the link's name computation outright whenever it
+          is present; at REST the two remain mutually exclusive exactly as
+          before. */}
+      <AnimatePresence initial={false}>
+        {expanded ? (
+          <motion.span
+            initial={{ opacity: 0, x: reducedMotion ? 0 : -6 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{
+              opacity: 0,
+              transition: {
+                duration: reducedMotion ? 0 : SIDEBAR_LABEL_EXIT_SECONDS,
+                ease: SIDEBAR_EASE,
+              },
+            }}
+            transition={{
+              duration: reducedMotion ? 0 : SIDEBAR_TRANSITION_SECONDS * 0.75,
+              delay: reducedMotion ? 0 : Math.min(staggerIndex * 0.015, 0.18),
+              ease: SIDEBAR_EASE,
+            }}
+            className="flex min-w-0 flex-col overflow-hidden whitespace-nowrap"
+          >
+            <span className="text-base leading-tight">{item.label}</span>
+            <span className="text-xs leading-tight text-ink-muted">{item.sub}</span>
+          </motion.span>
+        ) : null}
+      </AnimatePresence>
     </Link>
   );
 }
