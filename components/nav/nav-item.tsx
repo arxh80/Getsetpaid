@@ -62,16 +62,14 @@ export function NavItem({
       href={item.href}
       aria-current={active ? "page" : undefined}
       aria-label={expanded ? undefined : item.label}
-      // INSET FOCUS RING (`-outline-offset-2`), A NAMED DEVIATION FROM
-      // globals.css's `outline-offset: 2px` (review finding 4). The rail is a
-      // scroll container (`overflow-y-auto`, for workspaces whose groups
-      // outgrow a short screen), and per the CSS Overflow spec a scroll
-      // container clips on BOTH axes -- `overflow-x` cannot stay `visible`
-      // once `overflow-y` is `auto` -- so an outward ring on a full-width row
-      // loses its left/right segments to the clip no matter what classes the
-      // <nav> carries. Pulling the ring 2px INSIDE the row keeps all four
-      // segments visible at every scroll position; the rows are 44px tall, so
-      // the inset ring never touches the row's own text.
+      // The rail's focus ring is INSET, but not by a class here: a
+      // `focus-visible:-outline-offset-2` utility sits in @layer utilities
+      // and silently LOSES to globals.css's UNLAYERED base ring, whatever
+      // the specificity (re-review N1 -- the same cascade fact the
+      // border-radius guard documents). The unlayered
+      // `nav[aria-label="Primary"] :focus-visible` rule in globals.css is
+      // what actually insets it; its comment carries the scroll-container
+      // clip that makes the inset necessary at all.
       // pl-[19px] CENTRES THE COLLAPSED ICON (review finding 9, arithmetic
       // corrected): the rail is 64px and the icon 20px, so its left edge
       // belongs at (64-20)/2 = 22px -- of which the always-present 3px
@@ -80,7 +78,6 @@ export function NavItem({
       // WCAG 2.5.8-plus touch-target height DESIGN.md § Spacing now names.
       className={
         "flex h-11 items-center gap-3 border-l-[3px] pl-[19px] pr-4 no-underline " +
-        "focus-visible:-outline-offset-2 " +
         "transition-colors duration-[var(--dur-fast)] ease-brand " +
         (active
           ? "border-accent bg-surface font-semibold text-ink"

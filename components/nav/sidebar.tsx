@@ -119,6 +119,15 @@ function getPinnedServerSnapshot(): boolean {
  * read through `useSyncExternalStore` (same shape as the pin store above) so
  * plugging a mouse into a tablet mid-session updates it live, and so the
  * server render -- which cannot know -- consistently assumes `false`.
+ *
+ * THE COARSE-POINTER TABLET (>= md, so the rail shows, but no hover -- re-
+ * review N3): expansion is a TAP ON THE PIN, which is a real, focusable
+ * 32px button that expands AND holds the rail open -- for a touch user that
+ * coupling is better than hover-mimicry, not a fallback. Deliberately NOT a
+ * tap-anywhere-on-the-rail toggle: the rail's body is nav links, and a tap
+ * that toggles width instead of navigating would make every link's primary
+ * action ambiguous. The org-home page (every destination, with blurbs)
+ * remains the fully-labelled path, same as below md.
  */
 const HOVER_CAPABLE_QUERY = "(hover: hover) and (pointer: fine)";
 
@@ -333,6 +342,13 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
       // workspace with enough permitted groups to exceed a short screen,
       // rather than pushing the document's own scroll height taller.
       //
+      // KNOWN TRANSIENT (re-review N4, accepted): at scroll-top the rail
+      // starts BELOW the header, so a max-h-dvh rail can overhang the
+      // viewport bottom by up to the header's height until the page scrolls
+      // enough for `sticky top-0` to pin it -- at which point the height is
+      // exact. Self-correcting within one header-height of scroll; not worth
+      // a scroll-linked measurement to fix.
+      //
       // `hidden md:flex` (review finding 5a): below md there is no width to
       // pay -- even the 64px rail eats a sixth of a 375px phone, and the
       // expanded rail would cover most of it. The org-home page already
@@ -367,9 +383,9 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
           aria-label="Pin navigation open"
           className={
             "flex size-8 shrink-0 items-center justify-center border transition-colors " +
-            // Inset ring, same reason as nav-item.tsx: the rail is a scroll
-            // container and clips an outward ring on both axes.
-            "focus-visible:-outline-offset-2 " +
+            // The inset focus ring comes from globals.css's unlayered
+            // nav[aria-label="Primary"] rule, not a utility class here --
+            // a layered utility loses to the unlayered base ring (N1).
             "duration-[var(--dur-fast)] ease-brand " +
             (pinned
               ? "border-accent bg-surface text-ink"
