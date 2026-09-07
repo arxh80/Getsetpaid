@@ -865,23 +865,28 @@ describe("I2: the four detail pages gate the network identity row on view_networ
       const page = read(path);
 
       it("imports and calls getNetworkReadAccess(org), assigned to canReadNetwork", () => {
-        expect(page).toContain('import { getNetworkReadAccess } from "@/lib/network/access";');
+        expect(page).toContain(
+          'import { getNetworkConnectionAccess, getNetworkReadAccess } from "@/lib/network/access";',
+        );
         expect(page).toContain("getNetworkReadAccess(org)");
         expect(page).toMatch(/canReadNetwork\]\s*=\s*await Promise\.all/);
       });
 
       it("the network profile lookup runs ONLY when canReadNetwork is true -- never an unconditional call", () => {
         // The exact shape of the regression: an unconditional
-        // `await loadNetworkProfileForEntity(...)` with no ternary in front
-        // of it. The positive form asserts the guard exists; the negative
-        // form asserts the unguarded call is gone, so a partial revert (the
-        // ternary removed but `canReadNetwork` left unused elsewhere) still
-        // reddens here.
-        const guarded = `canReadNetwork\n    ? await loadNetworkProfileForEntity(org.id, "${kind}"`;
-        expect(page.replace(/\r\n/g, "\n")).toContain(guarded);
-        expect(page).not.toMatch(
-          new RegExp(`(?<!\\? )await loadNetworkProfileForEntity\\(org\\.id, "${kind}"`),
-        );
+        // `loadNetworkProfileForEntity(...)` with no `canReadNetwork` ternary
+        // in front of it. The final review (minor 5) merged the profile, link
+        // and access reads into ONE guarded Promise.all wave, so the positive
+        // form asserts the ternary sits directly in front of that wave, and
+        // the count asserts the lookup appears NOWHERE else -- hoisting it
+        // back out of the guarded wave (the I2 regression in its new clothes)
+        // reddens here either way.
+        const normalised = page.replace(/\r\n/g, "\n");
+        const guarded = `canReadNetwork\n    ? await Promise.all([\n        loadNetworkProfileForEntity(org.id, "${kind}"`;
+        expect(normalised).toContain(guarded);
+        const callSites =
+          normalised.split(`loadNetworkProfileForEntity(org.id, "${kind}"`).length - 1;
+        expect(callSites, "exactly one call site, the guarded one").toBe(1);
       });
 
       it("NetworkIdentityRow receives canRead={canReadNetwork}", () => {

@@ -62,8 +62,7 @@ import {
 import { formatDateOnly, formatDateTime } from "@/lib/format/date";
 import { NetworkIdentityRow } from "@/components/network/network-identity-row";
 import { LinkedIdentitySection } from "@/components/network/linked-identity-section";
-import { getNetworkReadAccess } from "@/lib/network/access";
-import { getNetworkConnectionAccess } from "@/lib/network/access";
+import { getNetworkConnectionAccess, getNetworkReadAccess } from "@/lib/network/access";
 import { loadNetworkProfileForEntity } from "@/lib/network/entities";
 import { loadNetworkLinkForEntity } from "@/lib/network/links-list";
 import { loadNetworkProfileForViewer } from "@/lib/network/discovery";
@@ -236,9 +235,15 @@ export default async function ArtistDetailPage({
   //
   // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
   // identical comment.
-  const networkProfile = canReadNetwork
-    ? await loadNetworkProfileForEntity(org.id, "artist", artist.id)
-    : null;
+  // TASK 4 / GAP B (Q73/Q82), one wave, not a waterfall. See the companies
+  // page's identical comment.
+  const [networkProfile, networkLink, connectAccess] = canReadNetwork
+    ? await Promise.all([
+        loadNetworkProfileForEntity(org.id, "artist", artist.id),
+        loadNetworkLinkForEntity(org.id, "artist", artist.id),
+        getNetworkConnectionAccess(org),
+      ])
+    : [null, null, null];
   const networkDrifted =
     networkProfile !== null &&
     profileHasDrifted(
@@ -250,14 +255,6 @@ export default async function ArtistDetailPage({
         websiteUrl: networkProfile.websiteUrl,
       },
     );
-
-  // TASK 4 / GAP B (Q73/Q82). See the companies page's identical comment.
-  const [networkLink, connectAccess] = canReadNetwork
-    ? await Promise.all([
-        loadNetworkLinkForEntity(org.id, "artist", artist.id),
-        getNetworkConnectionAccess(org),
-      ])
-    : [null, null];
   const linkedProfile =
     networkLink !== null
       ? await loadNetworkProfileForViewer(networkLink.networkProfileId)

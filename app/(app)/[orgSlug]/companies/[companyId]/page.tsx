@@ -41,8 +41,7 @@ import { loadNetworkProfileForEntity } from "@/lib/network/entities";
 import { loadNetworkLinkForEntity } from "@/lib/network/links-list";
 import { loadNetworkProfileForViewer } from "@/lib/network/discovery";
 import { profileHasDrifted } from "@/lib/network/drift";
-import { getNetworkReadAccess } from "@/lib/network/access";
-import { getNetworkConnectionAccess } from "@/lib/network/access";
+import { getNetworkConnectionAccess, getNetworkReadAccess } from "@/lib/network/access";
 
 /** The id of the single explanation the Manage section's controls point at. */
 const MANAGE_NOTE = "company-manage-blocked";
@@ -170,9 +169,25 @@ export default async function CompanyDetailPage({
   // skipped for tidiness: running it anyway and getting `null` back for a
   // suspended workspace is EXACTLY the dishonest state this closes, because
   // `null` is indistinguishable from "genuinely never published".
-  const networkProfile = canReadNetwork
-    ? await loadNetworkProfileForEntity(org.id, "company", company.id)
-    : null;
+  //
+  // TASK 4 / GAP B (Q73/Q82): THE LINKED-IDENTITY SECTION shares this wave.
+  // All three reads are gated on the same `canReadNetwork` and for the
+  // identical I2 reason -- a suspended workspace must not be told "not linked"
+  // about a record that IS genuinely linked. `connectAccess` is only needed to
+  // explain a DISABLED link picker (suspended/tier/permission); it is cheap
+  // enough (one `hasPermission` + one entitlements read, already cached per
+  // request by `lib/entitlements/policy.ts`) to resolve unconditionally rather
+  // than threading a second gate through this branch. ONE Promise.all, not a
+  // profile-then-link waterfall: the three are independent of each other
+  // (final review, minor 5) -- only `loadNetworkProfileForViewer` below
+  // genuinely depends on a predecessor.
+  const [networkProfile, networkLink, connectAccess] = canReadNetwork
+    ? await Promise.all([
+        loadNetworkProfileForEntity(org.id, "company", company.id),
+        loadNetworkLinkForEntity(org.id, "company", company.id),
+        getNetworkConnectionAccess(org),
+      ])
+    : [null, null, null];
   const networkDrifted =
     networkProfile !== null &&
     profileHasDrifted(
@@ -184,21 +199,6 @@ export default async function CompanyDetailPage({
         websiteUrl: networkProfile.websiteUrl,
       },
     );
-
-  // TASK 4 / GAP B (Q73/Q82): THE LINKED-IDENTITY SECTION. Gated on the same
-  // `canReadNetwork` as the row above and for the identical I2 reason -- a
-  // suspended workspace must not be told "not linked" about a record that IS
-  // genuinely linked. `connectAccess` is only needed to explain a DISABLED
-  // link picker (suspended/tier/permission); it is cheap enough (one
-  // `hasPermission` + one entitlements read, already cached per request by
-  // `lib/entitlements/policy.ts`) to resolve unconditionally rather than
-  // threading a second gate through this branch.
-  const [networkLink, connectAccess] = canReadNetwork
-    ? await Promise.all([
-        loadNetworkLinkForEntity(org.id, "company", company.id),
-        getNetworkConnectionAccess(org),
-      ])
-    : [null, null];
   const linkedProfile =
     networkLink !== null
       ? await loadNetworkProfileForViewer(networkLink.networkProfileId)

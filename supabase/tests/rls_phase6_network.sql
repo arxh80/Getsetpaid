@@ -1043,7 +1043,7 @@ select net.try('NU5c POSITIVE CONTROL: the SENDER runs the IDENTICAL statement a
 -- private.fill_connection_request_recipient() (20260904006000) derives it from
 -- to_network_profile_id when the caller OMITS it -- which the action now always
 -- does. NU5c has just withdrawn the request against this profile, so the
--- live-pair index leaves the pair free for exactly this one retry.
+-- live-pair index leaves the pair free for a fresh request.
 --
 -- NU5f is the half that keeps NR3 meaningful: the trigger fills only when NULL,
 -- so a SUPPLIED-and-wrong value is still the policy's problem and still 42501.
@@ -1389,6 +1389,66 @@ select net.val('NX3b CONTROL: those payloads DO carry field_visibility (NX3 is n
 select net.val('NX4 network_links emits NO audit row, on purpose (Q82)',
   $$select count(*)::text from public.audit_events
      where target_type='network_link' or action like 'network_link%'$$, '0');
+
+-- ===========================================================================
+-- NX5. INSERT-AS-PUBLISHED IS AUDITED (final-review finding, 20260907001000).
+--
+-- Nothing forces an INSERT to be a draft: the INSERT policy carries no status
+-- term and the published_at CHECK is satisfiable at creation. The application
+-- always inserts drafts -- but this table's audit lives in the DATABASE
+-- precisely because PostgREST plus the anon key bypass the app, so a direct
+-- insert-as-published must emit network_profile.published or the one action
+-- PRD § 15 names explicitly has an unaudited path. As first shipped it did:
+-- 20260904005000's else-arm swallowed every INSERT. NX5b was red against that
+-- function and is green against 20260907001000's.
+--
+-- Two fresh ALPHA venues, because every existing ALPHA entity with a profile
+-- occupies its one-live-profile-per-entity slot. Inserted as postgres (fixture,
+-- sessionless -- no audit row, which is itself the early-return behaviour);
+-- the profile inserts run as pmanager_c through the real INSERT policy.
+-- ===========================================================================
+insert into public.venues (id, organisation_id, name)
+select v.id::uuid, o.id, v.nm
+  from public.organisations o, (values
+    ('55550000-0000-0000-0000-000000000031', 'NX5 Draft Control Venue'),
+    ('55550000-0000-0000-0000-000000000032', 'NX5 Published-At-Birth Venue')
+  ) as v(id, nm)
+ where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select net.try('NX5 CONTROL: an INSERT as a DRAFT is accepted and stays unaudited',
+  format($$insert into public.network_profiles
+             (id, organisation_id, entity_kind, entity_id, status,
+              field_visibility, display_name)
+           values ('e0110000-0000-0000-0000-0000000000a1', %L, 'venue',
+                   '55550000-0000-0000-0000-000000000031', 'draft',
+                   '{}'::jsonb, 'NX5 Draft Control')$$,
+         :'alpha_org'), 'ok(1)');
+select net.try('NX5b a direct INSERT-AS-PUBLISHED is accepted (no status term in the policy)...',
+  format($$insert into public.network_profiles
+             (id, organisation_id, entity_kind, entity_id, status,
+              field_visibility, display_name, published_at)
+           values ('e0110000-0000-0000-0000-0000000000a2', %L, 'venue',
+                   '55550000-0000-0000-0000-000000000032', 'published',
+                   '{}'::jsonb, 'NX5 Published At Birth', now())$$,
+         :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select net.val('NX5c ...and it emits EXACTLY ONE network_profile.published row',
+  $$select count(*)::text from public.audit_events
+     where action='network_profile.published'
+       and target_id='e0110000-0000-0000-0000-0000000000a2'$$, '1');
+select net.val('NX5d ...while the draft INSERT emitted none (the else-arm survives the fix)',
+  $$select count(*)::text from public.audit_events
+     where target_id='e0110000-0000-0000-0000-0000000000a1'$$, '0');
+
+-- The published-at-birth profile leaves the platform-wide directory it just
+-- entered, so no later suite inherits an extra discoverable row from this
+-- section. Soft delete (a de-escalation, unaudited by design), as postgres.
+update public.network_profiles set deleted_at = now()
+ where id in ('e0110000-0000-0000-0000-0000000000a1',
+              'e0110000-0000-0000-0000-0000000000a2');
 
 -- ===========================================================================
 -- NZ. HOUSEKEEPING.

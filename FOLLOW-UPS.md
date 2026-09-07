@@ -3580,10 +3580,41 @@ phase next touches its file.
   and now live here.** `.superpowers/sdd/` is gitignored, so
   `exit-document.md` dies with the worktree; `CLAUDE.md` tracks the Playwright
   count (77) and nothing else. The Phase 6 exit baselines, for Phase 7's brief
-  to build against: **psql 1688/0, HTTP 338/0, vitest 1514 across 75 files,
+  to build against: **psql 1692/0, HTTP 338/0, vitest 1514 across 75 files,
   Playwright 77, contrast 16** — psql was 1686 at `f8b0f32`; the Q79 change
-  (`20260907000000`) added NR6b/NR6c. Any change to a suite updates this line
+  (`20260907000000`) added NR6b/NR6c and the final-review audit fix
+  (`20260907001000`) added NX5-NX5d. Any change to a suite updates this line
   in the same commit, the way CLAUDE.md's 77 is maintained.
+
+### Opened by the final whole-branch review (pre-PR)
+
+The review's one Important finding — publishing by direct INSERT emitted no
+`network_profile.published` audit row — is FIXED (`20260907001000` + psql
+NX5-NX5d), not booked. Two minors were deliberately left as work:
+
+- **The `network_connection_requests` list-tenant-clause exemption is asserted
+  structurally, not behaviourally.** `lib/list/query.ts` exempts the table
+  from the automatic `.eq("organisation_id", …)` clause and each loader in
+  `lib/network/requests-list.ts` supplies `to_/from_organisation_id` through
+  an OPTIONAL `applyFilters` closure; the binding test only asserts the
+  exempted relation has no `organisation_id` column, never that a reader
+  supplies a tenant predicate. RLS bounds the blast radius (the SELECT policy
+  is a from-OR-to disjunction), so a future omission is a *workspace*-scoping
+  bug for a multi-org user, not a cross-tenant leak — but nothing enforces the
+  "the tenant clause is only spelled differently" half of the comment's
+  argument. A source-shape guard (any `fetchListPage` caller on an exempted
+  relation with tenant columns must pass an `applyFilters` naming one) closes
+  it.
+- **The connect control never reflects a standing request.**
+  `components/network/connect-button.tsx` has three states and none consults
+  request status, so a caller with a live `pending` request sees an enabled
+  "Request connection" whose click returns the 23505 sentence. Pre-existing
+  and deliberate at Task 3 (the tenant-breakout argument for render-and-refuse
+  is sound); slightly more visible since the Q79 change, because a declined
+  row now sits beside a live one and the two behave differently on click. A
+  status-aware button is a Task-3-shaped UI change, not a policy one.
+
+### Q70-Q88, one line each, with the default taken
 
 `DECISIONS-QUEUE.md` is gitignored and dies with the worktree — Phase 5 booked
 exactly this loss as an open item ("the reasoning behind each answer does not
