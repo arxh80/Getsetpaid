@@ -287,16 +287,22 @@ export const getCurrentOrg = cache(
  * enforcement: CLAUDE.md § Permissions is explicit that "entitlements are
  * enforced server-side -- hiding UI is not enforcement". Every gated action
  * here is independently refused by an RLS policy if it is attempted anyway.
+ *
+ * cache()-WRAPPED, LIKE EVERY OTHER READ IN THIS FILE. The sidebar layout
+ * (app/(app)/layout.tsx) and the org-home page both ask for the identical
+ * three keys (view_network / manage_members / manage_custom_fields) in the
+ * same request; without the wrapper that was six has_permission() RPCs per
+ * org-home render, three of them exact duplicates. cache() keys on the
+ * argument pair, so distinct permissions still query independently.
  */
-export async function hasPermission(
-  organisationId: string,
-  permission: string,
-): Promise<boolean> {
-  const supabase = await createClient();
-  const { data, error } = await supabase.rpc("has_permission", {
-    p_org_id: organisationId,
-    p_permission: permission,
-  });
-  if (error) return false;
-  return data === true;
-}
+export const hasPermission = cache(
+  async (organisationId: string, permission: string): Promise<boolean> => {
+    const supabase = await createClient();
+    const { data, error } = await supabase.rpc("has_permission", {
+      p_org_id: organisationId,
+      p_permission: permission,
+    });
+    if (error) return false;
+    return data === true;
+  },
+);
