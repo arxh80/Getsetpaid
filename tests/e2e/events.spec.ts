@@ -310,7 +310,18 @@ test("a stored ticket link the renderer refuses is text, never an anchor", async
   // 4. NON-VACUITY. The page rendered, and it renders real anchors -- so (2)
   //    and (3) are not passing against a blank document. "Events" is the
   //    breadcrumb back to the list, which every event detail page carries.
+  //
+  //    SCOPED TO `page-content`, NOT `main` (sidebar nav build). The
+  //    persistent sidebar's "Events" nav item shares `<main>` with this
+  //    breadcrumb now and carries the identical accessible name when
+  //    collapsed (an icon-only link's name is its heading, exactly
+  //    "Events") -- a `main`-scoped query would find two matches and this
+  //    assertion would fail on a correct page. `page-content` (
+  //    app/(app)/[orgSlug]/layout.tsx) is the page's own content region,
+  //    which the sidebar sits beside, not inside.
   await expect(
-    page.locator("main").getByRole("link", { name: "Events", exact: true }),
+    page
+      .getByTestId("page-content")
+      .getByRole("link", { name: "Events", exact: true }),
   ).toHaveCount(1);
 });

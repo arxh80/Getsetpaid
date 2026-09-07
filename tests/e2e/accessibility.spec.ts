@@ -216,6 +216,42 @@ for (const [label, url] of SIGNED_IN_PAGES) {
 }
 
 // ===========================================================================
+// SIDEBAR NAV BUILD: THE RAIL, PINNED OPEN
+// ===========================================================================
+// Every scan above runs against the sidebar's DEFAULT, COLLAPSED render (none
+// of them hover or focus anything before scanning), so none of them can see
+// the markup that only exists once it is expanded: the visible heading +
+// subheading pair per item, and the group labels
+// (components/nav/nav-group.tsx's `sr-only`/visible toggle). Pinning it open
+// (a real click on a real button, not a simulated hover that a background
+// scan could lose) is the deterministic way to put the rail in that second
+// state before scanning -- the same "own dedicated test for a different
+// RENDER of a page" shape the finance-panel and network-profile-editor tests
+// below already use.
+test("a page with the sidebar pinned open has no automated accessibility violations", async ({
+  page,
+}) => {
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}/contacts`);
+
+  const pinButton = page.getByRole("button", { name: "Pin navigation open" });
+  await pinButton.click();
+  await expect(pinButton).toHaveAttribute("aria-pressed", "true");
+
+  // NON-VACUITY: the rail is genuinely expanded, not just clicked. The
+  // subheading text only renders in the expanded state
+  // (components/nav/nav-item.tsx), so seeing it proves the scan below is
+  // actually exercising the markup this test exists to cover. Both of these
+  // are CRM_AREAS entries (lib/nav/areas.ts), rendered unconditionally for
+  // every role that reaches an org route -- unlike the Network/Admin groups,
+  // there is no permission check to also get right here.
+  await expect(page.getByText("People you work with")).toBeVisible();
+  await expect(page.getByText("The businesses behind them", { exact: true })).toBeVisible();
+
+  await scan(page, "contacts list, sidebar pinned open");
+});
+
+// ===========================================================================
 // PHASE 5'S SURFACE: THE EVENT PAGE WITH THE FINANCE PANEL ON IT
 // ===========================================================================
 // ITS OWN TEST RATHER THAN A ROW IN THE TABLE ABOVE, and the reason is the

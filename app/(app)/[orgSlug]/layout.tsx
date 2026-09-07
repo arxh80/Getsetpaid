@@ -136,7 +136,20 @@ export default async function OrgLayout({
   return (
     <div className="flex flex-1 items-start gap-8">
       <Sidebar groups={groups} />
-      <div className="min-w-0 flex-1">{children}</div>
+      {/* data-testid, not a class or id: this is a TEST SEAM, not a style
+          hook. Sidebar nav items now share `<main>` with every page's own
+          content (see the "WHY NO <main> HERE" comment above), and some of
+          them render the exact same short label as a page's own breadcrumb
+          link -- "Events" is both this page's sidebar item AND the event
+          detail page's "back to the list" breadcrumb. A `page.locator("main")`
+          assertion that used to find exactly one no longer does.
+          tests/e2e/events.spec.ts's breadcrumb non-vacuity check is the one
+          place that collision actually broke an assertion; it now scopes to
+          this testid instead of `main` so it means "the page's own content",
+          not "everything main happens to contain". */}
+      <div data-testid="page-content" className="min-w-0 flex-1">
+        {children}
+      </div>
     </div>
   );
 }
