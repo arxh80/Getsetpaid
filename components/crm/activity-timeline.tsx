@@ -312,6 +312,58 @@ interface Rendered {
 }
 
 /**
+ * Non-CRM link targets that ride link_added / link_removed rather than a kind
+ * of their own: a room (venue_rooms), and since Phase 4 Task 7 a task
+ * (task_links) and a meeting (meeting_links) attached to a record. Each has a
+ * NAME but no page of its own, so the eyebrow names the KIND of thing and the
+ * body is its name -- exactly the shape the room case already had, generalised.
+ * A CRM target (company/contact/artist/agency/venue/event) is NOT in here and
+ * takes the "Linked to <link>" path, where `otherHref` builds a real link.
+ *
+ * `[label, fallbackBody]` per direction. The fallback covers a payload with no
+ * `other_name` -- unreachable from today's branches (task/meeting always carry a
+ * title), but `detail` is jsonb and every reader here is total.
+ */
+const ATTACHED_LINK: Record<
+  string,
+  {
+    readonly added: readonly [string, string];
+    readonly removed: readonly [string, string];
+  }
+> = {
+  room: {
+    added: ["Room added", "A room was added."],
+    removed: ["Room closed", "A room was closed."],
+  },
+  task: {
+    added: ["Task added", "A task was added."],
+    removed: ["Task removed", "A task was removed."],
+  },
+  meeting: {
+    added: ["Meeting added", "A meeting was added."],
+    removed: ["Meeting removed", "A meeting was removed."],
+  },
+};
+
+/**
+ * The named-text rendering for a room/task/meeting link, or null for a CRM
+ * target that should render as a link instead.
+ *
+ * `Object.hasOwn`, not `in` or a bare index: `other_type` is jsonb, and
+ * `ATTACHED_LINK["constructor"]` would otherwise resolve to a function on the
+ * prototype -- the same hole `otherHref` closes.
+ */
+function attachedLink(
+  row: ActivityRow,
+  direction: "added" | "removed",
+): Rendered | null {
+  const type = detailText(row.detail, "other_type");
+  if (!type || !Object.hasOwn(ATTACHED_LINK, type)) return null;
+  const [label, fallback] = ATTACHED_LINK[type][direction];
+  return { label, body: detailText(row.detail, "other_name") ?? fallback };
+}
+
+/**
  * THE EXTENSION POINT, AND IT IS A COMPILE-TIME ONE.
  *
  * Keyed on `ActivityKind`, so a kind added to lib/crm/activity.ts without an
@@ -365,40 +417,31 @@ const RENDER: Record<
     footnote: mergeFootnote(row, "this record"),
   }),
 
+  // A ROOM/TASK/MEETING renders as named text (it has a name but no page --
+  // `otherHref` returns null for all three anyway); a CRM target renders as a
+  // link. `attachedLink` is the first branch so the eyebrow says the right noun;
+  // null falls through to the CRM "Linked to <link>" path.
   link_added: (row, ctx) =>
-    detailText(row.detail, "other_type") === "room"
-      ? {
-          label: "Room added",
-          // A room's name is user content and is rendered as text, never as a
-          // link: it has no page. `otherHref` returns null for it anyway, and
-          // this branch exists so the eyebrow says the right noun.
-          body: detailText(row.detail, "other_name") ?? "A room was added.",
-        }
-      : {
-          label: "Linked",
-          body: (
-            <>
-              Linked to{" "}
-              <OtherRecord row={row} ctx={ctx} fallback="another record" />.
-            </>
-          ),
-        },
+    attachedLink(row, "added") ?? {
+      label: "Linked",
+      body: (
+        <>
+          Linked to{" "}
+          <OtherRecord row={row} ctx={ctx} fallback="another record" />.
+        </>
+      ),
+    },
 
   link_removed: (row, ctx) =>
-    detailText(row.detail, "other_type") === "room"
-      ? {
-          label: "Room closed",
-          body: detailText(row.detail, "other_name") ?? "A room was closed.",
-        }
-      : {
-          label: "Unlinked",
-          body: (
-            <>
-              <OtherRecord row={row} ctx={ctx} fallback="Another record" /> is
-              no longer linked to this one.
-            </>
-          ),
-        },
+    attachedLink(row, "removed") ?? {
+      label: "Unlinked",
+      body: (
+        <>
+          <OtherRecord row={row} ctx={ctx} fallback="Another record" /> is no
+          longer linked to this one.
+        </>
+      ),
+    },
 
   // THE LABEL, NEVER THE VALUE. A custom field's value is often the most
   // sensitive thing on a record, and a timeline that reprinted it would put a
@@ -442,6 +485,63 @@ const RENDER: Record<
     ),
     footnote:
       "Only the most recent value is kept — earlier values aren’t recorded.",
+  }),
+
+  // =========================================================================
+  // PHASE 4 TASK 7 -- the four operational kinds (20260902040000)
+  // =========================================================================
+
+  // A task's completion, dated at tasks.completed_at. NAMES THE TASK by title
+  // (plain text -- a task has no page of its own). Unlike record_updated this is
+  // one real transition the schema keeps, not a marker that moves, which is why
+  // it earns a kind rather than reusing "last edited".
+  task_completed: (row) => ({
+    label: "Task completed",
+    body: (
+      <>
+        <span translate="no" className="font-semibold break-words">
+          {detailText(row.detail, "other_name") ?? "A task"}
+        </span>{" "}
+        was completed.
+      </>
+    ),
+  }),
+
+  // A note added ABOUT this record (note_links). NO NAME AND NO BODY on purpose:
+  // a note has no title, and reprinting its body here would put a second,
+  // differently controlled copy of it on the page -- the discipline
+  // custom_field_set applies to a value. The notes panel shows the note; this
+  // says one was added.
+  note_added: (_row, ctx) => ({
+    label: "Note",
+    body: `A note was added about this ${ctx.noun}.`,
+  }),
+
+  // A document attached to / removed from this record (document_links), named by
+  // filename (plain text -- a document has no record page of its own).
+  // "Attached", not "linked", is the word the file surface uses.
+  document_attached: (row) => ({
+    label: "Document",
+    body: (
+      <>
+        <span translate="no" className="font-semibold break-words">
+          {detailText(row.detail, "other_name") ?? "A document"}
+        </span>{" "}
+        was attached.
+      </>
+    ),
+  }),
+
+  document_removed: (row) => ({
+    label: "Document removed",
+    body: (
+      <>
+        <span translate="no" className="font-semibold break-words">
+          {detailText(row.detail, "other_name") ?? "A document"}
+        </span>{" "}
+        was removed.
+      </>
+    ),
   }),
 };
 

@@ -1,4 +1,6 @@
 import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import { RelatedPanel } from "@/components/crm/related-panel";
+import type { RawSearchParams } from "@/lib/list/params";
 import {
   activityIsScoped,
   activityParams,
@@ -82,7 +84,8 @@ export default async function ContactDetailPage({
   // `?merged=1` -- see components/crm/merged-notice.tsx. A FLAG, never the
   // merged-away record's name: that name is personal data and a query string is
   // logged, bookmarked and pasted into support tickets.
-  const justMerged = (await searchParams).merged === "1";
+  const raw = (await searchParams) as RawSearchParams;
+  const justMerged = raw.merged === "1";
 
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
@@ -158,7 +161,7 @@ export default async function ContactDetailPage({
   // control on this surface (lib/crm/activity.ts). So it cannot be confused by
   // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
   // later phase adds to this route.
-  const activityListParams = activityParams(await searchParams);
+  const activityListParams = activityParams(raw);
   const activity = await fetchActivityPage(
     org.id,
     "contact",
@@ -360,6 +363,20 @@ export default async function ContactDetailPage({
           and every later phase's sources arrive as branches of
           public.activity_events rather than as a second component --
           lib/crm/activity.ts's header is the contract. */}
+      {/* THE RELATED PANEL (Phase 4 Task 3): the tasks, notes and documents
+          linked to this contact. Its three lists carry `rel_tasks_`/`rel_notes_`/
+          `rel_docs_` and the timeline carries `activity_`, so four lib/list/
+          surfaces now share this route -- every one is passed `preserve={raw}`
+          so paging any one leaves the others where they were (rule 10). */}
+      <RelatedPanel
+        orgSlug={org.slug}
+        organisationId={org.id}
+        entityType="contact"
+        entityId={contact.id}
+        basePath={`${basePath}/${contact.id}`}
+        raw={raw}
+      />
+
       <ActivityTimeline
         orgSlug={org.slug}
         subjectType="contact"
@@ -367,6 +384,7 @@ export default async function ContactDetailPage({
         params={activityListParams}
         basePath={`${basePath}/${contact.id}`}
         recordScoped={activityIsScoped(org.role)}
+        preserve={raw}
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

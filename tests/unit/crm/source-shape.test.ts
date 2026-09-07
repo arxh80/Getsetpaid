@@ -154,7 +154,14 @@ describe("every mutating call in lib/crm/ asks for the row count", () => {
     // this file's own directory scan started covering them; the three new
     // ones are lib/crm/events.ts's update, soft-delete and restore (there is
     // no DELETE policy on the table and no grant for one).
-    expect(sites.length).toBeGreaterThanOrEqual(29);
+    // Phase 4 Task 3 raised this from twenty-nine: tasks.ts's update/delete/
+    // restore for BOTH tasks and meetings (6), notes.ts's update/delete/restore
+    // (3), and link-actions.ts's removeLinkAction soft-delete (1) -- ten more
+    // `.update(` through commitWrite, counted rather than guessed. Every one is
+    // a soft-delete or an edit and passes `{ count: "exact" }`; the assertions
+    // below prove it per site. Still a floor, so adding more does not redden it
+    // for the wrong reason.
+    expect(sites.length).toBeGreaterThanOrEqual(39);
   });
 
   for (const site of sites) {
@@ -2005,5 +2012,112 @@ describe("Task 7: every list on a shared detail route is namespaced AND preserve
       expect(page.source, page.name).toContain("isRecordScopedRole(org.role)");
       expect(page.source, page.name).toContain("scopeNote=");
     }
+  });
+});
+
+// ===========================================================================
+// PHASE 4 TASK 3 -- the operations write paths and loaders
+// ===========================================================================
+
+describe("the operations write paths pass { count: \"exact\" } (Task 3)", () => {
+  // The generic census above already counts every `.update(` in lib/crm/ and
+  // asserts each carries `{ count: "exact" }`. This block names the specific
+  // actions so the mutation the brief calls for -- dropping the option from
+  // updateTaskAction -- has a labelled home, and so a reader can see the
+  // operations writes are covered rather than inferring it from the floor.
+  const tasks = read("lib/crm/tasks.ts");
+  const notes = read("lib/crm/notes.ts");
+  const linkActions = read("lib/crm/link-actions.ts");
+
+  it("tasks.ts holds the four task and four meeting actions", () => {
+    for (const name of [
+      "createTaskAction",
+      "updateTaskAction",
+      "deleteTaskAction",
+      "restoreTaskAction",
+      "createMeetingAction",
+      "updateMeetingAction",
+      "deleteMeetingAction",
+      "restoreMeetingAction",
+    ]) {
+      expect(tasks, name).toContain(`export async function ${name}(`);
+    }
+  });
+
+  it("notes.ts holds the four note actions and pins the author on create", () => {
+    for (const name of [
+      "createNoteAction",
+      "updateNoteAction",
+      "deleteNoteAction",
+      "restoreNoteAction",
+    ]) {
+      expect(notes, name).toContain(`export async function ${name}(`);
+    }
+    // A note is authored by its writer -- owner_user_id is pinned, not defaulted.
+    expect(notes).toContain("owner_user_id: user.id");
+  });
+
+  it("every operations UPDATE goes through commitWrite with { count: \"exact\" }", () => {
+    for (const [name, body] of [
+      ["tasks.ts", tasks],
+      ["notes.ts", notes],
+      ["link-actions.ts", linkActions],
+    ] as const) {
+      const updates = callArguments(body, "update");
+      expect(updates.length, `${name} has update calls`).toBeGreaterThan(0);
+      for (const args of updates) {
+        expect(args, name).toContain(`count: "exact"`);
+      }
+    }
+  });
+
+  it("removeLinkAction treats a zero-row soft-delete as a refusal (count === 0)", () => {
+    // The brief: a `count === 0` link removal is a refusal, not a success.
+    // commitWrite returns `refused` on count 0, and removeLinkAction returns
+    // the refusal message on anything but `applied`.
+    expect(linkActions).toContain('result.outcome === "applied"');
+    expect(linkActions).toContain("REFUSED_MESSAGE");
+  });
+});
+
+describe("the operations loaders filter deleted_at correctly (Task 3)", () => {
+  const queries = read("lib/crm/queries.ts");
+
+  function slice(from: string, to: string): string {
+    const start = queries.indexOf(from);
+    expect(start, `found ${from}`).toBeGreaterThan(-1);
+    const end = queries.indexOf(to, start + from.length);
+    return queries.slice(start, end === -1 ? undefined : end);
+  }
+
+  it("the reverse-lookup id reader filters deleted_at on the link rows", () => {
+    // reverseLinkIds reads a page of parent ids off the *_links tables; a
+    // removed link is not a link, so it must be excluded.
+    const body = slice("async function reverseLinkIds(", "\nfunction emptyRelatedPage");
+    expect(body).toContain(`.is("deleted_at", null)`);
+  });
+
+  it("loadLinksFor filters deleted_at on the link rows", () => {
+    const body = slice("export async function loadLinksFor(", "// ------");
+    expect(body).toContain(`.is("deleted_at", null)`);
+  });
+
+  it("the three single-record loaders SELECT deleted_at and do NOT filter it", () => {
+    // The same rule as loadEvent: a detail loader serves a soft-deleted record
+    // so restore is reachable. It selects the column and never filters it.
+    for (const [name, next] of [
+      ["export async function loadTask(", "export interface MeetingDetail"],
+      ["export async function loadMeeting(", "export interface NoteDetail"],
+      ["export async function loadNote(", "// ------"],
+    ] as const) {
+      const body = slice(name, next);
+      expect(body, name).toContain("deleted_at");
+      expect(body, name).not.toContain(`.is("deleted_at", null)`);
+    }
+  });
+
+  it("loadOpenTasksForUser filters deleted_at (it is not a detail loader)", () => {
+    const body = slice("export async function loadOpenTasksForUser(", "\n}");
+    expect(body).toContain(`.is("deleted_at", null)`);
   });
 });

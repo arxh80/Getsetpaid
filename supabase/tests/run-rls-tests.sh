@@ -257,6 +257,61 @@ else
 fi
 
 # ============================================================================
+# PHASE 4 (OPERATIONS) RLS / PERMISSION / TENANT-BOUNDARY SUITE.
+#
+# Runs AFTER the Phase 3 events suite and REUSES THE SAME FIXTURES WHOLE -- the
+# twelve users, orgs ALPHA and BETA, and the Phase 2 contacts / companies /
+# venues that the *_links target end points at. Only operational rows (tasks,
+# meetings, notes, documents, links) are created, in its OWN `op` schema, so the
+# count below is a statement about the Phase 4 suite alone.
+# ============================================================================
+docker cp "$HERE/rls_phase4_operations.sql" "$CTR:/tmp/rls_phase4_operations.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P2VARS[@]}" -f /tmp/rls_phase4_operations.sql
+
+p4_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from op.results where not pass" | tr -d '[:space:]')
+if [ "$p4_fails" != "0" ]; then
+  echo "PHASE 4 OPERATIONS SUITE FAILED: $p4_fails failing assertion(s)" >&2
+  echo "  A failure in OC, OD, OE or OF is a REOPENED TENANT BOUNDARY or a" >&2
+  echo "  broken note-visibility / link-target control -- treat as Sev1." >&2
+  echo "  A failure in OE3/OE3b means the FK LIFT did not put the schema back:" >&2
+  echo "  discard the run, reset the database, and do not trust anything after it." >&2
+  psql_status=1
+else
+  echo "Phase 4 operations suite: all assertions passed."
+fi
+
+# ============================================================================
+# PHASE 4 FILE-ACCESS SUITE (Task 5).
+#
+# The download half of the file-security pipeline at the DB layer: the
+# storage-key invariant, the storage.objects deny-all fence (proven to hold even
+# under a broad permissive grant), and the scan-status transition guard. Runs
+# AFTER the phase 4 operations suite, reuses the same fixtures (orgs
+# org-alpha/org-beta and the P2VARS claims), and tears down every row it plants
+# so the HTTP checks below start clean.
+# ============================================================================
+docker cp "$HERE/file_access_phase4.sql" "$CTR:/tmp/file_access_phase4.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P2VARS[@]}" -f /tmp/file_access_phase4.sql
+
+fa_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from fa.results where not pass" | tr -d '[:space:]')
+if [ "$fa_fails" != "0" ]; then
+  echo "PHASE 4 FILE-ACCESS SUITE FAILED: $fa_fails failing assertion(s)" >&2
+  echo "  A failure in A is a BROKEN storage-key invariant (a cross-tenant" >&2
+  echo "  file is now insertable); in B, a BREACHED storage.objects fence" >&2
+  echo "  (a client can read the private bytes); in C, a scan-status guard" >&2
+  echo "  that no longer holds (a verdict can be rolled back). Treat as Sev1." >&2
+  psql_status=1
+else
+  echo "Phase 4 file-access suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -301,6 +356,18 @@ probe "private helper is_active_member not an RPC"               404 "rpc/is_act
 probe "private helper shares_active_organisation not an RPC"     404 "rpc/shares_active_organisation"
 probe "private helper log_audit_event not an RPC"                404 "rpc/log_audit_event"
 probe "private helper handle_new_user not an RPC"                404 "rpc/handle_new_user"
+# Task 5: private.audit_document_action and the scan-status guard trigger fn are
+# not in `public` and must never be an RPC (rpc/audit_document_action resolves
+# to the PUBLIC thin wrapper, tested below; there is no private path at the API).
+probe "private helper guard_document_scan_status not an RPC"     404 "rpc/guard_document_scan_status"
+# public.audit_document_action IS the client-callable thin RPC, and it is
+# GUARDED: a null org and a forged arbitrary org both fail closed (42501 -> 403),
+# so it is reachable (not 404) yet cannot mint an audit row for an org the caller
+# has no relationship with. The actor is always forced to auth.uid().
+probe "audit_document_action IS routable and fails closed on a null org"   403 \
+      "rpc/audit_document_action" '{"p_action":"document_downloaded","p_org":null,"p_document_id":null}'
+probe "audit_document_action refuses a forged org the caller cannot view"  403 \
+      "rpc/audit_document_action" '{"p_action":"document_downloaded","p_org":"00000000-0000-0000-0000-0000000000aa","p_document_id":"00000000-0000-0000-0000-0000000000bb"}'
 # The two DEFINER functions that ARE meant to be client endpoints stay routable
 # (400 = reached it, rejected the deliberately invalid slug / null id).
 probe "create_organisation IS routable (positive control)"       400 \
@@ -2055,6 +2122,56 @@ p2_code "the view refuses an INSERT over PostgREST (55000, not the grant)" 500 \
   POST "activity_events" "{\"kind\":\"planted\"}" "$MGR"
 p2_code "...and a PATCH, refused the same way" 500 \
   PATCH "activity_events?kind=eq.record_created" "{\"kind\":\"planted\"}" "$MGR"
+
+echo
+echo "=== Phase 4 operations at the API surface (Task 2) ==="
+# The psql suite proves the policies through set-by-hand claims. This proves the
+# same tenant boundary and the note-visibility predicate through REAL password
+# sessions and PostgREST -- the highest-value paths only.
+#
+# Fixture ids planted by rls_phase4_operations.sql (as postgres):
+P4_NOTE_COMPANY='70000000-0000-0000-0000-000000000002'   # company, owner pmanager
+P4_NOTE_PRIVATE='70000000-0000-0000-0000-000000000001'   # private, owner pstd1
+P4_DOC_ALPHA='d0000000-0000-0000-0000-000000000001'      # clean, owner pmanager
+P4_MGR_TASK='7a000000-0000-0000-0000-000000000002'       # Manager Task (ALPHA)
+P4_BETA_TASK='7a00000b-0000-0000-0000-00000000000b'      # Beta Task (BETA)
+P4_UNOWNED_CONTACT='22220000-0000-0000-0000-000000000003'
+P4_BETA_CO='1111000b-0000-0000-0000-00000000000b'
+
+# anon: the tables are not reachable logged out at all.
+p2_code "anon GET tasks"      401 GET "tasks?select=id"
+p2_code "anon GET notes"      401 GET "notes?select=id"
+p2_code "anon GET documents"  401 GET "documents?select=id"
+
+# Tenant boundary, aimed at the other tenant's org id -- notes and documents
+# come back as [] for a member of the wrong tenant.
+p2_rows "manager GET notes of org BETA (expect 0)"     0 \
+        "notes?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+p2_rows "manager GET documents of org BETA (expect 0)" 0 \
+        "documents?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+# POSITIVE CONTROL: the same token reads an ALPHA company note it may see.
+p2_rows "CONTROL: manager GETs an ALPHA company note" 1 \
+        "notes?select=id&id=eq.$P4_NOTE_COMPANY" "$MGR"
+
+# NOTE VISIBILITY over HTTP. A 'private' note is absent for a non-author even a
+# full-scope Admin, and present for its author -- the § OD predicate at the API.
+p2_rows "a full-scope Admin does NOT see another user's PRIVATE note" 0 \
+        "notes?select=id&id=eq.$P4_NOTE_PRIVATE" "$MGR"
+p2_rows "CONTROL: the note's AUTHOR sees their own private note" 1 \
+        "notes?select=id&id=eq.$P4_NOTE_PRIVATE" "$STD"
+
+# DOCUMENT cross-tenant: BETA's owner cannot read an ALPHA document.
+p2_rows "pbowner (BETA) GETs an ALPHA document (expect 0)" 0 \
+        "documents?select=id&id=eq.$P4_DOC_ALPHA" "$BOWN"
+
+# CROSS-TENANT LINK INSERT: a manager POSTing a task_link into BETA is refused
+# (403, an INSERT policy has only WITH CHECK so PostgREST raises).
+p2_code "manager POSTs a task_link into org BETA" 403 POST "task_links" \
+        "{\"organisation_id\":\"$BETA_ORG\",\"parent_id\":\"$P4_BETA_TASK\",\"entity_type\":\"company\",\"entity_id\":\"$P4_BETA_CO\"}" "$MGR"
+# POSITIVE CONTROL: the same manager links their OWN ALPHA task to a contact they
+# can see -- 201, so the 403 above is the boundary and not a dead endpoint.
+p2_code "CONTROL: manager links their own ALPHA task to a visible contact" 201 POST "task_links" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"parent_id\":\"$P4_MGR_TASK\",\"entity_type\":\"contact\",\"entity_id\":\"$P4_UNOWNED_CONTACT\"}" "$MGR"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

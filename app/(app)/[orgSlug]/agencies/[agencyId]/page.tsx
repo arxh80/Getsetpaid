@@ -1,4 +1,6 @@
 import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import { RelatedPanel } from "@/components/crm/related-panel";
+import type { RawSearchParams } from "@/lib/list/params";
 import {
   activityIsScoped,
   activityParams,
@@ -95,7 +97,8 @@ export default async function AgencyDetailPage({
   // `?merged=1` -- see components/crm/merged-notice.tsx. A FLAG, never the
   // merged-away record's name: that name is personal data and a query string is
   // logged, bookmarked and pasted into support tickets.
-  const justMerged = (await searchParams).merged === "1";
+  const raw = (await searchParams) as RawSearchParams;
+  const justMerged = raw.merged === "1";
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
@@ -179,7 +182,7 @@ export default async function AgencyDetailPage({
   // control on this surface (lib/crm/activity.ts). So it cannot be confused by
   // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
   // later phase adds to this route.
-  const activityListParams = activityParams(await searchParams);
+  const activityListParams = activityParams(raw);
   const activity = await fetchActivityPage(
     org.id,
     "agency",
@@ -292,6 +295,17 @@ export default async function AgencyDetailPage({
         />
       )}
 
+      {/* THE RELATED PANEL (Phase 4 Task 3). Four lib/list/ surfaces on this
+          route now (three related + the timeline), each passed preserve (rule 10). */}
+      <RelatedPanel
+        orgSlug={org.slug}
+        organisationId={org.id}
+        entityType="agency"
+        entityId={agency.id}
+        basePath={`${basePath}/${agency.id}`}
+        raw={raw}
+      />
+
       {/* THE SHARED ACTIVITY TIMELINE (Task 7). One component, five pages,
           and every later phase's sources arrive as branches of
           public.activity_events rather than as a second component --
@@ -303,6 +317,7 @@ export default async function AgencyDetailPage({
         params={activityListParams}
         basePath={`${basePath}/${agency.id}`}
         recordScoped={activityIsScoped(org.role)}
+        preserve={raw}
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">

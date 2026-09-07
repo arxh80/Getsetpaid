@@ -56,6 +56,34 @@ import "server-only";
 //      Every branch shipped today reaches an index that already existed,
 //      except the status table's own, which ships with it.
 //
+//      MEASURED AGAIN IN TASK 7 (20260902040000), on the local stack with the
+//      operations tables seeded, `explain (analyze, buffers)` as postgres. FOUR
+//      more branches join the view, one per *_links table, and ALL FOUR ARE
+//      POLYMORPHIC (subject_type = the `entity_type` column, like merges and
+//      custom_field_values): a link's target is any of the six CRM entities, so
+//      none emits a literal subject_type and none is pruned at plan time. Each
+//      reaches its Task 1 reverse-lookup index and stays cheap only because that
+//      index LEADS on entity_type. On a CONTACT read the Append now holds NINE
+//      branch scans (was five): contacts (CTE), merges x2, contact_companies
+//      (contact side), custom_field_values, and the four new ones --
+//        task_links      -> task_links_target_idx      (link_added/link_removed
+//                           + task_completed via the tasks join's completed_at)
+//        meeting_links   -> meeting_links_target_idx
+//        note_links      -> note_links_target_idx       (note_added; the join to
+//                           public.notes is what carries notes_select_by_visibility
+//                           under security_invoker, so a private note authored by
+//                           someone else is filtered before it can reach a third
+//                           party's timeline -- rls_phase4_operations.sql § OI)
+//        document_links  -> document_links_target_idx
+//      The seven polymorphic branches (merges x2, custom_field_values, and these
+//      four) execute on EVERY entity-type read; the literal branches
+//      (contact_companies both sides, artist_representations x2, venue_rooms,
+//      event_lineup x2, the venue side, event_status_changes, and the five
+//      non-matching subjects CTE members) are eliminated at plan time on a
+//      non-matching read, confirmed in
+//      the same plan. NO INDEX IS CREATED in 20260902040000; the four names
+//      above are Task 1's. The plans are in the Task 7 report § 2.
+//
 // WHAT THE CONTRACT DOES NOT PROMISE, and a Phase 4 source must not assume:
 //   * NOT O(page). The union has no covering index, so each page SORTS every
 //     event on the record and takes the top n. Measured on a warm cache over a
@@ -174,6 +202,35 @@ export const ACTIVITY_KINDS = [
   // was attached to this record is worse than reusing the entry that already
   // means it."
   "status_changed",
+  // PHASE 4 TASK 7. Four sources land on the view (20260902040000), and these
+  // are the four new kinds that come with them -- exactly the four the brief
+  // names, and no more. There is deliberately NO `note_removed` and NO
+  // `document_added`:
+  //
+  //   task_completed     tasks.completed_at, folded into the task_links branch's
+  //                      lateral. The one kind that earns a source rather than
+  //                      being a `record_updated` -- a general last-edited marker
+  //                      cannot say "done".
+  //   note_added         note_links, at the link's created_at. A note has no
+  //                      title and its body is NEVER reprinted here (the
+  //                      discipline custom_field_set applies to a value), so this
+  //                      carries no name -- the renderer says "a note was added
+  //                      about this <noun>".
+  //   document_attached  document_links, naming the document by filename.
+  //   document_removed   the same branch's link-soft-delete arm.
+  //
+  // TASK AND MEETING ATTACHMENT DO NOT GET NEW KINDS. They REUSE
+  // link_added / link_removed, the venue_rooms/lineup rule: "one more entry
+  // meaning something was attached to this record is worse than reusing the
+  // entry that already means it." A task and a meeting both have a title, so the
+  // existing link_added renderer names them. note/document differ because a note
+  // has no name and a document's copy is "attached", not "linked" -- the
+  // reconciliation of the brief's overlapping Branch 1 vs Branches 3-4 is
+  // recorded in the Task 7 report (§ 2).
+  "task_completed",
+  "note_added",
+  "document_attached",
+  "document_removed",
 ] as const;
 
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
@@ -265,6 +322,15 @@ export const ACTIVITY_LIST = defineListSpec({
       // that a `backedBy` name is a REAL index name for the two events specs;
       // tests/unit/crm/activity.test.ts asserts these four are present here,
       // which is the half a unit test can do.
+      //
+      // THE FOUR TASK 7 NAMES ARE THE LAST FOUR, and all four are Task 1's
+      // reverse-lookup indexes (20260902002000): a link branch is POLYMORPHIC on
+      // the *_links `entity_type` column, so like merges/custom_field_values it
+      // is not pruned at plan time and stays cheap only because its target index
+      // LEADS on entity_type. 20260902040000 creates no index; the four names
+      // below already existed. rls_phase4_operations.sql § OI asserts each is a
+      // REAL index name, and tests/unit/crm/activity.test.ts asserts they are
+      // present here.
       backedBy:
         "per-branch (a view has no index): contacts/companies/agencies/artists/venues/events _id_org_unique, " +
         "merges_entity_winner_idx, merges_entity_loser_idx, " +
@@ -272,7 +338,9 @@ export const ACTIVITY_LIST = defineListSpec({
         "artist_representations_artist_id_idx, artist_representations_agency_id_idx, " +
         "venue_rooms_venue_id_idx, custom_field_values_entity_idx, " +
         "event_lineup_event_id_org_idx, event_lineup_artist_id_org_idx, " +
-        "events_venue_id_org_idx, event_status_changes_event_id_org_changed_at_idx",
+        "events_venue_id_org_idx, event_status_changes_event_id_org_changed_at_idx, " +
+        "task_links_target_idx, meeting_links_target_idx, " +
+        "note_links_target_idx, document_links_target_idx",
     },
   },
   defaultSort: "occurred",

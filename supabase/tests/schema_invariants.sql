@@ -138,6 +138,22 @@ insert into public.events (id, organisation_id, name, starts_at) values
   ('b7000000-0000-0000-0000-0000000000b1','22220000-0000-0000-0000-000000000002',
    'B Event', timestamptz '2026-09-03 20:00+00');
 
+-- PHASE 4 FIXTURES.
+--
+-- A task and a document in EACH tenant, for the cross-tenant plants A15-A17 and
+-- their positive controls B12-B14. The document storage_key must begin with its
+-- own org id (documents_storage_key_shape), so the fixtures themselves are the
+-- first proof that constraint admits a correct key.
+insert into public.tasks (id, organisation_id, title) values
+  ('a8000000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-000000000001','A Task'),
+  ('b8000000-0000-0000-0000-0000000000b1','22220000-0000-0000-0000-000000000002','B Task');
+insert into public.documents
+    (id, organisation_id, filename, storage_key, mime_type, size_bytes) values
+  ('a9000000-0000-0000-0000-0000000000a1','11110000-0000-0000-0000-000000000001',
+   'a.pdf','11110000-0000-0000-0000-000000000001/a','application/pdf',10),
+  ('b9000000-0000-0000-0000-0000000000b1','22220000-0000-0000-0000-000000000002',
+   'b.pdf','22220000-0000-0000-0000-000000000002/b','application/pdf',10);
+
 \o /dev/null
 
 -- ===========================================================================
@@ -243,6 +259,32 @@ select invariants.try('A14 artist_fee_history: fee against ANOTHER tenant''s eve
             'b7000000-0000-0000-0000-0000000000b1', date '2026-01-01', 1)$$,
   'denied(23503)');
 
+-- PHASE 4. The same class of attack on the operations schema. A15 is the
+-- link-table composite parent FK (task_links_parent_fkey); A17 is the
+-- document_versions composite FK. A16 is a DIFFERENT control -- the
+-- documents_storage_key_shape CHECK, which makes "a document''s key is inside
+-- its own tenant''s prefix" a database invariant, so a cross-tenant key is a
+-- 23514 rather than a foreign-key miss.
+select invariants.try('A15 task_links: link whose parent is ANOTHER tenant''s task',
+  $$insert into public.task_links (organisation_id, parent_id, entity_type, entity_id)
+    values ('11110000-0000-0000-0000-000000000001','b8000000-0000-0000-0000-0000000000b1',
+            'contact','a1000000-0000-0000-0000-0000000000a1')$$,
+  'denied(23503)');
+
+select invariants.try('A16 documents: storage_key beginning with ANOTHER tenant''s org id',
+  $$insert into public.documents
+      (organisation_id, filename, storage_key, mime_type, size_bytes)
+    values ('11110000-0000-0000-0000-000000000001','pwn',
+            '22220000-0000-0000-0000-000000000002/pwn','text/plain',1)$$,
+  'denied(23514)');
+
+select invariants.try('A17 document_versions: version naming ANOTHER tenant''s document',
+  $$insert into public.document_versions
+      (organisation_id, document_id, version_number, storage_key, mime_type, size_bytes)
+    values ('11110000-0000-0000-0000-000000000001','b9000000-0000-0000-0000-0000000000b1',
+            1,'11110000-0000-0000-0000-000000000001/v1','application/pdf',10)$$,
+  'denied(23503)');
+
 -- ===========================================================================
 -- B. POSITIVE CONTROLS.
 --
@@ -326,6 +368,28 @@ select invariants.try('B11 same-tenant artist_fee_history naming an event insert
       (organisation_id, artist_id, event_id, occurred_on, amount_minor)
     values ('11110000-0000-0000-0000-000000000001','a3000000-0000-0000-0000-0000000000a1',
             'a7000000-0000-0000-0000-0000000000a1', date '2026-03-01', 25000)$$,
+  'ok(1)');
+
+-- PHASE 4's three, one per section-A attack above. Each is the same statement
+-- with the tenant (A15/A17) or the storage-key prefix (A16) corrected.
+select invariants.try('B12 same-tenant task_links row inserts',
+  $$insert into public.task_links (organisation_id, parent_id, entity_type, entity_id)
+    values ('11110000-0000-0000-0000-000000000001','a8000000-0000-0000-0000-0000000000a1',
+            'contact','a1000000-0000-0000-0000-0000000000a1')$$,
+  'ok(1)');
+
+select invariants.try('B13 same-tenant documents row with a correct storage_key prefix inserts',
+  $$insert into public.documents
+      (organisation_id, filename, storage_key, mime_type, size_bytes)
+    values ('11110000-0000-0000-0000-000000000001','ok.txt',
+            '11110000-0000-0000-0000-000000000001/ok','text/plain',1)$$,
+  'ok(1)');
+
+select invariants.try('B14 same-tenant document_versions naming its own tenant''s document inserts',
+  $$insert into public.document_versions
+      (organisation_id, document_id, version_number, storage_key, mime_type, size_bytes)
+    values ('11110000-0000-0000-0000-000000000001','a9000000-0000-0000-0000-0000000000a1',
+            1,'11110000-0000-0000-0000-000000000001/a-v1','application/pdf',10)$$,
   'ok(1)');
 
 -- ===========================================================================
@@ -596,19 +660,33 @@ select invariants.val('E9  ...and nulled ONLY venue_room_id -- the venue survive
 -- policies. SO D4, D5 AND D11b FAIL FOR EXACTLY ONE TASK, and that is stated
 -- on each of them below with the number to expect. A reviewer of Task 2 should
 -- check they went GREEN rather than that they were silenced.
+--
+-- TWENTY-FIVE SINCE PHASE 4 TASK 1: the nine operations tables join it --
+-- tasks, meetings, notes, documents, the DORMANT document_versions, and the
+-- four *_links tables (20260902000000-002000). (The base was SIXTEEN, not the
+-- fifteen an older brief remembered -- event_status_changes was already here
+-- from Phase 3 Task 6.) ALL NINE ARRIVE WITH NO POLICIES, ON PURPOSE, the same
+-- safe order events used: RLS enabled, policies in Phase 4 Task 2. SO D4, D5
+-- AND D11b FAIL FOR EXACTLY THIS ONE TASK AGAIN -- the named interval -- with
+-- the counts each assertion below states. document_versions is in the list
+-- like merge_candidates and event_status_changes: it is read-only to the app
+-- (SELECT grant, SELECT-only policy in Task 2, no write path), which is exactly
+-- the shape D5 polices in its second direction.
 create view invariants.phase2_tables as
   select unnest(array[
     'companies','contacts','contact_companies','agencies','artists',
     'artist_representations','artist_fee_history','venues','venue_rooms',
     'custom_field_definitions','custom_field_values','merges',
-    'merge_candidates','events','event_lineup','event_status_changes'
+    'merge_candidates','events','event_lineup','event_status_changes',
+    'tasks','meetings','notes','documents','document_versions',
+    'task_links','meeting_links','note_links','document_links'
   ]) as relname;
 
-select invariants.val('D1  all 16 CRM/events tables exist',
+select invariants.val('D1  all 25 CRM/events/operations tables exist',
   $$select count(*)::text from invariants.phase2_tables t
      join pg_catalog.pg_class c on c.relname=t.relname
       and c.relnamespace='public'::regnamespace and c.relkind='r'$$,
-  '16');
+  '25');
 
 -- RLS on EVERY table in public, not just the twelve: the cheapest possible
 -- guard against the next entity table shipping without it.
@@ -641,7 +719,11 @@ select invariants.val('D3  every FK in public has its leading column indexed',
 -- EXPECTED RED BETWEEN PHASE 3 TASK 1 AND TASK 2: actual '2', because
 -- public.events and public.event_lineup have zero policies until 20260901010000.
 -- Task 2's reviewer checks this is back to '0'.
-select invariants.val('D4  all 16 tables have policies, and none is FOR ALL',
+-- EXPECTED RED BETWEEN PHASE 4 TASK 1 AND TASK 2: actual '9' -- the nine
+-- operations tables (tasks, meetings, notes, documents, document_versions and
+-- the four *_links) have zero policies until Phase 4 Task 2. Same interval,
+-- same safe direction.
+select invariants.val('D4  all 25 tables have policies, and none is FOR ALL',
   $$select count(*)::text from (
       select c.relname,
              count(p.oid)                                  as npol,
@@ -668,7 +750,11 @@ select invariants.val('D4  all 16 tables have policies, and none is FOR ALL',
 -- INSERT and UPDATE grants on each of the two new tables, none of which has a
 -- policy behind it yet. That is the SAFE direction (a grant with no policy
 -- reaches no rows), and it is exactly what this assertion is for.
-select invariants.val('D5  every grant on the 16 is justified by a policy, and vice versa',
+-- EXPECTED RED BETWEEN PHASE 4 TASK 1 AND TASK 2: actual '25' -- the SELECT,
+-- INSERT and UPDATE grants on each of the eight writable operations tables (24)
+-- plus the single SELECT grant on the read-only document_versions, none with a
+-- policy behind it yet. Same safe direction; Task 2's reviewer checks it is '0'.
+select invariants.val('D5  every grant on the 25 is justified by a policy, and vice versa',
   $$with granted as (
       select distinct c.relname, g.privilege_type::text as op
         from invariants.phase2_tables t
@@ -731,7 +817,12 @@ select invariants.val('D7  the default-privileges baseline is still in place',
 -- events_venue_fkey, event_lineup_event_fkey, event_lineup_artist_fkey and
 -- artist_fee_history_event_fkey -- the last of which is the Phase 2 debt
 -- FOLLOW-UPS.md § "Phase 3 -- events" required to be composite.
-select invariants.val('D8  all 12 two-column tenant-scoped FKs span exactly 2 columns',
+-- SEVENTEEN SINCE PHASE 4 TASK 1: the four *_links parent FKs
+-- (task_links_parent_fkey, meeting_links_parent_fkey, note_links_parent_fkey,
+-- document_links_parent_fkey) plus document_versions_document_fkey. Each is the
+-- composite (parent_id/document_id, organisation_id) -> parent (id,
+-- organisation_id) that makes A15 and A17 refusable at the constraint layer.
+select invariants.val('D8  all 17 two-column tenant-scoped FKs span exactly 2 columns',
   $$select count(*)::text from pg_catalog.pg_constraint
      where contype='f' and connamespace='public'::regnamespace
        and conname in ('venue_rooms_venue_fkey','contact_companies_contact_fkey',
@@ -740,9 +831,12 @@ select invariants.val('D8  all 12 two-column tenant-scoped FKs span exactly 2 co
                        'artist_fee_history_artist_fkey',
                        'events_venue_fkey','event_lineup_event_fkey',
                        'event_lineup_artist_fkey','artist_fee_history_event_fkey',
-                       'event_status_changes_event_fkey')
+                       'event_status_changes_event_fkey',
+                       'task_links_parent_fkey','meeting_links_parent_fkey',
+                       'note_links_parent_fkey','document_links_parent_fkey',
+                       'document_versions_document_fkey')
        and array_length(conkey,1)=2$$,
-  '12');
+  '17');
 
 -- THE NON-VACUITY CONTROL FOR D8, and it earned its place the moment the count
 -- moved: D8 counts constraints that are BOTH named and two-column, so a
@@ -750,7 +844,7 @@ select invariants.val('D8  all 12 two-column tenant-scoped FKs span exactly 2 co
 -- way as one that was narrowed to a single column -- and a reader correcting
 -- the expected number would silence both. This counts the names that exist at
 -- all, whatever their width.
-select invariants.val('D8b CONTROL: all 12 of those constraint names still exist',
+select invariants.val('D8b CONTROL: all 17 of those constraint names still exist',
   $$select count(*)::text from pg_catalog.pg_constraint
      where contype='f' and connamespace='public'::regnamespace
        and conname in ('venue_rooms_venue_fkey','contact_companies_contact_fkey',
@@ -759,8 +853,11 @@ select invariants.val('D8b CONTROL: all 12 of those constraint names still exist
                        'artist_fee_history_artist_fkey',
                        'events_venue_fkey','event_lineup_event_fkey',
                        'event_lineup_artist_fkey','artist_fee_history_event_fkey',
-                       'event_status_changes_event_fkey')$$,
-  '12');
+                       'event_status_changes_event_fkey',
+                       'task_links_parent_fkey','meeting_links_parent_fkey',
+                       'note_links_parent_fkey','document_links_parent_fkey',
+                       'document_versions_document_fkey')$$,
+  '17');
 
 -- TWO THREE-COLUMN FKs SINCE PHASE 3 TASK 1. custom_field_values' definition
 -- FK pins (field_id, organisation_id, entity_type); events_venue_room_fkey
@@ -784,13 +881,13 @@ select invariants.val('D9b CONTROL: both of those constraint names still exist',
 -- Every Phase 2 table must have a row -> organisation path. CLAUDE.md
 -- § Tenancy model makes this a requirement, and every RLS policy Task 2 writes
 -- depends on it.
-select invariants.val('D10 all 16 tables carry a NOT NULL organisation_id',
+select invariants.val('D10 all 25 tables carry a NOT NULL organisation_id',
   $$select count(*)::text from invariants.phase2_tables t
      join pg_catalog.pg_class c on c.relname=t.relname
       and c.relnamespace='public'::regnamespace
      join pg_catalog.pg_attribute a on a.attrelid=c.oid and a.attname='organisation_id'
      where a.attnotnull$$,
-  '16');
+  '25');
 
 -- ---------------------------------------------------------------------------
 -- D11. THE CHILD POLICIES' OWN TENANT CORRELATION.
@@ -831,6 +928,13 @@ select invariants.val('D10 all 16 tables carry a NOT NULL organisation_id',
 -- 20260901010000, so D11 counts zero violations out of zero expressions until
 -- then and D11b -- the control that exists precisely to catch that state --
 -- is RED for one task, at 17 against an expected 21. See D11b.
+--
+-- PHASE 4 TASK 1 ADDS FIVE PAIRS: the four *_links tables correlated to their
+-- own parent (task_links->tasks, meeting_links->meetings, note_links->notes,
+-- document_links->documents) and ('document_versions','documents'). Their
+-- policies land in Phase 4 Task 2, so D11 again counts zero violations out of
+-- the new zero expressions (a pass, which is the vacuity D11b exists to catch)
+-- and D11b is RED for this one task, at 22 against an expected 39. See D11b.
 create view invariants.child_parent as
   select * from (values
     ('venue_rooms',            'venues'),
@@ -838,7 +942,12 @@ create view invariants.child_parent as
     ('artist_representations', 'artists'),
     ('artist_fee_history',     'artists'),
     ('event_lineup',           'events'),
-    ('event_status_changes',   'events')
+    ('event_status_changes',   'events'),
+    ('task_links',             'tasks'),
+    ('meeting_links',          'meetings'),
+    ('note_links',             'notes'),
+    ('document_links',         'documents'),
+    ('document_versions',      'documents')
   ) as v(child, parent);
 
 select invariants.val('D11 every via-parent policy correlates parent.organisation_id with the child''s',
@@ -885,7 +994,17 @@ select invariants.val('D11 every via-parent policy correlates parent.organisatio
 -- stating on -- D11 itself stays green through the interval, because zero
 -- violations out of zero expressions is a pass, and that is the exact vacuity
 -- this control was added to catch.
-select invariants.val('D11b CONTROL: D11 inspected 22 policy expressions, not zero',
+--
+-- THIRTY-NINE SINCE PHASE 4 TASK 1, AND THIS NUMBER IS A PREDICTION OF TASK 2's
+-- POLICY SHAPES, computed here and CONFIRMED when Task 2 turns it green: the
+-- twenty-two above plus four on EACH of the four *_links tables (select, insert,
+-- update x2 = 16, mirroring venue_rooms) plus ONE on document_versions (a
+-- SELECT-only via-documents policy). 22 + 16 + 1 = 39. EXPECTED RED BETWEEN
+-- PHASE 4 TASK 1 AND TASK 2: actual '22', because none of the five new children
+-- has a policy yet. If Task 2's policy design differs (a link table needing a
+-- delete policy, say), Task 2 corrects this number -- that is the assertion
+-- doing its job, not a Task 1 defect.
+select invariants.val('D11b CONTROL: D11 inspected 39 policy expressions, not zero',
   $$select count(*)::text
       from invariants.child_parent cp
       join pg_catalog.pg_class c on c.relname = cp.child
@@ -896,7 +1015,7 @@ select invariants.val('D11b CONTROL: D11 inspected 22 policy expressions, not ze
         (coalesce(pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid), ''))
       ) as e(expr)
      where e.expr ~ ('FROM (public\.)?' || cp.parent || ' ')$$,
-  '22');
+  '39');
 
 -- ---------------------------------------------------------------------------
 -- Teardown. Cascades through every fixture row; rls_foundation.sql runs next
@@ -908,6 +1027,10 @@ delete from public.organisations where slug in ('inv-org-a','inv-org-b');
 -- one table here nothing in this file inserts into by hand: every `events`
 -- fixture above writes one through the trigger. So it is also the check that
 -- the table's ON DELETE CASCADE really reaches the organisation delete below.
+-- The Phase 4 tables (tasks, documents, task_links, document_versions) are in
+-- the tail: like event_status_changes they prove the organisation cascade
+-- reaches the operations schema too, and task_links/document_versions prove the
+-- composite-FK CASCADE from their own parent fired before the org delete.
 select invariants.val('Z1  teardown left no fixture rows behind',
   $$select (select count(*) from public.venues)::text || '/' ||
            (select count(*) from public.contacts)::text || '/' ||
@@ -915,8 +1038,12 @@ select invariants.val('Z1  teardown left no fixture rows behind',
            (select count(*) from public.custom_field_values)::text || '/' ||
            (select count(*) from public.events)::text || '/' ||
            (select count(*) from public.event_lineup)::text || '/' ||
-           (select count(*) from public.event_status_changes)::text$$,
-  '0/0/0/0/0/0/0');
+           (select count(*) from public.event_status_changes)::text || '/' ||
+           (select count(*) from public.tasks)::text || '/' ||
+           (select count(*) from public.documents)::text || '/' ||
+           (select count(*) from public.task_links)::text || '/' ||
+           (select count(*) from public.document_versions)::text$$,
+  '0/0/0/0/0/0/0/0/0/0/0');
 
 -- ===========================================================================
 -- Results

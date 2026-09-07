@@ -2306,6 +2306,177 @@ corrections are the useful part. Each now says what was actually done.
   answering "no". This entry is the scheduled home the Task 8 exit document's
   condition 3 points at; it is not a reminder, it is a gate on Phase 4's start.
 
+  **Task 5 count (the strongest evidence yet, added 2026-09-01).** The
+  file-security pipeline (Task 5) is the clearest case, because none of its
+  controls is visible to `lint`/`tsc`/`vitest run tests/unit` — the whole point
+  of file security is runtime behaviour. **Eight** file-security controls have
+  **no** source-only guard and are caught only by a stack suite:
+  (1) the `documents_storage_key_shape` CHECK refusing a cross-tenant key
+  (psql, `file_access_phase4.sql` A2); (2) the `storage.objects` deny-all fence,
+  proven to hold even under a broad permissive grant (psql B1/B2 + HTTP);
+  (3) the scan-status transition guard freezing a terminal verdict (psql C1/C2);
+  (4) the quarantine download gate — a non-`clean` document yields no URL
+  (integration, EICAR to 409); (5) the download audit written *before* the URL —
+  every download logged (integration, deterministic count); (6) the cross-tenant
+  download to 404 through RLS (integration + HTTP); (7) the `audit_document_action`
+  RPC guard — `view_crm` + document-in-org, fail-closed (HTTP 403 probes +
+  integration); (8) the schema placement of the audit helper — `private` writer
+  unreachable, `public` wrapper guarded (HTTP probes). The **one** file-pipeline
+  mechanism that *does* have a source-only guard is the soft-delete's
+  `{ count: "exact" }`, caught by `tests/unit/crm/source-shape.test.ts`'s census.
+  So a source-only CI leaves **eight** file-security regressions shippable
+  green — every mutation this task reproduced red (remove the clean gate, issue
+  the URL without auditing, drop the storage-key CHECK, drop the deny-all fence)
+  is one CI would miss.
+
+## Phase 4 — operations
+
+Opened by Phase 4 Task 1 (the operations schema — `tasks`, `meetings`, `notes`,
+`documents`, dormant `document_versions`, and the four `*_links` tables), which
+was deliberately schema-only: no policies, no write paths, no UI. These are the
+debts it carried forward.
+
+- **The nine operations tables ship with RLS ON and ZERO policies — Task 2 owes
+  every one of them a policy, and until then `schema_invariants.sql` D4/D5/D11b
+  are RED by design.** This is the identical safe-order interval Phase 3 Task 1
+  opened for events. Measured at Task 1 exit: D4 actual `9` (nine tables with no
+  policy), D5 actual `25` (24 select/insert/update grants on the eight writable
+  tables + one select grant on the read-only `document_versions`, none with a
+  policy behind it), D11b actual `22` against an expected `39`. **D11b's `39` is
+  a PREDICTION of Task 2's policy shapes** — 22 existing + 16 (four `*_links` ×
+  select/insert/update×2, mirroring `venue_rooms`) + 1 (`document_versions`
+  SELECT-only via-documents) — computed in Task 1 and confirmed when Task 2
+  turns it green. If Task 2's design differs (a link table needing a delete
+  policy, `document_versions` policed directly rather than via-parent), Task 2
+  corrects the `39`; that is the assertion working, not a Task 1 defect. **Owner:
+  Phase 4 Task 2**, which must check these three went GREEN, not that they were
+  silenced. `public.document_versions` specifically owes a SELECT-only policy on
+  `view_crm` and NO write grant/policy (it is dormant — file versioning is
+  Release 1.1).
+
+- **The custom-field entity_type allowlists were DELIBERATELY NOT widened to the
+  operational entities (Q47), and that is a decision, not an oversight.**
+  `custom_field_definitions_entity_type_allowed` and
+  `custom_field_values_entity_type_allowed` stay at the six CRM entities: tasks,
+  meetings, notes and documents do not get custom fields at MVP. Recorded on
+  `20260902003000`'s header and in the census test's `dedup`/custom-field
+  expectations (unchanged). The reversal is additive and cheap (a drop-and-add
+  ALTER per constraint plus the mirror in `lib/crm/custom-fields.ts`), and is a
+  product decision if the founder ever wants it — not a red-test fix. Because
+  `ActivitySubjectType = CustomFieldEntityType` is unchanged, `SUBJECT_NOUN`
+  (`lib/crm/activity.ts`) needed no new entry either, and `LINK_ENTITY_TYPES`
+  equals that same six-value set by construction — the three are kept as
+  separate constants on purpose (their equalities are independent), so a future
+  divergence touches one and not all three.
+
+- **`ParentTable` (`lib/crm/actions.ts`) gained `tasks`/`meetings`/`notes`/
+  `documents` BEFORE any caller.** The `*_links` write paths (later Phase 4
+  tasks) will call `liveInOrg(supabase, "tasks", …)` etc. to refuse a link whose
+  parent is soft-deleted or out of workspace — exactly the role the `events` arm
+  was added for in Phase 3 Task 1 ahead of its first caller. A union member with
+  no caller is harmless (nothing switches exhaustively on `ParentTable`); the
+  obligation this creates is that whoever writes the link paths uses it rather
+  than re-deriving the check. **Owner: the Phase 4 task that ships the link write
+  path.**
+
+- **The `<select>` pre-hydration and post-hydration defects, the no-JS submit
+  gate, and the multi-org picker e2e assertion were scheduled against "Phase 4's
+  first task" by Phase 3 Task 8 — but Phase 4's first task is schema-only, so
+  they move to the first Phase 4 task that ships a form.** They are UI changes to
+  the shared form primitives (`components/crm/`) and to `tests/e2e/`, and have
+  nothing to do with the schema. See the four entries under `## Phase 3 — events`
+  → "Opened by Task 8" and "Found in a browser": the five stale `<select>`s, the
+  value-set-before-hydration discard, the no-JavaScript submit, and the
+  five-and-sixth-picker multi-org e2e assertion. **Owner: Phase 4's first
+  form-bearing task**, which is the change that has to build a `<select>`-bearing
+  panel and the golden-path "add a task" step anyway.
+
+- **`20260901031000:180`'s needless `grant execute` and the § EG soft-deleted-
+  event assertion remain owed to a Phase 4 SQL task, and were NOT taken by the
+  schema-only Task 1.** The grant cleanup is a one-line new migration plus a
+  `schema_invariants.sql` assertion that no `private` `SECURITY DEFINER` trigger
+  function is executable by `authenticated`; the § EG assertion adds a
+  soft-deleted-event custom-field-write refusal to `rls_phase3_events.sql`. Both
+  are additive and neither is a live defect. **Owner: a Phase 4 SQL task (Task 2
+  is the natural home — it is already writing policies and can add both
+  assertions beside them).**
+
+### Opened by Task 8 (the phase exit gate)
+
+- **The Task 1 RLS-interval debt is DISCHARGED.** D4/D5/D11b were RED-by-design
+  while the nine operations tables carried RLS-on/zero-policies; Task 2 turned
+  all three GREEN (D11b's predicted `39` confirmed) and the psql/HTTP suite is
+  **1191 / 0 and 211 / 0 at HEAD** after a fresh `db reset`. No silencing: the
+  Task 8 mutation table reddens these controls on demand (M-1 reopens A15/D8 and
+  § OE; M-11 reopens § OB; M-12 reopens the storage fence). Recorded closed so a
+  reader does not mistake the Task 1 bullet above for an open interval.
+
+- **MERGE CONDITION 1 — a real malware scanner (Q42). Owner: the founder. Gate:
+  Phase 10.** The pipeline is proven end to end by the EICAR stub
+  (`documents.spec.ts`, `tests/integration/documents/upload-scan-download.test.ts`,
+  file_access § A/B/C) — **but the stub proves the pipeline, not detection.** No
+  real engine runs anywhere in this codebase; `clamav`/SaaS names throw. A real
+  scanner must be chosen, wired and tested against EICAR in a real integration
+  before launch. Full finding: § "Opened by Task 4" (Q42). Also owed to that
+  same scanner-wiring task: the **stuck `pending`/`error` re-scan sweep**
+  (§ "Opened by Task 5") — no security hole (fail-closed, no URL ever issued),
+  a reachability gap.
+
+- **MERGE CONDITION 2 — rate limiting, now over a wider surface. Owner: the
+  founder. Build: Phase 7. Gate: Phase 10.** Nothing enforces `SECURITY.md` § 5,
+  and Phase 4 grew the surface again: **four** new searchable list specs
+  (`TASK_LIST`, `MEETING_LIST`, `NOTE_LIST`, `DOCUMENT_LIST`) **plus a new
+  write endpoint that no other entity has — the document upload action**, which
+  reads bytes, sniffs, and runs a synchronous scan per call with no limiter. The
+  re-count at this exit is **24 list specs carrying a `searchColumn`** (20 at the
+  Phase 3 exit) and the upload endpoint on top. The gate in § "Phase 10 — launch
+  hardening" and the build in § "Phase 7 — admin/security" are restated over
+  these numbers. Scheduled as **Q55** (DECISIONS-QUEUE).
+
+- **MERGE CONDITION 3 — the screen-reader pass, extended by Phase 4's new
+  component shapes. Owner: the founder (or a nominee). Gate: Phase 10.** No
+  assistive-technology pass has ever run on this product. Phase 4 adds four
+  shapes to the Phase 10 script: the **task priority chip**, the **document scan
+  chip** (`Ready`/`Scanning…`/`Quarantined`, a state rendered as decoration-
+  adjacent text), the **entity-link picker** (a grouped `<select>` whose option
+  value is `entity_type:id`), and the **three-list related panel** (Tasks, notes
+  & documents on one entity page, each list with its own pager). The axe pass is
+  clean over all 19 pages and is **worth exactly its rule set** — it cannot hear
+  any of these. The Phase 10 screen-reader script is extended. Scheduled as
+  **Q56** (DECISIONS-QUEUE).
+
+- **MERGE CONDITION 4 — the CI stack-suite decision, now overdue and escalated.
+  Owner: the founder. Due: before Phase 5 starts. Scheduled as Q57 (was tracked
+  as Q41).** Phase 4 shipped **eight file-security controls with no source-only
+  guard** (enumerated in § "Phase 4 — CI decision"): a source-only CI leaves
+  every one shippable-green, and the Task 8 mutation table is the proof — M-1,
+  M-2, M-3, M-4, M-5, M-11 and M-12 each reproduce a real regression that
+  `lint`/`tsc`/`vitest run tests/unit` cannot see. This was gated "before Phase 4
+  starts" and Phase 4 has now shipped without the decision being made; it must be
+  answered before Phase 5 builds on the same split. If the answer is "no", the
+  M-4-SELECT gap below is the standing cost — a control whose only guard would be
+  a stack suite needs a psql/HTTP assertion added by hand each time.
+
+- **The M-4 SELECT-side link-target check has NO test — a measured coverage gap
+  (Task 8 mutation table). Owner: a Phase 4 fast-follow SQL task.** Switching the
+  INSERT policy's target check (`task_links_insert_via_task` `with_check`) from
+  `private.entity_is_visible` to `entity_is_manageable` is caught by
+  `rls_phase4_operations.sql` § OF (OF1 goes `ok(1)` → `denied(42501)`). Switching
+  the **SELECT** policy's target check (`task_links_select_via_task` `using`) the
+  same way reddens **nothing** — no assertion reads a link whose target is
+  see-but-not-manage. Not a live defect (the read-side check is more permissive,
+  not less), but an untested one. **Proposed assertion:** a § OF-read cell that
+  plants a task-link to a venue the booker can SEE but not MANAGE and asserts the
+  link ROW is still visible on select (the positive that a manageable-only SELECT
+  predicate would drop), across all four `*_links` select policies.
+
+- **A document restore is not audited while its delete is (minor).** Carried from
+  § "Opened by Task 6"; deliberate (the audited set is byte-actions + the
+  quarantine verdict), a one-line additive widening if delete/restore symmetry is
+  wanted. Owner: whoever revisits the document audit surface. **No filename sort
+  on the org-wide documents list (minor):** carried from § "Opened by Task 6", a
+  one-index + one-sort fast-follow if asked for.
+
 ## Phase 7 — admin/security
 
 - **RATE LIMITING. Owner: the founder. Scheduled here 2026-08-30 (final review
@@ -2499,12 +2670,15 @@ before the first real consumer exists rather than alongside it.
 - **PRE-DEPLOYMENT GATE: rate limiting must be implemented before this product
   is deployed. Owner: the founder. Added 2026-08-30 (final review I-9).** This
   is a refusal, not a reminder: if `SECURITY.md` § 5 is still unenforced when
-  launch is otherwise ready, launch does not proceed. **The surface grew in
-  Phase 3 and the gate is restated over the new number:** 20 list specs carry a
-  `searchColumn` and 15 pages render a search control (15 and 13 at the Phase 2
-  exit), so the unmetered `ilike` path this gate is about is a third wider than
-  it was when the gate was written. Re-count it again at each phase exit rather
-  than inheriting this sentence. The implementation is
+  launch is otherwise ready, launch does not proceed. **The surface grew again in
+  Phase 4 and the gate is restated over the new number:** **24** list specs carry
+  a `searchColumn` (20 at the Phase 3 exit; Phase 4 added `TASK_LIST`,
+  `MEETING_LIST`, `NOTE_LIST`, `DOCUMENT_LIST`) **and Phase 4 added the first
+  write endpoint that does real per-call work — the document upload action (byte
+  read + magic-byte sniff + synchronous malware scan) — which has no limiter
+  either.** The unmetered `ilike` path this gate is about is now a fifth wider
+  again than at the Phase 3 exit. Re-count it at each phase exit rather than
+  inheriting this sentence. (Task 8 exit condition 1; DECISIONS-QUEUE Q55.) The implementation is
   scheduled in § "Phase 7 — admin/security" above and the evidence is in
   § "Opened by Task 8"; this entry exists so that a slip in Phase 7 cannot turn
   into a ship. `SECURITY.md` § 1 makes security an acceptance criterion rather
@@ -2554,6 +2728,27 @@ before the first real consumer exists rather than alongside it.
      shell that is REPLACED rather than navigated to is the shape most likely
      to leave focus somewhere stale, and it is the first screen a paying
      customer's Owner ever sees.
+
+  **EXTENDED BY PHASE 4 (Task 8). Four more shapes, three of them new:**
+
+  1. **The task PRIORITY CHIP** (`components/crm/priority-chip.tsx`) and the
+     **document SCAN CHIP** (`components/crm/scan-status-chip.tsx`:
+     `Ready`/`Scanning…`/`Quarantined`). Both render a *state* as
+     decoration-adjacent text, and DESIGN.md forbids colour being the only
+     signal — the automated half confirms the text exists, not that it is in
+     reading order or announced as part of the row it labels.
+  2. **The ENTITY-LINK PICKER** (`components/crm/entity-link-picker.tsx`). A
+     grouped `<select>` whose `<optgroup>`s are entity types and whose option
+     value is `entity_type:id`; the Link button's accessible name and the
+     resulting "Unlink <name>" control are the question — is the picked target
+     announced, and is the unlink reversible by keyboard.
+  3. **THE THREE-LIST RELATED PANEL** (`components/crm/related-panel.tsx`).
+     "Tasks, notes & documents" on one entity page: three lists, each with its
+     own pager (`rel_tasks_`/`rel_notes_`/`rel_docs_`). The same landmark-list
+     usability question Phase 3 asked of the event detail's three surfaces, now
+     on every CRM record. The documents sub-list additionally carries a Detach
+     control per row and inert (non-link) filenames for non-`clean` files —
+     "Quarantined — cannot be opened" must be *spoken*, not only shown.
 - **A real assistive-technology pass has never been run.** No NVDA, JAWS or
   VoiceOver was available at any point during Foundation; accessibility-tree
   and DOM/spec-level evidence was used instead and disclosed each time. The
@@ -2636,3 +2831,105 @@ test suite.
 
 Any task that ships a screen needs someone to open it. Treat a browser
 walkthrough as part of the definition of done, not as optional diligence.
+
+### Opened by Task 4 (the file-security pipeline core)
+
+- **Q42 — WHICH PRODUCTION MALWARE SCANNER, AND AT WHAT COST — remains a founder
+  decision.** Task 4 built the `MalwareScanner` seam (`lib/security/malware-scan.ts`)
+  and a local `EicarStubScanner` that makes quarantine exercisable end to end,
+  but **no real engine runs anywhere in this codebase.** `getScanner()` reads
+  `MALWARE_SCANNER` (default `stub`); `clamav` and any SaaS name resolve to an
+  **unconfigured adapter that throws "not configured"** rather than silently
+  passing a file unscanned. Wiring the real scanner is a future task that owns:
+  the adapter implementation, the credential/DPA (a scanning SaaS is a
+  sub-processor — `CLAUDE.md` § Sub-processor register), whether scanning moves
+  to a **webhook** (a real SaaS is not synchronous — the upload action's
+  synchronous scan is an MVP stub property, noted in `lib/crm/documents.ts`), and
+  setting `MALWARE_SCANNER` in production so the throwing default cannot ship.
+  **Owner: founder decision (Q42), then the task that wires it.**
+
+- ~~**The upload is NOT audited yet — the audit call is a marked seam awaiting
+  Task 5's helper.**~~ **DONE, Phase 4 Task 5.** `20260902031000` ships
+  `public.audit_document_action` (the guarded thin RPC over
+  `private.log_audit_event`), and `uploadDocumentAction` now writes
+  `document_uploaded` on a clean/error verdict and `document_quarantined` on a
+  malware hit, fail-closed (an audit fault does not report success). Download and
+  soft-delete are audited in the same change (`document_downloaded`,
+  `document_deleted`). See `SECURITY.md` § 7.
+
+- **A scanner FAULT stores the file at `scan_status='error'` and the pipeline is
+  fail-closed on it — but there is no retry/re-scan path.** A thrown or `'error'`
+  scanner verdict lands the row `error` (never `clean`), so no signed URL is ever
+  issued (Task 5), which is the safe direction. What is missing is a way to
+  RE-SCAN an `error` row once the scanner is healthy again — today it is stuck.
+  Not needed for the stub (which never errors unbidden); owed by whoever wires
+  the real scanner alongside the webhook decision above.
+
+- **The OOXML macro check keys on plaintext ZIP markers (`vbaProject.bin`, a
+  `macroEnabled` content type), not a full unzip.** This is correct because a
+  ZIP stores entry names uncompressed in every header, so the markers appear
+  verbatim without decompression — but it is a substring scan, not a parser. If
+  a future requirement needs deeper OOXML validation (e.g. rejecting external
+  relationship targets / OLE-embedded objects), that is a real unzip-and-parse
+  step, a deliberate addition, not a tightening of the current sniff. Recorded so
+  the sniff's scope is not mistaken for full OOXML validation.
+
+### Opened by Task 5 (the download half — authorised signed URLs, audit, soft-delete)
+
+- **Soft-delete does NOT purge the bytes — a byte-GC job is owed (Phase 8 /
+  retention).** `deleteDocumentAction` sets `deleted_at` and audits
+  `document_deleted`, but the object stays in the `documents` bucket by design
+  (soft-delete discipline — `CLAUDE.md` § Non-negotiable rules; a deleted row is
+  restorable, and a hard byte-delete is not). What is missing is a
+  **retention/GC job** that removes the bytes of documents whose rows are past
+  the retention window (7yr financial / 2yr other, pending legal sign-off), so
+  storage does not grow without bound. **Owner: Phase 8 (retention), or the DSR
+  erasure flow (`Data subject request`), whichever lands first — a GDPR erasure
+  of a document must purge its bytes, not only its row.** Until then, deleted
+  documents keep their storage footprint, and a tenant's storage-used metric
+  counts them.
+
+- **A stuck `pending` or `error` document has no re-scan/sweep.** Two ways a row
+  can sit un-terminal forever: an upload that crashes between the `pending`
+  insert and the terminal update (stuck `pending`), and a scanner fault that
+  lands `error` (carried from Task 4). Both are fail-closed — neither yields a
+  signed URL, because the download gate serves only `clean` — so this is a
+  reachability/cleanup gap, not a security hole. The scan-status transition guard
+  (`20260902031000`) deliberately does **not** block `pending`/`error` →
+  `clean`, so a future re-scan path is unobstructed; what is missing is the path
+  itself (re-run the scan, or a sweep that quarantines rows older than N hours
+  with no verdict). **Owner: the task that wires the real scanner (Q42), which
+  needs the same webhook/verdict plumbing.** Recorded here so a stuck upload is
+  understood as a known gap with a safe failure mode, not a silent one.
+
+### Opened by Task 6 (the documents UI and cross-entity attachment)
+
+- **A document restore is not audited, while its soft-delete is.**
+  `deleteDocumentAction` writes a `document_deleted` audit row;
+  `restoreDocumentAction` writes none, because `public.audit_document_action`'s
+  closed action set (`20260902031000`) carries no restore verb and restore is a
+  metadata-only flip (no bytes touched, no signed URL minted). The asymmetry is
+  deliberate — the audited set is "byte-actions plus the quarantine verdict" —
+  but a `document_restored` row would be a one-line additive widening of that
+  RPC's `in (...)` check if a later phase wants delete/restore symmetry in the
+  log. **Owner: whoever revisits the document audit surface (audit-viewer work,
+  or the scanner-wiring task that already touches `20260902031000`).** Not a
+  live defect: the delete is on the record, and a restore returns it to exactly
+  the audited-uploaded state.
+
+- **The related panel's document detach is a per-entity un-attach (DONE, review
+  fix round 1).** The panel's Documents surface now carries a per-row **Detach**
+  control that calls `removeLinkAction` on the one `document_links` row attaching
+  the document to that record — a per-entity un-attach that leaves the document
+  and its other attachments untouched. (The earlier note here recommended
+  "delete from /documents and re-upload" as the workaround; that was **wrong and
+  destructive** — a document soft-delete removes it from *every* linked entity,
+  not just one — and is removed. Deleting a document is deleting the document,
+  never a way to detach it from one record.) No follow-up remains.
+
+- **The org-wide documents list offers no `filename` sort.** Only `created_at`,
+  because `filename`/`updated_at` have no `(organisation_id, <col>, id)` live
+  index and rule 9 forbids a sort naming an index nobody created. If sorting the
+  file list by name is wanted, it is one `documents_org_filename_id_live_idx`
+  migration plus a sort entry — the same shape as the events list's name sort.
+  **Owner: a documents fast-follow, if the sort is asked for.**

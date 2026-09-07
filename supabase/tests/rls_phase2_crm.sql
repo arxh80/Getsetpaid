@@ -406,18 +406,25 @@ select crm.val('A2  admin holds all seven CRM keys',
   $$select count(*)::text from public.role_permissions
     where role_key='admin' and permission_key in
     ('view_crm','manage_contacts','manage_artists','manage_venues','manage_custom_fields','merge_records','manage_events')$$, '7');
-select crm.val('A3  manager holds six, NOT manage_custom_fields',
+-- A3-A5 / A8 enumerate the FULL set per role, so they break by design whenever a
+-- key is granted -- which is the point (an accidental grant is caught here).
+-- PHASE 4 TASK 2 added the four operational write keys (manage_tasks,
+-- manage_meetings, manage_notes, manage_documents) to the same six roles that
+-- hold manage_events, so each of these four strings gains those four keys in
+-- sorted order. The "NOT manage_custom_fields" / "no venue key" / "no artist
+-- key" claims each still hold.
+select crm.val('A3  manager holds the manage set + operations, NOT manage_custom_fields',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='manager'$$,
-  'manage_artists,manage_contacts,manage_events,manage_venues,merge_records,view_crm');
-select crm.val('A4  booker: no venue key, no merge key -- but manage_events',
+  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,merge_records,view_crm');
+select crm.val('A4  booker: no venue key, no merge key -- but manage_events + operations',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='booker'$$,
-  'manage_artists,manage_contacts,manage_events,view_crm');
-select crm.val('A5  venue_manager: no artist key -- but manage_events',
+  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,view_crm');
+select crm.val('A5  venue_manager: no artist key -- but manage_events + operations',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='venue_manager'$$,
-  'manage_contacts,manage_events,manage_venues,view_crm');
+  'manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,view_crm');
 select crm.val('A6  finance is read-only over the CRM',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='finance'$$, 'view_crm');
@@ -428,7 +435,7 @@ select crm.val('A7  marketing: contacts, not artists',
 select crm.val('A8  standard_user holds the manage keys (scope is the policy''s job)',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='standard_user'$$,
-  'manage_artists,manage_contacts,manage_events,manage_venues,view_crm');
+  'manage_artists,manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,view_crm');
 select crm.val('A9  read_only holds view_crm and nothing else',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='read_only'$$, 'view_crm');
@@ -1226,11 +1233,19 @@ select crm.val('L5  every table carrying updated_at has the trigger',
 -- every other one, because L5 above asserts exactly that name -- a per-table
 -- prefix would put both tables in violation of the guard that exists to notice
 -- a new table arriving without a trigger.
-select crm.val('L6  ...and that is 20 tables (events + event_lineup in Phase 3)',
+--
+-- TWENTY-EIGHT SINCE PHASE 4 TASK 1: tasks, meetings, notes, documents and the
+-- four *_links tables each get a `set_updated_at` trigger by hand
+-- (20260902000000-002000) -- eight new ones. public.document_versions is the
+-- one operations table with NO updated_at column (versioning is dormant, and a
+-- version is immutable once written), so it gets NO trigger and L5 above must
+-- not expect one -- confirmed: L5 counts zero violations because it only looks
+-- at tables that HAVE an updated_at column.
+select crm.val('L6  ...and that is 28 tables (+8 operations tables in Phase 4)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '20');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '28');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together

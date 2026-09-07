@@ -117,6 +117,16 @@ function byPath(path: string): string {
 const SPEC_PARAM_WRAPPERS = [
   { call: "activityParams", module: "lib/crm/activity.ts" },
   { call: "lineupParams", module: "lib/crm/lineup-list.ts" },
+  // PHASE 4 TASK 3. The related panel carries THREE lib/list/ surfaces on one
+  // detail page (tasks, notes, documents), each declaring a real `searchColumn`
+  // and rendering no search control, so each drops its own `rel_*_q`. All three
+  // wrappers live in `lib/crm/related-list.ts` (pure, so tests/unit can drive
+  // it) and their `fetchListPage` callers are the reverse-lookup loaders in
+  // `lib/crm/queries.ts` (server-only). Three wrappers in one module, as the
+  // events pair already was.
+  { call: "relatedTasksParams", module: "lib/crm/related-list.ts" },
+  { call: "relatedNotesParams", module: "lib/crm/related-list.ts" },
+  { call: "relatedDocsParams", module: "lib/crm/related-list.ts" },
   // PHASE 3 TASK 7. The venue page's "Events here" and the artist page's
   // "Event history" are the third and fourth surfaces in the product that
   // declare a real `searchColumn` and render no search control, so each drops
@@ -157,7 +167,13 @@ describe("every paginated list shares one implementation", () => {
     // exactly why the mismatch between this assertion and the sentence above
     // it went unnoticed. A second list added to a file that already has one
     // would not move a file count.
-    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(20);
+    // THIRTY as of Phase 4 Task 3, raised from twenty: the tasks, meetings and
+    // notes list pages and their three `deleted` twins (6), and the three
+    // related-panel reverse loaders in `lib/crm/queries.ts` --
+    // loadTasksForEntity, loadNotesForEntity, loadDocumentsForEntity (3). Nine
+    // more, counted rather than guessed. The floor has teeth only at the number
+    // the tree holds; raising it is the obligation.
+    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(29);
   });
 
   it("every fetchListPage caller also parses its params through lib/list", () => {
@@ -203,11 +219,12 @@ describe("every paginated list shares one implementation", () => {
 
   it("every spec params wrapper really does go through parseListParams", () => {
     // The other half of the transitive rule above, asserted on its own so that
-    // emptying a wrapper's body cannot quietly satisfy the pairing check. FOUR
+    // emptying a wrapper's body cannot quietly satisfy the pairing check. SEVEN
     // is the denominator -- `activityParams`, `lineupParams`,
-    // `venueEventsParams` and `artistEventsParams` -- and a fifth added
-    // without a row here is a wrapper the pairing check cannot see.
-    expect(SPEC_PARAM_WRAPPERS).toHaveLength(4);
+    // `venueEventsParams`, `artistEventsParams` and the three related-panel
+    // wrappers -- and an eighth added without a row here is a wrapper the
+    // pairing check cannot see.
+    expect(SPEC_PARAM_WRAPPERS).toHaveLength(7);
     for (const wrapper of SPEC_PARAM_WRAPPERS) {
       const body = code(byPath(wrapper.module));
       expect(body, wrapper.call).toContain(`export function ${wrapper.call}(`);
@@ -306,6 +323,22 @@ describe("the list specs that differ from the others say how", () => {
     const events = readFileSync(root + "lib/crm/events-list.ts", "utf8");
     expect(events).toContain('paramPrefix: "venueevents_"');
     expect(events).toContain('paramPrefix: "artistevents_"');
+  });
+
+  it("the three related-panel surfaces set distinct, non-empty prefixes", () => {
+    // The related panel carries THREE lib/list/ surfaces on one detail page, so
+    // a missing or duplicated prefix is two of them reading one `after`. The
+    // VALUES are asserted here (the census's cheap structural check); the
+    // wrapper pairing is covered above.
+    const related = readFileSync(root + "lib/crm/related-list.ts", "utf8");
+    const prefixes = [
+      'paramPrefix: "rel_tasks_"',
+      'paramPrefix: "rel_notes_"',
+      'paramPrefix: "rel_docs_"',
+    ];
+    for (const p of prefixes) expect(related, p).toContain(p);
+    // Distinct: three literal strings, three of them.
+    expect(new Set(prefixes).size).toBe(3);
   });
 
   it("the timeline namespaces its query keys, because it shares a page", () => {

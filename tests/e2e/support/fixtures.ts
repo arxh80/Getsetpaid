@@ -156,6 +156,32 @@ export const ARTIST_NAME = "E2E Headliner";
 /** An artist in the OTHER tenant, on the other tenant's event's bill. */
 export const OTHER_ARTIST_NAME = "Other Tenant Headliner";
 
+// ===========================================================================
+// PHASE 4 TASK 8: THE OPERATIONS FIXTURE VOCABULARY
+// ===========================================================================
+// WRITTEN AS CONSTANTS FOR THE SAME REASON `EVENT_NAMES` IS: the tenant-breakout
+// and note-visibility assertions are ABSENCES (`not.toContainText(...)`), and a
+// typo'd literal in an absence assertion passes forever and silently. The two
+// cross-tenant strings in particular are what the operations breakout run proves
+// never leak from a browser holding another tenant's session.
+export const NOTE_BODIES = {
+  /** Authored by the manager, visibility `private`: reaches only its author. */
+  managerPrivate: "Manager Private Note — only its author may read this",
+  /** Visibility `company`: reaches every viewer in the workspace. */
+  company: "Company Note — the whole workspace reads this",
+  /** A `private` note in the OTHER tenant. Must appear on no surface here. */
+  otherTenant: "Other Tenant Secret Note",
+} as const;
+
+export const DOCUMENT_NAMES = {
+  /** A `clean` document linked to the manager-owned contact. */
+  clean: "Clean Rider.pdf",
+  /** A `quarantined` document — no download link, download route 409s. */
+  quarantined: "Quarantined Upload.txt",
+  /** A `clean` document in the OTHER tenant, linked to its event. */
+  otherTenant: "Other Tenant Secret Contract",
+} as const;
+
 /**
  * A `ticket_link` that PASSES the column CHECK and that `safeHref()` REFUSES.
  *
@@ -264,6 +290,35 @@ export interface E2eWorld {
    *  `events_select_view_crm` and nothing before this could tell them apart
    *  from a browser. */
   otherOrgArtistId: string;
+
+  // =========================================================================
+  // PHASE 4 TASK 8: THE OPERATIONS ROWS
+  // =========================================================================
+  /** A task in THIS tenant, owned by the manager, LINKED to the manager's
+   *  event (`task_links`, entity_type `event`). The operations golden path
+   *  completes it and reads `task_completed` on the event's timeline. */
+  taskId: string;
+  /** A meeting in THIS tenant, owned by the manager. */
+  meetingId: string;
+  /** A `private` note in THIS tenant, authored by the manager. Reaches only
+   *  the manager: the standard user must not see it. */
+  privateNoteId: string;
+  /** A `company` note in THIS tenant. Reaches every viewer in the workspace. */
+  companyNoteId: string;
+  /** A `clean` document in THIS tenant, linked to the manager-owned contact
+   *  (`document_links`, entity_type `contact`). */
+  cleanDocumentId: string;
+  /** A `quarantined` document in THIS tenant. Its own fixture row — no test
+   *  reuses it, so the quarantine assertions carry no ordering dependency. */
+  quarantinedDocumentId: string;
+  /** A task in the OTHER tenant. A valid uuid that must 404 from this session. */
+  otherOrgTaskId: string;
+  /** A `private` note in the OTHER tenant (`Other Tenant Secret Note`). */
+  otherOrgNoteId: string;
+  /** A `clean` document in the OTHER tenant (`Other Tenant Secret Contract`),
+   *  linked to that tenant's event. A valid uuid that must 404 here, and whose
+   *  filename must never appear on this tenant's document list. */
+  otherOrgDocumentId: string;
 
   users: Record<E2eRole, E2eUser>;
   /** The OTHER tenant's owner. Nothing signs in as them; they exist so the
@@ -603,6 +658,129 @@ export async function setUpWorld(): Promise<E2eWorld> {
     [otherOrgId, otherOrgEventId, otherOrgArtistId],
   );
 
+  // =========================================================================
+  // PHASE 4 TASK 8'S OPERATIONS ROWS
+  // =========================================================================
+  // Setup is `pg` as `postgres` for the same reason every other row here is
+  // (§ AND WHY SETUP IS `pg` above): a task/meeting/note write goes through an
+  // INSERT policy that needs a session, and this connection is not one. What the
+  // tests ASSERT on still goes through a real browser and anon-key session.
+  const taskId = randomUUID();
+  const meetingId = randomUUID();
+  const privateNoteId = randomUUID();
+  const companyNoteId = randomUUID();
+  const cleanDocumentId = randomUUID();
+  const quarantinedDocumentId = randomUUID();
+  const otherOrgTaskId = randomUUID();
+  const otherOrgNoteId = randomUUID();
+  const otherOrgDocumentId = randomUUID();
+
+  // A task in each tenant. The main one is owned by the manager; `completed_at`
+  // is null (it is `open`), so the operations golden path is the thing that
+  // completes it and produces the `task_completed` timeline row.
+  await sql(
+    `insert into public.tasks
+       (id, organisation_id, owner_user_id, title, status, priority)
+     values ($1,$2,$3,'Fixture task — confirm the rider','open','normal'),
+            ($4,$5,$6,'Other Tenant Secret Task','open','normal')`,
+    [taskId, orgId, users.manager.id, otherOrgTaskId, otherOrgId, otherOwner.id],
+  );
+
+  // The main task is LINKED to the manager's event, so the event's related
+  // panel shows it before the golden path completes it. Through `task_links`
+  // (entity_type `event`), which is a different policy from the task's own.
+  await sql(
+    `insert into public.task_links
+       (organisation_id, parent_id, entity_type, entity_id)
+     values ($1,$2,'event',$3)`,
+    [orgId, taskId, managerOwnedEventId],
+  );
+
+  // A meeting in the main tenant, owned by the manager. `starts_at` is NOT NULL.
+  await sql(
+    `insert into public.meetings
+       (id, organisation_id, owner_user_id, title, starts_at, status)
+     values ($1,$2,$3,'Fixture meeting — production call',
+             now() + interval '3 days','scheduled')`,
+    [meetingId, orgId, users.manager.id],
+  );
+
+  // TWO NOTES IN THE MAIN TENANT AND ONE IN THE OTHER, and the pair in the main
+  // tenant is the visibility payoff: the `private` one is authored by the
+  // manager and reaches only them; the `company` one reaches every viewer. The
+  // other tenant's is `private` too, but tenant scope refuses it before
+  // visibility is even consulted.
+  await sql(
+    `insert into public.notes
+       (id, organisation_id, owner_user_id, body, visibility)
+     values ($1,$2,$3,$4,'private'),
+            ($5,$2,$3,$6,'company'),
+            ($7,$8,$9,$10,'private')`,
+    [
+      privateNoteId,
+      orgId,
+      users.manager.id,
+      NOTE_BODIES.managerPrivate,
+      companyNoteId,
+      NOTE_BODIES.company,
+      otherOrgNoteId,
+      otherOrgId,
+      otherOwner.id,
+      NOTE_BODIES.otherTenant,
+    ],
+  );
+
+  // THREE DOCUMENTS. `scan_status` is set DIRECTLY here rather than through the
+  // upload pipeline, because this connection is `postgres` and cannot run the
+  // scanner or write to Storage; the real EICAR-stub pipeline (upload -> scan ->
+  // quarantine) is walked in a browser by `documents.spec.ts`. `scanned_at` is
+  // set for every terminal verdict (`documents_scanned_at_iff_terminal`), and
+  // `storage_key` starts with `<organisation_id>/` (`documents_storage_key_shape`).
+  // These rows have no bytes in the bucket, which is why the tests that assert on
+  // them read the LIST (chip + link presence), never fetch a clean fixture doc's
+  // bytes — the download-resolves assertion uses a real uploaded PDF instead.
+  await sql(
+    `insert into public.documents
+       (id, organisation_id, owner_user_id, filename, storage_key, mime_type,
+        size_bytes, scan_status, scanned_at)
+     values ($1,$2,$3,$4,$5,'application/pdf',1024,'clean',now()),
+            ($6,$2,$3,$7,$8,'text/plain',68,'quarantined',now()),
+            ($9,$10,$11,$12,$13,'application/pdf',2048,'clean',now())`,
+    [
+      cleanDocumentId,
+      orgId,
+      users.manager.id,
+      DOCUMENT_NAMES.clean,
+      `${orgId}/fixtures/${cleanDocumentId}-clean.pdf`,
+      quarantinedDocumentId,
+      DOCUMENT_NAMES.quarantined,
+      `${orgId}/fixtures/${quarantinedDocumentId}-quarantined.txt`,
+      otherOrgDocumentId,
+      otherOrgId,
+      otherOwner.id,
+      DOCUMENT_NAMES.otherTenant,
+      `${otherOrgId}/fixtures/${otherOrgDocumentId}-secret.pdf`,
+    ],
+  );
+
+  // The clean main-tenant document is attached to the manager-owned contact;
+  // the other tenant's is attached to its event. `document_links` again is a
+  // policy of its own, reached only for a document the caller can already see.
+  await sql(
+    `insert into public.document_links
+       (organisation_id, parent_id, entity_type, entity_id)
+     values ($1,$2,'contact',$3),
+            ($4,$5,'event',$6)`,
+    [
+      orgId,
+      cleanDocumentId,
+      managerOwnedContactId,
+      otherOrgId,
+      otherOrgDocumentId,
+      otherOrgEventId,
+    ],
+  );
+
   return {
     orgSlug,
     orgId,
@@ -621,6 +799,15 @@ export async function setUpWorld(): Promise<E2eWorld> {
     artistId,
     otherOrgEventId,
     otherOrgArtistId,
+    taskId,
+    meetingId,
+    privateNoteId,
+    companyNoteId,
+    cleanDocumentId,
+    quarantinedDocumentId,
+    otherOrgTaskId,
+    otherOrgNoteId,
+    otherOrgDocumentId,
     users,
     otherOwner,
   };

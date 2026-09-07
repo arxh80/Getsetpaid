@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test";
 import {
   ALT_VENUE_NAME,
   ARTIST_NAME,
+  DOCUMENT_NAMES,
   EVENT_NAMES,
+  NOTE_BODIES,
   OTHER_ARTIST_NAME,
   ROOM_NAME,
   VENUE_NAME,
@@ -286,6 +288,48 @@ test("another tenant's event is not reachable by id, from either slug", async ({
   // off the path; this is the assertion that says so from outside.
   await expectRefused(page, `/${world.orgSlug}/events/${world.otherOrgEventId}`);
   await expect(REFUSED(page)).not.toContainText(EVENT_NAMES.otherTenant);
+});
+
+test("another tenant's operations records — task, note, document — are not reachable", async ({
+  page,
+}) => {
+  // PHASE 4'S OPERATIONS ENTITIES, ON THE SAME BOUNDARY. Each has its own SELECT
+  // policy and its own detail route, so "the tenant filter holds" is a separate
+  // claim per entity a browser could not make before these routes existed. Every
+  // refusal is a 404 with the secret string ABSENT — never a 403 that would
+  // confirm the row exists (`expectRefused` asserts the status too).
+  await signIn(page, world, "manager");
+
+  // The other tenant's TASK — from our own slug (the interesting direction: the
+  // workspace is ours, the id is a real row, only the tenant filter separates).
+  await expectRefused(page, `/${world.orgSlug}/tasks/${world.otherOrgTaskId}`);
+  await expect(REFUSED(page)).not.toContainText("Other Tenant Secret Task");
+
+  // The other tenant's private NOTE.
+  await expectRefused(page, `/${world.orgSlug}/notes/${world.otherOrgNoteId}`);
+  await expect(REFUSED(page)).not.toContainText(NOTE_BODIES.otherTenant);
+
+  // The other tenant's DOCUMENT — its detail page, and its download route (which
+  // 404s a cross-tenant id, never distinguishing "not yours" from "not there").
+  await expectRefused(page, `/${world.orgSlug}/documents/${world.otherOrgDocumentId}`);
+  await expect(REFUSED(page)).not.toContainText(DOCUMENT_NAMES.otherTenant);
+  const download = await page.request.get(
+    `/${world.orgSlug}/documents/${world.otherOrgDocumentId}/download`,
+    { maxRedirects: 0 },
+  );
+  expect(
+    download.status(),
+    "a cross-tenant download id must 404, never 302 or 409",
+  ).toBe(404);
+
+  // And this tenant's own documents list never carries the other tenant's file.
+  await page.goto(`/${world.orgSlug}/documents`);
+  await expect(page.locator("main")).not.toContainText(DOCUMENT_NAMES.otherTenant);
+  // Non-vacuity: this tenant's OWN clean document IS on that list, so the
+  // absence above is not a page that failed to render.
+  await expect(
+    page.getByRole("link", { name: DOCUMENT_NAMES.clean }),
+  ).toHaveCount(1);
 });
 
 test("record scope holds on the venue's event list and on the event", async ({

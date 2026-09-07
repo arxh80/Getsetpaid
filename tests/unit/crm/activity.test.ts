@@ -44,15 +44,19 @@ describe("mapActivity", () => {
   // the count line, the pager and the list into disagreement, and the pager's
   // cursors are built from rows this page actually rendered.
   it("keeps a row whose kind this build does not know", () => {
+    // A KIND FROM A LATER PHASE. `note_added` used to stand in here, but Task 7
+    // made it real, so this now names a kind no migration emits -- the property
+    // under test is "an unknown kind maps to null and keeps rawKind", and the
+    // example must stay genuinely unknown for the assertion to mean anything.
     const row = mapActivity({
       id: UUID,
       occurred_at: "2026-08-29T03:00:00+00:00",
-      kind: "note_added",
+      kind: "invoice_raised",
       actor_name: null,
       detail: {},
     });
     expect(row.kind).toBeNull();
-    expect(row.rawKind).toBe("note_added");
+    expect(row.rawKind).toBe("invoice_raised");
   });
 
   it("survives a null, a scalar and an array where an object is expected", () => {
@@ -247,26 +251,38 @@ describe("SUBJECT_NOUN is total over the subject types", () => {
   });
 });
 
-describe("ACTIVITY_KINDS gained exactly one member in Task 6", () => {
-  it("is nine kinds, and status_changed is the ninth", () => {
-    // EIGHT BEFORE, NINE NOW. The number is written out so that a tenth kind
-    // arrives with a decision rather than by accident: every kind is a string
-    // the database can emit and a sentence somebody has to write.
-    expect(ACTIVITY_KINDS).toHaveLength(9);
+describe("ACTIVITY_KINDS gained four members in Task 7", () => {
+  it("is thirteen kinds, and the four Task 7 kinds are present", () => {
+    // NINE BEFORE (Task 6), THIRTEEN NOW. The number is written out so a
+    // fourteenth kind arrives with a decision rather than by accident: every
+    // kind is a string the database can emit and a sentence somebody has to
+    // write. Task 7 adds exactly these four (20260902040000).
+    expect(ACTIVITY_KINDS).toHaveLength(13);
+    for (const added of [
+      "task_completed",
+      "note_added",
+      "document_attached",
+      "document_removed",
+    ]) {
+      expect(ACTIVITY_KINDS, added).toContain(added);
+      expect(isActivityKind(added), added).toBe(true);
+    }
+    // The Task 6 kind is still here -- this was an addition, not a rewrite.
     expect(ACTIVITY_KINDS).toContain("status_changed");
-    expect(isActivityKind("status_changed")).toBe(true);
   });
 
-  it("did NOT gain a lineup-shaped kind", () => {
-    // The rule 20260829040000's venue_rooms branch set, asserted rather than
-    // trusted: both lineup branches and the venue branch REUSE link_added /
-    // link_removed. These are the names a later author would reach for.
+  it("did NOT gain a note_removed or a document_added kind", () => {
+    // The reconciliation asserted rather than trusted: task/meeting attachment
+    // REUSE link_added / link_removed (the venue_rooms/lineup rule), and note
+    // has a single creation kind with no removal counterpart, while document has
+    // attached/removed but no "added". These are the names a later author would
+    // reach for by symmetry, and none is a kind.
     for (const invented of [
-      "lineup_added",
-      "lineup_removed",
-      "artist_booked",
-      "venue_booked",
-      "event_linked",
+      "note_removed",
+      "document_added",
+      "task_added",
+      "meeting_added",
+      "task_link_added",
     ]) {
       expect(isActivityKind(invented), invented).toBe(false);
     }
@@ -335,6 +351,21 @@ describe("ACTIVITY_LIST.sort.occurred.backedBy names the new branches' indexes",
       "artist_representations_agency_id_idx",
       "venue_rooms_venue_id_idx",
       "custom_field_values_entity_idx",
+    ]) {
+      expect(backedBy, name).toContain(name);
+    }
+  });
+
+  it("carries the four Phase 4 Task 7 *_links_target_idx names", () => {
+    // The four new branches are POLYMORPHIC on the *_links entity_type column
+    // (like merges/custom_field_values), so each reaches the Task 1
+    // reverse-lookup index that LEADS on entity_type. rls_phase4_operations.sql
+    // § OI asserts each is a real index; this asserts the spec names it.
+    for (const name of [
+      "task_links_target_idx",
+      "meeting_links_target_idx",
+      "note_links_target_idx",
+      "document_links_target_idx",
     ]) {
       expect(backedBy, name).toContain(name);
     }

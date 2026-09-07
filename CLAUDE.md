@@ -15,7 +15,7 @@ The PRD is a binary docx and no text version is committed. To read it, run `pyth
 
 ## Current state
 
-The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrastructure, core CRM writes, and — since Phase 3 — events with their lineup). The PRD, the design and security docs and the pinned agent skills (`skills-lock.json` + `.agents/skills/`) sit alongside them.
+The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrastructure, core CRM writes, since Phase 3 events with their lineup, and — since Phase 4 — operations: tasks, meetings, notes and documents, the last behind a private-bucket, malware-scanned file pipeline). The PRD, the design and security docs and the pinned agent skills (`skills-lock.json` + `.agents/skills/`) sit alongside them.
 
 **The gates. Run all five before claiming a change is done:**
 
@@ -25,7 +25,7 @@ The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrast
 | `pnpm typecheck` | `tsc --noEmit`. CI runs this too (below), but **nothing on this machine does** — there is no git hook, and `pnpm build` is forbidden in a worktree pointed at the local stack. Several exhaustiveness guards (the `switch` with no `default` in `lib/crm/contacts.ts`, `lib/crm/companies.ts` and `lib/crm/actions.ts`) are compile-time only, so skipping this locally means finding out on a push at best. |
 | `pnpm test` | Vitest, unit and integration (`vitest run`). |
 | `pnpm test:rls` | The RLS integration tests (`vitest run tests/integration/rls`), included in `pnpm test`. |
-| `pnpm test:e2e` | Playwright (`playwright test`) — the Phase 2 and Phase 3 golden paths, tenant breakout and record scope, and the axe accessibility scan (one test per page, 13 pages), against a real browser and the local stack. **Prerequisite:** `npx playwright install chromium` once per machine. It starts its own dev server; set `PLAYWRIGHT_REUSE_SERVER=1` only to reuse one on port 3000 that you know is current. |
+| `pnpm test:e2e` | Playwright (`playwright test`) — the Phase 2, Phase 3 and Phase 4 golden paths (`operations.spec.ts` walks a task to its event timeline and the note-visibility payoff; `documents.spec.ts` walks the clean/quarantine file pipeline), tenant breakout and record scope, and the axe accessibility scan (one test per page, 19 pages), against a real browser and the local stack. **48 tests, run cold on its own dev server. Prerequisite:** `npx playwright install chromium` once per machine. It starts its own dev server; set `PLAYWRIGHT_REUSE_SERVER=1` only to reuse one on port 3000 that you know is current. |
 
 The psql/HTTP RLS suite is separate and needs a fresh database:
 `npx supabase db reset --local` then `bash supabase/tests/run-rls-tests.sh`. It
@@ -102,6 +102,13 @@ Full baseline table list is in PRD §11.
 - `events.status` carries all eight PRD values including `hold`, `confirmed`, `on_sale` and `sold_out`. They are **labels on one column**, with no transition rules, no state machine and no derived behaviour. Offers/holds/bookings remain out of MVP scope, and a status value is not that workflow arriving early. `public.event_status_changes` records transitions (founder Q33) and validates none of them.
 - **Events are not dedup-screened and not mergeable.** `merges.entity_type` and `merge_candidates.entity_type` deliberately exclude `'event'`, and `createEventAction` does not call `screenAfterCreate`: an event's name is not identifying (a recurring club night shares its name with every instalment by design) and `public.events` has no `email` column, so the only auto-merge signal is unreachable by construction.
 - **A lineup artist is always a real `artists` row** (`event_lineup.artist_id` is `NOT NULL` with a tenant-scoped composite FK); there is no free-text artist. **`venue_id` is nullable** — an event routinely exists before the venue is confirmed.
+
+**Operations, as they actually shipped in Phase 4** — tasks, meetings, notes and documents, each a top-level tenant entity that attaches to CRM records through its own per-entity `*_links` table (Q22). Four things read as gaps and are deliberate:
+
+- **Note visibility is binary** (`notes.visibility` is `private` or `company`, nothing finer): a `private` note reaches only its author; a `company` note is readable by the whole workspace but **editable only by its author** (founder Q54 — the UPDATE `USING` clause carries owner-scope, which closes a proven company-note theft path). Team/role-scoped or per-user sharing is a real feature (Q44), not shipped.
+- **A task's `reminder_at` is stored (constrained `<= due_at`) but never delivered** — there is no notification subsystem at MVP (Q45). Setting a reminder is silent.
+- **The malware scanner is a local EICAR stub**, not a real engine. `getScanner()` defaults to a stub that quarantines an EICAR-marked file end to end; `clamav`/SaaS names resolve to an **unconfigured adapter that throws**. The stub proves the pipeline (upload → scan → quarantine → the download gate refuses a non-`clean` document with 409); it does **not** prove real-malware detection. Wiring a real scanner is a launch gate (Q42, `SECURITY.md` § 6).
+- **`document_versions` ships dormant** (SELECT-only, no write path — versioning is Release 1.1), and **soft-deleting a document does not purge its bytes** — a retention/GC job is owed (Q52, Phase 8). Downloads and uploads are server-mediated; the browser never gets a Storage grant (`storage.objects` is deny-all fenced), which is what lets the download path authorise, audit and gate on scan status before any signed URL exists.
 
 **Duplicate contacts/companies:** an **exact, case-insensitive email match auto-merges**; everything else — including an exact name match — is flagged for manual review and never auto-merged silently. Every merge is audited. Name is only ever a *fuzzy* signal: `screen_for_duplicates()` labels a pair `exact_email` only when both emails are non-null and equal case-insensitively, and `fuzzy_name` otherwise (`supabase/migrations/20260829020000_dedup_detection_and_merge_workflow.sql:385`), and the application merges only on the ids the database proposes for that first case (`lib/crm/dedup.ts:704`, "AUTO-MERGE IS EMAIL-ONLY AND FIRES ONLY WHEN THE DATABASE PROPOSES IT"). In practice that means **contacts only**, because `contact` is the one entity in `MERGEABLE_COLUMNS` with an `email` column (`lib/crm/dedup.ts:65`).
 
@@ -213,7 +220,7 @@ Priorities: high information density without clutter; keyboard-first navigation 
 
 Golden path to prototype and protect: create contact → create event → add artist → add venue → add task → view activity.
 
-**What of it ships today, checked against the suite rather than asserted.** Every step but "add task" is walked in a real browser on every `pnpm test:e2e`: the Phase 2 half (contact, company, link, artist, venue, room, activity) in `tests/e2e/golden-path.spec.ts` and the Phase 3 half (create event, add the artist to the bill, change the venue, read the activity timeline) in `tests/e2e/events.spec.ts`. **"Add task" is Phase 4 and does not exist** — there is no `tasks` table and no route. The two specs are siblings on purpose; whoever builds tasks extends the sentence by adding a third, not by rewriting either.
+**What of it ships today, checked against the suite rather than asserted.** Every step is now walked in a real browser on every `pnpm test:e2e`: the Phase 2 half (contact, company, link, artist, venue, room, activity) in `tests/e2e/golden-path.spec.ts`, the Phase 3 half (create event, add the artist to the bill, change the venue, read the activity timeline) in `tests/e2e/events.spec.ts`, and the Phase 4 "add task → view activity" step in `tests/e2e/operations.spec.ts` (create a task, link it to an event, complete it, read `task_completed` on that event's timeline). The three specs are siblings on purpose; whoever extends the sentence adds a fourth, not rewrites the others.
 
 ## Testing gates
 

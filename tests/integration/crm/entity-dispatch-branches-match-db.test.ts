@@ -88,19 +88,26 @@ const EXPECTED: Record<string, readonly string[]> = {
 
   entity_is_live: ["company", "contact", "agency", "artist", "venue", "event"],
 
-  // THIRTEEN. This one is NOT keyed on CRM entity types alone -- 20260828140000
-  // (IMP-3) added the five child/join tables that carry an UPDATE policy,
-  // named after the TABLE rather than after an entity type, plus
-  // custom_field_definition for organisation configuration. FOLLOW-UPS.md and
-  // the Task 1 brief both listed seven; the live catalogue said eleven before
-  // this phase, twelve after Task 1, and thirteen after Task 2.
+  // TWENTY-ONE SINCE PHASE 4 TASK 1. This one is NOT keyed on CRM entity types
+  // alone -- 20260828140000 (IMP-3) added the five child/join tables that carry
+  // an UPDATE policy, named after the TABLE rather than after an entity type,
+  // plus custom_field_definition for organisation configuration. The live
+  // catalogue was eleven before Phase 3, twelve after Phase 3 Task 1, thirteen
+  // after Phase 3 Task 2 (`event_lineup`), and TWENTY-ONE after Phase 4 Task 1.
   //
   // `event_lineup` arrived in 20260901011000 -- the file that writes
-  // event_lineup_update_via_event, which is the only caller. Task 1 wrote
-  // "20260901010000" for it in the function's own comment; that comment is
-  // corrected in 20260901011000, which is where the arm actually lands,
-  // because "with the policy that needs it" is the rule and the policy is
-  // there.
+  // event_lineup_update_via_event, which is the only caller.
+  //
+  // PHASE 4 TASK 1 (20260902003000) added EIGHT: the four top-level operational
+  // entities (task, meeting, note, document) named after the ENTITY, and the
+  // four link tables (task_link, meeting_link, note_link, document_link) named
+  // after the TABLE -- matching the contact_company / venue_room / event_lineup
+  // precedent. public.document_versions has NO arm: it is dormant with a
+  // SELECT-only policy and no UPDATE policy, so nothing ever calls this guard
+  // for it. All eight rows they pin get their UPDATE policy in Phase 4 Task 2;
+  // the arm and the policy that needs it are one task apart here (the guard is
+  // safe with no caller), which is acceptable because the arm cannot let a
+  // write through -- it only tightens one.
   entity_org_unchanged: [
     "company",
     "contact",
@@ -115,6 +122,14 @@ const EXPECTED: Record<string, readonly string[]> = {
     "venue_room",
     "custom_field_value",
     "event_lineup",
+    "task",
+    "meeting",
+    "note",
+    "document",
+    "task_link",
+    "meeting_link",
+    "note_link",
+    "document_link",
   ],
 
   // DELIBERATELY WITHOUT 'event' -- events are not mergeable in Phase 3.

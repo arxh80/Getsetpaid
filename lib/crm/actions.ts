@@ -200,7 +200,19 @@ export type ParentTable =
   | "venues"
   | "contacts"
   | "companies"
-  | "events";
+  | "events"
+  // PHASE 4 TASK 1: the four operational entities are the PARENT end of the
+  // four *_links tables (20260902002000). Their arms arrive here BEFORE their
+  // first caller -- the link write paths are later Phase 4 tasks -- exactly as
+  // the `events` arm did in Phase 3 Task 1 (see the note above). A union member
+  // with no caller is harmless type-widening: nothing switches exhaustively on
+  // ParentTable, and PARENT_TABLE in custom-field-actions.ts is keyed on
+  // CustomFieldEntityType (unchanged), so widening the value type adds no
+  // obligation there.
+  | "tasks"
+  | "meetings"
+  | "notes"
+  | "documents";
 
 /**
  * Is this a LIVE row of THIS workspace, reachable by THIS caller?

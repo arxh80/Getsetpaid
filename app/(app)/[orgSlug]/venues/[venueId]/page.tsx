@@ -1,4 +1,5 @@
 import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import { RelatedPanel } from "@/components/crm/related-panel";
 import {
   activityIsScoped,
   activityParams,
@@ -382,6 +383,19 @@ export default async function VenueDetailPage({
           disabledReason={customFieldsBlocked}
         />
       )}
+
+      {/* THE RELATED PANEL (Phase 4 Task 3): tasks, notes and documents linked
+          to this venue. `rel_tasks_`/`rel_notes_`/`rel_docs_` join the existing
+          `venueevents_` and `activity_` surfaces on this route -- all passed
+          preserve (rule 10). */}
+      <RelatedPanel
+        orgSlug={org.slug}
+        organisationId={org.id}
+        entityType="venue"
+        entityId={venue.id}
+        basePath={`${basePath}/${venue.id}`}
+        raw={raw}
+      />
 
       {/* THE SHARED ACTIVITY TIMELINE (Task 7). One component, five pages,
           and every later phase's sources arrive as branches of
