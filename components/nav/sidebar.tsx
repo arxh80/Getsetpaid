@@ -102,8 +102,10 @@ function setPinnedGlobal(next: boolean): void {
 }
 
 /**
- * The persistent left rail. Rendered once by app/(app)/[orgSlug]/layout.tsx
- * and reused, not remounted, across client-side navigations between org
+ * The persistent left rail. Rendered once by app/(app)/layout.tsx -- as a
+ * SIBLING of `<main>`, never inside it (review finding 1: primary navigation
+ * inside `main` broke the skip link and the HTML spec's own rule for `main`)
+ * -- and reused, not remounted, across client-side navigations between org
  * routes -- that persistence is what makes "hover it once, click three
  * sections in a row without it collapsing between clicks" work, and it comes
  * free from the App Router keeping a layout's component instance mounted
@@ -238,19 +240,17 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
         ease: SIDEBAR_EASE,
       }}
       style={{ width: RAIL_WIDTH_COLLAPSED }}
-      // STICKY, NOT `h-dvh`. This rail is nested inside app/(app)/layout.tsx's
-      // <main>, which carries its own top padding (`py-8 sm:py-12`) below a
-      // header of variable height (the workspace switcher/user-email/sign-out
-      // row wraps to two lines on a narrow viewport) -- a literal 100dvh
-      // height starting from wherever that padding places it would run past
-      // the bottom of the viewport and force the whole page to scroll
-      // vertically even on a short page. `top-8 sm:top-12` matches that same
-      // padding so the rail sticks flush with where it already sits at rest,
-      // and `max-h-[calc(100dvh-2rem)]` plus `overflow-y-auto` cap it well
-      // inside the viewport and let the RAIL scroll internally on the rare
+      // STICKY AT THE VIEWPORT'S OWN TOP. The rail is a SIBLING of <main> in
+      // app/(app)/layout.tsx's full-width row (it used to sit INSIDE main's
+      // padded, centred column, which is what forced the old top-8/sm:top-12
+      // offsets -- and the review caught those disagreeing with the max-h
+      // calc, leaving the rail overhanging the viewport by 16px at >=640px).
+      // From the row's top edge, `top-0` and `max-h-dvh` are exact by
+      // construction: the rail sticks flush once the header scrolls away, and
+      // `overflow-y-auto` lets the RAIL scroll internally on the rare
       // workspace with enough permitted groups to exceed a short screen,
       // rather than pushing the document's own scroll height taller.
-      className="sticky top-8 flex max-h-[calc(100dvh-2rem)] shrink-0 flex-col overflow-x-hidden overflow-y-auto border-r border-rule bg-shell sm:top-12"
+      className="sticky top-0 flex max-h-dvh shrink-0 flex-col overflow-x-hidden overflow-y-auto border-r border-rule bg-shell"
     >
       <div className="flex h-11 shrink-0 items-center justify-end px-2">
         {/* A REAL <button>, aria-pressed rather than a re-worded label on
