@@ -218,6 +218,11 @@ function CreateProfileKindForm({
           pendingLabel="Creating…"
         >
           Create draft
+          {/* One of these forms renders per kind (up to four on the page);
+              the kind disambiguates the accessible name (keyboard-a11y
+              pass) — the visible <h3> above is not part of the button's
+              name computation. */}
+          <span className="sr-only"> — {NETWORK_ENTITY_KIND_LABELS[kind]}</span>
         </Button>
       </div>
     </form>

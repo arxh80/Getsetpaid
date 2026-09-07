@@ -207,8 +207,19 @@ function ReadOnlyComparison({
       {/* Scrolls inside its own container: a two-column comparison of
           user-supplied values is exactly the content that would otherwise push
           the page sideways, and html/body carry overflow-x: clip so the
-          overflow would be silently cut rather than scrollable. */}
-      <div className="overflow-x-auto border border-rule bg-surface">
+          overflow would be silently cut rather than scrollable.
+
+          role/aria-label/tabIndex (keyboard-a11y pass): a scrollable region
+          must be reachable and identifiable from the keyboard — WCAG 2.1.1 —
+          and this was the one horizontal scroller in the product without the
+          treatment components/list/entity-list.tsx and finance-panel.tsx
+          both carry (their comments hold the unconditional-tab-stop trade). */}
+      <div
+        role="region"
+        aria-label="Field-by-field comparison"
+        tabIndex={0}
+        className="overflow-x-auto border border-rule bg-surface"
+      >
         <table className="w-full min-w-[36rem] border-collapse text-base">
           <caption className="sr-only">
             Field-by-field comparison of {keepName} and {duplicateName}

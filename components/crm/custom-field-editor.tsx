@@ -413,8 +413,13 @@ function EditField({
 
   return (
     <details>
+      {/* sr-only name (keyboard-a11y pass): one Edit disclosure PER
+          definition, so without the field's name a screen reader's controls
+          list reads "Edit, Edit, Edit…" — the same fix room-panel.tsx and
+          representation-panel.tsx already carry. */}
       <summary className="cursor-pointer text-sm text-primary underline underline-offset-4">
         Edit
+        <span className="sr-only"> {definition.label}</span>
       </summary>
       <form action={formAction} className="flex flex-col gap-4 pt-3" noValidate>
         {state.error ? <Alert tone="error">{state.error}</Alert> : null}
@@ -494,6 +499,7 @@ function RemoveField({
           pendingLabel="Removing…"
         >
           Remove
+          <span className="sr-only"> {definition.label}</span>
         </Button>
       </form>
       {state.error ? (
@@ -541,6 +547,7 @@ function RestoreField({
           pendingLabel="Restoring…"
         >
           Restore
+          <span className="sr-only"> {definition.label}</span>
         </Button>
       </form>
       {state.error ? (
