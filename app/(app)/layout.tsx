@@ -214,6 +214,22 @@ export default async function AppLayout({
             children
           )}
         </main>
+        {/* THE RAIL'S COUNTERWEIGHT (re-review N2). <main>'s `mx-auto`
+            centres it in the LEFTOVER flex space, so without this the rail's
+            64px footprint pushed the whole content column 32px right of the
+            header's own max-w-4xl column at rest -- header and page visibly
+            out of register on every org route. A trailing spacer with the
+            rail's exact collapsed width (w-16 = RAIL_WIDTH_COLLAPSED = 64px,
+            same `hidden`/`md` breakpoint) makes the leftover space
+            symmetric again, so the two columns line up. It mirrors the
+            COLLAPSED width only, deliberately: hover-expansion still
+            translates the centred column -- that residual motion is
+            acknowledged in DESIGN.md § Motion's width-tween waiver, not
+            engineered away here. aria-hidden is belt-and-braces on an empty
+            div. */}
+        {sidebarGroups ? (
+          <div aria-hidden className="hidden w-16 shrink-0 md:block" />
+        ) : null}
       </div>
     </div>
   );
