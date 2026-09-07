@@ -186,29 +186,62 @@ test("REFUSAL PARITY: a foreign record and a nonexistent record are indistinguis
   // The bodies are compared as rendered innerText, not raw bytes: every
   // response carries a fresh CSP nonce and React stream ids, so two raw
   // bodies differ even for the SAME url requested twice -- rendered text is
-  // the level at which "the identical 404 page" is actually decidable. The
-  // raw-byte channel an attacker without a browser sees is covered by the
-  // status equality plus the copy assertions in expectRefused.
+  // the practical level at which "the identical 404 page" is decidable.
+  // innerText does not see the head, comments, data attributes or the flight
+  // payload; a leak through those channels is prevented by construction (the
+  // record read happens only below the loading boundary, generateMetadata
+  // falls back identically for both cases) rather than by this comparison,
+  // so the document TITLE is compared as well as a cheap head-channel probe,
+  // and the raw-byte channel is covered by the status equality plus the copy
+  // assertions in expectRefused.
   await signIn(page, world, "manager");
 
-  const families = [
+  await expectRefusalParity(page, world.orgSlug, [
     ["contact", `contacts/${world.otherOrgContactId}`, `contacts/${GHOST_ID}`],
     ["event", `events/${world.otherOrgEventId}`, `events/${GHOST_ID}`],
     ["task", `tasks/${world.otherOrgTaskId}`, `tasks/${GHOST_ID}`],
     ["note", `notes/${world.otherOrgNoteId}`, `notes/${GHOST_ID}`],
     ["artist", `artists/${world.otherOrgArtistId}`, `artists/${GHOST_ID}`],
-  ] as const;
+  ] as const);
+});
 
+test("REFUSAL PARITY from the counterparty: meeting, venue and company note refuse identically to ghosts", async ({
+  page,
+}) => {
+  // The remaining alphaPrivateRoutes families (network-leakage.spec.ts's
+  // matrix), driven through the SAME parity contract as the test above but
+  // from the OTHER side of the boundary: the counterparty's member, signed
+  // in for real, probes ALPHA's live meeting, venue and company note under
+  // its own slug against ghost ids. Together the two tests cover all eight
+  // entity families with a detail page.
+  await signInAsOtherMember(page);
+
+  await expectRefusalParity(page, world.otherOrgSlug, [
+    ["meeting", `meetings/${world.meetingId}`, `meetings/${GHOST_ID}`],
+    ["venue", `venues/${world.venueId}`, `venues/${GHOST_ID}`],
+    ["company note", `notes/${world.companyNoteId}`, `notes/${GHOST_ID}`],
+  ] as const);
+});
+
+/** The parity loop both REFUSAL PARITY tests drive -- see the header comment
+ *  on the first of them for the full argument. */
+async function expectRefusalParity(
+  page: import("@playwright/test").Page,
+  slug: string,
+  families: ReadonlyArray<readonly [string, string, string]>,
+) {
   for (const [label, foreignPath, ghostPath] of families) {
-    const foreign = await page.goto(`/${world.orgSlug}/${foreignPath}`);
+    const foreign = await page.goto(`/${slug}/${foreignPath}`);
     const foreignStatus = foreign?.status() ?? -1;
     await expect(REFUSED(page)).toContainText("Page not found");
     const foreignText = await page.locator("body").innerText();
+    const foreignTitle = await page.title();
 
-    const ghost = await page.goto(`/${world.orgSlug}/${ghostPath}`);
+    const ghost = await page.goto(`/${slug}/${ghostPath}`);
     const ghostStatus = ghost?.status() ?? -1;
     await expect(REFUSED(page)).toContainText("Page not found");
     const ghostText = await page.locator("body").innerText();
+    const ghostTitle = await page.title();
 
     expect(
       foreignStatus,
@@ -221,12 +254,17 @@ test("REFUSAL PARITY: a foreign record and a nonexistent record are indistinguis
         "document -- a difference is an existence oracle",
     ).toBe(ghostText);
     expect(
+      foreignTitle,
+      `${label}: the document title must not differ between a foreign row ` +
+        "and a nonexistent id -- generateMetadata must fall back identically",
+    ).toBe(ghostTitle);
+    expect(
       [200, 404],
       `${label}: the shared refusal status must be 404 or a streamed ` +
         `not-found (200), never 403; got ${foreignStatus}`,
     ).toContain(foreignStatus);
   }
-});
+}
 
 test("a stored javascript: or data: URL renders inert, never as a link", async ({
   page,
@@ -788,12 +826,14 @@ async function signInAsOtherMember(page: Page): Promise<void> {
   await expect(page).not.toHaveURL(/\/login/);
 }
 
-test("ALPHA's draft profile 404s for a foreign tenant, and ALPHA's draft never appears in that tenant's directory", async ({
+test("ALPHA's draft profile refuses a foreign tenant, and ALPHA's draft never appears in that tenant's directory", async ({
   page,
 }) => {
   await signInAsOtherMember(page);
 
-  // ---- THE DIRECT ID: 404, NEVER 403 (no existence leak) -------------------
+  // ---- THE DIRECT ID: REFUSED, NEVER 403 (no existence leak) ---------------
+  // (A record-level refusal under the viewer's own slug -- streamed since the
+  // loading-skeletons pass, per expectRefused's header.)
   // Same discipline `expectRefused` already applies to every other entity in
   // this file, over the SAME draft profile network-discovery.spec.ts uses for
   // the tier-angle version of this claim (`world.networkDraftProfileId`,

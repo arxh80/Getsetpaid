@@ -19,6 +19,14 @@ import Link from "next/link";
 // slugs and ids. 403 is reserved for tier/feature gating on a route the user's
 // OWN organisation cannot reach.
 //
+// SINCE THE LOADING-SKELETONS PASS the HTTP status this document arrives with
+// depends on WHERE the refusal happened: a workspace-slug refusal (the
+// [orgSlug] layout, above every loading boundary) is a literal 404, while a
+// record-level refusal under a valid slug STREAMS -- 200, this identical
+// markup, plus Next's injected noindex meta. The indistinguishability is
+// measured directly by tenant-breakout.spec.ts's REFUSAL PARITY test;
+// DESIGN.md § Error pages carries the contract.
+//
 // The numeral may use --danger at display size (it clears 3:1 at >=24px bold,
 // the same allowance --accent gets), and it never travels without its label --
 // colour is not the signal.

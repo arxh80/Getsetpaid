@@ -126,7 +126,7 @@ test("a CONNECTED viewer sees the connections-level field resolve, and the conne
   await expect(request).toBeEnabled();
 });
 
-test("ALPHA's own DRAFT profile 404s for a foreign, unconnected viewer -- no existence leak", async ({
+test("ALPHA's own DRAFT profile refuses a foreign, unconnected viewer -- no existence leak", async ({
   page,
 }) => {
   await signInAsFreeMember(page);
