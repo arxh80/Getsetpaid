@@ -153,12 +153,22 @@ export function CustomFieldsPanel({
  * (FormState.values) and the `??` below is what makes the reset restore what
  * was typed rather than what was stored.
  */
-function CustomFieldControl({
+// EXPORTED SINCE PHASE 5 TASK 3, for the finance panel. A finance line has no
+// standalone detail page, so its custom-field inputs render INSIDE the finance
+// add/edit form (components/crm/finance-forms.tsx) rather than in this
+// standalone panel -- but the CONTROL is the same one every entity uses, so it
+// is reused rather than re-implemented. `disabled` is the one prop finance
+// needs that the panel does not: the finance form disables every control
+// (never hides) when the caller cannot write, and the custom-field inputs
+// follow the same rule. Defaults to false, so this file's own use is unchanged.
+export function CustomFieldControl({
   cell,
   state,
+  disabled = false,
 }: {
   cell: CustomFieldCell;
   state: FormState;
+  disabled?: boolean;
 }) {
   const definition = cell.definition;
   const name = customFieldInputName(definition.id);
@@ -179,6 +189,7 @@ function CustomFieldControl({
           maxLength={500}
           hint={hint}
           error={error}
+          disabled={disabled}
         />
       );
 
@@ -198,6 +209,7 @@ function CustomFieldControl({
           inputMode="decimal"
           hint={hint}
           error={error}
+          disabled={disabled}
         />
       );
 
@@ -210,6 +222,7 @@ function CustomFieldControl({
           defaultValue={shown}
           hint={hint}
           error={error}
+          disabled={disabled}
         />
       );
 
@@ -224,17 +237,18 @@ function CustomFieldControl({
           inputMode="url"
           hint={hint}
           error={error}
+          disabled={disabled}
         />
       );
 
     case "boolean":
-      return <BooleanControl cell={cell} state={state} />;
+      return <BooleanControl cell={cell} state={state} disabled={disabled} />;
 
     case "single_select":
-      return <SingleSelectControl cell={cell} state={state} />;
+      return <SingleSelectControl cell={cell} state={state} disabled={disabled} />;
 
     case "multi_select":
-      return <MultiSelectControl cell={cell} state={state} />;
+      return <MultiSelectControl cell={cell} state={state} disabled={disabled} />;
   }
 }
 
@@ -254,7 +268,15 @@ function NeedsFixing({ cell }: { cell: CustomFieldCell }) {
   );
 }
 
-function BooleanControl({ cell, state }: { cell: CustomFieldCell; state: FormState }) {
+function BooleanControl({
+  cell,
+  state,
+  disabled = false,
+}: {
+  cell: CustomFieldCell;
+  state: FormState;
+  disabled?: boolean;
+}) {
   const definition = cell.definition;
   const name = customFieldInputName(definition.id);
   const id = useId();
@@ -279,8 +301,9 @@ function BooleanControl({ cell, state }: { cell: CustomFieldCell; state: FormSta
           name={name}
           value="true"
           defaultChecked={ticked}
+          disabled={disabled}
           aria-describedby={cell.state === "invalid" ? hintId : undefined}
-          className="size-5 border border-rule accent-primary"
+          className="size-5 border border-rule accent-primary disabled:cursor-not-allowed disabled:opacity-55"
         />
         <label htmlFor={id} className="text-sm font-semibold text-ink">
           {definition.label}
@@ -298,9 +321,11 @@ function BooleanControl({ cell, state }: { cell: CustomFieldCell; state: FormSta
 function SingleSelectControl({
   cell,
   state,
+  disabled = false,
 }: {
   cell: CustomFieldCell;
   state: FormState;
+  disabled?: boolean;
 }) {
   const definition = cell.definition;
   const name = customFieldInputName(definition.id);
@@ -329,11 +354,13 @@ function SingleSelectControl({
         id={id}
         name={name}
         defaultValue={shown}
+        disabled={disabled}
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy}
         className={
           "h-11 w-full min-w-0 border bg-surface px-3 text-base text-ink " +
           "transition-colors duration-[var(--dur-fast)] ease-brand " +
+          "disabled:cursor-not-allowed disabled:opacity-55 " +
           (error ? "border-danger" : "border-rule hover:border-ink focus:border-accent")
         }
       >
@@ -359,9 +386,11 @@ function SingleSelectControl({
 function MultiSelectControl({
   cell,
   state,
+  disabled = false,
 }: {
   cell: CustomFieldCell;
   state: FormState;
+  disabled?: boolean;
 }) {
   const definition = cell.definition;
   const name = customFieldInputName(definition.id);
@@ -402,9 +431,10 @@ function MultiSelectControl({
               name={name}
               value={option.key}
               defaultChecked={ticked.includes(option.key)}
+              disabled={disabled}
               aria-invalid={error ? true : undefined}
               aria-describedby={describedBy}
-              className="size-5 border border-rule accent-primary"
+              className="size-5 border border-rule accent-primary disabled:cursor-not-allowed disabled:opacity-55"
             />
             {option.label}
           </label>

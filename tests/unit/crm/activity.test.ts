@@ -224,21 +224,30 @@ describe("otherHref", () => {
 // a "contains" assertion cannot see that.
 
 describe("SUBJECT_NOUN is total over the subject types", () => {
-  it("has one entry per entity type, and six of them", () => {
-    // SIX IS THE DENOMINATOR. `ActivitySubjectType` is an alias of
-    // `CustomFieldEntityType`, so a seventh entity type in Phase 4 widens the
-    // union and TypeScript makes the missing noun a compile error -- but a
-    // `Record` type assertion passes vacuously against `{}` once something
-    // casts, which is the hole event-status.test.ts's key counts also close.
-    expect(Object.keys(SUBJECT_NOUN).sort()).toEqual(
-      [...CUSTOM_FIELD_ENTITY_TYPES].sort(),
-    );
+  // THE SUBJECT TYPES ARE THE CUSTOM-FIELD TYPES MINUS `financial_entry`.
+  // `ActivitySubjectType` was an alias of `CustomFieldEntityType` until Phase 5
+  // Task 3, when `financial_entry` joined the custom-field vocabulary (finance
+  // lines carry custom fields) but NOT the activity one (a finance line has no
+  // detail page and no timeline, and public.activity_events emits no rows for
+  // it). So SUBJECT_NOUN is total over the SIX activity subjects, and this test
+  // derives that list from CUSTOM_FIELD_ENTITY_TYPES rather than restating it,
+  // so a genuinely new SUBJECT type still fails here until it gets a noun.
+  const SUBJECTS = CUSTOM_FIELD_ENTITY_TYPES.filter(
+    (type) => type !== "financial_entry",
+  );
+
+  it("has one entry per subject type, and six of them", () => {
+    // SIX IS THE DENOMINATOR. A `Record` type assertion passes vacuously
+    // against `{}` once something casts, which is the hole event-status.test.ts's
+    // key counts also close.
+    expect(Object.keys(SUBJECT_NOUN).sort()).toEqual([...SUBJECTS].sort());
     expect(Object.keys(SUBJECT_NOUN)).toHaveLength(6);
+    // And finance is deliberately NOT a subject -- the exclusion the type makes.
+    expect(SUBJECT_NOUN).not.toHaveProperty("financial_entry");
   });
 
   it("every noun is a non-empty singular used in prose", () => {
-    for (const type of CUSTOM_FIELD_ENTITY_TYPES) {
-      const noun = SUBJECT_NOUN[type];
+    for (const [type, noun] of Object.entries(SUBJECT_NOUN)) {
       expect(noun, type).toBeTruthy();
       // Singular: the component writes "this ${noun}" and "against this
       // ${noun} yet". A plural here reads as a grammar bug on six pages.

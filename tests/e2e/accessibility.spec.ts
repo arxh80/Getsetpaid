@@ -1,6 +1,11 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { setUpWorld, tearDownWorld, type E2eWorld } from "./support/fixtures";
+import {
+  FINANCE_LINES,
+  setUpWorld,
+  tearDownWorld,
+  type E2eWorld,
+} from "./support/fixtures";
 import { signIn } from "./support/sign-in";
 
 // THE AUTOMATED ACCESSIBILITY PASS THE PLAN ASKED FOR.
@@ -199,6 +204,45 @@ for (const [label, url] of SIGNED_IN_PAGES) {
     await scan(page, label);
   });
 }
+
+// ===========================================================================
+// PHASE 5'S SURFACE: THE EVENT PAGE WITH THE FINANCE PANEL ON IT
+// ===========================================================================
+// ITS OWN TEST RATHER THAN A ROW IN THE TABLE ABOVE, and the reason is the
+// role. Every page in `SIGNED_IN_PAGES` is scanned as the MANAGER, and a
+// manager does not hold `view_finance` (20260903002000: owner, admin and
+// finance, nobody else) -- so the manager's event-detail scan above, which is
+// the same URL shape, renders NO finance panel at all and cannot see any of
+// this. Scanning it needs a session that holds the key, and the finance role is
+// MFA-required, so this test also pays for a real TOTP challenge.
+//
+// It is not a duplicate of that row. "One test per page" is about not putting
+// eleven pages under one 60s budget; this is a different RENDER of one page,
+// carrying markup no other scan in this file reaches: a summary TABLE with
+// `<th scope="row">` headers and a `tabIndex={0}` scroll region, two chip
+// vocabularies, a `<details>` edit disclosure per line with a full seven-field
+// form inside it, the "Removed from this list" disclosure, and a pager. That is
+// where a duplicate `id` (every edit form builds its ids from the entry id), an
+// orphaned `aria-describedby` (`finance-blocked` is rendered ONLY when the
+// panel is read-only), or a scrollable region with no keyboard access would
+// land first.
+//
+// THE LEDGER EVENT, NOT THE GOLDEN-PATH ONE: it is planted with a fee, an
+// income and a soft-deleted line, so the list, the summary and the removed
+// disclosure all render with content rather than as empty states.
+test("the event page WITH the finance panel has no automated accessibility violations", async ({
+  page,
+}) => {
+  await signIn(page, world, "finance");
+  await page.goto(`/${world.proOrgSlug}/events/${world.proLedgerEventId}`);
+  await expect(page.locator("main").first()).toBeVisible();
+  // NON-VACUITY: the panel is actually on the page being scanned. Without this
+  // the test would report a clean scan of an event page with no finance on it,
+  // which is the one thing it must not be able to do.
+  await expect(page.getByRole("region", { name: "Finance", exact: true })).toHaveCount(1);
+  await expect(page.locator("main")).toContainText(FINANCE_LINES.fixtureFee.description);
+  await scan(page, "event detail + finance panel");
+});
 
 test("the in-app 404 -- where every refusal lands -- is clean, exclusions and all", async ({
   page,

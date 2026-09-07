@@ -425,9 +425,15 @@ select crm.val('A5  venue_manager: no artist key -- but manage_events + operatio
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='venue_manager'$$,
   'manage_contacts,manage_documents,manage_events,manage_meetings,manage_notes,manage_tasks,manage_venues,view_crm');
-select crm.val('A6  finance is read-only over the CRM',
+-- PHASE 5 TASK 1 gives the Finance role its first WRITE key. It is still
+-- read-only over the CRM (view_crm and no manage_* CRM key), but it now holds
+-- view_finance and manage_finance -- the finance module is the one surface it
+-- writes (20260903002000). This string is the full set, so a stray grant to
+-- finance still arrives here as a red diff.
+select crm.val('A6  finance is read-only over the CRM, but writes the finance module',
   $$select string_agg(permission_key,',' order by permission_key)
-    from public.role_permissions where role_key='finance'$$, 'view_crm');
+    from public.role_permissions where role_key='finance'$$,
+  'manage_finance,view_crm,view_finance');
 select crm.val('A7  marketing: contacts, not artists',
   $$select string_agg(permission_key,',' order by permission_key)
     from public.role_permissions where role_key='marketing'$$,
@@ -1241,11 +1247,13 @@ select crm.val('L5  every table carrying updated_at has the trigger',
 -- version is immutable once written), so it gets NO trigger and L5 above must
 -- not expect one -- confirmed: L5 counts zero violations because it only looks
 -- at tables that HAVE an updated_at column.
-select crm.val('L6  ...and that is 28 tables (+8 operations tables in Phase 4)',
+-- TWENTY-NINE SINCE PHASE 5 TASK 1: public.financial_entries, whose trigger
+-- 20260903000000 adds by hand and names `set_updated_at` like every other one.
+select crm.val('L6  ...and that is 29 tables (+1 finance table in Phase 5)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '28');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '29');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together

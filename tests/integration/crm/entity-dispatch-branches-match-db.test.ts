@@ -54,6 +54,10 @@ afterAll(async () => {
  * `case` arm's position is a readability choice and the set is the contract.
  */
 const EXPECTED: Record<string, readonly string[]> = {
+  // SEVEN SINCE PHASE 5 TASK 3. 20260903020000 added 'financial_entry', keyed
+  // on view_finance rather than view_crm -- a finance line's custom-field
+  // values are readable only by view_finance, backing the SELECT policy
+  // custom_field_values_select_via_entity.
   entity_is_visible: [
     "company",
     "contact",
@@ -61,6 +65,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     "artist",
     "venue",
     "event",
+    "financial_entry",
   ],
 
   // NO 'event' YET, AND THAT IS AN INTERVAL RATHER THAN A DECISION.
@@ -77,6 +82,10 @@ const EXPECTED: Record<string, readonly string[]> = {
   // exist apart. Which KEY each arm names is bound separately, against the
   // deployed catalogue, by permission-for-entity-matches-db.test.ts -- this
   // census only asserts that the arm is there at all.
+  //
+  // SEVEN SINCE PHASE 5 TASK 3. 20260903020000 added 'financial_entry' ->
+  // manage_finance (seeded by Task 1), the arm the three custom_field_values
+  // WRITE policies dispatch through for a finance line's custom-field value.
   entity_is_manageable: [
     "company",
     "contact",
@@ -84,9 +93,24 @@ const EXPECTED: Record<string, readonly string[]> = {
     "artist",
     "venue",
     "event",
+    "financial_entry",
   ],
 
-  entity_is_live: ["company", "contact", "agency", "artist", "venue", "event"],
+  // SEVEN SINCE PHASE 5 TASK 3, and the 'financial_entry' arm is REQUIRED, not
+  // cosmetic: the three custom_field_values WRITE policies AND entity_is_live()
+  // alongside entity_is_manageable() (20260829011000), so without this arm a
+  // finance custom-field value write hits `else false` and is silently refused.
+  // 20260903020000's header § (c) records that the brief named only two
+  // dispatches and the deployed policy required this third.
+  entity_is_live: [
+    "company",
+    "contact",
+    "agency",
+    "artist",
+    "venue",
+    "event",
+    "financial_entry",
+  ],
 
   // TWENTY-ONE SINCE PHASE 4 TASK 1. This one is NOT keyed on CRM entity types
   // alone -- 20260828140000 (IMP-3) added the five child/join tables that carry
@@ -108,6 +132,11 @@ const EXPECTED: Record<string, readonly string[]> = {
   // the arm and the policy that needs it are one task apart here (the guard is
   // safe with no caller), which is acceptable because the arm cannot let a
   // write through -- it only tightens one.
+  //
+  // TWENTY-TWO SINCE PHASE 5 TASK 1 (20260903000000): `financial_entry`, named
+  // after the entity, arrived alongside financial_entries_update_manage_finance
+  // -- its only caller. financial_entries has no owner column, so this guard is
+  // the ONLY thing pinning (id, organisation_id) against a two-org admin.
   entity_org_unchanged: [
     "company",
     "contact",
@@ -130,6 +159,7 @@ const EXPECTED: Record<string, readonly string[]> = {
     "meeting_link",
     "note_link",
     "document_link",
+    "financial_entry",
   ],
 
   // DELIBERATELY WITHOUT 'event' -- events are not mergeable in Phase 3.

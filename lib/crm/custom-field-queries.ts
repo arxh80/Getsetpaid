@@ -29,6 +29,7 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 import {
+  CUSTOM_FIELD_ENTITY_TYPES,
   describeCustomFieldValue,
   isCustomFieldType,
   parseOptions,
@@ -162,13 +163,14 @@ export async function loadCustomFieldCounts(
     console.error("[crm] custom field count lookup failed:", error.message);
     return { outcome: "unavailable" };
   }
-  const counts: Record<string, number> = {
-    company: 0,
-    contact: 0,
-    agency: 0,
-    artist: 0,
-    venue: 0,
-  };
+  // SEEDED FROM THE VOCABULARY, NOT A HAND-KEPT LIST. Every entity type gets a
+  // zero so the settings tab strip renders a count for each -- iterating the
+  // literal here was how `event` (Phase 3) and `financial_entry` (Phase 5)
+  // reached the tab strip with a blank count while their `deleted_at is null`
+  // rows piled up uncounted. `if (... in counts)` still fences the loop, so a
+  // row of some type this build does not know is ignored rather than crashing.
+  const counts: Record<string, number> = {};
+  for (const type of CUSTOM_FIELD_ENTITY_TYPES) counts[type] = 0;
   for (const row of data as { entity_type: string }[]) {
     if (row.entity_type in counts) counts[row.entity_type] += 1;
   }
@@ -241,4 +243,92 @@ export async function loadCustomFieldPanel(
     }
   }
   return { outcome: "loaded", panel: { live, removed } };
+}
+
+export interface EntityCustomFields {
+  /** The LIVE definitions, in label order. */
+  readonly definitions: readonly CustomFieldDefinition[];
+  /** entityId -> its LIVE fields as cells, described from stored values. Only
+   *  entities that had at least one stored value appear; the caller falls back
+   *  to empty cells (definitions described against `undefined`) for the rest. */
+  readonly cellsByEntity: ReadonlyMap<string, readonly CustomFieldCell[]>;
+}
+
+export type EntityCustomFieldsResult =
+  | { readonly outcome: "loaded"; readonly fields: EntityCustomFields }
+  | { readonly outcome: "unavailable" };
+
+/**
+ * The LIVE custom fields for MANY entity rows of one type, in two round trips.
+ *
+ * ===========================================================================
+ * WHY THIS EXISTS ALONGSIDE loadCustomFieldPanel
+ * ===========================================================================
+ * `loadCustomFieldPanel` is one entity's detail page: it fetches removed-field
+ * values too and is one round trip PER entity. A finance line has NO detail
+ * page -- its custom-field inputs render inside the finance add/edit form on
+ * the EVENT page, where a whole page of lines shows at once. Calling the panel
+ * loader once per line would be one query per line; this batches all of them
+ * into a single `entity_id in (...)` read. It also drops the removed-field
+ * half, because the inline finance form renders LIVE fields only (there is no
+ * "Removed fields" disclosure on a form that is not a standalone panel).
+ *
+ * Same RLS discipline as every read here: the caller's own client, so a value
+ * is returned only when custom_field_values_select_via_entity admits it
+ * (view_crm + entity_is_visible, which for `financial_entry` is view_finance).
+ */
+export async function loadCustomFieldCellsForEntities(
+  organisationId: string,
+  entityType: CustomFieldEntityType,
+  entityIds: readonly string[],
+): Promise<EntityCustomFieldsResult> {
+  const definitions = await loadCustomFieldDefinitions(organisationId, entityType);
+  if (definitions.outcome === "unavailable") return { outcome: "unavailable" };
+
+  const live = definitions.definitions;
+  // Nothing defined, or nothing to look up: the definitions still travel back
+  // (the ADD form renders empty cells from them), but there are no values to
+  // fetch, so the second round trip is skipped.
+  if (live.length === 0 || entityIds.length === 0) {
+    return { outcome: "loaded", fields: { definitions: live, cellsByEntity: new Map() } };
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("custom_field_values")
+    .select("entity_id, field_id, value")
+    .eq("organisation_id", organisationId)
+    .eq("entity_type", entityType)
+    .in("entity_id", [...entityIds]);
+
+  if (error) {
+    console.error(
+      "[crm] custom field values (batch) lookup failed:",
+      error.message,
+    );
+    return { outcome: "unavailable" };
+  }
+
+  // entityId -> (fieldId -> value)
+  const stored = new Map<string, Map<string, unknown>>();
+  for (const row of data as { entity_id: string; field_id: string; value: unknown }[]) {
+    let perEntity = stored.get(row.entity_id);
+    if (perEntity === undefined) {
+      perEntity = new Map<string, unknown>();
+      stored.set(row.entity_id, perEntity);
+    }
+    perEntity.set(row.field_id, row.value);
+  }
+
+  const cellsByEntity = new Map<string, readonly CustomFieldCell[]>();
+  for (const [entityId, perEntity] of stored) {
+    cellsByEntity.set(
+      entityId,
+      live.map((definition) =>
+        describeCustomFieldValue(definition, perEntity.get(definition.id)),
+      ),
+    );
+  }
+
+  return { outcome: "loaded", fields: { definitions: live, cellsByEntity } };
 }
