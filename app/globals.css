@@ -136,6 +136,42 @@
      controls with transition-duration: 0s). They live in :root below and are
      referenced as duration-[var(--dur-fast)] instead. */
   --ease-brand: cubic-bezier(0.2, 0, 0, 1);
+
+  /* ---- Skeleton shimmer (loading-skeletons pass) ------------------------
+     `--animate-*` IS a v4 theme namespace, so this generates the
+     `animate-skeleton` utility every skeleton bone carries
+     (components/skeleton/bone.tsx).
+
+     WHY THIS IS NOT A GRADIENT SWEEP: DESIGN.md forbids gradients anywhere,
+     and § Motion permits animating exactly opacity, background-color,
+     border-color and translate. So the shimmer is a background-color
+     crossfade along the palette's own surface tokens -- resting --color-shell
+     breathing to --color-pink and back, the two warmest neighbours in the
+     set. No new colour is introduced: the browser interpolates between two
+     tokens already in DESIGN.md, the same way every hover transition does.
+
+     THE LOOP IS 1.8s, deliberately outside the --dur-* scale: those tokens
+     time TRANSITIONS between states; this is a continuous idle loop, and at
+     240ms it would flicker. Ease-in-out rather than --ease-brand because a
+     loop must be symmetric -- the brand curve's hard stop reads as a tick.
+
+     REDUCED MOTION IS HANDLED BELOW BY `animation: none`, NOT by the global
+     1ms clamp: a 1ms duration on an INFINITE loop is not "off", it is the
+     animation resampled at a quasi-random phase every frame -- a strobe,
+     served precisely to the users who asked for less motion. The unlayered
+     rule after the base styles kills the animation outright and leaves the
+     static bone. */
+  --animate-skeleton: skeleton-pulse 1.8s ease-in-out infinite;
+
+  @keyframes skeleton-pulse {
+    0%,
+    100% {
+      background-color: var(--color-shell);
+    }
+    50% {
+      background-color: var(--color-pink);
+    }
+  }
 }
 
 /* ===========================================================================
@@ -303,5 +339,18 @@ summary {
   *::after {
     animation-duration: 1ms !important;
     transition-duration: 1ms !important;
+  }
+
+  /* Skeletons go STATIC, not fast. The 1ms clamp above is right for one-shot
+     transitions but wrong for an infinite loop: 1ms x infinite means the
+     keyframes are resampled at an effectively random phase every displayed
+     frame -- a background-colour strobe, delivered to exactly the users who
+     asked motion to stop. `animation: none` leaves the bone at its resting
+     bg-shell with the hairline rules and the role="status" text carrying the
+     "loading" message (see components/skeleton/bone.tsx). Unlayered, so it
+     beats the generated `animate-skeleton` utility in @layer utilities
+     regardless of specificity; !important also outranks the clamp above. */
+  .animate-skeleton {
+    animation: none !important;
   }
 }
