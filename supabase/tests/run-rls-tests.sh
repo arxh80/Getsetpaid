@@ -347,9 +347,12 @@ fi
 #
 # Runs LAST of the psql suites and REUSES THE SAME FIXTURES WHOLE -- the twelve
 # users, orgs org-alpha/org-beta, and the Phase 2 companies and venues the
-# network profiles speak for. It creates ONLY network_* rows, so the contact,
-# artist and event censuses the HTTP block below was written against are
-# untouched. It plants and then removes one organisation_subscriptions row (its
+# network profiles speak for. It creates only network_* rows plus the two ALPHA
+# venues § NX5's insert-as-published fixture needs (20260907001000), so the
+# contact, artist and event censuses the HTTP block below was written against
+# are untouched -- and every downstream VENUE assertion is a floor or a
+# foreign-tenant zero (LG0's `>= 50`, LC0's non-emptiness, the HTTP sweep's
+# p2_rows 0 / p2_rows_min 1), so two extra ALPHA venues move none of them. It plants and then removes one organisation_subscriptions row (its
 # § NT, the Free-tier gate) and asserts in § NZ that it left none behind, for
 # the same reason rls_phase5_finance.sql asserts its own housekeeping: a leak
 # would redden an assertion in the HTTP block whose text says nothing about the
