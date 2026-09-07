@@ -234,6 +234,25 @@ test("a page with the sidebar pinned open has no automated accessibility violati
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}/contacts`);
 
+  // REST-STATE REGISTER (re-review N2), measured, not eyeballed: <main>
+  // centres itself with `mx-auto` in the flex row's LEFTOVER space, so the
+  // rail's 64px footprint pushed the whole content column 32px right of the
+  // header's own centred max-w-4xl column until the layout gained a matching
+  // trailing spacer. Both columns derive from the same viewport width, so at
+  // rest their left edges must coincide -- if this drifts, someone changed
+  // one side of the counterweight without the other.
+  const headerColumn = page.locator("header > div").first();
+  const [headerBox, mainBox] = await Promise.all([
+    headerColumn.boundingBox(),
+    page.locator("main").boundingBox(),
+  ]);
+  expect(headerBox, "header column must have a box").not.toBeNull();
+  expect(mainBox, "main column must have a box").not.toBeNull();
+  expect(
+    Math.abs((mainBox?.x ?? 0) - (headerBox?.x ?? 0)),
+    "at rest, <main> must sit in register with the header's centred column",
+  ).toBeLessThanOrEqual(1);
+
   const pinButton = page.getByRole("button", { name: "Pin navigation open" });
   await pinButton.click();
   await expect(pinButton).toHaveAttribute("aria-pressed", "true");
@@ -247,6 +266,28 @@ test("a page with the sidebar pinned open has no automated accessibility violati
   // there is no permission check to also get right here.
   await expect(page.getByText("People you work with")).toBeVisible();
   await expect(page.getByText("The businesses behind them", { exact: true })).toBeVisible();
+
+  // THE INSET FOCUS RING, ASSERTED FROM THE COMPUTED STYLE, NOT THE
+  // STYLESHEET (re-review N1). The rail's ring is inset by an UNLAYERED
+  // `nav[aria-label="Primary"] :focus-visible` rule in globals.css, because
+  // a Tailwind utility class for the same thing sits in @layer utilities and
+  // silently LOSES to the unlayered base ring -- which is exactly what the
+  // first cut shipped: a class that read correctly in the source and never
+  // applied. A refactor that "tidies" the rule into a layer, or back onto
+  // the component as a class, would regress the same invisible way; the
+  // computed value on a genuinely keyboard-focused row is the only honest
+  // witness. Tab moves focus from the just-clicked pin button onto the
+  // rail's first row (keyboard focus is what makes `:focus-visible` match
+  // reliably -- a programmatic .focus() leaves that to browser heuristics).
+  await page.keyboard.press("Tab");
+  const firstNavRow = page
+    .getByRole("navigation", { name: "Primary" })
+    .getByRole("link", { name: /^Overview/ });
+  await expect(firstNavRow).toBeFocused();
+  expect(
+    await firstNavRow.evaluate((el) => window.getComputedStyle(el).outlineOffset),
+    "the rail's focus ring must be inset (see globals.css's unlayered rail rule)",
+  ).toBe("-2px");
 
   await scan(page, "contacts list, sidebar pinned open");
 });
