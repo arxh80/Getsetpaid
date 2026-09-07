@@ -105,11 +105,23 @@ const SOURCES = new Map(
 // ===========================================================================
 // THE NEEDLE LIST -- EVERY TENANT-PRIVATE RELATION
 // ===========================================================================
-// The same list `supabase/tests/network_leakage_phase6.sql`'s `leak.private_rel`
-// carries, kept in step by hand and asserted at both ends (the psql suite
-// asserts its own size, this file asserts this one). `ratings` is on it even
-// though `public.ratings` does not exist -- N5/Q85's forward guard: the day it
-// lands, this assertion is already watching.
+// A SIBLING of `supabase/tests/network_leakage_phase6.sql`'s
+// `leak.private_rel` list, NOT a copy kept at equal size on purpose (Task 6
+// doc-reconciliation note, Constraint 13: an earlier version of this header
+// implied the two lists should agree in COUNT, which is false and was never
+// measured). Each list is sized to what IT is allowed to find on its own
+// path: this one deliberately EXCLUDES the four CRM entity kinds a network
+// profile can speak for -- companies, artists, venues, agencies -- because
+// `lib/network/entities.ts` legitimately reads them, for the caller's OWN
+// organisation only, to build the "publish a record" picker and resolve a
+// linked record's name (see `ALLOWED_LITERAL_TABLES` below); a needle for any
+// of those four would have to be suppressed on that one file rather than
+// caught by it. `leak.private_rel` has no such caller-owns-it exception to
+// carve out, so it carries all four. Each list's OWN size is asserted below
+// (this one) and in `network_leakage_phase6.sql` LF1b (28) independently --
+// the two numbers are not required to match and do not. `ratings` is on this
+// list even though `public.ratings` does not exist -- N5/Q85's forward guard:
+// the day it lands, this assertion is already watching.
 //
 // The four CRM entity tables a network profile can SPEAK FOR -- companies,
 // artists, venues, agencies -- are deliberately NOT on it. `lib/network/
@@ -182,9 +194,13 @@ describe("the network path names no tenant-private relation (the CI-visible half
   });
 
   it("DENOMINATOR: the needle list is 25 private relation names", () => {
-    // If this number ever disagrees with `leak.private_rel`'s own size
-    // assertion in supabase/tests/network_leakage_phase6.sql (LF1b), one of
-    // the two lists has drifted and the disagreement is the finding.
+    // NOT tied to `leak.private_rel`'s own size assertion in
+    // supabase/tests/network_leakage_phase6.sql (LF1b, 28) -- see this file's
+    // own header for why the two lists are deliberately different sizes (this
+    // one excludes the four CRM entity kinds a network profile can speak for,
+    // legitimately read by lib/network/entities.ts). This assertion pins THIS
+    // list's own count so a needle silently dropped from the array is a test
+    // edit, not a shrinking denominator nobody notices.
     expect(new Set(PRIVATE_RELATIONS).size).toBe(25);
   });
 
