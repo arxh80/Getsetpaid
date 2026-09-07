@@ -17,8 +17,9 @@ import { Bone } from "@/components/skeleton/bone";
 // earlier "no animation" stance is deliberate and founder-directed (the
 // site-wide loading-skeleton pass asked for shimmer explicitly); it is
 // logged in the pass's DECISIONS-QUEUE for veto. prefers-reduced-motion
-// returns this file to exactly its original behaviour: static bones, rules
-// and the status text (globals.css removes the animation outright).
+// removes the animation outright (globals.css), leaving static bg-rule
+// bones over the same rules and status text -- visible, unlike the original
+// bg-shell bars, which sat invisible on the page ground (review finding I1).
 //
 // aria-hidden, with the announcement carried by role="status" on the wrapper:
 // twelve rows of decorative bars are noise to a screen reader, and "Loading"
