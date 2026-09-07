@@ -1,6 +1,10 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import {
+  CUSTOM_FIELD_ENTITY_TYPES,
+  PERMISSION_FOR_ENTITY,
+} from "@/lib/crm/custom-fields";
 
 // SHAPE ASSERTIONS OVER SOURCE TEXT. Blunt on purpose.
 //
@@ -38,8 +42,23 @@ import { describe, expect, it } from "vitest";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 
+// LINE ENDINGS ARE NORMALISED, AND THAT IS NOT COSMETIC.
+//
+// Several assertions in this file are multi-line `toContain` checks against
+// source text -- the I-2 block below is the clearest, matching a string that
+// contains an escaped newline followed by six spaces. The repository sets no
+// `text` policy in `.gitattributes`, so a Windows checkout with
+// `core.autocrlf` on has CRLF in every file, and every one of those
+// assertions then fails against perfectly correct source. It was red at
+// Phase 3 Task 1's starting commit for exactly that reason, on a test whose
+// subject had nothing wrong with it.
+//
+// Normalising here rather than in `.gitattributes` keeps the fix local: a
+// repository-wide `text=auto` rewrites every file's line endings in one
+// commit, which is a decision for its own change (filed in FOLLOW-UPS.md).
+// Nothing this file asserts is ABOUT line endings, so nothing is weakened.
 function read(relative: string): string {
-  return readFileSync(root + relative, "utf8");
+  return readFileSync(root + relative, "utf8").replace(/\r\n/g, "\n");
 }
 
 /**
@@ -127,7 +146,15 @@ describe("every mutating call in lib/crm/ asks for the row count", () => {
     //
     // A floor rather than an exact number so Task 4b adding call sites does
     // not turn this red for the wrong reason -- but deleting them all does.
-    expect(sites.length).toBeGreaterThanOrEqual(7);
+    // Phase 3 Task 4 raised this from SEVEN to TWENTY-NINE, counted rather
+    // than guessed, and the breakdown is the point of writing the number
+    // down: agencies 3, artists 6, companies 3, contacts 4,
+    // custom-field-actions 3, events 3, merge 1, venues 6. Task 4b's seven
+    // was the state of lib/crm/ before Task 5 and Task 6 landed and before
+    // this file's own directory scan started covering them; the three new
+    // ones are lib/crm/events.ts's update, soft-delete and restore (there is
+    // no DELETE policy on the table and no grant for one).
+    expect(sites.length).toBeGreaterThanOrEqual(29);
   });
 
   for (const site of sites) {
@@ -592,61 +619,108 @@ describe("I-1: no refusal in lib/crm/ discards what the user typed", () => {
 // TASK 5 -- the custom fields engine
 // ===========================================================================
 
-describe("PERMISSION_FOR_ENTITY mirrors private.entity_is_manageable()", () => {
-  // A FIFTH COPY OF A MAPPING THAT LIVES IN SQL, and this is what binds it.
-  // The SQL function is the ENFORCEMENT -- every custom field value write is
-  // decided by it through the three write policies -- while the TypeScript
-  // table only decides which sentence a blocked user reads and whether the
-  // panel renders controls. Getting it wrong here cannot open a write; it can
-  // show the wrong explanation, or hide a control from somebody who could have
-  // used it, which is the "hidden loses the explanation" mistake
-  // components/crm/write-gate.tsx exists to avoid.
-  //
-  // The live-catalogue half (every entity type HAS a branch at all) is
-  // tests/integration/crm/custom-field-entity-types-match-db.test.ts. This is
-  // the half that checks WHICH KEY each branch names, which is a fact about
-  // the source rather than about the deployed shape.
-  const helpers = read(
-    "supabase/migrations/20260828120500_crm_policy_helpers.sql",
-  );
-  const start = helpers.indexOf(
-    "create or replace function private.entity_is_manageable(",
-  );
-  const body = helpers.slice(
-    start,
-    helpers.indexOf("comment on function private.entity_is_manageable"),
-  );
+// PERMISSION_FOR_ENTITY's mirror MOVED TO
+// tests/integration/crm/permission-for-entity-matches-db.test.ts IN PHASE 3
+// TASK 2 (Task 1 fix round 1, review finding I-2). It does not belong in a
+// source-shape file, and being here is what made it wrong twice over:
+//
+//   * it iterated its OWN hardcoded five-entry EXPECTED map rather than
+//     PERMISSION_FOR_ENTITY itself, so Task 1's sixth entry
+//     (`event: "manage_events"`) was asserted in neither direction and adding
+//     it turned nothing red;
+//   * it read 20260828120500_crm_policy_helpers.sql AS TEXT -- the file that
+//     first CREATED private.entity_is_manageable(). `create or replace
+//     function` means that file stopped being what is deployed the moment
+//     20260901010000 replaced it, so it was mirroring a body the database no
+//     longer runs.
+//
+// The replacement iterates the real table, reads the deployed body through
+// pg_get_functiondef(), asserts the two key sets are EQUAL (so a seventh entry
+// on either side alone is red), checks every key it names exists in
+// public.permissions, and drives the dispatch behaviourally as a Booker --
+// who holds manage_events and manage_artists and NOT manage_venues, which is
+// the one role that can tell "the key is chosen per entity type" from "the
+// key is ignored". It needs the local stack, which is why it is an
+// integration test and not this one.
+//
+// ===========================================================================
+// AND THAT MOVE COST SOMETHING: **NO PULL-REQUEST GATE WATCHES
+// PERMISSION_FOR_ENTITY ANY MORE.**
+// ===========================================================================
+// CI runs `pnpm exec vitest run tests/unit` and nothing else
+// (`.github/workflows/ci.yml`, "Unit tests" -- deliberately named by directory
+// so a new integration test does not silently start being skipped). Everything
+// under tests/integration/ talks to a live local Supabase stack over HTTP, so
+// it runs on a developer's machine via `pnpm test` with the stack up, and on
+// no pull request at all.
+//
+// The replacement is strictly better than what it replaced -- but only where
+// it runs. So a CHEAP STATIC HALF stays here, below, and the split is:
+//
+//   unit (runs in CI, every PR)  -- the TS table is total over the entity
+//     vocabulary, and every key it names is a real seeded permission key. That
+//     catches a typo, a dropped entry, or a seventh entity type shipped
+//     without its mapping, on the PR that introduces it.
+//   integration (runs locally)   -- the TS table agrees with the DEPLOYED
+//     dispatch about WHICH key each entity type resolves to, and the dispatch
+//     really behaves that way. That cannot be asked without a database.
+//
+// Neither half subsumes the other, and the unit half deliberately does NOT
+// re-implement the mapping: it asserts totality and membership, never
+// `event -> manage_events`, because a hardcoded expected mapping here is
+// exactly the thing that was wrong before. Recorded in FOLLOW-UPS.md.
 
-  it("finds the function body at all, so this cannot pass vacuously", () => {
-    expect(start).toBeGreaterThan(-1);
-    expect(body).toContain("when 'venue' then");
+describe("PERMISSION_FOR_ENTITY is total and names only real permission keys", () => {
+  // The CI-side half of the mirror. See the block above for the split.
+  const migrations = readdirSync(root + "supabase/migrations")
+    .filter((f) => f.endsWith(".sql"))
+    .map((f) => read("supabase/migrations/" + f))
+    .join("\n");
+
+  it("finds the permission seed statements at all, so this cannot pass vacuously", () => {
+    // Without this, a rename of the catalogue table would make every
+    // membership assertion below vacuously true -- there would simply be no
+    // seed text to fail against.
+    expect(migrations).toContain("insert into public.permissions");
+    expect(migrations).toMatch(/\('view_crm',\s+true,/);
   });
 
-  const EXPECTED: Record<string, string> = {
-    company: "manage_contacts",
-    contact: "manage_contacts",
-    agency: "manage_contacts",
-    artist: "manage_artists",
-    venue: "manage_venues",
-  };
+  it("is total over CUSTOM_FIELD_ENTITY_TYPES -- no entity type without a key", () => {
+    // `PERMISSION_FOR_ENTITY` is typed `Record<CustomFieldEntityType, string>`,
+    // so tsc already refuses a MISSING key -- but tsc does not run in every
+    // context this file does, and an entity type added to the tuple in the
+    // same commit as a `// @ts-expect-error` would slip. This is the runtime
+    // restatement, and it is what turns "six" into a number somebody chose.
+    expect([...Object.keys(PERMISSION_FOR_ENTITY)].sort()).toEqual(
+      [...CUSTOM_FIELD_ENTITY_TYPES].sort(),
+    );
+    expect(Object.keys(PERMISSION_FOR_ENTITY)).toHaveLength(6);
+  });
 
-  for (const [entity, key] of Object.entries(EXPECTED)) {
-    it(`'${entity}' resolves to ${key} in SQL and in TypeScript`, () => {
-      // The branch text between this `when` and the next one.
-      const from = body.indexOf(`when '${entity}' then`);
-      expect(from, `no '${entity}' branch`).toBeGreaterThan(-1);
-      const nextWhen = body.indexOf("    when '", from + 10);
-      const branch = body.slice(from, nextWhen === -1 ? undefined : nextWhen);
-      expect(branch).toContain(`permitted_organisations('${key}')`);
+  it("every key it names is a permission actually seeded by a migration", () => {
+    // THE TYPO CATCHER. A key absent from public.permissions is absent from
+    // the join inside private.permitted_organisations(), which returns no
+    // rows, which fails CLOSED -- so `manage_evnets` would deny every event
+    // write in the product and raise nothing anywhere. The seed row shape is
+    // `('<key>', <bool>,` in both 20260828210000 and 20260901010000.
+    const missing = [...new Set(Object.values(PERMISSION_FOR_ENTITY))].filter(
+      (key) =>
+        !new RegExp(String.raw`\('${key}',\s+(true|false),`).test(migrations),
+    );
+    expect(
+      missing,
+      `permission key(s) named by PERMISSION_FOR_ENTITY but seeded by no ` +
+        `migration: ${missing.join(", ")}. A key absent from ` +
+        `public.permissions fails CLOSED -- it denies every write of that ` +
+        `entity type and raises nothing.`,
+    ).toEqual([]);
+  });
 
-      const fields = read("lib/crm/custom-fields.ts");
-      const table = fields.slice(
-        fields.indexOf("export const PERMISSION_FOR_ENTITY"),
-        fields.indexOf("export const ENTITY_PATH_SEGMENT"),
-      );
-      expect(table).toContain(`${entity}: "${key}"`);
-    });
-  }
+  it("...and the same check really can fail, on a key nobody seeded", () => {
+    // The paired negative. Without it the assertion above passes against a
+    // regexp that matches everything -- which is how a source-text guard dies.
+    expect(/\('manage_evnets',\s+(true|false),/.test(migrations)).toBe(false);
+  });
 });
 
 describe("the custom fields panel carries the checkbox-group markers", () => {
@@ -920,13 +994,40 @@ describe("I-6: every capped reader in lib/crm/queries.ts orders before it caps",
   const lines = queries.split(/\r?\n/);
   const caps = lines
     .map((line, index) => ({ line, index }))
-    .filter(({ line }) => line.includes(".limit(") && !line.trimStart().startsWith("//"));
+    .filter(({ line }) => {
+      if (!line.includes(".limit(")) return false;
+      // COMMENT LINES ARE NOT CALLS, and both comment SHAPES have to be
+      // excluded. `//` was excluded from the start; the `*` continuation of a
+      // `/** */` block was not, and Phase 3 Task 7 is where that cost
+      // something: `loadUpcomingEvents`' doc-block explains why the function
+      // is a bounded `.limit(...)` rather than a fourth pager, and the guard
+      // read those two sentences as two capped readers with no `.order()`
+      // above them. A false RED, which is the safe direction -- but a guard
+      // that goes red at prose is a guard people start editing prose around.
+      const trimmed = line.trimStart();
+      return !trimmed.startsWith("//") && !trimmed.startsWith("*") && !trimmed.startsWith("/*");
+    });
 
   it("finds the capped readers at all, so this cannot pass vacuously", () => {
-    // Six today: two link panels, two representation panels, the rooms panel
-    // and the link picker. A floor, so Phase 3 adding one is not a red for the
-    // wrong reason -- but deleting them all is.
-    expect(caps.length).toBeGreaterThanOrEqual(6);
+    // ELEVEN, COUNTED RATHER THAN GUESSED, and raising this number is the
+    // obligation rather than paperwork -- a floor left at six would be
+    // satisfied by a tree that had deleted three of the readers it is meant to
+    // be counting. The comment said "six today" through Phase 3 Task 4, which
+    // had already made it eight.
+    //
+    // Two link panels (contact/company, both directions), the link picker, two
+    // representation panels, the rooms panel, the venue picker's venues and its
+    // rooms (Task 4), and the lineup panel's REMOVED slots (Task 5). The live
+    // lineup itself is NOT here: it is a real lib/list/ surface with a keyset
+    // pager, not a capped read.
+    //
+    // PHASE 3 TASK 7 ADDS TWO, and they are the two that most need this guard
+    // because neither is a join panel: the artist event history's STEP ONE
+    // (the 50 `event_lineup` rows whose ids step two pages, where an unordered
+    // cap would be a different 50 on every render), and the workspace home's
+    // upcoming-events block (five rows, ordered by date, on the first screen a
+    // user sees).
+    expect(caps.length).toBeGreaterThanOrEqual(11);
   });
 
   for (const { line, index } of caps) {
@@ -1046,4 +1147,863 @@ describe("every create screens for duplicates", () => {
       expect(source).toContain("if (screened.mergedInto)");
     });
   }
+});
+
+// ===========================================================================
+// PHASE 3 TASK 4 -- the event write path
+// ===========================================================================
+//
+// The `.update(` / `.delete(` census above already covers `lib/crm/events.ts`
+// without an edit: `CRM_SOURCES` reads the whole directory. What needed
+// raising is the FLOOR, whose stated job is that the suite cannot pass
+// vacuously -- see the assertion's own comment for the number and how it was
+// counted.
+
+describe("loadVenuesForPicker does not offer soft-deleted venues or rooms", () => {
+  // The same mutation as `loadLinkOptions` above (mutation 8 in the Task 4
+  // review's table: dropping the filter was invisible to the whole suite), one
+  // picker along -- and this one matters more, because the record it would
+  // start offering is a venue an event would then be SAVED against.
+  const queries = read("lib/crm/queries.ts");
+  const body = queries.slice(queries.indexOf("export async function loadVenuesForPicker"));
+
+  it("filters deleted_at in the query", () => {
+    expect(body).toContain(`.is("deleted_at", null)`);
+  });
+
+  it("scopes the query to one organisation", () => {
+    expect(body).toContain(`.eq("organisation_id", organisationId)`);
+  });
+
+  it("...and both filters are on the VENUES query, not only the rooms one", () => {
+    // The function runs two capped queries. A `.is("deleted_at", null)`
+    // anywhere in the body satisfies the two assertions above, so this one
+    // pins the half that decides which venues are offered.
+    const venuesQuery = body.slice(
+      body.indexOf(`.from("venues")`),
+      body.indexOf(`.limit(LINK_PANEL_LIMIT)`),
+    );
+    expect(venuesQuery).toContain(`.eq("organisation_id", organisationId)`);
+    expect(venuesQuery).toContain(`.is("deleted_at", null)`);
+  });
+
+  it("the two deliberate exceptions are the stored-value lookups, and they are named", () => {
+    // `lookupPlace` and the stored-room query must NOT filter `deleted_at`:
+    // their whole job is to find the deleted venue or closed room an event
+    // already names, so the `<select>` contains the stored value and editing
+    // another field does not silently clear it. Asserted so that "adding the
+    // filter everywhere" is a red rather than a silent data loss.
+    const lookup = queries.slice(
+      queries.indexOf("async function lookupPlace("),
+      queries.indexOf("const PICKER_ROOM_LIMIT"),
+    );
+    expect(lookup).toContain(`.select("name, deleted_at")`);
+    expect(lookup).not.toContain(`.is("deleted_at", null)`);
+  });
+
+  it("hands its rows to assemblePicker rather than assembling them inline", () => {
+    // FIX ROUND 1, I-1. The assembly used to live between the four queries in
+    // this function, where `tests/unit` cannot reach it -- and the defect it
+    // hid was a stored venue the caller cannot read being dropped from the
+    // options, which the browser then submits as `venue_id = null` on the next
+    // save of any other field. `assemblePicker` is pure and is driven directly
+    // by tests/unit/crm/event-picker.test.ts; this assertion is what keeps the
+    // real code path going through the tested one.
+    expect(body).toContain("return assemblePicker({");
+    expect(body).not.toContain("venues.push(");
+  });
+});
+
+describe("loadEvent serves a soft-deleted event, so restore is reachable", () => {
+  // The same rule as every other detail loader, and the one a copy of a LIST
+  // query would get wrong: a 404 after deleting is the shape that makes people
+  // afraid of the delete button, and the restore list would link into nothing.
+  const queries = read("lib/crm/queries.ts");
+  const body = queries.slice(
+    queries.indexOf("export async function loadEvent("),
+    queries.indexOf("async function lookupPlace("),
+  );
+
+  it("selects deleted_at rather than filtering it", () => {
+    expect(body).toContain("deleted_at");
+    expect(body).not.toContain(`.is("deleted_at", null)`);
+  });
+
+  it("scopes to one organisation and renders the ticket link through safeHref", () => {
+    expect(body).toContain(`.eq("organisation_id", organisationId)`);
+    // The render-side half of the protocol rule. A stored `javascript:` --
+    // from an import, or a direct PostgREST PATCH with the anon key past the
+    // CHECK constraint's reach -- must reach the page as `null` and be
+    // rendered as inert text.
+    expect(body).toContain("ticketLinkHref: safeHref(");
+    expect(body).not.toContain("ticketLinkHref: data.ticket_link");
+  });
+});
+
+describe("the event writes refuse a soft-deleted venue", () => {
+  // THE ONE END THAT IS APPLICATION-ONLY. `events_venue_fkey` is composite on
+  // (venue_id, organisation_id), so the DATABASE holds the tenant half -- but
+  // there is no `deleted_at` term in the events write policies, deliberately,
+  // so nothing except these four lines refuses a save against a venue the
+  // workspace has deleted.
+  //
+  // A source assertion because a Server Action is not drivable from a node
+  // test in this repository (tests/unit is pure functions only, by the
+  // config's own rule). The behavioural half is the browser walk in the task
+  // report.
+  const events = read("lib/crm/events.ts");
+
+  /**
+   * OVER THE CODE, NOT THE PROSE, and this is a correction Phase 3 Task 5
+   * forced rather than a tidy-up.
+   *
+   * A body runs from its own `export async function` to the next one, so the
+   * LAST action in the file absorbs everything after it -- and Task 5 added a
+   * section header below `restoreEventAction` that explains, in prose, which
+   * lineup write checks which end. It names `liveInOrg(` and
+   * `refusedEndState(` in order to explain them, which flipped
+   * `restoreEventAction` into the "checks the venue end" list and turned two
+   * assertions red about a function that had not changed.
+   *
+   * The same trap N-3 sprang on the `.update(` census, and the same fix:
+   * a line whose first non-space characters are `//` is prose, not a
+   * statement. Stripping cannot make a real call site invisible -- a call
+   * inside a comment is not a call -- so this strengthens the guard rather
+   * than relaxing it.
+   */
+  function actionBody(name: string): string {
+    const start = events.indexOf(`export async function ${name}(`);
+    expect(start, `${name} not found`).toBeGreaterThan(-1);
+    const next = events.indexOf("\nexport async function ", start + 1);
+    return events
+      .slice(start, next === -1 ? undefined : next)
+      .split("\n")
+      .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+      .join("\n");
+  }
+
+  const ACTIONS = [
+    "createEventAction",
+    "updateEventAction",
+    "deleteEventAction",
+    "restoreEventAction",
+  ] as const;
+
+  it("exactly the two WRITES check the venue end, and the two lifecycle actions do not", () => {
+    // The denominator, so this block cannot pass vacuously by nobody calling
+    // `liveInOrg` at all -- which is exactly what factoring the check into a
+    // helper would produce. Delete and restore touch no `venue_id`, and
+    // refusing to delete an event because somebody else deleted its venue
+    // would leave the user with a record they cannot remove.
+    const checking = ACTIONS.filter((name) => actionBody(name).includes("liveInOrg("));
+    expect(checking).toEqual(["createEventAction", "updateEventAction"]);
+  });
+
+  for (const action of ACTIONS) {
+    it(`${action} pairs liveInOrg with refusedEndState, or has neither`, () => {
+      const body = actionBody(action);
+      if (!body.includes("liveInOrg(")) {
+        expect(body).not.toContain("refusedEndState(");
+        return;
+      }
+      expect(body).toContain(`liveInOrg(supabase, "venues", org.id, parsed.values.venueId)`);
+      expect(body).toContain("refusedEndState(ends, formData)");
+    });
+  }
+
+  it("createEventAction does NOT screen for duplicates, and says why", () => {
+    // The inverse of "every create screens for duplicates" below, and it is a
+    // decision rather than an omission: 20260901001000 § (c) (Q30) gave
+    // private.dedup_entity_table() no 'event' arm, so the call would FAIL
+    // rather than return null -- unlike the four Phase 2 entities whose
+    // auto-merge branch is dead but harmless. There must also be no dead
+    // branch left behind pretending otherwise.
+    //
+    // OVER THE CODE, NOT THE PROSE. This file's header names both tokens in
+    // order to explain their absence, and `.toContain` cannot tell a sentence
+    // from a statement -- the same trap N-3 sprang on the census above, which
+    // counted a `.update(` in lib/crm/write.ts's header as a call site.
+    const code = events
+      .split("\n")
+      .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+      .join("\n");
+    expect(code).not.toContain("screenAfterCreate(");
+    expect(code).not.toContain("screened.mergedInto");
+    // The decision's name, in the prose, so the absence is explained and not
+    // merely true.
+    expect(events).toContain("20260901001000");
+  });
+
+  it("every write asks for the row count and pins the organisation", () => {
+    // Belt and braces over the directory-wide census above, because the writes
+    // here are the ones a copied file loses first.
+    //
+    // SIX SINCE PHASE 3 TASK 5, counted rather than guessed: the three EVENT
+    // writes (update, soft-delete, restore -- there is no DELETE policy on the
+    // table and no grant for one) plus the three LINEUP writes
+    // (updateLineupEntryAction, removeLineupEntryAction,
+    // restoreLineupEntryAction). `addLineupEntryAction` inserts and so has
+    // none, exactly as `createEventAction` does not.
+    //
+    // AN EXACT NUMBER RATHER THAN A FLOOR, deliberately, because this block's
+    // job is the DENOMINATOR the directory census cannot supply: a seventh
+    // `.update(` appearing here is either a new write that needs its own row
+    // in the loop below or a copy nobody meant to make.
+    const writes = events.match(/\.update\(/g) ?? [];
+    expect(writes).toHaveLength(6);
+    for (const action of ["updateEventAction", "deleteEventAction", "restoreEventAction"]) {
+      const body = actionBody(action);
+      expect(body, action).toContain(`count: "exact"`);
+      expect(body, action).toContain(`.eq("organisation_id", org.id)`);
+      expect(body, action).toContain(`.eq("id", eventId)`);
+    }
+  });
+});
+
+describe("the event form echoes every field a refusal would otherwise wipe", () => {
+  // React 19 resets a `<form action>` once the action resolves, so an
+  // UNCONTROLLED form -- which this one is, deliberately, because it then works
+  // with JavaScript disabled -- puts every input back to its `defaultValue`.
+  // A field whose default does not read the echo comes back EMPTY after a
+  // refusal, and the user who mistyped one character loses the record they
+  // just entered. That is invisible to tsc, to lint, and to every other test
+  // here: no assertion on a pure function can see a `??` deleted from a .tsx
+  // file.
+  //
+  // ONE ECHO PER RENDERED FIELD, WRITTEN OUT RATHER THAN THROUGH A HELPER.
+  // components/crm/venue-form.tsx routes its defaults through a `shown()`
+  // closure, which is tidier and leaves exactly one `state.values?.` in the
+  // file -- so a field added without an echo is invisible to a census. Here
+  // the ten are literal, and the count below is the guard.
+  const form = read("components/crm/event-form.tsx");
+
+  const FIELDS = [
+    "name",
+    "startsAt",
+    "endsAt",
+    "eventType",
+    "status",
+    "venueId",
+    "venueRoomId",
+    "location",
+    "ticketLink",
+    "notes",
+  ] as const;
+
+  it("reads the echo for each of the ten fields, and for no others", () => {
+    const echoes = form.match(/state\.values\?\.[A-Za-z]+/g) ?? [];
+    expect(
+      [...echoes].sort(),
+      "a field rendered without `state.values?.<name> ??` loses what was typed",
+    ).toEqual(FIELDS.map((name) => `state.values?.${name}`).sort());
+    // The count as well as the set: a duplicated echo would pass the set
+    // comparison above while meaning a field is rendered twice.
+    expect(echoes).toHaveLength(FIELDS.length);
+    expect(FIELDS).toHaveLength(10);
+  });
+
+  it("every echo falls back to the stored value rather than to an empty string", () => {
+    // `state.values?.name ?? ""` on an EDIT form renders an empty input over a
+    // record that has a name -- the mirror-image defect, and the one a
+    // careless fix for the first would introduce.
+    for (const name of FIELDS) {
+      expect(form, name).toContain(`state.values?.${name} ?? values.${name}`);
+    }
+  });
+
+  it("every <select> is keyed on its shown value, not only defaultValued", () => {
+    // MEASURED IN A BROWSER, first Rule 17 walk of this form. React syncs a
+    // text input's `defaultValue` to the DOM property on every update, so
+    // `form.reset()` after a Server Action restores the ECHOED value. It does
+    // NOT do the equivalent for a `<select>`, whose default lives in an
+    // `<option>`'s `selected` attribute -- written at mount and then left
+    // alone. Without the key, a refused submit snapped all four selects back
+    // to the options the page first rendered with ("Other", "Draft", no venue,
+    // no room), and retrying saved four values the user never chose.
+    //
+    // Nothing else in the repository can see this: it needs a DOM, a render
+    // and a re-render, and tests/unit is pure functions only. Same mechanism
+    // and same guard shape as the merge screen's survivor key (I-2 above).
+    for (const name of ["eventType", "status", "venueId", "venueRoomId"]) {
+      expect(form, name).toContain("key={`" + name + ":${" + name + "}`}");
+    }
+  });
+
+  it("carries NO checkbox-group marker, and says so", () => {
+    // Every other form in components/crm/ carries `groupMarkerName(...)`,
+    // because an unticked checkbox submits nothing and "none" then collides
+    // with "not asked" (lib/forms.ts). This form has no checkbox and no
+    // multi-select -- status and type are `<select>`s over closed
+    // vocabularies, which always submit -- so the marker would be dead code.
+    // Its ABSENCE is asserted with the explanation required beside it, because
+    // an unexplained absence here reads as the I-2 bug.
+    expect(form).not.toContain("groupMarkerName(");
+    expect(form).toContain("NO CHECKBOX GROUP ON THIS FORM");
+  });
+});
+
+// ===========================================================================
+// PHASE 3 TASK 5 -- the lineup builder
+// ===========================================================================
+//
+// The directory-wide `.update(` census above already covers the three new
+// lineup writes without an edit (`CRM_SOURCES` reads the whole of lib/crm/),
+// and the events-specific census in the block above was raised from three to
+// six with the breakdown written down. What is below is the part no census can
+// reach: WHICH ends each lineup action checks, and whether the panel hands
+// back what the user typed.
+
+describe("the lineup writes check the ends they have, and only those", () => {
+  // TWO ENDS WITH DIFFERENT AMOUNTS OF DATABASE BEHIND THEM, which is why this
+  // block asserts the denominator and not just the presence:
+  //
+  //   event   the parent, checked on ALL FOUR writes. ALSO a policy term
+  //           (`p.deleted_at is null` in all three event_lineup write
+  //           policies, 20260901011000), so this check buys the SENTENCE --
+  //           DELETED_RECORD_EXPLANATION instead of an `ok(0)` rendered as
+  //           REFUSED_MESSAGE.
+  //   artist  checked ONLY on the add, because it is the only write that names
+  //           an artist. For the SOFT-DELETED half this is the only control in
+  //           the system: rls_phase3_events.sql § EH5 asserts that no lineup
+  //           policy expression mentions public.artists, and § EH2 asserts a
+  //           record-scoped user really can book an artist they cannot see.
+  //           Delete the liveInOrg call and nothing else catches it.
+  //
+  // A source assertion because a Server Action is not drivable from a node
+  // test in this repository (tests/unit is pure functions only, by the
+  // config's own rule). The behavioural half is the browser walk in the task
+  // report and § EF/§ EG of the psql suite.
+  const events = read("lib/crm/events.ts");
+
+  function actionBody(name: string): string {
+    const start = events.indexOf(`export async function ${name}(`);
+    expect(start, `${name} not found`).toBeGreaterThan(-1);
+    const next = events.indexOf("\nexport async function ", start + 1);
+    // Comment lines stripped, for the reason the block above now strips them.
+    return events
+      .slice(start, next === -1 ? undefined : next)
+      .split("\n")
+      .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+      .join("\n");
+  }
+
+  const LINEUP_ACTIONS = [
+    "addLineupEntryAction",
+    "updateLineupEntryAction",
+    "removeLineupEntryAction",
+    "restoreLineupEntryAction",
+  ] as const;
+
+  it("all four check the EVENT end and pair it with refusedEndState", () => {
+    for (const action of LINEUP_ACTIONS) {
+      const body = actionBody(action);
+      expect(body, action).toContain(
+        `liveInOrg(supabase, "events", org.id, eventId)`,
+      );
+      expect(body, action).toContain("refusedEndState(ends, formData)");
+    }
+  });
+
+  it("exactly ONE of them checks the ARTIST end -- the add", () => {
+    // The denominator. Without it this passes vacuously the day somebody
+    // factors the two calls into a `lineupEnds()` helper, which is the change
+    // lib/crm/events.ts's § 4 refuses for this exact reason.
+    const checking = LINEUP_ACTIONS.filter((name) =>
+      actionBody(name).includes(`liveInOrg(supabase, "artists"`),
+    );
+    expect(checking).toEqual(["addLineupEntryAction"]);
+    expect(actionBody("addLineupEntryAction")).toContain(
+      `liveInOrg(supabase, "artists", org.id, artistId)`,
+    );
+  });
+
+  it("the artist end says, in the file, that no policy is behind it", () => {
+    // The one comment in this repository whose deletion would be a security
+    // regression rather than a documentation one: a reader who assumes RLS
+    // covers the artist end deletes four lines and a soft-deleted artist
+    // becomes bookable, with every gate green.
+    expect(events).toContain("rls_phase3_events.sql § EH");
+    expect(events).toContain(
+      "DO NOT DELETE THE liveInOrg CALL",
+    );
+  });
+
+  it("every lineup UPDATE carries count: \"exact\" and pins org, event and row", () => {
+    // A 204 IS NOT A SAVE (lib/crm/write.ts). The directory census covers the
+    // first half; the three `.eq(` are this block's own, because a lineup
+    // write that pinned only `id` would be a cross-event write for anyone who
+    // can forge a form post -- the policy would still refuse a cross-TENANT
+    // one, and would not refuse moving a slot between two events of the same
+    // tenant that the caller can write.
+    for (const action of [
+      "updateLineupEntryAction",
+      "removeLineupEntryAction",
+      "restoreLineupEntryAction",
+    ]) {
+      const body = actionBody(action);
+      expect(body, action).toContain(`count: "exact"`);
+      expect(body, action).toContain(`.eq("organisation_id", org.id)`);
+      expect(body, action).toContain(`.eq("event_id", eventId)`);
+      expect(body, action).toContain(`.eq("id", lineupId)`);
+    }
+  });
+
+  it("the duplicate artist is answered before classifyWrite sees it", () => {
+    const body = actionBody("addLineupEntryAction");
+    // 23505 handled inline, like `linkCompanyAction`'s. Reaching
+    // `classifyWrite` would map it to CONFLICT_MESSAGE -- "somebody else
+    // changed this record while you were editing it" -- about a person who
+    // does not exist.
+    expect(body).toContain(`error.code === "23505"`);
+    expect(body).toContain(
+      "return { error: LINEUP_DUPLICATE_ARTIST, values: echoedValues(formData) };",
+    );
+    expect(events).toContain(
+      'const LINEUP_DUPLICATE_ARTIST = "That artist is already on this lineup.";',
+    );
+  });
+});
+
+describe("the lineup forms echo every field a refusal would otherwise wipe", () => {
+  // React 19 resets a `<form action>` once the action resolves, so an
+  // UNCONTROLLED form -- which every form in this panel is, deliberately,
+  // because they then work with JavaScript disabled -- puts every input back to
+  // its `defaultValue`. A field whose default does not read the echo comes back
+  // EMPTY after a refusal. Invisible to tsc, to lint and to every other test
+  // here: no assertion on a pure function can see a `??` deleted from a .tsx
+  // file.
+  //
+  // TWO FILES, AND THE SPLIT IS ITSELF LOAD-BEARING. `lineup-panel.tsx` is a
+  // SERVER component; `lineup-forms.tsx` is the only client code in the
+  // surface. The first version had one `"use client"` file, which pulled
+  // `components/list/list-pager.tsx` into the browser bundle, where
+  // `encodeCursor`'s `Buffer.from(...).toString("base64url")` throws
+  // `Unknown encoding: base64url` DURING HYDRATION and takes the whole page's
+  // client tree with it. Measured in the Rule 17 walk; the panel still worked,
+  // because uncontrolled forms post natively, which is exactly why nothing else
+  // caught it. The penultimate assertion in this block is the guard.
+  const panel = read("components/crm/lineup-panel.tsx");
+  const forms = read("components/crm/lineup-forms.tsx");
+
+  // SIX, NOT FIVE. The brief names five -- the fields a SLOT has -- and the add
+  // form carries a sixth of its own, `artistId`, which is the one whose loss is
+  // worst: a refused add that snapped the picker back to its first option would
+  // book somebody the user never chose on the retry.
+  const SHARED_FIELDS = [
+    "position",
+    "billing",
+    "setStartsAt",
+    "setEndsAt",
+    "notes",
+  ] as const;
+  const FIELDS = [...SHARED_FIELDS, "artistId"] as const;
+
+  it("reads the echo for each of the six fields, and for no others", () => {
+    const echoes = form_echoes(forms);
+    expect(
+      [...new Set(echoes)].sort(),
+      "a field rendered without `state.values?.<name> ??` loses what was typed",
+    ).toEqual([...FIELDS].map((name) => `state.values?.${name}`).sort());
+    // Per NAME rather than as a total: the five shared fields are echoed twice
+    // -- once in `SlotEditForm`, once in `AddSlotForm` -- and an exact total
+    // would let a duplicated echo hide a missing one.
+    for (const name of FIELDS) {
+      const count = echoes.filter((echo) => echo === `state.values?.${name}`).length;
+      expect(count, `${name} is echoed at least once`).toBeGreaterThanOrEqual(1);
+    }
+    expect(SHARED_FIELDS).toHaveLength(5);
+    // And the SERVER half holds none of them: an echo there would be a value
+    // read out of a `state` that component does not have.
+    expect(form_echoes(panel)).toEqual([]);
+  });
+
+  it("the row form's echoes fall back to the STORED value, not to an empty string", () => {
+    // `state.values?.position ?? ""` on the row form renders an empty input
+    // over a slot that has a position -- the mirror-image defect, and the one a
+    // careless fix for the first would introduce. The add form is the opposite
+    // case and is allowed its blanks: there is no stored row.
+    for (const name of SHARED_FIELDS) {
+      expect(forms, name).toContain(`state.values?.${name} ?? stored.${name}`);
+    }
+    // And the panel is what builds `stored`, converting both instants to the
+    // wall clock the input speaks.
+    expect(panel).toContain("instantToLondonWallClock(row.setStartsAt)");
+    expect(panel).toContain("instantToLondonWallClock(row.setEndsAt)");
+    // A billing this build does not know falls back to `other` rather than to
+    // the FIRST option, which a `<select>` would otherwise select silently.
+    expect(panel).toContain('billing: row.billing ?? "other"');
+  });
+
+  it("every <select> is keyed on its shown value, not only defaultValued", () => {
+    // MEASURED IN A BROWSER by Task 4 on the event form, and re-measured here
+    // on the duplicate-artist refusal. React syncs a text input's
+    // `defaultValue` to the DOM property on every update, so `form.reset()`
+    // after a Server Action restores the ECHOED value. It does NOT do the
+    // equivalent for a `<select>`, whose default lives in an `<option>`'s
+    // `selected` attribute -- written at mount and then left alone.
+    //
+    // The denominator matters: this file has exactly TWO selects (`billing`,
+    // shared by both forms, and `artistId` on the add form), so a third added
+    // without a key is caught by the count as well as by the names. COUNTED
+    // OVER THE CODE, NOT THE PROSE -- the headers explain the `<select>`
+    // mechanism in words, and `.match()` cannot tell a sentence from an element
+    // (the trap N-3 sprang on the `.update(` census).
+    const selects = stripLineComments(forms).match(/<select\b/g) ?? [];
+    expect(selects).toHaveLength(2);
+    expect(forms).toContain("key={`billing:${values.billing}`}");
+    expect(forms).toContain("key={`artistId:${artistId}`}");
+  });
+
+  it("no <form> is nested inside a <span>", () => {
+    // The Task 5 deferred minor from Phase 2, found by review finding I-12 in a
+    // panel where axe reported ZERO violations: `<span><form>…</form></span>`
+    // is valid markup and an invalid content model, and browsers repair it by
+    // moving the form. Asserted structurally rather than by eye, because the
+    // repair is silent. Both files, because the panel places the forms and the
+    // forms place themselves.
+    for (const [label, source] of [
+      ["panel", panel],
+      ["forms", forms],
+    ] as const) {
+      expect(source, label).not.toMatch(/<span[^>]*>\s*(\{[^}]*\}\s*)?<form/);
+    }
+    // The positive control: there ARE forms, so the negative above is not
+    // satisfied by a file with none.
+    expect((forms.match(/<form\b/g) ?? []).length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("the position input carries the CHECK's bounds and the CHECK's sentence", () => {
+    // `event_lineup`'s CHECK is `position >= 0 and position <= 999`. The input
+    // attributes are the browser's half and are NOT the control -- a form post
+    // ignores them -- so the server-side parser is asserted beside them.
+    expect(forms).toContain('type="number"');
+    expect(forms).toContain("min={MIN_POSITION}");
+    expect(forms).toContain("max={MAX_POSITION}");
+    expect(forms).toContain("step={1}");
+    const list = read("lib/crm/lineup-list.ts");
+    expect(list).toContain("export const MIN_POSITION = 0;");
+    expect(list).toContain("export const MAX_POSITION = 999;");
+    expect(list).toContain('"Position must be a whole number between 0 and 999.";');
+  });
+
+  it("the notes cap is ONE constant, read by the control and by the parser", () => {
+    // FIX ROUND 1, MINOR 3. `maxLength={2000}` was typed here and
+    // `MAX_LINEUP_NOTES = 2000` lived in lib/crm/events.ts, so a change to the
+    // server cap would have left the browser truncating at the old one -- the
+    // exact drift MIN_POSITION/MAX_POSITION were moved into the pure module to
+    // prevent, and the only one of the two that had no guard. The constant now
+    // lives beside them and BOTH sides import it.
+    expect(read("lib/crm/lineup-list.ts")).toContain(
+      "export const MAX_LINEUP_NOTES = 2000;",
+    );
+    expect(forms).toContain("maxLength={MAX_LINEUP_NOTES}");
+    expect(forms, "a literal here can drift from the server's cap").not.toMatch(
+      /maxLength=\{\d+\}/,
+    );
+    const events = read("lib/crm/events.ts");
+    expect(events).toContain("notes.length > MAX_LINEUP_NOTES");
+    expect(events, "the constant moved out of this module").not.toContain(
+      "const MAX_LINEUP_NOTES =",
+    );
+  });
+
+  it("every write control is DISABLED with an explanation, never hidden", () => {
+    // FOLLOW-UPS Q6: "Write controls disabled, not hidden and not
+    // present-and-failing. Hidden loses the explanation; present-and-failing
+    // produces a 403 the user cannot interpret." The panel renders ONE note for
+    // the group and hands its id down; every control takes `disabled` from the
+    // same boolean and describes itself with that id.
+    expect(panel).toContain('const NOTE_ID = "lineup-blocked";');
+    expect(panel).toContain("const disabled = disabledReason !== null;");
+    const disabledProps = forms.match(/disabled=\{disabled\}/g) ?? [];
+    expect(disabledProps.length).toBeGreaterThanOrEqual(5);
+    const described = forms.match(/aria-describedby=\{disabled \? noteId : undefined\}/g) ?? [];
+    expect(described.length).toBeGreaterThanOrEqual(4);
+    // And NOT hidden: no control is rendered behind a `disabled ? null : …`.
+    expect(panel).not.toMatch(/disabled \? null :/);
+    expect(forms).not.toMatch(/disabled \? null :/);
+  });
+
+  it("the panel is a SERVER component, so ListPager never reaches the browser", () => {
+    // THE DEFECT THIS SPLIT EXISTS FOR, guarded from both ends. A `"use client"`
+    // on lineup-panel.tsx puts `ListPager` -> `buildListHref` -> `encodeCursor`
+    // -> `Buffer.from(...).toString("base64url")` into the browser bundle,
+    // where it throws at hydration and the page's whole client tree dies
+    // silently -- the forms still post natively, so the surface LOOKS fine and
+    // the pager's links do nothing.
+    //
+    // OVER THE CODE, NOT THE PROSE: both headers name `ListPager` and
+    // `lib/list/` in order to explain the split.
+    expect(panel.startsWith('"use client"')).toBe(false);
+    expect(stripLineComments(panel)).toContain("ListPager");
+    expect(forms.startsWith('"use client"')).toBe(true);
+    expect(stripLineComments(forms)).not.toContain("ListPager");
+    expect(stripLineComments(forms)).not.toContain("@/lib/list/");
+  });
+
+  it("the artist name links to the artist's own page", () => {
+    expect(panel).toContain("href={`/${orgSlug}/artists/${artistId}`}");
+  });
+});
+
+describe("the event detail page wires the lineup list the way it has to be wired", () => {
+  // FIX ROUND 1, MINOR 4. `buildListHref`'s `preserve` MECHANICS are covered
+  // (tests/unit/list/param-prefix.test.ts § 4), and the WIRING was not -- and
+  // the brief names this as the one criterion where "nothing fails loudly when
+  // it is wrong".
+  //
+  // It cannot break visibly today, because the page carries one list. Task 6
+  // adds the timeline, at which point a dropped `preserve` silently returns
+  // whichever list you did not click to its first page: no error, no log, a
+  // wrong page. Only the throwaway browser walk covered it, and a throwaway is
+  // not a gate.
+  const page = read("app/(app)/[orgSlug]/events/[eventId]/page.tsx");
+
+  it("passes the whole query string as `preserve` to the lineup panel", () => {
+    expect(page).toContain("preserve={raw}");
+    // The whole `searchParams` is the RIGHT thing to hand over, not a leak of
+    // one list's keys into another's URL: `buildListHref` strips the keys the
+    // spec owns before re-emitting the rest (lib/list/params.ts).
+    expect(page).toContain("const raw = (await searchParams) as RawSearchParams;");
+  });
+
+  it("hands the loader the RAW query string, so the namespace cannot be bypassed", () => {
+    // `loadLineupForEvent` owns LINEUP_LIST's namespace and the `lineup_q`
+    // drop. A caller that parsed params itself and passed them in would lose
+    // the drop, and the symptom is "No lineup yet" on an event with a full
+    // bill.
+    expect(page).toContain("loadLineupForEvent(org.id, event.id, raw)");
+    expect(page).toContain("params={lineup.params}");
+    // And it does NOT parse them itself, which is the shape that would let the
+    // two drift.
+    expect(page).not.toContain("parseListParams(");
+    expect(page).not.toContain("lineupParams(");
+  });
+
+  it("TASK 6 WILL ADD A SECOND LIST, and the slot comment says what it owes", () => {
+    // This assertion is aimed at the next author rather than at this code: the
+    // moment a second lib/list/ surface lands on this page, BOTH need their own
+    // `paramPrefix` and BOTH need `preserve`. The instruction is in the page
+    // where they will be working.
+    expect(page).toContain("`activity_`");
+    expect(page).toContain("preserve");
+  });
+});
+
+/** Every `state.values?.<name>` in a component, in source order. */
+function form_echoes(source: string): string[] {
+  return source.match(/state\.values\?\.[A-Za-z]+/g) ?? [];
+}
+
+/**
+ * Source with `//` lines blanked, for assertions that count ELEMENTS.
+ *
+ * The same rule `callArguments` applies, extracted because Task 5 needed it in
+ * a .tsx census too: a file that explains its own markup in prose otherwise
+ * counts its explanation. A `/* *\/` block comment would still be counted,
+ * which is a false RED and therefore safe -- this file's header says being
+ * noisy is the intended failure direction.
+ */
+function stripLineComments(source: string): string {
+  return source
+    .split("\n")
+    .map((line) => (line.trimStart().startsWith("//") ? "" : line))
+    .join("\n");
+}
+
+describe("Task 7: every list on a shared detail route is namespaced AND preserved", () => {
+  // THE SAME MECHANISM THE EVENT DETAIL PAGE'S BLOCK ABOVE USES, EXTENDED
+  // RATHER THAN REPLACED. `buildListHref`'s `preserve` MECHANICS are covered
+  // behaviourally in tests/unit/list/param-prefix.test.ts; what no behavioural
+  // test can see is a PAGE that forgets to pass it, because the failure is a
+  // silent return to page one on a surface nobody is looking at.
+  //
+  // Phase 3 Task 7 made the venue page a TWO-list route and the artist page a
+  // THREE-list one, which is the most exposed route in the product:
+  //
+  //   venue    VENUE_EVENTS_LIST (`venueevents_`) + ACTIVITY_LIST (`activity_`)
+  //   artist   ARTIST_FEE_LIST (bare) + ARTIST_EVENTS_LIST (`artistevents_`)
+  //            + ACTIVITY_LIST (`activity_`)
+  //
+  // A SOURCE CENSUS, with this file's usual limit: it says the wiring is
+  // present, not that it works. The Rule 17 browser walk is what measured that
+  // paging one surface leaves the others where they were.
+  const venue = read("app/(app)/[orgSlug]/venues/[venueId]/page.tsx");
+  const artist = read("app/(app)/[orgSlug]/artists/[artistId]/page.tsx");
+
+  const PAGES = [
+    { name: "venue", source: venue, lists: 2 },
+    { name: "artist", source: artist, lists: 3 },
+  ] as const;
+
+  it("each page reads its query string ONCE, into `raw`", () => {
+    // TWO `await searchParams` CALLS IS THE SHAPE THAT DRIFTS. The venue page
+    // used to call it twice -- once for `?merged=1` and once for the timeline
+    // -- and a third caller parsing its own copy is how one surface ends up
+    // reading a query string the others do not. One `raw`, handed to every
+    // parser and to every `preserve`.
+    for (const page of PAGES) {
+      expect(page.source, page.name).toContain(
+        "const raw = (await searchParams) as RawSearchParams;",
+      );
+    }
+    expect(PAGES).toHaveLength(2);
+  });
+
+  it("every list surface on each page is passed `preserve={raw}`", () => {
+    // THE DENOMINATOR IS THE LIST COUNT, and it is the assertion that catches
+    // the mutation this block exists for: adding a fourth surface to the
+    // artist page and wiring only three. `preserve={raw}` is counted as
+    // OCCURRENCES, over comment-stripped source, so the prose above each one
+    // is not counted as one.
+    for (const page of PAGES) {
+      const occurrences =
+        stripLineComments(page.source).match(/preserve=\{raw\}/g) ?? [];
+      expect(occurrences.length, `${page.name}: preserve={raw}`).toBe(
+        page.lists,
+      );
+    }
+  });
+
+  it("the venue page's two surfaces are the ones named, and no other", () => {
+    // NAMED, not merely counted: two `preserve={raw}` would also pass the
+    // assertion above if somebody wired the same list twice.
+    expect(venue).toContain("VENUE_EVENTS_LIST");
+    expect(venue).toContain("<ActivityTimeline");
+    // And the ROOM panel is deliberately not one of them: it is a
+    // LINK_PANEL_LIMIT capped read with no pager and no query keys, so passing
+    // it `preserve` would be wiring a namespace it does not have.
+    expect(venue).toContain("<RoomPanel");
+    expect(stripLineComments(venue)).not.toContain("preserve={raw}\n        rooms");
+  });
+
+  it("the artist page's three surfaces are the ones named", () => {
+    expect(artist).toContain("ARTIST_FEE_LIST");
+    expect(artist).toContain("ARTIST_EVENTS_LIST");
+    expect(artist).toContain("<ActivityTimeline");
+  });
+
+  it("neither page parses list params by hand", () => {
+    // The namespace AND the `q` drop live in the loader's wrapper
+    // (`venueEventsParams` / `artistEventsParams`, lib/crm/events-list.ts), and
+    // a page that built params some other way would silently lose the drop --
+    // `loadLineupForEvent`'s signature note states the same rule for the same
+    // reason. The venue page must not call `parseListParams` at all; the
+    // artist page calls it exactly once, for the fee history, which has no
+    // wrapper because it drops nothing.
+    expect(stripLineComments(venue)).not.toContain("parseListParams(");
+    const artistParses =
+      stripLineComments(artist).match(/parseListParams\(/g) ?? [];
+    expect(artistParses).toHaveLength(1);
+    expect(artist).toContain("parseListParams(ARTIST_FEE_LIST, raw)");
+    // The two event surfaces reach their params through the loaders, which own
+    // the wrappers.
+    expect(venue).toContain("loadEventsForVenue(");
+    expect(artist).toContain("loadEventsForArtist(");
+  });
+
+  it("both new capped readers name the COLUMNS they order by, not just any order", () => {
+    // FIX ROUND 1, M-4. The I-6 guard above proves an `.order(` sits above
+    // every `.limit(` in `lib/crm/queries.ts`. That is the clause that stops
+    // the cap returning a different subset on every render -- but it says
+    // nothing about WHICH columns, and both of this task's readers make a
+    // claim that depends on the columns specifically:
+    //
+    //   * the artist window is "stable between reloads" only because the sort
+    //     is TOTAL. `created_at desc` alone is not: two slots added in one
+    //     transaction share `created_at` to the microsecond, and the 50 that
+    //     survive the cap could then differ between two identical requests.
+    //     `id asc` is what closes it, and dropping that one line leaves the
+    //     I-6 guard green and the documented property false.
+    //   * the upcoming block's "soonest first" is `starts_at asc`, and its own
+    //     tie-break is `id asc` for the same reason -- two events starting at
+    //     the same instant must not swap places between reloads.
+    //
+    // Asserted over the lines ABOVE each cap, in order, so a reordering is red
+    // too. Line-based like its I-6 neighbour, for the same reason: this is a
+    // census of a chained builder, and the chain's order is the property.
+    const lines = read("lib/crm/queries.ts").split(/\r?\n/);
+
+    const CAPS = [
+      {
+        cap: ".limit(ARTIST_EVENTS_ID_CAP)",
+        above: ['.order("id"', '.order("created_at"'],
+      },
+      {
+        cap: ".limit(UPCOMING_EVENT_COUNT)",
+        above: ['.order("id"', '.order("starts_at"'],
+      },
+    ] as const;
+
+    for (const { cap, above } of CAPS) {
+      // COMMENT LINES ARE NOT CALLS, and BOTH comment shapes have to go --
+      // the same correction the I-6 guard above needed, and needed for the
+      // same file: `loadUpcomingEvents`' doc-block quotes its own
+      // `.limit(UPCOMING_EVENT_COUNT)` while explaining why the function is a
+      // capped read, and the first draft of this assertion found that sentence
+      // instead of the call.
+      const at = lines.findIndex((line) => {
+        if (!line.includes(cap)) return false;
+        const trimmed = line.trimStart();
+        return (
+          !trimmed.startsWith("//") &&
+          !trimmed.startsWith("*") &&
+          !trimmed.startsWith("/*")
+        );
+      });
+      // Non-vacuity: the cap has to BE there, or the loop below reads
+      // `lines[-1]` and `lines[-2]` and asserts nothing.
+      expect(at, `${cap} is present`).toBeGreaterThan(0);
+      above.forEach((clause, back) => {
+        expect(lines[at - 1 - back], `${cap}: ${back + 1} line(s) above`).toContain(
+          clause,
+        );
+      });
+    }
+    // TWO is the denominator -- the two capped readers this task added. A
+    // third added without a row here is a window whose stability nothing
+    // checks.
+    expect(CAPS).toHaveLength(2);
+  });
+
+  it("the workspace home's upcoming block is a capped read, not a fourth list", () => {
+    // The one surface in this task that is deliberately NOT a lib/list/ list.
+    // A pager on the workspace home would be a fourth query-string namespace
+    // on a page with no list vocabulary at all; the "See all events" link is
+    // the page-2. Asserted here so that "make it paginated" is a decision
+    // somebody has to undo this test for.
+    const home = read("app/(app)/[orgSlug]/page.tsx");
+    expect(home).toContain("loadUpcomingEvents(org.id)");
+    expect(home).toContain("See all events");
+    expect(stripLineComments(home)).not.toContain("fetchListPage");
+    expect(stripLineComments(home)).not.toContain("parseListParams(");
+    // The empty state's two strings, verbatim. They are the brief's copy and
+    // the one thing on this block a reader cannot infer from the query.
+    expect(home).toContain("Nothing coming up");
+    expect(home).toContain(
+      "Events you create will appear here once they have a date in the future.",
+    );
+    // A LIST WITH ITS ROLE RESTORED. Safari + VoiceOver drops list semantics
+    // from a `ul` whose list-style is none, and these rows are ruled.
+    expect(home).toContain('<ul role="list"');
+  });
+
+  it("the upcoming block states its own scope for a record-scoped role", () => {
+    // An empty block means "nothing is booked" for a full-scope viewer and
+    // "nothing assigned to you is booked" for a Standard User, and only the
+    // role tells the page which is true. Same failure Phase 2 Task 3 shipped
+    // on the contacts list ("No contacts yet" on a 71-contact workspace).
+    const home = read("app/(app)/[orgSlug]/page.tsx");
+    expect(home).toContain("isRecordScopedRole(org.role)");
+    expect(home).toContain(
+      "You’re seeing events assigned to you. Others in this workspace may see",
+    );
+  });
+
+  it("the two event surfaces on the detail pages state their scope too", () => {
+    for (const page of PAGES) {
+      expect(page.source, page.name).toContain("isRecordScopedRole(org.role)");
+      expect(page.source, page.name).toContain("scopeNote=");
+    }
+  });
 });

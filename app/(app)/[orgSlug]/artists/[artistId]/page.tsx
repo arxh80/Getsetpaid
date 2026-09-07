@@ -16,9 +16,16 @@ import {
 } from "@/lib/crm/write-access";
 import {
   loadArtist,
+  loadEventsForArtist,
   loadLinkOptions,
   loadRepresentationsForArtist,
 } from "@/lib/crm/queries";
+import {
+  ARTIST_EVENTS_LIST,
+  type ArtistEventsSortKey,
+  type EventRow,
+} from "@/lib/crm/events-list";
+import { StatusChip } from "@/components/crm/status-chip";
 import {
   ARTIST_FEE_LIST,
   ARTIST_FEE_SELECT,
@@ -61,10 +68,26 @@ import { formatDateOnly, formatDateTime } from "@/lib/format/date";
 // It goes through lib/list/ rather than through a LINK_PANEL_LIMIT cap,
 // because fee history GROWS -- one row per booking, kept for seven years
 // (CLAUDE.md § Non-negotiable rules) -- where a join panel does not. See
-// ARTIST_FEE_LIST in lib/crm/artists-list.ts for the argument and for the
-// consequence: lib/list/params.ts owns `q`, `sort`, `dir`, `size`, `after` and
-// `before` unconditionally, so this route may carry exactly ONE lib/list/
-// surface and this is it.
+// ARTIST_FEE_LIST in lib/crm/artists-list.ts for the argument.
+//
+// ===========================================================================
+// AND IT IS NOW ONE OF THREE, WHICH MAKES THIS THE MOST EXPOSED ROUTE HERE
+// ===========================================================================
+// The sentence above used to end "...so this route may carry exactly ONE
+// lib/list/ surface and this is it." That stopped being true when Task 7 of
+// Phase 2 gave `ListSpec` a `paramPrefix`, and this route now carries THREE:
+//
+//   fee history   ARTIST_FEE_LIST      no prefix -- bare `after`, `sort`, ...
+//   event history ARTIST_EVENTS_LIST   `artistevents_`
+//   timeline      ACTIVITY_LIST        `activity_`
+//
+// Bare and prefixed cannot collide, and two prefixed ones cannot collide while
+// the prefixes differ -- which `tests/unit/crm/events-list.test.ts` asserts as
+// a SET with its cardinality rather than one field at a time. What all three
+// still need is `preserve`: `buildListHref` builds from scratch on purpose, so
+// without it paging any one of them silently returns the other two to page
+// one. Nothing errors, which is exactly why it is wired rather than written
+// down.
 //
 // READ ONLY. There is no "add a fee" form and that is a scope decision, not an
 // omission: MVP finance is budget and actuals at EVENT level (Phase 5), and
@@ -180,13 +203,14 @@ export default async function ArtistDetailPage({
   const raw = (await searchParams) as RawSearchParams;
   const feeParams = parseListParams(ARTIST_FEE_LIST, raw);
 
-  // THE ONLY PAGE IN THIS PHASE WITH TWO LISTS ON IT, and the reason
-  // ACTIVITY_LIST carries `paramPrefix: "activity_"`. Without the namespace
-  // both `parseListParams` calls would read the same `after`, and the fee list
+  // THE PAGE WITH THREE LISTS ON IT, and the reason ACTIVITY_LIST carries
+  // `paramPrefix: "activity_"` and ARTIST_EVENTS_LIST carries
+  // `paramPrefix: "artistevents_"`. Without the namespaces these
+  // `parseListParams` calls would read the same `after`, and the fee list
   // would compare the timeline's timestamp against `occurred_on` -- a
   // PostgREST 400 rendered as "we couldn't load fees" on a page where nothing
-  // is wrong. `raw` is passed to BOTH as `preserve` below, so paging either
-  // one leaves the other where it was.
+  // is wrong. `raw` is passed to ALL THREE as `preserve` below, so paging any
+  // one of them leaves the other two where they were.
   const activityListParams = activityParams(raw);
   const activity = await fetchActivityPage(
     org.id,
@@ -387,6 +411,34 @@ export default async function ArtistDetailPage({
         </Suspense>
       </section>
 
+      <section className="flex flex-col gap-4 border-t border-rule pt-6">
+        <h2 className="text-xl font-bold text-ink">Event history</h2>
+        <p className="max-w-prose text-sm text-ink-muted">
+          The events this artist is on the bill for, most recent first. PRD 6.3
+          asks an artist record for its booking history; this reads it from the
+          lineups themselves rather than keeping a second copy.
+        </p>
+        {/* Same key discipline as the fee history above, and the same reason
+            the cursor is not in it. */}
+        <Suspense
+          key={JSON.stringify([artist.id])}
+          // FOUR, matching `artistEventColumns` below -- Name, Date, Venue,
+          // Status. The venue page's is three because that surface drops the
+          // Venue column. A skeleton narrower than the table it stands in for
+          // makes the columns jump when the boundary resolves.
+          fallback={<ListSkeleton columns={4} />}
+        >
+          <EventHistory
+            organisationId={org.id}
+            orgSlug={org.slug}
+            artistId={artist.id}
+            basePath={`${basePath}/${artist.id}`}
+            recordScoped={recordScoped}
+            raw={raw}
+          />
+        </Suspense>
+      </section>
+
       {/* A FAILED QUERY IS NOT AN EMPTY PANEL. Rendering nothing here
           would tell a user with forty custom fields that they have none,
           which is the one thing the empty state must never do. */}
@@ -457,6 +509,127 @@ export default async function ArtistDetailPage({
       </section>
     </div>
   );
+}
+
+/**
+ * "Event history": one page of the events this artist is on.
+ *
+ * THE READ IS TWO QUERIES AND THE CAP IS REAL -- see `loadEventsForArtist` in
+ * lib/crm/queries.ts. In one line: the relation that knows which events an
+ * artist is on is `event_lineup`, `fetchListPage` reads ONE relation, and the
+ * alternative to a bounded two-step is a second cursor, which
+ * lib/crm/activity.ts's header calls a defect outright. An artist on more than
+ * 50 events therefore sees a stable 50-slot window rather than everything, and
+ * that is recorded in FOLLOW-UPS.md § "Opened by Task 7" with the shape of the
+ * real fix.
+ */
+async function EventHistory({
+  organisationId,
+  orgSlug,
+  artistId,
+  basePath,
+  recordScoped,
+  raw,
+}: {
+  organisationId: string;
+  orgSlug: string;
+  artistId: string;
+  basePath: string;
+  recordScoped: boolean;
+  /** The page's whole query string -- see the header. THREE lists share it. */
+  raw: RawSearchParams;
+}) {
+  const { params, page, venueNames } = await loadEventsForArtist(
+    organisationId,
+    artistId,
+    raw,
+  );
+
+  return (
+    <EntityList
+      spec={ARTIST_EVENTS_LIST}
+      params={params}
+      basePath={basePath}
+      page={page}
+      columns={artistEventColumns(orgSlug, venueNames)}
+      rowKey={(row) => row.id}
+      // ALWAYS FALSE TODAY, and derived rather than written as `false`:
+      // `artistEventsParams` drops this surface's only narrowing key
+      // (`artistevents_q`) and the spec declares no filters. Deriving it means
+      // giving the surface a filter later cannot leave the empty state lying.
+      narrowed={isNarrowed(ARTIST_EVENTS_LIST, params)}
+      preserve={raw}
+      scopeNote={
+        recordScoped ? (
+          <p className="text-sm text-ink-muted">
+            You’re seeing events assigned to you. Others in this workspace may
+            see more.
+          </p>
+        ) : undefined
+      }
+      emptyState={
+        <div className="border border-rule bg-surface p-5">
+          <h2 className="text-xl font-bold text-ink">
+            {recordScoped ? "No events assigned to you" : "Not on any events yet"}
+          </h2>
+          <p className="mt-2 max-w-prose text-base text-ink-muted">
+            {recordScoped
+              ? "Events this artist is on that are assigned to you will appear here."
+              : "Add this artist to an event’s lineup and the night appears here, with its date, venue and status."}
+          </p>
+        </div>
+      }
+    />
+  );
+}
+
+function artistEventColumns(
+  orgSlug: string,
+  venueNames: ReadonlyMap<string, string>,
+): readonly ListColumn<EventRow, ArtistEventsSortKey>[] {
+  return [
+    {
+      key: "name",
+      header: "Name",
+      // NOT SORTABLE: this spec declares one sort, and `sortKey` is
+      // constrained to its keys, so naming another would not compile.
+      render: (row) => (
+        <Link
+          href={`/${orgSlug}/events/${row.id}`}
+          className="font-semibold break-words text-primary underline underline-offset-4 hover:text-ink"
+        >
+          {row.name}
+        </Link>
+      ),
+    },
+    {
+      key: "starts",
+      header: "Date",
+      sortKey: "starts",
+      // DESIGN.md § Numerals: tabular figures on every date column.
+      numeric: true,
+      render: (row) => (
+        <time dateTime={row.startsAt}>{formatDateTime(row.startsAt)}</time>
+      ),
+    },
+    {
+      key: "venue",
+      header: "Venue",
+      secondary: true,
+      render: (row) => {
+        const name = row.venueId ? venueNames.get(row.venueId) : undefined;
+        // ABSENT COVERS BOTH "no venue recorded" AND "a venue this caller
+        // cannot read", identically and on purpose -- `loadVenueNames` records
+        // why saying "(unavailable)" would be an oracle.
+        return name ? <span className="break-words">{name}</span> : <Absent />;
+      },
+    },
+    {
+      key: "status",
+      header: "Status",
+      render: (row) => <StatusChip status={row.status} />,
+    },
+  ];
 }
 
 async function FeeHistory({

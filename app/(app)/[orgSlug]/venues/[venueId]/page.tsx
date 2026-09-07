@@ -4,15 +4,31 @@ import {
   activityParams,
   fetchActivityPage,
 } from "@/lib/crm/activity";
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentOrg } from "@/lib/auth";
+import { isRecordScopedRole } from "@/lib/crm/record-scope";
 import {
   DELETED_RECORD_EXPLANATION,
   getCrmWriteAccess,
 } from "@/lib/crm/write-access";
-import { loadRoomsForVenue, loadVenue } from "@/lib/crm/queries";
+import {
+  loadEventsForVenue,
+  loadRoomsForVenue,
+  loadVenue,
+} from "@/lib/crm/queries";
+import {
+  VENUE_EVENTS_LIST,
+  type EventRow,
+  type VenueEventsSortKey,
+} from "@/lib/crm/events-list";
+import { isNarrowed, type RawSearchParams } from "@/lib/list/params";
+import type { ListColumn } from "@/lib/list/spec";
+import { EntityList } from "@/components/list/entity-list";
+import { ListSkeleton } from "@/components/list/list-skeleton";
+import { StatusChip } from "@/components/crm/status-chip";
 import { deleteVenueAction, restoreVenueAction } from "@/lib/crm/venues";
 import { loadCustomFieldPanel } from "@/lib/crm/custom-field-queries";
 import { CustomFieldsPanel } from "@/components/crm/custom-fields-panel";
@@ -45,6 +61,24 @@ import { formatDateTime } from "@/lib/format/date";
 // that is a policy term (`p.deleted_at is null` in both venue_rooms write
 // policies), not only an application check. The panel says so rather than
 // leaving the user to discover it through a refused click.
+//
+// ===========================================================================
+// TWO lib/list/ SURFACES SINCE PHASE 3 TASK 7, AND THE RULE THAT COMES WITH IT
+// ===========================================================================
+// "Events here" (VENUE_EVENTS_LIST, `venueevents_`) and the activity timeline
+// (ACTIVITY_LIST, `activity_`). Both read a cursor off THIS page's one query
+// string, so both need their own `paramPrefix` -- or one hands the other its
+// cursor and the symptom is a PostgREST 400 rendered as "we couldn't load" on
+// a page where nothing is wrong (lib/crm/activity.ts's header states it in
+// full) -- and both need `preserve`, or paging one silently returns the other
+// to page one. The ROOM panel is neither: it is a `LINK_PANEL_LIMIT` capped
+// read with no pager and no query keys at all.
+//
+// THE TIMELINE IS NOT THE EVENTS LIST AND NEITHER REPLACES THE OTHER. Since
+// Task 6 the timeline carries this venue's `link_added` entries -- "an event
+// was booked here", the moment it happened, in date-of-change order. "Events
+// here" is the BOOKING DIARY: the nights themselves, in date-of-night order,
+// with their status. One is what changed; the other is what is on.
 //
 // ===========================================================================
 // UNTRUSTED FREE TEXT, RENDERED AS TEXT
@@ -103,6 +137,11 @@ export default async function VenueDetailPage({
 
   const venue = result.record;
   const rooms = await loadRoomsForVenue(org.id, venue.id);
+  // WHY THE ROLE AND NOT ONLY THE ACCESS. A short events list means "this
+  // venue has had few nights" for a full-scope viewer and "few of them are
+  // assigned to you" for a record-scoped one, and only the role tells the page
+  // which sentence is true. Same argument as the events list's own scope note.
+  const recordScoped = isRecordScopedRole(org.role);
 
   const blocked = access.canWrite ? null : access.explanation;
   const panelBlocked =
@@ -133,12 +172,18 @@ export default async function VenueDetailPage({
         : access.explanation;
   const basePath = `/${org.slug}/venues`;
 
+  // THE WHOLE QUERY STRING, READ ONCE. Both list surfaces on this route take
+  // it: each parses only the keys its own `paramPrefix` owns, and each is
+  // handed the whole object again as `preserve` so paging one leaves the other
+  // where it was. See the header.
+  const raw = (await searchParams) as RawSearchParams;
+
   // THE TIMELINE'S OWN PAGE OF ITS OWN LIST. `activityParams` reads only keys
   // beginning `activity_`, and not even `activity_q` -- there is no search
   // control on this surface (lib/crm/activity.ts). So it cannot be confused by
   // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
   // later phase adds to this route.
-  const activityListParams = activityParams(await searchParams);
+  const activityListParams = activityParams(raw);
   const activity = await fetchActivityPage(
     org.id,
     "venue",
@@ -291,6 +336,34 @@ export default async function VenueDetailPage({
         disabledReason={panelBlocked}
       />
 
+      <section className="flex flex-col gap-4 border-t border-rule pt-6">
+        <h2 className="text-xl font-bold text-ink">Events here</h2>
+        <p className="max-w-prose text-sm text-ink-muted">
+          The nights booked at this venue, most recent first. PRD 6.4 asks a
+          venue for its event history; this is it, read from the events
+          themselves rather than kept as a second copy.
+        </p>
+        {/* The key covers the toolbar's half of the shape, exactly as the
+            artist page's fee history does, and deliberately NOT the cursor:
+            keying on the cursor remounts the pager on every page click and
+            drops focus to <body> (measured on the contacts page). This surface
+            has no toolbar, so in practice the key never changes -- it is here
+            so that giving it one later is one line rather than a bug. */}
+        <Suspense
+          key={JSON.stringify([venue.id])}
+          fallback={<ListSkeleton columns={3} />}
+        >
+          <VenueEvents
+            organisationId={org.id}
+            orgSlug={org.slug}
+            venueId={venue.id}
+            basePath={`${basePath}/${venue.id}`}
+            recordScoped={recordScoped}
+            raw={raw}
+          />
+        </Suspense>
+      </section>
+
       {/* A FAILED QUERY IS NOT AN EMPTY PANEL. Rendering nothing here
           would tell a user with forty custom fields that they have none,
           which is the one thing the empty state must never do. */}
@@ -321,6 +394,11 @@ export default async function VenueDetailPage({
         params={activityListParams}
         basePath={`${basePath}/${venue.id}`}
         recordScoped={activityIsScoped(org.role)}
+        // ADDED BY TASK 7 WITH THE SECOND LIST, not before it: without this,
+        // paging "Events here" would rebuild the URL without the timeline's
+        // cursor and quietly send it back to page one. Nothing errors, which
+        // is what makes it worth wiring rather than documenting.
+        preserve={raw}
       />
 
       <section className="flex flex-col gap-4 border-t border-rule pt-6">
@@ -357,6 +435,124 @@ export default async function VenueDetailPage({
       </section>
     </div>
   );
+}
+
+/**
+ * "Events here": one page of the venue's booking diary.
+ *
+ * A `Suspense` boundary of its own, so the rest of the record renders while
+ * this streams -- the shape the artist page's fee history established.
+ */
+async function VenueEvents({
+  organisationId,
+  orgSlug,
+  venueId,
+  basePath,
+  recordScoped,
+  raw,
+}: {
+  organisationId: string;
+  orgSlug: string;
+  venueId: string;
+  basePath: string;
+  recordScoped: boolean;
+  /**
+   * The page's whole query string. THIS PAGE HAS A SECOND LIST -- the activity
+   * timeline -- and without this every link built here would rebuild the URL
+   * without the timeline's cursor. See HrefOverrides.preserve.
+   */
+  raw: RawSearchParams;
+}) {
+  const { params, page } = await loadEventsForVenue(organisationId, venueId, raw);
+
+  return (
+    <EntityList
+      spec={VENUE_EVENTS_LIST}
+      params={params}
+      basePath={basePath}
+      page={page}
+      columns={venueEventColumns(orgSlug)}
+      rowKey={(row) => row.id}
+      // ALWAYS FALSE TODAY, and derived rather than written as `false`:
+      // `venueEventsParams` drops this surface's only narrowing key
+      // (`venueevents_q`) and the spec declares no filters, so nothing can
+      // narrow it. Deriving it means giving the surface a filter later cannot
+      // leave the empty state lying.
+      narrowed={isNarrowed(VENUE_EVENTS_LIST, params)}
+      preserve={raw}
+      scopeNote={
+        recordScoped ? (
+          <p className="text-sm text-ink-muted">
+            You’re seeing events assigned to you. Others in this workspace may
+            see more.
+          </p>
+        ) : undefined
+      }
+      emptyState={
+        <div className="border border-rule bg-surface p-5">
+          <h2 className="text-xl font-bold text-ink">
+            {recordScoped ? "No events assigned to you here" : "No events here yet"}
+          </h2>
+          <p className="mt-2 max-w-prose text-base text-ink-muted">
+            {recordScoped
+              ? "Events at this venue that are assigned to you will appear here."
+              : "An event booked at this venue appears here. Set the venue on an event and it shows up, with its date and status."}
+          </p>
+        </div>
+      }
+    />
+  );
+}
+
+/**
+ * Three columns, and the VENUE column is the one deliberately missing.
+ *
+ * Every row here is at this venue, so a Venue column would be the page's own
+ * heading repeated down the table. That is also why this surface needs no
+ * `loadVenueNames` second query, which the events list and the artist's event
+ * history both do.
+ */
+function venueEventColumns(
+  orgSlug: string,
+): readonly ListColumn<EventRow, VenueEventsSortKey>[] {
+  return [
+    {
+      key: "name",
+      header: "Name",
+      // NOT SORTABLE, and `sortKey` being constrained to the spec's own keys
+      // makes that a compile error rather than a judgement call: this spec
+      // declares one sort. A name sort here would need
+      // `events_org_name_id_live_idx` and a second column header on a panel
+      // inside a record page, which is noise.
+      render: (row) => (
+        <Link
+          href={`/${orgSlug}/events/${row.id}`}
+          className="font-semibold break-words text-primary underline underline-offset-4 hover:text-ink"
+        >
+          {row.name}
+        </Link>
+      ),
+    },
+    {
+      key: "starts",
+      header: "Date",
+      sortKey: "starts",
+      // DESIGN.md § Numerals: tabular figures on every date column.
+      numeric: true,
+      render: (row) => (
+        // `dateTime` carries the INSTANT; the text carries the UK-local
+        // rendering of it.
+        <time dateTime={row.startsAt}>{formatDateTime(row.startsAt)}</time>
+      ),
+    },
+    {
+      key: "status",
+      header: "Status",
+      // A LABEL, NOT A COLOUR. `StatusChip` renders the word and uses colour
+      // only to reinforce it -- DESIGN.md forbids colour as the only signal.
+      render: (row) => <StatusChip status={row.status} />,
+    },
+  ];
 }
 
 function Detail({ label, children }: { label: string; children: React.ReactNode }) {

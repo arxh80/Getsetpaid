@@ -226,6 +226,37 @@ else
 fi
 
 # ============================================================================
+# PHASE 3 (EVENTS) RLS / PERMISSION / RECORD-SCOPE SUITE.
+#
+# Runs AFTER the Phase 2 suite and REUSES ITS FIXTURES WHOLE -- the same twelve
+# users, the same two organisations, the same venues and artists -- so no new
+# auth.users rows are created here and P2VARS is handed straight over. That is
+# deliberate: a second cast of characters would be a second place for the role
+# matrix to drift, and what this phase is actually about is how events sit on
+# top of the Phase 2 record scope.
+#
+# It writes into its OWN `ev` schema rather than `crm`, so the count above
+# stays a statement about the Phase 2 suite alone and a Phase 3 failure is not
+# reported under a Phase 2 heading.
+# ============================================================================
+docker cp "$HERE/rls_phase3_events.sql" "$CTR:/tmp/rls_phase3_events.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P2VARS[@]}" -f /tmp/rls_phase3_events.sql
+
+p3_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from ev.results where not pass" | tr -d '[:space:]')
+if [ "$p3_fails" != "0" ]; then
+  echo "PHASE 3 EVENTS SUITE FAILED: $p3_fails failing assertion(s)" >&2
+  echo "  A failure in section EB, EF or EK is a REOPENED TENANT BOUNDARY -- treat as Sev1." >&2
+  echo "  A failure in EF10-EF12 means the FK LIFT did not put the schema back:" >&2
+  echo "  discard the run, reset the database, and do not trust anything after it." >&2
+  psql_status=1
+else
+  echo "Phase 3 events suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -412,6 +443,35 @@ p2_rows() { # name want_count path token
       | python -c "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")
   if [ "$n" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$n"
   else printf '  FAIL  %-58s got %s want %s\n' "$name" "$n" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+# THE VALUE VARIANT OF p2_rows, ADDED IN PHASE 3 TASK 1 (final review I-7).
+#
+# p2_rows counts rows. That is enough for a visibility question -- "does this
+# tenant see the other tenant's contacts" -- and it is NOT enough for the one
+# this was added for: `merges.field_resolution` is written by exactly one
+# function, and a row coming back proves nothing about whether the snapshot the
+# /merges screen and the activity timeline both read is inside it. So this
+# walks a dotted path into the FIRST row's JSON and compares the value.
+#
+# `<null>` for an absent key or a null value, `<none>` for no rows at all, so
+# "the key is missing" and "the query matched nothing" are different failures.
+p2_json() { # name want path token dotted.key
+  local name="$1" want="$2" path="$3" tok="$4" key="$5" v
+  v=$(curl -s "$API/rest/v1/$path" -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
+      | KEY="$key" python -c "
+import sys, json, os
+d = json.load(sys.stdin)
+if not isinstance(d, list) or not d:
+    print('<none>')
+else:
+    cur = d[0]
+    for part in os.environ['KEY'].split('.'):
+        cur = cur.get(part) if isinstance(cur, dict) else None
+    print('<null>' if cur is None else cur)
+")
+  if [ "$v" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$v"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$v" "$want"; api_fails=$((api_fails+1)); fi
 }
 
 MGR=$(p2_token pmanager);   [ -n "$MGR" ] || { echo "no token for pmanager" >&2; exit 1; }
@@ -727,6 +787,130 @@ p2_range_written() { # name want_total METHOD path body token -- count=exact
   fi
   printf '  FAIL  %-58s got "%s" want "%s"\n' "$name" "$cr" "$want"; api_fails=$((api_fails+1))
 }
+
+# ============================================================================
+# PHASE 3 (EVENTS) AT THE API SURFACE.
+#
+# The psql suite proves the six policies are right. This proves the same claims
+# reach PostgREST -- which is a different statement, because the grant surface,
+# the status codes and the row COUNT of a write all live at the transport and
+# none of them is visible from psql.
+#
+# PLACED HERE, and the position is load-bearing: it needs p2_range_shape and
+# p2_range_written (defined immediately above) and it must run while org ALPHA
+# is LIVE and UNSUBSCRIBED -- the subscription block above deletes its row on
+# its last line, and the suspension block below is about to soft-delete the
+# organisation. Between those two is the only window where a 201 means "the
+# policy allowed it" rather than "the entitlement gate happened to be open".
+#
+# THE PATCH-COUNT CHECK IS THE ONE THAT MATTERS. A PostgREST PATCH that changed
+# NOTHING answers `204 No Content` -- byte-identical, in the status line, to one
+# that changed fifteen rows. The row count is only ever in the `Content-Range`
+# RESPONSE HEADER. So "manager PATCHes a BETA event" asserts 204 AND `*/0`: a
+# 204 alone would pass against a policy that let the write through.
+# ============================================================================
+echo
+echo "=== Phase 3 events at the API surface ==="
+
+EV_ALPHA='ee110000-0000-0000-0000-000000000001'   # Alpha Manager Event
+EV_BETA='ee11000b-0000-0000-0000-00000000000b'    # Beta Secret Event
+EV_STD1='ee110000-0000-0000-0000-000000000002'    # Std1 Event, owned by pstd1
+# T Std1 Artist -- owned by pstd1, so a record-scoped caller can read it, and
+# NOT already on EV_STD1's bill. The psql suite books 4444...0001 (fixture),
+# ...0002 (EF3) and ...000f (EH2) there, so any of those would meet
+# event_lineup_event_artist_live_unique instead of the policy and the control
+# below would be measuring the wrong refusal.
+ART_STD1='444400b0-0000-0000-0000-0000000000b1'
+
+# anon: the two tables must not be reachable logged out at all.
+p2_code "anon GET events"                        401 GET  "events?select=id"
+p2_code "anon GET event_lineup"                  401 GET  "event_lineup?select=id"
+p2_code "anon POST events"                       401 POST "events" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"anon\",\"starts_at\":\"2026-12-01T20:00:00Z\"}"
+
+# Tenant boundary, aimed directly at the other tenant's org id -- the request
+# an attacker actually sends, since the org id is in every URL.
+p2_rows "manager GET events of org BETA (expect 0)"       0 \
+        "events?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+p2_rows "manager GET event_lineup of org BETA (expect 0)" 0 \
+        "event_lineup?select=id&organisation_id=eq.$BETA_ORG" "$MGR"
+p2_code "manager POSTs an event into org BETA"          403 POST "events" \
+        "{\"organisation_id\":\"$BETA_ORG\",\"name\":\"planted\",\"starts_at\":\"2026-12-01T20:00:00Z\"}" "$MGR"
+# POSITIVE CONTROL for the two zeros above: the same token, the same table,
+# their own tenant. Without it a 0 is satisfied by a dead endpoint or a policy
+# that denies everybody.
+p2_rows "CONTROL: the same manager GETs ALPHA's Manager Event"  1 \
+        "events?select=id&id=eq.$EV_ALPHA" "$MGR"
+
+# The role matrix, over HTTP. Booker holds manage_events; read_only does not.
+p2_code "booker POSTs an event (has manage_events)"     201 POST "events" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"http booker event\",\"starts_at\":\"2026-12-02T20:00:00Z\"}" "$BKR"
+p2_code "read_only POSTs an event"                      403 POST "events" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"http ro event\",\"starts_at\":\"2026-12-03T20:00:00Z\"}" "$RO"
+
+# The absent DELETE grant is absent at the HTTP layer too, which is the only
+# place a missing grant and a denying policy look different.
+p2_code "manager DELETEs an event (no DELETE grant)"    403 DELETE \
+        "events?id=eq.$EV_ALPHA" "" "$MGR"
+p2_code "manager DELETEs a lineup row (no DELETE grant)" 403 DELETE \
+        "event_lineup?event_id=eq.$EV_ALPHA" "" "$MGR"
+
+# RECORD SCOPE ON THE CHILD, OVER HTTP (Phase 3 Task 5). A lineup slot has no
+# owner_user_id of its own -- its scope is its EVENT's -- so this is the one
+# request that tells "the child inherits the parent's scope" apart from "the
+# child is unscoped": pstd1 is a standard_user who owns EV_STD1 and not
+# EV_ALPHA, and the row they are POSTing is perfectly well formed apart from
+# whose event it names. A 403 here is event_lineup_insert_via_event's EXISTS
+# failing to find an event pstd1 may write; a 201 would be a slot planted on
+# somebody else's bill through a URL, with no Server Action guard in the way.
+#
+# 403 AND NOT 204: an INSERT policy has only WITH CHECK, so PostgREST raises
+# rather than silently matching nothing. That asymmetry with PATCH is why the
+# count checks above exist for the UPDATE path and not for this one.
+p2_code "standard_user POSTs a lineup row on an event they do not own" 403 POST \
+        "event_lineup" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"event_id\":\"$EV_ALPHA\",\"artist_id\":\"$ART_STD1\"}" "$STD"
+# THE POSITIVE CONTROL, and it is mandatory here: without it the 403 above is
+# satisfied by a policy that refuses pstd1 every lineup INSERT, or by a table
+# nobody can write at all. Same token, same table, same body shape -- their
+# OWN event, and an artist not already on that bill.
+p2_code "CONTROL: ...and CAN POST one on their own event" 201 POST \
+        "event_lineup" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"event_id\":\"$EV_STD1\",\"artist_id\":\"$ART_STD1\"}" "$STD"
+
+# THE COUNT CHECK. A cross-tenant PATCH is a silent 204; only the header says
+# it wrote nothing. Both spellings are asserted -- the bare request, where the
+# RANGE half is `*`, and `Prefer: count=exact`, where the TOTAL is 0.
+p2_code "manager PATCHes a BETA event -> silent 204, not 403"  204 PATCH \
+        "events?id=eq.$EV_BETA" '{"name":"rewritten over http"}' "$MGR"
+p2_range_shape "...and with NO Prefer header the range IS '*'" none PATCH \
+        "events?id=eq.$EV_BETA" '{"name":"rewritten over http"}' "$MGR"
+p2_range_written "...and count=exact reports the 0 the 204 hid" 0 PATCH \
+        "events?id=eq.$EV_BETA" '{"name":"rewritten over http"}' "$MGR"
+# THE LIVE CONTROL for the three above: the identical PATCH on their OWN
+# tenant's event writes a row and says so. Without it a `*/0` is satisfied by a
+# PATCH that never works for anybody.
+p2_range_written "CONTROL: the same PATCH on an ALPHA event writes rows" ">=1" PATCH \
+        "events?id=eq.$EV_ALPHA" '{"notes":"http control"}' "$MGR"
+p2_range_shape "CONTROL: ...and its range is not '*'" rows PATCH \
+        "events?id=eq.$EV_ALPHA" '{"notes":"http control"}' "$MGR"
+
+# RECORD SCOPE, over HTTP: every event row pstd1 gets back is one pstd1 owns.
+# The unowned `T Alpha Event` (rls_phase2_crm.sql § T32) is in this table and
+# is exactly what a broken record-scope term would hand over.
+STD_EV=$(curl -s "$API/rest/v1/events?select=id,owner_user_id" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $STD" \
+  | python -c "
+import sys,json
+d=json.load(sys.stdin)
+print(-1 if not isinstance(d,list) else
+      '%d/%d' % (len(d), sum(1 for r in d if r['owner_user_id']!='${P2ID[pstd1]}')))")
+if [ "${STD_EV#*/}" = "0" ] && [ "${STD_EV%/*}" -ge 1 ] 2>/dev/null; then
+  printf '  PASS  %-58s %s\n' "standard_user GETs only events they own" "$STD_EV"
+else
+  printf '  FAIL  %-58s got %s want <n>=1/0\n' "standard_user GETs only events they own" "$STD_EV"
+  api_fails=$((api_fails+1))
+fi
 
 OWN2=$(p2_totp_elevate "$OWN")
 own2_aal=$(p2_aal "$OWN2")
@@ -1642,6 +1826,43 @@ else
          "...the Owner's loser is soft-deleted and attributed" "$hm_owner"
   api_fails=$((api_fails+1))
 fi
+# THE SNAPSHOT THE TWO MERGE SCREENS READ, OVER HTTP (final review I-7).
+#
+# The merge above is a REAL merge_records() call, so its field_resolution is
+# the real thing rather than a hand-written fixture -- which is exactly what
+# this suite had no assertion on. `merges?select=field_resolution` returning a
+# row proves the SELECT policy lets the Owner read it; only the value proves
+# the snapshot lib/crm/dedup.ts snapshotName() and 20260829040000:246 both
+# depend on is actually in there. The psql half is § Z of rls_phase2_crm.sql;
+# this is the same claim through PostgREST, where the column is serialised to
+# JSON and a shape change would show up differently.
+p2_json "the REAL merge's loser.before.name survives to the API" \
+        "Bella Nkemelu" \
+        "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
+        "field_resolution.loser.before.name"
+# THE SIDES HAVE TO BE TOLD APART BY SOMETHING THAT DIFFERS BETWEEN THEM, and
+# the name is not it: this fixture pair is two records with the SAME name
+# (:1523-1531, which is the point of a dedup fixture), so a probe expecting
+# "Bella Nkemelu" on each side passes even if merge_records() swapped the two
+# snapshots. The psql half catches that -- § Z's pairs are named
+# "Real Merge Winner …"/"Real Merge Loser …" precisely so Z6 and Z7 cannot
+# agree by accident -- but the assertion here has to stand on its own. The ids
+# differ, so they are what pins the sides.
+p2_json "...and it is the LOSER's row, not the winner's, under 'loser'" \
+        "$HM_OL" \
+        "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
+        "field_resolution.loser.before.id"
+p2_json "...and the winner side, which the timeline reads, is the winner's" \
+        "$HM_OW" \
+        "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
+        "field_resolution.winner.before.id"
+# THE PAIRED NEGATIVE. Without it every probe above is satisfied by a helper
+# that prints its own `want`: this asks for a key that has never existed and
+# must come back <null>.
+p2_json "CONTROL: a path that does not exist reads <null>, not a value" \
+        "<null>" \
+        "merges?select=field_resolution&loser_id=eq.$HM_OL" "$OWN2" \
+        "field_resolution.loser.prior.name"
 # TENANT BREAKOUT, over HTTP: the request an attacker actually sends.
 p2_code "TENANT BREAKOUT: merging an ALPHA record from org-http-merge" 403 POST \
         "rpc/merge_records" \

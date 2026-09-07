@@ -15,7 +15,7 @@ The PRD is a binary docx and no text version is committed. To read it, run `pyth
 
 ## Current state
 
-The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrastructure, core CRM writes). The PRD, the design and security docs and the pinned agent skills (`skills-lock.json` + `.agents/skills/`) sit alongside them.
+The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrastructure, core CRM writes, and — since Phase 3 — events with their lineup). The PRD, the design and security docs and the pinned agent skills (`skills-lock.json` + `.agents/skills/`) sit alongside them.
 
 **The gates. Run all five before claiming a change is done:**
 
@@ -25,7 +25,7 @@ The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrast
 | `pnpm typecheck` | `tsc --noEmit`. CI runs this too (below), but **nothing on this machine does** — there is no git hook, and `pnpm build` is forbidden in a worktree pointed at the local stack. Several exhaustiveness guards (the `switch` with no `default` in `lib/crm/contacts.ts`, `lib/crm/companies.ts` and `lib/crm/actions.ts`) are compile-time only, so skipping this locally means finding out on a push at best. |
 | `pnpm test` | Vitest, unit and integration (`vitest run`). |
 | `pnpm test:rls` | The RLS integration tests (`vitest run tests/integration/rls`), included in `pnpm test`. |
-| `pnpm test:e2e` | Playwright (`playwright test`) — the golden path, tenant breakout and the axe accessibility scan, against a real browser and the local stack. **Prerequisite:** `npx playwright install chromium` once per machine. It starts its own dev server; set `PLAYWRIGHT_REUSE_SERVER=1` only to reuse one on port 3000 that you know is current. |
+| `pnpm test:e2e` | Playwright (`playwright test`) — the Phase 2 and Phase 3 golden paths, tenant breakout and record scope, and the axe accessibility scan (one test per page, 13 pages), against a real browser and the local stack. **Prerequisite:** `npx playwright install chromium` once per machine. It starts its own dev server; set `PLAYWRIGHT_REUSE_SERVER=1` only to reuse one on port 3000 that you know is current. |
 
 The psql/HTTP RLS suite is separate and needs a fresh database:
 `npx supabase db reset --local` then `bash supabase/tests/run-rls-tests.sh`. It
@@ -96,6 +96,12 @@ Network identities and tenant-private records are **separate concepts in separat
 Organisation, User, Contact, Company, Artist/DJ, Agency, Venue (+ rooms), Supplier, Event (+ lineup), Tour, Offer/Hold/Booking, Task, Meeting, Note, Email activity, Document (+ versions), Financial entry, Relationship, Rating, Network profile, Audit event, Notification, Consent, Data subject request, Integration connection, Feedback.
 
 Full baseline table list is in PRD §11.
+
+**Events, as they actually shipped in Phase 3** — stated here because three of these read as features and are not:
+
+- `events.status` carries all eight PRD values including `hold`, `confirmed`, `on_sale` and `sold_out`. They are **labels on one column**, with no transition rules, no state machine and no derived behaviour. Offers/holds/bookings remain out of MVP scope, and a status value is not that workflow arriving early. `public.event_status_changes` records transitions (founder Q33) and validates none of them.
+- **Events are not dedup-screened and not mergeable.** `merges.entity_type` and `merge_candidates.entity_type` deliberately exclude `'event'`, and `createEventAction` does not call `screenAfterCreate`: an event's name is not identifying (a recurring club night shares its name with every instalment by design) and `public.events` has no `email` column, so the only auto-merge signal is unreachable by construction.
+- **A lineup artist is always a real `artists` row** (`event_lineup.artist_id` is `NOT NULL` with a tenant-scoped composite FK); there is no free-text artist. **`venue_id` is nullable** — an event routinely exists before the venue is confirmed.
 
 **Duplicate contacts/companies:** an **exact, case-insensitive email match auto-merges**; everything else — including an exact name match — is flagged for manual review and never auto-merged silently. Every merge is audited. Name is only ever a *fuzzy* signal: `screen_for_duplicates()` labels a pair `exact_email` only when both emails are non-null and equal case-insensitively, and `fuzzy_name` otherwise (`supabase/migrations/20260829020000_dedup_detection_and_merge_workflow.sql:385`), and the application merges only on the ids the database proposes for that first case (`lib/crm/dedup.ts:704`, "AUTO-MERGE IS EMAIL-ONLY AND FIRES ONLY WHEN THE DATABASE PROPOSES IT"). In practice that means **contacts only**, because `contact` is the one entity in `MERGEABLE_COLUMNS` with an `email` column (`lib/crm/dedup.ts:65`).
 
@@ -206,6 +212,8 @@ Skills supply method; `DESIGN.md` supplies the tokens and **outranks every skill
 Priorities: high information density without clutter; keyboard-first navigation and global command/search; contextual drawers for quick edits; one consistent timeline/activity component reused across every entity; status chips and relationship indicators; empty states that teach the workflow; WCAG 2.2 AA from the start, not retrofitted.
 
 Golden path to prototype and protect: create contact → create event → add artist → add venue → add task → view activity.
+
+**What of it ships today, checked against the suite rather than asserted.** Every step but "add task" is walked in a real browser on every `pnpm test:e2e`: the Phase 2 half (contact, company, link, artist, venue, room, activity) in `tests/e2e/golden-path.spec.ts` and the Phase 3 half (create event, add the artist to the bill, change the venue, read the activity timeline) in `tests/e2e/events.spec.ts`. **"Add task" is Phase 4 and does not exist** — there is no `tasks` table and no route. The two specs are siblings on purpose; whoever builds tasks extends the sentence by adding a third, not by rewriting either.
 
 ## Testing gates
 

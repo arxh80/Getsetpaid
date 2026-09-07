@@ -1,7 +1,13 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
-import { formatDate, formatDateOnly, formatDateTime } from "@/lib/format/date";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  formatDate,
+  formatDateOnly,
+  formatDateTime,
+  instantToLondonWallClock,
+  londonWallClockToInstant,
+} from "@/lib/format/date";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -102,4 +108,306 @@ describe("I-10: nothing outside lib/format/ defines a date formatter", () => {
       "a second copy of a date formatter is how one page starts showing UTC",
     ).toEqual([]);
   });
+});
+
+// ===========================================================================
+// PHASE 3 TASK 4 -- THE FORM DIRECTION
+// ===========================================================================
+//
+// WHAT THE ASSERTIONS IN THIS BLOCK DO AND DO NOT GUARD, stated first because
+// the first version of this header claimed more than it delivered and fix
+// round 1's Important 2 measured the gap.
+//
+// Every expected value below is an absolute UTC instant, so a reader can check
+// it by hand and it does not vary with `TZ`. What it does NOT do is force the
+// implementation to be zone-independent: the obvious wrong implementation,
+//
+//     return new Date(value).toISOString();
+//
+// asks the same tz database the same question when the machine's own zone IS
+// Europe/London, and therefore agrees with `londonWallClockToInstant` on ALL
+// EIGHT rows here -- both transition days included, the ambiguous 01:30 and the
+// non-existent 01:30 with them. Measured, on this machine, at fix round 1.
+//
+// So THE ZONE-INDEPENDENCE GUARD IS THE `process.env.TZ` BLOCK AT THE BOTTOM OF
+// THIS FILE, not these assertions. It runs in `pnpm test` and in CI's
+// `vitest run tests/unit` like everything else here -- it is not report-only --
+// and it is what turns "the answer is right" into "the answer is right
+// wherever this runs".
+//
+// These assertions still earn their place twice over: they are the readable
+// statement of what the four brief-nominated dates mean, and the three
+// `what it refuses` cases below DO catch the naive mutant on their own,
+// because it loses the shape, calendar and year checks. That is a parsing
+// property, not a timezone one, and it is worth being clear which is which --
+// a mutant that keeps the validation and replaces only the offset resolution
+// leaves this whole block GREEN (measured: 0 of 57 red here, 20 of 57 red in
+// the moved-TZ block).
+//
+// The four dates are the brief's: a BST date, a GMT date, and both 2026
+// transitions -- 29 March (01:00 UTC, clocks forward, 01:00-02:00 local does
+// not exist) and 25 October (01:00 UTC, clocks back, 01:00-02:00 local happens
+// twice).
+
+describe("londonWallClockToInstant -- a datetime-local value is Europe/London", () => {
+  it("a BST evening is stored an hour earlier in UTC", () => {
+    // 1 July 2026 is BST (UTC+1). 20:00 in London is 19:00Z.
+    expect(londonWallClockToInstant("2026-07-01T20:00")).toBe(
+      "2026-07-01T19:00:00.000Z",
+    );
+  });
+
+  it("a GMT evening is stored unchanged, because London is UTC in January", () => {
+    expect(londonWallClockToInstant("2026-01-15T20:00")).toBe(
+      "2026-01-15T20:00:00.000Z",
+    );
+  });
+
+  it("accepts the seconds a datetime-local input may include", () => {
+    expect(londonWallClockToInstant("2026-07-01T20:00:30")).toBe(
+      "2026-07-01T19:00:30.000Z",
+    );
+  });
+
+  describe("29 March 2026 -- the clocks go forward at 01:00Z", () => {
+    it("before the transition the offset is still zero", () => {
+      expect(londonWallClockToInstant("2026-03-29T00:30")).toBe(
+        "2026-03-29T00:30:00.000Z",
+      );
+    });
+
+    it("after the transition the offset is one hour", () => {
+      // 12:00 BST is 11:00Z. A naive `new Date()` on a UTC box says 12:00Z.
+      expect(londonWallClockToInstant("2026-03-29T12:00")).toBe(
+        "2026-03-29T11:00:00.000Z",
+      );
+    });
+
+    it("01:30, WHICH NEVER HAPPENS, is shifted forward past the gap", () => {
+      // Documented in the function: `Temporal`'s "compatible" disambiguation.
+      // Returning null here would put "That doesn't look like a date and time"
+      // under a string that looks perfectly ordinary.
+      const instant = londonWallClockToInstant("2026-03-29T01:30");
+      expect(instant).toBe("2026-03-29T01:30:00.000Z");
+      // And it reads back as the hour it really became.
+      expect(instantToLondonWallClock(instant as string)).toBe(
+        "2026-03-29T02:30",
+      );
+    });
+  });
+
+  describe("25 October 2026 -- the clocks go back at 01:00Z", () => {
+    it("before the transition the offset is still one hour", () => {
+      // 00:30 BST on the 25th is 23:30Z on the 24th -- the day moves too.
+      expect(londonWallClockToInstant("2026-10-25T00:30")).toBe(
+        "2026-10-24T23:30:00.000Z",
+      );
+    });
+
+    it("after the transition the offset is zero", () => {
+      expect(londonWallClockToInstant("2026-10-25T02:30")).toBe(
+        "2026-10-25T02:30:00.000Z",
+      );
+    });
+
+    it("01:30, WHICH HAPPENS TWICE, resolves to the FIRST occurrence", () => {
+      // 00:30Z is 01:30 BST; 01:30Z is 01:30 GMT an hour later. Both are
+      // "01:30 on 25 October" in London and the input cannot tell them apart.
+      // The earlier one wins, and the assertion is written with both instants
+      // named so the choice is visible rather than implied.
+      const first = "2026-10-25T00:30:00.000Z";
+      const second = "2026-10-25T01:30:00.000Z";
+      expect(instantToLondonWallClock(first)).toBe("2026-10-25T01:30");
+      expect(instantToLondonWallClock(second)).toBe("2026-10-25T01:30");
+      expect(londonWallClockToInstant("2026-10-25T01:30")).toBe(first);
+      expect(londonWallClockToInstant("2026-10-25T01:30")).not.toBe(second);
+    });
+  });
+
+  describe("what it refuses", () => {
+    it("returns null for anything that is not a datetime-local value", () => {
+      for (const value of [
+        "",
+        "   ",
+        "tomorrow",
+        "2026-07-01",
+        "2026-07-01 20:00",
+        "01/07/2026 20:00",
+        "2026-07-01T20:00Z",
+        "2026-07-01T20:00+01:00",
+      ]) {
+        expect(londonWallClockToInstant(value), value).toBeNull();
+      }
+    });
+
+    it("returns null for a string that matches the shape but is not a day", () => {
+      // 2026-02-30 matches the pattern. `Date.UTC` would roll it to 2 March
+      // and store an event on a day the user did not choose.
+      expect(londonWallClockToInstant("2026-02-30T20:00")).toBeNull();
+      expect(londonWallClockToInstant("2026-13-01T20:00")).toBeNull();
+      expect(londonWallClockToInstant("2026-07-32T20:00")).toBeNull();
+      expect(londonWallClockToInstant("2026-07-01T24:00")).toBeNull();
+      expect(londonWallClockToInstant("2026-07-01T20:60")).toBeNull();
+    });
+
+    it("returns null for a year outside living memory (the 0202-for-2020 typo)", () => {
+      expect(londonWallClockToInstant("0202-07-01T20:00")).toBeNull();
+      expect(londonWallClockToInstant("9999-07-01T20:00")).toBeNull();
+      // ...and the bounds themselves are inside.
+      expect(londonWallClockToInstant("1900-07-01T20:00")).not.toBeNull();
+      expect(londonWallClockToInstant("2200-07-01T20:00")).not.toBeNull();
+    });
+  });
+});
+
+describe("instantToLondonWallClock -- filling the edit form back in", () => {
+  it("renders a BST instant as the local wall clock", () => {
+    expect(instantToLondonWallClock("2026-07-01T19:00:00.000Z")).toBe(
+      "2026-07-01T20:00",
+    );
+  });
+
+  it("renders a GMT instant unchanged", () => {
+    expect(instantToLondonWallClock("2026-01-15T20:00:00.000Z")).toBe(
+      "2026-01-15T20:00",
+    );
+  });
+
+  it("crosses midnight in the right direction", () => {
+    // 23:30Z on 2 July is 00:30 on the 3rd here -- the same case formatDate's
+    // own test pins, in the other direction.
+    expect(instantToLondonWallClock("2026-07-02T23:30:00.000Z")).toBe(
+      "2026-07-03T00:30",
+    );
+  });
+
+  it("round-trips every unambiguous wall clock", () => {
+    for (const wall of [
+      "2026-01-15T20:00",
+      "2026-07-01T20:00",
+      "2026-03-29T00:30",
+      "2026-03-29T12:00",
+      "2026-10-25T00:30",
+      "2026-10-25T02:30",
+      "2026-12-31T23:59",
+    ]) {
+      const instant = londonWallClockToInstant(wall);
+      expect(instant, wall).not.toBeNull();
+      expect(instantToLondonWallClock(instant as string), wall).toBe(wall);
+    }
+  });
+
+  it("returns an empty string rather than null for an unreadable value", () => {
+    // A `defaultValue` of null makes an uncontrolled input controlled, which
+    // React warns about; "" is the honest empty input.
+    expect(instantToLondonWallClock("not an instant")).toBe("");
+    expect(instantToLondonWallClock("")).toBe("");
+  });
+});
+
+// ===========================================================================
+// THE ZONE-INDEPENDENCE GUARD, AND WHY THE BLOCK ABOVE IS NOT ONE
+// ===========================================================================
+//
+// The brief predicted that a naive `return new Date(value).toISOString()`
+// "passes the July and January cases on a UK machine and fails the
+// transitions". MEASURED, AND IT IS NOT TRUE. On this machine
+// (`Intl.DateTimeFormat().resolvedOptions().timeZone === "Europe/London"`) V8
+// resolves both transition days exactly as `londonWallClockToInstant` does --
+// the ambiguous 01:30 to the FIRST occurrence, the non-existent 01:30 shifted
+// FORWARD -- so the naive mutant passes all eight of the assertions above,
+// including the four the brief nominated as the guard:
+//
+//     2026-03-29T01:30 -> 2026-03-29T01:30:00.000Z   (agrees)
+//     2026-10-25T01:30 -> 2026-10-25T00:30:00.000Z   (agrees)
+//
+// That is not a coincidence and it is not luck: `new Date(wallClock)` on a box
+// whose zone IS Europe/London is asking the same tz database the same
+// question. The bug the function exists to prevent is not "the maths is hard",
+// it is "the zone is whatever the machine says" -- so a test run only in the
+// machine's own zone cannot see it, on any date.
+//
+// So the table is re-run with `process.env.TZ` moved out from under it. Node
+// re-reads TZ for local-time `Date` behaviour after start (verified: the same
+// literal yields 19:00Z under Europe/London, 20:00Z under UTC and 00:00Z the
+// next day under America/New_York), while `Intl.DateTimeFormat` with an
+// EXPLICIT `timeZone` is untouched -- which is the whole design.
+//
+// ===========================================================================
+// WHAT THE MUTANT ACTUALLY DOES, PER ZONE -- COUNTED, NOT ESTIMATED
+// ===========================================================================
+// The first version of this comment said "under UTC the naive mutant fails
+// every row here, including July and January." It does not, and fix round 1's
+// Important 2 caught it. Re-run per zone against the eight rows below:
+//
+//   ambient (Europe/London)   0 / 8   agrees on everything
+//   TZ=UTC                    4 / 8   fails 2026-07-01T20:00, 2026-03-29T12:00,
+//                                     2026-10-25T00:30 and 2026-10-25T01:30.
+//                                     JANUARY PASSES -- London is UTC then, so
+//                                     a UTC box is right about it by accident,
+//                                     which is exactly the trap. 2026-03-29T00:30
+//                                     and 2026-10-25T02:30 pass for the same
+//                                     reason (both are GMT-side), and the
+//                                     non-existent 2026-03-29T01:30 passes
+//                                     because both implementations land on
+//                                     01:30Z from opposite directions.
+//   TZ=America/New_York       8 / 8
+//   TZ=Australia/Sydney       8 / 8
+//
+// A CI box running UTC therefore catches this mutant on half these rows, not
+// on all of them -- and on none of them without this block. New_York and
+// Sydney are where the block's real strength is, which is why it is three
+// zones and not one.
+//
+// TZ is restored in afterAll, and vitest.config.ts sets `fileParallelism:
+// false`, so no other suite observes the change.
+
+const ZONE_CASES: readonly (readonly [string, string])[] = [
+  ["2026-07-01T20:00", "2026-07-01T19:00:00.000Z"],
+  ["2026-01-15T20:00", "2026-01-15T20:00:00.000Z"],
+  ["2026-03-29T00:30", "2026-03-29T00:30:00.000Z"],
+  ["2026-03-29T01:30", "2026-03-29T01:30:00.000Z"],
+  ["2026-03-29T12:00", "2026-03-29T11:00:00.000Z"],
+  ["2026-10-25T00:30", "2026-10-24T23:30:00.000Z"],
+  ["2026-10-25T01:30", "2026-10-25T00:30:00.000Z"],
+  ["2026-10-25T02:30", "2026-10-25T02:30:00.000Z"],
+];
+
+describe("the answer does not depend on the server's own timezone", () => {
+  const originalTZ = process.env.TZ;
+  afterAll(() => {
+    if (originalTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTZ;
+  });
+
+  for (const zone of ["UTC", "America/New_York", "Australia/Sydney"]) {
+    describe(`with TZ=${zone}`, () => {
+      beforeAll(() => {
+        process.env.TZ = zone;
+      });
+
+      it("finds the zone really moved, so this cannot pass vacuously", () => {
+        // Without this, a Node that ignored a runtime TZ change would make
+        // every assertion below a second copy of the ambient-zone run.
+        expect(new Date("2026-07-01T20:00").toISOString()).not.toBe(
+          "2026-07-01T19:00:00.000Z",
+        );
+      });
+
+      for (const [wall, instant] of ZONE_CASES) {
+        it(`${wall} is still ${instant}`, () => {
+          expect(londonWallClockToInstant(wall)).toBe(instant);
+        });
+      }
+
+      it("and the inverse still renders London, not the server's clock", () => {
+        expect(instantToLondonWallClock("2026-07-01T19:00:00.000Z")).toBe(
+          "2026-07-01T20:00",
+        );
+        expect(instantToLondonWallClock("2026-01-15T20:00:00.000Z")).toBe(
+          "2026-01-15T20:00",
+        );
+      });
+    });
+  }
 });

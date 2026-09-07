@@ -32,7 +32,7 @@ import { describe, expect, it } from "vitest";
 //     version of this file named without implementing (Task 8 review,
 //     Important #3), and it matters more than the other two: a list that
 //     hand-rolls a keyset query and never calls `fetchListPage` is invisible
-//     to the >= 15 floor, to the pairing check and to the `.range(`/`offset:`
+//     to the >= 17 floor, to the pairing check and to the `.range(`/`offset:`
 //     ban, so without this assertion the census's blind spot is exactly the
 //     defect the brief names ("a second, weaker cursor in the codebase").
 //   * a page that calls `.range(` or builds an `offset` -- a second pagination
@@ -94,41 +94,136 @@ function callSites(needle: string): string[] {
   });
 }
 
+/** One file's source, by the path `callers()` reports. */
+function byPath(path: string): string {
+  const found = SOURCES.find((f) => f.path === path);
+  if (!found) throw new Error(`[one-cursor-only] no source for ${path}`);
+  return found.text;
+}
+
+/**
+ * The spec-level wrappers around `parseListParams`, and where each is defined.
+ *
+ * A wrapper exists only where a surface has to REFUSE one of its own query
+ * keys -- a spec must declare a real `searchColumn` (a fake one is a PostgREST
+ * 400), and a surface with no search control must then make sure a
+ * hand-edited `?<prefix>q=zzz` cannot narrow it silently. Both entries below
+ * do exactly that and nothing else.
+ *
+ * This list is data for the two assertions above, not an exemption: the second
+ * one drives each wrapper's own module and requires it to call
+ * `parseListParams` and to drop a key.
+ */
+const SPEC_PARAM_WRAPPERS = [
+  { call: "activityParams", module: "lib/crm/activity.ts" },
+  { call: "lineupParams", module: "lib/crm/lineup-list.ts" },
+  // PHASE 3 TASK 7. The venue page's "Events here" and the artist page's
+  // "Event history" are the third and fourth surfaces in the product that
+  // declare a real `searchColumn` and render no search control, so each drops
+  // its own `<prefix>q`. Both `fetchListPage` callers are in
+  // `lib/crm/queries.ts` (server-only); both wrappers are in
+  // `lib/crm/events-list.ts`, which stays pure so tests/unit can drive them --
+  // and TWO WRAPPERS SHARING ONE MODULE is new, which is why the loop below
+  // resolves per wrapper rather than per module.
+  { call: "venueEventsParams", module: "lib/crm/events-list.ts" },
+  { call: "artistEventsParams", module: "lib/crm/events-list.ts" },
+] as const;
+
 describe("every paginated list shares one implementation", () => {
   const fetchers = callers("fetchListPage<");
   const parsers = callers("parseListParams(");
 
   it("finds the CALL SITES at all, so this suite cannot pass vacuously", () => {
-    // FIFTEEN at the time of writing: contacts, companies, artists, agencies,
-    // venues and their five `deleted` twins (10), the duplicates queue and its
-    // `resolved` twin (12), merge history (13), the artist fee list (14) and
-    // the activity timeline in `lib/crm/activity.ts` (15).
+    // TWENTY as of Phase 3 Task 7, raised from seventeen: contacts,
+    // companies, artists, agencies, venues and their five `deleted` twins
+    // (10), the duplicates queue and its `resolved` twin (12), merge history
+    // (13), the artist fee list (14), the activity timeline in
+    // `lib/crm/activity.ts` (15), the events list (16), the deleted events
+    // list (17), the lineup panel in `lib/crm/queries.ts` (18), and now the
+    // venue page's "Events here" (19) and the artist page's "Event history"
+    // (20) -- BOTH ADDED TO `lib/crm/queries.ts`, WHICH ALREADY HELD ONE. A
+    // file count would have moved by zero for this task; L1143 changed this to
+    // occurrences for exactly that case, and this is the first task to
+    // collect on it.
     //
-    // COUNTED AS OCCURRENCES, NOT AS FILES (L1143). Today the two happen to be
-    // the same number -- fifteen files, one call each -- which is exactly why
-    // the mismatch between this assertion and the sentence above it went
-    // unnoticed. A second list added to a file that already has one would not
-    // move a file count.
+    // RAISING IT IS THE OBLIGATION, not paperwork. It is a FLOOR, so Task 3
+    // could have added two lists and left it at fifteen and nothing would have
+    // gone red -- and the census would then have been satisfied by a codebase
+    // that had deleted two of the lists it is meant to be counting. The floor
+    // only has teeth at the number the tree actually holds.
     //
-    // A FLOOR, not an exact count, so Phase 3 adding events and lineups does
-    // not turn this red for the right reason -- but deleting the shared path
-    // does.
-    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(15);
+    // COUNTED AS OCCURRENCES, NOT AS FILES (L1143). Today the two still happen
+    // to be the same number -- seventeen files, one call each -- which is
+    // exactly why the mismatch between this assertion and the sentence above
+    // it went unnoticed. A second list added to a file that already has one
+    // would not move a file count.
+    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(20);
   });
 
   it("every fetchListPage caller also parses its params through lib/list", () => {
     // The pairing is the point. `fetchListPage` with hand-rolled params is a
     // page that reads `after` off the query string itself, which is where a
     // second, unvalidated cursor gets in.
-    const unpaired = fetchers.filter((path) => !parsers.includes(path));
+    //
+    // =======================================================================
+    // ONE INDIRECTION IS ALLOWED, AND IT IS TRANSITIVE RATHER THAN AN
+    // ALLOWLIST (Phase 3 Task 5)
+    // =======================================================================
+    // A spec that DROPS a query key -- `activityParams` drops `activity_q`,
+    // `lineupParams` drops `lineup_q`, both because the surface declares a
+    // real `searchColumn` and renders no search control -- has to own a
+    // wrapper around `parseListParams`, and its callers then call the wrapper
+    // rather than the parser.
+    //
+    // `lib/crm/activity.ts` happens to hold both halves in one file, so it
+    // passed this assertion by accident of layout. `lineupParams` cannot: it
+    // lives in `lib/crm/lineup-list.ts` because it must stay PURE (the client
+    // panel imports the spec and the vocabulary from that module, and a
+    // `server-only` import there would break the bundle) and because
+    // `tests/unit` can then drive it -- tests/unit/crm/lineup-list.test.ts's
+    // § 1 and § 2 are the only assertions in the repository that see the
+    // prefix collision and the dropped `q` at all. Its `fetchListPage` caller
+    // is `loadLineupForEvent` in `lib/crm/queries.ts`, which is server-only.
+    //
+    // So a file also satisfies the pairing by calling a wrapper WHOSE OWN
+    // MODULE calls `parseListParams`. That is checked here, not assumed: the
+    // wrapper names are resolved to their defining module and that module is
+    // required to be a `parseListParams` caller. A hand-rolled
+    // `myParams(raw)` that never touches lib/list therefore does NOT satisfy
+    // it, which is the whole property.
+    const unpaired = fetchers.filter(
+      (path) => !parsers.includes(path) && !SPEC_PARAM_WRAPPERS.some(
+        (wrapper) =>
+          code(byPath(path)).includes(`${wrapper.call}(`) &&
+          parsers.includes(wrapper.module),
+      ),
+    );
     expect(unpaired).toEqual([]);
+  });
+
+  it("every spec params wrapper really does go through parseListParams", () => {
+    // The other half of the transitive rule above, asserted on its own so that
+    // emptying a wrapper's body cannot quietly satisfy the pairing check. FOUR
+    // is the denominator -- `activityParams`, `lineupParams`,
+    // `venueEventsParams` and `artistEventsParams` -- and a fifth added
+    // without a row here is a wrapper the pairing check cannot see.
+    expect(SPEC_PARAM_WRAPPERS).toHaveLength(4);
+    for (const wrapper of SPEC_PARAM_WRAPPERS) {
+      const body = code(byPath(wrapper.module));
+      expect(body, wrapper.call).toContain(`export function ${wrapper.call}(`);
+      expect(body, wrapper.call).toContain("parseListParams(");
+      // And it drops a key rather than merely forwarding: that is the only
+      // reason a wrapper is allowed to exist instead of the parser being
+      // called directly.
+      expect(body, wrapper.call).toContain("]: undefined,");
+    }
   });
 
   it("no module outside lib/list reads a cursor param off the query string", () => {
     // THE HAND-ROLLED KEYSET. `fetchListPage` and `parseListParams` are paired
     // above, but a list that calls NEITHER -- `.gt("id", searchParams.after)`
     // with its own `.limit(n)` -- passes every other assertion in this file:
-    // the >= 15 floor cannot see it, the pairing check never considers it, and
+    // the >= 17 floor cannot see it, the pairing check never considers it, and
     // it uses neither `.range(` nor `offset:`. `lib/list/params.ts` owns the
     // names `after` and `before` (it reads `paramKey(spec, "after")` at line
     // 230) and is the only place allowed to take them off a query string.
@@ -200,6 +295,17 @@ describe("the list specs that differ from the others say how", () => {
         "utf8",
       ),
     ).toContain("activity_events");
+  });
+
+  it("both Task 7 surfaces namespace their keys, because they share a page", () => {
+    // The venue page carries two lib/list/ surfaces and the artist page three,
+    // so a missing prefix on either of these is two lists reading one `after`.
+    // The VALUES, their distinctness and the cardinality of the whole set are
+    // asserted in tests/unit/crm/events-list.test.ts § 1; this is the census's
+    // own cheap check that the field is present at all.
+    const events = readFileSync(root + "lib/crm/events-list.ts", "utf8");
+    expect(events).toContain('paramPrefix: "venueevents_"');
+    expect(events).toContain('paramPrefix: "artistevents_"');
   });
 
   it("the timeline namespaces its query keys, because it shares a page", () => {

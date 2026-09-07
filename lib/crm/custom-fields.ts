@@ -11,30 +11,37 @@
 // actions.ts ("use server").
 //
 // ===========================================================================
-// THE ENTITY-TYPE LIST BELOW IS THE FOURTH COPY, AND THAT IS ON PURPOSE
+// THE ENTITY-TYPE LIST BELOW IS A SECOND COPY OF TWO CHECK CONSTRAINTS
 // ===========================================================================
-// 20260827232512's header is explicit that the five-value allowlist is
-// duplicated across three CHECK constraints rather than shared, and why:
+// 20260827232512's header said the five-value allowlist was duplicated across
+// THREE CHECK constraints rather than shared, and predicted:
 //
 //     "Phase 3 adds 'event' to all three, and having to touch three
 //      constraints is the reminder that three code paths change too."
 //
-// This constant is a FOURTH copy, in a fourth language, and the brief asks it
-// to be declared as one. It exists because the definition editor has to render
-// a tab per entity type and the router has to validate `?entity=` against
-// something, and neither can read a CHECK constraint at request time.
+// PHASE 3 TASK 1 FALSIFIED THE SECOND HALF OF THAT SENTENCE, and this comment
+// is corrected rather than left standing. 20260901001000 added 'event' to TWO
+// of them -- custom_field_definitions_entity_type_allowed and
+// custom_field_values_entity_type_allowed -- and deliberately left
+// merges_entity_type_allowed at five, along with a FOURTH constraint that
+// header did not know about, merge_candidates_entity_type_allowed. Events are
+// not dedup-screened and not mergeable at MVP; the argument is written onto
+// merges_entity_type_allowed in the database and in 20260901001000's header
+// § (c).
 //
-// HOW A PHASE 3 DEVELOPER FINDS IT WITHOUT READING THIS COMMENT:
-// tests/integration/crm/custom-field-entity-types-match-db.test.ts reads all
-// THREE constraint definitions out of the live catalogue (pg_get_constraintdef)
-// and asserts each one's value set equals this array. Adding 'event' to the
-// constraints and not to this file turns that test red with a message naming
-// this file; adding it here and not to the constraints turns it red the other
-// way. It is the same tripwire tiers.ts, MFA_REQUIRED_ROLES and
-// PAST_DUE_GRACE_DAYS already have, applied to the one list this task adds.
+// So this constant mirrors the CUSTOM FIELD pair only. It exists because the
+// definition editor has to render a tab per entity type and the router has to
+// validate `?entity=` against something, and neither can read a CHECK
+// constraint at request time. lib/crm/dedup.ts's MERGE_ENTITY_TYPES was an
+// alias of this list until that migration and is now its own five-value tuple.
 //
-// It is deliberately NOT a way to avoid touching the constraints -- the count
-// is now four, and the reminder is louder rather than quieter.
+// HOW A LATER PHASE FINDS THIS WITHOUT READING THE COMMENT:
+// tests/integration/crm/custom-field-entity-types-match-db.test.ts reads the
+// constraint definitions out of the live catalogue (pg_get_constraintdef) and
+// asserts the custom-field pair equals this array while the merge pair equals
+// MERGE_ENTITY_TYPES. Editing either list alone turns it red naming the file.
+// tests/integration/crm/entity-dispatch-branches-match-db.test.ts is the same
+// treatment for the six polymorphic `case p_entity_type` dispatches in SQL.
 
 // The URL rules live in ONE file for the whole application: normaliseWebsite()
 // is the write-side protocol allowlist and safeHref() the render-side one, both
@@ -45,13 +52,26 @@
 import { groupMarkerName } from "@/lib/forms";
 import { normaliseWebsite, safeHref } from "@/lib/crm/urls";
 
-/** The five CRM entities a custom field can be attached to. Phase 3 adds 'event'. */
+/**
+ * The six CRM entities a custom field can be attached to.
+ *
+ * SIX SINCE PHASE 3 TASK 1 (`20260901001000_event_entity_type_widening.sql`).
+ * That migration widened `custom_field_definitions_entity_type_allowed` and
+ * `custom_field_values_entity_type_allowed` to six and DELIBERATELY LEFT
+ * `merges_entity_type_allowed` AND `merge_candidates_entity_type_allowed` AT
+ * FIVE -- events are not dedup-screened and not mergeable at MVP. So this list
+ * is no longer the merge list too: `MERGE_ENTITY_TYPES` in lib/crm/dedup.ts is
+ * its own five-value tuple from that change onwards, and stopped being an
+ * alias of this one. The reason is on `merges_entity_type_allowed`'s comment
+ * in the database and in `20260901001000`'s header § (c).
+ */
 export const CUSTOM_FIELD_ENTITY_TYPES = [
   "company",
   "contact",
   "agency",
   "artist",
   "venue",
+  "event",
 ] as const;
 
 export type CustomFieldEntityType = (typeof CUSTOM_FIELD_ENTITY_TYPES)[number];
@@ -69,6 +89,7 @@ export const ENTITY_TYPE_LABELS: Readonly<Record<CustomFieldEntityType, string>>
   agency: "Agencies",
   artist: "Artists",
   venue: "Venues",
+  event: "Events",
 };
 
 /**
@@ -104,6 +125,12 @@ export const PERMISSION_FOR_ENTITY: Readonly<
   agency: "manage_contacts",
   artist: "manage_artists",
   venue: "manage_venues",
+  // SEEDED IN PHASE 3 TASK 2 (20260901010000), NOT TASK 1. This literal is
+  // the TypeScript half only -- nothing in tests/integration compares
+  // PERMISSION_FOR_ENTITY against public.permissions, and
+  // private.entity_is_manageable() gains its own `event` arm in the same
+  // migration that seeds the key, so the two can never exist apart.
+  event: "manage_events",
 };
 
 /**
@@ -122,6 +149,12 @@ export const ENTITY_PATH_SEGMENT: Readonly<
   agency: "agencies",
   artist: "artists",
   venue: "venues",
+  // NO LONGER DANGLING. This entry was added by Phase 3 Task 1 ahead of the
+  // route, and said so; /[orgSlug]/events/[eventId] shipped in Task 3 and
+  // Task 6 built the two things that actually follow this link -- the artist
+  // timeline's `other_type: 'event'` entries and the venue timeline's, both
+  // branches of public.activity_events (20260901030000).
+  event: "events",
 };
 
 // ---------------------------------------------------------------------------

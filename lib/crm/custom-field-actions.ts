@@ -440,6 +440,12 @@ const PARENT_TABLE: Readonly<Record<CustomFieldEntityType, ParentTable>> = {
   agency: "agencies",
   artist: "artists",
   venue: "venues",
+  // PHASE 3 TASK 1. public.events exists and carries RLS from
+  // 20260901000000; its POLICIES land in Task 2, so until then this entry
+  // resolves to a table that answers every caller with zero rows -- which
+  // liveInOrg reads as "gone", the fail-closed direction. No screen reaches
+  // it before Task 3 in any case.
+  event: "events",
 };
 
 /**

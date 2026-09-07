@@ -11,10 +11,17 @@
 //      first" means "reset the database first", which means this suite could
 //      never run beside a dev session someone is using.
 //   2. Its fixtures are shaped for assertions, not for a walk -- contacts
-//      named "Deleted Contact" that are not deleted, ten merges written by
-//      hand rather than through `merge_records()`. A golden-path test that
-//      depends on those is a test that depends on another suite's incidental
-//      choices.
+//      named "Deleted Contact" that are not deleted, and merge rows in two
+//      different shapes. THE SECOND HALF OF THAT SENTENCE USED TO READ "ten
+//      merges written by hand rather than through `merge_records()`", and
+//      Phase 3 Task 1 made it half false: § Z of `rls_phase2_crm.sql` now
+//      plants five dedicated pairs and merges them through `merge_records()`
+//      for real, so the suite holds hand-written rows (no `<side>.before`
+//      snapshot) AND real ones (with it) side by side, on purpose. The
+//      hand-written ones were left alone because ~680 assertions are built on
+//      them. A golden-path test that depends on any of it is a test that
+//      depends on another suite's incidental choices, which is still the
+//      point.
 //
 // So this creates a disposable world with a unique slug per run and deletes it
 // afterwards, and it can run against a database anybody is already using.
@@ -113,6 +120,78 @@ export function localStack(): LocalStack {
 
 export const PASSWORD = "Test-Passw0rd!-e2e";
 
+/**
+ * The names the Task 7 assertions look for, in one place.
+ *
+ * WRITTEN AS CONSTANTS BECAUSE THEY ARE ASSERTED AS ABSENCES. A
+ * `not.toContainText("Manger Night")` typo passes forever and silently, and an
+ * absence assertion is exactly the kind that cannot fail loudly on its own --
+ * the same reason `expectRefused` asserts a STATUS as well as words.
+ */
+export const EVENT_NAMES = {
+  managerOwned: "Manager Night A",
+  standardOwned: "Standard Night A",
+  otherTenant: "Other Tenant Secret Event",
+  // FIX ROUND 1 (I-1). A FUTURE event that is SOFT-DELETED. It exists for one
+  // assertion -- that the workspace home's upcoming block does not show it --
+  // and that assertion exists because `loadUpcomingEvents` writes
+  // `deleted_at is null` BY HAND (nothing else writes it for that query) and
+  // the Task 7 mutation table recorded, correctly, that deleting the clause
+  // turned nothing red. It is on the first screen a user sees.
+  softDeleted: "Deleted Night A",
+  // TASK 8. A PAST event with a `ticket_link` the RENDERER refuses. See the
+  // fixture insert for why the value is what it is, and why the obvious value
+  // -- `javascript:` -- cannot be planted at all on this table.
+  hostileTicket: "Hostile Ticket Night",
+} as const;
+
+export const VENUE_NAME = "E2E Warehouse";
+/** A SECOND live venue, so "change the venue" is a step the golden path can
+ *  actually take. Owned by the MANAGER, where VENUE_NAME is owned by the
+ *  standard user -- so the picker on the manager's form is proven to offer
+ *  both a record they own and one they only have full-scope access to. */
+export const ALT_VENUE_NAME = "E2E Basement";
+export const ROOM_NAME = "E2E Main Room";
+export const ARTIST_NAME = "E2E Headliner";
+/** An artist in the OTHER tenant, on the other tenant's event's bill. */
+export const OTHER_ARTIST_NAME = "Other Tenant Headliner";
+
+/**
+ * A `ticket_link` that PASSES the column CHECK and that `safeHref()` REFUSES.
+ *
+ * ===========================================================================
+ * WHY NOT `javascript:`, WHICH IS WHAT THE TASK 8 BRIEF ASKED FOR
+ * ===========================================================================
+ * Because it cannot be stored. `events_ticket_link_is_http`
+ * (20260901000000) is `check (ticket_link is null or ticket_link ~* '^https?://')`,
+ * it is a validated CHECK rather than `NOT VALID`, and a CHECK binds EVERY
+ * writer -- `postgres` included, which is the connection this file uses. There
+ * is no `javascript:` row to plant, in this suite or in the product.
+ *
+ * That is a finding rather than a convenience. The constraint's own comment
+ * (20260901000000) calls itself "DEFENCE IN DEPTH, NOT THE CONTROL"; the phrase
+ * "a row written before it, by an import, or by a direct PostgREST PATCH is
+ * still possible" is the DETAIL PAGE's comment
+ * (app/(app)/[orgSlug]/events/[eventId]/page.tsx), not the constraint's.
+ * On `public.events` none of those three is possible today -- the table was
+ * created WITH the constraint, so there are no older rows, and PostgREST goes
+ * through the same CHECK. The sentence describes the shape of the risk
+ * correctly and overstates the exposure on this column.
+ *
+ * ===========================================================================
+ * SO WHAT IS ACTUALLY MEASURED HERE
+ * ===========================================================================
+ * The property that matters is unchanged and is still `safeHref()`'s: the page
+ * renders the PARSER's answer or nothing, never the raw column. This value is
+ * the smallest thing that separates the two -- `^https?://` matches it, so the
+ * CHECK admits it, and `new URL()` throws on the space inside the host, so
+ * `safeHref()` returns null and the detail page must render it as inert text.
+ * A page that wrote `href={event.ticketLink}` would ship a broken anchor here
+ * and a live `javascript:` one the day the CHECK is relaxed or the column is
+ * copied to a table without it.
+ */
+export const HOSTILE_TICKET_LINK = "https://exa mple.com/tickets";
+
 /** Roles this suite signs in as. */
 export type E2eRole = "manager" | "standard_user" | "read_only";
 
@@ -136,7 +215,68 @@ export interface E2eWorld {
   /** A contact carrying values that a `javascript:`-rejecting form would never
    *  have accepted, planted directly so the RENDER path is what is measured. */
   hostileContactId: string;
+
+  // =========================================================================
+  // PHASE 3 TASK 7: THE CROSS-ENTITY EVENT SURFACES
+  // =========================================================================
+  // A venue with two events at it -- one owned by the manager, one by the
+  // standard user -- and an artist on the bill of the manager's. That shape is
+  // the minimum that can tell the three failures apart on the new surfaces:
+  //
+  //   tenant boundary   the other tenant's event must 404 from BOTH slugs
+  //   record scope      the standard user's venue page must show THEIR event
+  //                     and not the manager's, inside one tenant
+  //   non-vacuity       the manager's page must show BOTH, or "it shows
+  //                     nothing" would satisfy every assertion above
+  //
+  // Both events are in the FUTURE, so they are also what the workspace home's
+  // upcoming block reads.
+  /** A venue in THIS tenant. Its detail page carries the "Events here" list. */
+  venueId: string;
+  /** A ROOM at that venue. Task 8: the event form's room `<select>` is an
+   *  `<optgroup>` over every live room in the workspace (there is no cascade
+   *  without JavaScript -- components/crm/event-form.tsx says why), so a
+   *  workspace with no rooms renders that control with one option and the
+   *  golden path cannot tell "the group is empty" from "the group is gone". */
+  venueRoomId: string;
+  /** A SECOND live venue in this tenant, owned by the manager. The golden
+   *  path's "change the venue" step needs somewhere to change it TO. */
+  altVenueId: string;
+  /** An event at that venue, owned by the manager. */
+  managerOwnedEventId: string;
+  /** An event at that venue, owned by the standard user. */
+  standardOwnedEventId: string;
+  /** An artist in this tenant, on the manager-owned event's lineup. */
+  artistId: string;
+  /** A FUTURE event in this tenant that is soft-deleted. It must appear on no
+   *  surface at all -- the workspace home's upcoming block least of all. */
+  softDeletedEventId: string;
+  /** A PAST event carrying `HOSTILE_TICKET_LINK`. In the past deliberately, so
+   *  it is outside the workspace home's upcoming block and cannot perturb the
+   *  five rows that block's assertions count on. */
+  hostileEventId: string;
+  /** An event in the OTHER tenant. Its id is a valid uuid that must 404. */
+  otherOrgEventId: string;
+  /** An artist in the OTHER tenant, on that tenant's event's bill. Task 8: the
+   *  other tenant's event now has a LINEUP, so "this tenant's event pages show
+   *  no other tenant's rows" is a claim about `event_lineup` as well as about
+   *  `events` -- `event_lineup_select_via_event` is a separate policy from
+   *  `events_select_view_crm` and nothing before this could tell them apart
+   *  from a browser. */
+  otherOrgArtistId: string;
+
   users: Record<E2eRole, E2eUser>;
+  /** The OTHER tenant's owner. Nothing signs in as them; they exist so the
+   *  second organisation has a member, which is what makes its rows real
+   *  rather than orphaned.
+   *
+   *  RETURNED, AS OF TASK 8, AND THAT IS THE WHOLE OF THE DEFERRED MINOR.
+   *  `tearDownWorld` used to find this user by LISTING UP TO 1000 AUTH USERS
+   *  and matching an email it re-derived from the slug. Two things were wrong
+   *  with it and only one is tidiness: the id was already in hand at creation
+   *  time, and on a stack with more than 1000 users the page would not contain
+   *  them and the teardown would silently leak a user every run. */
+  otherOwner: E2eUser;
 }
 
 async function api(
@@ -292,6 +432,177 @@ export async function setUpWorld(): Promise<E2eWorld> {
     ],
   );
 
+  // =========================================================================
+  // PHASE 3 TASK 7'S ROWS
+  // =========================================================================
+  // `starts_at` is NOT NULL (20260901000000) and both of this tenant's events
+  // are in the FUTURE, deliberately: the same two rows are what the venue
+  // page's "Events here" list pages and what the workspace home's upcoming
+  // block reads, so one fixture serves both and there is no second set of
+  // dates to keep in step.
+  //
+  // `owner_user_id` IS WRITTEN EXPLICITLY rather than left to the column's
+  // `default auth.uid()`: this connection is `postgres`, not a session, so the
+  // default would return NULL and every event would be a record NOBODY can see
+  // -- which would make the record-scope assertion pass for the wrong reason.
+  const venueId = randomUUID();
+  const venueRoomId = randomUUID();
+  const altVenueId = randomUUID();
+  const managerOwnedEventId = randomUUID();
+  const standardOwnedEventId = randomUUID();
+  const softDeletedEventId = randomUUID();
+  const hostileEventId = randomUUID();
+  const artistId = randomUUID();
+  const otherOrgVenueId = randomUUID();
+  const otherOrgEventId = randomUUID();
+  const otherOrgArtistId = randomUUID();
+
+  await sql(
+    `insert into public.venues (id, organisation_id, owner_user_id, name)
+     values ($1,$2,$3,$4), ($5,$6,$7,$8), ($9,$2,$10,$11)`,
+    [
+      venueId,
+      orgId,
+      // OWNED BY THE STANDARD USER, AND THAT IS THE WHOLE RECORD-SCOPE TEST.
+      // Venues are record-scoped like every other top-level entity, so a
+      // manager-owned venue 404s for the standard user and the "their venue
+      // page shows their event and not the manager's" assertion could never
+      // run -- it failed exactly that way on the first e2e run. The MANAGER is
+      // full-scope (`private.full_scope_organisations()` excludes only
+      // standard_user and read_only), so they still see this venue and both
+      // events at it.
+      users.standard_user.id,
+      VENUE_NAME,
+      otherOrgVenueId,
+      otherOrgId,
+      otherOwner.id,
+      "Other Tenant Venue",
+      altVenueId,
+      users.manager.id,
+      ALT_VENUE_NAME,
+    ],
+  );
+
+  // A ROOM AT THAT VENUE (Task 8). `venue_rooms` carries no `owner_user_id`:
+  // record scope follows the venue (20260827232510), so this room is inside
+  // the standard user's scope exactly as the venue above is.
+  await sql(
+    `insert into public.venue_rooms (id, organisation_id, venue_id, name)
+     values ($1,$2,$3,$4)`,
+    [venueRoomId, orgId, venueId, ROOM_NAME],
+  );
+
+  await sql(
+    `insert into public.artists (id, organisation_id, owner_user_id, name)
+     values ($1,$2,$3,$4), ($5,$6,$7,$8)`,
+    [
+      artistId,
+      orgId,
+      users.manager.id,
+      ARTIST_NAME,
+      otherOrgArtistId,
+      otherOrgId,
+      otherOwner.id,
+      OTHER_ARTIST_NAME,
+    ],
+  );
+
+  await sql(
+    `insert into public.events
+       (id, organisation_id, owner_user_id, venue_id, name, starts_at, status)
+     values ($1,$2,$3,$4,$5, now() + interval '14 days', 'confirmed'),
+            ($6,$2,$7,$4,$8, now() + interval '21 days', 'planned'),
+            ($9,$10,$11,$12,$13, now() + interval '10 days', 'confirmed')`,
+    [
+      managerOwnedEventId,
+      orgId,
+      users.manager.id,
+      venueId,
+      EVENT_NAMES.managerOwned,
+      standardOwnedEventId,
+      users.standard_user.id,
+      EVENT_NAMES.standardOwned,
+      otherOrgEventId,
+      otherOrgId,
+      otherOwner.id,
+      otherOrgVenueId,
+      EVENT_NAMES.otherTenant,
+    ],
+  );
+
+  // ---- FIX ROUND 1 (I-1): a soft-deleted FUTURE event.
+  //
+  // SOONER THAN EITHER LIVE ONE (+7 days against +14 and +21), deliberately: if
+  // the upcoming block ever stopped filtering `deleted_at`, this row would sort
+  // to the TOP of the five rather than to a position a short fixture might not
+  // reach. `deleted_at` is set in the same statement, so there is no window in
+  // which the world holds a live event nobody meant to create.
+  await sql(
+    `insert into public.events
+       (id, organisation_id, owner_user_id, venue_id, name, starts_at, status,
+        deleted_at)
+     values ($1,$2,$3,$4,$5, now() + interval '7 days', 'planned', now())`,
+    [
+      softDeletedEventId,
+      orgId,
+      users.manager.id,
+      venueId,
+      EVENT_NAMES.softDeleted,
+    ],
+  );
+
+  // ---- TASK 8: a PAST event whose ticket link the renderer must refuse.
+  //
+  // NO VENUE, deliberately: it exists for one assertion on its own detail page
+  // and must not appear in the venue page's "Events here" list, where it would
+  // be a third row two other tests count on not seeing.
+  await sql(
+    `insert into public.events
+       (id, organisation_id, owner_user_id, name, starts_at, status,
+        ticket_link)
+     values ($1,$2,$3,$4, now() - interval '30 days', 'completed', $5)`,
+    [
+      hostileEventId,
+      orgId,
+      users.manager.id,
+      EVENT_NAMES.hostileTicket,
+      HOSTILE_TICKET_LINK,
+    ],
+  );
+
+  // The artist is on the manager-owned event's bill, which is what the artist
+  // page's "Event history" reads -- through `event_lineup`, not through a
+  // column on `events`.
+  //
+  // AND A REMOVED SLOT ON THE OTHER EVENT (fix round 1, M-3). `deleted_at` on
+  // `event_lineup` is the OTHER hand-written soft-delete clause this task
+  // added -- step one of `loadEventsForArtist` -- and it had no test either.
+  // With this row, "the artist page does not show Standard Night A" stops
+  // being a statement about an artist who was never booked and becomes a
+  // statement about one who was UNBOOKED: drop the clause and the event comes
+  // back into their history.
+  await sql(
+    `insert into public.event_lineup
+       (organisation_id, event_id, artist_id, position, billing, deleted_at)
+     values ($1,$2,$3,0,'headliner', null),
+            ($1,$4,$3,1,'support', now())`,
+    [orgId, managerOwnedEventId, artistId, standardOwnedEventId],
+  );
+
+  // AND A LINEUP IN THE OTHER TENANT (Task 8). Until this row existed, every
+  // cross-tenant event assertion in this suite was made against a tenant whose
+  // `event_lineup` was EMPTY -- so "the other tenant's lineup does not leak"
+  // was satisfied by there being no lineup to leak. `event_lineup` has its own
+  // three policies (20260901011000) reached through `event_lineup_select_via_event`,
+  // which is a different expression from `events_select_view_crm`, and a
+  // browser could not previously tell the two apart.
+  await sql(
+    `insert into public.event_lineup
+       (organisation_id, event_id, artist_id, position, billing)
+     values ($1,$2,$3,0,'headliner')`,
+    [otherOrgId, otherOrgEventId, otherOrgArtistId],
+  );
+
   return {
     orgSlug,
     orgId,
@@ -300,7 +611,18 @@ export async function setUpWorld(): Promise<E2eWorld> {
     otherOrgContactId,
     managerOwnedContactId,
     hostileContactId,
+    venueId,
+    venueRoomId,
+    altVenueId,
+    managerOwnedEventId,
+    standardOwnedEventId,
+    softDeletedEventId,
+    hostileEventId,
+    artistId,
+    otherOrgEventId,
+    otherOrgArtistId,
     users,
+    otherOwner,
   };
 }
 
@@ -308,7 +630,9 @@ export async function setUpWorld(): Promise<E2eWorld> {
  * Delete the world.
  *
  * Deleting the two organisations cascades to every tenant row -- contacts,
- * companies, artists, venues, rooms, links, custom field values. Auth users are
+ * companies, artists, venues, rooms, links, custom field values, and (since
+ * Phase 3 Task 7) events and their lineup rows, both of which carry
+ * `organisation_id ... on delete cascade`. Auth users are
  * removed separately, through the Admin API, because nothing cascades into
  * `auth.users` and this suite must not be the thing that teaches the codebase
  * to delete from it by hand.
@@ -318,29 +642,22 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
   await sql(`delete from public.organisations where id = any($1::uuid[])`, [
     [world.orgId, world.otherOrgId],
   ]);
-  for (const user of Object.values(world.users)) {
+  // THE OTHER TENANT'S OWNER IS DELETED BY ID, LIKE EVERY OTHER USER
+  // (Task 8; the deferred minor this closes).
+  //
+  // It used to be found by LISTING UP TO 1000 auth users and matching an email
+  // this function re-derived from the slug. That was wrong twice over. It was
+  // a lookup for an id `setUpWorld` already held and simply did not return --
+  // and on a stack whose `auth.users` has grown past a thousand rows (this
+  // suite creates four per run and the psql suite creates twelve), the owner
+  // would not be on the first page, the `if` would never match, and teardown
+  // would leak one auth user per run in silence. `world.otherOwner` is the id,
+  // so there is nothing left to search for.
+  for (const user of [...Object.values(world.users), world.otherOwner]) {
     await api(`/auth/v1/admin/users/${user.id}`, {
       key: serviceRoleKey,
       method: "DELETE",
     });
-  }
-  // The other tenant's owner is not in `users` (nothing signs in as them), so
-  // they are removed by the pattern their email was created with. Scoped to
-  // THIS run's suffix, so a concurrent run's users are never touched.
-  const suffix = world.orgSlug.replace(/^e2e-/, "");
-  const listed = await api("/auth/v1/admin/users?per_page=1000", {
-    key: serviceRoleKey,
-  });
-  const { users = [] } = (await listed.json()) as {
-    users?: { id: string; email: string }[];
-  };
-  for (const u of users) {
-    if (u.email === `e2e-otherowner-${suffix}@test.local`) {
-      await api(`/auth/v1/admin/users/${u.id}`, {
-        key: serviceRoleKey,
-        method: "DELETE",
-      });
-    }
   }
   await closeDb();
 }

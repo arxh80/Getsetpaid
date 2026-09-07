@@ -20,13 +20,17 @@ import "server-only";
 // the RESOLVED queue. `merge_candidates.deleted_at` is set when a candidate is
 // merged or dismissed, so "off the queue" and "soft-deleted" are the same
 // state and the two views are one surface with two scopes.
+// NOTE THE THREE IMPORTS THAT ARE NO LONGER HERE. Until Phase 3 Task 1 this
+// file re-exported CUSTOM_FIELD_ENTITY_TYPES, isCustomFieldEntityType and
+// CustomFieldEntityType under merge-flavoured names. 20260901001000 widened
+// the custom-field allowlists to six and left the merge ones at five, so
+// MERGE_ENTITY_TYPES below is its own tuple with its own type and its own
+// guard, and importing the custom-field versions here would only invite
+// someone to re-alias them.
 import {
-  CUSTOM_FIELD_ENTITY_TYPES,
   ENTITY_PATH_SEGMENT,
   ENTITY_TYPE_LABELS,
-  isCustomFieldEntityType,
   parseOptions,
-  type CustomFieldEntityType,
   type CustomFieldDefinition,
 } from "@/lib/crm/custom-fields";
 import type { CrmWriteAccess } from "@/lib/crm/write-access";
@@ -35,17 +39,53 @@ import { commitWrite } from "@/lib/crm/write";
 import { createClient } from "@/lib/supabase/server";
 
 /**
- * The entity types a merge can touch.
+ * The entity types a merge can touch. FIVE, and no longer the same list as
+ * custom fields.
  *
- * The SAME five as custom fields, and deliberately the same constant rather
- * than a sixth copy: `merges_entity_type_allowed` and
- * `custom_field_values_entity_type_allowed` are two renderings of one list, and
- * tests/integration/crm/custom-field-entity-types-match-db.test.ts already
- * binds this constant to both. Phase 3 adds 'event' in one place.
+ * ===========================================================================
+ * IT USED TO BE `= CUSTOM_FIELD_ENTITY_TYPES`, AND PHASE 3 SPLIT THEM
+ * ===========================================================================
+ * `merges_entity_type_allowed` and `custom_field_values_entity_type_allowed`
+ * were two renderings of one list until
+ * 20260901001000_event_entity_type_widening.sql. That migration added 'event'
+ * to the two CUSTOM FIELD allowlists and DELIBERATELY left the two MERGE ones
+ * -- `merges_entity_type_allowed` and `merge_candidates_entity_type_allowed`
+ * -- at five. Events are not dedup-screened and not mergeable at MVP:
+ *
+ *   * 20260829020000 DECISION 1 makes a name a FUZZY signal only, never an
+ *     auto-merge one;
+ *   * a recurring club night shares its name with every previous instalment
+ *     BY DESIGN, so an event's name is a weaker signal than a venue's;
+ *   * public.events has no `email` column, so `exact_email` -- the only
+ *     branch that can ever auto-merge -- is unreachable for events by
+ *     construction.
+ *
+ * So every candidate pair would be `fuzzy_name` noise that trains users to
+ * dismiss the review queue. The full argument is on
+ * `merges_entity_type_allowed`'s comment in the database and in
+ * 20260901001000's header § (c); FOLLOW-UPS.md § "Phase 3 -- events" carries
+ * it as an open decision. CHANGING THIS LIST IS A PRODUCT DECISION, not a
+ * tidy-up, and it needs the two CHECK constraints, `private.dedup_entity_table`,
+ * `private.dedup_mergeable_columns` and `MERGEABLE_COLUMNS` below to move with
+ * it.
+ *
+ * Written out rather than derived by subtraction from CUSTOM_FIELD_ENTITY_TYPES
+ * -- a `.filter(t => t !== "event")` would silently absorb the next entity type
+ * a later phase adds, which is the opposite of what this list is for.
  */
-export type MergeEntityType = CustomFieldEntityType;
-export const MERGE_ENTITY_TYPES = CUSTOM_FIELD_ENTITY_TYPES;
-export const isMergeEntityType = isCustomFieldEntityType;
+export const MERGE_ENTITY_TYPES = [
+  "company",
+  "contact",
+  "agency",
+  "artist",
+  "venue",
+] as const;
+
+export type MergeEntityType = (typeof MERGE_ENTITY_TYPES)[number];
+
+export function isMergeEntityType(value: string): value is MergeEntityType {
+  return (MERGE_ENTITY_TYPES as readonly string[]).includes(value);
+}
 
 /**
  * The columns a merge may choose between, per entity type.

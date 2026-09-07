@@ -201,3 +201,103 @@ export function TextAreaField({
     </div>
   );
 }
+
+interface SelectFieldProps extends Omit<ComponentProps<"select">, "id"> {
+  label: string;
+  hint?: ReactNode;
+  error?: string;
+}
+
+/**
+ * The same field, for a closed vocabulary.
+ *
+ * ADDED BY PHASE 3 TASK 4, and a third component rather than a `as` prop on
+ * `Field` for exactly the reason `TextAreaField` is a second one: `Field`
+ * spreads `ComponentProps<"input">` onto an `<input>`, and `<select>` takes a
+ * different prop set (`multiple`, children instead of `value`, no `type`), so
+ * a flag would mean two prop unions and a cast at the spread.
+ *
+ * WHAT IS DELIBERATELY THE SAME, and why this exists at all rather than each
+ * form hand-rolling a `<label>` and a `<select>`: components/crm/ already has
+ * five hand-wired selects, and the final review's I-12 found three
+ * accessibility defects in one of them that the axe run reported as ZERO
+ * violations -- an error inside the `<label>` (so it becomes part of the
+ * control's accessible name rather than a separately announced error), an
+ * error `<p>` nothing references by `aria-describedby` (announced to nobody),
+ * and a `<form>` inside a `<span>`. All three are valid markup. So the wiring
+ * is here: visible bound label, persistent hint, error BELOW the control with
+ * `role="alert"` and `aria-describedby`, `aria-invalid` on the control itself.
+ *
+ * A NATIVE `<select>`, never a custom listbox -- components/org/
+ * workspace-switcher.tsx's header carries that argument in full, and it holds
+ * doubly here: this form must work with JavaScript disabled, and a `<div>`
+ * wearing `role="listbox"` does not.
+ *
+ * `<optgroup>` ARRIVES AS CHILDREN, not as a prop. The event form's room
+ * picker groups every room in the workspace under its venue, and inventing an
+ * options-and-groups prop shape to express that would be a second, worse way
+ * to write markup the caller can already write.
+ */
+export function SelectField({
+  label,
+  hint,
+  error,
+  required,
+  className = "",
+  children,
+  ...props
+}: SelectFieldProps) {
+  const id = useId();
+  const hintId = `${id}-hint`;
+  const errorId = `${id}-error`;
+
+  const describedBy =
+    [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(" ") ||
+    undefined;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <label htmlFor={id} className="text-sm font-semibold text-ink">
+        {label}
+        {required ? (
+          <span className="ml-2 font-normal text-ink-muted">Required</span>
+        ) : (
+          <span className="ml-2 font-normal text-ink-muted">Optional</span>
+        )}
+      </label>
+
+      {hint ? (
+        <p id={hintId} className="text-sm text-ink-muted">
+          {hint}
+        </p>
+      ) : null}
+
+      <select
+        {...props}
+        id={id}
+        required={required}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy}
+        className={
+          "h-11 w-full min-w-0 border bg-surface px-3 text-base text-ink " +
+          "transition-colors duration-[var(--dur-fast)] ease-brand " +
+          // Hover/focus swap the hairline for the accent rail. --accent is a
+          // BORDER colour here, never text -- the two-blue rule.
+          (error
+            ? "border-danger "
+            : "border-rule hover:border-ink focus:border-accent ") +
+          "disabled:cursor-not-allowed disabled:opacity-55 " +
+          className
+        }
+      >
+        {children}
+      </select>
+
+      {error ? (
+        <p id={errorId} role="alert" className="text-sm font-semibold text-danger">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}

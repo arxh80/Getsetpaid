@@ -35,8 +35,26 @@ import "server-only";
 //      plan time on every read of a different entity type; a polymorphic one
 //      is not, and executes on all of them. Measured, and both are fine: see
 //      20260829050000, which corrects 20260829040000's header on this --
-//      pruning is PARTIAL, 10 of the view's 13 branch scans, not all of them.
-//      Every branch shipped today reaches an index that already existed.
+//      pruning is PARTIAL, and the numbers moved in Phase 3 Task 6.
+//
+//      MEASURED AGAIN IN TASK 6, on 20,018 events / 40,054 lineup rows /
+//      40,320 status rows, VACUUM ANALYZEd, as a real `authenticated` role.
+//      The view is now 13 top-level branches, the first a CTE unioning 6
+//      entity tables, so the planner considers 18 branch scans. FIFTEEN emit a
+//      literal subject_type and are eliminated at plan time; the same THREE
+//      are polymorphic and are not. Every one of the three reads executes
+//      exactly SIX of the 18:
+//        event   events (CTE) + merges x2 + custom_field_values
+//                + event_lineup (event side)  -> event_lineup_event_id_org_idx
+//                + event_status_changes       -> event_status_changes_event_id_org_changed_at_idx
+//        artist  artists (CTE) + merges x2 + custom_field_values
+//                + artist_representations + event_lineup (artist side)
+//                                             -> event_lineup_artist_id_org_idx
+//        venue   venues (CTE) + merges x2 + custom_field_values
+//                + venue_rooms + events (venue side)
+//                                             -> events_venue_id_org_idx
+//      Every branch shipped today reaches an index that already existed,
+//      except the status table's own, which ships with it.
 //
 // WHAT THE CONTRACT DOES NOT PROMISE, and a Phase 4 source must not assume:
 //   * NOT O(page). The union has no covering index, so each page SORTS every
@@ -46,10 +64,18 @@ import "server-only";
 //     record, and NOT fine for a feed. A record with 10,000 notes would sort
 //     10,000 rows on every page click, and at that point the answer is a real
 //     table with a real index rather than another branch here.
-//   * NO ACTOR unless your source stores one. Only `merges` does today.
+//   * NO ACTOR unless your source stores one. TWO sources do: `merges`
+//     (merged_by, with a name joined from profiles) and, since Phase 3 Task 6,
+//     `event_status_changes` (changed_by, with NO name -- the renderer for
+//     that kind says what changed, and joining profiles on every row of every
+//     timeline to say who would be a join the surface does not use).
 //   * NO HISTORY unless your source keeps one. `record_updated` and
 //     `custom_field_set` are last-changed markers that MOVE; the schema keeps
-//     no per-edit history and this file does not invent one.
+//     no per-edit history and this file does not invent one. THE ONE
+//     EXCEPTION IS `status_changed`, and it is an exception because Phase 3
+//     Task 6 built the table that keeps the history -- not because the branch
+//     is cleverer. That is the shape a later phase needing real history has to
+//     copy: a source table, not a smarter projection of `updated_at`.
 //
 // ===========================================================================
 // PAGINATION IS lib/list/, UNMODIFIED
@@ -102,9 +128,21 @@ import {
 import { fetchListPage, type ListPage } from "@/lib/list/query";
 
 /**
- * The records a timeline can hang off: the same five as custom fields and
- * merges, and deliberately the same constant rather than a seventh copy.
- * Phase 3 adds 'event' in one place.
+ * The records a timeline can hang off: the same SIX as custom fields, and
+ * deliberately the same constant rather than another copy.
+ *
+ * IT IS NO LONGER "the same as merges" -- Phase 3 Task 1 widened the custom
+ * field allowlists to six and left the merge ones at five, so
+ * `MERGE_ENTITY_TYPES` in lib/crm/dedup.ts is now its own tuple. That does not
+ * affect this alias: a timeline hangs off a record, and an event is a record.
+ *
+ * `event` is in the union from 20260901001000, and SINCE PHASE 3 TASK 6 the
+ * view really emits event rows: 20260901030000 puts public.events into the
+ * `subjects` CTE and adds both directions of the lineup plus the venue side,
+ * and 20260901031000 adds `status_changed`. Until that pair landed this alias
+ * widened the type and nothing else -- which was the right order, because the
+ * renderer's `Record<ActivityKind, ...>` and `SUBJECT_NOUN` were total over
+ * `event` before any row could arrive.
  */
 export type ActivitySubjectType = CustomFieldEntityType;
 
@@ -125,6 +163,17 @@ export const ACTIVITY_KINDS = [
   "link_added",
   "link_removed",
   "custom_field_set",
+  // PHASE 3 TASK 6, and the ONLY kind that task adds. Its source is
+  // public.event_status_changes (20260901031000), the one table in this CRM
+  // that keeps a real per-change history rather than a last-changed marker --
+  // which is why it could not be expressed as a `record_updated`.
+  //
+  // NOTHING ELSE THAT TASK ADDED IS A NEW KIND. Both lineup branches and the
+  // venue branch reuse `link_added` / `link_removed`, per the rule
+  // 20260829040000's venue_rooms branch set: "one more entry meaning something
+  // was attached to this record is worse than reusing the entry that already
+  // means it."
+  "status_changed",
 ] as const;
 
 export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
@@ -206,12 +255,24 @@ export const ACTIVITY_LIST = defineListSpec({
       // codebase that is not one -- recorded in the Task 7 report rather than
       // quietly fudged. Every name below existed before Task 7; the migration
       // added none.
+      //
+      // THE FOUR PHASE 3 TASK 6 NAMES ARE THE LAST FOUR, and all four existed
+      // before that task: 20260901030000 and 20260901031000 create no index
+      // between them except the status table's own. `event_lineup_*_id_org_idx`
+      // are Task 1's FK-covering pair, `events_venue_id_org_idx` is Task 1's
+      // too, and `event_status_changes_event_id_org_changed_at_idx` ships with
+      // the table it covers. rls_phase3_events.sql sections EX and EL assert
+      // that a `backedBy` name is a REAL index name for the two events specs;
+      // tests/unit/crm/activity.test.ts asserts these four are present here,
+      // which is the half a unit test can do.
       backedBy:
-        "per-branch (a view has no index): contacts/companies/agencies/artists/venues _id_org_unique, " +
+        "per-branch (a view has no index): contacts/companies/agencies/artists/venues/events _id_org_unique, " +
         "merges_entity_winner_idx, merges_entity_loser_idx, " +
         "contact_companies_contact_company_unique, contact_companies_company_id_idx, " +
         "artist_representations_artist_id_idx, artist_representations_agency_id_idx, " +
-        "venue_rooms_venue_id_idx, custom_field_values_entity_idx",
+        "venue_rooms_venue_id_idx, custom_field_values_entity_idx, " +
+        "event_lineup_event_id_org_idx, event_lineup_artist_id_org_idx, " +
+        "events_venue_id_org_idx, event_status_changes_event_id_org_changed_at_idx",
     },
   },
   defaultSort: "occurred",
@@ -372,6 +433,7 @@ export const SUBJECT_NOUN: Readonly<Record<ActivitySubjectType, string>> = {
   agency: "agency",
   artist: "artist",
   venue: "venue",
+  event: "event",
 };
 
 /** Plural labels, reused from the custom-field tab strip. */

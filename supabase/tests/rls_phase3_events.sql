@@ -1,0 +1,2276 @@
+-- ===========================================================================
+-- Phase 3 (Events) RLS / permission / record-scope test suite.
+--
+-- Covers everything created by
+--   20260901000000_events_and_lineup.sql          (the tables and the grants)
+--   20260901010000_manage_events_permission.sql   (the key, and the sixth
+--                                                  entity_is_manageable arm)
+--   20260901011000_event_rls_policies.sql         (the six policies)
+--   20260901020000_event_list_indexes.sql         (the four list indexes --
+--                                                  § EX, added by Task 3)
+--
+-- RUN IT WITH:  supabase/tests/run-rls-tests.sh
+--   It runs AFTER rls_phase2_crm.sql and reuses that suite's fixtures whole --
+--   the twelve users, org ALPHA and org BETA, the venues and the artists. Only
+--   events and lineup rows are created here. Reusing them is not laziness: a
+--   second cast of characters would be a second place for the role matrix to
+--   drift, and the interesting properties of this phase are about how events
+--   sit on top of the Phase 2 record scope rather than beside it.
+--
+-- IT USES ITS OWN `ev` SCHEMA, NOT `crm`. rls_phase2_crm.sql opens with
+-- `drop schema if exists crm cascade`, and its results table is what
+-- run-rls-tests.sh counts to decide whether the Phase 2 suite passed. Writing
+-- into it would make "Phase 2 CRM suite: all assertions passed" a statement
+-- about two suites, and a Phase 3 failure would be reported under a Phase 2
+-- heading. The helpers below are that file's, verbatim, with the schema
+-- renamed.
+--
+-- CAST OF CHARACTERS -- rls_phase2_crm.sql's, unchanged:
+--
+--   Org ALPHA (slug org-alpha)                     Org BETA (slug org-beta)
+--   ---------------------------------------------  -------------------------
+--   powner      owner            aal2              pbowner  owner      aal2
+--   padmin      admin            aal2
+--   pmanager    manager          aal1              pmulti   admin in BOTH,
+--   pbooker     booker           aal1                       aal2
+--   pvenuemgr   venue_manager    aal1
+--   pfinance    finance          aal2
+--   pmarketing  marketing        aal1
+--   pstd1       standard_user    aal1
+--   pstd2       standard_user    aal1
+--   pro         read_only        aal1
+--
+-- WHO HOLDS manage_events (founder, Q29, 2026-08-30): owner, admin, manager,
+-- booker, venue_manager, standard_user. NOT finance, marketing, read_only.
+-- § EA asserts that from the catalogue; §§ EC-ED assert the consequences.
+--
+-- READ THE EXPECTATION VOCABULARY BEFORE READING THE ASSERTIONS -- copied
+-- verbatim from rls_phase2_crm.sql, because the distinctions are the same and
+-- restating them differently would be the beginning of them drifting:
+--   denied(42501)  the statement was REJECTED -- no grant, or a WITH CHECK /
+--                  INSERT policy violation.
+--   denied(23503)  rejected by a FOREIGN KEY -- the constraint layer, not RLS.
+--                  Task 1's tenant-scoped composite FKs produce this, and the
+--                  distinction matters: a 23503 holds for every writer in
+--                  every role, including one with no session at all.
+--   denied(23505)  rejected by a UNIQUE constraint.
+--   ok(0)          the statement was ACCEPTED and matched no rows, because the
+--                  USING clause filtered the target out first. Secure, but a
+--                  DIFFERENT mechanism from denied(42501), and the tests
+--                  assert which one is expected rather than accepting either.
+--                  On UPDATE, ok(0) is the signature of "you cannot see it";
+--                  denied(42501) is the signature of "you can see it and may
+--                  not do that to it".
+--
+-- POSITIVE CONTROLS ARE MANDATORY HERE. A suite of "expect 0 rows" assertions
+-- passes perfectly against a database where every policy denies everything.
+-- Every negative below is paired with the positive that proves the path works
+-- for somebody, in the same section.
+--
+-- TWO ROWS IN public.events ALREADY EXIST WHEN THIS FILE STARTS, and every
+-- count here is written knowing it: rls_phase2_crm.sql § T32 plants
+-- `T Alpha Event` (org ALPHA) and `T Beta Event` (org BETA), both UNOWNED, as
+-- the targets of artist_fee_history_event_fkey. They are deliberately NOT
+-- filtered out of the reads below -- a `where name like ...` would hide a leak
+-- of exactly the row the filter excluded -- so the visibility assertions use
+-- `string_agg(name)` and name them.
+--
+-- psql vars required: powner padmin pmanager pbooker pvenuemgr pfinance
+--   pmarketing pstd1 pstd2 pro pbowner pmulti          (uuids)
+--   ..._c   claims at that user's realistic assurance level
+--   ..._c1  the same user forced to aal1 (the stolen-password session)
+-- ===========================================================================
+\set ON_ERROR_STOP on
+\pset pager off
+
+drop schema if exists ev cascade;
+create schema ev;
+
+create table ev.results (
+  seq      serial primary key,
+  label    text,
+  expected text,
+  actual   text,
+  pass     boolean
+);
+
+-- SECURITY DEFINER for the same reason crm.record is: the assertions are
+-- recorded while the session is switched to `authenticated`, which has no
+-- privileges on ev.results.
+create function ev.record(p_label text, p_expected text, p_actual text)
+returns void language sql security definer set search_path = '' as $$
+  insert into ev.results (label, expected, actual, pass)
+  values (p_label, p_expected, p_actual, p_expected is not distinct from p_actual);
+$$;
+
+-- SCRATCH STORAGE FOR ASSERTIONS THAT COMPARE TWO MOMENTS. § EI records the
+-- event and lineup counts a manager sees while org ALPHA is LIVE and compares
+-- them against the same counts while it is SUSPENDED -- an equality against a
+-- measured baseline rather than a hardcoded number, which is the only form
+-- that can tell "suspension left reads alone" from "the fixture was empty".
+create table ev.notes (k text primary key, v text);
+
+create function ev.note(p_k text, p_v text)
+returns void language sql security definer set search_path = '' as $$
+  insert into ev.notes (k, v) values (p_k, p_v)
+  on conflict (k) do update set v = excluded.v;
+$$;
+
+create function ev.try(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_rows bigint; v_actual text;
+begin
+  begin
+    execute p_sql;
+    get diagnostics v_rows = row_count;
+    v_actual := 'ok(' || v_rows || ')';
+  exception when others then
+    v_actual := 'denied(' || sqlstate || ')';
+  end;
+  perform ev.record(p_label, p_expected, v_actual);
+end $$;
+
+-- THE CONSTRAINT-NAMING VARIANT (fix round 1, review finding F.8). Identical
+-- to ev.try except that a refusal records WHICH constraint raised it, as
+-- `denied(<sqlstate>:<conname>)`.
+--
+-- It exists because `denied(23503)` is ambiguous on public.event_lineup: BOTH
+-- event_lineup_event_fkey and event_lineup_artist_fkey are composite and
+-- tenant-scoped, so either could produce that SQLSTATE, and an assertion that
+-- accepted the bare code would stay green if the write started being refused
+-- by the OTHER end. `CONSTRAINT_NAME` is populated for integrity violations;
+-- `<no constraint>` is recorded when it is not, rather than a NULL that would
+-- silently compare equal to nothing.
+create function ev.try_con(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_rows bigint; v_actual text; v_con text;
+begin
+  begin
+    execute p_sql;
+    get diagnostics v_rows = row_count;
+    v_actual := 'ok(' || v_rows || ')';
+  exception when others then
+    get stacked diagnostics v_con = constraint_name;
+    v_actual := 'denied(' || sqlstate || ':'
+             || coalesce(nullif(v_con, ''), '<no constraint>') || ')';
+  end;
+  perform ev.record(p_label, p_expected, v_actual);
+end $$;
+
+create function ev.val(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_actual text;
+begin
+  begin
+    execute p_sql into v_actual;
+    v_actual := coalesce(v_actual, '<null>');
+  exception when others then
+    v_actual := 'denied(' || sqlstate || ')';
+  end;
+  perform ev.record(p_label, p_expected, v_actual);
+end $$;
+
+grant usage on schema ev to authenticated, anon, service_role;
+grant execute on function ev.record(text,text,text) to authenticated, anon, service_role;
+grant execute on function ev.note(text,text)        to authenticated, anon, service_role;
+grant select  on ev.notes                           to authenticated, anon, service_role;
+grant execute on function ev.try(text,text,text)    to authenticated, anon, service_role;
+grant execute on function ev.try_con(text,text,text) to authenticated, anon, service_role;
+grant execute on function ev.val(text,text,text)    to authenticated, anon, service_role;
+
+\o /dev/null
+
+-- ===========================================================================
+-- Fixtures -- EVENTS AND LINEUP ONLY
+-- ===========================================================================
+-- Both organisation ids are captured here, as postgres, and referenced by
+-- literal from every assertion that needs one. rls_phase2_crm.sql's fixture
+-- block explains why at length and the reason applies unchanged: any
+-- cross-tenant assertion that reaches its target organisation through a SELECT
+-- the attacker cannot perform is testing nothing -- the subquery returns no
+-- rows, the statement affects zero, and `ok(0)` looks like a denial.
+select id as alpha_org from public.organisations where slug='org-alpha' \gset
+select id as beta_org  from public.organisations where slug='org-beta'  \gset
+
+-- Planted as postgres so ownership is exactly what the tests need. The venue
+-- on the manager's event is rls_phase2_crm.sql's `Manager Venue`, which is
+-- what makes the composite events_venue_fkey a live part of this fixture
+-- rather than a column left NULL.
+insert into public.events (id, organisation_id, owner_user_id, name, starts_at, venue_id)
+select v.id::uuid, o.id, nullif(v.owner,'')::uuid, v.nm, v.st::timestamptz,
+       nullif(v.venue,'')::uuid
+from public.organisations o, (values
+  ('ee110000-0000-0000-0000-000000000001', :'pmanager', 'Alpha Manager Event',
+   '2026-10-01 20:00+00', '55550000-0000-0000-0000-000000000002'),
+  ('ee110000-0000-0000-0000-000000000002', :'pstd1',    'Std1 Event',
+   '2026-10-02 20:00+00', ''),
+  ('ee110000-0000-0000-0000-000000000003', :'pstd2',    'Std2 Event',
+   '2026-10-03 20:00+00', '')
+) as v(id, owner, nm, st, venue) where o.slug='org-alpha';
+
+-- A SOFT-DELETED event, owned by pmanager. § EG is about it: its lineup must
+-- stay READABLE (the restore path renders what restoring would bring back) and
+-- must not be WRITABLE.
+insert into public.events (id, organisation_id, owner_user_id, name, starts_at, deleted_at)
+select 'ee110000-0000-0000-0000-000000000004', o.id, :'pmanager', 'Deleted Event',
+       timestamptz '2026-10-04 20:00+00', now()
+from public.organisations o where o.slug='org-alpha';
+
+insert into public.events (id, organisation_id, owner_user_id, name, starts_at)
+select 'ee11000b-0000-0000-0000-00000000000b', o.id, :'pbowner', 'Beta Secret Event',
+       timestamptz '2026-10-05 20:00+00'
+from public.organisations o where o.slug='org-beta';
+
+-- A SOFT-DELETED ARTIST in ALPHA, for § EH3. It exists to prove a NEGATIVE
+-- about the policies -- that no lineup policy consults public.artists, not
+-- even for deletion -- which is the one property in this file whose whole
+-- value is that it keeps a future "helpful" edit out.
+insert into public.artists (id, organisation_id, owner_user_id, name, deleted_at)
+select '44440000-0000-0000-0000-00000000000f', o.id, :'pmanager',
+       'Phase3 Deleted Artist', now()
+from public.organisations o where o.slug='org-alpha';
+
+insert into public.event_lineup (id, organisation_id, event_id, artist_id, position, billing)
+select v.id::uuid, o.id, v.ev::uuid, v.ar::uuid, v.pos::int, v.bl
+from public.organisations o, (values
+  ('ff110000-0000-0000-0000-000000000001','ee110000-0000-0000-0000-000000000001',
+   '44440000-0000-0000-0000-000000000002','0','headliner'),
+  ('ff110000-0000-0000-0000-000000000002','ee110000-0000-0000-0000-000000000002',
+   '44440000-0000-0000-0000-000000000001','0','headliner'),
+  ('ff110000-0000-0000-0000-000000000003','ee110000-0000-0000-0000-000000000003',
+   '44440000-0000-0000-0000-000000000002','0','headliner'),
+  ('ff110000-0000-0000-0000-000000000004','ee110000-0000-0000-0000-000000000004',
+   '44440000-0000-0000-0000-000000000002','0','headliner')
+) as v(id, ev, ar, pos, bl) where o.slug='org-alpha';
+
+insert into public.event_lineup (id, organisation_id, event_id, artist_id, position, billing)
+select 'ff11000b-0000-0000-0000-00000000000b', o.id,
+       'ee11000b-0000-0000-0000-00000000000b',
+       '4444000b-0000-0000-0000-00000000000b', 0, 'headliner'
+from public.organisations o where o.slug='org-beta';
+
+-- ===========================================================================
+-- EA. The permission catalogue -- read out of role_permissions, not the file
+-- ===========================================================================
+-- A matrix that was seeded wrong makes every policy assertion below meaningless
+-- in a way that still shows as green. Same reason rls_phase2_crm.sql § A exists,
+-- and the mutation this section catches is "granting manage_events to read_only
+-- in 20260901010000".
+select ev.val('EA1 manage_events exists in the catalogue',
+  $$select count(*)::text from public.permissions where key='manage_events'$$, '1');
+select ev.val('EA2 ...and it does NOT survive suspension (it is a write key)',
+  $$select survives_suspension::text from public.permissions where key='manage_events'$$,
+  'false');
+select ev.val('EA3 exactly six roles hold it, named -- Q29, 2026-08-30',
+  $$select string_agg(role_key,',' order by role_key)
+      from public.role_permissions where permission_key='manage_events'$$,
+  'admin,booker,manager,owner,standard_user,venue_manager');
+-- THE NEGATIVE, WRITTEN AS ITS OWN ASSERTION rather than left implied by EA3's
+-- string. The three roles named here are the ones a future "just give everyone
+-- events" edit would reach for first, and a count is what goes red when one of
+-- them is added.
+select ev.val('EA4 finance, marketing and read_only hold it ZERO times',
+  $$select count(*)::text from public.role_permissions
+     where permission_key='manage_events'
+       and role_key in ('finance','marketing','read_only')$$, '0');
+-- POSITIVE CONTROL for EA4. Without it the zero above is satisfied by three
+-- roles that hold nothing at all -- which would be a different, larger bug
+-- and would look identical from here.
+select ev.val('EA5 CONTROL: those same three roles DO hold view_crm',
+  $$select count(*)::text from public.role_permissions
+     where permission_key='view_crm'
+       and role_key in ('finance','marketing','read_only')$$, '3');
+
+-- ===========================================================================
+-- EB. Tenant isolation, and the SHAPE of the policies that provide it
+-- ===========================================================================
+-- The mutation: dropping `organisation_id in (select
+-- private.permitted_organisations('view_crm'))` from events_select_view_crm,
+-- leaving only the record-scope disjunction.
+--
+-- MEASURED: EB1-EB11 DO NOT CATCH THAT, and the reason is worth knowing before
+-- reading them. `private.full_scope_organisations()` is itself membership-
+-- scoped, so with the permission term gone a manager still sees no BETA row --
+-- the tenant boundary holds on the surviving term alone. What the mutation
+-- actually removes is the PERMISSION and MFA half of the read gate, and the
+-- assertions that go red are EB13 below (structurally: the policy no longer
+-- names permitted_organisations at all), § EJ1 (an aal1 Owner, who holds no
+-- permission, reads 9 events instead of 0) and -- ADDED IN FIX ROUND 1 --
+-- EB15-EB20 below, which put the case IN this section.
+--
+-- EB15-EB20 EXIST BECAUSE THE MUTATION OPENS A WIDENING NO OTHER ASSERTION IN
+-- ANY SUITE COVERS. The surviving disjunct is
+--
+--     organisation_id in (select private.full_scope_organisations())
+--     or owner_user_id = (select auth.uid())
+--
+-- and the SECOND HALF OF THAT CARRIES NO ORGANISATION OR MEMBERSHIP TERM AT
+-- ALL. `permitted_organisations('view_crm')` is the only thing in this policy
+-- that asks whether the caller is still a member. Take it away and a user
+-- whose membership has been REVOKED goes on reading every event they own --
+-- the live ex-employee read path. EB1-EB11 all run as current, active members,
+-- so not one of them can express it however it is counted.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+
+-- NAMED, NOT COUNTED. A count of five passes against five of the wrong rows,
+-- and `T Alpha Event` (rls_phase2_crm.sql § T32) is in this list on purpose --
+-- filtering it out would hide a leak of precisely the row the filter removed.
+-- `Deleted Event` is here too: RLS does not hide soft-deleted rows (design
+-- note (g)), the application does.
+select ev.val('EB1 pmanager reads exactly ALPHA''s five events, by name',
+  $$select string_agg(name,',' order by name) from public.events$$,
+  'Alpha Manager Event,Deleted Event,Std1 Event,Std2 Event,T Alpha Event');
+select ev.val('EB2 ...and ZERO of org BETA''s, addressed by its organisation id',
+  format($$select count(*)::text from public.events where organisation_id=%L$$,
+         :'beta_org'), '0');
+select ev.val('EB3 ...including the one addressed by primary key',
+  $$select count(*)::text from public.events
+     where id='ee11000b-0000-0000-0000-00000000000b'$$, '0');
+select ev.val('EB4 event_lineup: zero BETA rows',
+  $$select count(*)::text from public.event_lineup
+     where id='ff11000b-0000-0000-0000-00000000000b'$$, '0');
+select ev.val('EB5 CONTROL: the same reader sees ALPHA''s own lineup rows',
+  $$select count(*)::text from public.event_lineup$$, '4');
+select ev.try('EB6 INSERT into org BETA is REFUSED, not silently dropped',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'planted', now())$$, :'beta_org'), 'denied(42501)');
+select ev.try('EB7 UPDATE of a BETA event matches nothing -- ok(0), not 42501',
+  $$update public.events set name='rewritten'
+     where id='ee11000b-0000-0000-0000-00000000000b'$$, 'ok(0)');
+select ev.try('EB8 CONTROL: the same UPDATE on their OWN event writes a row',
+  $$update public.events set name='Alpha Manager Event'
+     where id='ee110000-0000-0000-0000-000000000001'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- THE MIRROR, from org BETA. Without it EB1-EB5 are satisfied by a policy that
+-- shows ALPHA's rows to everybody and BETA has simply not been asked.
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select ev.val('EB9 pbowner reads exactly BETA''s two events, by name',
+  $$select string_agg(name,',' order by name) from public.events$$,
+  'Beta Secret Event,T Beta Event');
+select ev.val('EB10 ...and zero ALPHA events',
+  format($$select count(*)::text from public.events where organisation_id=%L$$,
+         :'alpha_org'), '0');
+select ev.val('EB11 ...and one lineup row, their own',
+  $$select count(*)::text from public.event_lineup$$, '1');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- THE SHAPE GUARDS. rls_phase2_crm.sql H12/H13, restated over the two new
+-- tables -- and they are not style.
+--
+-- The per-row form `public.has_permission(organisation_id, 'manage_events')`
+-- returns IDENTICAL ROWS FOR EVERY USER to the set form used here, so not one
+-- behavioural assertion in this file could tell them apart. What differs is
+-- that the set form has no correlation to the row, so the planner hoists it to
+-- an InitPlan and runs it ONCE per statement: measured at 23 ms against
+-- 5210 ms for a fifty-row page (20260828120500's header). A refactor back to
+-- the per-row form would be a 200x regression that this entire suite passes
+-- cleanly. These three assertions are the only thing that catches it.
+--
+-- SIX POLICIES, NOT SEVEN. The task brief said seven; the deployed count is
+-- three per table (select, insert, update -- there is no DELETE policy and no
+-- DELETE grant), which is exactly the shape of the venues / venue_rooms blocks
+-- they were copied from. schema_invariants.sql D11b's 21 is the same fact from
+-- the other side: it counts policy EXPRESSIONS, and event_lineup contributes
+-- four of them from three policies, because UPDATE has both a USING and a
+-- WITH CHECK. EB14 is the denominator, so a policy that was dropped rather
+-- than fixed cannot make EB12/EB13 pass by emptying their input.
+-- ---------------------------------------------------------------------------
+select ev.val('EB12 no Phase 3 policy calls has_permission per row',
+  $$select count(*)::text from pg_policies
+     where schemaname='public' and tablename in ('events','event_lineup')
+       and (coalesce(qual,'') like '%has_permission(%'
+         or coalesce(with_check,'') like '%has_permission(%')$$, '0');
+select ev.val('EB13 every Phase 3 policy is built on the hoistable set form',
+  $$select count(*)::text from pg_policies
+     where schemaname='public' and tablename in ('events','event_lineup')
+       and coalesce(qual,'') || coalesce(with_check,'')
+           not like '%permitted_organisations%'$$, '0');
+select ev.val('EB14 CONTROL: EB12/EB13 inspected 6 policies, not zero',
+  $$select count(*)::text from pg_policies
+     where schemaname='public' and tablename in ('events','event_lineup')$$, '6');
+
+-- ---------------------------------------------------------------------------
+-- EB15-EB20. THE REVOKED MEMBER (fix round 1, review finding F.1).
+--
+-- The one reader for whom `owner_user_id = (select auth.uid())` is true and
+-- membership is not. `pstd1`'s ALPHA membership is flipped to `revoked` for
+-- the length of three statements and put back; `organisation_memberships`
+-- carries no trigger but `set_updated_at`, and this is the only place in the
+-- suite that touches it.
+--
+-- IN AN EXPLICIT TRANSACTION so an abort between the flip and the restore
+-- cannot leave the local database with a revoked fixture user. Same reason as
+-- the two schema lifts in §§ ED and EF.
+--
+-- WHY IT DISCRIMINATES, traced against the deployed expression before it was
+-- written: unmutated, `permitted_organisations('view_crm')` requires
+-- `status = 'active'`, so a revoked pstd1 gets an empty set and the whole
+-- conjunction is false -> 0 rows. Under the mutation that term is gone,
+-- `full_scope_organisations()` (also active-only) is empty, and
+-- `owner_user_id = auth.uid()` is TRUE for their own event -> they read it.
+-- EB16 is the assertion that flips; EB20 is the positive control that the zero
+-- is the revocation talking and not a broken fixture.
+-- ---------------------------------------------------------------------------
+begin;
+
+update public.organisation_memberships
+   set status = 'revoked'
+ where user_id = :'pstd1' and organisation_id = :'alpha_org';
+
+select ev.val('EB15 CONTROL: pstd1''s ALPHA membership really is revoked',
+  format($$select status from public.organisation_memberships
+            where user_id=%L and organisation_id=%L$$, :'pstd1', :'alpha_org'),
+  'revoked');
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EB16 a REVOKED member reads ZERO events -- including the one they OWN',
+  $$select count(*)::text from public.events$$, '0');
+select ev.val('EB17 ...and zero lineup rows',
+  $$select count(*)::text from public.event_lineup$$, '0');
+select ev.try('EB18 ...and cannot write one either',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'Revoked Event', now())$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+update public.organisation_memberships
+   set status = 'active'
+ where user_id = :'pstd1' and organisation_id = :'alpha_org';
+
+select ev.val('EB19 CONTROL: the membership is restored to active',
+  format($$select status from public.organisation_memberships
+            where user_id=%L and organisation_id=%L$$, :'pstd1', :'alpha_org'),
+  'active');
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EB20 POSITIVE: reinstated, they read their own event again',
+  $$select coalesce(string_agg(name,',' order by name),'<none>') from public.events$$,
+  'Std1 Event');
+reset role; reset request.jwt.claims;
+
+commit;
+
+-- ===========================================================================
+-- EC. The role matrix, cell by cell
+-- ===========================================================================
+-- The mutation: granting DELETE on public.events.
+--
+-- The two POSITIVE cells first, because they are the ones that make every
+-- refusal below mean something. Booker and Venue Manager are the pair the key
+-- exists for: a Booker holds manage_artists and not manage_venues, a Venue
+-- Manager the mirror, and both put on events.
+set role authenticated;
+set request.jwt.claims = :'pbooker_c';
+select ev.try('EC1 POSITIVE: a BOOKER creates an event',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'Booker Event', timestamptz '2026-11-01 20:00+00')$$,
+         :'alpha_org'), 'ok(1)');
+select ev.try('EC2 ...and DELETE is refused by the missing grant, in every role',
+  $$delete from public.events where name='Booker Event'$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pvenuemgr_c';
+select ev.try('EC3 POSITIVE: a VENUE MANAGER creates an event',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'VenueMgr Event', timestamptz '2026-11-02 20:00+00')$$,
+         :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pfinance_c';
+select ev.try('EC4 finance cannot create an event (view_crm only)',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'Finance Event', now())$$, :'alpha_org'), 'denied(42501)');
+select ev.val('EC5 CONTROL: finance READS events perfectly well',
+  $$select (count(*) > 0)::text from public.events$$, 'true');
+select ev.try('EC6 finance cannot DELETE either',
+  $$delete from public.events where name='Booker Event'$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmarketing_c';
+select ev.try('EC7 marketing cannot create an event (manage_contacts only)',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'Marketing Event', now())$$, :'alpha_org'), 'denied(42501)');
+select ev.val('EC8 CONTROL: marketing READS events',
+  $$select (count(*) > 0)::text from public.events$$, 'true');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select ev.try('EC9 read_only cannot create an event',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'ReadOnly Event', now())$$, :'alpha_org'), 'denied(42501)');
+-- ok(0), NOT denied(42501), AND THE DIFFERENCE IS THE POINT. read_only is
+-- record-scoped (private.full_scope_organisations() excludes it) and owns
+-- nothing, so events_update_manage_events' USING clause filters every row out
+-- before the WITH CHECK is ever reached. "You cannot see it" and "you can see
+-- it and may not do that to it" are different answers and this file asserts
+-- which one is expected rather than accepting either.
+select ev.try('EC10 read_only UPDATE matches nothing -- ok(0), the USING clause',
+  $$update public.events set name='rewritten'
+     where id='ee110000-0000-0000-0000-000000000001'$$, 'ok(0)');
+select ev.val('EC11 CONTROL: read_only sees ZERO events -- record scope, not the key',
+  $$select count(*)::text from public.events$$, '0');
+select ev.try('EC12 read_only cannot DELETE',
+  $$delete from public.events where id='ee110000-0000-0000-0000-000000000001'$$,
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.try('EC13 nor can a manager DELETE an event (no grant, not a policy)',
+  $$delete from public.events where id='ee110000-0000-0000-0000-000000000003'$$,
+  'denied(42501)');
+select ev.try('EC14 nor DELETE a lineup row',
+  $$delete from public.event_lineup where id='ff110000-0000-0000-0000-000000000001'$$,
+  'denied(42501)');
+-- THE PAIRED POSITIVE: removal IS available, as an UPDATE. Without this the
+-- four DELETE refusals above are satisfied by a table nobody can remove
+-- anything from at all, which is a different bug.
+select ev.try('EC15 CONTROL: removal is an UPDATE of deleted_at, and it works',
+  $$update public.event_lineup set deleted_at=now()
+     where id='ff110000-0000-0000-0000-000000000001'$$, 'ok(1)');
+select ev.try('EC16 ...and the restore that proves it was a soft delete',
+  $$update public.event_lineup set deleted_at=null
+     where id='ff110000-0000-0000-0000-000000000001'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select ev.try('EC17 not even an aal2 OWNER can DELETE an event',
+  $$delete from public.events where id='ee110000-0000-0000-0000-000000000003'$$,
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- ED. Record scope -- the Standard User boundary
+-- ===========================================================================
+-- The mutation: removing the record-scope disjunction from
+-- events_update_manage_events.
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+
+-- NAMED, NOT COUNTED, and this is the assertion the section turns on: a count
+-- of 1 passes against the WRONG row. `T Alpha Event` is unowned and every other
+-- ALPHA event belongs to somebody else, so the correct answer is exactly one
+-- name.
+select ev.val('ED1 pstd1 sees ONLY their own event, by name',
+  $$select coalesce(string_agg(name,',' order by name),'<none>') from public.events$$,
+  'Std1 Event');
+select ev.try('ED2 ...cannot claim another user''s by rewriting owner_user_id',
+  format($$update public.events set owner_user_id=%L
+            where id='ee110000-0000-0000-0000-000000000003'$$, :'pstd1'), 'ok(0)');
+select ev.try('ED3 ...cannot give their OWN away -- WITH CHECK, so 42501',
+  format($$update public.events set owner_user_id=%L
+            where id='ee110000-0000-0000-0000-000000000002'$$, :'pstd2'), 'denied(42501)');
+select ev.try('ED4 ...cannot create one owned by somebody else',
+  format($$insert into public.events (organisation_id, owner_user_id, name, starts_at)
+           values (%L,%L,'Std1 Planted', now())$$, :'alpha_org', :'pstd2'),
+  'denied(42501)');
+-- EXPLICIT NULL, not an omitted column. The omitted case is ED6's positive and
+-- it succeeds, because events.owner_user_id carries `default auth.uid()`
+-- (20260901000000). Writing NULL on purpose defeats the default and is what a
+-- client sending `{"owner_user_id": null}` does.
+select ev.try('ED5 ...nor an UNOWNED one, by defeating the default with an explicit null',
+  format($$insert into public.events (organisation_id, owner_user_id, name, starts_at)
+           values (%L, null,'Std1 Unowned', now())$$, :'alpha_org'), 'denied(42501)');
+
+-- THE FOUR POSITIVES. Without them everything above is satisfied by a policy
+-- that refuses a Standard User everything, which is the failure mode a
+-- record-scope rule fails into.
+select ev.try('ED6 POSITIVE: INSERT with the owner defaulting to them',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'Std1 Created Event', timestamptz '2026-11-03 20:00+00')$$,
+         :'alpha_org'), 'ok(1)');
+select ev.val('ED7 ...and the default really made THEM the owner',
+  format($$select (owner_user_id = %L)::text from public.events
+            where name='Std1 Created Event'$$, :'pstd1'), 'true');
+select ev.try('ED8 POSITIVE: EDIT their own',
+  $$update public.events set notes='mine'
+     where id='ee110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+select ev.try('ED9 POSITIVE: soft-delete their own',
+  $$update public.events set deleted_at=now()
+     where id='ee110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+select ev.try('ED10 POSITIVE: ...and restore it, which is why SELECT ignores deleted_at',
+  $$update public.events set deleted_at=null
+     where id='ee110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- THE RECORD-SCOPE TERM IN `events_update_manage_events`, ASKED WITH THE
+-- SELECT POLICY'S COPY OF IT LIFTED.
+--
+-- ADDED BECAUSE THE MUTATION RUN PROVED ED1-ED10 COULD NOT SEE IT. Removing
+-- the record-scope disjunction from BOTH clauses of
+-- events_update_manage_events left the ENTIRE suite green -- 999 psql
+-- assertions and 195 HTTP checks, zero failures. That is the same class of
+-- gap § Y and P11 exist for, and the cause was measured on this stack rather
+-- than guessed:
+--
+--   * ED2's `ok(0)` survived because PostgreSQL applies the SELECT policies to
+--     the rows an UPDATE reads, and events_select_view_crm still carried the
+--     disjunction -- so pstd2's event was invisible to the statement whatever
+--     the UPDATE policy said.
+--   * ED3's `denied(42501)` survived because PostgreSQL ALSO applies the
+--     SELECT policy to the NEW row of an UPDATE. Measured three ways:
+--       UPDATE policy mutated, SELECT intact, new owner = pstd2   -> 42501
+--       UPDATE policy mutated, SELECT intact, new owner = pmanager-> 42501
+--       BOTH mutated, new owner = pstd2                           -> UPDATE 1
+--     The third line is the one that identifies the mechanism: with the SELECT
+--     policy's copy of the term gone too, the give-away succeeds.
+--
+-- So the two policies are each other's backstop on this exact term, and
+-- neither can be measured while the other holds. The SELECT policy's
+-- disjunction comes off for the length of four statements, the UPDATE policy
+-- is asked on its own, and the SELECT policy is put back and compared against
+-- what was there.
+--
+-- SAFETY, TWO LAYERS. ED11 proves the lift really happened, so ED12/ED13 are
+-- the UPDATE policy answering and not the old visibility rule. ED15/ED16
+-- assert the restore structurally and behaviourally.
+--
+-- AND THE WHOLE LIFT RUNS INSIDE AN EXPLICIT TRANSACTION (fix round 1, review
+-- finding F.7). `\set ON_ERROR_STOP on` guarantees an abort between the
+-- `alter policy` and its restore is reachable, and the previous version left
+-- that case to a comment telling the reader to reset the database. Policy DDL
+-- is transactional in PostgreSQL and `set role` / `set request.jwt.claims`
+-- work inside a transaction block, so an abort now rolls the weakened policy
+-- back on its own. ev.record's writes commit with it.
+-- ---------------------------------------------------------------------------
+begin;
+
+set search_path = 'pg_catalog, public';
+select ev.note('ed_select_qual', (select qual from pg_policies
+  where schemaname='public' and tablename='events' and cmd='SELECT'));
+reset search_path;
+
+alter policy "events_select_view_crm" on public.events
+  using ( organisation_id in (select private.permitted_organisations('view_crm')) );
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('ED11 CONTROL: with the SELECT term lifted, pstd1 can now SEE pstd2''s event',
+  $$select count(*)::text from public.events
+     where id='ee110000-0000-0000-0000-000000000003'$$, '1');
+-- ok(0) STILL, and now it is the UPDATE policy's USING clause saying it --
+-- nothing else is left to. Under the mutation this becomes ok(1).
+select ev.try('ED12 ...and STILL cannot claim it -- the UPDATE policy''s USING, alone',
+  format($$update public.events set owner_user_id=%L
+            where id='ee110000-0000-0000-0000-000000000003'$$, :'pstd1'), 'ok(0)');
+-- 42501 STILL, and now it is the UPDATE policy's WITH CHECK saying it. This is
+-- THE assertion the record-scope mutation flips.
+select ev.try('ED13 ...and STILL cannot give their own away -- the WITH CHECK, alone',
+  format($$update public.events set owner_user_id=%L
+            where id='ee110000-0000-0000-0000-000000000002'$$, :'pstd2'), 'denied(42501)');
+select ev.try('ED14 POSITIVE: ...while an ordinary edit of their own still works',
+  $$update public.events set notes='still mine'
+     where id='ee110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+alter policy "events_select_view_crm" on public.events
+  using (
+    organisation_id in (select private.permitted_organisations('view_crm'))
+    and (
+      organisation_id in (select private.full_scope_organisations())
+      or owner_user_id = (select auth.uid())
+    )
+  );
+
+select ev.val('ED15 the SELECT policy is restored EXACTLY as the migration made it',
+  $$select ((select qual from pg_policies
+               where schemaname='public' and tablename='events' and cmd='SELECT')
+            = (select v from ev.notes where k='ed_select_qual'))::text$$, 'true');
+select ev.val('ED15a CONTROL: and that is the record-scoped expression, not any expression',
+  -- Without this, ED15 is satisfied by two identical WRONG expressions, since
+  -- both sides are read from the same live schema.
+  $$select (select v from ev.notes where k='ed_select_qual')$$,
+  '((organisation_id IN ( SELECT private.permitted_organisations(''view_crm''::text) AS permitted_organisations)) AND ((organisation_id IN ( SELECT private.full_scope_organisations() AS full_scope_organisations)) OR (owner_user_id = ( SELECT auth.uid() AS uid))))');
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+-- TWO NAMES, NOT ONE: ED6 created `Std1 Created Event` earlier in this
+-- section, and it is theirs. ED1 ran before that and is the one-name form.
+select ev.val('ED16 ...and behaviourally: pstd1 is back to seeing only their own events',
+  $$select coalesce(string_agg(name,',' order by name),'<none>') from public.events$$,
+  'Std1 Created Event,Std1 Event');
+reset role; reset request.jwt.claims;
+
+commit;
+
+-- ===========================================================================
+-- EE. Cross-tenant record transfer -- private.entity_org_unchanged()
+-- ===========================================================================
+-- The mutation: deleting the entity_org_unchanged term from
+-- events_update_manage_events' WITH CHECK.
+--
+-- pmulti is an ADMIN OF BOTH organisations, which multi-org membership at MVP
+-- makes an ordinary user rather than a contrived one. Every other term in the
+-- WITH CHECK is satisfied by the destination organisation -- they hold
+-- manage_events there, the plan permits writes there, and they are full-scope
+-- there -- so entity_org_unchanged is the ONLY thing standing between them and
+-- moving a record between tenants in one statement.
+--
+-- `Std2 Event` is the target because it names no venue: events_venue_fkey is
+-- tenant-scoped, so an event WITH a venue would also violate the foreign key,
+-- and a 23503 would tell us nothing about the policy.
+set role authenticated;
+set request.jwt.claims = :'pmulti_c';
+select ev.try('EE1 pmulti cannot move an ALPHA event into BETA',
+  format($$update public.events set organisation_id=%L
+            where id='ee110000-0000-0000-0000-000000000003'$$, :'beta_org'),
+  'denied(42501)');
+select ev.val('EE2 ...and the row is still in ALPHA',
+  format($$select (organisation_id = %L)::text from public.events
+            where id='ee110000-0000-0000-0000-000000000003'$$, :'alpha_org'), 'true');
+-- THE CONTROL THAT MAKES EE1 A STATEMENT ABOUT organisation_id. Without it,
+-- EE1 passes against a policy that refuses pmulti every UPDATE.
+select ev.try('EE3 CONTROL: the same user, the same row, editing anything ELSE',
+  $$update public.events set notes='pmulti was here'
+     where id='ee110000-0000-0000-0000-000000000003'$$, 'ok(1)');
+-- ...and that they really are authorised in the destination, so EE1 is not
+-- passing because BETA refuses them outright.
+select ev.try('EE4 CONTROL: pmulti CAN create an event in BETA directly',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'Multi Beta Event', timestamptz '2026-11-04 20:00+00')$$,
+         :'beta_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EF. event_lineup is scoped BY ITS EVENT
+-- ===========================================================================
+-- The mutation: removing `p.organisation_id = event_lineup.organisation_id`
+-- from the child policy. This is M-1 from Phase 2, reproduced on a new table --
+-- and on venue_rooms it left the ENTIRE suite green (843 psql assertions, 174
+-- HTTP checks), because the composite FK makes the two columns agree by
+-- construction. EF6-EF12 are the § Y technique that takes the FK away.
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EF1 pstd1 sees only the lineup of the event THEY own',
+  $$select coalesce(string_agg(id::text,',' order by id),'<none>')
+      from public.event_lineup$$,
+  'ff110000-0000-0000-0000-000000000002');
+select ev.try('EF2 ...cannot add an artist to an event they do not own',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id)
+           values (%L,'ee110000-0000-0000-0000-000000000001',
+                   '44440000-0000-0000-0000-000000000001')$$, :'alpha_org'),
+  'denied(42501)');
+select ev.try('EF3 POSITIVE: ...and CAN add one to their own',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id, position)
+           values (%L,'ee110000-0000-0000-0000-000000000002',
+                   '44440000-0000-0000-0000-000000000002', 1)$$, :'alpha_org'),
+  'ok(1)');
+-- TWO LAYERS, IN THIS ORDER, AND THE ORDER WAS MEASURED RATHER THAN ASSUMED.
+-- The task brief predicted denied(23503) here -- the composite foreign key --
+-- and the answer is denied(42501): the POLICY refuses an `authenticated`
+-- caller FIRST, because its EXISTS finds no ALPHA event with that id, so the
+-- constraint is never consulted. Exactly the ordering
+-- 20260828121000's venue_rooms block spells out and rls_phase2_crm.sql
+-- B19/B20 assert on that table.
+--
+-- Both layers matter and they are not interchangeable, so both are asserted:
+-- the policy is what an attacker meets, and the FK is what holds for every
+-- writer in every role INCLUDING the ones RLS does not apply to (postgres, a
+-- SECURITY DEFINER body, a DBA repair script). EF4b asks the second question
+-- the only way it can be asked -- with no session at all.
+select ev.try('EF4 a lineup row naming a BETA event: the POLICY refuses first, 42501',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id)
+           values (%L,'ee11000b-0000-0000-0000-00000000000b',
+                   '44440000-0000-0000-0000-000000000001')$$, :'alpha_org'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- As postgres: no policy is in the way, so this reaches the constraint layer.
+-- A single-column event_lineup_event_fkey would let this row land.
+--
+-- ev.try_con, NOT ev.try, AND THE CONSTRAINT NAME IS THE POINT (fix round 1,
+-- review finding F.8). This row names a BETA event AND an ALPHA artist, and
+-- BOTH event_lineup_event_fkey and event_lineup_artist_fkey are composite and
+-- tenant-scoped -- either could raise 23503. A bare `denied(23503)` would stay
+-- green if the EVENT foreign key were narrowed to a single column and the
+-- ARTIST one started doing the refusing instead, which is the exact
+-- substitution this assertion exists to notice.
+select ev.try_con('EF4b ...and as postgres, where no policy is in the way, the EVENT FK refuses it',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id)
+           values (%L,'ee11000b-0000-0000-0000-00000000000b',
+                   '44440000-0000-0000-0000-000000000001')$$, :'alpha_org'),
+  'denied(23503:event_lineup_event_fkey)');
+select ev.try('EF4c CONTROL: the same postgres INSERT against an ALPHA event lands',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id, position)
+           values (%L,'ee110000-0000-0000-0000-000000000003',
+                   '44440000-0000-0000-0000-000000000001', 5)$$, :'alpha_org'),
+  'ok(1)');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EF5 CONTROL: a full-scope reader sees every ALPHA lineup row',
+  $$select (count(*) >= 4)::text from public.event_lineup$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- THE FK-LIFT (§ Y's technique, on the new table).
+--
+-- `event_lineup_event_fkey (event_id, organisation_id)` is what makes EF4 a
+-- 23503 -- and while it holds, the policy's correlation term CANNOT CHANGE AN
+-- ANSWER, so nothing behavioural can see it. The constraint comes off for the
+-- length of four statements, the row it would have refused is planted as
+-- postgres, and the policy is asked on its own.
+--
+-- THE PLANTED ROW USES A **BETA** ARTIST. event_lineup_artist_fkey is composite
+-- too and is NOT dropped, so a row tagged BETA naming an ALPHA artist would be
+-- refused by the constraint that is still there and the plant would fail --
+-- which would make EF7's zero mean "nothing was planted" rather than "the
+-- policy refused it". Measured, not assumed: that is what the first draft did.
+--
+-- SAFETY, TWO LAYERS. EF6 proves the plant landed, so EF7's zero is the policy
+-- answering. The row is deleted and the FK (and its comment) restored
+-- immediately afterwards; EF10-EF12 assert both.
+--
+-- AND THE WHOLE LIFT RUNS INSIDE AN EXPLICIT TRANSACTION (fix round 1, review
+-- finding F.7), for the reason § ED's does: constraint DDL is transactional in
+-- PostgreSQL, so an abort between `drop constraint` and its re-add rolls back
+-- rather than leaving public.event_lineup without its composite foreign key.
+-- The ACCESS EXCLUSIVE lock the drop takes is held to commit, which costs
+-- nothing here -- this suite is one session.
+--
+-- UNDER ev.val'S OWN search_path, because pg_get_constraintdef() renders
+-- against it -- § Y measured that capturing the note under a different path
+-- than the comparison makes the restore assertion fail for a reason that has
+-- nothing to do with the schema.
+-- ---------------------------------------------------------------------------
+begin;
+
+set search_path = 'pg_catalog, public';
+select ev.note('ef_fkey_def', (select pg_catalog.pg_get_constraintdef(oid)
+  from pg_catalog.pg_constraint
+ where conname='event_lineup_event_fkey' and connamespace='public'::regnamespace));
+select ev.note('ef_fkey_comment', (select pg_catalog.obj_description(oid, 'pg_constraint')
+  from pg_catalog.pg_constraint
+ where conname='event_lineup_event_fkey' and connamespace='public'::regnamespace));
+reset search_path;
+
+alter table public.event_lineup drop constraint event_lineup_event_fkey;
+
+insert into public.event_lineup (id, organisation_id, event_id, artist_id, position)
+select 'ff11ffff-0000-0000-0000-0000000000ff', o.id,
+       'ee110000-0000-0000-0000-000000000001',
+       '4444000b-0000-0000-0000-00000000000b', 9
+from public.organisations o where o.slug='org-beta';
+
+select ev.val('EF6 CONTROL: the cross-tenant lineup row really was planted',
+  $$select count(*)::text from public.event_lineup
+     where id='ff11ffff-0000-0000-0000-0000000000ff'$$, '1');
+
+-- pmanager holds view_crm in ALPHA and full record scope there, so the parent
+-- event clears every OTHER term in the policy. The correlation is the only
+-- thing left standing between them and a row tagged BETA.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EF7 a slot on an ALPHA event but TAGGED BETA is invisible to ALPHA',
+  $$select count(*)::text from public.event_lineup
+     where id='ff11ffff-0000-0000-0000-0000000000ff'$$, '0');
+select ev.val('EF8 CONTROL: the same reader still sees ALPHA''s own lineup rows',
+  $$select (count(*) > 0)::text from public.event_lineup$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- The other direction. BETA's owner is the organisation the row is TAGGED with
+-- and still must not see it, because the event it hangs off is not theirs.
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select ev.val('EF9 ...and invisible to BETA too, whose id it carries',
+  $$select count(*)::text from public.event_lineup
+     where id='ff11ffff-0000-0000-0000-0000000000ff'$$, '0');
+reset role; reset request.jwt.claims;
+
+delete from public.event_lineup where id='ff11ffff-0000-0000-0000-0000000000ff';
+alter table public.event_lineup
+  add constraint event_lineup_event_fkey
+    foreign key (event_id, organisation_id)
+    references public.events (id, organisation_id) on delete cascade;
+
+-- THE COMMENT COMES BACK TOO. `alter table ... add constraint` creates a bare
+-- constraint, and the text below is 20260901000000's verbatim -- the migration
+-- this suite is supposed to leave the schema identical to.
+comment on constraint event_lineup_event_fkey on public.event_lineup is
+  'Tenant-scoped: a lineup slot can only name an event that agrees with it about which organisation it belongs to. Without the composite form a user could insert a slot into another tenant''s event -- the exact write 20260828001132 proved reachable on venue_rooms and closed.';
+
+select ev.val('EF10 the composite FK is restored EXACTLY as the migration made it',
+  $$select ((select pg_catalog.pg_get_constraintdef(oid)
+               from pg_catalog.pg_constraint
+              where conname='event_lineup_event_fkey'
+                and connamespace='public'::regnamespace)
+            = (select v from ev.notes where k='ef_fkey_def'))::text$$, 'true');
+select ev.val('EF10a CONTROL: that definition is the composite one, not any FK',
+  -- Without this the comparison above is satisfied by two identical WRONG
+  -- definitions, since both sides are read from the same live schema.
+  $$select (select v from ev.notes where k='ef_fkey_def')$$,
+  'FOREIGN KEY (event_id, organisation_id) REFERENCES public.events(id, organisation_id) ON DELETE CASCADE');
+select ev.val('EF11 the constraint COMMENT is restored too',
+  $$select ((select pg_catalog.obj_description(oid, 'pg_constraint')
+               from pg_catalog.pg_constraint
+              where conname='event_lineup_event_fkey'
+                and connamespace='public'::regnamespace)
+            = (select v from ev.notes where k='ef_fkey_comment'))::text$$, 'true');
+select ev.val('EF12 ...and the planted row is gone',
+  $$select count(*)::text from public.event_lineup
+     where id='ff11ffff-0000-0000-0000-0000000000ff'$$, '0');
+
+commit;
+
+-- ---------------------------------------------------------------------------
+-- EF13-EF18. ONE LIVE SLOT PER ARTIST PER EVENT, AND THE SOFT DELETE RELEASES
+-- IT (Phase 3 Task 5).
+--
+-- THE MUTATION: dropping `where deleted_at is null` from
+-- `event_lineup_event_artist_live_unique`. A TOTAL unique index passes EF13 --
+-- the duplicate is still refused -- and then REFUSES EF15, the legitimate
+-- re-add, because the soft-deleted row blocks the new one forever. That is a
+-- soft delete turned into a hard one by an index definition, and it is the
+-- trap 20260901000000's index comment names
+-- (`artist_representations_one_current_primary_per_artist` avoids the same
+-- thing temporally). EF15 is therefore the assertion that carries this block;
+-- EF13 alone would stay green under the mutation.
+--
+-- ev.try_con, NOT ev.try, AND THE CONSTRAINT NAME IS THE POINT. `denied(23505)`
+-- is ambiguous the moment a second unique index exists on this table -- and one
+-- more arrived with 20260901021000's list index, which is NOT unique but which
+-- a future "make position unique per event" edit would make so. A bare code
+-- would stay green if the duplicate started being refused by a different index
+-- for a different reason. `constraint_name` is populated for a unique INDEX
+-- violation as well as for a named constraint, which is why this reads back the
+-- index name rather than `<no constraint>` -- measured, not assumed.
+--
+-- IN AN EXPLICIT TRANSACTION, per this file's house style for a block that
+-- mutates the fixture: EF17 puts the lineup back exactly as §§ EG-EI expect to
+-- find it (one LIVE slot on ee11...0001, no extra rows), and an abort between
+-- the soft delete and the restore would otherwise leave the fixture short a
+-- row with every later count silently off by one.
+begin;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+-- The fixture's own slot: ff11...0001 is (ee11...0001, 44440000-...0002), live.
+select ev.try_con('EF13 a SECOND live slot for the same (event, artist) is refused',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id, position)
+           values (%L,'ee110000-0000-0000-0000-000000000001',
+                   '44440000-0000-0000-0000-000000000002', 4)$$, :'alpha_org'),
+  'denied(23505:event_lineup_event_artist_live_unique)');
+select ev.try('EF14 ...the slot is REMOVED, which is an UPDATE of deleted_at',
+  $$update public.event_lineup set deleted_at = now()
+     where id='ff110000-0000-0000-0000-000000000001'$$, 'ok(1)');
+select ev.try('EF15 POSITIVE: ...and the SAME artist can now be re-added',
+  format($$insert into public.event_lineup (id, organisation_id, event_id, artist_id, position)
+           values ('ff11dddd-0000-0000-0000-0000000000dd',%L,
+                   'ee110000-0000-0000-0000-000000000001',
+                   '44440000-0000-0000-0000-000000000002', 4)$$, :'alpha_org'),
+  'ok(1)');
+-- BOTH ROWS EXIST: the removed one and the new one. That is the state the
+-- partial index is FOR, and asserting it stops EF15 from being satisfied by an
+-- index that quietly hard-deletes the old row.
+select ev.val('EF16 CONTROL: the removed slot and the new one BOTH exist',
+  $$select count(*)::text from public.event_lineup
+     where event_id='ee110000-0000-0000-0000-000000000001'
+       and artist_id='44440000-0000-0000-0000-000000000002'$$, '2');
+-- AND RESTORING THE REMOVED ONE IS NOW A 23505, which is a different event
+-- from EF13 and gets a different sentence in the application:
+-- `restoreLineupEntryAction` lets it reach `classifyWrite` -> `conflict` ->
+-- CONFLICT_MESSAGE ("somebody else changed this record"), because here that is
+-- true -- the artist really has been re-added since.
+select ev.try_con('EF17 ...and putting the removed one BACK is refused while the new one lives',
+  $$update public.event_lineup set deleted_at = null
+     where id='ff110000-0000-0000-0000-000000000001'$$,
+  'denied(23505:event_lineup_event_artist_live_unique)');
+reset role; reset request.jwt.claims;
+
+-- Put the fixture back exactly as §§ EG-EI expect it: the re-added row goes,
+-- and the original comes back live.
+delete from public.event_lineup where id='ff11dddd-0000-0000-0000-0000000000dd';
+update public.event_lineup set deleted_at = null
+ where id='ff110000-0000-0000-0000-000000000001';
+
+select ev.val('EF18 the fixture is restored: ONE live slot for that pair, and no extra row',
+  $$select (select count(*) from public.event_lineup
+              where event_id='ee110000-0000-0000-0000-000000000001'
+                and artist_id='44440000-0000-0000-0000-000000000002'
+                and deleted_at is null)::text
+        || '/' ||
+           (select count(*) from public.event_lineup
+              where id='ff11dddd-0000-0000-0000-0000000000dd')::text$$,
+  '1/0');
+
+commit;
+
+-- ---------------------------------------------------------------------------
+-- EF19. THE INDEX ITSELF IS PARTIAL, read out of the catalogue.
+--
+-- EF13-EF18 are behavioural and would all stay green under a TOTAL unique
+-- index right up to EF15 -- which is the one that flips, and which is one
+-- assertion. This is the structural half, in the style of § EX: the predicate
+-- is what makes the re-add possible, so it is asserted as text rather than
+-- inferred from a single behaviour.
+select ev.val('EF19 the live-slot unique index really is partial on deleted_at is null',
+  $$select pg_catalog.pg_get_indexdef(c.oid) from pg_catalog.pg_class c
+     where c.relname = 'event_lineup_event_artist_live_unique'$$,
+  'CREATE UNIQUE INDEX event_lineup_event_artist_live_unique ON public.event_lineup USING btree (event_id, artist_id) WHERE (deleted_at IS NULL)');
+
+-- ---------------------------------------------------------------------------
+-- EF20-EF29. THE RECORD-SCOPE DISJUNCTIONS INSIDE THE TWO event_lineup WRITE
+-- POLICIES, ASKED WITH THE SELECT POLICIES THAT MASK THEM LIFTED.
+--
+-- ADDED IN FIX ROUND 1 BECAUSE THE MUTATION RUN PROVED NOTHING COULD SEE THEM.
+-- Removing `(p.organisation_id in full_scope or p.owner_user_id = auth.uid())`
+-- from event_lineup_insert_via_event left the ENTIRE suite green -- 1029 psql
+-- assertions and 197 HTTP checks, zero failures, measured. That is the same
+-- class of gap § ED11-ED16 exists for on public.events, and the cause is the
+-- same mechanism one table down:
+--
+--   * A POLICY PREDICATE IS EVALUATED AS THE CALLER. The child's
+--     `exists (select 1 from public.events p ...)` reads public.events THROUGH
+--     events_select_view_crm, which carries its own copy of the record-scope
+--     term -- so for a record-scoped caller the parent row is invisible and
+--     the EXISTS is false before the child's own disjunction is reached. EF2's
+--     `denied(42501)` therefore survives the mutation.
+--   * The UPDATE half is masked twice over: PostgreSQL applies
+--     event_lineup_select_via_event to the rows an UPDATE reads, and THAT
+--     policy carries a third copy of the term.
+--
+-- Measured over HTTP as pstd1 POSTing a slot on to pmanager's event, which is
+-- the same statement EF21 makes below:
+--
+--     shipped schema                                    403
+--     record scope removed from the CHILD insert only   403
+--     record scope removed from events_select only      403
+--     removed from BOTH                                 201  -- the slot lands
+--
+-- So the terms are each other's backstop and neither can be measured while the
+-- other holds. Both masking SELECT policies come off for the length of seven
+-- statements, the write policies are asked on their own, and both are put back
+-- and compared against what was there.
+--
+-- SAFETY, TWO LAYERS, EXACTLY AS § ED DOES IT. EF20 and EF23 prove each lift
+-- really happened, so EF21/EF24/EF26 are the WRITE policies answering and not
+-- the old visibility rule. EF27-EF29 assert both restores structurally, with
+-- ED15a's literal control on each so the comparison cannot be satisfied by two
+-- identical WRONG expressions.
+--
+-- WHITESPACE IS NORMALISED IN THE LITERAL CONTROLS. `pg_policies.qual` renders
+-- the child policy's EXISTS across several lines with indentation, so the
+-- comparison is made over `regexp_replace(qual, '\s+', ' ', 'g')`. The
+-- STRUCTURAL comparison (EF27/EF29 against ev.notes) is byte-for-byte and is
+-- unaffected; only the human-written literal is normalised, and it has to be,
+-- or the assertion would be about pg_get_expr's line breaking.
+--
+-- AND THE WHOLE LIFT RUNS INSIDE AN EXPLICIT TRANSACTION, for § ED's reason:
+-- `\set ON_ERROR_STOP on` makes an abort between an `alter policy` and its
+-- restore reachable, policy DDL is transactional in PostgreSQL, and `set role`
+-- / `set request.jwt.claims` work inside a transaction block -- so an abort
+-- rolls the weakened policies back on its own rather than leaving the database
+-- open and a comment telling the next reader to reset it.
+-- ---------------------------------------------------------------------------
+begin;
+
+set search_path = 'pg_catalog, public';
+select ev.note('ef_events_select_qual', (select qual from pg_policies
+  where schemaname='public' and tablename='events' and cmd='SELECT'));
+select ev.note('ef_lineup_select_qual', (select qual from pg_policies
+  where schemaname='public' and tablename='event_lineup' and cmd='SELECT'));
+reset search_path;
+
+-- LIFT 1: the PARENT's SELECT record scope. This is what makes the child
+-- INSERT policy's own disjunction the only thing left standing.
+alter policy "events_select_view_crm" on public.events
+  using ( organisation_id in (select private.permitted_organisations('view_crm')) );
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EF20 CONTROL: with the parent SELECT term lifted, pstd1 can now SEE pmanager''s event',
+  $$select count(*)::text from public.events
+     where id='ee110000-0000-0000-0000-000000000001'$$, '1');
+-- 42501 STILL, and now it is event_lineup_insert_via_event's OWN record-scope
+-- disjunction saying it -- nothing else is left to. THIS IS THE ASSERTION THE
+-- MUTATION FLIPS: with that disjunction removed it becomes ok(1), and a
+-- standard_user plants a slot on somebody else's bill.
+select ev.try('EF21 ...and STILL cannot add a slot to it -- the INSERT policy''s disjunction, alone',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id)
+           values (%L,'ee110000-0000-0000-0000-000000000001',
+                   '44440000-0000-0000-0000-000000000001')$$, :'alpha_org'),
+  'denied(42501)');
+select ev.try('EF22 POSITIVE: ...while adding one to their OWN event still works',
+  format($$insert into public.event_lineup (id, organisation_id, event_id, artist_id, position)
+           values ('ff11aaaa-0000-0000-0000-0000000000aa',%L,
+                   'ee110000-0000-0000-0000-000000000002',
+                   '444400b0-0000-0000-0000-0000000000b2', 6)$$, :'alpha_org'),
+  'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- LIFT 2: the CHILD's own SELECT record scope, on top of the first. Without
+-- this the UPDATE assertions below measure visibility again rather than
+-- event_lineup_update_via_event -- PostgreSQL applies the SELECT policy to the
+-- rows an UPDATE reads AND to the row it writes.
+alter policy "event_lineup_select_via_event" on public.event_lineup
+  using (
+    exists (
+      select 1 from public.events p
+      where p.id = event_lineup.event_id
+        and p.organisation_id = event_lineup.organisation_id
+        and p.organisation_id in (select private.permitted_organisations('view_crm'))
+    )
+  );
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EF23 CONTROL: with BOTH SELECT terms lifted, pstd1 can now SEE the slot on pmanager''s event',
+  $$select count(*)::text from public.event_lineup
+     where id='ff110000-0000-0000-0000-000000000001'$$, '1');
+-- ok(0), and now it is event_lineup_update_via_event's USING clause saying it.
+-- Under the mutation this becomes ok(1) -- a standard_user re-billing an
+-- artist on a night that is not theirs.
+select ev.try('EF24 ...and STILL cannot edit it -- the UPDATE policy''s USING, alone',
+  $$update public.event_lineup set billing='opener'
+     where id='ff110000-0000-0000-0000-000000000001'$$, 'ok(0)');
+select ev.try('EF25 POSITIVE: ...while editing a slot on their OWN event still works',
+  $$update public.event_lineup set billing='headliner'
+     where id='ff110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+-- THE WITH CHECK HALF, which is a different statement from EF24: this row
+-- passes the USING clause (it is on their own event) and fails on the NEW
+-- event_id. entity_org_unchanged and the composite FK are both satisfied --
+-- same organisation, real event -- so the only thing that can refuse it is the
+-- record-scope disjunction in the WITH CHECK.
+select ev.try('EF26 ...nor MOVE their own slot on to somebody else''s event -- the WITH CHECK, alone',
+  $$update public.event_lineup set event_id='ee110000-0000-0000-0000-000000000001'
+     where id='ff110000-0000-0000-0000-000000000002'$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- Both policies back, verbatim from 20260901011000 and 20260828121000.
+alter policy "event_lineup_select_via_event" on public.event_lineup
+  using (
+    exists (
+      select 1 from public.events p
+      where p.id = event_lineup.event_id
+        and p.organisation_id = event_lineup.organisation_id
+        and p.organisation_id in (select private.permitted_organisations('view_crm'))
+        and (
+          p.organisation_id in (select private.full_scope_organisations())
+          or p.owner_user_id = (select auth.uid())
+        )
+    )
+  );
+
+alter policy "events_select_view_crm" on public.events
+  using (
+    organisation_id in (select private.permitted_organisations('view_crm'))
+    and (
+      organisation_id in (select private.full_scope_organisations())
+      or owner_user_id = (select auth.uid())
+    )
+  );
+
+-- The row EF22 planted goes, so §§ EG-EI and the HTTP block meet the fixture
+-- as described. `ART_STD1` in run-rls-tests.sh deliberately uses a DIFFERENT
+-- artist on this same event, so leaving this row would turn that probe's
+-- positive control into a 23505.
+delete from public.event_lineup where id='ff11aaaa-0000-0000-0000-0000000000aa';
+
+select ev.val('EF27 the parent SELECT policy is restored EXACTLY as the migration made it',
+  $$select ((select qual from pg_policies
+               where schemaname='public' and tablename='events' and cmd='SELECT')
+            = (select v from ev.notes where k='ef_events_select_qual'))::text$$, 'true');
+select ev.val('EF28 the CHILD SELECT policy is restored EXACTLY too',
+  $$select ((select qual from pg_policies
+               where schemaname='public' and tablename='event_lineup' and cmd='SELECT')
+            = (select v from ev.notes where k='ef_lineup_select_qual'))::text$$, 'true');
+select ev.val('EF28a CONTROL: and that is the record-scoped expression, not any expression',
+  -- ED15a's control, one table down. Without it EF28 is satisfied by two
+  -- identical WRONG expressions, since both sides are read from the same live
+  -- schema.
+  --
+  -- TWO NORMALISATIONS, AND BOTH WERE MEASURED RATHER THAN ASSUMED.
+  --   * WHITESPACE: pg_policies renders this EXISTS across several lines with
+  --     indentation, so the comparison is over `regexp_replace(qual, '\s+',
+  --     ' ', 'g')`. EF28 above is byte-for-byte and is unaffected; only this
+  --     human-written literal is normalised, and it has to be, or the
+  --     assertion would be about pg_get_expr's line breaking.
+  --   * `public.events`, NOT `events`. The literal is written the way the
+  --     capture actually renders it, which is schema-qualified even under
+  --     `search_path = 'pg_catalog, public'` -- the first draft assumed the
+  --     unqualified form (§ ED15a's literal has no table reference at all, so
+  --     that section never met this) and the assertion went red on the run
+  --     that added it. The measured form is the one that ships.
+  $$select regexp_replace((select v from ev.notes where k='ef_lineup_select_qual'),
+                          '\s+', ' ', 'g')$$,
+  '(EXISTS ( SELECT 1 FROM public.events p WHERE ((p.id = event_lineup.event_id) AND (p.organisation_id = event_lineup.organisation_id) AND (p.organisation_id IN ( SELECT private.permitted_organisations(''view_crm''::text) AS permitted_organisations)) AND ((p.organisation_id IN ( SELECT private.full_scope_organisations() AS full_scope_organisations)) OR (p.owner_user_id = ( SELECT auth.uid() AS uid))))))');
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EF29 ...and behaviourally: pstd1 is back to seeing only their own event''s lineup',
+  $$select coalesce(string_agg(distinct event_id::text,','),'<none>')
+      from public.event_lineup$$,
+  'ee110000-0000-0000-0000-000000000002');
+reset role; reset request.jwt.claims;
+
+commit;
+
+-- ===========================================================================
+-- EG. A SOFT-DELETED PARENT -- readable, not writable
+-- ===========================================================================
+-- The mutation, in either direction: adding `p.deleted_at is null` to the
+-- SELECT policy, or removing it from the three write policies.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+-- READABLE. The detail page renders a deleted event's lineup beside the
+-- "Deleted" notice so a user can see what restoring would bring back, and the
+-- restore path reads it. 20260828121000 design note (g).
+select ev.val('EG1 the lineup of a SOFT-DELETED event is still readable',
+  $$select count(*)::text from public.event_lineup
+     where event_id='ee110000-0000-0000-0000-000000000004'$$, '1');
+select ev.val('EG2 ...and so is the deleted event itself',
+  $$select count(*)::text from public.events
+     where id='ee110000-0000-0000-0000-000000000004'$$, '1');
+-- NOT WRITABLE. INSERT is 42501 (WITH CHECK is the only clause an INSERT
+-- policy has); UPDATE is ok(0), because `p.deleted_at is null` is in the USING
+-- clause and the target row stops matching. Two different mechanisms, asserted
+-- as the two different things they are.
+select ev.try('EG3 ...but a new slot cannot be ADDED to it -- 42501',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id)
+           values (%L,'ee110000-0000-0000-0000-000000000004',
+                   '44440000-0000-0000-0000-000000000001')$$, :'alpha_org'),
+  'denied(42501)');
+select ev.try('EG4 ...nor an existing one EDITED -- ok(0), the USING clause',
+  $$update public.event_lineup set billing='support'
+     where id='ff110000-0000-0000-0000-000000000004'$$, 'ok(0)');
+select ev.try('EG5 ...nor soft-deleted, which is the same UPDATE',
+  $$update public.event_lineup set deleted_at=now()
+     where id='ff110000-0000-0000-0000-000000000004'$$, 'ok(0)');
+-- THE POSITIVE CONTROL: the identical statements against a LIVE event of the
+-- same owner succeed. Without it EG3-EG5 are satisfied by a lineup nobody can
+-- write at all.
+select ev.try('EG6 POSITIVE: the same INSERT against a LIVE event succeeds',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id, position)
+           values (%L,'ee110000-0000-0000-0000-000000000001',
+                   '44440000-0000-0000-0000-000000000001', 1)$$, :'alpha_org'),
+  'ok(1)');
+select ev.try('EG7 POSITIVE: ...and the same UPDATE against a LIVE slot',
+  $$update public.event_lineup set billing='support'
+     where id='ff110000-0000-0000-0000-000000000001'$$, 'ok(1)');
+-- AND THE RESTORE PATH ITSELF, end to end: restoring the event re-opens its
+-- lineup for writing. This is what would break if `p.deleted_at is null` were
+-- ever moved on to the SELECT policy.
+select ev.try('EG8 restoring the event re-opens its lineup for writing',
+  $$update public.events set deleted_at=null
+     where id='ee110000-0000-0000-0000-000000000004'$$, 'ok(1)');
+select ev.try('EG9 ...and now the slot on it IS editable',
+  $$update public.event_lineup set billing='support'
+     where id='ff110000-0000-0000-0000-000000000004'$$, 'ok(1)');
+-- Put it back, so § EI's counts and the HTTP block meet the fixture as
+-- described.
+select ev.try('EG10 ...re-deleted, leaving the fixture as § EI expects it',
+  $$update public.events set deleted_at=now()
+     where id='ee110000-0000-0000-0000-000000000004'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EH. THE ARTIST END IS **NOT** A POLICY TERM -- and must not become one
+-- ===========================================================================
+-- The mutation: adding an artists term to any lineup policy.
+--
+-- This section is entirely positive, and that is deliberate: it exists to stop
+-- a future "helpful" edit. 20260828235000's argument, verbatim on the new
+-- table -- a policy predicate is evaluated AS THE CALLER, so a term reading
+-- public.artists would be filtered by artists_select_view_crm, and for a
+-- record-scoped user who owns the event and not the artist "the artist is
+-- deleted" would collapse into "I cannot see the artist". Legitimate writes
+-- against perfectly live artists would start being refused.
+--
+-- WHAT ACTUALLY GUARDS THE ARTIST END: `event_lineup_artist_fkey` for the
+-- cross-tenant half (EF4's sibling, at the constraint layer), and
+-- `liveInOrg(supabase, "artists", org.id, artistId)` in lib/crm/events.ts for
+-- the soft-deleted half. THERE IS NO DATABASE CONTROL BEHIND THAT SECOND ONE.
+-- EH3 is the assertion that says so out loud, so nobody deletes the
+-- application check believing a policy is behind it.
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EH1 pstd1 cannot even SEE the manager''s artist',
+  $$select count(*)::text from public.artists
+     where id='44440000-0000-0000-0000-000000000002'$$, '0');
+select ev.try('EH2 ...and can nevertheless book them on to their OWN event',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id, position)
+           values (%L,'ee110000-0000-0000-0000-000000000002',
+                   '44440000-0000-0000-0000-00000000000f', 2)$$, :'alpha_org'),
+  'ok(1)');
+-- `<null>`, NOT `true`, AND THAT IS THE POINT. pstd1 cannot read that artist
+-- row at all -- it is pmanager's -- so the SELECT returns no row and ev.val
+-- records `<null>`. Asking THEM whether it is deleted answers nothing, which
+-- is precisely why a `deleted_at` term on the artist end inside a POLICY would
+-- collapse "the artist is deleted" into "I cannot see the artist". EH4 asks
+-- the same question as postgres, where the answer is a fact about the fixture
+-- rather than about the reader, and the two together are the claim: the artist
+-- IS soft-deleted, and EH2's write succeeded anyway.
+select ev.val('EH3 ...and pstd1 cannot even tell whether that artist is deleted',
+  $$select (deleted_at is not null)::text from public.artists
+     where id='44440000-0000-0000-0000-00000000000f'$$,
+  '<null>');
+reset role; reset request.jwt.claims;
+select ev.val('EH4 (as postgres) the artist EH2 booked really is soft-deleted',
+  $$select (deleted_at is not null)::text from public.artists
+     where id='44440000-0000-0000-0000-00000000000f'$$, 'true');
+select ev.val('EH5 CONTROL: no lineup policy expression mentions public.artists',
+  $$select count(*)::text from pg_policies
+     where schemaname='public' and tablename='event_lineup'
+       and (coalesce(qual,'') like '%artists%'
+         or coalesce(with_check,'') like '%artists%')$$, '0');
+
+-- ===========================================================================
+-- EI. A SUSPENDED ORGANISATION IS READ-ONLY, NOT A LOCKOUT
+-- ===========================================================================
+-- The mutation: flipping manage_events.survives_suspension to true. The P11
+-- technique -- the write must STILL refuse, because
+-- private.crm_write_organisations() carries its own unconditional
+-- `deleted_at is null` clause, and a defence-in-depth term whose value is
+-- never measured with the term beside it removed is an assumption.
+--
+-- The counts are taken WHILE LIVE and compared after suspension, rather than
+-- hardcoded: an exact number here would be a hostage to every section above,
+-- and '0' would pass against a database where every policy denies everything.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.note('live_events',  (select count(*)::text from public.events));
+select ev.note('live_lineup',  (select count(*)::text from public.event_lineup));
+reset role; reset request.jwt.claims;
+
+update public.organisations set deleted_at = now() where slug = 'org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EI1 SUSPENDED: events are still readable, the SAME count as live',
+  $$select ((select count(*) from public.events)::text
+            = (select v from ev.notes where k='live_events'))::text$$, 'true');
+select ev.val('EI1a CONTROL: ...and that baseline is not zero',
+  $$select ((select v from ev.notes where k='live_events')::int > 0)::text$$, 'true');
+select ev.val('EI2 SUSPENDED: the lineup is still readable, same count as live',
+  $$select ((select count(*) from public.event_lineup)::text
+            = (select v from ev.notes where k='live_lineup'))::text$$, 'true');
+select ev.try('EI3 SUSPENDED: INSERT is refused -- 42501, the WITH CHECK',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'Suspended Event', now())$$, :'alpha_org'), 'denied(42501)');
+select ev.try('EI4 SUSPENDED: UPDATE matches nothing -- ok(0), the USING clause',
+  $$update public.events set name='rewritten'
+     where id='ee110000-0000-0000-0000-000000000001'$$, 'ok(0)');
+select ev.try('EI5 SUSPENDED: a lineup INSERT is refused',
+  format($$insert into public.event_lineup (organisation_id, event_id, artist_id, position)
+           values (%L,'ee110000-0000-0000-0000-000000000001',
+                   '44440000-0000-0000-0000-00000000000f', 7)$$, :'alpha_org'),
+  'denied(42501)');
+select ev.try('EI6 SUSPENDED: a lineup UPDATE matches nothing',
+  $$update public.event_lineup set billing='opener'
+     where id='ff110000-0000-0000-0000-000000000001'$$, 'ok(0)');
+reset role; reset request.jwt.claims;
+
+-- THE P11 TECHNIQUE. Flip the catalogue boolean -- the exact one-row mistake
+-- that would open the first gate -- and prove the SECOND gate still refuses.
+-- Restored per-key from what this block FOUND, not to a constant, so a
+-- catalogue mistake made earlier survives to be caught rather than being
+-- silently corrected here.
+do $$
+declare
+  v_alpha uuid; v_mgr uuid; n int;
+  r_insert text; r_update text; v_first_gate text; v_saved boolean;
+begin
+  select id into v_alpha from public.organisations where slug = 'org-alpha';
+  select id into v_mgr   from auth.users where email = 'pmanager@test.local';
+
+  select survives_suspension into v_saved
+    from public.permissions where key = 'manage_events';
+
+  update public.permissions set survives_suspension = true
+   where key = 'manage_events';
+
+  perform pg_catalog.set_config('request.jwt.claims',
+    pg_catalog.json_build_object('sub', v_mgr, 'role','authenticated', 'aal','aal1')::text,
+    true);
+  v_first_gate := public.has_permission(v_alpha,'manage_events')::text;
+
+  set local role authenticated;
+  begin
+    insert into public.events (organisation_id, name, starts_at)
+    values (v_alpha, 'First Gate Off Event', now());
+    get diagnostics n = row_count; r_insert := 'ok(' || n || ')';
+  exception when others then r_insert := 'denied(' || sqlstate || ')'; end;
+  begin
+    update public.events set name = 'flipped'
+     where id = 'ee110000-0000-0000-0000-000000000001';
+    get diagnostics n = row_count; r_update := 'ok(' || n || ')';
+  exception when others then r_update := 'denied(' || sqlstate || ')'; end;
+  reset role;
+
+  perform pg_catalog.set_config('request.jwt.claims', '', true);
+  update public.permissions set survives_suspension = v_saved
+   where key = 'manage_events';
+
+  perform ev.record(
+    'EI7  CONTROL: the catalogue flip really DOES open the first gate',
+    'true', v_first_gate);
+  perform ev.record(
+    'EI8  FIRST GATE OFF: the event INSERT still refuses (crm_write_organisations)',
+    'denied(42501)', r_insert);
+  -- THE MECHANISM CHANGES, AND THE ASSERTION SAYS SO. With the first gate
+  -- open, permitted_organisations('manage_events') contains the suspended
+  -- organisation again, so the UPDATE's USING clause passes and the row STOPS
+  -- being invisible -- EI4's ok(0) becomes a 42501 here. That is the second
+  -- gate talking, in WITH CHECK, where 20260828140500 deliberately put the
+  -- entitlement term so that a refused write is a loud 403 rather than a
+  -- success-shaped 204. An `ok(1)` here would be the breakout.
+  perform ev.record(
+    'EI9  FIRST GATE OFF: ...and the UPDATE is REFUSED, not silently applied',
+    'denied(42501)', r_update);
+  perform ev.record(
+    'EI10 the key this block borrows was found -- and restored -- FALSE',
+    'false', v_saved::text);
+end $$;
+
+update public.organisations set deleted_at = null where slug = 'org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.try('EI11 REINSTATED: the same INSERT is allowed again',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'Reinstated Event', timestamptz '2026-11-05 20:00+00')$$,
+         :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EJ. The MFA / assurance gate, on the new tables
+-- ===========================================================================
+-- A control on an existing mechanism (20260827210000), asserted here because
+-- the CRM read gate now covers two more tables and nothing else would notice
+-- if it did not. An Owner requires MFA (CLAUDE.md § Session security), so an
+-- aal1 session of theirs -- the stolen-password case -- holds no permission at
+-- all.
+set role authenticated;
+set request.jwt.claims = :'powner_c1';
+select ev.val('EJ1 aal1 OWNER reads ZERO events',
+  $$select count(*)::text from public.events$$, '0');
+select ev.val('EJ2 aal1 OWNER reads ZERO lineup rows',
+  $$select count(*)::text from public.event_lineup$$, '0');
+select ev.try('EJ3 aal1 OWNER cannot create an event',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'aal1 Event', now())$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select ev.val('EJ4 POSITIVE: the SAME owner at aal2 reads the events',
+  $$select (count(*) > 0)::text from public.events$$, 'true');
+select ev.try('EJ5 POSITIVE: ...and can create one',
+  format($$insert into public.events (organisation_id, name, starts_at)
+           values (%L,'Owner aal2 Event', timestamptz '2026-11-06 20:00+00')$$,
+         :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EK. private.entity_is_visible / _is_manageable ANSWER FOR 'event',
+--     THROUGH A REAL SESSION
+-- ===========================================================================
+-- FOLLOW-UPS.md § "Phase 3 -- events" filed this as Phase 3 Task 2's, and the
+-- reason it could not be done from vitest is the reason it belongs here: both
+-- functions carry terms that read auth.uid(), which is NULL for `postgres`, so
+-- driven as postgres they would answer false for every entity type including
+-- the five that have worked since Phase 2 -- a `false` would prove nothing.
+--
+-- WHAT DEPENDS ON THE ANSWER: the three custom_field_values write policies and
+-- the merges INSERT policy dispatch through these two functions, so an event
+-- with no arm would make every custom field on every event silently
+-- unwritable. 20260901010000 added the manageable arm; 20260901001000 added
+-- the visible one.
+--
+-- THE DISCRIMINATING PAIR IS pfinance. They are FULL-SCOPE (only
+-- standard_user and read_only are not) and hold view_crm and NOT
+-- manage_events, so `visible=true, manageable=false` on the SAME row is only
+-- possible if the two functions really do consult different keys. A dispatch
+-- that ignored the key, or that copy-pasted view_crm into the manageable arm,
+-- answers true/true and goes red here and nowhere else.
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EK1 pstd1: their OWN event is visible AND manageable',
+  format($$select private.entity_is_visible('event','ee110000-0000-0000-0000-000000000002',%L)::text
+             || '/' ||
+             private.entity_is_manageable('event','ee110000-0000-0000-0000-000000000002',%L)::text$$,
+         :'alpha_org', :'alpha_org'), 'true/true');
+select ev.val('EK2 pstd1: pstd2''s event is NEITHER -- record scope',
+  format($$select private.entity_is_visible('event','ee110000-0000-0000-0000-000000000003',%L)::text
+             || '/' ||
+             private.entity_is_manageable('event','ee110000-0000-0000-0000-000000000003',%L)::text$$,
+         :'alpha_org', :'alpha_org'), 'false/false');
+select ev.val('EK3 pstd1: a BETA event is NEITHER -- tenant',
+  format($$select private.entity_is_visible('event','ee11000b-0000-0000-0000-00000000000b',%L)::text
+             || '/' ||
+             private.entity_is_manageable('event','ee11000b-0000-0000-0000-00000000000b',%L)::text$$,
+         :'beta_org', :'beta_org'), 'false/false');
+-- The organisation argument is a term in its own right, not decoration: this
+-- is the cross-tenant hole no foreign key can reach (SECURITY.md § 10), and
+-- naming an ALPHA organisation for a BETA row must be false even for a caller
+-- who is in ALPHA.
+select ev.val('EK4 pstd1: their own event under the WRONG organisation id is false',
+  format($$select private.entity_is_visible('event','ee110000-0000-0000-0000-000000000002',%L)::text$$,
+         :'beta_org'), 'false');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EK5 POSITIVE CONTROL: pmanager, full scope, gets true/true on the SAME row EK2 refused',
+  format($$select private.entity_is_visible('event','ee110000-0000-0000-0000-000000000003',%L)::text
+             || '/' ||
+             private.entity_is_manageable('event','ee110000-0000-0000-0000-000000000003',%L)::text$$,
+         :'alpha_org', :'alpha_org'), 'true/true');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pfinance_c';
+select ev.val('EK6 pfinance: VISIBLE but NOT MANAGEABLE -- the two keys really differ',
+  format($$select private.entity_is_visible('event','ee110000-0000-0000-0000-000000000003',%L)::text
+             || '/' ||
+             private.entity_is_manageable('event','ee110000-0000-0000-0000-000000000003',%L)::text$$,
+         :'alpha_org', :'alpha_org'), 'true/false');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EX. THE FOUR INDEXES lib/crm/events-list.ts NAMES IN `backedBy` EXIST, AND
+--     HAVE THE SHAPE THAT MAKES THE NAMING TRUE
+-- ===========================================================================
+-- Phase 2 STATED this rule and never asserted it. `lib/list/spec.ts` says
+-- `backedBy` is "Required, and required to be a real index name, because the
+-- alternative is what was measured before 20260828180000 existed" -- and
+-- nothing anywhere checked that the string is a real index name. A rename in a
+-- later migration, or a typo in a copied spec, leaves `backedBy` pointing at
+-- nothing, every gate green, and the list back to a Seq Scan plus a top-N sort
+-- of every live row in the tenant. Measured in Task 3 on 24,998 events: 9.95 ms
+-- and 478 buffers unindexed against 0.60 ms and 14 indexed, and the SHAPE is
+-- O(tenant) per page click, so it looks fine in every fixture in this file.
+--
+-- WHY HERE AND NOT IN VITEST. A unit test can read the four strings out of the
+-- spec (tests/unit/crm/events-list.test.ts does, and checks their shape); only
+-- the database can say whether an index of that name exists. This section is
+-- the half that needs a database.
+--
+-- THE DENOMINATOR IS FOUR. Every assertion below counts over the same list of
+-- four `backedBy` names -- `events_org_starts_at_id_live_idx`,
+-- `events_org_name_id_live_idx`, `events_org_updated_at_id_live_idx` (the live
+-- list's three sorts) and `events_org_deleted_at_id_idx` (the restore view's
+-- one). EX1 fixes that four, so nothing below can pass by inspecting an empty
+-- set. EX6 is the positive control in the other direction: a name that is NOT
+-- one of them finds nothing, so EX1 is not passing because every string
+-- matches.
+--
+-- Run as `postgres`. pg_class and pg_index carry no RLS and this section makes
+-- no claim about who can see what -- every other section in this file does
+-- that. Deliberately structural.
+reset role; reset request.jwt.claims;
+
+select ev.val('EX1 all four `backedBy` names exist as indexes on public.events',
+  $$select count(*)::text from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+      join pg_catalog.pg_class t on t.oid = i.indrelid
+      join pg_catalog.pg_namespace n on n.oid = t.relnamespace
+     where n.nspname = 'public' and t.relname = 'events'
+       and c.relkind = 'i'
+       and c.relname in ('events_org_starts_at_id_live_idx',
+                         'events_org_name_id_live_idx',
+                         'events_org_updated_at_id_live_idx',
+                         'events_org_deleted_at_id_idx')$$, '4');
+
+-- The names themselves, not just how many. EX1 counts names it is handed, so
+-- it cannot see an index this task did NOT create sitting in the same
+-- namespace; this reads the whole `events_org_%` family back and requires it to
+-- be exactly the four. That is the half that goes red when a later migration
+-- adds a fifth list index without a spec entry to justify it.
+--
+-- `\_` ESCAPES THE UNDERSCORE, so the pattern is `events_org_` literally.
+-- Fix round 1, review Minor 5: this query used to carry
+-- `and c.relname not in ('events_organisation_id_idx')`, which never once
+-- fired -- there is no underscore after `org` in `events_organisation_id_idx`,
+-- so the escaped LIKE already excludes it -- and a dead exclusion reads as a
+-- guard doing work. Removed rather than commented, because the escape is the
+-- real mechanism and the exclusion was hiding it.
+select ev.val('EX2 ...and they are those four exactly',
+  $$select string_agg(c.relname, ',' order by c.relname)
+      from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+      join pg_catalog.pg_class t on t.oid = i.indrelid
+      join pg_catalog.pg_namespace n on n.oid = t.relnamespace
+     where n.nspname = 'public' and t.relname = 'events' and c.relkind = 'i'
+       and c.relname like 'events\_org\_%'$$,
+  'events_org_deleted_at_id_idx,events_org_name_id_live_idx,events_org_starts_at_id_live_idx,events_org_updated_at_id_live_idx');
+
+-- THE SHAPE, NOT ONLY THE NAME. An index of the right name over the wrong
+-- columns satisfies EX1 and serves nothing: `organisation_id` has to LEAD (the
+-- list pins it by equality and that is what makes the index reachable at all --
+-- 7x on contacts, 20260828180000), `id` has to be the last key column (keyset
+-- pagination compares `(sort column, id)` and the tie-break has to be in the
+-- index), and the partial predicate has to match the clause lib/list/query.ts
+-- always writes, or the index cannot be used at all.
+select ev.val('EX3 the three LIVE indexes are (organisation_id, <sort>, id) INCLUDE (owner_user_id) WHERE deleted_at IS NULL',
+  $$select count(*)::text from pg_catalog.pg_class c
+     where c.relname in ('events_org_starts_at_id_live_idx',
+                         'events_org_name_id_live_idx',
+                         'events_org_updated_at_id_live_idx')
+       and pg_get_indexdef(c.oid) ~
+           '^CREATE INDEX \w+ ON public\.events USING btree \(organisation_id, \w+, id\) INCLUDE \(owner_user_id\) WHERE \(deleted_at IS NULL\)$'$$,
+  '3');
+
+select ev.val('EX4 the RESTORE index is the same shape with the predicate inverted',
+  $$select pg_get_indexdef(c.oid) from pg_catalog.pg_class c
+     where c.relname = 'events_org_deleted_at_id_idx'$$,
+  'CREATE INDEX events_org_deleted_at_id_idx ON public.events USING btree (organisation_id, deleted_at, id) INCLUDE (owner_user_id) WHERE (deleted_at IS NOT NULL)');
+
+-- The sort COLUMN of each live index is the column its spec entry declares.
+-- EX3 accepts any middle column; this pins which. Without it, three indexes
+-- over `starts_at` would pass EX1, EX2 and EX3 together, and two of the three
+-- sorts would be back to a top-N sort of the tenant.
+select ev.val('EX5 each live index'' middle key column is the one its sort declares',
+  $$select string_agg(c.relname || '=' || a.attname, ',' order by c.relname)
+      from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+      join pg_catalog.pg_attribute a
+        on a.attrelid = i.indrelid and a.attnum = i.indkey[1]
+     where c.relname in ('events_org_starts_at_id_live_idx',
+                         'events_org_name_id_live_idx',
+                         'events_org_updated_at_id_live_idx')$$,
+  'events_org_name_id_live_idx=name,events_org_starts_at_id_live_idx=starts_at,events_org_updated_at_id_live_idx=updated_at');
+
+-- POSITIVE CONTROL, in the direction that matters: EX1 counts names it is
+-- handed, so it would report 4 for any four strings that happened to exist.
+-- This asks for a name in the same family that deliberately does NOT exist --
+-- `ends_at` is the sort lib/crm/events-list.ts refuses to declare because the
+-- column is nullable -- and requires 0. If this returns 1, the lookup above is
+-- matching something other than the name it was given.
+select ev.val('EX6 POSITIVE CONTROL: a plausible name that was never created finds nothing',
+  $$select count(*)::text from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+     where c.relname = 'events_org_ends_at_id_live_idx'$$, '0');
+
+-- ===========================================================================
+-- EL. THE INDEX lib/crm/lineup-list.ts NAMES IN `backedBy` EXISTS, AND HAS THE
+--     SHAPE THAT MAKES THE NAMING TRUE (Phase 3 Task 5)
+-- ===========================================================================
+-- § EX's argument, one table along. `lib/list/spec.ts` says `backedBy` is
+-- "required to be a real index name", and a unit test can only read the string
+-- out of the spec (tests/unit/crm/lineup-list.test.ts § 3 does); only the
+-- database can say whether an index of that name exists. Without this the
+-- lineup pager silently goes back to reading and RLS-checking every live slot
+-- on the event from the first one -- measured at 1,741 buffers and 180 parent
+-- lookups for a deep page against 320 and 26 (20260901021000's header).
+--
+-- THE DENOMINATOR IS ONE. LINEUP_LIST declares exactly one sort, so there is
+-- exactly one `backedBy` name to check. EL4 is the control in the other
+-- direction: a plausible name that was never created must find nothing, so EL1
+-- is not passing because every string matches.
+--
+-- Run as `postgres`. pg_class and pg_index carry no RLS and this section makes
+-- no claim about who can see what.
+reset role; reset request.jwt.claims;
+
+select ev.val('EL1 the `backedBy` name exists as an index on public.event_lineup',
+  $$select count(*)::text from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+      join pg_catalog.pg_class t on t.oid = i.indrelid
+      join pg_catalog.pg_namespace n on n.oid = t.relnamespace
+     where n.nspname = 'public' and t.relname = 'event_lineup'
+       and c.relkind = 'i'
+       and c.relname = 'event_lineup_org_event_position_id_live_idx'$$, '1');
+
+-- THE SHAPE, NOT ONLY THE NAME. An index of the right name over the wrong
+-- columns satisfies EL1 and serves nothing. Every part is load-bearing:
+-- `organisation_id` LEADS because lib/list/query.ts pins it by equality;
+-- `event_id` is second because `loadLineupForEvent`'s `applyFilters` callback
+-- in lib/crm/queries.ts pins that too (NOT lineup-list.ts -- LINEUP_LIST has
+-- `filters: {}` and the string does not appear in that file at all; fix round
+-- 1, Minor 2, and 20260901021000's header carries the same misattribution,
+-- which is left for the next migration that touches this table because no
+-- existing migration is edited);
+-- `position` is the sort; `id` is last because keyset pagination compares
+-- `(position, id)` and `position` is deliberately NOT unique, so the tie-break
+-- carries real weight here; and the partial predicate has to match the clause
+-- lib/list/query.ts always writes or the index cannot be used at all.
+--
+-- NO `INCLUDE (owner_user_id)`, unlike the three events indexes § EX3 checks --
+-- public.event_lineup has no such column, because a slot's record scope is its
+-- parent event's. The regex therefore has no INCLUDE clause in it, and that
+-- absence is asserted rather than merely permitted.
+select ev.val('EL2 it is (organisation_id, event_id, position, id) WHERE deleted_at IS NULL, with no INCLUDE',
+  $$select pg_catalog.pg_get_indexdef(c.oid) from pg_catalog.pg_class c
+     where c.relname = 'event_lineup_org_event_position_id_live_idx'$$,
+  'CREATE INDEX event_lineup_org_event_position_id_live_idx ON public.event_lineup USING btree (organisation_id, event_id, "position", id) WHERE (deleted_at IS NULL)');
+
+-- The claim the header of 20260901021000 makes about WHY there is no INCLUDE,
+-- asserted from the catalogue rather than trusted: public.event_lineup really
+-- has no owner_user_id. If a later migration adds one, this goes red and the
+-- index comment stops being true in the same commit.
+select ev.val('EL3 public.event_lineup has no owner_user_id, which is why there is no INCLUDE',
+  $$select count(*)::text from pg_catalog.pg_attribute a
+     where a.attrelid = 'public.event_lineup'::regclass
+       and a.attname = 'owner_user_id' and a.attnum > 0 and not a.attisdropped$$,
+  '0');
+
+select ev.val('EL4 POSITIVE CONTROL: a plausible name that was never created finds nothing',
+  $$select count(*)::text from pg_catalog.pg_class c
+      join pg_catalog.pg_index i on i.indexrelid = c.oid
+     where c.relname = 'event_lineup_org_event_created_at_id_live_idx'$$, '0');
+
+
+-- ===========================================================================
+-- EM. THE EVENT'S OWN TIMELINE, AND THE STATUS HISTORY BEHIND IT
+--     (Phase 3 Task 6; migrations 20260901030000 and 20260901031000)
+-- ===========================================================================
+-- SECTION LETTERS. The Task 6 brief named these five sections EK, EL, EM, EN
+-- and EO. EK and EL were TAKEN by Tasks 2 and 5 while the brief was being
+-- written (EK is entity_is_visible/_is_manageable for 'event', EL is the
+-- lineup index's `backedBy`), so they are EM, EN, EO, EP and EQ here, in the
+-- brief's order. The Task 6 report carries the mapping.
+--
+-- WHAT IS BEING ASSERTED, AND WHY IT IS ASSERTED AS A SET OF KINDS.
+-- public.activity_events is a nine-column view over thirteen top-level
+-- branches, five of which arrived in this task. A COUNT of its rows would go
+-- green for the wrong reasons in both directions -- a branch that emits twice
+-- and a branch that emits nothing look identical to a total. So the assertion
+-- is `string_agg(distinct kind)`, sorted: it names every kind the event's
+-- timeline carries and it is red the moment one is missing OR one is invented.
+--
+-- THIS SECTION BUILDS ITS OWN EVENT rather than reusing the fixture's. Sections
+-- EF, EG and EI mutate the fixture events by design (EF22 plants and deletes a
+-- lineup row, EG deletes and restores, EI creates two more), so an assertion
+-- about "exactly these kinds" written against one of them would be an
+-- assertion about the order this file's sections happen to run in.
+--
+-- FIXTURE, planted as postgres so ownership is exactly what the assertions
+-- need. `Timeline Event` is pmanager's, in ALPHA, at `draft`.
+reset role; reset request.jwt.claims;
+
+insert into public.events
+  (id, organisation_id, owner_user_id, name, starts_at, venue_id, status)
+select 'ee110000-0000-0000-0000-0000000000e6', o.id, :'pmanager', 'Timeline Event',
+       timestamptz '2026-12-01 20:00+00',
+       '55550000-0000-0000-0000-000000000002', 'draft'
+from public.organisations o where o.slug='org-alpha';
+
+-- ONE SOFT-DELETED LINEUP ROW IS BOTH HALVES OF THE LINK STORY. The branch
+-- cross-joins a two-row VALUES list on (created_at, deleted_at), so a single
+-- removed slot emits link_added AND link_removed -- which is why one row here
+-- covers what the brief calls "one lineup add and one lineup remove".
+insert into public.event_lineup
+  (id, organisation_id, event_id, artist_id, position, billing, deleted_at)
+select 'ff110000-0000-0000-0000-0000000000e6', o.id,
+       'ee110000-0000-0000-0000-0000000000e6',
+       '44440000-0000-0000-0000-000000000001', 0, 'headliner', now()
+from public.organisations o where o.slug='org-alpha';
+
+-- THE CUSTOM FIELD BRANCH IS POLYMORPHIC AND WAS NEVER TOUCHED BY THIS TASK.
+-- `custom_field_set` keys on `cfv.entity_type`, so 'event' arrives with no new
+-- branch -- 20260901001000 widened the CHECK and that was the whole change.
+-- This is the assertion that turns that claim from a reading into a
+-- measurement.
+insert into public.custom_field_definitions
+  (id, organisation_id, entity_type, key, label, field_type)
+select 'aaaa0000-0000-0000-0000-000000000004', o.id, 'event', 'stage_plan',
+       'Stage plan', 'text'
+from public.organisations o where o.slug='org-alpha';
+
+insert into public.custom_field_values
+  (id, organisation_id, field_id, entity_type, entity_id, value)
+select 'bbbb0000-0000-0000-0000-000000000004', o.id,
+       'aaaa0000-0000-0000-0000-000000000004', 'event',
+       'ee110000-0000-0000-0000-0000000000e6', '"two decks and a mixer"'::jsonb
+from public.organisations o where o.slug='org-alpha';
+
+-- THE CREATE-TIME ROW EXISTS IN THE TABLE. It is the honest start of the
+-- history and the table is the history; Branch 5 is what keeps it off the
+-- timeline (EM8). Written as one row with a NULL from_status -- and `<null>`
+-- rather than an empty string, because ev.val coalesces and an empty result
+-- would otherwise compare equal to a missing row.
+select ev.val('EM1  creating an event wrote ONE status row, with from_status NULL',
+  $$select count(*)::text || '/' || coalesce(min(from_status),'<null>')
+      from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '1/<null>');
+
+-- THE ACTOR. Planted as postgres, so auth.uid() was NULL -- which the trigger
+-- records rather than refusing (a status change that really happened must not
+-- be lost because nobody was signed in). EM4 is the paired positive: a change
+-- made through a real session carries that session's user.
+select ev.val('EM2  ...and changed_by is NULL, because postgres has no auth.uid()',
+  $$select coalesce(changed_by::text,'<null>') from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '<null>');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.try('EM3  pmanager changes the status',
+  $$update public.events set status='confirmed'
+     where id='ee110000-0000-0000-0000-0000000000e6'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select ev.val('EM4  ...and the trigger wrote a SECOND row, draft->confirmed, actored',
+  format($$select count(*)::text || '/' ||
+             (select from_status || '->' || to_status
+                from public.event_status_changes
+               where event_id='ee110000-0000-0000-0000-0000000000e6'
+                 and from_status is not null) || '/' ||
+             (select (changed_by = %L)::text
+                from public.event_status_changes
+               where event_id='ee110000-0000-0000-0000-0000000000e6'
+                 and from_status is not null)
+          from public.event_status_changes
+         where event_id='ee110000-0000-0000-0000-0000000000e6'$$, :'pmanager'),
+  '2/draft->confirmed/true');
+
+-- TWO LAYERS KEEP A SPURIOUS ROW OFF THIS TABLE, AND THEY CATCH DIFFERENT
+-- STATEMENTS. Measured in Task 6 by removing each one and running this suite,
+-- not reasoned about:
+--
+--   `after insert or update OF STATUS`   the column list. An UPDATE that does
+--                                        not MENTION status never fires the
+--                                        trigger at all -- so EM5/EM6 below
+--                                        stay green even with the body's guard
+--                                        removed. (First draft of this file
+--                                        expected EM6 to be the assertion that
+--                                        catches it; the mutation run said
+--                                        otherwise, 0 assertions red.)
+--   `old.status is distinct from new.status`   the body's guard. This is what
+--                                        catches an UPDATE that DOES mention
+--                                        status and does not change it -- and
+--                                        that is not a contrived statement: a
+--                                        PostgREST PATCH sends every column the
+--                                        client was holding, so the edit form
+--                                        saving a name change ships
+--                                        `status=<unchanged>` with it. Without
+--                                        the guard, every save through the edit
+--                                        form would grow a "Status changed from
+--                                        Confirmed to Confirmed" entry.
+--
+-- EM6 is the first layer's assertion; EM6b is the second's, and EM6b is the one
+-- the mutation flips.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.try('EM5  ...an edit that does NOT touch status still succeeds',
+  $$update public.events set notes='an ordinary edit'
+     where id='ee110000-0000-0000-0000-0000000000e6'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select ev.val('EM6  ...and wrote NO status row -- the trigger''s `of status` column list',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '2');
+
+-- THE EDIT FORM'S ACTUAL STATEMENT: status IS in the SET list and is unchanged,
+-- which is what a PostgREST PATCH of a whole row looks like. The trigger fires;
+-- the body's guard is the only thing that stops it writing.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.try('EM5b ...and a save that RE-SENDS the same status succeeds too',
+  $$update public.events set status='confirmed', notes='saved again'
+     where id='ee110000-0000-0000-0000-0000000000e6'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select ev.val('EM6b ...and STILL wrote no row -- the `is distinct from` guard, alone',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '2');
+
+-- THE WHOLE TIMELINE, AS A SET OF KINDS. Six of them, one per source that can
+-- speak about this event:
+--   record_created / record_updated   the subjects CTE (Branch 1)
+--   status_changed                    event_status_changes (Branch 5)
+--   link_added / link_removed         event_lineup, event side (Branch 2)
+--   custom_field_set                  the POLYMORPHIC branch, untouched
+-- and NOT record_deleted, because the event is live.
+--
+-- MUTATION: deleting the `public.events` arm from the subjects CTE drops
+-- record_created and record_updated from this string.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EM7  the event''s timeline carries exactly the six kinds its sources can emit',
+  $$select string_agg(distinct kind, ',' order by kind)
+      from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e6'$$,
+  'custom_field_set,link_added,link_removed,record_created,record_updated,status_changed');
+
+-- THE CREATE-TIME ROW IS IN THE TABLE (EM1) AND NOT ON THE TIMELINE. Branch 5
+-- filters `from_status is not null` for one reason: `record_created` already
+-- carries that instant, and the two would tie on occurred_at and be separated
+-- only by the md5 tie-break, which is noise.
+--
+-- MUTATION: removing that filter makes this read '2', and the timeline grows a
+-- "Status changed from an earlier status to Draft" entry beside every
+-- "Created".
+select ev.val('EM8  ...and exactly ONE status_changed entry -- the create row is skipped',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e6'
+       and kind='status_changed'$$, '1');
+
+select ev.val('EM9  ...whose detail carries both ends by name',
+  $$select (detail->>'from') || '->' || (detail->>'to')
+      from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e6'
+       and kind='status_changed'$$, 'draft->confirmed');
+
+-- THE VIEW-WIDE NULL GUARD. Every branch either reads a NOT NULL column or
+-- filters `occurred_at is not null`, and lib/crm/activity.ts's spec declares
+-- `notNull: true` on that sort. A null sort value does not error -- it drops a
+-- whole BAND of rows out of a keyset page silently (lib/list/spec.ts).
+--
+-- MUTATION: deleting `where e.occurred_at is not null` from either lineup
+-- branch makes this non-zero, and nothing else in this suite notices.
+select ev.val('EM10 NO row anywhere in the view has a null occurred_at',
+  $$select count(*)::text from public.activity_events where occurred_at is null$$,
+  '0');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- public.event_status_changes IS READ-ONLY TO EVERY SESSION.
+--
+-- Not "the policy refuses the row" -- there is no INSERT, UPDATE or DELETE
+-- GRANT at all, so the statement never reaches a policy. That is why the
+-- expectation is denied(42501) on all three and not ok(0): ok(0) would be the
+-- signature of a USING clause filtering the target out, which would mean a
+-- write path exists and merely found nothing.
+--
+-- THIS IS THE ASSERTION THAT GOES RED IF SOMEBODY "COMPLETES" THE TABLE with a
+-- write grant and a policy to match. schema_invariants.sql D5 would go red
+-- too, from the other direction.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.try('EM11 authenticated cannot INSERT a status row directly',
+  format($$insert into public.event_status_changes
+             (organisation_id, event_id, from_status, to_status)
+           values (%L,'ee110000-0000-0000-0000-0000000000e6','draft','cancelled')$$,
+         :'alpha_org'), 'denied(42501)');
+select ev.try('EM12 ...nor UPDATE one',
+  $$update public.event_status_changes set to_status='cancelled'
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, 'denied(42501)');
+select ev.try('EM13 ...nor DELETE one',
+  $$delete from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, 'denied(42501)');
+-- POSITIVE CONTROL for EM11-EM13: the same session CAN read them. Without it
+-- the three denials above are satisfied by a table nobody can touch at all,
+-- which would be a different bug and would look identical from here.
+select ev.val('EM14 POSITIVE CONTROL: ...but CAN read them',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '2');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- RECORD SCOPE ON THE STATUS TABLE. Its one SELECT policy reaches the parent
+-- event for both the permission and the record-scope terms, so a standard_user
+-- sees the history of their own events and none of anybody else's -- inherited
+-- from events_select_view_crm rather than restated, which is the property
+-- worth asserting because a policy that restated it could drift.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.try('EM15 pstd1 changes the status of their OWN event',
+  $$update public.events set status='on_sale'
+     where id='ee110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+select ev.val('EM16 ...and reads its status rows',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-000000000002'$$, '2');
+select ev.val('EM17 ...and ZERO rows of pmanager''s event -- record scope, via the parent',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee110000-0000-0000-0000-0000000000e6'$$, '0');
+select ev.val('EM18 ...and ZERO of BETA''s -- tenant',
+  $$select count(*)::text from public.event_status_changes
+     where event_id='ee11000b-0000-0000-0000-00000000000b'$$, '0');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EN. THE TIMELINE ITSELF IS RECORD-SCOPED, and that is INHERITED
+-- ===========================================================================
+-- public.activity_events is `security_invoker`, so every branch reads its base
+-- table under the caller's own policies and this view grants nothing. That
+-- inheritance IS the access control for this surface -- there is no policy on
+-- the view and there is nothing else to get right -- which is exactly why it
+-- is asserted here rather than assumed from the `with (security_invoker=true)`
+-- in the migration.
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select ev.val('EN1  pstd1 reads their OWN event''s timeline',
+  $$select (count(*) > 0)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-000000000002'$$, 'true');
+select ev.val('EN2  ...and it now carries a status_changed entry of their own',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-000000000002'
+       and kind='status_changed'$$, '1');
+select ev.val('EN3  ...and ZERO rows for pmanager''s event',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e6'$$, '0');
+select ev.val('EN4  ...and ZERO for BETA''s event',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee11000b-0000-0000-0000-00000000000b'$$, '0');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EN5  POSITIVE CONTROL: pmanager, full scope, reads the SAME subject_id EN3 refused',
+  $$select (count(*) > 0)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e6'$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EO. THE ARTIST SIDE OF THE LINEUP -- PRD 6.3's booking history
+-- ===========================================================================
+-- One event_lineup row is an entry on BOTH records, and Branch 3 is the half
+-- that makes an artist's page answer "where have they played". Its own event
+-- and artist, for section EM's reason.
+reset role; reset request.jwt.claims;
+
+insert into public.artists (id, organisation_id, owner_user_id, name)
+select '44440000-0000-0000-0000-0000000000e1', o.id, :'pmanager', 'Timeline Artist'
+from public.organisations o where o.slug='org-alpha';
+
+insert into public.events (id, organisation_id, owner_user_id, name, starts_at)
+select 'ee110000-0000-0000-0000-0000000000e8', o.id, :'pmanager',
+       'Artist Side Event', timestamptz '2026-12-02 20:00+00'
+from public.organisations o where o.slug='org-alpha';
+
+insert into public.event_lineup
+  (id, organisation_id, event_id, artist_id, position, billing)
+select 'ff110000-0000-0000-0000-0000000000e8', o.id,
+       'ee110000-0000-0000-0000-0000000000e8',
+       '44440000-0000-0000-0000-0000000000e1', 0, 'headliner'
+from public.organisations o where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EO1  the ARTIST''s timeline carries link_added naming the event',
+  $$select kind || '/' || (detail->>'other_type') || '/' || (detail->>'other_name')
+      from public.activity_events
+     where subject_type='artist'
+       and subject_id='44440000-0000-0000-0000-0000000000e1'
+       and detail->>'other_type'='event'$$,
+  'link_added/event/Artist Side Event');
+-- THE OTHER DIRECTION OF THE SAME SOURCE ROW, so the pair is asserted rather
+-- than one side inferred from the other. Different synthetic ids (the
+-- subject_type is in the digest), same event_lineup row.
+select ev.val('EO2  ...and the EVENT''s timeline carries the mirror, naming the artist',
+  $$select kind || '/' || (detail->>'other_type') || '/' || (detail->>'other_name')
+      from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e8'
+       and detail->>'other_type'='artist'$$,
+  'link_added/artist/Timeline Artist');
+select ev.val('EO3  ...and the two entries have DIFFERENT ids, so neither can shadow the other',
+  $$select (count(distinct id) = 2)::text from public.activity_events
+     where detail->>'other_type' in ('artist','event')
+       and subject_id in ('44440000-0000-0000-0000-0000000000e1',
+                          'ee110000-0000-0000-0000-0000000000e8')$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- THE CROSS-TENANT READ. The row is real and it is ALPHA's; BETA's owner must
+-- see nothing of it, from either side. There is no such row to plant in BETA,
+-- so the probe is the ALPHA subject_id read by a BETA session -- which is the
+-- shape an IDOR attempt actually takes (a uuid out of a URL).
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select ev.val('EO4  BETA''s owner reads ZERO rows for the ALPHA artist',
+  $$select count(*)::text from public.activity_events
+     where subject_type='artist'
+       and subject_id='44440000-0000-0000-0000-0000000000e1'$$, '0');
+select ev.val('EO5  ...and ZERO for the ALPHA event',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e8'$$, '0');
+-- POSITIVE CONTROL: the same session DOES see its own tenant's lineup entry,
+-- so EO4 and EO5 are not passing because the branch is broken for everybody.
+select ev.val('EO6  POSITIVE CONTROL: ...but DOES see BETA''s own artist-side entry',
+  $$select count(*)::text from public.activity_events
+     where subject_type='artist'
+       and subject_id='4444000b-0000-0000-0000-00000000000b'
+       and kind='link_added' and detail->>'other_type'='event'$$, '1');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EP. THE TIE-BREAK, ON A CONSTRUCTED TIE (the T7-T9 technique)
+-- ===========================================================================
+-- `occurred_at` is not unique ACROSS branches or WITHIN one: two rows written
+-- in a single transaction share `now()` to the microsecond, which is not a
+-- rare tie but the ordinary case for a create that also links. lib/list/'s
+-- cursor is `[value, id, sort]`, so the view's synthetic md5 id has to make
+-- the order TOTAL and STABLE -- not meaningful, which an md5 digest is not.
+--
+-- Two lineup rows, one transaction, same event.
+reset role; reset request.jwt.claims;
+
+begin;
+insert into public.artists (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, :'pmanager', v.nm
+from public.organisations o, (values
+  ('44440000-0000-0000-0000-0000000000e2','Tie Artist One'),
+  ('44440000-0000-0000-0000-0000000000e3','Tie Artist Two')
+) as v(id, nm) where o.slug='org-alpha';
+
+insert into public.event_lineup
+  (id, organisation_id, event_id, artist_id, position, billing)
+select v.id::uuid, o.id, 'ee110000-0000-0000-0000-0000000000e8', v.ar::uuid,
+       v.pos::int, 'support'
+from public.organisations o, (values
+  ('ff110000-0000-0000-0000-0000000000e2','44440000-0000-0000-0000-0000000000e2','1'),
+  ('ff110000-0000-0000-0000-0000000000e3','44440000-0000-0000-0000-0000000000e3','2')
+) as v(id, ar, pos) where o.slug='org-alpha';
+commit;
+
+select ev.val('EP1  the two slots really do share created_at -- the tie is constructed, not hoped for',
+  $$select (count(distinct created_at) = 1)::text from public.event_lineup
+     where id in ('ff110000-0000-0000-0000-0000000000e2',
+                  'ff110000-0000-0000-0000-0000000000e3')$$, 'true');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EP2  both tied entries are on the timeline -- neither is lost to the tie',
+  $$select count(*)::text from public.activity_events
+     where subject_type='event'
+       and subject_id='ee110000-0000-0000-0000-0000000000e8'
+       and kind='link_added'
+       and detail->>'other_name' like 'Tie Artist%'$$, '2');
+
+-- THE STABILITY, MEASURED THE WAY T7-T9 MEASURE IT: capture the order once,
+-- ask again, compare. A tie-break that were NOT total would be free to return
+-- the two rows either way round, and keyset pagination would then drop or
+-- repeat one across a page boundary.
+select ev.note('ep_tie_order', (
+  select string_agg(detail->>'other_name', ',' order by occurred_at desc, id desc)
+    from public.activity_events
+   where subject_type='event'
+     and subject_id='ee110000-0000-0000-0000-0000000000e8'
+     and kind='link_added'
+     and detail->>'other_name' like 'Tie Artist%'));
+
+select ev.val('EP3  ...and the SAME query returns them in the SAME order a second time',
+  $$select ((select string_agg(detail->>'other_name', ',' order by occurred_at desc, id desc)
+               from public.activity_events
+              where subject_type='event'
+                and subject_id='ee110000-0000-0000-0000-0000000000e8'
+                and kind='link_added'
+                and detail->>'other_name' like 'Tie Artist%')
+            = (select v from ev.notes where k='ep_tie_order'))::text$$, 'true');
+
+-- NON-VACUITY for EP3: the captured order must actually name both rows. Two
+-- NULLs compare equal, and so would two identical wrong answers.
+select ev.val('EP3b CONTROL: the captured order names both, not zero',
+  $$select (select (v like '%Tie Artist One%' and v like '%Tie Artist Two%')::text
+              from ev.notes where k='ep_tie_order')$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- EQ. THE VENUE SIDE, AND ITS ACCEPTED LIMITATION
+--     (founder Q34, 2026-08-30)
+-- ===========================================================================
+-- Branch 4 gives a venue's timeline the events booked into it. `events.venue_id`
+-- is a COLUMN, not a join row: it has no timestamp of its own and no
+-- `deleted_at`. So the entry is dated at the EVENT'S created_at and it MOVES
+-- when the venue changes -- off the old venue's timeline entirely, on to the
+-- new one's, still carrying the old date.
+--
+-- EQ5 IS THAT LIMITATION, ASSERTED. It is not a bug this suite failed to
+-- notice; it is the trade the founder took in exchange for a venue timeline
+-- that shows its events at all, and asserting it is what stops the next reader
+-- discovering it in a browser and "fixing" it into a branch that lies about
+-- when the booking happened.
+reset role; reset request.jwt.claims;
+
+insert into public.venues (id, organisation_id, owner_user_id, name)
+select v.id::uuid, o.id, :'pmanager', v.nm
+from public.organisations o, (values
+  ('55550000-0000-0000-0000-0000000000e1','Timeline Venue A'),
+  ('55550000-0000-0000-0000-0000000000e2','Timeline Venue B')
+) as v(id, nm) where o.slug='org-alpha';
+
+insert into public.events
+  (id, organisation_id, owner_user_id, name, starts_at, venue_id)
+select 'ee110000-0000-0000-0000-0000000000e9', o.id, :'pmanager',
+       'Venue Side Event', timestamptz '2026-12-03 20:00+00',
+       '55550000-0000-0000-0000-0000000000e1'
+from public.organisations o where o.slug='org-alpha';
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select ev.val('EQ1  venue A''s timeline carries link_added naming the event',
+  $$select kind || '/' || (detail->>'other_type') || '/' || (detail->>'other_name')
+      from public.activity_events
+     where subject_type='venue'
+       and subject_id='55550000-0000-0000-0000-0000000000e1'
+       and detail->>'other_type'='event'$$,
+  'link_added/event/Venue Side Event');
+
+-- THE DATE IS THE EVENT'S, not the venue's and not the moment of booking.
+-- This is the honest half of the limitation and it is asserted so the branch
+-- cannot quietly start using `updated_at`, which would make the entry move in
+-- TIME on every unrelated edit as well as moving between venues.
+select ev.val('EQ2  ...dated at events.created_at exactly',
+  $$select (a.occurred_at = e.created_at)::text
+      from public.activity_events a
+      join public.events e on e.id='ee110000-0000-0000-0000-0000000000e9'
+     where a.subject_type='venue'
+       and a.subject_id='55550000-0000-0000-0000-0000000000e1'
+       and a.detail->>'other_type'='event'$$, 'true');
+
+select ev.val('EQ3  ...and there is NO link_removed arm on the venue side',
+  $$select count(*)::text from public.activity_events
+     where subject_type='venue'
+       and subject_id='55550000-0000-0000-0000-0000000000e1'
+       and kind='link_removed'
+       and detail->>'other_type'='event'$$, '0');
+
+select ev.try('EQ4  the event moves to venue B',
+  $$update public.events set venue_id='55550000-0000-0000-0000-0000000000e2'
+     where id='ee110000-0000-0000-0000-0000000000e9'$$, 'ok(1)');
+
+-- THE ACCEPTED LIMITATION, BOTH HALVES.
+select ev.val('EQ5  LIMITATION: venue A''s timeline LOSES the entry entirely',
+  $$select count(*)::text from public.activity_events
+     where subject_type='venue'
+       and subject_id='55550000-0000-0000-0000-0000000000e1'
+       and detail->>'other_type'='event'$$, '0');
+select ev.val('EQ6  LIMITATION: venue B''s shows it, still dated at the event''s created_at',
+  $$select (a.occurred_at = e.created_at)::text
+      from public.activity_events a
+      join public.events e on e.id='ee110000-0000-0000-0000-0000000000e9'
+     where a.subject_type='venue'
+       and a.subject_id='55550000-0000-0000-0000-0000000000e2'
+       and a.detail->>'other_type'='event'$$, 'true');
+
+-- AN EVENT WITH NO VENUE EMITS NOTHING FROM THIS BRANCH. `venue_id is not
+-- null` is not an optimisation: without it every venue-less event would emit a
+-- row with a NULL subject_id, which no reader can filter to and which would
+-- sit in the view forever. `Artist Side Event` (section EO) has no venue.
+select ev.val('EQ7  an event with NO venue emits no venue-side entry at all',
+  $$select count(*)::text from public.activity_events
+     where subject_type='venue'
+       and detail->>'other_id'='ee110000-0000-0000-0000-0000000000e8'$$, '0');
+select ev.val('EQ8  ...and no row in the whole view has a NULL subject_id',
+  $$select count(*)::text from public.activity_events where subject_id is null$$,
+  '0');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- Results
+-- ===========================================================================
+\o
+\echo ''
+\echo '========== PHASE 3 (EVENTS) RLS SUITE =========='
+select seq, case when pass then 'PASS' else '**FAIL**' end as result,
+       label, expected, actual
+from ev.results order by seq;
+
+\echo ''
+select count(*) filter (where pass) as passed,
+       count(*) filter (where not pass) as failed,
+       count(*) as total
+from ev.results;

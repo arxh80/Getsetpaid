@@ -143,6 +143,20 @@ interface ListResponse {
  */
 export interface ListQuery extends PromiseLike<ListResponse> {
   eq(column: string, value: unknown): ListQuery;
+  /**
+   * Membership in a BOUNDED, CALLER-BUILT set of values.
+   *
+   * Added by Phase 3 Task 7 for `loadEventsForArtist`, whose relation is
+   * `event_lineup` rather than `events` -- see that function for why a
+   * two-step read is the shape and for the cap that keeps this list short.
+   *
+   * THE LIST MUST BE BOUNDED BY THE CALLER. `.in()` puts every value in the
+   * GET query string, so an unbounded set is a request that grows with the
+   * tenant and eventually exceeds what PostgREST will accept. Every caller in
+   * this repository caps at `MAX_PAGE_SIZE` (50 uuids, roughly 2KB) or states
+   * its own ceiling -- the same budget `loadVenueNames` records.
+   */
+  in(column: string, values: readonly unknown[]): ListQuery;
   is(column: string, value: null): ListQuery;
   ilike(column: string, pattern: string): ListQuery;
   filter(column: string, operator: string, value: unknown): ListQuery;
