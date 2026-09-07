@@ -13,6 +13,19 @@
  *  character matches most of a tenant and answers nothing. */
 export const PALETTE_MIN_QUERY_LENGTH = 2;
 
+/**
+ * The window CustomEvent the header trigger dispatches to open the palette.
+ *
+ * AN EVENT, NOT AN IMPORT, AND THE INDIRECTION IS LOAD-BEARING: the trigger
+ * lives in the app shell's header (app/(app)/layout.tsx), and the shell's
+ * module graph must reach no CRM query — tests/unit/list/
+ * app-shell-has-no-crm-query.test.ts guards the MFA-enrolment lockout that a
+ * CRM read in the shell would cause. The palette (whose search action DOES
+ * reach the CRM list specs) therefore mounts below the MFA gate in
+ * app/(app)/[orgSlug]/layout.tsx, and the trigger knows only this string.
+ */
+export const PALETTE_OPEN_EVENT = "getsetpaid:open-command-palette";
+
 export interface PaletteRecordHit {
   readonly id: string;
   readonly label: string;

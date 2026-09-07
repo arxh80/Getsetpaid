@@ -1,0 +1,108 @@
+import "server-only";
+
+import {
+  ADMIN_ITEMS,
+  CRM_AREAS,
+  NETWORK_ITEMS,
+  OPERATIONS_AREAS,
+  OVERVIEW_ITEM,
+} from "@/lib/nav/areas";
+import { hasPermission } from "@/lib/auth";
+import type { SidebarNavGroup } from "@/components/nav/types";
+
+// The rail's contents for one workspace — moved verbatim out of
+// app/(app)/layout.tsx (keyboard-a11y pass) so the command palette, which
+// mounts in app/(app)/[orgSlug]/layout.tsx BELOW the MFA gate (see
+// lib/palette/results.ts's PALETTE_OPEN_EVENT for why it cannot live in the
+// shell), can build the same permission-filtered section list without the
+// two layouts drifting. `hasPermission` is cache()-wrapped per request, so
+// both layouts calling this costs one set of permission RPCs, not two.
+//
+// CRM and Operations render for every role that can reach an org route (they
+// all hold `view_crm`; each list's own empty state explains record scope --
+// see lib/nav/areas.ts). Network is gated as a GROUP on `view_network`; the
+// two admin items are gated INDIVIDUALLY -- `manage_members` and
+// `manage_custom_fields` are different permissions, so a Manager who can
+// invite people but not define custom fields sees "Members" alone, not a
+// half-disabled group. A group only appears once it has at least one item.
+//
+// NOT INCLUDED: a "Finance" group. The sidebar task brief's spec names one,
+// but there is no route to point it at -- Phase 5 shipped finance as a panel
+// ON THE EVENT DETAIL PAGE (components/crm/finance-panel.tsx), not a
+// standalone list. CLAUDE.md's instruction for a sidebar item is explicit:
+// "do not invent sections that have no route." A link that only ever lands
+// on /events, mislabelled "Finance", would duplicate the Events item under a
+// false name -- so the group is omitted rather than faked, and the sidebar
+// build report names it as a deviation for a design-system owner to weigh in
+// on (a dedicated /[orgSlug]/finance rollup page is the real fix, and is not
+// this build's to invent).
+export async function buildSidebarGroups(
+  orgId: string,
+  orgSlug: string,
+): Promise<SidebarNavGroup[]> {
+  const [canViewNetwork, canManageMembers, canManageCustomFields] =
+    await Promise.all([
+      hasPermission(orgId, "view_network"),
+      hasPermission(orgId, "manage_members"),
+      hasPermission(orgId, "manage_custom_fields"),
+    ]);
+
+  return [
+    // The hub first (review finding 12): the rail's own way back to the
+    // workspace overview, and the item that lights up while you are on it --
+    // every other href is longer, so the longest-prefix active match only
+    // ever picks this one on /[orgSlug] itself.
+    {
+      id: "workspace",
+      heading: "Workspace",
+      items: [toNavItem(orgSlug, OVERVIEW_ITEM)],
+    },
+    {
+      id: "crm",
+      heading: "CRM",
+      items: CRM_AREAS.map((area) => toNavItem(orgSlug, area)),
+    },
+    {
+      id: "operations",
+      heading: "Operations",
+      items: OPERATIONS_AREAS.map((area) => toNavItem(orgSlug, area)),
+    },
+    ...(canViewNetwork
+      ? [
+          {
+            id: "network",
+            heading: "Network",
+            items: NETWORK_ITEMS.map((area) => toNavItem(orgSlug, area)),
+          },
+        ]
+      : []),
+    ...(canManageMembers || canManageCustomFields
+      ? [
+          {
+            id: "admin",
+            heading: "Admin",
+            items: [
+              ...(canManageMembers ? [toNavItem(orgSlug, ADMIN_ITEMS[0])] : []),
+              ...(canManageCustomFields
+                ? [toNavItem(orgSlug, ADMIN_ITEMS[1])]
+                : []),
+            ],
+          },
+        ]
+      : []),
+  ];
+}
+
+function toNavItem(
+  orgSlug: string,
+  area: { path: string; label: string; sub: string },
+) {
+  return {
+    path: area.path,
+    label: area.label,
+    sub: area.sub,
+    // OVERVIEW_ITEM's path is "" -- the hub itself -- and the template below
+    // would give it a trailing slash Next treats as a different URL.
+    href: area.path === "" ? `/${orgSlug}` : `/${orgSlug}/${area.path}`,
+  };
+}

@@ -4,17 +4,9 @@ import {
   getActiveMemberships,
   getCurrentOrg,
   getCurrentUser,
-  hasPermission,
 } from "@/lib/auth";
-import {
-  CRM_AREAS,
-  OPERATIONS_AREAS,
-  NETWORK_ITEMS,
-  ADMIN_ITEMS,
-  OVERVIEW_ITEM,
-} from "@/lib/nav/areas";
+import { buildSidebarGroups } from "@/lib/nav/sidebar-groups";
 import { Sidebar } from "@/components/nav/sidebar";
-import type { SidebarNavGroup } from "@/components/nav/types";
 import { currentPath } from "@/lib/auth/current-path";
 import { signOutAction } from "@/lib/auth/actions";
 import { evaluateMfaGate } from "@/lib/auth/mfa-gate";
@@ -28,7 +20,7 @@ import { WorkspaceSwitcher } from "@/components/org/workspace-switcher";
 import { SuspendedBanner } from "@/components/org/suspended-banner";
 import { Wordmark } from "@/components/wordmark";
 import { SkipLink } from "@/components/ui/skip-link";
-import { CommandPalette } from "@/components/palette/command-palette";
+import { PaletteTrigger } from "@/components/palette/palette-trigger";
 
 // Shell for every signed-in screen.
 //
@@ -143,17 +135,16 @@ export default async function AppLayout({
           </Link>
 
           <div className="ml-auto flex items-center gap-4">
-            {/* The command palette (keyboard-a11y pass): Ctrl/Cmd-K anywhere,
-                or this header trigger. Mounted only when the request resolved
-                to a workspace AND no MFA gate holds — the same condition as
-                the rail, because the palette's sections ARE the rail's
-                permission-filtered groups and its record search is
-                org-scoped. currentOrg is non-null whenever sidebarGroups is,
-                but TypeScript cannot see that through the ternary, so both
-                are checked. */}
-            {sidebarGroups && currentOrg ? (
-              <CommandPalette orgSlug={currentOrg.slug} groups={sidebarGroups} />
-            ) : null}
+            {/* The command palette's TRIGGER only (keyboard-a11y pass) — a
+                dumb event dispatcher, because THIS module graph must reach no
+                CRM query (the MFA-lockout guard,
+                tests/unit/list/app-shell-has-no-crm-query.test.ts). The
+                palette itself, whose search action reaches the CRM list
+                specs, mounts below the gate in app/(app)/[orgSlug]/layout.tsx
+                and listens for the trigger's event. Same render condition as
+                the rail, so trigger and palette exist together or not at
+                all. */}
+            {sidebarGroups ? <PaletteTrigger /> : null}
             {/* Task 8: only rendered on an org-scoped page (currentOrg !==
                 null). A single-org user never sees the switcher at all -- a
                 control with exactly one destination is not a control, it is
@@ -253,96 +244,4 @@ export default async function AppLayout({
       </div>
     </div>
   );
-}
-
-/**
- * The rail's contents for one workspace. CRM and Operations render for every
- * role that can reach an org route (they all hold `view_crm`; each list's own
- * empty state explains record scope -- see lib/nav/areas.ts). Network is
- * gated as a GROUP on `view_network`; the two admin items are gated
- * INDIVIDUALLY -- `manage_members` and `manage_custom_fields` are different
- * permissions, so a Manager who can invite people but not define custom
- * fields sees "Members" alone, not a half-disabled group. A group only
- * appears once it has at least one item.
- *
- * NOT INCLUDED: a "Finance" group. The task brief's spec names one, but there
- * is no route to point it at -- Phase 5 shipped finance as a panel ON THE
- * EVENT DETAIL PAGE (components/crm/finance-panel.tsx), not a standalone
- * list. CLAUDE.md's instruction for a sidebar item is explicit: "do not
- * invent sections that have no route." A link that only ever lands on
- * /events, mislabelled "Finance", would duplicate the Events item under a
- * false name -- so the group is omitted rather than faked, and the build
- * report names it as a deviation for a design-system owner to weigh in on
- * (a dedicated /[orgSlug]/finance rollup page is the real fix, and is not
- * this build's to invent).
- */
-async function buildSidebarGroups(
-  orgId: string,
-  orgSlug: string,
-): Promise<SidebarNavGroup[]> {
-  const [canViewNetwork, canManageMembers, canManageCustomFields] =
-    await Promise.all([
-      hasPermission(orgId, "view_network"),
-      hasPermission(orgId, "manage_members"),
-      hasPermission(orgId, "manage_custom_fields"),
-    ]);
-
-  return [
-    // The hub first (review finding 12): the rail's own way back to the
-    // workspace overview, and the item that lights up while you are on it --
-    // every other href is longer, so the longest-prefix active match only
-    // ever picks this one on /[orgSlug] itself.
-    {
-      id: "workspace",
-      heading: "Workspace",
-      items: [toNavItem(orgSlug, OVERVIEW_ITEM)],
-    },
-    {
-      id: "crm",
-      heading: "CRM",
-      items: CRM_AREAS.map((area) => toNavItem(orgSlug, area)),
-    },
-    {
-      id: "operations",
-      heading: "Operations",
-      items: OPERATIONS_AREAS.map((area) => toNavItem(orgSlug, area)),
-    },
-    ...(canViewNetwork
-      ? [
-          {
-            id: "network",
-            heading: "Network",
-            items: NETWORK_ITEMS.map((area) => toNavItem(orgSlug, area)),
-          },
-        ]
-      : []),
-    ...(canManageMembers || canManageCustomFields
-      ? [
-          {
-            id: "admin",
-            heading: "Admin",
-            items: [
-              ...(canManageMembers ? [toNavItem(orgSlug, ADMIN_ITEMS[0])] : []),
-              ...(canManageCustomFields
-                ? [toNavItem(orgSlug, ADMIN_ITEMS[1])]
-                : []),
-            ],
-          },
-        ]
-      : []),
-  ];
-}
-
-function toNavItem(
-  orgSlug: string,
-  area: { path: string; label: string; sub: string },
-) {
-  return {
-    path: area.path,
-    label: area.label,
-    sub: area.sub,
-    // OVERVIEW_ITEM's path is "" -- the hub itself -- and the template below
-    // would give it a trailing slash Next treats as a different URL.
-    href: area.path === "" ? `/${orgSlug}` : `/${orgSlug}/${area.path}`,
-  };
 }

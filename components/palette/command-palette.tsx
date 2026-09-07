@@ -5,7 +5,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   useTransition,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
@@ -14,12 +13,27 @@ import type { SidebarNavGroup } from "@/components/nav/types";
 import { searchPaletteAction } from "@/lib/palette/search";
 import {
   PALETTE_MIN_QUERY_LENGTH,
+  PALETTE_OPEN_EVENT,
   type PaletteRecordGroup,
 } from "@/lib/palette/results";
 
 // The command palette: Ctrl/Cmd-K, jump to any section, find a record, start
 // a new one. Founder scope is exactly that — no j/k list layer, no shortcut
 // cheat-sheet, no "power" tier.
+//
+// ===========================================================================
+// MOUNTED IN app/(app)/[orgSlug]/layout.tsx, BELOW THE MFA GATE — NOT IN THE
+// SHELL, AND THE SEPARATION IS A GUARDED PROPERTY
+// ===========================================================================
+// The search action's module graph reaches the CRM list specs, and the app
+// shell's graph must not (tests/unit/list/app-shell-has-no-crm-query.test.ts:
+// a CRM read in the shell locks un-enrolled Owners/Admins out of the MFA
+// enrolment screen). The header's visible trigger is therefore a separate,
+// import-free component (palette-trigger.tsx) that dispatches
+// PALETTE_OPEN_EVENT on window; this component listens for that event and for
+// the hotkey. Mounting below the org segment also means the palette exists
+// exactly where its sections and record search are meaningful — never on
+// /invites, /onboarding, or a gate screen.
 //
 // ===========================================================================
 // WIDGET SHAPE: A MODAL DIALOG WHOSE ONE CONTROL IS AN ARIA 1.2 COMBOBOX
@@ -90,16 +104,6 @@ const NEW_ACTION_LABELS: Readonly<Record<string, string>> = {
 const LISTBOX_ID = "command-palette-listbox";
 const INPUT_ID = "command-palette-input";
 
-function subscribeNever(): () => void {
-  return () => {};
-}
-function readIsApplePlatform(): boolean {
-  return /Mac|iPhone|iPad/.test(window.navigator.platform);
-}
-function serverIsApplePlatform(): boolean {
-  return false;
-}
-
 interface SearchState {
   readonly forQuery: string;
   readonly groups: readonly PaletteRecordGroup[];
@@ -121,16 +125,6 @@ export function CommandPalette({
   const [searching, startSearch] = useTransition();
   const seqRef = useRef(0);
   const openerRef = useRef<HTMLElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-
-  // Same SSR-safe capability read the sidebar's hover gate uses: the server
-  // cannot know the platform, so it consistently renders "Ctrl K" and the
-  // client corrects to "⌘K" in its first paint on Apple hardware.
-  const isApple = useSyncExternalStore(
-    subscribeNever,
-    readIsApplePlatform,
-    serverIsApplePlatform,
-  );
 
   const trimmed = query.trim();
   const recordSearchArmed = trimmed.length >= PALETTE_MIN_QUERY_LENGTH;
@@ -279,10 +273,13 @@ export function CommandPalette({
     document.getElementById("main")?.focus();
   };
 
-  // ---- Global hotkey ------------------------------------------------------
-  // Re-registered per open/close so the closure is never stale; a keydown
-  // listener swap is free. Plain Ctrl/Cmd+K only — Alt/Shift chords stay
-  // with the browser.
+  // ---- Global hotkey + the header trigger's event -------------------------
+  // Re-registered per open/close so the closure is never stale; a listener
+  // swap is free. Plain Ctrl/Cmd+K only — Alt/Shift chords stay with the
+  // browser. PALETTE_OPEN_EVENT arrives from palette-trigger.tsx in the
+  // shell's header (see this file's mounting note); at dispatch time the
+  // trigger button holds focus, so document.activeElement is the right
+  // element to restore focus to on close in both paths.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
@@ -299,8 +296,15 @@ export function CommandPalette({
         }
       }
     };
+    const onOpenEvent = () => {
+      if (!open) openPalette(document.activeElement as HTMLElement | null);
+    };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener(PALETTE_OPEN_EVENT, onOpenEvent);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener(PALETTE_OPEN_EVENT, onOpenEvent);
+    };
   }, [open]);
 
   const onInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -358,26 +362,6 @@ export function CommandPalette({
 
   return (
     <>
-      {/* The pointer-visible way in — also the touch and discoverability
-          affordance the bare hotkey lacks. */}
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-haspopup="dialog"
-        aria-keyshortcuts="Control+K Meta+K"
-        onClick={() => openPalette(triggerRef.current)}
-        className={
-          "hidden h-11 items-center gap-2 border border-rule bg-surface px-3 " +
-          "text-sm text-ink-muted transition-colors " +
-          "duration-[var(--dur-fast)] ease-brand hover:border-ink hover:text-ink sm:flex"
-        }
-      >
-        <span>Search</span>
-        <kbd className="border border-rule px-1.5 py-0.5 font-mono text-xs text-ink-muted">
-          {isApple ? "⌘K" : "Ctrl K"}
-        </kbd>
-      </button>
-
       {open ? (
         <div className="fixed inset-0 z-50">
           {/* Scrim: click closes, exactly like Escape. aria-hidden — it is
@@ -440,7 +424,10 @@ export function CommandPalette({
               id={LISTBOX_ID}
               role="listbox"
               aria-label="Results"
-              className="max-h-[min(60vh,28rem)] overflow-y-auto pb-2"
+              // overscroll-contain: reaching the end of the palette's own
+              // scroll must not start scrolling the page behind the scrim
+              // (web-interface-guidelines' modal scroll-chaining rule).
+              className="max-h-[min(60vh,28rem)] overflow-y-auto overscroll-contain pb-2"
             >
               {groupViews.map((group) => (
                 <div

@@ -1,5 +1,7 @@
 import { notFound } from "next/navigation";
 import { getCurrentOrg } from "@/lib/auth";
+import { buildSidebarGroups } from "@/lib/nav/sidebar-groups";
+import { CommandPalette } from "@/components/palette/command-palette";
 
 // The org segment's guard, and deliberately nothing else. The sidebar this
 // layout used to render moved UP to app/(app)/layout.tsx (review finding 1):
@@ -35,5 +37,23 @@ export default async function OrgLayout({
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  return children;
+  // THE COMMAND PALETTE MOUNTS HERE, NOT IN THE SHELL (keyboard-a11y pass).
+  // Its search action's module graph reaches the CRM list specs, and the
+  // shell's graph must not — tests/unit/list/app-shell-has-no-crm-query
+  // .test.ts guards the MFA-enrolment lockout a CRM read in the shell would
+  // cause. This layout renders only below a passed gate and a resolved org,
+  // which is also exactly where the palette's sections and record search
+  // mean anything. The header's visible trigger stays in the shell as a
+  // dumb event dispatcher (components/palette/palette-trigger.tsx); this
+  // component listens for its event and for Ctrl/Cmd-K. buildSidebarGroups
+  // runs on cache()-wrapped permission RPCs the shell already paid for, so
+  // the second call costs no extra round trips.
+  const groups = await buildSidebarGroups(org.id, org.slug);
+
+  return (
+    <>
+      <CommandPalette orgSlug={org.slug} groups={groups} />
+      {children}
+    </>
+  );
 }

@@ -27,7 +27,12 @@
 
 import { getCurrentOrg } from "@/lib/auth";
 import { formatDateTime } from "@/lib/format/date";
-import { MAX_SEARCH_LENGTH, toolbarParamNames, type ListParams } from "@/lib/list/params";
+import {
+  MAX_SEARCH_LENGTH,
+  parseListParams,
+  toolbarParamNames,
+  type ListParams,
+} from "@/lib/list/params";
 import { fetchListPage } from "@/lib/list/query";
 import type { ListSpec } from "@/lib/list/spec";
 import {
@@ -42,27 +47,26 @@ import {
   type PaletteSearchResult,
 } from "@/lib/palette/results";
 
-/** Default-everything ListParams for one palette read: the spec's default
- *  sort and direction, every filter at its filters-nothing first choice,
- *  page one, five rows. */
+/**
+ * ListParams for one palette read, THROUGH `parseListParams` rather than
+ * hand-rolled — tests/unit/list/one-cursor-only.test.ts's census requires
+ * every `fetchListPage` caller to pair with the shared parser, and the first
+ * cut of this function was exactly the hand-rolled params object that census
+ * exists to catch. Feeding the query and page size in as raw, spec-namespaced
+ * params means the palette's inputs go through the same trimming, capping and
+ * validation the list pages' query strings do, and everything else (default
+ * sort and direction, filters-nothing filter choices, NO CURSOR — the palette
+ * never pages) is the parser's own default.
+ */
 function paletteParams(
   spec: ListSpec<string, string>,
   q: string,
 ): ListParams<string, string> {
-  const filters: Record<string, string> = {};
-  for (const [key, definition] of Object.entries(spec.filters)) {
-    filters[key] = definition.choices[0].value;
-  }
-  return {
-    q,
-    sort: spec.defaultSort,
-    dir: spec.sort[spec.defaultSort].defaultDirection,
-    filters,
-    pageSize: PALETTE_RESULTS_PER_ENTITY,
-    cursor: null,
-    cursorDirection: null,
-    cursorDiscarded: false,
-  };
+  const names = toolbarParamNames(spec);
+  return parseListParams(spec, {
+    [names.q]: q,
+    [names.size]: String(PALETTE_RESULTS_PER_ENTITY),
+  });
 }
 
 function hitDetail(def: PaletteEntityDef, raw: Record<string, unknown>): string | null {
