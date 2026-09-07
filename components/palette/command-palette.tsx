@@ -52,11 +52,12 @@ import {
 // that just changed.
 //
 // ===========================================================================
-// WHERE THE DATA COMESFROM, AND WHAT NEVER REACHES THE CLIENT
+// WHERE THE DATA COMES FROM, AND WHAT NEVER REACHES THE CLIENT
 // ===========================================================================
 // Sections and actions are the CALLER's already-permission-filtered sidebar
-// groups (app/(app)/layout.tsx builds them per role) — a static handful of
-// links, filtered client-side because they are navigation, not records.
+// groups (lib/nav/sidebar-groups.ts builds them per role, the same builder
+// the rail uses) — a static handful of links, filtered client-side because
+// they are navigation, not records.
 // Records come from searchPaletteAction, which reuses each entity's OWN list
 // spec/select through fetchListPage — RLS-gated, tenant-clause, allowlisted
 // search column, five rows per entity. No record data is ever downloaded
