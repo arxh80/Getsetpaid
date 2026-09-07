@@ -3708,3 +3708,36 @@ worktree lasts; the exit document restates all nineteen in the same form.
   otherwise, rather than change the policy unilaterally. See CLAUDE.md's own
   "Network, as it actually shipped in Phase 6" section and this task's
   additive migration.
+
+## Keyboard-a11y pass (side pass, branch `keyboard-a11y`)
+
+- **Focus loss after a SUCCESSFUL server-revalidation swap — residual, scoped
+  out deliberately (KA-6).** This pass fixed the two big classes of keyboard
+  focus loss: the during-flight blur (`components/ui/button.tsx` — pending is
+  now `aria-disabled`, focus survives every submit) and the client-side
+  reveal/cancel unmounts (`components/ui/use-reveal-focus.ts` over
+  delete-restore, request-actions, link-picker). What remains is the class
+  where an action SUCCEEDS and the revalidated tree no longer contains the
+  focused button: link-panel's "Make primary" (unmounts on `isPrimary`),
+  representation-panel's Remove↔Restore/primary swaps, room-panel's
+  Close↔Reopen, profile-editor's "Hide now", custom-field-editor's
+  Remove→Restore section move, and every per-row Unlink/Detach/Delete whose
+  row disappears. Each needs its own "where does focus belong once this row
+  is gone" answer (usually: the next row's same control, else the list
+  heading) — a per-surface design pass, not a blanket `#main` jump, which is
+  why it is recorded instead of half-done. The mechanism to reuse when it is
+  done: a ref + effect watching the action's success state, the same shape
+  use-reveal-focus establishes.
+- **The palette's per-keystroke cost has a first lever if it ever matters
+  (KA-3):** `fetchListPage` always runs its count query; a `skipCount` option
+  (additive, defaulting to today's behaviour) would halve the palette's
+  round trips at the price of the "All N matching…" escape rows. Not built —
+  eight bounded counts on a debounced, two-char-minimum search is fine at
+  MVP scale, and the option is one more knob on a function whose knobs are
+  all load-bearing.
+- **`<details>` disclosures do not close on Escape** (room-panel rename,
+  custom-field edit, representation edit — native behaviour: no browser
+  closes a `<details>` on Escape). Tab-out always works, the `<summary>` is a
+  persistent, correctly-announced trigger, and replacing a native disclosure
+  with a scripted one to gain Escape would trade real robustness for a
+  courtesy. Revisit only if user feedback asks for it.
