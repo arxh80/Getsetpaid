@@ -837,6 +837,29 @@ export async function countSentConnectionRequests(
 }
 
 /**
+ * PHASE 7 TASK 1, FIX ROUND 1 (⚠️ 5). Count `audit_log.viewed` self-audit
+ * rows for one actor -- the audit-log spec's ground truth for "did viewing
+ * the page actually write the row it claims to, and did anything ELSE
+ * (a Next.js Link prefetch, a re-render) write a SECOND one it should not
+ * have". Same shape as `countSentConnectionRequests` immediately above:
+ * straight out of Postgres as `postgres`, bypassing RLS on purpose, so the
+ * count is not reading through the very audit_events policy a bug in it
+ * could be hiding behind. Scoped to ONE actor (the spec's own throwaway
+ * superuser, unique per run) rather than a bare action-string count, so a
+ * concurrently-running spec file's own superuser writing the identical
+ * action name cannot perturb the number.
+ */
+export async function countAuditLogViewedRows(
+  actorUserId: string,
+): Promise<number> {
+  const result = await db().query<{ count: string }>(
+    "select count(*)::text as count from public.audit_events where actor_user_id = $1 and action = 'audit_log.viewed'",
+    [actorUserId],
+  );
+  return Number(result.rows[0]?.count ?? "0");
+}
+
+/**
  * Build the world. Returns everything a test needs to address it by id.
  *
  * The suffix is per-run rather than fixed, so a crashed run leaves rows that

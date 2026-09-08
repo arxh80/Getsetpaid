@@ -262,6 +262,33 @@ export function auditLogFiltersForSelfAudit(
  * the write landed; it does NOT throw, so the caller decides what "the
  * self-audit failed" means for the page (see app/(app)/super/audit-log/
  * page.tsx: refused entirely, rather than shown unaudited).
+ *
+ * ===========================================================================
+ * FIX ROUND 1, ⚠️ 5: CAN A `<Link>` PREFETCH OF THIS PAGE CALL THIS FUNCTION
+ * WITHOUT ANYONE ACTUALLY VIEWING ANYTHING?
+ * ===========================================================================
+ * This function is called from `AuditLogResults`, which is the component
+ * INSIDE app/(app)/super/audit-log/page.tsx's <Suspense> boundary --
+ * components/admin/audit-log-table.tsx's pager "Next" link points back at
+ * this same page (a new cursor) with `prefetch={undefined}` (Next.js's
+ * default "auto" mode) when enabled. Next.js's documented "auto" behaviour
+ * for a DYNAMIC route (this one is: it reads `searchParams`, so it cannot be
+ * statically generated) prefetches only the shared layout down to the
+ * nearest `loading.js` boundary -- NOT the async Server Component behind a
+ * `<Suspense>`, which is exactly where this function lives. So a prefetch
+ * should reach the page shell and the skeleton, and stop there, without ever
+ * calling this function.
+ *
+ * MEASURED, not left as "should": tests/e2e/audit-log.spec.ts's "a Next.js
+ * Link prefetch of the pager's own href does not mint a spurious self-audit
+ * row" loads a real page with a real, enabled "Next" link (which Next.js
+ * prefetches automatically the instant it is in the viewport -- there is no
+ * separate hover step to trigger it), waits, and reads the row count
+ * straight out of Postgres (bypassing the app entirely, so the UI cannot be
+ * hiding a false negative): exactly one `audit_log.viewed` row exists after
+ * the visit, for the one real render. If a later Next.js version, or a
+ * future change to `prefetch={true}` anywhere in this route area, changes
+ * that, this is the test that goes red.
  */
 export async function recordAuditLogView(
   filters: AuditLogFilters,

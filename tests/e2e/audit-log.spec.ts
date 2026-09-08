@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
+  countAuditLogViewedRows,
   PASSWORD,
   setUpWorld,
   tearDownWorld,
@@ -228,4 +229,52 @@ test("Next pagination is a real keyset link, not disabled, when more than one pa
   await expect(page.locator("main table tbody tr").first()).not.toHaveText(
     firstRowText,
   );
+});
+
+// ===========================================================================
+// FIX ROUND 1, ⚠️ 5: DOES A Next.js Link PREFETCH MINT A SPURIOUS
+// audit_log.viewed ROW?
+// ===========================================================================
+// The review could not settle this from the diff: `recordAuditLogView` is
+// not cache()-wrapped, and the pager's "Next" <Link> uses the DEFAULT
+// (`prefetch={undefined}`, "auto") prefetch mode, which Next.js's own docs
+// describe as fetching only the shared layout down to the nearest
+// loading.js boundary for a DYNAMIC route -- i.e. NOT the async
+// AuditLogResults component behind app/(app)/super/audit-log/page.tsx's
+// <Suspense>, where recordAuditLogView actually runs. "Probably not" is not
+// the same as measured, and CLAUDE.md's own audit discipline ("never log
+// ... " and, more to the point here, an audit trail whose OWN instrumentation
+// pollutes itself) makes this worth settling rather than assuming.
+//
+// MEASURED DIRECTLY: `next.toBeVisible()` below is Next.js's actual
+// prefetch trigger for a Link in the viewport (App Router prefetches
+// visible links automatically -- there is no separate hover step to
+// perform), so simply loading the page and confirming the "Next" link
+// renders is already the real-world trigger a user's browser fires on
+// every visit to a page with more than one row. The count is read STRAIGHT
+// OUT OF POSTGRES (countAuditLogViewedRows, bypassing the app entirely), so
+// this is not trusting the UI to tell the truth about what it wrote.
+test("a Next.js Link prefetch of the pager's own href does not mint a spurious self-audit row", async ({
+  page,
+}) => {
+  await signInAsSuperuser(page);
+  const before = await countAuditLogViewedRows(world.superuser.id);
+
+  await page.goto("/super/audit-log?size=1");
+  await expect(page.getByRole("heading", { name: "Audit log", level: 1 })).toBeVisible();
+  // The "Next" link is real and enabled (two planted probes guarantee a
+  // second row), so it is in the viewport and eligible for Next's automatic
+  // prefetch the instant this resolves.
+  await expect(page.getByRole("link", { name: "Next" })).toBeVisible();
+
+  // No client-observable signal marks "a prefetch fetch has now settled" --
+  // it is fire-and-forget from the page's perspective by design. A bounded
+  // wait, then read the ground truth from the database.
+  await page.waitForTimeout(2000);
+
+  const after = await countAuditLogViewedRows(world.superuser.id);
+  expect(
+    after,
+    "exactly ONE self-audit row -- the page's own real render -- must exist; a second would mean the pager's prefetchable Next link minted an unaudited-in-intent, audited-in-fact row nobody actually viewed",
+  ).toBe(before + 1);
 });
