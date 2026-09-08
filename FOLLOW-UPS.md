@@ -2658,9 +2658,19 @@ before the first real consumer exists rather than alongside it.
   meantime. Same 30-day statutory clock as the entry above.
 - **Full CRM write auditing** — INSERT and UPDATE on all twelve tables, which
   fix round 1 deliberately did not build (only the two hard DELETEs and merges
-  are audited). Belongs with the audit log viewer, and needs a before/after diff
-  design plus a retention answer for the diffs. See `SECURITY.md` § 7, "CRM
-  writes: what is audited today, and what is not".
+  are audited). Needs a before/after diff design plus a retention answer for
+  the diffs. See `SECURITY.md` § 7, "CRM writes: what is audited today, and
+  what is not". **RESCHEDULED 2026-09-08 (Phase 7 Task 1, fix round 1,
+  Important 3).** This entry used to say "belongs with the audit log
+  viewer" — the viewer shipped in Task 1 (`/super/audit-log`, reading the
+  existing `audit_events` table) and this entry does not; "belongs with"
+  was never a build obligation on the viewer itself (the viewer's own brief
+  never asked for it), but leaving the sentence unchanged after the viewer
+  landed made it read as a promise nothing was keeping. **Now scheduled as
+  its own line-item, Phase 7 Task 6b, after Task 6 (in-app feedback) and
+  before Task 7 (permission tests)** — see `progress.md`'s task list and
+  DECISIONS-QUEUE.md Q94 for the deferral and its recommended default.
+  `SECURITY.md` § 7 is corrected to match.
 - **Restore-from-audit is not possible, by design.** The audit payload is an
   allowlist of identifiers — `private.audit_crm_payload()` drops
   `custom_field_values.value` and `merges.field_resolution` — because
