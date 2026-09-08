@@ -132,25 +132,70 @@ describe("the read-only envelope is the read_only role's own key set", () => {
     }
   });
 
-  it("that role holds only read keys today, so the envelope is genuinely read-only", async () => {
+  // =========================================================================
+  // THE ENVELOPE GUARD IS AN ALLOWLIST, NOT A DENYLIST -- FIX ROUND 1,
+  // IMPORTANT 3
+  // =========================================================================
+  // It shipped as a prefix DENYLIST: reject any key matching
+  // ^(manage_|merge_|delete_|create_). That guards the four names that
+  // happened to exist, and a denylist over a namespace nobody controls is a
+  // guard that fails open by construction -- `export_contacts`,
+  // `publish_profile`, `send_invite`, `link_records` would all ride into the
+  // product's most dangerous grant silently. It is not hypothetical: the fix
+  // THIS TASK ITSELF QUEUES for Q98 is a new key named
+  // `accept_support_access`, which the denylist would have waved straight
+  // through into the impersonation envelope.
+  //
+  // Flipped to the positive claim the feature actually rests on: the
+  // impersonation envelope is READS, so every key granted to the envelope
+  // role must be a `view_` key. A key named anything else is either a write
+  // (a real widening) or a naming convention change (which deserves a human
+  // reading this test, not a silent pass).
+  it("every key in the envelope is a `view_` key -- the guard is an allowlist, not a denylist", async () => {
+    const keys = (
+      await scalar(
+        `select coalesce(string_agg(permission_key, ',' order by permission_key), '<none>') as v
+           from public.role_permissions where role_key = $1`,
+        [IMPERSONATION_ROLE_ENVELOPE],
+      )
+    ).split(",");
+
+    for (const key of keys) {
+      expect(
+        /^view_/.test(key),
+        `'${key}' is granted to ${IMPERSONATION_ROLE_ENVELOPE}, so an impersonating superuser holds it -- and it is not a \`view_\` key. Either it permits something other than reading (a widening of the product's most dangerous grant, arriving in a migration whose diff need never mention impersonation), or the read-key naming convention has changed and this assertion needs a human. Current envelope: ${keys.join(", ")}`,
+      ).toBe(true);
+    }
+  });
+
+  it("...and the envelope is exactly the set expected today, so any change is a red test", async () => {
+    // THE SECOND HALF THE ALLOWLIST STILL DOES NOT COVER. `^view_` would
+    // admit a future `view_finance` or `view_audit_log` without comment --
+    // both are reads, so the shape assertion above passes, and both would be
+    // a real widening of what support can see (finance is the obvious one:
+    // Q96 scoped impersonation to what a Read Only member sees, and a Read
+    // Only member sees no money). Pinning the exact set makes ANY change to
+    // the envelope -- widening or narrowing, write key or read key -- a red
+    // test that a human has to re-read and re-record, which is the same
+    // discipline rls_phase2_crm.sql § M1d/§ M1g apply to the suspension
+    // catalogue.
     const keys = await scalar(
       `select coalesce(string_agg(permission_key, ',' order by permission_key), '<none>') as v
          from public.role_permissions where role_key = $1`,
       [IMPERSONATION_ROLE_ENVELOPE],
     );
-    // The ASSERTION is the shape, not the list: any key that permits a write
-    // is a widening of what an impersonating superuser can do, arriving in a
-    // migration whose diff need never mention impersonation. The list is
-    // printed in the failure message so the reader sees what changed.
-    for (const key of keys.split(",")) {
-      expect(
-        /^(manage_|merge_|delete_|create_)/.test(key),
-        `'${key}' is granted to ${IMPERSONATION_ROLE_ENVELOPE} and reads as a WRITE key -- the impersonation envelope would widen with it. Current key set: ${keys}`,
-      ).toBe(false);
-    }
-    expect(keys, "the envelope is not empty (otherwise it grants nothing)").not.toBe(
-      "<none>",
+    expect(
+      keys,
+      "the impersonation envelope changed. This is not a test to update casually: whatever was added or removed changes what a platform superuser can see inside a customer's workspace. Re-read DECISIONS-QUEUE Q96, confirm the change is intended, then re-record it here.",
+    ).toBe("view_crm,view_network");
+  });
+
+  it("the envelope is not empty (an empty set grants nothing and the feature is dead)", async () => {
+    const count = await scalar(
+      `select count(*)::text as v from public.role_permissions where role_key = $1`,
+      [IMPERSONATION_ROLE_ENVELOPE],
     );
+    expect(Number(count)).toBeGreaterThan(0);
   });
 });
 
