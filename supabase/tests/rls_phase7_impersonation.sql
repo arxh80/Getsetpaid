@@ -486,8 +486,27 @@ select imp.val('IX2 an ALPHA session reads 0 BETA contacts',
   format($$select count(*)::text from public.contacts where organisation_id=%L$$, :'beta_org'), '0');
 select imp.val('IX3 an ALPHA session reads 0 BETA events',
   format($$select count(*)::text from public.events where organisation_id=%L$$, :'beta_org'), '0');
-select imp.val('IX4 an ALPHA session cannot read BETA''s organisations row',
-  format($$select count(*)::text from public.organisations where id=%L$$, :'beta_org'), '0');
+-- IX4, RE-MEASURED FOR PHASE 7 TASK 3 (20260908030000). It expected 0 and now
+-- expects 1, and NOTHING ABOUT IMPERSONATION CHANGED: the superuser gained
+-- organisations_select_platform_lifecycle, a permissive SELECT policy that
+-- gives them every organisation's row -- id, name, slug, timestamps, lifecycle
+-- state -- because Postgres applies SELECT policies to an UPDATE's row
+-- matching, so without it every suspend and reinstate would match zero rows
+-- and report success (the trap 20260826154304 documents on
+-- organisation_subscriptions_select_platform_billing).
+--
+-- THE SCOPE CLAIM THIS SECTION MAKES IS UNAFFECTED, and IX1/IX2/IX3 above are
+-- where it lives: an ALPHA session grants no permission over BETA and reads
+-- none of BETA's records. What is now readable is the tenant's NAME, not the
+-- tenant's DATA -- which CLAUDE.md § Superuser dashboard permits in as many
+-- words ("only aggregate metadata"), and which the superuser could already
+-- half-see through the billing policy on organisation_subscriptions.
+select imp.val('IX4 MEASURED (Task 3): the superuser reads BETA''s organisations ROW -- metadata, not records',
+  format($$select count(*)::text from public.organisations where id=%L$$, :'beta_org'), '1');
+select imp.val('IX4b ...and it is the LIFECYCLE policy doing it, not anything about the session',
+  $$select count(*)::text from pg_policies
+     where schemaname='public' and tablename='organisations'
+       and policyname='organisations_select_platform_lifecycle'$$, '1');
 -- IG10c, PLACED HERE BECAUSE IT IS A SCOPE MEASUREMENT: the subscription row
 -- the entitlement layer reads is reachable for an organisation this session
 -- does NOT cover, which is what proves IG10b is the pre-existing platform
@@ -858,8 +877,13 @@ set role authenticated;
 set request.jwt.claims = :'super_c';
 select imp.val('IZ2 with the rows gone, `super` reads 0 ALPHA contacts again',
   format($$select count(*)::text from public.contacts where organisation_id=%L$$, :'alpha_org'), '0');
-select imp.val('IZ3 and can no longer read ALPHA''s organisations row',
-  format($$select count(*)::text from public.organisations where id=%L$$, :'alpha_org'), '0');
+-- IZ3, RE-MEASURED FOR PHASE 7 TASK 3 -- same reason as IX4 above. The row
+-- stays readable because the superuser holds a lifecycle SELECT policy over
+-- every organisation, with or without a session. IZ2 immediately above is the
+-- assertion that carries the meaning of this section: with the session rows
+-- gone, the superuser reads NONE of ALPHA's contacts.
+select imp.val('IZ3 MEASURED (Task 3): ALPHA''s organisations ROW stays readable -- the lifecycle policy, not a session',
+  format($$select count(*)::text from public.organisations where id=%L$$, :'alpha_org'), '1');
 reset role; reset request.jwt.claims;
 
 select imp.val('IZ4 the AUDIT trail survived the cleanup (append-only)',

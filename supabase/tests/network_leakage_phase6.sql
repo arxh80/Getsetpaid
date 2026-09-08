@@ -698,12 +698,24 @@ create view leak.network_surface_wide as
 
 select leak.val('LE1 N5: NOTHING on the network surface names a rating, in any form',
   $$select count(*)::text from leak.network_surface_wide where body ~* 'rating'$$, '0');
-select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 9 functions',
+-- 11/2/11/24 SINCE PHASE 7 TASK 3 (20260908031000), and the census catching
+-- the change is the census working. Two functions entered by net (b) -- named
+-- by a network policy expression -- when the wind-down clock was added to
+-- network_profiles_select_published_directory:
+--   private.organisation_network_presence_active  Q88/Q92/Q101, the clock
+--   private.is_active_member                      the disjunct that keeps a
+--                                                 suspended organisation's own
+--                                                 members reading their own
+--                                                 published profiles (Q6)
+-- Both are inspected for the word "rating" by LE1 above, which is the whole
+-- point of a structural census: a function that joins the network surface is
+-- audited the day it joins, not the day somebody remembers to add its name.
+select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 11 functions',
   $$select count(*) filter (where objname like 'policy:%')::text || '/' ||
            count(*) filter (where objname like 'view:%')::text || '/' ||
            count(*) filter (where objname like 'function:%')::text || '/' ||
            count(*)::text
-      from leak.network_surface_wide$$, '11/2/9/22');
+      from leak.network_surface_wide$$, '11/2/11/24');
 -- M6, NAMED. The two functions rls_phase6_network.sql § NF1b could not see.
 select leak.val('LE1c M6: the two functions the NAME filter missed are INSIDE this census',
   $$select string_agg(objname, ',' order by objname) from leak.network_surface_wide
@@ -714,8 +726,10 @@ select leak.val('LE1d ...and the functions in the census, by name, so a dropped 
   $$select string_agg(replace(objname,'function:',''), ',' order by objname)
       from leak.network_surface_wide where objname like 'function:%'$$,
   'private.audit_network_row,private.entity_is_manageable,private.entity_org_unchanged,'
-  'private.fill_connection_request_recipient,private.network_publish_organisations,'
+  'private.fill_connection_request_recipient,private.is_active_member,'
+  'private.network_publish_organisations,'
   'private.network_request_status_transition_guard,private.network_visibility_is_valid,'
+  'private.organisation_network_presence_active,'
   'private.permitted_organisations,private.set_updated_at');
 
 -- THE PLANTED POSITIVE CONTROL. Without it, "0 bodies mention rating" is a
@@ -1151,10 +1165,51 @@ delete from public.organisation_subscriptions where organisation_id = :'alpha_or
 -- own network profiles until the workspace is reinstated"). That is Task 1
 -- ledger items M2/M3. THIS SUITE DOES NOT CHANGE THE POLICY: a one-clause
 -- change to the directory predicate is a product decision, not a test's.
+--
+-- ===========================================================================
+-- THAT PRODUCT DECISION HAS SINCE BEEN MADE -- Q88, AND THIS SECTION IS NOW
+-- THE MEASUREMENT OF THE BOUNDARY RATHER THAN OF ITS ABSENCE
+-- ===========================================================================
+-- FOUNDER RULING Q88 (2026-09-07), shipped in Phase 7 Task 3
+-- (20260908031000): a suspended organisation keeps its network presence UNTIL
+-- THE END OF ITS CURRENT SUBSCRIPTION PERIOD, and no longer than the 60-day
+-- retention window (queued default Q92). So "a counterparty still sees it" is
+-- STILL TRUE and is still what LJ1/LJ1b/LJ2 measure -- but it is now true
+-- BECAUSE A CLOCK IS RUNNING rather than because nothing was checking, and a
+-- test that only measured the first half would pass identically against a
+-- policy with the clause deleted.
+--
+-- So this section drives BOTH SIDES of the boundary:
+--   LJ0    plant a subscription whose period end is in the FUTURE
+--   LJ1-2  inside the window: the counterparty still sees everything
+--   LJ2c-e past the window: the profile is GONE for a counterparty, at both
+--          visibility levels, with the org still suspended and nothing else
+--          changed -- the period end is the only thing that moved
+--   LJ2f   ...and the org's OWN member still reads it, which is Q6 and is the
+--          disjunct in the policy that keeps the two rulings compatible
+--
+-- ALPHA HAS NO SUBSCRIPTION ROW AT THIS POINT (§ LI planted one for the
+-- downgrade probe and deleted it again), so LJ0 plants one and § LJ7 removes
+-- it, leaving LZ2's housekeeping assertion true.
+--
+-- WHY A SUBSCRIPTION ROW IS NEEDED AT ALL: with no row,
+-- private.organisation_network_presence_active() compares against a NULL
+-- current_period_end and answers FALSE -- the fail-closed direction for a
+-- cross-tenant read. Correct, but it would make LJ1 pass for the wrong reason
+-- and never exercise the clock.
 -- ===========================================================================
 \o /dev/null
 update public.organisations set deleted_at = now() where id = :'alpha_org';
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'alpha_org', 'pro', 'monthly', 3, 'active', now() + interval '20 days');
 \o
+select leak.val('LJ0 FIXTURE: ALPHA is suspended, with a paid period still running',
+  format($$select (lifecycle_state = 'suspended'
+                   and (select s.current_period_end > now()
+                          from public.organisation_subscriptions s
+                         where s.organisation_id = o.id))::text
+             from public.organisations o where o.id=%L$$, :'alpha_org'), 'true');
 
 set role authenticated;
 set request.jwt.claims = :'pgmgr_c1';
@@ -1172,6 +1227,43 @@ select leak.val('LJ2 ...and a CONNECTED counterparty still resolves its `connect
   $$select contact_email from public.network_connected_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'bookings@alpha.test');
 reset role; reset request.jwt.claims;
+
+-- ---- THE OTHER SIDE OF THE BOUNDARY -------------------------------------
+-- ONE THING MOVES: current_period_end goes into the past. The organisation is
+-- still suspended, the profile is still published, the connection is still
+-- accepted, the counterparty is still a member. If LJ2c-LJ2e still returned
+-- rows, the clause added in 20260908031000 would be doing nothing.
+\o /dev/null
+update public.organisation_subscriptions set current_period_end = now() - interval '1 day'
+ where organisation_id = :'alpha_org';
+\o
+set role authenticated;
+set request.jwt.claims = :'pgmgr_c1';
+select leak.val('LJ2c Q88 BOUNDARY: past period end, the counterparty NO LONGER sees the profile',
+  $$select display_name from public.network_directory
+     where id='e0110000-0000-0000-0000-00000000000a'$$, '<null>');
+select leak.val('LJ2d ...not through the base table either -- the row policy is what closed',
+  $$select count(*)::text from public.network_profiles
+     where id='e0110000-0000-0000-0000-00000000000a'$$, '0');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pbmgr_c1';
+select leak.val('LJ2e ...and a CONNECTED counterparty loses it too (an accepted connection is not a bypass)',
+  $$select contact_email from public.network_connected_profiles
+     where id='e0110000-0000-0000-0000-00000000000a'$$, '<null>');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select leak.val('LJ2f Q6 SURVIVES Q88: ALPHA''s OWN member still reads its own published profile',
+  $$select display_name from public.network_profiles
+     where id='e0110000-0000-0000-0000-00000000000a'$$, 'Alpha Promotions');
+reset role; reset request.jwt.claims;
+-- Back inside the window for LJ3-LJ6, which are about the OWN-MEMBER half and
+-- were written against a running period.
+\o /dev/null
+update public.organisation_subscriptions set current_period_end = now() + interval '20 days'
+ where organisation_id = :'alpha_org';
+\o
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -1201,6 +1293,7 @@ reset role; reset request.jwt.claims;
 
 \o /dev/null
 update public.organisations set deleted_at = null where id = :'alpha_org';
+delete from public.organisation_subscriptions where organisation_id = :'alpha_org';
 \o
 select leak.val('LJ7 HOUSEKEEPING: ALPHA is reinstated, so nothing downstream meets a suspended org',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
