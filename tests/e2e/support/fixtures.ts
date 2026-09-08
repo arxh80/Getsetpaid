@@ -443,11 +443,11 @@ export interface E2eWorld {
   // =========================================================================
   // TWO MORE TENANTS, AND THE TIER IS THE WHOLE REASON THEY EXIST.
   //
-  // The main organisation deliberately has NO `organisation_subscriptions` row
-  // (see the insert in `setUpWorld`), so `private.finance_module_organisations()`'s
-  // "not yet billed => not yet gated" escape applies to it and a finance write
-  // there would prove nothing about the Pro gate. These two carry REAL
-  // subscription rows:
+  // The main organisation carries a real STARTER row (see the insert in
+  // `setUpWorld`, added by Phase 7 Task A) -- Starter's finance_module is
+  // false, same as the "no subscription row" escape used to read before Task
+  // A removed it, so a finance write there still proves nothing about the Pro
+  // gate. These two carry their OWN, DIFFERENT subscription rows:
   //
   //   proOrg      plan_id 'pro',     status 'active'  -> finance_module TRUE
   //   starterOrg  plan_id 'starter', status 'active'  -> finance_module FALSE
@@ -818,11 +818,27 @@ export async function setUpWorld(): Promise<E2eWorld> {
     [orgId, `E2E ${suffix}`, orgSlug, otherOrgId, `E2E Other ${suffix}`, otherOrgSlug],
   );
 
-  // NO organisation_subscriptions ROW ON PURPOSE.
-  // `private.crm_write_organisations()` treats "no subscription" as "not yet
-  // billed, not yet gated" (20260828140000). A Starter row would work too; no
-  // row is the state a freshly created workspace is actually in today, so it is
-  // the state the golden path should be walked in.
+  // A REAL Starter subscription row for both, WHERE THIS USED TO SAY "NO ROW
+  // ON PURPOSE". PHASE 7 TASK A (20260908000000) removed private.crm_write_
+  // organisations()'s "no subscription row = not yet billed, not yet gated"
+  // escape: public.create_organisation() now writes a Starter row for every
+  // new organisation at birth, and every real workspace has one from the
+  // moment it exists. These two organisations are planted by a direct SQL
+  // insert rather than through create_organisation() (see this file's header
+  // for why), so they need the same row created explicitly, or the golden
+  // path's own CRM writes -- create contact, create event, add artist, add
+  // venue, add task -- would now be refused before a single browser action
+  // ran. Starter, not Pro: nothing walked against these two organisations
+  // needs the finance module (that lives in proOrg/starterOrg below) or an
+  // unlimited custom-field count.
+  await sql(
+    `insert into public.organisation_subscriptions
+       (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+     values ($1,'starter','monthly',3,'active', now() + interval '30 days'),
+            ($2,'starter','monthly',3,'active', now() + interval '30 days')`,
+    [orgId, otherOrgId],
+  );
+
   await sql(
     `insert into public.organisation_memberships
        (organisation_id, user_id, role, status, joined_at)
@@ -1185,10 +1201,12 @@ export async function setUpWorld(): Promise<E2eWorld> {
   // =========================================================================
   // TWO ORGANISATIONS THAT EXIST FOR THEIR SUBSCRIPTION ROWS.
   //
-  // The main organisation above has none on purpose, so
-  // `private.finance_module_organisations()` exempts it ("not yet billed => not
-  // yet gated") and a finance write there would be permitted by the ESCAPE
-  // rather than by the tier. These two carry real rows -- 'pro' and 'starter',
+  // The main organisation above now carries a real STARTER row (Phase 7 Task
+  // A), whose finance_module is false -- so a finance write there is still
+  // refused by the TIER, the same outcome the "not yet billed => not yet
+  // gated" escape used to produce before Task A removed it, and still not
+  // what this section is testing. These two carry real rows -- 'pro' and
+  // 'starter',
   // both `active` with a period end in the future, so neither is inside the
   // past_due grace branch -- which makes the Pro gate's OPEN and CLOSED states
   // both reachable from a browser for the first time.
