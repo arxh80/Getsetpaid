@@ -507,6 +507,52 @@ export interface E2eWorld {
    */
   financeTotpSecret: string;
 
+  // =========================================================================
+  // PHASE 7 TASK 1: THE PLATFORM SUPERUSER
+  // =========================================================================
+  // Not one of the fixed `E2eRole` personas `signIn()` addresses by role --
+  // same reasoning as `otherOwner`/`otherMember`/`freeMember`: superuser
+  // status is `public.platform_admins` membership, not an organisation
+  // role, so it does not belong in the `users` record every organisation-
+  // scoped breakout assertion in this suite reasons about. Signed in by hand
+  // in the spec (tests/e2e/audit-log.spec.ts), the same "manual form walk"
+  // idiom tenant-breakout.spec.ts's signInAsOtherMember uses -- except this
+  // one ALSO walks the TOTP challenge, because the platform superuser is
+  // MFA-required (CLAUDE.md § Session security) and
+  // has_platform_permission('view_audit_log') is aal2-gated
+  // (20260827210000_mfa_aal_permission_gate.sql): a password-only session
+  // would find the audit log page render (isSuperuser() is NOT aal-gated,
+  // deliberately -- see lib/admin/superuser.ts) but every real query behind
+  // it would come back empty, which is exactly the wrong thing for a test
+  // that means to prove the CROSS-TENANT READ works.
+  superuser: E2eUser;
+  /** Same shape and same non-secrecy as `financeTotpSecret` above --
+   *  `enrolTotp` gives this account a real, verified TOTP factor so a
+   *  browser sign-in walks the genuine per-sign-in challenge rather than
+   *  stubbing it. */
+  superuserTotpSecret: string;
+  /**
+   * TWO PLANTED `audit_events` ROWS, ONE PER TENANT, WITH DISTINCT ACTION
+   * STRINGS -- the audit log e2e spec's deterministic fixture data.
+   *
+   * WHY PLANTED RATHER THAN RELIED ON NATURALLY. `orgId`/`otherOrgId` are
+   * inserted directly by SQL below (not through `create_organisation()`),
+   * so they write no `organisation.created` row, and nothing else this file
+   * does is guaranteed to leave a KNOWN, FILTERABLE action string in a KNOWN
+   * organisation by the time the audit-log spec runs -- assertions built on
+   * "whatever happens to be in the table" would be non-deterministic and
+   * would break the moment an earlier step in this file changed shape.
+   * These two rows are `postgres`-inserted directly (the same route
+   * `sql()` uses for every other planted fixture row; audit_events has no
+   * INSERT grant for any client role at all, by design), each in a
+   * DIFFERENT organisation so the spec can prove the superuser's read
+   * spans both, and each with a distinct `action` so a filter by exact
+   * action string is provably narrowing rather than vacuously matching
+   * everything.
+   */
+  auditProbeAlphaId: string;
+  auditProbeBetaId: string;
+
   users: Record<E2eRole, E2eUser>;
   /** The OTHER tenant's owner. Nothing signs in as them; they exist so the
    *  second organisation has a member, which is what makes its rows real
@@ -1270,6 +1316,50 @@ export async function setUpWorld(): Promise<E2eWorld> {
   // gate `signIn` walks.
   const financeTotpSecret = await enrolTotp(users.finance.email);
 
+  // =========================================================================
+  // PHASE 7 TASK 1: THE PLATFORM SUPERUSER
+  // =========================================================================
+  // A throwaway auth user, granted `platform_admins` DIRECTLY BY SQL --
+  // exactly the shape `supabase/migrations/20260827210500_seed_platform_
+  // superuser.sql`'s own header says granting one requires ("no client path
+  // exists at all... done the same way [as a DBA action]"), and the same
+  // route `tests/integration/rls/support/fixtures.ts`'s `superuser` persona
+  // uses. Enrolled with a real, verified TOTP factor for the same reason
+  // `financeTotpSecret` is: the platform superuser is MFA-required
+  // (CLAUDE.md § Session security), and a stubbed challenge would prove
+  // nothing about the aal2 gate `has_platform_permission()` actually
+  // enforces on every cross-tenant read this account makes.
+  const superuser = await createUser(`e2e-superuser-${suffix}@test.local`);
+  await sql(`insert into public.platform_admins (user_id) values ($1)`, [
+    superuser.id,
+  ]);
+  const superuserTotpSecret = await enrolTotp(superuser.email);
+
+  // TWO DETERMINISTIC audit_events ROWS, ONE PER TENANT -- see the
+  // `auditProbeAlphaId`/`auditProbeBetaId` fields' own header on E2eWorld
+  // for why these are planted rather than relied on to occur naturally.
+  // `postgres`-inserted directly, the same route every other planted
+  // fixture row in this file uses; audit_events has no INSERT grant for any
+  // client role (private.log_audit_event is the sole write path and is
+  // granted to nobody).
+  const auditProbeAlphaId = randomUUID();
+  const auditProbeBetaId = randomUUID();
+  await sql(
+    `insert into public.audit_events
+       (id, organisation_id, actor_user_id, action, target_type, target_id, correlation_id, created_at)
+     values
+       ($1, $2, $3, 'e2e.audit_probe_alpha', 'probe', gen_random_uuid(), gen_random_uuid(), now()),
+       ($4, $5, $6, 'e2e.audit_probe_beta',  'probe', gen_random_uuid(), gen_random_uuid(), now())`,
+    [
+      auditProbeAlphaId,
+      orgId,
+      users.manager.id,
+      auditProbeBetaId,
+      otherOrgId,
+      otherOwner.id,
+    ],
+  );
+
   const proEventId = randomUUID();
   const proLedgerEventId = randomUUID();
   const starterEventId = randomUUID();
@@ -1563,6 +1653,10 @@ export async function setUpWorld(): Promise<E2eWorld> {
     starterEntryId,
     otherOrgFinanceEntryId,
     financeTotpSecret,
+    superuser,
+    superuserTotpSecret,
+    auditProbeAlphaId,
+    auditProbeBetaId,
     users,
     otherOwner,
     otherMember,
@@ -1606,6 +1700,38 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
   await sql(`delete from public.organisations where id = any($1::uuid[])`, [
     [world.orgId, world.otherOrgId, world.proOrgId, world.starterOrgId, world.freeOrgId],
   ]);
+
+  // =========================================================================
+  // PHASE 7 TASK 1: audit_events ROWS MUST GO BEFORE THE USERS THEY NAME
+  // =========================================================================
+  // `audit_events.actor_user_id` deliberately carries NO `ON DELETE
+  // CASCADE`/`SET NULL` (20260826151656_foundation_schema.sql's own
+  // comment: "audit records must survive an actor account being removed...
+  // a hard delete of auth.users is blocked while audit history references
+  // it"). Organisation deletion above only SETS NULL on `organisation_id`
+  // -- the actor reference survives it -- so by this point every row this
+  // run's users ever wrote into audit_events (the two planted probes,
+  // AND anything a real action incidentally audited: a document
+  // upload/download/delete, a network profile publish, a merge) still
+  // names a `users`/`otherOwner`/`otherMember`/`freeMember`/`superuser` id
+  // this function is about to hard-delete via the Admin API. Left in
+  // place, that DELETE would fail at the database with a foreign-key
+  // violation -- silently, because the loop below never checks the Admin
+  // API's response -- and the auth user would leak forever. `postgres`
+  // (this file's `sql()`) can delete rows from a table with zero client
+  // GRANTs the same way it can insert into one; this is the teardown half
+  // of the same bypass `setUpWorld` uses to plant them.
+  const thisRunsUserIds = [
+    ...Object.values(world.users).map((u) => u.id),
+    world.otherOwner.id,
+    world.freeMember.id,
+    world.otherMember.id,
+    world.superuser.id,
+  ];
+  await sql(`delete from public.audit_events where actor_user_id = any($1::uuid[])`, [
+    thisRunsUserIds,
+  ]);
+
   // THE OTHER TENANT'S OWNER IS DELETED BY ID, LIKE EVERY OTHER USER
   // (Task 8; the deferred minor this closes).
   //
@@ -1621,8 +1747,9 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
   //
   // THE COUNTS IN THIS PARAGRAPH ARE RE-COUNTED, NOT COPIED. It used to say
   // "this suite creates four per run and the psql suite creates twelve", and
-  // both numbers had gone stale: `setUpWorld` creates EIGHT (five `E2eRole`
-  // personas, `otherOwner`, `freeMember`, `otherMember`) and
+  // both numbers had gone stale: `setUpWorld` creates NINE (five `E2eRole`
+  // personas, `otherOwner`, `freeMember`, `otherMember`, and -- Phase 7 Task
+  // 1 -- the platform `superuser`) and
   // `supabase/tests/run-rls-tests.sh` creates NINETEEN (five in its opening
   // loop, twelve for the Phase 2 suite, and two counterparties for the Phase 6
   // network-leakage suite). The thousand-row argument is unchanged and is why
@@ -1632,6 +1759,7 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
     world.otherOwner,
     world.freeMember,
     world.otherMember,
+    world.superuser,
   ]) {
     await api(`/auth/v1/admin/users/${user.id}`, {
       key: serviceRoleKey,

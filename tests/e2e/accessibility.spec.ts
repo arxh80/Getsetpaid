@@ -2,11 +2,13 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
   FINANCE_LINES,
+  PASSWORD,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
 } from "./support/fixtures";
 import { signIn, signOut } from "./support/sign-in";
+import { totpCode } from "../support/totp";
 
 // THE AUTOMATED ACCESSIBILITY PASS THE PLAN ASKED FOR.
 //
@@ -551,6 +553,47 @@ test("the connection requests page (received and sent) has no automated accessib
   // NON-VACUITY: the Sent list's one accepted row is really on the page.
   await expect(page.getByText(world.networkBetaAnchorProfileName)).toBeVisible();
   await scan(page, "connection requests page");
+});
+
+// ===========================================================================
+// PHASE 7 TASK 1'S SURFACE: THE SUPERUSER AUDIT LOG, POPULATED
+// ===========================================================================
+// Its own dedicated test, same shape as the finance panel's above: NOT one
+// of the fixed `E2eRole` personas `signIn()` addresses (platform-superuser
+// status is `platform_admins` membership, not an organisation role -- see
+// tests/e2e/support/fixtures.ts's own header on `world.superuser`), and MFA-
+// required, so this test also pays for a real TOTP challenge. It scans the
+// route area's own minimal header (app/(app)/super/layout.tsx -- no org
+// rail, a different landmark structure from every other page this file
+// scans), the five-field filter form, and a POPULATED results table: an
+// empty table would miss the `<details>` before/after disclosures, the
+// monospace id cells and the pager, which is exactly the markup a duplicate
+// `id` or an orphaned `aria-describedby` would land in.
+async function signInAsSuperuser(page: Page): Promise<void> {
+  await page.goto("/login");
+  await page.locator('input[name="email"]').fill(world.superuser.email);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).not.toHaveURL(/\/login/);
+
+  const heading = page.getByRole("heading", { name: "Enter your two-factor code" });
+  await expect(heading).toBeVisible();
+  await page.locator('input[name="code"]').fill(totpCode(world.superuserTotpSecret));
+  await page.getByRole("button", { name: "Verify and continue" }).click();
+  await expect(heading).toHaveCount(0);
+}
+
+test("the superuser audit log, populated, has no automated accessibility violations", async ({
+  page,
+}) => {
+  await signInAsSuperuser(page);
+  await page.goto(
+    `/super/audit-log?action=${encodeURIComponent("e2e.audit_probe_alpha")}`,
+  );
+  await expect(page.getByRole("heading", { name: "Audit log", level: 1 })).toBeVisible();
+  // NON-VACUITY: the filtered probe row is really on the page being scanned.
+  await expect(page.locator("main")).toContainText("e2e.audit_probe_alpha");
+  await scan(page, "superuser audit log");
 });
 
 test("the in-app 404 -- where every refusal lands -- is clean, exclusions and all", async ({
