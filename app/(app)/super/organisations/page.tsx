@@ -11,8 +11,8 @@ import { formatDateTime } from "@/lib/format/date";
 import { StepUpGate } from "@/components/auth/step-up-gate";
 import {
   CloseOrganisationForm,
-  ReinstateOrganisationForm,
   SuspendOrganisationForm,
+  WoundDownOrganisationsList,
 } from "@/components/admin/organisation-lifecycle-forms";
 
 // PHASE 7 TASK 3: organisation lifecycle -- the operator's surface for
@@ -96,85 +96,31 @@ export default async function OrganisationLifecyclePage() {
           that locks behind you.
         </p>
 
-        {woundDown.length === 0 ? (
-          <p className="max-w-prose text-base text-ink-muted">
-            Every workspace on the platform is active.
-          </p>
-        ) : (
-          <>
-            <ul className="flex flex-col border-t border-rule">
-              {woundDown.map((org) => {
-                const remaining = daysUntil(org.retentionExpiresAt, now);
-                return (
-                  <li
-                    key={org.id}
-                    className="flex flex-col gap-3 border-b border-rule py-4"
-                  >
-                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                      <span className="text-base font-semibold text-ink">
-                        {org.name}
-                      </span>
-                      <span className="text-sm text-ink-muted">/{org.slug}</span>
-                      <span className="text-sm font-semibold text-warning">
-                        {lifecycleLabel(org.lifecycleState)}
-                      </span>
-                      {org.lifecycleChangedAt ? (
-                        <span className="text-sm text-ink-muted tabular-nums">
-                          since {formatDateTime(org.lifecycleChangedAt)}
-                        </span>
-                      ) : null}
-                    </div>
-
-                    {org.lifecycleReason ? (
-                      <p className="max-w-prose text-base text-ink">
-                        {org.lifecycleReason}
-                      </p>
-                    ) : null}
-
-                    {org.retentionExpiresAt ? (
-                      <p className="text-sm text-ink-muted">
-                        Retained until{" "}
-                        <span className="tabular-nums">
-                          {formatDateTime(org.retentionExpiresAt)}
-                        </span>
-                        {remaining !== null ? (
-                          <>
-                            {" "}
-                            (<span className="tabular-nums">{remaining}</span>{" "}
-                            {remaining === 1 ? "day" : "days"})
-                          </>
-                        ) : null}
-                        .
-                      </p>
-                    ) : null}
-
-                    {/* NOT WRAPPED IN <StepUpGate>. Wrapping it would replace
-                        this whole list with a re-auth prompt, which is the
-                        wrong trade for a surface whose other job is telling
-                        the operator what is currently wound down -- the same
-                        reasoning /super/impersonation gives for its start
-                        control. reinstateOrganisationAction re-checks
-                        server-side and refuses with a sentence pointing back
-                        at the prompt the section above renders. */}
-                    <div>
-                      <ReinstateOrganisationForm slug={org.slug} name={org.name} />
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-            {woundDown.length === LIFECYCLE_LIST_LIMIT ? (
-              <p className="max-w-prose text-sm text-ink-muted">
-                Showing the{" "}
-                <span className="tabular-nums">{LIFECYCLE_LIST_LIMIT}</span> most
-                recent. The complete history of every transition is in the audit
-                log, filtered to <code>organisation.suspended</code>,{" "}
-                <code>organisation.deleted</code> and{" "}
-                <code>organisation.reinstated</code>.
-              </p>
-            ) : null}
-          </>
-        )}
+        {/* THE LIST IS A CLIENT COMPONENT, AND THE DATES ARE FORMATTED HERE.
+            Two reasons, both about correctness rather than taste. The reinstate
+            action state has to live ABOVE the rows or its confirmation unmounts
+            with the row it just removed (the component's own header has the
+            browser finding). And formatDateTime() is a server helper with an
+            explicit timezone contract (DESIGN.md: UTC in the database, UK local
+            in the UI) -- passing preformatted strings keeps one implementation
+            of that rather than a second one in the bundle. */}
+        <WoundDownOrganisationsList
+          limit={LIFECYCLE_LIST_LIMIT}
+          rows={woundDown.map((org) => ({
+            id: org.id,
+            name: org.name,
+            slug: org.slug,
+            stateLabel: lifecycleLabel(org.lifecycleState),
+            changedAt: org.lifecycleChangedAt
+              ? formatDateTime(org.lifecycleChangedAt)
+              : null,
+            reason: org.lifecycleReason,
+            retentionExpiresAt: org.retentionExpiresAt
+              ? formatDateTime(org.retentionExpiresAt)
+              : null,
+            retentionDays: daysUntil(org.retentionExpiresAt, now),
+          }))}
+        />
       </section>
     </div>
   );

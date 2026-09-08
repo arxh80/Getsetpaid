@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useState, type KeyboardEvent } from "react";
+import { useActionState, useState } from "react";
 import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
 import { useRevealFocus } from "@/components/ui/use-reveal-focus";
 import {
@@ -132,109 +132,202 @@ export function CloseOrganisationForm() {
 }
 
 /**
- * The per-row reinstate control: a button that reveals a reason field.
+ * The wound-down list, and the ONE reinstate action behind all of its rows.
  *
- * `subject` is written into both the sr-only trigger suffix and the question,
- * so a list of N rows does not announce N identical "Reopen" buttons -- the
- * same reason components/admin/impersonation-actions.tsx carries it.
+ * ===========================================================================
+ * WHY THE LIST IS A CLIENT COMPONENT AND THE ACTION STATE LIVES AT ITS TOP
+ * ===========================================================================
+ * FOUND IN THE BROWSER, NOT IN REVIEW, AND IT IS THE WHOLE REASON THIS FILE
+ * IS SHAPED LIKE THIS. The first cut put a `useActionState` inside each row.
+ * Reopening then worked perfectly and reported nothing: the action calls
+ * revalidatePath, the server re-renders the list WITHOUT the workspace that is
+ * no longer wound down, the row unmounts -- and the success Alert, which lived
+ * inside it, unmounts with it. The operator clicked "Yes, reopen", the row
+ * vanished, and the product said nothing at all. Silent success on a
+ * privileged, audited action, and worse than silent for anyone relying on a
+ * screen reader, who gets no announcement that anything happened.
+ *
+ * So the action state is hoisted ABOVE the rows, into a component that stays
+ * mounted across the re-render because its position does not change. The rows
+ * come and go underneath it; the confirmation stays.
+ *
+ * The empty state lives here too, for the same reason: reopening the LAST
+ * wound-down workspace is exactly the case where the list becomes empty and
+ * the message must still be readable.
  */
-export function ReinstateOrganisationForm({
-  slug,
-  name,
+export function WoundDownOrganisationsList({
+  rows,
+  limit,
 }: {
-  slug: string;
-  name: string;
-}) {
-  const [asking, setAsking] = useState(false);
-  const { triggerRef, revealRef, onRevealKeyDown } = useRevealFocus<
-    HTMLParagraphElement,
-    HTMLButtonElement
-  >(asking, () => setAsking(false));
-
-  if (!asking) {
-    return (
-      <Button
-        ref={triggerRef}
-        type="button"
-        variant="primary"
-        onClick={() => setAsking(true)}
-      >
-        Reopen
-        <span className="sr-only"> — {name}</span>
-      </Button>
-    );
-  }
-  return (
-    <ReinstateConfirm
-      slug={slug}
-      name={name}
-      questionRef={revealRef}
-      onKeyDown={onRevealKeyDown}
-      onCancel={() => setAsking(false)}
-    />
-  );
-}
-
-function ReinstateConfirm({
-  slug,
-  name,
-  questionRef,
-  onKeyDown,
-  onCancel,
-}: {
-  slug: string;
-  name: string;
-  questionRef: React.Ref<HTMLParagraphElement>;
-  onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
-  onCancel: () => void;
+  rows: readonly {
+    id: string;
+    name: string;
+    slug: string;
+    stateLabel: string;
+    changedAt: string | null;
+    reason: string | null;
+    retentionExpiresAt: string | null;
+    retentionDays: number | null;
+  }[];
+  limit: number;
 }) {
   const [state, formAction, pending] = useActionState(
     reinstateOrganisationAction,
     EMPTY_FORM_STATE,
   );
+  const [askingId, setAskingId] = useState<string | null>(null);
 
   return (
-    <form
-      action={formAction}
-      onKeyDown={onKeyDown}
-      className="flex max-w-prose flex-col gap-3"
-    >
-      <input type="hidden" name="organisationSlug" value={slug} />
+    <div className="flex flex-col gap-4">
       {state.error ? <Alert tone="error">{state.error}</Alert> : null}
       {state.message ? <Alert tone="success">{state.message}</Alert> : null}
-      {/* The reveal's focus target (tabIndex={-1}): focus lands on the
-          question rather than on a button a repeated Enter could fire. */}
-      <p
-        ref={questionRef}
-        tabIndex={-1}
-        role="status"
-        className="max-w-prose text-base text-ink"
-      >
-        Reopen {name}? Writes come back immediately for everyone in it, and its
-        published profiles return to the network directory.
-      </p>
-      <TextAreaField
-        label="Reason"
-        name="reason"
-        required
-        rows={2}
-        defaultValue={state.values?.reason ?? ""}
-        error={state.fieldErrors?.reason}
-        hint="Goes on the permanent audit record beside the suspension it undoes."
-      />
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          type="submit"
-          variant="primary"
-          pending={pending}
-          pendingLabel="Reopening…"
-        >
-          Yes, reopen
-        </Button>
-        <Button type="button" variant="secondary" onClick={onCancel}>
-          Leave it closed
-        </Button>
+
+      {rows.length === 0 ? (
+        <p className="max-w-prose text-base text-ink-muted">
+          Every workspace on the platform is active.
+        </p>
+      ) : (
+        <>
+          <ul className="flex flex-col border-t border-rule">
+            {rows.map((row) => (
+              <WoundDownRow
+                key={row.id}
+                row={row}
+                asking={askingId === row.id}
+                pending={pending}
+                fieldError={state.fieldErrors?.reason}
+                formAction={formAction}
+                onAsk={() => setAskingId(row.id)}
+                onCancel={() => setAskingId(null)}
+              />
+            ))}
+          </ul>
+          {rows.length === limit ? (
+            <p className="max-w-prose text-sm text-ink-muted">
+              Showing the <span className="tabular-nums">{limit}</span> most
+              recent. The complete history of every transition is in the audit
+              log, filtered to <code>organisation.suspended</code>,{" "}
+              <code>organisation.deleted</code> and{" "}
+              <code>organisation.reinstated</code>.
+            </p>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function WoundDownRow({
+  row,
+  asking,
+  pending,
+  fieldError,
+  formAction,
+  onAsk,
+  onCancel,
+}: {
+  row: {
+    id: string;
+    name: string;
+    slug: string;
+    stateLabel: string;
+    changedAt: string | null;
+    reason: string | null;
+    retentionExpiresAt: string | null;
+    retentionDays: number | null;
+  };
+  asking: boolean;
+  pending: boolean;
+  fieldError: string | undefined;
+  formAction: (data: FormData) => void;
+  onAsk: () => void;
+  onCancel: () => void;
+}) {
+  const { triggerRef, revealRef, onRevealKeyDown } = useRevealFocus<
+    HTMLParagraphElement,
+    HTMLButtonElement
+  >(asking, onCancel);
+
+  return (
+    <li className="flex flex-col gap-3 border-b border-rule py-4">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="text-base font-semibold text-ink">{row.name}</span>
+        <span className="text-sm text-ink-muted">/{row.slug}</span>
+        <span className="text-sm font-semibold text-warning">{row.stateLabel}</span>
+        {row.changedAt ? (
+          <span className="text-sm text-ink-muted tabular-nums">
+            since {row.changedAt}
+          </span>
+        ) : null}
       </div>
-    </form>
+
+      {row.reason ? (
+        <p className="max-w-prose text-base text-ink">{row.reason}</p>
+      ) : null}
+
+      {row.retentionExpiresAt ? (
+        <p className="text-sm text-ink-muted">
+          Retained until{" "}
+          <span className="tabular-nums">{row.retentionExpiresAt}</span>
+          {row.retentionDays !== null ? (
+            <>
+              {" "}
+              (<span className="tabular-nums">{row.retentionDays}</span>{" "}
+              {row.retentionDays === 1 ? "day" : "days"})
+            </>
+          ) : null}
+          .
+        </p>
+      ) : null}
+
+      {!asking ? (
+        <div>
+          <Button ref={triggerRef} type="button" variant="primary" onClick={onAsk}>
+            Reopen
+            <span className="sr-only"> — {row.name}</span>
+          </Button>
+        </div>
+      ) : (
+        <form
+          action={formAction}
+          onKeyDown={onRevealKeyDown}
+          className="flex max-w-prose flex-col gap-3"
+        >
+          <input type="hidden" name="organisationSlug" value={row.slug} />
+          {/* The reveal's focus target (tabIndex={-1}): focus lands on the
+              question rather than on a button a repeated Enter could fire. */}
+          <p
+            ref={revealRef}
+            tabIndex={-1}
+            role="status"
+            className="max-w-prose text-base text-ink"
+          >
+            Reopen {row.name}? Writes come back immediately for everyone in it,
+            and its published profiles return to the network directory.
+          </p>
+          <TextAreaField
+            label="Reason"
+            name="reason"
+            required
+            rows={2}
+            error={fieldError}
+            hint="Goes on the permanent audit record beside the suspension it undoes."
+          />
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              type="submit"
+              variant="primary"
+              pending={pending}
+              pendingLabel="Reopening…"
+            >
+              Yes, reopen
+            </Button>
+            <Button type="button" variant="secondary" onClick={onCancel}>
+              Leave it closed
+            </Button>
+          </div>
+        </form>
+      )}
+    </li>
   );
 }

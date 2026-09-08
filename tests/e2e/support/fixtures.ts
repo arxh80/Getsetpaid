@@ -913,6 +913,32 @@ export async function setOrganisationSuspended(
 }
 
 /**
+ * PHASE 7 TASK 3. The organisation-lifecycle audit trail, read STRAIGHT OUT OF
+ * POSTGRES as `postgres` -- same reasoning as the impersonation reader below:
+ * nobody can read audit_events through the app except the platform superuser,
+ * and asserting a trail through the very policy a bug in it could be hiding
+ * behind proves less than reading the table.
+ *
+ * Returns `action` and the operator's reason, in order. The reason is the half
+ * that cannot be checked anywhere else: CLAUDE.md § Superuser dashboard makes
+ * it mandatory, and "mandatory" is only true if what the operator typed in the
+ * browser is what landed on the record.
+ */
+export async function organisationLifecycleAudit(
+  organisationId: string,
+): Promise<{ action: string; reason: string | null }[]> {
+  const result = await db().query<{ action: string; reason: string | null }>(
+    `select action, after->>'reason' as reason
+       from public.audit_events
+      where organisation_id = $1
+        and action in ('organisation.suspended','organisation.deleted','organisation.reinstated')
+      order by created_at, id`,
+    [organisationId],
+  );
+  return result.rows.map((r) => ({ action: r.action, reason: r.reason }));
+}
+
+/**
  * PHASE 7 TASK 2. The impersonation audit trail for one organisation, read
  * STRAIGHT OUT OF POSTGRES as `postgres`.
  *
