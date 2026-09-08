@@ -40,12 +40,21 @@ export async function buildSidebarGroups(
   orgId: string,
   orgSlug: string,
 ): Promise<SidebarNavGroup[]> {
-  const [canViewNetwork, canManageMembers, canManageCustomFields] =
-    await Promise.all([
-      hasPermission(orgId, "view_network"),
-      hasPermission(orgId, "manage_members"),
-      hasPermission(orgId, "manage_custom_fields"),
-    ]);
+  const [
+    canViewNetwork,
+    canManageMembers,
+    canManageCustomFields,
+    canManageOrganisation,
+  ] = await Promise.all([
+    hasPermission(orgId, "view_network"),
+    hasPermission(orgId, "manage_members"),
+    hasPermission(orgId, "manage_custom_fields"),
+    // Phase 7 Task 2: gates the "Support access" item. Owner/Admin only, and
+    // -- because manage_organisation does not survive suspension and is not in
+    // the impersonation envelope -- absent for a suspended workspace and for
+    // an impersonating superuser alike.
+    hasPermission(orgId, "manage_organisation"),
+  ]);
 
   return [
     // The hub first (review finding 12): the rail's own way back to the
@@ -76,7 +85,7 @@ export async function buildSidebarGroups(
           },
         ]
       : []),
-    ...(canManageMembers || canManageCustomFields
+    ...(canManageMembers || canManageCustomFields || canManageOrganisation
       ? [
           {
             id: "admin",
@@ -85,6 +94,9 @@ export async function buildSidebarGroups(
               ...(canManageMembers ? [toNavItem(orgSlug, ADMIN_ITEMS[0])] : []),
               ...(canManageCustomFields
                 ? [toNavItem(orgSlug, ADMIN_ITEMS[1])]
+                : []),
+              ...(canManageOrganisation
+                ? [toNavItem(orgSlug, ADMIN_ITEMS[2])]
                 : []),
             ],
           },

@@ -20,6 +20,10 @@ import "server-only";
 
 import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
+import {
+  IMPERSONATION_ROLE_ENVELOPE,
+  resolveImpersonationForOrg,
+} from "@/lib/admin/impersonation-session";
 
 export interface CurrentUser {
   id: string;
@@ -60,6 +64,25 @@ export interface CurrentOrg {
    * rule holds.
    */
   isSuspended: boolean;
+  /**
+   * This workspace is being viewed through a live BREAK-GLASS IMPERSONATION
+   * SESSION, not through a membership (Phase 7 Task 2).
+   *
+   * `role` above is then `IMPERSONATION_ROLE_ENVELOPE` ('read_only'), which is
+   * the honest description of what the caller holds -- but note that it is a
+   * LABEL here, not the enforcement: the enforcement is
+   * private.impersonated_organisations(), wired into public.has_permission(),
+   * private.permitted_organisations() and private.full_scope_organisations()
+   * by 20260908020000. Setting this field on its own would grant nothing, and
+   * clearing it would take nothing away.
+   *
+   * Consumers must render the banner (app/(app)/layout.tsx does, for every
+   * org-scoped route at once, the same way it renders SuspendedBanner) so
+   * support access is never mistaken for normal use.
+   */
+  isImpersonated: boolean;
+  /** ISO instant the impersonation window closes, or null when not impersonated. */
+  impersonationExpiresAt: string | null;
 }
 
 /**
@@ -266,7 +289,35 @@ export const getCurrentOrg = cache(
       .eq("status", "active")
       .maybeSingle();
 
-    if (!membership) return null;
+    // ===========================================================================
+    // THE IMPERSONATION BRANCH (Phase 7 Task 2)
+    // ===========================================================================
+    // Reached ONLY when the membership lookup above came back empty, so an
+    // ordinary member -- every user of the product except the platform
+    // superuser mid-session -- pays nothing for it. A superuser who is NOT
+    // mid-session falls straight through to the same `return null` as before,
+    // and gets the identical tenant-isolation 404 as any stranger: there is no
+    // "superuser can see everything" path here, which is CLAUDE.md
+    // § Superuser dashboard's "no direct tenant-data access outside
+    // impersonation" expressed in the resolver every org route goes through.
+    //
+    // resolveImpersonationForOrg() also WRITES the page-access audit row and
+    // fails closed if that write is refused -- see its header for why the
+    // audit lives at this choke point and not in a layout.
+    if (!membership) {
+      const impersonation = await resolveImpersonationForOrg(org.id as string);
+      if (!impersonation) return null;
+      return {
+        id: org.id as string,
+        name: org.name as string,
+        slug: org.slug as string,
+        // A LABEL, NOT THE GRANT. See CurrentOrg.isImpersonated.
+        role: IMPERSONATION_ROLE_ENVELOPE,
+        isSuspended: (org.deleted_at as string | null) !== null,
+        isImpersonated: true,
+        impersonationExpiresAt: impersonation.expiresAt,
+      };
+    }
 
     return {
       id: org.id as string,
@@ -274,6 +325,8 @@ export const getCurrentOrg = cache(
       slug: org.slug as string,
       role: membership.role as string,
       isSuspended: (org.deleted_at as string | null) !== null,
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     };
   },
 );

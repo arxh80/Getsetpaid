@@ -251,6 +251,11 @@ async function bothSides(subscription: Subscription | null): Promise<Sides> {
       role: "owner",
       slug: "fin-probe",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     });
 
     return {
@@ -530,6 +535,11 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
       role: "owner",
       slug: "x",
       isSuspended: true,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     });
     expect(
       refusal(suspended, "a suspended workspace").reason,
@@ -542,6 +552,11 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
       role: "owner",
       slug: "x",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     });
     expect(
       refusal(tier, "a Starter workspace whose caller also lacks the key").reason,
@@ -558,6 +573,11 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
       role: "read_only",
       slug: "x",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     });
     expect(refusal(permission, "a read_only caller on an ungated plan").reason).toBe(
       "permission",
@@ -572,6 +592,11 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
       role: "finance",
       slug: "x",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     });
     expect(allowed.canWrite).toBe(true);
   });
@@ -597,6 +622,11 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
               role: "owner",
               slug: "x",
               isSuspended: true,
+              // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+              // these fixtures: nothing here exercises impersonation, and a fixture
+              // that quietly claimed to would be asserting about the wrong feature.
+              isImpersonated: false,
+              impersonationExpiresAt: null,
             });
           },
         ],
@@ -620,6 +650,11 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
               role: "owner",
               slug: "x",
               isSuspended: false,
+              // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+              // these fixtures: nothing here exercises impersonation, and a fixture
+              // that quietly claimed to would be asserting about the wrong feature.
+              isImpersonated: false,
+              impersonationExpiresAt: null,
             });
           },
         ],
@@ -636,6 +671,11 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
               role: "booker",
               slug: "x",
               isSuspended: false,
+              // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+              // these fixtures: nothing here exercises impersonation, and a fixture
+              // that quietly claimed to would be asserting about the wrong feature.
+              isImpersonated: false,
+              impersonationExpiresAt: null,
             });
           },
         ],

@@ -18,6 +18,7 @@ import { SignOutButton } from "@/components/auth/sign-out-button";
 import { RecordCurrentOrg } from "@/components/org/record-current-org";
 import { WorkspaceSwitcher } from "@/components/org/workspace-switcher";
 import { SuspendedBanner } from "@/components/org/suspended-banner";
+import { ImpersonationBanner } from "@/components/admin/impersonation-banner";
 import { Wordmark } from "@/components/wordmark";
 import { SkipLink } from "@/components/ui/skip-link";
 import { PaletteTrigger } from "@/components/palette/palette-trigger";
@@ -192,6 +193,26 @@ export default async function AppLayout({
           banner is still read before it in DOM order. */}
       {currentOrg?.isSuspended ? (
         <SuspendedBanner orgName={currentOrg.name} />
+      ) : null}
+
+      {/* Phase 7 Task 2. Rendered HERE, beside SuspendedBanner, for exactly
+          the reason that one is here: it is a fact about the whole workspace
+          rather than about one screen, and `currentOrg` is already resolved
+          at this level for the switcher, so no route has to remember to
+          render it. An org-scoped page the superuser reaches during
+          impersonation cannot be un-bannered without deleting this line.
+
+          BOTH BANNERS CAN RENDER AT ONCE, and that is right: support access
+          to a SUSPENDED workspace is a real and likely case (a customer
+          suspended for non-payment asking why something looks wrong), and
+          the two facts are independent — one says the workspace is
+          read-only for everyone, the other says who is looking and until
+          when. */}
+      {currentOrg?.isImpersonated ? (
+        <ImpersonationBanner
+          orgName={currentOrg.name}
+          expiresAt={currentOrg.impersonationExpiresAt}
+        />
       ) : null}
 
       {/* Rail and content are SIBLINGS in one full-width row -- the rail at

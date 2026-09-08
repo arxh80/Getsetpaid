@@ -51,6 +51,11 @@ const org = {
   role: "marketing" as const,
   slug: "m4-probe",
   isSuspended: false,
+  // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+  // these fixtures: nothing here exercises impersonation, and a fixture
+  // that quietly claimed to would be asserting about the wrong feature.
+  isImpersonated: false,
+  impersonationExpiresAt: null,
 };
 
 afterEach(() => {

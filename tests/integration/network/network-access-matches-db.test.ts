@@ -257,6 +257,11 @@ async function bothSides(subscription: Subscription | null): Promise<Sides> {
       role: "owner" as const,
       slug: "net-probe",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     };
     const publish = await getNetworkPublishAccess(orgArg);
     const connect = await getNetworkConnectionAccess(orgArg);
@@ -565,6 +570,11 @@ describe("the three checks happen in the order the copy depends on", () => {
     role: "owner" as const,
     slug: "suspended-probe",
     isSuspended: true,
+    // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+    // these fixtures: nothing here exercises impersonation, and a fixture
+    // that quietly claimed to would be asserting about the wrong feature.
+    isImpersonated: false,
+    impersonationExpiresAt: null,
   };
 
   it("SUSPENDED wins over both the tier and the permission, on both write gates", async () => {
@@ -631,6 +641,11 @@ describe("the READ gate has no tier term, and that is the shape of the Free tier
       role: "read_only" as const,
       slug: "free-probe",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     };
     expect(await getNetworkReadAccess(org)).toBe(true);
     // ...and it did not ask the entitlements to decide that.
@@ -658,6 +673,11 @@ describe("the READ gate has no tier term, and that is the shape of the Free tier
       role: "owner" as const,
       slug: "free-probe",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     };
     expect(refusal(await getNetworkPublishAccess(org), "free publish").reason).toBe(
       "tier",
