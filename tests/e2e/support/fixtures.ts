@@ -888,6 +888,31 @@ export async function countAuditLogViewedRows(
 }
 
 /**
+ * PHASE 7 TASK 2, FIX ROUND 1 (Important 2). Suspend or reinstate an
+ * organisation, as `postgres`.
+ *
+ * There is no client write path to `organisations.deleted_at` that a test
+ * could drive -- suspension is a platform action and an Owner deliberately
+ * cannot perform it (DECISIONS-QUEUE consequence P7), which is the whole
+ * reason Q98 exists. So the only way to put the browser in front of a
+ * suspended workspace is to set the column directly, the same route every
+ * other planted fixture in this file uses.
+ *
+ * THE CALLER MUST REINSTATE IN A `finally`. This suite's specs are serial and
+ * share one world; a workspace left suspended would silently turn every later
+ * assertion into a suspension assertion.
+ */
+export async function setOrganisationSuspended(
+  organisationId: string,
+  suspended: boolean,
+): Promise<void> {
+  await sql(
+    `update public.organisations set deleted_at = $2 where id = $1`,
+    [organisationId, suspended ? new Date().toISOString() : null],
+  );
+}
+
+/**
  * PHASE 7 TASK 2. The impersonation audit trail for one organisation, read
  * STRAIGHT OUT OF POSTGRES as `postgres`.
  *

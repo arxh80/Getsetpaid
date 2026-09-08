@@ -4,6 +4,7 @@ import {
   PASSWORD,
   impersonationAuditActions,
   impersonationAuditedRoutes,
+  setOrganisationSuspended,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
@@ -429,6 +430,77 @@ test("the request form is behind the step-up gate, and the action re-checks it",
     "an aal1 superuser session must not reach the impersonation request form",
   ).toBeVisible();
   await expect(page.locator('input[name="organisationSlug"]')).toHaveCount(0);
+});
+
+// ===========================================================================
+// FIX ROUND 1, IMPORTANT 2: THE Q98 CONSEQUENCE IS EXPLAINED, NOT 404'd
+// ===========================================================================
+// `manage_organisation` has survives_suspension = false, so a SUSPENDED
+// workspace's own Owner/Admin holds it not at all -- which is consequence P7
+// working as designed. The alert written to explain that was unreachable dead
+// code behind the page's own permission gate, so the consequence reached the
+// customer as a bare 404 on a page they had been told exists.
+//
+// These two tests are the pair that matters: the explanation is REACHABLE for
+// the workspace's administrator, and REFUSAL PARITY IS INTACT for everyone
+// else. A fix that achieved only the first would have opened the page up.
+//
+// Q98 itself is untouched and still queued: accepting remains impossible while
+// suspended, because public.accept_impersonation_request() asks
+// has_permission() and gets false. Asserted below rather than assumed.
+test("a SUSPENDED workspace's admin gets the paused explanation, not a bare 404", async ({
+  browser,
+}) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await setOrganisationSuspended(world.orgId, true);
+    await signInAsOrgAdmin(page);
+    await page.goto(`/${world.orgSlug}/support-access`);
+
+    await expect(
+      page.getByRole("heading", { name: "Support access", level: 1 }),
+    ).toBeVisible();
+    await expect(page.locator("main")).toContainText("paused");
+    await expect(page.locator("main")).toContainText("suspended");
+    // The <title> must agree with the body in BOTH directions -- a page that
+    // renders its content under a "Not found" tab is the same oracle problem
+    // in reverse.
+    await expect(page).not.toHaveTitle(/Not found/);
+
+    // AND NOTHING ELSE. No request data, no accept/decline control: this
+    // branch adds a sentence, not a read.
+    await expect(page.getByRole("button", { name: /^Accept/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Decline/ })).toHaveCount(0);
+    await expect(page.locator("main")).not.toContainText("Waiting for you");
+  } finally {
+    await setOrganisationSuspended(world.orgId, false);
+    await context.close();
+  }
+});
+
+test("...and a member without the role still gets the identical not-found, suspended or not", async ({
+  browser,
+}) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await setOrganisationSuspended(world.orgId, true);
+    await signIn(page, world, "manager");
+    const response = await page.goto(`/${world.orgSlug}/support-access`);
+
+    // REFUSAL PARITY. The suspended branch is gated on the caller's own role
+    // granting manage_organisation in the catalogue, so a Manager sees the
+    // same document they saw before this fix existed -- never the
+    // explanation, which would confirm the page is there and merely gated.
+    expect([200, 404]).toContain(response?.status() ?? -1);
+    await expect(page.locator("body")).toContainText("Page not found");
+    await expect(page).toHaveTitle(/Not found/);
+    await expect(page.locator("body")).not.toContainText("paused");
+  } finally {
+    await setOrganisationSuspended(world.orgId, false);
+    await context.close();
+  }
 });
 
 // ===========================================================================

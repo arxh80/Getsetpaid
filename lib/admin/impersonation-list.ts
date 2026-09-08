@@ -112,6 +112,107 @@ export function displayStatus(
 }
 
 /**
+ * Would the caller's role in this organisation grant `manage_organisation`
+ * IF the workspace were not suspended?
+ *
+ * ===========================================================================
+ * WHAT THIS IS FOR, AND WHAT IT MUST NEVER BE USED FOR
+ * ===========================================================================
+ * FIX ROUND 1, IMPORTANT 2. `manage_organisation` has
+ * `survives_suspension = false` (20260828210000), so in a SUSPENDED workspace
+ * its own Owner/Admin holds it not at all -- which is consequence P7 working
+ * as designed, and which meant the one piece of UI written to explain that
+ * consequence (DECISIONS-QUEUE Q98) could never render: the page's permission
+ * gate fired first and the customer got a bare 404 on a page they had been
+ * told exists.
+ *
+ * This answers the narrower question the page needs to tell those two cases
+ * apart: "is this a suspended workspace's own administrator?" rather than "may
+ * this caller administer?". It is a RENDER decision between two refusal-shaped
+ * outcomes -- a 404, or a page whose entire content is the sentence "requests
+ * are paused" -- and it authorises NOTHING. Every write is still
+ * `public.accept_impersonation_request()`, which asks
+ * `public.has_permission(org, 'manage_organisation')` and therefore still
+ * refuses a suspended workspace's admin, exactly as Q98 describes.
+ *
+ * ===========================================================================
+ * IT IS DERIVED FROM THE CATALOGUE, NOT FROM A HARDCODED ROLE LIST
+ * ===========================================================================
+ * The tempting version is `org.role === "owner" || org.role === "admin"`.
+ * That hardcodes today's answer to a question `public.role_permissions` owns,
+ * and goes stale silently the day a migration grants `manage_organisation` to
+ * another role -- showing that role a 404 where it should see the explanation.
+ * So it joins the catalogue, which is ordinary authenticated-readable
+ * reference data (`role_permissions_select_authenticated`), against the
+ * caller's OWN membership row (always visible to them).
+ *
+ * ===========================================================================
+ * IT DELIBERATELY OMITS THE aal2 TERM, AND THAT IS SAFE HERE
+ * ===========================================================================
+ * `public.has_permission()` also requires aal2 for MFA-required roles. This
+ * does not, so an aal1 Owner of a SUSPENDED workspace reaches the explanation
+ * too. That discloses nothing: they are already an active member who can see
+ * the suspension banner on every route, and the page in that state contains no
+ * request data at all -- the list queries return nothing for them, because RLS
+ * has not moved. Its caller ANDs it with `org.isSuspended`, so on a live
+ * workspace this path is never taken and an aal1 Owner still gets the same
+ * 404 as anyone else.
+ */
+export async function roleWouldAdministerOrganisation(
+  organisationId: string,
+): Promise<boolean> {
+  const supabase = await createClient();
+  const { data: claims } = await supabase.auth.getClaims();
+  const userId = claims?.claims?.sub;
+  if (typeof userId !== "string") return false;
+
+  // TWO PLAIN QUERIES RATHER THAN ONE EMBED. PostgREST can only embed across a
+  // relationship it can infer from a foreign key, and there is none from
+  // organisation_memberships straight to role_permissions -- both reference
+  // public.roles, they do not reference each other. An embed would resolve as
+  // a 400 at runtime, which this function's fail-closed branch would then
+  // report as "not an administrator" and nobody would ever see the
+  // explanation. Two round trips, on a path taken only when a permission check
+  // has already failed AND the workspace is suspended.
+  const { data: membership, error: membershipError } = await supabase
+    .from("organisation_memberships")
+    .select("role")
+    .eq("organisation_id", organisationId)
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (membershipError || !membership) {
+    if (membershipError) {
+      console.error(
+        "[admin] membership lookup failed; treating the caller as not an administrator:",
+        membershipError.message,
+      );
+    }
+    return false;
+  }
+
+  const { data: grant, error: grantError } = await supabase
+    .from("role_permissions")
+    .select("permission_key")
+    .eq("role_key", membership.role as string)
+    .eq("permission_key", "manage_organisation")
+    .maybeSingle();
+
+  if (grantError) {
+    // FAIL CLOSED: "could not tell" reads as "not an administrator", which
+    // renders the same 404 a stranger gets. The failure mode is a suspended
+    // Owner missing an explanation, never a stranger gaining one.
+    console.error(
+      "[admin] role/permission lookup failed; treating the caller as not an administrator:",
+      grantError.message,
+    );
+    return false;
+  }
+  return grant !== null;
+}
+
+/**
  * Every impersonation session the calling superuser holds, newest first.
  *
  * The join to public.organisations resolves through

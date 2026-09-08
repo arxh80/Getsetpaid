@@ -5,6 +5,7 @@ import {
   displayStatus,
   isLive,
   listOrganisationImpersonationRequests,
+  roleWouldAdministerOrganisation,
 } from "@/lib/admin/impersonation-list";
 import { IMPERSONATION_TIME_BOX_MINUTES } from "@/lib/admin/impersonation-contract";
 import { formatDateTime } from "@/lib/format/date";
@@ -47,7 +48,19 @@ export async function generateMetadata({
 }: PageProps<"/[orgSlug]/support-access">): Promise<Metadata> {
   const { orgSlug } = await params;
   const org = await getCurrentOrg(orgSlug);
-  if (!org || !(await hasPermission(org.id, "manage_organisation"))) {
+  if (!org) return { title: "Not found · GetSetPaid" };
+  // Mirrors the body's two-reason gate exactly (fix round 1, Important 2).
+  // If it did not, a suspended workspace's administrator would read the
+  // paused notice under a tab titled "Not found" — and the <title> is the
+  // enumeration oracle app/(app)/super/audit-log/page.tsx documents at
+  // length, so the two must agree in BOTH directions, not just the refusing
+  // one. hasPermission and getCurrentOrg are cache()-wrapped, so agreeing
+  // costs no extra round trip.
+  const canAdminister = await hasPermission(org.id, "manage_organisation");
+  if (
+    !canAdminister &&
+    !(org.isSuspended && (await roleWouldAdministerOrganisation(org.id)))
+  ) {
     return { title: "Not found · GetSetPaid" };
   }
   return { title: `Support access · ${org.name} · GetSetPaid` };
@@ -67,7 +80,61 @@ export default async function SupportAccessPage({
   // independently -- impersonation_sessions_select_target_admin returns no
   // rows without the permission -- so this is the render decision, not the
   // enforcement.
-  if (!(await hasPermission(org.id, "manage_organisation"))) notFound();
+  //
+  // ===========================================================================
+  // ...WITH ONE EXCEPTION, WHICH IS FIX ROUND 1, IMPORTANT 2
+  // ===========================================================================
+  // `manage_organisation` has `survives_suspension = false`, so a SUSPENDED
+  // workspace's own Owner/Admin fails this check exactly like a stranger --
+  // and the Q98 alert further down, written specifically to explain that,
+  // could never render. The consequence reached the customer as an
+  // unexplained 404 on a page they had been told exists, which is worse than
+  // the consequence itself.
+  //
+  // So there are now TWO reasons to render, not one, and they render
+  // DIFFERENT PAGES: the ordinary administrator gets the working surface; a
+  // suspended workspace's administrator gets the paused notice and nothing
+  // else -- no lists, no controls, no request data (RLS returns them none
+  // anyway, which is the point: this branch adds a sentence, not a read).
+  //
+  // REFUSAL PARITY IS INTACT. The second condition requires `org.isSuspended`
+  // AND that the caller's own role grants manage_organisation in the
+  // catalogue, so an ordinary member -- suspended workspace or not -- still
+  // gets the identical not-found document. Q98 itself is NOT resolved here:
+  // accepting is still impossible while suspended, because
+  // public.accept_impersonation_request() asks has_permission() and gets
+  // false. This makes the refusal legible; it does not soften it.
+  const canAdminister = await hasPermission(org.id, "manage_organisation");
+  const pausedBySuspension =
+    !canAdminister &&
+    org.isSuspended &&
+    (await roleWouldAdministerOrganisation(org.id));
+
+  if (!canAdminister && !pausedBySuspension) notFound();
+
+  if (pausedBySuspension) {
+    return (
+      <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-3">
+          <h1 className="tracking-display text-3xl font-extrabold text-ink">
+            Support access
+          </h1>
+          <p className="max-w-prose text-base text-ink-muted">
+            GetSetPaid support cannot see anything in this workspace unless you
+            let them.
+          </p>
+        </div>
+        <Alert tone="info">
+          Support-access requests are <strong>paused</strong> while this
+          workspace is suspended. Answering one is a change to the workspace,
+          and a suspended workspace is read-only — so nothing can be accepted
+          or declined here until it is reinstated. Nobody at GetSetPaid can see
+          this workspace in the meantime. Contact GetSetPaid support to have it
+          reinstated.
+        </Alert>
+      </div>
+    );
+  }
 
   const rows = await listOrganisationImpersonationRequests(org.id);
   const now = new Date();
@@ -108,13 +175,12 @@ export default async function SupportAccessPage({
         </p>
       </div>
 
-      {org.isSuspended ? (
-        <Alert tone="info">
-          This workspace is suspended, so it is read-only — which includes
-          answering support-access requests. Contact GetSetPaid support to have
-          it reinstated first.
-        </Alert>
-      ) : null}
+      {/* NO SUSPENDED-WORKSPACE ALERT HERE ANY MORE. It used to sit at this
+          point and was unreachable dead code (fix round 1, Important 2): the
+          permission gate above fires first for a suspended workspace's own
+          administrator, because manage_organisation does not survive
+          suspension. Its sentence now lives in the `pausedBySuspension`
+          branch above, which is the only state that can actually reach it. */}
 
       <section className="flex flex-col gap-4">
         <h2 className="text-xl font-bold text-ink">Waiting for you</h2>
