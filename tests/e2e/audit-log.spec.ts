@@ -69,9 +69,38 @@ async function signInAsSuperuser(page: Page): Promise<void> {
 
 const REFUSED = (page: Page) => page.locator("body");
 
-/** Same shape as tenant-breakout.spec.ts's expectRefused: HTTP 200 (the
- *  streamed not-found contract) or a literal 404, never 403, never a bounce
- *  to /login, and the identical not-found document either way. */
+/**
+ * Same shape as tenant-breakout.spec.ts's expectRefused: HTTP 200 (the
+ * streamed not-found contract) or a literal 404, never 403, never a bounce
+ * to /login, and the identical not-found document either way.
+ *
+ * FIX ROUND 1, IMPORTANT/⚠️ 4. DESIGN.md § Error pages' whole property is
+ * "identical document" -- not merely "the words 'Page not found' appear
+ * somewhere in it". The review's own ⚠️ named the gap precisely: this
+ * refusal is reached through app/(app)/super/layout.tsx, which renders its
+ * "Superuser" eyebrow and page.tsx's own <title> UNCONDITIONALLY, above
+ * where the notFound() call happens -- if either survives into the
+ * refusal's DOM, a non-superuser (or an attacker with a stolen password)
+ * learns "this route exists and is superuser-gated" from a document that is
+ * supposed to be indistinguishable from any other 404, which is exactly the
+ * enumeration-oracle shape CLAUDE.md's tenant-isolation rule forbids.
+ *
+ * "Back to your workspace" is NOT used as the discriminator, even though it
+ * is this layout's own link text -- app/(app)/not-found.tsx (the document
+ * itself) uses the IDENTICAL string, so its presence proves nothing either
+ * way. "Superuser" (the layout's eyebrow, `text-xs uppercase`) and the
+ * page's <title> ("Audit log · Superuser · GetSetPaid") are unique to this
+ * layout/page and appear nowhere else in the product (grepped).
+ *
+ * MEASURED, NOT ASSUMED: both assertions below PASS against the shipped
+ * code, because Next.js's not-found resolution unmounts every layout
+ * between the segment that threw notFound() and the nearest ANCESTOR that
+ * owns a not-found.tsx of its own -- app/(app)/super/ has none, so the
+ * error propagates past app/(app)/super/layout.tsx to app/(app)/not-found.tsx,
+ * taking this layout's header with it. Asserted here so a future
+ * app/(app)/super/not-found.tsx (which would catch the error AT that layer
+ * instead, and reinstate the chrome) is a red test, not a silent leak.
+ */
 async function expectStreamedRefusal(page: Page, url: string): Promise<void> {
   const response = await page.goto(url);
   const status = response?.status() ?? -1;
@@ -83,6 +112,18 @@ async function expectStreamedRefusal(page: Page, url: string): Promise<void> {
     /\/login/,
   );
   await expect(REFUSED(page)).toContainText("Page not found");
+
+  // THE PARITY ASSERTION. Neither the layout's own eyebrow label nor the
+  // audit-log page's own <title> may survive into the refusal a
+  // non-superuser receives.
+  await expect(
+    REFUSED(page),
+    `${url}'s refusal must not carry the /super layout's "Superuser" chrome -- that would distinguish this refusal from an ordinary 404`,
+  ).not.toContainText("Superuser");
+  await expect(
+    page,
+    `${url}'s refusal must not carry the audit-log page's own <title> -- same oracle, via the tab title instead of the body`,
+  ).not.toHaveTitle(/Superuser/);
 }
 
 test("a non-superuser gets the streamed not-found contract at /super and /super/audit-log, and sees no audit content", async ({

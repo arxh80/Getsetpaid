@@ -21,9 +21,24 @@ import { ListSkeleton } from "@/components/list/list-skeleton";
 // (20260826154304) -- no new read surface. Every superuser VIEW of this page
 // is itself audited (public.audit_superuser_audit_log_view(), 20260908010000),
 // which is why AuditLogResults calls that RPC before it queries anything.
-export const metadata: Metadata = {
-  title: "Audit log · Superuser · GetSetPaid",
-};
+//
+// generateMetadata(), NOT a static `export const metadata` -- FIX ROUND 1,
+// IMPORTANT/⚠️ 4. A static export is evaluated regardless of what the page
+// component itself decides to render, so the tab's <title> carried "Audit
+// log · Superuser · GetSetPaid" into the STREAMED refusal a non-superuser
+// receives even though the body (correctly) does not -- an oracle,
+// measured directly in tests/e2e/audit-log.spec.ts's expectStreamedRefusal.
+// Same fix, same shape, as every record-level page in the product already
+// uses for the identical reason: app/(app)/[orgSlug]/contacts/[contactId]/
+// page.tsx:64-77 re-runs its own lookup inside generateMetadata() and
+// returns "Not found · GetSetPaid" when it fails, rather than a static
+// title that would leak which record exists. isSuperuser() is cache()-
+// wrapped (lib/admin/superuser.ts), so calling it here AND in the page body
+// below costs one RPC round trip per request, not two.
+export async function generateMetadata(): Promise<Metadata> {
+  if (!(await isSuperuser())) return { title: "Not found · GetSetPaid" };
+  return { title: "Audit log · Superuser · GetSetPaid" };
+}
 
 const BASE_PATH = "/super/audit-log";
 
