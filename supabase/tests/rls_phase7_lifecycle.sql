@@ -445,6 +445,39 @@ select lc.val('LA4b ...and the counts are real, not zeros (ALPHA has members)',
             order by created_at desc limit 1$$, :'alpha_org'), 'true');
 -- NO TENANT RECORD CONTENT. The same discipline § IA asserts for the
 -- impersonation rows: a summary is counts, and a count is not content.
+-- THE REASON IS CUSTOMER-VISIBLE, AND THAT IS AN INTENDED PROPERTY WITH A
+-- TEST, NOT AN ACCIDENT. Found in self-review: public.organisations is
+-- readable by every active member (organisations_select_member) and RLS
+-- filters ROWS, not columns, so a member reads lifecycle_reason from
+-- PostgREST -- while the first cut of the banner deliberately hid it. The
+-- product now shows it and the operator's form warns them before they type
+-- (20260908032000). This assertion is what keeps the two halves agreeing: if
+-- it ever fails because a member can no longer read the column, the banner and
+-- the form hint are both wrong and must move with it.
+-- ALPHA is ACTIVE at this point (LR13b reinstated it), and an active workspace
+-- has no reason to read -- so this plants one rather than asserting against
+-- whatever happens to be there, and clears it again.
+\o /dev/null
+update public.organisations
+   set deleted_at = now(), lifecycle_reason = 'Non-payment: invoice 902.'
+ where id = :'alpha_org';
+\o
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select lc.val('LA5a INTENDED DISCLOSURE: a member of the workspace reads the operator''s reason',
+  $$select lifecycle_reason from public.organisations where slug='org-alpha'$$,
+  'Non-payment: invoice 902.');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select lc.val('LA5b ...and a FOREIGN organisation''s Owner reads nothing at all',
+  $$select lifecycle_reason from public.organisations where slug='org-alpha'$$,
+  '<null>');
+reset role; reset request.jwt.claims;
+\o /dev/null
+update public.organisations set deleted_at = null where id = :'alpha_org';
+\o
+
 select lc.val('LA5 the payload names no contact, no email and no record id',
   format($$select count(*)::text from public.audit_events
             where organisation_id=%L and action in ('organisation.suspended',

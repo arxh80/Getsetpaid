@@ -111,7 +111,7 @@ export function SuspendOrganisationForm() {
       intro={`It becomes read-only: everyone in it keeps reading everything, nobody can change anything, and its own Owner cannot undo it. It keeps its place in the network directory until its current subscription period ends, and its data is kept for ${ORGANISATION_RETENTION_DAYS} days.`}
       submitLabel="Suspend workspace"
       pendingLabel="Suspending…"
-      reasonHint="Goes on the permanent audit record. Name the ticket, the invoice or the decision."
+      reasonHint="THE WORKSPACE'S OWN PEOPLE WILL READ THIS on every page, and it goes on the permanent audit record. Write the sentence you would say to them — name the invoice or the decision — not an internal note."
       variant="danger"
     />
   );
@@ -125,7 +125,7 @@ export function CloseOrganisationForm() {
       intro={`Soft-delete. Nothing is removed — the workspace becomes read-only exactly as a suspension does, leaves the network directory immediately rather than at period end, and its data is kept for ${ORGANISATION_RETENTION_DAYS} days. There is no hard delete in this product; reopening restores everything.`}
       submitLabel="Close workspace"
       pendingLabel="Closing…"
-      reasonHint="Goes on the permanent audit record. Name who asked and when."
+      reasonHint="THE WORKSPACE'S OWN PEOPLE WILL READ THIS on every page, and it goes on the permanent audit record. Write the sentence you would say to them — who asked and when — not an internal note."
       variant="danger"
     />
   );
@@ -311,7 +311,7 @@ function WoundDownRow({
             required
             rows={2}
             error={fieldError}
-            hint="Goes on the permanent audit record beside the suspension it undoes."
+            hint="Goes on the permanent audit record beside the suspension it undoes. Not shown to the workspace — the banner is gone the moment this succeeds."
           />
           <div className="flex flex-wrap items-center gap-3">
             <Button

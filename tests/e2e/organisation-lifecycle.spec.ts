@@ -216,12 +216,19 @@ test("the golden walk: suspend → the workspace's own people are told → reope
     await expect(banner, "that it is reversible, and by whom").toContainText(
       "Contact GetSetPaid support",
     );
-    // THE OPERATOR'S REASON IS NOT IN IT, and that is deliberate rather than
-    // an omission: "invoice 902 is 21 days overdue" is a note for the audit
-    // record and for the next operator, not a sentence to put in front of
-    // every member of the workspace on every page. The customer is told WHAT
-    // and FOR HOW LONG; the WHY is a support conversation.
-    await expect(banner).not.toContainText("invoice 902");
+
+    // THE OPERATOR'S REASON *IS* IN IT -- SELF-REVIEW FIX (20260908032000).
+    // The first cut withheld it here, on the theory that the operator's
+    // phrasing is an internal note. It is not: public.organisations is
+    // readable by every active member and RLS filters rows, not columns, so
+    // `GET /rest/v1/organisations?select=lifecycle_reason` returned it to any
+    // member from a browser while the one screen they actually read hid it.
+    // This assertion is what stops that regressing to disclosed-by-accident
+    // and withheld-by-design, which is the worst of the three arrangements.
+    await expect(
+      banner,
+      "the reason must be on the screen the customer reads, not only in the API",
+    ).toContainText("invoice 902");
 
     // ...on every route, not just the one. The banner renders from the app
     // shell precisely so no page has to remember it.

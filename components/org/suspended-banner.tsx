@@ -105,6 +105,21 @@ export function SuspendedBanner({
           here is still visible and still yours.
         </p>
 
+        {/* THE OPERATOR'S REASON, AND IT IS SHOWN ON PURPOSE.
+            SELF-REVIEW FIX (20260908032000). It used to be withheld here on
+            the theory that the operator's phrasing is an internal note -- but
+            public.organisations is readable by every active member and RLS
+            filters rows, not columns, so the reason was reaching the customer
+            through the API anyway while being kept off the one screen they
+            actually read. Disclosed to whoever inspects and withheld from the
+            person it is about is the worst of the three arrangements. It is
+            also, plainly, the most useful sentence this banner can carry: it
+            is what turns "why has this stopped working" into an action. The
+            operator's form now warns them before they type. */}
+        {lifecycle?.reason ? (
+          <p className="text-sm text-ink">{lifecycle.reason}</p>
+        ) : null}
+
         {/* WHAT THE NETWORK SEES. Only for a suspension, and only when we know
             the date: Q88 keeps a suspended workspace in the directory until
             its subscription period ends, and Q101 takes a closed one out at
