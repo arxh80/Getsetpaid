@@ -295,6 +295,145 @@ select lc.val('LP8 the new policy names BOTH terms -- the superuser AND the sanc
        and qual ~ 'has_platform_permission'
        and qual ~ 'lifecycle_transition_in_progress'$$, '1');
 
+-- ---- THE ACTIVE-ROW DIRECTION (fix round 1, review finding I1) -----------
+-- EVERY ASSERTION ABOVE ATTACKS AN ALREADY-SUSPENDED ROW, where USING's
+-- `deleted_at is null` closes the door before anything else is consulted. The
+-- LIVE-row direction was never driven, and it was open: an aal2 Owner could
+-- PATCH their own live workspace to lifecycle_state = 'deleted' with an
+-- arbitrary lifecycle_reason, un-audited -- reaching Q101's immediate
+-- directory removal, a state only the superuser can undo (P7), and
+-- member-authored text on the platform's own suspended-workspace banner.
+--
+-- Reproduced as `ok(1)` before the fix. These are the assertions that keep it
+-- shut.
+\o /dev/null
+update public.organisations set deleted_at = null where id = :'alpha_org';
+\o
+select lc.val('LP9  FIXTURE: ALPHA is LIVE again, so USING cannot be what refuses below',
+  format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
+         :'alpha_org'), 'true');
+
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select lc.try('LP9a I1: the Owner cannot wind their OWN LIVE workspace down',
+  $$update public.organisations
+       set deleted_at = now(), lifecycle_state = 'deleted',
+           lifecycle_reason = 'Suspended by GetSetPaid for fraud - call 0800-SCAM'
+     where slug='org-alpha'$$, 'denied(42501)');
+select lc.try('LP9b ...nor set a bare deleted_at (the Phase 2 self-suspension door is CLOSED -- Q104)',
+  $$update public.organisations set deleted_at=now() where slug='org-alpha'$$,
+  'denied(42501)');
+select lc.try('LP9c ...nor write lifecycle_reason alone, which the customer banner renders',
+  $$update public.organisations set lifecycle_reason='call 0800-SCAM'
+     where slug='org-alpha'$$, 'denied(42501)');
+select lc.try('LP9d ...nor lifecycle_state alone',
+  $$update public.organisations set lifecycle_state='deleted' where slug='org-alpha'$$,
+  'denied(42501)');
+-- THE POSITIVE CONTROL. Without it, LP9a-LP9d would pass just as well against
+-- a policy that had accidentally revoked UPDATE altogether, and the Owner's
+-- ordinary settings screen would be broken with a green suite.
+select lc.try('LP9e CONTROL: the SAME Owner CAN still rename their live workspace',
+  $$update public.organisations set name='Alpha Promotions' where slug='org-alpha'$$,
+  'ok(1)');
+reset role; reset request.jwt.claims;
+
+select lc.val('LP9f ...and after all four refusals the row is UNCHANGED and still live',
+  format($$select (lifecycle_state='active' and deleted_at is null
+                   and lifecycle_reason is null)::text
+             from public.organisations where id=%L$$, :'alpha_org'), 'true');
+select lc.val('LP9g ...and NO audit row was minted by any of them',
+  format($$select count(*)::text from public.audit_events
+            where organisation_id=%L
+              and action in ('organisation.suspended','organisation.deleted',
+                             'organisation.reinstated')
+              and after->>'reason' like '%%0800-SCAM%%'$$, :'alpha_org'), '0');
+
+-- ---- THE SECOND GATE, PROVEN BY TURNING THE FIRST ONE OFF ----------------
+-- rls_phase2_crm.sql section 7's discipline, applied to this fix: a
+-- defence-in-depth term whose value is never measured with the term beside it
+-- removed is an assumption, not a control -- and I1 happened precisely because
+-- ONE term was assumed to cover both directions of a write.
+--
+-- The policy's WITH CHECK is relaxed back to its pre-fix shape inside a DO
+-- block, the attack is re-run, and private.organisation_lifecycle_guard() --
+-- which consults no policy at all -- is what refuses. Restored in the same
+-- block; LP10d is the proof it was.
+do $$
+declare v_owner uuid; v_alpha uuid; r_attack text; r_control text; n int;
+begin
+  select id into v_alpha from public.organisations where slug='org-alpha';
+  select id into v_owner from auth.users where email='powner@test.local';
+
+  -- Back to 20260826154304:737's bare clause -- the exact shape I1 exploited.
+  alter policy organisations_update_manage_organisation
+    on public.organisations
+    with check ( public.has_permission(id, 'manage_organisation') );
+
+  perform pg_catalog.set_config('request.jwt.claims',
+    pg_catalog.json_build_object('sub', v_owner, 'role','authenticated','aal','aal2')::text,
+    true);
+  set local role authenticated;
+  begin
+    update public.organisations
+       set deleted_at = pg_catalog.now(), lifecycle_state = 'deleted',
+           lifecycle_reason = 'gate 1 is off'
+     where id = v_alpha;
+    get diagnostics n = row_count; r_attack := 'ok(' || n || ')';
+  exception when others then r_attack := 'denied(' || sqlstate || ')'; end;
+  begin
+    update public.organisations set name = 'Alpha Promotions' where id = v_alpha;
+    get diagnostics n = row_count; r_control := 'ok(' || n || ')';
+  exception when others then r_control := 'denied(' || sqlstate || ')'; end;
+  reset role;
+  perform pg_catalog.set_config('request.jwt.claims','',true);
+
+  -- Put the fix back.
+  alter policy organisations_update_manage_organisation
+    on public.organisations
+    with check (
+      public.has_permission(id, 'manage_organisation')
+      and deleted_at       is null
+      and lifecycle_state  = 'active'
+      and lifecycle_reason is null
+    );
+
+  perform lc.record(
+    'LP10  GATE 1 OFF: the TRIGGER alone still refuses the wind-down',
+    'denied(42501)', r_attack);
+  perform lc.record(
+    'LP10b GATE 1 OFF: ...and an ordinary rename still works, so LP10 is the guard',
+    'ok(1)', r_control);
+  perform lc.record(
+    'LP10c GATE 1 OFF: ...and ALPHA is still live and unreasoned',
+    'true',
+    (select (lifecycle_state='active' and deleted_at is null
+             and lifecycle_reason is null)::text
+       from public.organisations where id = v_alpha));
+end $$;
+select lc.val('LP10d ...and GATE 1 was restored (the WITH CHECK carries all three terms again)',
+  $$select count(*)::text from pg_policies
+     where schemaname='public' and tablename='organisations'
+       and policyname='organisations_update_manage_organisation'
+       and with_check ~ 'deleted_at IS NULL'
+       and with_check ~ 'lifecycle_state'
+       and with_check ~ 'lifecycle_reason IS NULL'$$, '1');
+select lc.val('LP10e STRUCTURAL: the guard trigger is on the table and sorts BEFORE the normaliser',
+  $$select string_agg(tgname, ',' order by tgname) from pg_trigger
+     where tgrelid='public.organisations'::regclass and not tgisinternal
+       and tgname like 'organisation_lifecycle%'$$,
+  'organisation_lifecycle_guard,organisation_lifecycle_sync');
+
+-- HAND § LR BACK THE FIXTURE IT INHERITS. The LP9 block needed ALPHA LIVE (the
+-- whole point of I1 is the active-row direction), and § LR opens by measuring
+-- the marker against a SUSPENDED one. Restored as postgres, which the guard
+-- exempts by design -- row_security_active() is false for a rolbypassrls role.
+\o /dev/null
+update public.organisations set deleted_at = now() where id = :'alpha_org';
+\o
+select lc.val('LP11 HOUSEKEEPING: ALPHA is suspended again, as § LR expects to find it',
+  format($$select (deleted_at is not null and lifecycle_state='suspended')::text
+             from public.organisations where id=%L$$, :'alpha_org'), 'true');
+
 -- ===========================================================================
 -- § LR  THE SUPERUSER'S PATH, AND ITS MARKER
 --
@@ -403,6 +542,37 @@ select lc.try('LR13b ...and reinstatement still works (the deadline is not a loc
   $$select public.reinstate_organisation('org-alpha','recovered after the window')$$, 'ok(1)');
 reset role; reset request.jwt.claims;
 
+-- ---- THE EDGE NOBODY HAD WRITTEN DOWN (fix round 1, review Minor 3) ------
+-- suspend_organisation() refuses only when the state is ALREADY 'suspended',
+-- so a CLOSED workspace can be suspended -- and that is not a no-op: the
+-- retention clock re-stamps (Q102) and directory presence RETURNS, because
+-- Q88's grace applies to 'suspended' and Q101's immediate removal applies to
+-- 'deleted'. Coherent with both rulings, and the one transition in the state
+-- machine that nothing measured. It is a real operator move (a closure logged
+-- against the wrong workspace, downgraded rather than reopened), so it is
+-- pinned here rather than left to be discovered.
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lc.try('LR14 FIXTURE: close ALPHA again, to drive deleted -> suspended',
+  $$select public.delete_organisation('org-alpha','M3 fixture: closed')$$, 'ok(1)');
+select lc.val('LR14a ...and a CLOSED workspace has no directory presence (Q101)',
+  $$select private.organisation_network_presence_active(
+             (select id from public.organisations where slug='org-alpha'))::text$$,
+  'false');
+select lc.try('LR15 M3: a CLOSED workspace CAN be suspended (deleted -> suspended)',
+  $$select public.suspend_organisation('org-alpha','M3: downgraded to suspension')$$,
+  'ok(1)');
+select lc.val('LR15a ...and it really is suspended now',
+  $$select lifecycle_state from public.organisations where slug='org-alpha'$$,
+  'suspended');
+select lc.val('LR15b CONSEQUENCE: directory presence RETURNS under Q88''s grace',
+  $$select private.organisation_network_presence_active(
+             (select id from public.organisations where slug='org-alpha'))::text$$,
+  'true');
+select lc.try('LR15c HOUSEKEEPING: reopen it',
+  $$select public.reinstate_organisation('org-alpha','M3 teardown')$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
 -- ===========================================================================
 -- § LA  THE AUDIT TRAIL
 --
@@ -414,7 +584,7 @@ reset role; reset request.jwt.claims;
 select lc.val('LA1 every transition above wrote exactly one audit row',
   format($$select count(*)::text from public.audit_events
             where organisation_id=%L and action in ('organisation.suspended',
-                    'organisation.deleted','organisation.reinstated')$$, :'alpha_org'), '5');
+                    'organisation.deleted','organisation.reinstated')$$, :'alpha_org'), '8');
 select lc.val('LA1b ...each with its OWN correlation thread (one operation, one id)',
   format($$select (count(distinct correlation_id) = count(*))::text
              from public.audit_events
@@ -426,10 +596,10 @@ select lc.val('LA2 the actor is the REAL superuser, never the customer',
             where organisation_id=%L and action in ('organisation.suspended',
                     'organisation.deleted','organisation.reinstated')$$,
          :'super', :'alpha_org'), 'true');
-select lc.val('LA3 the operator''s reason is on the record, verbatim',
+select lc.val('LA3 the FIRST suspension''s reason is on the record, verbatim',
   format($$select after->>'reason' from public.audit_events
             where organisation_id=%L and action='organisation.suspended'
-            order by created_at desc limit 1$$, :'alpha_org'),
+            order by created_at asc limit 1$$, :'alpha_org'),
   'non-payment, invoice 902');
 select lc.val('LA4 THE SUMMARY: counts, both clocks and the period end, all present',
   format($$select (after ? 'active_members' and after ? 'published_profiles'
@@ -437,12 +607,12 @@ select lc.val('LA4 THE SUMMARY: counts, both clocks and the period end, all pres
                    and after ? 'lifecycle_state')::text
              from public.audit_events
             where organisation_id=%L and action='organisation.suspended'
-            order by created_at desc limit 1$$, :'alpha_org'), 'true');
+            order by created_at asc limit 1$$, :'alpha_org'), 'true');
 select lc.val('LA4b ...and the counts are real, not zeros (ALPHA has members)',
   format($$select ((after->>'active_members')::int > 0)::text
              from public.audit_events
             where organisation_id=%L and action='organisation.suspended'
-            order by created_at desc limit 1$$, :'alpha_org'), 'true');
+            order by created_at asc limit 1$$, :'alpha_org'), 'true');
 -- NO TENANT RECORD CONTENT. The same discipline § IA asserts for the
 -- impersonation rows: a summary is counts, and a count is not content.
 -- THE REASON IS CUSTOMER-VISIBLE, AND THAT IS AN INTENDED PROPERTY WITH A

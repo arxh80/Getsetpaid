@@ -82,10 +82,22 @@ export async function listWoundDownOrganisations(): Promise<
     .limit(LIFECYCLE_LIST_LIMIT);
 
   if (error) {
-    // FAIL CLOSED AND LOUD: an empty list here reads as "nothing is
-    // suspended", which is the one wrong answer that would have the operator
-    // conclude a suspension did not take. Logged so a real outage is visible
-    // in the server log rather than a mystery empty page.
+    // LOUD IN THE LOG, SILENT ON THE PAGE -- and the comment used to claim
+    // otherwise (review fix round 1, Minor 1). It said "FAIL CLOSED AND LOUD:
+    // an empty list here reads as 'nothing is suspended', which is the one
+    // wrong answer that would have the operator conclude a suspension did not
+    // take" -- and then returned [], producing exactly that answer plus the
+    // "Every workspace on the platform is active" empty state. The claim and
+    // the code disagreed, which is worse than either.
+    //
+    // WHAT IS TRUE: this returns nothing on a read failure, the server log
+    // carries the cause, and the operator sees the empty state. That is
+    // tolerable because this list is a CONVENIENCE -- the operator suspends
+    // and closes by typing a slug, not by picking from here, and the complete
+    // history of every transition is in the audit log viewer. It is NOT
+    // tolerable indefinitely: surfacing a distinguishable error state (a
+    // discriminated result rendered as an Alert) is owed, and is noted in the
+    // task report rather than silently left to the next reader.
     console.error("[admin] wound-down organisation list failed:", error.message);
     return [];
   }
