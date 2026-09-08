@@ -608,6 +608,17 @@ select harness.try('G2  owner cannot write org B''s subscription either',
 
 reset role; reset request.jwt.claims;
 
+-- PHASE 7 TASK A: org_a and org_b already carry a Starter row each --
+-- public.create_organisation() (lines 127/132 above) now writes one at birth
+-- for every organisation, org_a/org_b included. G3/G3b below are specifically
+-- about the INSERT policy (organisation_subscriptions_insert_platform_billing),
+-- so they need a genuinely absent row to insert INTO, or they measure a
+-- duplicate-key error (23505) instead of the grant this section is FOR.
+-- Stripped here, as postgres, the same way § N's N1 in rls_phase2_crm.sql
+-- reaches the "no subscription row" state deliberately rather than by
+-- accident.
+delete from public.organisation_subscriptions where organisation_id in (:'org_a_id', :'org_b_id');
+
 set role authenticated;
 set request.jwt.claims = :'super_c';
 

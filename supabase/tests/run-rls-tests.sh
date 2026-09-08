@@ -677,6 +677,26 @@ BETA_ORG=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -t
 ALPHA_ORG=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
             "select id from public.organisations where slug='org-alpha'" | tr -d '[:space:]')
 
+# PHASE 7 TASK A: the psql suites above (specifically network_leakage_phase6.sql's
+# LZ2/LI, the last thing to touch it) deliberately leave ALPHA row-less when
+# they finish -- that is the state their OWN assertions are about, and it is
+# unrelated to this section. Before Task A that was harmless here too, because
+# private.crm_write_organisations()'s "no subscription row" escape meant a
+# row-less ALPHA still accepted every CRM write below (e.g. "booker POSTs an
+# artist"). That escape is gone, so a row-less ALPHA now REFUSES those writes,
+# for a reason this section's own text says nothing about. Give both fixture
+# organisations a real, working row before any write assertion below runs --
+# `on conflict` because BETA already carries the Starter row
+# public.create_organisation() writes at birth, and this section's writers act
+# as ALPHA members only, so BETA only needs enough to not be row-less should a
+# future assertion here name it.
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c \
+  "insert into public.organisation_subscriptions
+     (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+   values ('$ALPHA_ORG','pro','monthly',1,'active', now() + interval '30 days'),
+          ('$BETA_ORG','pro','monthly',1,'active', now() + interval '30 days')
+   on conflict (organisation_id) do update set plan_id='pro', status='active';" > /dev/null
+
 p2_token() { # email -> access token
   curl -s -X POST "$API/auth/v1/token?grant_type=password" \
     -H "apikey: $ANON" -H "Content-Type: application/json" \
@@ -885,10 +905,22 @@ p2_sub "update public.organisation_subscriptions
 p2_code "CANCELLED inside the window: no grace, closed at once"  403 POST "artists" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"cancelled artist\"}" "$BKR"
 
-# Restore the shipped state -- no subscription row, so the gate is inert again.
+# STRIP the row entirely -- PHASE 7 TASK A FLIPPED THIS. It used to prove "no
+# subscription row = the escape = writes allowed again"; the escape is gone,
+# so the same statement now proves the opposite: a row-less organisation is
+# DENIED, not returned to some inert default. Matches rls_phase2_crm.sql
+# § N's N1/N16 at this same layer.
 p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
-p2_code "RESTORED: no subscription row, writes allowed again" 201 POST "artists" \
-        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"inert artist\"}" "$BKR"
+p2_code "STRIPPED: no subscription row, writes are now DENIED (escape removed)" 403 POST "artists" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"stripped artist\"}" "$BKR"
+
+# ...and leave ALPHA on a REAL, working row. There is no more inert state to
+# rest on between sections -- "Phase 3 events at the API surface" immediately
+# below needs ALPHA's CRM writes to keep working, and so does every HTTP
+# section after it.
+p2_sub "insert into public.organisation_subscriptions
+          (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+        values ('$ALPHA_ORG','pro','monthly',1,'active', now() + interval '30 days');"
 
 echo
 echo "=== Read-only suspension at the API surface (Q6 / Task 3a) ==="
@@ -1060,10 +1092,13 @@ p2_range_written() { # name want_total METHOD path body token -- count=exact
 #
 # PLACED HERE, and the position is load-bearing: it needs p2_range_shape and
 # p2_range_written (defined immediately above) and it must run while org ALPHA
-# is LIVE and UNSUBSCRIBED -- the subscription block above deletes its row on
-# its last line, and the suspension block below is about to soft-delete the
-# organisation. Between those two is the only window where a 201 means "the
-# policy allowed it" rather than "the entitlement gate happened to be open".
+# is LIVE and SUBSCRIBED (the block above restores a real Pro row on its last
+# line -- PHASE 7 TASK A removed private.crm_write_organisations()'s "no
+# subscription row" escape, so a 201 below is meaningful only with a real,
+# working row behind it, not despite the absence of one), and BEFORE the
+# suspension block further down soft-deletes the organisation. Between those
+# two is the only window where a 201 means "the policy allowed it" and not
+# "the entitlement gate happened to be open" (or, pre-Task-A, "closed").
 #
 # THE PATCH-COUNT CHECK IS THE ONE THAT MATTERS. A PostgREST PATCH that changed
 # NOTHING answers `204 No Content` -- byte-identical, in the status line, to one
@@ -1831,9 +1866,15 @@ else
   api_fails=$((api_fails+1))
 fi
 
-# Restore the shipped state: no subscription row, so the gate is inert again --
-# the same clean-up the entitlement block above performs for the same reason.
-p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
+# PHASE 7 TASK A: there is no more "no subscription row = inert" state to
+# restore ALPHA to -- private.crm_write_organisations()'s escape is gone, and
+# the "Custom field VALUES at the API surface" section immediately below
+# writes through set_custom_field_values(), which is itself a CRM write
+# gated by that same function (20260829011000). Deleting the row here would
+# deny that section's own LIVE CONTROL. Restore to STARTER instead -- a real,
+# working tier, same as ALPHA already carries above this block.
+p2_sub "update public.organisation_subscriptions set plan_id='starter', status='active'
+        where organisation_id='$ALPHA_ORG';"
 
 echo
 echo "=== Custom field VALUES at the API surface (Task 5) ==="
@@ -1938,6 +1979,13 @@ cf_rpc "REINSTATED: the same save applies again (positive control)" 200 \
 #
 # Its own organisation, because the psql § W fixtures have already been merged
 # and dismissed by the time this runs, and a merge is not idempotent.
+#
+# IT NEEDS A REAL SUBSCRIPTION ROW (PHASE 7 TASK A), planted below alongside
+# it. screen_for_duplicates() and merge_records() are CRM writes, gated by
+# private.crm_write_organisations() (rls_phase2_crm.sql's § W header names it
+# explicitly), and that function's "no subscription row" escape is gone --
+# without a row of its own this organisation would refuse every merge in this
+# section before its own logic was ever reached.
 # ----------------------------------------------------------------------------
 echo
 echo "=== Dedup and merge at the API surface (Task 6) ==="
@@ -1957,6 +2005,10 @@ HM_OL="4d0000ff-0000-0000-0000-000000000005"  # newer -> the Owner's loser
 p2_sub "insert into public.organisations (id, name, slug)
         values ('$MERGE_ORG','Org HTTP Merge','org-http-merge')
         on conflict (id) do nothing;
+        insert into public.organisation_subscriptions
+          (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+        values ('$MERGE_ORG','starter','monthly',1,'active', now() + interval '30 days')
+        on conflict (organisation_id) do nothing;
         insert into public.organisation_memberships
           (organisation_id, user_id, role, status, joined_at)
         values ('$MERGE_ORG','${P2ID[pmanager]}','manager','active',now()),
