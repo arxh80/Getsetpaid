@@ -444,10 +444,23 @@ export interface E2eWorld {
   // TWO MORE TENANTS, AND THE TIER IS THE WHOLE REASON THEY EXIST.
   //
   // The main organisation carries a real STARTER row (see the insert in
-  // `setUpWorld`, added by Phase 7 Task A) -- Starter's finance_module is
-  // false, same as the "no subscription row" escape used to read before Task
-  // A removed it, so a finance write there still proves nothing about the Pro
-  // gate. These two carry their OWN, DIFFERENT subscription rows:
+  // `setUpWorld`, added by Phase 7 Task A). Starter's finance_module is
+  // false -- so a finance write there is REFUSED, which is a real behavioural
+  // flip from before Task A: `private.finance_module_organisations()` itself
+  // is untouched by that task (its "no subscription row" escape is a
+  // deliberate, separate follow-up -- FOLLOW-UPS.md § "Phase 7 -- superuser
+  // dashboard" -- and Starter/Free's finance_module was always false), but
+  // the main org used to be the one place that escape was actually exercised:
+  // it had NO subscription row before Task A, and that escape ALLOWED finance
+  // writes ("not yet billed => not yet gated"). Task A's create_organisation()
+  // change gave it a real Starter row instead, which the tier itself refuses.
+  // Net effect on this org: finance writes went from ALLOWED (via the escape)
+  // to REFUSED (via the tier) -- unexercised by any spec (no `tests/e2e/`
+  // spec writes finance against `world.orgSlug`), but worth stating correctly
+  // here since this is the exact file a future finance e2e test would read.
+  // Either way, a finance write here still proves nothing about the Pro gate
+  // -- that is what these two carry their OWN, DIFFERENT subscription rows
+  // for:
   //
   //   proOrg      plan_id 'pro',     status 'active'  -> finance_module TRUE
   //   starterOrg  plan_id 'starter', status 'active'  -> finance_module FALSE
@@ -1202,11 +1215,14 @@ export async function setUpWorld(): Promise<E2eWorld> {
   // TWO ORGANISATIONS THAT EXIST FOR THEIR SUBSCRIPTION ROWS.
   //
   // The main organisation above now carries a real STARTER row (Phase 7 Task
-  // A), whose finance_module is false -- so a finance write there is still
-  // refused by the TIER, the same outcome the "not yet billed => not yet
-  // gated" escape used to produce before Task A removed it, and still not
-  // what this section is testing. These two carry real rows -- 'pro' and
-  // 'starter',
+  // A), whose finance_module is false -- so a finance write there is refused
+  // by the TIER. That is a REAL FLIP from before Task A, not the same outcome:
+  // the main org previously had NO subscription row, and private.finance_
+  // module_organisations()'s "not yet billed => not yet gated" escape (still
+  // untouched by Task A -- see this file's earlier finance-organisations
+  // comment for why) ALLOWED finance writes there, not refused them. Either
+  // way it is still not what this section is testing. These two carry real
+  // rows -- 'pro' and 'starter',
   // both `active` with a period end in the future, so neither is inside the
   // past_due grace branch -- which makes the Pro gate's OPEN and CLOSED states
   // both reachable from a browser for the first time.
