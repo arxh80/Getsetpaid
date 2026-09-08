@@ -2660,8 +2660,35 @@ next person does not have to re-derive it.
   the SQL function **and** in `policy.ts`, in the same change.
   `tests/integration/entitlements/past-due-grace-matches-db.test.ts` is what
   fails if only one of them moves.
-- **Ship the superuser REINSTATE path in the same change as the suspend
-  button.** **CORRECTED IN TASK 3a FIX ROUND 1 — the first sentence used to say
+- ~~**Ship the superuser REINSTATE path in the same change as the suspend
+  button.**~~ **DISCHARGED 2026-09-08, Phase 7 Task 3 (`20260908030000`).**
+  Built to the shape this entry specifies, exactly: a NEW permissive policy,
+  `organisations_update_platform_lifecycle`, which is the only policy in the
+  schema whose `USING` clause can match a soft-deleted organisation row and
+  therefore the only way `deleted_at` can ever be cleared.
+  `organisations_update_manage_organisation` is untouched, `manage_organisation`
+  is still `survives_suspension = false`, and `rls_phase2_crm.sql` P7/P7a/P7b
+  and P11-P11f all pass unchanged. **Three things this entry could not have
+  anticipated, recorded because the next reader should not have to re-derive
+  them:**
+  (1) the new policy needed a matching SELECT policy,
+  `organisations_select_platform_lifecycle`, because Postgres applies SELECT
+  policies to an UPDATE's row-matching and the superuser is a member of
+  nothing, so without it every reinstate would match zero rows and report
+  success (`20260826154304` documents the same trap on
+  `organisation_subscriptions`); that widening is why
+  `rls_phase7_impersonation.sql` IX4/IZ3 were re-measured.
+  (2) the three RPCs are `SECURITY INVOKER`, against the house pattern, so the
+  new policy is the *enforcement* rather than dead code beside a definer that
+  bypasses RLS.
+  (3) the policy carries a second term, `private.lifecycle_transition_in_progress()`,
+  so a raw `PATCH /rest/v1/organisations` from the superuser's own browser
+  cannot make an un-audited, un-reasoned lifecycle change; the marker is set
+  only inside the three RPCs and closed again by them.
+  `rls_phase7_lifecycle.sql` sections LP and LR are the proof, driven from the
+  Owner, a foreign aal2 Owner and an aal1 superuser. **ORIGINAL ENTRY BELOW,
+  kept because its mechanism description is what made the fix buildable.**
+  **CORRECTED IN TASK 3a FIX ROUND 1 — the first sentence used to say
   "since `20260828140000`, a soft-deleted organisation grants no permission at
   all", which has been false since `20260828210000` and cites a superseded
   migration. The conclusion below is unchanged; the mechanism behind it is
@@ -2703,11 +2730,40 @@ next person does not have to re-derive it.
   `private.audit_crm_row()` now resolves the organisation through a live lookup,
   so a vanished parent degrades to `NULL` rather than aborting. R12/R13 assert it
   **with `request.jwt.claims` set**, and go red as `denied(23503)` when reverted.
-  **What genuinely remains for Phase 7** is the volume half: one audit row per
+  ~~**What genuinely remains for Phase 7** is the volume half: one audit row per
   cascaded child row, each with its own `correlation_id` because
   `private.log_audit_event()` mints a fresh one per call. Either thread one
   correlation id through the deletion path or suppress row-level audit inside the
-  bulk operation and write a single summary row. This matters beyond tidiness —
+  bulk operation and write a single summary row.~~ **THE VOLUME HALF IS
+  DISCHARGED 2026-09-08, Phase 7 Task 3 (`20260908030000`), AS THREADING PLUS
+  SUMMARY — and the mechanism is deliberately general, so the hard purge and the
+  DSR erasure reuse it rather than inventing their own.**
+  `private.log_audit_event()` now resolves its correlation id in THREE steps
+  rather than two: an explicit `p_correlation_id` wins, then the thread
+  `private.begin_lifecycle_transition()` declares, then — unchanged — a fresh
+  uuid per call. An operation declares itself once and every audit row written
+  anywhere inside it, **by any trigger, including one added years later**, joins
+  one thread with no call site edited. `private.end_lifecycle_transition()`
+  closes it, and that pairing is not optional: an `is_local` GUC stands to the
+  end of the *transaction* whatever `SET` clauses the call stack carries
+  (measured, after the first cut assumed otherwise). Beside it,
+  `private.log_organisation_lifecycle_event()` writes ONE summary row per
+  transition whose `after` payload carries the new state, both clocks, the
+  operator's reason and COUNTS of what the transition touched (active members,
+  published profiles) — counts, never rows, so the audit table stays free of
+  tenant record content.
+  **Suppression was considered and rejected**: it discards evidence to save
+  space, in the table whose whole purpose is evidence, and unrecoverably — a
+  summary saying "1,412 rows" cannot answer "was contact X among them".
+  Threading keeps both, and if a purge is ever large enough that per-row rows
+  are genuinely intolerable, the place to add suppression is that one function,
+  on the same GUC, not thirty call sites.
+  `rls_phase7_lifecycle.sql` LA6/LA6b is the proof, and it is deliberately TWO
+  writes inside one declared operation: every real lifecycle transition happens
+  to be alone on its thread, so a one-row-per-thread assertion would have passed
+  identically against the old function. **The purge itself is still Phase 8+
+  machinery and still does not exist** — Task 3 shipped the states, the clocks
+  and the reversibility, not the deletion. This matters beyond tidiness —
   it is the path superuser organisation deletion and GDPR erasure both take, and
   erasure carries a 30-day statutory clock.
 - **DSR erasure must scrub `merges.field_resolution`, not just the entity row.**
