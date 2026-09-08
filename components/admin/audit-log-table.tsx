@@ -4,6 +4,7 @@ import type { RawSearchParams } from "@/lib/list/params";
 import {
   auditLogIsFiltered,
   buildAuditLogNextHref,
+  buildAuditLogSelfHref,
   type AuditLogPage,
   type AuditLogParams,
 } from "@/lib/admin/audit-log";
@@ -238,6 +239,12 @@ function PayloadDetail({ label, value }: { label: string; value: unknown }) {
  * at the end of the log) -- see that file's header for the measurements
  * behind that choice. No "Previous": lib/admin/audit-log.ts's header
  * explains why this surface is forward-only.
+ *
+ * DISABLED IS A NO-OP, NOT A DROP (fix round 1, Important 1). The href for
+ * the disabled branch is the CURRENT view (buildAuditLogSelfHref), not the
+ * bare basePath -- see that function's header for why "page one, filters
+ * cleared" was the exact lie list-pager.tsx's own `selfHref` exists to
+ * prevent, and this component now reproduces the shape it already cited.
  */
 function NextLink({
   basePath,
@@ -255,7 +262,7 @@ function NextLink({
   const href =
     enabled && cursor
       ? buildAuditLogNextHref(basePath, params, raw, cursor)
-      : basePath;
+      : buildAuditLogSelfHref(basePath, params, raw);
   return (
     <Link
       href={href}

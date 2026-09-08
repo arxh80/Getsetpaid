@@ -402,3 +402,32 @@ export function buildAuditLogNextHref(
     cursor: { direction: "after", cursor },
   });
 }
+
+/**
+ * Build the href for the CURRENT view -- the page being rendered right now,
+ * filters and cursor (if any) unchanged.
+ *
+ * FIX ROUND 1, IMPORTANT 1. The disabled "Next" link at the end of the log
+ * used to fall back to the bare `basePath` (page one, every filter dropped)
+ * -- exactly the lie components/list/list-pager.tsx's own `selfHref` exists
+ * to prevent ("the href points at the current view so activating it is a
+ * no-op rather than a lie"), and this component's own header already cited
+ * that file's shape without actually reproducing it. `aria-disabled` keeps
+ * the element focusable and activatable BY DESIGN (list-pager.tsx's header:
+ * that is the whole point of `aria-disabled` over removing the element from
+ * the tab order), so a keyboard user who tabs to "Next" at the end of a
+ * filtered page and presses Enter must land back on the SAME page they were
+ * already looking at -- never on an unfiltered page one.
+ */
+export function buildAuditLogSelfHref(
+  basePath: string,
+  params: AuditLogParams,
+  raw: RawSearchParams,
+): string {
+  return buildListHref(AUDIT_LOG_SPEC, basePath, params.list, {
+    preserve: raw,
+    cursor: params.list.cursor
+      ? { direction: "after", cursor: params.list.cursor }
+      : null,
+  });
+}
