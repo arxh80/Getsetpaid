@@ -2510,6 +2510,71 @@ debts it carried forward.
 This is where the privileged surface actually lands, so these must be fixed
 before the first real consumer exists rather than alongside it.
 
+### Opened by Task 2 (break-glass impersonation)
+
+Everything below is a KNOWN, MEASURED property of what shipped, not a defect
+found later. Each is queued in
+`.superpowers/sdd/plan-the-whole-build-synthetic-thompson/DECISIONS-QUEUE.md`
+with the default that shipped, and each names what the fix would be so the
+next person does not have to re-derive it.
+
+- **A SUSPENDED organisation cannot accept a support-access request (Q98).**
+  `manage_organisation` has `survives_suspension = false`, so a suspended
+  workspace's own Owner/Admin can neither see nor answer one. Consistent with
+  consequence P7 (suspension is not self-serviceable) and measured in
+  `rls_phase7_impersonation.sql` § IS — but it bites the support case most
+  likely to need impersonation. **The fix, if the founder wants one, is a NEW
+  catalogue key** (`accept_support_access`, `survives_suspension = true`,
+  granted to Owner/Admin) — never a special case inside `has_permission()`,
+  which is the one function in the schema that must stay readable in one pass.
+  Note the other half is already right: an ALREADY-LIVE session survives
+  suspension for reads, because `view_crm` does.
+- **Consent cannot be withdrawn between accept and start (Q100).**
+  `public.end_impersonation_session()` acts on a RUNNING session. The window is
+  minutes in practice and the page says so in as many words, but a customer who
+  changes their mind in it has no control. **The fix needs a SEVENTH status**
+  (`withdrawn`), not a reuse of `declined`: the state CHECK ties `declined` to
+  `accepted_at is null`, deliberately, so that no reader has to consult
+  `status` to know what a timestamp column means.
+- **The accepting admin is `aal2` but not step-up-fresh (Q99).** The superuser
+  side has both. Cheap to add if wanted: wrap the accept CONTROL (never the
+  page — a re-auth prompt in place of a list would be the first read in the
+  product to demand one) in `<StepUpGate>`, and add the `checkStepUp()` call
+  the superuser actions already carry to
+  `acceptImpersonationRequestAction`.
+- **Nothing notifies the customer that a request exists.** Q45 for the third
+  time (after `reminder_at` and connection requests): there is no notification
+  subsystem at MVP, so `/[orgSlug]/support-access` is the whole discovery
+  surface. **This is the entry the email fold-in later in Phase 7 should
+  discharge** — an impersonation request is a better first transactional email
+  than most, because the customer cannot act on it if they never see it.
+- **The page-access audit is APP-SIDE and over-records.** It fires at
+  `getCurrentOrg()`, which is the only choke point every org-scoped page
+  passes through (an `[orgSlug]` layout does not re-run on a client-side
+  navigation between two routes that share it). Two consequences, both
+  deliberate and both worth a reviewer's attention: a Next.js **prefetch**
+  lands a `page_viewed` row for a page nobody opened — the opposite of Task
+  1's decision for the audit-log viewer, because here the safe direction is
+  over-recording; and a **direct PostgREST read** by an impersonating
+  superuser would be authorised by the grant and not recorded as a page view,
+  though the session and its start/end remain audited. Closing the second
+  needs a trigger-based read audit, which does not exist anywhere in this
+  product and should not be invented for one feature.
+- **`/super` is now a landing page, and the next operator surface adds a row
+  to `SURFACES` in `app/(app)/super/page.tsx`.** It stopped being a redirect
+  to `/super/audit-log` the moment a second surface existed. Its own loading
+  skeleton moved with it.
+- **The impersonated view has one fidelity gap worth naming:**
+  `public.profiles` is readable via `private.shares_active_organisation()`,
+  and an impersonating superuser shares no organisation — so a name resolved
+  from `profiles` (an activity-timeline actor, a record owner) may render
+  blank during a session where the customer would see a person's name. Not a
+  leak (the direction is less information, not more) and not measured as a
+  defect anywhere, but it is the class of thing that makes a support engineer
+  doubt what they are looking at. If it matters, the fix is the same shape as
+  every other policy here: one additional SELECT policy probing
+  `private.impersonated_organisations('view_crm')`.
+
 - ~~**`private.custom_field_limit()` has the SAME escape, and it dies in the
   same migration.**~~ **DISCHARGED 2026-09-08, Phase 7 Task A
   (`20260908000000`).** Task 5 (`20260829010500`) mirrored
