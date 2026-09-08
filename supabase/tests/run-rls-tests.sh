@@ -573,6 +573,51 @@ else
 fi
 
 # ============================================================================
+# PHASE 7 TASK 3 (ORGANISATION LIFECYCLE) SUITE.
+#
+# Runs LAST of the psql suites, after impersonation, and reuses the SAME
+# fixtures and the SAME variable set (P7VARS). It suspends, closes and
+# reinstates ALPHA repeatedly -- the only suite in this directory that WRITES
+# a lifecycle state through the product's own RPCs rather than through a
+# postgres-role UPDATE -- and its § LZ asserts it leaves ALPHA active,
+# unchanged, and with its original subscription period. That matters more here
+# than anywhere else: a workspace left suspended would make every HTTP check
+# below run against a read-only tenant, and those were written against a live
+# one.
+#
+# It also DISABLES A TRIGGER for one assertion (§ LV4, the CHECK proved with
+# the normaliser off) and re-enables it in the same DO block, which is why it
+# runs after everything that depends on public.organisations behaving normally.
+# ============================================================================
+docker cp "$HERE/rls_phase7_lifecycle.sql" "$CTR:/tmp/rls_phase7_lifecycle.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off   "${P7VARS[@]}" -f /tmp/rls_phase7_lifecycle.sql
+
+lc_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc            "select count(*) from lc.results where not pass" | tr -d '[:space:]')
+if [ "$lc_fails" != "0" ]; then
+  echo "PHASE 7 LIFECYCLE SUITE FAILED: $lc_fails failing assertion(s)" >&2
+  echo "  In LV, THE INVARIANT IS BROKEN -- a row can now be 'active' with" >&2
+  echo "  deleted_at set, or wound down without it. Thirty-odd permission" >&2
+  echo "  gates read deleted_at alone on the strength of that invariant." >&2
+  echo "  In LP, CONSEQUENCE P7 IS GONE -- an Owner, a foreign admin or an" >&2
+  echo "  aal1 superuser can un-suspend a workspace. Sev1." >&2
+  echo "  In LR, EITHER THE WAY BACK IS BROKEN (a one-way door: suspend with" >&2
+  echo "  no reinstate) OR THE SANCTIONED-PATH MARKER IS GONE, which means a" >&2
+  echo "  raw PATCH can now make an un-audited, un-reasoned lifecycle change." >&2
+  echo "  In LA, THE AUDIT TRAIL is incomplete, unthreaded, misattributed, or" >&2
+  echo "  has started carrying tenant record content." >&2
+  echo "  In LN, THE Q88/Q92/Q101 CLOCKS have moved. These expectations are" >&2
+  echo "  FOUNDER RULINGS, so a failure means the code changed, not that the" >&2
+  echo "  expectation should." >&2
+  echo "  In LZ, this suite left ALPHA wound down and every HTTP check below" >&2
+  echo "  is now running against a read-only tenant -- discard the run and" >&2
+  echo "  reset." >&2
+  psql_status=1
+else
+  echo "Phase 7 lifecycle suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
