@@ -79,6 +79,18 @@ export default async function ImpersonationPage() {
 
       <section className="flex flex-col gap-4 border-t border-rule pt-8">
         <h2 className="text-xl font-bold text-ink">Your sessions</h2>
+        {/* STARTING A SESSION ALSO NEEDS STEP-UP, AND THE CONTROL IS NOT
+            WRAPPED IN THE GATE. Wrapping it would replace this whole list
+            with a re-auth prompt, which is the wrong trade for a surface
+            whose other job is telling the operator what is running. So
+            startImpersonationAction re-checks server-side and refuses with a
+            sentence pointing back at the prompt the section above renders
+            when the credential is stale. Ending a session needs no step-up
+            at all -- see lib/admin/impersonation.ts. */}
+        <p className="max-w-prose text-sm text-ink-muted">
+          Starting a session asks you to confirm it’s you again if it has been
+          more than a few minutes; ending one never does.
+        </p>
         {sessions.length === 0 ? (
           <p className="max-w-prose text-base text-ink-muted">
             No impersonation sessions yet. Request one above — it will appear

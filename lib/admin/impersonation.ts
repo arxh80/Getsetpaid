@@ -14,17 +14,22 @@
 // ===========================================================================
 // WHAT THIS FILE ADDS ON TOP OF THE RPCs, AND WHY EACH ONE IS NOT REDUNDANT
 // ===========================================================================
-// 1. STEP-UP RE-AUTHENTICATION, on the two superuser actions. CLAUDE.md
-//    § Session security requires it "before ... any high-risk admin/superuser
-//    function (including impersonation)". It is checked HERE and not in the
-//    database because `amr` freshness lives in the JWT and is read through
+// 1. STEP-UP RE-AUTHENTICATION, on the two superuser actions THAT GRANT --
+//    request and start -- and deliberately NOT on the one that takes access
+//    away (see endImpersonationAction's own header for why gating a safety
+//    control behind a five-minute credential is backwards when the thing it
+//    ends runs for sixty). CLAUDE.md § Session security requires step-up
+//    "before ... any high-risk admin/superuser function (including
+//    impersonation)". It is checked HERE and not in the database because
+//    `amr` freshness lives in the JWT and is read through
 //    supabase.auth.getClaims(), which revalidates the token with the auth
 //    server -- a Postgres function sees only the decoded claims it was handed.
 //    The database's own gate (has_platform_permission -> aal2) is the floor;
 //    step-up is the additional "and you proved it in the last five minutes".
 //    THE UI GATE IS NOT THE CONTROL: app/(app)/super/impersonation/page.tsx
-//    wraps the forms in <StepUpGate>, and these actions re-check anyway,
-//    because hiding a form is not enforcement (CLAUDE.md § Permissions).
+//    wraps the request form in <StepUpGate>, and these actions re-check
+//    anyway, because hiding a form is not enforcement (CLAUDE.md
+//    § Permissions).
 // 2. A SENTENCE PER REFUSAL. The RPCs raise deliberately undifferentiated
 //    42501s (a foreign admin probing session ids must not be able to tell a
 //    real id in another tenant from a fabricated one), so the mapping from
@@ -50,7 +55,10 @@ import { FAILED_MESSAGE } from "@/lib/crm/write";
 import { isSuperuser } from "@/lib/admin/superuser";
 
 const STEP_UP_REQUIRED =
-  "Confirm it’s you before using support access. Reload this page and re-enter your two-factor code, then try again.";
+  "Confirm it’s you before opening support access. Use the re-authentication prompt at the top of this page, then try again.";
+
+const REASON_TOO_LONG =
+  "That reason is too long. Keep it under 500 characters — it is a note for the workspace’s admins, not a report.";
 
 const NOT_YOURS =
   "That request can’t be actioned from here. Reload the page — it may already have been answered, or it may not be yours to answer.";
@@ -83,6 +91,12 @@ function rpcRefusal(
 ): FormState {
   if (code === "42501") return refuse(NOT_YOURS, formData);
   if (code === "23505") return refuse(ALREADY_LIVE, formData);
+  // 23514 is impersonation_sessions_reason_present -- in practice always the
+  // 500-character cap, since the empty case is caught as 22023 by the RPC
+  // before the INSERT. The form carries maxLength={500}, so reaching this
+  // means the form was bypassed; it still deserves a sentence the caller can
+  // act on rather than "we couldn't save that just now".
+  if (code === "23514") return refuse(REASON_TOO_LONG, formData);
   if (code === "22023") {
     // Two 22023s exist: an empty reason and an unknown slug. They are told
     // apart by the message the function raised, which is our own text, not a
@@ -108,6 +122,7 @@ function rpcRefusal(
  */
 async function authoriseSuperuser(
   formData: FormData,
+  { requireStepUp }: { requireStepUp: boolean },
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly state: FormState }> {
   if (!(await getCurrentUser())) {
     return { ok: false, state: refuse(FAILED_MESSAGE, formData) };
@@ -117,7 +132,7 @@ async function authoriseSuperuser(
     // they aim at somebody else's session. There is nothing to learn here.
     return { ok: false, state: refuse(NOT_YOURS, formData) };
   }
-  if (!(await checkStepUp())) {
+  if (requireStepUp && !(await checkStepUp())) {
     return { ok: false, state: refuse(STEP_UP_REQUIRED, formData) };
   }
   return { ok: true };
@@ -130,7 +145,8 @@ export async function requestImpersonationAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authoriseSuperuser(formData);
+  // STEP-UP REQUIRED: this is the act CLAUDE.md § Session security names.
+  const gate = await authoriseSuperuser(formData, { requireStepUp: true });
   if (!gate.ok) return gate.state;
 
   const slug = field(formData, "organisationSlug");
@@ -165,7 +181,13 @@ export async function startImpersonationAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authoriseSuperuser(formData);
+  // STEP-UP REQUIRED. This is the moment access actually begins -- the
+  // request only asked -- so it is the one that most deserves a fresh
+  // credential, and acceptance can arrive hours after the request, by which
+  // time the sign-in that covered the request is long stale. The page's
+  // <StepUpGate> renders the re-auth prompt above this list when it is, which
+  // is where STEP_UP_REQUIRED sends the caller.
+  const gate = await authoriseSuperuser(formData, { requireStepUp: true });
   if (!gate.ok) return gate.state;
 
   const sessionId = field(formData, "sessionId");
@@ -192,11 +214,35 @@ export async function startImpersonationAction(
 // ---------------------------------------------------------------------------
 // 3. END (superuser side)
 // ---------------------------------------------------------------------------
+/**
+ * End a session, from the superuser's side.
+ *
+ * ===========================================================================
+ * NO STEP-UP HERE, AND THIS IS A DELIBERATE ASYMMETRY WITH THE TWO ABOVE
+ * ===========================================================================
+ * FOUND IN SELF-REVIEW, and it is the kind of thing a uniform gate gets wrong
+ * by being uniform. The step-up window is FIVE MINUTES (lib/auth/step-up.ts)
+ * and the impersonation time-box is SIXTY, so for fifty-five of every sixty
+ * minutes a superuser's credential is stale -- and if ending were gated the
+ * same way as starting, the operator would be unable to CLOSE their own
+ * session without re-authenticating first.
+ *
+ * That is backwards. Step-up exists to guard an action that GRANTS
+ * capability; ending removes it. Putting friction in front of the safety
+ * control makes the dangerous state (a session left open) the path of least
+ * resistance, which is the opposite of what the gate is for. The customer's
+ * own revoke on /[orgSlug]/support-access has no step-up either, for the same
+ * reason, and neither does signing out.
+ *
+ * The identity check stays, and the database's own guard
+ * (public.end_impersonation_session: your session, or manage_organisation in
+ * the target organisation) is unchanged and is the actual control.
+ */
 export async function endImpersonationAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authoriseSuperuser(formData);
+  const gate = await authoriseSuperuser(formData, { requireStepUp: false });
   if (!gate.ok) return gate.state;
 
   const sessionId = field(formData, "sessionId");
