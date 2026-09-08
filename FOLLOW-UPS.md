@@ -2510,17 +2510,25 @@ debts it carried forward.
 This is where the privileged surface actually lands, so these must be fixed
 before the first real consumer exists rather than alongside it.
 
-- **`private.custom_field_limit()` has the SAME escape, and it dies in the same
-  migration.** Task 5 (`20260829010500`) mirrors
+- ~~**`private.custom_field_limit()` has the SAME escape, and it dies in the
+  same migration.**~~ **DISCHARGED 2026-09-08, Phase 7 Task A
+  (`20260908000000`).** Task 5 (`20260829010500`) mirrored
   `private.crm_write_organisations()` clause for clause, including reading "no
   subscription row" as **unlimited** rather than as Free. That is not a
   copy-paste convenience: Free's `custom_field_limit` is `0`, so reading a
   missing row as Free would give every organisation in the product zero custom
   fields on every entity type and ship the feature dead. The TypeScript half
-  (`customFieldLimit()` in `lib/crm/custom-fields.ts`) carries the same branch,
+  (`customFieldLimit()` in `lib/crm/custom-fields.ts`) carried the same branch,
   and `tests/integration/crm/custom-field-limit-matches-db.test.ts` binds the
-  two. When the escape below is removed, remove it in **three** places — that
-  function, this one, and the TypeScript mirror — in the same change.
+  two. **Removed in exactly the three places this entry names, in the same
+  migration/change as the entry below** — but NOT by deleting the branch the
+  way `crm_write_organisations()` was fixed: falling through to the Free case
+  would still zero every organisation's fields, so `private.custom_field_limit()`
+  now RAISES (`errcode XX000`) when an organisation exists with no subscription
+  row instead, an invariant the backfill + `create_organisation()`'s new write
+  make structurally impossible. `customFieldLimit()` and the binding test were
+  updated to match (the TS half falls through to Free's `0`, the safe default,
+  rather than raising).
 - **Custom field slot cycling is a billing question, not a schema one.** Founder
   decision Q12 (2026-08-29): a soft-deleted `custom_field_definitions` row frees
   its tier slot, so an organisation on Starter can remove five definitions and
@@ -2533,20 +2541,47 @@ before the first real consumer exists rather than alongside it.
   toward the limit for some window, meter stored values rather than definitions,
   or decide it does not matter. `private.custom_field_slot_available()` is the
   one function that changes.
-- **Switch the subscription entitlement gate on: remove the escape and backfill,
-  in ONE migration.** `private.crm_write_organisations()` (`20260828140000`) is
-  on all 25 CRM write policies and is **deliberately inert**: its
-  `s.organisation_id is null` branch means an organisation with no subscription
-  row is not gated, and `create_organisation()` writes no such row, so today it
-  gates nothing. Without that branch it would deny every CRM write in the
-  product on the day it shipped. Phase 7 must (1) backfill an
-  `organisation_subscriptions` row for every existing organisation, (2) make
-  `create_organisation()` write one, and (3) delete the branch — in the same
-  migration, in that order. Do it in the wrong order and every tenant loses
-  write access to their own CRM. `rls_phase2_crm.sql` § N and the HTTP
-  "Subscription entitlement" block are what prove the machinery works while it
-  is switched off; N1 and N16 are the two assertions that must change when the
-  escape goes.
+- ~~**Switch the subscription entitlement gate on: remove the escape and
+  backfill, in ONE migration.**~~ **DISCHARGED 2026-09-08, Phase 7 Task A
+  (`20260908000000`, commits `02e944d`/`5a4af78`/`41aa9c3`/`dabd986` on
+  `worktree-admin-phase`).** `private.crm_write_organisations()`
+  (`20260828140000`) was on all 25 CRM write policies and was **deliberately
+  inert**: its `s.organisation_id is null` branch meant an organisation with
+  no subscription row was not gated, and `create_organisation()` wrote no such
+  row, so it gated nothing. Without that branch it would have denied every CRM
+  write in the product on the day it shipped. **Done, in exactly the order
+  this entry specified**: (1) backfilled an `organisation_subscriptions` row
+  for every existing organisation, (2) made `create_organisation()` write one,
+  and (3) deleted the branch — in one migration, in that order. `rls_phase2_crm.sql`
+  § N's N1 and N16 were flipped to prove the gate now DENIES a stripped
+  organisation rather than proving the machinery works while switched off, and
+  every fixture across the psql/HTTP suite that relied on "no subscription
+  row" as its ambient state (ALPHA/BETA, `org-merge`, `org-http-merge`,
+  `rls_foundation.sql`'s org_a/org_b) was given a real row of its own. Full
+  psql/HTTP suite and `pnpm test` verified green — see `task-A-report.md`.
+- **`private.finance_module_organisations()` and `private.network_publish_organisations()`
+  carry the SAME "no subscription row" escape Task A did not touch.** Added
+  2026-09-08, alongside the entry above going DISCHARGED, so the gap does not
+  just disappear with it. Both mirror `private.crm_write_organisations()`'s
+  pre-Task-A shape clause for clause (`finance_module_organisations()`:
+  `20260903001000`; `network_publish_organisations()`: `20260904001000`) —
+  "no row => not yet billed => not yet gated" — and Task A deliberately scoped
+  around them (`.superpowers/sdd/plan-the-whole-build-synthetic-thompson/progress.md`'s
+  Task A description names only `crm_write_organisations()` and
+  `custom_field_limit()`), not by oversight. Two things a future task should
+  know going in: (1) `financial_entries`' own write policies (`20260903003000`)
+  are gated ONLY by `finance_module_organisations()`, never by
+  `crm_write_organisations()`, so removing the finance escape needs no
+  `custom_field_values`-style double-gate fix; `custom_field_values` writes for
+  `entity_type = 'financial_entry'` DO carry both, which is exactly the
+  interaction Task A's `rls_phase5_finance.sql` § FI fixes hit. (2) Every
+  fixture organisation across the whole psql/HTTP/e2e suite now carries a real
+  subscription row from birth (Task A's `create_organisation()` change), which
+  already forced every fixture that relied on "no row" for the finance/network
+  escapes specifically (`rls_phase5_finance.sql` FE1/FE12,
+  `rls_phase6_network.sql` § NT's NT1, `network_leakage_phase6.sql` § LI) to
+  strip that row explicitly before testing it — so removing these two escapes
+  is a smaller fixture-ripple than Task A's was, not a repeat of it.
 - **Replace the `past_due` grace proxy with a real column, in BOTH halves.**
   The founder's 3-day grace window (`lib/entitlements/policy.ts`, 2026-08-28) is
   now enforced in the database too — `private.past_due_grace_days()` and
