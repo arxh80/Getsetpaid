@@ -191,7 +191,10 @@ export default async function AppLayout({
           target, so "skip to content" still lands on the content and the
           banner is still read before it in DOM order. */}
       {currentOrg?.isSuspended ? (
-        <SuspendedBanner orgName={currentOrg.name} />
+        <SuspendedBanner
+          orgName={currentOrg.name}
+          lifecycle={currentOrg.lifecycle}
+        />
       ) : null}
 
       {/* THE IMPERSONATION BANNER IS NOT HERE, AND THAT IS FIX ROUND 1,

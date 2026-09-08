@@ -54,6 +54,9 @@ const org = {
   // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
   // these fixtures: nothing here exercises impersonation, and a fixture
   // that quietly claimed to would be asserting about the wrong feature.
+  // Phase 7 Task 3 added `lifecycle`: null for an ACTIVE workspace, which
+  // every fixture here is.
+  lifecycle: null,
   isImpersonated: false,
   impersonationExpiresAt: null,
 };

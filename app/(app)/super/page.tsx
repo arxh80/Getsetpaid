@@ -35,6 +35,12 @@ const SURFACES: readonly { href: string; label: string; blurb: string }[] = [
     blurb:
       "Break-glass, read-only support access to one workspace, only after that workspace's own Owner or Admin accepts, time-boxed and fully audited.",
   },
+  {
+    href: "/super/organisations",
+    label: "Organisations",
+    blurb:
+      "Suspend, close and reopen a workspace. Soft-delete only, every transition reasoned and audited, and every one of them reversible.",
+  },
 ];
 
 export default async function SuperuserIndexPage() {

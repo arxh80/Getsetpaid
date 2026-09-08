@@ -24,6 +24,7 @@ import {
   IMPERSONATION_ROLE_ENVELOPE,
   resolveImpersonationForOrg,
 } from "@/lib/admin/impersonation-session";
+import type { OrganisationLifecycleState } from "@/lib/admin/lifecycle-contract";
 
 export interface CurrentUser {
   id: string;
@@ -64,6 +65,34 @@ export interface CurrentOrg {
    * rule holds.
    */
   isSuspended: boolean;
+  /**
+   * WHICH kind of wound-down state, and its clocks (Phase 7 Task 3).
+   *
+   * Null when the workspace is active -- `isSuspended` above stays the
+   * predicate every existing consumer reads, and none of them had to change.
+   * This is the extra detail the customer's banner needs in order to say what
+   * happened, when, how long the data is kept and whether the network can
+   * still see them, instead of the single sentence it could manage before.
+   *
+   * `networkPresenceUntil` is the subscription's `current_period_end`, which
+   * founder ruling Q88 makes the boundary for a SUSPENDED workspace's place in
+   * the directory. CAVEAT, and it is why the banner says "about": for
+   * organisations that predate 20260908000000 that column was backfilled to
+   * migration-time + 30 days and is a placeholder rather than a real billing
+   * date (Phase 7 Task A, ledger note M2).
+   *
+   * NOT THE ENFORCEMENT, exactly like `isSuspended`. The states live in
+   * public.organisations under a CHECK constraint, the directory rule lives in
+   * private.organisation_network_presence_active(), and this object is what
+   * tells the customer about them.
+   */
+  lifecycle: {
+    state: OrganisationLifecycleState;
+    changedAt: string | null;
+    reason: string | null;
+    retentionExpiresAt: string | null;
+    networkPresenceUntil: string | null;
+  } | null;
   /**
    * This workspace is being viewed through a live BREAK-GLASS IMPERSONATION
    * SESSION, not through a membership (Phase 7 Task 2).
@@ -194,6 +223,36 @@ export async function getPendingInvites(): Promise<Membership[]> {
 }
 
 /**
+ * Shape the four lifecycle columns into CurrentOrg.lifecycle, or null.
+ *
+ * NULL FOR AN ACTIVE WORKSPACE, deliberately, rather than an object saying
+ * `state: "active"` with four nulls in it: `org.lifecycle` then reads as "is
+ * there anything to explain here", which is what every consumer actually wants
+ * to ask, and it cannot be confused with `isSuspended`, which stays the
+ * predicate the write-gates and the existing consumers read.
+ *
+ * IT TRUSTS THE DATABASE'S INVARIANT rather than re-deriving it: the CHECK
+ * constraint organisations_lifecycle_matches_deleted_at makes
+ * `lifecycle_state = 'active'` equivalent to `deleted_at is null`, so reading
+ * either one here would give the same answer, and reading the state column is
+ * the one that also says WHICH wound-down state it is.
+ */
+function lifecycleOf(
+  org: Record<string, unknown>,
+  networkPresenceUntil: string | null,
+): CurrentOrg["lifecycle"] {
+  const state = (org.lifecycle_state as OrganisationLifecycleState) ?? "active";
+  if (state === "active") return null;
+  return {
+    state,
+    changedAt: (org.lifecycle_changed_at as string | null) ?? null,
+    reason: (org.lifecycle_reason as string | null) ?? null,
+    retentionExpiresAt: (org.retention_expires_at as string | null) ?? null,
+    networkPresenceUntil,
+  };
+}
+
+/**
  * Resolve an org slug from the URL to the caller's organisation, or null.
  *
  * NULL COVERS THREE CASES AND DOES NOT DISTINGUISH THEM: the slug does not
@@ -261,7 +320,9 @@ export const getCurrentOrg = cache(
     // Q6 works at all.
     const { data: org, error } = await supabase
       .from("organisations")
-      .select("id, name, slug, deleted_at")
+      .select(
+        "id, name, slug, deleted_at, lifecycle_state, lifecycle_changed_at, lifecycle_reason, retention_expires_at",
+      )
       .eq("slug", slug)
       .maybeSingle();
 
@@ -314,9 +375,33 @@ export const getCurrentOrg = cache(
         // A LABEL, NOT THE GRANT. See CurrentOrg.isImpersonated.
         role: IMPERSONATION_ROLE_ENVELOPE,
         isSuspended: (org.deleted_at as string | null) !== null,
+        // NO SECOND QUERY ON THE IMPERSONATION PATH. The lifecycle detail
+        // exists to explain a suspension to the workspace's own members; an
+        // impersonating superuser gets the state and no clocks, because the
+        // period-end lookup would be a read of the tenant's subscription row
+        // for a caller whose whole envelope is deliberately view_crm and
+        // view_network (Q96). The banner degrades to its one-sentence form.
+        lifecycle: lifecycleOf(org, null),
         isImpersonated: true,
         impersonationExpiresAt: impersonation.expiresAt,
       };
+    }
+
+    // ONLY WHEN WOUND DOWN. An active workspace pays nothing for this -- which
+    // matters, because getCurrentOrg() runs on every org-scoped route in the
+    // product and the overwhelming majority of them are for live workspaces.
+    // organisation_subscriptions_select_member is what makes the read work at
+    // all, and it has no deleted_at term, which is what keeps a suspended
+    // organisation's own subscription row readable to its own members
+    // (20260828210000 § "WHAT DOES *NOT* CHANGE").
+    let periodEnd: string | null = null;
+    if ((org.deleted_at as string | null) !== null) {
+      const { data: subscription } = await supabase
+        .from("organisation_subscriptions")
+        .select("current_period_end")
+        .eq("organisation_id", org.id as string)
+        .maybeSingle();
+      periodEnd = (subscription?.current_period_end as string | null) ?? null;
     }
 
     return {
@@ -325,6 +410,7 @@ export const getCurrentOrg = cache(
       slug: org.slug as string,
       role: membership.role as string,
       isSuspended: (org.deleted_at as string | null) !== null,
+      lifecycle: lifecycleOf(org, periodEnd),
       isImpersonated: false,
       impersonationExpiresAt: null,
     };

@@ -260,6 +260,9 @@ async function bothSides(subscription: Subscription | null): Promise<Sides> {
       // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
       // these fixtures: nothing here exercises impersonation, and a fixture
       // that quietly claimed to would be asserting about the wrong feature.
+      // Phase 7 Task 3 added `lifecycle`: null for an ACTIVE workspace, which
+      // every fixture here is.
+      lifecycle: null,
       isImpersonated: false,
       impersonationExpiresAt: null,
     };
@@ -573,6 +576,17 @@ describe("the three checks happen in the order the copy depends on", () => {
     // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
     // these fixtures: nothing here exercises impersonation, and a fixture
     // that quietly claimed to would be asserting about the wrong feature.
+    // Phase 7 Task 3 added `lifecycle`. A suspended workspace really does
+    // carry one -- getCurrentOrg() never returns isSuspended with a null
+    // lifecycle for a member -- so the fixture carries the shape the
+    // database would actually produce rather than a convenient null.
+    lifecycle: {
+      state: "suspended" as const,
+      changedAt: "2026-09-08T00:00:00.000Z",
+      reason: "fixture",
+      retentionExpiresAt: "2026-11-07T00:00:00.000Z",
+      networkPresenceUntil: "2026-10-08T00:00:00.000Z",
+    },
     isImpersonated: false,
     impersonationExpiresAt: null,
   };
@@ -644,6 +658,9 @@ describe("the READ gate has no tier term, and that is the shape of the Free tier
       // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
       // these fixtures: nothing here exercises impersonation, and a fixture
       // that quietly claimed to would be asserting about the wrong feature.
+      // Phase 7 Task 3 added `lifecycle`: null for an ACTIVE workspace, which
+      // every fixture here is.
+      lifecycle: null,
       isImpersonated: false,
       impersonationExpiresAt: null,
     };
@@ -676,6 +693,9 @@ describe("the READ gate has no tier term, and that is the shape of the Free tier
       // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
       // these fixtures: nothing here exercises impersonation, and a fixture
       // that quietly claimed to would be asserting about the wrong feature.
+      // Phase 7 Task 3 added `lifecycle`: null for an ACTIVE workspace, which
+      // every fixture here is.
+      lifecycle: null,
       isImpersonated: false,
       impersonationExpiresAt: null,
     };
