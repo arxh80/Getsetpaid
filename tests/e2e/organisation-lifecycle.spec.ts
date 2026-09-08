@@ -16,7 +16,7 @@ import { totpCode } from "../support/totp";
 // ===========================================================================
 // WHAT THIS FILE IS FOR, GIVEN THAT THE psql SUITE ALREADY EXISTS
 // ===========================================================================
-// supabase/tests/rls_phase7_lifecycle.sql (67 assertions) proves the DATABASE:
+// supabase/tests/rls_phase7_lifecycle.sql (69 assertions) proves the DATABASE:
 // the invariant, consequence P7 against three different attackers, the
 // sanctioned-path marker, the audit summary and its correlation thread, and
 // both sides of the Q88/Q92/Q101 network clocks. None of that is re-proved
