@@ -79,6 +79,41 @@ where not exists (
   where s.organisation_id = o.id
 );
 
+-- FIX ROUND 1 (review I3): the brief's own words for this invariant --
+-- "asserted, not assumed" -- meant at MIGRATION TIME, not only at runtime
+-- inside private.custom_field_limit() below. That runtime raise and its
+-- covering test (tests/integration/crm/custom-field-limit-matches-db.test.ts)
+-- are what catch a FUTURE regression; neither one verifies that THIS
+-- statement, on THIS deploy, actually covered every row before step 3 removes
+-- the escape a moment from now. On this schema that gap is safe by
+-- construction -- the `not exists` above runs against the live
+-- `public.organisations` table in the same transaction, so nothing it could
+-- miss is possible -- but "safe by construction" is exactly the kind of claim
+-- this migration exists to stop taking on trust rather than measuring. Three
+-- lines, cheap, and exactly what a hosted `db push` deploying this file for
+-- the first time against a real, populated database would want checked before
+-- steps 2 and 3 make the backfill's correctness load-bearing.
+do $$
+declare
+  v_missing bigint;
+begin
+  select pg_catalog.count(*)
+    into v_missing
+    from public.organisations o
+    where not exists (
+      select 1 from public.organisation_subscriptions s
+      where s.organisation_id = o.id
+    );
+
+  if v_missing > 0 then
+    raise exception
+      '20260908000000: % organisation(s) still have no organisation_subscriptions row after the backfill above -- refusing to proceed to steps 2/3, which would deny every CRM write for them the moment the escape is removed',
+      v_missing
+      using errcode = 'XX000';
+  end if;
+end;
+$$;
+
 -- ===========================================================================
 -- REQUIREMENT 1, STEP 2 of 3: create_organisation() WRITES A ROW.
 -- ===========================================================================
