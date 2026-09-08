@@ -6,7 +6,7 @@ import {
   isLive,
   listOrganisationImpersonationRequests,
 } from "@/lib/admin/impersonation-list";
-import { IMPERSONATION_TIME_BOX_MINUTES } from "@/lib/admin/impersonation-session";
+import { IMPERSONATION_TIME_BOX_MINUTES } from "@/lib/admin/impersonation-contract";
 import { formatDateTime } from "@/lib/format/date";
 import {
   AcceptImpersonationForm,
@@ -71,10 +71,21 @@ export default async function SupportAccessPage({
 
   const rows = await listOrganisationImpersonationRequests(org.id);
   const now = new Date();
+
+  // THREE GROUPS, AND THE MIDDLE ONE HOLDS TWO DIFFERENT THINGS ON PURPOSE.
+  //
+  // FOUND IN THE BROWSER WALK, NOT IN REVIEW. The first cut had `granted`
+  // hold only genuinely-live sessions, which put an ACCEPTED-BUT-NOT-STARTED
+  // row under the heading "History" -- a request the customer had just said
+  // yes to, filed under a word meaning "over". Acceptance and start are
+  // deliberately separate (the whole reason `started_at` exists), so there is
+  // a real window in which support MAY enter and has not, and the customer's
+  // own page has to name it rather than losing it between two headings.
   const pending = rows.filter((row) => row.status === "requested");
-  const live = rows.filter((row) => isLive(row, now));
+  const granted = rows.filter((row) => row.status === "accepted" || isLive(row, now));
   const history = rows.filter(
-    (row) => row.status !== "requested" && !isLive(row, now),
+    (row) =>
+      row.status !== "requested" && row.status !== "accepted" && !isLive(row, now),
   );
 
   return (
@@ -144,36 +155,59 @@ export default async function SupportAccessPage({
       </section>
 
       <section className="flex flex-col gap-4 border-t border-rule pt-8">
-        <h2 className="text-xl font-bold text-ink">Open right now</h2>
-        {live.length === 0 ? (
+        <h2 className="text-xl font-bold text-ink">Access you have granted</h2>
+        {granted.length === 0 ? (
           <p className="max-w-prose text-base text-ink-muted">
-            No support session is running.
+            Nobody at GetSetPaid can open this workspace.
           </p>
         ) : (
           <ul className="flex flex-col border-t border-rule">
-            {live.map((row) => (
-              <li key={row.id} className="flex flex-col gap-3 border-b border-rule py-4">
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <span className="text-base font-semibold text-ink">
-                    GetSetPaid support
-                  </span>
-                  <ImpersonationStatusChip status={displayStatus(row, now)} />
-                  {row.expiresAt ? (
-                    <span className="text-sm text-ink-muted tabular-nums">
-                      Ends {formatDateTime(row.expiresAt)}
+            {granted.map((row) => {
+              const running = isLive(row, now);
+              return (
+                <li key={row.id} className="flex flex-col gap-3 border-b border-rule py-4">
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <span className="text-base font-semibold text-ink">
+                      GetSetPaid support
                     </span>
-                  ) : null}
-                </div>
-                <p className="max-w-prose text-base text-ink">{row.reason}</p>
-                <div>
-                  <RevokeImpersonationForm
-                    orgSlug={org.slug}
-                    sessionId={row.id}
-                    subject={`session started ${row.startedAt ? formatDateTime(row.startedAt) : ""}`}
-                  />
-                </div>
-              </li>
-            ))}
+                    <ImpersonationStatusChip status={displayStatus(row, now)} />
+                    {running && row.expiresAt ? (
+                      <span className="text-sm text-ink-muted tabular-nums">
+                        Ends {formatDateTime(row.expiresAt)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="max-w-prose text-base text-ink">{row.reason}</p>
+                  {running ? (
+                    <div>
+                      <RevokeImpersonationForm
+                        orgSlug={org.slug}
+                        sessionId={row.id}
+                        subject={`session started ${row.startedAt ? formatDateTime(row.startedAt) : ""}`}
+                      />
+                    </div>
+                  ) : (
+                    // ACCEPTED, NOT STARTED. There is no control here, and
+                    // the sentence says so rather than leaving a gap the
+                    // reader has to interpret: public.end_impersonation_
+                    // session() acts on a RUNNING session, so consent given
+                    // cannot currently be taken back in the window before
+                    // support opens it. Queued as DECISIONS-QUEUE Q100 with
+                    // "no withdraw-after-accept at MVP" as the shipped
+                    // default -- the window is minutes in practice, and the
+                    // session is still time-boxed and audited the moment it
+                    // starts.
+                    <p className="max-w-prose text-sm text-ink-muted">
+                      Support hasn’t opened this yet. When they do it runs for{" "}
+                      <span className="tabular-nums">
+                        {IMPERSONATION_TIME_BOX_MINUTES}
+                      </span>{" "}
+                      minutes and an “End access now” control appears here.
+                    </p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

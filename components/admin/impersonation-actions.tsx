@@ -10,7 +10,7 @@ import {
   revokeImpersonationSessionAction,
   startImpersonationAction,
 } from "@/lib/admin/impersonation";
-import { IMPERSONATION_TIME_BOX_MINUTES } from "@/lib/admin/impersonation-session";
+import { IMPERSONATION_TIME_BOX_MINUTES } from "@/lib/admin/impersonation-contract";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 

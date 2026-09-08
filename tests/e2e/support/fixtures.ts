@@ -531,6 +531,34 @@ export interface E2eWorld {
    *  browser sign-in walks the genuine per-sign-in challenge rather than
    *  stubbing it. */
   superuserTotpSecret: string;
+
+  // =========================================================================
+  // PHASE 7 TASK 2: THE ORGANISATION ADMIN WHO GIVES CONSENT
+  // =========================================================================
+  // Break-glass impersonation cannot be walked without one. `users` -- the
+  // fixed `E2eRole` record -- deliberately contains no Owner or Admin of
+  // `orgId` (its three members are a manager, a standard user and a read-only
+  // user), and `manage_organisation` is the permission
+  // public.accept_impersonation_request() requires. Nobody in the world could
+  // accept a request before this account existed, which is the correct
+  // product behaviour and a dead end for a test.
+  //
+  // ADDED TO `orgId`, NOT TO A NEW ORGANISATION, ON PURPOSE: the impersonated
+  // workspace has to contain real CRM records for "tenant data is visible"
+  // to mean anything, and `orgId` is the one this suite fills with contacts,
+  // events, tasks and notes. Nothing else in this directory reads
+  // /[orgSlug]/members or counts memberships (grepped), so a fourth member
+  // perturbs no existing assertion.
+  //
+  // MFA-ENROLLED, like `finance` and `superuser` and for the same reason:
+  // `admin` is one of the roles private.role_requires_mfa() covers, so an
+  // aal1 session of this account holds manage_organisation NOT AT ALL --
+  // it could sign in, reach the page, and find the accept button refuse. A
+  // stubbed challenge would prove nothing about the gate the consent
+  // actually passes through.
+  orgAdmin: E2eUser;
+  /** @see orgAdmin -- the real, verified factor its browser sign-in walks. */
+  orgAdminTotpSecret: string;
   /**
    * TWO PLANTED `audit_events` ROWS, ONE PER TENANT, WITH DISTINCT ACTION
    * STRINGS -- the audit log e2e spec's deterministic fixture data.
@@ -857,6 +885,58 @@ export async function countAuditLogViewedRows(
     [actorUserId],
   );
   return Number(result.rows[0]?.count ?? "0");
+}
+
+/**
+ * PHASE 7 TASK 2. The impersonation audit trail for one organisation, read
+ * STRAIGHT OUT OF POSTGRES as `postgres`.
+ *
+ * Same shape and same reasoning as `countAuditLogViewedRows` above: bypassing
+ * RLS on purpose, so what the spec asserts about the trail is not read back
+ * through the very audit_events policy a bug in it could be hiding behind --
+ * and, more to the point here, because NOBODY can read this through the app.
+ * audit_events is superuser-only, and the impersonating superuser is in the
+ * middle of the session being audited.
+ *
+ * Returns the action strings in order. The e2e assertion that matters is
+ * COMPLETENESS -- request, accept, start, at least one page_viewed, end --
+ * because the browser walk is the only place a MISSED page access can be
+ * observed at all: the psql suite calls the audit RPC directly and therefore
+ * proves the RPC works, not that the app reaches it on every page.
+ */
+export async function impersonationAuditActions(
+  organisationId: string,
+): Promise<string[]> {
+  const result = await db().query<{ action: string }>(
+    `select action from public.audit_events
+      where organisation_id = $1 and target_type = 'impersonation_session'
+      order by created_at, id`,
+    [organisationId],
+  );
+  return result.rows.map((r) => r.action);
+}
+
+/**
+ * PHASE 7 TASK 2. Every DISTINCT route recorded against this organisation's
+ * impersonation page views, in order of first appearance.
+ *
+ * The spec uses it to prove two things at once: that the routes the browser
+ * actually visited are all there, and that nothing beyond a route string
+ * reached the audit -- `after` is asserted to have the single key `route` by
+ * the psql suite (§ IA6); this reads the values so the browser walk can say
+ * WHICH pages it recorded.
+ */
+export async function impersonationAuditedRoutes(
+  organisationId: string,
+): Promise<string[]> {
+  const result = await db().query<{ route: string }>(
+    `select distinct on (after->>'route') after->>'route' as route
+       from public.audit_events
+      where organisation_id = $1 and action = 'impersonation.page_viewed'
+      order by after->>'route'`,
+    [organisationId],
+  );
+  return result.rows.map((r) => r.route);
 }
 
 /**
@@ -1358,6 +1438,19 @@ export async function setUpWorld(): Promise<E2eWorld> {
   ]);
   const superuserTotpSecret = await enrolTotp(superuser.email);
 
+  // PHASE 7 TASK 2. The Admin of `orgId` who accepts (or declines) an
+  // impersonation request -- see the `orgAdmin` field's own header for why
+  // `users` could not supply one and why this account has to hold a real
+  // TOTP factor.
+  const orgAdmin = await createUser(`e2e-orgadmin-${suffix}@test.local`);
+  await sql(
+    `insert into public.organisation_memberships
+       (organisation_id, user_id, role, status, joined_at)
+     values ($1,$2,'admin','active',now())`,
+    [orgId, orgAdmin.id],
+  );
+  const orgAdminTotpSecret = await enrolTotp(orgAdmin.email);
+
   // TWO DETERMINISTIC audit_events ROWS, ONE PER TENANT -- see the
   // `auditProbeAlphaId`/`auditProbeBetaId` fields' own header on E2eWorld
   // for why these are planted rather than relied on to occur naturally.
@@ -1678,6 +1771,8 @@ export async function setUpWorld(): Promise<E2eWorld> {
     financeTotpSecret,
     superuser,
     superuserTotpSecret,
+    orgAdmin,
+    orgAdminTotpSecret,
     auditProbeAlphaId,
     auditProbeBetaId,
     users,
@@ -1750,6 +1845,11 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
     world.freeMember.id,
     world.otherMember.id,
     world.superuser.id,
+    // PHASE 7 TASK 2. This account ACCEPTS an impersonation request, and
+    // public.accept_impersonation_request() audits that acceptance with the
+    // accepting admin as actor_user_id -- so it acquires audit rows that
+    // block its own hard delete exactly like every id above it.
+    world.orgAdmin.id,
   ];
   await sql(`delete from public.audit_events where actor_user_id = any($1::uuid[])`, [
     thisRunsUserIds,
@@ -1783,6 +1883,7 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
     world.freeMember,
     world.otherMember,
     world.superuser,
+    world.orgAdmin,
   ]) {
     await api(`/auth/v1/admin/users/${user.id}`, {
       key: serviceRoleKey,

@@ -310,6 +310,32 @@ select imp.val('IG9 ACTIVE: FULL record scope -- reads contacts owned by OTHER p
            where organisation_id=%L and owner_user_id is distinct from %L$$, :'alpha_org', :'super'), 'true');
 select imp.val('IG10 ACTIVE: reads ALPHA''s events too (the grant is the key set, not one table)',
   format($$select (count(*) > 0)::text from public.events where organisation_id=%L$$, :'alpha_org'), 'true');
+-- ===========================================================================
+-- IG10b/IG10c: WHY THE ENTITLEMENT LAYER RESOLVES DURING IMPERSONATION, AND
+-- WHY NO NEW POLICY WAS ADDED FOR IT -- MEASURED, NOT REASONED
+-- ===========================================================================
+-- lib/entitlements reads public.organisation_subscriptions through the
+-- CALLER's own RLS, and that table's member policy is
+-- private.is_active_member() -- which an impersonating superuser is not. The
+-- first cut of this task therefore added an impersonation SELECT policy to
+-- that table, on the argument that without it every impersonated workspace
+-- would resolve to FREE: no finance panel, and every blocked write control
+-- blaming the customer's billing rather than the read-only envelope.
+--
+-- THE ARGUMENT WAS RIGHT AND THE PREMISE WAS FALSE, and this pair of
+-- assertions is what caught it. `organisation_subscriptions_select_platform_
+-- billing` has existed since Foundation and reads
+-- has_platform_permission(...) -- allowlist plus aal2, organisation-
+-- independent -- so the platform superuser could ALREADY read every
+-- organisation's subscription row, impersonating or not. The extra policy
+-- granted nothing and was deleted rather than shipped as a second way to
+-- reach a row that was already reachable.
+--
+-- IG10c is the load-bearing half: it proves the read is the PLATFORM policy
+-- and not the impersonation grant, by measuring it against an organisation
+-- the superuser has NO session over at all.
+select imp.val('IG10b ACTIVE: the subscription read the entitlement layer needs resolves (via the PLATFORM billing policy, not this feature)',
+  format($$select count(*)::text from public.organisation_subscriptions where organisation_id=%L$$, :'beta_org'), '1');
 
 -- THE ENVELOPE, MEASURED KEY BY KEY. Every one of these is a WRITE key, and
 -- every one must be false for the whole session.
@@ -414,6 +440,18 @@ select imp.val('IX3 an ALPHA session reads 0 BETA events',
   format($$select count(*)::text from public.events where organisation_id=%L$$, :'beta_org'), '0');
 select imp.val('IX4 an ALPHA session cannot read BETA''s organisations row',
   format($$select count(*)::text from public.organisations where id=%L$$, :'beta_org'), '0');
+-- IG10c, PLACED HERE BECAUSE IT IS A SCOPE MEASUREMENT: the subscription row
+-- the entitlement layer reads is reachable for an organisation this session
+-- does NOT cover, which is what proves IG10b is the pre-existing platform
+-- billing policy rather than anything this task added. It is not a leak this
+-- feature opened -- CLAUDE.md § Superuser dashboard explicitly permits the
+-- operator aggregate metadata (seats, plan, usage) outside impersonation --
+-- but it IS the reason no impersonation policy on that table was needed, and
+-- a future reader deserves to see it measured rather than argued.
+select imp.val('IG10c the same read succeeds for an org with NO session at all -- so IG10b is the platform policy',
+  format($$select count(*)::text from public.organisation_subscriptions where organisation_id=%L$$, :'beta_org'), '1');
+select imp.val('IX4b CONTRAST: the same caller reads 0 BETA CONTACTS -- metadata is not records',
+  format($$select count(*)::text from public.contacts where organisation_id=%L$$, :'beta_org'), '0');
 select imp.val('IX5 has_permission(NULL, ...) is still FALSE, never NULL, with a session live',
   $$select coalesce(public.has_permission(null,'view_crm')::text, 'NULL LEAKED')$$, 'false');
 select imp.val('IX6 the unfiltered contact read returns ONLY ALPHA''s rows',

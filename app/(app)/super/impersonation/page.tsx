@@ -7,7 +7,7 @@ import {
   isLive,
   listMyImpersonationSessions,
 } from "@/lib/admin/impersonation-list";
-import { IMPERSONATION_TIME_BOX_MINUTES } from "@/lib/admin/impersonation-session";
+import { IMPERSONATION_TIME_BOX_MINUTES } from "@/lib/admin/impersonation-contract";
 import { formatDateTime } from "@/lib/format/date";
 import { StepUpGate } from "@/components/auth/step-up-gate";
 import { ImpersonationRequestForm } from "@/components/admin/impersonation-request-form";

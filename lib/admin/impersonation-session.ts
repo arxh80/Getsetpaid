@@ -53,33 +53,23 @@ import "server-only";
 import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { currentPath } from "@/lib/auth/current-path";
+// THE PURE HALF LIVES NEXT DOOR, AND HAS TO. Three Client Components need
+// the time-box for their copy; importing it from THIS file dragged
+// lib/supabase/server into the client graph and failed the build on the
+// `server-only` marker above. See lib/admin/impersonation-contract.ts.
+// Re-exported here so server callers have one import for the whole
+// contract.
+import {
+  IMPERSONATION_ROLE_ENVELOPE,
+  IMPERSONATION_TIME_BOX_MINUTES,
+  auditableRoute,
+} from "@/lib/admin/impersonation-contract";
 
-/**
- * The time-box, in minutes. DECISIONS-QUEUE Q95 (default taken 2026-09-08).
- *
- * THE DATABASE IS THE AUTHORITY, NOT THIS CONSTANT.
- * private.impersonation_time_box() is what public.start_impersonation_session()
- * actually stamps onto expires_at, and private.impersonated_organisations()
- * is what enforces it on every permission evaluation. This constant exists so
- * the UI can say "60 minutes" before a session has been started (there is no
- * expires_at to read yet), and
- * tests/integration/rls/impersonation-matches-db.test.ts asserts the two
- * agree -- the repo's `*-matches-db` pattern, because a number duplicated in
- * two languages is a number that will disagree.
- */
-export const IMPERSONATION_TIME_BOX_MINUTES = 60;
-
-/**
- * The role whose permission set an impersonating superuser is granted.
- * DECISIONS-QUEUE Q96 (read-only) / Q97 (at full record scope).
- *
- * Again the database is the authority: private.impersonated_organisations()
- * joins public.role_permissions for role_key = 'read_only' rather than
- * listing keys, so this string is the UI's label for a rule the database
- * owns -- and the binding test asserts this exact key exists in public.roles
- * and grants no `manage_` permission.
- */
-export const IMPERSONATION_ROLE_ENVELOPE = "read_only";
+export {
+  IMPERSONATION_ROLE_ENVELOPE,
+  IMPERSONATION_TIME_BOX_MINUTES,
+  auditableRoute,
+};
 
 export interface ActiveImpersonation {
   readonly sessionId: string;
@@ -87,22 +77,6 @@ export interface ActiveImpersonation {
   readonly reason: string;
   /** ISO instant. The DATABASE's answer, stamped at start. */
   readonly expiresAt: string;
-}
-
-/**
- * The route string the audit records: path only, query string discarded.
- *
- * lib/supabase/middleware.ts stamps `${pathname}${search}` onto the header
- * currentPath() reads, and `search` is where a list page's `q=` search term
- * lives. A search term is CONTENT -- it is a fragment of what the tenant's
- * records say, typed by whoever is looking -- and the brief is explicit that
- * the page-access audit carries "route only, no content". A path SEGMENT's
- * record id is deliberately kept: knowing which record support opened is the
- * point of the trail, and an id is not content.
- */
-export function auditableRoute(path: string): string {
-  const [pathname] = path.split("?");
-  return pathname ?? "/";
 }
 
 /**

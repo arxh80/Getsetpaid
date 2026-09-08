@@ -3,7 +3,7 @@
 import { useActionState } from "react";
 import { EMPTY_FORM_STATE } from "@/lib/forms";
 import { requestImpersonationAction } from "@/lib/admin/impersonation";
-import { IMPERSONATION_TIME_BOX_MINUTES } from "@/lib/admin/impersonation-session";
+import { IMPERSONATION_TIME_BOX_MINUTES } from "@/lib/admin/impersonation-contract";
 import { Field, TextAreaField } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
