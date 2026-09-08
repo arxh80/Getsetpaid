@@ -507,6 +507,72 @@ else
 fi
 
 # ============================================================================
+# PHASE 7 TASK 2 (IMPERSONATION) SUITE -- THE BREAK-GLASS PROOF.
+#
+# Runs LAST of the psql suites and reuses the SAME fixtures whole: the twelve
+# Phase 2 users, orgs ALPHA and BETA, and their CRM rows. It creates only
+# impersonation_sessions rows (plus the audit_events those produce) and its
+# § IZ asserts it leaves NONE of the former behind -- which matters more here
+# than for any other suite, because a live session row would hand `super`
+# view_crm over ALPHA for the whole of the HTTP block below, and those checks
+# were written against a superuser who can read audit_events and nothing else.
+#
+# P7VARS = P6VARS. It needs the Phase 2 users' claims (powner accepts,
+# pbowner is the foreign admin, pmanager is the in-tenant non-admin) plus
+# `super`/`super_c`/`super_c1` -- and P6VARS is already exactly that set,
+# built for the leakage suite's own audit_events positive control. `super_c1`
+# (the aal1 form) is added here because § IG18/IG19 measure that a stolen
+# password with no second factor holds nothing even mid-session.
+#
+# CLAUDE.md § Superuser dashboard makes impersonation the ONLY sanctioned deep-
+# access path in the product. Every other suite in this directory proves a
+# boundary HOLDS; this is the one that proves a boundary OPENS, exactly as far
+# as it was supposed to.
+# ============================================================================
+P7VARS=( "${P6VARS[@]}" )
+P7VARS+=( -v "super_c1={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
+
+docker cp "$HERE/rls_phase7_impersonation.sql" "$CTR:/tmp/rls_phase7_impersonation.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P7VARS[@]}" -f /tmp/rls_phase7_impersonation.sql
+
+p7_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from imp.results where not pass" | tr -d '[:space:]')
+if [ "$p7_fails" != "0" ]; then
+  echo "PHASE 7 IMPERSONATION SUITE FAILED: $p7_fails failing assertion(s)" >&2
+  echo "  In IP, THE READ-ONLY ENVELOPE HAS WIDENED -- somebody granted a" >&2
+  echo "  manage_/merge_ key to the read_only role, which widens what an" >&2
+  echo "  impersonating superuser holds, in a migration whose diff says" >&2
+  echo "  nothing about impersonation." >&2
+  echo "  In IR, THE CONSENT GATE IS GONE -- a foreign admin can see or answer" >&2
+  echo "  another tenant's request, or the superuser has a direct write path" >&2
+  echo "  into the table and can grant themselves access unilaterally." >&2
+  echo "  In IG1-IG5, ACCESS WITHOUT CONSENT: a merely REQUESTED or ACCEPTED" >&2
+  echo "  session now grants tenant reads. This is the finding." >&2
+  echo "  In IG18/IG19, THE MFA GATE: an aal1 session now holds the grant." >&2
+  echo "  In IW, AN IMPERSONATOR CAN WRITE INTO A TENANT." >&2
+  echo "  In IX, THE SCOPE BOUNDARY: one organisation's session now reaches" >&2
+  echo "  another tenant." >&2
+  echo "  In IM, THE TWO HALVES OF THE PERMISSION RULE HAVE DRIFTED -- the" >&2
+  echo "  impersonation disjunct is in one function body and not the other." >&2
+  echo "  In IE1-IE5, THE TIME-BOX IS NOT ENFORCED: an expired session still" >&2
+  echo "  grants. Sev1." >&2
+  echo "  In IA, THE AUDIT TRAIL is incomplete, unthreaded, misattributed, or" >&2
+  echo "  has started carrying tenant record content." >&2
+  echo "  In IS, SUSPENSION BEHAVIOUR CHANGED -- these expectations are a" >&2
+  echo "  RECORD of measured behaviour (Q98), so a failure means re-measure" >&2
+  echo "  and re-record, not relax." >&2
+  echo "  In IZ, this suite left session rows behind and the HTTP checks below" >&2
+  echo "  are now running with a superuser who can read a tenant -- discard" >&2
+  echo "  the run and reset." >&2
+  echo "  Every one of those is Sev1." >&2
+  psql_status=1
+else
+  echo "Phase 7 impersonation suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which

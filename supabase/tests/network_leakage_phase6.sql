@@ -849,9 +849,26 @@ select leak.val('LF1b DENOMINATOR: 28 private relation names were the needle set
 -- pulled in, read, and found to name no private relation -- so the guard is
 -- one function wider than the call graph and no weaker for it. Over-inclusion
 -- is the safe direction and is left as-is on purpose.
+--
+-- RE-READ AND RE-RECORDED 2026-09-08 (PHASE 7 TASK 2, IMPERSONATION). This
+-- denominator went from four bodies to SIX, exactly as designed, when
+-- 20260908020000 added the impersonation disjunct to permitted_organisations
+-- and has_permission: the text closure now also pulls in
+-- private.impersonated_organisations (the grant) and, through it,
+-- private.has_platform_permission (the allowlist + aal2 check).
+--
+-- THE FINDING THAT MATTERS IS LF1, AND IT IS STILL GREEN. Both new bodies are
+-- inside the closure and neither names a private relation -- which is the
+-- non-obvious part worth stating, because private.impersonated_organisations
+-- reads public.impersonation_sessions, a table that is NOT in leak.private_rel
+-- and deliberately so: it holds no tenant record content, only the metadata of
+-- a support engagement (who asked, which organisation, why, when it expires).
+-- If a later change made either masking view resolve something through the
+-- impersonation grant, LF1 -- not this line -- is what would go red.
 select leak.val('LF2 DENOMINATOR: the closure, by name -- these are the bodies that were read',
   $$select count(*)::text || ':' || string_agg(fqn, ',' order by fqn) from leak.fn_closure$$,
-  '4:private.permitted_organisations,private.role_requires_mfa,'
+  '6:private.has_platform_permission,private.impersonated_organisations,'
+  'private.permitted_organisations,private.role_requires_mfa,'
   'private.session_is_aal2,public.has_permission');
 -- THE DEPTH ASSERTION. private.role_requires_mfa is NOT a pg_depend child of
 -- either view -- it is reached only by reading permitted_organisations' body.

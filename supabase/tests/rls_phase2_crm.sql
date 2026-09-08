@@ -1530,10 +1530,32 @@ select crm.val('M1d the ONLY suspension term and the ONLY literal, per PARSED bo
 -- b.key = rp.permission_key)`, or `or rp.permission_key = private.some_fn()`.
 -- Neither adds a literal, so M1d stays green; both add a dependency, and the
 -- parser records it.
-select crm.val('M1d2 the two PARSED bodies read exactly the four tables and three functions the rule is made of',
+--
+-- ===========================================================================
+-- RE-READ AND RE-RECORDED 2026-09-08 (PHASE 7 TASK 2, IMPERSONATION)
+-- ===========================================================================
+-- This assertion went red, exactly as designed, when 20260908020000 added the
+-- impersonation disjunct to both bodies. THE EXPECTED VALUE WAS NOT RELAXED --
+-- it gained ONE named function, `private.impersonated_organisations`, and it
+-- gained it in BOTH halves, which is itself the check: a one-sided
+-- implementation (the disjunct added to has_permission and forgotten in
+-- permitted_organisations, or the reverse) would leave the two sides of the
+-- `||` different and this assertion red. The M1 sweep cannot catch that on its
+-- own, because no impersonation session exists at the point M1 runs --
+-- supabase/tests/rls_phase7_impersonation.sql § IM re-runs the sweep WITH one
+-- live, and § IM2 covers full_scope_organisations(), the third consumer.
+--
+-- THE TABLE HALF IS UNCHANGED, and that is the substantive fact this line now
+-- also records: neither body reads a new TABLE. impersonation_sessions is
+-- read inside private.impersonated_organisations(), a SECURITY DEFINER helper
+-- with its own four conditions (live session, unexpired, still-allowlisted at
+-- aal2, key held by `read_only`), rather than inlined here where it would be
+-- evaluated under the caller's RLS and could form a cycle with the policy on
+-- that same table.
+select crm.val('M1d2 the two PARSED bodies read exactly the four tables and four functions the rule is made of',
   $$select crm.canon_deps('has_permission') || '  ||  '
         || crm.canon_deps('permitted_organisations')$$,
-  'organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.role_requires_mfa,private.session_is_aal2  ||  organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.role_requires_mfa,private.session_is_aal2');
+  'organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2  ||  organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2');
 -- The catalogue is only trustworthy if nothing can grant a key that is not in
 -- it -- otherwise an uncatalogued key silently inherits "no row, no join, no
 -- permission" for reads AND the wrong suspension answer.
