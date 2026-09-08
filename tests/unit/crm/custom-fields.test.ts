@@ -115,17 +115,27 @@ describe("customFieldLimit mirrors private.custom_field_limit()", () => {
   // The DEPLOYED function is driven against this one in
   // tests/integration/crm/custom-field-limit-matches-db.test.ts. These are the
   // three branches that have no database in them at all.
-  it("reads no subscription as UNLIMITED, not as Free", () => {
-    // The escape private.crm_write_organisations() already carries. Reading it
-    // as Free would resolve to a limit of 0 for every organisation that exists
-    // today -- create_organisation() writes no subscription row -- and ship the
-    // feature dead.
+  it("reads no subscription as Free (0), now that Phase 7 Task A removed the escape", () => {
+    // Before Task A this read "no subscription" as UNLIMITED, mirroring
+    // private.crm_write_organisations()'s old escape: reading it as Free
+    // would have resolved to a limit of 0 for every organisation that
+    // existed -- create_organisation() wrote no subscription row -- and
+    // shipped the feature dead. Task A closed that gap at the source instead:
+    // create_organisation() now writes a Starter row at birth and every
+    // pre-existing organisation was backfilled one, so "no subscription row"
+    // is no longer a state a real organisation can be in, and falling
+    // through to `entitlements.customFieldLimit` (Free's 0, the same safe
+    // default "indeterminate" uses below) is safe rather than a feature-
+    // killing default. The SQL half does not have this option -- it RAISES
+    // instead, because an organisation that exists with no row is now a
+    // violated invariant, not a legitimate lookup outcome; see private.
+    // custom_field_limit()'s own comment.
     expect(
       customFieldLimit({
         status: "no-subscription",
         entitlements: { customFieldLimit: 0 },
       }),
-    ).toBeNull();
+    ).toBe(0);
   });
 
   it("fails CLOSED on an indeterminate lookup", () => {

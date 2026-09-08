@@ -323,27 +323,39 @@ function isCustomFieldKey(value: string): boolean {
  * pattern this codebase already uses for the tier matrix, the MFA role list
  * and the grace window itself.
  *
- * "no-subscription" IS UNLIMITED, NOT FREE, and that is the one clause worth
- * arguing. `entitlementsPermitCrmWrites` already reads a missing subscription
- * row as "not yet billed, therefore not yet gated" -- create_organisation()
- * writes no subscription row, so every organisation that exists today has
- * none. Reading it as Free here would resolve to a limit of ZERO and ship the
- * whole feature dead on arrival, for every customer. Phase 7 removes this
- * escape here and in the SQL in one change.
+ * "no-subscription" IS NOW FREE (0), NOT UNLIMITED -- PHASE 7 TASK A FLIPPED
+ * THIS. Before Task A, `entitlementsPermitCrmWrites` read a missing
+ * subscription row as "not yet billed, therefore not yet gated" --
+ * create_organisation() wrote no subscription row, so every organisation
+ * that existed had none, and reading it as Free here would have resolved to
+ * a limit of ZERO and shipped the whole feature dead on arrival, for every
+ * customer. Task A removed that escape in all three places at once (this
+ * function, private.custom_field_limit(), and
+ * tests/integration/crm/custom-field-limit-matches-db.test.ts, which binds
+ * the two): public.create_organisation() now writes a Starter row at birth,
+ * and a backfill migration gave one to every organisation that predates it,
+ * so "no subscription row" is no longer a state any real organisation is
+ * in -- it falls through to `result.entitlements`, which
+ * lib/entitlements/policy.ts's resolveEntitlements() already populates with
+ * Free's shape (customFieldLimit 0) for "no-subscription", the same safe
+ * default "indeterminate" uses below. The SQL half does not have the luxury
+ * of a silent fallback: private.custom_field_limit() RAISES instead, because
+ * an organisation that exists with no subscription row is now a violated
+ * invariant rather than a legitimate lookup outcome, and a raise surfaces
+ * that loudly where a client-side 0 would just look like a Free-tier
+ * response. See that function's comment for the asymmetry.
  *
- * "indeterminate" IS ZERO, and it deliberately does NOT match the database,
- * for the reason `entitlementsPermitCrmWrites` gives for the same asymmetry: a
- * failed lookup in the application is not the same event as a missing row in
- * the database, and the consequence differs. Here it hides a create form;
- * there it would open a gate. In practice this branch is unreachable through
- * the UI, because getCrmWriteAccess() already refuses the whole screen on
- * "indeterminate" before any limit is consulted.
+ * "indeterminate" IS ZERO, for the reason `entitlementsPermitCrmWrites` gives
+ * for the same asymmetry: a failed lookup in the application is not the same
+ * event as a missing row in the database, and the consequence differs. Here
+ * it hides a create form; there it would open a gate. In practice this
+ * branch is unreachable through the UI, because getCrmWriteAccess() already
+ * refuses the whole screen on "indeterminate" before any limit is consulted.
  */
 export function customFieldLimit(result: {
   status: "no-subscription" | "resolved" | "indeterminate";
   entitlements: { customFieldLimit: number | null };
 }): number | null {
-  if (result.status === "no-subscription") return null;
   if (result.status === "indeterminate") return 0;
   return result.entitlements.customFieldLimit;
 }

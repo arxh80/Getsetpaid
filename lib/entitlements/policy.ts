@@ -27,9 +27,20 @@ import "server-only";
 //
 // THREE OUTCOMES, DELIBERATELY NOT COLLAPSED INTO ONE:
 //   "no-subscription"  organisation_subscriptions has no row for this org.
-//                       Legitimate and expected -- create_organisation()
-//                       does not also create a subscription row -- so this
-//                       reads as the Free tier's entitlements, not an error.
+//                       BEFORE PHASE 7 TASK A this was legitimate and
+//                       expected -- create_organisation() did not also
+//                       create a subscription row, so every organisation
+//                       was in this state. Task A made create_organisation()
+//                       write a Starter row at birth and backfilled one onto
+//                       every organisation that predates it
+//                       (20260908000000), so this state should not occur for
+//                       a real organisation any more -- it is handled the
+//                       same way (Free's entitlements, not an error) because
+//                       collapsing it into "indeterminate" would treat a
+//                       clean empty query result the same as a failed one,
+//                       but reaching it now most likely means the invariant
+//                       above was violated rather than that billing has not
+//                       started yet.
 //   "resolved"          A subscription row exists. Its plan's entitlements
 //                       apply if status = 'active'; otherwise (see below)
 //                       Free's entitlements apply, still under "resolved"

@@ -46,14 +46,21 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /**
  * One subscription state to drive both halves with.
  *
- * `plan` null means NO organisation_subscriptions ROW AT ALL, which is the
- * state every organisation in the product is in today (create_organisation()
- * writes none) and the one branch where a wrong answer would ship the feature
- * dead rather than merely misgated.
+ * PHASE 7 TASK A: `plan: null` ("no organisation_subscriptions row at all")
+ * used to be a scenario in this array, comparing private.custom_field_limit()
+ * (which returned NULL, "unlimited") against customFieldLimit() (which also
+ * returned null). Task A removed that escape in both halves AND changed its
+ * shape asymmetrically: the SQL function now RAISES for an organisation that
+ * exists with no subscription row (a violated invariant, not a legitimate
+ * lookup outcome -- see its comment), while the TypeScript half returns 0
+ * (Free's shape, the same safe default "indeterminate" already used). A raise
+ * and a return value are not comparable through this array's uniform
+ * `.toBe()` assertion, so that state is now its own dedicated test below
+ * ("the SQL invariant") rather than a row in this table.
  */
 interface Scenario {
   readonly name: string;
-  readonly plan: "free" | "starter" | "pro" | null;
+  readonly plan: "free" | "starter" | "pro";
   readonly status?: "active" | "past_due" | "cancelled";
   /** current_period_end relative to now, in ms. */
   readonly periodEndOffsetMs?: number;
@@ -62,7 +69,6 @@ interface Scenario {
 }
 
 const SCENARIOS: readonly Scenario[] = [
-  { name: "no subscription row at all (the not-yet-billed escape)", plan: null },
   {
     name: "free/active",
     plan: "free",
@@ -123,7 +129,7 @@ describe("the custom-field limit is the same rule in TypeScript and in SQL", () 
         try {
           const { rows } = await client.query<{
             org: string;
-            period_end: Date | null;
+            period_end: Date;
           }>(
             `with o as (
                insert into public.organisations (name, slug)
@@ -137,12 +143,11 @@ describe("the custom-field limit is the same rule in TypeScript and in SQL", () 
                select o.id, $1::text, 'monthly', 1, $2::text,
                       now() + make_interval(secs => $3::float8 / 1000)
                from o
-               where $1::text is not null
                returning organisation_id, current_period_end
              )
              select o.id as org, s.current_period_end as period_end
-             from o left join s on s.organisation_id = o.id`,
-            [scenario.plan, scenario.status ?? null, scenario.periodEndOffsetMs ?? 0],
+             from o join s on s.organisation_id = o.id`,
+            [scenario.plan, scenario.status ?? "active", scenario.periodEndOffsetMs ?? 0],
           );
 
           const org = rows[0].org;
@@ -159,14 +164,11 @@ describe("the custom-field limit is the same rule in TypeScript and in SQL", () 
           // decision chain rather than a hand-built EntitlementsResult.
           const fromTypeScript = customFieldLimit(
             resolveEntitlements({
-              data:
-                scenario.plan === null
-                  ? null
-                  : {
-                      plan_id: scenario.plan,
-                      status: scenario.status as string,
-                      current_period_end: (rows[0].period_end as Date).toISOString(),
-                    },
+              data: {
+                plan_id: scenario.plan,
+                status: scenario.status ?? "active",
+                current_period_end: rows[0].period_end.toISOString(),
+              },
               error: null,
             }),
           );
@@ -181,6 +183,44 @@ describe("the custom-field limit is the same rule in TypeScript and in SQL", () 
         }
       }
     } finally {
+      client.release();
+    }
+  });
+
+  // PHASE 7 TASK A: the invariant the migration comment claims but never
+  // measured until now. An organisation that EXISTS with NO
+  // organisation_subscriptions row is, after Task A, a state
+  // public.create_organisation() and the 20260908000000 backfill together
+  // make impossible for a real organisation -- so private.custom_field_limit()
+  // RAISES rather than returning 0 (Free) or NULL (unlimited), either of
+  // which would silently reintroduce one of the two defects this task closed.
+  // Driven directly against the deployed function, the same way the sweep
+  // above is, rather than asserted from the migration's source text.
+  it("private.custom_field_limit() raises for an organisation with no subscription row", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const { rows } = await client.query<{ org: string }>(
+        `insert into public.organisations (name, slug)
+         values ('No Subscription Probe',
+                 'no-sub-probe-' || replace(gen_random_uuid()::text,'-',''))
+         returning id as org`,
+      );
+      const org = rows[0].org;
+
+      // The TypeScript half's OWN answer for the same shape, for contrast in
+      // the failure message -- it does NOT raise; see customFieldLimit()'s
+      // header for why 0 (Free's shape) is its safe default instead.
+      const fromTypeScript = customFieldLimit(
+        resolveEntitlements({ data: null, error: null }),
+      );
+      expect(fromTypeScript, "the TypeScript half's safe default is 0, not unlimited").toBe(0);
+
+      await expect(
+        client.query("select private.custom_field_limit($1::uuid)", [org]),
+      ).rejects.toThrow(/no organisation_subscriptions row/);
+    } finally {
+      await client.query("rollback");
       client.release();
     }
   });
