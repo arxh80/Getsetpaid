@@ -2797,6 +2797,33 @@ next person does not have to re-derive it.
   than something applied afterwards, and the Task 8 exit document was explicit
   that closing this as "accepted" rather than scheduled would have blocked the
   Phase 2 merge.
+- **PRE-LAUNCH GATE: an impersonating superuser's DIRECT PostgREST reads are
+  authorised and unrecorded. Owner: the founder. Added 2026-09-08 (Phase 7
+  Task 2, fix round 1, Important 4.)** This is a NAMED GATE, not a note, and
+  it is here so that a residual disposed of as "acceptable at MVP" cannot
+  quietly become "done". **The measured fact:** `authenticated` holds `SELECT`
+  on every tenant table, those policies call
+  `private.permitted_organisations()` / `private.full_scope_organisations()`,
+  and both now consult `private.impersonated_organisations()`. So
+  `GET /rest/v1/contacts?organisation_id=eq.<target>` with the browser's anon
+  key and a live session **returns rows and mints no
+  `impersonation.page_viewed` row**. The app-side audit at `getCurrentOrg()`
+  is complete for every path through the Next.js app and fails closed, but it
+  is not a database-level control, and Postgres cannot fire a trigger on
+  SELECT. **Why it was accepted at MVP:** no read-audit mechanism exists
+  anywhere in this product; the *session itself* — request, consent, start,
+  end/expiry — remains audited in-transaction at the database, which is
+  exactly the set the binding constraint enumerates ("actor, org, reason,
+  start/end"); and the window is consented, time-boxed and read-only.
+  **What closing it looks like, so the next person does not have to derive
+  it:** either `pgaudit` (session/object audit on the impersonating role) or
+  an RPC-only read surface for this grant — i.e. revoking direct table SELECT
+  for an impersonating session and routing its reads through auditing
+  definer functions. Both are real work and neither is a one-line fix, which
+  is precisely why it is a gate with an owner rather than a TODO.
+  Cross-referenced in `SECURITY.md` § 10's "Break-glass impersonation" risk
+  row (residual 1) and § 7's page-access subsection; **if this entry and
+  those disagree, this one is the schedule and they are the description.**
 - **SCREEN-READER PASS. Owner: the founder (or a nominee). Due: before Phase 10
   exit. Script: `task-8-report.md` § 3.** Added 2026-08-30 (final review I-13).
   No screen-reader pass has ever been run on this product -- it has now been

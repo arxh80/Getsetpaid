@@ -9,12 +9,19 @@ import "server-only";
 // sitting beside lib/network/connections.ts.
 //
 // BOTH QUERIES READ THROUGH THE CALLER'S OWN RLS and add no filter that is an
-// access decision. public.impersonation_sessions carries exactly two SELECT
+// ACCESS decision. public.impersonation_sessions carries exactly two SELECT
 // policies (20260908020000): the superuser sees their own rows, a
 // manage_organisation holder sees rows for their own organisation. So
 // `listMyImpersonationSessions()` returns nothing at all for a non-superuser
 // and `listOrganisationImpersonationRequests()` returns nothing for a member
 // who cannot administer the workspace -- without either function saying so.
+//
+// THAT IS ABOUT AUTHORISATION, AND IT IS NOT THE WHOLE STORY (fix round 1,
+// Minor 5). The two policies are OR'd, so an unfiltered query gets their
+// UNION -- which is a correctness problem for `listMyImpersonationSessions()`
+// even though it is not an access one. Its own header explains the filter it
+// therefore carries. The lesson is lib/auth/index.ts's getMemberships(), and
+// this file needed it too.
 //
 // NO PAGINATION, AND THAT IS BOUNDED RATHER THAN UNBOUNDED (CLAUDE.md
 // § Non-negotiable rules, "paginate everything"): both queries carry an
@@ -219,14 +226,42 @@ export async function roleWouldAdministerOrganisation(
  * organisations_select_impersonation_counterparty (20260908020000), which is
  * keyed on exactly these rows -- so the name comes back for a workspace the
  * caller has a session against and for no other.
+ *
+ * ===========================================================================
+ * THE `.eq("superuser_user_id", ...)` IS LOAD-BEARING -- FIX ROUND 1, MINOR 5
+ * ===========================================================================
+ * THIS FILE'S HEADER USED TO CLAIM THE POLICIES ALONE MADE THIS LIST CORRECT,
+ * AND THAT WAS ONLY TRUE OF THE FIRST OF THE TWO. There are two SELECT
+ * policies on impersonation_sessions and an unfiltered query gets their
+ * UNION: `impersonation_sessions_select_superuser` returns the caller's own
+ * rows, and `impersonation_sessions_select_target_admin` returns EVERY row
+ * for any organisation the caller holds manage_organisation in. So a
+ * superuser who is also an Owner or Admin of any workspace would see that
+ * workspace's sessions listed under the heading "Your sessions" -- including
+ * ones another superuser opened.
+ *
+ * Inert at MVP (there is one superuser and § IF2 of
+ * rls_phase7_impersonation.sql asserts they are a member of nothing), which
+ * is exactly why it is worth fixing now rather than when it stops being
+ * inert. It is also the SAME defect lib/auth/index.ts's getMemberships()
+ * documents at length, from a real browser, for the identical
+ * two-policies-OR-together reason -- and the sibling read in
+ * lib/admin/impersonation-session.ts carries this filter with a paragraph
+ * explaining why. Three copies of one lesson, one of which had not learnt it.
  */
 export async function listMyImpersonationSessions(): Promise<
   readonly SuperuserImpersonationRow[]
 > {
   const supabase = await createClient();
+
+  const { data: claims } = await supabase.auth.getClaims();
+  const userId = claims?.claims?.sub;
+  if (typeof userId !== "string") return [];
+
   const { data, error } = await supabase
     .from("impersonation_sessions")
     .select(`${COLUMNS}, organisations ( name, slug )`)
+    .eq("superuser_user_id", userId)
     .order("requested_at", { ascending: false })
     .limit(IMPERSONATION_LIST_LIMIT);
 

@@ -354,6 +354,54 @@ select imp.val('IG16 ACTIVE: NO merge_records',
 select imp.val('IG17 ACTIVE: a nonexistent key is still false (fail-closed, not "any key while active")',
   format($$select public.has_permission(%L,'no_such_permission')::text$$, :'alpha_org'), 'false');
 
+-- ===========================================================================
+-- IG20-IG22: THE BLAST RADIUS OF THE Q97 WIDENING, MEASURED (fix round 1,
+-- Minor 7)
+-- ===========================================================================
+-- IG8/IG9 prove full record scope WORKS (the impersonator reads rows they do
+-- not own, which is the whole point of Q97). They do not prove it stopped
+-- where it was supposed to. Full scope relaxes the OWNER half of
+-- `org_id in (permitted) and (full_scope or owner_user_id = auth.uid())`, so
+-- the question worth asking is: which read did the product gate on OWNERSHIP
+-- rather than on a permission key, and did widening scope open it?
+--
+-- There is exactly one, and IG20 is it. `notes_select_by_visibility`
+-- (20260902011000) deliberately carries NO full_scope term -- a `private`
+-- note reaches its author and nobody else, whatever their role -- so an
+-- impersonating superuser must not read one either. That holds today by a
+-- property of a PHASE 4 policy, not by anything this feature does, which is
+-- precisely why it is worth pinning here: a later edit that "tidies up" that
+-- policy by giving it the same full_scope shape as its siblings would widen
+-- impersonation as a side effect, in a diff that never mentions it.
+--
+-- IG21 is the second gate that is a KEY rather than scope (view_finance,
+-- which read_only does not hold), and IG22 is the positive control that
+-- keeps both zeros honest -- documents ARE readable, on view_crm, so the two
+-- zeros above are the specific gates and not a blanket refusal.
+select imp.val('IG20 ACTIVE: full scope does NOT open another user''s PRIVATE note (Q97''s one real risk)',
+  format($$select count(*)::text from public.notes
+           where organisation_id=%L and visibility='private'$$, :'alpha_org'), '0');
+select imp.val('IG21 ACTIVE: reads 0 financial_entries -- view_finance is not in the envelope',
+  format($$select count(*)::text from public.financial_entries where organisation_id=%L$$, :'alpha_org'), '0');
+select imp.val('IG22 CONTROL: documents ARE readable (view_crm), so IG20/IG21 are gates, not a blanket refusal',
+  format($$select (count(*) > 0)::text from public.documents where organisation_id=%L$$, :'alpha_org'), 'true');
+select imp.val('IG23 CONTROL: COMPANY-visibility notes ARE readable, so IG20 is the visibility term',
+  format($$select (count(*) > 0)::text from public.notes
+           where organisation_id=%L and visibility='company'$$, :'alpha_org'), 'true');
+
+-- THE DENOMINATORS FOR IG20 AND IG21, READ AS POSTGRES. Without these, both
+-- zeros above are equally well explained by "there is nothing there" --
+-- Constraint 14's rule, and the reason every negative in this file is paired.
+reset role; reset request.jwt.claims;
+select imp.val('IG20b DENOMINATOR: a PRIVATE note really does exist in ALPHA, owned by somebody other than the superuser',
+  format($$select (count(*) > 0)::text from public.notes
+           where organisation_id=%L and visibility='private' and owner_user_id is distinct from %L$$,
+         :'alpha_org', :'super'), 'true');
+select imp.val('IG21b DENOMINATOR: ALPHA really does have financial_entries',
+  format($$select (count(*) > 0)::text from public.financial_entries where organisation_id=%L$$, :'alpha_org'), 'true');
+set role authenticated;
+set request.jwt.claims = :'super_c';
+
 -- AN aal1 SESSION HOLDS NOTHING. The same claim set, one assurance level down
 -- -- a stolen password with no second factor -- must grant nothing at all,
 -- because private.impersonated_organisations() carries
