@@ -35,6 +35,20 @@ import { formatDateTime } from "@/lib/format/date";
 // stated in the second line so it does not read as a bug when it happens.
 //
 // ===========================================================================
+// WHERE IT RENDERS FROM, AND WHY THAT IS A CONTROL RATHER THAN A DETAIL
+// ===========================================================================
+// app/(app)/[orgSlug]/layout.tsx -- the ORG SEGMENT's layout, not the shared
+// (app) shell where it first shipped. FIX ROUND 1, IMPORTANT 1, MEASURED IN A
+// BROWSER: the shell is a shared ancestor of /super/impersonation and
+// /[orgSlug], so the router reused that segment when the operator clicked
+// "Open workspace" and the FIRST impersonated page rendered with no banner --
+// exactly the failure lib/admin/impersonation-session.ts's header predicts for
+// putting anything per-navigation in a shared layout. The org segment's layout
+// re-renders whenever the router ENTERS the segment and stays mounted for
+// navigations within it, so the banner is guaranteed by structure rather than
+// by which link was clicked. Do not move it back up.
+//
+// ===========================================================================
 // role="status", NOT "alert" -- AND NOT DISMISSIBLE
 // ===========================================================================
 // Both for the reasons components/org/suspended-banner.tsx gives for the

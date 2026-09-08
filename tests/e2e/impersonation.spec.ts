@@ -233,6 +233,33 @@ test("the golden walk: request → accept as the org admin → start → bannere
     await expect(superuserPage.locator("main")).toContainText("Ends at");
 
     // ---- 5. THE BANNERED, READ-ONLY VIEW ----------------------------------
+    //
+    // ===========================================================================
+    // FIX ROUND 1, IMPORTANT 1: THE FIRST ENTRY IS A CLIENT-SIDE NAVIGATION,
+    // AND UNTIL THIS STEP EXISTED THE SUITE COULD NOT SEE IT
+    // ===========================================================================
+    // Every other navigation in this file is `page.goto()` — a full document
+    // load, which re-renders every layout in the tree and therefore always
+    // produces a banner. The operator's ACTUAL first step into the workspace
+    // is the "Open workspace" <Link> on /super/impersonation: a client-side
+    // navigation from a route where `currentOrg` resolved to null and no
+    // banner was rendered. If the router reuses the shared `(app)` layout
+    // segment rather than re-rendering it, the first impersonated page a
+    // human ever sees is the one page that is NOT bannered — the single thing
+    // the brief calls out by name.
+    //
+    // So this step clicks the real control, and asserts the banner, before
+    // any goto() in this test gets a chance to paper over it.
+    await superuserPage.goto("/super/impersonation");
+    await superuserPage.getByRole("link", { name: "Open workspace" }).click();
+    await expect(superuserPage).toHaveURL(
+      (url) => url.pathname === `/${world.orgSlug}`,
+    );
+    await expect(
+      superuserPage.getByTestId("impersonation-banner"),
+      "the FIRST impersonated page, reached by a client-side navigation from /super/impersonation, must be bannered — a shared ancestor layout does not necessarily re-render on one",
+    ).toBeVisible();
+
     await superuserPage.goto(`/${world.orgSlug}`);
     const banner = superuserPage.getByTestId("impersonation-banner");
     await expect(banner).toBeVisible();

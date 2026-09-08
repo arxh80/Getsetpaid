@@ -18,7 +18,6 @@ import { SignOutButton } from "@/components/auth/sign-out-button";
 import { RecordCurrentOrg } from "@/components/org/record-current-org";
 import { WorkspaceSwitcher } from "@/components/org/workspace-switcher";
 import { SuspendedBanner } from "@/components/org/suspended-banner";
-import { ImpersonationBanner } from "@/components/admin/impersonation-banner";
 import { Wordmark } from "@/components/wordmark";
 import { SkipLink } from "@/components/ui/skip-link";
 import { PaletteTrigger } from "@/components/palette/palette-trigger";
@@ -195,25 +194,32 @@ export default async function AppLayout({
         <SuspendedBanner orgName={currentOrg.name} />
       ) : null}
 
-      {/* Phase 7 Task 2. Rendered HERE, beside SuspendedBanner, for exactly
-          the reason that one is here: it is a fact about the whole workspace
-          rather than about one screen, and `currentOrg` is already resolved
-          at this level for the switcher, so no route has to remember to
-          render it. An org-scoped page the superuser reaches during
-          impersonation cannot be un-bannered without deleting this line.
+      {/* THE IMPERSONATION BANNER IS NOT HERE, AND THAT IS FIX ROUND 1,
+          IMPORTANT 1 — MEASURED, NOT REASONED.
 
-          BOTH BANNERS CAN RENDER AT ONCE, and that is right: support access
-          to a SUSPENDED workspace is a real and likely case (a customer
-          suspended for non-payment asking why something looks wrong), and
-          the two facts are independent — one says the workspace is
-          read-only for everyone, the other says who is looking and until
-          when. */}
-      {currentOrg?.isImpersonated ? (
-        <ImpersonationBanner
-          orgName={currentOrg.name}
-          expiresAt={currentOrg.impersonationExpiresAt}
-        />
-      ) : null}
+          It was here, beside SuspendedBanner, on the argument that both are
+          facts about the whole workspace and `currentOrg` is already
+          resolved at this level. The argument is fine and the LOCATION was
+          wrong, for the same reason lib/admin/impersonation-session.ts gives
+          for keeping the page audit out of a layout: THIS LAYOUT DOES NOT
+          RE-RENDER ON A CLIENT-SIDE NAVIGATION. `(app)` is a shared ancestor
+          of both /super/impersonation and /[orgSlug], so clicking the
+          operator's own "Open workspace" link — the primary way into a
+          session — reused this segment, and the FIRST impersonated page a
+          human ever saw was the one page with no banner.
+
+          Measured by clicking the real control in
+          tests/e2e/impersonation.spec.ts: the URL assertion passed and the
+          banner assertion failed. Every other navigation in that file is
+          page.goto(), a full document load, which re-renders every layout —
+          which is exactly why the suite could not see it before.
+
+          It now renders from app/(app)/[orgSlug]/layout.tsx, the segment
+          boundary every impersonated route crosses: entering the segment
+          renders it fresh, navigating within the segment keeps it mounted.
+          SuspendedBanner stays here because its own audience is different —
+          it is about a workspace a MEMBER is in, reached from the switcher
+          and from routes outside the segment. */}
 
       {/* Rail and content are SIBLINGS in one full-width row -- the rail at
           the true viewport edge (the standard CRM shell this build wanted;
