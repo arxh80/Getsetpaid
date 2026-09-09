@@ -1,6 +1,6 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { repoRoot as root, readSource as read } from "../../support/source";
 import {
   CUSTOM_FIELD_ENTITY_TYPES,
   PERMISSION_FOR_ENTITY,
@@ -40,26 +40,13 @@ import {
 // is deliberately allowed to be noisy: a new `.update(` in lib/crm/ that this
 // cannot parse should fail and be looked at, not be silently skipped.
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 
-// LINE ENDINGS ARE NORMALISED, AND THAT IS NOT COSMETIC.
-//
-// Several assertions in this file are multi-line `toContain` checks against
-// source text -- the I-2 block below is the clearest, matching a string that
-// contains an escaped newline followed by six spaces. The repository sets no
-// `text` policy in `.gitattributes`, so a Windows checkout with
-// `core.autocrlf` on has CRLF in every file, and every one of those
-// assertions then fails against perfectly correct source. It was red at
-// Phase 3 Task 1's starting commit for exactly that reason, on a test whose
-// subject had nothing wrong with it.
-//
-// Normalising here rather than in `.gitattributes` keeps the fix local: a
-// repository-wide `text=auto` rewrites every file's line endings in one
-// commit, which is a decision for its own change (filed in FOLLOW-UPS.md).
-// Nothing this file asserts is ABOUT line endings, so nothing is weakened.
-function read(relative: string): string {
-  return readFileSync(root + relative, "utf8").replace(/\r\n/g, "\n");
-}
+// `read` NORMALISES LINE ENDINGS, AND THAT IS NOT COSMETIC -- several
+// assertions here are multi-line `toContain` checks against source text (the
+// I-2 block below matches an escaped newline followed by six spaces), and a
+// Windows checkout with core.autocrlf would fail every one of them against
+// perfectly correct source. tests/support/source.ts carries the full argument
+// and is now the single place it holds.
 
 /**
  * The index of a top-level export's definition, whichever form it is declared

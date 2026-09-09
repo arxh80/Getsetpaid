@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { readSource as read, stripComments } from "../../support/source";
 
 // Task 4 / Gap B (Q73): THE LINK PICKER'S SOURCE-SHAPE GUARD.
 //
@@ -23,19 +22,8 @@ import { describe, expect, it } from "vitest";
 // stripped first (this very file's header names `similarity(` in prose, and a
 // naive substring search would flag itself), then a regex over the raw
 // source.
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 
-function read(relative: string): string {
-  return readFileSync(root + relative, "utf8").replace(/\r\n/g, "\n");
-}
 
-function stripComments(code: string): string {
-  return code
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .map((line) => line.replace(/\/\/.*$/, ""))
-    .join("\n");
-}
 
 const FILES = [
   "components/network/link-picker.tsx",

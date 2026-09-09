@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   MEETING_DELETED_LIST,
@@ -9,6 +8,7 @@ import {
 } from "@/lib/crm/tasks-list";
 import { NOTE_DELETED_LIST, NOTE_LIST } from "@/lib/crm/notes-list";
 import type { ListSpec, SortOption } from "@/lib/list/spec";
+import { repoRoot as root } from "../../support/source";
 
 // THE notNull SWEEP.
 //
@@ -36,7 +36,6 @@ import type { ListSpec, SortOption } from "@/lib/list/spec";
 // to TASK_LIST.sort. It compiles (the `true` is a lie the type cannot see) and
 // this sweep goes RED on "no live-list sort names a nullable column".
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 const indexMigration = readFileSync(
   root + "supabase/migrations/20260902020000_operations_list_indexes.sql",
   "utf8",

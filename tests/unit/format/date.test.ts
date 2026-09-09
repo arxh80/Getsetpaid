@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { repoRoot as root } from "../../support/source";
 import {
   formatDate,
   formatDateOnly,
@@ -9,7 +9,6 @@ import {
   londonWallClockToInstant,
 } from "@/lib/format/date";
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 
 describe("formatDate -- an instant, rendered in UK local time", () => {
   it("renders en-GB day/short-month/year", () => {
