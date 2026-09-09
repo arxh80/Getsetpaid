@@ -41,6 +41,12 @@ const SURFACES: readonly { href: string; label: string; blurb: string }[] = [
     blurb:
       "Suspend, close and reopen a workspace. Soft-delete only, every transition reasoned and audited, and every one of them reversible.",
   },
+  {
+    href: "/super/billing",
+    label: "Billing overrides",
+    blurb:
+      "Time-boxed, audited exceptions to a workspace's tier, seat count or feature flags. Never a permanent edit — every override auto-reverts when it expires.",
+  },
 ];
 
 export default async function SuperuserIndexPage() {
