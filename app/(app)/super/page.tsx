@@ -47,6 +47,12 @@ const SURFACES: readonly { href: string; label: string; blurb: string }[] = [
     blurb:
       "Time-boxed, audited exceptions to a workspace's tier, seat count or feature flags. Never a permanent edit — every override auto-reverts when it expires.",
   },
+  {
+    href: "/super/health",
+    label: "Platform health",
+    blurb:
+      "Live platform counts — workspaces, signups, seats, storage — and the incident alerts a tripped rate limit, repeated failed sign-ins or a quarantined upload raise. Aggregates only.",
+  },
 ];
 
 export default async function SuperuserIndexPage() {
