@@ -117,9 +117,12 @@ just removed.
 
 ### Focus
 
-The global rule in `app/globals.css` is `outline: 2px solid var(--color-ink)`
-with `outline-offset: 2px`. `--ink` clears 3:1 on `--shell` (18.05), `--surface`
-(16.71) and `--surface-raised` (15.21).
+The global rule in `app/globals.css` is `outline: 2px solid var(--color-focus)`
+with `outline-offset: 2px`. `--focus` and `--ink` share a value (`#F5F5F7`)
+today, but the ring is drawn from the dedicated focus token, not the text one,
+precisely so the two can diverge later (an inset ring on a green surface,
+below) without the rule quietly drawing the wrong colour. `--focus` clears
+3:1 on `--shell` (18.05), `--surface` (16.71) and `--surface-raised` (15.21).
 
 White on a green fill is **1.25:1** and would fail — but `outline-offset: 2px`
 draws the ring on the **parent background**, never on the control's own fill, so

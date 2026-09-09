@@ -304,9 +304,14 @@ body {
   border-radius: var(--radius);
 }
 
-/* DESIGN.md § Interaction states: ink, not blue, so the ring reads on every
-   surface. That is NOT because ink clears contrast against a --color-primary
-   fill -- white ink on the brand green is 1.25:1 and would fail outright.
+/* DESIGN.md § Interaction states: --color-focus, not --color-primary/blue, so
+   the ring reads on every surface. --color-focus and --color-ink happen to
+   share a value (#F5F5F7) today, but the ring is drawn from the FOCUS token,
+   not the text one -- they are free to diverge (an inset ring on a green
+   surface is the day that would matter; see below) without this rule
+   silently drawing the wrong colour. That is NOT because --color-focus
+   clears contrast against a --color-primary fill -- it is 1.25:1 on the
+   brand green and would fail outright.
    It is safe because `outline-offset: 2px` below draws the ring on the
    PARENT background, never on the control's own fill: a green button
    focused on this dark page shows a white ring against the page, which
@@ -335,16 +340,16 @@ body {
    not assumed). Every control in this app carries `transition-colors` with a
    120ms duration, so without this the focus ring did NOT appear instantly:
    outline-style/width flip at once, but outline-color animated from the
-   element's resting currentColor to ink over 120ms. On a --color-primary
-   button, whose currentColor is white, that is a white ring visibly fading
-   to ink on every keyboard focus -- the exact "focus ring fades in" failure
-   the comment above claims we avoid.
+   element's resting currentColor to --color-focus over 120ms. On a
+   --color-primary button, whose currentColor is white, that is a white ring
+   visibly fading to --color-focus on every keyboard focus -- the exact
+   "focus ring fades in" failure the comment above claims we avoid.
 
    Re-declaring the property list here, minus outline-color, keeps the
    hover/active colour transitions the components rely on while pinning the
    ring itself to frame one. */
 :focus-visible {
-  outline: 2px solid var(--color-ink);
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
   transition-property: color, background-color, border-color,
     text-decoration-color, fill, stroke;
