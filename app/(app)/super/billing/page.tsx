@@ -6,7 +6,11 @@ import {
   listActiveFeatureOverrides,
   OVERRIDE_LIST_LIMIT,
 } from "@/lib/admin/overrides-list";
-import { FEATURE_FLAG_LABELS, TIER_CHOICE_LABELS } from "@/lib/admin/overrides-contract";
+import {
+  FEATURE_FLAG_LABELS,
+  isFeatureFlagKey,
+  TIER_CHOICE_LABELS,
+} from "@/lib/admin/overrides-contract";
 import { daysUntil } from "@/lib/admin/lifecycle-contract";
 import { formatDateTime } from "@/lib/format/date";
 import { StepUpGate } from "@/components/auth/step-up-gate";
@@ -110,7 +114,13 @@ export default async function BillingOverridesPage() {
             reason: row.reason,
             expiresAtLabel: formatDateTime(row.expiresAt),
             daysRemaining: daysUntil(row.expiresAt, now),
-            flagLabel: FEATURE_FLAG_LABELS[row.flagKey],
+            // An unmirrored flag_key (DB allowlist extended before this
+            // deploy, or a service-role write) renders RAW rather than being
+            // hidden (review M4) -- a live override must stay findable and
+            // revocable here.
+            flagLabel: isFeatureFlagKey(row.flagKey)
+              ? FEATURE_FLAG_LABELS[row.flagKey]
+              : row.flagKey,
           }))}
         />
       </section>

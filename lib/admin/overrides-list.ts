@@ -31,7 +31,6 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import type { TierKey } from "@/lib/entitlements/tiers";
 import { isTierKey } from "@/lib/entitlements/tiers";
-import { isFeatureFlagKey, type FeatureFlagKey } from "@/lib/admin/overrides-contract";
 
 /** The ceiling on each list. Not a page size -- there is no "next" -- but the
  *  bound that keeps the query finite however the platform grows. */
@@ -54,7 +53,13 @@ export interface ActiveFeatureOverrideRow {
   readonly organisationId: string;
   readonly organisationName: string;
   readonly organisationSlug: string;
-  readonly flagKey: FeatureFlagKey;
+  /** Usually one of FEATURE_FLAG_KEYS -- but deliberately `string`, not
+   * FeatureFlagKey (review M4): if the DB CHECK allowlist is extended before
+   * the TS mirror deploys (or a service-role write inserts an unmirrored
+   * key), the override is still LIVE, and filtering it out of this list
+   * would make it invisible on /super/billing and un-revocable through the
+   * UI. The page renders an unknown key raw instead. */
+  readonly flagKey: string;
   readonly reason: string;
   readonly startsAt: string;
   readonly expiresAt: string;
@@ -161,19 +166,21 @@ export async function listActiveFeatureOverrides(): Promise<
   const rows = data ?? [];
   const names = await organisationNames(rows.map((r) => r.organisation_id as string));
 
-  return rows
-    .filter((row) => isFeatureFlagKey(row.flag_key as string))
-    .map((row) => {
-      const org = names.get(row.organisation_id as string);
-      return {
-        id: row.id as string,
-        organisationId: row.organisation_id as string,
-        organisationName: org?.name ?? "(unknown workspace)",
-        organisationSlug: org?.slug ?? "",
-        flagKey: row.flag_key as FeatureFlagKey,
-        reason: row.reason as string,
-        startsAt: row.starts_at as string,
-        expiresAt: row.expires_at as string,
-      };
-    });
+  // NO isFeatureFlagKey() FILTER (review M4): a live override whose flag_key
+  // the TS mirror does not recognise must still be listed, or it becomes
+  // invisible here and un-revocable through the UI while the DB keeps
+  // honouring it. The page falls back to rendering the raw key.
+  return rows.map((row) => {
+    const org = names.get(row.organisation_id as string);
+    return {
+      id: row.id as string,
+      organisationId: row.organisation_id as string,
+      organisationName: org?.name ?? "(unknown workspace)",
+      organisationSlug: org?.slug ?? "",
+      flagKey: row.flag_key as string,
+      reason: row.reason as string,
+      startsAt: row.starts_at as string,
+      expiresAt: row.expires_at as string,
+    };
+  });
 }
