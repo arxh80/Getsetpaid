@@ -944,15 +944,27 @@ EOF
 
 ---
 
-## Task 4: Replace the wordmark component with the lockup
+## Task 4: Replace the wordmark component with the traced wordmark
+
+**Founder ruling, 2026-09-09 — this supersedes the spec's § 6 "full lockup":** the header
+shows the **wordmark only**. The mark's strokes are ~1.5% of its height, so at header size
+they fall below one pixel and it renders as a green smudge — verified against the source
+PNG, which degrades identically, so this is the artwork's limit and not the trace's. The
+mark still ships: `app/icon.svg` (Task 5) renders it at 32px+, where its strokes resolve.
+
+Consequence: **there is no `markOnly` prop.** With the mark out of the header, its only
+consumer is a static SVG file that cannot import from a module, so a `markOnly` branch
+would be an unused code path. `MARK_PATH` stays exported for Task 5 to copy.
 
 **Files:**
 - Modify: `components/wordmark.tsx` (whole file)
 - Modify: `tests/unit/design/wordmark.test.ts` (add one describe block)
 
 **Interfaces:**
-- Consumes: `MARK_PATH`, `MARK_VIEWBOX`, `WORD_PATH`, `WORD_VIEWBOX` from Task 3.
-- Produces: `export function Wordmark({ className, markOnly }: { className?: string; markOnly?: boolean })`. Both existing call sites — `app/(app)/layout.tsx:134` and `app/(auth)/layout.tsx:26` — call `<Wordmark />` with no props and must keep working unchanged.
+- Consumes: `WORD_PATH` and `WORD_VIEWBOX` from Task 3.
+- Produces: `export function Wordmark({ className }: { className?: string })`. Both existing
+  call sites — `app/(app)/layout.tsx:134` and `app/(auth)/layout.tsx:26` — call `<Wordmark />`
+  with no props and must keep working unchanged.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -960,8 +972,7 @@ Append to `tests/unit/design/wordmark.test.ts`:
 
 ```ts
 describe("the Wordmark component", () => {
-  const src = () =>
-    readFileSync(`${root}components/wordmark.tsx`, "utf8");
+  const src = () => readFileSync(`${root}components/wordmark.tsx`, "utf8");
 
   it("keeps the export name and prop both call sites rely on", () => {
     expect(src()).toMatch(/export function Wordmark\(/);
@@ -975,28 +986,32 @@ describe("the Wordmark component", () => {
     expect(src()).toMatch(/aria-label="GetSetPaid"/);
   });
 
-  it("fills the mark from the accent token, not a literal", () => {
-    // DESIGN.md § Anti-patterns: no literal hex in a component. Going through
-    // the token is also what lets the mark follow the palette if it moves.
-    expect(src()).toMatch(/text-accent|var\(--color-accent\)/);
+  it("carries no literal hex", () => {
+    // DESIGN.md § Anti-patterns. The wordmark inherits --color-ink through a
+    // token utility so it follows the palette rather than pinning a value.
     expect(src()).not.toMatch(/#[0-9A-Fa-f]{6}/);
+    expect(src()).toMatch(/text-ink|fill-current/);
   });
 
-  it("uses evenodd fill so the outlined counters stay open", () => {
-    // The mark is an outline: every stroke is an outer and an inner contour.
-    // Under the default nonzero rule it fills solid and reads as a blob.
+  it("uses evenodd fill so the letter counters stay open", () => {
+    // Every enclosed counter in G, E, S, P, A, D and the full stop is a
+    // separate contour. Under a fill rule that filled them, the wordmark
+    // would render as a row of solid blocks.
     expect(src()).toMatch(/fillRule="evenodd"/);
+  });
+
+  it("renders the wordmark and does not reach for the mark", () => {
+    // Founder ruling: the mark is illegible at header size and lives in
+    // app/icon.svg instead. A component that imported it would have no
+    // call site for it.
+    expect(src()).toMatch(/WORD_PATH/);
+    expect(src()).not.toMatch(/MARK_PATH/);
+    expect(src()).not.toMatch(/markOnly/);
   });
 
   it("no longer claims the product has no logo", () => {
     // The old file argued a mark would be invented content. One exists now.
     expect(src()).not.toMatch(/no logotype file/i);
-  });
-
-  it("renders both halves, and the mark alone under markOnly", () => {
-    expect(src()).toMatch(/markOnly/);
-    expect(src()).toMatch(/MARK_PATH/);
-    expect(src()).toMatch(/WORD_PATH/);
   });
 });
 ```
@@ -1011,74 +1026,39 @@ Expected: FAIL — six failures in the new block; the first reports no `role="im
 Replace the whole of `components/wordmark.tsx` with:
 
 ```tsx
-import {
-  MARK_PATH,
-  MARK_VIEWBOX,
-  WORD_PATH,
-  WORD_VIEWBOX,
-} from "@/components/wordmark.paths";
+import { WORD_PATH, WORD_VIEWBOX } from "@/components/wordmark.paths";
 
-// The logo lockup: mark, then wordmark.
+// The wordmark.
 //
 // This file used to argue that inventing a mark for a product that had not
 // commissioned one would be exactly the kind of invented content the brief
 // warns against, and set the name in Source Serif 4 at 800 instead. That was
 // right until the founder supplied real artwork; it is not any more.
 //
-// INLINE SVG RATHER THAN AN IMAGE OR A WEBFONT, for three reasons that are
-// each independently sufficient. It is sharp at 20px and at 200px, where a
-// raster is soft on a 3x display. The mark's fill goes through
-// --color-accent, so it follows the palette instead of baking a hex into a
-// binary. And the wordmark's ultra-condensed grotesque is artwork, not a UI
-// typeface -- outlining it means no second font request for one word, and no
-// approximation, since nothing freely licensable is that compressed.
+// WHY THE MARK IS NOT HERE. The logo has one, and it is deliberately absent
+// from the header. Its strokes are about 1.5% of its height, so anywhere
+// below roughly 40px they fall under a single pixel and it renders as a green
+// smudge rather than a drawn outline -- checked against the source PNG, which
+// degrades identically, so this is the artwork's limit and not a fault in the
+// trace. The mark ships in app/icon.svg at 32px and up, where it resolves.
+// If a solid-fill variant of the mark is ever commissioned, that is the point
+// at which it can join this lockup.
 //
-// THE WORDMARK IS THE ONLY CONDENSED THING IN THE PRODUCT. Source Serif 4
-// runs every heading, every table, every label. Do not "match the brand font"
-// anywhere else; DESIGN.md § Type says so too.
+// INLINE SVG RATHER THAN A WEBFONT: the wordmark's ultra-condensed grotesque
+// is artwork, not a UI typeface. Outlining it means no second font request
+// for one word, and no approximation -- nothing freely licensable is that
+// compressed.
 //
-// ORDER IS MARK-THEN-WORD, the reverse of brand/logo_with_text.png, where the
-// mark is drawn as the terminal glyph of the word. Reversing it makes
-// `markOnly` a clean split rather than a crop of the right-hand end.
+// THIS IS THE ONLY CONDENSED THING IN THE PRODUCT. Source Serif 4 runs every
+// heading, every table, every label. Do not "match the brand font" anywhere
+// else; DESIGN.md § Type says so too.
 //
-// fillRule="evenodd" IS LOAD-BEARING: the mark is an outlined glyph, so every
-// stroke contributes an outer and an inner contour. Under the default nonzero
-// rule the counters fill and the mark reads as a solid blob.
-export function Wordmark({
-  className = "",
-  markOnly = false,
-}: {
-  className?: string;
-  /** The mark alone -- the favicon's source, and the defined collapsed form
-   *  for a future narrow-header breakpoint. No call site in the app today. */
-  markOnly?: boolean;
-}) {
-  const mark = (
-    <svg
-      viewBox={MARK_VIEWBOX}
-      className="h-5 w-auto shrink-0 fill-current text-accent"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path d={MARK_PATH} fillRule="evenodd" />
-    </svg>
-  );
-
-  if (markOnly) {
-    return (
-      <span role="img" aria-label="GetSetPaid" className={className}>
-        {mark}
-      </span>
-    );
-  }
-
+// fillRule="evenodd" IS LOAD-BEARING: every enclosed counter in G, E, S, P, A,
+// D and the full stop is its own contour, and a fill rule that filled them
+// would render the word as a row of solid blocks.
+export function Wordmark({ className = "" }: { className?: string }) {
   return (
-    <span
-      role="img"
-      aria-label="GetSetPaid"
-      className={`inline-flex items-center gap-2 ${className}`}
-    >
-      {mark}
+    <span role="img" aria-label="GetSetPaid" className={className}>
       <svg
         viewBox={WORD_VIEWBOX}
         className="h-4 w-auto fill-current text-ink"
@@ -1095,10 +1075,10 @@ export function Wordmark({
 - [ ] **Step 4: Run the tests and the type checker**
 
 Run: `pnpm exec vitest run tests/unit/design/wordmark.test.ts`
-Expected: PASS, 11 tests.
+Expected: PASS — Task 3's generated-path tests plus these six.
 
 Run: `pnpm typecheck`
-Expected: no errors. (Both call sites pass no props; `markOnly` is optional.)
+Expected: no errors. Both call sites pass no props.
 
 Run: `pnpm lint`
 Expected: no errors.
@@ -1108,32 +1088,32 @@ Expected: no errors.
 ```bash
 git add components/wordmark.tsx tests/unit/design/wordmark.test.ts
 git commit -F - <<'EOF'
-Replace the type-only wordmark with the real lockup
+Replace the type-only wordmark with the traced artwork
 
 The old component argued that inventing a mark for a product that had not
 commissioned one would be invented content, and set the name in Source Serif 4
 instead. Real artwork exists now, so that reasoning has expired -- but it was
 correct when written, which is why the replacement says so rather than
-deleting the note.
+quietly deleting the note.
 
-Inline SVG rather than a raster or a webfont: sharp at 20px and 200px, the
-mark's fill goes through --color-accent instead of baking a hex into a binary,
-and outlining the wordmark avoids both a second font request for one word and
-an approximation -- nothing freely licensable is that compressed.
+The mark is deliberately not in this lockup. Its strokes are ~1.5% of its
+height, so below about 40px they fall under one pixel and it renders as a
+green smudge; the source PNG degrades identically at that size, which is how
+we know it is the artwork's limit rather than the trace's. It ships in
+app/icon.svg instead, at sizes where it resolves. That also removes the
+markOnly branch the plan originally called for -- with the mark out of the
+header its only consumer is a static file that cannot import a module, so the
+prop would have had no caller.
 
-fillRule="evenodd" is load-bearing and tested. The mark is an outlined glyph,
-so every stroke contributes two contours; under the default nonzero rule the
-counters fill and it renders as a solid blob.
-
-Order is mark-then-word, reversing the source artwork, so markOnly is a clean
-split rather than a crop.
+fillRule="evenodd" is load-bearing and tested: every counter in G, E, S, P, A,
+D and the full stop is a separate contour, and a rule that filled them would
+render the word as a row of solid blocks.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01Jb3nKztabqLuaJY77iPY4U
 EOF
 ```
 
----
 
 ## Task 5: Icon, theme colour, and the rendered checks
 
@@ -1172,20 +1152,23 @@ test.describe("brand", () => {
       page.getByRole("link", { name: "GetSetPaid" }),
     ).toBeVisible();
 
-    // Two <path>s -- mark and wordmark. One means markOnly leaked in, or the
-    // trace collapsed to a single contour.
-    await expect(logo.locator("svg")).toHaveCount(2);
+    // One <svg>: the wordmark. The mark is deliberately not in the header
+    // (founder ruling -- it is illegible at this size); it lives in
+    // app/icon.svg. Two here would mean it crept back in.
+    await expect(logo.locator("svg")).toHaveCount(1);
 
     const bg = await page.evaluate(
       () => getComputedStyle(document.body).backgroundColor,
     );
     expect(bg).toBe("rgb(11, 11, 14)"); // --color-shell #0B0B0E
 
-    const markFill = await logo
+    // The wordmark resolves --color-ink through a token utility rather than
+    // pinning a value, so this is the check that the theme actually applied.
+    const wordFill = await logo
       .locator("svg")
       .first()
       .evaluate((el) => getComputedStyle(el).fill);
-    expect(markFill).toBe("rgb(32, 252, 143)"); // --color-accent #20FC8F
+    expect(wordFill).toBe("rgb(245, 245, 247)"); // --color-ink #F5F5F7
   });
 
   test("color-scheme is dark, so native controls follow the page", async ({
@@ -1219,6 +1202,8 @@ App Router serves `app/icon.svg` in preference to `app/favicon.ico`. Paste the e
 ```
 
 The literal hexes are correct here and are not a token violation: a static SVG served as a file has no access to the stylesheet's custom properties, and a favicon must render before any CSS loads. The `<rect>` is required — a transparent favicon on a browser's own dark tab strip is invisible.
+
+**This file is now the mark's only home.** The founder ruled the mark out of the header on 2026-09-09 because its ~1.5%-of-height strokes fall below one pixel there. Icons render at 32px and up, which is where those strokes resolve — so getting this file right matters more than it did when the mark also appeared in the lockup. Check the rendered result rather than assuming: open the SVG at 32px and confirm the counters are open and the strokes are continuous.
 
 Then delete the superseded icon:
 
