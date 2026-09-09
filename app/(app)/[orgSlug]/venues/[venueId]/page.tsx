@@ -146,7 +146,6 @@ export default async function VenueDetailPage({
   if (result.outcome === "missing") notFound();
 
   const venue = result.record;
-  const rooms = await loadRoomsForVenue(org.id, venue.id);
   // WHY THE ROLE AND NOT ONLY THE ACCESS. A short events list means "this
   // venue has had few nights" for a full-scope viewer and "few of them are
   // assigned to you" for a record-scoped one, and only the role tells the page
@@ -156,13 +155,6 @@ export default async function VenueDetailPage({
   const blocked = access.canWrite ? null : access.explanation;
   const panelBlocked =
     venue.deletedAt !== null ? DELETED_RECORD_EXPLANATION : blocked;
-  // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
-  // the panel is a Client Component and this is the only place with an
-  // RLS-scoped server client. `includeRemoved` is implied: the loader
-  // returns the values of REMOVED fields too, which is what makes
-  // "removing a field keeps what was filled in" visible rather than merely
-  // true (20260829010000, decision 1).
-  const customFields = await loadCustomFieldPanel(org.id, "venue", venue.id);
   // A CUSTOM FIELD VALUE IS AN ORDINARY CRM WRITE ON THIS RECORD, so the
   // key that gates it is the venue's own key --
   // private.entity_is_manageable() maps this entity type to it in the
@@ -194,28 +186,43 @@ export default async function VenueDetailPage({
   // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
   // later phase adds to this route.
   const activityListParams = activityParams(raw);
-  const activity = await fetchActivityPage(
-    org.id,
-    "venue",
-    venue.id,
-    activityListParams,
-  );
 
-  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). Venues carry `website`
-  // but no `city`/`country` column (20260827232510's `location` free text is
-  // not the same concept as a network `city`, so it is deliberately not
-  // compared -- lib/network/drift.ts's header).
-  // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
-  // identical comment.
-  // TASK 4 / GAP B (Q73/Q82), one wave, not a waterfall. See the companies
-  // page's identical comment.
-  const [networkProfile, networkLink, connectAccess] = canReadNetwork
-    ? await Promise.all([
-        loadNetworkProfileForEntity(org.id, "venue", venue.id),
-        loadNetworkLinkForEntity(org.id, "venue", venue.id),
-        getNetworkConnectionAccess(org),
-      ])
-    : [null, null, null];
+  // ONE WAVE, NOT A WATERFALL -- the same argument the network trio below
+  // already made, applied to everything that shares its precondition. All four
+  // need `org.id` and `venue.id`, plus `canReadNetwork` from the opening
+  // Promise.all, and nothing produced by each other. See the agencies page's
+  // identical comment; `linkedProfile` stays serial because it needs
+  // `networkLink.networkProfileId`.
+  const [
+    rooms,
+    customFields,
+    activity,
+    [networkProfile, networkLink, connectAccess],
+  ] = await Promise.all([
+    loadRoomsForVenue(org.id, venue.id),
+    // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
+    // the panel is a Client Component and this is the only place with an
+    // RLS-scoped server client. `includeRemoved` is implied: the loader
+    // returns the values of REMOVED fields too, which is what makes
+    // "removing a field keeps what was filled in" visible rather than merely
+    // true (20260829010000, decision 1).
+    loadCustomFieldPanel(org.id, "venue", venue.id),
+    fetchActivityPage(org.id, "venue", venue.id, activityListParams),
+    // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). Venues carry `website`
+    // but no `city`/`country` column (20260827232510's `location` free text is
+    // not the same concept as a network `city`, so it is deliberately not
+    // compared -- lib/network/drift.ts's header).
+    // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
+    // identical comment.
+    // TASK 4 / GAP B (Q73/Q82). See the companies page's identical comment.
+    canReadNetwork
+      ? Promise.all([
+          loadNetworkProfileForEntity(org.id, "venue", venue.id),
+          loadNetworkLinkForEntity(org.id, "venue", venue.id),
+          getNetworkConnectionAccess(org),
+        ])
+      : Promise.resolve([null, null, null] as const),
+  ]);
   const networkDrifted =
     networkProfile !== null &&
     profileHasDrifted(

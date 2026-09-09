@@ -105,7 +105,71 @@ export default async function CompanyDetailPage({
   if (result.outcome === "missing") notFound();
 
   const company = result.record;
-  const links = await loadContactsForCompany(org.id, company.id);
+
+  // THE TIMELINE'S OWN PAGE OF ITS OWN LIST. `activityParams` reads only keys
+  // beginning `activity_`, and not even `activity_q` -- there is no search
+  // control on this surface (lib/crm/activity.ts). So it cannot be confused by
+  // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
+  // later phase adds to this route.
+  const activityListParams = activityParams(raw);
+
+  // ONE WAVE, NOT A WATERFALL -- the same argument the network trio below
+  // already made, applied to everything that shares its precondition. These
+  // four need `org.id` and `company.id`, plus `canReadNetwork` from the
+  // opening Promise.all, and nothing produced by each other.
+  //
+  // THE LINK PICKER IS NOT IN THIS WAVE, and that is not an oversight: its
+  // exclusion list is `links.map(...)`, so it genuinely cannot start until
+  // `links` has resolved. It stays serial below, as does `linkedProfile`,
+  // which needs `networkLink.networkProfileId`. Everything that CAN start at
+  // once now does.
+  const [
+    links,
+    customFields,
+    activity,
+    [networkProfile, networkLink, connectAccess],
+  ] = await Promise.all([
+    loadContactsForCompany(org.id, company.id),
+    // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
+    // the panel is a Client Component and this is the only place with an
+    // RLS-scoped server client. `includeRemoved` is implied: the loader
+    // returns the values of REMOVED fields too, which is what makes
+    // "removing a field keeps what was filled in" visible rather than merely
+    // true (20260829010000, decision 1).
+    loadCustomFieldPanel(org.id, "company", company.id),
+    fetchActivityPage(org.id, "company", company.id, activityListParams),
+    // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). A plain lookup of THIS
+    // organisation's own network_profiles row for THIS company -- never a
+    // join, never a cross-tenant read (lib/network/entities.ts's header).
+    // `companies` has no city/country/website columns (20260827232510), so the
+    // drift comparison below has only `name` to check for a company -- the one
+    // field every kind shares.
+    //
+    // GATED ON `canReadNetwork` (FIX ROUND 1, I2). The lookup is not merely
+    // skipped for tidiness: running it anyway and getting `null` back for a
+    // suspended workspace is EXACTLY the dishonest state this closes, because
+    // `null` is indistinguishable from "genuinely never published".
+    //
+    // TASK 4 / GAP B (Q73/Q82): THE LINKED-IDENTITY SECTION shares this wave.
+    // All three reads are gated on the same `canReadNetwork` and for the
+    // identical I2 reason -- a suspended workspace must not be told "not
+    // linked" about a record that IS genuinely linked. `connectAccess` is only
+    // needed to explain a DISABLED link picker (suspended/tier/permission); it
+    // is cheap enough (one `hasPermission` + one entitlements read, already
+    // cached per request by `lib/entitlements/policy.ts`) to resolve
+    // unconditionally rather than threading a second gate through this branch.
+    // ONE Promise.all, not a profile-then-link waterfall: the three are
+    // independent of each other (final review, minor 5) -- only
+    // `loadNetworkProfileForViewer` below genuinely depends on a predecessor.
+    canReadNetwork
+      ? Promise.all([
+          loadNetworkProfileForEntity(org.id, "company", company.id),
+          loadNetworkLinkForEntity(org.id, "company", company.id),
+          getNetworkConnectionAccess(org),
+        ])
+      : Promise.resolve([null, null, null] as const),
+  ]);
+
   const options = access.canWrite
     ? await loadLinkOptions(
         "contacts",
@@ -119,13 +183,6 @@ export default async function CompanyDetailPage({
   // editable, and this route serves deleted records on purpose.
   const panelBlocked =
     company.deletedAt !== null ? DELETED_RECORD_EXPLANATION : blocked;
-  // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
-  // the panel is a Client Component and this is the only place with an
-  // RLS-scoped server client. `includeRemoved` is implied: the loader
-  // returns the values of REMOVED fields too, which is what makes
-  // "removing a field keeps what was filled in" visible rather than merely
-  // true (20260829010000, decision 1).
-  const customFields = await loadCustomFieldPanel(org.id, "company", company.id);
   // A CUSTOM FIELD VALUE IS AN ORDINARY CRM WRITE ON THIS RECORD, so the
   // key that gates it is the company's own key --
   // private.entity_is_manageable() maps this entity type to it in the
@@ -145,49 +202,7 @@ export default async function CompanyDetailPage({
         : access.explanation;
   const basePath = `/${org.slug}/companies`;
 
-  // THE TIMELINE'S OWN PAGE OF ITS OWN LIST. `activityParams` reads only keys
-  // beginning `activity_`, and not even `activity_q` -- there is no search
-  // control on this surface (lib/crm/activity.ts). So it cannot be confused by
-  // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
-  // later phase adds to this route.
-  const activityListParams = activityParams(raw);
-  const activity = await fetchActivityPage(
-    org.id,
-    "company",
-    company.id,
-    activityListParams,
-  );
 
-  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). A plain lookup of THIS
-  // organisation's own network_profiles row for THIS company -- never a join,
-  // never a cross-tenant read (lib/network/entities.ts's header). `companies`
-  // has no city/country/website columns (20260827232510), so the drift
-  // comparison below has only `name` to check for a company -- the one field
-  // every kind shares.
-  //
-  // GATED ON `canReadNetwork` (FIX ROUND 1, I2). The lookup is not merely
-  // skipped for tidiness: running it anyway and getting `null` back for a
-  // suspended workspace is EXACTLY the dishonest state this closes, because
-  // `null` is indistinguishable from "genuinely never published".
-  //
-  // TASK 4 / GAP B (Q73/Q82): THE LINKED-IDENTITY SECTION shares this wave.
-  // All three reads are gated on the same `canReadNetwork` and for the
-  // identical I2 reason -- a suspended workspace must not be told "not linked"
-  // about a record that IS genuinely linked. `connectAccess` is only needed to
-  // explain a DISABLED link picker (suspended/tier/permission); it is cheap
-  // enough (one `hasPermission` + one entitlements read, already cached per
-  // request by `lib/entitlements/policy.ts`) to resolve unconditionally rather
-  // than threading a second gate through this branch. ONE Promise.all, not a
-  // profile-then-link waterfall: the three are independent of each other
-  // (final review, minor 5) -- only `loadNetworkProfileForViewer` below
-  // genuinely depends on a predecessor.
-  const [networkProfile, networkLink, connectAccess] = canReadNetwork
-    ? await Promise.all([
-        loadNetworkProfileForEntity(org.id, "company", company.id),
-        loadNetworkLinkForEntity(org.id, "company", company.id),
-        getNetworkConnectionAccess(org),
-      ])
-    : [null, null, null];
   const networkDrifted =
     networkProfile !== null &&
     profileHasDrifted(

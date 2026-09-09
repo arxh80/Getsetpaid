@@ -881,9 +881,20 @@ describe("I2: the four detail pages gate the network identity row on view_networ
         // the count asserts the lookup appears NOWHERE else -- hoisting it
         // back out of the guarded wave (the I2 regression in its new clothes)
         // reddens here either way.
+        //
+        // MATCHED AS A PATTERN, NOT A LITERAL, and the difference is the point.
+        // The claim is "the lookup is the first thing inside a Promise.all that
+        // is the consequent of a `canReadNetwork` ternary". Indentation depth
+        // and whether that inner Promise.all is itself `await`ed are NOT part
+        // of the claim: when the guarded wave was nested inside the page's
+        // outer one-wave Promise.all, both changed and all four of these went
+        // red with the invariant fully intact. A literal that pins whitespace
+        // fails on formatting and passes on nothing extra.
         const normalised = page.replace(/\r\n/g, "\n");
-        const guarded = `canReadNetwork\n    ? await Promise.all([\n        loadNetworkProfileForEntity(org.id, "${kind}"`;
-        expect(normalised).toContain(guarded);
+        const guarded = new RegExp(
+          String.raw`canReadNetwork\s*\?\s*(?:await\s+)?Promise\.all\(\[\s*loadNetworkProfileForEntity\(org\.id, "${kind}"`,
+        );
+        expect(normalised).toMatch(guarded);
         const callSites =
           normalised.split(`loadNetworkProfileForEntity(org.id, "${kind}"`).length - 1;
         expect(callSites, "exactly one call site, the guarded one").toBe(1);
