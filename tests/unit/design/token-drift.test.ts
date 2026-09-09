@@ -103,3 +103,44 @@ describe("design token contract", () => {
     }
   });
 });
+
+describe("base rules follow the dark ground", () => {
+  const css = () => readFileSync(`${root}app/globals.css`, "utf8");
+
+  it("declares color-scheme: dark", () => {
+    // Undeclared, a dark-mode machine renders the browser's OWN chrome --
+    // native <select> popups (the workspace switcher, the invite role picker),
+    // form-control internals, scrollbars, autofill -- guessing. Declared, all
+    // of it is pinned to the palette contrast.py actually measured.
+    expect(css()).toMatch(/color-scheme:\s*dark\s*;/);
+    expect(css()).not.toMatch(/color-scheme:\s*light\s*;/);
+  });
+
+  it("the skeleton shimmer breathes to a token that still exists", () => {
+    // --color-pink was the light palette's breathe stop and is deleted. A
+    // keyframe referencing a dead custom property does not error -- it
+    // resolves to nothing and the bone silently stops moving, which is a
+    // loading state that looks like a broken page.
+    const theme = readThemeColors();
+    const keyframe = css().slice(css().indexOf("@keyframes skeleton-pulse"));
+    const refs = [...keyframe.matchAll(/var\(--color-([a-z0-9-]+)\)/g)].map(
+      (m) => m[1],
+    );
+    expect(refs.length).toBeGreaterThan(0);
+    for (const ref of refs) {
+      expect(theme.has(ref), `--color-${ref} referenced by the keyframe`).toBe(
+        true,
+      );
+    }
+    expect(refs).toContain("skeleton-breathe");
+  });
+
+  it("the skeleton breathe stop keeps a perceptible amplitude", () => {
+    // The light system rested at #D6CBCB and breathed to #FFD6E0 -- 1.20:1
+    // between the two stops. Below roughly that, the loop is invisible; far
+    // above it, the bone strobes. #2A2A33 -> #3A3A45 is 1.27:1.
+    const theme = readThemeColors();
+    expect(theme.get("rule")).toBe("#2A2A33");
+    expect(theme.get("skeleton-breathe")).toBe("#3A3A45");
+  });
+});

@@ -189,17 +189,16 @@
      interpolates them the same way every hover transition does; no new
      colour is introduced.
 
-     THE BONE RESTS AT --color-rule AND BREATHES TO --color-pink (review
-     finding I1). The first cut rested at --color-shell, which IS the page
-     background: at the loop's rest points every bone was invisible, and
-     under prefers-reduced-motion -- where the rule below freezes the loop AT
-     its rest point -- the whole skeleton was a blank page for exactly the
-     users who asked for a calmer one. --rule is the existing
-     hairline token, visible on both grounds a bone sits on (--shell page,
-     --surface card), so the static form reads and the animated form has a
-     perceptible amplitude. Decorative fills, so no contrast gate applies --
-     the loading MESSAGE is carried by role="status" text, never by the
-     colour.
+     THE BONE RESTS AT --color-rule AND BREATHES TO --color-skeleton-breathe.
+     The first cut rested at --color-shell, which IS the page background: at
+     the loop's rest points every bone was invisible, and under
+     prefers-reduced-motion -- where the rule below freezes the loop AT its
+     rest point -- the whole skeleton was a blank page for exactly the users
+     who asked for a calmer one. --rule is the existing hairline token,
+     visible on both grounds a bone sits on (--shell page, --surface card),
+     so the static form reads and the animated form has a perceptible
+     amplitude. Decorative fills, so no contrast gate applies -- the loading
+     MESSAGE is carried by role="status" text, never by the colour.
 
      THE LOOP IS 1.8s, deliberately outside the --dur-* scale: those tokens
      time TRANSITIONS between states; this is a continuous idle loop, and at
@@ -213,6 +212,14 @@
      served precisely to the users who asked for less motion. The unlayered
      rule after the base styles kills the animation outright and leaves the
      static --color-rule bone. */
+  /* The bone's breathe stop. Was --color-pink on the light palette; that
+     token is deleted, and a keyframe pointing at a dead custom property does
+     not error -- it resolves to nothing and the bone silently stops moving.
+     #3A3A45 sits 1.27:1 from --color-rule, matching the 1.20:1 amplitude
+     the light system's own pair had. Decorative fill, so no
+     contrast gate applies -- the loading MESSAGE is carried by role="status"
+     text, never by the colour. */
+  --color-skeleton-breathe: #3A3A45;
   --animate-skeleton: skeleton-pulse 1.8s ease-in-out infinite;
 
   @keyframes skeleton-pulse {
@@ -221,7 +228,7 @@
       background-color: var(--color-rule);
     }
     50% {
-      background-color: var(--color-pink);
+      background-color: var(--color-skeleton-breathe);
     }
   }
 }
@@ -270,17 +277,16 @@ html {
   overflow-x: clip;
   background: var(--color-shell);
 
-  /* DESIGN.md § Open: "Dark mode is not specified. The palette is light-only,
-     and the PRD does not require dark mode." Saying so EXPLICITLY is what
-     stops the user agent from guessing: on a machine set to dark mode, an
-     undeclared color-scheme lets the browser render its OWN chrome dark --
-     the native <select> popup (two of them ship here: the workspace switcher
-     and the invite role picker), form-control internals, scrollbars and
-     autofill backgrounds -- against our light --color-shell page. Declaring
-     `light` pins all of that to the palette DESIGN.md actually specifies and
-     contrast.py actually measured. This is not dark-mode support; it is the
-     opposite, and deliberately so until a dark ramp is designed. */
-  color-scheme: light;
+  /* Declaring this is what stops the user agent guessing. Undeclared, a
+     machine set to light mode renders the browser's OWN chrome light -- the
+     native <select> popup (two ship here: the workspace switcher and the
+     invite role picker), form-control internals, scrollbars and autofill
+     backgrounds -- against our near-black --color-shell page. `dark` pins all
+     of it to the palette DESIGN.md specifies and contrast.py measures.
+     There is no light theme and no toggle: DESIGN.md § Open's "dark mode is
+     not specified" was resolved by adopting the brand palette, which is only
+     legible on a dark ground. */
+  color-scheme: dark;
 }
 
 body {
