@@ -913,6 +913,51 @@ export async function setOrganisationSuspended(
 }
 
 /**
+ * PHASE 7 TASK 4. Simulates a billing/feature override's natural expiry
+ * without waiting for real wall-clock time to pass -- the brief's own
+ * "(simulated) expiry restores Starter denial". Backdates `expires_at` on
+ * whatever ACTIVE (unrevoked) row exists rather than deleting it: expiry is a
+ * READ-TIME filter (private.active_billing_override() /
+ * private.active_feature_override()), not a delete, and the row's continued
+ * existence -- just outside its window -- is exactly what those functions are
+ * proven against.
+ *
+ * Runs as `postgres` (bypasses RLS and the guard trigger), the same route
+ * every other direct fixture manipulation in this file uses -- there is no
+ * product path that ages a clock forward, by design.
+ */
+export async function expireBillingOverride(organisationId: string): Promise<void> {
+  // starts_at is pushed back FIRST, in the same statement -- see supabase/
+  // tests/rls_phase7_overrides.sql § OD's identical fix and comment: a grant
+  // made moments ago carries a starts_at close to "now", and backdating only
+  // expires_at can push it BEFORE starts_at, tripping
+  // organisation_billing_overrides_window (measured: it did, on the first cut
+  // of this helper). Widening the whole window first keeps expires_at's
+  // move -- across "now" -- the only thing this call is actually testing.
+  await sql(
+    `update public.organisation_billing_overrides
+        set starts_at  = now() - interval '2 hours',
+            expires_at = now() - interval '1 minute'
+      where organisation_id = $1 and revoked_at is null`,
+    [organisationId],
+  );
+}
+
+/** See expireBillingOverride() -- the feature-override twin, same fix. */
+export async function expireFeatureOverride(
+  organisationId: string,
+  flagKey: string,
+): Promise<void> {
+  await sql(
+    `update public.organisation_feature_overrides
+        set starts_at  = now() - interval '2 hours',
+            expires_at = now() - interval '1 minute'
+      where organisation_id = $1 and flag_key = $2 and revoked_at is null`,
+    [organisationId, flagKey],
+  );
+}
+
+/**
  * PHASE 7 TASK 3. The organisation-lifecycle audit trail, read STRAIGHT OUT OF
  * POSTGRES as `postgres` -- same reasoning as the impersonation reader below:
  * nobody can read audit_events through the app except the platform superuser,
