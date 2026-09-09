@@ -423,7 +423,63 @@ select rl.try('RS7c ...but NOT a foreign workspace''s (42501) -- no framing anot
 select rl.try('RS8 ...but NOT a foreign organisation''s (42501)',
   format($$select * from public.consume_rate_limit('exports',%L)$$, :'beta_org'),
   'denied(42501)');
+
+-- ---------------------------------------------------------------------------
+-- FIX ROUND 1, REVIEW FINDING I1 -- THE COLUMN RS7c STOPPED ONE SHORT OF.
+--
+-- RS7c proves a foreign organisation cannot be named on an ORGANISATION-scoped
+-- category. Nothing asserted the USER-scoped combination, and that was the one
+-- that worked: the wrapper validated p_organisation_id only on the
+-- organisation branch and passed it through to the core -- and therefore into
+-- incident_alerts.organisation_id -- on every other. A manager of ALPHA could
+-- file 61 `search` calls naming BETA and produce an alert the operator reads
+-- as "BETA tripped a rate limit", with /super/health rendering the workspace
+-- NAME and nothing else. Organisation ids are harvestable
+-- (network_profiles.organisation_id is SELECT-granted to `authenticated`
+-- under the cross-tenant directory policy, and RLS filters rows not columns),
+-- so this was targeted, not guesswork.
+--
+-- RS7d is the assertion that FAILS against the old function: it returned
+-- ok(1)/true.
+-- ---------------------------------------------------------------------------
+select rl.try('RS7d a user-scoped category naming a FOREIGN workspace is a caller bug (22023) -- I1',
+  format($$select * from public.consume_rate_limit('search',%L)$$, :'beta_org'),
+  'denied(22023)');
+select rl.try('RS7e ...and naming your OWN workspace is refused too -- the attribution is not the caller''s to supply',
+  format($$select * from public.consume_rate_limit('network_discovery',%L)$$, :'alpha_org'),
+  'denied(22023)');
 reset role; reset request.jwt.claims;
+
+-- A REAL user-scoped crossing, so the null attribution is measured on a live
+-- alert row rather than argued from the source. The counter is cleared first:
+-- § RS1 already spent one `search` unit and a fixed window that turned over
+-- between then and here would leave the burst one short of its own crossing.
+\o /dev/null
+delete from public.rate_limit_counters where category='search' and subject_id=:'pmanager';
+delete from public.incident_alerts
+ where alert_type='rate_limit_tripped' and details->>'subject_id' = :'pmanager';
+\o
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+\o /dev/null
+do $$ begin for i in 1..61 loop perform 1 from public.consume_rate_limit('search'); end loop; end $$;
+\o
+reset role; reset request.jwt.claims;
+select rl.val('RS7f a user-scoped crossing files exactly one alert',
+  format($$select count(*)::text from public.incident_alerts
+            where alert_type='rate_limit_tripped' and details->>'subject_id' = %L$$,
+         :'pmanager'),
+  '1');
+select rl.val('RS7g ...and it is attributed to NO workspace -- null, which /super/health says in words',
+  format($$select (organisation_id is null)::text from public.incident_alerts
+            where alert_type='rate_limit_tripped' and details->>'subject_id' = %L$$,
+         :'pmanager'),
+  'true');
+select rl.val('RS7h ...while still recording WHAT it was about (details.subject_scope)',
+  format($$select details->>'subject_scope' from public.incident_alerts
+            where alert_type='rate_limit_tripped' and details->>'subject_id' = %L$$,
+         :'pmanager'),
+  'user');
 
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
@@ -452,6 +508,37 @@ select rl.val('RS11 `anon` holds no EXECUTE on the wrapper at all',
 select rl.val('RS12 `authenticated` does',
   $$select has_function_privilege('authenticated','public.consume_rate_limit(text,uuid)','EXECUTE')::text$$,
   'true');
+
+-- ---------------------------------------------------------------------------
+-- FIX ROUND 1, REVIEW FINDING I2 -- THE CONNECTION-REQUEST BUDGET IS ENFORCED
+-- AT THE WRITE, NOT ONLY IN THE APPLICATION.
+--
+-- The behaviour is proved through the actual bypass in
+-- tests/integration/security/connection-request-budget.test.ts (a real
+-- supabase-js client POSTing straight to PostgREST, eleven times). What
+-- belongs HERE is the structure that test depends on: the grant is still
+-- there (so the trigger is the meter rather than a revoked grant pretending
+-- to be one), and the trigger is BEFORE INSERT on the table itself, so no
+-- writer -- the app's form, a stripped-form post, a raw INSERT -- can be
+-- reached by a path that skips it.
+-- ---------------------------------------------------------------------------
+select rl.val('RS13 `authenticated` still holds INSERT on network_connection_requests',
+  $$select has_table_privilege('authenticated','public.network_connection_requests','INSERT')::text$$,
+  'true');
+select rl.val('RS14 ...and a BEFORE INSERT trigger meters every one of them -- I2',
+  $$select count(*)::text from pg_catalog.pg_trigger t
+     where t.tgrelid = 'public.network_connection_requests'::pg_catalog.regclass
+       and t.tgname = 'meter_connection_request'
+       and not t.tgisinternal
+       and (t.tgtype & 2) = 2      -- BEFORE
+       and (t.tgtype & 4) = 4$$,   -- INSERT
+  '1');
+select rl.val('RS15 ...calling the metering function, not something else',
+  $$select p.proname from pg_catalog.pg_trigger t
+      join pg_catalog.pg_proc p on p.oid = t.tgfoid
+     where t.tgrelid = 'public.network_connection_requests'::pg_catalog.regclass
+       and t.tgname = 'meter_connection_request'$$,
+  'meter_connection_request');
 
 -- ===========================================================================
 -- § RA  INCIDENT ALERTS
@@ -555,6 +642,71 @@ select rl.try('RA17 un-resolving is allowed (a mis-click is reversible)',
   format($$update public.incident_alerts
               set resolved_at = null, resolved_by = null where id = %L$$, :'trip_alert'),
   'ok(1)');
+-- ---------------------------------------------------------------------------
+-- FIX ROUND 1, REVIEW FINDING I4 -- RESOLVING AUDITS ITSELF, AND A REOPEN
+-- CANNOT ERASE WHO RESOLVED.
+--
+-- RA11 resolved this alert and RA17 reopened it, which is precisely the
+-- sequence that used to leave the row reading `resolved_at = null,
+-- resolved_by = null` with no record anywhere that it had ever been resolved.
+-- `resolved_by` on the row was the stated compensating control for having no
+-- audit row at all; RA17 is the branch that destroys it. Both transitions now
+-- write to public.audit_events, from an AFTER UPDATE trigger rather than from
+-- the server action -- because this table carries a client UPDATE grant and a
+-- permissive superuser UPDATE policy, so a raw PATCH is a resolve path no call
+-- site could cover.
+-- ---------------------------------------------------------------------------
+select rl.val('RA24 resolving wrote an incident_alert.resolved audit row -- I4',
+  format($$select count(*)::text from public.audit_events
+            where action='incident_alert.resolved' and target_id=%L$$, :'trip_alert'),
+  '1');
+select rl.val('RA25 ...and reopening wrote incident_alert.reopened',
+  format($$select count(*)::text from public.audit_events
+            where action='incident_alert.reopened' and target_id=%L$$, :'trip_alert'),
+  '1');
+-- THE ONE THAT MAKES THE TRAIL SURVIVE THE BRANCH THAT MOTIVATED IT: the
+-- reopen's `before` carries the resolution it erased, so "who resolved this,
+-- and when" is answerable after the columns are null.
+select rl.val('RA26 ...carrying the resolver the reopen erased, in `before`',
+  format($$select (before->>'resolved_by' = %L)::text from public.audit_events
+            where action='incident_alert.reopened' and target_id=%L$$,
+         :'super', :'trip_alert'),
+  'true');
+select rl.val('RA27 ...both attributed to the acting superuser, not to nobody',
+  format($$select (bool_and(actor_user_id = %L))::text from public.audit_events
+            where action in ('incident_alert.resolved','incident_alert.reopened')
+              and target_id=%L$$, :'super', :'trip_alert'),
+  'true');
+
+-- ---------------------------------------------------------------------------
+-- FIX ROUND 1, REVIEW FINDING I3 -- THE TASK 6 EMAIL SEAM HAS AN ACCESS PATH.
+--
+-- `notified_at` was designed as the delivery seam and `service_role` held NO
+-- privilege on this table at all: `rolbypassrls` bypasses POLICIES, not table
+-- PRIVILEGES, so Task 6's sender -- a server-side job with the service-role
+-- key and no user session -- could neither read the unnotified rows nor stamp
+-- one. 20260909070000 grants the minimum that makes it real, and these five
+-- assertions are the shape of that minimum: the sender may read and may stamp
+-- ONE COLUMN; it may not rewrite alert content; and the operator's half is
+-- unchanged (RA16 above still refuses a client stamp).
+-- ---------------------------------------------------------------------------
+select rl.val('RA19 service_role can READ unnotified alerts -- Task 6''s first query',
+  $$select has_table_privilege('service_role','public.incident_alerts','SELECT')::text$$,
+  'true');
+select rl.val('RA20 ...and can stamp notified_at',
+  $$select has_column_privilege('service_role','public.incident_alerts','notified_at','UPDATE')::text$$,
+  'true');
+select rl.val('RA21 ...but cannot rewrite the summary (column-level grant, not table-level)',
+  $$select has_column_privilege('service_role','public.incident_alerts','summary','UPDATE')::text$$,
+  'false');
+select rl.val('RA22 ...nor resolve one on the operator''s behalf',
+  $$select has_column_privilege('service_role','public.incident_alerts','resolved_at','UPDATE')::text$$,
+  'false');
+select rl.val('RA23 ...nor INSERT or DELETE: the writers are still the definer functions',
+  $$select (has_table_privilege('service_role','public.incident_alerts','INSERT')
+            or has_table_privilege('service_role','public.incident_alerts','DELETE'))::text$$,
+  'false');
+
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'powner_c';

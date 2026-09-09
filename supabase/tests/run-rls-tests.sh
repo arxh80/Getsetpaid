@@ -691,6 +691,10 @@ if [ "$rl_fails" != "0" ]; then
   echo "  In RS, THE WRAPPER'S SCOPE BINDING BROKE -- a session can spend an" >&2
   echo "  account-scoped budget (locking a stranger out by user id), or a" >&2
   echo "  non-member can burn another tenant's export allowance. Sev1." >&2
+  echo "  RS7d/RS7e/RS7g are fix round 1's I1: a user-scoped category must" >&2
+  echo "  take NO organisation, so an incident alert can never be attributed" >&2
+  echo "  to a workspace the caller merely named. A failure there means the" >&2
+  echo "  operator's alert feed can be made to blame an innocent tenant. Sev1." >&2
   echo "  In RA, THE ALERT BOUNDARY: a non-superuser can read platform" >&2
   echo "  alerts, a client can forge or delete one, or the resolve guard now" >&2
   echo "  lets an operator rewrite alert content or stamp notified_at (which" >&2
