@@ -412,7 +412,7 @@ body {
   font-family: var(--font-serif);
 }
 *, *::before, *::after { border-radius: var(--radius); }
-:focus-visible { outline: 2px solid var(--color-ink); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
   /* Except an infinite loop, which stops outright — see § Motion. */
