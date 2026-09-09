@@ -206,3 +206,47 @@ describe("generated logo paths", () => {
     }
   });
 });
+
+describe("the Wordmark component", () => {
+  const src = () => readFileSync(`${root}components/wordmark.tsx`, "utf8");
+
+  it("keeps the export name and prop both call sites rely on", () => {
+    expect(src()).toMatch(/export function Wordmark\(/);
+    expect(src()).toMatch(/className/);
+  });
+
+  it("has an accessible name", () => {
+    // It is inside <Link href="/"> at both call sites with no other text, so
+    // without this the link announces as its href.
+    expect(src()).toMatch(/role="img"/);
+    expect(src()).toMatch(/aria-label="GetSetPaid"/);
+  });
+
+  it("carries no literal hex", () => {
+    // DESIGN.md § Anti-patterns. The wordmark inherits --color-ink through a
+    // token utility so it follows the palette rather than pinning a value.
+    expect(src()).not.toMatch(/#[0-9A-Fa-f]{6}/);
+    expect(src()).toMatch(/text-ink|fill-current/);
+  });
+
+  it("uses evenodd fill so the letter counters stay open", () => {
+    // Every enclosed counter in G, E, S, P, A, D and the full stop is a
+    // separate contour. Under a fill rule that filled them, the wordmark
+    // would render as a row of solid blocks.
+    expect(src()).toMatch(/fillRule="evenodd"/);
+  });
+
+  it("renders the wordmark and does not reach for the mark", () => {
+    // Founder ruling: the mark is illegible at header size and lives in
+    // app/icon.svg instead. A component that imported it would have no
+    // call site for it.
+    expect(src()).toMatch(/WORD_PATH/);
+    expect(src()).not.toMatch(/MARK_PATH/);
+    expect(src()).not.toMatch(/markOnly/);
+  });
+
+  it("no longer claims the product has no logo", () => {
+    // The old file argued a mark would be invented content. One exists now.
+    expect(src()).not.toMatch(/no logotype file/i);
+  });
+});
