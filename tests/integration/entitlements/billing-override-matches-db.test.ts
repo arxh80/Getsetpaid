@@ -50,6 +50,7 @@ interface EffectivePlanRow {
 async function seedOrgWithOverride(
   client: import("pg").PoolClient,
   override: null | { tier: string | null; seats: number | null; expired: boolean },
+  subscriptionStatus: "active" | "cancelled" = "active",
 ): Promise<string> {
   const { rows } = await client.query<{ org: string }>(
     `insert into public.organisations (name, slug)
@@ -58,11 +59,17 @@ async function seedOrgWithOverride(
   );
   const org = rows[0].org;
 
+  // A cancelled subscription's current_period_end is set in the PAST so the
+  // past_due grace window (measured from it) can never be what keeps
+  // status_ok true by accident -- the cancelled case must stand on the
+  // status alone.
   await client.query(
     `insert into public.organisation_subscriptions
        (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
-     values ($1, 'starter', 'monthly', 1, 'active', now() + interval '30 days')`,
-    [org],
+     values ($1, 'starter', 'monthly', 1, $2,
+             case when $2 = 'active' then now() + interval '30 days'
+                  else now() - interval '30 days' end)`,
+    [org, subscriptionStatus],
   );
 
   if (override) {
@@ -241,6 +248,96 @@ describe("billing overrides are the same rule in TypeScript and in SQL", () => {
       );
       expect(rows[0].plan_id).toBe("starter");
       expect(rows[0].seat_count).toBe(42);
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
+  it("SEATS-ONLY override + CANCELLED subscription: BOTH halves deny (review I1 -- seats do not revive a lapsed subscription)", async () => {
+    // THE FIX-ROUND-1 BINDING CASE (20260909010000). As first shipped,
+    // effective_organisation_plan()'s status bypass fired on ANY active
+    // override row, so this exact state -- a seats-only override on a
+    // cancelled subscription -- granted full paid-tier writes in SQL while
+    // resolveEntitlements() resolved Free. The two halves must DENY together.
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const org = await seedOrgWithOverride(
+        client,
+        { tier: null, seats: 42, expired: false },
+        "cancelled",
+      );
+
+      const plan = await readEffectivePlan(client, org);
+      expect(plan.override_active, "the seats-only override IS active as a row").toBe(true);
+      expect(
+        plan.status_ok,
+        "status_ok -- a seats-only override must NOT bypass the cancelled status",
+      ).toBe(false);
+      // status_ok=false is what every gate conjoins on, so plan_id staying
+      // 'starter' grants nothing -- same shape as cancelled-with-no-override.
+      expect(plan.plan_id).toBe("starter");
+
+      const override: ActiveBillingOverride = { tier: null, seats: 42 };
+      const fromTypeScript = resolveEntitlements(
+        {
+          data: {
+            plan_id: "starter",
+            status: "cancelled",
+            current_period_end: new Date(Date.now() - 30 * 86400_000).toISOString(),
+          },
+          error: null,
+        },
+        Date.now(),
+        override,
+      );
+      // TypeScript's cancelled branch: Free's entitlements, override:false.
+      expect(fromTypeScript.tier).toBe("free");
+      expect(fromTypeScript.override).toBe(false);
+      expect(fromTypeScript.entitlements).toEqual(TIER_MATRIX.free);
+
+      // The agreement that matters: neither half grants a paid capability.
+      expect(fromTypeScript.entitlements.crmWrites).toBe(false);
+      expect(fromTypeScript.entitlements.financeModule).toBe(false);
+      expect(plan.status_ok && plan.crm_writes).toBeFalsy();
+      expect(plan.status_ok && plan.finance_module).toBeFalsy();
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
+  it("a TIER-NAMING override still bypasses a CANCELLED subscription's status on both halves (the deliberate comp semantics survive the I1 fix)", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      const org = await seedOrgWithOverride(
+        client,
+        { tier: "pro", seats: null, expired: false },
+        "cancelled",
+      );
+
+      const plan = await readEffectivePlan(client, org);
+      expect(plan.status_ok, "a tier-naming override bypasses status").toBe(true);
+      expect(plan.plan_id).toBe("pro");
+      expect(plan.finance_module).toBe(TIER_MATRIX.pro.financeModule);
+
+      const fromTypeScript = resolveEntitlements(
+        {
+          data: {
+            plan_id: "starter",
+            status: "cancelled",
+            current_period_end: new Date(Date.now() - 30 * 86400_000).toISOString(),
+          },
+          error: null,
+        },
+        Date.now(),
+        { tier: "pro", seats: null },
+      );
+      expect(fromTypeScript.tier).toBe("pro");
+      expect(fromTypeScript.override).toBe(true);
+      expect(fromTypeScript.entitlements.financeModule).toBe(plan.finance_module);
     } finally {
       await client.query("rollback");
       client.release();

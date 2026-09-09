@@ -273,6 +273,21 @@ describe("resolveEntitlements -- an active billing override wins outright", () =
     expect(result.override).toBe(false);
   });
 
+  it("a SEATS-ONLY override does NOT bypass a CANCELLED subscription's status (review I1)", () => {
+    // The state where the two halves diverged as first shipped: SQL's
+    // status bypass fired on ANY active override row, TypeScript's only on a
+    // tier-naming one. 20260909010000 fixed the SQL side to this rule;
+    // billing-override-matches-db.test.ts binds the deployed function to it.
+    const result = resolveEntitlements(row("starter", "cancelled"), NOW, {
+      tier: null,
+      seats: 42,
+    });
+    expect(result.status).toBe("resolved");
+    expect(result.tier).toBe("free");
+    expect(result.entitlements).toEqual(TIER_MATRIX.free);
+    expect(result.override).toBe(false);
+  });
+
   it("no override object at all (null) behaves exactly as before Task 4", () => {
     const withNull = resolveEntitlements(row("pro", "active"), NOW, null);
     const withoutArg = resolveEntitlements(row("pro", "active"), NOW);
