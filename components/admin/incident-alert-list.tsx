@@ -68,6 +68,20 @@ function FilterStrip({
 
   return (
     <form
+      // THE KEY IS LOAD-BEARING, and the e2e step added with the attribution
+      // filter is what found it. These controls are UNCONTROLLED
+      // (`defaultValue`), and React does not reset an existing DOM node's value
+      // on re-render -- so after a client-side navigation to a narrower or
+      // wider view, including the one "Clear filters" performs, the selects and
+      // the search box still displayed the reader's PREVIOUS choices while the
+      // list below them showed the new ones. Cosmetic on its own; not cosmetic
+      // on the next submit, because the form posts what the controls SAY, so a
+      // "Filter" click after "Clear filters" silently re-applied filters the
+      // operator had just cleared. Keying the form on the view it was rendered
+      // for remounts it whenever that view changes, which is the reset. It does
+      // NOT fire while the reader is picking values before submitting, because
+      // nothing re-renders then.
+      key={`${filters.alertType ?? "any"}|${filters.status}|${filters.attribution}|${params.list.q}`}
       action={basePath}
       method="get"
       className="flex flex-wrap items-end gap-x-4 gap-y-4 border-y border-rule py-4"
