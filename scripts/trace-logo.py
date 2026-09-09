@@ -1,8 +1,15 @@
-"""Trace brand/*.png into SVG path data for components/wordmark.tsx.
+"""Trace brand/*.png into SVG path data for components/wordmark.tsx and
+app/icon.svg.
 
     python scripts/trace-logo.py
 
-Writes components/wordmark.paths.ts. Re-run after changing the artwork.
+Writes components/wordmark.paths.ts and app/icon.svg. Re-run after changing
+the artwork. app/icon.svg is a static file that cannot import the .ts module,
+so it gets the mark's path data and viewBox emitted directly into markup by
+this same run rather than hand-copied -- see the brief for Task 5 of the
+dark-rebrand plan on why hand-copying a multi-kilobyte path string is the
+failure mode to avoid. The two outputs share one source of truth (`mark_d`,
+computed once below) and so cannot drift apart.
 
 WHY THIS EXISTS RATHER THAN A ONE-LINE potrace CALL: no vector tracer is
 installed on this project's machines -- potrace, vtracer, inkscape and
@@ -37,6 +44,15 @@ from PIL import Image, ImageChops
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "components" / "wordmark.paths.ts"
+OUT_ICON = ROOT / "app" / "icon.svg"
+
+# Literal hexes, not tokens -- correct here and nowhere else in app/ or
+# components/. app/icon.svg is a static file the browser can request before
+# any stylesheet loads, so it cannot resolve a CSS custom property; it has to
+# carry the colours itself. Matches --color-shell and the mark colour from
+# DESIGN.md's dark palette.
+ICON_GROUND = "#0B0B0E"
+ICON_MARK = "#20FC8F"
 
 # Trace at a fixed HEIGHT rather than a fixed width. Both outputs are
 # normalised to a 100-unit-tall viewBox, so height is what sets the effective
@@ -407,12 +423,34 @@ def main():
         % (mark_d, mark_w, mark_h, word_d, word_w, word_h),
         encoding="utf-8",
     )
+
+    # app/icon.svg -- the mark's only home in the product (the header lockup
+    # dropped it; see Task 2 of the dark-rebrand plan). Same mark_d and the
+    # same viewBox numbers as MARK_VIEWBOX above, just rendered into markup
+    # instead of a TS export, since a static SVG file cannot import one.
+    OUT_ICON.write_text(
+        "<!-- GENERATED FILE -- do not edit. -->\n"
+        "<!-- Regenerate with: python scripts/trace-logo.py -->\n"
+        "<!-- Mark path/viewBox traced from brand/LOGO.png, shared with\n"
+        "     components/wordmark.paths.ts's MARK_PATH/MARK_VIEWBOX. The\n"
+        "     ground and mark colours are literal hex, not tokens: this file\n"
+        "     is served as a static asset and has to render before any\n"
+        "     stylesheet loads, so it cannot reach a CSS custom property. -->\n"
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %s %g">\n'
+        '  <rect width="100%%" height="100%%" fill="%s"/>\n'
+        '  <path d="%s" fill="%s" fill-rule="evenodd"/>\n'
+        "</svg>\n"
+        % (mark_w, mark_h, ICON_GROUND, mark_d, ICON_MARK),
+        encoding="utf-8",
+    )
+
     print("mark  grid %dx%d  viewBox %sx%g  %d contours  %d bytes"
           % (mw, mh, mark_w, mark_h, mark_n, len(mark_d)))
     print("word  grid %dx%d  viewBox %sx%g  %d contours  %d bytes"
           % (ww, wh, word_w, word_h, word_n, len(word_d)))
     print("aspect mark %.5f  source %.5f" % (mark_w / mark_h, 2226 / 2805))
     print("total %d bytes (budget 15360)" % total)
+    print("wrote %s" % OUT_ICON.relative_to(ROOT))
 
 
 if __name__ == "__main__":
