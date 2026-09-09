@@ -1,56 +1,65 @@
 """Check colours against the WCAG 2.2 AA targets DESIGN.md commits to.
 
     python scripts/contrast.py                    # audit every token pair
-    python scripts/contrast.py "#0062FF"          # one colour vs shell and white
-    python scripts/contrast.py "#FFF" "#0062FF"   # one explicit pair
+    python scripts/contrast.py "#20FC8F"          # one colour vs shell and surface
+    python scripts/contrast.py "#0B0B0E" "#20FC8F"  # one explicit pair
 
 AA thresholds: 4.5:1 for body text, 3:1 for large text (>=24px bold or >=18.66px)
 and for UI components and meaningful borders.
 
 Any colour added to DESIGN.md must arrive with its ratio printed from here.
+
+The palette is dark. --color-rule (#2A2A33) is deliberately NOT in CONTRACT:
+it is decorative separation at 1.38:1, and any border that carries meaning uses
+rule-strong (3.69:1) or accent (14.40:1) instead.
 """
 
 import sys
 
-SHELL = "#FFF4F4"
-SURFACE = "#FFFFFF"
+SHELL = "#0B0B0E"
+SURFACE = "#15151A"
 
-# Mirrors the token block in DESIGN.md. Keep in step when tokens change.
+# Mirrors the token block in DESIGN.md and app/globals.css.
+# tests/unit/design/token-drift.test.ts fails if this and globals.css disagree.
 TOKENS = {
-    "shell": "#FFF4F4",
-    "surface": "#FFFFFF",
-    "ink": "#14141C",
-    "ink-muted": "#55555F",
-    "primary": "#0062FF",
-    "on-primary": "#FFFFFF",
-    "accent": "#3A86FF",
-    "lilac": "#BDB2FF",
-    "pink": "#FFD6E0",
-    "rule": "#D6CBCB",
-    "rule-strong": "#14141C",
-    "success": "#0E5F42",
-    "warning": "#7A4F00",
-    "danger": "#9E1C15",
+    "shell": "#0B0B0E",
+    "surface": "#15151A",
+    "surface-raised": "#1E1E25",
+    "ink": "#F5F5F7",
+    "ink-muted": "#9A9AA4",
+    "primary": "#20FC8F",
+    "on-primary": "#0B0B0E",
+    "accent": "#20FC8F",
+    "rule": "#2A2A33",
+    "rule-strong": "#6A6A78",
+    "success": "#20FC8F",
+    "warning": "#FFB020",
+    "danger": "#FF6B61",
+    "focus": "#F5F5F7",
+    "focus-on-primary": "#0B0B0E",
 }
 
 # (label, foreground token, background token, required ratio)
 CONTRACT = [
-    ("body text on page",        "ink",         "shell",     4.5),
-    ("body text on card",        "ink",         "surface",   4.5),
-    ("muted text on page",       "ink-muted",   "shell",     4.5),
-    ("text on lilac surface",    "ink",         "lilac",     4.5),
-    ("text on pink surface",     "ink",         "pink",      4.5),
-    ("link on page",             "primary",     "shell",     4.5),
-    ("link on card",             "primary",     "surface",   4.5),
-    ("primary button label",     "on-primary",  "primary",   4.5),
-    ("success text",             "success",     "shell",     4.5),
-    ("warning text",             "warning",     "shell",     4.5),
-    ("danger text",              "danger",      "shell",     4.5),
-    ("focus ring on page",       "ink",         "shell",     3.0),
-    ("focus ring on primary",    "ink",         "primary",   3.0),
-    ("accent border on page",    "accent",      "shell",     3.0),
-    ("accent border on card",    "accent",      "surface",   3.0),
-    ("accent display text 24px+", "accent",     "shell",     3.0),
+    ("body text on page",          "ink",              "shell",          4.5),
+    ("body text on card",          "ink",              "surface",        4.5),
+    ("body text on raised",        "ink",              "surface-raised", 4.5),
+    ("muted text on page",         "ink-muted",        "shell",          4.5),
+    ("muted text on card",         "ink-muted",        "surface",        4.5),
+    ("link on page",               "primary",          "shell",          4.5),
+    ("link on card",               "primary",          "surface",        4.5),
+    ("primary button label",       "on-primary",       "primary",        4.5),
+    ("success text",               "success",          "surface",        4.5),
+    ("warning text",               "warning",          "surface",        4.5),
+    ("danger text",                "danger",           "surface",        4.5),
+    ("focus ring on page",         "focus",            "shell",          3.0),
+    ("focus ring on card",         "focus",            "surface",        3.0),
+    ("focus ring on raised",       "focus",            "surface-raised", 3.0),
+    ("focus ring on primary fill", "focus-on-primary", "primary",        3.0),
+    ("accent border on page",      "accent",           "shell",          3.0),
+    ("accent border on card",      "accent",           "surface",        3.0),
+    ("strong border on page",      "rule-strong",      "shell",          3.0),
+    ("strong border on card",      "rule-strong",      "surface",        3.0),
 ]
 
 
