@@ -229,11 +229,41 @@ describe("the custom-field limit is the same rule in TypeScript and in SQL", () 
   // changed operator would already be caught -- this states the intent
   // directly and fails with one readable line rather than eight limit
   // mismatches.
-  it("custom_field_limit() is built on the shared constant and the same allowlist", async () => {
+  //
+  // SINCE PHASE 7 TASK 4 (20260909000000): custom_field_limit() no longer
+  // computes the past_due grace window inline -- it delegates to the shared
+  // private.effective_organisation_plan(), which is what makes an active
+  // billing override apply here too (see that migration's header). So this
+  // test now asserts the DELEGATION from custom_field_limit() and the grace
+  // machinery on effective_organisation_plan() itself, rather than looking
+  // for both in the same function body.
+  it("custom_field_limit() delegates to the shared effective-plan function", async () => {
     const { rows } = await pool.query<{ src: string }>(
       "select prosrc as src from pg_proc p" +
         " join pg_namespace n on n.oid = p.pronamespace" +
         " where n.nspname = 'private' and p.proname = 'custom_field_limit'",
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].src, "must call the shared effective-tier function").toContain(
+      "private.effective_organisation_plan(",
+    );
+    // Free's 0 is read out of subscription_plans rather than written into the
+    // function, so a pricing change in a migration cannot leave this behind.
+    expect(rows[0].src, "must read Free's limit from the plans table").toContain(
+      "public.subscription_plans",
+    );
+    // An allowlist of writing statuses, so a fourth status arrives denied.
+    expect(rows[0].src, "cancelled must not be an allowed status").not.toContain(
+      "cancelled",
+    );
+  });
+
+  it("private.effective_organisation_plan() is built on the shared grace constant and the same allowlist", async () => {
+    const { rows } = await pool.query<{ src: string }>(
+      "select prosrc as src from pg_proc p" +
+        " join pg_namespace n on n.oid = p.pronamespace" +
+        " where n.nspname = 'private' and p.proname = 'effective_organisation_plan'",
     );
 
     expect(rows).toHaveLength(1);
@@ -243,11 +273,6 @@ describe("the custom-field limit is the same rule in TypeScript and in SQL", () 
     expect(rows[0].src, "must special-case past_due").toContain("past_due");
     expect(rows[0].src, "must measure grace from current_period_end").toContain(
       "current_period_end",
-    );
-    // Free's 0 is read out of subscription_plans rather than written into the
-    // function, so a pricing change in a migration cannot leave this behind.
-    expect(rows[0].src, "must read Free's limit from the plans table").toContain(
-      "public.subscription_plans",
     );
     // An allowlist of writing statuses, so a fourth status arrives denied.
     expect(rows[0].src, "cancelled must not be an allowed status").not.toContain(

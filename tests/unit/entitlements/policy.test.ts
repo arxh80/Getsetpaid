@@ -211,3 +211,80 @@ describe("resolveEntitlements -- unrecognised plan_id fails closed rather than t
     }
   });
 });
+
+// PHASE 7 TASK 4 -- billing overrides. private.active_billing_override()'s
+// exact predicate (not revoked, started, not yet expired) is the SQL side's
+// job and is proven against the deployed database in
+// tests/integration/entitlements/billing-override-matches-db.test.ts; these
+// tests are about what resolveEntitlements() DOES once it is handed an
+// object it already trusts is "currently active".
+describe("resolveEntitlements -- an active billing override wins outright", () => {
+  it("an override naming Pro applies even though the subscription is Starter and active", () => {
+    const result = resolveEntitlements(row("starter", "active"), NOW, {
+      tier: "pro",
+      seats: null,
+    });
+    expect(result.status).toBe("resolved");
+    expect(result.tier).toBe("pro");
+    expect(result.entitlements).toEqual(TIER_MATRIX.pro);
+    expect(result.override).toBe(true);
+  });
+
+  it("an override BYPASSES the subscription's own status entirely -- cancelled included", () => {
+    const result = resolveEntitlements(row("starter", "cancelled"), NOW, {
+      tier: "pro",
+      seats: null,
+    });
+    expect(result.tier).toBe("pro");
+    expect(result.override).toBe(true);
+  });
+
+  it("an override wins even over a query ERROR -- it does not need the subscription row at all", () => {
+    const result = resolveEntitlements(
+      { data: null, error: { message: "connection reset" } },
+      NOW,
+      { tier: "starter", seats: null },
+    );
+    expect(result.status).toBe("resolved");
+    expect(result.tier).toBe("starter");
+    expect(result.override).toBe(true);
+  });
+
+  it("an override may LOWER the effective tier, exactly like a downgrade", () => {
+    const result = resolveEntitlements(row("pro", "active"), NOW, {
+      tier: "free",
+      seats: null,
+    });
+    expect(result.tier).toBe("free");
+    expect(result.entitlements).toEqual(TIER_MATRIX.free);
+    expect(result.override).toBe(true);
+  });
+
+  it("a SEATS-ONLY override (tier null) does not change tier resolution", () => {
+    const result = resolveEntitlements(row("starter", "active"), NOW, {
+      tier: null,
+      seats: 25,
+    });
+    expect(result.tier).toBe("starter");
+    expect(result.entitlements).toEqual(TIER_MATRIX.starter);
+    // override:false is deliberate here -- see resolveEntitlements()'s own
+    // comment: this field means "the TIER came from an override", and a
+    // seats-only override never changes it.
+    expect(result.override).toBe(false);
+  });
+
+  it("no override object at all (null) behaves exactly as before Task 4", () => {
+    const withNull = resolveEntitlements(row("pro", "active"), NOW, null);
+    const withoutArg = resolveEntitlements(row("pro", "active"), NOW);
+    expect(withNull).toEqual(withoutArg);
+    expect(withNull.override).toBe(false);
+  });
+
+  it("every non-override branch reports override:false explicitly", () => {
+    expect(resolveEntitlements({ data: null, error: null }, NOW).override).toBe(false);
+    expect(
+      resolveEntitlements({ data: null, error: { message: "x" } }, NOW).override,
+    ).toBe(false);
+    expect(resolveEntitlements(row("pro", "cancelled"), NOW).override).toBe(false);
+  });
+});
