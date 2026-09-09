@@ -248,7 +248,10 @@ These become live the moment a real tenant table exists.
   a complete automated pass, and "0 violations" from any scanner is worth
   exactly as much as its rule set (the spec carries a `passes.length > 0`
   non-vacuity control for the same reason).
-- **NOTHING IN THE PRODUCT ENFORCES `SECURITY.md` § 5, AND SEARCH IS THE
+- **[SUPERSEDED 2026-09-09 by Phase 7 Task 5 -- § 5 IS NOW ENFORCED. The
+  measurement below is kept as the record of what the gap was and why it
+  mattered; do not read it as a current statement of the product.]**
+  **NOTHING IN THE PRODUCT ENFORCES `SECURITY.md` § 5, AND SEARCH IS THE
   SURFACE THAT MATTERS.** A codebase-wide grep for
   `rate.?limit|ratelimit|throttl` returns one hit, `ACTIVITY_WRITE_THROTTLE_MS`
   in `lib/auth/idle-timeout.ts`, which throttles a `sessionStorage` write. The
@@ -2853,6 +2856,23 @@ next person does not have to re-derive it.
   than something applied afterwards, and the Task 8 exit document was explicit
   that closing this as "accepted" rather than scheduled would have blocked the
   Phase 2 merge.
+  **DISCHARGED 2026-09-09, Phase 7 Task 5 (`20260909020000`), with one
+  narrowed residual that stays a gate.** `SECURITY.md` § 5 is now built: one
+  mechanism, one config table holding the values, metered at the single
+  `lib/list/query.ts` chokepoint every one of those `searchColumn` specs flows
+  through (so the count that kept growing is no longer the thing to re-count --
+  a twenty-fifth spec inherits the meter by construction), plus a genuine
+  per-account login lockout in GoTrue's password-verification hook. § 5's
+  table now carries a per-row status. **The narrowed gate that replaces this
+  one:** a direct `GET /rest/v1/network_directory` with the anon key and a
+  session JWT is still unmetered and cannot be metered from inside a
+  PostgREST GET (read-only transaction; a counter increment is a write) --
+  DECISIONS-QUEUE Q107, whose recommended closure is a `pgrst.db_pre_request`
+  DENY of the direct path for the two directory views. **The document-upload
+  action named above is still unmetered** and is the second residual: its
+  budget is not in § 5's table at all, so it needs a founder decision on a
+  number before it can be added -- queued as part of Q107's follow-on rather
+  than invented here.
 - **PRE-LAUNCH GATE: an impersonating superuser's DIRECT PostgREST reads are
   authorised and unrecorded. Owner: the founder. Added 2026-09-08 (Phase 7
   Task 2, fix round 1, Important 4.)** This is a NAMED GATE, not a note, and
@@ -3467,6 +3487,21 @@ recorded for the history and the residual each leaves; the rest are open.
   tenant, index-backed) would be many times too generous for a query whose
   unit cost scales with the whole platform instead.
 
+  **BUILT 2026-09-09, Phase 7 Task 5, and it DID name the endpoint by name.**
+  `rate_limit_policies` carries `network_discovery` as its own category at
+  30/60s, keyed on the TABLE (`network_directory`) in `lib/list/query.ts`
+  rather than on a spec flag, so a copied spec cannot opt out and a plain
+  BROWSE is metered as well as a search -- the O(platform) cost is paid with
+  or without a term typed. The 31st read in a minute is refused through the
+  real page function against a real Postgres in
+  `tests/integration/security/rate-limit-network-discovery.test.ts`, which
+  also proves the search budget is a genuinely separate one. **The sentence
+  above stays true of ONE path:** a script hitting
+  `/rest/v1/network_directory?display_name=ilike.*` DIRECTLY, without the
+  app, is still unmetered and cannot be metered inside a PostgREST GET
+  (read-only transaction vs. a counter write). DECISIONS-QUEUE Q107, and a
+  named gate in `SECURITY.md` § 5 and § 10.
+
 ### Opened by Task 4 (request-to-connect, the accept unlock, the link picker)
 
 - **There is no notification of any kind when a connection request is sent,
@@ -3909,7 +3944,17 @@ worktree lasts; the exit document restates all nineteen in the same form.
   organisation can be asked again immediately and indefinitely, and nothing
   meters it — the mitigation is the Phase 7 network rate limiter (Q86/Q87),
   NOT anything in the Phase 6 change, so that limiter is now more load-bearing
-  than when it was deferred.
+  than when it was deferred. **METERED 2026-09-09 (Phase 7 Task 5,
+  `20260909040000`).** Note it needed its OWN budget rather than the discovery
+  one: metering the directory bounds how fast an abuser can FIND
+  organisations, not how fast they can pester ones they already found, and
+  sending is a server action that never passes the list chokepoint. 10/hour
+  **per organisation** — per-user is bypassed by inviting a colleague — and
+  the crossing files a `rate_limit_tripped` alert, which is the first
+  operator-visible signal of network harassment this product has had. The
+  NUMBER is a recommended default rather than a founder ruling
+  (DECISIONS-QUEUE Q112): it is the one row in `SECURITY.md` § 5 that document
+  proposes rather than inherits, and changing it is one UPDATE plus one line.
 - **Q80 (connection scope):** organisation-to-organisation, symmetric, and
   ORG-WIDE — accepting one request also resolves the requester org's other
   published profiles' `connections`-level fields.
@@ -3936,13 +3981,19 @@ worktree lasts; the exit document restates all nineteen in the same form.
   one that leaks); keyset pagination with a server page ceiling; measure the
   real cost on a seeded corpus and record it honestly. The 30 req/min limiter
   named in `SECURITY.md` § 5 is deferred to Phase 7 and disclosed as
-  unimplemented, not left implied.
+  unimplemented, not left implied. **CLOSED by Phase 7 Task 5**: built as
+  specified, app-side at the list chokepoint, with no `SECURITY DEFINER`
+  search function added -- the constraint held. The direct-PostgREST
+  residual is Q107.
 - **Q87 (accept the linear search ceiling, or build a dedicated search path —
   found mid-phase, Task 3):** accept the linear-with-the-platform search cost
   for MVP (measured: 44-86ms at 20k profiles, growing with the WHOLE
   platform's published-row count, not one tenant's), with the Phase 7 rate
   limiter as the mitigant; a dedicated, separately-reviewed search path is
   scoped future work rather than a default reached under time pressure.
+  **The mitigant exists as of Phase 7 Task 5**, so the ceiling is now
+  accepted WITH its throttle rather than bare; the dedicated search path is
+  still unbuilt and still deliberately so.
 - **Q88 (suspended-org network visibility — found mid-phase, Task 5):** leave
   the behaviour as measured for MVP — a suspended org's published profile
   stays visible to a counterparty AND to the suspended org's own members —

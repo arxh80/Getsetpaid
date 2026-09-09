@@ -245,7 +245,11 @@ describe("the 31st network-directory read in a minute is refused", () => {
       "a",
     );
 
-    const page = await fetchListPage<ContactRow, "name", never>({
+    const page = await fetchListPage<
+      ContactRow,
+      keyof (typeof CONTACT_LIST)["sort"],
+      keyof (typeof CONTACT_LIST)["filters"]
+    >({
       spec: CONTACT_LIST,
       params,
       organisationId: fx.orgA.id,
