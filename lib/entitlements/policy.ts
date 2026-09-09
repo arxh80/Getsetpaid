@@ -345,12 +345,19 @@ export const getOrganisationEntitlements = cache(
     ]);
 
     // A FAILED OVERRIDE READ IS TREATED AS "NO OVERRIDE", NOT AS AN ERROR
-    // THAT PROPAGATES. An override only ever GRANTS more than the base
-    // subscription would; failing toward "no override" therefore fails
-    // toward the conservative answer (denies the extra grant rather than
-    // inventing one from an unconfirmed read), the same direction
-    // `resolveEntitlements()`'s own "indeterminate -> Free-shaped deny"
-    // already takes for the subscription query itself.
+    // THAT PROPAGATES -- and the trade-off is stated honestly rather than
+    // claimed away (review M2 corrected this comment's first version, which
+    // asserted "an override only ever GRANTS more" -- false: a DOWNGRADE
+    // override deliberately lowers the effective tier, see
+    // OVERRIDE_TIER_CHOICES). For an UPGRADE override this direction is
+    // conservative (denies the extra grant rather than inventing one from an
+    // unconfirmed read). For a DOWNGRADE override it transiently fails toward
+    // the org's HIGHER real tier at the app layer -- accepted as the least-bad
+    // direction because the alternative (propagating the error) would deny
+    // the whole org on any transient failure, the failure lasts only as long
+    // as the read failure does, and the SQL gates remain the enforcement: any
+    // actual DB write is still refused by private.effective_organisation_plan()
+    // regardless of what this layer resolved.
     let override: ActiveBillingOverride | null = null;
     if (overrideRow.error) {
       console.error(
