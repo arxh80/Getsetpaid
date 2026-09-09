@@ -38,6 +38,7 @@ survives a future change to the walk; nonzero merely happens to agree today.
 """
 
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from PIL import Image, ImageChops
@@ -458,7 +459,7 @@ def main():
     icon_tx = (ICON_SQUARE - mark_w * icon_scale) / 2
     icon_ty = (ICON_SQUARE - mark_h * icon_scale) / 2
 
-    OUT_ICON.write_text(
+    icon_svg = (
         "<!-- GENERATED FILE. Do not edit. -->\n"
         "<!-- Regenerate with: python scripts/trace-logo.py -->\n"
         "<!-- Mark path traced from brand/LOGO.png, shared with\n"
@@ -483,9 +484,34 @@ def main():
             num(icon_scale),
             mark_d,
             ICON_MARK,
-        ),
-        encoding="utf-8",
+        )
     )
+
+    # SELF-VALIDATE BEFORE WRITING, NOT AFTER. tests/unit/design/icon.test.ts
+    # already guards the committed file with a real parse, but that only
+    # catches a bad file once someone remembers to run the suite before
+    # committing -- which failed twice in a row while this exact comment
+    # block was being hand-edited (a `--` inside an XML comment, illegal per
+    # the XML spec, silently invisible to `pnpm lint`/`pnpm typecheck`/eye).
+    # Parsing here, in the tool doing the writing, catches the mistake at the
+    # moment it is made instead of depending on a separate suite running
+    # afterwards. Same parser (libexpat via xml.etree.ElementTree) the unit
+    # test shells out to Python for -- free to reuse here since Python is
+    # already running this script. Kept the unit test too: it is the one of
+    # the two that runs in CI, and it also catches an edit that bypasses this
+    # generator entirely (someone hand-editing app/icon.svg directly).
+    try:
+        ET.fromstring(icon_svg)
+    except ET.ParseError as exc:
+        sys.exit(
+            "generated app/icon.svg is not well-formed XML: %s\nNothing was "
+            "written. This is almost always a `--` inside an XML comment "
+            "(illegal per the XML spec, unlike `//` or HTML comments) -- "
+            "check the <!-- --> blocks in the string just built above."
+            % exc
+        )
+
+    OUT_ICON.write_text(icon_svg, encoding="utf-8")
 
     print("mark  grid %dx%d  viewBox %sx%g  %d contours  %d bytes"
           % (mw, mh, mark_w, mark_h, mark_n, len(mark_d)))
