@@ -61,6 +61,7 @@ Every ratio is printed by `scripts/contrast.py`, not asserted.
 | `--danger` | `#FF6B61` | 7.05 | 6.52 | Cancelled, failed, destructive |
 | `--focus` | `#F5F5F7` | 18.05 | 16.71 | Focus ring on any dark surface |
 | `--focus-on-primary` | `#0B0B0E` | — | — | Focus ring on a green fill (14.40:1) |
+| `--skeleton-breathe` | `#3A3A45` | 1.75 | 1.62 | Loading-bone shimmer stop — see § 3.2 |
 | `--scrim` | `rgb(0 0 0 / 0.6)` | — | — | Behind modals and drawers |
 
 `--ink` is `#F5F5F7`, not `#FFFFFF`. Pure white on near-black blooms at small sizes;
@@ -75,8 +76,16 @@ Any border that carries meaning — active row, selected state, error outline �
 
 `#3A86FF`, `#0062FF`, `#BDB2FF` and `#FFD6E0` are deleted from the system.
 
-- `--lilac` and `--pink` had **zero** usages across 220 component files. Removing them
-  is free.
+- `--lilac` has **zero** usages — only its own declaration. Removing it is free.
+- `--pink` has zero usages *as a class name* across 220 components, but
+  `app/globals.css` itself references `var(--color-pink)` inside the
+  `@keyframes skeleton-pulse` block: it is the loading bone's breathe stop.
+  **Deleting the token without repointing that keyframe freezes every skeleton in
+  the app** — a keyframe naming a dead custom property does not error, it resolves to
+  nothing and the animation silently stops at its rest colour. A replacement token,
+  `--skeleton-breathe` `#3A3A45`, takes over: 1.27:1 from `--rule`, against the
+  1.20:1 the light pair (`#D6CBCB` → `#FFD6E0`) had. Decorative, so no contrast gate
+  applies — the loading *message* is carried by `role="status"` text.
 - `--primary` (197 usages, mostly `text-primary` on links) and `--accent` (41 usages)
   change value only. No component is edited.
 
@@ -311,11 +320,15 @@ used `bg-surface` to mean "white" rather than "the card colour" will look wrong.
 is what acceptance criterion 6 exists for, and it is the largest single cost in the
 work — half a day of looking, not a script.
 
-**Loading skeletons.** They were tuned on `bg-rule` against a light shell
-(`loading-skeletons`, PR #11, already in this branch's ancestry). `--rule` on dark is a
-much smaller step from `--surface` than it was on light, so the skeletons may become
-nearly invisible. They will likely need `--surface-raised` instead. Checked as part of
-criterion 6.
+**Loading skeletons.** Two separate problems, one already resolved above.
+
+The *shimmer* breaking is certain, not a risk: the keyframe named `--color-pink`
+directly, and § 3.2 repoints it to `--skeleton-breathe`.
+
+The *resting* value is still a risk. A bone rests at `--rule`, which is a smaller step
+from `--surface` on dark (1.28:1) than `#D6CBCB` was from white (1.58:1). If a loading
+state reads as a blank page, the bone moves to `--surface-raised`. Checked as part of
+criterion 7.
 
 **Phase 7 conflicts.** `admin-phase` is in flight off the same `80ee45f` and touches
 `app/globals.css`. It will need a rebase after this lands. Named here so it is not a
