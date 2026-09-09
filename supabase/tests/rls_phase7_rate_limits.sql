@@ -170,10 +170,22 @@ select rl.val('RV6 In-app feedback: 10 / hour, per user',
   $$select max_requests || '/' || window_seconds || '/' || subject_scope
       from public.rate_limit_policies where category='feedback'$$,
   '10/3600/user');
--- SIX ROWS AND NO MORE. A seventh category appearing without a § 5 row is the
--- drift this assertion exists to catch, in the direction the other six cannot.
-select rl.val('RV7 the policy table holds exactly the six § 5 categories',
-  $$select count(*)::text from public.rate_limit_policies$$, '6');
+select rl.val('RV6a Connection requests: 10 / hour, per ORGANISATION (Q79 spam, Q112)',
+  $$select max_requests || '/' || window_seconds || '/' || subject_scope
+      from public.rate_limit_policies where category='network_connection_request'$$,
+  '10/3600/organisation');
+-- ORG-SCOPED IS THE LOAD-BEARING HALF of that row and gets its own assertion:
+-- a per-USER budget is bypassed by inviting a colleague (seats are cheap, six
+-- roles hold manage_network_connections), and the pestered organisation
+-- experiences one WORKSPACE, not one person. A future edit that "simplifies"
+-- this to 'user' would look tidy and would reopen the vector.
+select rl.val('RV6b ...and it is org-scoped, not user-scoped, deliberately',
+  $$select subject_scope from public.rate_limit_policies
+     where category='network_connection_request'$$, 'organisation');
+-- SEVEN ROWS AND NO MORE. An eighth category appearing without a § 5 row is
+-- the drift this assertion exists to catch, in the direction the others cannot.
+select rl.val('RV7 the policy table holds exactly the seven § 5 categories',
+  $$select count(*)::text from public.rate_limit_policies$$, '7');
 -- network_discovery must never be folded into search (FOLLOW-UPS:3408-3419):
 -- its unit cost is O(platform-wide published rows), not O(tenant).
 select rl.val('RV8 network_discovery is a DISTINCT category from search',
@@ -194,7 +206,7 @@ select rl.try('RV10 ...nor INSERT a new category',
     values ('smuggled','user',1,1,'x')$$,
   'denied(42501)');
 select rl.val('RV11 the superuser CAN read the configuration (the health view states it)',
-  $$select count(*)::text from public.rate_limit_policies$$, '6');
+  $$select count(*)::text from public.rate_limit_policies$$, '7');
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -392,6 +404,22 @@ select rl.val('RS7 a member CAN spend their OWN organisation''s export budget',
   'true');
 -- The DoS-through-the-limiter hole: without the membership check, any
 -- authenticated stranger could exhaust another tenant's export allowance.
+-- Q79/Q112's budget rides the SAME org-scoped path, so it inherits both
+-- guards. Asserted rather than argued: the wrapper decides scope from the
+-- POLICY ROW, so a future edit that flipped this category to 'user' would
+-- silently reopen the invite-a-colleague bypass and nothing else would notice.
+select rl.try('RS7a network_connection_request needs an organisation too (22023)',
+  $$select * from public.consume_rate_limit('network_connection_request')$$,
+  'denied(22023)');
+select rl.val('RS7b ...and a member CAN spend their own workspace''s request budget',
+  format($$select allowed::text
+             from public.consume_rate_limit('network_connection_request',%L)$$,
+         :'alpha_org'),
+  'true');
+select rl.try('RS7c ...but NOT a foreign workspace''s (42501) -- no framing another org',
+  format($$select * from public.consume_rate_limit('network_connection_request',%L)$$,
+         :'beta_org'),
+  'denied(42501)');
 select rl.try('RS8 ...but NOT a foreign organisation''s (42501)',
   format($$select * from public.consume_rate_limit('exports',%L)$$, :'beta_org'),
   'denied(42501)');
@@ -794,8 +822,8 @@ select rl.val('RZ3 the two suite documents are gone (not soft-deleted -- never e
 select rl.val('RZ4 ALPHA is still active and untouched',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
          :'alpha_org'), 'true');
-select rl.val('RZ5 the six seeded policy rows are exactly as they were',
-  $$select count(*)::text from public.rate_limit_policies$$, '6');
+select rl.val('RZ5 the seven seeded policy rows are exactly as they were',
+  $$select count(*)::text from public.rate_limit_policies$$, '7');
 
 \pset format aligned
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual

@@ -67,6 +67,7 @@ import { echoedValues, field, type FormState } from "@/lib/forms";
 import { stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { getNetworkConnectionAccess } from "@/lib/network/access";
+import { consumeRateLimit } from "@/lib/security/rate-limit";
 
 /**
  * Shown when a terminal request is acted on again.
@@ -272,6 +273,34 @@ export async function sendConnectionRequestAction(
   const toProfileId = field(formData, "toProfileId");
   if (!fromProfileId || !toProfileId) {
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
+
+  // ==========================================================================
+  // Q79'S SPAM MITIGATION (SECURITY.md § 5, 10/hour/organisation, Q112)
+  // ==========================================================================
+  // The founder's 2026-09-07 reversal made a declined pair re-requestable,
+  // which removed the one zero-cost anti-harassment control in a product with
+  // no blocking, muting or moderation. FOLLOW-UPS' Q79 entry names this
+  // limiter as the mitigation, and this is where it lands: metering the
+  // DIRECTORY (lib/list/query.ts) bounds how fast an abuser can FIND
+  // organisations, not how fast they can pester ones they already found.
+  //
+  // AFTER authorisation, deliberately. Spending a budget on a request the
+  // permission/tier/suspension gates were going to refuse anyway would let an
+  // unauthorised caller burn their own workspace's allowance -- and, worse,
+  // teach the operator's alert feed to fire on a workspace that sent nothing.
+  //
+  // ORG-SCOPED (org.id, not the user). A per-user budget is bypassed by
+  // inviting a colleague: six roles hold manage_network_connections (Q77),
+  // seats are cheap, and the pestered workspace experiences ONE WORKSPACE
+  // whoever clicked. The RPC re-checks active membership, so naming an
+  // organisation here cannot burn a stranger's allowance.
+  const budget = await consumeRateLimit("network_connection_request", org.id);
+  if (!budget.allowed) {
+    return {
+      error: `This workspace has sent a lot of connection requests in the last hour. Try again in ${budget.retryAfterSeconds} seconds.`,
+      values: echoedValues(formData),
+    };
   }
 
   const user = await getCurrentUser();

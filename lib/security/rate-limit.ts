@@ -49,15 +49,21 @@ import { createClient } from "@/lib/supabase/server";
  * the auth hooks -- the RPC refuses them from a session (42501), and this
  * type keeps a caller from ever writing that call.
  *
- * 'exports' takes an organisation id (the budget is the tenant's, not the
- * caller's); the RPC verifies active membership so a stranger cannot burn
- * another tenant's allowance.
+ * 'exports' and 'network_connection_request' take an organisation id (the
+ * budget is the tenant's, not the caller's); the RPC verifies active
+ * membership so a stranger cannot burn another tenant's allowance.
+ *
+ * 'network_connection_request' is org-scoped for a second reason beyond whose
+ * budget it is: a per-USER budget on sending connection requests is bypassed
+ * by inviting a colleague, and the pestered workspace experiences one
+ * WORKSPACE whoever clicked (Q79/Q112, SECURITY.md § 5).
  */
 export type RateLimitCategory =
   | "search"
   | "network_discovery"
   | "feedback"
-  | "exports";
+  | "exports"
+  | "network_connection_request";
 
 export type RateLimitVerdict =
   | { readonly allowed: true }
