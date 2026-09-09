@@ -1,5 +1,10 @@
 import "server-only";
 
+// `loadNetworkProfileById` is `cache`-wrapped: both profile routes ask for the
+// profile twice in one render (generateMetadata, then the body). Per-request
+// and keyed on the two string ids -- see lib/crm/queries.ts's header.
+import { cache } from "react";
+
 // The bridge between "a network profile" and "the private record it speaks
 // for" -- reading the PRIVATE side only, never joining it into a network
 // query. Two things live here:
@@ -198,10 +203,10 @@ export interface NetworkProfileDetail {
  * pages' enumeration-oracle argument, applied to a profile rather than a CRM
  * record).
  */
-export async function loadNetworkProfileById(
+export const loadNetworkProfileById = cache(async (
   organisationId: string,
   profileId: string,
-): Promise<NetworkProfileDetail | null> {
+): Promise<NetworkProfileDetail | null> => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("network_profiles")
@@ -233,7 +238,7 @@ export async function loadNetworkProfileById(
     contactEmail: (data.contact_email as string | null) ?? "",
     fieldVisibility: parseFieldVisibility(data.field_visibility),
   };
-}
+});
 
 /** One of this organisation's own PUBLISHED profiles, as the "Send from"
  *  picker (components/network/connect-button.tsx, Task 4) needs it. */

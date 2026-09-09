@@ -62,6 +62,35 @@ function read(relative: string): string {
 }
 
 /**
+ * The index of a top-level export's definition, whichever form it is declared
+ * in, or -1.
+ *
+ * THE MARKER MUST NOT ENCODE THE DECLARATION KEYWORD. Several blocks below
+ * slice a loader's body out of lib/crm/queries.ts by searching for the literal
+ * `export async function loadEvent(`. That is a claim about how the loader is
+ * SPELLED, and none of those tests is about spelling -- they assert that the
+ * body selects `deleted_at` and never filters it. When the single-record
+ * loaders were wrapped in React's per-request `cache` (queries.ts's header
+ * explains why), the keyword changed to `export const ... = cache(async (` and
+ * three tests went red without a single one of their subjects changing.
+ *
+ * So look for the name at a DEFINITION site in either form. Both are anchored
+ * on `export ` at the start of a line, so a call site inside another function
+ * cannot match.
+ */
+function defOf(source: string, name: string): number {
+  for (const form of [
+    `export async function ${name}(`,
+    `export const ${name} = cache(async (`,
+    `export const ${name} = async (`,
+  ]) {
+    const at = source.indexOf(form);
+    if (at > -1) return at;
+  }
+  return -1;
+}
+
+/**
  * Every call in `source` whose callee ends with `.<method>(`, returned as the
  * text between its parentheses.
  *
@@ -1229,7 +1258,7 @@ describe("loadEvent serves a soft-deleted event, so restore is reachable", () =>
   // afraid of the delete button, and the restore list would link into nothing.
   const queries = read("lib/crm/queries.ts");
   const body = queries.slice(
-    queries.indexOf("export async function loadEvent("),
+    defOf(queries, "loadEvent"),
     queries.indexOf("async function lookupPlace("),
   );
 
@@ -2092,6 +2121,14 @@ describe("the operations loaders filter deleted_at correctly (Task 3)", () => {
     return queries.slice(start, end === -1 ? undefined : end);
   }
 
+  /** `slice`, but locating the start by export name rather than by keyword. */
+  function sliceDef(name: string, to: string): string {
+    const start = defOf(queries, name);
+    expect(start, `found ${name}`).toBeGreaterThan(-1);
+    const end = queries.indexOf(to, start);
+    return queries.slice(start, end === -1 ? undefined : end);
+  }
+
   it("the reverse-lookup id reader filters deleted_at on the link rows", () => {
     // reverseLinkIds reads a page of parent ids off the *_links tables; a
     // removed link is not a link, so it must be excluded.
@@ -2108,11 +2145,11 @@ describe("the operations loaders filter deleted_at correctly (Task 3)", () => {
     // The same rule as loadEvent: a detail loader serves a soft-deleted record
     // so restore is reachable. It selects the column and never filters it.
     for (const [name, next] of [
-      ["export async function loadTask(", "export interface MeetingDetail"],
-      ["export async function loadMeeting(", "export interface NoteDetail"],
-      ["export async function loadNote(", "// ------"],
+      ["loadTask", "export interface MeetingDetail"],
+      ["loadMeeting", "export interface NoteDetail"],
+      ["loadNote", "// ------"],
     ] as const) {
-      const body = slice(name, next);
+      const body = sliceDef(name, next);
       expect(body, name).toContain("deleted_at");
       expect(body, name).not.toContain(`.is("deleted_at", null)`);
     }

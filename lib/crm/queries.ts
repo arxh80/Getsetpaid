@@ -1,5 +1,29 @@
 import "server-only";
 
+// ===========================================================================
+// EVERY SINGLE-RECORD LOADER BELOW IS `cache`-WRAPPED, BECAUSE EVERY DETAIL
+// ROUTE ASKS FOR ITS RECORD TWICE
+// ===========================================================================
+// Next.js runs `generateMetadata` and the page component in the SAME request
+// render, and both need the record -- one for the <title>, one for the body.
+// Written as plain functions that is two identical queries, two RLS
+// evaluations, on the widest select the page issues. React's `cache` is
+// per-request and keyed on argument identity, and every loader here takes
+// nothing but strings (organisationId, recordId), so the second ask is free
+// and the first is unchanged.
+//
+// PER-REQUEST IS THE WHOLE SAFETY ARGUMENT: the cache cannot outlive the
+// render, so it cannot serve one tenant's row to another tenant's request.
+// This is the same convention, for the same reason, that getCurrentOrg() and
+// getCurrentUser() already follow (lib/auth/index.ts).
+//
+// NOT CACHED, DELIBERATELY: `loadLinkOptions` takes a `readonly string[]`
+// exclude list, and callers pass a fresh `[]` literal -- argument identity
+// would never match, so wrapping it would add a lookup that always misses.
+// Its callers pass DIFFERENT tables anyway ("artists" vs "contacts"), so they
+// are distinct queries, not repeats.
+import { cache } from "react";
+
 // Single-record reads for the contact and company detail/edit screens.
 //
 // ===========================================================================
@@ -150,10 +174,10 @@ export interface ContactDetail {
 const CONTACT_DETAIL_SELECT =
   "id, name, email, phone, title, location, website, socials, tags, deleted_at, created_at, updated_at";
 
-export async function loadContact(
+export const loadContact = cache(async (
   organisationId: string,
   contactId: string,
-): Promise<RecordResult<ContactDetail>> {
+): Promise<RecordResult<ContactDetail>> => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("contacts")
@@ -210,7 +234,7 @@ export async function loadContact(
       updatedAt: String(data.updated_at),
     },
   };
-}
+});
 
 export interface CompanyDetail {
   id: string;
@@ -221,10 +245,10 @@ export interface CompanyDetail {
   updatedAt: string;
 }
 
-export async function loadCompany(
+export const loadCompany = cache(async (
   organisationId: string,
   companyId: string,
-): Promise<RecordResult<CompanyDetail>> {
+): Promise<RecordResult<CompanyDetail>> => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("companies")
@@ -254,7 +278,7 @@ export async function loadCompany(
       updatedAt: String(data.updated_at),
     },
   };
-}
+});
 
 // ---------------------------------------------------------------------------
 // The join, read from either side
@@ -512,10 +536,10 @@ export interface ArtistDetail {
   updatedAt: string;
 }
 
-export async function loadArtist(
+export const loadArtist = cache(async (
   organisationId: string,
   artistId: string,
-): Promise<RecordResult<ArtistDetail>> {
+): Promise<RecordResult<ArtistDetail>> => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("artists")
@@ -556,7 +580,7 @@ export async function loadArtist(
       updatedAt: String(data.updated_at),
     },
   };
-}
+});
 
 export interface AgencyDetail {
   id: string;
@@ -566,10 +590,10 @@ export interface AgencyDetail {
   updatedAt: string;
 }
 
-export async function loadAgency(
+export const loadAgency = cache(async (
   organisationId: string,
   agencyId: string,
-): Promise<RecordResult<AgencyDetail>> {
+): Promise<RecordResult<AgencyDetail>> => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("agencies")
@@ -598,7 +622,7 @@ export async function loadAgency(
       updatedAt: String(data.updated_at),
     },
   };
-}
+});
 
 export interface VenueDetail {
   id: string;
@@ -622,10 +646,10 @@ export interface VenueDetail {
   updatedAt: string;
 }
 
-export async function loadVenue(
+export const loadVenue = cache(async (
   organisationId: string,
   venueId: string,
-): Promise<RecordResult<VenueDetail>> {
+): Promise<RecordResult<VenueDetail>> => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("venues")
@@ -666,7 +690,7 @@ export async function loadVenue(
       updatedAt: String(data.updated_at),
     },
   };
-}
+});
 
 // ---------------------------------------------------------------------------
 // artist_representations, read from either side
@@ -1153,10 +1177,10 @@ export interface EventDetail {
  * something, and they cannot fix what they cannot see. So the name renders,
  * marked, and only the link is withheld.
  */
-export async function loadEvent(
+export const loadEvent = cache(async (
   organisationId: string,
   eventId: string,
-): Promise<RecordResult<EventDetail>> {
+): Promise<RecordResult<EventDetail>> => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("events")
@@ -1216,7 +1240,7 @@ export async function loadEvent(
       updatedAt: String(data.updated_at),
     },
   };
-}
+});
 
 /**
  * The name and liveness of one venue or room, or null.
@@ -1632,11 +1656,11 @@ export async function loadLineupForEvent(
  * is a search-backed picker with its own keyset page, which needs a measured
  * design and is in FOLLOW-UPS.md rather than guessed at here.
  */
-export async function loadArtistsForPicker(
+export const loadArtistsForPicker = cache(async (
   organisationId: string,
-): Promise<{ id: string; name: string }[]> {
+): Promise<{ id: string; name: string }[]> => {
   return loadLinkOptions("artists", organisationId, []);
-}
+});
 
 // ===========================================================================
 // PHASE 3 TASK 7: THE THREE CROSS-ENTITY EVENT SURFACES
@@ -1958,10 +1982,10 @@ export interface TaskDetail {
   updatedAt: string;
 }
 
-export async function loadTask(
+export const loadTask = cache(async (
   organisationId: string,
   taskId: string,
-): Promise<RecordResult<TaskDetail>> {
+): Promise<RecordResult<TaskDetail>> => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("tasks")
@@ -1994,7 +2018,7 @@ export async function loadTask(
       updatedAt: String(data.updated_at),
     },
   };
-}
+});
 
 export interface MeetingDetail {
   id: string;
@@ -2013,10 +2037,10 @@ export interface MeetingDetail {
   updatedAt: string;
 }
 
-export async function loadMeeting(
+export const loadMeeting = cache(async (
   organisationId: string,
   meetingId: string,
-): Promise<RecordResult<MeetingDetail>> {
+): Promise<RecordResult<MeetingDetail>> => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("meetings")
@@ -2054,7 +2078,7 @@ export async function loadMeeting(
       updatedAt: String(data.updated_at),
     },
   };
-}
+});
 
 export interface NoteDetail {
   id: string;
@@ -2066,10 +2090,10 @@ export interface NoteDetail {
   updatedAt: string;
 }
 
-export async function loadNote(
+export const loadNote = cache(async (
   organisationId: string,
   noteId: string,
-): Promise<RecordResult<NoteDetail>> {
+): Promise<RecordResult<NoteDetail>> => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("notes")
@@ -2096,7 +2120,7 @@ export async function loadNote(
       updatedAt: String(data.updated_at),
     },
   };
-}
+});
 
 // ---------------------------------------------------------------------------
 // The entity-link display -- the CRM records a task/meeting/note is linked to

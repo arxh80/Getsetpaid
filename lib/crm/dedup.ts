@@ -1,5 +1,11 @@
 import "server-only";
 
+// `loadMergePair` is `cache`-wrapped: the merge screen asks for the pair in
+// generateMetadata and again in the page body, and React's per-request cache
+// turns the second ask into a lookup. Same convention, same reason, as the
+// detail loaders in lib/crm/queries.ts.
+import { cache } from "react";
+
 // The duplicate review queue and the merge history: specs, shapes and reads.
 //
 // ===========================================================================
@@ -470,10 +476,10 @@ export interface MergePair {
  * candidate. The one place it is deliberately NOT applied is the loser of a
  * completed merge, which the history has to be able to show.
  */
-export async function loadMergePair(
+export const loadMergePair = cache(async (
   organisationId: string,
   candidateId: string,
-): Promise<MergePair | null> {
+): Promise<MergePair | null> => {
   const supabase = await createClient();
 
   const { data: candidateRow, error } = await supabase
@@ -502,7 +508,7 @@ export async function loadMergePair(
   );
   if (!pair) return null;
   return { ...pair, candidate };
-}
+});
 
 /**
  * The same two records without a candidate row behind them.
