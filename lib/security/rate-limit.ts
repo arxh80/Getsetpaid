@@ -50,8 +50,23 @@ import { createClient } from "@/lib/supabase/server";
  * type keeps a caller from ever writing that call.
  *
  * 'exports' takes an organisation id (the budget is the tenant's, not the
- * caller's); the RPC verifies active membership so a stranger cannot burn
- * another tenant's allowance. Every other category here is USER-scoped and
+ * caller's); the RPC verifies active MEMBERSHIP so a stranger cannot burn
+ * another tenant's allowance.
+ *
+ * MEMBERSHIP IS NOT PERMISSION, and the difference is worth stating rather
+ * than leaving to be discovered (cleanup round, N1; Q116). `consume_rate_limit`
+ * is granted to `authenticated` and callable directly over PostgREST, so ANY
+ * active member of a workspace -- a Read Only one holding no export right and
+ * no `manage_network_connections` -- can POST it ten times against their own
+ * organisation and spend that workspace's whole hourly budget, and file a
+ * `rate_limit_tripped` alert naming their own workspace on the operator's
+ * feed. That is IN-TENANT, not a tenant crossing: the gate does stop a
+ * stranger, which is the property finding I1 was about. It is also
+ * pre-existing rather than introduced by any of this, and it is why the claim
+ * is "the caller belongs to the workspace" and not "the caller is entitled to
+ * spend its budget".
+ *
+ * Every other category here is USER-scoped and
  * takes NO organisation: since `20260909050000` the RPC refuses one with
  * 22023, because a caller-supplied organisation on a user-scoped budget was
  * what let an incident alert be attributed to a workspace the caller merely
