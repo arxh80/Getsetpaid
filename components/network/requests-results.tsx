@@ -151,12 +151,28 @@ function counterpartyColumns(
         <div className="flex flex-wrap items-center gap-2">
           {direction === "received" && row.status === "pending" ? (
             <>
-              <AcceptRequestForm orgSlug={orgSlug} requestId={row.id} />
-              <DeclineRequestForm orgSlug={orgSlug} requestId={row.id} />
+              {/* `subject` disambiguates the accessible name per row (a table
+                  of pending requests otherwise announces N identical "Accept"
+                  buttons). The display name is already rendered visibly in
+                  this row's counterparty cell, so it discloses nothing new. */}
+              <AcceptRequestForm
+                orgSlug={orgSlug}
+                requestId={row.id}
+                subject={row.counterparty?.row.displayName}
+              />
+              <DeclineRequestForm
+                orgSlug={orgSlug}
+                requestId={row.id}
+                subject={row.counterparty?.row.displayName}
+              />
             </>
           ) : null}
           {direction === "sent" && row.status === "pending" ? (
-            <WithdrawRequestForm orgSlug={orgSlug} requestId={row.id} />
+            <WithdrawRequestForm
+              orgSlug={orgSlug}
+              requestId={row.id}
+              subject={row.counterparty?.row.displayName}
+            />
           ) : null}
         </div>
       ),

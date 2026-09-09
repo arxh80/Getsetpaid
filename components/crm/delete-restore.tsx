@@ -4,19 +4,26 @@ import { useActionState, useState } from "react";
 import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { useRevealFocus } from "@/components/ui/use-reveal-focus";
 
 // Soft delete and restore, as two one-button forms.
 //
 // ===========================================================================
 // DELETE ASKS FIRST, AND THE CONFIRMATION IS INLINE RATHER THAN A DIALOG
 // ===========================================================================
-// A modal here would need focus trapping, a return-focus target, an Escape
-// handler and an aria-modal container, all to ask one question. Revealing the
-// question in place needs none of that and is better behaved: focus is already
-// where the answer is, Escape is the browser's back button, and nothing
-// underneath is inert. The revealed state announces itself through
-// `role="status"` on the question, so a screen-reader user is told the button
-// they pressed asked something rather than doing something.
+// A modal here would need focus trapping and an aria-modal container, all to
+// ask one question. Revealing the question in place needs neither and is
+// better behaved: nothing underneath is inert. The revealed state announces
+// itself through `role="status"` on the question, so a screen-reader user is
+// told the button they pressed asked something rather than doing something.
+//
+// TWO PIECES OF DIALOG DISCIPLINE THE INLINE PATTERN STILL OWES (keyboard-a11y
+// pass — the original header claimed neither was needed, and the audit
+// measured otherwise): the trigger sits INSIDE the branch it toggles, so
+// revealing the question unmounted the focused element and dropped keyboard
+// focus to <body>, both opening and cancelling. `useRevealFocus` is the shared
+// fix — focus moves to the question on open, back to the trigger on "Keep it",
+// and Escape cancels the same way "Keep it" does. See that hook's header.
 //
 // The destructive button is `variant="danger"` -- a bordered outline that
 // fills on hover, not a solid red block, per DESIGN.md. And it says "Delete
@@ -36,6 +43,7 @@ export function DeleteRecordForm({
   action,
   hiddenFields,
   label,
+  srSubject,
   question,
   blocked,
   describedBy,
@@ -43,6 +51,15 @@ export function DeleteRecordForm({
   action: (prev: FormState, data: FormData) => Promise<FormState>;
   hiddenFields: Record<string, string>;
   label: string;
+  /**
+   * Names the record for a screen reader when the visible label cannot — a
+   * list rendering one delete control PER ROW (documents, which have no
+   * detail page) would otherwise announce N identical "Delete" buttons,
+   * breaking the "the label is also the accessible name" contract above.
+   * Rendered sr-only after the label; omit on a detail page whose label
+   * already names its subject ("Delete contact").
+   */
+  srSubject?: string;
   question: string;
   /** True when the caller may not write. Renders inert. */
   blocked: boolean;
@@ -56,12 +73,17 @@ export function DeleteRecordForm({
 }) {
   const [state, formAction, pending] = useActionState(action, EMPTY_FORM_STATE);
   const [asking, setAsking] = useState(false);
+  const { triggerRef, revealRef, onRevealKeyDown } = useRevealFocus<
+    HTMLParagraphElement,
+    HTMLButtonElement
+  >(asking, () => setAsking(false));
 
   if (blocked) {
     return (
       <div>
         <Button type="button" variant="danger" disabled aria-describedby={describedBy}>
           {label}
+          {srSubject ? <span className="sr-only"> {srSubject}</span> : null}
         </Button>
       </div>
     );
@@ -73,11 +95,23 @@ export function DeleteRecordForm({
       {state.message ? <Alert tone="success">{state.message}</Alert> : null}
 
       {asking ? (
-        <form action={formAction} className="flex flex-col gap-3">
+        <form
+          action={formAction}
+          onKeyDown={onRevealKeyDown}
+          className="flex flex-col gap-3"
+        >
           {Object.entries(hiddenFields).map(([name, value]) => (
             <input key={name} type="hidden" name={name} value={value} />
           ))}
-          <p role="status" className="max-w-prose text-base text-ink">
+          {/* tabIndex={-1}: the reveal's focus target — the QUESTION, not
+              either answer, so a repeated Enter can never confirm and the
+              focus point reads what is being asked. See use-reveal-focus. */}
+          <p
+            ref={revealRef}
+            tabIndex={-1}
+            role="status"
+            className="max-w-prose text-base text-ink"
+          >
             {question}
           </p>
           <div className="flex flex-wrap items-center gap-3">
@@ -91,8 +125,14 @@ export function DeleteRecordForm({
         </form>
       ) : (
         <div>
-          <Button type="button" variant="danger" onClick={() => setAsking(true)}>
+          <Button
+            ref={triggerRef}
+            type="button"
+            variant="danger"
+            onClick={() => setAsking(true)}
+          >
             {label}
+            {srSubject ? <span className="sr-only"> {srSubject}</span> : null}
           </Button>
         </div>
       )}
@@ -109,12 +149,15 @@ export function RestoreRecordForm({
   action,
   hiddenFields,
   label,
+  srSubject,
   blocked,
   describedBy,
 }: {
   action: (prev: FormState, data: FormData) => Promise<FormState>;
   hiddenFields: Record<string, string>;
   label: string;
+  /** @see DeleteRecordForm.srSubject — the per-row list case. */
+  srSubject?: string;
   blocked: boolean;
   describedBy: string;
 }) {
@@ -125,6 +168,7 @@ export function RestoreRecordForm({
       <div>
         <Button type="button" disabled aria-describedby={describedBy}>
           {label}
+          {srSubject ? <span className="sr-only"> {srSubject}</span> : null}
         </Button>
       </div>
     );
@@ -140,6 +184,7 @@ export function RestoreRecordForm({
         ))}
         <Button type="submit" pending={pending} pendingLabel="Restoring…">
           {label}
+          {srSubject ? <span className="sr-only"> {srSubject}</span> : null}
         </Button>
       </form>
     </div>

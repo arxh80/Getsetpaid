@@ -850,7 +850,7 @@ test("ALPHA's draft profile refuses a foreign tenant, and ALPHA's draft never ap
   // (Constraint 15: no scanning-and-hoping) cannot make this pass by accident.
   await page.goto(`/${world.otherOrgSlug}/network`);
   await page.getByLabel("Search the network by name").fill(world.networkDraftProfileName);
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(page.getByRole("link", { name: world.networkDraftProfileName })).toHaveCount(0);
   await expect(page.locator("main")).not.toContainText(world.networkDraftProfileName);
 });

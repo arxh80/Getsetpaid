@@ -90,6 +90,13 @@
   /* ---- Structure ------------------------------------------------------- */
   --color-rule: #D6CBCB;
   --color-rule-strong: #14141C;
+  /* DESIGN.md § Tokens' --scrim, verbatim (ink at 40%): the overlay wash
+     behind a modal surface — DESIGN.md § Shape names it as the third depth
+     step for drawers and modals. First consumer: the command palette
+     (keyboard-a11y pass). Not a new colour — the token has been in DESIGN.md
+     since the palette section was written; this line makes `bg-scrim`
+     generatable. Decorative overlay, so no text-contrast pair applies. */
+  --color-scrim: rgb(20 20 28 / 0.4);
 
   /* ---- Status -- never the only signal, always paired with a label ------ */
   --color-success: #0E5F42;    /*  7.13:1 */
@@ -307,6 +314,22 @@ body {
    rail e2e test asserts the COMPUTED offset, not the stylesheet. */
 nav[aria-label="Primary"] :focus-visible {
   outline-offset: -2px;
+}
+
+/* THE MAIN LANDMARK IS A PROGRAMMATIC FOCUS TARGET, NOT A CONTROL.
+   Both layouts give <main id="main"> tabIndex={-1} (keyboard-a11y pass) so the
+   skip link and scripts that must relocate a lost focus (idle-timeout's "Stay
+   signed in" unmounts the element holding focus) have a real .focus() target.
+   Browsers apply :focus-visible heuristically to programmatic focus that
+   follows a key press, which would draw the 2px ink ring around the ENTIRE
+   content column -- a page-height rectangle, not a focus indicator. Suppressed
+   here, UNLAYERED, because an `outline-none` utility on the element sits in
+   @layer utilities and loses to the unlayered base ring above regardless of
+   specificity (the same cascade fact every rule in this block documents).
+   "Keyboard focus is never removed" (DESIGN.md) is about interactive controls;
+   main is a landmark no Tab press can reach. */
+main:focus-visible {
+  outline: none;
 }
 
 /* Removes the ~300ms tap delay mobile browsers hold in case a tap becomes a

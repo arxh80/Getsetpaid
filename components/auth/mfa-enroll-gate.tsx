@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect, useRef } from "react";
 import { mfaEnrollStepAction, type MfaEnrollState } from "@/lib/auth/mfa-actions";
 import { EMPTY_FORM_STATE } from "@/lib/forms";
 import { Field } from "@/components/ui/field";
@@ -143,8 +143,35 @@ function VerifyStep({
   //
   // See components/auth/mfa-challenge-gate.tsx for the three-build
   // measurement this conclusion rests on.
+  //
+  // FOCUS ON ARRIVAL (keyboard-a11y pass). "Begin setup" unmounts itself the
+  // moment this step replaces it, which dropped keyboard focus to <body> at
+  // the top of a screen every privileged user must pass. Focus moves HERE, to
+  // the step's container (tabIndex={-1}) — deliberately NOT to the code
+  // input, preserving the recorded decision mfa-challenge-gate.tsx's autoFocus
+  // comment documents: jumping straight to the input would put a screen
+  // reader's focus PAST the QR code and manual key, the two things this step
+  // exists to show before a code can even exist. From the container, reading
+  // and tabbing proceed through the step in order. Mount-only: this component
+  // appears only after a user action, stays mounted across failed codes, and
+  // is never server-rendered into a fresh page, so the effect can never steal
+  // focus on load.
+  const stepRef = useRef<HTMLFormElement | null>(null);
+  useEffect(() => {
+    stepRef.current?.focus();
+  }, []);
   return (
-    <form action={formAction} className="flex flex-col gap-5" noValidate>
+    <form
+      ref={stepRef}
+      tabIndex={-1}
+      action={formAction}
+      // No outline-suppressing class: a layered utility would lose to
+      // globals.css's unlayered :focus-visible ring anyway (the cascade note
+      // there), and the ring this leaves — around the step that just took
+      // focus — is legitimate "you are here" feedback, not noise.
+      className="flex flex-col gap-5"
+      noValidate
+    >
       <input type="hidden" name="factorId" value={state.factorId} />
       <input type="hidden" name="qrCodeSvg" value={state.qrCodeSvg ?? ""} />
       <input type="hidden" name="secret" value={state.secret ?? ""} />

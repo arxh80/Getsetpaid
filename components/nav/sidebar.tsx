@@ -8,6 +8,7 @@ import {
   useState,
   useSyncExternalStore,
   type FocusEvent,
+  type KeyboardEvent,
 } from "react";
 import { usePathname } from "next/navigation";
 import { motion, useReducedMotion } from "framer-motion";
@@ -212,9 +213,20 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
   );
   const [hovered, setHovered] = useState(false);
   const [focusWithin, setFocusWithin] = useState(false);
+  // ESC-TO-COLLAPSE (keyboard-a11y pass, from the sidebar review's courtesy
+  // queue). Escape anywhere in the rail collapses a hover/focus expansion —
+  // but "set focusWithin to false" alone cannot express that: focus is still
+  // inside the rail, so the very next Tab press would fire onFocus and
+  // re-expand it, making Escape a one-keypress flicker. `escCollapsed` is the
+  // suppression: while true, hover and focus-within stop expanding. It clears
+  // the moment the situation Escape addressed is over — the pointer leaves,
+  // or focus leaves the rail — so the next visit behaves normally. A PINNED
+  // rail ignores Escape entirely: the pin is an explicit, persisted choice,
+  // and dismissing it belongs to the pin button, not to a reflex key.
+  const [escCollapsed, setEscCollapsed] = useState(false);
   const navRef = useRef<HTMLElement | null>(null);
 
-  const expanded = pinned || hovered || focusWithin;
+  const expanded = pinned || ((hovered || focusWithin) && !escCollapsed);
 
   const togglePin = useCallback(() => {
     setPinnedGlobal(!readPinned());
@@ -251,7 +263,24 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
   const handleMouseLeave = useCallback(() => {
     cancelHoverIntent();
     setHovered(false);
+    // The pointer Escape suppressed has left; the next hover starts clean.
+    setEscCollapsed(false);
   }, [cancelHoverIntent]);
+
+  // Escape collapses a hover/focus expansion — see `escCollapsed` above.
+  // Deliberately NOT preventDefault: nothing above the rail listens for
+  // Escape today, and swallowing the event wholesale would also block a
+  // future global dismiss (the command palette's, for one) from layering
+  // correctly; stopPropagation alone keeps this rail-local.
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLElement>) => {
+      if (event.key !== "Escape") return;
+      if (pinned || !(hovered || focusWithin) || escCollapsed) return;
+      event.stopPropagation();
+      setEscCollapsed(true);
+    },
+    [pinned, hovered, focusWithin, escCollapsed],
+  );
 
   // A timer armed at unmount must not fire into a gone component.
   useEffect(() => cancelHoverIntent, [cancelHoverIntent]);
@@ -273,6 +302,9 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
     const goingTo = event.relatedTarget;
     if (!navRef.current || !goingTo || !navRef.current.contains(goingTo)) {
       setFocusWithin(false);
+      // Focus has left the rail entirely, so the state Escape suppressed is
+      // gone — Tab-ing back in expands again, as it should.
+      setEscCollapsed(false);
     }
   }, []);
 
@@ -324,6 +356,7 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
       onMouseLeave={handleMouseLeave}
       onFocus={handleFocus}
       onBlur={handleBlur}
+      onKeyDown={handleKeyDown}
       initial={false}
       animate={{ width: expanded ? RAIL_WIDTH_EXPANDED : RAIL_WIDTH_COLLAPSED }}
       transition={{

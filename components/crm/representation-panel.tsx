@@ -413,6 +413,11 @@ function PrimaryButton({
       <RowIds orgSlug={orgSlug} row={row} />
       <Button type="submit" variant="secondary" pending={pending} pendingLabel="Saving…">
         {label}
+        {/* Per-row control: the other end's name disambiguates the accessible
+            name, matching RemoveButton/RestoreButton beside it (keyboard-a11y
+            pass). Null when the caller may not read that record — the Q3a
+            disclosure rule — so nothing is added rather than a blank dash. */}
+        {row.otherName ? <span className="sr-only"> — {row.otherName}</span> : null}
       </Button>
       {state.error ? <Alert tone="error">{state.error}</Alert> : null}
     </form>

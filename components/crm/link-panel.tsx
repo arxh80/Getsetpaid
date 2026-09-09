@@ -148,6 +148,7 @@ export function ContactCompanyPanel({
                       contactId={onContact ? anchorId : row.id}
                       companyId={onContact ? row.id : anchorId}
                       label={onContact ? "Make primary" : "Make primary for them"}
+                      name={row.name}
                     />
                   )}
                   <UnlinkButton
@@ -200,11 +201,15 @@ function PrimaryButton({
   contactId,
   companyId,
   label,
+  name,
 }: {
   orgSlug: string;
   contactId: string;
   companyId: string;
   label: string;
+  /** The linked record's name — one of these renders PER ROW, and the sibling
+   *  UnlinkButton already disambiguates the same way (keyboard-a11y pass). */
+  name: string;
 }) {
   const [state, formAction, pending] = useActionState(
     setPrimaryCompanyAction,
@@ -217,6 +222,7 @@ function PrimaryButton({
       <input type="hidden" name="companyId" value={companyId} />
       <Button type="submit" variant="secondary" pending={pending} pendingLabel="Saving…">
         {label}
+        <span className="sr-only"> — {name}</span>
       </Button>
       {state.error ? <Alert tone="error">{state.error}</Alert> : null}
     </form>
