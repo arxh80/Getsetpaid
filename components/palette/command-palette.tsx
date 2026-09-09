@@ -11,6 +11,7 @@ import {
 import { useRouter } from "next/navigation";
 import type { SidebarNavGroup } from "@/components/nav/types";
 import { searchPaletteAction } from "@/lib/palette/search";
+import { formatRetryAfter } from "@/lib/format/duration";
 import {
   PALETTE_MIN_QUERY_LENGTH,
   PALETTE_OPEN_EVENT,
@@ -539,14 +540,26 @@ export function CommandPalette({
               {searchRateLimited ? (
                 // NOT the failure copy: "try again in a moment" invites the
                 // very retry the limiter is refusing (SECURITY.md § 5).
+                //
+                // THE REMAINDER IS A HUMAN DURATION, like the other three
+                // refusal surfaces (cleanup round, nit N4). This one predates
+                // `formatRetryAfter` and was missed when fix round 1's M2
+                // introduced it, so the claim "the next surface to render a
+                // refusal inherits it" was true of three of four. It is
+                // harmless at today's numbers -- the palette only ever serves
+                // the 60-second `search` budget -- and would stop being
+                // harmless the moment that budget's window changed, which is
+                // one UPDATE to `rate_limit_policies` with no code diff to
+                // notice it (SECURITY.md § 5, "the values live in the
+                // database").
                 <p className="px-4 pt-4 pb-2 text-sm text-ink-muted">
                   You’ve reached the search limit for now — nothing is wrong.
                   Sections and actions still work; records can be searched
                   again in{" "}
                   <span className="tabular-nums">
-                    {search?.retryAfterSeconds ?? 60}
-                  </span>{" "}
-                  seconds.
+                    {formatRetryAfter(search?.retryAfterSeconds ?? 60)}
+                  </span>
+                  .
                 </p>
               ) : null}
               {nothingMatches ? (
