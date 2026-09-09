@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { MARK_PATH, MARK_VIEWBOX } from "@/components/wordmark.paths";
+import { MARK_PATH } from "@/components/wordmark.paths";
 
 // app/icon.svg is served as a static file (Task 5 of the dark-rebrand plan)
 // and is now the mark's ONLY home in the product -- the header lockup does
@@ -71,8 +71,19 @@ describe("app/icon.svg", () => {
     expect(result.status, result.stderr || "expat parse failed").toBe(0);
   });
 
-  it("declares a viewBox", () => {
-    expect(svg).toMatch(/<svg\b[^>]*\bviewBox="0 0 [\d.]+ [\d.]+"/);
+  it("declares a SQUARE viewBox -- MARK_VIEWBOX's own portrait aspect made a letterboxed icon", () => {
+    // Fix round 2: emitting MARK_VIEWBOX ("0 0 79.38 100", the mark's own
+    // portrait aspect) directly as the icon's canvas made the opaque ground
+    // itself portrait. Every consumer that treats an app icon as square
+    // (browser tab strip, bookmark bar, PWA install, OS shortcut) then
+    // letterboxed it -- visible as transparent bands either side of the
+    // dark rect. The canvas must be 1:1 regardless of the mark's own
+    // proportions.
+    const viewBox = svg.match(/<svg\b[^>]*\bviewBox="0 0 ([\d.]+) ([\d.]+)"/);
+    expect(viewBox).not.toBeNull();
+    const [, w, h] = viewBox!;
+    expect(Number(w)).toBeGreaterThan(0);
+    expect(w).toBe(h);
   });
 
   it("paints an opaque full-bleed ground rect -- a transparent icon is invisible on a dark tab strip", () => {
@@ -93,13 +104,34 @@ describe("app/icon.svg", () => {
     expect(pathMatch![0]).toMatch(/fill-rule="evenodd"/);
   });
 
-  it("carries the traced MARK_PATH/MARK_VIEWBOX verbatim, not a hand-copied approximation", () => {
+  it("carries the traced MARK_PATH verbatim, not a hand-copied approximation", () => {
     // Guards against the failure mode the brief warned about: MARK_PATH is a
     // multi-kilobyte string, and hand-copying it invites silent truncation.
     // This file is generated from the same in-memory value
-    // components/wordmark.paths.ts's MARK_PATH is written from, so the two
-    // must match exactly.
+    // components/wordmark.paths.ts's MARK_PATH is written from, so the raw
+    // path data must match exactly -- deliberately NOT MARK_VIEWBOX, which
+    // is the mark's own portrait aspect and is intentionally not this file's
+    // (square) canvas; see the "declares a SQUARE viewBox" test above.
     expect(svg).toContain(`d="${MARK_PATH}"`);
-    expect(svg).toContain(`viewBox="${MARK_VIEWBOX}"`);
+  });
+
+  it("positions the mark by a transform, inset from the canvas edge -- fix round 2 for a mark that bled to the edges", () => {
+    // The mark is TRANSLATED AND SCALED into the square canvas rather than
+    // retraced -- MARK_PATH above is untouched -- via an SVG `transform` on
+    // a wrapping <g>. At 128px the glyph originally ran right up against the
+    // left/right of its ground with no margin and read as cropped. This
+    // doesn't hardcode the exact inset (that's ICON_INSET_FRAC's job in
+    // scripts/trace-logo.py, not a unit test's), just that one exists: a
+    // positive translate on both axes, and a scale below 1 so the mark's own
+    // bounding box is shrunk to fit inside the inset, not just shifted.
+    const transform = svg.match(
+      /<g\s+transform="translate\(([-\d.]+),([-\d.]+)\)\s*scale\(([-\d.]+)\)"/,
+    );
+    expect(transform).not.toBeNull();
+    const [, tx, ty, scale] = transform!;
+    expect(Number(tx)).toBeGreaterThan(0);
+    expect(Number(ty)).toBeGreaterThan(0);
+    expect(Number(scale)).toBeGreaterThan(0);
+    expect(Number(scale)).toBeLessThan(1);
   });
 });

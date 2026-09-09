@@ -46,4 +46,38 @@ test.describe("brand", () => {
     );
     expect(scheme).toBe("dark");
   });
+
+  test("app/icon.svg loads as an image, not a broken-image placeholder", async ({
+    page,
+  }) => {
+    // This is the check that would have caught the parse bug FIRST: a
+    // double hyphen inside app/icon.svg's XML comment made the file
+    // unparseable, but the server still returned it with a 200 and the
+    // correct content-type -- the browser is the consumer that actually
+    // rejects it. tests/unit/design/icon.test.ts now guards the file's
+    // markup with a real XML parser, but that reads the file on disk; this
+    // is the same file requested exactly the way a browser chrome, bookmark
+    // bar or PWA installer requests it.
+    await page.goto("/login");
+    const dims = await page.evaluate(async () => {
+      const img = new Image();
+      const loaded = new Promise<{ w: number; h: number }>(
+        (resolve, reject) => {
+          img.onload = () =>
+            resolve({ w: img.naturalWidth, h: img.naturalHeight });
+          img.onerror = () => reject(new Error("icon.svg failed to load"));
+        },
+      );
+      img.src = "/icon.svg";
+      return loaded;
+    });
+
+    expect(dims.w).toBeGreaterThan(0);
+    expect(dims.h).toBeGreaterThan(0);
+    // The icon's canvas is a square viewBox (ICON_SQUARE in
+    // scripts/trace-logo.py) precisely so it does not letterbox in a square
+    // icon slot -- equal natural dimensions is the browser-side proof that
+    // held.
+    expect(dims.w).toBe(dims.h);
+  });
 });

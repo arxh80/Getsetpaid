@@ -54,6 +54,26 @@ OUT_ICON = ROOT / "app" / "icon.svg"
 ICON_GROUND = "#0B0B0E"
 ICON_MARK = "#20FC8F"
 
+# app/icon.svg's own canvas, independent of the mark's trace proportions.
+# MARK_VIEWBOX (mark_w x 100, mark_w set by the artwork's own aspect -- 79.38
+# today) is right for an inline <svg> sized by its caller, but wrong as a
+# favicon's outer canvas: every consumer (browser tab strip, bookmark bar,
+# PWA install, OS shortcut) treats an app icon as SQUARE, and emitting the
+# mark's own portrait viewBox as the icon's viewBox made the opaque ground
+# itself portrait -- letterboxed into a square slot as a tall rect with
+# transparent bands either side.
+#
+# ICON_SQUARE fixes that outer canvas at 1:1 regardless of the mark's aspect.
+# ICON_INSET_FRAC is deliberately small: the strokes are already close to the
+# legibility floor at 16px (the smallest size a favicon actually renders at),
+# so a generous margin would shrink the glyph further and cost more than a
+# tight crop against the ground would. The mark is translated and scaled (not
+# retraced) to fit inside the inset square, letterboxed on whichever axis its
+# own aspect makes slack -- here that is width, since the mark is taller than
+# it is wide.
+ICON_SQUARE = 100.0
+ICON_INSET_FRAC = 0.06
+
 # Trace at a fixed HEIGHT rather than a fixed width. Both outputs are
 # normalised to a 100-unit-tall viewBox, so height is what sets the effective
 # resolution; the wordmark is ~5:1 and the mark ~0.8:1, and pinning width would
@@ -425,22 +445,45 @@ def main():
     )
 
     # app/icon.svg -- the mark's only home in the product (the header lockup
-    # dropped it; see Task 2 of the dark-rebrand plan). Same mark_d and the
-    # same viewBox numbers as MARK_VIEWBOX above, just rendered into markup
-    # instead of a TS export, since a static SVG file cannot import one.
+    # dropped it; see Task 2 of the dark-rebrand plan). Same mark_d as
+    # MARK_PATH above, just rendered into markup instead of a TS export,
+    # since a static SVG file cannot import one. The VIEWBOX IS NOT
+    # MARK_VIEWBOX, though, and that is deliberate: see ICON_SQUARE above.
+    # mark_d is translated and scaled by an SVG `transform`, not retraced --
+    # MARK_PATH itself is untouched, so components/wordmark.paths.ts (whose
+    # inline <svg> DOES use MARK_VIEWBOX directly, sized by its caller rather
+    # than a fixed square) cannot drift from this file's numbers.
+    icon_drawable = ICON_SQUARE - 2 * ICON_SQUARE * ICON_INSET_FRAC
+    icon_scale = min(icon_drawable / mark_w, icon_drawable / mark_h)
+    icon_tx = (ICON_SQUARE - mark_w * icon_scale) / 2
+    icon_ty = (ICON_SQUARE - mark_h * icon_scale) / 2
+
     OUT_ICON.write_text(
         "<!-- GENERATED FILE. Do not edit. -->\n"
         "<!-- Regenerate with: python scripts/trace-logo.py -->\n"
-        "<!-- Mark path/viewBox traced from brand/LOGO.png, shared with\n"
-        "     components/wordmark.paths.ts's MARK_PATH/MARK_VIEWBOX. The\n"
+        "<!-- Mark path traced from brand/LOGO.png, shared with\n"
+        "     components/wordmark.paths.ts's MARK_PATH. Translated/scaled\n"
+        "     (not retraced) into a SQUARE canvas here, centred with a small\n"
+        "     inset; see ICON_SQUARE/ICON_INSET_FRAC in this script. The\n"
         "     ground and mark colours are literal hex, not tokens: this file\n"
         "     is served as a static asset and has to render before any\n"
         "     stylesheet loads, so it cannot reach a CSS custom property. -->\n"
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %s %g">\n'
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %g %g">\n'
         '  <rect width="100%%" height="100%%" fill="%s"/>\n'
-        '  <path d="%s" fill="%s" fill-rule="evenodd"/>\n'
+        '  <g transform="translate(%s,%s) scale(%s)">\n'
+        '    <path d="%s" fill="%s" fill-rule="evenodd"/>\n'
+        "  </g>\n"
         "</svg>\n"
-        % (mark_w, mark_h, ICON_GROUND, mark_d, ICON_MARK),
+        % (
+            ICON_SQUARE,
+            ICON_SQUARE,
+            ICON_GROUND,
+            num(icon_tx),
+            num(icon_ty),
+            num(icon_scale),
+            mark_d,
+            ICON_MARK,
+        ),
         encoding="utf-8",
     )
 
