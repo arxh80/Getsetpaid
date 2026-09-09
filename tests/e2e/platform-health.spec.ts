@@ -171,11 +171,31 @@ test("the superuser reads live counts and a real alert row at /super/health", as
       page.getByRole("heading", { name: "Incident alerts", level: 2 }),
     ).toBeVisible();
     await expect(page.getByText(alertSummary)).toBeVisible();
-    // Rendered through its LABEL, not its raw enum value.
-    await expect(page.getByText("Rate limit tripped").first()).toBeVisible();
+    const row = page.locator("li", { hasText: alertSummary });
+    // Rendered through its LABEL, not its raw enum value. Scoped to the ROW:
+    // since the M5 pager landed, the type filter's own <option> carries the
+    // same string, and an unscoped match would be asserting on a dropdown
+    // entry rather than on the alert.
+    await expect(row.getByText("Rate limit tripped")).toBeVisible();
+
+    // ---- THE FILTER NARROWS, AND CLEARING RESTORES. -----------------------
+    // Fix round 1, M5: this list used to be a flat 50-row read with no cursor
+    // and no filter, which review finding I1's flood turns into "the real
+    // alerts are unreachable from the UI". The pager and the two filters are
+    // what CLAUDE.md's "Paginate everything" asks for, and a filter nobody
+    // drives in a browser is a filter that works in theory.
+    await page
+      .getByLabel("Alert type")
+      .selectOption({ label: "Upload quarantined" });
+    await page.getByRole("button", { name: "Filter" }).click();
+    // Only the planted row's absence is asserted, not an empty list: other
+    // specs in this suite quarantine real uploads, so "no rows at all" would
+    // be a claim about what else is running.
+    await expect(page.getByText(alertSummary)).toHaveCount(0);
+    await page.getByRole("link", { name: "Clear filters" }).click();
+    await expect(page.getByText(alertSummary)).toBeVisible();
 
     // ---- RESOLVING IS BOOKKEEPING, AND IT WORKS. --------------------------
-    const row = page.locator("li", { hasText: alertSummary });
     await row.getByRole("button", { name: "Resolve" }).click();
     await expect(row.getByRole("button", { name: "Resolve" })).toHaveCount(0);
     await expect(

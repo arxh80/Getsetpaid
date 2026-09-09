@@ -2,17 +2,15 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { isSuperuser } from "@/lib/admin/superuser";
 import {
-  INCIDENT_ALERT_LIST_LIMIT,
-  INCIDENT_ALERT_TYPE_LABELS,
-  isIncidentAlertType,
-  listIncidentAlerts,
+  fetchIncidentAlertPage,
   loadPlatformHealthSnapshot,
-  type IncidentAlertRow,
+  parseIncidentAlertParams,
   type PlatformHealthSnapshot,
 } from "@/lib/admin/health";
+import type { RawSearchParams } from "@/lib/list/params";
+import { IncidentAlertList } from "@/components/admin/incident-alert-list";
 import { formatDateTime } from "@/lib/format/date";
 import { humanFileSize } from "@/lib/format/bytes";
-import { ResolveAlertForm } from "@/components/admin/incident-alert-actions";
 
 // PHASE 7 TASK 5: the platform health view + the incident-alert list.
 //
@@ -188,65 +186,19 @@ function SnapshotSections({ snapshot }: { snapshot: PlatformHealthSnapshot }) {
   );
 }
 
-function AlertList({ alerts }: { alerts: readonly IncidentAlertRow[] }) {
-  if (alerts.length === 0) {
-    return (
-      <p className="max-w-prose text-base text-ink-muted">
-        No incident alerts. They appear here when a rate limit trips, an
-        account accumulates failed sign-ins, or the malware scanner
-        quarantines an upload — and email delivery for new alerts arrives
-        with the notification work later in this phase.
-      </p>
-    );
-  }
-
-  return (
-    <ul className="flex flex-col border-t border-rule">
-      {alerts.map((alert) => (
-        <li
-          key={alert.id}
-          className="flex flex-col gap-2 border-b border-rule py-4 sm:flex-row sm:items-start sm:justify-between"
-        >
-          <div className="flex max-w-prose flex-col gap-1">
-            <p className="text-base font-semibold text-ink">
-              {isIncidentAlertType(alert.alertType)
-                ? INCIDENT_ALERT_TYPE_LABELS[alert.alertType]
-                : // An unmirrored type renders RAW rather than hidden -- a
-                  // live alert must stay findable and resolvable here (the
-                  // overrides list's M4 rule).
-                  alert.alertType}
-              {alert.organisationName !== null ? (
-                <span className="font-normal text-ink-muted">
-                  {" "}
-                  · {alert.organisationName}
-                </span>
-              ) : null}
-            </p>
-            <p className="text-base text-ink">{alert.summary}</p>
-            <p className="text-sm text-ink-muted">
-              Raised {formatDateTime(alert.createdAt)}
-              {alert.resolvedAt !== null
-                ? ` · resolved ${formatDateTime(alert.resolvedAt)}`
-                : null}
-            </p>
-          </div>
-          {alert.resolvedAt === null ? (
-            <ResolveAlertForm alertId={alert.id} />
-          ) : null}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-export default async function PlatformHealthPage() {
+export default async function PlatformHealthPage({
+  searchParams,
+}: PageProps<"/super/health">) {
   // STREAMED, NOT LITERAL -- see app/(app)/super/layout.tsx's header for why
   // the gate lives in each page rather than in the layout.
   if (!(await isSuperuser())) notFound();
 
+  const raw = (await searchParams) as RawSearchParams;
+  const alertParams = parseIncidentAlertParams(raw);
+
   const [health, alerts] = await Promise.all([
     loadPlatformHealthSnapshot(),
-    listIncidentAlerts(),
+    fetchIncidentAlertPage(alertParams),
   ]);
 
   return (
@@ -289,12 +241,17 @@ export default async function PlatformHealthPage() {
         <h2 className="text-xl font-bold text-ink">Incident alerts</h2>
         <p className="max-w-prose text-sm text-ink-muted">
           Trigger-based rows — a tripped rate limit, repeated failed sign-ins
-          on one account, a quarantined upload. Open alerts first, newest
-          first, up to{" "}
-          <span className="tabular-nums">{INCIDENT_ALERT_LIST_LIMIT}</span>.
-          Resolving is bookkeeping: the row keeps who resolved it and when.
+          on one account, a quarantined upload. Newest first, a page at a time;
+          filter by type or narrow to the open ones. Resolving is bookkeeping,
+          and it is audited: the row keeps who resolved it and when, and the
+          audit log keeps that even after a reopen.
         </p>
-        <AlertList alerts={alerts} />
+        <IncidentAlertList
+          page={alerts}
+          params={alertParams}
+          raw={raw}
+          basePath="/super/health"
+        />
       </section>
     </div>
   );

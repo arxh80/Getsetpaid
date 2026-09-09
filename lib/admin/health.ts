@@ -28,6 +28,15 @@ import "server-only";
 // three-way honesty ListPage keeps.
 
 import { createClient } from "@/lib/supabase/server";
+import type { Cursor } from "@/lib/list/cursor";
+import { quoteLogicValue } from "@/lib/list/postgrest";
+import {
+  buildListHref,
+  parseListParams,
+  type ListParams,
+  type RawSearchParams,
+} from "@/lib/list/params";
+import { defineListSpec, type ListSpec } from "@/lib/list/spec";
 
 export interface PlatformHealthSnapshot {
   readonly generatedAt: string | null;
@@ -171,10 +180,13 @@ export async function loadPlatformHealthSnapshot(): Promise<PlatformHealthOutcom
   };
 }
 
-/** The ceiling on the alert list. Not a page size -- the working list an
- *  operator triages; the full history ages out by resolution, and a platform
- *  with 50+ open alerts has a bigger problem than pagination. */
-export const INCIDENT_ALERT_LIST_LIMIT = 50;
+// THE FLAT 50-ROW CEILING IS GONE (fix round 1, M5). It used to live here as
+// INCIDENT_ALERT_LIST_LIMIT, with the comment "a platform with 50+ open alerts
+// has a bigger problem than pagination". Finding I1 is that bigger problem:
+// one account could file roughly two alerts a minute, and the ceiling turned
+// that into real alerts being unreachable from the UI entirely. The page size
+// now comes from lib/list/params.ts's own ceiling, through
+// INCIDENT_ALERT_SPEC, and the list is a keyset pager with two filters.
 
 export type IncidentAlertType =
   | "rate_limit_tripped"
@@ -191,6 +203,19 @@ export function isIncidentAlertType(value: string): value is IncidentAlertType {
   return value in INCIDENT_ALERT_TYPE_LABELS;
 }
 
+/** The three scopes `public.rate_limit_policies.subject_scope` permits. An
+ *  `upload_quarantined` alert has none (its `details` carry a document id),
+ *  and anything unrecognised is dropped rather than rendered: `details` is
+ *  written only by this schema's own definer functions, but a platform
+ *  surface should not be the place that assumption is first tested. */
+const SUBJECT_SCOPES = new Set(["user", "organisation", "account"]);
+
+function subjectScopeOf(details: unknown): string | null {
+  if (typeof details !== "object" || details === null) return null;
+  const scope = (details as Record<string, unknown>).subject_scope;
+  return typeof scope === "string" && SUBJECT_SCOPES.has(scope) ? scope : null;
+}
+
 export interface IncidentAlertRow {
   readonly id: string;
   /** Usually one of IncidentAlertType -- deliberately `string`, the
@@ -198,33 +223,210 @@ export interface IncidentAlertRow {
    *  resolvable, rendered raw, never filtered into invisibility. */
   readonly alertType: string;
   readonly organisationName: string | null;
+  /**
+   * `details.subject_scope` -- "user", "organisation" or "account" -- when the
+   * writer recorded one.
+   *
+   * FIX ROUND 1, REVIEW FINDING I1. `organisationName` used to be the ONLY
+   * attribution this page rendered, which made a null one read as "no
+   * information" rather than as the fact it is. A user-scoped crossing
+   * (`search`, `network_discovery`) now carries no organisation at all by
+   * construction -- `public.consume_rate_limit()` refuses to attribute one
+   * (`20260909050000`) -- so the operator needs to be told WHAT the alert is
+   * about instead of being left to infer a workspace. Identifiers only: the
+   * scope is a three-value enum from the limiter, never user-entered content.
+   */
+  readonly subjectScope: string | null;
   readonly summary: string;
   readonly createdAt: string;
   readonly resolvedAt: string | null;
 }
 
+/** Which alerts the operator is looking at. `any` is the default because a
+ *  resolved alert is still evidence and the e2e/UI both rest on a row staying
+ *  listed after it is resolved. */
+export type IncidentAlertStatusFilter = "any" | "open" | "resolved";
+
+export interface IncidentAlertFilters {
+  readonly alertType: IncidentAlertType | null;
+  readonly status: IncidentAlertStatusFilter;
+}
+
+export interface IncidentAlertParams {
+  readonly filters: IncidentAlertFilters;
+  /** The lib/list/ half: pageSize and cursor. Kept whole rather than picked
+   *  apart, because buildListHref (the "Next" link) needs the same shape back. */
+  readonly list: ListParams<IncidentAlertSort, never>;
+}
+
+export type IncidentAlertSort = "created_at";
+
 /**
- * Open alerts first (newest first), then the most recently raised resolved
- * ones, up to the ceiling. Reads through the caller's own RLS
- * (incident_alerts_select_platform, 20260909020000).
+ * The minimal `ListSpec` this surface needs -- the audit-log viewer's shape,
+ * for the audit-log viewer's reason.
+ *
+ * `tests/unit/list/one-cursor-only.test.ts` enforces as a source census that
+ * `encodeCursor`/`decodeCursor` are called from nowhere but `lib/list` itself,
+ * and allows exactly one indirection: a wrapper whose own module calls
+ * `parseListParams`. So this file declares a real spec and goes through
+ * `parseListParams`/`buildListHref` for the cursor and the page-size ceiling,
+ * rather than growing a second cursor format one refactor away from
+ * disagreeing with the first. The two real filters below are not
+ * `FilterChoice`-shaped in a way the spec could carry through
+ * `applyFilters` (this list is not read by `fetchListPage` at all -- it has no
+ * `organisation_id` to scope to and is superuser-only), so they are parsed
+ * here and applied directly.
  */
-export async function listIncidentAlerts(): Promise<
-  readonly IncidentAlertRow[]
-> {
+export const INCIDENT_ALERT_SPEC: ListSpec<IncidentAlertSort, never> =
+  defineListSpec({
+    entity: "incident_alerts",
+    noun: { one: "alert", many: "alerts" },
+    searchColumn: "summary",
+    searchLabel: "Search alerts",
+    sort: {
+      created_at: {
+        column: "created_at",
+        label: "Raised",
+        defaultDirection: "desc",
+        directionLabels: { asc: "Oldest first", desc: "Newest first" },
+        notNull: true,
+        backedBy: "incident_alerts_created_at_id_desc_idx",
+      },
+    },
+    defaultSort: "created_at",
+    filters: {},
+  });
+
+/** Query-string keys for the two real filters. Distinct from lib/list's own
+ *  reserved set (q/sort/dir/size/after/before), so buildListHref's `preserve`
+ *  carries them through a "Next" click untouched. */
+export const INCIDENT_ALERT_FILTER_PARAMS = {
+  alertType: "type",
+  status: "status",
+} as const;
+
+function firstParam(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) return value.length > 0 ? (value[0] ?? null) : null;
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Parse one request's query string. Never throws; a stale or hostile value
+ * degrades to "no filter", the same rule `parseListParams` and `decodeCursor`
+ * already follow.
+ */
+export function parseIncidentAlertParams(
+  raw: RawSearchParams,
+): IncidentAlertParams {
+  const list = parseListParams(INCIDENT_ALERT_SPEC, raw);
+
+  const typeRaw = firstParam(raw[INCIDENT_ALERT_FILTER_PARAMS.alertType]);
+  const statusRaw = firstParam(raw[INCIDENT_ALERT_FILTER_PARAMS.status]);
+
+  return {
+    filters: {
+      alertType:
+        typeRaw !== null && isIncidentAlertType(typeRaw) ? typeRaw : null,
+      status:
+        statusRaw === "open" || statusRaw === "resolved" ? statusRaw : "any",
+    },
+    list,
+  };
+}
+
+/** True when either filter is set -- drives the "no matches" vs "nothing yet"
+ *  copy the same way `isNarrowed()` does for entity lists. */
+export function incidentAlertIsFiltered(filters: IncidentAlertFilters): boolean {
+  return filters.alertType !== null || filters.status !== "any";
+}
+
+export type IncidentAlertPage =
+  | {
+      readonly outcome: "loaded";
+      readonly rows: readonly IncidentAlertRow[];
+      readonly hasNext: boolean;
+      readonly lastCursor: Cursor | null;
+    }
+  | { readonly outcome: "unavailable" };
+
+/**
+ * One page of alerts, newest first, through the caller's own RLS
+ * (incident_alerts_select_platform, 20260909020000).
+ *
+ * ===========================================================================
+ * FIX ROUND 1, MINOR M5: THIS WAS A FLAT `limit 50` WITH NO CURSOR
+ * ===========================================================================
+ * That met CLAUDE.md's page-size ceiling and not its "Paginate everything. No
+ * unbounded list endpoint" rule, and finding I1 is what made the difference
+ * matter rather than being a nicety: alerts a single account could file at
+ * roughly two a minute would push every real one off the operator's only
+ * triage surface, unreachable from the UI at all. So: a keyset pager and two
+ * filters.
+ *
+ * ORDERED NEWEST-FIRST, NOT OPEN-FIRST, and that is the trade the pager
+ * demands. "Open first, then newest" is a two-key order over a nullable
+ * column, which a `(value, id)` cursor cannot express -- and a pager that
+ * cannot express its own order is how a row gets skipped between pages. The
+ * capability is not lost: `status=open` is one click, and it is a better
+ * answer than an implicit sort, because it also bounds the count.
+ *
+ * FORWARD-ONLY, the audit log's reasoning: an exact count over a
+ * platform-wide table on every page load is the unbounded aggregate the
+ * cursor exists to avoid, and "Next" plus a bounded page size is what
+ * "paginate everything" actually asks for.
+ */
+export async function fetchIncidentAlertPage(
+  params: IncidentAlertParams,
+): Promise<IncidentAlertPage> {
+  const { filters } = params;
+  const { pageSize, cursor } = params.list;
   const supabase = await createClient();
-  const { data, error } = await supabase
+
+  let query = supabase
     .from("incident_alerts")
-    .select("id, alert_type, organisation_id, summary, created_at, resolved_at")
-    .order("resolved_at", { ascending: true, nullsFirst: true })
+    .select(
+      "id, alert_type, organisation_id, details, summary, created_at, resolved_at",
+    );
+
+  // THE ALLOWLISTED FILTERS: two columns, two fixed operators, and both values
+  // already passed the allowlist in parseIncidentAlertParams -- nothing a
+  // request supplies reaches the query as a column name or an operator.
+  if (filters.alertType !== null) {
+    query = query.eq("alert_type", filters.alertType);
+  }
+  if (filters.status === "open") query = query.is("resolved_at", null);
+  if (filters.status === "resolved") {
+    query = query.not("resolved_at", "is", null);
+  }
+
+  // THE KEYSET PREDICATE. The same two-part shape lib/list/query.ts documents
+  // at length: a redundant range bound the planner can push into
+  // incident_alerts_created_at_id_desc_idx, plus the OR'd exact tie-break that
+  // is the only way PostgREST's grammar can express a row-value comparison.
+  if (cursor) {
+    const quoted = quoteLogicValue(cursor.value);
+    query = query
+      .lte("created_at", cursor.value)
+      .or(
+        `created_at.lt.${quoted},and(created_at.eq.${quoted},id.lt.${cursor.id})`,
+      );
+  }
+
+  const { data, error } = await query
     .order("created_at", { ascending: false })
-    .limit(INCIDENT_ALERT_LIST_LIMIT);
+    .order("id", { ascending: false })
+    // The spare row answers "is there a next page" without a second,
+    // unbounded count query.
+    .limit(pageSize + 1);
 
   if (error) {
     console.error("[admin] incident alert list failed:", error.message);
-    return [];
+    return { outcome: "unavailable" };
   }
 
-  const rows = data ?? [];
+  const raw = data ?? [];
+  const more = raw.length > pageSize;
+  const rows = more ? raw.slice(0, pageSize) : raw;
   const orgIds = [
     ...new Set(
       rows
@@ -251,15 +453,63 @@ export async function listIncidentAlerts(): Promise<
     }
   }
 
-  return rows.map((row) => ({
+  const mapped: IncidentAlertRow[] = rows.map((row) => ({
     id: row.id as string,
     alertType: row.alert_type as string,
     organisationName:
       row.organisation_id === null
         ? null
         : (names.get(row.organisation_id as string) ?? "(unknown workspace)"),
+    subjectScope: subjectScopeOf(row.details),
     summary: row.summary as string,
     createdAt: row.created_at as string,
     resolvedAt: (row.resolved_at as string | null) ?? null,
   }));
+
+  const lastRow = mapped[mapped.length - 1];
+  // `sort: "created_at"` -- INCIDENT_ALERT_SPEC's one sort key, and the only
+  // value parseListParams will accept back: a cursor made under any other
+  // sort is discarded.
+  const lastCursor: Cursor | null = lastRow
+    ? { value: lastRow.createdAt, id: lastRow.id, sort: "created_at" }
+    : null;
+
+  return { outcome: "loaded", rows: mapped, hasNext: more, lastCursor };
+}
+
+/**
+ * The "Next" page's href. Delegates to lib/list/params.ts's buildListHref --
+ * the one sanctioned `encodeCursor` call site -- carrying the request's own
+ * searchParams through `preserve` so the two filters survive the click.
+ */
+export function buildIncidentAlertNextHref(
+  basePath: string,
+  params: IncidentAlertParams,
+  raw: RawSearchParams,
+  cursor: Cursor,
+): string {
+  return buildListHref(INCIDENT_ALERT_SPEC, basePath, params.list, {
+    preserve: raw,
+    cursor: { direction: "after", cursor },
+  });
+}
+
+/**
+ * The href for the CURRENT view. A disabled "Next" keeps `aria-disabled`
+ * rather than leaving the tab order, so it stays activatable by keyboard --
+ * and activating it must be a no-op on the page the reader is already on,
+ * never a jump to an unfiltered page one. Same shape, same reason, as
+ * `buildAuditLogSelfHref`.
+ */
+export function buildIncidentAlertSelfHref(
+  basePath: string,
+  params: IncidentAlertParams,
+  raw: RawSearchParams,
+): string {
+  return buildListHref(INCIDENT_ALERT_SPEC, basePath, params.list, {
+    preserve: raw,
+    cursor: params.list.cursor
+      ? { direction: "after", cursor: params.list.cursor }
+      : null,
+  });
 }
