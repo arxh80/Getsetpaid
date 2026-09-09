@@ -28,6 +28,16 @@ import { Alert } from "@/components/ui/alert";
 // are-you-sure beat would guard against a mis-click that cannot happen.
 // Revoking is a ROW BUTTON in a list of similar rows -- exactly the shape
 // components/ui/use-reveal-focus.tsx's reveal exists for.
+//
+// EVERY REASON HINT CARRIES THE Q103 DISCLOSURE WARNING (fix round 1, review
+// I2): organisation_billing_overrides_select_member /
+// organisation_feature_overrides_select_member give ANY active member of the
+// target workspace SELECT over the full row -- reason and revoked_reason
+// included, revoked/expired history rows included (RLS filters rows, not
+// columns) -- so what the operator types here is readable by the workspace's
+// own people through PostgREST even though no in-app surface renders it to
+// them today. Same wording precedent as
+// components/admin/organisation-lifecycle-forms.tsx's lifecycle forms.
 
 export function GrantBillingOverrideForm() {
   const [state, formAction, pending] = useActionState(
@@ -103,7 +113,7 @@ export function GrantBillingOverrideForm() {
         rows={3}
         defaultValue={state.values?.reason ?? ""}
         error={state.fieldErrors?.reason}
-        hint="Goes on the permanent audit record. Name the invoice, the negotiation or the incident — not an internal shorthand."
+        hint="THE WORKSPACE'S OWN PEOPLE CAN READ THIS — any member of the workspace can read the override row, this reason included — and it goes on the permanent audit record. Write the sentence you would say to them — name the invoice, the negotiation or the incident — not an internal shorthand."
       />
 
       <div>
@@ -176,7 +186,7 @@ export function GrantFeatureOverrideForm() {
         rows={3}
         defaultValue={state.values?.reason ?? ""}
         error={state.fieldErrors?.reason}
-        hint="Goes on the permanent audit record."
+        hint="THE WORKSPACE'S OWN PEOPLE CAN READ THIS — any member of the workspace can read the override row, this reason included — and it goes on the permanent audit record. Write the sentence you would say to them."
       />
 
       <div>
@@ -333,7 +343,7 @@ function OverrideRow<T extends OverrideRowBase>({
             required
             rows={2}
             error={fieldError}
-            hint="Goes on the permanent audit record beside the grant it ends."
+            hint="THE WORKSPACE'S OWN PEOPLE CAN READ THIS — revoked override rows stay readable to any member of the workspace, this reason included — and it goes on the permanent audit record beside the grant it ends. Write the sentence you would say to them."
           />
           <div className="flex flex-wrap items-center gap-3">
             <Button
