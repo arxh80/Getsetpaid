@@ -66,7 +66,7 @@ export interface EntityOption {
  * is itself partial on `deleted_at is null`, so a record whose profile was
  * deleted may be republished, and the picker should offer it again.
  */
-export async function loadPublishedEntityIds(
+async function loadPublishedEntityIds(
   organisationId: string,
   entityKind: NetworkEntityKind,
 ): Promise<string[]> {

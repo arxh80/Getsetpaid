@@ -35,7 +35,6 @@ import { cache } from "react";
 // someone to re-alias them.
 import {
   ENTITY_PATH_SEGMENT,
-  ENTITY_TYPE_LABELS,
   parseOptions,
   type CustomFieldDefinition,
 } from "@/lib/crm/custom-fields";
@@ -139,10 +138,15 @@ export function columnLabel(column: string): string {
 }
 
 /** Why a pair was flagged. The DB constrains it; this renders it. */
-export const CANDIDATE_REASONS = ["exact_email", "fuzzy_name"] as const;
-export type CandidateReason = (typeof CANDIDATE_REASONS)[number];
+// A UNION, NOT A TUPLE, because nothing needs these at runtime. The `as const`
+// tuple this replaced existed only to derive this type -- no caller iterated
+// it and no test mirrored it against merge_candidates' CHECK constraint, so it
+// was a runtime array serving a compile-time job. `REASON_LABELS` below still
+// enumerates every member, and its `Record<CandidateReason, string>` type still
+// fails to compile if the database grows a third reason and this does not.
+export type CandidateReason = "exact_email" | "fuzzy_name";
 
-export const REASON_LABELS: Readonly<Record<CandidateReason, string>> = {
+const REASON_LABELS: Readonly<Record<CandidateReason, string>> = {
   // NAMED FOR WHAT IT MEANS TO THE READER, not for the column it matched on.
   // "Same email" is a fact about the two records; "exact_email" is a value in
   // a CHECK constraint.
@@ -161,10 +165,6 @@ export function entityHref(
   id: string,
 ): string {
   return `/${orgSlug}/${ENTITY_PATH_SEGMENT[entityType]}/${id}`;
-}
-
-export function entityLabel(entityType: MergeEntityType): string {
-  return ENTITY_TYPE_LABELS[entityType];
 }
 
 /**
