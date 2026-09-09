@@ -228,6 +228,12 @@ colour.
 
 ## 6. Placement
 
+**Superseded by the founder ruling of 2026-09-09 — see plan Task 4.** The header
+ships the wordmark only, with no mark beside it: the mark's strokes are ~1.5% of its
+height and fall below one pixel at header size, so the full lockup this section
+describes was never built. The mark lives in `app/icon.svg` instead. Left as written
+below for the record, not as what shipped.
+
 The lockup **replaces `components/wordmark.tsx`**, which today renders the string
 "GetSetPaid" in Source Serif 4 at weight 800. Its own header comment explains why:
 
@@ -311,6 +317,10 @@ the new dark ground is re-measured as part of § 8.
    backgrounds, images without a dark variant, borders that vanish, skeleton
    placeholders tuned for light.
 8. The logo renders sharp at 20px, 24px and 200px, and `markOnly` is legible at 16px.
+   **Superseded by the founder ruling of 2026-09-09 — see plan Task 4:** there is no
+   `markOnly` prop, so this criterion cannot be satisfied as written. The mark ships
+   only in `app/icon.svg`, at its fixed icon size; the wordmark-only header criterion
+   is the first half, still true.
 
 ## 9. Risks
 
