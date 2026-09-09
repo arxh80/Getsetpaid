@@ -22,6 +22,7 @@ import { formatDateTime } from "@/lib/format/date";
 import { countPendingReceivedRequests } from "@/lib/network/requests-list";
 import { Alert } from "@/components/ui/alert";
 import { RuledList, RuledRow } from "@/components/ui/ruled-row";
+import { CRM_AREAS, OPERATIONS_AREAS } from "@/lib/nav/areas";
 
 export async function generateMetadata({
   params,
@@ -331,11 +332,18 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
           list and reads the sentence, and writing one would be a test about
           English; the guard is this comment.
 
-          IT IS STILL NOT A NAVIGATION BAR. A persistent nav belongs in
-          app/(app)/layout.tsx, where it would also have to answer what happens
-          on narrow screens, where the workspace switcher sits relative to it,
-          and which of these a Read Only user should see -- a design, not a
-          list. Named here rather than half-built. */}
+          THIS GRID IS NOW REDUNDANT WITH THE SIDEBAR (Sidebar nav build,
+          app/(app)/[orgSlug]/layout.tsx + components/nav/sidebar.tsx) AND IS
+          KEPT ANYWAY -- a deliberate call, not an oversight. Removing it would
+          touch every golden-path/accessibility/tenant-breakout spec that reads
+          this page's card links and blurbs, for a purely cosmetic win (one
+          less way to reach the same six routes), and this page still earns
+          its keep as the dashboard: the upcoming-events and open-tasks
+          sections above are real data the sidebar has no room for. If this
+          page is revisited, the six-plus-four cards below are the part to cut
+          first; "Keeping the records clean" and "Network" (below) are not
+          reachable from the sidebar at all yet and would need to move there
+          first. */}
       <section className="border border-rule bg-surface p-5">
         <h2 className="text-xl font-bold text-ink">Where to start</h2>
         <p className="mt-2 max-w-prose text-base text-ink-muted">
@@ -643,99 +651,11 @@ function roleLabel(key: string): string {
     .join(" ");
 }
 
-/**
- * The six CRM areas, in the order the workflow uses them.
- *
- * DATA RATHER THAN SIX COPIES OF THE SAME JSX. This comment used to say "the
- * sixth (events, Phase 3) is one line here instead of a paragraph somebody has
- * to match to the other five", and Phase 3 Task 3 collected on it: adding
- * Events was one entry in the array below and nothing else in this file.
- *
- * NOT FILTERED BY PERMISSION, deliberately. Every role in the Q2 matrix that
- * can reach this page holds `view_crm`, so all six lists are READABLE by all
- * of them -- and each list already explains, in its own empty state, why a
- * record-scoped user is seeing fewer rows than their colleagues. Hiding a link
- * because the viewer cannot WRITE there would be the "hidden loses the
- * explanation" mistake components/crm/write-gate.tsx exists to avoid, applied
- * to a read.
- *
- * Events is the sixth and it obeys the same rule: `view_crm` is what the
- * SELECT policy in 20260901011000 requires, and a Finance or Marketing user
- * holds it while holding no `manage_events` at all. They can read the list;
- * the "New event" control on it explains itself.
- */
-const CRM_AREAS = [
-  {
-    path: "contacts",
-    label: "Contacts",
-    blurb:
-      "The people this workspace works with — agents, promoters, venue managers, drivers.",
-  },
-  {
-    path: "companies",
-    label: "Companies",
-    blurb:
-      "The businesses behind them. A contact can belong to several, and one of them is their main one.",
-  },
-  {
-    path: "artists",
-    label: "Artists",
-    blurb:
-      "Who you book. Their representation and their fee history hang off one record.",
-  },
-  {
-    path: "agencies",
-    label: "Agencies",
-    blurb:
-      "Who represents them, in what territory, and from when.",
-  },
-  {
-    path: "venues",
-    label: "Venues",
-    blurb:
-      "Where the events happen, and the rooms inside them events can be assigned to.",
-  },
-  // LAST, because the workflow arrives here: CLAUDE.md's core sequence is
-  // `relationship -> enquiry/hold -> booking/event -> delivery -> settlement`,
-  // and an event is the thing the five above get attached to.
-  {
-    path: "events",
-    label: "Events",
-    blurb:
-      "The nights you are putting on. A date, a venue and a lineup, with everything above it hanging off one record.",
-  },
-] as const;
-
-/**
- * The four operational areas (Phase 4), in the order they are used: a task is
- * planned, a meeting is held, a note is kept, a file is filed. Data rather than
- * four copies of the same JSX, exactly as CRM_AREAS. Not filtered by permission
- * -- every role that reaches this page holds `view_crm` and each list explains
- * its own write rules. Documents was added by Task 6.
- */
-const OPERATIONS_AREAS = [
-  {
-    path: "tasks",
-    label: "Tasks",
-    blurb:
-      "What needs doing — chase a contract, confirm a rider, call the venue. With a due date, a priority and the record it is about.",
-  },
-  {
-    path: "meetings",
-    label: "Meetings",
-    blurb:
-      "Calls and get-togethers, with a time, who came and what was agreed.",
-  },
-  {
-    path: "notes",
-    label: "Notes",
-    blurb:
-      "Free-form text kept with a record. Private to you, or shared with the workspace.",
-  },
-  {
-    path: "documents",
-    label: "Documents",
-    blurb:
-      "Contracts, riders and artwork. Scanned before they can be opened, and attached to the records they are about.",
-  },
-] as const;
+// CRM_AREAS and OPERATIONS_AREAS used to be defined here as two private
+// arrays. Sidebar nav build: moved to lib/nav/areas.ts (imported above) so
+// the new persistent sidebar (components/nav/sidebar.tsx, wired up in
+// app/(app)/[orgSlug]/layout.tsx) can render the SAME six-plus-four areas
+// with the same `label`, plus a short `sub` subheading this card grid does
+// not need. One array per group, not two that can drift -- see that file's
+// header comment for the full argument, including why the layout does not
+// simply import these two arrays from this page module instead.

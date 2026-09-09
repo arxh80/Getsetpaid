@@ -1,6 +1,20 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getActiveMemberships, getCurrentOrg, getCurrentUser } from "@/lib/auth";
+import {
+  getActiveMemberships,
+  getCurrentOrg,
+  getCurrentUser,
+  hasPermission,
+} from "@/lib/auth";
+import {
+  CRM_AREAS,
+  OPERATIONS_AREAS,
+  NETWORK_ITEMS,
+  ADMIN_ITEMS,
+  OVERVIEW_ITEM,
+} from "@/lib/nav/areas";
+import { Sidebar } from "@/components/nav/sidebar";
+import type { SidebarNavGroup } from "@/components/nav/types";
 import { currentPath } from "@/lib/auth/current-path";
 import { signOutAction } from "@/lib/auth/actions";
 import { evaluateMfaGate } from "@/lib/auth/mfa-gate";
@@ -76,6 +90,36 @@ export default async function AppLayout({
     getActiveMemberships(),
   ]);
 
+  // THE SIDEBAR IS BUILT HERE, NOT IN app/(app)/[orgSlug]/layout.tsx, AND THE
+  // REASON IS THE SKIP LINK (review finding 1). `<SkipLink>` targets `#main`;
+  // if the rail rendered inside `<main>` (as the first cut did), "skip to
+  // content" would land a keyboard user at the top of up to 17 repeated nav
+  // links -- the exact WCAG 2.4.1 failure the link exists to prevent, and one
+  // axe cannot see. The HTML spec agrees: `main` "must not include content
+  // that is repeated across a set of documents, such as site navigation
+  // links". So the rail is a SIBLING of <main>, which only this layout can
+  // arrange -- and `currentOrg` is already resolved here for the workspace
+  // switcher, via the same RLS-gated lookup, so no second resolution is
+  // needed. Null (a non-org route like /invites or /onboarding, or a slug the
+  // caller cannot see) simply means no rail.
+  //
+  // NOT RENDERED WHILE THE MFA GATE HOLDS: the gate replaces the page content
+  // wholesale, and a rail of workspace links beside a "set up your
+  // authenticator" card would be navigation to pages that all re-gate
+  // identically. Skipping it also skips the three permission RPCs below.
+  //
+  // THREE INDEPENDENT PERMISSION READS, IN PARALLEL -- same
+  // Promise.all-not-sequential-awaits shape app/(app)/[orgSlug]/page.tsx and
+  // members/page.tsx both use, and the same has_permission() RPC those pages
+  // call (now cache()-wrapped, so the org-home page's identical three reads
+  // cost nothing extra): this is a RENDER decision, not the enforcement.
+  // Every route these gate is independently protected by its own RLS policy
+  // regardless of what this sidebar chooses to show.
+  const sidebarGroups =
+    currentOrg && mfaGate.kind === "pass"
+      ? await buildSidebarGroups(currentOrg.id, currentOrg.slug)
+      : null;
+
   return (
     <div className="flex min-h-dvh flex-col">
       <SkipLink />
@@ -147,15 +191,138 @@ export default async function AppLayout({
         <SuspendedBanner orgName={currentOrg.name} />
       ) : null}
 
-      <main id="main" className="mx-auto w-full max-w-4xl flex-1 px-4 py-8 sm:py-12">
-        {mfaGate.kind === "enroll" ? (
-          <MfaEnrollGate next={next} />
-        ) : mfaGate.kind === "challenge" ? (
-          <MfaChallengeGate next={next} />
-        ) : (
-          children
-        )}
-      </main>
+      {/* Rail and content are SIBLINGS in one full-width row -- the rail at
+          the true viewport edge (the standard CRM shell this build wanted;
+          the first cut kept it inside <main>'s centred max-w-4xl column only
+          because restructuring this layout was out of that task's scope, and
+          this review brought the restructure anyway). <main> keeps its own
+          centred column INSIDE the row, so /invites and /onboarding -- where
+          there is no rail -- render exactly as before. On desktop widths the
+          rail's hover-expansion now spends the viewport's slack margins
+          before it touches the content column's width. */}
+      <div className="flex w-full flex-1 items-start">
+        {sidebarGroups ? <Sidebar groups={sidebarGroups} /> : null}
+        <main
+          id="main"
+          className="mx-auto w-full min-w-0 max-w-4xl flex-1 px-4 py-8 sm:py-12"
+        >
+          {mfaGate.kind === "enroll" ? (
+            <MfaEnrollGate next={next} />
+          ) : mfaGate.kind === "challenge" ? (
+            <MfaChallengeGate next={next} />
+          ) : (
+            children
+          )}
+        </main>
+        {/* THE RAIL'S COUNTERWEIGHT (re-review N2). <main>'s `mx-auto`
+            centres it in the LEFTOVER flex space, so without this the rail's
+            64px footprint pushed the whole content column 32px right of the
+            header's own max-w-4xl column at rest -- header and page visibly
+            out of register on every org route. A trailing spacer with the
+            rail's exact collapsed width (w-16 = RAIL_WIDTH_COLLAPSED = 64px,
+            same `hidden`/`md` breakpoint) makes the leftover space
+            symmetric again, so the two columns line up. It mirrors the
+            COLLAPSED width only, deliberately: hover-expansion still
+            translates the centred column -- that residual motion is
+            acknowledged in DESIGN.md § Motion's width-tween waiver, not
+            engineered away here. aria-hidden is belt-and-braces on an empty
+            div. */}
+        {sidebarGroups ? (
+          <div aria-hidden className="hidden w-16 shrink-0 md:block" />
+        ) : null}
+      </div>
     </div>
   );
+}
+
+/**
+ * The rail's contents for one workspace. CRM and Operations render for every
+ * role that can reach an org route (they all hold `view_crm`; each list's own
+ * empty state explains record scope -- see lib/nav/areas.ts). Network is
+ * gated as a GROUP on `view_network`; the two admin items are gated
+ * INDIVIDUALLY -- `manage_members` and `manage_custom_fields` are different
+ * permissions, so a Manager who can invite people but not define custom
+ * fields sees "Members" alone, not a half-disabled group. A group only
+ * appears once it has at least one item.
+ *
+ * NOT INCLUDED: a "Finance" group. The task brief's spec names one, but there
+ * is no route to point it at -- Phase 5 shipped finance as a panel ON THE
+ * EVENT DETAIL PAGE (components/crm/finance-panel.tsx), not a standalone
+ * list. CLAUDE.md's instruction for a sidebar item is explicit: "do not
+ * invent sections that have no route." A link that only ever lands on
+ * /events, mislabelled "Finance", would duplicate the Events item under a
+ * false name -- so the group is omitted rather than faked, and the build
+ * report names it as a deviation for a design-system owner to weigh in on
+ * (a dedicated /[orgSlug]/finance rollup page is the real fix, and is not
+ * this build's to invent).
+ */
+async function buildSidebarGroups(
+  orgId: string,
+  orgSlug: string,
+): Promise<SidebarNavGroup[]> {
+  const [canViewNetwork, canManageMembers, canManageCustomFields] =
+    await Promise.all([
+      hasPermission(orgId, "view_network"),
+      hasPermission(orgId, "manage_members"),
+      hasPermission(orgId, "manage_custom_fields"),
+    ]);
+
+  return [
+    // The hub first (review finding 12): the rail's own way back to the
+    // workspace overview, and the item that lights up while you are on it --
+    // every other href is longer, so the longest-prefix active match only
+    // ever picks this one on /[orgSlug] itself.
+    {
+      id: "workspace",
+      heading: "Workspace",
+      items: [toNavItem(orgSlug, OVERVIEW_ITEM)],
+    },
+    {
+      id: "crm",
+      heading: "CRM",
+      items: CRM_AREAS.map((area) => toNavItem(orgSlug, area)),
+    },
+    {
+      id: "operations",
+      heading: "Operations",
+      items: OPERATIONS_AREAS.map((area) => toNavItem(orgSlug, area)),
+    },
+    ...(canViewNetwork
+      ? [
+          {
+            id: "network",
+            heading: "Network",
+            items: NETWORK_ITEMS.map((area) => toNavItem(orgSlug, area)),
+          },
+        ]
+      : []),
+    ...(canManageMembers || canManageCustomFields
+      ? [
+          {
+            id: "admin",
+            heading: "Admin",
+            items: [
+              ...(canManageMembers ? [toNavItem(orgSlug, ADMIN_ITEMS[0])] : []),
+              ...(canManageCustomFields
+                ? [toNavItem(orgSlug, ADMIN_ITEMS[1])]
+                : []),
+            ],
+          },
+        ]
+      : []),
+  ];
+}
+
+function toNavItem(
+  orgSlug: string,
+  area: { path: string; label: string; sub: string },
+) {
+  return {
+    path: area.path,
+    label: area.label,
+    sub: area.sub,
+    // OVERVIEW_ITEM's path is "" -- the hub itself -- and the template below
+    // would give it a trailing slash Next treats as a different URL.
+    href: area.path === "" ? `/${orgSlug}` : `/${orgSlug}/${area.path}`,
+  };
 }

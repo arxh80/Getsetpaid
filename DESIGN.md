@@ -140,6 +140,8 @@ Borders are always exactly 1px. Emphasis comes from swapping `--rule` for `--rul
 
 Dense table rows use `--space-2` vertical padding, `--space-3` horizontal. Forms use `--space-4`. Section separation uses `--space-7`.
 
+**Control height: 44px.** Interactive rows and controls that a finger must hit (sidebar nav rows, and any future toolbar of the same kind) are 44px tall — deliberately off the 4px-scale's named stops (between `--space-6` and `--space-7`) because it is WCAG 2.5.8's enlarged touch-target size, not a spacing decision. Use it as a height only; it never becomes a padding or gap value.
+
 ---
 
 ## Interaction states
@@ -169,6 +171,8 @@ Minimal and fast. Nothing bounces, nothing scales.
 ```
 
 Only `opacity`, `background-color`, `border-color` and `transform: translate` are animated. Drawers slide on X, no fade-scale. Always honour `prefers-reduced-motion: reduce` by dropping to `--dur-fast` opacity only.
+
+**One standing waiver: the sidebar rail animates `width`** (`components/nav/sidebar.tsx`, reviewed and accepted). The rail's expand/collapse is a container growing around fixed-size children; the two letter-of-the-rule alternatives are worse — `scaleX` squashes every child with the container, and a `translateX` overlay changes the rail from pushing content to covering it, a bigger deviation than the property. The waiver is exactly that one tween: `--dur-slow` / `--ease`, instant under `prefers-reduced-motion`, expansion gated on hover capability plus ~120ms of hover intent so a passing pointer never pays the relayout. It is not precedent for animating `width`/`height` anywhere else; the property list above stays the rule. One acknowledged consequence rides with it: a rail that pushes rather than overlays necessarily translates the centred content column while it expands (the layout balances the rail's *collapsed* footprint with a matching trailing spacer, so the column is centred at rest and the translation exists only during hover/pin) — accepted as the cost of choosing push over overlay, not a defect to engineer away.
 
 ---
 

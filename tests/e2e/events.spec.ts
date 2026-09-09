@@ -310,6 +310,14 @@ test("a stored ticket link the renderer refuses is text, never an anchor", async
   // 4. NON-VACUITY. The page rendered, and it renders real anchors -- so (2)
   //    and (3) are not passing against a blank document. "Events" is the
   //    breadcrumb back to the list, which every event detail page carries.
+  //
+  //    `main`-SCOPED, AND THAT SCOPING IS NOW ALSO AN ASSERTION (sidebar nav
+  //    build, review finding 1): the persistent rail carries its own "Events"
+  //    link with the identical accessible name, but the rail is a SIBLING of
+  //    `<main>` (app/(app)/layout.tsx), never inside it -- so `main` finding
+  //    exactly ONE "Events" link is simultaneously the breadcrumb non-vacuity
+  //    check and a regression trip-wire for the rail ever moving back inside
+  //    the content landmark.
   await expect(
     page.locator("main").getByRole("link", { name: "Events", exact: true }),
   ).toHaveCount(1);

@@ -238,6 +238,29 @@ body {
     text-decoration-color, fill, stroke;
 }
 
+/* THE SIDEBAR RAIL'S RING SITS 2px INSIDE ITS ROWS, NOT 2px OUTSIDE.
+
+   The rail is a scroll container (overflow-y-auto, for workspaces whose
+   groups outgrow a short screen), and a scroll container clips on BOTH axes
+   -- per CSS Overflow §3.1 a specified `overflow-x: visible` computes to
+   `auto` the moment the other axis scrolls -- so the base rule's outward
+   ring loses its side segments to the clip on every full-width row, at
+   every scroll position. Pulling the ring inside the row keeps all four
+   segments visible; the rows are 44px tall, so it never touches their text.
+
+   UNLAYERED ON PURPOSE, LIKE THE RULE ABOVE IT -- this cannot be a Tailwind
+   utility on the components. Generated utilities live in @layer utilities,
+   and in the author origin an unlayered rule beats a layered one no matter
+   what the selectors score (the exact cascade fact the border-radius
+   guard's comment at the top of this file documents) -- so a
+   `focus-visible:-outline-offset-2` class on a nav row LOSES to the
+   unlayered base rule above and silently never applies. Beside it here,
+   both rules are unlayered and (0,2,1) beats (0,1,0) honestly. The pinned-
+   rail e2e test asserts the COMPUTED offset, not the stylesheet. */
+nav[aria-label="Primary"] :focus-visible {
+  outline-offset: -2px;
+}
+
 /* Removes the ~300ms tap delay mobile browsers hold in case a tap becomes a
    double-tap-to-zoom. Scoped to controls, so pinch-zoom on the page itself is
    untouched -- disabling that would be an accessibility failure. */
