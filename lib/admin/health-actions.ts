@@ -3,17 +3,29 @@
 // The one write /super/health carries: resolving (or reopening) an incident
 // alert.
 //
-// DELIBERATELY LIGHTER THAN EVERY OTHER ADMIN WRITE HERE, and the difference
-// is what the write touches. Lifecycle, impersonation and overrides all act
-// ON A TENANT -- so they ride audited RPCs, step-up, mandatory reasons and
-// transition markers. Resolving an alert changes one flag on a row of
-// PLATFORM OPERATIONAL METADATA that the operator alone can read: it is
-// bookkeeping, not a high-risk superuser function (CLAUDE.md § Session
-// security's step-up list), so it is a plain RLS-gated UPDATE. The row still
-// records who resolved it and when -- private.incident_alert_resolution_
-// guard() (20260909020000) forces resolved_by to the caller and refuses any
-// other column -- so the accountability is IN the row rather than in
-// audit_events. The brief: "a simple resolved flag, no escalation machinery".
+// LIGHTER THAN EVERY OTHER ADMIN WRITE HERE ON THE STEP-UP AXIS, AND NOT ON
+// THE AUDIT ONE. Lifecycle, impersonation and overrides all act ON A TENANT --
+// so they ride audited RPCs, step-up, mandatory reasons and transition
+// markers. Resolving an alert changes one flag on a row of PLATFORM
+// OPERATIONAL METADATA that the operator alone can read: it is bookkeeping,
+// not a high-risk superuser function (CLAUDE.md § Session security's step-up
+// list), so it stays a plain RLS-gated UPDATE with no re-auth and no reason
+// field. The brief: "a simple resolved flag, no escalation machinery".
+//
+// IT DOES AUDIT, SINCE FIX ROUND 1 (review finding I4). The first cut did not,
+// and defended that with "the accountability lives in resolved_by/resolved_at
+// on the row itself instead" -- which the `reopen` branch below falsifies: it
+// nulls both, the guard permits it (§ RA17), and the only record of who
+// resolved an alert was therefore erasable by anyone who could reopen it.
+// CLAUDE.md is explicit that superuser access audits itself, the READ of this
+// page already does (platform_health.viewed), and this was the phase's only
+// superuser write without a row. The audit is written by an AFTER UPDATE
+// TRIGGER (private.audit_incident_alert_resolution(), 20260909080000) rather
+// than from here, because incident_alerts carries a client UPDATE grant and a
+// permissive superuser UPDATE policy -- a raw PATCH from the operator's own
+// browser is a real resolve path that no call site in this file could cover.
+// private.incident_alert_resolution_guard() (20260909020000) still forces
+// resolved_by to the caller and refuses every other column.
 //
 // A PLAIN <form action>, no client JS: same progressive-enhancement rule as
 // every other form in this product (lib/forms.ts).
