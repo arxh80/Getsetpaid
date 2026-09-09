@@ -355,30 +355,45 @@ select fin.val('FB15 ...and NEITHER of them asks for view_crm',
        and coalesce(qual,'') || coalesce(with_check,'') like '%view_crm%'$$, '0');
 
 -- THE TIER HELPER'S BODY, read out of the DEPLOYED function. 20260903001000 was
--- written by copying private.crm_write_organisations() and substituting
--- p.crm_writes -> p.finance_module. A missed substitution is invisible to every
--- behavioural assertion in this file EXCEPT section FE's Starter case (Starter
--- carries crm_writes = true and finance_module = false), and invisible to a
--- source review entirely. These two name both halves of the substitution.
-select fin.val('FB16 finance_module_organisations() reads p.finance_module...',
+-- originally written by copying private.crm_write_organisations() and
+-- substituting p.crm_writes -> p.finance_module -- a missed substitution
+-- would have been invisible to every behavioural assertion in this file
+-- EXCEPT section FE's Starter case (Starter carries crm_writes = true and
+-- finance_module = false), and invisible to a source review entirely.
+--
+-- SINCE PHASE 7 TASK 4 (20260909000000): the function no longer joins
+-- organisation_subscriptions/subscription_plans inline -- it calls the
+-- shared private.effective_organisation_plan(), which is what makes an
+-- active billing override apply here too (see that migration's header).
+-- `p.finance_module` became `e.finance_module` and the escape's literal
+-- became `not e.has_subscription`; both assertions below were updated in the
+-- SAME migration that changed the source, per this file's own convention of
+-- re-reading rather than re-running a structural assertion whenever the
+-- function it names is deliberately rewritten.
+select fin.val('FB16 finance_module_organisations() reads e.finance_module (the shared plan)',
   $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
-            like '%p.finance_module%')::text$$, 'true');
+            like '%e.finance_module%')::text$$, 'true');
 select fin.val('FB17 ...and does NOT read crm_writes (the copy-paste this file guards)',
   $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
             like '%crm_writes%')::text$$, 'false');
--- THE ESCAPE, AS A DELIBERATE TRIPWIRE. `s.organisation_id is null` is what
--- makes the gate inert -- and Phase 7 Task A (20260908000000) did NOT remove
--- it: the ledger scopes Task A to private.crm_write_organisations() and
--- private.custom_field_limit() alone, and finance_module_organisations()'s
--- own escape is a deliberate separate follow-up. This assertion therefore
--- STAYS GREEN through Task A. What DID change is the fixture state around
--- it: create_organisation() now writes a real subscription row at birth, so
--- ALPHA no longer arrives here row-less on its own -- FE1/FE12 below strip
--- the row explicitly to reach the state this escape actually needs, which
--- Task A's own N1/N16 in rls_phase2_crm.sql do too, for the same reason.
+-- THE ESCAPE, AS A DELIBERATE TRIPWIRE. `not e.has_subscription` (formerly
+-- `s.organisation_id is null`) is what makes the gate inert for an
+-- organisation with no subscription row -- and Phase 7 Task A (20260908000000)
+-- did NOT remove it: the ledger scopes Task A to
+-- private.crm_write_organisations() and private.custom_field_limit() alone,
+-- and finance_module_organisations()'s own escape is a deliberate separate
+-- follow-up, UNTOUCHED BY TASK 4's routing through effective_organisation_plan()
+-- (that migration's header: "preserved VERBATIM as its own disjunct,
+-- unrelated to overrides"). This assertion therefore stays green through
+-- both Task A and Task 4. What DID change at Task A is the fixture state
+-- around it: create_organisation() now writes a real subscription row at
+-- birth, so ALPHA no longer arrives here row-less on its own -- FE1/FE12
+-- below strip the row explicitly to reach the state this escape actually
+-- needs, which Task A's own N1/N16 in rls_phase2_crm.sql do too, for the
+-- same reason.
 select fin.val('FB18 ...and still carries the "not yet billed => not yet gated" escape',
   $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
-            like '%s.organisation_id is null%')::text$$, 'true');
+            like '%not e.has_subscription%')::text$$, 'true');
 
 -- THE SUMMARY VIEW. Its whole security story is `security_invoker=true`: it
 -- reads public.financial_entries as the CALLER, so financial_entries_select_

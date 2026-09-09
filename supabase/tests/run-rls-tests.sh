@@ -618,6 +618,45 @@ else
 fi
 
 # ============================================================================
+# PHASE 7 TASK 4 (BILLING + FEATURE OVERRIDES) SUITE.
+#
+# Runs LAST of the psql suites, after lifecycle, and reuses the SAME fixtures
+# and the SAME variable set (P7VARS). ALPHA arrives here with no subscription
+# row (the lifecycle suite's own § LZ leaves it that way) -- this suite plants
+# its own Pro subscription for ALPHA and restores it to nothing at its own
+# § OZ, the same save/plant/restore discipline every suite in this chain uses.
+# ============================================================================
+docker cp "$HERE/rls_phase7_overrides.sql" "$CTR:/tmp/rls_phase7_overrides.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P7VARS[@]}" -f /tmp/rls_phase7_overrides.sql
+
+ov_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from ov.results where not pass" | tr -d '[:space:]')
+if [ "$ov_fails" != "0" ]; then
+  echo "PHASE 7 OVERRIDES SUITE FAILED: $ov_fails failing assertion(s)" >&2
+  echo "  In OB, THE EFFECTIVE-TIER RESOLUTION IS WRONG -- an active override" >&2
+  echo "  is not being consulted, or a foreign organisation can now read" >&2
+  echo "  another tenant's overrides." >&2
+  echo "  In OC, THE SANCTIONED-PATH MARKER IS GONE -- an Owner or the" >&2
+  echo "  superuser's own raw PATCH can now write an override directly," >&2
+  echo "  un-audited." >&2
+  echo "  In OD, READ-TIME EXPIRY IS BROKEN -- an expired override is still" >&2
+  echo "  being applied, or a live one is being denied early." >&2
+  echo "  In OG, DOWNGRADE SAFETY HAS REGRESSED -- an override that lowers" >&2
+  echo "  the tier either failed to deny a new write, or deleted existing" >&2
+  echo "  data. Sev1." >&2
+  echo "  In OH/OI11, THE AUDIT TRAIL is incomplete or misattributed." >&2
+  echo "  In OZ, this suite left ALPHA's subscription/override state changed" >&2
+  echo "  and every HTTP check below is now running against a different" >&2
+  echo "  tenant than the one it was written against -- discard the run and" >&2
+  echo "  reset." >&2
+  psql_status=1
+else
+  echo "Phase 7 overrides suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
