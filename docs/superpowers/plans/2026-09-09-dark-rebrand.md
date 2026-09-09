@@ -16,6 +16,15 @@
 - **No literal hex in `components/` or `app/`** outside `app/globals.css` and the documented Google SSO exception (`#4285F4`, `#EA4335`, `#FBBC05`, `#34A853`).
 - **`--radius: 0` everywhere. No `box-shadow`. No gradient.** Unchanged by this work; do not introduce any.
 - **Unit tests are `.test.ts` only.** `vitest.config.ts` has `include: ["tests/**/*.test.ts"]` and `environment: "node"`. There is no jsdom and no Testing Library. Component assertions are **source-reading tests** (see `tests/unit/list/app-shell-has-no-crm-query.test.ts` for the established pattern) or Playwright.
+- **No dead hex, even in a comment, in any file a drift test scans**
+  (`app/globals.css`, `DESIGN.md`, `CLAUDE.md`, `components/ui/button.tsx`,
+  `components/skeleton/bone.tsx`, `components/list/list-skeleton.tsx`,
+  `scripts/contrast.py`). Explanatory prose states the **ratio**, which stays
+  true, and names the old value in words — "the shell this replaced", not the
+  hex. A hex in a comment is precisely the thing that goes stale and misleads
+  the next reader; that is the same argument Task 6 makes about
+  `button.tsx`'s "3.66:1". Test files are not scanned and may name old values
+  where a threshold needs justifying.
 - **`pnpm build` is forbidden in this worktree** — it resolves to the hosted project. Use `npx next typegen` if route types are needed.
 - **Commit after every task.** Message body explains *why*, not what. Trailers required:
   ```
@@ -300,7 +309,7 @@ Replace lines 73-103 (from `/* ---- Ground ---` through `--color-danger: #9E1C15
      had two blues 11% apart and DESIGN.md called that split "the single
      easiest thing to get wrong"; there is now one brand colour, so that
      class of mistake cannot occur. Green is unusable on a light ground
-     (1.27:1 on the old #FFF4F4 shell) and excellent on this one. */
+     (1.27:1 on the shell this replaced) and excellent on this one. */
   --color-primary: #20FC8F;    /* 14.40:1 on shell -- links, primary fill */
   --color-on-primary: #0B0B0E; /* 14.40:1 on --color-primary */
   --color-accent: #20FC8F;     /* borders, focus rails, active state */
@@ -473,8 +482,8 @@ In `app/globals.css`, inside `@theme`, immediately before `--animate-skeleton`, 
   /* The bone's breathe stop. Was --color-pink on the light palette; that
      token is deleted, and a keyframe pointing at a dead custom property does
      not error -- it resolves to nothing and the bone silently stops moving.
-     #3A3A45 sits 1.27:1 from --color-rule, matching the amplitude the light
-     system had (#D6CBCB -> #FFD6E0 was 1.20:1). Decorative fill, so no
+     #3A3A45 sits 1.27:1 from --color-rule, matching the 1.20:1 amplitude
+     the light system's own pair had. Decorative fill, so no
      contrast gate applies -- the loading MESSAGE is carried by role="status"
      text, never by the colour. */
   --color-skeleton-breathe: #3A3A45;
@@ -1357,7 +1366,7 @@ Six sections. Take every value and every ratio from `docs/superpowers/specs/2026
 Replace the third paragraph (beginning "Palette is `#FFF4F4` shell") with:
 
 ```markdown
-Palette is a dark ground: `#0B0B0E` shell, `#15151A` surface, `#1E1E25` raised, `#F5F5F7` ink for all text, and **one brand green** `#20FC8F` — from the logo — carrying `--primary`, `--accent` and `--success` alike. That green is unusable on a light ground (1.27:1 on the old `#FFF4F4` shell), which is why the product is dark. There is deliberately no second accent: `--chart-1` … `--chart-5` are a separate namespace that must never appear in UI chrome, and success is told apart from interactive green **structurally** — a bordered uppercase chip versus an underlined link or a filled button — never by hue. Always go through the token, never a literal hex.
+Palette is a dark ground: `#0B0B0E` shell, `#15151A` surface, `#1E1E25` raised, `#F5F5F7` ink for all text, and **one brand green** `#20FC8F` — from the logo — carrying `--primary`, `--accent` and `--success` alike. That green is unusable on a light ground (1.27:1 on the shell it replaced), which is why the product is dark. There is deliberately no second accent: `--chart-1` … `--chart-5` are a separate namespace that must never appear in UI chrome, and success is told apart from interactive green **structurally** — a bordered uppercase chip versus an underlined link or a filled button — never by hue. Always go through the token, never a literal hex.
 ```
 
 And in the direction line above it, change "minimalist, sharp-edged, bold serif" to "minimalist, sharp-edged, bold serif on a near-black ground".
