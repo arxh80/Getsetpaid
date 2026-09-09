@@ -195,6 +195,38 @@ test("the superuser reads live counts and a real alert row at /super/health", as
     await page.getByRole("link", { name: "Clear filters" }).click();
     await expect(page.getByText(alertSummary)).toBeVisible();
 
+    // ---- ATTRIBUTION AND SEARCH NARROW TOO. -------------------------------
+    // The cleanup round's N2 and N3. The attribution filter is the answer to
+    // the half of finding I1 that is mitigated rather than closed: the flood
+    // an ordinary account can file is ENTIRELY unattributed, so "Attributed
+    // to a workspace" is the one click that separates it from everything
+    // else. The planted row carries world.orgId, so filtering to the
+    // unattributed set must hide it -- driven here rather than argued,
+    // because a filter nobody drives in a browser is a filter that works in
+    // theory. The search is asserted the same way and for a blunter reason:
+    // INCIDENT_ALERT_SPEC declared `searchColumn: "summary"` from the start
+    // and nothing applied it, so `q` parsed, survived a "Next" click, and
+    // filtered nothing.
+    await page
+      .getByLabel("Attribution")
+      .selectOption({ label: "Not attributed to a workspace" });
+    await page.getByRole("button", { name: "Filter" }).click();
+    await expect(page.getByText(alertSummary)).toHaveCount(0);
+    await page.getByRole("link", { name: "Clear filters" }).click();
+    await expect(page.getByText(alertSummary)).toBeVisible();
+
+    await page.getByLabel("Search alerts").fill("no such alert summary");
+    await page.getByRole("button", { name: "Filter" }).click();
+    await expect(page.getByText(alertSummary)).toHaveCount(0);
+    // The positive control: the search MATCHES on a real fragment of the
+    // summary, so the assertion above is the filter working rather than the
+    // list being empty for some other reason.
+    await page.getByLabel("Search alerts").fill(world.orgSlug);
+    await page.getByRole("button", { name: "Filter" }).click();
+    await expect(page.getByText(alertSummary)).toBeVisible();
+    await page.getByRole("link", { name: "Clear filters" }).click();
+    await expect(page.getByText(alertSummary)).toBeVisible();
+
     // ---- RESOLVING IS BOOKKEEPING, AND IT WORKS. --------------------------
     await row.getByRole("button", { name: "Resolve" }).click();
     await expect(row.getByRole("button", { name: "Resolve" })).toHaveCount(0);
