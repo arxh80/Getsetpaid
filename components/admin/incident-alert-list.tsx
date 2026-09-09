@@ -1,8 +1,9 @@
 import Link from "next/link";
 import type { Cursor } from "@/lib/list/cursor";
-import type { RawSearchParams } from "@/lib/list/params";
+import { toolbarParamNames, type RawSearchParams } from "@/lib/list/params";
 import {
   INCIDENT_ALERT_FILTER_PARAMS,
+  INCIDENT_ALERT_SPEC,
   INCIDENT_ALERT_TYPE_LABELS,
   buildIncidentAlertNextHref,
   buildIncidentAlertSelfHref,
@@ -49,6 +50,11 @@ const SELECT_CLASS =
 
 const LABEL_CLASS = "text-base font-semibold text-ink";
 
+const INPUT_CLASS =
+  "h-11 w-full min-w-0 border border-rule bg-surface px-3 text-base text-ink " +
+  "placeholder:text-ink-muted transition-colors duration-[var(--dur-fast)] " +
+  "ease-brand hover:border-ink focus:border-accent";
+
 function FilterStrip({
   params,
   basePath,
@@ -57,7 +63,8 @@ function FilterStrip({
   basePath: string;
 }) {
   const { filters } = params;
-  const narrowed = incidentAlertIsFiltered(filters);
+  const narrowed = incidentAlertIsFiltered(params);
+  const searchName = toolbarParamNames(INCIDENT_ALERT_SPEC).q;
 
   return (
     <form
@@ -65,6 +72,34 @@ function FilterStrip({
       method="get"
       className="flex flex-wrap items-end gap-x-4 gap-y-4 border-y border-rule py-4"
     >
+      {/* THE SEARCH BOX EXISTS BECAUSE THE SPEC ALWAYS SAID IT DID (cleanup
+          round, nit N3). INCIDENT_ALERT_SPEC has carried `searchColumn:
+          "summary"` and `searchLabel: "Search alerts"` since the M5 pager
+          landed, and nothing applied either -- so `q` was parsed, preserved
+          across a "Next" click, and ignored. It now filters, and the one
+          thing it filters on is the one thing the type filter cannot reach:
+          every rate-limit crossing, in every category, shares the single
+          `rate_limit_tripped` type, and only the summary names the category.
+          The `name` comes from `toolbarParamNames` rather than a literal "q",
+          so this input and `parseListParams` cannot disagree about the key. */}
+      <div className="flex min-w-0 flex-1 basis-64 flex-col gap-2">
+        <label className={LABEL_CLASS} htmlFor="incident-alert-search">
+          {INCIDENT_ALERT_SPEC.searchLabel}
+        </label>
+        <input
+          id="incident-alert-search"
+          name={searchName}
+          type="search"
+          defaultValue={params.list.q}
+          autoComplete="off"
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="none"
+          maxLength={100}
+          className={INPUT_CLASS}
+        />
+      </div>
+
       <div className="flex min-w-0 basis-64 flex-col gap-2">
         <label className={LABEL_CLASS} htmlFor="incident-alert-type">
           Alert type
@@ -97,6 +132,28 @@ function FilterStrip({
           <option value="any">Open and resolved</option>
           <option value="open">Open only</option>
           <option value="resolved">Resolved only</option>
+        </select>
+      </div>
+
+      {/* ATTRIBUTION: the cleanup round's N2. The alert types and the open/
+          resolved split are both blind to the one property that separates a
+          flood from a signal here — whether the alert names a workspace at
+          all. See lib/admin/health.ts's IncidentAlertAttributionFilter for
+          why that property is exactly the flood's shape, and why this is the
+          cheap half of the answer rather than the whole of it. */}
+      <div className="flex min-w-0 basis-64 flex-col gap-2">
+        <label className={LABEL_CLASS} htmlFor="incident-alert-attribution">
+          Attribution
+        </label>
+        <select
+          id="incident-alert-attribution"
+          name={INCIDENT_ALERT_FILTER_PARAMS.attribution}
+          defaultValue={filters.attribution}
+          className={SELECT_CLASS}
+        >
+          <option value="any">Any attribution</option>
+          <option value="workspace">Attributed to a workspace</option>
+          <option value="unattributed">Not attributed to a workspace</option>
         </select>
       </div>
 
@@ -234,7 +291,7 @@ export function IncidentAlertList({
   raw: RawSearchParams;
   basePath: string;
 }) {
-  const narrowed = incidentAlertIsFiltered(params.filters);
+  const narrowed = incidentAlertIsFiltered(params);
 
   if (page.outcome === "unavailable") {
     return (
@@ -258,7 +315,7 @@ export function IncidentAlertList({
       {page.rows.length === 0 ? (
         <p className="max-w-prose text-base text-ink-muted">
           {narrowed
-            ? "No incident alerts match the filters you’ve set."
+            ? "No incident alerts match the search or filters you’ve set."
             : "No incident alerts. They appear here when a rate limit trips, an account accumulates failed sign-ins, or the malware scanner quarantines an upload — and email delivery for new alerts arrives with the notification work later in this phase."}
         </p>
       ) : (

@@ -29,7 +29,7 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 import type { Cursor } from "@/lib/list/cursor";
-import { quoteLogicValue } from "@/lib/list/postgrest";
+import { containsPattern, quoteLogicValue } from "@/lib/list/postgrest";
 import {
   buildListHref,
   parseListParams,
@@ -186,7 +186,9 @@ export async function loadPlatformHealthSnapshot(): Promise<PlatformHealthOutcom
 // one account could file roughly two alerts a minute, and the ceiling turned
 // that into real alerts being unreachable from the UI entirely. The page size
 // now comes from lib/list/params.ts's own ceiling, through
-// INCIDENT_ALERT_SPEC, and the list is a keyset pager with two filters.
+// INCIDENT_ALERT_SPEC, and the list is a keyset pager with three filters and
+// a search (the third filter and the search are the cleanup round's N2 and
+// N3 -- see IncidentAlertAttributionFilter and INCIDENT_ALERT_SPEC).
 
 export type IncidentAlertType =
   | "rate_limit_tripped"
@@ -199,8 +201,24 @@ export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {
   upload_quarantined: "Upload quarantined",
 };
 
+/**
+ * OWN KEYS ONLY, not `in`.
+ *
+ * Found by the unit suite this cleanup round added while covering the two new
+ * parse axes: `value in INCIDENT_ALERT_TYPE_LABELS` answers TRUE for
+ * `toString`, `constructor` and every other `Object.prototype` member, so
+ * `?type=toString` passed the allowlist and reached `.eq("alert_type", …)` as a
+ * filter nobody wrote. Harmless in effect -- PostgREST parameterises the value,
+ * so it matched no rows -- and precisely the shape CLAUDE.md § Non-negotiable
+ * rules forbids ("filter inputs map to allowlisted columns and operators"), and
+ * the same hole `tests/unit/list/params.test.ts` already probes by name for the
+ * generic list parser.
+ */
 export function isIncidentAlertType(value: string): value is IncidentAlertType {
-  return value in INCIDENT_ALERT_TYPE_LABELS;
+  return Object.prototype.hasOwnProperty.call(
+    INCIDENT_ALERT_TYPE_LABELS,
+    value,
+  );
 }
 
 /** The three scopes `public.rate_limit_policies.subject_scope` permits. An
@@ -247,9 +265,35 @@ export interface IncidentAlertRow {
  *  listed after it is resolved. */
 export type IncidentAlertStatusFilter = "any" | "open" | "resolved";
 
+/**
+ * Whether an alert names a workspace.
+ *
+ * ADDED BY THE CLEANUP ROUND (nit N2), and the reason is the half of review
+ * finding I1 the fix round mitigated rather than closed. The forged-attribution
+ * half is gone by construction (`20260909050000`). The FLOOD half is not: one
+ * authenticated account can still trip the two user-scoped budgets (`search` at
+ * 60/min, `network_discovery` at 30/min) about twice a minute, roughly 2,880 a
+ * day, and every one of those alerts is `rate_limit_tripped`, open, and
+ * attributed to no workspace at all -- so neither of M5's two filters separates
+ * them from the alerts an operator actually needs to see. The pager makes real
+ * alerts REACHABLE; it does nothing about the noise.
+ *
+ * This third filter is the cheap half of the answer: `unattributed` is exactly
+ * the shape the flood takes, so `workspace` hides all of it in one click. It is
+ * not a substitute for the real answer -- a per-subject dedup window, so the
+ * same user tripping the same budget every minute files one alert rather than
+ * sixty -- which is queued as Q117 because it needs a schema decision this
+ * round is not the place for.
+ */
+export type IncidentAlertAttributionFilter =
+  | "any"
+  | "workspace"
+  | "unattributed";
+
 export interface IncidentAlertFilters {
   readonly alertType: IncidentAlertType | null;
   readonly status: IncidentAlertStatusFilter;
+  readonly attribution: IncidentAlertAttributionFilter;
 }
 
 export interface IncidentAlertParams {
@@ -276,6 +320,29 @@ export type IncidentAlertSort = "created_at";
  * `applyFilters` (this list is not read by `fetchListPage` at all -- it has no
  * `organisation_id` to scope to and is superuser-only), so they are parsed
  * here and applied directly.
+ *
+ * `searchColumn` IS APPLIED, and that is a cleanup-round change (nit N3). It
+ * was declared here from the start -- `ListSpec` requires the field -- while
+ * `fetchIncidentAlertPage` never used it, so `parseListParams` parsed `q` and
+ * `buildListHref` re-emitted it into every "Next" href and nothing ever
+ * filtered on it. That is dead configuration that reads like a feature: the
+ * next person to add a search box to the filter strip would have got a control
+ * that silently did nothing. Deleting the declaration was the other option and
+ * is not available cheaply -- the field is required by `ListSpec`, twenty-odd
+ * specs set it, `lib/list/query.ts` and `components/list/list-toolbar.tsx` both
+ * read it unconditionally, and `AUDIT_LOG_SPEC` declares it dead for the same
+ * reason, so making it optional is a refactor of shared list infrastructure
+ * rather than a nit fix. Wiring it up is three lines and one input, and
+ * `summary` is worth searching: it carries the rate-limit CATEGORY
+ * ("Rate limit exceeded: network_discovery (limit 30 per 60 seconds)."), which
+ * is the one axis the alert-type filter cannot narrow -- every category's
+ * crossing shares the single `rate_limit_tripped` type.
+ *
+ * The ILIKE is a sequential scan of `incident_alerts`, platform-wide rather
+ * than tenant-scoped (`lib/list/spec.ts`'s searchColumn note). That is
+ * acceptable here for the reason it is not everywhere: this table has one
+ * reader, it is bounded by the alert triggers rather than by user writes, and
+ * the page size ceiling bounds what comes back.
  */
 export const INCIDENT_ALERT_SPEC: ListSpec<IncidentAlertSort, never> =
   defineListSpec({
@@ -303,6 +370,7 @@ export const INCIDENT_ALERT_SPEC: ListSpec<IncidentAlertSort, never> =
 export const INCIDENT_ALERT_FILTER_PARAMS = {
   alertType: "type",
   status: "status",
+  attribution: "attribution",
 } as const;
 
 function firstParam(value: string | string[] | undefined): string | null {
@@ -322,6 +390,9 @@ export function parseIncidentAlertParams(
 
   const typeRaw = firstParam(raw[INCIDENT_ALERT_FILTER_PARAMS.alertType]);
   const statusRaw = firstParam(raw[INCIDENT_ALERT_FILTER_PARAMS.status]);
+  const attributionRaw = firstParam(
+    raw[INCIDENT_ALERT_FILTER_PARAMS.attribution],
+  );
 
   return {
     filters: {
@@ -329,15 +400,27 @@ export function parseIncidentAlertParams(
         typeRaw !== null && isIncidentAlertType(typeRaw) ? typeRaw : null,
       status:
         statusRaw === "open" || statusRaw === "resolved" ? statusRaw : "any",
+      attribution:
+        attributionRaw === "workspace" || attributionRaw === "unattributed"
+          ? attributionRaw
+          : "any",
     },
     list,
   };
 }
 
-/** True when either filter is set -- drives the "no matches" vs "nothing yet"
- *  copy the same way `isNarrowed()` does for entity lists. */
-export function incidentAlertIsFiltered(filters: IncidentAlertFilters): boolean {
-  return filters.alertType !== null || filters.status !== "any";
+/** True when the reader has narrowed the list at all -- either filter, or the
+ *  search term -- which drives the "no matches" vs "nothing yet" copy and the
+ *  "Clear filters" link, the same way `isNarrowed()` does for entity lists.
+ *  Takes the whole params rather than just the filters, because since nit N3
+ *  `q` is one of the things that narrows it. */
+export function incidentAlertIsFiltered(params: IncidentAlertParams): boolean {
+  return (
+    params.filters.alertType !== null ||
+    params.filters.status !== "any" ||
+    params.filters.attribution !== "any" ||
+    params.list.q !== ""
+  );
 }
 
 export type IncidentAlertPage =
@@ -361,7 +444,9 @@ export type IncidentAlertPage =
  * matter rather than being a nicety: alerts a single account could file at
  * roughly two a minute would push every real one off the operator's only
  * triage surface, unreachable from the UI at all. So: a keyset pager and two
- * filters.
+ * filters -- and, since the cleanup round, a third filter that separates the
+ * flood from everything else (N2) and the search the spec always declared
+ * (N3).
  *
  * ORDERED NEWEST-FIRST, NOT OPEN-FIRST, and that is the trade the pager
  * demands. "Open first, then newest" is a two-key order over a nullable
@@ -397,6 +482,29 @@ export async function fetchIncidentAlertPage(
   if (filters.status === "open") query = query.is("resolved_at", null);
   if (filters.status === "resolved") {
     query = query.not("resolved_at", "is", null);
+  }
+  // THE FLOOD IS EXACTLY THE `organisation_id is null` SET (cleanup round, N2),
+  // because a user-scoped crossing cannot carry a workspace at all since
+  // 20260909050000. So "Attributed to a workspace" is one click that hides
+  // every alert an ordinary account can manufacture, and "Not attributed" is
+  // the click that inspects them.
+  if (filters.attribution === "workspace") {
+    query = query.not("organisation_id", "is", null);
+  }
+  if (filters.attribution === "unattributed") {
+    query = query.is("organisation_id", null);
+  }
+
+  // THE DECLARED SEARCH, ACTUALLY APPLIED (cleanup round, nit N3). The column
+  // comes from the spec rather than from a literal here, so the declaration and
+  // the query cannot disagree; `containsPattern` is lib/list/query.ts's own
+  // escaping for the LIKE metacharacters and PostgREST's grammar, reused rather
+  // than re-derived.
+  if (params.list.q !== "") {
+    query = query.ilike(
+      INCIDENT_ALERT_SPEC.searchColumn,
+      containsPattern(params.list.q),
+    );
   }
 
   // THE KEYSET PREDICATE. The same two-part shape lib/list/query.ts documents
