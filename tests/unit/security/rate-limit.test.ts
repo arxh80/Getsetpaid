@@ -77,22 +77,16 @@ describe("consumeRateLimit — what it asks the database", () => {
     });
   });
 
-  it("sends an ORGANISATION for the connection-request budget, never a user", async () => {
-    // Q79/Q112. The budget binds the workspace, not the person: a per-user
-    // budget is bypassed by inviting a colleague. If a refactor ever dropped
-    // the organisation argument here the RPC would refuse with 22023 rather
-    // than fall back to the caller -- but it would refuse EVERY request, so
-    // the failure would be loud. This pins the intended shape anyway.
-    returns([{ allowed: true, retry_after_seconds: 0, request_count: 1 }]);
-    await consumeRateLimit(
-      "network_connection_request",
-      "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-    );
-    expect(rpc.calls[0].args).toEqual({
-      p_category: "network_connection_request",
-      p_organisation_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-    });
-  });
+  // THE CONNECTION-REQUEST BUDGET IS NOT REACHABLE FROM THIS MODULE, AND THAT
+  // IS THE POINT (fix round 1, review finding I2). Q79/Q112's budget used to
+  // be spent here, which left `network_connection_requests`' own client INSERT
+  // grant unmetered -- a scripted sender never loaded the app. It now lives in
+  // private.meter_connection_request() (20260909060000), a BEFORE INSERT
+  // trigger that meters EVERY writer, and 'network_connection_request' is
+  // absent from RateLimitCategory so a second app-side meter cannot be added
+  // back beside it by accident: two meters on one click would spend two units
+  // and silently halve the shipped limit. The type is the guard, so the test
+  // for it is a compile-time one (`pnpm typecheck`), not an assertion here.
 
   it("meters the NAMED network-discovery category under its own name", async () => {
     // SECURITY.md § 5's network-discovery row is deliberately not folded into

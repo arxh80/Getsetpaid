@@ -67,7 +67,7 @@ import { echoedValues, field, type FormState } from "@/lib/forms";
 import { stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { getNetworkConnectionAccess } from "@/lib/network/access";
-import { consumeRateLimit } from "@/lib/security/rate-limit";
+import { formatRetryAfter } from "@/lib/format/duration";
 
 /**
  * Shown when a terminal request is acted on again.
@@ -276,33 +276,29 @@ export async function sendConnectionRequestAction(
   }
 
   // ==========================================================================
-  // Q79'S SPAM MITIGATION (SECURITY.md § 5, 10/hour/organisation, Q112)
+  // Q79'S SPAM MITIGATION (SECURITY.md § 5, 10/hour/organisation, Q112) IS
+  // ENFORCED IN THE DATABASE, AT THE INSERT -- NOT HERE.
   // ==========================================================================
-  // The founder's 2026-09-07 reversal made a declined pair re-requestable,
-  // which removed the one zero-cost anti-harassment control in a product with
-  // no blocking, muting or moderation. FOLLOW-UPS' Q79 entry names this
-  // limiter as the mitigation, and this is where it lands: metering the
-  // DIRECTORY (lib/list/query.ts) bounds how fast an abuser can FIND
-  // organisations, not how fast they can pester ones they already found.
+  // FIX ROUND 1, REVIEW FINDING I2. This action used to call
+  // consumeRateLimit("network_connection_request", org.id) before the insert
+  // below, and that was the ONLY meter -- while `network_connection_requests`
+  // carries a client INSERT grant and a permissive INSERT policy. So a user who
+  // legitimately holds manage_network_connections in a publishing workspace --
+  // exactly the actor Q79's mitigation targets -- could POST straight to
+  // /rest/v1/network_connection_requests with the anon key and a session JWT,
+  // unlimited, and never load this application. The casual clicker was
+  // metered; the scripted one was not.
   //
-  // AFTER authorisation, deliberately. Spending a budget on a request the
-  // permission/tier/suspension gates were going to refuse anyway would let an
-  // unauthorised caller burn their own workspace's allowance -- and, worse,
-  // teach the operator's alert feed to fire on a workspace that sent nothing.
+  // The meter therefore MOVED into private.meter_connection_request()
+  // (20260909060000), a BEFORE INSERT trigger, and this call site is gone
+  // rather than kept beside it: two meters on one click would spend two units
+  // and silently halve the shipped limit. PostgREST's read-only-GET constraint
+  // (the reason the DIRECTORY budget must be app-side, SECURITY.md § 5's named
+  // residual) does not apply to a write -- a POST runs read-write, which is why
+  // the same argument reaches the opposite answer here.
   //
-  // ORG-SCOPED (org.id, not the user). A per-user budget is bypassed by
-  // inviting a colleague: six roles hold manage_network_connections (Q77),
-  // seats are cheap, and the pestered workspace experiences ONE WORKSPACE
-  // whoever clicked. The RPC re-checks active membership, so naming an
-  // organisation here cannot burn a stranger's allowance.
-  const budget = await consumeRateLimit("network_connection_request", org.id);
-  if (!budget.allowed) {
-    return {
-      error: `This workspace has sent a lot of connection requests in the last hour. Try again in ${budget.retryAfterSeconds} seconds.`,
-      values: echoedValues(formData),
-    };
-  }
-
+  // The refusal arrives as SQLSTATE PT429 from the insert below, with the
+  // seconds remaining in `hint`.
   const user = await getCurrentUser();
   if (!user) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
@@ -319,6 +315,23 @@ export async function sendConnectionRequestAction(
   });
 
   if (error) {
+    // THE BUDGET REFUSAL (fix round 1, I2). private.meter_connection_request()
+    // raises PT429 -- PostgREST's "return this HTTP status" escape, so a direct
+    // REST caller gets a real 429 and this action gets a code it can tell apart
+    // from the two below. `hint` carries the seconds left in the window; the
+    // copy renders a human duration, because the window here is an HOUR and
+    // "try again in 3,541 seconds" is not a sentence (M2).
+    if (error.code === "PT429") {
+      const retrySeconds = Number.parseInt(error.hint ?? "", 10);
+      return {
+        error:
+          "This workspace has sent a lot of connection requests in the last hour. " +
+          (Number.isFinite(retrySeconds)
+            ? `Try again in ${formatRetryAfter(retrySeconds)}.`
+            : "Try again later."),
+        values: echoedValues(formData),
+      };
+    }
     // 42501 here has one likely cause a user can act on -- an end that is no
     // longer published -- and two they cannot (tier, role). The sentence names
     // the actionable one without claiming to know which happened. A forged

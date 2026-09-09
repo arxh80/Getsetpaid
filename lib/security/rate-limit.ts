@@ -49,21 +49,27 @@ import { createClient } from "@/lib/supabase/server";
  * the auth hooks -- the RPC refuses them from a session (42501), and this
  * type keeps a caller from ever writing that call.
  *
- * 'exports' and 'network_connection_request' take an organisation id (the
- * budget is the tenant's, not the caller's); the RPC verifies active
- * membership so a stranger cannot burn another tenant's allowance.
+ * 'exports' takes an organisation id (the budget is the tenant's, not the
+ * caller's); the RPC verifies active membership so a stranger cannot burn
+ * another tenant's allowance. Every other category here is USER-scoped and
+ * takes NO organisation: since `20260909050000` the RPC refuses one with
+ * 22023, because a caller-supplied organisation on a user-scoped budget was
+ * what let an incident alert be attributed to a workspace the caller merely
+ * named (fix round 1, review finding I1).
  *
- * 'network_connection_request' is org-scoped for a second reason beyond whose
- * budget it is: a per-USER budget on sending connection requests is bypassed
- * by inviting a colleague, and the pestered workspace experiences one
- * WORKSPACE whoever clicked (Q79/Q112, SECURITY.md § 5).
+ * 'network_connection_request' IS DELIBERATELY ABSENT, though the category
+ * exists in `public.rate_limit_policies`. Q79/Q112's budget is enforced in the
+ * database at the INSERT (`private.meter_connection_request()`,
+ * `20260909060000`) so that it binds every writer including a direct
+ * PostgREST POST -- and a second, app-side meter beside it would spend two
+ * units per click and silently halve the shipped limit. Leaving the name out
+ * of this union is what stops one being added back by accident.
  */
 export type RateLimitCategory =
   | "search"
   | "network_discovery"
   | "feedback"
-  | "exports"
-  | "network_connection_request";
+  | "exports";
 
 export type RateLimitVerdict =
   | { readonly allowed: true }

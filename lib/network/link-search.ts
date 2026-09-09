@@ -28,6 +28,7 @@
 // planted positive control that proves the parse would catch one.
 
 import { loadNetworkDirectory } from "@/lib/network/discovery";
+import { formatRetryAfter } from "@/lib/format/duration";
 import {
   EMPTY_LINK_PICKER_SEARCH_STATE,
   type LinkPickerSearchState,
@@ -73,7 +74,7 @@ export async function searchNetworkDirectoryForLinkAction(
     return {
       query,
       results: [],
-      error: `You’ve reached the network-search limit for now — nothing is wrong. Try again in ${page.retryAfterSeconds} seconds.`,
+      error: `You’ve reached the network-search limit for now — nothing is wrong. Try again in ${formatRetryAfter(page.retryAfterSeconds)}.`,
     };
   }
   if (page.outcome !== "loaded") {

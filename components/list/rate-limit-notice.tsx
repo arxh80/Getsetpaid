@@ -11,6 +11,14 @@
 //
 // role="status" (polite), same as the sibling error notices -- the page is
 // fine; one region of it declined to load.
+//
+// THE REMAINDER IS RENDERED AS A HUMAN DURATION (fix round 1, minor M2). It
+// used to be raw seconds, which reads fine for the 60-second budgets this
+// component serves today and badly for the hour-long ones beside it -- and the
+// copy is shared, so the next surface to reach it inherits whichever form is
+// here. `formatRetryAfter` rounds up, so the advice is never early.
+
+import { formatRetryAfter } from "@/lib/format/duration";
 
 export function RateLimitNotice({
   retryAfterSeconds,
@@ -29,7 +37,8 @@ export function RateLimitNotice({
       <span className="font-semibold">Too many requests.</span> You’ve reached
       the limit for loading {subject} just now — nothing is wrong with your
       data. Try again in{" "}
-      <span className="tabular-nums">{retryAfterSeconds}</span> seconds.
+      <span className="tabular-nums">{formatRetryAfter(retryAfterSeconds)}</span>
+      .
     </p>
   );
 }
