@@ -1266,11 +1266,20 @@ select crm.val('L5  every table carrying updated_at has the trigger',
 -- no updated_at column, because a link is created or soft-deleted and never
 -- edited. 29 + 2 = 31, and a reviewer of 20260904000000 checks that arithmetic
 -- against the three tables it creates.
-select crm.val('L6  ...and that is 31 tables (+2 network tables in Phase 6)',
+-- 32 SINCE PHASE 7 TASK 5, up from 31. ONE added out of the six tables Phase 7
+-- creates: only public.rate_limit_counters carries an updated_at column
+-- (impersonation_sessions, rate_limit_policies, incident_alerts,
+-- organisation_billing_overrides and organisation_feature_overrides do not --
+-- each is written once and then either read, resolved or expired, never
+-- edited), and § L5 above caught it arriving WITHOUT the trigger. 20260909030000
+-- attaches it. That is this guard doing the exact job it was written for, so
+-- the fix was to add the trigger rather than to carve out the table -- see that
+-- migration's header for why an exception list would have destroyed the guard.
+select crm.val('L6  ...and that is 32 tables (+1 rate_limit_counters in Phase 7)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '31');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '32');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together

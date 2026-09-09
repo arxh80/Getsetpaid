@@ -657,6 +657,64 @@ else
 fi
 
 # ============================================================================
+# PHASE 7 TASK 5 (RATE LIMITING + INCIDENT ALERTS + PLATFORM HEALTH) SUITE.
+#
+# Runs LAST of the psql suites, after overrides, and reuses the SAME fixtures
+# and the SAME variable set (P7VARS). It is the only suite here that plants a
+# row in a TENANT table (two documents, to fire the malware-quarantine
+# trigger) -- its own § RZ deletes both, along with every counter and alert it
+# created, so the HTTP block below runs against the state it was written
+# against. It also takes an alert-table denominator at § RF rather than
+# assuming zero, because an earlier suite could raise one.
+# ============================================================================
+docker cp "$HERE/rls_phase7_rate_limits.sql" "$CTR:/tmp/rls_phase7_rate_limits.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P7VARS[@]}" -f /tmp/rls_phase7_rate_limits.sql
+
+rl_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from rl.results where not pass" | tr -d '[:space:]')
+if [ "$rl_fails" != "0" ]; then
+  echo "PHASE 7 RATE-LIMIT SUITE FAILED: $rl_fails failing assertion(s)" >&2
+  echo "  In RV, A SHIPPED RATE LIMIT NO LONGER MATCHES SECURITY.md § 5." >&2
+  echo "  The table in that document IS the requirement -- so a failure here" >&2
+  echo "  means either the seed changed without the document, or a seventh" >&2
+  echo "  category appeared with no § 5 row. Fix the drift, do not relax the" >&2
+  echo "  assertion." >&2
+  echo "  In RW, THE WINDOW ARITHMETIC MOVED -- windows are no longer" >&2
+  echo "  epoch-aligned or no longer close at the boundary, which silently" >&2
+  echo "  changes every budget in the product." >&2
+  echo "  In RC, COUNTER INTEGRITY IS GONE: an increment is lost, a refusal" >&2
+  echo "  is no longer counted (which breaks the exactly-once alert), or a" >&2
+  echo "  client role can now write or read counters. Sev1 on the last one --" >&2
+  echo "  a client that can UPDATE a counter can zero its own budget." >&2
+  echo "  In RS, THE WRAPPER'S SCOPE BINDING BROKE -- a session can spend an" >&2
+  echo "  account-scoped budget (locking a stranger out by user id), or a" >&2
+  echo "  non-member can burn another tenant's export allowance. Sev1." >&2
+  echo "  In RA, THE ALERT BOUNDARY: a non-superuser can read platform" >&2
+  echo "  alerts, a client can forge or delete one, or the resolve guard now" >&2
+  echo "  lets an operator rewrite alert content or stamp notified_at (which" >&2
+  echo "  would let them silence Task 6's email without sending it)." >&2
+  echo "  In RH, THE LOGIN LOCKOUT IS BROKEN. RH4 is the load-bearing one: a" >&2
+  echo "  lockout that lifts for a correct password is not a lockout -- the" >&2
+  echo "  brute force simply continues until it succeeds. Sev1." >&2
+  echo "  In RQ, A MALWARE QUARANTINE NO LONGER RAISES AN ALERT, or the" >&2
+  echo "  alert has started carrying the filename (user-entered content on a" >&2
+  echo "  platform surface)." >&2
+  echo "  In RP, THE HEALTH SNAPSHOT is reachable by a non-superuser or by" >&2
+  echo "  an aal1 session, has stopped auditing itself, or RP10 failed --" >&2
+  echo "  which means its projection has grown a field that is not a count," >&2
+  echo "  a sum or an organisation name, i.e. the no-direct-tenant-data rule" >&2
+  echo "  is broken on the operator's own dashboard. Sev1." >&2
+  echo "  In RZ, this suite left counters, alerts or DOCUMENTS behind and" >&2
+  echo "  every HTTP check below is now running against a tenant it was not" >&2
+  echo "  written against -- discard the run and reset." >&2
+  psql_status=1
+else
+  echo "Phase 7 rate-limit suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
