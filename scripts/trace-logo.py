@@ -429,7 +429,7 @@ def main():
     # same viewBox numbers as MARK_VIEWBOX above, just rendered into markup
     # instead of a TS export, since a static SVG file cannot import one.
     OUT_ICON.write_text(
-        "<!-- GENERATED FILE -- do not edit. -->\n"
+        "<!-- GENERATED FILE. Do not edit. -->\n"
         "<!-- Regenerate with: python scripts/trace-logo.py -->\n"
         "<!-- Mark path/viewBox traced from brand/LOGO.png, shared with\n"
         "     components/wordmark.paths.ts's MARK_PATH/MARK_VIEWBOX. The\n"
