@@ -178,14 +178,34 @@ const PROSE_FILES = [
   "lib/crm/task-status.ts",
   "app/not-found.tsx",
   "app/(app)/not-found.tsx",
+  // Palette-critical and previously the gap that let Finding 1's false
+  // "3.66:1 on primary" claim survive undetected: neither file's PROSE was
+  // ever scanned, only globals.css's @theme block (via the hex-survival
+  // check below) and contrast.py's TOKENS dict (via the sibling test at the
+  // top of this file). Comments in both can still go stale exactly like any
+  // other file's.
+  "app/globals.css",
+  "scripts/contrast.py",
 ];
 
-// Every deleted hex, every deleted token name, and the phrases and ratios that
-// only make sense under the palette they came from. The RATIOS are the subtle
-// entries: 3.66 was ink on the old primary fill, 4.65 was the old primary as
-// text, 3.23 the old accent. All three are quoted as live facts in comments
-// that survived the value change, which is exactly how a false claim outlives
-// the thing it described.
+// Every deleted hex, every deleted token name, and the ratios that only make
+// sense under the palette they came from. The RATIOS are the subtle entries:
+// 3.66 was ink on the old primary fill, 4.65 was the old primary as text,
+// 3.23 the old accent. All three were quoted as live facts in comments that
+// survived the value change, which is exactly how a false claim outlives the
+// thing it described -- app/globals.css:307-308 carried the 3.66 one until
+// this test started scanning that file.
+//
+// "two-blue" / "two blues" and "--color-lilac" / "--color-pink" are
+// deliberately NOT here. Naming an old value in WORDS to explain a current
+// decision is sanctioned prose, not a stale claim -- app/globals.css:61,89,122
+// say "the old palette's two blues were 11% apart" and ":215 says "Was
+// --color-pink on the light palette; that token is deleted" -- both
+// retrospective, both self-correcting ("that token is deleted"), neither
+// claiming the old thing still exists. Banning the phrase would forbid the
+// file from explaining itself. --color-lilac stays banned: nothing in
+// PROSE_FILES has a legitimate reason to name it, so there is nothing for the
+// ban to wrongly catch.
 const DEAD = [
   "#FFF4F4",
   "#14141C",
@@ -198,23 +218,11 @@ const DEAD = [
   "#0E5F42",
   "#7A4F00",
   "#9E1C15",
-  "two-blue",
-  "two blues",
   "--color-lilac",
-  "--color-pink",
   "3.66",
   "4.65",
   "3.23",
 ];
-
-// NOTE ON `app/globals.css`, WHICH IS DELIBERATELY NOT IN `PROSE_FILES`.
-// Its @theme block is covered by "no removed hex survives anywhere in the
-// theme" above, so no dead VALUE can hide there. Its comments do say "two
-// blues" -- but retrospectively ("the old palette's two blues were 11%
-// apart"), which is the sanctioned way to explain a change: name the old
-// thing in words, never in a live hex. Banning the phrase there would forbid
-// the file from explaining itself. See the report for the one comment in that
-// file that is NOT retrospective and still needs an owner's fix.
 
 describe("no document or comment describes the dead palette", () => {
   for (const file of PROSE_FILES) {

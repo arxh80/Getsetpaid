@@ -304,8 +304,26 @@ body {
   border-radius: var(--radius);
 }
 
-/* DESIGN.md § Interaction states: ink, not blue, so the ring stays visible on
-   every surface INCLUDING a --color-primary fill (3.66:1, its tightest case).
+/* DESIGN.md § Interaction states: ink, not blue, so the ring reads on every
+   surface. That is NOT because ink clears contrast against a --color-primary
+   fill -- white ink on the brand green is 1.25:1 and would fail outright.
+   It is safe because `outline-offset: 2px` below draws the ring on the
+   PARENT background, never on the control's own fill: a green button
+   focused on this dark page shows a white ring against the page, which
+   clears 3:1 comfortably (18.05:1 on --shell, 16.71:1 on --surface, 15.21:1
+   on --surface-raised) regardless of what the control underneath is filled
+   with.
+
+   The one shape that would still fail is an INSET ring, which lands ON the
+   fill instead of beside it. `nav[aria-label="Primary"] :focus-visible` is
+   the one inset ring in this file (the rail is a scroll container that
+   clips an outset ring); it is safe today only because the rail's active
+   row is `border-accent bg-surface` -- a green BORDER, not a green fill --
+   so that ring lands on #15151A at 16.71:1, not on green. `--color-focus-
+   on-primary` (#0B0B0E, 14.40:1 on green) exists, unused, as the required
+   override for the day an inset ring lands on an actually-green surface;
+   `scripts/contrast.py` measures its ratio so it cannot silently rot.
+
    Never animated -- a focus ring must appear the instant focus lands.
    ("Keyboard focus is never removed", DESIGN.md § Interaction states.)
 
