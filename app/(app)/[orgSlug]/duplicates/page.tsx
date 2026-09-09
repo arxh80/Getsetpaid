@@ -149,7 +149,7 @@ export default async function DuplicatesPage({
           listParams.filters,
           listParams.pageSize,
         ])}
-        fallback={<ListSkeleton columns={4} />}
+        fallback={<ListSkeleton columns={5} />}
       >
         <DuplicateResults
           organisationId={org.id}

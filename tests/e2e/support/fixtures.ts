@@ -347,7 +347,9 @@ export interface E2eWorld {
    */
   otherOrgSlug: string;
   otherOrgId: string;
-  /** A contact in the OTHER tenant. Its id is a valid uuid that must 404. */
+  /** A contact in the OTHER tenant. Its id is a valid uuid that must refuse
+   *  (the streamed not-found contract under one's own slug; literal 404 under
+   *  the foreign slug -- see tenant-breakout.spec.ts's expectRefused). */
   otherOrgContactId: string;
   /** A contact in THIS tenant owned by the manager, which the standard user
    *  must not be able to open -- record scope, not tenant scope. */
@@ -363,7 +365,9 @@ export interface E2eWorld {
   // standard user -- and an artist on the bill of the manager's. That shape is
   // the minimum that can tell the three failures apart on the new surfaces:
   //
-  //   tenant boundary   the other tenant's event must 404 from BOTH slugs
+  //   tenant boundary   the other tenant's event must refuse from BOTH slugs
+  //                     (literal 404 under the foreign slug; the streamed
+  //                     not-found contract under one's own)
   //   record scope      the standard user's venue page must show THEIR event
   //                     and not the manager's, inside one tenant
   //   non-vacuity       the manager's page must show BOTH, or "it shows
@@ -395,7 +399,7 @@ export interface E2eWorld {
    *  it is outside the workspace home's upcoming block and cannot perturb the
    *  five rows that block's assertions count on. */
   hostileEventId: string;
-  /** An event in the OTHER tenant. Its id is a valid uuid that must 404. */
+  /** An event in the OTHER tenant. Its id is a valid uuid that must refuse (streamed not-found under one's own slug). */
   otherOrgEventId: string;
   /** An artist in the OTHER tenant, on that tenant's event's bill. Task 8: the
    *  other tenant's event now has a LINEUP, so "this tenant's event pages show
@@ -425,12 +429,12 @@ export interface E2eWorld {
   /** A `quarantined` document in THIS tenant. Its own fixture row — no test
    *  reuses it, so the quarantine assertions carry no ordering dependency. */
   quarantinedDocumentId: string;
-  /** A task in the OTHER tenant. A valid uuid that must 404 from this session. */
+  /** A task in the OTHER tenant. A valid uuid that must refuse from this session. */
   otherOrgTaskId: string;
   /** A `private` note in the OTHER tenant (`Other Tenant Secret Note`). */
   otherOrgNoteId: string;
   /** A `clean` document in the OTHER tenant (`Other Tenant Secret Contract`),
-   *  linked to that tenant's event. A valid uuid that must 404 here, and whose
+   *  linked to that tenant's event. A valid uuid that must refuse here, and whose
    *  filename must never appear on this tenant's document list. */
   otherOrgDocumentId: string;
 
@@ -509,7 +513,7 @@ export interface E2eWorld {
   // THE FIXTURE THE NETWORK-LEAKAGE PROOF NEEDED, AND WHY IT IS NEW WORK.
   //
   // This world could already drive a counterparty in ONE direction: ALPHA's
-  // personas looking at `otherOrgId`'s rows and getting 404s. It could not
+  // personas looking at `otherOrgId`'s rows and getting refusals. It could not
   // drive the other -- somebody signed in INSIDE the second tenant, looking
   // back at ALPHA -- because the only member of that tenant was `otherOwner`,
   // whom nothing signs in as, and `owner` is MFA-required so a plain browser
@@ -517,7 +521,7 @@ export interface E2eWorld {
   // rather than the tenant boundary.
   //
   // `otherMember` is a `manager`: MFA-optional, so a password sign-in really
-  // does hold `view_network` and `view_crm`, which is what makes a 404 on
+  // does hold `view_network` and `view_crm`, which is what makes a refusal on
   // ALPHA's contact a statement about the boundary. It is also UNCONNECTED to
   // ALPHA -- no connection request touches `otherOrgId` -- which is the
   // browser half of the network-leakage matrix's "unconnected" column
@@ -561,7 +565,7 @@ export interface E2eWorld {
   networkAlphaProfileName: string;
   /** ALPHA's DRAFT profile (`orgId`), never published. Neither masking view
    *  ever carries a draft, so this is what proves a foreign viewer gets the
-   *  same 404 a nonexistent id would -- no existence leak. */
+   *  same refusal a nonexistent id would (status AND document, measured by the parity assertions) -- no existence leak. */
   networkDraftProfileId: string;
   /** Its `display_name`, suffixed per run. */
   networkDraftProfileName: string;
@@ -915,7 +919,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
       orgId,
       // OWNED BY THE STANDARD USER, AND THAT IS THE WHOLE RECORD-SCOPE TEST.
       // Venues are record-scoped like every other top-level entity, so a
-      // manager-owned venue 404s for the standard user and the "their venue
+      // manager-owned venue refuses the standard user and the "their venue
       // page shows their event and not the manager's" assertion could never
       // run -- it failed exactly that way on the first e2e run. The MANAGER is
       // full-scope (`private.full_scope_organisations()` excludes only

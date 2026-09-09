@@ -26,8 +26,12 @@ import Link from "next/link";
 // indistinguishable from the one rendered for a slug that does not exist at
 // all. A distinguishing 403 there would be an enumeration oracle for other
 // tenants' slugs and ids. See app/not-found.tsx's header for the full argument
-// -- and tests/e2e/tenant-breakout.spec.ts, which asserts the STATUS is 404
-// at every refusal, not merely that the words are on the page.
+// -- and tests/e2e/tenant-breakout.spec.ts, which measures it: a WORKSPACE
+// refusal (thrown by the [orgSlug] layout, above every loading boundary)
+// still carries the literal HTTP 404, while a RECORD refusal under a valid
+// slug streams as 200 + this identical document since the loading-skeletons
+// pass, and the indistinguishability itself is asserted directly by that
+// file's REFUSAL PARITY test (DESIGN.md § Error pages has the contract).
 //
 // Layout is DESIGN.md § Error pages: centred, large display numeral in
 // --text-5xl, one short sentence, one primary action out. No illustration, no

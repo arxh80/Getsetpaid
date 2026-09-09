@@ -2101,7 +2101,9 @@ corrections are the useful part. Each now says what was actually done.
 
   This task moves the line rather than only re-filing it: FIVE of its
   assertions are now permanent, in `tests/e2e/tenant-breakout.spec.ts` (the venue list, the
-  cross-tenant event 404 from both slugs, record scope on the list AND on the
+  cross-tenant event refusal from both slugs — literal 404 under the foreign
+  slug, the streamed not-found contract under one's own since the
+  loading-skeletons pass — record scope on the list AND on the
   record, the artist history through the lineup, and the workspace home).
   `.superpowers/sdd/phase-3-events/task-7-browser-walk.spec.ts` is still a
   throwaway, and what stays in it is the part a permanent assertion is the wrong

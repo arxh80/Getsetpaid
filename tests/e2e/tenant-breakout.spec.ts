@@ -51,26 +51,67 @@ test.afterAll(async () => {
 const REFUSED = (page: import("@playwright/test").Page) => page.locator("body");
 
 /**
- * Go to a URL that must be refused, and assert the STATUS as well as the words.
+ * Go to a URL that must be refused, and assert the refusal contract.
  *
  * ===========================================================================
- * WHY THE STATUS IS THE ASSERTION AND THE TEXT IS NOT ENOUGH
+ * TWO REFUSAL SHAPES, SINCE THE LOADING-SKELETONS PASS -- AND WHY
  * ===========================================================================
- * Final review I-11 (deferred-minor L1138). Every refusal here asserted
- * `toContainText("Page not found")` and nothing else, while the Task 8 exit
- * document recorded IDOR/BOLA as **Met** on the evidence "all 404, not 403 --
- * no membership or record enumeration. Asserted in Playwright." The status
- * code was not asserted anywhere in this file, so that row was argued rather
- * than measured.
+ * Final review I-11 made the HTTP status the assertion here, because a
+ * distinguishing 403 is an enumeration oracle for other tenants' slugs and
+ * ids, and "Page not found" words alone would stay green through a future
+ * error boundary that 403s. That property is unchanged. What changed is
+ * WHERE the status can still carry it.
  *
- * The property is load-bearing, not cosmetic: `app/not-found.tsx`'s own header
- * says in as many words that the page IS a security control and that a
- * distinguishing 403 there would be an enumeration oracle for other tenants'
- * slugs and ids. A future route that returns 403 for a cross-tenant id would
- * keep rendering the same words through an error boundary and every assertion
- * in this file would stay green.
+ * The loading-skeletons pass put a `loading.tsx` on every org segment, and a
+ * loading file is a Suspense boundary: on a document request Next flushes the
+ * shell (status 200) the moment the boundary's fallback is ready, so a
+ * `notFound()` thrown by a PAGE below that boundary can only swap the BODY to
+ * the not-found document -- the status line is already on the wire. This is
+ * the framework's documented streaming trade-off (Next injects
+ * `<meta name="robots" content="noindex">` into exactly this response). So:
+ *
+ *   WORKSPACE-level refusals (a slug the caller cannot see) happen in
+ *   `app/(app)/[orgSlug]/layout.tsx`, ABOVE every loading boundary, before
+ *   anything flushes -> still a real HTTP 404. `expectRefusedAtWorkspace`.
+ *
+ *   RECORD-level refusals (a valid slug, a foreign or out-of-scope id)
+ *   happen in the page, BELOW the boundary -> HTTP 200 + the identical
+ *   streamed not-found document. `expectRefused`.
+ *
+ * WHY 200 DOES NOT REOPEN THE ORACLE: the oracle is a DIFFERENCE between
+ * "exists, not yours" and "does not exist". Both run the identical
+ * RLS-filtered query, get the identical zero rows, throw the identical
+ * notFound() at the identical point, and stream the identical document with
+ * the identical status. That indistinguishability is no longer implied by a
+ * fixed status code, so it is measured directly by the parity test below
+ * ("REFUSAL PARITY..."), which is now the load-bearing assertion. What this
+ * helper still pins per probe: never a 403, never a bounce to /login for an
+ * authenticated probe (status uniformity), only the two statuses the two
+ * legitimate refusal shapes produce, and the refusal copy itself.
  */
 async function expectRefused(
+  page: import("@playwright/test").Page,
+  url: string,
+) {
+  const response = await page.goto(url);
+  const status = response?.status() ?? -1;
+  expect(
+    [200, 404],
+    `${url} must refuse as 404 or a streamed not-found (200) -- never 403, ` +
+      `never a redirect; got ${status}`,
+  ).toContain(status);
+  expect(page.url(), `${url} must not bounce an authenticated probe to login`)
+    .not.toMatch(/\/login/);
+  await expect(REFUSED(page)).toContainText("Page not found");
+}
+
+/**
+ * A refusal that happens at the WORKSPACE boundary -- a slug the signed-in
+ * caller cannot see. `app/(app)/[orgSlug]/layout.tsx` throws this notFound()
+ * above every loading boundary, so nothing has flushed and the literal HTTP
+ * 404 is still asserted, exactly as before the loading-skeletons pass.
+ */
+async function expectRefusedAtWorkspace(
   page: import("@playwright/test").Page,
   url: string,
 ) {
@@ -83,9 +124,10 @@ test("another tenant's workspace is not reachable by slug", async ({ page }) => 
   await signIn(page, world, "manager");
   // 404 rather than 403: a 403 confirms the workspace exists, which is
   // membership enumeration. The manager is a full-scope member of their OWN
-  // workspace, so this is the tenant boundary and nothing else. The STATUS is
-  // asserted, not only the words -- see expectRefused.
-  await expectRefused(page, `/${world.otherOrgSlug}/contacts`);
+  // workspace, so this is the tenant boundary and nothing else. A WORKSPACE
+  // refusal happens in the layout, above every loading boundary, so the
+  // literal HTTP 404 is still asserted -- see expectRefusedAtWorkspace.
+  await expectRefusedAtWorkspace(page, `/${world.otherOrgSlug}/contacts`);
   await expect(REFUSED(page)).not.toContainText("Other Tenant Secret");
 });
 
@@ -93,8 +135,9 @@ test("another tenant's record is not reachable by id, from either slug", async (
   page,
 }) => {
   await signIn(page, world, "manager");
-  // Under the OTHER tenant's slug -- refused because the workspace is not ours.
-  await expectRefused(
+  // Under the OTHER tenant's slug -- refused because the workspace is not
+  // ours, at the layout, so the literal 404 still holds.
+  await expectRefusedAtWorkspace(
     page,
     `/${world.otherOrgSlug}/contacts/${world.otherOrgContactId}`,
   );
@@ -118,6 +161,110 @@ test("record scope holds inside one tenant, on the list and on the record", asyn
     `/${world.orgSlug}/contacts/${world.managerOwnedContactId}`,
   );
 });
+
+/**
+ * A well-formed UUID that matches no row anywhere. Fixed, not random: the
+ * parity assertion below compares two requests, and a deterministic probe
+ * keeps a failure reproducible run to run.
+ */
+const GHOST_ID = "00000000-0000-4000-8000-000000000000";
+
+test("REFUSAL PARITY: a foreign record and a nonexistent record are indistinguishable, per entity family", async ({
+  page,
+}) => {
+  // ==========================================================================
+  // THE LOAD-BEARING ENUMERATION-ORACLE ASSERTION.
+  // ==========================================================================
+  // Before the loading-skeletons pass, the oracle property -- "exists, not
+  // yours" must not be tellable from "does not exist" -- was IMPLIED by every
+  // refusal carrying the same literal 404. Streaming took that implication
+  // away for record-level refusals (see expectRefused's header), so this test
+  // asserts the property DIRECTLY: for each entity family, probe a real,
+  // live row belonging to another tenant and a well-formed id that matches
+  // nothing, and require the same HTTP status and the same rendered document.
+  //
+  // The bodies are compared as rendered innerText, not raw bytes: every
+  // response carries a fresh CSP nonce and React stream ids, so two raw
+  // bodies differ even for the SAME url requested twice -- rendered text is
+  // the practical level at which "the identical 404 page" is decidable.
+  // innerText does not see the head, comments, data attributes or the flight
+  // payload; a leak through those channels is prevented by construction (the
+  // record read happens only below the loading boundary, generateMetadata
+  // falls back identically for both cases) rather than by this comparison,
+  // so the document TITLE is compared as well as a cheap head-channel probe,
+  // and the raw-byte channel is covered by the status equality plus the copy
+  // assertions in expectRefused.
+  await signIn(page, world, "manager");
+
+  await expectRefusalParity(page, world.orgSlug, [
+    ["contact", `contacts/${world.otherOrgContactId}`, `contacts/${GHOST_ID}`],
+    ["event", `events/${world.otherOrgEventId}`, `events/${GHOST_ID}`],
+    ["task", `tasks/${world.otherOrgTaskId}`, `tasks/${GHOST_ID}`],
+    ["note", `notes/${world.otherOrgNoteId}`, `notes/${GHOST_ID}`],
+    ["artist", `artists/${world.otherOrgArtistId}`, `artists/${GHOST_ID}`],
+  ] as const);
+});
+
+test("REFUSAL PARITY from the counterparty: meeting, venue and company note refuse identically to ghosts", async ({
+  page,
+}) => {
+  // The remaining alphaPrivateRoutes families (network-leakage.spec.ts's
+  // matrix), driven through the SAME parity contract as the test above but
+  // from the OTHER side of the boundary: the counterparty's member, signed
+  // in for real, probes ALPHA's live meeting, venue and company note under
+  // its own slug against ghost ids. Together the two tests cover all eight
+  // entity families with a detail page.
+  await signInAsOtherMember(page);
+
+  await expectRefusalParity(page, world.otherOrgSlug, [
+    ["meeting", `meetings/${world.meetingId}`, `meetings/${GHOST_ID}`],
+    ["venue", `venues/${world.venueId}`, `venues/${GHOST_ID}`],
+    ["company note", `notes/${world.companyNoteId}`, `notes/${GHOST_ID}`],
+  ] as const);
+});
+
+/** The parity loop both REFUSAL PARITY tests drive -- see the header comment
+ *  on the first of them for the full argument. */
+async function expectRefusalParity(
+  page: import("@playwright/test").Page,
+  slug: string,
+  families: ReadonlyArray<readonly [string, string, string]>,
+) {
+  for (const [label, foreignPath, ghostPath] of families) {
+    const foreign = await page.goto(`/${slug}/${foreignPath}`);
+    const foreignStatus = foreign?.status() ?? -1;
+    await expect(REFUSED(page)).toContainText("Page not found");
+    const foreignText = await page.locator("body").innerText();
+    const foreignTitle = await page.title();
+
+    const ghost = await page.goto(`/${slug}/${ghostPath}`);
+    const ghostStatus = ghost?.status() ?? -1;
+    await expect(REFUSED(page)).toContainText("Page not found");
+    const ghostText = await page.locator("body").innerText();
+    const ghostTitle = await page.title();
+
+    expect(
+      foreignStatus,
+      `${label}: a foreign row and a nonexistent id must share one status -- ` +
+        "a difference is an existence oracle",
+    ).toBe(ghostStatus);
+    expect(
+      foreignText,
+      `${label}: a foreign row and a nonexistent id must render the identical ` +
+        "document -- a difference is an existence oracle",
+    ).toBe(ghostText);
+    expect(
+      foreignTitle,
+      `${label}: the document title must not differ between a foreign row ` +
+        "and a nonexistent id -- generateMetadata must fall back identically",
+    ).toBe(ghostTitle);
+    expect(
+      [200, 404],
+      `${label}: the shared refusal status must be 404 or a streamed ` +
+        `not-found (200), never 403; got ${foreignStatus}`,
+    ).toContain(foreignStatus);
+  }
+}
 
 test("a stored javascript: or data: URL renders inert, never as a link", async ({
   page,
@@ -244,6 +391,9 @@ test("the pager announces an unavailable direction rather than removing it", asy
 // was written and is no longer: final review I-11 put the status assertion
 // into `expectRefused` above and every refusal in this file now goes through
 // it. So the new assertions inherit it rather than adding a second copy.
+// (Since the loading-skeletons pass "the status assertion" means the
+// streaming-aware contract in expectRefused's header, with the oracle carried
+// by the REFUSAL PARITY test above.)
 
 test("a venue page lists that venue's events, and only this tenant's", async ({
   page,
@@ -284,8 +434,12 @@ test("another tenant's event is not reachable by id, from either slug", async ({
   page,
 }) => {
   await signIn(page, world, "manager");
-  // Under the OTHER tenant's slug -- refused because the workspace is not ours.
-  await expectRefused(page, `/${world.otherOrgSlug}/events/${world.otherOrgEventId}`);
+  // Under the OTHER tenant's slug -- refused because the workspace is not
+  // ours, at the layout: literal 404.
+  await expectRefusedAtWorkspace(
+    page,
+    `/${world.otherOrgSlug}/events/${world.otherOrgEventId}`,
+  );
   // And under OUR OWN slug, which is the interesting one: the workspace is
   // ours, the id is a real row, and only the tenant filter separates them.
   // `loadEvent` takes `organisation_id` as an argument and does not read it
@@ -611,7 +765,11 @@ test("a Finance user cannot reach another tenant's finance, from either slug", a
   await expect(page.locator("main")).toContainText(FINANCE_LINES.fixtureFee.formatted);
 
   // ---- THE OTHER TENANT'S EVENT, UNDER THE OTHER TENANT'S SLUG -----------
-  await expectRefused(page, `/${world.otherOrgSlug}/events/${world.otherOrgEventId}`);
+  // A workspace this user is no member of: layout refusal, literal 404.
+  await expectRefusedAtWorkspace(
+    page,
+    `/${world.otherOrgSlug}/events/${world.otherOrgEventId}`,
+  );
   await expect(REFUSED(page)).not.toContainText(FINANCE_LINES.otherTenant.description);
   await expect(REFUSED(page)).not.toContainText(FINANCE_LINES.otherTenant.formatted);
 
@@ -623,9 +781,12 @@ test("a Finance user cannot reach another tenant's finance, from either slug", a
   await expect(REFUSED(page)).not.toContainText(FINANCE_LINES.otherTenant.formatted);
 
   // ---- AND THE MAIN WORKSPACE, WHICH THIS USER IS NOT A MEMBER OF --------
-  // A third tenant, reached by slug rather than by id: 404, never 403, so
-  // nothing here enumerates workspaces either.
-  await expectRefused(page, `/${world.orgSlug}/events/${world.managerOwnedEventId}`);
+  // A third tenant, reached by slug rather than by id: a layout refusal, so
+  // the literal 404 still holds and nothing here enumerates workspaces.
+  await expectRefusedAtWorkspace(
+    page,
+    `/${world.orgSlug}/events/${world.managerOwnedEventId}`,
+  );
   await expect(REFUSED(page)).not.toContainText(EVENT_NAMES.managerOwned);
 });
 
@@ -665,12 +826,14 @@ async function signInAsOtherMember(page: Page): Promise<void> {
   await expect(page).not.toHaveURL(/\/login/);
 }
 
-test("ALPHA's draft profile 404s for a foreign tenant, and ALPHA's draft never appears in that tenant's directory", async ({
+test("ALPHA's draft profile refuses a foreign tenant, and ALPHA's draft never appears in that tenant's directory", async ({
   page,
 }) => {
   await signInAsOtherMember(page);
 
-  // ---- THE DIRECT ID: 404, NEVER 403 (no existence leak) -------------------
+  // ---- THE DIRECT ID: REFUSED, NEVER 403 (no existence leak) ---------------
+  // (A record-level refusal under the viewer's own slug -- streamed since the
+  // loading-skeletons pass, per expectRefused's header.)
   // Same discipline `expectRefused` already applies to every other entity in
   // this file, over the SAME draft profile network-discovery.spec.ts uses for
   // the tier-angle version of this claim (`world.networkDraftProfileId`,

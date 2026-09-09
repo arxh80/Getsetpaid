@@ -129,9 +129,20 @@ test("a private note hides from a second same-org user; a company note does not"
   await signIn(page, world, "standard_user");
 
   // The private note is not this user's, so `loadNote` returns nothing under
-  // RLS and the app 404s. The body must be ABSENT.
+  // RLS and the app renders the not-found document. The body must be ABSENT.
+  // Since the loading-skeletons pass this record-level refusal streams as
+  // HTTP 200 with the identical not-found body (the status line is flushed by
+  // the loading boundary before the page's notFound() lands); 404-or-200,
+  // never 403 -- the oracle equality lives in tenant-breakout.spec.ts's
+  // REFUSAL PARITY test, whose families include notes.
   const privateResponse = await page.goto(privateUrl);
-  expect(privateResponse?.status(), "private note 404s for a non-author").toBe(404);
+  const privateStatus = privateResponse?.status() ?? -1;
+  expect(
+    [200, 404],
+    `private note must refuse for a non-author as 404 or a streamed ` +
+      `not-found (200), never 403; got ${privateStatus}`,
+  ).toContain(privateStatus);
+  await expect(page.locator("body")).toContainText("Page not found");
   await expect(page.locator("body")).not.toContainText(PRIVATE_BODY);
 
   // The company note IS visible to the same second user.

@@ -93,7 +93,7 @@ export default async function DeletedDocumentsPage({
 
       <Suspense
         key={JSON.stringify([listParams.q, listParams.filters, listParams.pageSize])}
-        fallback={<ListSkeleton columns={4} />}
+        fallback={<ListSkeleton columns={5} />}
       >
         <Results
           organisationId={org.id}

@@ -136,6 +136,54 @@
      controls with transition-duration: 0s). They live in :root below and are
      referenced as duration-[var(--dur-fast)] instead. */
   --ease-brand: cubic-bezier(0.2, 0, 0, 1);
+
+  /* ---- Skeleton shimmer (loading-skeletons pass) ------------------------
+     `--animate-*` IS a v4 theme namespace, so this generates the
+     `animate-skeleton` utility every skeleton bone carries
+     (components/skeleton/bone.tsx).
+
+     WHY THIS IS NOT A GRADIENT SWEEP: DESIGN.md forbids gradients anywhere,
+     and § Motion permits animating exactly opacity, background-color,
+     border-color and translate. So the shimmer is a background-color
+     crossfade between two tokens already in DESIGN.md -- the browser
+     interpolates them the same way every hover transition does; no new
+     colour is introduced.
+
+     THE BONE RESTS AT --color-rule AND BREATHES TO --color-pink (review
+     finding I1). The first cut rested at --color-shell, which IS the page
+     background: at the loop's rest points every bone was invisible, and
+     under prefers-reduced-motion -- where the rule below freezes the loop AT
+     its rest point -- the whole skeleton was a blank page for exactly the
+     users who asked for a calmer one. --rule (#D6CBCB) is the existing
+     hairline token, visible on both grounds a bone sits on (--shell page,
+     --surface card), so the static form reads and the animated form has a
+     perceptible amplitude. Decorative fills, so no contrast gate applies --
+     the loading MESSAGE is carried by role="status" text, never by the
+     colour.
+
+     THE LOOP IS 1.8s, deliberately outside the --dur-* scale: those tokens
+     time TRANSITIONS between states; this is a continuous idle loop, and at
+     240ms it would flicker. DESIGN.md § Motion carries the waiver. Ease-in-
+     out rather than --ease-brand because a loop must be symmetric -- the
+     brand curve's hard stop reads as a tick.
+
+     REDUCED MOTION IS HANDLED BELOW BY `animation: none`, NOT by the global
+     1ms clamp: a 1ms duration on an INFINITE loop is not "off", it is the
+     animation resampled at a quasi-random phase every frame -- a strobe,
+     served precisely to the users who asked for less motion. The unlayered
+     rule after the base styles kills the animation outright and leaves the
+     static --color-rule bone. */
+  --animate-skeleton: skeleton-pulse 1.8s ease-in-out infinite;
+
+  @keyframes skeleton-pulse {
+    0%,
+    100% {
+      background-color: var(--color-rule);
+    }
+    50% {
+      background-color: var(--color-pink);
+    }
+  }
 }
 
 /* ===========================================================================
@@ -303,5 +351,21 @@ summary {
   *::after {
     animation-duration: 1ms !important;
     transition-duration: 1ms !important;
+  }
+
+  /* Skeletons go STATIC, not fast. The 1ms clamp above is right for one-shot
+     transitions but wrong for an infinite loop: 1ms x infinite means the
+     keyframes are resampled at an effectively random phase every displayed
+     frame -- a background-colour strobe, delivered to exactly the users who
+     asked motion to stop. `animation: none` leaves the bone at its resting
+     bg-rule -- a VISIBLE static skeleton (review finding I1: the first cut
+     rested at bg-shell, the page colour, which froze reduced-motion users on
+     a blank page) -- with the hairline rules and the role="status" text
+     still carrying the "loading" message (components/skeleton/bone.tsx).
+     Unlayered, so it beats the generated `animate-skeleton` utility in
+     @layer utilities regardless of specificity; !important also outranks the
+     clamp above. */
+  .animate-skeleton {
+    animation: none !important;
   }
 }

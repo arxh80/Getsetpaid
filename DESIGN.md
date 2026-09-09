@@ -170,7 +170,9 @@ Minimal and fast. Nothing bounces, nothing scales.
 --ease: cubic-bezier(0.2, 0, 0, 1);
 ```
 
-Only `opacity`, `background-color`, `border-color` and `transform: translate` are animated. Drawers slide on X, no fade-scale. Always honour `prefers-reduced-motion: reduce` by dropping to `--dur-fast` opacity only.
+Only `opacity`, `background-color`, `border-color` and `transform: translate` are animated. Drawers slide on X, no fade-scale. Always honour `prefers-reduced-motion: reduce` by dropping to `--dur-fast` opacity only — except an **infinite loop**, which must stop outright (`animation: none`): a clamped duration on a loop resamples the keyframes every frame, which is a strobe, the opposite of what the preference asks for.
+
+**Second standing waiver: the skeleton shimmer loops at 1.8s** (`--animate-skeleton`, `app/globals.css`; every `components/skeleton/` bone). The `--dur-*` tokens time one-shot state transitions; a continuous idle loop at 240ms flickers. The waiver is exactly one keyframe pair — `background-color` between `--rule` and `--pink`, symmetric ease-in-out — instant-off under reduced motion per the rule above. Like the sidebar's width tween, it is not precedent: a third duration outside the scale means adding a `--dur-loop` token here first.
 
 **One standing waiver: the sidebar rail animates `width`** (`components/nav/sidebar.tsx`, reviewed and accepted). The rail's expand/collapse is a container growing around fixed-size children; the two letter-of-the-rule alternatives are worse — `scaleX` squashes every child with the container, and a `translateX` overlay changes the rail from pushing content to covering it, a bigger deviation than the property. The waiver is exactly that one tween: `--dur-slow` / `--ease`, instant under `prefers-reduced-motion`, expansion gated on hover capability plus ~120ms of hover intent so a passing pointer never pays the relayout. It is not precedent for animating `width`/`height` anywhere else; the property list above stays the rule. One acknowledged consequence rides with it: a rail that pushes rather than overlays necessarily translates the centred content column while it expands (the layout balances the rail's *collapsed* footprint with a matching trailing spacer, so the column is centred at rest and the translation exists only during hover/pin) — accepted as the cost of choosing push over overlay, not a defect to engineer away.
 
@@ -192,13 +194,15 @@ The numeral may use `--danger` at display size (≥24px bold clears 3:1, same ru
 
 | Page | Copy | Primary action | Notes |
 |---|---|---|---|
-| 404 Not found | "Page not found." | Back to dashboard | Also served for any record ID that doesn't resolve — see the tenant-isolation rule below |
+| 404 Not found | "Page not found." | Back to dashboard | Also served for any record ID that doesn't resolve — see the tenant-isolation rule below; the "404" names the page, not always the HTTP status (record-level refusals stream as 200 — see "What identical 404 means at the HTTP layer" below) |
 | 403 Forbidden | "You don't have access to this." | Back to dashboard | Only for a route that is category-gated (e.g. a Free-tier user hitting a Pro-only page) — never used for a record in another org, see below |
 | 500 Server error | "Something went wrong on our end." | Retry / Back to dashboard | No stack trace, no error ID exposed unless it's a correlation ID meant for support |
 | Maintenance / offline | "GetSetPaid is temporarily unavailable." | — (no action; optional status-page link if one exists) | Static page, must render with no JS/DB dependency |
 | Unauthenticated | "Sign in to continue." | Sign in | Redirect-after-login preserves the original destination |
 
 **Tenant-isolation rule (security-critical, ties to `CLAUDE.md` § Non-negotiable rules and the IDOR/BOLA testing gate):** a record that exists but belongs to another organisation must render the **identical 404** as a record that doesn't exist at all. Never a distinguishing 403, never a different message, never a different response time band. Returning 403 for "exists, not yours" and 404 for "doesn't exist" is an enumeration oracle — it lets an attacker map another tenant's IDs. 403 is reserved for feature/tier gating on a route the user's own org simply can't access, not for cross-tenant record lookups.
+
+**What "identical 404" means at the HTTP layer, since the loading-skeletons pass:** a *workspace*-level refusal (a slug the caller cannot see) still carries a literal HTTP 404 — `app/(app)/[orgSlug]/layout.tsx` throws it above every loading boundary. A *record*-level refusal under a valid slug **streams**: the route's `loading.tsx` flushes the status line (200) before the page's `notFound()` lands, so both "exists, not yours" and "doesn't exist" return HTTP 200 with the identical not-found document (and Next's injected `noindex` meta). The rule's property is the **indistinguishability of the two cases** — identical status, identical document, identical query path — and it is measured directly by `tests/e2e/tenant-breakout.spec.ts`'s REFUSAL PARITY test rather than implied by a fixed status code. A route handler (e.g. the document download gate) never streams and keeps the literal 404.
 
 **Copy tone:** plain, no blame, no apology beyond "something went wrong." No exclamation marks, no "oops," matching the serif/sharp-edged direction — errors are not the place for personality.
 
