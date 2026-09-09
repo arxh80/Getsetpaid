@@ -943,6 +943,48 @@ export async function expireBillingOverride(organisationId: string): Promise<voi
   );
 }
 
+/**
+ * PHASE 7 TASK 5. Plants one open incident alert so /super/health can be read
+ * POPULATED rather than empty.
+ *
+ * INSERTED AS `postgres`, the same route `auditProbeAlphaId`/`auditProbeBetaId`
+ * take and for the identical reason: `public.incident_alerts` has NO INSERT
+ * policy and no INSERT grant for any client role at all (20260909020000) --
+ * every real writer is a SECURITY DEFINER function behind a trigger or the
+ * limiter, so there is no product path a browser could drive to create one.
+ *
+ * THIS DOES NOT REPLACE PROVING THE TRIGGERS. That the three conditions really
+ * do raise a row is measured where it can be: `rls_phase7_rate_limits.sql`
+ * § RA (the exactly-once rate-limit crossing), § RQ (the malware quarantine)
+ * and § RH (the login lockout), plus `tests/integration/security/
+ * rate-limit-network-discovery.test.ts` driving a real crossing through the
+ * real page function. What is only observable HERE is that a row, once it
+ * exists, renders and can be resolved by the operator -- and an empty-state
+ * scan would miss every component this task added.
+ *
+ * The caller deletes it in a `finally`: these specs are serial and share one
+ * world, and a stray open alert would change the "Open incident alerts" count
+ * any later assertion reads.
+ */
+export async function plantIncidentAlert(
+  organisationId: string | null,
+  summary: string,
+): Promise<string> {
+  const result = await db().query<{ id: string }>(
+    `insert into public.incident_alerts
+       (alert_type, organisation_id, summary, details)
+     values ('rate_limit_tripped', $1, $2, '{"category":"network_discovery"}'::jsonb)
+     returning id`,
+    [organisationId, summary],
+  );
+  return result.rows[0].id;
+}
+
+/** Remove a planted alert. See plantIncidentAlert() for why this must run. */
+export async function deleteIncidentAlert(id: string): Promise<void> {
+  await sql(`delete from public.incident_alerts where id = $1`, [id]);
+}
+
 /** See expireBillingOverride() -- the feature-override twin, same fix. */
 export async function expireFeatureOverride(
   organisationId: string,
