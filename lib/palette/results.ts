@@ -48,4 +48,11 @@ export interface PaletteRecordGroup {
 
 export type PaletteSearchResult =
   | { readonly outcome: "results"; readonly groups: readonly PaletteRecordGroup[] }
-  | { readonly outcome: "unavailable" };
+  | { readonly outcome: "unavailable" }
+  /**
+   * The caller's search budget is spent (SECURITY.md § 5, 60/min/user). Its
+   * own outcome rather than "unavailable" because the palette owes the person
+   * the honest sentence -- slow down and when to retry -- not "try again in a
+   * moment", which invites exactly the retry the limiter is refusing.
+   */
+  | { readonly outcome: "rate_limited"; readonly retryAfterSeconds: number };

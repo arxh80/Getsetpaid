@@ -108,7 +108,15 @@ const INPUT_ID = "command-palette-input";
 interface SearchState {
   readonly forQuery: string;
   readonly groups: readonly PaletteRecordGroup[];
-  readonly failed: boolean;
+  /**
+   * false = fine; "error" = the read failed (try again in a moment);
+   * "rate_limited" = the caller's search budget is spent (SECURITY.md § 5)
+   * and the right advice is the OPPOSITE of "try again in a moment", which
+   * is why the two refusals are not one flag.
+   */
+  readonly failed: false | "error" | "rate_limited";
+  /** The window's remainder, for the rate-limited sentence. */
+  readonly retryAfterSeconds: number | null;
 }
 
 export function CommandPalette({
@@ -171,9 +179,26 @@ export function CommandPalette({
         const result = await searchPaletteAction(orgSlug, q);
         if (seqRef.current !== seq) return;
         if (result.outcome === "results") {
-          setSearch({ forQuery: q, groups: result.groups, failed: false });
+          setSearch({
+            forQuery: q,
+            groups: result.groups,
+            failed: false,
+            retryAfterSeconds: null,
+          });
+        } else if (result.outcome === "rate_limited") {
+          setSearch({
+            forQuery: q,
+            groups: [],
+            failed: "rate_limited",
+            retryAfterSeconds: result.retryAfterSeconds,
+          });
         } else {
-          setSearch({ forQuery: q, groups: [], failed: true });
+          setSearch({
+            forQuery: q,
+            groups: [],
+            failed: "error",
+            retryAfterSeconds: null,
+          });
         }
       });
     }, 250);
@@ -357,9 +382,16 @@ export function CommandPalette({
   const showingRecords =
     recordSearchArmed && search !== null && search.forQuery === trimmed;
   const searchPending = recordSearchArmed && (searching || !showingRecords);
-  const searchFailed = showingRecords && search !== null && search.failed;
+  const searchFailed =
+    showingRecords && search !== null && search.failed === "error";
+  const searchRateLimited =
+    showingRecords && search !== null && search.failed === "rate_limited";
   const nothingMatches =
-    trimmed !== "" && flatOptions.length === 0 && !searchPending && !searchFailed;
+    trimmed !== "" &&
+    flatOptions.length === 0 &&
+    !searchPending &&
+    !searchFailed &&
+    !searchRateLimited;
 
   return (
     <>
@@ -502,6 +534,19 @@ export function CommandPalette({
                 <p className="px-4 pt-4 pb-2 text-sm text-ink-muted">
                   We couldn’t search records just now. Sections and actions
                   still work; try the search again in a moment.
+                </p>
+              ) : null}
+              {searchRateLimited ? (
+                // NOT the failure copy: "try again in a moment" invites the
+                // very retry the limiter is refusing (SECURITY.md § 5).
+                <p className="px-4 pt-4 pb-2 text-sm text-ink-muted">
+                  You’ve reached the search limit for now — nothing is wrong.
+                  Sections and actions still work; records can be searched
+                  again in{" "}
+                  <span className="tabular-nums">
+                    {search?.retryAfterSeconds ?? 60}
+                  </span>{" "}
+                  seconds.
                 </p>
               ) : null}
               {nothingMatches ? (
