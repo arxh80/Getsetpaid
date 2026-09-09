@@ -186,9 +186,11 @@ Base 15px — serifs need slightly more size than a sans at the same density.
 | `--text-4xl` | 44 / 48 | Display |
 | `--text-5xl` | 60 / 62 | Hero display only |
 
-Headings are 700–800, matching what actually ships: `grep -rn "font-extrabold" app components` returns 79 hits across 72 files, including `app/(auth)/login/page.tsx`'s `<h1>` — the one heading a human has actually looked at rendered on this ground, and it reads well at 800. Body is 400. Table headers are 600 with `letter-spacing: 0.04em` and uppercase at `--text-xs`.
+Headings are **800**. Body is 400. Table headers are 600 with `letter-spacing: 0.04em` and uppercase at `--text-xs`.
 
-Whether 800 "blooms" more than 700 on this near-black shell — heavy serifs picking up extra visual weight against dark — is a real question but an **open** one, not a settled rule: nobody has measured it or looked at the 72 files side by side, and the branch that would have made 700 the rule never touched them. Treat a 700-vs-800 pass as a deliberate future visual decision, not a defect to fix opportunistically.
+**Settled by the founder on 2026-09-09, on a rendered comparison.** The dark-rebrand spec originally asserted that headings should drop to 700 because heavy serifs bloom against a near-black ground. That claim was never measured or looked at, and the 79 headings across 72 files it would have changed were never touched. Shown 700 and 800 side by side on this exact palette, the founder chose 800: it carries more presence without smearing, and the counters stay open at display sizes.
+
+So `font-extrabold` on a heading is correct, not a leftover. Do not "fix" one to `font-bold` — that makes it inconsistent with the other 78.
 
 Display sizes (`--text-3xl` and up) get `letter-spacing: -0.02em` — bold serifs need tightening at scale.
 

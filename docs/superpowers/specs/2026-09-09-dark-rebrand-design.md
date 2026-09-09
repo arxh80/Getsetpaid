@@ -176,6 +176,8 @@ inside the logo component. It is artwork, not a UI typeface. `DESIGN.md` § Type
 an explicit line saying so, so that a later contributor does not "match the brand font"
 in a page heading.
 
+**Superseded by the founder ruling of 2026-09-09.** Shown 700 and 800 side by side on the shipped palette, the founder chose **800** — it carries more presence without smearing and the counters stay open. The claim below was asserted here without ever being measured or looked at, and the 79 headings across 72 files it would have changed were never touched. See `DESIGN.md` § Type.
+
 One dark-ground adjustment: headings move from weight 800 to 700. Heavy serifs bloom
 against a dark background — 700 on `#0B0B0E` reads with the same weight 800 had on
 `#FFF4F4`. Body stays 400. Table headers stay 600.
