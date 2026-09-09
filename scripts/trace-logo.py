@@ -48,16 +48,34 @@ TRACE_HEIGHT = 1600
 # converted to trace pixels per image. Expressed this way it means the same
 # thing for both sources regardless of TRACE_HEIGHT.
 #
-# THESE THREE NUMBERS WERE CHOSEN BY MEASUREMENT, NOT TASTE, and two of them
-# are non-obvious. Fidelity was scored as intersection-over-union between the
-# emitted path (rasterised under even-odd, which is how it is consumed) and the
-# source mask, swept over TRACE_HEIGHT x EPSILON_OUT x DECIMALS:
+# THESE THREE NUMBERS WERE CHOSEN BY MEASUREMENT, NOT TASTE, and the first
+# point below is the non-obvious one. Reproduce any of it with
+# scripts/trace-logo-calibrate.py, which scores fidelity as
+# intersection-over-union between the emitted path (rasterised under even-odd,
+# which is how it is consumed) and the source mask.
 #
-#   * EPSILON_OUT must stay ABOVE the coordinate-rounding granularity. Below
-#     it, Douglas-Peucker preserves vertices that then round onto each other,
-#     and the result is both larger and LESS accurate -- at DECIMALS=1 an
-#     epsilon of 0.08 cost 20344 bytes for a worse trace than 0.15 got for
-#     9508. Smaller is not safer here.
+#   * EPSILON_OUT HAS A FLOOR, and going below it makes the trace both bigger
+#     and LESS accurate. Smaller is not safer here. The floor is
+#
+#         max(coordinate-rounding granularity, one trace pixel)
+#
+#     in output units -- that is, max(10**-DECIMALS, 100/TRACE_HEIGHT). At the
+#     shipped config those are 0.01 and 0.0625, so THE TRACE-PIXEL TERM BINDS
+#     and the floor is 0.0625; EPSILON_OUT sits a shade under 2x above it.
+#     Below one trace pixel the tolerance can no longer span the staircase
+#     along a straight edge, so Douglas-Peucker stops collapsing it and starts
+#     preserving it: measured point counts run 755 at 0.12, 1520 at 0.08, 4135
+#     at 0.06 and 11344 at 0.04, for 8856 / 18044 / 48843 / 132931 bytes, while
+#     the mark's IoU peaks at 0.12 and does not improve after.
+#
+#     The rounding term is real but does not bind here. It is what bit an
+#     earlier DECIMALS=1 configuration, where vertices Douglas-Peucker had kept
+#     then rounded onto each other -- 198 adjacent collisions at 0.06 and 1966
+#     at 0.04. At DECIMALS=2 there are ZERO collisions at every epsilon tried,
+#     so at this precision the staircase, not the rounding, is the whole story.
+#     Point counts come out identical under both DECIMALS settings, which is
+#     the measurement that separates the two mechanisms.
+#
 #   * The mark's accuracy asymptotes near IoU 0.954 (the residue is polygon-vs-
 #     antialiased-threshold, not trace error). This setting measures 0.951 for
 #     the mark and 0.996 for the wordmark in 8856 bytes -- at the knee, and a
@@ -74,13 +92,19 @@ DECIMALS = 2
 # specks, not artwork.
 MIN_EXTENT = 1.5
 
-# logo_with_text.png carries a one-to-two-pixel ring of semi-transparent WHITE
-# around the outside of its black ground -- a rasteriser edge artefact, not
-# artwork (the corners read (255,255,255,alpha=192) against a ground whose own
-# bounding box starts at 5,5). A naive white-pixel bounding box latches onto
-# that ring and returns the whole 4172-square canvas, which is exactly the
-# failure that makes the wordmark come out as a fifteen-contour smudge. Ignore
-# a margin this wide before looking for the wordmark.
+# logo_with_text.png carries a ring of semi-transparent WHITE around the
+# outside of its black ground -- a rasteriser edge artefact, not artwork (the
+# corners read (255,255,255,alpha=192) against a ground whose own bounding box
+# starts at 5,5). A naive white-pixel bounding box latches onto that ring and
+# returns the whole 4172-square canvas, which is what makes the wordmark come
+# out as a plausible-looking fifteen-contour smudge. Ignore a margin this wide
+# before looking for the wordmark.
+#
+# THE RING IS 5px DEEP, MEASURED: sweeping this constant, margins 0-4 all latch
+# onto the ring and 5 upwards return the real wordmark box. So 8 is 1.6x the
+# depth it has to clear -- a margin of safety, not a comfortable one, and NOT
+# the guarantee. The guarantee is the frame-touch check in white_box() below,
+# which is what actually catches a re-export whose ring is deeper than this.
 BORDER_MARGIN = 8
 
 LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
@@ -142,6 +166,42 @@ def white_box(path):
     box = _mask(inner, "white").getbbox()
     if box is None:
         sys.exit("no white pixels found in " + str(path))
+
+    # A wordmark sitting on a ground does not run to the edge of the frame it
+    # was found in. A latched border ring does, on all four sides at once, and
+    # that is the ONLY thing separating the two cases without knowing anything
+    # about the artwork -- so refuse rather than trace a full-canvas box.
+    #
+    # This is the guard; BORDER_MARGIN is not. Raising the margin only moves
+    # the ring depth at which the silent failure comes back, whereas this check
+    # has no such ceiling. It matters because the failure is otherwise
+    # invisible: a latched box still exits 0, still comes in under the byte
+    # budget, and still emits a dozen-odd plausible-looking contours. Today's
+    # box clears the frame by 849px on the left and 1855px on top, so there is
+    # no risk of a false positive.
+    touching = [
+        edge
+        for edge, hit in (
+            ("left", box[0] == 0),
+            ("top", box[1] == 0),
+            ("right", box[2] == inner.width),
+            ("bottom", box[3] == inner.height),
+        )
+        if hit
+    ]
+    if touching:
+        sys.exit(
+            "white-pixel bounding box %r touches the inspected frame on the %s "
+            "of %s.\nThat means the white search latched onto something "
+            "running to the edge of the image -- almost certainly the "
+            "semi-transparent border ring described at BORDER_MARGIN, which is "
+            "currently %dpx and was 5px deep in the artwork this was written "
+            "against.\nRaise BORDER_MARGIN past the ring and re-run. Do NOT "
+            "delete this check: tracing the returned box would silently give a "
+            "wordmark covering the whole canvas, and every other signal (exit "
+            "code, contour count, byte budget) would still look correct."
+            % (box, "/".join(touching), path, m)
+        )
     return (box[0] + m, box[1] + m, box[2] + m, box[3] + m)
 
 
@@ -320,6 +380,18 @@ def main():
     word_grid, ww, wh = load_grid(src, "white", white_box(src))
     word_d, word_w, word_h, word_n = to_path(contours(word_grid, ww, wh), ww, wh)
 
+    total = len(mark_d) + len(word_d)
+    if total >= 15360:
+        # Checked BEFORE the write, not after. An over-budget run must not
+        # leave a bad generated file on disk beside a non-zero exit, where the
+        # next thing to look at components/ finds something that looks
+        # generated, imports cleanly, and quietly blows the bundle budget.
+        sys.exit(
+            "over the path budget: %d bytes >= 15360. Raise EPSILON_OUT (mind "
+            "the floor described above it) and re-run. Nothing was written."
+            % total
+        )
+
     OUT.write_text(
         "// GENERATED FILE -- do not edit.\n"
         "// Regenerate with: python scripts/trace-logo.py\n"
@@ -335,15 +407,12 @@ def main():
         % (mark_d, mark_w, mark_h, word_d, word_w, word_h),
         encoding="utf-8",
     )
-    total = len(mark_d) + len(word_d)
     print("mark  grid %dx%d  viewBox %sx%g  %d contours  %d bytes"
           % (mw, mh, mark_w, mark_h, mark_n, len(mark_d)))
     print("word  grid %dx%d  viewBox %sx%g  %d contours  %d bytes"
           % (ww, wh, word_w, word_h, word_n, len(word_d)))
     print("aspect mark %.5f  source %.5f" % (mark_w / mark_h, 2226 / 2805))
     print("total %d bytes (budget 15360)" % total)
-    if total >= 15360:
-        sys.exit("over the path budget -- raise EPSILON_OUT and re-run")
 
 
 if __name__ == "__main__":
