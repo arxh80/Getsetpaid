@@ -104,6 +104,44 @@ describe("design token contract", () => {
   });
 });
 
+// ===========================================================================
+// THE TWO HAND-SYNCED COPIES OF --color-shell (plus one of --color-accent).
+//
+// app/icon.svg and app/layout.tsx's `themeColor` both carry a literal hex
+// because they are read before any stylesheet loads -- DESIGN.md § Anti-
+// patterns' three sanctioned exceptions to "no literal hex". app/layout.tsx
+// says outright that its copy must be kept in sync with --color-shell "by
+// hand". Nothing enforced that: tests/unit/design/icon.test.ts checks the
+// icon's ground rect fill only against a hex SHAPE (/fill="#[0-9A-Fa-f]{6}"/),
+// never its VALUE, and no test touched `themeColor` at all. A future shell
+// (or accent) tweak could pass every other gate green and leave the iOS
+// address bar and the favicon ground at the old colour.
+// ===========================================================================
+describe("app/icon.svg and app/layout.tsx track the theme, not a frozen copy", () => {
+  const theme = readThemeColors();
+
+  it("app/icon.svg's ground rect equals --color-shell", () => {
+    const svg = readFileSync(`${root}app/icon.svg`, "utf8");
+    const rect = svg.match(/<rect\b[^>]*\bfill="(#[0-9A-Fa-f]{6})"/);
+    expect(rect, "app/icon.svg's ground <rect fill=…>").not.toBeNull();
+    expect(rect![1].toUpperCase()).toBe(theme.get("shell"));
+  });
+
+  it("app/icon.svg's mark equals --color-accent", () => {
+    const svg = readFileSync(`${root}app/icon.svg`, "utf8");
+    const path = svg.match(/<path\b[^>]*\bfill="(#[0-9A-Fa-f]{6})"/);
+    expect(path, "app/icon.svg's mark <path fill=…>").not.toBeNull();
+    expect(path![1].toUpperCase()).toBe(theme.get("accent"));
+  });
+
+  it("app/layout.tsx's themeColor equals --color-shell", () => {
+    const layout = readFileSync(`${root}app/layout.tsx`, "utf8");
+    const themeColor = layout.match(/themeColor:\s*"(#[0-9A-Fa-f]{6})"/);
+    expect(themeColor, "app/layout.tsx's viewport.themeColor").not.toBeNull();
+    expect(themeColor![1].toUpperCase()).toBe(theme.get("shell"));
+  });
+});
+
 describe("base rules follow the dark ground", () => {
   const css = () => readFileSync(`${root}app/globals.css`, "utf8");
 
