@@ -23,12 +23,15 @@ import {
 // EVERY TONE IS AN EXISTING TOKEN so this component adds no colour and
 // `python scripts/contrast.py` is unchanged. The `active` tone is the one that
 // is not `border-current`: it pairs an ACCENT border with INK text, because
-// DESIGN.md permits `--accent` on a border and forbids it on text. That mirrors
-// the "primary" chip in components/crm/link-panel.tsx exactly.
+// `--accent` is the brand green and shares its value with `--success` and
+// `--primary` -- a green LABEL would read as "succeeded" or as a link, so the
+// rail carries the tone and the ink label carries the words (DESIGN.md
+// § Palette). That mirrors the "primary" chip in
+// components/crm/link-panel.tsx exactly.
 
 /** Tone -> tokens. A `Record` keyed on the union, so a new tone is a compile error. */
 const TONE_CLASS: Record<OperationsTone, string> = {
-  // Accent rail, ink label. Never accent text (DESIGN.md § Two blues).
+  // Accent rail, ink label. Never accent text (DESIGN.md § Palette).
   active: "border-accent text-ink",
   muted: "border-rule text-ink-muted",
   success: "border-success text-success",

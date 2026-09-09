@@ -4,66 +4,158 @@ The visual direction for GetSetPaid. This is the source of truth for colour, typ
 
 **Building UI? Read ["Build-time design tooling"](#build-time-design-tooling) first** — it names which design skills to invoke, in what order, and which of their defaults to discard.
 
-**Direction:** minimalist, sharp-edged, bold serif. No rounded corners, no drop shadows, no gradients. Structure comes from hairline rules, generous whitespace and typographic weight — not from decoration.
+**Direction:** minimalist, sharp-edged, bold serif on a near-black ground. No rounded corners, no drop shadows, no gradients. Structure comes from hairline rules, generous whitespace and typographic weight — not from decoration.
 
 ---
 
 ## Palette
 
-Source palette (https://colorhunt.co/palette/3a86ffbdb2ffffd6e0fff4f4):
-`#3A86FF` `#BDB2FF` `#FFD6E0` `#FFF4F4`.
+**One brand green on a dark ground.** The founder's logo is drawn in a single
+spring green, `#20FC8F`, and that is a *light* value: it can only carry meaning
+as a foreground on a dark ground, or as a fill with dark text on it. Measured:
 
-Those four are pastels of near-equal lightness with no dark value between them, so **none of them can carry body text** against the shell — and PRD §14 commits us to WCAG 2.2 AA. Measured:
+| `#20FC8F` on | Ratio | Usable? |
+|---|---|---|
+| the warm shell this palette replaced | 1.27:1 | No — fails even the 3:1 non-text threshold |
+| `#FFFFFF` | 1.37:1 | No |
+| `#000000` | 15.38:1 | Yes |
+| the old ink, used as a ground | 13.42:1 | Yes |
 
-| On `--shell` `#FFF4F4` | Ratio | Body 4.5:1 | Large/UI 3:1 |
-|---|---|---|---|
-| `#3A86FF` | 3.23:1 | FAIL | PASS |
-| `#BDB2FF` | 1.78:1 | FAIL | FAIL |
-| `#FFD6E0` | 1.22:1 | FAIL | FAIL |
-
-White text does not rescue the blue either — white on `#3A86FF` is 3.48:1, so the source palette cannot produce a compliant primary button in any combination.
-
-**The fix: deepen the blue.** `#3A86FF` is `hsl(217, 100%, 61%)`. At 50% lightness it becomes `#0062FF` — identical hue, identical saturation, still an electric blue, but 4.65:1 as text and 5.01:1 under white. One value moves; the other three source colours are untouched, and the original blue stays in the set as the lighter accent.
+So adopting the logo's colour and keeping a light shell were mutually exclusive.
+The founder chose the dark ground.
 
 ### Working palette
 
-| Token | Hex | On shell | Role |
-|---|---|---|---|
-| `--shell` | `#FFF4F4` | — | Page background *(source)* |
-| `--surface` | `#FFFFFF` | — | Cards, tables, drawers — lifts off the warm shell without a shadow |
-| `--ink` | `#14141C` | 17.01:1 | All body text, headings, icons |
-| `--ink-muted` | `#55555F` | 6.84:1 | Secondary text, metadata, table sub-labels |
-| `--primary` | `#0062FF` | 4.65:1 | Links, buttons, any blue that touches text |
-| `--accent` | `#3A86FF` | 3.23:1 | Borders, focus rails, active state, chart primary *(source)* |
-| `--lilac` | `#BDB2FF` | — | Surface, chips, chart series 2 *(source)* |
-| `--pink` | `#FFD6E0` | — | Surface, chips, chart series 3 *(source)* |
-| `--rule` | `#D6CBCB` | — | Hairline borders, table dividers |
-| `--rule-strong` | `#14141C` | — | Emphasis borders, active row |
-| `--success` | `#0E5F42` | 7.13:1 | Confirmed, paid, on sale |
-| `--warning` | `#7A4F00` | 6.62:1 | Hold, pending, overdue soon |
-| `--danger` | `#9E1C15` | 7.41:1 | Cancelled, failed, overdue, destructive |
+Every ratio below is printed by `python scripts/contrast.py`, not asserted.
 
-### The two-blue rule
+| Token | Hex | On shell | On surface | Role |
+|---|---|---|---|---|
+| `--shell` | `#0B0B0E` | — | — | Page ground |
+| `--surface` | `#15151A` | 1.08 | — | Cards, tables, drawers |
+| `--surface-raised` | `#1E1E25` | 1.19 | 1.10 | Overlays, modals, hovered row |
+| `--ink` | `#F5F5F7` | 18.05 | 16.71 | All body text, headings, icons |
+| `--ink-muted` | `#9A9AA4` | 7.05 | 6.53 | Secondary text, metadata, sub-labels |
+| `--primary` | `#20FC8F` | 14.40 | 13.33 | Links, primary button fill |
+| `--on-primary` | `#0B0B0E` | — | — | Text on a green fill (14.40:1) |
+| `--accent` | `#20FC8F` | 14.40 | 13.33 | Borders, focus rails, active state |
+| `--rule` | `#2A2A33` | 1.38 | 1.28 | Hairline borders, table dividers |
+| `--rule-strong` | `#6A6A78` | 3.69 | 3.42 | Meaningful borders, active row |
+| `--success` | `#20FC8F` | 14.40 | 13.33 | Confirmed, paid, on sale |
+| `--warning` | `#FFB020` | 10.75 | 9.95 | Hold, pending, overdue soon |
+| `--danger` | `#FF6B61` | 7.05 | 6.52 | Cancelled, failed, destructive |
+| `--focus` | `#F5F5F7` | 18.05 | 16.71 | Focus ring on any dark surface |
+| `--focus-on-primary` | `#0B0B0E` | — | — | Focus ring on a green fill (14.40:1) |
+| `--skeleton-breathe` | `#3A3A45` | 1.75 | 1.62 | Loading-bone shimmer stop |
+| `--scrim` | `rgb(0 0 0 / 0.6)` | — | — | Behind modals and drawers |
 
-There are two blues 11% apart in lightness. They **will** be confused in review unless the split is explicit:
+`--ink` is `#F5F5F7`, not `#FFFFFF`. Pure white on near-black blooms at small
+sizes; a two-point step off white removes the halation without costing
+measurable contrast (18.05:1 against 19.65:1).
 
-> **`--primary` `#0062FF` is the only blue permitted to touch text or a button.**
-> **`--accent` `#3A86FF` is borders, focus rails, active indicators and chart marks — never text, never a fill behind a label.**
+`--rule` at 1.38:1 is deliberate and permitted: it is decorative separation
+only. Any border that carries **meaning** — active row, selected state, error
+outline — uses `--rule-strong` at 3.69:1, or `--accent`.
 
-The one exception: `--accent` may carry **large bold display text at ≥24px bold**, where 3:1 applies and it passes at 3.23:1.
+### Removed tokens
+
+The light palette's blue pair, its lilac and its pink surfaces are **deleted
+from the system**, along with its ink, muted ink, rule and its three status
+colours.
+Nothing is renamed and nothing is aliased: the names are gone.
+
+- The lilac surface token had **zero** usages — only its own declaration.
+  Removing it was free.
+- The pink surface token had zero usages *as a class name* across 220
+  components, but `app/globals.css` referenced it inside the `@keyframes skeleton-pulse` block:
+  it was the loading bone's breathe stop. Deleting the token without repointing
+  that keyframe would have frozen every skeleton in the app — a keyframe naming
+  a dead custom property does not error, it resolves to nothing and the
+  animation silently stops at its rest colour. `--skeleton-breathe` `#3A3A45`
+  took over: 1.27:1 from `--rule`, against the 1.20:1 the light pair had.
+  Decorative, so no contrast gate applies — the loading *message* is carried by
+  `role="status"` text.
+- `--primary` (197 usages, mostly `text-primary` on links) and `--accent` (41
+  usages) changed **value only**. No component was edited.
+
+This also deletes the old **blue-pair rule** — the split between a text blue and
+a border blue that `CLAUDE.md` called "the single easiest thing to get wrong".
+There is one brand colour now, so that class of mistake no longer exists.
+
+### `--success` and `--primary` share one value — deliberately
+
+Both are `#20FC8F`. Introducing a second green a few degrees away would rebuild
+exactly the confusable-pair problem that blue split existed to manage, in a
+new place. Separation is **structural**, never chromatic:
+
+- **Status** is always a chip: `--rule-strong` border, uppercase label at
+  `--text-xs`, never bare coloured text.
+- **Interactive** green is a link (underlined) or a filled button
+  (`--on-primary` label).
+
+This file already forbids status conveyed by colour alone, so the rule tightens
+an existing one rather than adding a new risk. A reviewer seeing green text must
+be able to tell what it is from its shape, not its hue.
+
+### Chart ramp — a separate namespace
+
+Charts need five categorically distinct series. They get their own tokens,
+prefixed `--chart-`, and those tokens are **never used in UI chrome**. All
+measured on `--surface`; each clears the 3:1 non-text threshold with wide
+margin:
+
+| Token | Hex | On surface |
+|---|---|---|
+| `--chart-1` | `#20FC8F` | 13.33 |
+| `--chart-2` | `#5AA9FF` | 7.41 |
+| `--chart-3` | `#FFC24B` | 11.33 |
+| `--chart-4` | `#C79BFF` | 8.28 |
+| `--chart-5` | `#FF8FB1` | 8.51 |
+
+Keeping them namespaced is what stops `--chart-2` drifting back into the
+interface as a second accent and reinventing the problem the one-green rule
+just removed.
+
+### Focus
+
+The global rule in `app/globals.css` is `outline: 2px solid var(--color-ink)`
+with `outline-offset: 2px`. `--ink` clears 3:1 on `--shell` (18.05), `--surface`
+(16.71) and `--surface-raised` (15.21).
+
+White on a green fill is **1.25:1** and would fail — but `outline-offset: 2px`
+draws the ring on the **parent background**, never on the control's own fill, so
+a green button focused on a dark page shows a white ring against the page. That
+is what makes one ring safe everywhere.
+
+The exception is an **inset** ring. `app/globals.css` has exactly one:
+`nav[aria-label="Primary"] :focus-visible` uses a negative offset because the
+rail is a scroll container that clips an outset ring. That rail's active row is
+a green *left border* on `--surface`, not a green fill, so its inset ring lands
+at 16.71:1. No green-filled element hosts an inset ring anywhere in the app
+today.
+
+`--focus-on-primary` (14.40:1 on green) is defined anyway, unused, as the
+required override the moment anyone puts an inset ring on a green surface. It is
+a trap guard, and `scripts/contrast.py` asserts its ratio so it cannot silently
+rot.
 
 ### Other constraints
 
-- `--lilac` and `--pink` are **surfaces only**. Never text, never a border that carries meaning, never the sole signal for a status.
-- Text on any palette surface is `--ink`. Verified: on shell 17.01:1, on pink 13.91:1, on lilac 9.57:1, on `--primary` 3.66:1 (so a primary button uses **white** text at 5.01:1, not ink).
-- Status must never be colour-only — always pair with a text label or shape. Colour-blind users and greyscale printing both need it.
-- Adding a colour means adding a row above with its measured ratio. `scripts/contrast.py` prints it.
+- Text on any palette surface is `--ink` or `--ink-muted`. Verified: `--ink` on
+  shell 18.05:1, on surface 16.71:1, on raised 15.21:1; `--ink-muted` 7.05:1 and
+  6.53:1. On a green fill the label is `--on-primary` at 14.40:1, never `--ink`.
+- Status must never be colour-only — always pair with a text label or shape.
+  Colour-blind users and greyscale printing both need it, and `--success` and
+  `--primary` sharing a value makes it doubly true here.
+- Adding a colour means adding a row above with its measured ratio.
+  `scripts/contrast.py` prints it.
 
 ---
 
 ## Type
 
 **Bold serif throughout.** One family, weight does the work — that is what keeps it minimalist.
+
+**The wordmark's ultra-condensed grotesque is artwork, not a UI typeface.** It exists only as outlined vector paths inside `components/wordmark.tsx`; there is no font file behind it and none is loaded. Do not "match the brand font" in a page heading — every piece of UI type is Source Serif 4.
 
 ```
 --font-display: "Source Serif 4", "Iowan Old Style", Georgia, "Times New Roman", serif;
@@ -91,7 +183,7 @@ Base 15px — serifs need slightly more size than a sans at the same density.
 | `--text-4xl` | 44 / 48 | Display |
 | `--text-5xl` | 60 / 62 | Hero display only |
 
-Headings are 700–800. Body is 400. Table headers are 600 with `letter-spacing: 0.04em` and uppercase at `--text-xs`.
+Headings are 700 — not 800. Heavy serifs bloom against a dark background, and 700 on the near-black shell reads with the weight 800 had on the light shell this replaced. Body is 400. Table headers are 600 with `letter-spacing: 0.04em` and uppercase at `--text-xs`.
 
 Display sizes (`--text-3xl` and up) get `letter-spacing: -0.02em` — bold serifs need tightening at scale.
 
@@ -119,8 +211,8 @@ No exceptions — buttons, inputs, cards, chips, modals, avatars, images, charts
 
 **No shadows.** Depth is expressed by:
 1. A `1px solid var(--rule)` hairline.
-2. A background step: `--shell` (page) → `--surface` (card) → `--surface` with `--rule-strong` border (overlay).
-3. For drawers and modals: a `1px solid var(--ink)` border plus a scrim of `rgb(20 20 28 / 0.4)`.
+2. A background step: `--shell` (page) → `--surface` (card) → `--surface-raised` (overlay), or `--surface` with a `--rule-strong` border where the step alone is too quiet.
+3. For drawers and modals: a `1px solid var(--ink)` border plus `--scrim`, which is black at 60%. Not the light system's ink-at-40%: on a near-black page a 40% wash of a near-black ink is not a scrim, it is nothing.
 
 Borders are always exactly 1px. Emphasis comes from swapping `--rule` for `--rule-strong`, never from thickening to 2px, except the focus ring.
 
@@ -148,14 +240,16 @@ Dense table rows use `--space-2` vertical padding, `--space-3` horizontal. Forms
 
 | State | Treatment |
 |---|---|
-| Hover (row) | Background `--surface` → `#FBF6F6`; no movement, no shadow |
-| Hover (button) | Fill darkens one step; no scale, no lift |
-| Focus | `outline: 2px solid var(--ink); outline-offset: 2px` — ink, not blue, so it is visible on every surface including a `--primary` fill |
+| Hover (row) | Background `--surface` → `--surface-raised`; no movement, no shadow |
+| Hover (button) | Fill **lightens** one step; no scale, no lift. On a dark ground a darker hover reads as disabled, not as live — the direction inverts from the light system |
+| Focus | `outline: 2px solid var(--color-focus); outline-offset: 2px` — see below |
 | Active | Left border `3px solid var(--accent)`, background `--surface` |
-| Selected | Background `--lilac` at 35% over `--surface`, ink text |
+| Selected | Background `--surface-raised` with a `--rule-strong` left border, `--ink` text |
 | Disabled | `--ink-muted` text at 55%, `--rule` border, no fill change |
 
-Focus must be visible on `--shell`, `--surface`, `--primary`, `--lilac` and `--pink`. Ink at 2px clears 3:1 on all five (3.66:1 on `--primary`, its tightest case).
+Focus must be visible on `--shell`, `--surface` and `--surface-raised`. `--focus` at 2px clears 3:1 on all three, with room to spare: 18.05:1, 16.71:1 and 15.21:1.
+
+It is **`outline-offset: 2px` that makes one ring enough**, not the ring's own contrast. `--focus` on a green fill is 1.25:1 and would fail — but the offset draws the ring on the parent background, never on the control's own fill, so a green button focused on a dark page shows a white ring against the page. The one inset ring in the app (`nav[aria-label="Primary"] :focus-visible`, which uses a negative offset because the rail clips an outset one) sits on `--surface` at 16.71:1, its active row being a green *left border* rather than a green fill. Put an inset ring on a green surface and `--focus-on-primary` (14.40:1) becomes mandatory; § Palette's "Focus" explains why it exists unused.
 
 Keyboard focus is never removed. `:focus-visible` for pointer users, full `:focus` for keyboard.
 
@@ -172,7 +266,7 @@ Minimal and fast. Nothing bounces, nothing scales.
 
 Only `opacity`, `background-color`, `border-color` and `transform: translate` are animated. Drawers slide on X, no fade-scale. Always honour `prefers-reduced-motion: reduce` by dropping to `--dur-fast` opacity only — except an **infinite loop**, which must stop outright (`animation: none`): a clamped duration on a loop resamples the keyframes every frame, which is a strobe, the opposite of what the preference asks for.
 
-**Second standing waiver: the skeleton shimmer loops at 1.8s** (`--animate-skeleton`, `app/globals.css`; every `components/skeleton/` bone). The `--dur-*` tokens time one-shot state transitions; a continuous idle loop at 240ms flickers. The waiver is exactly one keyframe pair — `background-color` between `--rule` and `--pink`, symmetric ease-in-out — instant-off under reduced motion per the rule above. Like the sidebar's width tween, it is not precedent: a third duration outside the scale means adding a `--dur-loop` token here first.
+**Second standing waiver: the skeleton shimmer loops at 1.8s** (`--animate-skeleton`, `app/globals.css`; every `components/skeleton/` bone). The `--dur-*` tokens time one-shot state transitions; a continuous idle loop at 240ms flickers. The waiver is exactly one keyframe pair — `background-color` between `--rule` and `--skeleton-breathe`, symmetric ease-in-out — instant-off under reduced motion per the rule above. Like the sidebar's width tween, it is not precedent: a third duration outside the scale means adding a `--dur-loop` token here first.
 
 **One standing waiver: the sidebar rail animates `width`** (`components/nav/sidebar.tsx`, reviewed and accepted). The rail's expand/collapse is a container growing around fixed-size children; the two letter-of-the-rule alternatives are worse — `scaleX` squashes every child with the container, and a `translateX` overlay changes the rail from pushing content to covering it, a bigger deviation than the property. The waiver is exactly that one tween: `--dur-slow` / `--ease`, instant under `prefers-reduced-motion`, expansion gated on hover capability plus ~120ms of hover intent so a passing pointer never pays the relayout. It is not precedent for animating `width`/`height` anywhere else; the property list above stays the rule. One acknowledged consequence rides with it: a rail that pushes rather than overlays necessarily translates the centred content column while it expands (the layout balances the rail's *collapsed* footprint with a matching trailing spacer, so the column is centred at rest and the translation exists only during hover/pin) — accepted as the cost of choosing push over overlay, not a defect to engineer away.
 
@@ -190,7 +284,7 @@ Page not found.
 [ Back to dashboard ]
 ```
 
-The numeral may use `--danger` at display size (≥24px bold clears 3:1, same rule as `--accent`); body copy stays `--ink`. Never colour-only — the numeral and the label always ship together.
+The numeral may use `--danger`, which clears 4.5:1 as body text on both grounds (7.05:1 on shell, 6.52:1 on surface) and needs no large-text exemption; body copy stays `--ink`. Never colour-only — the numeral and the label always ship together.
 
 | Page | Copy | Primary action | Notes |
 |---|---|---|---|
@@ -210,73 +304,122 @@ The numeral may use `--danger` at display size (≥24px bold clears 3:1, same ru
 
 ## Tokens
 
-Drop-in CSS custom properties.
+Tailwind v4 is CSS-first, so `app/globals.css`'s `@theme` block **is** this
+contract compiled — `bg-shell`, `text-ink-muted`, `border-rule`, `p-5`,
+`text-2xl` all resolve from it, and there is no `tailwind.config.js` to
+disagree. What follows is that block; `tests/unit/design/token-drift.test.ts`
+asserts it against `scripts/contrast.py` so the two cannot drift apart.
 
 ```css
-:root {
+@theme {
   /* Ground */
-  --shell: #FFF4F4;      /* page */
-  --surface: #FFFFFF;    /* cards, tables, drawers */
+  --color-shell: #0B0B0E;          /* page */
+  --color-surface: #15151A;        /* cards, tables, drawers */
+  --color-surface-raised: #1E1E25; /* overlays, modals, hovered row */
 
   /* Text */
-  --ink: #14141C;        /* 17.01:1 on shell */
-  --ink-muted: #55555F;  /*  6.84:1 on shell */
+  --color-ink: #F5F5F7;        /* 18.05:1 on shell */
+  --color-ink-muted: #9A9AA4;  /*  7.05:1 on shell */
 
-  /* Blue — two values, see "The two-blue rule" */
-  --primary: #0062FF;    /*  4.65:1 — the ONLY blue allowed on text or a button */
-  --on-primary: #FFFFFF; /*  5.01:1 on --primary */
-  --accent: #3A86FF;     /*  3.23:1 — borders, focus rails, active, charts. Never text. */
-
-  /* Surfaces */
-  --lilac: #BDB2FF;
-  --pink: #FFD6E0;
+  /* Brand — ONE green, from the logo. --primary and --accent are the same
+     value on purpose; see "Removed tokens". */
+  --color-primary: #20FC8F;    /* 14.40:1 on shell — links, primary fill */
+  --color-on-primary: #0B0B0E; /* 14.40:1 on --color-primary */
+  --color-accent: #20FC8F;     /* borders, focus rails, active state */
 
   /* Structure */
-  --rule: #D6CBCB;
-  --rule-strong: #14141C;
-  --scrim: rgb(20 20 28 / 0.4);
+  --color-rule: #2A2A33;        /* 1.38:1 — DECORATIVE separation only */
+  --color-rule-strong: #6A6A78; /* 3.69:1 — any border that carries meaning */
+  --color-scrim: rgb(0 0 0 / 0.6);
 
-  /* Status — never the only signal, always with a label */
-  --success: #0E5F42;    /*  7.13:1 */
-  --warning: #7A4F00;    /*  6.62:1 */
-  --danger: #9E1C15;     /*  7.41:1 */
+  /* Focus — see "Focus" above for why one ring is enough */
+  --color-focus: #F5F5F7;
+  --color-focus-on-primary: #0B0B0E;
+
+  /* Status — never the only signal, always paired with a label */
+  --color-success: #20FC8F;    /* 13.33:1 on surface */
+  --color-warning: #FFB020;    /*  9.95:1 on surface */
+  --color-danger: #FF6B61;     /*  6.52:1 on surface */
+
+  /* Charts — a SEPARATE namespace, never used in UI chrome */
+  --color-chart-1: #20FC8F;    /* 13.33:1 on surface */
+  --color-chart-2: #5AA9FF;    /*  7.41:1 */
+  --color-chart-3: #FFC24B;    /* 11.33:1 */
+  --color-chart-4: #C79BFF;    /*  8.28:1 */
+  --color-chart-5: #FF8FB1;    /*  8.51:1 */
 
   /* Type */
-  --font-display: "Source Serif 4", "Iowan Old Style", Georgia, serif;
-  --font-body: "Source Serif 4", "Iowan Old Style", Georgia, serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --font-serif: var(--font-source-serif-4), "Iowan Old Style", Georgia,
+    "Times New Roman", serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
-  --text-xs: 0.75rem;    --lh-xs: 1rem;
-  --text-sm: 0.8125rem;  --lh-sm: 1.25rem;
-  --text-base: 0.9375rem; --lh-base: 1.5rem;
-  --text-lg: 1.0625rem;  --lh-lg: 1.625rem;
-  --text-xl: 1.25rem;    --lh-xl: 1.75rem;
-  --text-2xl: 1.5625rem; --lh-2xl: 2rem;
-  --text-3xl: 2rem;      --lh-3xl: 2.375rem;
-  --text-4xl: 2.75rem;   --lh-4xl: 3rem;
-  --text-5xl: 3.75rem;   --lh-5xl: 3.875rem;
+  --text-xs: 0.75rem;      --text-xs--line-height: 1rem;
+  --text-sm: 0.8125rem;    --text-sm--line-height: 1.25rem;
+  --text-base: 0.9375rem;  --text-base--line-height: 1.5rem;
+  --text-lg: 1.0625rem;    --text-lg--line-height: 1.625rem;
+  --text-xl: 1.25rem;      --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5625rem;   --text-2xl--line-height: 2rem;
+  --text-3xl: 2rem;        --text-3xl--line-height: 2.375rem;
+  --text-4xl: 2.75rem;     --text-4xl--line-height: 3rem;
+  --text-5xl: 3.75rem;     --text-5xl--line-height: 3.875rem;
 
   /* Shape — square everywhere */
   --radius: 0;
-  --border: 1px;
 
-  /* Space */
-  --space-1: 0.25rem; --space-2: 0.5rem;  --space-3: 0.75rem;
-  --space-4: 1rem;    --space-5: 1.5rem;  --space-6: 2rem;
-  --space-7: 3rem;    --space-8: 4rem;    --space-9: 6rem;
+  /* Space — 4px base */
+  --spacing: 0.25rem;
 
-  /* Motion */
-  --dur-fast: 120ms; --dur-base: 160ms; --dur-slow: 240ms;
-  --ease: cubic-bezier(0.2, 0, 0, 1);
+  /* Motion. `--ease-*` is a v4 theme namespace, so this generates the
+     `ease-brand` utility. `--duration-*` is NOT, so the durations live in
+     :root below and are referenced as duration-[var(--dur-fast)]. */
+  --ease-brand: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Skeleton shimmer — a background-colour crossfade, never a gradient */
+  --color-skeleton-breathe: #3A3A45;
+  --animate-skeleton: skeleton-pulse 1.8s ease-in-out infinite;
+
+  @keyframes skeleton-pulse {
+    0%, 100% { background-color: var(--color-rule); }
+    50%      { background-color: var(--color-skeleton-breathe); }
+  }
 }
 
-html { background: var(--shell); color: var(--ink); font-family: var(--font-body); }
-* { border-radius: var(--radius); }
-:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+:root {
+  --dur-fast: 120ms;
+  --dur-base: 160ms;
+  --dur-slow: 240ms;
+}
+
+html {
+  overflow-x: clip;
+  background: var(--color-shell);
+  /* Declared, not inferred. Undeclared, a machine set to light mode renders
+     the browser's OWN chrome light -- native <select> popups, form-control
+     internals, scrollbars, autofill -- against a near-black page. `dark` pins
+     all of it to the palette contrast.py measures. There is no light theme
+     and no toggle. */
+  color-scheme: dark;
+}
+body {
+  overflow-x: clip;
+  background: var(--color-shell);
+  color: var(--color-ink);
+  font-family: var(--font-serif);
+}
+*, *::before, *::after { border-radius: var(--radius); }
+:focus-visible { outline: 2px solid var(--color-ink); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; }
+  /* Except an infinite loop, which stops outright — see § Motion. */
+  .animate-skeleton { animation: none !important; }
 }
 ```
+
+Google's sign-in button carries the official four-colour "G" as four
+`--brand-google-*` custom properties in `app/globals.css`. They are third-party
+brand marks fixed by Google's guidelines, **not design tokens**, and are
+quarantined there so the "no literal hex in a component" rule still holds across
+the whole app.
 
 ---
 
@@ -286,9 +429,10 @@ Reject these in review:
 
 - Any `border-radius` above 0.
 - Any `box-shadow` used for elevation.
-- **`--accent` `#3A86FF` on any text under 24px bold, or as a fill behind a label.** Use `--primary`.
-- **A literal `#3A86FF` or `#0062FF` in a component.** Go through the token, so the two-blue rule stays enforceable.
-- Small text in `--lilac` or `--pink`.
+- **`--chart-*` used anywhere in UI chrome.** They are a chart namespace and nothing else; the moment one becomes a second accent, the confusable-pair problem is back.
+- **A second green introduced to distinguish success from primary.** They share a value on purpose — separate them structurally (a bordered uppercase chip versus an underlined link or a filled button), never by hue.
+- **A literal hex in a component.** Go through the token. There are exactly three documented exceptions, all of them places a CSS custom property cannot reach: the Google SSO button's four brand colours, quarantined as `--brand-google-*` in `app/globals.css`; `app/icon.svg`, which the browser fetches as a file before any stylesheet; and `app/layout.tsx`'s `themeColor`, a `<meta>` read from the document head for the same reason. `tests/unit/design/token-drift.test.ts` enforces the rule and names every exemption.
+- A hover that **darkens** a fill. On this ground darker reads as disabled.
 - Status conveyed by colour alone, with no label.
 - Numbers in a table without `tabular-nums`.
 - A gradient anywhere.
@@ -370,7 +514,7 @@ Passes 1 and 3 are non-negotiable. Pass 2 is as needed, but expected on anything
 | WCAG 2.2 AA compliance | `accessibility-compliance` | ARIA patterns, focus trapping, keyboard | Its contrast advice — `scripts/contrast.py` is authoritative |
 | UI review on a diff | `web-design-guidelines` | `file:line` findings, forms/focus/semantics | — |
 | Token architecture as it grows | `ui-ux-pro-max:design-system` | Primitive → semantic → component layering | Its example scales — ours are set above |
-| Charts and finance visuals | `dataviz` | Chart-type choice, axis/legend/tooltip rules, stat tiles | Its placeholder palette — use `--accent`, `--lilac`, `--pink` |
+| Charts and finance visuals | `dataviz` | Chart-type choice, axis/legend/tooltip rules, stat tiles | Its placeholder palette — use `--chart-1` … `--chart-5` |
 | Motion, drawers, transitions | `framer-motion-best-practices` | `AnimatePresence`, layout animation, reduced-motion | Springs and bounce — see [Motion](#motion) |
 | Reference-driven redesign | `taste-skill:redesign-skill`, `taste-skill:minimalist-skill` | Editorial density, typographic contrast | Warm-monochrome palette, pastel drift |
 | Screenshot → component | `taste-skill:image-to-code-skill` | Structure extraction | Everything visual from the source image |
@@ -411,6 +555,4 @@ Failing any of these means the feature is not done, same as a failing test.
 
 ## Open
 
-- **Dark mode** is not specified. The palette is light-only, and the PRD does not require dark mode. If it is wanted, the pastels cannot invert directly — it needs a separately designed dark ramp, not a filter.
-- **Charts** need series colours beyond three. `--accent`, `--lilac`, `--pink` cover three; a fourth-plus series needs derived steps with a verified categorical distinction.
 - **Display face** for marketing pages — Source Serif 4 throughout by default; Fraunces is the alternate if more voice is wanted on the public site.

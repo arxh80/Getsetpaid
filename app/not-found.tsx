@@ -27,9 +27,9 @@ import Link from "next/link";
 // measured directly by tenant-breakout.spec.ts's REFUSAL PARITY test;
 // DESIGN.md § Error pages carries the contract.
 //
-// The numeral may use --danger at display size (it clears 3:1 at >=24px bold,
-// the same allowance --accent gets), and it never travels without its label --
-// colour is not the signal.
+// The numeral may use --danger, which clears 4.5:1 as body text on this
+// ground and needs no large-text allowance, and it never travels without its
+// label -- colour is not the signal.
 export default function NotFound() {
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center gap-5 px-4 py-8">

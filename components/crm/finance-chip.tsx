@@ -15,10 +15,13 @@ import {
 // reinforcement (DESIGN.md § Working palette forbids colour-only status), a
 // hairline box rather than a filled pill (--radius: 0, no shadow, no gradient),
 // and EVERY TONE IS AN EXISTING TOKEN so this component adds no colour and
-// `python scripts/contrast.py` stays at 16 rows. `active` pairs an ACCENT
-// border with INK text -- never accent text, which DESIGN.md § Two blues
-// forbids. FinanceTone is the same union as OperationsTone, so this TONE_CLASS
-// is byte-identical to those two files on purpose.
+// `python scripts/contrast.py` gains no row. `active` pairs an ACCENT border
+// with INK text, never accent text: --accent is the brand green and shares its
+// value with --success and --primary, so a green LABEL would read as
+// "succeeded" or as a link. The rail carries the tone, the ink label carries
+// the words (DESIGN.md § Palette). FinanceTone is the same union as
+// OperationsTone, so this TONE_CLASS is byte-identical to those two files on
+// purpose.
 
 const TONE_CLASS: Record<FinanceTone, string> = {
   active: "border-accent text-ink",

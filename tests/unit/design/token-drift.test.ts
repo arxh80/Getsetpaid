@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -142,5 +142,150 @@ describe("base rules follow the dark ground", () => {
     const theme = readThemeColors();
     expect(theme.get("rule")).toBe("#2A2A33");
     expect(theme.get("skeleton-breathe")).toBe("#3A3A45");
+  });
+});
+
+// ===========================================================================
+// THE BAN LIST -- stale PROSE, not stale code.
+//
+// The tests above prove the shipped stylesheet and the WCAG audit agree on the
+// values. They say nothing about the FILES THAT DESCRIBE those values, and in
+// this repo that is the more dangerous half: `CLAUDE.md` § Design is what every
+// agent reads BEFORE touching UI, and `DESIGN.md` is the contract the design
+// skills are explicitly told outranks their own defaults. A wrong colour fails
+// a test in ten seconds. A wrong SENTENCE just quietly aims the next
+// contributor at a palette that has not existed for five commits.
+//
+// So this block is a grep with a list, kept beside the token contract because
+// that is where somebody changing a colour is already looking.
+// ===========================================================================
+
+// Files whose PROSE must not describe the light palette. Not the whole repo:
+// `docs/` quotes the old values on purpose (the rebrand spec's whole § 1 is a
+// table of them), and `tests/` needs a threshold's provenance.
+const PROSE_FILES = [
+  "DESIGN.md",
+  "CLAUDE.md",
+  "components/ui/button.tsx",
+  "components/ui/field.tsx",
+  "components/ui/ruled-row.tsx",
+  "components/crm/status-chip.tsx",
+  "components/list/list-pager.tsx",
+  "components/list/list-skeleton.tsx",
+  "components/skeleton/bone.tsx",
+  "components/crm/finance-chip.tsx",
+  "components/crm/task-status-chip.tsx",
+  "lib/crm/task-status.ts",
+  "app/not-found.tsx",
+  "app/(app)/not-found.tsx",
+];
+
+// Every deleted hex, every deleted token name, and the phrases and ratios that
+// only make sense under the palette they came from. The RATIOS are the subtle
+// entries: 3.66 was ink on the old primary fill, 4.65 was the old primary as
+// text, 3.23 the old accent. All three are quoted as live facts in comments
+// that survived the value change, which is exactly how a false claim outlives
+// the thing it described.
+const DEAD = [
+  "#FFF4F4",
+  "#14141C",
+  "#0062FF",
+  "#3A86FF",
+  "#BDB2FF",
+  "#FFD6E0",
+  "#D6CBCB",
+  "#55555F",
+  "#0E5F42",
+  "#7A4F00",
+  "#9E1C15",
+  "two-blue",
+  "two blues",
+  "--color-lilac",
+  "--color-pink",
+  "3.66",
+  "4.65",
+  "3.23",
+];
+
+// NOTE ON `app/globals.css`, WHICH IS DELIBERATELY NOT IN `PROSE_FILES`.
+// Its @theme block is covered by "no removed hex survives anywhere in the
+// theme" above, so no dead VALUE can hide there. Its comments do say "two
+// blues" -- but retrospectively ("the old palette's two blues were 11%
+// apart"), which is the sanctioned way to explain a change: name the old
+// thing in words, never in a live hex. Banning the phrase there would forbid
+// the file from explaining itself. See the report for the one comment in that
+// file that is NOT retrospective and still needs an owner's fix.
+
+describe("no document or comment describes the dead palette", () => {
+  for (const file of PROSE_FILES) {
+    it(`${file} is clean`, () => {
+      const text = readFileSync(`${root}${file}`, "utf8").toUpperCase();
+      const hits = DEAD.filter((d) => text.includes(d.toUpperCase()));
+      expect(hits, `stale palette references in ${file}`).toEqual([]);
+    });
+  }
+});
+
+// ===========================================================================
+// NO LITERAL HEX IN A COMPONENT (DESIGN.md § Anti-patterns).
+//
+// THE PATTERN IS WIDER THAN THE ONE USED ELSEWHERE IN THIS SUITE, ON PURPOSE.
+// The regex the rest of the repo reaches for is /#[0-9A-Fa-f]{6}/, and it has
+// a hole big enough to drive `#fff` through: CSS shorthand is three digits, so
+// every `#000`, `#fff` and `#0f0` passed a "no literal hex" check unnoticed.
+// The `{3}` group below closes it. The trailing (?![0-9A-Fa-f]) is what stops
+// the fix breaking the original case -- without it the three-digit branch
+// would match the first half of a six-digit value and report the wrong string.
+// ===========================================================================
+const HEX = /#[0-9A-Fa-f]{3}(?:[0-9A-Fa-f]{3})?(?![0-9A-Fa-f])/g;
+
+// The sanctioned sites, each with the reason it cannot go through a token.
+const HEX_EXEMPT = new Set([
+  // The token declarations themselves, plus Google's four brand colours, which
+  // Google's sign-in guidelines fix and which are quarantined there as
+  // --brand-google-* precisely so this rule holds everywhere else.
+  "app/globals.css",
+  // Served as a FILE by the browser's icon fetch, before and outside any
+  // stylesheet. A custom property is unreachable from it.
+  "app/icon.svg",
+  // <meta name="theme-color">, read from the document head before any
+  // stylesheet loads. Same unreachability as the icon.
+  "app/layout.tsx",
+  // Not a colour at all: the comment there is about the `#` CHARACTER
+  // truncating a data: URI, and `fill:#fff` is the example of an SVG payload
+  // that would trigger it. Rewriting it to avoid a hex would delete the point.
+  "components/auth/mfa-enroll-gate.tsx",
+]);
+
+function walk(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(`${root}${dir}`, { withFileTypes: true })) {
+    const rel = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...walk(rel));
+    else if (/\.(tsx?|svg|css)$/.test(entry.name)) out.push(rel);
+  }
+  return out;
+}
+
+describe("no literal hex outside the sanctioned sites", () => {
+  it("app/ and components/ go through tokens", () => {
+    const offenders: string[] = [];
+    for (const file of [...walk("app"), ...walk("components")]) {
+      if (HEX_EXEMPT.has(file)) continue;
+      const hits = readFileSync(`${root}${file}`, "utf8").match(HEX);
+      if (hits) offenders.push(`${file}: ${hits.join(", ")}`);
+    }
+    expect(offenders, "literal hex outside the documented exceptions").toEqual(
+      [],
+    );
+  });
+
+  it("the widened pattern catches shorthand the old one missed", () => {
+    // The regression this test exists for. /#[0-9A-Fa-f]{6}/ returns null on
+    // the first string and the ban would have passed it.
+    expect("color: #fff".match(HEX)).toEqual(["#fff"]);
+    expect("color: #20FC8F".match(HEX)).toEqual(["#20FC8F"]);
+    // And the guard against the obvious way to get the widening wrong.
+    expect("color: #20FC8F".match(HEX)?.[0]).not.toBe("#20F");
   });
 });

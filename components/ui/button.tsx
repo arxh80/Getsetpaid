@@ -6,9 +6,10 @@ import type { ComponentProps, MouseEvent } from "react";
 //
 // DESIGN.md § Shape and § Interaction states, expressed once:
 //   square corners (global --radius: 0), no shadow, 1px borders only, hover
-//   darkens the fill without moving or scaling anything, focus is a 2px INK
-//   ring so it stays visible on a --primary fill (3.66:1) as well as on the
-//   shell.
+//   LIGHTENS the fill without moving or scaling anything, focus is a 2px
+//   --color-focus ring at outline-offset: 2px, so it lands on the page behind
+//   the control and stays legible even against a green fill (--color-focus ON
+//   --color-primary is 1.25:1 and would not, on the fill itself).
 //
 // Height is 44px minimum (h-11) because that is the touch-target floor, and
 // because a 44px control next to a 44px input is the only way the forms line
@@ -29,10 +30,10 @@ const BASE =
   "disabled:cursor-not-allowed disabled:opacity-55";
 
 const VARIANTS: Record<Variant, string> = {
-  // The only blue permitted on a filled button (--primary, 4.65:1; white label
-  // on it is 5.01:1). Hover darkens by compositing ink over the fill rather
-  // than introducing a second blue -- adding one would break the two-blue rule
-  // by stealth.
+  // The brand green, the only fill on a primary action (14.40:1 on the
+  // shell; the --on-primary label on it is 14.40:1). Hover LIGHTENS to
+  // --ink rather than darkening -- on a dark ground a darker hover reads as
+  // disabled, not as live. 18.05:1 in that state.
   primary:
     "border-primary bg-primary text-on-primary " +
     "hover:border-ink hover:bg-ink " +

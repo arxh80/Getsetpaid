@@ -209,9 +209,9 @@ These are acceptance criteria, not hardening tasks. A feature is not done until 
 
 **`DESIGN.md` holds the colour, type, spacing and shape tokens. Read it before writing any UI.**
 
-Direction in one line: minimalist, sharp-edged, bold serif — square corners everywhere (`--radius: 0`), no shadows, no gradients, structure from hairline rules and typographic weight.
+Direction in one line: minimalist, sharp-edged, bold serif on a near-black ground — square corners everywhere (`--radius: 0`), no shadows, no gradients, structure from hairline rules and typographic weight.
 
-Palette is `#FFF4F4` shell, `#BDB2FF` lilac and `#FFD6E0` pink as surfaces, `#14141C` ink for all text, and **two blues**: `--primary` `#0062FF` is the only blue permitted on text or a button (the source `#3A86FF` fails AA at 4.5:1); `--accent` `#3A86FF` is borders, focus rails, active state and charts. That split is the single easiest thing to get wrong — always go through the token, never a literal hex.
+Palette is a dark ground: `#0B0B0E` shell, `#15151A` surface, `#1E1E25` raised, `#F5F5F7` ink for all text, and **one brand green** `#20FC8F` — from the logo — carrying `--primary`, `--accent` and `--success` alike. That green is unusable on a light ground (1.27:1 on the shell it replaced), which is why the product is dark. There is deliberately no second accent: `--chart-1` … `--chart-5` are a separate namespace that must never appear in UI chrome, and success is told apart from interactive green **structurally** — a bordered uppercase chip versus an underlined link or a filled button — never by hue. Always go through the token, never a literal hex.
 
 Type is Source Serif 4 throughout, with `tabular-nums` mandatory on every number in a table.
 
