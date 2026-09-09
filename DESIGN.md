@@ -243,7 +243,7 @@ Dense table rows use `--space-2` vertical padding, `--space-3` horizontal. Forms
 | State | Treatment |
 |---|---|
 | Hover (row) | Background `--surface` → `--surface-raised`; no movement, no shadow |
-| Hover (button) | Fill **lightens** one step; no scale, no lift. On a dark ground a darker hover reads as disabled, not as live — the direction inverts from the light system |
+| Hover (button) | A **filled** control (`primary`) lightens its fill one step; no scale, no lift. On a dark ground a darker fill reads as disabled, not as live — the direction inverts from the light system. A **bordered** control (`secondary`, `quiet`) carries its identity in the border and label, not the fill, so it may step its fill back toward the page ground (`--surface` → `--shell`) on hover — legible and legitimate, because the border and label state carry the "live" signal, not the fill's direction |
 | Focus | `outline: 2px solid var(--color-focus); outline-offset: 2px` — see below |
 | Active | Left border `3px solid var(--accent)`, background `--surface` |
 | Selected | Background `--surface-raised` with a `--rule-strong` left border, `--ink` text |
@@ -434,7 +434,7 @@ Reject these in review:
 - **`--chart-*` used anywhere in UI chrome.** They are a chart namespace and nothing else; the moment one becomes a second accent, the confusable-pair problem is back.
 - **A second green introduced to distinguish success from primary.** They share a value on purpose — separate them structurally (a bordered uppercase chip versus an underlined link or a filled button), never by hue.
 - **A literal hex in a component.** Go through the token. There are exactly three documented exceptions, all of them places a CSS custom property cannot reach: the Google SSO button's four brand colours, quarantined as `--brand-google-*` in `app/globals.css`; `app/icon.svg`, which the browser fetches as a file before any stylesheet; and `app/layout.tsx`'s `themeColor`, a `<meta>` read from the document head for the same reason. `tests/unit/design/token-drift.test.ts` enforces the rule and names every exemption.
-- A hover that **darkens** a fill. On this ground darker reads as disabled.
+- **A filled control's fill darkening on hover.** On this ground darker reads as disabled — a fill carries the control's identity, so `primary` must lighten. This does not extend to a bordered control (`secondary`, `quiet`): its identity is the border and label, and stepping its fill back to the page ground (`--surface` → `--shell`) on hover is legible, not a disabled read. Reject a hover only when it reads as disabled, not by fill direction alone.
 - Status conveyed by colour alone, with no label.
 - Numbers in a table without `tabular-nums`.
 - A gradient anywhere.
