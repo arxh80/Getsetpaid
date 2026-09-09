@@ -541,12 +541,24 @@ export async function fetchListPage<
   // built: the refused request must not cost the database the very work the
   // limit exists to bound.
   //
-  // WHAT THIS DOES NOT METER, stated so nobody reads more into it:
-  // `GET /rest/v1/network_directory` issued directly with the anon key + a
-  // session JWT never enters this function. That residual is measured, named
-  // in SECURITY.md § 5/§ 10 and queued (Q107) -- PostgREST runs GETs in
-  // read-only transactions, so no DB-side hook on that path can write a
-  // counter (20260909020000's header carries the probe).
+  // WHAT THIS DOES NOT METER, stated so nobody reads more into it. Two things,
+  // and only the first is a residual:
+  //
+  //   1. `GET /rest/v1/network_directory` issued directly with the anon key +
+  //      a session JWT never enters this function. That residual is measured,
+  //      named in SECURITY.md § 5/§ 10 and queued (Q107) -- PostgREST runs
+  //      GETs in read-only transactions, so no DB-side hook on that path can
+  //      write a counter (20260909020000's header carries the probe).
+  //   2. lib/network/discovery.ts's `loadNetworkProfileForViewer` and
+  //      `loadNetworkProfileSummaries` read `network_directory` and
+  //      `network_connected_profiles` WITHOUT going through this function, and
+  //      are deliberately unmetered (fix round 1, minor M4). Both are
+  //      `id`-equality lookups -- one row, or a bounded `.in()` over ids the
+  //      caller already holds -- so neither carries the O(platform-wide
+  //      published rows) cost this budget exists to bound, and charging a
+  //      browse unit for opening one profile would meter the cheap path to
+  //      protect the expensive one. What holds without qualification is that
+  //      no LIST of the directory reaches the database without passing here.
   // =========================================================================
   const meteredCategory =
     table === "network_directory"
