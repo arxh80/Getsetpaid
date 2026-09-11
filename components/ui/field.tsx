@@ -92,7 +92,9 @@ export function Field({
           "placeholder:text-ink-muted " +
           "transition-colors duration-[var(--dur-fast)] ease-brand " +
           // Hover/focus swap the hairline for the accent rail. --accent is a
-          // BORDER colour here, never text -- the two-blue rule.
+          // BORDER colour here, never text: it is the brand green, and green
+          // text beside a green focus rail is the structural confusion
+          // DESIGN.md § Palette exists to prevent.
           (error
             ? "border-danger "
             : "border-rule hover:border-ink focus:border-accent ") +
@@ -282,7 +284,9 @@ export function SelectField({
           "h-11 w-full min-w-0 border bg-surface px-3 text-base text-ink " +
           "transition-colors duration-[var(--dur-fast)] ease-brand " +
           // Hover/focus swap the hairline for the accent rail. --accent is a
-          // BORDER colour here, never text -- the two-blue rule.
+          // BORDER colour here, never text: it is the brand green, and green
+          // text beside a green focus rail is the structural confusion
+          // DESIGN.md § Palette exists to prevent.
           (error
             ? "border-danger "
             : "border-rule hover:border-ink focus:border-accent ") +

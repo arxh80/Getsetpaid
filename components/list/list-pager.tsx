@@ -209,9 +209,9 @@ function PagerLink({
             //
             // NO `opacity-55`, and that is a deliberate departure from
             // DESIGN.md § Interaction states' disabled row. Review finding
-            // M-4 measured what it produced here: --ink-muted at 55% over
-            // --surface computes to #A2A2A7, which is 2.54:1 — under the 4.5:1
-            // this text needs.
+            // M-4 measured what it produced here, and the dark rebrand did not
+            // rescue it: --ink-muted composited at 55% over --surface is
+            // 2.83:1 — still under the 4.5:1 this text needs.
             //
             // WCAG 1.4.3 exempts "inactive user interface components", and for
             // every other disabled control in this product that exemption

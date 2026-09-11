@@ -8,7 +8,7 @@ import { SkipLink } from "@/components/ui/skip-link";
 // SaaS auth page ships. There is nothing true to put in that panel -- we have
 // no customer logos, no testimonials and no metrics, and inventing them is the
 // exact failure mode DESIGN.md and the house style both call out. So the page
-// is the form, framed by a hairline, on the warm shell.
+// is the form, framed by a hairline, on the near-black shell.
 //
 // max-w-md keeps the measure short: a login form that stretches to 1200px is
 // harder to use than one that does not.

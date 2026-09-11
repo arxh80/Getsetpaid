@@ -35,8 +35,8 @@ import Link from "next/link";
 //
 // Layout is DESIGN.md § Error pages: centred, large display numeral in
 // --text-5xl, one short sentence, one primary action out. No illustration, no
-// mascot, no joke copy. The numeral may use --danger at display size (it
-// clears 3:1 at >=24px bold, the same allowance --accent gets) and it never
+// mascot, no joke copy. The numeral may use --danger, which clears 4.5:1 as
+// body text on this ground and needs no large-text allowance, and it never
 // travels without its label -- colour is not the signal.
 //
 // The `min-h-dvh` of the root version is gone: inside the shell the layout's

@@ -57,13 +57,15 @@
      - --radius is 0 everywhere. No exceptions, no per-component override.
      - No box-shadow for elevation. Depth is a 1px --rule hairline plus a
        background step (shell -> surface -> surface + rule-strong).
-     - THE TWO-BLUE RULE: --color-primary (#0062FF, 4.65:1) is the ONLY blue
-       allowed to touch text or fill a button. --color-accent (#3A86FF,
-       3.23:1) is borders, focus rails, active state and charts -- never
-       text under 24px bold, never a fill behind a label. They are 11% apart
-       in lightness and WILL be confused unless you go through the token.
-     - --lilac / --pink are surfaces only. Never text, never a meaningful
-       border, never the sole signal for a status.
+     - ONE BRAND GREEN. --color-primary and --color-accent are both #20FC8F,
+       and so is --color-success. The old palette's two blues were 11% apart
+       and DESIGN.md called that "the single easiest thing to get wrong";
+       there is one brand colour now. Status is separated from interactive
+       green STRUCTURALLY -- a bordered uppercase chip versus an underlined
+       link or a filled button -- never by hue.
+     - --color-rule is DECORATIVE (1.38:1). Any border that carries meaning
+       uses --color-rule-strong (3.69:1) or --color-accent.
+     - --color-chart-* never appear in UI chrome.
 
    `python scripts/contrast.py` audits every pair above against WCAG 2.2 AA
    and exits non-zero on a failure. Run it after touching any colour.
@@ -71,37 +73,68 @@
 
 @theme {
   /* ---- Ground ---------------------------------------------------------- */
-  --color-shell: #FFF4F4;      /* page */
-  --color-surface: #FFFFFF;    /* cards, tables, drawers */
+  --color-shell: #0B0B0E;          /* page */
+  --color-surface: #15151A;        /* cards, tables, drawers */
+  --color-surface-raised: #1E1E25; /* overlays, modals, hovered row */
 
   /* ---- Text ------------------------------------------------------------ */
-  --color-ink: #14141C;        /* 17.01:1 on shell */
-  --color-ink-muted: #55555F;  /*  6.84:1 on shell */
+  /* Not #FFFFFF. Pure white on near-black blooms at small sizes; two points
+     off white removes the halation and costs nothing measurable
+     (18.05:1 against 19.65:1). */
+  --color-ink: #F5F5F7;        /* 18.05:1 on shell */
+  --color-ink-muted: #9A9AA4;  /*  7.05:1 on shell */
 
-  /* ---- Blue -- two values, see the two-blue rule above ------------------ */
-  --color-primary: #0062FF;    /*  4.65:1 -- the ONLY blue on text or a button */
-  --color-on-primary: #FFFFFF; /*  5.01:1 on --color-primary */
-  --color-accent: #3A86FF;     /*  3.23:1 -- borders, focus rails, active, charts */
-
-  /* ---- Surfaces -------------------------------------------------------- */
-  --color-lilac: #BDB2FF;
-  --color-pink: #FFD6E0;
+  /* ---- Brand -- ONE green, from the logo -------------------------------
+     --primary and --accent are the SAME value on purpose. The old palette
+     had two blues 11% apart and DESIGN.md called that split "the single
+     easiest thing to get wrong"; there is now one brand colour, so that
+     class of mistake cannot occur. Green is unusable on a light ground
+     (1.27:1 on the shell this replaced) and excellent on this one. */
+  --color-primary: #20FC8F;    /* 14.40:1 on shell -- links, primary fill */
+  --color-on-primary: #0B0B0E; /* 14.40:1 on --color-primary */
+  --color-accent: #20FC8F;     /* borders, focus rails, active state */
 
   /* ---- Structure ------------------------------------------------------- */
-  --color-rule: #D6CBCB;
-  --color-rule-strong: #14141C;
-  /* DESIGN.md § Tokens' --scrim, verbatim (ink at 40%): the overlay wash
-     behind a modal surface — DESIGN.md § Shape names it as the third depth
-     step for drawers and modals. First consumer: the command palette
-     (keyboard-a11y pass). Not a new colour — the token has been in DESIGN.md
-     since the palette section was written; this line makes `bg-scrim`
-     generatable. Decorative overlay, so no text-contrast pair applies. */
-  --color-scrim: rgb(20 20 28 / 0.4);
+  --color-rule: #2A2A33;        /* 1.38:1 -- DECORATIVE separation only */
+  --color-rule-strong: #6A6A78; /* 3.69:1 -- any border that carries meaning */
+  /* DESIGN.md § Tokens' --scrim: the overlay wash behind a modal surface,
+     the third depth step for drawers and modals. Black at 60% rather than
+     the light palette's ink-at-40%, because on a near-black page a 40% wash
+     of a near-black ink is not a scrim, it is nothing. First consumer: the
+     command palette (keyboard-a11y pass). Decorative overlay, so no
+     text-contrast pair applies. */
+  --color-scrim: rgb(0 0 0 / 0.6);
 
-  /* ---- Status -- never the only signal, always paired with a label ------ */
-  --color-success: #0E5F42;    /*  7.13:1 */
-  --color-warning: #7A4F00;    /*  6.62:1 */
-  --color-danger: #9E1C15;     /*  7.41:1 */
+  /* ---- Focus -----------------------------------------------------------
+     The global rule uses `outline-offset: 2px`, so the ring lands on the
+     PARENT background and never on a control's own fill -- which is what
+     makes one white ring safe on a green button (white ON green is 1.25:1
+     and would fail). --focus-on-primary is the override required the moment
+     anyone puts an INSET ring on a green surface. It has no call site today
+     (checked: the rail's inset ring sits on `bg-surface`, its active state
+     being a green left border rather than a fill) and is measured by
+     contrast.py so it cannot silently rot. */
+  --color-focus: #F5F5F7;
+  --color-focus-on-primary: #0B0B0E;
+
+  /* ---- Status -- never the only signal, always paired with a label ------
+     --success IS --primary. A second green a few degrees away would rebuild
+     the two-blue problem in a new place, so separation is structural: status
+     is always a bordered, uppercase chip; interactive green is always an
+     underlined link or a filled button. */
+  --color-success: #20FC8F;    /* 13.33:1 on surface */
+  --color-warning: #FFB020;    /*  9.95:1 on surface */
+  --color-danger: #FF6B61;     /*  6.52:1 on surface */
+
+  /* ---- Charts -- a SEPARATE namespace, never used in UI chrome ----------
+     Namespacing is what stops --chart-2 drifting back into the interface as
+     a second accent. All measured on --surface; each clears the 3:1
+     non-text threshold. */
+  --color-chart-1: #20FC8F;    /* 13.33:1 */
+  --color-chart-2: #5AA9FF;    /*  7.41:1 */
+  --color-chart-3: #FFC24B;    /* 11.33:1 */
+  --color-chart-4: #C79BFF;    /*  8.28:1 */
+  --color-chart-5: #FF8FB1;    /*  8.51:1 */
 
   /* ---- Type ------------------------------------------------------------ */
   --font-serif: var(--font-source-serif-4), "Iowan Old Style", Georgia,
@@ -156,17 +189,16 @@
      interpolates them the same way every hover transition does; no new
      colour is introduced.
 
-     THE BONE RESTS AT --color-rule AND BREATHES TO --color-pink (review
-     finding I1). The first cut rested at --color-shell, which IS the page
-     background: at the loop's rest points every bone was invisible, and
-     under prefers-reduced-motion -- where the rule below freezes the loop AT
-     its rest point -- the whole skeleton was a blank page for exactly the
-     users who asked for a calmer one. --rule (#D6CBCB) is the existing
-     hairline token, visible on both grounds a bone sits on (--shell page,
-     --surface card), so the static form reads and the animated form has a
-     perceptible amplitude. Decorative fills, so no contrast gate applies --
-     the loading MESSAGE is carried by role="status" text, never by the
-     colour.
+     THE BONE RESTS AT --color-rule AND BREATHES TO --color-skeleton-breathe.
+     The first cut rested at --color-shell, which IS the page background: at
+     the loop's rest points every bone was invisible, and under
+     prefers-reduced-motion -- where the rule below freezes the loop AT its
+     rest point -- the whole skeleton was a blank page for exactly the users
+     who asked for a calmer one. --rule is the existing hairline token,
+     visible on both grounds a bone sits on (--shell page, --surface card),
+     so the static form reads and the animated form has a perceptible
+     amplitude. Decorative fills, so no contrast gate applies -- the loading
+     MESSAGE is carried by role="status" text, never by the colour.
 
      THE LOOP IS 1.8s, deliberately outside the --dur-* scale: those tokens
      time TRANSITIONS between states; this is a continuous idle loop, and at
@@ -180,6 +212,14 @@
      served precisely to the users who asked for less motion. The unlayered
      rule after the base styles kills the animation outright and leaves the
      static --color-rule bone. */
+  /* The bone's breathe stop. Was --color-pink on the light palette; that
+     token is deleted, and a keyframe pointing at a dead custom property does
+     not error -- it resolves to nothing and the bone silently stops moving.
+     #3A3A45 sits 1.27:1 from --color-rule, matching the 1.20:1 amplitude
+     the light system's own pair had. Decorative fill, so no
+     contrast gate applies -- the loading MESSAGE is carried by role="status"
+     text, never by the colour. */
+  --color-skeleton-breathe: #3A3A45;
   --animate-skeleton: skeleton-pulse 1.8s ease-in-out infinite;
 
   @keyframes skeleton-pulse {
@@ -188,7 +228,7 @@
       background-color: var(--color-rule);
     }
     50% {
-      background-color: var(--color-pink);
+      background-color: var(--color-skeleton-breathe);
     }
   }
 }
@@ -237,17 +277,16 @@ html {
   overflow-x: clip;
   background: var(--color-shell);
 
-  /* DESIGN.md § Open: "Dark mode is not specified. The palette is light-only,
-     and the PRD does not require dark mode." Saying so EXPLICITLY is what
-     stops the user agent from guessing: on a machine set to dark mode, an
-     undeclared color-scheme lets the browser render its OWN chrome dark --
-     the native <select> popup (two of them ship here: the workspace switcher
-     and the invite role picker), form-control internals, scrollbars and
-     autofill backgrounds -- against our light --color-shell page. Declaring
-     `light` pins all of that to the palette DESIGN.md actually specifies and
-     contrast.py actually measured. This is not dark-mode support; it is the
-     opposite, and deliberately so until a dark ramp is designed. */
-  color-scheme: light;
+  /* Declaring this is what stops the user agent guessing. Undeclared, a
+     machine set to light mode renders the browser's OWN chrome light -- the
+     native <select> popup (two ship here: the workspace switcher and the
+     invite role picker), form-control internals, scrollbars and autofill
+     backgrounds -- against our near-black --color-shell page. `dark` pins all
+     of it to the palette DESIGN.md specifies and contrast.py measures.
+     There is no light theme and no toggle: DESIGN.md § Open's "dark mode is
+     not specified" was resolved by adopting the brand palette, which is only
+     legible on a dark ground. */
+  color-scheme: dark;
 }
 
 body {
@@ -265,8 +304,31 @@ body {
   border-radius: var(--radius);
 }
 
-/* DESIGN.md § Interaction states: ink, not blue, so the ring stays visible on
-   every surface INCLUDING a --color-primary fill (3.66:1, its tightest case).
+/* DESIGN.md § Interaction states: --color-focus, not --color-primary/blue, so
+   the ring reads on every surface. --color-focus and --color-ink happen to
+   share a value (#F5F5F7) today, but the ring is drawn from the FOCUS token,
+   not the text one -- they are free to diverge (an inset ring on a green
+   surface is the day that would matter; see below) without this rule
+   silently drawing the wrong colour. That is NOT because --color-focus
+   clears contrast against a --color-primary fill -- it is 1.25:1 on the
+   brand green and would fail outright.
+   It is safe because `outline-offset: 2px` below draws the ring on the
+   PARENT background, never on the control's own fill: a green button
+   focused on this dark page shows a white ring against the page, which
+   clears 3:1 comfortably (18.05:1 on --shell, 16.71:1 on --surface, 15.21:1
+   on --surface-raised) regardless of what the control underneath is filled
+   with.
+
+   The one shape that would still fail is an INSET ring, which lands ON the
+   fill instead of beside it. `nav[aria-label="Primary"] :focus-visible` is
+   the one inset ring in this file (the rail is a scroll container that
+   clips an outset ring); it is safe today only because the rail's active
+   row is `border-accent bg-surface` -- a green BORDER, not a green fill --
+   so that ring lands on #15151A at 16.71:1, not on green. `--color-focus-
+   on-primary` (#0B0B0E, 14.40:1 on green) exists, unused, as the required
+   override for the day an inset ring lands on an actually-green surface;
+   `scripts/contrast.py` measures its ratio so it cannot silently rot.
+
    Never animated -- a focus ring must appear the instant focus lands.
    ("Keyboard focus is never removed", DESIGN.md § Interaction states.)
 
@@ -278,16 +340,16 @@ body {
    not assumed). Every control in this app carries `transition-colors` with a
    120ms duration, so without this the focus ring did NOT appear instantly:
    outline-style/width flip at once, but outline-color animated from the
-   element's resting currentColor to ink over 120ms. On a --color-primary
-   button, whose currentColor is white, that is a white ring visibly fading
-   to ink on every keyboard focus -- the exact "focus ring fades in" failure
-   the comment above claims we avoid.
+   element's resting currentColor to --color-focus over 120ms. On a
+   --color-primary button, whose currentColor is white, that is a white ring
+   visibly fading to --color-focus on every keyboard focus -- the exact
+   "focus ring fades in" failure the comment above claims we avoid.
 
    Re-declaring the property list here, minus outline-color, keeps the
    hover/active colour transitions the components rely on while pinning the
    ring itself to frame one. */
 :focus-visible {
-  outline: 2px solid var(--color-ink);
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
   transition-property: color, background-color, border-color,
     text-decoration-color, fill, stroke;

@@ -1,10 +1,11 @@
 // The one skeleton primitive every loading surface is built from.
 //
-// A bone is a block of --color-rule that breathes to --color-pink and back
-// (the `animate-skeleton` utility, defined in app/globals.css @theme). That
-// is the whole shimmer: a background-colour crossfade between two tokens
-// already in DESIGN.md -- no gradient (forbidden), no new colour, and
-// background-color is on § Motion's short list of animatable properties.
+// A bone is a block of --color-rule that breathes to
+// --color-skeleton-breathe and back (the `animate-skeleton` utility, defined
+// in app/globals.css @theme). That is the whole shimmer: a background-colour
+// crossfade between two tokens already in DESIGN.md -- no gradient
+// (forbidden), no new colour, and background-color is on § Motion's short
+// list of animatable properties.
 // Under prefers-reduced-motion the animation is removed outright (globals.css
 // -- see the strobe note there) and the bone rests static at bg-rule.
 //

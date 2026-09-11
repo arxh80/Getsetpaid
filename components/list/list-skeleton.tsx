@@ -11,9 +11,9 @@ import { Bone } from "@/components/skeleton/bone";
 // static on the argument that DESIGN.md § Motion's property list has no room
 // for a shimmer -- which was true of the gradient sweep the word usually
 // means, and remains true: no gradient. What ships instead is a
-// background-colour crossfade between two existing surface tokens
-// (--color-shell to --color-pink and back; components/skeleton/bone.tsx),
-// and background-color IS on § Motion's animatable list. The reversal of the
+// background-colour crossfade between two existing tokens (--color-rule to
+// --color-skeleton-breathe and back; components/skeleton/bone.tsx), and
+// background-color IS on § Motion's animatable list. The reversal of the
 // earlier "no animation" stance is deliberate and founder-directed (the
 // site-wide loading-skeleton pass asked for shimmer explicitly); it is
 // logged in the pass's DECISIONS-QUEUE for veto. prefers-reduced-motion

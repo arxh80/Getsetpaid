@@ -67,8 +67,9 @@ export function RuledRow({
 //
 // Text first, colour second. The label is the signal; the colour is a
 // reinforcement that a colour-blind user or a greyscale printout can lose
-// without losing the meaning. --lilac and --pink are surfaces only here, never
-// the text, per DESIGN.md.
+// without losing the meaning. The SHAPE matters too: --success shares its
+// value with --primary, so a bordered, labelled box is what tells a status
+// chip from an interactive control -- never the hue (DESIGN.md § Palette).
 // ---------------------------------------------------------------------------
 type ChipTone = "active" | "pending" | "revoked";
 

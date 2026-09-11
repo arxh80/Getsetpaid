@@ -28,16 +28,17 @@ import {
 //   * `border-current`, so the border is the same token as the text and one
 //     tone decides both. The alternative -- a coloured FILL behind the label --
 //     would need a second measured ratio per tone for the label on top of it,
-//     and for `--accent` DESIGN.md forbids it outright ("never a fill behind a
-//     label").
+//     a green fill behind a label is also the exact shape of a primary
+//     BUTTON, and DESIGN.md § Palette separates status from interactive green
+//     structurally rather than by hue -- so a filled chip would erase the one
+//     signal that distinguishes them.
 //
 // EVERY TONE IS AN EXISTING TOKEN WITH A MEASURED RATIO, so this component
-// adds no colour and `python scripts/contrast.py` is unchanged by it. On the
-// shell: ink 17.01:1, ink-muted 6.84:1, success 7.13:1, warning 6.62:1,
-// danger 7.41:1 (DESIGN.md § Working palette). The chip renders inside the
-// list table, whose ground is `--surface` (#FFFFFF) -- lighter than the shell
-// those ratios were measured against, so each is at least as high there.
-// Borders need 3:1 and the lowest of the five clears it twice over.
+// adds no colour and `python scripts/contrast.py` is unchanged by it. The chip
+// renders inside the list table, whose ground is `--surface`, so those are the
+// figures that apply: ink 16.71:1, ink-muted 6.53:1, success 13.33:1, warning
+// 9.95:1, danger 6.52:1 (DESIGN.md § Working palette). Text needs 4.5:1 and
+// borders 3:1; the lowest of the five clears both.
 //
 // A `<span>`, NOT A `<button>` AND NOT A LINK. Nothing about a status chip is
 // interactive; the way to filter by status is the toolbar's Status control,

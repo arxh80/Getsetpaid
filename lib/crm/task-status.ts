@@ -123,9 +123,10 @@ export type ScanStatus = (typeof SCAN_STATUSES)[number];
  * The chip tones an operations status/priority can carry, as NAMES.
  *
  * `active` is the accent rail (open/in_progress work still to do) — an accent
- * BORDER with ink text, never accent text, which DESIGN.md forbids. `muted` is
- * the hairline-and-grey neutral. The other three are the measured status
- * tokens.
+ * BORDER with ink text, never accent text, because `--accent` shares its value
+ * with `--success` and `--primary` and a green label would read as
+ * "succeeded" or as a link. `muted` is the hairline-and-grey neutral. The
+ * other three are the measured status tokens.
  */
 export type OperationsTone =
   | "active"
