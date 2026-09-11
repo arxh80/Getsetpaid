@@ -719,6 +719,49 @@ else
 fi
 
 # ============================================================================
+# PHASE 7 TASK 6 (IN-APP FEEDBACK) SUITE.
+#
+# Runs LAST of the psql suites, after rate limits, and reuses the SAME
+# fixtures and the SAME variable set (P7VARS). It writes feedback rows as
+# pstd1/pstd2 (spending pstd2's whole hourly budget on purpose), plants three
+# rows as postgres (one three years old, one with a screenshot, one
+# quarantined), and its own § FZ deletes every row, counter, alert and audit
+# event it created, so the HTTP block below -- which spends CAROL's budget,
+# not theirs -- runs against the state it was written against.
+# ============================================================================
+docker cp "$HERE/rls_phase7_feedback.sql" "$CTR:/tmp/rls_phase7_feedback.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P7VARS[@]}" -f /tmp/rls_phase7_feedback.sql
+
+fb_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from fb.results where not pass" | tr -d '[:space:]')
+if [ "$fb_fails" != "0" ]; then
+  echo "PHASE 7 FEEDBACK SUITE FAILED: $fb_fails failing assertion(s)" >&2
+  echo "  In FP, THE COLUMN-NARROW GRANTS HAVE WIDENED -- a submitter can now" >&2
+  echo "  name user_id/role/status, or a client can DELETE, or the sender can" >&2
+  echo "  rewrite content." >&2
+  echo "  In FI, ATTRIBUTION IS FORGEABLE (FI6-FI11: Task 5 finding I1's class," >&2
+  echo "  on a second platform table) or a refused forgery now spends budget" >&2
+  echo "  (FI12) or the submission is no longer audited (FI13). Sev1 on FI9." >&2
+  echo "  In FR, A NON-SUPERUSER READS FEEDBACK (the submitter, a colleague, a" >&2
+  echo "  foreign Owner or an aal1 superuser), or RETENTION HAS STOPPED" >&2
+  echo "  EXPIRING AT READ TIME (FR6)." >&2
+  echo "  In FU, THE STATUS-ONLY GATE IS GONE (FU3/FU4/FU10) or the status" >&2
+  echo "  change is no longer audited (FU2)." >&2
+  echo "  In FM, THE 10/HOUR BUDGET NO LONGER BINDS THE WRITE (Task 5 finding" >&2
+  echo "  I2's class): a direct PostgREST INSERT is unmetered, or refusals are" >&2
+  echo "  being counted, or the crossing alert is missing/attributed." >&2
+  echo "  In FA, A SCREENSHOT VIEW CAN GO UNAUDITED -- a non-superuser or an" >&2
+  echo "  aal1 session can mint the audit row, or a quarantine files no alert." >&2
+  echo "  In FZ, this suite left rows behind and the HTTP block below is now" >&2
+  echo "  running against state it was not written against -- discard the run." >&2
+  psql_status=1
+else
+  echo "Phase 7 feedback suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -3181,6 +3224,70 @@ p2_rows "UNCONNECTED reads 0 network_links with NO filter"     0 "network_links?
 p2_rows "CONNECTED reads 0 network_links with NO filter (Q82)" 0 "network_links?select=id" "$CONN"
 p2_rows_min "CONTROL: the CONNECTED caller DOES read its own BETA contacts" 1 \
         "contacts?select=id&organisation_id=eq.$BETA_ORG" "$CONN"
+
+# ============================================================================
+# PHASE 7 TASK 6: IN-APP FEEDBACK OVER REAL HTTP -- THE DIRECT-POSTGREST PATH.
+#
+# The psql suite above proves the trigger from `set role authenticated`. This
+# is the request a script actually sends: the anon key plus a real password-
+# grant token, POSTed straight at PostgREST with no Next.js in the way. Task
+# 5's finding I2 was precisely a budget this path skipped; here it must not.
+#
+# carol is org A's ACTIVE standard_user (rls_foundation.sql) with a fresh
+# feedback budget -- the psql suite spent pstd1/pstd2's, not hers.
+# ============================================================================
+echo
+echo "=== Phase 7 feedback at the API surface ==="
+
+CAROL_ORG=$(curl -s "$API/rest/v1/organisations?select=id" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $TOKEN" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(d[0]['id'] if d else '')")
+[ -n "$CAROL_ORG" ] || { echo "carol could not read her own org over HTTP" >&2; exit 1; }
+
+fb_post() { # name want_http body
+  local name="$1" want="$2" body="$3" code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/rest/v1/feedback" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" -H "Prefer: return=minimal" -d "$body")
+  if [ "$code" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$code"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$code" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+fb_post "carol POSTs feedback naming her own workspace -> 201" 201 \
+  "{\"organisation_id\":\"$CAROL_ORG\",\"category\":\"bug\",\"message\":\"http one\",\"route\":\"/org-a\"}"
+fb_post "FORGERY: naming user_id is refused at the column grant -> 403" 403 \
+  "{\"user_id\":\"${ID[super]}\",\"organisation_id\":\"$CAROL_ORG\",\"category\":\"bug\",\"message\":\"x\",\"route\":\"/\"}"
+fb_post "FORGERY: naming a workspace she is not a member of -> 403" 403 \
+  "{\"organisation_id\":\"$BETA_ORG\",\"category\":\"bug\",\"message\":\"x\",\"route\":\"/\"}"
+fb_post "FORGERY: naming status is refused at the column grant -> 403" 403 \
+  "{\"status\":\"actioned\",\"organisation_id\":\"$CAROL_ORG\",\"category\":\"bug\",\"message\":\"x\",\"route\":\"/\"}"
+p2_rows "carol reads 0 feedback rows -- not even her own"  0 "feedback?select=id" "$TOKEN"
+probe "private helper feedback_before_insert not an RPC"          404 "rpc/feedback_before_insert"
+probe "private helper feedback_update_guard not an RPC"           404 "rpc/feedback_update_guard"
+probe "audit_feedback_screenshot_view IS routable and refuses carol (403)" 403 \
+      "rpc/audit_feedback_screenshot_view" '{"p_feedback_id":"00000000-0000-4000-8000-0000000000cc"}'
+# THE BUDGET, ON THE RAW PATH: nine more accepted (ten in all), the eleventh a
+# real HTTP 429 -- the PT429 SQLSTATE escape, through PostgREST.
+for i in 2 3 4 5 6 7 8 9 10; do
+  fb_post "carol's submission #$i -> 201" 201 \
+    "{\"organisation_id\":\"$CAROL_ORG\",\"category\":\"idea\",\"message\":\"http $i\",\"route\":\"/org-a\"}"
+done
+fb_post "carol's ELEVENTH direct-PostgREST submission in the hour -> 429" 429 \
+  "{\"organisation_id\":\"$CAROL_ORG\",\"category\":\"idea\",\"message\":\"http 11\",\"route\":\"/org-a\"}"
+fb_n=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+       "select count(*) from public.feedback where user_id='${ID[carol]}'" | tr -d '[:space:]')
+if [ "$fb_n" = "10" ]; then printf '  PASS  %-58s %s\n' "exactly ten rows landed for carol (the 429 wrote nothing)" "$fb_n"
+else printf '  FAIL  %-58s got %s want 10\n' "exactly ten rows landed for carol" "$fb_n"; api_fails=$((api_fails+1)); fi
+fb_role=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+       "select string_agg(distinct coalesce(organisation_role,'null'), ',') from public.feedback where user_id='${ID[carol]}'" | tr -d '[:space:]')
+if [ "$fb_role" = "standard_user" ]; then printf '  PASS  %-58s %s\n' "every row's role was stamped from carol's membership" "$fb_role"
+else printf '  FAIL  %-58s got %s want standard_user\n' "every row's role was stamped from carol's membership" "$fb_role"; api_fails=$((api_fails+1)); fi
+# Housekeeping: carol's rows, counters, the crossing alert and the audit rows.
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c \
+  "delete from public.incident_alerts where details->>'category'='feedback' and details->>'subject_id'='${ID[carol]}';
+   delete from public.audit_events where target_type='feedback' and actor_user_id='${ID[carol]}';
+   delete from public.feedback where user_id='${ID[carol]}';
+   delete from public.rate_limit_counters where category='feedback' and subject_id='${ID[carol]}';"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2
