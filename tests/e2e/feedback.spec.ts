@@ -246,11 +246,14 @@ test("an aal1 superuser session reaches no feedback", async ({ page }) => {
     // is not on the page" would be true of ANY page and proves nothing
     // (fix round 1, M6). What proves the page refused is that the list's own
     // chrome -- its h1 and its search control -- is absent while the
-    // challenge is up, and that the title carries nothing of it.
+    // challenge is up. (The <title> is NOT asserted here: generateMetadata
+    // gates on isSuperuser(), which this session IS, so the tab reads
+    // "Feedback · Superuser" over the challenge -- true of every /super page
+    // under the superuser's own aal1 session, and not a leak to anyone else;
+    // the non-superuser title gating is the refusal-parity test above.)
     await expect(page.getByRole("heading", { name: "Enter your two-factor code" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Feedback", level: 1 })).toHaveCount(0);
     await expect(page.locator("body")).not.toContainText("Search feedback");
-    await expect(page).not.toHaveTitle(/Feedback/);
     // THE LOAD-BEARING ASSERTION: the screenshot route -- a route handler,
     // so a literal 404 -- for the same aal1 session, with no audit row.
     const res = await page.request.get(`/super/feedback/${planted}/screenshot`);
