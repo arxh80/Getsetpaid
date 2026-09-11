@@ -92,6 +92,26 @@ Auth at Brevo's SMTP relay so auth emails come from your domain.
 
 - **Now (auth is already live):** step 1 (domain auth) + step 3 (Supabase SMTP) +
   step 4 (DPA). No app code.
-- **Phase 7:** step 2 wiring, when the feedback feature and incident alerts land.
+- **Phase 7 Task 6 — DONE in code, needs config:** step 2 is wired. Two
+  consumers call `sendEmail()` and nothing else does:
+  - `lib/email/feedback-notification.ts` — the founder's receipt for one
+    feedback submission, sent after the row is stored, stamping
+    `feedback.notified_at` only on `ok: true`. Recipient: `SUPPORT_CONTACT_EMAIL`.
+  - `lib/email/incident-alerts.ts` — one digest of every `incident_alerts`
+    row with `notified_at is null`, stamping only after `ok: true`. Invoked by
+    `POST /api/incident-alerts/deliver` with
+    `Authorization: Bearer $INCIDENT_ALERT_DELIVERY_SECRET`. **Nothing in the
+    repo schedules that call** — point an external cron at it (every 5–15
+    minutes is plenty; DECISIONS-QUEUE Q118). Until then alerts are rows on
+    `/super/health` and not emails.
+  Env: `BREVO_*` (above) plus `SUPPORT_CONTACT_EMAIL` and
+  `INCIDENT_ALERT_DELIVERY_SECRET` (`.env.example`). Unset means "stored, not
+  emailed" — logged loudly, never a crash, never a failed submission.
 - **Deferred:** connection-request / general notifications — there is no
   notification subsystem at MVP (Q45), so nothing sends those yet.
+
+## Sub-processor register
+
+Brevo is listed in `docs/sub-processors.md`. It is EU-based (France), so the
+UK → EEA transfer rides the UK adequacy regulations and needs no IDTA/SCCs; the
+DPA still must be signed before real personal data flows (`SECURITY.md` § 15).
