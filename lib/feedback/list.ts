@@ -11,6 +11,18 @@ import "server-only";
 // directly (this list is not read by fetchListPage: it has no organisation to
 // scope to and is superuser-only), forward-only paging, newest first.
 //
+// BOTH SORT DIRECTIONS ARE HONOURED (fix round 1, finding M5). FEEDBACK_SPEC
+// advertises `asc` ("Oldest first") and `desc`, parseListParams accepts
+// `?dir=asc`, and buildFeedbackNextHref echoes it on every "Next" link -- so
+// the first cut, which hard-coded `desc` in both the ORDER BY and the keyset
+// predicate, produced a URL that lied: newest-first whatever it said. Kept
+// rather than dropped from the spec because "oldest first" is the natural
+// reading for working through a backlog, and the cost is one ternary each
+// side: keysetClause() below is lib/list/query.ts's applyCursor() shape (the
+// bound and the strict operator flip together, so the order and the
+// predicate can never disagree), and the (created_at desc, id desc) index
+// serves an ascending read as a backward scan.
+//
 // FILTERABLE BY ORG, CATEGORY AND DATE (CLAUDE.md § In-app feedback) plus
 // status and a message search. The organisation filter takes a SLUG typed
 // into a text box rather than a select of every workspace on the platform --
@@ -36,7 +48,7 @@ import {
   type ListParams,
   type RawSearchParams,
 } from "@/lib/list/params";
-import { defineListSpec, type ListSpec } from "@/lib/list/spec";
+import { defineListSpec, type ListSpec, type SortDirection } from "@/lib/list/spec";
 import {
   isFeedbackCategory,
   isFeedbackStatus,
@@ -152,6 +164,26 @@ export type FeedbackPage =
     }
   | { readonly outcome: "unavailable" };
 
+/**
+ * The keyset predicate for one reading direction, as the two PostgREST
+ * filters the query applies: a top-level bound on `created_at` (so the
+ * index range is narrow) and an `or()` carrying the strict half plus the
+ * `id` tie-break. Pure, so tests/unit/feedback/list-direction.test.ts can
+ * prove the operators flip WITH the direction rather than reading the query.
+ */
+export function keysetClause(
+  direction: SortDirection,
+  cursor: Cursor,
+): { readonly bound: "gte" | "lte"; readonly or: string } {
+  const strict = direction === "asc" ? "gt" : "lt";
+  const bound = direction === "asc" ? "gte" : "lte";
+  const quoted = quoteLogicValue(cursor.value);
+  return {
+    bound,
+    or: `created_at.${strict}.${quoted},and(created_at.eq.${quoted},id.${strict}.${cursor.id})`,
+  };
+}
+
 function screenshotOf(key: unknown, status: unknown): FeedbackRow["screenshot"] {
   if (typeof key !== "string") return "none";
   return status === "clean" || status === "quarantined" || status === "error"
@@ -161,7 +193,7 @@ function screenshotOf(key: unknown, status: unknown): FeedbackRow["screenshot"] 
 
 export async function fetchFeedbackPage(params: FeedbackParams): Promise<FeedbackPage> {
   const { filters } = params;
-  const { pageSize, cursor } = params.list;
+  const { pageSize, cursor, dir } = params.list;
   const supabase = await createClient();
 
   // THE ORGANISATION FILTER resolves a slug to an id first. Nothing found is
@@ -200,17 +232,17 @@ export async function fetchFeedbackPage(params: FeedbackParams): Promise<Feedbac
     query = query.ilike(FEEDBACK_SPEC.searchColumn, containsPattern(params.list.q));
   }
 
-  // THE KEYSET PREDICATE, lib/list/query.ts's two-part shape.
+  // THE KEYSET PREDICATE, lib/list/query.ts's two-part shape, in the
+  // direction the URL asked for -- the same `dir` the ORDER BY below reads.
   if (cursor) {
-    const quoted = quoteLogicValue(cursor.value);
-    query = query
-      .lte("created_at", cursor.value)
-      .or(`created_at.lt.${quoted},and(created_at.eq.${quoted},id.lt.${cursor.id})`);
+    const clause = keysetClause(dir, cursor);
+    query = query.filter("created_at", clause.bound, cursor.value).or(clause.or);
   }
 
+  const ascending = dir === "asc";
   const { data, error } = await query
-    .order("created_at", { ascending: false })
-    .order("id", { ascending: false })
+    .order("created_at", { ascending })
+    .order("id", { ascending })
     .limit(pageSize + 1);
 
   if (error) {
