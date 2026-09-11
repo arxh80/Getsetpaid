@@ -249,20 +249,39 @@ select fb.try('FI16 a blank message is a CHECK violation',
 select fb.try('FI17 a route not beginning with / is a CHECK violation',
   format($$insert into public.feedback (id, organisation_id, category, message, route)
            values (%L, null, 'bug', 'x', 'javascript:alert(1)')$$, :'fi_forge'), 'denied(23514)');
-select fb.try('FI18 a screenshot key not pinned to the row''s own id is a CHECK violation',
+-- Since fix round 1 (20260911020000) a SESSION writer naming any screenshot
+-- key meets the trigger's object-existence test BEFORE Postgres evaluates
+-- the CHECK constraints (BEFORE INSERT triggers run first), so from the
+-- submitter's seat every malformed screenshot row is 42501. The CHECKs are
+-- proved below from the sessionless seat, where the trigger passes through.
+select fb.try('FI18 a screenshot key not pinned to the row''s own id is refused (trigger first: 42501)',
   format($$insert into public.feedback (id, organisation_id, category, message, route,
              screenshot_key, screenshot_mime, screenshot_size_bytes, screenshot_scan_status, screenshot_scanned_at)
            values (%L, null, 'bug', 'x', '/', 'feedback/%s', 'image/png', 10, 'clean', now())$$,
-         :'fi_forge', :'fi_a'), 'denied(23514)');
-select fb.try('FI19 a screenshot key without its mime/size/verdict is a CHECK violation',
+         :'fi_forge', :'fi_a'), 'denied(42501)');
+select fb.try('FI19 a screenshot key without its mime/size/verdict is refused (trigger first: 42501)',
   format($$insert into public.feedback (id, organisation_id, category, message, route, screenshot_key)
-           values (%L, null, 'bug', 'x', '/', 'feedback/%s')$$, :'fi_forge', :'fi_forge'), 'denied(23514)');
-select fb.try('FI19b a non-image screenshot mime is a CHECK violation',
+           values (%L, null, 'bug', 'x', '/', 'feedback/%s')$$, :'fi_forge', :'fi_forge'), 'denied(42501)');
+select fb.try('FI19b a non-image screenshot mime is refused (trigger first: 42501)',
   format($$insert into public.feedback (id, organisation_id, category, message, route,
              screenshot_key, screenshot_mime, screenshot_size_bytes, screenshot_scan_status, screenshot_scanned_at)
            values (%L, null, 'bug', 'x', '/', 'feedback/%s', 'application/pdf', 10, 'clean', now())$$,
-         :'fi_forge', :'fi_forge'), 'denied(23514)');
+         :'fi_forge', :'fi_forge'), 'denied(42501)');
 reset role; reset request.jwt.claims;
+-- The CHECKs themselves, from the seat the trigger exempts (postgres, no session).
+select fb.try('FI18c CHECK: a key not pinned to the row''s own id is 23514 for a sessionless writer',
+  format($$insert into public.feedback (id, user_id, organisation_id, category, message, route,
+             screenshot_key, screenshot_mime, screenshot_size_bytes, screenshot_scan_status, screenshot_scanned_at)
+           values (%L, %L, null, 'bug', 'x', '/', 'feedback/%s', 'image/png', 10, 'clean', now())$$,
+         :'fi_forge', :'pstd1', :'fi_a'), 'denied(23514)');
+select fb.try('FI19c CHECK: a key without its mime/size/verdict is 23514 for a sessionless writer',
+  format($$insert into public.feedback (id, user_id, organisation_id, category, message, route, screenshot_key)
+           values (%L, %L, null, 'bug', 'x', '/', 'feedback/%s')$$, :'fi_forge', :'pstd1', :'fi_forge'), 'denied(23514)');
+select fb.try('FI19d CHECK: a non-image mime is 23514 for a sessionless writer',
+  format($$insert into public.feedback (id, user_id, organisation_id, category, message, route,
+             screenshot_key, screenshot_mime, screenshot_size_bytes, screenshot_scan_status, screenshot_scanned_at)
+           values (%L, %L, null, 'bug', 'x', '/', 'feedback/%s', 'application/pdf', 10, 'clean', now())$$,
+         :'fi_forge', :'pstd1', :'fi_forge'), 'denied(23514)');
 
 -- What the database STORED, read as postgres.
 select fb.val('FI2 the stored user_id is the SESSION''s, whatever was (not) sent',
@@ -495,8 +514,8 @@ reset role;
 select fb.try('FM9b a SESSIONLESS caller is refused (fail closed: no session, no budget)',
   $$select * from public.feedback_budget_remaining()$$, 'denied(42501)');
 select fb.val('FM10 the pre-check is STABLE (a read, cannot spend) and SECURITY DEFINER (clients cannot read counters)',
-  $$select provolatile || '/' || prosecdef::text from pg_proc
-     where oid='public.feedback_budget_remaining()'::regprocedure$$, 's/true');
+  $$select provolatile::text || '/' || prosecdef::text from pg_proc
+     where proname='feedback_budget_remaining' and pronamespace='public'::regnamespace$$, 's/true');
 select fb.val('FM3 the counter reads exactly the limit -- refusals are NOT counted (Q115, second instance)',
   format($$select request_count::text from public.rate_limit_counters
             where category='feedback' and subject_scope='user' and subject_id=%L$$, :'pstd2'), '10');
@@ -606,7 +625,13 @@ delete from public.incident_alerts
 delete from public.audit_events where target_type='feedback';
 delete from public.feedback where user_id in (:'pstd1', :'pstd2');
 delete from public.rate_limit_counters where category='feedback' and subject_id in (:'pstd1', :'pstd2');
+-- storage.protect_delete() refuses a direct DELETE on storage.objects unless
+-- this GUC is set (the Storage API sets it for its own deletes). The planted
+-- row above never had bytes behind it, so the API cannot be asked; the guard
+-- is lifted for exactly this statement and put back.
+set storage.allow_delete_query = 'true';
 delete from storage.objects where bucket_id='feedback-screenshots' and name='feedback/' || :'fi_withobj';
+reset storage.allow_delete_query;
 \o
 select fb.val('FZ6 the planted storage object is gone',
   format($$select count(*)::text from storage.objects where bucket_id='feedback-screenshots' and name='feedback/%s'$$, :'fi_withobj'), '0');
