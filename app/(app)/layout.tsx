@@ -21,6 +21,7 @@ import { SuspendedBanner } from "@/components/org/suspended-banner";
 import { Wordmark } from "@/components/wordmark";
 import { SkipLink } from "@/components/ui/skip-link";
 import { PaletteTrigger } from "@/components/palette/palette-trigger";
+import { FeedbackDialog } from "@/components/feedback/feedback-dialog";
 
 // Shell for every signed-in screen.
 //
@@ -145,6 +146,14 @@ export default async function AppLayout({
                 the rail, so trigger and palette exist together or not at
                 all. */}
             {sidebarGroups ? <PaletteTrigger /> : null}
+            {/* Phase 7 Task 6: in-app feedback, "reachable from anywhere in
+                the app" -- every signed-in screen, org-scoped or not, /super
+                included. Gated on the MFA gate passing, like the rail: a
+                user still enrolling is not "in the app" yet. Its server
+                action reaches `feedback` and no CRM table
+                (tests/unit/list/app-shell-has-no-crm-query.test.ts walks
+                this import). */}
+            {mfaGate.kind === "pass" ? <FeedbackDialog /> : null}
             {/* Task 8: only rendered on an org-scoped page (currentOrg !==
                 null). A single-org user never sees the switcher at all -- a
                 control with exactly one destination is not a control, it is

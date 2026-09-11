@@ -53,6 +53,12 @@ const SURFACES: readonly { href: string; label: string; blurb: string }[] = [
     blurb:
       "Live platform counts — workspaces, signups, seats, storage — and the incident alerts a tripped rate limit, repeated failed sign-ins or a quarantined upload raise. Aggregates only.",
   },
+  {
+    href: "/super/feedback",
+    label: "Feedback",
+    blurb:
+      "What people sent from the in-app Feedback control — identified, filterable by workspace, category and date, with a status you set by hand. Screenshots open through an audited link, never inline.",
+  },
 ];
 
 export default async function SuperuserIndexPage() {
