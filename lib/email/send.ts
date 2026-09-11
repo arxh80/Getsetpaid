@@ -12,13 +12,25 @@ import "server-only";
 // ever reaches it -- the same guard lib/supabase/admin.ts uses for the
 // service-role key. Never prefix any variable here with NEXT_PUBLIC_.
 //
-// SCOPE: transactional only (auth is handled by Supabase's own SMTP, configured
-// separately -- see docs/email-setup.md). This helper is for app-initiated mail:
-// the in-app feedback receipt to the founder and incident alerts (both Phase 7).
-// Marketing email is a different stream with a PECR consent gate and does NOT
-// go through here (CLAUDE.md -- Legal and regulatory compliance).
+// SCOPE: transactional only. Auth mail (sign-up, magic link, reset) is
+// Supabase Auth's own SMTP, a separate hosted-project setting that is NOT
+// configured in this repository yet -- docs/email-setup.md § 3. This helper is
+// for app-initiated mail: the in-app feedback receipt to the founder and
+// incident alerts (both Phase 7). Marketing email is a different stream with
+// a PECR consent gate and does NOT go through here (CLAUDE.md -- Legal and
+// regulatory compliance).
+//
+// TIMEOUT (Phase 7 Task 6 fix round 1, finding I2): the typed-result contract
+// covered a rejected fetch and a non-2xx response but not a connection that
+// is accepted and never answered -- undici's default is 300 s, and a
+// serverless host kills the function long before that, so a Brevo stall was a
+// hung submission and, on retry, a duplicate row. Every call now carries an
+// AbortSignal; the abort surfaces through the same `network error` branch.
 
 const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
+/** How long one Brevo call may take before it is abandoned as a network
+ *  failure. Brevo answers in well under a second when it answers at all. */
+export const BREVO_TIMEOUT_MS = 10_000;
 
 export interface EmailAddress {
   email: string;
@@ -34,6 +46,10 @@ export interface SendEmailInput {
   /** Overrides the default sender for this one message. */
   from?: EmailAddress;
   replyTo?: EmailAddress;
+  /** Overrides BREVO_TIMEOUT_MS. Exists so the unit test can prove the
+   *  abort path in milliseconds rather than ten seconds; production callers
+   *  leave it unset. */
+  timeoutMs?: number;
 }
 
 export type SendEmailResult =
@@ -93,9 +109,19 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
         ...(input.text ? { textContent: input.text } : {}),
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
       }),
+      // A stalled connection is a network failure, not a wait. See the header.
+      signal: AbortSignal.timeout(input.timeoutMs ?? BREVO_TIMEOUT_MS),
     });
   } catch (cause) {
-    return { ok: false, error: `network error: ${String(cause)}` };
+    // A timeout rejects with a DOMException named TimeoutError; it is named
+    // in the result so the log line says "timed out" rather than just "error".
+    const timedOut = cause instanceof Error && cause.name === "TimeoutError";
+    return {
+      ok: false,
+      error: timedOut
+        ? `network error: Brevo did not answer within ${input.timeoutMs ?? BREVO_TIMEOUT_MS} ms`
+        : `network error: ${String(cause)}`,
+    };
   }
 
   if (!response.ok) {

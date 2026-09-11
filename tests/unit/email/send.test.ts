@@ -61,6 +61,8 @@ describe("sendEmail", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://api.brevo.com/v3/smtp/email");
     expect((init.headers as Record<string, string>)["api-key"]).toBe("test-key");
+    // I2: every call carries a timeout signal, with nothing asked for.
+    expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(String(init.body)).not.toContain("test-key");
     expect(JSON.parse(String(init.body))).toMatchObject({
       sender: { email: "no-reply@example.test", name: "GetSetPaid" },
@@ -92,5 +94,30 @@ describe("sendEmail", () => {
     const result = await sendEmail(input);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("network error");
+  });
+
+  // Fix round 1, finding I2: a connection that is accepted and never answered
+  // was the one failure the typed-result contract did not cover -- the fetch
+  // had no signal, so a Brevo stall held the submission for undici's 300 s
+  // default (or until the serverless host killed the function). The fetch
+  // below never resolves on its own; it only rejects when the signal the
+  // sender passed it fires. Against the old code this test hangs.
+  it("abandons a fetch that never answers, within the timeout, as a network error", async () => {
+    fetchMock.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        }),
+    );
+    const started = Date.now();
+    const result = await sendEmail({ ...input, timeoutMs: 50 });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toBe("network error: Brevo did not answer within 50 ms");
+  });
+
+  it("the production timeout is ten seconds", async () => {
+    const { BREVO_TIMEOUT_MS } = await import("@/lib/email/send");
+    expect(BREVO_TIMEOUT_MS).toBe(10_000);
   });
 });
