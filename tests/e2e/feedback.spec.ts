@@ -156,7 +156,10 @@ test("a member sends feedback from a record page and the superuser reads, opens 
   await expect(item).toContainText("manager");
   await expect(item).toContainText(recordPath);
   await expect(item.getByText("Bug", { exact: true })).toBeVisible();
-  await expect(item.getByText("New", { exact: true })).toBeVisible();
+  // THE CHIP, not the <option> of the same name inside the Status select
+  // beside it -- getByText("New") resolves to both (a strict-mode violation
+  // this spec's first real run surfaced, fix round 1).
+  await expect(item.locator("span", { hasText: /^New$/ })).toBeVisible();
 
   // ---- FILTERS NARROW AND CLEAR --------------------------------------------
   await page.getByLabel("Category").selectOption("idea");
@@ -185,7 +188,7 @@ test("a member sends feedback from a record page and the superuser reads, opens 
   await item2.getByLabel("Status").selectOption("read");
   await item2.getByRole("button", { name: "Update" }).click();
   await expect(item2.getByText("Done. Marked Read.")).toBeVisible();
-  await expect(item2.getByText("Read", { exact: true }).first()).toBeVisible();
+  await expect(item2.locator("span", { hasText: /^Read$/ })).toBeVisible();
   expect(await countFeedbackAudit("feedback.status_changed", row!.id)).toBe(1);
   expect((await feedbackRowByMessage(message))!.status).toBe("read");
 });
