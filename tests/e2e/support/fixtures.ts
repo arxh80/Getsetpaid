@@ -985,6 +985,123 @@ export async function deleteIncidentAlert(id: string): Promise<void> {
   await sql(`delete from public.incident_alerts where id = $1`, [id]);
 }
 
+// ===========================================================================
+// PHASE 7 TASK 6: IN-APP FEEDBACK
+// ===========================================================================
+
+export interface FeedbackRowRead {
+  id: string;
+  userId: string;
+  userEmail: string | null;
+  organisationId: string | null;
+  organisationRole: string | null;
+  route: string;
+  category: string;
+  status: string;
+  screenshotScanStatus: string | null;
+  notifiedAt: string | null;
+}
+
+/**
+ * The row the submit dialog wrote, read STRAIGHT OUT OF POSTGRES. No client
+ * role can read `feedback` except the aal2 superuser, and asserting what the
+ * trigger stamped (user, email, role, route) through the UI that displays it
+ * proves less than reading the table.
+ */
+export async function feedbackRowByMessage(message: string): Promise<FeedbackRowRead | null> {
+  const result = await db().query<{
+    id: string; user_id: string; user_email: string | null; organisation_id: string | null;
+    organisation_role: string | null; route: string; category: string; status: string;
+    screenshot_scan_status: string | null; notified_at: string | null;
+  }>(
+    `select id, user_id, user_email, organisation_id, organisation_role, route, category, status,
+            screenshot_scan_status, notified_at
+       from public.feedback where message = $1 order by created_at desc limit 1`,
+    [message],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    userEmail: row.user_email,
+    organisationId: row.organisation_id,
+    organisationRole: row.organisation_role,
+    route: row.route,
+    category: row.category,
+    status: row.status,
+    screenshotScanStatus: row.screenshot_scan_status,
+    notifiedAt: row.notified_at,
+  };
+}
+
+/** Audit rows of one action naming one feedback row. `feedback.screenshot_viewed`
+ *  is the one the brief cares about: it must be exactly the number of times
+ *  the real link was followed. */
+export async function countFeedbackAudit(action: string, feedbackId: string): Promise<number> {
+  const result = await db().query<{ count: string }>(
+    `select count(*)::text as count from public.audit_events
+      where target_type = 'feedback' and action = $1 and target_id = $2`,
+    [action, feedbackId],
+  );
+  return Number(result.rows[0]?.count ?? "0");
+}
+
+/**
+ * Plant a feedback row as `postgres` (the trigger passes a sessionless writer
+ * through, so user/role are supplied here) -- for the scans that need the
+ * list POPULATED without walking the dialog again.
+ */
+export async function plantFeedback(
+  userId: string,
+  organisationId: string | null,
+  organisationRole: string | null,
+  message: string,
+): Promise<string> {
+  const result = await db().query<{ id: string }>(
+    `insert into public.feedback (user_id, user_email, organisation_id, organisation_role, category, message, route)
+     select $1, u.email, $2, $3, 'other', $4, '/planted' from auth.users u where u.id = $1
+     returning id`,
+    [userId, organisationId, organisationRole, message],
+  );
+  return result.rows[0].id;
+}
+
+/**
+ * Spend a user's whole hourly feedback budget in one write, so the NEXT real
+ * submission through the dialog is the refused one. The window arithmetic is
+ * the database's own (private.rate_limit_window_start), so the row lands in
+ * the bin the trigger will read.
+ */
+export async function fillFeedbackBudget(userId: string): Promise<void> {
+  await sql(
+    `insert into public.rate_limit_counters (category, subject_scope, subject_id, window_start, request_count)
+     select 'feedback', 'user', $1,
+            private.rate_limit_window_start(now(), p.window_seconds), p.max_requests
+       from public.rate_limit_policies p where p.category = 'feedback'
+     on conflict (category, subject_scope, subject_id, window_start)
+       do update set request_count = excluded.request_count`,
+    [userId],
+  );
+}
+
+/** Everything this feature writes for a set of users: rows, counters, the
+ *  crossing alerts, and their audit rows (which would otherwise block the
+ *  users' hard delete, the Task 1 teardown rule). */
+export async function clearFeedbackState(userIds: string[]): Promise<void> {
+  await sql(
+    `delete from public.incident_alerts
+      where details->>'category' = 'feedback' and details->>'subject_id' = any($1::text[])`,
+    [userIds],
+  );
+  await sql(`delete from public.audit_events where target_type = 'feedback'`);
+  await sql(`delete from public.feedback where user_id = any($1::uuid[])`, [userIds]);
+  await sql(
+    `delete from public.rate_limit_counters where category = 'feedback' and subject_id = any($1::uuid[])`,
+    [userIds],
+  );
+}
+
 /** See expireBillingOverride() -- the feature-override twin, same fix. */
 export async function expireFeatureOverride(
   organisationId: string,
