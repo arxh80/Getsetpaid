@@ -2,3 +2,28 @@ allowBuilds:
   esbuild: true
   sharp: false
   unrs-resolver: false
+
+# SECURITY OVERRIDES -- transitive patch bumps, not feature upgrades.
+#
+# `pnpm audit --audit-level high` is a CI gate (.github/workflows/ci.yml) and
+# SECURITY.md § 11 makes dependency scanning a release gate, so a high sitting
+# in the tree is a red build on every PR until it is dealt with. Both of these
+# arrive through packages we do not depend on directly -- sharp via next,
+# js-yaml via eslint -- so there is no direct version to raise.
+#
+#   sharp   <0.35.4 -- libheif GHSA-g89c-p67h-r497 / GHSA-2jg2-4ch7-h545
+#   js-yaml <4.3.2  -- GHSA-2883-xcg3-v3hh, CPU use on empty merge sources
+#
+# Both are patch bumps inside the same minor, which is why an override is the
+# proportionate tool here rather than waiting on the parents to re-release.
+#
+# THE RANGES ARE CARET-PINNED, NOT ">=", AND THAT MATTERS. A ">=4.3.2" on
+# js-yaml resolved to 5.4.1 -- a major version, with whatever breaking changes
+# v5 carries, silently substituted underneath eslint. An override is a
+# statement about which PATCH is safe, so it must not be able to cross a major
+# boundary on its own.
+# Remove an entry once its parent ships a version that resolves past it on its
+# own -- an override that no longer changes anything is a lie about the tree.
+overrides:
+  sharp: "^0.35.4"
+  js-yaml: "^4.3.2"
