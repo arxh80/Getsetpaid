@@ -56,7 +56,7 @@
  * here rather than silently corrupted. The database floor is the CHECK
  * `amount_minor >= 0`; the same ceiling is enforced server-side in finance.ts.
  */
-export const MAX_AMOUNT_MINOR = Number.MAX_SAFE_INTEGER;
+const MAX_AMOUNT_MINOR = Number.MAX_SAFE_INTEGER;
 
 /**
  * The ONE pattern a pounds input has to match: digits, optionally a decimal

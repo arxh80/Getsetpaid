@@ -247,7 +247,7 @@ export function isActivityKind(value: string): value is ActivityKind {
   return (ACTIVITY_KINDS as readonly string[]).includes(value);
 }
 
-export const ACTIVITY_SELECT =
+const ACTIVITY_SELECT =
   "id, occurred_at, kind, actor_name, detail";
 
 export interface ActivityRow {

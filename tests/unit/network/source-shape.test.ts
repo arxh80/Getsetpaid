@@ -1,11 +1,10 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   NETWORK_DIRECTORY_LIST,
   NETWORK_DIRECTORY_SELECT,
 } from "@/lib/network/discovery-list";
 import { PUBLISHABLE_FIELDS } from "@/lib/network/fields";
+import { readSource as read, stripComments } from "../../support/source";
 
 // SOURCE-ONLY SHAPE ASSERTIONS OVER THE NETWORK CONTROLS.
 //
@@ -37,16 +36,10 @@ import { PUBLISHABLE_FIELDS } from "@/lib/network/fields";
 // The same reasoning tests/unit/crm/source-shape.test.ts states for omitted
 // query-builder options, applied to a boundary rather than to a save.
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 
-// LINE ENDINGS ARE NORMALISED, for the reason tests/unit/crm/source-shape.ts
-// gives at length: the repository sets no `text` policy in `.gitattributes`, so
-// a Windows checkout with core.autocrlf has CRLF everywhere and every
-// multi-line `toContain` below would fail against perfectly correct source.
-// Nothing this file asserts is ABOUT line endings.
-function read(relative: string): string {
-  return readFileSync(root + relative, "utf8").replace(/\r\n/g, "\n");
-}
+// `read` normalises line endings, for the reason tests/support/source.ts gives
+// at length: a Windows checkout with core.autocrlf would otherwise redden every
+// multi-line `toContain` below against perfectly correct source.
 
 const TABLES = read("supabase/migrations/20260904000000_network_tables.sql");
 const HELPER = read(
@@ -610,13 +603,6 @@ const EDITOR_COMPONENT = read("components/network/profile-editor.tsx");
 /** Line and block comments stripped, for an ABSENCE claim -- this file's own
  *  header prose names the functions it forbids the component from calling,
  *  which would otherwise trip the very check it explains. */
-function stripComments(code: string): string {
-  return code
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .map((line) => line.replace(/\/\/.*$/, ""))
-    .join("\n");
-}
 const EDITOR_COMPONENT_CODE = stripComments(EDITOR_COMPONENT);
 
 describe("the editor's render gate is the RESULT of a server call, not a client-settable boolean", () => {
@@ -881,9 +867,20 @@ describe("I2: the four detail pages gate the network identity row on view_networ
         // the count asserts the lookup appears NOWHERE else -- hoisting it
         // back out of the guarded wave (the I2 regression in its new clothes)
         // reddens here either way.
+        //
+        // MATCHED AS A PATTERN, NOT A LITERAL, and the difference is the point.
+        // The claim is "the lookup is the first thing inside a Promise.all that
+        // is the consequent of a `canReadNetwork` ternary". Indentation depth
+        // and whether that inner Promise.all is itself `await`ed are NOT part
+        // of the claim: when the guarded wave was nested inside the page's
+        // outer one-wave Promise.all, both changed and all four of these went
+        // red with the invariant fully intact. A literal that pins whitespace
+        // fails on formatting and passes on nothing extra.
         const normalised = page.replace(/\r\n/g, "\n");
-        const guarded = `canReadNetwork\n    ? await Promise.all([\n        loadNetworkProfileForEntity(org.id, "${kind}"`;
-        expect(normalised).toContain(guarded);
+        const guarded = new RegExp(
+          String.raw`canReadNetwork\s*\?\s*(?:await\s+)?Promise\.all\(\[\s*loadNetworkProfileForEntity\(org\.id, "${kind}"`,
+        );
+        expect(normalised).toMatch(guarded);
         const callSites =
           normalised.split(`loadNetworkProfileForEntity(org.id, "${kind}"`).length - 1;
         expect(callSites, "exactly one call site, the guarded one").toBe(1);

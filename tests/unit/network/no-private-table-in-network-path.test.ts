@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { repoRoot as root, stripComments } from "../../support/source";
 
 // PHASE 6 (NETWORK), TASK 5: THE CI-VISIBLE HALF OF THE LEAKAGE PROOF.
 //
@@ -44,7 +44,6 @@ import { describe, expect, it } from "vitest";
 // the `.from(...)` call-site count is asserted non-zero, the needle list's own
 // size is asserted, and a planted hostile fixture containing `from("notes")`
 // is run through the SAME detector and must be flagged.
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 
 /** Every file under `relative`, recursively, with a source extension. */
 function sourceFilesUnder(relative: string): string[] {
@@ -66,13 +65,6 @@ function sourceFilesUnder(relative: string): string[] {
 /** Comments stripped, so a doc comment that NAMES a forbidden table -- as this
  *  file's own header does, and as several modules' headers do at length --
  *  cannot trip the search. */
-function stripComments(code: string): string {
-  return code
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .map((line) => line.replace(/\/\/.*$/, ""))
-    .join("\n");
-}
 
 /** Every `.from("<literal>")` call site. */
 function literalFromCalls(code: string): string[] {

@@ -163,8 +163,8 @@ export function checkPhone(value: string | null): FieldProblem | null {
  * form would render "Use 25 tags or fewer" beside nothing at all, which is a
  * WCAG failure wearing a validation message's clothes.
  */
-export const MAX_TAGS = 25;
-export const MAX_TAG_LENGTH = 40;
+const MAX_TAGS = 25;
+const MAX_TAG_LENGTH = 40;
 
 function parseTextArray(
   raw: string | null,

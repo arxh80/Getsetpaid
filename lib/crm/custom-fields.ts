@@ -227,7 +227,7 @@ export const FIELD_TYPE_LABELS: Readonly<Record<CustomFieldType, string>> = {
 };
 
 /** The two types the `options` list is required for -- and only allowed for. */
-export const SELECT_TYPES: readonly CustomFieldType[] = [
+const SELECT_TYPES: readonly CustomFieldType[] = [
   "single_select",
   "multi_select",
 ];
@@ -303,7 +303,7 @@ export const MAX_CUSTOM_FIELD_NUMBER = 1e15;
 /** The identifier shape the DB pins for both `key` and every option key. */
 const KEY_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
 
-export function isCustomFieldKey(value: string): boolean {
+function isCustomFieldKey(value: string): boolean {
   return KEY_PATTERN.test(value);
 }
 

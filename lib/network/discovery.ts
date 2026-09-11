@@ -1,5 +1,10 @@
 import "server-only";
 
+// `loadNetworkProfileForViewer` is `cache`-wrapped: the directory profile page
+// asks for it in generateMetadata and again in the body. Per-request, keyed on
+// the profile id -- see lib/crm/queries.ts's header.
+import { cache } from "react";
+
 // Task 3: the read path over PUBLISHED network profiles -- the directory page
 // and the profile-as-seen-by-the-caller page. Two functions, and the second is
 // the one Constraint 19 is about.
@@ -136,9 +141,9 @@ export interface NetworkProfileForViewer {
  * round trip this function sometimes skips is cheap to keep sequential and
  * easy to reason about.
  */
-export async function loadNetworkProfileForViewer(
+export const loadNetworkProfileForViewer = cache(async (
   profileId: string,
-): Promise<NetworkProfileForViewer | null> {
+): Promise<NetworkProfileForViewer | null> => {
   const supabase = await createClient();
 
   const connected = await supabase
@@ -173,7 +178,7 @@ export async function loadNetworkProfileForViewer(
   }
   if (!directory.data) return null;
   return { row: mapNetworkDirectoryRow(directory.data), source: "directory" };
-}
+});
 
 /**
  * Task 4: batch-resolve several profile ids in exactly two round trips,

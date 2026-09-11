@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { repoRoot as root } from "../../support/source";
 
 // ONE CURSOR, AND A CENSUS THAT SAYS SO.
 //
@@ -43,7 +43,6 @@ import { describe, expect, it } from "vitest";
 // It is deliberately allowed to be noisy. A new list that this cannot see
 // should fail here and be looked at.
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(root + dir)) {

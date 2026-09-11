@@ -175,7 +175,7 @@ export type FinancialEntryParams = ListParams<
  * renaming this is a mismatch a reader can see. Same shape as
  * `LINEUP_SEARCH_PARAM`.
  */
-export const FINANCE_SEARCH_PARAM = "fin_q";
+const FINANCE_SEARCH_PARAM = "fin_q";
 
 /**
  * The finance list's parameters, out of the event detail page's query string.

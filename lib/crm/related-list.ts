@@ -69,7 +69,7 @@ export const RELATED_TASKS_LIST = defineListSpec({
 export type RelatedTasksSortKey = keyof (typeof RELATED_TASKS_LIST)["sort"];
 export type RelatedTasksFilterKey = keyof (typeof RELATED_TASKS_LIST)["filters"];
 
-export const RELATED_TASKS_SEARCH_PARAM = "rel_tasks_q";
+const RELATED_TASKS_SEARCH_PARAM = "rel_tasks_q";
 
 export function relatedTasksParams(
   raw: RawSearchParams,
@@ -107,7 +107,7 @@ export const RELATED_NOTES_LIST = defineListSpec({
 export type RelatedNotesSortKey = keyof (typeof RELATED_NOTES_LIST)["sort"];
 export type RelatedNotesFilterKey = keyof (typeof RELATED_NOTES_LIST)["filters"];
 
-export const RELATED_NOTES_SEARCH_PARAM = "rel_notes_q";
+const RELATED_NOTES_SEARCH_PARAM = "rel_notes_q";
 
 export function relatedNotesParams(
   raw: RawSearchParams,
@@ -178,7 +178,7 @@ export const RELATED_DOCS_LIST = defineListSpec({
 export type RelatedDocsSortKey = keyof (typeof RELATED_DOCS_LIST)["sort"];
 export type RelatedDocsFilterKey = keyof (typeof RELATED_DOCS_LIST)["filters"];
 
-export const RELATED_DOCS_SEARCH_PARAM = "rel_docs_q";
+const RELATED_DOCS_SEARCH_PARAM = "rel_docs_q";
 
 export function relatedDocsParams(
   raw: RawSearchParams,
