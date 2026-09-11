@@ -1,130 +1,52 @@
-import { Suspense } from "react";
-import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { getCurrentOrg } from "@/lib/auth";
 import {
   NOTE_DELETED_LIST,
   NOTE_DELETED_SELECT,
   mapDeletedNoteRow,
   type DeletedNoteRow,
-  type NoteDeletedFilterKey,
   type NoteDeletedSortKey,
 } from "@/lib/crm/notes-list";
-import {
-  isNarrowed,
-  parseListParams,
-  type ListParams,
-  type RawSearchParams,
-} from "@/lib/list/params";
-import { fetchListPage } from "@/lib/list/query";
 import type { ListColumn } from "@/lib/list/spec";
-import { EntityList } from "@/components/list/entity-list";
-import { ListSkeleton } from "@/components/list/list-skeleton";
-import { ListToolbar } from "@/components/list/list-toolbar";
+import { deletedRecordsPage } from "@/components/list/deleted-records-page";
 import { formatDateTime } from "@/lib/format/date";
 
-export async function generateMetadata({
-  params,
-}: PageProps<"/[orgSlug]/notes/deleted">): Promise<Metadata> {
-  const { orgSlug } = await params;
-  const org = await getCurrentOrg(orgSlug);
-  return {
-    title: org ? `Deleted notes · ${org.name} · GetSetPaid` : "Not found · GetSetPaid",
-  };
-}
-
-export default async function DeletedNotesPage({
-  params,
-  searchParams,
-}: PageProps<"/[orgSlug]/notes/deleted">) {
-  const { orgSlug } = await params;
-  const org = await getCurrentOrg(orgSlug);
-  if (!org) notFound();
-
-  const raw = (await searchParams) as RawSearchParams;
-  const listParams = parseListParams(NOTE_DELETED_LIST, raw);
-  const basePath = `/${org.slug}/notes/deleted`;
-  const narrowed = isNarrowed(NOTE_DELETED_LIST, listParams);
-
-  return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-3">
-        <p className="text-sm text-ink-muted">
-          <Link href={`/${org.slug}/notes`} className="text-primary underline underline-offset-4 hover:text-ink">
-            Notes
-          </Link>
-        </p>
-        <h1 className="tracking-display text-3xl font-extrabold text-ink">Deleted notes</h1>
-        <p className="max-w-prose text-base text-ink-muted">
-          Nothing here has been destroyed. Open a note to restore it — its links
-          come back with it. You can only restore notes you wrote.
-        </p>
-      </div>
-
-      <ListToolbar spec={NOTE_DELETED_LIST} params={listParams} basePath={basePath} narrowed={narrowed} />
-
-      <Suspense
-        key={JSON.stringify([listParams.q, listParams.filters, listParams.pageSize])}
-        fallback={<ListSkeleton columns={3} />}
-      >
-        <Results
-          organisationId={org.id}
-          orgSlug={org.slug}
-          listParams={listParams}
-          basePath={basePath}
-          narrowed={narrowed}
-        />
-      </Suspense>
+// NO RECORD-SCOPE NOTE, AND THAT IS NOT AN OMISSION. A note is scoped by
+// AUTHORSHIP, not by assignment: `private` reaches only its author and a
+// `company` note is editable only by its author (founder Q54). "Assigned to
+// you" would be the wrong sentence, so the blurb says the true one instead --
+// you can only restore notes you wrote.
+const { generateMetadata, Page } = deletedRecordsPage({
+  segment: "notes",
+  backLabel: "Notes",
+  title: "Deleted notes",
+  blurb: (
+    <>
+      Nothing here has been destroyed. Open a note to restore it — its links come
+      back with it. You can only restore notes you wrote.
+    </>
+  ),
+  spec: NOTE_DELETED_LIST,
+  table: "notes",
+  select: NOTE_DELETED_SELECT,
+  mapRow: mapDeletedNoteRow,
+  columns: columnsFor,
+  skeletonColumns: 3,
+  emptyState: () => (
+    <div className="border border-rule bg-surface p-5">
+      <h2 className="text-xl font-bold text-ink">Nothing deleted</h2>
+      <p className="mt-2 max-w-prose text-base text-ink-muted">
+        Deleted notes stay here so they can be restored.
+      </p>
     </div>
-  );
-}
+  ),
+});
 
-async function Results({
-  organisationId,
-  orgSlug,
-  listParams,
-  basePath,
-  narrowed,
-}: {
-  organisationId: string;
-  orgSlug: string;
-  listParams: ListParams<NoteDeletedSortKey, NoteDeletedFilterKey>;
-  basePath: string;
-  narrowed: boolean;
-}) {
-  const page = await fetchListPage<DeletedNoteRow, NoteDeletedSortKey, NoteDeletedFilterKey>({
-    spec: NOTE_DELETED_LIST,
-    params: listParams,
-    organisationId,
-    table: "notes",
-    select: NOTE_DELETED_SELECT,
-    scope: "deleted",
-    mapRow: mapDeletedNoteRow,
-  });
+export { generateMetadata };
+export default Page;
 
-  return (
-    <EntityList
-      spec={NOTE_DELETED_LIST}
-      params={listParams}
-      basePath={basePath}
-      page={page}
-      columns={columnsFor(orgSlug)}
-      rowKey={(row) => row.id}
-      narrowed={narrowed}
-      emptyState={
-        <div className="border border-rule bg-surface p-5">
-          <h2 className="text-xl font-bold text-ink">Nothing deleted</h2>
-          <p className="mt-2 max-w-prose text-base text-ink-muted">
-            Deleted notes stay here so they can be restored.
-          </p>
-        </div>
-      }
-    />
-  );
-}
-
-function columnsFor(orgSlug: string): readonly ListColumn<DeletedNoteRow, NoteDeletedSortKey>[] {
+function columnsFor(
+  orgSlug: string,
+): readonly ListColumn<DeletedNoteRow, NoteDeletedSortKey>[] {
   return [
     {
       key: "body",
@@ -142,7 +64,9 @@ function columnsFor(orgSlug: string): readonly ListColumn<DeletedNoteRow, NoteDe
       key: "visibility",
       header: "Visibility",
       secondary: true,
-      render: (row) => <span className="text-ink-muted capitalize">{row.visibility}</span>,
+      render: (row) => (
+        <span className="text-ink-muted capitalize">{row.visibility}</span>
+      ),
     },
     {
       key: "deleted",
