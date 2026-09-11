@@ -32,9 +32,11 @@ import { repoRoot as root } from "../../support/source";
 //     version of this file named without implementing (Task 8 review,
 //     Important #3), and it matters more than the other two: a list that
 //     hand-rolls a keyset query and never calls `fetchListPage` is invisible
-//     to the >= 17 floor, to the pairing check and to the `.range(`/`offset:`
+//     to a CALL-SITE COUNT, to the pairing check and to the `.range(`/`offset:`
 //     ban, so without this assertion the census's blind spot is exactly the
 //     defect the brief names ("a second, weaker cursor in the codebase").
+//   * a route that renders a list and reaches `lib/list` by no path at all --
+//     ASSERTED BELOW, and it is the assertion that replaced a floor.
 //   * a page that calls `.range(` or builds an `offset` -- a second pagination
 //     MODEL, not just a second implementation
 //   * a module outside `lib/list` importing `decodeCursor`, which is how a
@@ -42,6 +44,29 @@ import { repoRoot as root } from "../../support/source";
 //
 // It is deliberately allowed to be noisy. A new list that this cannot see
 // should fail here and be looked at.
+//
+// ===========================================================================
+// THE OBLIGATION IS AN ENUMERATION NOW, NOT A NUMBER
+// ===========================================================================
+// For five phases the first assertion here was
+// `callSites("fetchListPage<").length >= N`, and every edit RAISED N; the
+// prose said in as many words that raising it was the obligation. If you have
+// come here to restore that, read this first.
+//
+// The count was a PROXY for "every list goes through the one cursor", and it
+// worked while every list wrote `fetchListPage<` itself. Once fourteen routes
+// began delegating to the two list-page factories, fourteen occurrences became
+// two: the proxy started measuring INDIRECTION rather than surface area. A
+// lowered floor would have been the wrong repair, because the bypass that
+// matters is invisible to a number in both directions -- a route that
+// hand-rolls its own query calls nothing, so it neither raises the count nor
+// trips it.
+//
+// So the obligation moved. Every route that renders a list is enumerated and
+// must reach `lib/list` one of three ways: call `fetchListPage` itself,
+// delegate to a factory, or call a loader that does. Anything else has to be
+// named in an EXEMPT list with a reason. Add a list and do nothing, and it
+// goes red naming your file -- which is what a number never did.
 
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -70,28 +95,6 @@ function code(text: string): string {
 
 const callers = (needle: string) =>
   SOURCES.filter((f) => code(f.text).includes(needle)).map((f) => f.path);
-
-/**
- * Every OCCURRENCE of `needle`, as `path#n` -- not every file containing one.
- *
- * Deferred-minor L1143. The floor below used `callers("fetchListPage<").length`
- * and the prose around it called the result "call sites". Fifteen files each
- * holding exactly one call made the two numbers identical, which is why nobody
- * noticed -- and a sixteenth list added to an EXISTING file (a detail page
- * already carrying one, which is how the artist page got its fee list) would
- * not move a file count at all. Counting occurrences makes the assertion say
- * what its comment says.
- */
-function callSites(needle: string): string[] {
-  return SOURCES.flatMap((f) => {
-    const body = code(f.text);
-    const out: string[] = [];
-    for (let at = body.indexOf(needle); at !== -1; at = body.indexOf(needle, at + 1)) {
-      out.push(`${f.path}#${out.length + 1}`);
-    }
-    return out;
-  });
-}
 
 /** One file's source, by the path `callers()` reports. */
 function byPath(path: string): string {
@@ -150,98 +153,116 @@ describe("every paginated list shares one implementation", () => {
   const fetchers = callers("fetchListPage<");
   const parsers = callers("parseListParams(");
 
-  it("finds the CALL SITES at all, so this suite cannot pass vacuously", () => {
-    // TWENTY as of Phase 3 Task 7, raised from seventeen: contacts,
-    // companies, artists, agencies, venues and their five `deleted` twins
-    // (10), the duplicates queue and its `resolved` twin (12), merge history
-    // (13), the artist fee list (14), the activity timeline in
-    // `lib/crm/activity.ts` (15), the events list (16), the deleted events
-    // list (17), the lineup panel in `lib/crm/queries.ts` (18), and now the
-    // venue page's "Events here" (19) and the artist page's "Event history"
-    // (20) -- BOTH ADDED TO `lib/crm/queries.ts`, WHICH ALREADY HELD ONE. A
-    // file count would have moved by zero for this task; L1143 changed this to
-    // occurrences for exactly that case, and this is the first task to
-    // collect on it.
+  it("every route that renders a list reaches the one cursor", () => {
+    // ======================================================================
+    // THIS REPLACED A FLOOR, AND THE INVARIANT CHANGED WITH IT. READ THIS
+    // BEFORE RESTORING A NUMBER
+    // ======================================================================
+    // For five phases this was `callSites("fetchListPage<").length >= N`, and
+    // every edit RAISED N -- the file said in as many words that raising it
+    // was the obligation. That assertion is gone, and its replacement is not
+    // a smaller number: it is a different claim.
     //
-    // RAISING IT IS THE OBLIGATION, not paperwork. It is a FLOOR, so Task 3
-    // could have added two lists and left it at fifteen and nothing would have
-    // gone red -- and the census would then have been satisfied by a codebase
-    // that had deleted two of the lists it is meant to be counting. The floor
-    // only has teeth at the number the tree actually holds.
+    // The count was only ever a PROXY for "every list goes through the one
+    // cursor". It worked while each list wrote `fetchListPage<` itself. Once
+    // fourteen routes began delegating to components/list/entity-list-page.tsx
+    // and components/list/deleted-records-page.tsx, fourteen occurrences
+    // became two, and the proxy started measuring indirection rather than
+    // surface area. A lowered floor would have been the wrong repair: it
+    // still counts call sites, and a sixth entity that HAND-ROLLS its own
+    // query calls nothing, so it neither raises the count nor trips it. The
+    // bypass is invisible to a number in both directions.
     //
-    // COUNTED AS OCCURRENCES, NOT AS FILES (L1143). Today the two still happen
-    // to be the same number -- seventeen files, one call each -- which is
-    // exactly why the mismatch between this assertion and the sentence above
-    // it went unnoticed. A second list added to a file that already has one
-    // would not move a file count.
-    // THIRTY as of Phase 4 Task 3, raised from twenty: the tasks, meetings and
-    // notes list pages and their three `deleted` twins (6), and the three
-    // related-panel reverse loaders in `lib/crm/queries.ts` --
-    // loadTasksForEntity, loadNotesForEntity, loadDocumentsForEntity (3). Nine
-    // more, counted rather than guessed. The floor has teeth only at the number
-    // the tree holds; raising it is the obligation.
-    // THIRTY as of Phase 5 Task 2: the finance list on the event detail page,
-    // loaded by loadFinancialEntriesForEvent in lib/crm/finance-queries.ts.
-    //
-    // =======================================================================
-    // TWENTY-SIX, AND THE FLOOR WENT DOWN FOR THE FIRST TIME. READ THIS BEFORE
-    // LOWERING IT AGAIN
-    // =======================================================================
-    // Every previous edit RAISED this number, and the comment above is
-    // emphatic that raising it is the obligation. This one lowers it, which is
-    // exactly the move that should make a reviewer suspicious: a census
-    // satisfied by a smaller codebase is usually a census that has stopped
-    // counting something.
-    //
-    // It is not, here, and the reason is checkable rather than asserted. The
-    // fourteen list ROUTES that used to write `fetchListPage<` out themselves
-    // -- nine restore queues and the five relationship-layer lists -- now
-    // delegate to components/list/deleted-records-page.tsx and
-    // components/list/entity-list-page.tsx, which write it once each. Fourteen
-    // occurrences became two. NO LIST SURFACE WAS REMOVED; the same fourteen
-    // routes render the same fourteen lists.
-    //
-    // So an occurrence count is no longer a proxy for surface area, and the
-    // assertion below it is what keeps the teeth: the delegating routes are
-    // counted DIRECTLY, and the two factories must themselves be call sites.
-    // Deleting a list route, or quietly detaching one from its factory, still
-    // reddens -- which is the property this test exists for.
-    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(26);
-  });
+    // So the obligation is now an ENUMERATION rather than a number. Every
+    // route that renders a list must reach lib/list one of exactly two ways,
+    // and anything that does neither has to be named here with a reason. Add
+    // a list and do nothing, and this goes red naming your file.
+    const LIST_MARKERS = ["<EntityList", "entityListPage(", "deletedRecordsPage("];
 
-  it("the list-page factories are call sites, and their routes are counted", () => {
-    // The other half of the floor above, after consolidation. A route that
-    // delegates renders a paginated list just as surely as one that calls
-    // `fetchListPage` itself, and is just as much a thing this suite is meant
-    // to be counting -- it simply no longer looks like one to a text search.
-    const FACTORIES = [
+    // ONE INDIRECTION IS ALLOWED, AND IT IS TRANSITIVE RATHER THAN AN
+    // ALLOWLIST -- the same policy this file already applies to the
+    // `parseListParams` wrappers below, for the same reason.
+    //
+    // A detail page renders <EntityList> for a panel whose page was fetched by
+    // a loader in lib/ (the venue page's "Events here" via loadEventsForVenue,
+    // the network links list via loadNetworkLinksList). Those routes reach the
+    // one cursor through exactly one hop, and an allowlist naming them would
+    // have to be edited every time a panel moves -- which is the kind of
+    // maintenance that turns a guard into a rubber stamp.
+    //
+    // So resolve it: any symbol EXPORTED by a module that itself calls
+    // `fetchListPage<` counts as reaching it. A loader that stops calling
+    // fetchListPage drops out of this set, and every route that relied on it
+    // goes red -- which is the behaviour an allowlist would have suppressed.
+    const loaderExports = SOURCES.filter((f) =>
+      code(f.text).includes("fetchListPage<"),
+    ).flatMap((f) => [
+      ...code(f.text).matchAll(
+        /^export (?:async )?(?:function|const) ([A-Za-z_$][\w$]*)/gm,
+      ),
+    ].map((m) => `${m[1]}(`));
+
+    const REACHES = [
+      "fetchListPage<",
+      "entityListPage(",
+      "deletedRecordsPage(",
+      ...loaderExports,
+    ];
+
+    // Routes that render something list-shaped but legitimately do not reach
+    // the shared cursor by any of those routes. EMPTY, AND THAT IS THE POINT
+    // -- an entry here is a declaration that a surface paginates by some other
+    // means, which is the thing this suite exists to make impossible to do
+    // quietly.
+    const EXEMPT: readonly string[] = [];
+
+    const listRoutes = SOURCES.filter(
+      (f) =>
+        f.path.startsWith("app/") &&
+        f.path.endsWith("page.tsx") &&
+        LIST_MARKERS.some((m) => code(f.text).includes(m)),
+    );
+
+    // The denominator, so a broken walk cannot pass this vacuously.
+    expect(
+      listRoutes.length,
+      "routes rendering a list. If this fell, a list route was deleted or the " +
+        "walk stopped seeing app/.",
+    ).toBeGreaterThanOrEqual(19);
+
+    // And the loader resolution found something, so a regex that stopped
+    // matching cannot silently turn the hop above into a blanket pass.
+    expect(
+      loaderExports.length,
+      "exported loaders in modules that call fetchListPage. If this is zero " +
+        "the transitive hop is matching nothing and every panel route below " +
+        "would be reported as stranded.",
+    ).toBeGreaterThanOrEqual(5);
+
+    const stranded = listRoutes
+      .filter((f) => !REACHES.some((m) => code(f.text).includes(m)))
+      .map((f) => f.path)
+      .filter((path) => !EXEMPT.includes(path));
+    expect(
+      stranded,
+      "a route renders a list without calling fetchListPage, without " +
+        "delegating to a list-page factory, and without calling a loader that " +
+        "reaches fetchListPage. That is a second cursor, or a hand-rolled " +
+        "query, which is what this whole file exists to prevent.",
+    ).toEqual([]);
+
+    // And the two factories must themselves reach it, or the delegation above
+    // is delegation to nothing.
+    for (const factory of [
       "components/list/deleted-records-page.tsx",
       "components/list/entity-list-page.tsx",
-    ];
-    for (const factory of FACTORIES) {
+    ]) {
       expect(
         byPath(factory),
         `${factory} must call fetchListPage -- it is the shared cursor for ` +
           "every route that delegates to it",
       ).toContain("fetchListPage<");
     }
-
-    // FOURTEEN: nine restore queues (contacts, companies, artists, agencies,
-    // venues, events, tasks, meetings, notes) and the five relationship-layer
-    // lists. `documents/deleted` is deliberately NOT among them -- see
-    // deleted-records-page.tsx -- and still calls fetchListPage itself, so it
-    // is already counted by the floor above.
-    const delegating = SOURCES.filter(
-      (f) =>
-        f.path.startsWith("app/") &&
-        (code(f.text).includes("entityListPage(") ||
-          code(f.text).includes("deletedRecordsPage(")),
-    );
-    expect(
-      delegating.length,
-      "routes delegating to a list-page factory. Raising this when a list is " +
-        "added is the same obligation as raising the floor above.",
-    ).toBeGreaterThanOrEqual(14);
   });
 
   it("every fetchListPage caller also parses its params through lib/list", () => {
