@@ -162,7 +162,9 @@ test("a member sends feedback from a record page and the superuser reads, opens 
   await expect(item.locator("span", { hasText: /^New$/ })).toBeVisible();
 
   // ---- FILTERS NARROW AND CLEAR --------------------------------------------
-  await page.getByLabel("Category").selectOption("idea");
+  // exact: the header's (closed) Feedback <dialog> keeps its own required
+  // "Category" select in the DOM, so the page-level label matches two.
+  await page.getByLabel("Category", { exact: true }).selectOption("idea");
   await page.getByRole("button", { name: "Filter" }).click();
   await expect(page.getByText(message)).toHaveCount(0);
   await page.getByRole("link", { name: "Clear filters" }).click();
