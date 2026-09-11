@@ -152,8 +152,22 @@ export default async function AppLayout({
                 user still enrolling is not "in the app" yet. Its server
                 action reaches `feedback` and no CRM table
                 (tests/unit/list/app-shell-has-no-crm-query.test.ts walks
-                this import). */}
-            {mfaGate.kind === "pass" ? <FeedbackDialog /> : null}
+                this import).
+
+                NOT UNDER IMPERSONATION (Task 6 fix round 1, finding M4). A
+                support-access session holds no membership of the workspace
+                it is inside, so every submission from there is refused at
+                the trigger -- correctly, since a row attributed to that
+                workspace would be false -- and the first cut rendered that
+                as a dead control answering the generic "refused" sentence.
+                Hidden here when this render KNOWS the request is
+                impersonated. It cannot always know: this layout does not
+                re-render on a client-side navigation into the workspace
+                (the impersonation banner's own lesson, below), so
+                submitFeedbackAction carries the check that always runs and
+                refuses with a sentence that says why. Sending with a null
+                organisation instead is a product choice, queued as Q121. */}
+            {mfaGate.kind === "pass" && !currentOrg?.isImpersonated ? <FeedbackDialog /> : null}
             {/* Task 8: only rendered on an org-scoped page (currentOrg !==
                 null). A single-org user never sees the switcher at all -- a
                 control with exactly one destination is not a control, it is

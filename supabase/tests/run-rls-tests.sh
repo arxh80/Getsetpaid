@@ -3274,6 +3274,14 @@ for i in 2 3 4 5 6 7 8 9 10; do
 done
 fb_post "carol's ELEVENTH direct-PostgREST submission in the hour -> 429" 429 \
   "{\"organisation_id\":\"$CAROL_ORG\",\"category\":\"idea\",\"message\":\"http 11\",\"route\":\"/org-a\"}"
+# FIX ROUND 1 (I1): the pre-check the app runs BEFORE any Storage I/O, over
+# the same session -- carol's budget is spent, so it must read 0 (and reading
+# it must not change the ten-row count asserted next).
+fb_budget=$(curl -s -X POST "$API/rest/v1/rpc/feedback_budget_remaining" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' \
+  | python -c "import sys,json;r=json.load(sys.stdin);r=r[0] if isinstance(r,list) else r;print(r.get('remaining'))")
+if [ "$fb_budget" = "0" ]; then printf '  PASS  %-58s %s\n' "feedback_budget_remaining reads 0 for carol over HTTP" "$fb_budget"
+else printf '  FAIL  %-58s got %s want 0\n' "feedback_budget_remaining reads 0 for carol over HTTP" "$fb_budget"; api_fails=$((api_fails+1)); fi
 fb_n=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
        "select count(*) from public.feedback where user_id='${ID[carol]}'" | tr -d '[:space:]')
 if [ "$fb_n" = "10" ]; then printf '  PASS  %-58s %s\n' "exactly ten rows landed for carol (the 429 wrote nothing)" "$fb_n"

@@ -74,6 +74,15 @@ export function isFeedbackScreenshotMime(
 export const SCREENSHOT_WARNING =
   "A screenshot captures whatever is on your screen, including records that belong to your workspace or to a workspace you were viewing. The GetSetPaid operator will be able to see it, and every time they open it is recorded.";
 
+/**
+ * What a support-access (impersonating) session is told instead of the
+ * generic "refused" sentence (fix round 1, M4). Lives here rather than in
+ * actions.ts because a "use server" module may export only async functions,
+ * and the unit test asserts the exact sentence.
+ */
+export const IMPERSONATION_REFUSAL =
+  "Feedback can’t be sent during a support-access session — it would be attributed to a workspace you don’t belong to. End the session, or send it from the superuser area.";
+
 /** The storage key for a feedback screenshot: `feedback/{id}`, pinned by the
  *  database CHECK feedback_screenshot_key_shape. No user input, ever. */
 export function feedbackScreenshotKey(feedbackId: string): string {

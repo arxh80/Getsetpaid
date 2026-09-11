@@ -1085,6 +1085,17 @@ export async function fillFeedbackBudget(userId: string): Promise<void> {
   );
 }
 
+/** How many objects the feedback bucket holds -- read straight out of
+ *  storage.objects, so the e2e can assert that a REFUSED submission with a
+ *  screenshot attached wrote nothing (Task 6 fix round 1, I1: the upload used
+ *  to run before the metered insert). */
+export async function countFeedbackScreenshotObjects(): Promise<number> {
+  const result = await db().query<{ count: string }>(
+    `select count(*)::text as count from storage.objects where bucket_id = 'feedback-screenshots'`,
+  );
+  return Number(result.rows[0]?.count ?? "0");
+}
+
 /** Everything this feature writes for a set of users: rows, counters, the
  *  crossing alerts, and their audit rows (which would otherwise block the
  *  users' hard delete, the Task 1 teardown rule). */

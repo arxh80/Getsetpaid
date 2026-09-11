@@ -23,6 +23,23 @@
 // org-scoped page uses -- and only a workspace that lookup returns is named.
 //
 // ===========================================================================
+// THE BUDGET IS READ BEFORE ANY STORAGE I/O (fix round 1, finding I1)
+// ===========================================================================
+// The trigger meters the ROW, and the row is the cheap half of a submission.
+// The expensive half -- a service-role write of up to 5 MiB into the private
+// bucket and a synchronous malware scan -- ran BEFORE the INSERT, so a
+// submitter whose budget was already spent (or a Free-tier account, for which
+// feedback is the first path that can drive the Storage client at all) could
+// loop the action and burn storage and scanner time without limit while the
+// counter read a flat 10. So the action now asks
+// public.feedback_budget_remaining() (20260911010000) -- a STABLE, SECURITY
+// DEFINER read of the caller's own counter -- before it touches the bucket,
+// and refuses with the SAME "Try again in …" sentence the trigger's PT429
+// renders. It is a read: it spends nothing, so it cannot double-meter, and
+// the trigger stays the enforcement (a skipped pre-check is still refused at
+// the write). FAIL CLOSED: an error from the RPC is treated as "0 left".
+//
+// ===========================================================================
 // "CURRENT PAGE/ROUTE": THE PATHNAME, WITHOUT THE QUERY STRING
 // ===========================================================================
 // The dialog is opened over whatever page the user was reading, and a server
@@ -36,6 +53,21 @@
 // attribution, not content.
 //
 // ===========================================================================
+// UNDER IMPERSONATION THE ACTION EXPLAINS ITSELF (fix round 1, finding M4)
+// ===========================================================================
+// getCurrentOrg() under a support-access session returns the workspace with
+// `isImpersonated: true` and no membership behind it, so the trigger would
+// refuse the row with 42501 -- correct (a row blaming that workspace would be
+// a false attribution) but rendered as the generic "refused" sentence, i.e. a
+// dead control. app/(app)/layout.tsx hides the trigger when it KNOWS the
+// request is impersonated, but that layout does not re-render on a
+// client-side navigation into the workspace (the impersonation banner's own
+// lesson), so this action is the check that always runs: it refuses early,
+// before any Storage I/O, with a sentence that says why and what to do.
+// Submitting with a null organisation instead is a product choice, queued as
+// DECISIONS-QUEUE Q121 rather than taken here.
+//
+// ===========================================================================
 // THE SCREENSHOT IS THE DOCUMENTS PIPELINE, IMAGES ONLY
 // ===========================================================================
 // sniffAndAllow() (magic bytes, never the declared type) must read the bytes
@@ -46,16 +78,25 @@
 // (lib/crm/documents.ts's shape), and the verdict lands on the row. A
 // quarantined screenshot is stored (evidence), never served (the view path
 // refuses anything but `clean`), and files an incident alert by trigger.
+// Since fix round 1 the trigger also requires the object to EXIST for a
+// session writer naming a key (20260911020000), so the upload-then-insert
+// order here is load-bearing, not merely tidy.
 //
 // ===========================================================================
-// THE EMAIL NEVER FAILS THE SUBMISSION
+// THE EMAIL NEVER FAILS -- OR DELAYS -- THE SUBMISSION (fix round 1, I2)
 // ===========================================================================
-// The row is stored first. The founder's receipt is sent after, through the
-// one Brevo sender, and its failure is logged and left visible on the row
-// (notified_at null) -- never surfaced to the submitter, who did nothing
-// wrong and whose feedback IS recorded. lib/email/feedback-notification.ts.
+// The row is stored first. The founder's receipt is sent AFTER THE RESPONSE,
+// through Next's after(): the one Brevo call now carries a 10-second timeout
+// (lib/email/send.ts), and with that in place it is no longer awaited on the
+// submit path at all -- a Brevo stall used to hold the dialog at "Sending…"
+// and invite a retry that inserted a second, identical row. after() keeps
+// the function alive on a serverless host until the callback settles, so the
+// send still happens; its failure is still logged and still left visible on
+// the row (notified_at null) -- never surfaced to the submitter, who did
+// nothing wrong and whose feedback IS recorded. lib/email/feedback-notification.ts.
 
 import { headers } from "next/headers";
+import { after } from "next/server";
 import { getCurrentOrg, getCurrentUser } from "@/lib/auth";
 import { currentPath } from "@/lib/auth/current-path";
 import { auditableRoute } from "@/lib/admin/impersonation-contract";
@@ -71,6 +112,7 @@ import { notifyFounderOfFeedback } from "@/lib/email/feedback-notification";
 import {
   FEEDBACK_MESSAGE_MAX,
   FEEDBACK_SCREENSHOT_MAX_BYTES,
+  IMPERSONATION_REFUSAL,
   feedbackScreenshotKey,
   isFeedbackCategory,
   isFeedbackScreenshotMime,
@@ -79,6 +121,10 @@ import {
 const BUCKET = "feedback-screenshots";
 const USER_AGENT_MAX = 512;
 const ROUTE_MAX = 512;
+/** The feedback window, SECURITY.md § 5. Only ever used when the database
+ *  failed to say how long is left -- and that case is logged, because the
+ *  trigger and the RPC both always set it. */
+const FEEDBACK_WINDOW_SECONDS = 3600;
 
 const NOT_AN_IMAGE =
   "Screenshots must be an image — PNG, JPEG, WebP or GIF.";
@@ -98,6 +144,13 @@ function verdictStatus(verdict: ScanResult): "clean" | "quarantined" | "error" {
     case "error":
       return "error";
   }
+}
+
+function budgetRefusal(seconds: number, formData: FormData): FormState {
+  return {
+    error: `Too many feedback submissions just now. Try again in ${formatRetryAfter(seconds)}.`,
+    values: echoedValues(formData),
+  };
 }
 
 export async function submitFeedbackAction(
@@ -133,6 +186,29 @@ export async function submitFeedbackAction(
   const slug = firstPathSegment(route);
   const org = slug ? await getCurrentOrg(slug) : null;
   const userAgent = ((await headers()).get("user-agent") ?? "").slice(0, USER_AGENT_MAX);
+
+  // A support-access session holds no membership; the row would be refused
+  // at the trigger anyway. Say why, before spending anything. See the header.
+  if (org?.isImpersonated) {
+    return { error: IMPERSONATION_REFUSAL, values: echoedValues(formData) };
+  }
+
+  // ---- THE BUDGET, READ BEFORE ANY STORAGE I/O (I1) --------------------------
+  const supabase = await createClient();
+  const budget = await supabase.rpc("feedback_budget_remaining").single();
+  if (budget.error) {
+    // Fail closed: a budget we cannot read is a budget we treat as spent.
+    console.error("[feedback] budget pre-check failed; refusing without touching storage:", budget.error.message);
+    return budgetRefusal(FEEDBACK_WINDOW_SECONDS, formData);
+  }
+  const remaining = Number((budget.data as { remaining?: unknown } | null)?.remaining);
+  const retryAfter = Number((budget.data as { retry_after_seconds?: unknown } | null)?.retry_after_seconds);
+  if (!Number.isFinite(remaining) || remaining <= 0) {
+    return budgetRefusal(
+      Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : FEEDBACK_WINDOW_SECONDS,
+      formData,
+    );
+  }
 
   // ---- the optional screenshot ---------------------------------------------
   const feedbackId = crypto.randomUUID();
@@ -177,7 +253,6 @@ export async function submitFeedbackAction(
   // ---- the row, through the submitter's OWN session --------------------------
   // No user_id, no user_email, no role, no status: the trigger stamps them and
   // the column grant would refuse them anyway.
-  const supabase = await createClient();
   const { error } = await supabase.from("feedback").insert({
     id: feedbackId,
     organisation_id: org?.id ?? null,
@@ -193,19 +268,35 @@ export async function submitFeedbackAction(
   });
 
   if (error) {
-    // The row did not land, so the stored bytes are an orphan.
-    if (screenshot) await storage.storage.from(BUCKET).remove([screenshot.key]);
+    // The row did not land, so the stored bytes are an orphan. A cleanup
+    // that fails is logged, not ignored: the bytes stay behind with no row,
+    // and the Phase 8 sweep (Q120) does not exist yet.
+    if (screenshot) {
+      const removed = await storage.storage.from(BUCKET).remove([screenshot.key]);
+      if (removed.error) {
+        console.error(
+          `[feedback] orphaned screenshot ${screenshot.key} could not be removed after a refused insert:`,
+          removed.error.message,
+        );
+      }
+    }
 
     if (error.code === "PT429") {
       // THE BUDGET REFUSAL -- the trigger's `hint` is the real remainder of
       // the fixed hour, rendered as a human duration rather than raw seconds.
+      // (Reachable only in the race between the pre-check above and the
+      // trigger, or when the pre-check was wrong; either way the sentence is
+      // the same one.)
       const seconds = Number(error.hint);
-      return {
-        error: `Too many feedback submissions just now. Try again in ${formatRetryAfter(
-          Number.isFinite(seconds) ? seconds : 3600,
-        )}.`,
-        values: echoedValues(formData),
-      };
+      if (!Number.isFinite(seconds) || seconds <= 0) {
+        // The trigger always sets hint; a missing one is a bug worth seeing,
+        // not a silent over-statement of the wait by up to an hour.
+        console.error("[feedback] PT429 arrived without a usable hint; rendering the whole window:", error.hint);
+      }
+      return budgetRefusal(
+        Number.isFinite(seconds) && seconds > 0 ? seconds : FEEDBACK_WINDOW_SECONDS,
+        formData,
+      );
     }
     if (error.code === "42501") {
       return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
@@ -214,8 +305,8 @@ export async function submitFeedbackAction(
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
 
-  // ---- the founder's receipt -- after the row, never gating it ---------------
-  await notifyFounderOfFeedback({
+  // ---- the founder's receipt -- after the RESPONSE, never gating it ----------
+  const notification = {
     feedbackId,
     category,
     message,
@@ -226,7 +317,8 @@ export async function submitFeedbackAction(
     organisationRole: org?.role ?? null,
     userAgent: userAgent === "" ? null : userAgent,
     screenshot: screenshot?.status ?? "none",
-  });
+  } as const;
+  after(() => notifyFounderOfFeedback(notification));
 
   if (screenshot?.status === "quarantined") return { message: RECORDED_QUARANTINED };
   if (screenshot?.status === "error") return { message: RECORDED_UNSCANNED };

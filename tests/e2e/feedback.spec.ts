@@ -4,6 +4,7 @@ import {
   PASSWORD,
   clearFeedbackState,
   countFeedbackAudit,
+  countFeedbackScreenshotObjects,
   feedbackRowByMessage,
   fillFeedbackBudget,
   plantFeedback,
@@ -192,7 +193,7 @@ test("a member sends feedback from a record page and the superuser reads, opens 
 // ===========================================================================
 // THE REFUSAL IS A REAL REFUSAL THE UI EXPLAINS, IN HUMAN TIME
 // ===========================================================================
-test("an exhausted feedback budget is refused with a human wait, not raw seconds", async ({ page }) => {
+test("an exhausted feedback budget is refused with a human wait, not raw seconds -- and writes NO screenshot bytes", async ({ page }) => {
   await fillFeedbackBudget(world.users.standard_user.id);
   await signIn(page, world, "standard_user");
   await page.goto(`/${world.orgSlug}`);
@@ -200,6 +201,12 @@ test("an exhausted feedback budget is refused with a human wait, not raw seconds
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel(/Category/).selectOption("idea");
   await dialog.getByLabel(/Message/).fill("E2E eleventh submission");
+  // Fix round 1 (I1): a screenshot is ATTACHED to the refused submission,
+  // and the bucket is counted before and after. The first cut uploaded it
+  // (5 MiB through the service-role client, then a scan) before the metered
+  // insert refused the row, so a spent budget could still burn storage.
+  await page.locator("#feedback-screenshot").setInputFiles({ name: "shot.png", mimeType: "image/png", buffer: PNG });
+  const objectsBefore = await countFeedbackScreenshotObjects();
   await dialog.getByRole("button", { name: "Send feedback" }).click();
   const alert = dialog.getByRole("alert");
   await expect(alert).toContainText("Too many feedback submissions");
@@ -207,6 +214,10 @@ test("an exhausted feedback budget is refused with a human wait, not raw seconds
   await expect(alert).toContainText(/Try again in \d+ (minute|minutes|hour|hours)\./);
   await expect(alert).not.toContainText(/\d{3,} seconds/);
   expect(await feedbackRowByMessage("E2E eleventh submission")).toBeNull();
+  expect(
+    await countFeedbackScreenshotObjects(),
+    "a refused submission must not touch storage.objects -- not even transiently",
+  ).toBe(objectsBefore);
 });
 
 // ===========================================================================
@@ -226,11 +237,20 @@ test("an aal1 superuser session reaches no feedback", async ({ page }) => {
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.getByRole("heading", { name: "Enter your two-factor code" })).toBeVisible();
     await page.goto("/super/feedback");
+    // The MFA interstitial replaces the whole of <main>, so "the planted row
+    // is not on the page" would be true of ANY page and proves nothing
+    // (fix round 1, M6). What proves the page refused is that the list's own
+    // chrome -- its h1 and its search control -- is absent while the
+    // challenge is up, and that the title carries nothing of it.
     await expect(page.getByRole("heading", { name: "Enter your two-factor code" })).toBeVisible();
-    await expect(page.getByText("E2E aal1 probe row")).toHaveCount(0);
-    // And the screenshot route is a literal 404 for the same session.
+    await expect(page.getByRole("heading", { name: "Feedback", level: 1 })).toHaveCount(0);
+    await expect(page.locator("body")).not.toContainText("Search feedback");
+    await expect(page).not.toHaveTitle(/Feedback/);
+    // THE LOAD-BEARING ASSERTION: the screenshot route -- a route handler,
+    // so a literal 404 -- for the same aal1 session, with no audit row.
     const res = await page.request.get(`/super/feedback/${planted}/screenshot`);
     expect(res.status()).toBe(404);
+    expect(await countFeedbackAudit("feedback.screenshot_viewed", planted)).toBe(0);
   } finally {
     // cleared in afterAll with everything else
   }
