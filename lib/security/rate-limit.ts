@@ -34,7 +34,7 @@ import "server-only";
 // A consume that ERRORS refuses the request, the same direction every gate
 // in this codebase fails (isSuperuser(), the MFA gate, the impersonation
 // page-view audit). The categories metered here are retryable conveniences
-// -- a search, a directory browse, a feedback submit -- so the cost of a
+// -- a search, a directory browse -- so the cost of a
 // false refusal is a retry, while failing open turns any limiter outage into
 // exactly the unmetered state SECURITY.md § 5 exists to close. Logged loudly
 // so a real outage reads as a spike of refusals in the server log, not a
@@ -72,18 +72,21 @@ import { createClient } from "@/lib/supabase/server";
  * what let an incident alert be attributed to a workspace the caller merely
  * named (fix round 1, review finding I1).
  *
- * 'network_connection_request' IS DELIBERATELY ABSENT, though the category
- * exists in `public.rate_limit_policies`. Q79/Q112's budget is enforced in the
- * database at the INSERT (`private.meter_connection_request()`,
+ * 'network_connection_request' AND 'feedback' ARE DELIBERATELY ABSENT, though
+ * both categories exist in `public.rate_limit_policies`. Q79/Q112's budget is
+ * enforced in the database at the INSERT (`private.meter_connection_request()`,
  * `20260909060000`) so that it binds every writer including a direct
  * PostgREST POST -- and a second, app-side meter beside it would spend two
- * units per click and silently halve the shipped limit. Leaving the name out
- * of this union is what stops one being added back by accident.
+ * units per click and silently halve the shipped limit. Phase 7 Task 6 gave
+ * the feedback budget the same shape for the same reason
+ * (`private.feedback_before_insert()`, `20260911000000`): `public.feedback`
+ * carries a client INSERT grant, so the meter lives where every writer
+ * passes, and `submitFeedbackAction` does NOT call this. Leaving both names
+ * out of this union is what stops one being added back by accident.
  */
 export type RateLimitCategory =
   | "search"
   | "network_discovery"
-  | "feedback"
   | "exports";
 
 export type RateLimitVerdict =
@@ -92,9 +95,9 @@ export type RateLimitVerdict =
 
 /**
  * When the RPC itself fails we cannot know the real window's remainder, so
- * the refusal advises the longest window any per-user category uses (60s for
- * search/discovery -- feedback's is longer, but a shorter hint only costs an
- * earlier retry that the recovered limiter will answer honestly).
+ * the refusal advises the longest window any per-user category consumed HERE
+ * uses (60s for search/discovery; the hour-long budgets are metered in the
+ * database and carry their own remainder in the refusal's `hint`).
  */
 const FAIL_CLOSED_RETRY_SECONDS = 60;
 

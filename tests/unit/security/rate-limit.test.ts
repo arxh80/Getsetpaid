@@ -161,7 +161,7 @@ describe("consumeRateLimit — FAILING CLOSED", () => {
   it("refuses when the RPC returns null", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     returns(null);
-    await expect(consumeRateLimit("feedback")).resolves.toEqual(FAIL_CLOSED);
+    await expect(consumeRateLimit("network_discovery")).resolves.toEqual(FAIL_CLOSED);
   });
 
   it("refuses when `allowed` is missing", async () => {
@@ -206,10 +206,13 @@ describe("consumeRateLimit — the retry hint is never nonsense", () => {
   });
 
   it("does NOT fall back for a legitimately large remainder", async () => {
-    // feedback's window is an hour; a 3599-second remainder is correct there
+    // exports' window is an hour; a 3599-second remainder is correct there
     // and must survive, or the hint would under-report by a factor of 60.
+    // (feedback used to be the example here; since Phase 7 Task 6 its budget
+    // is metered in the database at the INSERT and is no longer a category
+    // this function accepts -- see RateLimitCategory.)
     returns([{ allowed: false, retry_after_seconds: 3599 }]);
-    await expect(consumeRateLimit("feedback")).resolves.toEqual({
+    await expect(consumeRateLimit("exports", "00000000-0000-4000-8000-000000000001")).resolves.toEqual({
       allowed: false,
       retryAfterSeconds: 3599,
     });
