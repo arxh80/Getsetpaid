@@ -2760,9 +2760,30 @@ before the first real consumer exists rather than alongside it.
   a non-modal banner wrapping a countdown that updates every 5s). Real WCAG 2.2
   AA concerns, and both need a screen reader to validate the fix. Do not "fix"
   them blind first — a change nobody can hear is not an improvement.
-- **Google SSO has never completed a real sign-in.** The code path and its CSP
-  allowances are written and the redirect chain runs un-blocked, but no OAuth
-  credentials exist. Exercise it end to end once they do.
+- **Google SSO completed a real sign-in on 2026-09-09** against the hosted
+  project: `POST /login` -> `signInWithGoogleAction` -> `GET /auth/callback?code=`
+  303 -> `/` 307 -> the org workspace 200. The auth-provisioning trigger fired
+  and placed the account in its organisation. Two things that cost time and are
+  not obvious from the code:
+  - **`env()` in `supabase/config.toml` is resolved at `supabase start`, not per
+    request.** A stack started before `.env` existed sent Google the literal
+    string `env(GOOGLE_OAUTH_CLIENT_ID)`, and the only visible symptom was a
+    failed sign-in. Restart the stack after touching either value.
+  - **It hung indefinitely in a normal Chrome profile and worked first try in
+    incognito**, with identical config on both sides — so a browser extension or
+    stale Google cookies, not the app. Worth remembering before debugging the
+    server again: CSP, credentials and provider config were all verified good
+    while the profile was still hanging.
+  Still unexercised: sign-in against the **local** stack (only the hosted
+  project has been driven end to end), and any Playwright coverage — the flow
+  needs a real Google account, so it stays a manual check.
+- **The hosted project's Site URL is `http://127.0.0.1:3000`** while the app and
+  `NEXT_PUBLIC_SITE_URL` use `http://localhost:3000`. Different origins to a
+  browser. It does not break sign-in — `http://localhost:3000/**` is in the
+  redirect allow-list, which is what the successful run used — but it is the
+  fallback GoTrue redirects to when a flow errors before `redirect_to` is
+  recoverable, so an auth failure lands the user on an origin with no session
+  cookies. Align the two before the first real deployment.
 - **HSTS and `upgrade-insecure-requests` are gated on an https site URL** and so
   are unexercised locally. Verify from response headers on the first real
   deployment.
