@@ -182,7 +182,66 @@ describe("every paginated list shares one implementation", () => {
     // the tree holds; raising it is the obligation.
     // THIRTY as of Phase 5 Task 2: the finance list on the event detail page,
     // loaded by loadFinancialEntriesForEvent in lib/crm/finance-queries.ts.
-    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(30);
+    //
+    // =======================================================================
+    // TWENTY-SIX, AND THE FLOOR WENT DOWN FOR THE FIRST TIME. READ THIS BEFORE
+    // LOWERING IT AGAIN
+    // =======================================================================
+    // Every previous edit RAISED this number, and the comment above is
+    // emphatic that raising it is the obligation. This one lowers it, which is
+    // exactly the move that should make a reviewer suspicious: a census
+    // satisfied by a smaller codebase is usually a census that has stopped
+    // counting something.
+    //
+    // It is not, here, and the reason is checkable rather than asserted. The
+    // fourteen list ROUTES that used to write `fetchListPage<` out themselves
+    // -- nine restore queues and the five relationship-layer lists -- now
+    // delegate to components/list/deleted-records-page.tsx and
+    // components/list/entity-list-page.tsx, which write it once each. Fourteen
+    // occurrences became two. NO LIST SURFACE WAS REMOVED; the same fourteen
+    // routes render the same fourteen lists.
+    //
+    // So an occurrence count is no longer a proxy for surface area, and the
+    // assertion below it is what keeps the teeth: the delegating routes are
+    // counted DIRECTLY, and the two factories must themselves be call sites.
+    // Deleting a list route, or quietly detaching one from its factory, still
+    // reddens -- which is the property this test exists for.
+    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(26);
+  });
+
+  it("the list-page factories are call sites, and their routes are counted", () => {
+    // The other half of the floor above, after consolidation. A route that
+    // delegates renders a paginated list just as surely as one that calls
+    // `fetchListPage` itself, and is just as much a thing this suite is meant
+    // to be counting -- it simply no longer looks like one to a text search.
+    const FACTORIES = [
+      "components/list/deleted-records-page.tsx",
+      "components/list/entity-list-page.tsx",
+    ];
+    for (const factory of FACTORIES) {
+      expect(
+        byPath(factory),
+        `${factory} must call fetchListPage -- it is the shared cursor for ` +
+          "every route that delegates to it",
+      ).toContain("fetchListPage<");
+    }
+
+    // FOURTEEN: nine restore queues (contacts, companies, artists, agencies,
+    // venues, events, tasks, meetings, notes) and the five relationship-layer
+    // lists. `documents/deleted` is deliberately NOT among them -- see
+    // deleted-records-page.tsx -- and still calls fetchListPage itself, so it
+    // is already counted by the floor above.
+    const delegating = SOURCES.filter(
+      (f) =>
+        f.path.startsWith("app/") &&
+        (code(f.text).includes("entityListPage(") ||
+          code(f.text).includes("deletedRecordsPage(")),
+    );
+    expect(
+      delegating.length,
+      "routes delegating to a list-page factory. Raising this when a list is " +
+        "added is the same obligation as raising the floor above.",
+    ).toBeGreaterThanOrEqual(14);
   });
 
   it("every fetchListPage caller also parses its params through lib/list", () => {
