@@ -5,8 +5,8 @@ plug in at different layers.
 
 | Path | What it sends | Configured where |
 |---|---|---|
-| **Supabase Auth SMTP** | signup confirm, magic link, password reset, invites | Supabase (custom SMTP) — no app code |
-| **App transactional** | in-app feedback receipt to founder, incident alerts (Phase 7) | `lib/email/send.ts` — Brevo HTTP API |
+| **Supabase Auth SMTP** | signup confirm, magic link, password reset, invites | Supabase (custom SMTP) — no app code. **Not configured yet**: neither the hosted project nor `supabase/config.toml` points Auth at Brevo today (§ 3 is a to-do) |
+| **App transactional** | in-app feedback receipt to founder, incident alerts (Phase 7) | `lib/email/send.ts` — Brevo HTTP API. **Built** |
 
 Provider: **Brevo** — free tier 300 emails/day, EU-based. Chosen for UK/EU data
 residency (CLAUDE.md § International transfers) plus a free tier that covers MVP
@@ -54,7 +54,11 @@ Deliverability depends on it — without SPF/DKIM/DMARC, mail lands in spam.
    }
    ```
    The helper returns a typed result and never throws, so a mail failure cannot
-   take down the action that triggered it.
+   take down the action that triggered it. Every call carries a 10-second
+   timeout (`BREVO_TIMEOUT_MS`): a Brevo endpoint that accepts the connection
+   and never answers comes back as `ok: false` with a "did not answer" reason,
+   not a hung caller. The feedback receipt runs after the submission's
+   response (`after()` from `next/server`), so the submitter never waits on it.
 
 ## 3. Supabase Auth custom SMTP (production)
 
@@ -74,8 +78,10 @@ Auth at Brevo's SMTP relay so auth emails come from your domain.
   ```
 - Local dev uses Inbucket (Supabase's local mail catcher) — no Brevo needed
   locally; this custom SMTP is a hosted-project setting.
-- `supabase/config.toml` has an `[auth.email.smtp]` block for the same values if
-  you prefer config-as-code; keep the password out of git (use `env(...)`).
+- `supabase/config.toml` carries only the CLI's commented-out `[auth.email.smtp]`
+  example (a SendGrid placeholder); nothing there points at Brevo. If you
+  prefer config-as-code, uncomment it with the values above and keep the
+  password out of git (use `env(...)`).
 
 ## 4. Compliance (before real personal data flows)
 
