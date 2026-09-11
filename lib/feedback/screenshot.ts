@@ -17,6 +17,14 @@ import "server-only";
 //                       feedback_select_platform decides (aal2 superuser only,
 //                       inside retention); nothing -> 404, no existence leak
 //   3. the verdict   -- anything but `clean` -> 409 (the quarantine gate)
+//   3b. the bytes    -- the object must EXIST in the bucket, checked through
+//                       the service-role Storage client BEFORE the audit, so
+//                       a row whose bytes are missing is a 404 with no audit
+//                       row rather than an audit row followed by a 500 (fix
+//                       round 1, finding M1). The trigger now refuses a
+//                       session writer declaring a key with no object behind
+//                       it (20260911020000); this covers what the trigger
+//                       cannot -- bytes that were there and are gone.
 //   4. THE AUDIT     -- public.audit_feedback_screenshot_view(), a guarded
 //                       SECURITY DEFINER RPC that writes feedback.screenshot_viewed
 //                       with the actor forced to auth.uid(); if it refuses or
@@ -74,6 +82,28 @@ export async function issueFeedbackScreenshotUrl(
     return { ok: false, status: 409, reason: WITHHELD };
   }
 
+  // THE BYTES, BEFORE THE AUDIT. An audit row must record a view that can
+  // happen; a key with nothing behind it is "not found", not "viewed".
+  const bucket = createStorageClient().storage.from(BUCKET);
+  // storage-js's exists(): {data:true} when the HEAD succeeds, {data:false,
+  // error} on a 404 (the error is SET in that case, so it is not the
+  // failure branch), and a throw for anything else.
+  let present: { data: boolean | null; error: { message: string } | null };
+  try {
+    present = await bucket.exists(data.screenshot_key as string);
+  } catch (cause) {
+    console.error("[feedback] screenshot existence check threw; withholding the URL:", cause instanceof Error ? cause.message : String(cause));
+    return { ok: false, status: 500 };
+  }
+  if (present.data === false) {
+    console.error(`[feedback] row ${feedbackId} names screenshot ${data.screenshot_key} but no object exists; no audit row written`);
+    return { ok: false, status: 404 };
+  }
+  if (present.error || present.data !== true) {
+    console.error("[feedback] screenshot existence check failed; withholding the URL:", present.error?.message ?? "no answer");
+    return { ok: false, status: 500 };
+  }
+
   // THE AUDIT, BEFORE THE URL. A refused or failed audit withholds the file.
   const audit = await supabase.rpc("audit_feedback_screenshot_view", {
     p_feedback_id: feedbackId,
@@ -83,9 +113,7 @@ export async function issueFeedbackScreenshotUrl(
     return { ok: false, status: 500 };
   }
 
-  const signed = await createStorageClient()
-    .storage.from(BUCKET)
-    .createSignedUrl(data.screenshot_key as string, SIGNED_URL_TTL_SECONDS);
+  const signed = await bucket.createSignedUrl(data.screenshot_key as string, SIGNED_URL_TTL_SECONDS);
   if (signed.error || !signed.data?.signedUrl) {
     console.error("[feedback] createSignedUrl failed:", signed.error?.message ?? "no URL");
     return { ok: false, status: 500 };

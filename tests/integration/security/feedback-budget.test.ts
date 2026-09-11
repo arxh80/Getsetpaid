@@ -112,6 +112,34 @@ describe("feedback over the raw PostgREST path", () => {
     // Neither refusal spent budget: the counter reads exactly the one accepted row.
     expect(await counterCount(persona.userId)).toBe(1);
 
+    // Fix round 1 (I1): the pre-check the app runs before any Storage I/O is a
+    // READ of that same counter, from the caller's own session -- and it
+    // reports the caller's budget, not a parameter's.
+    const budget = await persona.client.rpc("feedback_budget_remaining").single();
+    expect(budget.error).toBeNull();
+    expect((budget.data as { remaining: number }).remaining).toBe(MAX - 1);
+    // Reading it spent nothing.
+    expect(await counterCount(persona.userId)).toBe(1);
+
+    // M1: a DECLARED screenshot with no object behind it is refused at the
+    // trigger, verdict and all -- the row cannot say "clean" about bytes that
+    // do not exist. The key passes the shape CHECK (it is this row's own id).
+    const declaredId = crypto.randomUUID();
+    const declared = await persona.client.from("feedback").insert({
+      id: declaredId,
+      organisation_id: fx.orgA.id,
+      category: "bug",
+      message: "declared screenshot",
+      route: "/",
+      screenshot_key: `feedback/${declaredId}`,
+      screenshot_mime: "image/png",
+      screenshot_size_bytes: 10,
+      screenshot_scan_status: "clean",
+      screenshot_scanned_at: new Date().toISOString(),
+    });
+    expect(declared.error?.code).toBe("42501");
+    expect(await counterCount(persona.userId), "a refused declaration spends nothing").toBe(1);
+
     // And the submitter reads nothing back, their own row included.
     const { data } = await persona.client.from("feedback").select("id");
     expect(data).toEqual([]);
@@ -142,6 +170,16 @@ describe("feedback over the raw PostgREST path", () => {
     expect(Number(eleventh.error?.hint)).toBeGreaterThan(0);
     expect(Number(eleventh.error?.hint)).toBeLessThanOrEqual(WINDOW);
 
+    // Fix round 1 (I1): the app's pre-check now reads 0 for this session, with
+    // the same remainder the trigger put in `hint` -- so the refusal it
+    // renders BEFORE touching storage is the same sentence.
+    const spent = await persona.client.rpc("feedback_budget_remaining").single();
+    expect(spent.error).toBeNull();
+    const budget = spent.data as { remaining: number; retry_after_seconds: number };
+    expect(budget.remaining).toBe(0);
+    expect(budget.retry_after_seconds).toBeGreaterThan(0);
+    expect(budget.retry_after_seconds).toBeLessThanOrEqual(WINDOW);
+
     const { rows } = await pool.query(`select count(*)::int as n from public.feedback where user_id = $1`, [persona.userId]);
     expect(rows[0].n).toBe(MAX);
     expect(await counterCount(persona.userId)).toBe(MAX);
@@ -154,5 +192,14 @@ describe("feedback over the raw PostgREST path", () => {
     expect(alerts.rows).toHaveLength(1);
     expect(alerts.rows[0].organisation_id).toBeNull();
     expect(alerts.rows[0].details.subject_scope).toBe("user");
+  });
+
+  it("the budget read is a session's own: anon has no EXECUTE on it", async () => {
+    const { rows } = await pool.query(
+      `select has_function_privilege('anon', 'public.feedback_budget_remaining()', 'EXECUTE') as anon,
+              has_function_privilege('service_role', 'public.feedback_budget_remaining()', 'EXECUTE') as svc,
+              has_function_privilege('authenticated', 'public.feedback_budget_remaining()', 'EXECUTE') as authed`,
+    );
+    expect(rows[0]).toEqual({ anon: false, svc: false, authed: true });
   });
 });

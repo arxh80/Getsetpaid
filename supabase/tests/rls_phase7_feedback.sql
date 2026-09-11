@@ -119,6 +119,9 @@ select gen_random_uuid()::text as fa_shot \gset
 select gen_random_uuid()::text as fa_old  \gset
 select gen_random_uuid()::text as fa_quar \gset
 select gen_random_uuid()::text as fi_forge \gset
+-- Fix round 1 (M1): one key with NO object behind it, one WITH.
+select gen_random_uuid()::text as fi_declared \gset
+select gen_random_uuid()::text as fi_withobj  \gset
 select count(*)::text as alerts_before from public.incident_alerts \gset
 select count(*)::text as audit_before  from public.audit_events where target_type='feedback' \gset
 \o
@@ -174,8 +177,17 @@ select fb.val('FP4 authenticated may UPDATE exactly one column: status',
        and grantee='authenticated' and privilege_type='UPDATE'$$, 'status');
 select fb.val('FP5 authenticated holds no DELETE',
   $$select has_table_privilege('authenticated','public.feedback','DELETE')::text$$, 'false');
-select fb.val('FP6 service_role may SELECT (the sender reads what to email)',
-  $$select has_table_privilege('service_role','public.feedback','SELECT')::text$$, 'true');
+-- Fix round 1 (M2): the sender never reads a row -- its one UPDATE matches on
+-- id and notified_at, and that is ALL it may select. A whole-table SELECT on
+-- a BYPASSRLS role was a read of message/user_email/route across every
+-- workspace and past retention.
+select fb.val('FP6 service_role may SELECT exactly id and notified_at (what its UPDATE''s WHERE needs)',
+  $$select string_agg(column_name, ',' order by column_name)
+      from information_schema.column_privileges
+     where table_schema='public' and table_name='feedback'
+       and grantee='service_role' and privilege_type='SELECT'$$, 'id,notified_at');
+select fb.val('FP6b ...and holds NO table-level SELECT (20260911030000 narrowed it)',
+  $$select has_table_privilege('service_role','public.feedback','SELECT')::text$$, 'false');
 select fb.val('FP7 service_role may UPDATE notified_at alone',
   $$select string_agg(column_name, ',' order by column_name)
       from information_schema.column_privileges
@@ -282,6 +294,42 @@ select fb.val('FI14b no refused forgery left an audit row behind',
 select fb.val('FI14c no refused forgery left a row behind',
   format($$select count(*)::text from public.feedback where id=%L$$, :'fi_forge'), '0');
 
+-- FIX ROUND 1, FINDING M1: "the row says there is a screenshot" must mean
+-- "the server put bytes there". A session writer may not DECLARE a key (and
+-- with it a scan verdict) that no object backs. The key below passes the
+-- shape CHECK (it is the row's own id), so what refuses it is the trigger's
+-- new storage.objects existence test -- and, because it runs before the
+-- meter, the refusal spends nothing.
+\o /dev/null
+insert into storage.objects (bucket_id, name)
+values ('feedback-screenshots', 'feedback/' || :'fi_withobj');
+\o
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select fb.try('FI22 DECLARED SCREENSHOT: a clean verdict with NO object behind the key is refused (42501)',
+  format($$insert into public.feedback (id, organisation_id, category, message, route,
+             screenshot_key, screenshot_mime, screenshot_size_bytes, screenshot_scan_status, screenshot_scanned_at)
+           values (%L, %L, 'bug', 'phantom clean', '/org-alpha', 'feedback/%s', 'image/png', 10, 'clean', now())$$,
+         :'fi_declared', :'alpha_org', :'fi_declared'), 'denied(42501)');
+select fb.try('FI22b ...and a QUARANTINED verdict with no object is refused too (no phantom alert)',
+  format($$insert into public.feedback (id, organisation_id, category, message, route,
+             screenshot_key, screenshot_mime, screenshot_size_bytes, screenshot_scan_status, screenshot_scanned_at)
+           values (%L, %L, 'bug', 'phantom quarantine', '/org-alpha', 'feedback/%s', 'image/png', 10, 'quarantined', now())$$,
+         :'fi_declared', :'alpha_org', :'fi_declared'), 'denied(42501)');
+select fb.try('FI23 CONTROL: the same INSERT with an object under the key is accepted',
+  format($$insert into public.feedback (id, organisation_id, category, message, route,
+             screenshot_key, screenshot_mime, screenshot_size_bytes, screenshot_scan_status, screenshot_scanned_at)
+           values (%L, %L, 'bug', 'real screenshot', '/org-alpha', 'feedback/%s', 'image/png', 10, 'clean', now())$$,
+         :'fi_withobj', :'alpha_org', :'fi_withobj'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select fb.val('FI22c the phantom quarantine filed NO upload_quarantined alert',
+  format($$select count(*)::text from public.incident_alerts where details->>'feedback_id'=%L$$, :'fi_declared'), '0');
+select fb.val('FI22d ...and left no row',
+  format($$select count(*)::text from public.feedback where id=%L$$, :'fi_declared'), '0');
+select fb.val('FI23b the meter charged the accepted screenshot row and neither refused declaration (3 in all)',
+  format($$select request_count::text from public.rate_limit_counters
+            where category='feedback' and subject_scope='user' and subject_id=%L$$, :'pstd1'), '3');
+
 -- anon and sessionless writers.
 set role anon;
 select fb.try('FI20 anon cannot insert at all',
@@ -295,7 +343,7 @@ select fb.try('FI21 a SESSIONLESS writer (postgres fixture) inserts with an expl
 select fb.val('FI21b ...and it audited nothing and metered nothing (no actor to attribute)',
   format($$select (select count(*) from public.audit_events where target_id=%L)::text || '/' ||
                   (select request_count from public.rate_limit_counters
-                    where category='feedback' and subject_id=%L)::text$$, :'fi_c', :'pstd1'), '0/2');
+                    where category='feedback' and subject_id=%L)::text$$, :'fi_c', :'pstd1'), '0/3');
 
 -- ===========================================================================
 -- § FR  SELECT -- who reads what
@@ -328,11 +376,23 @@ reset role; reset request.jwt.claims;
 \o /dev/null
 insert into public.feedback (id, user_id, organisation_id, category, message, route, created_at)
 values (:'fi_old', :'pstd1', :'alpha_org', 'bug', 'ancient', '/', now() - interval '3 years');
+-- Fix round 1 (M6): FR4 is a PROPERTY, not a count of a fixed id list. The
+-- expected value is what postgres sees inside retention; the superuser must
+-- read exactly that many of pstd1's rows and none of the expired ones.
+select count(*)::text as fr4_expected from public.feedback
+ where user_id=:'pstd1' and created_at >= private.feedback_retention_cutoff() \gset
+select count(*)::text as fr4_expired from public.feedback
+ where user_id=:'pstd1' and created_at < private.feedback_retention_cutoff() \gset
 \o
+select fb.val('FR4d CONTROL: at least one of pstd1''s rows is past retention, so FR4/FR4c measure the clock',
+  format($$select (%L::int >= 1)::text$$, :'fr4_expired'), 'true');
 set role authenticated;
 set request.jwt.claims = :'super_c';
-select fb.val('FR4 the aal2 superuser reads the workspace row, the workspace-less row and the planted row',
-  format($$select count(*)::text from public.feedback where id in (%L,%L,%L)$$, :'fi_a', :'fi_b', :'fi_c'), '3');
+select fb.val('FR4 the aal2 superuser reads exactly pstd1''s IN-RETENTION rows -- as many as postgres counts',
+  format($$select count(*)::text from public.feedback where user_id=%L$$, :'pstd1'), :'fr4_expected');
+select fb.val('FR4c ...and none of pstd1''s rows past the cutoff',
+  format($$select count(*)::text from public.feedback
+            where user_id=%L and created_at < private.feedback_retention_cutoff()$$, :'pstd1'), '0');
 select fb.val('FR4b ...with its stamped email, role and route',
   format($$select (user_email is not null and organisation_role='standard_user' and route='/org-alpha/venues')::text
             from public.feedback where id=%L$$, :'fi_a'), 'true');
@@ -404,6 +464,10 @@ select fb.val('FU10b the widened grant is revoked again',
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'pstd2_c';
+-- Fix round 1 (I1): the READ the app runs before any Storage I/O. A fresh
+-- budget reads the whole limit; reading it spends nothing (FM3 still holds).
+select fb.val('FM0 feedback_budget_remaining() reads the whole limit for a fresh session',
+  $$select remaining::text from public.feedback_budget_remaining()$$, '10');
 select fb.try('FM1 ten submissions in one window are accepted (one multi-row INSERT, trigger per row)',
   format($$insert into public.feedback (id, organisation_id, category, message, route)
            select gen_random_uuid(), %L, 'idea', 'burst ' || g, '/org-alpha'
@@ -414,7 +478,25 @@ select fb.try('FM2 the eleventh is refused with PT429 -- a real HTTP 429 through
 select fb.try('FM2b ...and again (repeatable, nothing rolled back that mattered)',
   format($$insert into public.feedback (id, organisation_id, category, message, route)
            values (gen_random_uuid(), null, 'idea', 'twelfth', '/')$$), 'denied(PT429)');
+select fb.val('FM8 ...and the pre-check now reads 0 for this session (the app refuses before touching storage)',
+  $$select remaining::text from public.feedback_budget_remaining()$$, '0');
+select fb.val('FM8b ...with the same remainder the trigger put in hint: 0 < retry <= 3600',
+  $$select (retry_after_seconds > 0 and retry_after_seconds <= 3600)::text from public.feedback_budget_remaining()$$, 'true');
 reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+select fb.val('FM8c the read is the CALLER''s own budget: pstd1 (3 accepted) reads 7, not pstd2''s 0',
+  $$select remaining::text from public.feedback_budget_remaining()$$, '7');
+reset role; reset request.jwt.claims;
+set role anon;
+select fb.try('FM9 anon cannot read a budget (no EXECUTE)',
+  $$select * from public.feedback_budget_remaining()$$, 'denied(42501)');
+reset role;
+select fb.try('FM9b a SESSIONLESS caller is refused (fail closed: no session, no budget)',
+  $$select * from public.feedback_budget_remaining()$$, 'denied(42501)');
+select fb.val('FM10 the pre-check is STABLE (a read, cannot spend) and SECURITY DEFINER (clients cannot read counters)',
+  $$select provolatile || '/' || prosecdef::text from pg_proc
+     where oid='public.feedback_budget_remaining()'::regprocedure$$, 's/true');
 select fb.val('FM3 the counter reads exactly the limit -- refusals are NOT counted (Q115, second instance)',
   format($$select request_count::text from public.rate_limit_counters
             where category='feedback' and subject_scope='user' and subject_id=%L$$, :'pstd2'), '10');
@@ -524,7 +606,10 @@ delete from public.incident_alerts
 delete from public.audit_events where target_type='feedback';
 delete from public.feedback where user_id in (:'pstd1', :'pstd2');
 delete from public.rate_limit_counters where category='feedback' and subject_id in (:'pstd1', :'pstd2');
+delete from storage.objects where bucket_id='feedback-screenshots' and name='feedback/' || :'fi_withobj';
 \o
+select fb.val('FZ6 the planted storage object is gone',
+  format($$select count(*)::text from storage.objects where bucket_id='feedback-screenshots' and name='feedback/%s'$$, :'fi_withobj'), '0');
 select fb.val('FZ1 no feedback rows this suite created remain',
   format($$select count(*)::text from public.feedback where user_id in (%L,%L)$$, :'pstd1', :'pstd2'), '0');
 select fb.val('FZ2 no feedback counters remain',
