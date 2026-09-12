@@ -2780,21 +2780,19 @@ next person does not have to re-derive it.
   control; it no longer is. The data was always *in* the table and erasure
   always had to purge it — what changed is that nothing now hides it in the
   meantime. Same 30-day statutory clock as the entry above.
-- **Full CRM write auditing** — INSERT and UPDATE on all twelve tables, which
-  fix round 1 deliberately did not build (only the two hard DELETEs and merges
-  are audited). Needs a before/after diff design plus a retention answer for
-  the diffs. See `SECURITY.md` § 7, "CRM writes: what is audited today, and
-  what is not". **RESCHEDULED 2026-09-08 (Phase 7 Task 1, fix round 1,
-  Important 3).** This entry used to say "belongs with the audit log
-  viewer" — the viewer shipped in Task 1 (`/super/audit-log`, reading the
-  existing `audit_events` table) and this entry does not; "belongs with"
-  was never a build obligation on the viewer itself (the viewer's own brief
-  never asked for it), but leaving the sentence unchanged after the viewer
-  landed made it read as a promise nothing was keeping. **Now scheduled as
-  its own line-item, Phase 7 Task 6b, after Task 6 (in-app feedback) and
-  before Task 7 (permission tests)** — see `progress.md`'s task list and
-  DECISIONS-QUEUE.md Q94 for the deferral and its recommended default.
-  `SECURITY.md` § 7 is corrected to match.
+- **Full CRM write auditing — DONE 2026-09-12 (Phase 7 Task 6b,
+  `20260912000000` + `20260912001000`).** INSERT and UPDATE on all eleven
+  mutable Phase 2 tables are audited by trigger (the twelfth, `merges`, is
+  append-only and its INSERT was already audited); the before/after diff
+  design is name-only with a per-table structural allowlist in ONE function
+  (`private.audit_crm_value_columns()`), soft-delete/restore are their own
+  actions, the four multi-row RPCs share one correlation id per call, and
+  the retention/volume answer is measured (216 bytes per row, ~0.36 ms per
+  row of trigger cost, no per-table opt-out). Everything is in
+  `SECURITY.md` § 7, "Every CRM INSERT and UPDATE is audited too". **What
+  this did not do:** the Phase 3–6 tables (events, lineup, tasks, meetings,
+  notes, documents, links, financial entries) carry no INSERT/UPDATE audit —
+  Q94 scoped this to "the twelve" and the extension is queued as Q122.
 - **Restore-from-audit is not possible, by design.** The audit payload is an
   allowlist of identifiers — `private.audit_crm_payload()` drops
   `custom_field_values.value` and `merges.field_resolution` — because

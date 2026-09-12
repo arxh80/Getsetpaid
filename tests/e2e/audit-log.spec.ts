@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
   countAuditLogViewedRows,
@@ -6,7 +7,7 @@ import {
   tearDownWorld,
   type E2eWorld,
 } from "./support/fixtures";
-import { signIn } from "./support/sign-in";
+import { signIn, signOut } from "./support/sign-in";
 import { totpCode } from "../support/totp";
 
 // PHASE 7 TASK 1: THE SUPERUSER AUDIT LOG VIEWER, THROUGH THE BROWSER.
@@ -277,4 +278,78 @@ test("a Next.js Link prefetch of the pager's own href does not mint a spurious s
     after,
     "exactly ONE self-audit row -- the page's own real render -- must exist; a second would mean the pager's prefetchable Next link minted an unaudited-in-intent, audited-in-fact row nobody actually viewed",
   ).toBe(before + 1);
+});
+
+// ===========================================================================
+// PHASE 7 TASK 6b: A MEMBER'S ORDINARY CRM EDIT REACHES THE FOUNDER'S LOG BY
+// ITS OWN ACTION NAME -- AND NOTHING THE MEMBER TYPED COMES WITH IT.
+// ===========================================================================
+// The database triggers (20260912000000) are proved at the SQL layer by
+// rls_phase7_crm_audit.sql and over raw PostgREST by
+// tests/integration/security/crm-audit-no-content-leak.test.ts. This walk
+// is the third write path the brief names -- the SERVER ACTION, i.e. the
+// real edit form a Manager uses -- and the founder's side of it: the row
+// exists under `contact.updated` (populated, not the empty state), the
+// soft-delete lands under `contact.soft_deleted` rather than being buried as
+// an update, the diff names the changed columns, and the sentinel the
+// Manager typed is NOWHERE on the page. That last assertion is the whole
+// point of the design: the audit log is the one cross-tenant surface the
+// operator reads without an impersonation request.
+test("a Manager's edit and soft-delete are audited by the database under their own action names, and the founder reads no content", async ({
+  page,
+}) => {
+  const sentinel = `Sentinel Renamed ${Date.now()}`;
+  const sentinelTitle = "Sentinel Title Zqxv";
+
+  // ---- the member, through the REAL edit form (a server action) ----------
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}/contacts/${world.managerOwnedContactId}/edit`);
+  await page.locator('input[name="name"]').fill(sentinel);
+  await page.locator('input[name="title"]').fill(sentinelTitle);
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page).not.toHaveURL(/\/edit$/);
+  await expect(page.getByRole("heading", { name: sentinel })).toBeVisible();
+
+  // ...and the real delete control, confirmed.
+  await page.getByRole("button", { name: /Delete contact/ }).click();
+  await page.getByRole("button", { name: "Yes, delete" }).click();
+  await expect(page.getByRole("button", { name: "Yes, delete" })).toHaveCount(0);
+  await signOut(page);
+
+  // ---- the founder ---------------------------------------------------------
+  await signInAsSuperuser(page);
+
+  await page.goto(
+    `/super/audit-log?action=${encodeURIComponent("contact.updated")}&org=${world.orgId}`,
+  );
+  const main = page.locator("main");
+  await expect(main).toContainText("contact.updated");
+  await expect(main).toContainText(world.managerOwnedContactId);
+  await expect(main).not.toContainText("No events match");
+  // The diff NAMES the columns: open the payload and read the changed list.
+  await main.locator("details").filter({ hasText: "After" }).first().locator("summary").click();
+  await expect(main).toContainText('"changed"');
+  await expect(main).toContainText('"name"');
+  await expect(main).toContainText('"title"');
+  // ...and carries none of what was typed.
+  await expect(main).not.toContainText(sentinel);
+  await expect(main).not.toContainText(sentinelTitle);
+
+  await page.goto(
+    `/super/audit-log?action=${encodeURIComponent("contact.soft_deleted")}&org=${world.orgId}`,
+  );
+  await expect(main).toContainText("contact.soft_deleted");
+  await expect(main).toContainText(world.managerOwnedContactId);
+  await expect(main).not.toContainText("No events match");
+  await expect(main).not.toContainText(sentinel);
+
+  // The 35th axe scan: the CRM-action-filtered log, populated, with a
+  // payload <details> open -- the one state of this page Task 1's scan did
+  // not reach, because no CRM row existed to open.
+  await main.locator("details").first().locator("summary").click();
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"])
+    .analyze();
+  expect(results.passes.length).toBeGreaterThan(0);
+  expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
 });
