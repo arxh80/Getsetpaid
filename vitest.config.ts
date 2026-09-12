@@ -72,6 +72,13 @@ export default defineConfig({
           include: ["tests/integration/**/*.test.{ts,tsx}"],
           environment: "node",
           globals: false,
+          // KNOWN FLAKE, BY DESIGN, AND THE REASON THIS IS 20 s RATHER THAN
+          // 5 s: under the full `pnpm test` load a window-waiting limiter
+          // test (tests/integration/security/rate-limit-network-discovery,
+          // or feedback-budget's "allows exactly ten raw inserts")
+          // occasionally exceeds even this; each passes in <10 s alone and a
+          // second full run is clean. Not a product defect -- re-run before
+          // chasing it.
           testTimeout: 20_000,
           hookTimeout: 60_000,
           // The RLS suite mutates shared reference-independent fixtures (its
