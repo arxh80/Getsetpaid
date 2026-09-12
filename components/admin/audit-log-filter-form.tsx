@@ -6,7 +6,12 @@ import {
   auditLogIsFiltered,
   type AuditLogFilters,
 } from "@/lib/admin/audit-log";
+import { knownAuditActions } from "@/lib/admin/audit-actions";
 import { instantToLondonWallClock } from "@/lib/format/date";
+
+/** The `<datalist>`'s id. Static, because this form renders once per page
+ *  and the id must match the input's `list` attribute exactly. */
+const ACTION_DATALIST_ID = "audit-log-known-actions";
 
 // The audit log's filter strip.
 //
@@ -71,14 +76,27 @@ export function AuditLogFilterForm({
         />
       </div>
       <div className="min-w-0 basis-56">
+        {/* PHASE 7 TASK 6b: the field stays FREE TEXT (lib/admin/audit-log.ts's
+            parser is the allowlist, and an action it has never heard of must
+            still be filterable), but it now offers the catalogue as a native
+            <datalist> so "contact." completes to the four contact actions.
+            A <datalist> is a suggestion list, not a constraint: it works with
+            JavaScript off, is announced by screen readers as a combobox with
+            autocomplete, and never blocks a value that is not in it. */}
         <Field
           label="Action"
           name={AUDIT_LOG_FILTER_PARAMS.action}
           defaultValue={filters.action ?? ""}
-          hint={'Exact match, e.g. "organisation.created".'}
+          hint={'Exact match, e.g. "contact.updated". Start typing for known actions.'}
           autoComplete="off"
           spellCheck={false}
+          list={ACTION_DATALIST_ID}
         />
+        <datalist id={ACTION_DATALIST_ID}>
+          {knownAuditActions().map((action) => (
+            <option key={action} value={action} />
+          ))}
+        </datalist>
       </div>
       <div className="min-w-0">
         <Field
