@@ -762,6 +762,40 @@ else
 fi
 
 # ============================================================================
+# PHASE 7 TASK 6b (FULL CRM WRITE AUDITING) SUITE.
+#
+# Runs LAST of the psql suites, after feedback, on the SAME fixtures and the
+# SAME variable set (P7VARS). It plants its own CRM rows in ALPHA as postgres
+# (sessionless, so un-audited), writes to them as pmanager/padmin, and its own
+# § CZ deletes every row and audit event it created, so the HTTP block below
+# runs against the state it was written against.
+# ============================================================================
+docker cp "$HERE/rls_phase7_crm_audit.sql" "$CTR:/tmp/rls_phase7_crm_audit.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P7VARS[@]}" -f /tmp/rls_phase7_crm_audit.sql
+
+ca_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from ca.results where not pass" | tr -d '[:space:]')
+if [ "$ca_fails" != "0" ]; then
+  echo "PHASE 7 CRM AUDIT SUITE FAILED: $ca_fails failing assertion(s)" >&2
+  echo "  In CA, THE TRIGGER CENSUS OR THE ALLOWLIST MOVED -- a table lost its" >&2
+  echo "  audit pair, or private.audit_crm_value_columns() now names a CONTENT" >&2
+  echo "  column (CA5), which is a superuser-readable channel for tenant data." >&2
+  echo "  In CU, THE NO-CONTENT-LEAK PROPERTY IS BROKEN: an UPDATE's audit row" >&2
+  echo "  carries a user-entered value. Sev1 -- CLAUDE.md § Superuser dashboard." >&2
+  echo "  In CD, soft-delete/restore are no longer distinguishable actions." >&2
+  echo "  In CX, THE EXEMPTION IS WRONG: a definer-context write is un-audited" >&2
+  echo "  (Task 5 I4's class), or a sessionless/no-op write now emits rows." >&2
+  echo "  In CB, A BULK PATH SPRAYS UN-CORRELATED ROWS, or the thread is left" >&2
+  echo "  open past the wrapper, or an *_unthreaded body became reachable." >&2
+  echo "  In CZ, this suite left rows behind -- discard the run and reset." >&2
+  psql_status=1
+else
+  echo "Phase 7 CRM audit suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -810,6 +844,14 @@ probe "private helper handle_new_user not an RPC"                404 "rpc/handle
 # not in `public` and must never be an RPC (rpc/audit_document_action resolves
 # to the PUBLIC thin wrapper, tested below; there is no private path at the API).
 probe "private helper guard_document_scan_status not an RPC"     404 "rpc/guard_document_scan_status"
+# Task 6b: the four multi-row CRM RPCs were MOVED to private.*_unthreaded and
+# wrapped under their own names so every call opens one audit thread. The
+# moved bodies must not be routable, or a caller could skip the thread.
+probe "private merge_records_unthreaded not an RPC"              404 "rpc/merge_records_unthreaded"
+probe "private set_contact_primary_company_unthreaded not an RPC" 404 "rpc/set_contact_primary_company_unthreaded"
+probe "private set_artist_primary_representation_unthreaded not an RPC" 404 "rpc/set_artist_primary_representation_unthreaded"
+probe "private set_custom_field_values_unthreaded not an RPC"    404 "rpc/set_custom_field_values_unthreaded"
+probe "private begin_crm_bulk_audit not an RPC"                  404 "rpc/begin_crm_bulk_audit"
 # public.audit_document_action IS the client-callable thin RPC, and it is
 # GUARDED: a null org and a forged arbitrary org both fail closed (42501 -> 403),
 # so it is reachable (not 404) yet cannot mint an audit row for an org the caller
