@@ -226,6 +226,63 @@ test("an exhausted feedback budget is refused with a human wait, not raw seconds
 });
 
 // ===========================================================================
+// THE PROMISED SIZE IS REACHABLE (cleanup round, N5)
+// ===========================================================================
+// The dialog promises "up to 5 MiB"; a Server Action's body is capped by
+// next.config.ts's serverActions.bodySizeLimit, and Next's DEFAULT is 1 MB.
+// Every earlier upload test used a 1x1 PNG, so nothing here had ever posted a
+// body over 1 MB, and a real 1440p screenshot (routinely 1-4 MB) died as a
+// framework 413 behind Next's generic "A server error occurred" -- the
+// dialog's own sentences were unreachable. Two sizes, one test: a 2 MiB
+// image lands as the app's own success, and a 6 MiB one is refused by the
+// app's own TOO_BIG sentence -- proving the app-level check still fires
+// ABOVE the promise rather than the framework answering first.
+test("a screenshot over 1 MB lands, and one over 5 MiB is refused by the dialog's own sentence", async ({
+  page,
+}) => {
+  const message = `E2E feedback ${world.orgSlug} a real-sized screenshot`;
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}`);
+  await page.getByRole("button", { name: "Feedback" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel(/Category/).selectOption("bug");
+  await dialog.getByLabel(/Message/).fill(message);
+  await page
+    .locator("#feedback-screenshot")
+    .setInputFiles({ name: "big.png", mimeType: "image/png", buffer: paddedPng(2 * 1024 * 1024) });
+  await dialog.getByRole("button", { name: "Send feedback" }).click();
+  await expect(dialog.getByText("Done. Thanks — your feedback has been recorded.")).toBeVisible();
+  const row = await feedbackRowByMessage(message);
+  expect(row, "the 2 MiB submission must land as a row").not.toBeNull();
+  expect(row!.screenshotScanStatus).toBe("clean");
+
+  // Above the promise: the APP's sentence, not a framework error page.
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Feedback" }).click();
+  await dialog.getByLabel(/Category/).selectOption("bug");
+  await dialog.getByLabel(/Message/).fill(`${message} oversized`);
+  await page
+    .locator("#feedback-screenshot")
+    .setInputFiles({ name: "huge.png", mimeType: "image/png", buffer: paddedPng(6 * 1024 * 1024) });
+  await dialog.getByRole("button", { name: "Send feedback" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("That screenshot is larger than the 5 MiB limit.");
+  await expect(page.locator("body")).not.toContainText("A server error occurred");
+  expect(await feedbackRowByMessage(`${message} oversized`)).toBeNull();
+});
+
+/**
+ * A PNG signature followed by zero padding to `size` bytes. `sniffAndAllow`
+ * reads the leading magic bytes only, so this is "an image" to the pipeline
+ * and inert to the EICAR stub; it is generated here, never a committed
+ * fixture.
+ */
+function paddedPng(size: number): Buffer {
+  const out = Buffer.alloc(size);
+  PNG.copy(out, 0, 0, Math.min(PNG.length, size));
+  return out;
+}
+
+// ===========================================================================
 // REFUSAL PARITY, AND THE aal1 GATE
 // ===========================================================================
 test("a non-superuser gets the streamed not-found contract at /super/feedback", async ({ page }) => {

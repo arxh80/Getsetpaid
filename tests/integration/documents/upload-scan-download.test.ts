@@ -267,4 +267,40 @@ describe("document upload / scan / download pipeline", () => {
     if (dl.ok) throw new Error("a soft-deleted document must not yield a URL");
     expect(dl.status).toBe(404);
   });
+
+  // Phase 7 Task 6 cleanup round (N5). Every fixture above is ~200 bytes.
+  // This posts a 2 MiB PDF -- generated here, never a committed fixture --
+  // through the real action, the real bucket (25 MiB cap) and the real
+  // size_bytes CHECK, and asserts the app's own outcome. HONESTY NOTE: this
+  // harness calls `uploadDocumentAction` DIRECTLY, so it never crosses Next's
+  // Server Action body parser and passes on f71b2bb too; it proves the
+  // pipeline below the framework cap handles a real-sized file. The test that
+  // fails on f71b2bb for the framework reason ("Body exceeded 1 MB limit") is
+  // the e2e twin in tests/e2e/documents.spec.ts, which posts the same 2 MiB
+  // through the real page; the cap is bound to the promise in
+  // tests/unit/security/upload-limits.test.ts.
+  it("a 2 MiB upload lands `clean` with its true size recorded and a signed URL that serves every byte", async () => {
+    useManagerA();
+    const twoMiB = 2 * 1024 * 1024;
+    const bytes = new Uint8Array(twoMiB);
+    bytes.set(CLEAN_PDF, 0);
+
+    const up = await uploadAs(fx.orgA.slug, bytes, "two-mib.pdf", "application/pdf");
+    expect(up.error).toBeUndefined();
+    expect(up.message).toBe("Uploaded.");
+    expect(await scanStatusOf(up.documentId)).toBe("clean");
+
+    const { rows } = await pool.query<{ size_bytes: string }>(
+      `select size_bytes::text from public.documents where id = $1`,
+      [up.documentId],
+    );
+    expect(Number(rows[0]?.size_bytes)).toBe(twoMiB);
+
+    const dl = await issueDownloadUrl(fx.orgA.slug, up.documentId);
+    expect(dl.ok).toBe(true);
+    if (!dl.ok) throw new Error("expected a signed URL");
+    const res = await fetch(dl.url);
+    expect(res.status).toBe(200);
+    expect((await res.arrayBuffer()).byteLength).toBe(twoMiB);
+  });
 });
