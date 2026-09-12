@@ -219,9 +219,13 @@ test("an exhausted feedback budget is refused with a human wait, not raw seconds
   await expect(alert).toContainText(/Try again in \d+ (minute|minutes|hour|hours)\./);
   await expect(alert).not.toContainText(/\d{3,} seconds/);
   expect(await feedbackRowByMessage("E2E eleventh submission")).toBeNull();
+  // A count taken after the response cannot see a transient row; what this
+  // asserts is that NOTHING IS LEFT BEHIND. That no upload is attempted at
+  // all is the unit test's proof (submit-action-budget.test.ts: `upload`
+  // never called for a spent budget).
   expect(
     await countFeedbackScreenshotObjects(),
-    "a refused submission must not touch storage.objects -- not even transiently",
+    "a refused submission must leave storage.objects as it found it",
   ).toBe(objectsBefore);
 });
 
