@@ -9,6 +9,7 @@ import type { ListColumn } from "@/lib/list/spec";
 import { entityListPage } from "@/components/list/entity-list-page";
 import { NewRecordAction } from "@/components/crm/write-gate";
 import { formatDate } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
 
 const { generateMetadata, Page } = entityListPage({
   segment: "artists",
@@ -118,10 +119,7 @@ function artistColumns(
         return parts.length > 0 ? (
           <span className="break-words">{parts.join(", ")}</span>
         ) : (
-          <span className="text-ink-muted">
-            <span aria-hidden="true">—</span>
-            <span className="sr-only">Not recorded</span>
-          </span>
+          <Absent />
         );
       },
     },

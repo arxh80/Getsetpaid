@@ -14,6 +14,8 @@ import { Alert } from "@/components/ui/alert";
 import { DeleteRecordForm, RestoreRecordForm } from "@/components/crm/delete-restore";
 import { SecondaryRecordAction, WriteBlockedNote } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
+import { Detail } from "@/components/ui/detail";
 
 export async function generateMetadata({
   params,
@@ -192,22 +194,3 @@ export default async function MeetingDetailPage({
   );
 }
 
-function Detail({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase">
-        {label}
-      </dt>
-      <dd className="text-base break-words text-ink">{children}</dd>
-    </div>
-  );
-}
-
-function Absent() {
-  return (
-    <span className="text-ink-muted">
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">Not recorded</span>
-    </span>
-  );
-}

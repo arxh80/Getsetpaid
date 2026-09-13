@@ -67,6 +67,8 @@ import { loadNetworkProfileForEntity } from "@/lib/network/entities";
 import { loadNetworkLinkForEntity } from "@/lib/network/links-list";
 import { loadNetworkProfileForViewer } from "@/lib/network/discovery";
 import { profileHasDrifted } from "@/lib/network/drift";
+import { Absent } from "@/components/ui/absent";
+import { Detail } from "@/components/ui/detail";
 
 // One artist: the record, who represents them, and what they have been paid.
 //
@@ -821,10 +823,7 @@ function feeColumns(): readonly ListColumn<ArtistFeeRow, ArtistFeeSortKey>[] {
         row.note ? (
           <span className="break-words">{row.note}</span>
         ) : (
-          <span className="text-ink-muted">
-            <span aria-hidden="true">—</span>
-            <span className="sr-only">No note</span>
-          </span>
+          <Absent label="No note" />
         ),
       // NO EVENT COLUMN, and it is not an oversight. `artist_fee_history` has
       // an `event_id`, and 20260828001134 holds it NULL with
@@ -836,24 +835,3 @@ function feeColumns(): readonly ListColumn<ArtistFeeRow, ArtistFeeSortKey>[] {
   ];
 }
 
-function Detail({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase">
-        {label}
-      </dt>
-      <dd className="text-base break-words text-ink">{children}</dd>
-    </div>
-  );
-}
-
-/** A blank cell is indistinguishable from a rendering fault, and silent to a
- *  screen reader. */
-function Absent() {
-  return (
-    <span className="text-ink-muted">
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">Not recorded</span>
-    </span>
-  );
-}

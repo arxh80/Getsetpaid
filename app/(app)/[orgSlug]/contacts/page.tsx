@@ -9,6 +9,7 @@ import type { ListColumn } from "@/lib/list/spec";
 import { entityListPage } from "@/components/list/entity-list-page";
 import { NewRecordAction } from "@/components/crm/write-gate";
 import { formatDate } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
 
 const { generateMetadata, Page } = entityListPage({
   segment: "contacts",
@@ -136,11 +137,3 @@ function contactColumns(
   ];
 }
 
-function Absent() {
-  return (
-    <span className="text-ink-muted">
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">Not recorded</span>
-    </span>
-  );
-}

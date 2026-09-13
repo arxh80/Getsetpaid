@@ -27,6 +27,7 @@ import { EntityList } from "@/components/list/entity-list";
 import { ListSkeleton } from "@/components/list/list-skeleton";
 import { ListToolbar } from "@/components/list/list-toolbar";
 import { formatDate } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
 
 // The merge history.
 //
@@ -234,10 +235,7 @@ function mergeColumns(
       secondary: true,
       render: (row) =>
         row.fieldsFromLoser.length === 0 ? (
-          <span className="text-ink-muted">
-            <span aria-hidden="true">—</span>
-            <span className="sr-only">No fields taken</span>
-          </span>
+          <Absent label="No fields taken" />
         ) : (
           <span className="text-ink-muted">
             {row.fieldsFromLoser.map(columnLabel).join(", ")}

@@ -30,6 +30,7 @@ import { DocumentUpload } from "@/components/crm/document-upload";
 import { WriteBlockedNote } from "@/components/crm/write-gate";
 import { humanFileSize } from "@/lib/format/bytes";
 import { formatDateTime } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
 
 // The reusable RELATED panel: the tasks, notes and documents linked TO one CRM
 // record, mounted on every entity detail page.
@@ -203,10 +204,7 @@ function taskColumns(
       secondary: true,
       render: (row) =>
         row.dueAt === null ? (
-          <span className="text-ink-muted">
-            <span aria-hidden="true">—</span>
-            <span className="sr-only">No due date</span>
-          </span>
+          <Absent label="No due date" />
         ) : (
           <time dateTime={row.dueAt} className="tabular-nums">
             {formatDateTime(row.dueAt)}
