@@ -62,14 +62,16 @@ import { echoedValues, field, type FormState } from "@/lib/forms";
 import { authoriseOrg, failureState, stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { sanitiseFilename, sniffAndAllow } from "@/lib/security/file-allowlist";
+// THE SIZE CEILING IS SHARED WITH next.config.ts, because the framework cap
+// must sit above it -- see lib/security/upload-limits.ts. This file is
+// `"use server"`, so it cannot export the constant itself.
+import { DOCUMENT_MAX_SIZE_BYTES } from "@/lib/security/upload-limits";
 import { buildStorageKey } from "@/lib/crm/storage-keys";
 import { getScanner, type ScanResult } from "@/lib/security/malware-scan";
 import { LINK_ENTITY_TYPES, type LinkEntityType } from "@/lib/crm/links";
 
 const PERMISSION = "manage_documents";
 
-/** 25 MiB, the same ceiling as documents.size_bytes' CHECK and the bucket. */
-const MAX_SIZE_BYTES = 26214400;
 
 const NO_FILE = "Choose a file to upload.";
 const TOO_BIG =
@@ -115,7 +117,7 @@ export async function uploadDocumentAction(
   if (!(file instanceof File) || file.size === 0) {
     return { error: NO_FILE, values: echoedValues(formData) };
   }
-  if (file.size > MAX_SIZE_BYTES) {
+  if (file.size > DOCUMENT_MAX_SIZE_BYTES) {
     return { error: TOO_BIG, values: echoedValues(formData) };
   }
 
