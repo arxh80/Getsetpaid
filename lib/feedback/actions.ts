@@ -72,8 +72,15 @@
 //
 // THE LABEL IS NOT SET FROM HERE. `during_support_access` is outside the
 // column-level INSERT grant and is stamped by private.feedback_before_insert()
-// from private.is_impersonating() (`20260916002000`), so it is a fact the
-// database establishes about the session, not a claim this action makes. That
+// from private.is_impersonating_route(new.route) (`20260916002000`, narrowed
+// from the route-blind private.is_impersonating() by `20260917001000` after fix
+// round 1's M2: the blind form also labelled the founder's OWN /super feedback
+// whenever a support session happened to be open in another tab). So the label
+// means "sent from a page inside the workspace this session names", and it is a
+// fact the database establishes about the session, not a claim this action
+// makes. The route being client-supplied does not weaken it: the route can only
+// NARROW a label that already requires an allowlisted, aal2, live-session
+// platform superuser, and cannot mint one. That
 // matters because this layout-and-action pair cannot be the enforcement: a
 // direct PostgREST INSERT never runs either of them.
 //
