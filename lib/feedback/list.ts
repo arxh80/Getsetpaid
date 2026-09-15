@@ -152,6 +152,9 @@ export interface FeedbackRow {
   readonly userAgent: string | null;
   readonly screenshot: "none" | "clean" | "quarantined" | "error";
   readonly notifiedAt: string | null;
+  /** Q121: stamped by the database when the submitter was inside a live
+   *  support-access session. Never settable by a client. */
+  readonly duringSupportAccess: boolean;
   readonly createdAt: string;
 }
 
@@ -217,7 +220,7 @@ export async function fetchFeedbackPage(params: FeedbackParams): Promise<Feedbac
   let query = supabase
     .from("feedback")
     .select(
-      "id, category, status, message, route, user_email, organisation_id, organisation_role, user_agent, screenshot_key, screenshot_scan_status, notified_at, created_at",
+      "id, category, status, message, route, user_email, organisation_id, organisation_role, user_agent, screenshot_key, screenshot_scan_status, notified_at, during_support_access, created_at",
     );
 
   // ALLOWLISTED FILTERS: every value passed a closed allowlist in
@@ -289,6 +292,7 @@ export async function fetchFeedbackPage(params: FeedbackParams): Promise<Feedbac
     userAgent: (row.user_agent as string | null) ?? null,
     screenshot: screenshotOf(row.screenshot_key, row.screenshot_scan_status),
     notifiedAt: (row.notified_at as string | null) ?? null,
+    duringSupportAccess: row.during_support_access === true,
     createdAt: row.created_at as string,
   }));
 

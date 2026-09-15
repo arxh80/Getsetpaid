@@ -53,19 +53,29 @@
 // attribution, not content.
 //
 // ===========================================================================
-// UNDER IMPERSONATION THE ACTION EXPLAINS ITSELF (fix round 1, finding M4)
+// UNDER IMPERSONATION THE SUBMISSION IS ACCEPTED, WITHOUT A WORKSPACE (Q121)
 // ===========================================================================
-// getCurrentOrg() under a support-access session returns the workspace with
-// `isImpersonated: true` and no membership behind it, so the trigger would
-// refuse the row with 42501 -- correct (a row blaming that workspace would be
-// a false attribution) but rendered as the generic "refused" sentence, i.e. a
-// dead control. app/(app)/layout.tsx hides the trigger when it KNOWS the
-// request is impersonated, but that layout does not re-render on a
-// client-side navigation into the workspace (the impersonation banner's own
-// lesson), so this action is the check that always runs: it refuses early,
-// before any Storage I/O, with a sentence that says why and what to do.
-// Submitting with a null organisation instead is a product choice, queued as
-// DECISIONS-QUEUE Q121 rather than taken here.
+// FOUNDER RULING Q121 REVERSES TASK 6 FIX ROUND 1's M4. That round hid the
+// control in app/(app)/layout.tsx and refused here with IMPERSONATION_REFUSAL,
+// because getCurrentOrg() under a support-access session returns the workspace
+// with `isImpersonated: true` and no membership behind it, so a row naming
+// that workspace would be refused at the trigger (42501) -- correctly, since
+// the attribution would be false.
+//
+// The founder chose the alternative that round queued: the operator's feedback
+// from inside a customer's workspace is worth having, so it is ACCEPTED with
+// NO organisation on it and LABELLED. This action therefore passes
+// `organisation_id: null` when the workspace it resolved is an impersonated
+// one -- it does not pass the id and let the trigger refuse, and it does not
+// refuse itself. The route is captured exactly as it is for anyone else (the
+// operator was on a real page and that page is the point of the feedback).
+//
+// THE LABEL IS NOT SET FROM HERE. `during_support_access` is outside the
+// column-level INSERT grant and is stamped by private.feedback_before_insert()
+// from private.is_impersonating() (`20260916002000`), so it is a fact the
+// database establishes about the session, not a claim this action makes. That
+// matters because this layout-and-action pair cannot be the enforcement: a
+// direct PostgREST INSERT never runs either of them.
 //
 // ===========================================================================
 // THE SCREENSHOT IS THE DOCUMENTS PIPELINE, IMAGES ONLY
@@ -112,7 +122,6 @@ import { notifyFounderOfFeedback } from "@/lib/email/feedback-notification";
 import {
   FEEDBACK_MESSAGE_MAX,
   FEEDBACK_SCREENSHOT_MAX_BYTES,
-  IMPERSONATION_REFUSAL,
   feedbackScreenshotKey,
   isFeedbackCategory,
   isFeedbackScreenshotMime,
@@ -187,11 +196,11 @@ export async function submitFeedbackAction(
   const org = slug ? await getCurrentOrg(slug) : null;
   const userAgent = ((await headers()).get("user-agent") ?? "").slice(0, USER_AGENT_MAX);
 
-  // A support-access session holds no membership; the row would be refused
-  // at the trigger anyway. Say why, before spending anything. See the header.
-  if (org?.isImpersonated) {
-    return { error: IMPERSONATION_REFUSAL, values: echoedValues(formData) };
-  }
+  // Q121: a support-access session holds no membership of the workspace it is
+  // inside, so the row carries NO workspace rather than a false one. The
+  // database labels it; see the header.
+  const supportAccess = org?.isImpersonated === true;
+  const organisationId = supportAccess ? null : (org?.id ?? null);
 
   // ---- THE BUDGET, READ BEFORE ANY STORAGE I/O (I1) --------------------------
   const supabase = await createClient();
@@ -255,7 +264,7 @@ export async function submitFeedbackAction(
   // the column grant would refuse them anyway.
   const { error } = await supabase.from("feedback").insert({
     id: feedbackId,
-    organisation_id: org?.id ?? null,
+    organisation_id: organisationId,
     category,
     message,
     route,
@@ -312,9 +321,14 @@ export async function submitFeedbackAction(
     message,
     route,
     submitterEmail: user.email,
-    organisationName: org?.name ?? null,
-    organisationSlug: org?.slug ?? null,
-    organisationRole: org?.role ?? null,
+    // The workspace NAMED in the email is the one the row carries -- null
+    // under support access, so the receipt cannot read as a submission by a
+    // member of that workspace. The name is still useful context and is
+    // carried by `supportAccess` below instead.
+    organisationName: supportAccess ? null : (org?.name ?? null),
+    organisationSlug: supportAccess ? null : (org?.slug ?? null),
+    organisationRole: supportAccess ? null : (org?.role ?? null),
+    supportAccess,
     userAgent: userAgent === "" ? null : userAgent,
     screenshot: screenshot?.status ?? "none",
   } as const;

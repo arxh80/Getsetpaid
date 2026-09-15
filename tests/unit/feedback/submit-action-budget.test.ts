@@ -9,8 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // storage and scanner time with the counter flat at 10. The load-bearing
 // assertion is `upload` never being called; against that code it fails.
 //
-// Also here, because they are order facts too: an impersonating session is
-// refused with its own explanation before the budget is even read (M4); a
+// Also here, because they are order facts too: an impersonating session now
+// submits a row with NO workspace on it rather than being refused (Q121,
+// reversing fix round 1's M4, and the LABEL is the database's to stamp); a
 // refused insert removes the orphaned object and LOGS a failed removal (M7);
 // a PT429 that arrives without a hint is logged rather than silently
 // over-stated (M7); and the founder's receipt runs through next/server's
@@ -72,7 +73,7 @@ vi.mock("@/lib/email/feedback-notification", () => ({
 }));
 
 import { submitFeedbackAction } from "@/lib/feedback/actions";
-import { IMPERSONATION_REFUSAL } from "@/lib/feedback/contract";
+import { SUPPORT_ACCESS_LABEL } from "@/lib/feedback/contract";
 import { EMPTY_FORM_STATE } from "@/lib/forms";
 
 const PNG = Buffer.from(
@@ -197,16 +198,58 @@ describe("submitFeedbackAction reads the budget before it touches storage (I1)",
   });
 });
 
-describe("submitFeedbackAction under a support-access session (M4)", () => {
-  it("refuses with the explanation, before the budget is read or anything is stored", async () => {
-    stubs.org = { ...member, role: "read_only", isImpersonated: true, impersonationExpiresAt: "2026-09-11T10:00:00Z" };
+describe("submitFeedbackAction under a support-access session (Q121)", () => {
+  beforeEach(() => {
+    stubs.org = {
+      ...member,
+      role: "read_only",
+      isImpersonated: true,
+      impersonationExpiresAt: "2026-09-11T10:00:00Z",
+    };
+    stubs.rpc.mockResolvedValue({ data: { remaining: 5, retry_after_seconds: 600 }, error: null });
+  });
 
+  it("is ACCEPTED, and the row carries NO workspace -- the reversal of fix round 1's M4", async () => {
     const result = await submitFeedbackAction(EMPTY_FORM_STATE, form());
 
-    expect(result.error).toBe(IMPERSONATION_REFUSAL);
-    expect(stubs.rpc).not.toHaveBeenCalled();
-    expect(stubs.upload).not.toHaveBeenCalled();
-    expect(stubs.insert).not.toHaveBeenCalled();
+    expect(result.message).toContain("recorded");
+    expect(stubs.insert).toHaveBeenCalledOnce();
+    const row = stubs.insert.mock.calls[0]![0] as Record<string, unknown>;
+    expect(row.organisation_id).toBeNull();
+    // The workspace the operator was LOOKING at is not smuggled in under
+    // another name either: the row is exactly as workspace-less as it claims.
+    expect(Object.values(row)).not.toContain(member.id);
+  });
+
+  it("never sets the label itself -- `during_support_access` is the database's column", async () => {
+    await submitFeedbackAction(EMPTY_FORM_STATE, form());
+
+    const row = stubs.insert.mock.calls[0]![0] as Record<string, unknown>;
+    // Naming it would be 42501 at the column grant (20260916002000); this
+    // asserts the action does not try, which is what keeps the app path and
+    // the raw PostgREST path bound by the same rule.
+    expect(Object.keys(row)).not.toContain("during_support_access");
+    expect(SUPPORT_ACCESS_LABEL).toBe("Sent during support access");
+  });
+
+  it("still captures the route the operator was on, and still uploads the screenshot", async () => {
+    await submitFeedbackAction(EMPTY_FORM_STATE, form());
+
+    const row = stubs.insert.mock.calls[0]![0] as Record<string, unknown>;
+    expect(row.route).toBe("/org-a/contacts/11111111-2222-4333-8444-555555555555");
+    expect(stubs.upload).toHaveBeenCalledOnce();
+  });
+
+  it("tells the founder's receipt it was support access, and names no workspace", async () => {
+    await submitFeedbackAction(EMPTY_FORM_STATE, form());
+    for (const cb of stubs.afterCallbacks) await cb();
+
+    expect(stubs.notify).toHaveBeenCalledOnce();
+    const payload = stubs.notify.mock.calls[0]![0] as Record<string, unknown>;
+    expect(payload.supportAccess).toBe(true);
+    expect(payload.organisationName).toBeNull();
+    expect(payload.organisationSlug).toBeNull();
+    expect(payload.organisationRole).toBeNull();
   });
 });
 

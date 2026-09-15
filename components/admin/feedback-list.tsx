@@ -16,6 +16,7 @@ import {
   FEEDBACK_CATEGORY_LABELS,
   FEEDBACK_STATUSES,
   FEEDBACK_STATUS_LABELS,
+  SUPPORT_ACCESS_LABEL,
   isFeedbackCategory,
   isFeedbackStatus,
 } from "@/lib/feedback/contract";
@@ -192,6 +193,9 @@ function Row({ row, basePath }: { row: FeedbackRow; basePath: string }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className={CHIP_CLASS}>{category}</span>
         <span className={CHIP_CLASS}>{status}</span>
+        {row.duringSupportAccess ? (
+          <span className={CHIP_CLASS}>{SUPPORT_ACCESS_LABEL}</span>
+        ) : null}
         <span className="text-sm text-ink-muted">
           Submitted {formatDateTime(row.createdAt)}
           {row.notifiedAt === null ? " · email not sent" : ""}
@@ -204,7 +208,15 @@ function Row({ row, basePath }: { row: FeedbackRow; basePath: string }) {
         </dd>
         <dt className="text-ink-muted">Workspace</dt>
         <dd className="text-ink">
-          {row.organisationName ?? "Not inside a workspace"}
+          {/* Q121: a support-access submission carries NO workspace by
+              design, and saying "Not inside a workspace" would hide the one
+              fact that explains the row. The label is read from the column
+              the database stamps, never inferred from a null organisation --
+              /invites, /onboarding and /super all produce null-org rows that
+              are nothing to do with support access. */}
+          {row.duringSupportAccess
+            ? SUPPORT_ACCESS_LABEL
+            : (row.organisationName ?? "Not inside a workspace")}
           {row.organisationRole ? ` · ${row.organisationRole}` : ""}
         </dd>
         <dt className="text-ink-muted">Page</dt>

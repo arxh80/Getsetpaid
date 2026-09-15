@@ -8,6 +8,7 @@
 
 import {
   FEEDBACK_CATEGORY_LABELS,
+  SUPPORT_ACCESS_LABEL,
   type FeedbackCategory,
 } from "@/lib/feedback/contract";
 
@@ -32,6 +33,10 @@ export interface FeedbackEmailInput {
   readonly organisationRole: string | null;
   readonly userAgent: string | null;
   readonly screenshot: "none" | "clean" | "quarantined" | "error";
+  /** Q121: sent from inside a break-glass support-access session, so the row
+   *  carries no workspace and is labelled. Optional so existing callers and
+   *  fixtures read as `false`. */
+  readonly supportAccess?: boolean;
   /** Absolute origin of the app, for the dashboard link. */
   readonly siteUrl: string;
 }
@@ -60,12 +65,16 @@ export function buildFeedbackEmail(input: FeedbackEmailInput): EmailBody {
   const category = FEEDBACK_CATEGORY_LABELS[input.category];
   const workspace = input.organisationName
     ? `${input.organisationName}${input.organisationSlug ? ` (${input.organisationSlug})` : ""}`
-    : "no workspace (submitted outside one)";
+    : input.supportAccess
+      ? `${SUPPORT_ACCESS_LABEL} — no workspace on the row`
+      : "no workspace (submitted outside one)";
   const role = input.organisationRole ?? "—";
   const from = input.submitterEmail ?? "(email unavailable)";
   const link = `${input.siteUrl.replace(/\/$/, "")}/super/feedback`;
 
-  const subject = `[Feedback · ${category}] ${input.organisationName ?? "No workspace"}`;
+  const subject = `[Feedback · ${category}] ${
+    input.organisationName ?? (input.supportAccess ? SUPPORT_ACCESS_LABEL : "No workspace")
+  }`;
 
   const text = [
     `New in-app feedback (${category}).`,

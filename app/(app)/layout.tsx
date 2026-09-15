@@ -154,20 +154,21 @@ export default async function AppLayout({
                 (tests/unit/list/app-shell-has-no-crm-query.test.ts walks
                 this import).
 
-                NOT UNDER IMPERSONATION (Task 6 fix round 1, finding M4). A
-                support-access session holds no membership of the workspace
-                it is inside, so every submission from there is refused at
-                the trigger -- correctly, since a row attributed to that
-                workspace would be false -- and the first cut rendered that
-                as a dead control answering the generic "refused" sentence.
-                Hidden here when this render KNOWS the request is
-                impersonated. It cannot always know: this layout does not
-                re-render on a client-side navigation into the workspace
-                (the impersonation banner's own lesson, below), so
-                submitFeedbackAction carries the check that always runs and
-                refuses with a sentence that says why. Sending with a null
-                organisation instead is a product choice, queued as Q121. */}
-            {mfaGate.kind === "pass" && !currentOrg?.isImpersonated ? <FeedbackDialog /> : null}
+                RENDERED UNDER IMPERSONATION TOO, since founder ruling Q121
+                reversed Task 6 fix round 1's M4. That round hid this control
+                whenever the render knew the request was impersonated, because
+                a support-access session holds no membership and the row would
+                have been refused at the trigger. The submission is now
+                ACCEPTED with no workspace on it and labelled "Sent during
+                support access" -- so there is nothing to hide, and the gating
+                that could never be reliable anyway (this layout does not
+                re-render on a client-side navigation into the workspace, the
+                impersonation banner's own lesson below) is gone rather than
+                left as a control that appears and disappears. The workspace
+                is dropped in submitFeedbackAction and the LABEL is stamped by
+                the database (20260916002000), which is the only place it can
+                be enforced for a direct PostgREST write. */}
+            {mfaGate.kind === "pass" ? <FeedbackDialog /> : null}
             {/* Task 8: only rendered on an org-scoped page (currentOrg !==
                 null). A single-org user never sees the switcher at all -- a
                 control with exactly one destination is not a control, it is
