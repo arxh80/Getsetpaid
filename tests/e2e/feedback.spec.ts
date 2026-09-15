@@ -338,6 +338,51 @@ test("an aal1 superuser session reaches no feedback", async ({ page }) => {
 });
 
 // ===========================================================================
+// Q121: A SUPPORT-ACCESS SUBMISSION READS AS ONE ON THE OPERATOR'S LIST
+// ===========================================================================
+// Founder ruling Q121 reversed Task 6's hide-and-refuse: the operator's
+// feedback from inside a customer's workspace is ACCEPTED with no workspace on
+// it and "clearly labelled". A row with no workspace ALREADY rendered as "Not
+// inside a workspace" -- which is what /invites and /onboarding submissions
+// are -- so the whole of the ruling's user-visible half is that these two
+// cases must not look the same. That is a render fact and only a browser can
+// see it.
+//
+// The row is planted WITH the label rather than earned through a real
+// impersonation session, deliberately: that the label can only be earned by a
+// live impersonating superuser, and cannot be forged by a member or named at
+// the column grant, is proved from real session claims in
+// supabase/tests/rls_phase7_feedback.sql § FX. Planting it here would prove
+// nothing about that and would hide what this test IS for.
+test("a support-access submission is labelled on /super/feedback, and a workspace-less one is not", async ({
+  page,
+}) => {
+  const supportMessage = `E2E feedback ${world.orgSlug} from inside support access`;
+  const outsideMessage = `E2E feedback ${world.orgSlug} from no workspace at all`;
+  await plantFeedback(world.superuser.id, null, null, supportMessage, true, `/${world.orgSlug}/venues`);
+  await plantFeedback(world.users.manager.id, null, null, outsideMessage, false, "/invites");
+
+  await signInAsSuperuser(page);
+  await page.goto("/super/feedback");
+
+  // BOTH ROWS ARE ON THE PAGE FIRST. Without this, every assertion below is
+  // satisfied by a page that rendered neither.
+  const supportRow = page.locator("li", { hasText: supportMessage });
+  const outsideRow = page.locator("li", { hasText: outsideMessage });
+  await expect(supportRow).toHaveCount(1);
+  await expect(outsideRow).toHaveCount(1);
+
+  await expect(supportRow).toContainText("Sent during support access");
+  await expect(supportRow).not.toContainText("Not inside a workspace");
+
+  // THE CONTRAST, which is the whole point: a genuinely workspace-less
+  // submission still reads the old way, so the label means what it says
+  // rather than being what every null-org row renders.
+  await expect(outsideRow).toContainText("Not inside a workspace");
+  await expect(outsideRow).not.toContainText("Sent during support access");
+});
+
+// ===========================================================================
 // ACCESSIBILITY -- the list POPULATED, and the OPEN dialog
 // ===========================================================================
 test("/super/feedback has no detectable accessibility violations, populated", async ({ page }) => {

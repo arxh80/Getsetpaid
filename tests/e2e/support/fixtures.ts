@@ -1057,12 +1057,22 @@ export async function plantFeedback(
   organisationId: string | null,
   organisationRole: string | null,
   message: string,
+  /** Q121: the "Sent during support access" label. Planted here rather than
+   *  earned through a real impersonation session, because what this fixture
+   *  feeds is a RENDER test -- that the operator's list shows the label
+   *  instead of "Not inside a workspace". That the label can only be EARNED by
+   *  a live impersonating superuser, and cannot be forged by a member, is
+   *  supabase/tests/rls_phase7_feedback.sql § FX's job and is proved there
+   *  from a real session's claims. */
+  duringSupportAccess = false,
+  /** The route the submitter was on. Defaults to the planted marker. */
+  route = "/planted",
 ): Promise<string> {
   const result = await db().query<{ id: string }>(
-    `insert into public.feedback (user_id, user_email, organisation_id, organisation_role, category, message, route)
-     select $1, u.email, $2, $3, 'other', $4, '/planted' from auth.users u where u.id = $1
+    `insert into public.feedback (user_id, user_email, organisation_id, organisation_role, category, message, route, during_support_access)
+     select $1, u.email, $2, $3, 'other', $4, $5, $6 from auth.users u where u.id = $1
      returning id`,
-    [userId, organisationId, organisationRole, message],
+    [userId, organisationId, organisationRole, message, route, duringSupportAccess],
   );
   return result.rows[0].id;
 }
