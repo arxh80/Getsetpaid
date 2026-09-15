@@ -86,6 +86,25 @@ import { siteUrl } from "@/lib/supabase/env";
 // tick returns them unchanged. That is the same retry-is-the-schedule rule
 // the rest of this file runs on, and `deferred` in the result says how many.
 //
+// AND THE CAP CANNOT STARVE THE VICTIM (fix round 2, review finding N3).
+// A cap is only fair if the queue behind it ages. public.pending_lockout_
+// notifications() used to order by each account's MOST RECENT unnotified
+// alert, which ADVANCES every 15 minutes for an account that is still being
+// hammered -- so on a queue this cap kept full, the accounts under active
+// attack sorted to the back on every tick and were the ones never told.
+// `20260918000000` orders by the OLDEST unnotified alert instead, which cannot
+// advance while an account waits. Nothing in this file changed; the guarantee
+// is a property of the query, and § RD28-RD35 measure it against a queue
+// deliberately saturated through `p_limit`.
+//
+// WHO SEES A DEFERRAL (fix round 2, review finding N4). `deferred` is in this
+// function's result, but its caller is a pg_net POST and pg_net reads no
+// response -- so the number reached nobody. /super/health now carries the
+// count of accounts waiting and the AGE of the oldest (`20260918001000`): a
+// non-zero count is normal for a tick or two, an oldest-pending timestamp that
+// keeps receding is a queue that is not draining, which is what a wrong bearer
+// or a stopped clock look like from the outside.
+//
 // WHY NOT A LOCK. The obvious alternative -- pg_try_advisory_lock inside
 // private.deliver_incident_alerts() -- cannot work, and the reason is worth
 // recording so it is not "fixed" that way later: that function uses pg_net,

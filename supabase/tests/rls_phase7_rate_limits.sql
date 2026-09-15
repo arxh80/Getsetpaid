@@ -914,6 +914,20 @@ select rl.val('RP7 the abuse block counts the quarantines this suite planted',
 select rl.val('RP8 ...and the open-alert count is non-negative',
   $$select ((public.platform_health_snapshot()->'abuse'->>'open_alerts')::int >= 0)::text$$,
   'true');
+-- THE DEFERRED-NOTIFICATION QUEUE IS ON THE PAGE (fix round 2, finding N4).
+-- Both keys, because the count alone cannot tell a one-tick backlog from a
+-- queue that is not draining -- the age beside it is what diagnoses. § RD34
+-- drives the same two numbers against a queue this suite deliberately
+-- saturates; these two prove the projection exists at all.
+select rl.val('RP8a the abuse block names the deferred lockout-notification queue',
+  $$select (public.platform_health_snapshot()->'abuse'
+              ?& array['lockout_notifications_pending',
+                       'lockout_notifications_oldest_at'])::text$$,
+  'true');
+select rl.val('RP8b ...counted in ACCOUNTS, and non-negative',
+  $$select ((public.platform_health_snapshot()
+              ->'abuse'->>'lockout_notifications_pending')::int >= 0)::text$$,
+  'true');
 -- THE PROJECTION IS THE MASK. The aggregates run over tenant tables that carry
 -- no superuser SELECT policy; if the snapshot ever grew a record field, this
 -- is the assertion that would have to be deleted to keep the suite green.
@@ -932,12 +946,13 @@ select rl.val('RP10a ...over a NON-EMPTY projection, so RP10 is not vacuous',
   $$select (jsonb_array_length(public.platform_health_snapshot()
               ->'storage_top_organisations') >= 1)::text$$, 'true');
 reset role; reset request.jwt.claims;
--- SEVEN successful calls above (RP4-RP8, RP10, RP10a). RP1-RP3 raise on the
+-- NINE successful calls above (RP4-RP8, RP8a, RP8b, RP10, RP10a -- the two
+-- N4 assertions joined the block in fix round 2). RP1-RP3 raise on the
 -- permission gate BEFORE the audit write, deliberately -- a refused read is
 -- not a read -- so they contribute nothing here and must not be counted.
-select rl.val('RP9 EVERY call wrote a platform_health.viewed audit row (seven calls above)',
+select rl.val('RP9 EVERY call wrote a platform_health.viewed audit row (nine calls above)',
   format($$select ((select count(*) from public.audit_events
-                     where action='platform_health.viewed') - %L::bigint >= 7)::text$$,
+                     where action='platform_health.viewed') - %L::bigint >= 9)::text$$,
          (:'viewed_before')::text),
   'true');
 select rl.val('RP11 `anon` holds no EXECUTE on the snapshot',
@@ -1097,6 +1112,126 @@ select rl.val('RD27 ...and the OPERATOR digest seam is untouched by it',
   format($$select count(*)::text from public.incident_alerts
             where alert_type='repeated_login_failures' and details->>'subject_id' = %L
               and notified_at is null$$, :'pstd1'), '2');
+
+-- ===========================================================================
+-- A SATURATED QUEUE MUST SERVE THE ACCOUNT STILL UNDER ATTACK (fix round 2,
+-- review finding N3).
+--
+-- Fix round 1 capped the delivery run at 30 accounts per tick. The cap is
+-- right; ordering the queue by each account's MOST RECENT unnotified alert was
+-- not. A hammered account re-crosses its lockout window every 15 minutes, which
+-- ADVANCES that timestamp and pushes it behind every quieter account -- so on a
+-- queue the cap keeps full, the accounts under active attack are deferred every
+-- tick, which is the exact inverse of what founder ruling Q114 is for.
+--
+-- THE QUEUE IS SATURATED HERE, NOT DESCRIBED. Two accounts are made pending and
+-- the queue is given room for ONE, because the queue's capacity IS `p_limit`
+-- (lib/email/lockout-notification.ts clamps it to LOCKOUT_NOTIFICATION_LIMIT =
+-- 30 and passes it straight through). Saturating through that parameter
+-- exercises the same cap-plus-ordering interaction the 30-account case does,
+-- and needs two real auth.users rows instead of thirty-one.
+--
+--   pstd1, STILL UNDER ATTACK: first crossing 60 minutes ago, latest NOW.
+--   pstd2, QUIET:              one crossing 30 minutes ago, nothing since.
+--
+-- min(created_at):  pstd1 = -60m  <  pstd2 = -30m   -> pstd1 served (shipped)
+-- max(created_at):  pstd1 = now   >  pstd2 = -30m   -> pstd2 served (the bug)
+--
+-- So RD30 is the finding: it reads `pstd1` today and read `pstd2` before
+-- 20260918000000.
+-- ===========================================================================
+\o /dev/null
+-- Start from a clean queue: every OTHER account's pending alert is STAMPED
+-- rather than deleted, so `RZ2`'s row-count denominator is untouched while the
+-- saturated queue below contains exactly the two accounts this block plants.
+update public.incident_alerts set account_notified_at = now()
+ where alert_type = 'repeated_login_failures' and account_notified_at is null;
+delete from public.incident_alerts
+ where alert_type = 'repeated_login_failures'
+   and details->>'subject_id' in (:'pstd1', :'pstd2');
+insert into public.incident_alerts (alert_type, organisation_id, summary, details, created_at)
+values
+  ('repeated_login_failures', null,
+   'Repeated failed sign-in attempts on one account (limit 5 per 900 seconds).',
+   jsonb_build_object('category','login_account','subject_scope','account',
+     'subject_id', :'pstd1', 'max_requests', 5, 'window_seconds', 900),
+   now() - interval '60 minutes'),
+  ('repeated_login_failures', null,
+   'Repeated failed sign-in attempts on one account (limit 5 per 900 seconds).',
+   jsonb_build_object('category','login_account','subject_scope','account',
+     'subject_id', :'pstd1', 'max_requests', 5, 'window_seconds', 900),
+   now()),
+  ('repeated_login_failures', null,
+   'Repeated failed sign-in attempts on one account (limit 5 per 900 seconds).',
+   jsonb_build_object('category','login_account','subject_scope','account',
+     'subject_id', :'pstd2', 'max_requests', 5, 'window_seconds', 900),
+   now() - interval '30 minutes');
+\o
+-- THE DENOMINATORS FIRST. Without these, RD30's single row could mean "the
+-- hammered account was the only one offered" instead of "it was CHOSEN".
+select rl.val('RD28 DENOMINATOR: with room for everyone, BOTH accounts are pending',
+  format($$select count(*)::text from public.pending_lockout_notifications(500)
+            where account_user_id in (%L,%L)$$, :'pstd1', :'pstd2'), '2');
+select rl.val('RD29 DENOMINATOR: ...and they are the ONLY accounts pending',
+  $$select count(*)::text from public.pending_lockout_notifications(500)$$, '2');
+-- THE FINDING. One slot, two candidates, and the one still being hammered wins.
+select rl.val('RD30 SATURATED: the account still under ATTACK is the one served',
+  format($$select (account_user_id = %L)::text
+             from public.pending_lockout_notifications(1)$$, :'pstd1'), 'true');
+-- WHY THAT IS NOT AN ACCIDENT OF THE PLANT: the hammered account's most recent
+-- alert is genuinely the NEWEST in the queue, so the old `order by max()` had to
+-- put it last. This is the assertion that makes RD30 a regression test rather
+-- than a coincidence.
+select rl.val('RD31 ...even though its LATEST alert is the newest in the queue',
+  format($$select ((select pg_catalog.max(created_at) from public.incident_alerts
+                     where alert_type='repeated_login_failures' and details->>'subject_id' = %L)
+                 > (select pg_catalog.max(created_at) from public.incident_alerts
+                     where alert_type='repeated_login_failures' and details->>'subject_id' = %L))::text$$,
+         :'pstd1', :'pstd2'), 'true');
+-- AND THE PAYLOAD IS UNCHANGED: only the ORDERING moved. The email still names
+-- the most recent lockout window, which is what the copy quotes.
+select rl.val('RD32 ...and latest_at is still that account''s MOST RECENT window',
+  format($$select (latest_at = (select pg_catalog.max(created_at) from public.incident_alerts
+                                 where alert_type='repeated_login_failures'
+                                   and details->>'subject_id' = %L))::text
+             from public.pending_lockout_notifications(1)$$, :'pstd1'), 'true');
+-- STARVATION-PROOF BY CONSTRUCTION: a FURTHER crossing on the hammered account
+-- -- the thing that used to push it to the back -- does not move it at all.
+\o /dev/null
+insert into public.incident_alerts (alert_type, organisation_id, summary, details, created_at)
+values ('repeated_login_failures', null,
+        'Repeated failed sign-in attempts on one account (limit 5 per 900 seconds).',
+        jsonb_build_object('category','login_account','subject_scope','account',
+          'subject_id', :'pstd1', 'max_requests', 5, 'window_seconds', 900),
+        now() + interval '1 minute');
+\o
+select rl.val('RD33 a FURTHER crossing does not push the victim back down the queue',
+  format($$select (account_user_id = %L)::text
+             from public.pending_lockout_notifications(1)$$, :'pstd1'), 'true');
+
+-- AND THE DEFERRAL IS VISIBLE TO THE OPERATOR (fix round 2, finding N4). The
+-- run is bounded and nothing reads pg_net's response, so /super/health's own
+-- count is the only surface that can say a queue exists. Read through the
+-- health RPC as the aal2 superuser, against the queue saturated above -- two
+-- accounts waiting, which is exactly what RD28/RD29 measured from the sender's
+-- side. A count that disagreed with the sender's queue would be worse than no
+-- count at all.
+-- Taken as `postgres`, BEFORE the role switch, so the comparison is against the
+-- table's own truth rather than against whatever the superuser session can see.
+\o /dev/null
+select pg_catalog.min(created_at)::text as oldest_pending from public.incident_alerts
+ where alert_type='repeated_login_failures' and account_notified_at is null \gset
+\o
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select rl.val('RD34 /super/health COUNTS the two accounts waiting to be told',
+  $$select ((public.platform_health_snapshot()
+              ->'abuse'->>'lockout_notifications_pending')::int)::text$$, '2');
+select rl.val('RD35 ...and dates the queue from the OLDEST unnotified crossing',
+  format($$select (((public.platform_health_snapshot()
+                      ->'abuse'->>'lockout_notifications_oldest_at')::timestamptz)
+                 = %L::timestamptz)::text$$, :'oldest_pending'), 'true');
+reset role; reset request.jwt.claims;
 
 -- ===========================================================================
 -- § RZ  HOUSEKEEPING

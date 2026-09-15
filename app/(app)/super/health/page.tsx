@@ -180,6 +180,24 @@ function SnapshotSections({ snapshot }: { snapshot: PlatformHealthSnapshot }) {
             value={snapshot.abuse.quarantinedDocumentsTotal}
           />
           <StatRow label="Open incident alerts" value={snapshot.abuse.openAlerts} />
+          {/* THE DEFERRAL, MADE VISIBLE (fix round 2, review finding N4). The
+              account-holder lockout notification (Q114) is delivered by a run
+              bounded at 30 accounts and 120 seconds a tick, and NOTHING reads
+              pg_net's response -- so a wrong bearer, a stopped clock or a
+              permanently squeezed budget all look exactly like a healthy tick.
+              These two lines are the only operator-facing witness that the
+              queue exists: the count is how many accounts are waiting, and the
+              AGE beside it is what separates a normal one-tick backlog from a
+              queue that is not draining at all. */}
+          <StatRow
+            label="Accounts waiting for a lockout notification"
+            note={
+              snapshot.abuse.lockoutNotificationsOldestAt
+                ? `Oldest waiting since ${formatDateTime(snapshot.abuse.lockoutNotificationsOldestAt)} — if this stops moving, the delivery clock is not draining the queue`
+                : "Delivered on the 10-minute clock, 30 accounts a tick"
+            }
+            value={snapshot.abuse.lockoutNotificationsPending}
+          />
         </dl>
       </section>
     </>

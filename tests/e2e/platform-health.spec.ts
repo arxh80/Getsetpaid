@@ -152,6 +152,18 @@ test("the superuser reads live counts and a real alert row at /super/health", as
     await expect(page.getByText("Active memberships")).toBeVisible();
     await expect(page.getByText("Open incident alerts")).toBeVisible();
 
+    // THE DEFERRED LOCKOUT QUEUE IS ON THE PAGE (fix round 2, review finding
+    // N4). The account-holder notification (Q114) is delivered by a run
+    // bounded at 30 accounts a tick, and nothing reads pg_net's response — so
+    // before this line every operator surface was silent about a backlog, and
+    // a wrong bearer looked exactly like a healthy tick. Asserted here rather
+    // than only in psql because the whole finding is that the OPERATOR cannot
+    // see it: a number that exists in the RPC and never reaches the page
+    // closes nothing.
+    await expect(
+      page.getByText("Accounts waiting for a lockout notification"),
+    ).toBeVisible();
+
     // ---- THE TASK A M2 CAVEAT IS ON THE PAGE. -----------------------------
     // The backfill stamped seat_count = 1 and a placeholder period end onto
     // every pre-existing workspace. Rendering "Declared seats" without saying

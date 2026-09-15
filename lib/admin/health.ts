@@ -75,6 +75,16 @@ export interface PlatformHealthSnapshot {
     readonly quarantinedUploads24h: number | null;
     readonly quarantinedDocumentsTotal: number | null;
     readonly openAlerts: number | null;
+    /** ACCOUNTS (not alerts) waiting for the Q114 account-holder lockout
+     *  email -- the length of public.pending_lockout_notifications()'s queue.
+     *  Fix round 2, review finding N4: the delivery run is bounded at 30
+     *  accounts a tick and NOTHING reads pg_net's response, so without this
+     *  a backlog that never drains is invisible on every operator surface. */
+    readonly lockoutNotificationsPending: number | null;
+    /** When the oldest still-unnotified lockout crossed. The half that
+     *  diagnoses: a non-zero count is normal for a tick or two, a receding
+     *  oldest-pending timestamp is a queue that is not draining. */
+    readonly lockoutNotificationsOldestAt: string | null;
   };
 }
 
@@ -175,6 +185,11 @@ export async function loadPlatformHealthSnapshot(): Promise<PlatformHealthOutcom
         quarantinedUploads24h: num(abuse.quarantined_uploads_24h),
         quarantinedDocumentsTotal: num(abuse.quarantined_documents_total),
         openAlerts: num(abuse.open_alerts),
+        lockoutNotificationsPending: num(abuse.lockout_notifications_pending),
+        lockoutNotificationsOldestAt:
+          typeof abuse.lockout_notifications_oldest_at === "string"
+            ? abuse.lockout_notifications_oldest_at
+            : null,
       },
     },
   };
