@@ -49,7 +49,14 @@ export default defineConfig({
         extends: true,
         test: {
           name: "unit",
-          include: ["tests/unit/**/*.test.ts"],
+          // `.tsx` TOO, AND THE OMISSION WAS A TRAP RATHER THAN A CHOICE.
+          // The pattern was `*.test.ts` only, so a test file written as
+          // `.tsx` -- which is what a test that RENDERS a component has to
+          // be -- was matched by nothing and silently never ran. Vitest
+          // reports "No test files found" only when the filter names it
+          // directly; in a full run it is simply absent, which is the same
+          // failure mode as an untested size limit: it looks covered.
+          include: ["tests/unit/**/*.test.{ts,tsx}"],
           environment: "node",
           globals: false,
           // Pure functions: nothing shared, so nothing to serialise, and a
@@ -62,7 +69,7 @@ export default defineConfig({
         extends: true,
         test: {
           name: "integration",
-          include: ["tests/integration/**/*.test.ts"],
+          include: ["tests/integration/**/*.test.{ts,tsx}"],
           environment: "node",
           globals: false,
           testTimeout: 20_000,

@@ -8,6 +8,7 @@ import {
 import type { ListColumn } from "@/lib/list/spec";
 import { deletedRecordsPage } from "@/components/list/deleted-records-page";
 import { formatDate } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
 
 const { generateMetadata, Page } = deletedRecordsPage({
   segment: "contacts",
@@ -104,11 +105,3 @@ function columnsFor(
   ];
 }
 
-function Absent() {
-  return (
-    <span className="text-ink-muted">
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">Not recorded</span>
-    </span>
-  );
-}

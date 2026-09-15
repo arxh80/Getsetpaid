@@ -34,6 +34,8 @@ import {
 } from "@/components/crm/write-gate";
 import { ContactCompanyPanel } from "@/components/crm/link-panel";
 import { formatDateTime } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
+import { Detail } from "@/components/ui/detail";
 
 // One contact.
 //
@@ -176,7 +178,6 @@ export default async function ContactDetailPage({
         ? null
         : access.explanation;
   const basePath = `/${org.slug}/contacts`;
-
 
   return (
     <div className="flex flex-col gap-8">
@@ -439,24 +440,5 @@ export default async function ContactDetailPage({
 /** The id of the single explanation the Manage section's controls point at. */
 const MANAGE_NOTE = "contact-manage-blocked";
 
-function Detail({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase">
-        {label}
-      </dt>
-      <dd className="text-base break-words text-ink">{children}</dd>
-    </div>
-  );
-}
-
 /** See the contacts list's copy of this: a blank cell is indistinguishable
  *  from a rendering fault, and silent to a screen reader. */
-function Absent() {
-  return (
-    <span className="text-ink-muted">
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">Not recorded</span>
-    </span>
-  );
-}

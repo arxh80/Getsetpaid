@@ -28,6 +28,7 @@ import { ListSkeleton } from "@/components/list/list-skeleton";
 import { ListToolbar } from "@/components/list/list-toolbar";
 import { NewRecordAction } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
 
 // Events. `manage_events` (20260901010000) -- a Booker and a Venue Manager
 // both hold it, a Finance or Marketing user does not.
@@ -346,13 +347,3 @@ function eventColumns(
   ];
 }
 
-/** A blank cell is indistinguishable from a rendering fault, and silent to a
- *  screen reader. */
-function Absent() {
-  return (
-    <span className="text-ink-muted">
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">Not recorded</span>
-    </span>
-  );
-}

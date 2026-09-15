@@ -39,6 +39,7 @@ import { ListSkeleton } from "@/components/list/list-skeleton";
 import { ListToolbar } from "@/components/list/list-toolbar";
 import { humanFileSize } from "@/lib/format/bytes";
 import { formatDateTime } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
 
 // Documents. `manage_documents` (20260902010000). The org-wide file list: every
 // document in the workspace, its scan status, who uploaded it, what it is
@@ -383,13 +384,3 @@ function LinkedTo({
   );
 }
 
-/** A blank cell is indistinguishable from a rendering fault, and silent to a
- *  screen reader. */
-function Absent({ label }: { label: string }) {
-  return (
-    <span className="text-ink-muted">
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">{label}</span>
-    </span>
-  );
-}
