@@ -27,6 +27,7 @@ import { getLocalSupabaseStatus } from "../rls/support/env";
 import {
   CRM_AUDIT_TARGETS,
   CRM_AUDIT_TARGET_TABLE,
+  CRM_AUDIT_VERBS,
   crmAuditActions,
   knownAuditActions,
 } from "@/lib/admin/audit-actions";
@@ -108,6 +109,54 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
       ["a_table_that_does_not_exist"],
     );
     expect(rows[0].n).toBe(0);
+  });
+
+  // FIX ROUND 1, REVIEW M3: the two halves of the catalogue that were bound
+  // to NOTHING. The test below pins the TARGETS (from tgargs) and the one
+  // further down pins every COMPLETE `p_action => '<literal>'`; neither could
+  // see the verbs, which audit_crm_change() builds as `v_target || '.updated'`,
+  // nor the action names audit_crm_row() takes from tg_argv[0]. A verb rename,
+  // or a new `audit_crm_row('event.hard_deleted', 'event')` trigger, left the
+  // datalist stale with this file green.
+  it("the verbs audit_crm_change() builds its action names from are exactly CRM_AUDIT_VERBS", async () => {
+    const { rows } = await pool.query<{ body: string }>(
+      `select pg_get_functiondef(p.oid) as body
+         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'private' and p.proname = 'audit_crm_change'`,
+    );
+    expect(rows.length).toBe(1);
+    // The function's only dotted string literals ARE its verbs: it emits
+    // `v_target || '.created'` and a CASE over '.soft_deleted' / '.restored' /
+    // '.updated'. Comments stripped so a verb named in prose does not count.
+    const code = rows[0].body.replace(/--[^\n]*/g, "");
+    const verbs = [...new Set([...code.matchAll(/'\.([a-z_]+)'/g)].map((m) => m[1]))];
+    expect(verbs.sort()).toEqual([...CRM_AUDIT_VERBS].sort());
+  });
+
+  it("every action name an audit_crm_row trigger passes through tg_argv is in the catalogue", async () => {
+    const { rows } = await pool.query<{ table_name: string; tgname: string; args: string }>(
+      `select c.relname as table_name, t.tgname, encode(t.tgargs, 'escape') as args
+         from pg_trigger t
+         join pg_class c on c.oid = t.tgrelid
+         join pg_proc p on p.oid = t.tgfoid
+         join pg_namespace n on n.oid = p.pronamespace
+        where c.relnamespace = 'public'::regnamespace
+          and not t.tgisinternal
+          and n.nspname = 'private' and p.proname = 'audit_crm_row'
+        order by 1, 2`,
+    );
+    // contact_company.deleted, custom_field_value.deleted, records.merged
+    // (20260828141000) -- fewer than three means this stopped finding them.
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+
+    const known = new Set(knownAuditActions());
+    const missing = rows
+      // Two NUL-separated arguments, the action first. encode(..., 'escape')
+      // renders a NUL as the four characters `\000`.
+      .map((r) => ({ ...r, action: r.args.split(/\\000|\0/)[0] }))
+      .filter((r) => !known.has(r.action))
+      .map((r) => `${r.table_name}.${r.tgname}: ${r.action}`);
+    expect(missing).toEqual([]);
   });
 
   it("the derived CRM action set is exactly what the trigger can emit", () => {

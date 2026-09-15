@@ -326,12 +326,24 @@ test("a Manager's edit and soft-delete are audited by the database under their o
   await expect(main).toContainText("contact.updated");
   await expect(main).toContainText(world.managerOwnedContactId);
   await expect(main).not.toContainText("No events match");
-  // The diff NAMES the columns: open the payload and read the changed list.
-  await main.locator("details").filter({ hasText: "After" }).first().locator("summary").click();
-  await expect(main).toContainText('"changed"');
-  await expect(main).toContainText('"name"');
-  await expect(main).toContainText('"title"');
-  // ...and carries none of what was typed.
+  // The diff NAMES the columns: open THIS contact's payload and read the
+  // changed list. PINNED BY target_id, not "the first <details> on the page"
+  // (fix round 1, review M8): the row happened to be ours only because
+  // nothing later in this spec edits a contact, and a future test that edited
+  // one first would move these assertions to a different row -- passing the
+  // "no sentinel" half vacuously. Rows are ordered created_at desc, so the
+  // first row FOR THIS CONTACT is the edit just made.
+  const updatedRow = main
+    .locator("table tbody tr")
+    .filter({ hasText: world.managerOwnedContactId })
+    .first();
+  await expect(updatedRow).toBeVisible();
+  await updatedRow.locator("details").filter({ hasText: "After" }).locator("summary").click();
+  await expect(updatedRow).toContainText('"changed"');
+  await expect(updatedRow).toContainText('"name"');
+  await expect(updatedRow).toContainText('"title"');
+  // ...and carries none of what was typed -- asserted over the WHOLE page,
+  // which is the stronger direction: a leak anywhere on this screen fails.
   await expect(main).not.toContainText(sentinel);
   await expect(main).not.toContainText(sentinelTitle);
 
@@ -345,8 +357,16 @@ test("a Manager's edit and soft-delete are audited by the database under their o
 
   // The 35th axe scan: the CRM-action-filtered log, populated, with a
   // payload <details> open -- the one state of this page Task 1's scan did
-  // not reach, because no CRM row existed to open.
-  await main.locator("details").first().locator("summary").click();
+  // not reach, because no CRM row existed to open. Pinned by target_id for
+  // the same reason as above.
+  await main
+    .locator("table tbody tr")
+    .filter({ hasText: world.managerOwnedContactId })
+    .first()
+    .locator("details")
+    .filter({ hasText: "After" })
+    .locator("summary")
+    .click();
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"])
     .analyze();

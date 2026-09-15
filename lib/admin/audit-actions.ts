@@ -7,8 +7,9 @@
 // lib/admin/audit-log.ts's action filter is deliberately free text (a
 // length-capped exact match) so a legacy or one-off action is still
 // findable. That is the right allowlist SHAPE for a filter and the wrong one
-// for DISCOVERY: Phase 7 Task 6b added forty-four action names in one
-// migration (four verbs over eleven CRM tables), and "an action the founder
+// for DISCOVERY: Phase 7 Task 6b added forty action names in one migration
+// (four verbs over the nine soft-deletable CRM tables, two over the other
+// two), and "an action the founder
 // cannot filter for is an action they cannot find" cuts both ways -- a filter
 // that accepts any string is no help to someone who does not know the
 // string. So the filter stays free text and the form offers this catalogue
