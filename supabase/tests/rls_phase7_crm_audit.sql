@@ -7,7 +7,12 @@
 --   private.audit_crm_project()            values -> allowlisted keys only
 --   private.audit_crm_change()             the AFTER INSERT OR UPDATE writer
 --   22 triggers                            audit_insert/audit_update x 11 tables
---   private.begin/end_crm_bulk_audit()     the member-level correlation thread
+--   private.begin/end_crm_bulk_audit()     the member-level correlation thread,
+--                                          RE-ENTRANT since 20260915000000
+--                                          (fix round 1, M1): a wrapper called
+--                                          inside an open thread joins it
+--                                          rather than replacing and then
+--                                          closing it -- § CB5
 --   private.log_audit_event()              the four-step correlation coalesce
 --   public.merge_records / set_contact_primary_company /
 --   set_artist_primary_representation / set_custom_field_values
@@ -717,10 +722,21 @@ select ca.val('CB3f NOTHING on the merge''s thread carries the loser''s sentinel
   format($$select count(*)::text from public.audit_events
             where created_at >= %L and actor_user_id=%L
               and (coalesce(before::text,'') || coalesce(after::text,'')) like '%%ZQXV%%'$$, :'ca_t1', :'pmanager'), '0');
-select ca.val('CB3g the unthreaded body is NOT callable as a client: private.merge_records_unthreaded is not in an exposed schema',
+-- CB3g PROVES THE PRIVILEGE SHAPE THAT IS REAL (fix round 1, review M7).
+-- As first written this asserted that `anon` lacks EXECUTE on the moved body,
+-- which is true and is the wrong half: `authenticated` DELIBERATELY holds it,
+-- and must, because the wrapper is SECURITY INVOKER -- its body runs as the
+-- caller, so the caller needs EXECUTE on everything it calls. What actually
+-- makes the body unreachable is PostgREST's exposed-schema list (config.toml
+-- `schemas = ["public", "graphql_public"]`; `private` is not in it), and the
+-- runner's HTTP block asserts exactly that with five 404 probes. So this
+-- assertion now states the grants as they are, deliberately, rather than
+-- implying the absence of one is the control.
+select ca.val('CB3g the moved body sits in `private` where authenticated DELIBERATELY holds EXECUTE (the wrapper is SECURITY INVOKER) and anon does not -- unroutability is the HTTP block''s five 404s, not this grant',
   $$select (select count(*) from pg_proc p where p.pronamespace='private'::regnamespace and p.proname='merge_records_unthreaded')::text
+       || '/' || has_function_privilege('authenticated', 'private.merge_records_unthreaded(uuid,text,uuid,uuid,jsonb,jsonb)', 'EXECUTE')::text
        || '/' || has_function_privilege('anon', 'private.merge_records_unthreaded(uuid,text,uuid,uuid,jsonb,jsonb)', 'EXECUTE')::text$$,
-  '1/false');
+  '1/true/false');
 
 -- set_custom_field_values: N upserts + a sweep on one thread. Two definitions
 -- so the save both updates one value and inserts another.
@@ -742,6 +758,61 @@ select ca.val('CB4b ...custom_field_value.updated + .created on ONE correlation 
             from public.audit_events where created_at >= %L and actor_user_id=%L
               and target_type='custom_field_value'$$, :'ca_t2', :'pmanager'),
   'custom_field_value.created,custom_field_value.updated 1 true');
+
+-- ---------------------------------------------------------------------------
+-- CB5: THE THREAD IS RE-ENTRANT (fix round 1, review M1 -- 20260915000000).
+-- ---------------------------------------------------------------------------
+-- The composition the review measured: an operation opens its own thread,
+-- writes, calls one of the four wrappers MID-WAY, and writes again. Before
+-- 20260915000000 that produced THREE correlation ids for one action -- the
+-- declared thread, the inner wrapper's own, and then a fresh uuid per row
+-- afterwards, because the inner end_crm_bulk_audit() cleared the marker
+-- unconditionally. Exactly the un-correlated spray 20260912001000's header
+-- says it exists to prevent, with no error and no test red. This is that
+-- assertion: ONE id for the WHOLE operation, inner rows included.
+create function ca.nested_op(p_contact uuid, p_company uuid, p_org uuid)
+returns text language plpgsql security invoker set search_path = '' as $$
+declare v_opened boolean;
+begin
+  v_opened := private.begin_crm_bulk_audit();
+  update public.contacts set title = 'CA nested one' where id = p_contact;
+  -- A WRAPPER CALLED INSIDE THE OPEN THREAD. It must JOIN this thread and
+  -- leave it standing, not open a second one and then close ours.
+  perform public.set_contact_primary_company(p_contact, p_company, p_org);
+  update public.contacts set title = 'CA nested two' where id = p_contact;
+  perform private.end_crm_bulk_audit(v_opened);
+  return 'ok';
+end $$;
+grant execute on function ca.nested_op(uuid, uuid, uuid) to authenticated;
+
+\o /dev/null
+select now()::text as ca_t_nest \gset
+\o
+begin;
+set local role authenticated;
+set local request.jwt.claims = :'pmanager_c';
+select ca.val('CB5 an operation opens a thread, writes, calls set_contact_primary_company mid-way, and writes again',
+  format($$select ca.nested_op(%L, %L, %L)$$, :ca_ct, :ca_co2, :'alpha_org'), 'ok');
+reset role;
+select ca.val('CB5c ...and the OUTER end closed the thread (same transaction, GUC empty) -- the inner one did NOT close it early',
+  $$select (private.crm_bulk_correlation_id() is null)::text$$, 'true');
+commit;
+select ca.val('CB5b ...every audit row of the WHOLE operation -- the outer updates AND the inner wrapper''s rows -- shares ONE correlation id',
+  format($$select count(distinct correlation_id)::text || ' thread(s) / ' || (count(*) >= 3)::text
+            from public.audit_events where created_at >= %L and actor_user_id=%L$$,
+         :'ca_t_nest', :'pmanager'), '1 thread(s) / true');
+-- The forensic half of M1: the id is no longer the caller's to name, so a
+-- member with a direct database session cannot splice their writes into
+-- another actor's thread. The grant itself stays, and must -- see CB5e.
+select ca.val('CB5d the caller-supplied-id form of begin_crm_bulk_audit is GONE (nobody can name another actor''s thread)',
+  $$select count(*)::text from pg_proc p
+     where p.pronamespace='private'::regnamespace and p.proname='begin_crm_bulk_audit'
+       and pg_get_function_identity_arguments(p.oid) = 'uuid'$$, '0');
+select ca.val('CB5e ...and the no-argument form is executable by authenticated ONLY (its callers are the SECURITY INVOKER wrappers, whose bodies run as the caller)',
+  $$select has_function_privilege('authenticated','private.begin_crm_bulk_audit()','EXECUTE')::text
+      || '/' || has_function_privilege('anon','private.begin_crm_bulk_audit()','EXECUTE')::text
+      || '/' || has_function_privilege('service_role','private.begin_crm_bulk_audit()','EXECUTE')::text$$,
+  'true/false/false');
 
 -- ===========================================================================
 -- § CZ  HOUSEKEEPING -- every row and audit event this suite created goes.
@@ -765,6 +836,7 @@ delete from public.merges where organisation_id = :'alpha_org' and loser_id = :c
 delete from public.merge_candidates where organisation_id = :'alpha_org'
    and (keep_id in (:ca_ct, :ca_ct2, :ca_new) or duplicate_id in (:ca_ct, :ca_ct2, :ca_new));
 drop function ca.definer_touch(uuid);
+drop function ca.nested_op(uuid, uuid, uuid);
 -- ALPHA's subscription row goes back to what it was (nothing, today).
 delete from public.organisation_subscriptions where organisation_id = :'alpha_org';
 insert into public.organisation_subscriptions select * from ca.saved_sub;
