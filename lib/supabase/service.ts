@@ -17,10 +17,34 @@ import "server-only";
 // a sender is a server-side job with no user, so no RLS policy can name it
 // and no session-scoped RPC can authorise it. 20260911000000 gives
 // `public.feedback` the identical, column-narrow grant. So this client's
-// reach is bounded BY THE GRANTS, not by convention: it can read the two
-// notification tables and stamp one column on each, and a `.from()` against
-// any other table in this schema fails at the privilege check, because
+// reach is bounded BY THE GRANTS, not by convention: a `.from()` against any
+// other table in this schema fails at the privilege check, because
 // `service_role` still holds nothing else (the RLS suites assert it).
+//
+// WHAT IT REACHES, AS OF TASK 6c (fix round 1, M4 -- this paragraph was stale
+// within one task of being written, which is why it now enumerates):
+//
+//   * `public.incident_alerts` -- select, and update on TWO columns:
+//     `notified_at` (the operator's digest carried this row) and
+//     `account_notified_at` (the account holder has been told, founder ruling
+//     Q114). They are separate seams on purpose: different recipients,
+//     independent failure.
+//   * `public.feedback` -- select, and update on `notified_at` alone.
+//   * ONE RPC: `public.pending_lockout_notifications(int)`, called from
+//     lib/email/lockout-notification.ts to resolve the addresses of accounts
+//     with an unnotified lockout alert.
+//
+// AN RPC IS BOUNDED BY ITS OWN GRANT, NOT BY THE TABLE GRANTS ABOVE IT, and
+// that distinction is the whole reason this paragraph exists: a SECURITY
+// DEFINER function runs as its OWNER, so anything this client can execute can
+// reach past every grant listed here. `pending_lockout_notifications` is
+// therefore built to be safe to hold rather than merely convenient: it is
+// `security definer`, owned by `postgres`, revoked from public/anon/
+// authenticated and granted to `service_role` ALONE, and it takes NO user
+// argument -- it cannot be asked for a chosen person's address, only for the
+// accounts that currently have an unnotified lockout alert. A future RPC added
+// to this list gets the same three questions: who owns it, who may execute it,
+// and what can the caller ask it FOR.
 //
 // THE SAME FOUR PROPERTIES admin.ts and storage.ts keep:
 //   1. `import "server-only"` -- a Client Component reaching this file is a
