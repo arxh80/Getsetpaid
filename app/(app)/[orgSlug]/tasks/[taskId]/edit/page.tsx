@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import { getCurrentOrg } from "@/lib/auth";
 import { getCrmWriteAccess } from "@/lib/crm/write-access";
 import { loadTask } from "@/lib/crm/queries";
@@ -8,6 +8,7 @@ import { TaskForm } from "@/components/crm/task-form";
 import { WriteBlockedNote } from "@/components/crm/write-gate";
 import { Alert } from "@/components/ui/alert";
 import { instantToLondonWallClock } from "@/lib/format/date";
+import { DeletedRecordNotice } from "@/components/crm/deleted-record-notice";
 
 export async function generateMetadata({
   params,
@@ -48,21 +49,38 @@ export default async function EditTaskPage({
 
   const task = result.record;
   const basePath = `/${org.slug}/tasks`;
-  // A DELETED TASK IS NOT EDITABLE -- it is restored first. Send the user to the
-  // record, where the Restore control is.
-  if (task.deletedAt !== null) redirect(`${basePath}/${task.id}`);
+  const detailHref = `${basePath}/${task.id}`;
+  const breadcrumb = (
+    <p className="text-sm text-ink-muted">
+      <Link
+        href={detailHref}
+        className="break-words text-primary underline underline-offset-4 hover:text-ink"
+      >
+        {task.title}
+      </Link>
+    </p>
+  );
+  // A DELETED TASK IS NOT EDITABLE, AND IT SAYS SO RATHER THAN MOVING THE
+  // USER. This used to `redirect()` to the record page where Restore lives.
+  // The link below still goes there; what changed is that the user is told
+  // why first. See components/crm/deleted-record-notice.tsx.
+  if (task.deletedAt !== null) {
+    return (
+      <div className="flex flex-col gap-6">
+        {breadcrumb}
+        <DeletedRecordNotice
+          label={task.title}
+          noun="task"
+          detailHref={detailHref}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-3">
-        <p className="text-sm text-ink-muted">
-          <Link
-            href={`${basePath}/${task.id}`}
-            className="break-words text-primary underline underline-offset-4 hover:text-ink"
-          >
-            {task.title}
-          </Link>
-        </p>
+        {breadcrumb}
         <h1 className="tracking-display text-3xl font-extrabold text-ink">Edit task</h1>
       </div>
 
@@ -79,7 +97,7 @@ export default async function EditTaskPage({
             dueAt: task.dueAt === null ? "" : instantToLondonWallClock(task.dueAt),
             reminderAt: task.reminderAt === null ? "" : instantToLondonWallClock(task.reminderAt),
           }}
-          cancelHref={`${basePath}/${task.id}`}
+          cancelHref={detailHref}
         />
       ) : (
         <WriteBlockedNote access={access} id="edit-task-blocked" />
