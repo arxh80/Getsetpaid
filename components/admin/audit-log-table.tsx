@@ -222,7 +222,16 @@ function PayloadDetail({ label, value }: { label: string; value: unknown }) {
   }
   return (
     <details className="text-xs">
-      <summary className="cursor-pointer text-ink-muted hover:text-ink">
+      {/* py-1.5 is WCAG 2.2 SC 2.5.8 (target-size), not decoration. These two
+          summaries are 16px tall and sit 8px apart, so BOTH the 24x24 size
+          rule and the 24px offset rule failed -- and the 35th axe scan missed
+          it until Task 6b's fix round, because it had only ever opened the
+          FIRST <details> ("Before"), whose <pre> expands BETWEEN the two
+          summaries and pushes them apart. Pinning the row and opening "After"
+          leaves them adjacent, which is the real resting state of every other
+          row on the page. 6px of vertical padding takes each target to 28px,
+          satisfying the size rule outright. */}
+      <summary className="cursor-pointer py-1.5 text-ink-muted hover:text-ink">
         {label}
       </summary>
       <pre className="mt-1 max-w-xs overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs text-ink-muted">
