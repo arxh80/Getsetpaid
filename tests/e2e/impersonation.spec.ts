@@ -2,6 +2,8 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
   PASSWORD,
+  clearFeedbackState,
+  feedbackRowByMessage,
   impersonationAuditActions,
   impersonationAuditedRoutes,
   setOrganisationSuspended,
@@ -64,7 +66,13 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  if (world) await tearDownWorld(world);
+  // The golden walk now submits feedback from inside the session (fix round 1,
+  // I1), so this suite owns feedback rows and a rate-limit counter for the
+  // superuser. Cleared the same way feedback.spec.ts clears its own.
+  if (world) {
+    await clearFeedbackState([world.superuser.id]);
+    await tearDownWorld(world);
+  }
 });
 
 /**
@@ -274,6 +282,67 @@ test("the golden walk: request → accept as the org admin → start → bannere
     await superuserPage.goto(`/${world.orgSlug}/contacts`);
     await expect(superuserPage.getByTestId("impersonation-banner")).toBeVisible();
     await expect(superuserPage.locator("main")).toContainText("Manager Only Contact");
+
+    // ---- 5b. THE OPERATOR CAN SEND FEEDBACK FROM INSIDE THE SESSION -------
+    //
+    // =======================================================================
+    // FIX ROUND 1, IMPORTANT 1: THE Q121 UN-GATE HAD NO TEST AT ALL
+    // =======================================================================
+    // Founder ruling Q121's explicit WORK OWED was to UNDO Task 6 fix round
+    // 1's hide-and-refuse, so the Feedback control renders during support
+    // access and the submission is ACCEPTED, workspace-less and labelled.
+    // Everything about that was covered EXCEPT the thing the ruling exists to
+    // serve: rls_phase7_feedback.sql § FX proves the label from real session
+    // claims but runs no layout; feedback.spec.ts proves the RENDER of a
+    // PLANTED row; submit-action-budget.test.ts proves the action's branch
+    // with a stubbed getCurrentOrg. Re-adding `&& !currentOrg?.isImpersonated`
+    // to app/(app)/layout.tsx left all five gates green with the feature
+    // unreachable from the one place it is for. THIS is the walk that closes
+    // it, and it is cheap because the live session above already exists.
+    //
+    // It fails if the control is hidden (the click times out), if
+    // submitFeedbackAction sends `org.id` instead of null (the trigger raises
+    // 42501 -- an impersonator holds no membership -- and the dialog shows the
+    // generic refusal instead of the receipt), if getCurrentOrg() stops
+    // setting isImpersonated on the real submit path, or if the database
+    // stops stamping the label for this route.
+    const supportFeedback = `E2E support-access feedback ${world.orgSlug} the contacts filter resets`;
+    await superuserPage.getByRole("button", { name: "Feedback" }).click();
+    const feedbackDialog = superuserPage.getByRole("dialog");
+    await expect(
+      feedbackDialog.getByRole("heading", { name: "Send feedback" }),
+      "the Feedback control must render INSIDE a support-access session (Q121 reversed the gating)",
+    ).toBeVisible();
+    await feedbackDialog.getByLabel(/Category/).selectOption("bug");
+    await feedbackDialog.getByLabel(/Message/).fill(supportFeedback);
+    await feedbackDialog.getByRole("button", { name: "Send feedback" }).click();
+    await expect(
+      feedbackDialog.getByText("Done. Thanks — your feedback has been recorded."),
+      "the submission must be ACCEPTED, not refused -- fix round 1 of Task 6 refused it and Q121 reversed that",
+    ).toBeVisible();
+    await feedbackDialog.getByRole("button", { name: "Close" }).click();
+
+    // READ STRAIGHT OUT OF POSTGRES, because nothing in this browser can see
+    // the row: the submitter has no SELECT policy on their own feedback
+    // (Q103) and the superuser is mid-session.
+    const supportRow = await feedbackRowByMessage(supportFeedback);
+    expect(supportRow, "the support-access submission must have landed").not.toBeNull();
+    expect(supportRow!.userId, "attributed to the operator, like every submission").toBe(
+      world.superuser.id,
+    );
+    expect(
+      supportRow!.organisationId,
+      "a support-access row carries NO workspace -- the operator holds no membership of it",
+    ).toBeNull();
+    expect(supportRow!.organisationRole).toBeNull();
+    expect(
+      supportRow!.duringSupportAccess,
+      "the DATABASE must label it: this is the only assertion that walks layout -> action -> trigger on one path",
+    ).toBe(true);
+    expect(
+      supportRow!.route,
+      "the route is where the operator WAS, captured exactly as for anyone else",
+    ).toBe(`/${world.orgSlug}/contacts`);
 
     // ---- 6. AND IT IS READ-ONLY -------------------------------------------
     // THE CONTROL IS PRESENT AND INERT, NOT ABSENT, and that is the product's

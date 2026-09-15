@@ -1000,6 +1000,10 @@ export interface FeedbackRowRead {
   status: string;
   screenshotScanStatus: string | null;
   notifiedAt: string | null;
+  /** Q121's label, stamped by the trigger from the caller's own session --
+   *  read here so the impersonation walk can prove the app EARNED it rather
+   *  than a fixture planting it. */
+  duringSupportAccess: boolean;
 }
 
 /**
@@ -1013,9 +1017,10 @@ export async function feedbackRowByMessage(message: string): Promise<FeedbackRow
     id: string; user_id: string; user_email: string | null; organisation_id: string | null;
     organisation_role: string | null; route: string; category: string; status: string;
     screenshot_scan_status: string | null; notified_at: string | null;
+    during_support_access: boolean;
   }>(
     `select id, user_id, user_email, organisation_id, organisation_role, route, category, status,
-            screenshot_scan_status, notified_at
+            screenshot_scan_status, notified_at, during_support_access
        from public.feedback where message = $1 order by created_at desc limit 1`,
     [message],
   );
@@ -1032,6 +1037,7 @@ export async function feedbackRowByMessage(message: string): Promise<FeedbackRow
     status: row.status,
     screenshotScanStatus: row.screenshot_scan_status,
     notifiedAt: row.notified_at,
+    duringSupportAccess: row.during_support_access,
   };
 }
 
