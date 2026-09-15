@@ -710,8 +710,16 @@ values (:'fx_session', :'super', :'beta_org', 'Task 6c suite: the Q121 label.',
 set role authenticated;
 set request.jwt.claims = :'super_c';
 
-select fb.val('FX9 private.is_impersonating() is TRUE for the operator in a live session',
-  $$select private.is_impersonating()::text$$, 'true');
+-- FIX ROUND 2, N5: this reads the ROUTE-SCOPED predicate, which is the one the
+-- trigger actually stamps from. The route-blind private.is_impersonating() is
+-- production-dead since 20260917001000 and `20260918002000` revoked its EXECUTE
+-- from `authenticated` -- so a session-role read of it would now raise 42501,
+-- and asserting on it would have been asserting on a function nothing ships.
+select fb.val('FX9 the operator IS in a live session, measured on the predicate that ships',
+  $$select private.is_impersonating_route('/org-beta/venues')::text$$, 'true');
+select fb.val('FX9a ...and the route-BLIND predicate is no longer callable from a session',
+  $$select has_function_privilege('authenticated','private.is_impersonating()','EXECUTE')::text$$,
+  'false');
 select fb.try('FX10 the operator submits with no workspace, and it is ACCEPTED (Q121)',
   format($$insert into public.feedback (id, organisation_id, category, message, route)
            values (%L, null, 'bug', 'The venue picker loses its filter here too.',
@@ -778,7 +786,7 @@ update public.impersonation_sessions set expires_at = now() - interval '1 minute
 set role authenticated;
 set request.jwt.claims = :'super_c';
 select fb.val('FX15 an EXPIRED session is not impersonation -- the time-box is evaluated live',
-  $$select private.is_impersonating()::text$$, 'false');
+  $$select private.is_impersonating_route('/org-beta/venues')::text$$, 'false');
 select fb.try('FX16 ...so a submission from it is accepted and NOT labelled',
   format($$insert into public.feedback (id, organisation_id, category, message, route)
            values (%L, null, 'other', 'After the session lapsed.', '/super')$$, :'fx_expired'),
