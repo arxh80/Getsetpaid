@@ -1,0 +1,154 @@
+import "server-only";
+
+// THE PER-ACCOUNT LOCKOUT NOTIFICATION -- founder ruling Q114.
+//
+// ===========================================================================
+// WHY THIS IS A SEPARATE SENDER FROM THE DIGEST
+// ===========================================================================
+// lib/email/incident-alerts.ts sends ONE digest of every pending alert to the
+// OPERATOR. This sends a different message, about a subset of those alerts, to
+// A DIFFERENT PERSON: the holder of the account someone is failing to sign in
+// to. It must not be folded into the digest -- the digest goes to the founder,
+// and putting a customer's security notice in it would either tell the founder
+// nothing new or tell the customer about the whole platform.
+//
+// It rides the SAME CLOCK (pg_cron -> /api/incident-alerts/deliver, Q118), so
+// there is exactly one scheduler in the product; the route calls both and
+// reports both.
+//
+// ===========================================================================
+// THE ABUSE, AND WHAT ACTUALLY CAPS IT
+// ===========================================================================
+// The notification is reachable by failing someone's login, so an attacker who
+// knows an address can now generate mail to that person as well as lock them
+// out. The cap is NOT a counter in this file; it is structural, in two places:
+//
+//   * public.record_rate_limit_event() writes the `repeated_login_failures`
+//     alert ONLY at the crossing (request_count = max + 1), exactly once per
+//     fixed 15-minute window. Ten thousand further attempts in that window
+//     write no further row, so they can produce no further email. Ceiling:
+//     four emails per hour per account, however hard it is hammered.
+//   * public.pending_lockout_notifications() GROUPS BY ACCOUNT, so a backlog
+//     (the clock down for an hour, four windows crossed) is ONE email naming
+//     the most recent window and one stamp over all four ids -- not four.
+//
+// WHAT REMAINS is stated in SECURITY.md § 5 rather than implied away: roughly
+// four emails an hour to one address the attacker already knew.
+//
+// ===========================================================================
+// THE ADDRESS NEVER LEAVES THIS FUNCTION, AND NEVER REACHES A LOG
+// ===========================================================================
+// The recipient is resolved in the database, inside
+// public.pending_lockout_notifications() -- a SECURITY DEFINER function
+// granted to `service_role` alone that takes NO user argument, so it cannot be
+// asked for a chosen person's address, only for the accounts that currently
+// have an unnotified lockout alert. Nothing here logs an address: a failed
+// send logs the ACCOUNT ID, which is what a human would need to look it up
+// through a path that is itself authorised. Nothing here reads, stores or logs
+// anything that was typed at the sign-in form -- the alert row never carried
+// it in the first place.
+//
+// ===========================================================================
+// STAMP ONLY AFTER ok:true, AND THE LOCKOUT DOES NOT DEPEND ON ANY OF IT
+// ===========================================================================
+// `account_notified_at` moves only for the ids an accepted send actually
+// covered, exactly the way `notified_at` does. A failed send stamps nothing
+// and the next tick retries the identical set. And the send path is entirely
+// downstream of the lockout: the lockout is enforced synchronously inside
+// GoTrue's password-verification hook, in the database, and neither knows nor
+// waits for this file. An outage here delays a notification; it cannot let an
+// attempt through, and it cannot lock anybody out either.
+
+import { sendEmail } from "@/lib/email/send";
+import { buildLockoutNotification } from "@/lib/email/templates";
+import { createServiceClient } from "@/lib/supabase/service";
+import { siteUrl } from "@/lib/supabase/env";
+
+/** Accounts notified in one run. A tick that finds more than this leaves the
+ *  rest for the next one -- they stay pending, which is the retry. */
+export const LOCKOUT_NOTIFICATION_LIMIT = 100;
+
+export type LockoutNotificationResult =
+  | { readonly outcome: "nothing_pending" }
+  | { readonly outcome: "delivered"; readonly sent: number; readonly failed: number }
+  | { readonly outcome: "unavailable"; readonly error: string };
+
+interface PendingRow {
+  readonly account_user_id: string;
+  readonly email: string;
+  readonly alert_ids: string[];
+  readonly latest_at: string;
+  readonly max_requests: number;
+  readonly window_seconds: number;
+}
+
+export async function deliverLockoutNotifications(
+  limit: number = LOCKOUT_NOTIFICATION_LIMIT,
+): Promise<LockoutNotificationResult> {
+  const service = createServiceClient();
+
+  const { data, error } = await service.rpc("pending_lockout_notifications", {
+    p_limit: Math.max(1, Math.min(limit, LOCKOUT_NOTIFICATION_LIMIT)),
+  });
+
+  if (error) {
+    console.error("[email] lockout notifications could not be read:", error.message);
+    return { outcome: "unavailable", error: error.message };
+  }
+
+  const rows = (data ?? []) as PendingRow[];
+  if (rows.length === 0) return { outcome: "nothing_pending" };
+
+  const origin = siteUrl();
+  let sent = 0;
+  let failed = 0;
+
+  for (const row of rows) {
+    const body = buildLockoutNotification({
+      lastAttemptAt: row.latest_at,
+      maxAttempts: row.max_requests,
+      windowSeconds: row.window_seconds,
+      siteUrl: origin,
+    });
+
+    const result = await sendEmail({
+      to: [{ email: row.email }],
+      subject: body.subject,
+      html: body.html,
+      text: body.text,
+    });
+
+    if (!result.ok) {
+      failed += 1;
+      // THE ACCOUNT ID, NEVER THE ADDRESS. A server log is read by more
+      // people and kept in more places than the database is.
+      console.error(
+        `[email] lockout notification for account ${row.account_user_id} failed; nothing stamped, re-sendable:`,
+        result.error,
+      );
+      continue;
+    }
+
+    const { error: stampError } = await service
+      .from("incident_alerts")
+      .update({ account_notified_at: new Date().toISOString() })
+      .in("id", row.alert_ids)
+      .is("account_notified_at", null);
+
+    if (stampError) {
+      // Sent but unstamped: the next tick sends it again. A duplicate warning
+      // to the account holder is the honest failure; a silent stamp over an
+      // unsent notice is the dishonest one.
+      failed += 1;
+      console.error(
+        `[email] lockout notification for account ${row.account_user_id} was sent but could not be stamped; the next run will re-send:`,
+        stampError.message,
+      );
+      continue;
+    }
+
+    sent += 1;
+  }
+
+  return { outcome: "delivered", sent, failed };
+}

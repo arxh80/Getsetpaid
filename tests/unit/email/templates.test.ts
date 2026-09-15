@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildFeedbackEmail,
   buildIncidentAlertDigest,
+  buildLockoutNotification,
   escapeHtml,
 } from "@/lib/email/templates";
+import { SUPPORT_ACCESS_LABEL } from "@/lib/feedback/contract";
 
-// The two transactional bodies, as pure functions. The load-bearing property
+// The three transactional bodies, as pure functions. The load-bearing property
 // is ESCAPING: a feedback message is untrusted content and lands in an HTML
 // body an email client renders.
 
@@ -105,5 +107,101 @@ describe("buildIncidentAlertDigest", () => {
     expect(buildIncidentAlertDigest(rows.slice(0, 1), "x").subject).toBe(
       "[GetSetPaid] 1 new incident alert",
     );
+  });
+});
+
+// ===========================================================================
+// THE ACCOUNT HOLDER'S LOCKOUT NOTICE (founder ruling Q114)
+// ===========================================================================
+// This one is read by a worried person who cannot sign in, so the copy IS the
+// feature. Three things it must say -- the brief's own list -- and one whole
+// category it must never say.
+describe("buildLockoutNotification", () => {
+  const body = buildLockoutNotification({
+    lastAttemptAt: "2026-09-16T09:30:00.000Z",
+    maxAttempts: 5,
+    windowSeconds: 900,
+    siteUrl: "https://app.example.test/",
+  });
+
+  it("says what happened, in the subject a person will scan", () => {
+    expect(body.subject).toBe("Someone is trying to sign in to your GetSetPaid account");
+  });
+
+  it("says the password was NOT compromised by this", () => {
+    expect(body.text).toContain("does NOT mean your password was compromised");
+    expect(body.html).toContain("does not mean your password was compromised");
+  });
+
+  it("says how to get in right now -- the magic link and Google, the escape hatch", () => {
+    expect(body.text).toContain("magic link");
+    expect(body.text).toContain("Google");
+    expect(body.html).toContain('href="https://app.example.test/login"');
+  });
+
+  it("quotes the policy's own numbers rather than a hardcoded sentence", () => {
+    expect(body.text).toContain("15 minutes");
+    expect(body.text).toContain("5 failed attempts");
+    // The same builder must follow a policy change made by UPDATE, not by
+    // editing this file -- the numbers come from the alert row.
+    const changed = buildLockoutNotification({
+      lastAttemptAt: "2026-09-16T09:30:00.000Z",
+      maxAttempts: 3,
+      windowSeconds: 1800,
+      siteUrl: "x",
+    });
+    expect(changed.text).toContain("30 minutes");
+    expect(changed.text).toContain("3 failed attempts");
+  });
+
+  it("carries nothing about the attempts themselves -- no IP, no location, nothing typed", () => {
+    const all = `${body.subject}
+${body.text}
+${body.html}`.toLowerCase();
+    for (const forbidden of [
+      "ip address",
+      "attempted password",
+      "the password used",
+      "location",
+      "user agent",
+      "browser",
+    ]) {
+      expect(all).not.toContain(forbidden);
+    }
+  });
+
+  it("says the notice went to nobody else", () => {
+    expect(body.text).toContain("We do not tell anyone else");
+  });
+});
+
+// ===========================================================================
+// Q121: a support-access submission names no workspace, and says so
+// ===========================================================================
+describe("buildFeedbackEmail under support access", () => {
+  const base = {
+    feedbackId: "f1",
+    category: "bug" as const,
+    message: "the venue picker forgets my filter",
+    route: "/org-alpha/venues",
+    submitterEmail: "founder@example.test",
+    organisationName: null,
+    organisationSlug: null,
+    organisationRole: null,
+    userAgent: "vitest/1.0",
+    screenshot: "none" as const,
+    siteUrl: "https://app.example.test",
+  };
+
+  it("labels the workspace line and the subject, instead of reading as 'No workspace'", () => {
+    const labelled = buildFeedbackEmail({ ...base, supportAccess: true });
+    expect(labelled.subject).toContain(SUPPORT_ACCESS_LABEL);
+    expect(labelled.text).toContain(SUPPORT_ACCESS_LABEL);
+  });
+
+  it("an ordinary workspace-less submission is NOT labelled", () => {
+    const plain = buildFeedbackEmail(base);
+    expect(plain.subject).toContain("No workspace");
+    expect(plain.text).not.toContain(SUPPORT_ACCESS_LABEL);
   });
 });

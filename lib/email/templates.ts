@@ -1,6 +1,6 @@
-// The two transactional messages the product sends, as PURE builders.
+// The three transactional messages the product sends, as PURE builders.
 //
-// No "server-only" and no I/O: tests/unit/email drives both against fixed
+// No "server-only" and no I/O: tests/unit/email drives all three against fixed
 // inputs, and the senders in this directory only ever hand the result to
 // lib/email/send.ts. Everything user-entered is HTML-ESCAPED on the way into
 // the HTML body -- a feedback message is untrusted content (CLAUDE.md
@@ -172,4 +172,71 @@ export function buildIncidentAlertDigest(
   ].join("\n");
 
   return { subject, html, text };
+}
+
+export interface LockoutEmailInput {
+  /** When the lockout that triggered this notification was crossed. ISO. */
+  readonly lastAttemptAt: string;
+  /** SECURITY.md § 5's Login row, read from the alert's own details so the
+   *  copy cannot drift from the policy the database enforces. */
+  readonly maxAttempts: number;
+  readonly windowSeconds: number;
+  /** Absolute origin of the app, for the sign-in link. */
+  readonly siteUrl: string;
+}
+
+/**
+ * THE ACCOUNT HOLDER'S OWN NOTIFICATION (founder ruling Q114) — a different
+ * message to a different person from `buildIncidentAlertDigest`, which is the
+ * operator's. It goes to the address on the account and to nobody else.
+ *
+ * Three things the copy has to do, because a security email that only says
+ * "suspicious activity" makes people change a password they did not need to
+ * change and still not be able to sign in:
+ *
+ *   1. say what actually happened, in the product's own words;
+ *   2. say plainly that THIS does not mean the password is compromised — the
+ *      attempts failed, which is why there is a lockout at all;
+ *   3. say how to get in RIGHT NOW: the magic link and Google sign-in are not
+ *      affected by a password lockout, which is the whole escape hatch
+ *      SECURITY.md § 5 relies on.
+ *
+ * It carries no IP, no location, no attempt count beyond the policy's own
+ * numbers, and nothing that was typed — a notification about failed password
+ * attempts must never quote the attempts.
+ */
+export function buildLockoutNotification(input: LockoutEmailInput): EmailBody {
+  const minutes = Math.max(1, Math.round(input.windowSeconds / 60));
+  const link = `${input.siteUrl.replace(/\/$/, "")}/login`;
+  const when = input.lastAttemptAt;
+
+  const subject = "Someone is trying to sign in to your GetSetPaid account";
+
+  const lines = [
+    `Someone has repeatedly failed to sign in to your GetSetPaid account with a password.`,
+    ``,
+    `We locked password sign-in on your account for ${minutes} minutes after ${input.maxAttempts} failed attempts. The most recent burst was at ${when} (UTC).`,
+    ``,
+    `This does NOT mean your password was compromised — the attempts failed, which is exactly why the lock exists. We never see what was typed, and nothing in your workspace was accessed.`,
+    ``,
+    `If this was you: wait ${minutes} minutes and try again, or sign in right now with a magic link or with Google — neither is affected by a password lock.`,
+    ``,
+    `If it was not you: no action is required, but if your password is one you use elsewhere, change it once you are back in.`,
+    ``,
+    `Sign in: ${link}`,
+    ``,
+    `You are getting this because it is your account. We do not tell anyone else about sign-in attempts on it.`,
+  ];
+
+  const html = [
+    `<p>Someone has repeatedly failed to sign in to your GetSetPaid account with a password.</p>`,
+    `<p>We locked password sign-in on your account for <strong>${minutes} minutes</strong> after ${escapeHtml(String(input.maxAttempts))} failed attempts. The most recent burst was at ${escapeHtml(when)} (UTC).</p>`,
+    `<p><strong>This does not mean your password was compromised</strong> — the attempts failed, which is exactly why the lock exists. We never see what was typed, and nothing in your workspace was accessed.</p>`,
+    `<p><strong>If this was you:</strong> wait ${minutes} minutes and try again, or sign in right now with a <em>magic link</em> or with <em>Google</em> — neither is affected by a password lock.</p>`,
+    `<p><strong>If it was not you:</strong> no action is required, but if your password is one you use elsewhere, change it once you are back in.</p>`,
+    `<p><a href="${escapeHtml(link)}">Sign in to GetSetPaid</a></p>`,
+    `<p>You are getting this because it is your account. We do not tell anyone else about sign-in attempts on it.</p>`,
+  ].join("\n");
+
+  return { subject, html, text: lines.join("\n") };
 }
