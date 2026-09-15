@@ -201,6 +201,15 @@ export interface LockoutEmailInput {
  *      affected by a password lockout, which is the whole escape hatch
  *      SECURITY.md § 5 relies on.
  *
+ * ABOUT THE WAIT (fix round 1, M6). The first cut said "wait N minutes and try
+ * again", which is optimistic in both directions: the window is FIXED and
+ * epoch-aligned, so the remaining lock is at most N minutes and usually less;
+ * and a sustained attack re-crosses the threshold every window, so SECURITY.md
+ * § 5's own word for how long password sign-in can stay locked is
+ * "indefinitely". Telling a person to wait it out can therefore be advice that
+ * never comes true. The copy now says the ceiling, says it can keep
+ * re-locking, and points at the route that always works.
+ *
  * It carries no IP, no location, no attempt count beyond the policy's own
  * numbers, and nothing that was typed — a notification about failed password
  * attempts must never quote the attempts.
@@ -219,7 +228,7 @@ export function buildLockoutNotification(input: LockoutEmailInput): EmailBody {
     ``,
     `This does NOT mean your password was compromised — the attempts failed, which is exactly why the lock exists. We never see what was typed, and nothing in your workspace was accessed.`,
     ``,
-    `If this was you: wait ${minutes} minutes and try again, or sign in right now with a magic link or with Google — neither is affected by a password lock.`,
+    `If this was you: the lock clears by itself, at most ${minutes} minutes after the last burst and often sooner — but it re-locks if the attempts keep coming, so it may not clear while someone is still trying. The reliable way in is a magic link or Google sign-in: neither is affected by a password lock.`,
     ``,
     `If it was not you: no action is required, but if your password is one you use elsewhere, change it once you are back in.`,
     ``,
@@ -232,7 +241,7 @@ export function buildLockoutNotification(input: LockoutEmailInput): EmailBody {
     `<p>Someone has repeatedly failed to sign in to your GetSetPaid account with a password.</p>`,
     `<p>We locked password sign-in on your account for <strong>${minutes} minutes</strong> after ${escapeHtml(String(input.maxAttempts))} failed attempts. The most recent burst was at ${escapeHtml(when)} (UTC).</p>`,
     `<p><strong>This does not mean your password was compromised</strong> — the attempts failed, which is exactly why the lock exists. We never see what was typed, and nothing in your workspace was accessed.</p>`,
-    `<p><strong>If this was you:</strong> wait ${minutes} minutes and try again, or sign in right now with a <em>magic link</em> or with <em>Google</em> — neither is affected by a password lock.</p>`,
+    `<p><strong>If this was you:</strong> the lock clears by itself, at most ${minutes} minutes after the last burst and often sooner — but it re-locks if the attempts keep coming, so it may not clear while someone is still trying. The reliable way in is a <em>magic link</em> or <em>Google</em> sign-in: neither is affected by a password lock.</p>`,
     `<p><strong>If it was not you:</strong> no action is required, but if your password is one you use elsewhere, change it once you are back in.</p>`,
     `<p><a href="${escapeHtml(link)}">Sign in to GetSetPaid</a></p>`,
     `<p>You are getting this because it is your account. We do not tell anyone else about sign-in attempts on it.</p>`,

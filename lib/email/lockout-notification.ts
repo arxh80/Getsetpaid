@@ -64,13 +64,58 @@ import { buildLockoutNotification } from "@/lib/email/templates";
 import { createServiceClient } from "@/lib/supabase/service";
 import { siteUrl } from "@/lib/supabase/env";
 
+// ===========================================================================
+// THE RUN IS BOUNDED IN WALL-CLOCK TIME, AND THAT IS A CORRECTNESS PROPERTY
+// (fix round 1, M1)
+// ===========================================================================
+// This loop is SEQUENTIAL and each send has lib/email/send.ts's 10-second
+// Brevo timeout. At the first cut's limit of 100 accounts, a degraded Brevo
+// made the worst case ~1000 s against the clock's 600 s cadence (Q118) -- so
+// tick 2 could fire while tick 1 was still looping, read
+// pending_lockout_notifications() (which still returns every account tick 1
+// has not yet STAMPED, because the stamp is after the send) and send the same
+// notice again. The duplicate lands on the ACCOUNT HOLDER, which is exactly
+// the outcome Q114's structural cap exists to bound, and a credential-stuffing
+// spray reaches it without the attacker doing anything else.
+//
+// So the worst case is made to fit inside the cadence, twice over:
+//   * at most 30 accounts per tick -- 30 x 10 s = 300 s even with no budget;
+//   * and a 120-second wall-clock budget checked BEFORE each send, so the
+//     real ceiling is 120 s + one in-flight send = ~130 s, against 600 s.
+// Deferred accounts are not lost: nothing is stamped for them, so the next
+// tick returns them unchanged. That is the same retry-is-the-schedule rule
+// the rest of this file runs on, and `deferred` in the result says how many.
+//
+// WHY NOT A LOCK. The obvious alternative -- pg_try_advisory_lock inside
+// private.deliver_incident_alerts() -- cannot work, and the reason is worth
+// recording so it is not "fixed" that way later: that function uses pg_net,
+// which is FIRE-AND-FORGET. It queues the request and returns in
+// microseconds, long before this route has started, let alone finished, so a
+// lock taken there is released before the work it would be guarding begins.
+// Real mutual exclusion would have to be a lease held across the HTTP request
+// (a row with an expiry, claimed and released by the route) -- more moving
+// parts, and a lease that outlives a crashed run is its own outage. Bounding
+// the work so overlap is unreachable is smaller and needs nothing to be
+// remembered.
+
 /** Accounts notified in one run. A tick that finds more than this leaves the
  *  rest for the next one -- they stay pending, which is the retry. */
-export const LOCKOUT_NOTIFICATION_LIMIT = 100;
+export const LOCKOUT_NOTIFICATION_LIMIT = 30;
+
+/** Wall-clock budget for the whole loop. See the block above: it is what
+ *  keeps a degraded Brevo from pushing one tick past the next one. */
+export const LOCKOUT_NOTIFICATION_BUDGET_MS = 120_000;
 
 export type LockoutNotificationResult =
   | { readonly outcome: "nothing_pending" }
-  | { readonly outcome: "delivered"; readonly sent: number; readonly failed: number }
+  | {
+      readonly outcome: "delivered";
+      readonly sent: number;
+      readonly failed: number;
+      /** Accounts this run did not reach before its wall-clock budget ran
+       *  out. Nothing was stamped for them; the next tick picks them up. */
+      readonly deferred: number;
+    }
   | { readonly outcome: "unavailable"; readonly error: string };
 
 interface PendingRow {
@@ -102,8 +147,21 @@ export async function deliverLockoutNotifications(
   const origin = siteUrl();
   let sent = 0;
   let failed = 0;
+  let deferred = 0;
+  const startedAt = Date.now();
 
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
+    // THE BUDGET IS CHECKED BEFORE THE SEND, NOT AFTER: the point is that no
+    // send is STARTED once the run is out of time, so the ceiling is the
+    // budget plus at most one in-flight timeout.
+    if (Date.now() - startedAt >= LOCKOUT_NOTIFICATION_BUDGET_MS) {
+      deferred = rows.length - index;
+      console.error(
+        `[email] lockout notifications ran out of wall-clock budget with ${deferred} account(s) unsent; nothing stamped for them, the next tick retries`,
+      );
+      break;
+    }
+
     const body = buildLockoutNotification({
       lastAttemptAt: row.latest_at,
       maxAttempts: row.max_requests,
@@ -150,5 +208,5 @@ export async function deliverLockoutNotifications(
     sent += 1;
   }
 
-  return { outcome: "delivered", sent, failed };
+  return { outcome: "delivered", sent, failed, deferred };
 }

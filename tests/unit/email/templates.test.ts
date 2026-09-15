@@ -154,6 +154,19 @@ describe("buildLockoutNotification", () => {
     expect(changed.text).toContain("3 failed attempts");
   });
 
+  // FIX ROUND 1, M6: the wait advice must not promise something the lockout
+  // does not deliver. The window is fixed and epoch-aligned, so the remaining
+  // lock is AT MOST the policy's minutes and usually less; and a sustained
+  // attack re-crosses the threshold every window, which SECURITY.md § 5 calls
+  // "indefinitely". "Wait N minutes and try again" was true in neither
+  // direction.
+  it("does not promise that waiting out the window works", () => {
+    expect(body.text).toContain("at most 15 minutes");
+    expect(body.text).toContain("re-locks if the attempts keep coming");
+    expect(body.text).not.toContain("wait 15 minutes and try again");
+    expect(body.html).not.toContain("wait <strong>15 minutes</strong>");
+  });
+
   it("carries nothing about the attempts themselves -- no IP, no location, nothing typed", () => {
     const all = `${body.subject}
 ${body.text}

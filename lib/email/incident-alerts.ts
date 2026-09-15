@@ -39,11 +39,23 @@ import "server-only";
 // A run is bounded (`limit`) so a flood cannot produce an unbounded email.
 // Two overlapping runs can double-send the same digest: the stamp is
 // `where notified_at is null`, so the SECOND stamp is a no-op, but both sends
-// go out. Accepted at the 10-minute cadence (with a 15-second pg_net timeout
-// and a 10-second Brevo timeout, overlap needs this route to hang for ten
-// minutes); a claim-before-send would need an UPDATE the sender is allowed to
+// go out. A claim-before-send would need an UPDATE the sender is allowed to
 // make on a row it has not yet emailed, which is the wrong direction for the
-// column and would mark undelivered alerts delivered after a crash.
+// column and would mark undelivered alerts delivered after a crash. So the
+// duplicate is accepted and OVERLAP IS MADE UNREACHABLE INSTEAD, by keeping
+// the whole route's worst case well inside the 600-second cadence:
+//
+//   * this digest is ONE Brevo call, so at most one 10-second timeout;
+//   * lib/email/lockout-notification.ts, which runs on the same tick, is a
+//     sequential loop and is therefore bounded BOTH by a 30-account limit and
+//     by a 120-second wall-clock budget (fix round 1, M1 -- at the first cut's
+//     100 accounts the worst case was ~1000 s, i.e. longer than the cadence,
+//     and the earlier claim here that a 10-second Brevo timeout ruled overlap
+//     out was false the moment that loop was added).
+//
+// Worst case now ~140 s against a 600 s tick. The pg_net timeout does not
+// help with any of this: it abandons the response, it does not cancel the
+// handler.
 
 import { sendEmail } from "@/lib/email/send";
 import { supportContactEmail } from "@/lib/email/feedback-notification";
