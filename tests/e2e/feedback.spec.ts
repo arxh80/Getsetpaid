@@ -215,8 +215,20 @@ test("an exhausted feedback budget is refused with a human wait, not raw seconds
   await dialog.getByRole("button", { name: "Send feedback" }).click();
   const alert = dialog.getByRole("alert");
   await expect(alert).toContainText("Too many feedback submissions");
-  // formatRetryAfter: an hour-long window reads as minutes, never "3541 seconds".
-  await expect(alert).toContainText(/Try again in \d+ (minute|minutes|hour|hours)\./);
+  // formatRetryAfter renders a HUMAN duration, never a raw remainder: "12
+  // minutes", or "45 seconds" when under two minutes is left of the hour
+  // window, which is the actionable reading at that size and is deliberate
+  // (lib/format/duration.ts). Task 6 asserted minutes-or-hours
+  // UNCONDITIONALLY, so this test failed whenever the refusal happened to land
+  // in the last two minutes of the budget's fixed window -- roughly 3.3% of
+  // runs, and it bit for real in Task 6b's gate 5. WIDENED rather than pinned:
+  // the window is epoch-aligned and derived from now(), so pinning it would
+  // mean controlling the clock for one assertion. The load-bearing half is the
+  // NEGATIVE below, which is the actual regression ("Try again in 3541
+  // seconds") and which the seconds form cannot satisfy: formatRetryAfter only
+  // ever renders seconds below 120, so a three-digit second count is
+  // unreachable unless the formatter is bypassed.
+  await expect(alert).toContainText(/Try again in \d+ (second|seconds|minute|minutes|hour|hours)\./);
   await expect(alert).not.toContainText(/\d{3,} seconds/);
   expect(await feedbackRowByMessage("E2E eleventh submission")).toBeNull();
   // A count taken after the response cannot see a transient row; what this
