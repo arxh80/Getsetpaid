@@ -284,11 +284,17 @@ function TypeAndOptions({
         ) : null}
       </div>
 
-      <details className="border border-rule px-3 py-2">
-        <summary className="cursor-pointer text-sm font-semibold text-ink">
+      <details className="border border-rule">
+        {/* PADDING BELONGS ON THE SUMMARY, NOT THE DETAILS. It was on the
+            <details> here, which insets the summary without enlarging it --
+            the clickable target stayed one line-height tall (~20px), under
+            SC 2.5.8's 24x24. On the summary it is both the inset and the
+            target. Same shape room-panel.tsx and the other four disclosures
+            already use. */}
+        <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-ink">
           Choices — for “Choose one” and “Choose several” only
         </summary>
-        <div className="pt-3">
+        <div className="px-3 pt-1 pb-3">
           <TextAreaField
             label="One per line"
             name="options"
@@ -417,7 +423,11 @@ function EditField({
           definition, so without the field's name a screen reader's controls
           list reads "Edit, Edit, Edit…" — the same fix room-panel.tsx and
           representation-panel.tsx already carry. */}
-      <summary className="cursor-pointer text-sm text-primary underline underline-offset-4">
+      {/* `py-1.5` TAKES THE TARGET TO 32px (20px line-height + 12px), clearing
+          SC 2.5.8's 24x24. Vertical only, deliberately: this summary sits
+          flush in the field row's flex column, and horizontal padding would
+          indent "Edit" out of line with everything above it. */}
+      <summary className="cursor-pointer py-1.5 text-sm text-primary underline underline-offset-4">
         Edit
         <span className="sr-only"> {definition.label}</span>
       </summary>

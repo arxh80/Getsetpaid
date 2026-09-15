@@ -341,6 +341,45 @@ test("the event page WITH the finance panel has no automated accessibility viola
 // draft with every field at its default, missing the seven radio ladders,
 // the publish summary sentence and the "Hide now" quick actions that only
 // render once a field is not hidden.
+test("custom-field settings (read-only view) has no automated accessibility violations", async ({
+  page,
+}) => {
+  // ==========================================================================
+  // THE SETTINGS AREA HAD NEVER BEEN SCANNED ONCE
+  // ==========================================================================
+  // SIGNED_IN_PAGES covers lists, create forms, detail pages and the network
+  // surfaces. It covers no settings page at all, so nothing under
+  // /[orgSlug]/settings was known-good. This closes the read-only half of that.
+  //
+  // ==========================================================================
+  // WHAT THIS CANNOT REACH, AND WHY THAT IS NOT A DETAIL
+  // ==========================================================================
+  // `manage_custom_fields` is OWNER AND ADMIN ONLY (20260828120000), and this
+  // suite has no owner and no admin: `E2eRole` is manager | standard_user |
+  // read_only | finance | booker, and sign-in.ts says so outright -- "owner and
+  // admin are the other two and nothing here is either".
+  //
+  // So the EDITABLE render of this page -- the "Add a field" disclosure, and an
+  // "Edit" disclosure per definition -- cannot be produced by any role this
+  // suite can sign in as. Those are exactly the two controls whose target size
+  // failed SC 2.5.8 and which this branch fixes, so THE FIX ITSELF IS NOT
+  // COVERED HERE and this test must not be read as covering it.
+  //
+  // Writing the scan anyway, as a manager, is still worth it: it is the first
+  // time anything under /settings has been scanned, and it arms every rule
+  // against the read-only render. But a scan that creates a definition and
+  // checks the disclosure needs an owner or admin in the shared fixture --
+  // both MFA-required (CLAUDE.md § Session security), so it needs the TOTP
+  // treatment `finance` already has. That is its own change, and it is the
+  // bigger half of this finding: no Owner/Admin-only surface in the product
+  // has ever been scanned, by anything.
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}/settings/custom-fields`);
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+
+  await scan(page, "custom-field settings (read-only)");
+});
+
 test("the network profile editor, populated, has no automated accessibility violations", async ({
   page,
 }) => {
