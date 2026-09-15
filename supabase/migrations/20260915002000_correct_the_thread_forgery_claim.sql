@@ -1,0 +1,104 @@
+-- Phase 7 Task 6b, fix round 2, re-review findings N1 and N2. DOCUMENTATION
+-- ONLY: this migration changes no behaviour and no function body. It reissues
+-- two `comment on function` statements, which are LIVE DATABASE OBJECTS and
+-- therefore additively correctable -- the 20260909090000 precedent, which
+-- applies to `comment on` and not to plain `--` script comments. The `--`
+-- comments inside 20260915000000 stand as written, immutable; these comments
+-- are the correction of record.
+--
+-- ===========================================================================
+-- N1: A CLAIM THAT IS FALSE AS WRITTEN
+-- ===========================================================================
+-- 20260915000000 dropped the `uuid` parameter from
+-- private.begin_crm_bulk_audit() and concluded:
+--
+--   "the worst a direct caller can now do is open a fresh random thread of
+--    their own"
+--   "a member calling this from a direct database session cannot attach their
+--    writes to another actor's thread"
+--
+-- The parameter is genuinely gone (rls_phase7_crm_audit.sql § CB5d pins the
+-- one-argument identity-args count at 0, and no caller of the old form
+-- survives anywhere). THE PARAMETER WAS NEVER THE VECTOR.
+--
+-- private.crm_bulk_correlation_id() reads the RAW GUC
+-- `app.crm_bulk_correlation_id`. A custom placeholder GUC -- any setting whose
+-- name carries a dot and belongs to no extension -- is `PGC_USERSET`: every
+-- role may set it, with no grant and no privilege check. Measured live as
+-- `authenticated`:
+--
+--   set_config('app.crm_bulk_correlation_id', '<victim uuid>', true)  -> ok
+--   private.begin_crm_bulk_audit()                                    -> false
+--   private.crm_bulk_correlation_id()                                 -> <victim uuid>
+--
+-- One extra statement, and the granted function is not even needed: the
+-- triggers read the GUC directly through private.log_audit_event(), so plain
+-- CRM writes after that `set_config` join the chosen thread. Dropping the
+-- parameter closed the polite door beside an open window.
+--
+-- ===========================================================================
+-- WHAT IS ACTUALLY TRUE, AND WHY IT STILL DOES NOT BLOCK
+-- ===========================================================================
+-- TRUE: the id cannot be PASSED IN -- the signature takes no argument, so no
+--   API shape offers it and no wrapper forwards one.
+-- TRUE: a DIRECT DATABASE SESSION can still set the GUC and splice its writes
+--   onto any correlation id it names. That is not closed and is not closable
+--   while the marker is a GUC.
+-- FORENSIC INTEGRITY ONLY, on every axis that matters:
+--   * UNREACHABLE OVER PostgREST. `private` is not in config.toml's exposed
+--     schema list (the runner's HTTP block proves 404 on five probes), and
+--     PostgREST exposes no `set_config` path of its own. The forgery needs a
+--     database credential, which no application user has.
+--   * NO PRIVILEGE. No RLS policy and no guard reads this GUC (CA6e). Setting
+--     it grants nothing, unlocks no row, and bypasses no check.
+--   * NO DATA CORRUPTION. It cannot alter, delete or suppress an audit row.
+--     Every audit row still carries its own actor_user_id, organisation_id,
+--     target and timestamp, written by the trigger from the session, not from
+--     the marker. The forger's rows are still attributed TO THE FORGER.
+--   * THE DAMAGE IS GROUPING, NOT ATTRIBUTION. An investigator who reads by
+--     correlation_id alone sees the forger's rows inside the victim's thread.
+--     Reading by (correlation_id, actor_user_id) -- which every audit row
+--     already supports with no schema change -- separates them again.
+-- The honest summary, and the one now written into the comment below: the id
+-- cannot be passed in; the GUC can still be set from a direct session; the
+-- consequence is forensic only.
+--
+-- Whether to raise the bar further -- recording the opener's identity beside
+-- the id, or deriving the thread from something a client cannot set -- is
+-- QUEUED AS Q123 rather than built here, because every candidate mechanism
+-- available in-session (a second GUC, a temp table, a pg_temp object) is
+-- equally client-writable, so the cheap versions buy an extra statement of
+-- inconvenience and no property. See DECISIONS-QUEUE.md.
+--
+-- ===========================================================================
+-- N2: THE MARKER IS STICKY NOW, AND THAT IS THE COST OF RE-ENTRANCY
+-- ===========================================================================
+-- 20260912001000's end_crm_bulk_audit() cleared UNCONDITIONALLY.
+-- 20260915000000's end_crm_bulk_audit(p_opened) clears only when p_opened is
+-- true. So a marker that was set by SOMETHING OTHER THAN begin() -- the only
+-- way being a direct session's own set_config -- now SURVIVES a full wrapper
+-- cycle, where the old code would have wiped it. Measured: a session-scope
+-- set_config, then merge_records(), leaves the marker standing after commit.
+--
+-- FIXED OR DOCUMENTED? DOCUMENTED, and the justification is that clearing
+-- unconditionally IS the M1 defect. end() cannot tell "my parent wrapper's
+-- open thread" from "a pre-set marker": both are simply a non-empty GUC at
+-- entry, and begin() returns false for both by design. Any rule that made
+-- end(false) clear would make the inner wrapper of a composed operation close
+-- its caller's thread again -- exactly the three-ids-for-one-action spray
+-- § CB5 now asserts against. Distinguishing them needs a second marker
+-- recording who opened it, which is client-writable too (see Q123) and so
+-- distinguishes nothing against the only actor who can reach this at all.
+--
+-- The stickiness is self-inflicted and same-session: the only way to set the
+-- marker outside begin() is to hold a database session and choose to, and it
+-- costs that session nothing but its own thread grouping. The new behaviour is
+-- now PINNED rather than merely tolerated: rls_phase7_crm_audit.sql § CB5f
+-- asserts that a pre-set marker is joined (opened = false) AND still standing
+-- after end(false) returns.
+
+comment on function private.begin_crm_bulk_audit() is
+  'OPENS one multi-row CRM operation under one correlation id, so every audit row written inside it -- by the INSERT/UPDATE/DELETE triggers on the CRM tables, by private.record_merge(), by anything added later -- joins one thread. RE-ENTRANT since Phase 7 Task 6b fix round 1 (review M1): returns true when it opened the thread (the caller owns it and must pass that true to private.end_crm_bulk_audit), and false when a thread was ALREADY open, in which case it changes nothing and the caller joins the thread it found. Composing two wrappers therefore yields ONE correlation id, not three. TAKES NO ARGUMENT since that same fix: the id is minted here, so it cannot be PASSED IN. THAT IS NOT THE SAME AS UNFORGEABLE, and fix round 1 said otherwise -- corrected here (re-review N1): `app.crm_bulk_correlation_id` is a custom placeholder GUC and therefore PGC_USERSET, so any role holding a DIRECT DATABASE SESSION can set_config it in one statement and this function will JOIN the id it finds (measured; asserted in rls_phase7_crm_audit.sql § CB5f). That is FORENSIC INTEGRITY ONLY: unreachable over PostgREST (`private` is not an exposed schema), granting no privilege (no policy or guard reads this GUC), corrupting no data (every audit row still carries the writer''s own actor_user_id, so a forged thread misgroups rows without misattributing them -- read by (correlation_id, actor_user_id) and they separate). Raising the bar further is Q123, not a shipped property. Granted to authenticated because its callers are the SECURITY INVOKER wrappers public.merge_records / set_contact_primary_company / set_artist_primary_representation / set_custom_field_values, whose bodies run as the caller -- that grant is structural, not optional. Not a permission gate and read by no policy.';
+
+comment on function private.end_crm_bulk_audit(boolean) is
+  'CLOSES the operation private.begin_crm_bulk_audit() opened, and ONLY if this caller is the one that opened it: pass back the boolean begin returned. Called as the last statement of each wrapper; an is_local GUC otherwise stands to the end of the transaction whatever SET clauses the call stack carries (measured in 20260908030000). The parameter defaults to true so a bare end_crm_bulk_audit() still closes, which is what a single, un-nested caller means. DELIBERATE CONSEQUENCE (re-review N2): a marker that begin() did not open is never cleared here, so a marker set directly by a session''s own set_config SURVIVES a full wrapper cycle, where 20260912001000''s unconditional clear wiped it. Clearing unconditionally is precisely the M1 defect -- end() cannot distinguish a parent wrapper''s open thread from a pre-set marker, and clearing either one makes an inner wrapper close its caller''s operation. Same-session and self-inflicted; pinned by rls_phase7_crm_audit.sql § CB5f.';

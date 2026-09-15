@@ -12,7 +12,12 @@
 --                                          (fix round 1, M1): a wrapper called
 --                                          inside an open thread joins it
 --                                          rather than replacing and then
---                                          closing it -- § CB5
+--                                          closing it -- § CB5. The id cannot
+--                                          be PASSED IN (§ CB5d); it CAN
+--                                          still be set as a GUC from a direct
+--                                          database session (§ CB5f), which is
+--                                          forensic integrity only -- see
+--                                          20260915002000
 --   private.log_audit_event()              the four-step correlation coalesce
 --   public.merge_records / set_contact_primary_company /
 --   set_artist_primary_representation / set_custom_field_values
@@ -801,10 +806,10 @@ select ca.val('CB5b ...every audit row of the WHOLE operation -- the outer updat
   format($$select count(distinct correlation_id)::text || ' thread(s) / ' || (count(*) >= 3)::text
             from public.audit_events where created_at >= %L and actor_user_id=%L$$,
          :'ca_t_nest', :'pmanager'), '1 thread(s) / true');
--- The forensic half of M1: the id is no longer the caller's to name, so a
--- member with a direct database session cannot splice their writes into
--- another actor's thread. The grant itself stays, and must -- see CB5e.
-select ca.val('CB5d the caller-supplied-id form of begin_crm_bulk_audit is GONE (nobody can name another actor''s thread)',
+-- The forensic half of M1: the id can no longer be PASSED IN. That is all it
+-- is -- see § CB5f, which measures what it is NOT. The grant itself stays, and
+-- must -- see CB5e.
+select ca.val('CB5d the caller-supplied-id form of begin_crm_bulk_audit is GONE (the id cannot be PASSED IN -- CB5f measures what that does not close)',
   $$select count(*)::text from pg_proc p
      where p.pronamespace='private'::regnamespace and p.proname='begin_crm_bulk_audit'
        and pg_get_function_identity_arguments(p.oid) = 'uuid'$$, '0');
@@ -813,6 +818,63 @@ select ca.val('CB5e ...and the no-argument form is executable by authenticated O
       || '/' || has_function_privilege('anon','private.begin_crm_bulk_audit()','EXECUTE')::text
       || '/' || has_function_privilege('service_role','private.begin_crm_bulk_audit()','EXECUTE')::text$$,
   'true/false/false');
+
+-- ---------------------------------------------------------------------------
+-- CB5f: THE FORGERY THAT DROPPING THE PARAMETER DID NOT CLOSE (re-review N1),
+-- and the sticky marker that re-entrancy bought (re-review N2). One
+-- measurement documents both, because they are the same two statements.
+--
+-- `app.crm_bulk_correlation_id` is a CUSTOM PLACEHOLDER GUC, hence PGC_USERSET
+-- -- every role may set it, with no grant. So a member holding a DIRECT
+-- DATABASE SESSION can name any thread they like in one statement, and
+-- begin_crm_bulk_audit() joins it. This assertion exists so a future reader
+-- meets that fact here rather than believing CB5d closed it.
+--
+-- It is forensic integrity only: unreachable over PostgREST (`private` is not
+-- an exposed schema -- the runner's HTTP block proves 404), no privilege (no
+-- policy reads this GUC), no data corruption (each audit row still carries the
+-- writer's own actor_user_id). Q123 holds the question of raising the bar.
+--
+-- The THIRD value is N2: after end(false) the pre-set marker is STILL
+-- STANDING. 20260912001000's unconditional clear wiped it; clearing
+-- unconditionally is the M1 defect, because end() cannot tell a parent
+-- wrapper's thread from a pre-set one. Pinned, not pretended away.
+-- Reads the GUC through current_setting rather than
+-- private.crm_bulk_correlation_id(), which `authenticated` is NOT granted --
+-- the raw GUC is exactly what that function reads, and reading it raw is
+-- itself part of the point.
+create function ca.forge_thread(p_id text)
+returns text language plpgsql security invoker set search_path = '' as $$
+declare v_opened boolean; v_seen text; v_after text;
+begin
+  -- The whole attack. No grant consulted, no privilege required.
+  perform pg_catalog.set_config('app.crm_bulk_correlation_id', p_id, true);
+  v_opened := private.begin_crm_bulk_audit();
+  v_seen   := nullif(
+    pg_catalog.current_setting('app.crm_bulk_correlation_id', true), '');
+  perform private.end_crm_bulk_audit(v_opened);
+  v_after  := nullif(
+    pg_catalog.current_setting('app.crm_bulk_correlation_id', true), '');
+  return v_opened::text || ' / ' || coalesce(v_seen, '<null>')
+      || ' / ' || coalesce(v_after, '<null>');
+end $$;
+grant execute on function ca.forge_thread(text) to authenticated;
+
+begin;
+set local role authenticated;
+set local request.jwt.claims = :'pmanager_c';
+select ca.val('CB5f a member with a direct session SETS the GUC itself: begin joins the forged id (opened=false), and end(false) leaves it standing -- forensic only, no privilege, unreachable over PostgREST',
+  $$select ca.forge_thread('deadbeef-0000-4000-8000-000000000001')$$,
+  'false / deadbeef-0000-4000-8000-000000000001 / deadbeef-0000-4000-8000-000000000001');
+reset role;
+-- ...and the private reader the triggers use returns that same forged id, so
+-- the rows written after it really would join the victim's thread.
+select ca.val('CB5g ...and private.crm_bulk_correlation_id() -- what the audit trigger reads -- returns the forged id, so rows written now join that thread',
+  $$select private.crm_bulk_correlation_id()::text$$,
+  'deadbeef-0000-4000-8000-000000000001');
+commit;
+-- The set_config above was is_local, so the transaction end discarded it; the
+-- session is back to no open thread and § CZ runs against clean state.
 
 -- ===========================================================================
 -- § CZ  HOUSEKEEPING -- every row and audit event this suite created goes.
