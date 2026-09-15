@@ -50,6 +50,9 @@
 --   FM  the meter at the write
 --   FA  the screenshot-view audit RPC + the quarantine alert
 --   FS  the bucket and its fences
+--   FX  feedback during SUPPORT ACCESS (Task 6c, founder ruling Q121): the
+--       label is accepted only for a live impersonating superuser, and a
+--       member cannot forge it
 --   FZ  housekeeping
 --
 -- EXPECTATION VOCABULARY (rls_phase2_crm.sql's, unchanged):
@@ -168,7 +171,7 @@ select fb.val('FP3 ...and NOT user_id / user_email / organisation_role / status 
       from information_schema.column_privileges
      where table_schema='public' and table_name='feedback'
        and grantee='authenticated' and privilege_type='INSERT'
-       and column_name in ('user_id','user_email','organisation_role','status','notified_at','created_at')$$,
+       and column_name in ('user_id','user_email','organisation_role','status','notified_at','created_at','during_support_access')$$,
   '0');
 select fb.val('FP4 authenticated may UPDATE exactly one column: status',
   $$select string_agg(column_name, ',' order by column_name)
@@ -616,15 +619,158 @@ select fb.val('FS4 four RESTRICTIVE deny-all client fences name the bucket',
        and polname like 'feedback_screenshots_deny_client_%'$$, '4');
 
 -- ===========================================================================
+-- § FX  FEEDBACK DURING SUPPORT ACCESS -- FOUNDER RULING Q121
+--
+-- Task 6's fix round hid the control and refused the submission; Q121 reverses
+-- that. The row is ACCEPTED with no workspace and labelled "sent during
+-- support access", and the LABEL is the thing that must not be forgeable --
+-- it tells the founder "this row is mine, from inside a customer's workspace",
+-- which is Task 6's I1 bug class on a new column.
+--
+-- Everything here is driven from the position the attacker holds: a real
+-- session's claims under `set role authenticated`, which is what a PostgREST
+-- request becomes. The app's own layout and server action are not in the
+-- picture at all, deliberately -- a direct INSERT runs neither.
+-- ===========================================================================
+\o /dev/null
+select gen_random_uuid()::text as fx_member    \gset
+select gen_random_uuid()::text as fx_forge     \gset
+select gen_random_uuid()::text as fx_support   \gset
+select gen_random_uuid()::text as fx_expired   \gset
+select gen_random_uuid()::text as fx_named     \gset
+select gen_random_uuid()::text as fx_session   \gset
+\o
+
+select fb.val('FX1 FIXTURE: `super` holds NO membership of BETA -- the workspace it will impersonate',
+  format($$select count(*)::text from public.organisation_memberships
+            where organisation_id=%L and user_id=%L$$, :'beta_org', :'super'), '0');
+select fb.val('FX2 FIXTURE: no impersonation session is live for `super` yet',
+  format($$select count(*)::text from public.impersonation_sessions
+            where superuser_user_id=%L and status='active' and expires_at > now()$$, :'super'), '0');
+select fb.val('FX3 `during_support_access` is OUTSIDE the authenticated INSERT grant',
+  $$select count(*)::text from information_schema.column_privileges
+     where table_schema='public' and table_name='feedback'
+       and grantee='authenticated' and privilege_type='INSERT'
+       and column_name='during_support_access'$$, '0');
+
+-- ---- A MEMBER, NOT IMPERSONATING -----------------------------------------
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
+
+select fb.try('FX4 a member may still submit with NO workspace (/invites, /onboarding)',
+  format($$insert into public.feedback (id, organisation_id, category, message, route)
+           values (%L, null, 'idea', 'An invite screen idea.', '/invites')$$, :'fx_member'),
+  'ok(1)');
+-- THE FORGERY. A member who names the column at all is refused by the GRANT,
+-- before any trigger runs -- the user_id/status precedent, and the reason the
+-- label cannot be planted by a stripped form post or a raw PostgREST INSERT.
+select fb.try('FX6 a member CANNOT name during_support_access -- 42501 at the column grant',
+  format($$insert into public.feedback (id, organisation_id, category, message, route, during_support_access)
+           values (%L, null, 'idea', 'I am the operator, honest.', '/invites', true)$$, :'fx_forge'),
+  'denied(42501)');
+-- And a member cannot mint themselves a session to become one, either: the
+-- label's whole premise is a row on a table no member may write.
+select fb.try('FX8 a member cannot create an impersonation session to earn the label',
+  format($$insert into public.impersonation_sessions
+             (superuser_user_id, target_organisation_id, reason, status,
+              admin_accepted_by, accepted_at, started_at, expires_at)
+           values (%L, %L, 'let me in', 'active', %L, now(), now(), now() + interval '1 hour')$$,
+         :'pstd1', :'alpha_org', :'pstd1'),
+  'denied(42501)');
+
+reset role; reset request.jwt.claims;
+
+-- READ BACK AS `postgres`, DELIBERATELY. A submitter has no SELECT policy on
+-- their own row (Q103), so the same two reads taken inside the session return
+-- <null> and 0 WHATEVER LANDED -- which is a test that passes while the thing
+-- is broken. Measured the hard way after FX5 did exactly that on the first
+-- run of this section.
+select fb.val('FX5 ...and that row is NOT labelled -- an absent workspace is not support access',
+  format($$select during_support_access::text from public.feedback where id=%L$$, :'fx_member'),
+  'false');
+select fb.val('FX7 ...and the forged-label attempt left NO row',
+  format($$select count(*)::text from public.feedback where id=%L$$, :'fx_forge'), '0');
+select fb.val('FX7b DENOMINATOR: the same read DOES see the accepted row, so FX7''s 0 means something',
+  format($$select count(*)::text from public.feedback where id=%L$$, :'fx_member'), '1');
+
+-- ---- THE OPERATOR, INSIDE A LIVE SUPPORT-ACCESS SESSION -------------------
+-- Planted as `postgres`: the RPCs that normally create this row are Task 2's
+-- and are proved in rls_phase7_impersonation.sql. What is under test here is
+-- what the LABEL reads off, not how the session is granted.
+\o /dev/null
+insert into public.impersonation_sessions
+  (id, superuser_user_id, target_organisation_id, reason, status,
+   admin_accepted_by, accepted_at, started_at, expires_at)
+values (:'fx_session', :'super', :'beta_org', 'Task 6c suite: the Q121 label.',
+        'active', :'pbowner', now(), now(), now() + interval '1 hour');
+\o
+
+set role authenticated;
+set request.jwt.claims = :'super_c';
+
+select fb.val('FX9 private.is_impersonating() is TRUE for the operator in a live session',
+  $$select private.is_impersonating()::text$$, 'true');
+select fb.try('FX10 the operator submits with no workspace, and it is ACCEPTED (Q121)',
+  format($$insert into public.feedback (id, organisation_id, category, message, route)
+           values (%L, null, 'bug', 'The venue picker loses its filter here too.',
+                   '/org-beta/venues')$$, :'fx_support'),
+  'ok(1)');
+select fb.val('FX11 ...and the DATABASE labelled it, with no column supplied',
+  format($$select during_support_access::text from public.feedback where id=%L$$, :'fx_support'),
+  'true');
+select fb.val('FX12 ...with the route the operator was on, and still no workspace',
+  format($$select coalesce(organisation_id::text,'<none>') || ' ' || route
+            from public.feedback where id=%L$$, :'fx_support'),
+  '<none> /org-beta/venues');
+select fb.val('FX13 ...attributed to the operator, like every other submission',
+  format($$select (user_id = %L)::text from public.feedback where id=%L$$, :'super', :'fx_support'),
+  'true');
+-- SUPPORT ACCESS STILL CANNOT CLAIM THE WORKSPACE. The reversal changed where
+-- the row lands, not what an impersonator may assert about a tenant.
+select fb.try('FX14 the operator STILL cannot name the workspace they are inside',
+  format($$insert into public.feedback (id, organisation_id, category, message, route)
+           values (%L, %L, 'bug', 'Attributed to them.', '/org-beta/venues')$$,
+         :'fx_named', :'beta_org'),
+  'denied(42501)');
+
+reset role; reset request.jwt.claims;
+
+-- ---- THE CLOCK IS THE GRANT, HERE TOO -------------------------------------
+-- Q95: an expired session reads `active` in the column and grants nothing.
+-- The label follows the same rule, or it would outlive the access it names.
+\o /dev/null
+update public.impersonation_sessions set expires_at = now() - interval '1 minute'
+ where id = :'fx_session';
+\o
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select fb.val('FX15 an EXPIRED session is not impersonation -- the time-box is evaluated live',
+  $$select private.is_impersonating()::text$$, 'false');
+select fb.try('FX16 ...so a submission from it is accepted and NOT labelled',
+  format($$insert into public.feedback (id, organisation_id, category, message, route)
+           values (%L, null, 'other', 'After the session lapsed.', '/super')$$, :'fx_expired'),
+  'ok(1)');
+select fb.val('FX17 ...unlabelled, measured',
+  format($$select during_support_access::text from public.feedback where id=%L$$, :'fx_expired'),
+  'false');
+reset role; reset request.jwt.claims;
+
+select fb.val('FX18 exactly ONE labelled row exists in the whole table',
+  $$select count(*)::text from public.feedback where during_support_access$$, '1');
+
+-- ===========================================================================
 -- § FZ  HOUSEKEEPING
 -- ===========================================================================
 \o /dev/null
 delete from public.incident_alerts
- where (details->>'category'='feedback' and details->>'subject_id' in (:'pstd1', :'pstd2'))
+ where (details->>'category'='feedback' and details->>'subject_id' in (:'pstd1', :'pstd2', :'super'))
     or details->>'feedback_id' in (:'fa_quar', :'fa_shot');
 delete from public.audit_events where target_type='feedback';
-delete from public.feedback where user_id in (:'pstd1', :'pstd2');
-delete from public.rate_limit_counters where category='feedback' and subject_id in (:'pstd1', :'pstd2');
+-- § FX added `super` as a submitter (the operator's own support-access row)
+-- and one planted impersonation session; both go back the way they came.
+delete from public.feedback where user_id in (:'pstd1', :'pstd2', :'super');
+delete from public.rate_limit_counters where category='feedback' and subject_id in (:'pstd1', :'pstd2', :'super');
+delete from public.impersonation_sessions where id = :'fx_session';
 -- storage.protect_delete() refuses a direct DELETE on storage.objects unless
 -- this GUC is set (the Storage API sets it for its own deletes). The planted
 -- row above never had bytes behind it, so the API cannot be asked; the guard
@@ -636,10 +782,14 @@ reset storage.allow_delete_query;
 select fb.val('FZ6 the planted storage object is gone',
   format($$select count(*)::text from storage.objects where bucket_id='feedback-screenshots' and name='feedback/%s'$$, :'fi_withobj'), '0');
 select fb.val('FZ1 no feedback rows this suite created remain',
-  format($$select count(*)::text from public.feedback where user_id in (%L,%L)$$, :'pstd1', :'pstd2'), '0');
+  format($$select count(*)::text from public.feedback where user_id in (%L,%L,%L)$$,
+         :'pstd1', :'pstd2', :'super'), '0');
 select fb.val('FZ2 no feedback counters remain',
   format($$select count(*)::text from public.rate_limit_counters
-            where category='feedback' and subject_id in (%L,%L)$$, :'pstd1', :'pstd2'), '0');
+            where category='feedback' and subject_id in (%L,%L,%L)$$,
+         :'pstd1', :'pstd2', :'super'), '0');
+select fb.val('FZ7 the planted impersonation session is gone',
+  format($$select count(*)::text from public.impersonation_sessions where id=%L$$, :'fx_session'), '0');
 select fb.val('FZ3 the alert table is back to the denominator § FB found',
   format($$select ((select count(*) from public.incident_alerts) = %L::bigint)::text$$, :'alerts_before'), 'true');
 select fb.val('FZ4 the feedback audit rows are back to the denominator',

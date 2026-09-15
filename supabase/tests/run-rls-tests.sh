@@ -368,7 +368,7 @@ MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=foo
   "${P2VARS[@]}" -f /tmp/rls_phase6_network.sql
 
 p6_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from net.results where not pass" | tr -d '[:space:]')
+           "select count(*) from nw.results where not pass" | tr -d '[:space:]')
 if [ "$p6_fails" != "0" ]; then
   echo "PHASE 6 NETWORK SUITE FAILED: $p6_fails failing assertion(s)" >&2
   echo "  A failure in ND is a PRIVATE TABLE IN A DISCOVERY PATH (N2) -- a view" >&2

@@ -46,6 +46,8 @@
 --   RH  the login hook: lockout, correct-password-still-rejected, reset
 --   RQ  the malware-quarantine trigger
 --   RP  platform_health_snapshot(): guarded, self-auditing, aggregate-only
+--   RD  DELIVERY (Task 6c): the pg_cron clock (Q118) and the account-holder
+--       lockout seam (Q114) -- including the two structural caps
 --   RZ  housekeeping
 --
 -- EXPECTATION VOCABULARY (rls_phase2_crm.sql's, unchanged):
@@ -941,6 +943,160 @@ select rl.val('RP9 EVERY call wrote a platform_health.viewed audit row (seven ca
 select rl.val('RP11 `anon` holds no EXECUTE on the snapshot',
   $$select has_function_privilege('anon','public.platform_health_snapshot()','EXECUTE')::text$$,
   'false');
+
+-- ===========================================================================
+-- § RD  DELIVERY -- THE CLOCK (Q118) AND THE ACCOUNT-HOLDER SEAM (Q114)
+--
+-- Task 6c wired two things that Task 5 and Task 6 left as seams. Both are
+-- asserted here rather than in a unit test, because both are database facts:
+-- WHETHER A JOB IS REGISTERED AT ALL, and whether the account-holder
+-- notification's cap is a property of the data or a promise in a comment.
+--
+-- THE SUBJECT EXISTS BEFORE ANYTHING IS ASSERTED ABOUT IT. § RH has just
+-- driven a real lockout on `pstd1` and § RH6 measured its ONE alert row, so
+-- everything below reads a row that provably exists -- not an empty set that
+-- would satisfy "no unnotified alerts" trivially.
+-- ===========================================================================
+
+-- ---- the clock ------------------------------------------------------------
+select rl.val('RD1 pg_cron is installed',
+  $$select count(*)::text from pg_extension where extname='pg_cron'$$, '1');
+select rl.val('RD2 pg_net is installed',
+  $$select count(*)::text from pg_extension where extname='pg_net'$$, '1');
+select rl.val('RD3 exactly ONE cron job exists -- the product has one scheduler',
+  $$select count(*)::text from cron.job$$, '1');
+select rl.val('RD4 ...named incident-alert-delivery, every 10 minutes',
+  $$select jobname || ' @ ' || schedule from cron.job$$,
+  'incident-alert-delivery @ */10 * * * *');
+select rl.val('RD5 ...running private.deliver_incident_alerts(), and nothing else',
+  $$select command from cron.job where jobname='incident-alert-delivery'$$,
+  'select private.deliver_incident_alerts()');
+select rl.val('RD6 ...and it is active',
+  $$select active::text from cron.job where jobname='incident-alert-delivery'$$, 'true');
+select rl.val('RD7 no client role may run the job body',
+  $$select (has_function_privilege('authenticated','private.deliver_incident_alerts()','EXECUTE')
+         or has_function_privilege('anon','private.deliver_incident_alerts()','EXECUTE')
+         or has_function_privilege('service_role','private.deliver_incident_alerts()','EXECUTE'))::text$$,
+  'false');
+-- LOCAL DEV IS A REAL NO-OP, MEASURED. With no Vault entries the function must
+-- return before it builds a request -- not POST an empty bearer, and not guess
+-- a URL. The pg_net queue is counted either side of a real call.
+select rl.val('RD8 FIXTURE: neither Vault entry exists on this stack',
+  $$select count(*)::text from vault.secrets
+     where name in ('incident_alert_delivery_url','incident_alert_delivery_secret')$$, '0');
+\o /dev/null
+select count(*)::text as net_before from net.http_request_queue \gset
+select private.deliver_incident_alerts();
+\o
+select rl.val('RD9 ...so a tick queues NO http request at all',
+  format($$select ((select count(*) from net.http_request_queue) = %L::bigint)::text$$,
+         :'net_before'), 'true');
+
+-- ---- the account-holder seam ----------------------------------------------
+select rl.val('RD10 account_notified_at exists and is null on the fresh lockout alert',
+  format($$select (account_notified_at is null)::text from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$,
+         :'pstd1'), 'true');
+select rl.val('RD11 service_role may stamp account_notified_at',
+  $$select has_column_privilege('service_role','public.incident_alerts','account_notified_at','UPDATE')::text$$,
+  'true');
+-- MEASURED, NOT ASSUMED, and the answer is the uncomfortable one: this table's
+-- UPDATE grant to `authenticated` is TABLE-LEVEL, not column-level, so a new
+-- column is writable by grant the moment it is added -- `notified_at` has
+-- always been in the same position. The GUARD is therefore the whole of the
+-- column gate here, which is exactly what its own comment claims, and RD13
+-- below is the assertion that matters.
+select rl.val('RD12 the grant does NOT gate the column -- authenticated holds table-level UPDATE',
+  $$select has_column_privilege('authenticated','public.incident_alerts','account_notified_at','UPDATE')::text$$,
+  'true');
+-- THE GUARD, not merely the grant: the operator is the one client who CAN
+-- update this table (the resolve flag), so the column has to be refused by
+-- the guard as well, or a superuser could silence a customer's notice.
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select rl.try('RD13 the aal2 SUPERUSER cannot stamp account_notified_at either',
+  format($$update public.incident_alerts set account_notified_at = now()
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$, :'pstd1'),
+  'denied(42501)');
+select rl.val('RD14 pending_lockout_notifications() is not callable from a session',
+  $$select has_function_privilege('authenticated',
+      'public.pending_lockout_notifications(integer)','EXECUTE')::text$$, 'false');
+reset role; reset request.jwt.claims;
+select rl.val('RD15 ...nor by anon',
+  $$select has_function_privilege('anon',
+      'public.pending_lockout_notifications(integer)','EXECUTE')::text$$, 'false');
+select rl.val('RD16 ...and service_role -- the sender -- may call it',
+  $$select has_function_privilege('service_role',
+      'public.pending_lockout_notifications(integer)','EXECUTE')::text$$, 'true');
+
+select rl.val('RD17 the locked-out account is pending exactly once',
+  format($$select count(*)::text from public.pending_lockout_notifications()
+            where account_user_id = %L$$, :'pstd1'), '1');
+select rl.val('RD18 ...addressed to the account''s OWN address, from auth.users',
+  format($$select (n.email = (select u.email::text from auth.users u where u.id = %L))::text
+            from public.pending_lockout_notifications() n where n.account_user_id = %L$$,
+         :'pstd1', :'pstd1'), 'true');
+select rl.val('RD19 ...carrying the policy''s own numbers, not a hardcoded sentence',
+  format($$select max_requests || '/' || window_seconds
+            from public.pending_lockout_notifications() where account_user_id = %L$$,
+         :'pstd1'), '5/900');
+
+-- CAP #1, STRUCTURAL: more failures in the SAME window file no further alert,
+-- so they can produce no further email however hard the account is hammered.
+\o /dev/null
+select public.hook_password_verification_attempt(
+         jsonb_build_object('user_id',:'pstd1','valid',false)) from generate_series(1,20);
+\o
+select rl.val('RD20 CAP 1: twenty more failed attempts file NO second alert',
+  format($$select count(*)::text from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$,
+         :'pstd1'), '1');
+select rl.val('RD21 ...and the counter kept counting past the limit (pressure, not traffic)',
+  format($$select (request_count > 5)::text from public.rate_limit_counters
+            where category='login_account' and subject_id=%L$$, :'pstd1'), 'true');
+
+-- CAP #2, STRUCTURAL: a BACKLOG of windows (the clock down for an hour) is ONE
+-- email and one stamp over every id, not one email per window. Planted as
+-- `postgres`, which is the only writer this table has.
+\o /dev/null
+insert into public.incident_alerts (alert_type, organisation_id, summary, details, created_at)
+values ('repeated_login_failures', null,
+        'Repeated failed sign-in attempts on one account (limit 5 per 900 seconds).',
+        jsonb_build_object('category','login_account','subject_scope','account',
+          'subject_id', :'pstd1', 'max_requests', 5, 'window_seconds', 900),
+        now() - interval '20 minutes');
+\o
+select rl.val('RD22 two pending alerts now exist for that one account',
+  format($$select count(*)::text from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L
+              and account_notified_at is null$$, :'pstd1'), '2');
+select rl.val('RD23 CAP 2: the sender is still offered ONE row for that account...',
+  format($$select count(*)::text from public.pending_lockout_notifications()
+            where account_user_id = %L$$, :'pstd1'), '1');
+select rl.val('RD24 ...carrying BOTH alert ids, so one send stamps both',
+  format($$select array_length(alert_ids, 1)::text from public.pending_lockout_notifications()
+            where account_user_id = %L$$, :'pstd1'), '2');
+select rl.val('RD25 ...and the most recent window is the one the email will name',
+  format($$select (latest_at = (select max(created_at) from public.incident_alerts
+                                 where alert_type='repeated_login_failures'
+                                   and details->>'subject_id' = %L))::text
+            from public.pending_lockout_notifications() where account_user_id = %L$$,
+         :'pstd1', :'pstd1'), 'true');
+
+-- ONCE STAMPED, GONE. The stamp is what stops the next tick re-sending.
+\o /dev/null
+update public.incident_alerts set account_notified_at = now()
+ where alert_type='repeated_login_failures' and details->>'subject_id' = :'pstd1';
+\o
+select rl.val('RD26 a stamped account is no longer pending',
+  format($$select count(*)::text from public.pending_lockout_notifications()
+            where account_user_id = %L$$, :'pstd1'), '0');
+-- THE TWO SEAMS ARE INDEPENDENT: stamping the account holder's must not mark
+-- the row as delivered to the OPERATOR, or one failure would silence the other.
+select rl.val('RD27 ...and the OPERATOR digest seam is untouched by it',
+  format($$select count(*)::text from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L
+              and notified_at is null$$, :'pstd1'), '2');
 
 -- ===========================================================================
 -- § RZ  HOUSEKEEPING

@@ -67,20 +67,27 @@
 \set ON_ERROR_STOP on
 \pset pager off
 
-drop schema if exists net cascade;
-create schema net;
+-- RENAMED `net` -> `nw` IN TASK 6c, AND THE RENAME IS LOAD-BEARING. Founder
+-- ruling Q118 installs pg_net, whose functions live in a schema called `net`.
+-- This suite's helper schema had the same name and opened with
+-- `drop schema if exists net cascade` -- which, had psql been running as an
+-- owner of it, would have DROPPED THE EXTENSION the incident-alert clock
+-- POSTs through. It failed loudly instead ("must be owner of schema net"),
+-- which is the only reason this is a rename and not an outage.
+drop schema if exists nw cascade;
+create schema nw;
 
-create table net.results (
+create table nw.results (
   seq serial primary key, label text, expected text, actual text, pass boolean
 );
 
-create function net.record(p_label text, p_expected text, p_actual text)
+create function nw.record(p_label text, p_expected text, p_actual text)
 returns void language sql security definer set search_path = '' as $$
-  insert into net.results (label, expected, actual, pass)
+  insert into nw.results (label, expected, actual, pass)
   values (p_label, p_expected, p_actual, p_expected is not distinct from p_actual);
 $$;
 
-create function net.try(p_label text, p_sql text, p_expected text)
+create function nw.try(p_label text, p_sql text, p_expected text)
 returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
 declare v_rows bigint; v_actual text;
 begin
@@ -91,10 +98,10 @@ begin
   exception when others then
     v_actual := 'denied(' || sqlstate || ')';
   end;
-  perform net.record(p_label, p_expected, v_actual);
+  perform nw.record(p_label, p_expected, v_actual);
 end $$;
 
-create function net.val(p_label text, p_sql text, p_expected text)
+create function nw.val(p_label text, p_sql text, p_expected text)
 returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
 declare v_actual text;
 begin
@@ -104,13 +111,13 @@ begin
   exception when others then
     v_actual := 'denied(' || sqlstate || ')';
   end;
-  perform net.record(p_label, p_expected, v_actual);
+  perform nw.record(p_label, p_expected, v_actual);
 end $$;
 
-grant usage on schema net to authenticated, anon, service_role;
-grant execute on function net.record(text,text,text) to authenticated, anon, service_role;
-grant execute on function net.try(text,text,text)    to authenticated, anon, service_role;
-grant execute on function net.val(text,text,text)    to authenticated, anon, service_role;
+grant usage on schema nw to authenticated, anon, service_role;
+grant execute on function nw.record(text,text,text) to authenticated, anon, service_role;
+grant execute on function nw.try(text,text,text)    to authenticated, anon, service_role;
+grant execute on function nw.val(text,text,text)    to authenticated, anon, service_role;
 
 \o /dev/null
 
@@ -171,7 +178,7 @@ select 'e0110000-0000-0000-0000-00000000000e', :'beta_org'::uuid,
        'venue', '5555000b-0000-0000-0000-00000000000b', 'published',
        '{}'::jsonb, 'Beta Deleted Venue', now(), now();
 
-select net.val('N00 FIXTURE: four profiles exist -- 2 published live, 1 draft, 1 deleted',
+select nw.val('N00 FIXTURE: four profiles exist -- 2 published live, 1 draft, 1 deleted',
   $$select count(*) filter (where status='published' and deleted_at is null)::text || '/' ||
            count(*) filter (where status='draft')::text || '/' ||
            count(*) filter (where deleted_at is not null)::text
@@ -191,21 +198,21 @@ select net.val('N00 FIXTURE: four profiles exist -- 2 published live, 1 draft, 1
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 
-select net.try('NA1 CONTROL: a WELL-FORMED visibility map is accepted (23514 vs 42501 oracle)',
+select nw.try('NA1 CONTROL: a WELL-FORMED visibility map is accepted (23514 vs 42501 oracle)',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, display_name, field_visibility, city)
            values ('e0110000-0000-0000-0000-0000000000a1', %L, 'venue',
                    '55550000-0000-0000-0000-000000000001', 'Vocab Control',
                    '{"city":"network"}'::jsonb, 'Bath')$$, :'alpha_org'), 'ok(1)');
 
-select net.try('NA2 an UNKNOWN KEY is refused by the CHECK, not by a privilege error',
+select nw.try('NA2 an UNKNOWN KEY is refused by the CHECK, not by a privilege error',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, display_name, field_visibility)
            values ('e0110000-0000-0000-0000-0000000000a2', %L, 'venue',
                    '55550000-0000-0000-0000-000000000001', 'Bad Key',
                    '{"phone":"network"}'::jsonb)$$, :'alpha_org'), 'denied(23514)');
 
-select net.try('NA3 an UNKNOWN LEVEL (a typo for "network") is refused the same way',
+select nw.try('NA3 an UNKNOWN LEVEL (a typo for "network") is refused the same way',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, display_name, field_visibility)
            values ('e0110000-0000-0000-0000-0000000000a3', %L, 'venue',
@@ -215,7 +222,7 @@ select net.try('NA3 an UNKNOWN LEVEL (a typo for "network") is refused the same 
 -- Q71 IS ENFORCED IN BOTH DIRECTIONS: display_name and entity_kind are always
 -- network-visible, so they are REJECTED as keys. A level that cannot be set
 -- cannot be mis-set.
-select net.try('NA4 display_name is REJECTED as a visibility key (always network, Q71)',
+select nw.try('NA4 display_name is REJECTED as a visibility key (always network, Q71)',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, display_name, field_visibility)
            values ('e0110000-0000-0000-0000-0000000000a4', %L, 'venue',
@@ -223,21 +230,21 @@ select net.try('NA4 display_name is REJECTED as a visibility key (always network
                    '{"display_name":"hidden"}'::jsonb)$$, :'alpha_org'), 'denied(23514)');
 
 -- N3, at the constraint layer: a hidden (or absent) field may not carry a value.
-select net.try('NA5 N3: a field left out of the map (= hidden) may NOT carry a value',
+select nw.try('NA5 N3: a field left out of the map (= hidden) may NOT carry a value',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, display_name, field_visibility, region)
            values ('e0110000-0000-0000-0000-0000000000a5', %L, 'venue',
                    '55550000-0000-0000-0000-000000000001', 'Hidden With Value',
                    '{}'::jsonb, 'Somerset')$$, :'alpha_org'), 'denied(23514)');
 
-select net.try('NA5b N3: an EXPLICITLY hidden field may not carry a value either',
+select nw.try('NA5b N3: an EXPLICITLY hidden field may not carry a value either',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, display_name, field_visibility, region)
            values ('e0110000-0000-0000-0000-0000000000a6', %L, 'venue',
                    '55550000-0000-0000-0000-000000000001', 'Explicit Hidden',
                    '{"region":"hidden"}'::jsonb, 'Somerset')$$, :'alpha_org'), 'denied(23514)');
 
-select net.try('NA5c CONTROL: the SAME value with region at `network` is accepted',
+select nw.try('NA5c CONTROL: the SAME value with region at `network` is accepted',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, display_name, field_visibility, region)
            values ('e0110000-0000-0000-0000-0000000000a7', %L, 'venue',
@@ -245,12 +252,12 @@ select net.try('NA5c CONTROL: the SAME value with region at `network` is accepte
                    '{"region":"network"}'::jsonb, 'Somerset')$$, :'alpha_org'), 'denied(23505)');
 
 -- ...and Q81's biconditional, both ways.
-select net.try('NA6 Q81: a `published` profile with no published_at is refused',
+select nw.try('NA6 Q81: a `published` profile with no published_at is refused',
   format($$insert into public.network_profiles
              (organisation_id, entity_kind, entity_id, display_name, status)
            values (%L,'venue','55550000-0000-0000-0000-000000000001','No Timestamp','published')$$,
          :'alpha_org'), 'denied(23514)');
-select net.try('NA6b Q81: a `draft` profile WITH a published_at is refused too',
+select nw.try('NA6b Q81: a `draft` profile WITH a published_at is refused too',
   format($$insert into public.network_profiles
              (organisation_id, entity_kind, entity_id, display_name, published_at)
            values (%L,'venue','55550000-0000-0000-0000-000000000001','Stray Timestamp',now())$$,
@@ -264,7 +271,7 @@ reset role; reset request.jwt.claims;
 -- the second. What NA5c proves is that the refusal moved from 23514 to 23505 --
 -- i.e. the N3 CHECK no longer objects once region is at `network`, which is the
 -- control NA5/NA5b need. Stated because an unexplained 23505 reads as a bug.
-select net.val('NA7 CONTROL: NA1''s row really is what makes NA5c a 23505 (Q74, one per record)',
+select nw.val('NA7 CONTROL: NA1''s row really is what makes NA5c a 23505 (Q74, one per record)',
   $$select count(*)::text from public.network_profiles
      where entity_id='55550000-0000-0000-0000-000000000001' and deleted_at is null$$, '1');
 
@@ -274,7 +281,7 @@ delete from public.network_profiles where id='e0110000-0000-0000-0000-0000000000
 -- ===========================================================================
 -- NB. The permission catalogue, read out of the database.
 -- ===========================================================================
-select net.val('NB1 the three network keys exist',
+select nw.val('NB1 the three network keys exist',
   $$select string_agg(key, ',' order by key) from public.permissions
      where key like 'view_network' or key like 'manage_network%'$$,
   'manage_network_connections,manage_network_profile,view_network');
@@ -282,16 +289,16 @@ select net.val('NB1 the three network keys exist',
 -- M1f's SET IS UNCHANGED, and this is the assertion that says so from THIS
 -- file as well as from rls_phase2_crm.sql -- a reviewer's first question about
 -- a new READ key is whether it moved that set.
-select net.val('NB2 view_crm is STILL the only survives_suspension key (M1f unchanged)',
+select nw.val('NB2 view_crm is STILL the only survives_suspension key (M1f unchanged)',
   $$select string_agg(key, ',' order by key) from public.permissions
      where survives_suspension$$, 'view_crm');
 
-select net.val('NB3 view_network is held by all NINE roles (Free is a view-only network tier)',
+select nw.val('NB3 view_network is held by all NINE roles (Free is a view-only network tier)',
   $$select count(*)::text from public.role_permissions where permission_key='view_network'$$, '9');
-select net.val('NB4 manage_network_profile is held by owner/admin/manager/marketing',
+select nw.val('NB4 manage_network_profile is held by owner/admin/manager/marketing',
   $$select string_agg(role_key, ',' order by role_key) from public.role_permissions
      where permission_key='manage_network_profile'$$, 'admin,manager,marketing,owner');
-select net.val('NB5 manage_network_connections is held by six roles',
+select nw.val('NB5 manage_network_connections is held by six roles',
   $$select string_agg(role_key, ',' order by role_key) from public.role_permissions
      where permission_key='manage_network_connections'$$,
   'admin,booker,manager,marketing,owner,venue_manager');
@@ -303,7 +310,7 @@ select net.val('NB5 manage_network_connections is held by six roles',
 -- missing and nothing else here would notice.
 set role authenticated;
 set request.jwt.claims = :'powner_c1';
-select net.val('NB6 an aal1 OWNER holds NONE of the three network keys (MFA, folded in)',
+select nw.val('NB6 an aal1 OWNER holds NONE of the three network keys (MFA, folded in)',
   $$select (select count(*) from private.permitted_organisations('view_network'))::text || '/' ||
            (select count(*) from private.permitted_organisations('manage_network_profile'))::text || '/' ||
            (select count(*) from private.permitted_organisations('manage_network_connections'))::text$$,
@@ -316,7 +323,7 @@ set request.jwt.claims = :'powner_c';
 -- live at this point in the run is a fact about OTHER suites, not about the MFA
 -- gate. Asserting an exact number would couple this control to fixtures it says
 -- nothing about; "none" versus "some" is the whole of what NB6 needs.
-select net.val('NB6b CONTROL: the SAME owner at aal2 holds all three (NB6 is the gate, not a dead session)',
+select nw.val('NB6b CONTROL: the SAME owner at aal2 holds all three (NB6 is the gate, not a dead session)',
   $$select ((select count(*) from private.permitted_organisations('view_network')) > 0)::text || '/' ||
            ((select count(*) from private.permitted_organisations('manage_network_profile')) > 0)::text || '/' ||
            ((select count(*) from private.permitted_organisations('manage_network_connections')) > 0)::text$$,
@@ -360,7 +367,7 @@ reset role; reset request.jwt.claims;
 -- the name is reported SCHEMA-QUALIFIED so a same-named relation in another
 -- schema is a different string rather than a collision.
 --
--- FUNCTIONS ARE COUNTED SEPARATELY (net.view_fn_deps below) rather than folded
+-- FUNCTIONS ARE COUNTED SEPARATELY (nw.view_fn_deps below) rather than folded
 -- in: a view that calls a SECURITY DEFINER helper reading a private table is
 -- the same leak wearing a different hat, and the connected view legitimately
 -- calls one (private.permitted_organisations), so the two sets have different
@@ -371,7 +378,7 @@ reset role; reset request.jwt.claims;
 -- Without it, a query that saw nothing at all would return the empty set for
 -- both views and pass -- the exact vacuity D11b was added to catch elsewhere.
 -- ===========================================================================
-create view net.view_deps as
+create view nw.view_deps as
   select v.relname as viewname,
          coalesce(string_agg(distinct tn.nspname || '.' || t.relname, ','
                              order by tn.nspname || '.' || t.relname), '<none>') as tables,
@@ -386,16 +393,17 @@ create view net.view_deps as
     -- invisible before fix round 1.
     join pg_catalog.pg_class t on t.oid = d.refobjid
     join pg_catalog.pg_namespace tn on tn.oid = t.relnamespace
-   -- The `net` schema is included on the VIEW side so ND3b's synthetic probe
-   -- below is reported by this exact query rather than by a second copy of it
-   -- that could drift.
-   where v.relnamespace in ('public'::regnamespace, 'net'::regnamespace)
+   -- The harness schema `nw` is included on the VIEW side so ND3b's synthetic
+   -- probe below is reported by this exact query rather than by a second copy
+   -- of it that could drift. (It was `net` until Task 6c; that name now
+   -- belongs to pg_net -- see the rename note at the top of this file.)
+   where v.relnamespace in ('public'::regnamespace, 'nw'::regnamespace)
      and v.relkind = 'v' and t.oid <> v.oid
    group by v.relname;
 
 -- The FUNCTION half. A view's `pg_depend` rows include pg_proc entries for
 -- every function its definition calls.
-create view net.view_fn_deps as
+create view nw.view_fn_deps as
   select v.relname as viewname,
          coalesce(string_agg(distinct pn.nspname || '.' || p.proname, ','
                              order by pn.nspname || '.' || p.proname), '<none>') as fns,
@@ -410,17 +418,17 @@ create view net.view_fn_deps as
    where v.relnamespace = 'public'::regnamespace and v.relkind = 'v'
    group by v.relname;
 
-select net.val('ND1 network_directory depends on EXACTLY {public.network_profiles}, cardinality 1',
-  $$select tables || ' (' || n || ')' from net.view_deps where viewname='network_directory'$$,
+select nw.val('ND1 network_directory depends on EXACTLY {public.network_profiles}, cardinality 1',
+  $$select tables || ' (' || n || ')' from nw.view_deps where viewname='network_directory'$$,
   'public.network_profiles (1)');
 
-select net.val('ND2 network_connected_profiles depends on EXACTLY those two, cardinality 2',
-  $$select tables || ' (' || n || ')' from net.view_deps
+select nw.val('ND2 network_connected_profiles depends on EXACTLY those two, cardinality 2',
+  $$select tables || ' (' || n || ')' from nw.view_deps
      where viewname='network_connected_profiles'$$,
   'public.network_connection_requests,public.network_profiles (2)');
 
-select net.val('ND3 NON-VACUITY CONTROL: the same query sees event_finance_summary''s dependency',
-  $$select tables || ' (' || n || ')' from net.view_deps where viewname='event_finance_summary'$$,
+select nw.val('ND3 NON-VACUITY CONTROL: the same query sees event_finance_summary''s dependency',
+  $$select tables || ' (' || n || ')' from nw.view_deps where viewname='event_finance_summary'$$,
   'public.financial_entries (1)');
 
 -- ND3b IS THE CONTROL THAT PROVES THE WIDENING, AND IT IS SYNTHETIC ON
@@ -433,23 +441,23 @@ select net.val('ND3 NON-VACUITY CONTROL: the same query sees event_finance_summa
 -- 1's whole mutation set.
 --
 -- So one is built here, pointed at public.activity_events (a view over
--- tenant-private data, i.e. the real shape of the leak), and net.view_deps --
+-- tenant-private data, i.e. the real shape of the leak), and nw.view_deps --
 -- THE SAME VIEW ND1-ND3 USE, not a copy -- is asked what it sees. Under the
 -- shipped query it reports the view. Under the old relkind='r' one it reported
 -- `<none> (0)`, which is what this assertion would then read.
 --
 -- It is dropped immediately below, so nothing downstream meets it.
-create view net.probe_view_over_view as
+create view nw.probe_view_over_view as
   select a.id from public.activity_events a where false;
 
-select net.val('ND3b CONTROL: net.view_deps SEES a view->view dependency (the I1 bypass)',
-  $$select tables || ' (' || n || ')' from net.view_deps
+select nw.val('ND3b CONTROL: nw.view_deps SEES a view->view dependency (the I1 bypass)',
+  $$select tables || ' (' || n || ')' from nw.view_deps
      where viewname='probe_view_over_view'$$,
   'public.activity_events (1)');
 
-drop view net.probe_view_over_view;
+drop view nw.probe_view_over_view;
 
-select net.val('ND3b2 ...and the probe is gone, so nothing downstream reads it',
+select nw.val('ND3b2 ...and the probe is gone, so nothing downstream reads it',
   $$select count(*)::text from pg_catalog.pg_class
      where relname='probe_view_over_view'$$, '0');
 
@@ -457,25 +465,25 @@ select net.val('ND3b2 ...and the probe is gone, so nothing downstream reads it',
 -- one, and it is the permission helper its `exists` needs. A SECURITY DEFINER
 -- helper reading a private table would appear here and nowhere else.
 -- NOTE THE `coalesce` AND WHY IT IS OUTSIDE THE SUBQUERY. A view that calls no
--- function has NO ROW in net.view_fn_deps at all -- the aggregate inside that
+-- function has NO ROW in nw.view_fn_deps at all -- the aggregate inside that
 -- view never runs for it -- so the scalar select returns NULL, not the
 -- '<none>' string_agg's own coalesce produces. Coalescing the ROW's absence is
 -- what makes "calls nothing" and "was not inspected" the same visible answer
 -- here; ND3d is the paired control that the query finds a function when there
 -- is one to find.
-select net.val('ND3c network_directory calls NO function at all',
-  $$select coalesce((select fns || ' (' || n || ')' from net.view_fn_deps
+select nw.val('ND3c network_directory calls NO function at all',
+  $$select coalesce((select fns || ' (' || n || ')' from nw.view_fn_deps
                       where viewname='network_directory'), '<none> (0)')$$,
   '<none> (0)');
-select net.val('ND3d network_connected_profiles calls EXACTLY private.permitted_organisations',
-  $$select fns || ' (' || n || ')' from net.view_fn_deps
+select nw.val('ND3d network_connected_profiles calls EXACTLY private.permitted_organisations',
+  $$select fns || ' (' || n || ')' from nw.view_fn_deps
      where viewname='network_connected_profiles'$$,
   'private.permitted_organisations (1)');
 
 -- security_invoker is what makes the base policy the SINGLE gate. Without it
 -- the views would run as their owner and become a second, independent access
 -- surface nothing keeps in step -- the classic view-bypasses-RLS defect.
-select net.val('ND4 BOTH views are security_invoker (one gate, not two that drift)',
+select nw.val('ND4 BOTH views are security_invoker (one gate, not two that drift)',
   $$select (select (c.reloptions::text like '%security_invoker=true%')::text
               from pg_catalog.pg_class c where c.oid='public.network_directory'::regclass)
         || '/' ||
@@ -492,14 +500,14 @@ select net.val('ND4 BOTH views are security_invoker (one gate, not two that drif
 -- future column added to network_profiles would not move it. So NC2 measures
 -- BOTH numbers and states them, and NC3 asserts the inequality that matters.
 -- ===========================================================================
-select net.val('NC1 network_directory exposes exactly 11 columns',
+select nw.val('NC1 network_directory exposes exactly 11 columns',
   $$select count(*)::text from information_schema.columns
      where table_schema='public' and table_name='network_directory'$$, '11');
-select net.val('NC1b network_connected_profiles exposes exactly 11 columns',
+select nw.val('NC1b network_connected_profiles exposes exactly 11 columns',
   $$select count(*)::text from information_schema.columns
      where table_schema='public' and table_name='network_connected_profiles'$$, '11');
 
-select net.val('NC2 MEASURED: base table 19 columns, directory view 11 (the denominator, from the catalog)',
+select nw.val('NC2 MEASURED: base table 19 columns, directory view 11 (the denominator, from the catalog)',
   $$select (select count(*) from information_schema.columns
               where table_schema='public' and table_name='network_profiles')::text
         || '/' ||
@@ -507,7 +515,7 @@ select net.val('NC2 MEASURED: base table 19 columns, directory view 11 (the deno
               where table_schema='public' and table_name='network_directory')::text$$,
   '19/11');
 
-select net.val('NC3 ...and the view is strictly NARROWER than the table it reads',
+select nw.val('NC3 ...and the view is strictly NARROWER than the table it reads',
   $$select ((select count(*) from information_schema.columns
                where table_schema='public' and table_name='network_directory')
             < (select count(*) from information_schema.columns
@@ -516,19 +524,19 @@ select net.val('NC3 ...and the view is strictly NARROWER than the table it reads
 
 -- THE TWO NAMES THAT MUST NOT BE THERE. A discovery result identifies a
 -- PROFILE, never a tenant and never a tenant's private record.
-select net.val('NC4 NEITHER view projects organisation_id or entity_id (0 of 4 possible)',
+select nw.val('NC4 NEITHER view projects organisation_id or entity_id (0 of 4 possible)',
   $$select count(*)::text from information_schema.columns
      where table_schema='public'
        and table_name in ('network_directory','network_connected_profiles')
        and column_name in ('organisation_id','entity_id')$$, '0');
 
-select net.val('NC4b CONTROL: the base table HAS both columns (NC4 is not vacuous)',
+select nw.val('NC4b CONTROL: the base table HAS both columns (NC4 is not vacuous)',
   $$select count(*)::text from information_schema.columns
      where table_schema='public' and table_name='network_profiles'
        and column_name in ('organisation_id','entity_id')$$, '2');
 
 -- The eleven, by name, so a column swapped for another is red even at 11.
-select net.val('NC5 the directory''s eleven columns, by name',
+select nw.val('NC5 the directory''s eleven columns, by name',
   $$select string_agg(column_name, ',' order by column_name)
       from information_schema.columns
      where table_schema='public' and table_name='network_directory'$$,
@@ -543,34 +551,34 @@ select net.val('NC5 the directory''s eleven columns, by name',
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
 
-select net.val('NM1 CONTROL: a BETA member SEES ALPHA''s published profile in the directory',
+select nw.val('NM1 CONTROL: a BETA member SEES ALPHA''s published profile in the directory',
   $$select display_name from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'Alpha Promotions');
 
-select net.val('NM2 POSITIVE: a `network` field (city) resolves for them -- the mask is not blanket',
+select nw.val('NM2 POSITIVE: a `network` field (city) resolves for them -- the mask is not blanket',
   $$select city from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'Bristol');
 
-select net.val('NM3 THE FINDING: a `connections` field (contact_email) is NULL in the directory',
+select nw.val('NM3 THE FINDING: a `connections` field (contact_email) is NULL in the directory',
   $$select coalesce(contact_email,'<null>') from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, '<null>');
-select net.val('NM3b ...and so is the second one (bio), so NM3 is not one-column luck',
+select nw.val('NM3b ...and so is the second one (bio), so NM3 is not one-column luck',
   $$select coalesce(bio,'<null>') from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, '<null>');
 
 -- The connected view returns NOTHING yet -- there is no accepted request.
-select net.val('NM4 the CONNECTED view is empty for them before any request is accepted',
+select nw.val('NM4 the CONNECTED view is empty for them before any request is accepted',
   $$select count(*)::text from public.network_connected_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, '0');
 
 -- A DRAFT and a SOFT-DELETED profile are not discoverable.
-select net.val('NM5 ALPHA''s DRAFT profile is invisible to BETA in the directory',
+select nw.val('NM5 ALPHA''s DRAFT profile is invisible to BETA in the directory',
   $$select count(*)::text from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000d'$$, '0');
-select net.val('NM5b ...and so is it in the BASE TABLE (the directory policy needs published)',
+select nw.val('NM5b ...and so is it in the BASE TABLE (the directory policy needs published)',
   $$select count(*)::text from public.network_profiles
      where id='e0110000-0000-0000-0000-00000000000d'$$, '0');
-select net.val('NM5c CONTROL: the same caller DOES see ALPHA''s PUBLISHED row in the base table',
+select nw.val('NM5c CONTROL: the same caller DOES see ALPHA''s PUBLISHED row in the base table',
   $$select count(*)::text from public.network_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, '1');
 reset role; reset request.jwt.claims;
@@ -579,7 +587,7 @@ reset role; reset request.jwt.claims;
 -- "invisible to the OTHER tenant" rather than "invisible, full stop".
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.val('NM6 CONTROL: ALPHA sees its OWN draft (no tier term, no deleted_at term)',
+select nw.val('NM6 CONTROL: ALPHA sees its OWN draft (no tier term, no deleted_at term)',
   $$select display_name from public.network_profiles
      where id='e0110000-0000-0000-0000-00000000000d'$$, 'Alpha Draft Venue');
 reset role; reset request.jwt.claims;
@@ -601,7 +609,7 @@ reset role; reset request.jwt.claims;
 -- was never recorded.
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NM6b the visibility flip is a write the UPDATE policy PERMITS',
+select nw.try('NM6b the visibility flip is a write the UPDATE policy PERMITS',
   $$update public.network_profiles
        set field_visibility = field_visibility || '{"city":"hidden"}'::jsonb,
            city = null
@@ -610,25 +618,25 @@ reset role; reset request.jwt.claims;
 
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
-select net.val('NM7 after flipping city to hidden, the ROW still appears in the directory',
+select nw.val('NM7 after flipping city to hidden, the ROW still appears in the directory',
   $$select display_name from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'Alpha Promotions');
-select net.val('NM8 ...and city is now NULL in the view',
+select nw.val('NM8 ...and city is now NULL in the view',
   $$select coalesce(city,'<null>') from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, '<null>');
 reset role; reset request.jwt.claims;
 
-select net.val('NM9 N3: ...AND THE BASE COLUMN IS NULL TOO, read as postgres',
+select nw.val('NM9 N3: ...AND THE BASE COLUMN IS NULL TOO, read as postgres',
   $$select coalesce(city,'<null>') from public.network_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, '<null>');
 
 -- The CHECK is what enforces NM9 rather than the application remembering.
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NM10 the CHECK refuses re-planting a value while city is hidden',
+select nw.try('NM10 the CHECK refuses re-planting a value while city is hidden',
   $$update public.network_profiles set city='Bristol'
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'denied(23514)');
-select net.try('NM10b CONTROL: the SAME write with city back at `network` is accepted',
+select nw.try('NM10b CONTROL: the SAME write with city back at `network` is accepted',
   $$update public.network_profiles
        set field_visibility = field_visibility || '{"city":"network"}'::jsonb,
            city='Bristol'
@@ -642,20 +650,20 @@ reset role; reset request.jwt.claims;
 -- by the absence of a route: the anon key ships in every browser bundle, so a
 -- route that does not exist is not a control.
 -- ===========================================================================
-select net.val('NG1 none of the 5 network objects carries an anon= grant',
+select nw.val('NG1 none of the 5 network objects carries an anon= grant',
   $$select count(*)::text from pg_catalog.pg_class c
      where c.relnamespace='public'::regnamespace
        and c.relname in ('network_profiles','network_links','network_connection_requests',
                          'network_directory','network_connected_profiles')
        and c.relacl::text like '%anon=%'$$, '0');
 
-select net.val('NG1b CONTROL: all 5 objects exist and were inspected (the denominator)',
+select nw.val('NG1b CONTROL: all 5 objects exist and were inspected (the denominator)',
   $$select count(*)::text from pg_catalog.pg_class c
      where c.relnamespace='public'::regnamespace
        and c.relname in ('network_profiles','network_links','network_connection_requests',
                          'network_directory','network_connected_profiles')$$, '5');
 
-select net.val('NG2 CONTROL: `authenticated` DOES hold a grant on all 5 (NG1 is not "no ACL at all")',
+select nw.val('NG2 CONTROL: `authenticated` DOES hold a grant on all 5 (NG1 is not "no ACL at all")',
   $$select count(*)::text from pg_catalog.pg_class c
      where c.relnamespace='public'::regnamespace
        and c.relname in ('network_profiles','network_links','network_connection_requests',
@@ -663,12 +671,12 @@ select net.val('NG2 CONTROL: `authenticated` DOES hold a grant on all 5 (NG1 is 
        and c.relacl::text like '%authenticated=%'$$, '5');
 
 -- No DELETE grant on any of the three tables -- soft delete is the only delete.
-select net.val('NG3 no DELETE grant on any of the three tables',
+select nw.val('NG3 no DELETE grant on any of the three tables',
   $$select count(*)::text from information_schema.role_table_grants
      where table_schema='public' and grantee='authenticated'
        and privilege_type='DELETE'
        and table_name in ('network_profiles','network_links','network_connection_requests')$$, '0');
-select net.val('NG3b CONTROL: they hold 9 SELECT/INSERT/UPDATE grants between them',
+select nw.val('NG3b CONTROL: they hold 9 SELECT/INSERT/UPDATE grants between them',
   $$select count(*)::text from information_schema.role_table_grants
      where table_schema='public' and grantee='authenticated'
        and privilege_type in ('SELECT','INSERT','UPDATE')
@@ -689,7 +697,7 @@ select net.val('NG3b CONTROL: they hold 9 SELECT/INSERT/UPDATE grants between th
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NT1 NO SUBSCRIPTION ROW: a manage_network_profile holder INSERTs a profile (the ESCAPE)',
+select nw.try('NT1 NO SUBSCRIPTION ROW: a manage_network_profile holder INSERTs a profile (the ESCAPE)',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, display_name, field_visibility)
            values ('e0110000-0000-0000-0000-0000000000f1', %L, 'venue',
@@ -705,19 +713,19 @@ on conflict (organisation_id) do update set plan_id='free', status='active';
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NT2 FREE: the SAME INSERT is now refused with 42501 (a loud refusal, not a silent 0)',
+select nw.try('NT2 FREE: the SAME INSERT is now refused with 42501 (a loud refusal, not a silent 0)',
   format($$insert into public.network_profiles
              (organisation_id, entity_kind, entity_id, display_name, field_visibility)
            values (%L,'artist','44440000-0000-0000-0000-000000000001','Free Profile','{}'::jsonb)$$,
          :'alpha_org'), 'denied(42501)');
-select net.try('NT3 FREE: an UPDATE of the pre-existing profile is refused too',
+select nw.try('NT3 FREE: an UPDATE of the pre-existing profile is refused too',
   $$update public.network_profiles set display_name='Renamed On Free'
      where id='e0110000-0000-0000-0000-0000000000f1'$$, 'denied(42501)');
 -- Q81: a downgrade FREEZES writing; it never hides a customer's own data.
-select net.val('NT4 FREE: ...while the SELECT of that same row still returns it (Q81)',
+select nw.val('NT4 FREE: ...while the SELECT of that same row still returns it (Q81)',
   $$select display_name from public.network_profiles
      where id='e0110000-0000-0000-0000-0000000000f1'$$, 'Escape Profile');
-select net.val('NT4b FREE: ...and browsing the DIRECTORY still works -- Free is a view-only tier',
+select nw.val('NT4b FREE: ...and browsing the DIRECTORY still works -- Free is a view-only tier',
   $$select count(*)::text from public.network_directory$$, '2');
 reset role; reset request.jwt.claims;
 
@@ -726,7 +734,7 @@ update public.organisation_subscriptions set plan_id='starter'
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NT5 STARTER: writes come back (the gate is the plan, not a one-way door)',
+select nw.try('NT5 STARTER: writes come back (the gate is the plan, not a one-way door)',
   $$update public.network_profiles set display_name='Escape Profile'
      where id='e0110000-0000-0000-0000-0000000000f1'$$, 'ok(1)');
 reset role; reset request.jwt.claims;
@@ -755,7 +763,7 @@ set request.jwt.claims = :'pbooker_c';
 -- published live profile, through the DIRECTORY policy. The soft-deleted one is
 -- filtered by that policy's `deleted_at is null`, and BETA's second published
 -- profile does not exist yet -- section NR creates it below.
-select net.val('NT6 CONTROL: a BOOKER reads ALPHA''s 3 own profiles, and 1 of BETA''s 2 (the published live one)',
+select nw.val('NT6 CONTROL: a BOOKER reads ALPHA''s 3 own profiles, and 1 of BETA''s 2 (the published live one)',
   format($$select (select count(*) from public.network_profiles
                      where organisation_id = %L)::text
                 || '/' ||
@@ -763,7 +771,7 @@ select net.val('NT6 CONTROL: a BOOKER reads ALPHA''s 3 own profiles, and 1 of BE
                      where organisation_id = %L)::text$$,
          :'alpha_org', :'beta_org'),
   '3/1');
-select net.try('NT7 a BOOKER''s profile INSERT is refused (no manage_network_profile)',
+select nw.try('NT7 a BOOKER''s profile INSERT is refused (no manage_network_profile)',
   format($$insert into public.network_profiles
              (organisation_id, entity_kind, entity_id, display_name, field_visibility)
            values (%L,'artist','44440000-0000-0000-0000-000000000001','Booker Profile','{}'::jsonb)$$,
@@ -771,7 +779,7 @@ select net.try('NT7 a BOOKER''s profile INSERT is refused (no manage_network_pro
 -- ok(0), not denied: the UPDATE policy carries the key in its USING clause, so
 -- the row is invisible to the statement and there is nothing to refuse. Same
 -- distinction rls_phase2_crm B17 and rls_phase5_finance FD15 record.
-select net.try('NT8 a BOOKER''s profile UPDATE matches NOTHING -- ok(0), the USING clause',
+select nw.try('NT8 a BOOKER''s profile UPDATE matches NOTHING -- ok(0), the USING clause',
   $$update public.network_profiles set display_name='x'
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'ok(0)');
 reset role; reset request.jwt.claims;
@@ -788,7 +796,7 @@ reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 
-select net.try('NR1 ALPHA cannot request a connection to its OWN profile (23514)',
+select nw.try('NR1 ALPHA cannot request a connection to its OWN profile (23514)',
   format($$insert into public.network_connection_requests
              (from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -796,7 +804,7 @@ select net.try('NR1 ALPHA cannot request a connection to its OWN profile (23514)
                    %L,'e0110000-0000-0000-0000-00000000000a')$$,
          :'alpha_org', :'alpha_org'), 'denied(23514)');
 
-select net.try('NR2 CONTROL: the same shape aimed at BETA''s profile SUCCEEDS',
+select nw.try('NR2 CONTROL: the same shape aimed at BETA''s profile SUCCEEDS',
   format($$insert into public.network_connection_requests
              (id, from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -807,7 +815,7 @@ select net.try('NR2 CONTROL: the same shape aimed at BETA''s profile SUCCEEDS',
 
 -- THE FORGERY THE SECOND INLINE `exists` EXISTS FOR: to_organisation_id is a
 -- client-supplied column on a table the client may INSERT into.
-select net.try('NR3 to_organisation_id cannot be FORGED -- the profile must really be theirs',
+select nw.try('NR3 to_organisation_id cannot be FORGED -- the profile must really be theirs',
   format($$insert into public.network_connection_requests
              (from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -815,7 +823,7 @@ select net.try('NR3 to_organisation_id cannot be FORGED -- the profile must real
                    %L,'e0110000-0000-0000-0000-0000000000f1')$$,
          :'alpha_org', :'beta_org'), 'denied(42501)');
 
-select net.try('NR4 a request may not be sent from a DRAFT profile (Q78)',
+select nw.try('NR4 a request may not be sent from a DRAFT profile (Q78)',
   format($$insert into public.network_connection_requests
              (from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -831,7 +839,7 @@ reset role; reset request.jwt.claims;
 -- that the narrowed index actually landed.
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
-select net.try('NR5 the RECIPIENT declines the request',
+select nw.try('NR5 the RECIPIENT declines the request',
   $$update public.network_connection_requests
        set status='declined', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000001'$$, 'ok(1)');
@@ -839,7 +847,7 @@ reset role; reset request.jwt.claims;
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NR6 Q79 (changed 2026-09-07): a SECOND identical request after a DECLINE succeeds',
+select nw.try('NR6 Q79 (changed 2026-09-07): a SECOND identical request after a DECLINE succeeds',
   format($$insert into public.network_connection_requests
              (id, from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -853,13 +861,13 @@ select net.try('NR6 Q79 (changed 2026-09-07): a SECOND identical request after a
 -- (append-only, "a richer record than a tombstone") -- and the narrowed index
 -- still refuses a duplicate while a LIVE (pending) request stands, so the
 -- narrowing cannot drift into no uniqueness at all.
-select net.val('NR6b ...as a FRESH row: the pair now holds the declined record AND the new pending one',
+select nw.val('NR6b ...as a FRESH row: the pair now holds the declined record AND the new pending one',
   format($$select string_agg(status, ',' order by status)
              from public.network_connection_requests
             where from_organisation_id=%L
               and to_network_profile_id='e0110000-0000-0000-0000-00000000000b'$$,
          :'alpha_org'), 'declined,pending');
-select net.try('NR6c ...and a THIRD request while the new PENDING one stands is still 23505',
+select nw.try('NR6c ...and a THIRD request while the new PENDING one stands is still 23505',
   format($$insert into public.network_connection_requests
              (from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -896,7 +904,7 @@ where not exists (select 1 from public.network_profiles
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NR7 a request on a FRESH pair (BETA''s second profile) is accepted',
+select nw.try('NR7 a request on a FRESH pair (BETA''s second profile) is accepted',
   format($$insert into public.network_connection_requests
              (id, from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -910,14 +918,14 @@ select net.try('NR7 a request on a FRESH pair (BETA''s second profile) is accept
 -- left responded_at null is a 23514. NR8b measures that half -- it is the exact
 -- statement lib/network/connections.ts must NOT write, and the reason
 -- withdrawConnectionRequestAction moves BOTH columns in one UPDATE.
-select net.try('NR8 a withdraw that leaves responded_at null is refused by the CHECK',
+select nw.try('NR8 a withdraw that leaves responded_at null is refused by the CHECK',
   $$update public.network_connection_requests set status='withdrawn'
      where id='c0110000-0000-0000-0000-000000000002'$$, 'denied(23514)');
-select net.try('NR8b the SENDER withdraws it properly, through the real sender-withdraws policy',
+select nw.try('NR8b the SENDER withdraws it properly, through the real sender-withdraws policy',
   $$update public.network_connection_requests
        set status='withdrawn', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000002'$$, 'ok(1)');
-select net.try('NR9 CONTROL: once WITHDRAWN, the pair is free for a fresh request (Q79)',
+select nw.try('NR9 CONTROL: once WITHDRAWN, the pair is free for a fresh request (Q79)',
   format($$insert into public.network_connection_requests
              (id, from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -929,10 +937,10 @@ reset role; reset request.jwt.claims;
 
 -- THE TRIGGER BINDS `postgres` TOO, asserted rather than mentioned. This is the
 -- statement the shortcut above would have used.
-select net.try('NR10 the transition guard refuses declined -> withdrawn even as POSTGRES',
+select nw.try('NR10 the transition guard refuses declined -> withdrawn even as POSTGRES',
   $$update public.network_connection_requests set status='withdrawn'
      where id='c0110000-0000-0000-0000-000000000001'$$, 'denied(23514)');
-select net.val('NR10b CONTROL: that row is still `declined` (NR10 changed nothing)',
+select nw.val('NR10b CONTROL: that row is still `declined` (NR10 changed nothing)',
   $$select status from public.network_connection_requests
      where id='c0110000-0000-0000-0000-000000000001'$$, 'declined');
 
@@ -945,22 +953,22 @@ select net.val('NR10b CONTROL: that row is still `declined` (NR10 changed nothin
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NU1 THE FINDING: the SENDER cannot set status=accepted (42501)',
+select nw.try('NU1 THE FINDING: the SENDER cannot set status=accepted (42501)',
   $$update public.network_connection_requests
        set status='accepted', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000003'$$, 'denied(42501)');
-select net.try('NU2 ...nor `declined` -- answering is the recipient''s word alone',
+select nw.try('NU2 ...nor `declined` -- answering is the recipient''s word alone',
   $$update public.network_connection_requests
        set status='declined', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000003'$$, 'denied(42501)');
-select net.val('NU3 CONTROL: the sender CAN see the row (NU1 is WITH CHECK, not invisibility)',
+select nw.val('NU3 CONTROL: the sender CAN see the row (NU1 is WITH CHECK, not invisibility)',
   $$select status from public.network_connection_requests
      where id='c0110000-0000-0000-0000-000000000003'$$, 'pending');
 reset role; reset request.jwt.claims;
 
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
-select net.try('NU4 POSITIVE: the RECIPIENT can (the same statement, a different actor)',
+select nw.try('NU4 POSITIVE: the RECIPIENT can (the same statement, a different actor)',
   $$update public.network_connection_requests
        set status='accepted', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000003'$$, 'ok(1)');
@@ -1001,7 +1009,7 @@ select 'e0110000-0000-0000-0000-00000000000f', :'beta_org'::uuid,
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NU5a FIXTURE: a fresh PENDING request, so the trigger cannot pre-empt the policy',
+select nw.try('NU5a FIXTURE: a fresh PENDING request, so the trigger cannot pre-empt the policy',
   format($$insert into public.network_connection_requests
              (id, from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -1013,10 +1021,10 @@ reset role; reset request.jwt.claims;
 
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
-select net.val('NU5b CONTROL: the RECIPIENT can see the row and it really is pending',
+select nw.val('NU5b CONTROL: the RECIPIENT can see the row and it really is pending',
   $$select status from public.network_connection_requests
      where id='c0110000-0000-0000-0000-000000000004'$$, 'pending');
-select net.try('NU5 THE FINDING: the RECIPIENT cannot set `withdrawn` -- 42501, the POLICY refusing',
+select nw.try('NU5 THE FINDING: the RECIPIENT cannot set `withdrawn` -- 42501, the POLICY refusing',
   $$update public.network_connection_requests
        set status='withdrawn', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000004'$$, 'denied(42501)');
@@ -1024,7 +1032,7 @@ reset role; reset request.jwt.claims;
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NU5c POSITIVE CONTROL: the SENDER runs the IDENTICAL statement and it applies',
+select nw.try('NU5c POSITIVE CONTROL: the SENDER runs the IDENTICAL statement and it applies',
   $$update public.network_connection_requests
        set status='withdrawn', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000004'$$, 'ok(1)');
@@ -1050,7 +1058,7 @@ select net.try('NU5c POSITIVE CONTROL: the SENDER runs the IDENTICAL statement a
 -- An unconditional overwrite would have turned that forged insert into a silent
 -- success and deleted the assertion.
 -- ===========================================================================
-select net.try('NU5d I4: a request INSERT that OMITS to_organisation_id is ACCEPTED',
+select nw.try('NU5d I4: a request INSERT that OMITS to_organisation_id is ACCEPTED',
   format($$insert into public.network_connection_requests
              (id, from_organisation_id, from_network_profile_id,
               to_network_profile_id)
@@ -1060,7 +1068,7 @@ select net.try('NU5d I4: a request INSERT that OMITS to_organisation_id is ACCEP
          :'alpha_org'), 'ok(1)');
 reset role; reset request.jwt.claims;
 
-select net.val('NU5e ...and the trigger derived BETA''s organisation from the profile',
+select nw.val('NU5e ...and the trigger derived BETA''s organisation from the profile',
   format($$select (to_organisation_id = %L)::text
              from public.network_connection_requests
             where id='c0110000-0000-0000-0000-000000000005'$$,
@@ -1068,7 +1076,7 @@ select net.val('NU5e ...and the trigger derived BETA''s organisation from the pr
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NU5f CONTROL: a SUPPLIED-and-wrong to_organisation_id is still refused (NR3 still means something)',
+select nw.try('NU5f CONTROL: a SUPPLIED-and-wrong to_organisation_id is still refused (NR3 still means something)',
   format($$insert into public.network_connection_requests
              (from_organisation_id, from_network_profile_id,
               to_organisation_id, to_network_profile_id)
@@ -1086,11 +1094,11 @@ set request.jwt.claims = :'pbowner_c';
 -- THE TRANSITION TRIGGER. Terminal means final: an accepted request cannot go
 -- back to pending, even though `pending` would otherwise just fail the WITH
 -- CHECK -- and, more to the point, cannot be flipped to another terminal value.
-select net.try('NU6 THE TRIGGER: an ACCEPTED row cannot move back to `pending` (23514)',
+select nw.try('NU6 THE TRIGGER: an ACCEPTED row cannot move back to `pending` (23514)',
   $$update public.network_connection_requests
        set status='pending', responded_at=null
      where id='c0110000-0000-0000-0000-000000000003'$$, 'denied(23514)');
-select net.try('NU7 ...nor sideways to `declined` (the WITH CHECK would allow the landing value)',
+select nw.try('NU7 ...nor sideways to `declined` (the WITH CHECK would allow the landing value)',
   $$update public.network_connection_requests set status='declined'
      where id='c0110000-0000-0000-0000-000000000003'$$, 'denied(23514)');
 reset role; reset request.jwt.claims;
@@ -1099,13 +1107,13 @@ reset role; reset request.jwt.claims;
 -- fields for BETA -- AND NOTHING ELSE.
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
-select net.val('NU8 PAYOFF: the connected view now returns ALPHA''s profile for BETA',
+select nw.val('NU8 PAYOFF: the connected view now returns ALPHA''s profile for BETA',
   $$select display_name from public.network_connected_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'Alpha Promotions');
-select net.val('NU9 ...and a `connections` field (contact_email) now RESOLVES',
+select nw.val('NU9 ...and a `connections` field (contact_email) now RESOLVES',
   $$select contact_email from public.network_connected_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'bookings@alpha.test');
-select net.val('NU10 ...while the DIRECTORY view still masks it (two views, two levels)',
+select nw.val('NU10 ...while the DIRECTORY view still masks it (two views, two levels)',
   $$select coalesce(contact_email,'<null>') from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, '<null>');
 -- N4: an accepted connection grants NO access to any tenant table.
@@ -1116,7 +1124,7 @@ select net.val('NU10 ...while the DIRECTORY view still masks it (two views, two 
 -- not the network boundary, and would have stayed green through any leak of
 -- ALPHA's contacts. Resolved as postgres at the top of the file, the 0/0/0 is
 -- what N4 actually claims: an accepted connection unlocks NO tenant table.
-select net.val('NU11 N4: the connection unlocks NO tenant data -- ALPHA''s contacts/notes/finance',
+select nw.val('NU11 N4: the connection unlocks NO tenant data -- ALPHA''s contacts/notes/finance',
   format($$select (select count(*) from public.contacts where organisation_id = %L)::text
                 || '/' ||
                   (select count(*) from public.notes where organisation_id = %L)::text
@@ -1124,13 +1132,13 @@ select net.val('NU11 N4: the connection unlocks NO tenant data -- ALPHA''s conta
                   (select count(*) from public.financial_entries where organisation_id = %L)::text$$,
          :'alpha_org', :'alpha_org', :'alpha_org'),
   '0/0/0');
-select net.val('NU11b CONTROL: the same caller reads its OWN org''s contacts (NU11 is not a dead session)',
+select nw.val('NU11b CONTROL: the same caller reads its OWN org''s contacts (NU11 is not a dead session)',
   $$select (count(*) > 0)::text from public.contacts$$, 'true');
 reset role; reset request.jwt.claims;
 -- THE DENOMINATOR FOR NU11, read as postgres: ALPHA really does hold contacts,
 -- notes and finance lines for the connected counterparty to have failed to see.
 -- Without this, 0/0/0 is equally satisfied by a tenant that owns nothing.
-select net.val('NU11c DENOMINATOR: ALPHA really has contacts, notes and finance lines to leak',
+select nw.val('NU11c DENOMINATOR: ALPHA really has contacts, notes and finance lines to leak',
   format($$select ((select count(*) from public.contacts where organisation_id = %L) > 0)::text
                 || '/' ||
                   ((select count(*) from public.notes where organisation_id = %L) > 0)::text
@@ -1145,7 +1153,7 @@ set request.jwt.claims = :'pbowner_c';
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.val('NU12 Q80 SYMMETRY: the connection resolves the other way round too',
+select nw.val('NU12 Q80 SYMMETRY: the connection resolves the other way round too',
   $$select display_name from public.network_connected_profiles
      where id='e0110000-0000-0000-0000-00000000000b'$$, 'Beta Bookings');
 reset role; reset request.jwt.claims;
@@ -1155,20 +1163,20 @@ reset role; reset request.jwt.claims;
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NL1 ALPHA links BETA''s published profile to its own private company',
+select nw.try('NL1 ALPHA links BETA''s published profile to its own private company',
   format($$insert into public.network_links
              (id, organisation_id, network_profile_id, private_entity_type, private_entity_id)
            values ('d0110000-0000-0000-0000-000000000001', %L,
                    'e0110000-0000-0000-0000-00000000000b',
                    'company','11110000-0000-0000-0000-000000000002')$$,
          :'alpha_org'), 'ok(1)');
-select net.try('NL2 ...but NOT to a DRAFT profile (the inline exists reads status)',
+select nw.try('NL2 ...but NOT to a DRAFT profile (the inline exists reads status)',
   format($$insert into public.network_links
              (organisation_id, network_profile_id, private_entity_type, private_entity_id)
            values (%L,'e0110000-0000-0000-0000-00000000000d',
                    'venue','55550000-0000-0000-0000-000000000002')$$,
          :'alpha_org'), 'denied(42501)');
-select net.try('NL3 ...nor to a SOFT-DELETED profile',
+select nw.try('NL3 ...nor to a SOFT-DELETED profile',
   format($$insert into public.network_links
              (organisation_id, network_profile_id, private_entity_type, private_entity_id)
            values (%L,'e0110000-0000-0000-0000-00000000000e',
@@ -1182,15 +1190,15 @@ reset role; reset request.jwt.claims;
 -- so "0" is a boundary and not a broken session.
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
-select net.val('NL4 Q82: the PROFILE''S OWNER sees 0 links to their own profile',
+select nw.val('NL4 Q82: the PROFILE''S OWNER sees 0 links to their own profile',
   $$select count(*)::text from public.network_links
      where network_profile_id='e0110000-0000-0000-0000-00000000000b'$$, '0');
-select net.val('NL4b ...and 0 network links in total',
+select nw.val('NL4b ...and 0 network links in total',
   $$select count(*)::text from public.network_links$$, '0');
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.val('NL5 CONTROL: the LINKING organisation sees its own link (NL4 is a boundary)',
+select nw.val('NL5 CONTROL: the LINKING organisation sees its own link (NL4 is a boundary)',
   $$select count(*)::text from public.network_links
      where network_profile_id='e0110000-0000-0000-0000-00000000000b'$$, '1');
 reset role; reset request.jwt.claims;
@@ -1205,7 +1213,7 @@ reset role; reset request.jwt.claims;
 -- (which deparses the stored node tree, so quoting and whitespace are
 -- normalised before the comparison sees them -- the D11 technique).
 -- ===========================================================================
-create view net.network_policy_exprs as
+create view nw.network_policy_exprs as
   select p.polname, c.relname,
          coalesce(pg_catalog.pg_get_expr(p.polqual, p.polrelid), '') || ' ' ||
          coalesce(pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid), '') as expr
@@ -1214,65 +1222,65 @@ create view net.network_policy_exprs as
    where c.relnamespace='public'::regnamespace
      and c.relname in ('network_profiles','network_links','network_connection_requests');
 
-select net.val('NS0 DENOMINATOR: 11 network policies were inspected, and that is non-zero',
-  $$select count(*)::text from net.network_policy_exprs$$, '11');
+select nw.val('NS0 DENOMINATOR: 11 network policies were inspected, and that is non-zero',
+  $$select count(*)::text from nw.network_policy_exprs$$, '11');
 
 -- The directory policy is the ONE that does not name permitted_organisations,
 -- deliberately: it asks "is this an active member of ANY organisation", which
 -- is not a per-key question. So 10 of 11.
-select net.val('NS1 10 of the 11 use the SET form; the 11th is the directory policy',
+select nw.val('NS1 10 of the 11 use the SET form; the 11th is the directory policy',
   $$select count(*) filter (where expr like '%permitted_organisations(%')::text || '/' ||
            string_agg(polname, ',') filter (where expr not like '%permitted_organisations(%')
-      from net.network_policy_exprs$$,
+      from nw.network_policy_exprs$$,
   '10/network_profiles_select_published_directory');
 
-select net.val('NS2 NONE of the 11 uses the per-row has_permission( form',
-  $$select count(*)::text from net.network_policy_exprs
+select nw.val('NS2 NONE of the 11 uses the per-row has_permission( form',
+  $$select count(*)::text from nw.network_policy_exprs
      where expr like '%has_permission(%'$$, '0');
 
 -- The six write-gated policies name the tier helper. Six: profiles
 -- insert+update, links insert+update, requests insert, requests
 -- recipient-responds. The SENDER-WITHDRAWS policy deliberately does not (a Free
 -- org must be able to retract).
-select net.val('NS3 6 policies name network_publish_organisations; the withdraw policy does not',
+select nw.val('NS3 6 policies name network_publish_organisations; the withdraw policy does not',
   $$select count(*) filter (where expr like '%network_publish_organisations%')::text || '/' ||
-           (select count(*) from net.network_policy_exprs
+           (select count(*) from nw.network_policy_exprs
              where polname='network_connection_requests_update_sender_withdraws'
                and expr like '%network_publish_organisations%')::text
-      from net.network_policy_exprs$$, '6/0');
+      from nw.network_policy_exprs$$, '6/0');
 
 -- THE REPLACEMENT GUARD FOR THE SINGLE-COLUMN FK, half one: the SELECT policy
 -- on network_links names network_profiles nowhere at all.
-select net.val('NS4 Q82: network_links'' SELECT policy contains NO occurrence of network_profiles',
-  $$select count(*)::text from net.network_policy_exprs
+select nw.val('NS4 Q82: network_links'' SELECT policy contains NO occurrence of network_profiles',
+  $$select count(*)::text from nw.network_policy_exprs
      where polname='network_links_select_view_network'
        and expr like '%network_profiles%'$$, '0');
-select net.val('NS4b CONTROL: the assertion found that policy at all (denominator 1)',
-  $$select count(*)::text from net.network_policy_exprs
+select nw.val('NS4b CONTROL: the assertion found that policy at all (denominator 1)',
+  $$select count(*)::text from nw.network_policy_exprs
      where polname='network_links_select_view_network'$$, '1');
 
 -- Half two: the write policies read only `id` and `status` (and deleted_at) from
 -- network_profiles. Asserted by the ABSENCE of any other column name that would
 -- signal a tenant claim -- most of all organisation_id, which would be exactly
 -- the composite FK's semantics smuggled into a policy.
-select net.val('NS5 network_links'' write policies name NO network_profiles column beyond id/status/deleted_at',
-  $$select count(*)::text from net.network_policy_exprs
+select nw.val('NS5 network_links'' write policies name NO network_profiles column beyond id/status/deleted_at',
+  $$select count(*)::text from nw.network_policy_exprs
      where relname='network_links'
        and (expr like '%p.organisation_id%' or expr like '%p.display_name%'
             or expr like '%p.entity_id%'   or expr like '%p.field_visibility%')$$, '0');
-select net.val('NS5b CONTROL: those write policies DO read p.status (the guard is not vacuous)',
-  $$select count(*)::text from net.network_policy_exprs
+select nw.val('NS5b CONTROL: those write policies DO read p.status (the guard is not vacuous)',
+  $$select count(*)::text from nw.network_policy_exprs
      where relname='network_links' and expr like '%p.status%'$$, '2');
 
 -- NO POLICY GRANTS A NON-OWNING ORGANISATION ANY READ OF network_links.
-select net.val('NS6 network_links has exactly ONE select policy, and no other read path',
+select nw.val('NS6 network_links has exactly ONE select policy, and no other read path',
   $$select count(*)::text from pg_catalog.pg_policy p
      join pg_catalog.pg_class c on c.oid=p.polrelid
     where c.relname='network_links' and p.polcmd in ('r','*')$$, '1');
 
 -- No FOR ALL policy anywhere on the three (a `for all` silently applies USING
 -- as the WITH CHECK for INSERT).
-select net.val('NS7 none of the 11 is a FOR ALL policy',
+select nw.val('NS7 none of the 11 is a FOR ALL policy',
   $$select count(*)::text from pg_catalog.pg_policy p
      join pg_catalog.pg_class c on c.oid=p.polrelid
     where c.relnamespace='public'::regnamespace
@@ -1281,7 +1289,7 @@ select net.val('NS7 none of the 11 is a FOR ALL policy',
 
 -- THE TWO-POLICY SPLIT, structurally: there are exactly two UPDATE policies on
 -- the requests table, and neither's WITH CHECK mentions both status verbs.
-select net.val('NS8 the requests table has exactly TWO update policies (not one with an `or`)',
+select nw.val('NS8 the requests table has exactly TWO update policies (not one with an `or`)',
   $$select count(*)::text from pg_catalog.pg_policy p
      join pg_catalog.pg_class c on c.oid=p.polrelid
     where c.relname='network_connection_requests' and p.polcmd='w'$$, '2');
@@ -1299,7 +1307,7 @@ select net.val('NS8 the requests table has exactly TWO update policies (not one 
 -- bodies -- and states how many of each it looked at, because a "0 violations"
 -- assertion passes perfectly against a suite that inspected nothing.
 -- ===========================================================================
-create view net.network_surface as
+create view nw.network_surface as
   select 'policy:' || p.polname as objname,
          coalesce(pg_catalog.pg_get_expr(p.polqual, p.polrelid), '') || ' ' ||
          coalesce(pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid), '') as body
@@ -1319,24 +1327,24 @@ create view net.network_surface as
     join pg_catalog.pg_namespace n on n.oid = pr.pronamespace
    where n.nspname in ('public','private') and pr.proname like 'network%';
 
-select net.val('NF1 N5: NO network policy, view or function body contains the substring `rating`',
-  $$select count(*)::text from net.network_surface where body ~* 'rating'$$, '0');
+select nw.val('NF1 N5: NO network policy, view or function body contains the substring `rating`',
+  $$select count(*)::text from nw.network_surface where body ~* 'rating'$$, '0');
 
-select net.val('NF1b DENOMINATOR: it inspected 11 policies, 2 views and 3 functions (16), non-zero',
+select nw.val('NF1b DENOMINATOR: it inspected 11 policies, 2 views and 3 functions (16), non-zero',
   $$select count(*) filter (where objname like 'policy:%')::text || '/' ||
            count(*) filter (where objname like 'view:%')::text || '/' ||
            count(*) filter (where objname like 'function:%')::text || '/' ||
            count(*)::text
-      from net.network_surface$$, '11/2/3/16');
+      from nw.network_surface$$, '11/2/3/16');
 
 -- ...and the same guard over the two masking views' COLUMN lists, which is
 -- where an "anonymised aggregate on a network profile" would actually land.
-select net.val('NF2 N5: neither masking view exposes a column whose name mentions rating or score',
+select nw.val('NF2 N5: neither masking view exposes a column whose name mentions rating or score',
   $$select count(*)::text from information_schema.columns
      where table_schema='public'
        and table_name in ('network_directory','network_connected_profiles')
        and (column_name ~* 'rating' or column_name ~* 'score')$$, '0');
-select net.val('NF2b DENOMINATOR: 22 view columns were inspected',
+select nw.val('NF2b DENOMINATOR: 22 view columns were inspected',
   $$select count(*)::text from information_schema.columns
      where table_schema='public'
        and table_name in ('network_directory','network_connected_profiles')$$, '22');
@@ -1349,7 +1357,7 @@ select net.val('NF2b DENOMINATOR: 22 view columns were inspected',
 -- real. What is asserted here is that it fired for the RIGHT transitions and
 -- that its payload carries NO published field's value.
 -- ===========================================================================
-select net.val('NX1 the visibility flip in § NM emitted a visibility_changed audit row',
+select nw.val('NX1 the visibility flip in § NM emitted a visibility_changed audit row',
   $$select (count(*) > 0)::text from public.audit_events
      where action='network_profile.visibility_changed'
        and target_id='e0110000-0000-0000-0000-00000000000a'$$, 'true');
@@ -1358,7 +1366,7 @@ select net.val('NX1 the visibility flip in § NM emitted a visibility_changed au
 -- re-request-after-decline is a real INSERT now, so it audits like any other
 -- send -- which is itself worth having on the books, since the re-request is
 -- the write the Phase 7 rate limiter (Q86/Q87) will meter.
-select net.val('NX2 the § NR/§ NU requests emitted requested / accepted / declined rows',
+select nw.val('NX2 the § NR/§ NU requests emitted requested / accepted / declined rows',
   $$select (select count(*) from public.audit_events where action='network_connection.requested')::text
         || '/' ||
            (select count(*) from public.audit_events where action='network_connection.accepted')::text
@@ -1369,7 +1377,7 @@ select net.val('NX2 the § NR/§ NU requests emitted requested / accepted / decl
 -- THE PAYLOAD DISCIPLINE. audit_events is superuser-readable, and CLAUDE.md
 -- § Superuser dashboard keeps tenant record content off that surface. The
 -- fixture's published values are the oracle: none of them may appear.
-select net.val('NX3 NO published field VALUE appears in any network audit payload',
+select nw.val('NX3 NO published field VALUE appears in any network audit payload',
   $$select count(*)::text from public.audit_events
      where action like 'network_%'
        and (after::text like '%Alpha Promotions%'
@@ -1379,14 +1387,14 @@ select net.val('NX3 NO published field VALUE appears in any network audit payloa
          or after::text like '%Twenty years of shows%')$$, '0');
 -- TWO, not one: section NM flips city to hidden and then restores it, and both
 -- are real client writes through the UPDATE policy, so both are audited.
-select net.val('NX3b CONTROL: those payloads DO carry field_visibility (NX3 is not "empty payloads")',
+select nw.val('NX3b CONTROL: those payloads DO carry field_visibility (NX3 is not "empty payloads")',
   $$select count(*)::text from public.audit_events
      where action='network_profile.visibility_changed'
        and after ? 'field_visibility'$$, '2');
 
 -- No audit row for a link (Q82: private, grants nothing) -- stated so the
 -- absence reads as a decision rather than an oversight.
-select net.val('NX4 network_links emits NO audit row, on purpose (Q82)',
+select nw.val('NX4 network_links emits NO audit row, on purpose (Q82)',
   $$select count(*)::text from public.audit_events
      where target_type='network_link' or action like 'network_link%'$$, '0');
 
@@ -1417,7 +1425,7 @@ select v.id::uuid, o.id, v.nm
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select net.try('NX5 CONTROL: an INSERT as a DRAFT is accepted and stays unaudited',
+select nw.try('NX5 CONTROL: an INSERT as a DRAFT is accepted and stays unaudited',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, status,
               field_visibility, display_name)
@@ -1425,7 +1433,7 @@ select net.try('NX5 CONTROL: an INSERT as a DRAFT is accepted and stays unaudite
                    '55550000-0000-0000-0000-000000000031', 'draft',
                    '{}'::jsonb, 'NX5 Draft Control')$$,
          :'alpha_org'), 'ok(1)');
-select net.try('NX5b a direct INSERT-AS-PUBLISHED is accepted (no status term in the policy)...',
+select nw.try('NX5b a direct INSERT-AS-PUBLISHED is accepted (no status term in the policy)...',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, status,
               field_visibility, display_name, published_at)
@@ -1435,11 +1443,11 @@ select net.try('NX5b a direct INSERT-AS-PUBLISHED is accepted (no status term in
          :'alpha_org'), 'ok(1)');
 reset role; reset request.jwt.claims;
 
-select net.val('NX5c ...and it emits EXACTLY ONE network_profile.published row',
+select nw.val('NX5c ...and it emits EXACTLY ONE network_profile.published row',
   $$select count(*)::text from public.audit_events
      where action='network_profile.published'
        and target_id='e0110000-0000-0000-0000-0000000000a2'$$, '1');
-select net.val('NX5d ...while the draft INSERT emitted none (the else-arm survives the fix)',
+select nw.val('NX5d ...while the draft INSERT emitted none (the else-arm survives the fix)',
   $$select count(*)::text from public.audit_events
      where target_id='e0110000-0000-0000-0000-0000000000a1'$$, '0');
 
@@ -1463,7 +1471,7 @@ update public.network_profiles set deleted_at = now()
 -- and would go red for a reason nothing here caused. What this file owes is
 -- that section NT's free -> starter -> gone sequence really ended at "gone" for
 -- org-alpha, which is the state every downstream block was written against.
-select net.val('NZ1 HOUSEKEEPING: this file left no ALPHA organisation_subscriptions row behind',
+select nw.val('NZ1 HOUSEKEEPING: this file left no ALPHA organisation_subscriptions row behind',
   format($$select count(*)::text from public.organisation_subscriptions
             where organisation_id = %L$$, :'alpha_org'), '0');
 
@@ -1475,10 +1483,10 @@ select net.val('NZ1 HOUSEKEEPING: this file left no ALPHA organisation_subscript
 \echo '========== PHASE 6 NETWORK RLS SUITE =========='
 select seq, case when pass then 'PASS' else '**FAIL**' end as result,
        label, expected, actual
-from net.results order by seq;
+from nw.results order by seq;
 
 \echo ''
 select count(*) filter (where pass) as passed,
        count(*) filter (where not pass) as failed,
        count(*) as total
-from net.results;
+from nw.results;

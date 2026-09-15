@@ -110,9 +110,20 @@ create index feedback_during_support_access_idx
 
 
 -- ---------------------------------------------------------------------------
--- 3. THE TRIGGER, REISSUED. Body from 20260911000000 § 5 with the label
---    stamped alongside the other database-owned columns; attribution, the
---    membership refusal and the meter are unchanged.
+-- 3. THE TRIGGER, REISSUED.
+--
+--    THE BODY IS COPIED FROM 20260911020000 -- THE LATEST VERSION -- NOT FROM
+--    20260911000000, WHICH FIRST CREATED IT. That distinction cost a gate-3
+--    run: reissuing from the ORIGINAL silently dropped fix round 1's
+--    screenshot-existence check (M1), and the feedback suite caught it as four
+--    refusals turning into accepts. A `create or replace` of a function that
+--    has been reissued once is a REGRESSION RISK, not a copy -- whoever
+--    reissues this next must start from the most recent definition, which is
+--    now THIS file.
+--
+--    The only change here is (3): the Q121 label, stamped beside the other
+--    database-owned columns. Attribution, the membership refusal, the
+--    screenshot-existence check and the whole meter are byte-identical.
 -- ---------------------------------------------------------------------------
 
 create or replace function private.feedback_before_insert()
@@ -133,14 +144,14 @@ declare
 begin
   -- NOT A CLIENT SUBMISSION: a migration, a seed or a test fixture inserting
   -- as `postgres` has no session, is attributed by what it wrote, and spends
-  -- nobody's budget. Deliberately NOT row_security_active(): this function is
-  -- SECURITY DEFINER, so that reads false for EVERY caller inside it.
+  -- nobody's budget. `auth.uid() is null`, deliberately NOT
+  -- row_security_active() (false for every caller inside SECURITY DEFINER).
   if v_uid is null then
     return new;
   end if;
 
-  -- (1) WHO. Whatever the caller sent (the column grant means they could
-  -- not have sent anything), the row is theirs.
+  -- (1) WHO. The row is the session's -- id and email both from the session,
+  -- never from the request (the column grant means nothing could arrive).
   new.user_id := v_uid;
   select u.email into new.user_email from auth.users u where u.id = v_uid;
 
@@ -161,6 +172,19 @@ begin
     new.organisation_role := v_role;
   end if;
 
+  -- (2b) A DECLARED SCREENSHOT MUST HAVE BYTES BEHIND IT (fix round 1, M1).
+  -- The key's SHAPE is pinned by CHECK (feedback/{id}); its EXISTENCE is
+  -- pinned here. No client can write the bucket (the restrictive fence), so
+  -- an object under this key was put there by the server, after the sniff
+  -- and the scan -- which is what makes the verdict column trustworthy.
+  if new.screenshot_key is not null and not exists (
+       select 1 from storage.objects o
+        where o.bucket_id = 'feedback-screenshots'
+          and o.name      = new.screenshot_key) then
+    raise exception 'feedback: screenshot % has no stored object', new.screenshot_key
+      using errcode = '42501';
+  end if;
+
   -- (3) THE DATABASE OWNS THESE, whatever arrived -- the Q121 label included.
   -- An impersonating superuser holds no membership of the workspace they are
   -- inside, so their row is null-org by construction as well as by choice:
@@ -178,7 +202,6 @@ begin
   end if;
 
   v_window := private.rate_limit_window_start(pg_catalog.now(), v_policy.window_seconds);
-  -- `greatest` is a parser construct, unqualified on purpose under search_path = ''.
   v_retry  := greatest(0, pg_catalog.ceil(extract(epoch from
                 (v_window + pg_catalog.make_interval(secs => v_policy.window_seconds)
                   - pg_catalog.now())))::integer);
@@ -191,30 +214,25 @@ begin
     and c.window_start  = v_window;
   v_count := coalesce(v_count, 0);
 
-  -- (4a) BUDGET ALREADY SPENT: raise having written nothing, so the rollback
-  -- this causes has nothing to undo and the refusal is repeatable.
+  -- (4a) BUDGET ALREADY SPENT: raise having written nothing.
   if v_count >= v_policy.max_requests then
     raise exception 'feedback: you have reached the feedback limit (% per % seconds)',
       v_policy.max_requests, v_policy.window_seconds
       using errcode = 'PT429', hint = v_retry::text;
   end if;
 
-  -- (4b) COUNT IT, through the shared core -- user-scoped, NO organisation
-  -- (20260909050000's rule: a user-scoped budget attributes no workspace).
+  -- (4b) COUNT IT, through the shared core -- user-scoped, NO organisation.
   select r.request_count into v_after
   from private.record_rate_limit_event('feedback', 'user', v_uid, null) r;
 
-  -- (4c) THE RACE: two submissions can both pass (4a) at count = max - 1; the
-  -- second one's own increment is what this rolls back.
+  -- (4c) THE RACE: the second of two that both passed (4a) at max - 1.
   if v_after > v_policy.max_requests then
     raise exception 'feedback: you have reached the feedback limit (% per % seconds)',
       v_policy.max_requests, v_policy.window_seconds
       using errcode = 'PT429', hint = v_retry::text;
   end if;
 
-  -- (4d) THE CROSSING ALERT, at the last accepted submission -- the core's
-  -- own max+1 write can never commit on this path. Unattributed, like every
-  -- user-scoped crossing; the operator's feed says so in words.
+  -- (4d) THE CROSSING ALERT, at the last accepted submission. Unattributed.
   if v_after = v_policy.max_requests then
     insert into public.incident_alerts (alert_type, organisation_id, summary, details)
     values (
@@ -240,6 +258,6 @@ end;
 $$;
 
 comment on function private.feedback_before_insert() is
-  'THE ONE CHOKEPOINT every feedback writer passes (20260911000000; reissued by 20260916002000 for founder ruling Q121). Stamps user_id and user_email from the session, organisation_role from the caller''s OWN active membership, refuses (42501) a workspace they are not a member of, stamps status/notified_at/created_at, stamps `during_support_access` from private.is_impersonating() -- so the "sent during support access" label is reachable only by a platform superuser inside a live break-glass session and by nobody else -- and spends the 10/hour budget (PT429, remaining seconds in `hint`). A null organisation is accepted from any caller, as before: /invites, /onboarding and /super are real signed-in surfaces with no workspace in their path, and an ABSENT attribution is not a false one (see 20260916002000''s header; Q124).';
+  'THE ONE CHOKEPOINT every feedback writer passes (20260911000000; reissued by 20260916002000 for founder ruling Q121). Stamps user_id and user_email from the session, organisation_role from the caller''s OWN active membership, refuses (42501) a workspace they are not a member of, refuses (42501) a declared screenshot with no stored object behind its key (20260911020000''s M1, carried forward unchanged), stamps status/notified_at/created_at, stamps `during_support_access` from private.is_impersonating() -- so the "sent during support access" label is reachable only by a platform superuser inside a live break-glass session and by nobody else -- and spends the 10/hour budget (PT429, remaining seconds in `hint`). A null organisation is accepted from any caller, as before: /invites, /onboarding and /super are real signed-in surfaces with no workspace in their path, and an ABSENT attribution is not a false one (see 20260916002000''s header; Q124).';
 
 revoke all on function private.feedback_before_insert() from public, anon, authenticated, service_role;
