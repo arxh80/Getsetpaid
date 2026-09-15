@@ -1120,6 +1120,71 @@ describe("grants on Phase 7 tables are minimal", () => {
     expect(rows, "a signed-out caller holds a grant on a platform table").toEqual([]);
   });
 
+  it("no Phase 7 table gives `authenticated` a TABLE-level UPDATE", async () => {
+    // THE ROW THAT WAS RED, and the reason 20260919000000 exists.
+    //
+    // `incident_alerts` held table-level UPDATE for `authenticated`. That was
+    // never member-reachable -- the row policy gates on
+    // has_platform_permission, and the matrix above measures exactly that,
+    // principal by principal, and finds it closed. What it left open is
+    // slower: any column a later migration adds becomes writable from the
+    // single aal2 superuser's own browser the moment it exists, with only the
+    // resolution guard's hand-maintained immutable list in the way -- a list
+    // `account_notified_at` (20260916001000) already had to be remembered
+    // into. A column-level grant inverts that: a forgotten column is outside
+    // the grant and fails closed.
+    //
+    // Asserted as a RULE over all seven tables rather than as a fact about the
+    // one that was wrong, so the next platform table cannot arrive with the
+    // same shape and a green suite.
+    const { rows } = await pool.query<{ table_name: string; n: number }>(
+      `select g.table_name, count(*)::int as n
+         from information_schema.column_privileges g
+        where g.table_schema = 'public'
+          and g.table_name = any($1::text[])
+          and g.grantee = 'authenticated'
+          and g.privilege_type = 'UPDATE'
+        group by g.table_name`,
+      [[...PHASE7_TABLES]],
+    );
+    const columnCount = await pool.query<{ table_name: string; n: number }>(
+      `select c.table_name, count(*)::int as n
+         from information_schema.columns c
+        where c.table_schema = 'public' and c.table_name = any($1::text[])
+        group by c.table_name`,
+      [[...PHASE7_TABLES]],
+    );
+    const total = new Map(columnCount.rows.map((r) => [r.table_name, r.n]));
+    for (const row of rows) {
+      expect(
+        row.n,
+        `${row.table_name} grants \`authenticated\` UPDATE on all ${row.n} of ` +
+          `its columns -- a table-level grant, so every column a later ` +
+          `migration adds is writable from the operator's own browser the ` +
+          `moment it exists (Q125). Narrow it to the columns the client ` +
+          `actually writes.`,
+      ).toBeLessThan(total.get(row.table_name)!);
+    }
+    // The denominator: if NOTHING granted `authenticated` UPDATE on any of the
+    // seven, the loop above would be vacuous.
+    expect(
+      rows.length,
+      "no Phase 7 table grants `authenticated` UPDATE at all, so the rule above " +
+        "checked nothing -- feedback.status and incident_alerts' resolution " +
+        "flag are both real client writes and at least two rows are expected",
+    ).toBeGreaterThan(0);
+  });
+
+  it("`authenticated` writes only the resolution flag on `incident_alerts`", async () => {
+    const { rows } = await pool.query<{ column_name: string }>(
+      `select column_name from information_schema.column_privileges
+        where table_schema='public' and table_name='incident_alerts'
+          and grantee='authenticated' and privilege_type='UPDATE'
+        order by column_name`,
+    );
+    expect(rows.map((r) => r.column_name)).toEqual(["resolved_at", "resolved_by"]);
+  });
+
   it("service_role's reach into `feedback` is the two-column delivery seam and nothing more", async () => {
     // BYPASSRLS makes the policy irrelevant for this role, so the grant is the
     // whole of the control. 20260911030000 narrowed it after the first cut

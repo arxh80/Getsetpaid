@@ -1015,18 +1015,55 @@ select rl.val('RD10 account_notified_at exists and is null on the fresh lockout 
 select rl.val('RD11 service_role may stamp account_notified_at',
   $$select has_column_privilege('service_role','public.incident_alerts','account_notified_at','UPDATE')::text$$,
   'true');
--- MEASURED, NOT ASSUMED, and the answer is the uncomfortable one: this table's
--- UPDATE grant to `authenticated` is TABLE-LEVEL, not column-level, so a new
--- column is writable by grant the moment it is added -- `notified_at` has
--- always been in the same position. The GUARD is therefore the whole of the
--- column gate here, which is exactly what its own comment claims, and RD13
--- below is the assertion that matters.
-select rl.val('RD12 the grant does NOT gate the column -- authenticated holds table-level UPDATE',
+-- ===========================================================================
+-- RD12 REVERSED BY PHASE 7 TASK 7 (20260919000000), AND THE REVERSAL IS THE
+-- POINT -- NOT A WEAKENED ASSERTION.
+-- ===========================================================================
+-- This used to read "RD12 the grant does NOT gate the column -- authenticated
+-- holds table-level UPDATE", expecting `true`, with a header calling that "the
+-- uncomfortable one": the table's UPDATE grant was TABLE-LEVEL, so any column
+-- a later migration added was writable by grant the moment it existed, and the
+-- GUARD was the whole of the column gate. `account_notified_at`
+-- (20260916001000) had to be remembered into that guard's list by hand, which
+-- is what raised DECISIONS-QUEUE Q125.
+--
+-- Task 7's permission matrix found the same shape mechanically and closed it:
+-- `authenticated` now holds UPDATE on `resolved_at` and `resolved_by` ONLY --
+-- the two columns lib/admin/health-actions.ts actually writes -- so a column
+-- added after today is OUTSIDE the grant and fails closed with 42501 instead
+-- of relying on somebody updating a list. The assertion therefore states the
+-- new fact, in both directions.
+select rl.val('RD12 the grant DOES gate the column now -- account_notified_at is outside it',
   $$select has_column_privilege('authenticated','public.incident_alerts','account_notified_at','UPDATE')::text$$,
+  'false');
+select rl.val('RD12a ...and the grant is exactly the resolution flag, nothing wider',
+  $$select string_agg(column_name, ',' order by column_name)
+      from information_schema.column_privileges
+     where table_schema='public' and table_name='incident_alerts'
+       and grantee='authenticated' and privilege_type='UPDATE'$$,
+  'resolved_at,resolved_by');
+-- THE GUARD IS STILL THERE, AND IT IS NOW UNREACHABLE FROM ANY CLIENT PATH --
+-- which is the correct end state and also a denominator problem this comment
+-- refuses to leave implicit. Every column in the guard's immutable list is now
+-- outside the client grant, so no session can reach the `raise` to be refused
+-- by it: the guard has become pure defence in depth, and RD13's refusal below
+-- is delivered by the GRANT first. Deleting the guard entirely would leave
+-- RD13 green. So the guard's continued existence and its list are asserted
+-- directly, from its own body -- the parsed-body idiom rls_phase2_crm.sql
+-- § M1d2 established -- rather than inferred from a refusal that another
+-- control is now producing.
+select rl.val('RD12b the guard still exists and still names the delivery-seam columns',
+  $$select (pg_catalog.pg_get_functiondef(p.oid) like '%account_notified_at%'
+        and pg_catalog.pg_get_functiondef(p.oid) like '%new.notified_at%'
+        and pg_catalog.pg_get_functiondef(p.oid) like '%resolved_by must be the resolving caller%')::text
+      from pg_catalog.pg_proc p
+      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'private' and p.proname = 'incident_alert_resolution_guard'$$,
   'true');
--- THE GUARD, not merely the grant: the operator is the one client who CAN
--- update this table (the resolve flag), so the column has to be refused by
--- the guard as well, or a superuser could silence a customer's notice.
+-- THE REFUSAL ITSELF, unchanged in outcome and now delivered by the grant:
+-- the operator is the one client who CAN update this table (the resolve flag),
+-- so a superuser must still not be able to silence a customer's lockout
+-- notice.
 set role authenticated;
 set request.jwt.claims = :'super_c';
 select rl.try('RD13 the aal2 SUPERUSER cannot stamp account_notified_at either',

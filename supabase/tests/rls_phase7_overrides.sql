@@ -172,6 +172,40 @@ reset role; reset request.jwt.claims;
 -- ===========================================================================
 -- § OC  WRITABLE ONLY THROUGH THE AUDITED RPCs
 -- ===========================================================================
+-- THE GRANT FIRST, THEN THE POLICY, THEN THE TRIGGER -- in the order a request
+-- meets them, because BYPASSRLS bypasses policies and NOT grants and a policy
+-- is therefore the wrong place to look for the last line of defence against a
+-- role that does not consult policies (Task 5's finding I3).
+--
+-- Added by Phase 7 Task 7 alongside 20260919001000. Both tables used to grant
+-- `authenticated` TABLE-level UPDATE: never member-reachable (OC3/OC4 below
+-- drive that from the org's own Owner and from the superuser's raw PATCH), but
+-- a column added by a later migration would have been inside the grant the
+-- moment it existed, with only private.override_table_guard()'s logic in the
+-- way. The grant is now the three columns public.revoke_billing_override() /
+-- revoke_feature_override() write, so a future column fails CLOSED instead.
+-- The RPCs are SECURITY INVOKER, so their own statements run as
+-- `authenticated` and this grant is what they spend -- which is why the three
+-- are asserted PRESENT as well as the rest absent.
+select ov.val('OC0 the billing UPDATE grant is exactly the three revocation columns',
+  $$select string_agg(column_name, ',' order by column_name)
+      from information_schema.column_privileges
+     where table_schema='public' and table_name='organisation_billing_overrides'
+       and grantee='authenticated' and privilege_type='UPDATE'$$,
+  'revoked_at,revoked_by,revoked_reason');
+select ov.val('OC0a ...and the feature one is the same three',
+  $$select string_agg(column_name, ',' order by column_name)
+      from information_schema.column_privileges
+     where table_schema='public' and table_name='organisation_feature_overrides'
+       and grantee='authenticated' and privilege_type='UPDATE'$$,
+  'revoked_at,revoked_by,revoked_reason');
+select ov.val('OC0b no client role holds DELETE on either table -- history is never removed',
+  $$select (has_table_privilege('authenticated','public.organisation_billing_overrides','DELETE')
+         or has_table_privilege('anon','public.organisation_billing_overrides','DELETE')
+         or has_table_privilege('authenticated','public.organisation_feature_overrides','DELETE')
+         or has_table_privilege('anon','public.organisation_feature_overrides','DELETE'))::text$$,
+  'false');
+
 -- ALPHA's own aal2 Owner cannot write the table directly, granted or not.
 set role authenticated;
 set request.jwt.claims = :'powner_c';
@@ -181,10 +215,27 @@ select ov.try('OC1 ALPHA''s own Owner cannot INSERT a billing override directly'
            values (%L,'starter','self-service',%L, now()+interval '1 hour')$$,
          :'alpha_org', :'powner'),
   'denied(42501)');
+-- WAS `ok(0)` UNTIL 20260919001000, AND THE CHANGE IS A STRENGTHENING.
+-- `expires_at` is now outside the client UPDATE grant, so this is refused at
+-- the privilege check with a loud 42501 instead of being silently filtered to
+-- zero rows by the policy -- and a silent no-op is the outcome PostgREST
+-- reports as a 204, indistinguishable from success (the same argument Task 5
+-- made for putting the finance tier conjunct in WITH CHECK rather than USING).
 select ov.try('OC2 ...nor UPDATE the one the superuser just granted',
   format($$update public.organisation_billing_overrides
              set expires_at = now() + interval '999 hours'
            where organisation_id=%L$$, :'alpha_org'),
+  'denied(42501)');
+-- AND THE POLICY IS STILL MEASURED, which OC2 no longer does on its own: with
+-- every column it names outside the grant, OC2 would stay green if the policy
+-- were dropped entirely. So the same Owner tries an UPDATE naming ONLY the
+-- three GRANTED columns, which reaches the policy -- and matches no row,
+-- because `*_select_member` lets them SEE the override and no UPDATE policy
+-- admits them to it.
+select ov.try('OC2a ...and an UPDATE of only the GRANTED columns reaches the policy and matches nothing',
+  format($$update public.organisation_billing_overrides
+             set revoked_at = now(), revoked_by = %L, revoked_reason = 'self-service'
+           where organisation_id=%L$$, :'powner', :'alpha_org'),
   'ok(0)');
 reset role; reset request.jwt.claims;
 
@@ -195,10 +246,25 @@ reset role; reset request.jwt.claims;
 -- matches nothing.
 set role authenticated;
 set request.jwt.claims = :'super_c';
+-- Also `ok(0)` until 20260919001000, and strengthened for the same reason:
+-- `expires_at` is outside the grant, so the operator's raw PATCH of it is a
+-- privilege error before any policy runs.
 select ov.try('OC3 the SUPERUSER cannot UPDATE the table directly (no transition marker)',
   format($$update public.organisation_billing_overrides
              set expires_at = now() + interval '999 hours'
            where organisation_id=%L$$, :'alpha_org'),
+  'denied(42501)');
+-- THE ASSERTION THIS SECTION EXISTS FOR, and the one OC3 used to carry alone:
+-- the superuser naming ONLY granted columns DOES reach
+-- organisation_billing_overrides_update_platform, passes its
+-- has_platform_permission term, and still matches nothing, because
+-- private.override_transition_in_progress() is false outside the RPCs. Drop
+-- the marker term and this goes red; drop the policy and this goes red. OC3
+-- above would not.
+select ov.try('OC3a ...and even naming only the GRANTED columns, the marker term matches no row',
+  format($$update public.organisation_billing_overrides
+             set revoked_at = now(), revoked_by = %L, revoked_reason = 'raw patch'
+           where organisation_id=%L$$, :'super', :'alpha_org'),
   'ok(0)');
 select ov.try('OC4 ...nor INSERT one directly',
   format($$insert into public.organisation_billing_overrides
