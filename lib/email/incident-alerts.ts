@@ -23,21 +23,27 @@ import "server-only";
 // ===========================================================================
 // WHO CALLS THIS, AND WHEN -- HONESTLY
 // ===========================================================================
-// Nothing in this repo schedules it. There is no scheduler in the product (the
-// house pattern is read-time expiry, and an email cannot be read-time). The
-// entry point is the route handler app/api/incident-alerts/deliver/route.ts,
-// which an EXTERNAL cron (the hosting provider's, or pg_cron + pg_net on the
-// hosted project) calls with a server-held bearer secret. Until that cron is
-// configured, an alert is a row on /super/health and not an email -- which is
-// exactly what it was before this task, stated in SECURITY.md § 12 and queued
-// as DECISIONS-QUEUE Q118 rather than papered over with a fake scheduler.
+// THE DATABASE DOES, every 10 minutes, since Task 6c (founder ruling Q118).
+// `pg_cron` runs the job `incident-alert-delivery`, which calls
+// private.deliver_incident_alerts() (20260916000000); that function reads the
+// route's URL and bearer from Supabase Vault and `pg_net`-POSTs
+// app/api/incident-alerts/deliver/route.ts. This is the product's ONLY
+// scheduler -- everything else here uses read-time expiry, and an email cannot
+// be read-time.
+//
+// IT IS A NO-OP WHEREVER THE VAULT ENTRIES ARE ABSENT, which is every
+// environment this repository can reach: local dev and CI register the job and
+// the function returns before it builds a request. So "nothing arrives locally"
+// is the designed behaviour, not a broken clock.
 //
 // A run is bounded (`limit`) so a flood cannot produce an unbounded email.
 // Two overlapping runs can double-send the same digest: the stamp is
 // `where notified_at is null`, so the SECOND stamp is a no-op, but both sends
-// go out. Accepted at MVP (a cron every few minutes does not overlap itself);
-// a claim-before-send would need an UPDATE the sender is allowed to make on a
-// row it has not yet emailed, which is the wrong direction for the column.
+// go out. Accepted at the 10-minute cadence (with a 15-second pg_net timeout
+// and a 10-second Brevo timeout, overlap needs this route to hang for ten
+// minutes); a claim-before-send would need an UPDATE the sender is allowed to
+// make on a row it has not yet emailed, which is the wrong direction for the
+// column and would mark undelivered alerts delivered after a crash.
 
 import { sendEmail } from "@/lib/email/send";
 import { supportContactEmail } from "@/lib/email/feedback-notification";
