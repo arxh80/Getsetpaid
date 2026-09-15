@@ -75,6 +75,32 @@ interface Deferred {
  * other page. Each entry names a violation this scan actually found and that
  * Task 8 deliberately did not fix, with a pointer into FOLLOW-UPS.md.
  */
+/**
+ * WAIT FOR THE REAL PAGE, NOT FOR `main` (fix round 2, review finding N6).
+ *
+ * Every signed-in scan in this file used to wait only for
+ * `expect(page.locator("main").first()).toBeVisible()`. That is satisfied by
+ * the ROUTE'S `loading.tsx`, which renders a skeleton INSIDE the shell's
+ * `main` -- so on a slow stream axe could analyse the skeleton instead of the
+ * page. It did: a full-suite run failed `contact detail + timeline` on
+ * `page-has-heading-one (1 nodes)` and passed the same test in isolation.
+ *
+ * The failure direction was safe -- no `loading.tsx` in this app contains an
+ * `<h1>`, so a scan that caught a skeleton always failed loudly on that rule
+ * rather than passing green against a subject that was never rendered -- but a
+ * gate that is only accidentally correct is not a gate. Waiting for the page's
+ * own `<h1>` makes "the scan saw the real page" structural: the skeleton
+ * cannot satisfy it, and the element it waits for is the same one the rule
+ * that flaked is about.
+ *
+ * Deliberately the `<h1>` and not a networkidle/timeout: every page this file
+ * scans has exactly one, which is what `page-has-heading-one` asserts, so this
+ * is the cheapest witness that is also load-bearing.
+ */
+async function settled(page: Page) {
+  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+}
+
 async function scan(page: Page, label: string, deferred: Deferred[] = []) {
   const results = await new AxeBuilder({ page })
     .withTags(WCAG_TAGS)
@@ -212,7 +238,7 @@ for (const [label, url] of SIGNED_IN_PAGES) {
   test(`${label} has no automated accessibility violations`, async ({ page }) => {
     await signIn(page, world, "manager");
     await page.goto(url(world));
-    await expect(page.locator("main").first()).toBeVisible();
+    await settled(page);
     await scan(page, label);
   });
 }
@@ -235,6 +261,10 @@ test("a page with the sidebar pinned open has no automated accessibility violati
 }) => {
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}/contacts`);
+  // BEFORE THE MEASUREMENT, not just before the scan (fix round 2, N6): the
+  // skeleton and the page are different DOM, so measuring the columns' left
+  // edges against a still-streaming route would measure the wrong thing.
+  await settled(page);
 
   // REST-STATE REGISTER (re-review N2), measured, not eyeballed: <main>
   // centres itself with `mx-auto` in the flex row's LEFTOVER space, so the
@@ -324,7 +354,7 @@ test("the event page WITH the finance panel has no automated accessibility viola
 }) => {
   await signIn(page, world, "finance");
   await page.goto(`/${world.proOrgSlug}/events/${world.proLedgerEventId}`);
-  await expect(page.locator("main").first()).toBeVisible();
+  await settled(page);
   // NON-VACUITY: the panel is actually on the page being scanned. Without this
   // the test would report a clean scan of an event page with no finance on it,
   // which is the one thing it must not be able to do.

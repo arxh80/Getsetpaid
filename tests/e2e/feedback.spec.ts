@@ -387,9 +387,33 @@ test("a support-access submission is labelled on /super/feedback, and a workspac
 // ===========================================================================
 test("/super/feedback has no detectable accessibility violations, populated", async ({ page }) => {
   await plantFeedback(world.users.manager.id, world.orgId, "manager", "E2E accessibility scan row");
+  // BOTH SHAPES OF ROW IN THE SCANNED TREE (fix round 2). The first row is
+  // workspace-attributed; this second one is the Q121 support-access shape --
+  // null organisation, `during_support_access` true -- which is the only way
+  // the "Sent during support access" chip and the Workspace <dd>'s
+  // support-access branch are rendered at all. The chip is structurally a twin
+  // of the status chip this scan already covers (same CHIP_CLASS span, same
+  // flex row), so no axe rule could fire on one and not the other -- but this
+  // phase has now produced four findings of the form "the test passed because
+  // its subject was never rendered", and the cost of closing the argument is
+  // one argument.
+  await plantFeedback(
+    world.superuser.id,
+    null,
+    null,
+    "E2E accessibility scan row, support access",
+    true,
+    `/${world.orgSlug}/contacts`,
+  );
   await signInAsSuperuser(page);
   await page.goto("/super/feedback");
-  await expect(page.getByText("E2E accessibility scan row")).toBeVisible();
+  await expect(page.getByText("E2E accessibility scan row", { exact: true })).toBeVisible();
+  // NON-VACUITY: the support-access row and its chip are really on the page
+  // being scanned, not merely in the database.
+  await expect(
+    page.getByText("E2E accessibility scan row, support access", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Sent during support access").first()).toBeVisible();
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
     .analyze();
