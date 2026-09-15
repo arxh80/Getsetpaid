@@ -638,6 +638,8 @@ select gen_random_uuid()::text as fx_forge     \gset
 select gen_random_uuid()::text as fx_support   \gset
 select gen_random_uuid()::text as fx_expired   \gset
 select gen_random_uuid()::text as fx_named     \gset
+select gen_random_uuid()::text as fx_ownpage   \gset
+select gen_random_uuid()::text as fx_otherorg  \gset
 select gen_random_uuid()::text as fx_session   \gset
 \o
 
@@ -727,6 +729,37 @@ select fb.val('FX13 ...attributed to the operator, like every other submission',
   'true');
 -- SUPPORT ACCESS STILL CANNOT CLAIM THE WORKSPACE. The reversal changed where
 -- the row lands, not what an impersonator may assert about a tenant.
+-- ---- FIX ROUND 1, M2: THE LABEL IS ABOUT THE REQUEST, NOT THE PERSON ------
+-- Before the fix the label read off private.is_impersonating(), which asks
+-- only "does this caller hold a live session ANYWHERE". So the operator's own
+-- feedback from /super/feedback -- about the dashboard, nothing to do with a
+-- customer -- was stamped "Sent during support access" for as long as some
+-- session was open in another tab. Same session as FX10 above, still live;
+-- the only thing that differs is the page the operator was on.
+select fb.try('FX19 the SAME live session, submitting from /super -- accepted',
+  format($$insert into public.feedback (id, organisation_id, category, message, route)
+           values (%L, null, 'idea', 'The feedback list wants a date filter.', '/super/feedback')$$,
+         :'fx_ownpage'),
+  'ok(1)');
+select fb.val('FX20 ...and NOT labelled: the operator''s own screens are not a customer''s workspace',
+  format($$select during_support_access::text from public.feedback where id=%L$$, :'fx_ownpage'),
+  'false');
+-- And a route naming a DIFFERENT workspace than the one under session is not
+-- support access either -- the scoping is to the impersonated organisation,
+-- not to "any slug-shaped first segment".
+select fb.try('FX21 a route naming a workspace this session does NOT cover -- accepted',
+  format($$insert into public.feedback (id, organisation_id, category, message, route)
+           values (%L, null, 'bug', 'Typed a slug I am not inside.', '/org-alpha/venues')$$,
+         :'fx_otherorg'),
+  'ok(1)');
+select fb.val('FX22 ...and NOT labelled',
+  format($$select during_support_access::text from public.feedback where id=%L$$, :'fx_otherorg'),
+  'false');
+select fb.val('FX23 DENOMINATOR: the route-scoped predicate IS true for the impersonated workspace',
+  $$select private.is_impersonating_route('/org-beta/venues')::text$$, 'true');
+select fb.val('FX24 ...and false for the operator''s own area, same session, same instant',
+  $$select private.is_impersonating_route('/super/feedback')::text$$, 'false');
+
 select fb.try('FX14 the operator STILL cannot name the workspace they are inside',
   format($$insert into public.feedback (id, organisation_id, category, message, route)
            values (%L, %L, 'bug', 'Attributed to them.', '/org-beta/venues')$$,
