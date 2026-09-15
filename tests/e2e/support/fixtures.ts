@@ -322,7 +322,37 @@ export type E2eRole =
   // `booker` holds view_crm and seven manage_* keys and NOT view_finance
   // (20260903002000), which is exactly the shape the finance render gate has to
   // refuse: a fully-privileged CRM user who may not see the money.
-  | "booker";
+  | "booker"
+  // ---- PHASE 7 TASK 7 -----------------------------------------------------
+  // THE TWO ROLES NOTHING IN THIS SUITE HAD EVER SIGNED IN AS.
+  //
+  // Until this task `E2eRole` was `manager | standard_user | read_only |
+  // finance | booker`, and sign-in.ts said so outright: "owner and admin are
+  // the other two and nothing here is either". The consequence was not a gap
+  // in coverage, it was a class of GREEN TESTS THAT MEASURED NOTHING --
+  //
+  //   * every Owner/Admin-only surface (`manage_custom_fields`,
+  //     `manage_members`, `manage_organisation` are the only three
+  //     permissions in `role_permissions` held by exactly {owner, admin})
+  //     had never been rendered by a session that holds the key, so a scan
+  //     or a walk against one was measuring an EMPTY page; and
+  //   * the plan's own named case for Task 7 -- "unreachable by a
+  //     non-superuser, EVEN AN ORG OWNER" -- could not be written at all,
+  //     and the /super refusal probes that exist were all driven by a
+  //     manager with the standing note that "an Org Owner is MFA-required,
+  //     so an owner probe would be measuring the MFA challenge rather than
+  //     the superuser gate".
+  //
+  // Both are MFA-REQUIRED (`private.role_requires_mfa()`, CLAUDE.md
+  // § Session security), so both walk the real per-sign-in TOTP challenge
+  // against the live GoTrue verifier, from `ownerTotpSecret`/`adminTotpSecret`
+  // below. An owner or admin persona that did NOT walk it would sign in at
+  // aal1, hold NEITHER of its two exclusive keys, and refuse everywhere for
+  // the MFA reason rather than the reason under test -- which is the same
+  // denominator failure this task exists to close, reintroduced by the
+  // fixture meant to close it.
+  | "owner"
+  | "admin";
 
 export interface E2eUser {
   id: string;
@@ -506,6 +536,22 @@ export interface E2eWorld {
    * whether the finance keys are held at all.
    */
   financeTotpSecret: string;
+
+  /**
+   * PHASE 7 TASK 7. The real, verified factors the `owner` and `admin`
+   * personas' browser sign-ins walk.
+   *
+   * Same shape and same non-secrecy as `financeTotpSecret` above: they belong
+   * to throwaway accounts this run created and `tearDownWorld` deletes.
+   * `signIn()` selects between these three by role -- see TOTP_SECRET_BY_ROLE
+   * in ./sign-in.ts, which replaced a single hardcoded `financeTotpSecret`
+   * read that would have silently presented the FINANCE user's code at an
+   * owner's challenge and failed as "wrong code" rather than as "the fixture
+   * does not carry this role's secret".
+   */
+  ownerTotpSecret: string;
+  /** @see ownerTotpSecret */
+  adminTotpSecret: string;
 
   // =========================================================================
   // PHASE 7 TASK 1: THE PLATFORM SUPERUSER
@@ -1247,6 +1293,23 @@ export async function setUpWorld(): Promise<E2eWorld> {
     // tier -- not the role -- is what refuses the Starter write.
     finance: await createUser(`e2e-finance-${suffix}@test.local`),
     booker: await createUser(`e2e-booker-${suffix}@test.local`),
+    // ---- PHASE 7 TASK 7 ---------------------------------------------------
+    // Members of `orgId`, like manager/standard_user/read_only, so an
+    // Owner/Admin-only surface is rendered in the workspace this suite
+    // actually fills with records. Their TOTP factors are enrolled below,
+    // beside `financeTotpSecret`, and must exist before any browser signs in
+    // as them or the app renders the ENROL gate instead of the CHALLENGE gate.
+    //
+    // DELIBERATELY SEPARATE FROM `orgAdmin`, which is also an admin of
+    // `orgId`. `orgAdmin` is the impersonation consent-giver, driven in its
+    // own browser context alongside a superuser context in
+    // impersonation.spec.ts; pointing the role-addressed `admin` persona at
+    // the same account would put two concurrently-driven contexts on one
+    // auth user and make an unrelated spec's failure look like this one's.
+    // Two admins of one workspace perturbs nothing else -- no spec in this
+    // directory reads /[orgSlug]/members or counts memberships (grepped).
+    owner: await createUser(`e2e-owner-${suffix}@test.local`),
+    admin: await createUser(`e2e-admin-${suffix}@test.local`),
   };
   // The other tenant's owner. Never signed in as -- they exist so the second
   // organisation has a member, which is what makes its rows real rather than
@@ -1290,7 +1353,9 @@ export async function setUpWorld(): Promise<E2eWorld> {
             ($1,$3,'standard_user','active',now()),
             ($1,$4,'read_only','active',now()),
             ($5,$6,'owner','active',now()),
-            ($5,$7,'manager','active',now())`,
+            ($5,$7,'manager','active',now()),
+            ($1,$8,'owner','active',now()),
+            ($1,$9,'admin','active',now())`,
     [
       orgId,
       users.manager.id,
@@ -1299,6 +1364,11 @@ export async function setUpWorld(): Promise<E2eWorld> {
       otherOrgId,
       otherOwner.id,
       otherMember.id,
+      // PHASE 7 TASK 7. The first Owner and the first role-addressed Admin of
+      // `orgId` this suite has ever had -- see the `owner`/`admin` arms of
+      // E2eRole for what could not be measured without them.
+      users.owner.id,
+      users.admin.id,
     ],
   );
 
@@ -1701,6 +1771,14 @@ export async function setUpWorld(): Promise<E2eWorld> {
   // gate `signIn` walks.
   const financeTotpSecret = await enrolTotp(users.finance.email);
 
+  // PHASE 7 TASK 7. Same reason, same shape, for the two MFA-required roles
+  // this suite gained. A stubbed challenge would leave both at aal1, and
+  // `has_permission()` refuses an owner/admin membership at aal1
+  // (20260827210000) -- so their exclusive keys would be held NOT AT ALL and
+  // every Owner/Admin assertion would pass or fail for the MFA reason.
+  const ownerTotpSecret = await enrolTotp(users.owner.email);
+  const adminTotpSecret = await enrolTotp(users.admin.email);
+
   // =========================================================================
   // PHASE 7 TASK 1: THE PLATFORM SUPERUSER
   // =========================================================================
@@ -2051,6 +2129,8 @@ export async function setUpWorld(): Promise<E2eWorld> {
     starterEntryId,
     otherOrgFinanceEntryId,
     financeTotpSecret,
+    ownerTotpSecret,
+    adminTotpSecret,
     superuser,
     superuserTotpSecret,
     orgAdmin,
@@ -2152,9 +2232,12 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
   //
   // THE COUNTS IN THIS PARAGRAPH ARE RE-COUNTED, NOT COPIED. It used to say
   // "this suite creates four per run and the psql suite creates twelve", and
-  // both numbers had gone stale: `setUpWorld` creates NINE (five `E2eRole`
-  // personas, `otherOwner`, `freeMember`, `otherMember`, and -- Phase 7 Task
-  // 1 -- the platform `superuser`) and
+  // both numbers had gone stale: `setUpWorld` creates TWELVE (SEVEN `E2eRole`
+  // personas since Phase 7 Task 7 added `owner` and `admin`, `otherOwner`,
+  // `freeMember`, `otherMember`, the platform `superuser` from Phase 7 Task 1,
+  // and `orgAdmin` from Phase 7 Task 2 -- and the two new personas need no
+  // line of their own here or in the loop below, because both are inside
+  // `Object.values(world.users)`) and
   // `supabase/tests/run-rls-tests.sh` creates NINETEEN (five in its opening
   // loop, twelve for the Phase 2 suite, and two counterparties for the Phase 6
   // network-leakage suite). The thousand-row argument is unchanged and is why
