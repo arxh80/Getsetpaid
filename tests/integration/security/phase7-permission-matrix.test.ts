@@ -236,7 +236,15 @@ const ARGS = {
    *  the row every refused draft/publish/review call is aimed at, so a
    *  refusal is the guard's and not "no such draft". */
   legalDraftId: "",
+  /** Phase 8 Task 2: a consent GRANT recorded by the Read Only member through
+   *  the real RPC -- the row every other principal must not be able to read
+   *  or change. */
+  consentId: "",
 };
+
+// Phase 8 Task 2: the no-organisation principal's user id, for the
+// record_consent attribution probe.
+let noOrgUserId = "";
 
 // Phase 8 Task 1. The slug the long-lived draft lives on, and the one each
 // legal positive control borrows and gives back. Two different slugs, because
@@ -657,6 +665,10 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
   feedback_budget_remaining:
     "a STABLE read of the caller's own feedback budget; spends nothing and " +
     "discloses nobody else's counter.",
+  record_consent:
+    "Phase 8 Task 2 -- ANY signed-in person records their OWN marketing " +
+    "consent or withdrawal. Takes no user argument; the database stamps the " +
+    "session's (asserted below, and in rls_phase8_consents.sql § CW).",
 };
 
 /**
@@ -745,6 +757,15 @@ const PRE_PHASE7_RELATIONS = [
  */
 const PUBLIC_READ_RELATIONS = ["legal_documents"] as const;
 
+/**
+ * Phase 8 relations a signed-in principal may read ONLY THEIR OWN rows of, and
+ * write none of directly -- asserted in their own block below.
+ * `consents`: the consent ledger (Task 2). SELECT to authenticated, rows
+ * filtered to auth.uid() (plus the aal2 superuser's oversight read); writes go
+ * through record_consent() alone.
+ */
+const OWN_ROW_RELATIONS = ["consents"] as const;
+
 const PHASE7_TABLES = [
   "feedback",
   "impersonation_sessions",
@@ -783,6 +804,7 @@ beforeAll(async () => {
     throw new Error(`could not create the no-organisation principal: ${createErr?.message}`);
   }
   fx._allUserIds.push(created.user.id);
+  noOrgUserId = created.user.id;
   noOrgClient = createClient(fx.apiUrl, fx.anonKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
@@ -993,6 +1015,26 @@ beforeAll(async () => {
     }
   }
 
+  // ---- Phase 8 Task 2: a consent grant held for the run -----------------
+  // Recorded by the Read Only member through the real RPC -- the positive
+  // control for record_consent before any refusal is asserted.
+  {
+    const { rows } = await pool.query<{ version: number }>(
+      `select version from public.legal_documents where slug = 'marketing-preferences' and status = 'published'`,
+    );
+    const { data, error } = await fx.activeByRole.read_only.client.rpc("record_consent", {
+      p_purpose: "marketing_email",
+      p_action: "granted",
+      p_policy_version: rows[0].version,
+      p_statement: "marketing-email-1",
+    });
+    const recorded = (data ?? []) as { consent_id: string }[];
+    if (error || recorded.length !== 1) {
+      throw new Error(`POSITIVE CONTROL FAILED: record_consent: ${error?.message}`);
+    }
+    ARGS.consentId = recorded[0].consent_id;
+  }
+
   // `rate_limit_counters` needs a row too, and the honest way to get one is to
   // spend a real budget through the real meter as a real member.
   {
@@ -1105,7 +1147,9 @@ describe("the inventory is mechanical", () => {
         "PHASE7_TABLES nor PRE_PHASE7_RELATIONS. A platform table added by a " +
         "later phase belongs in the first (and gets probed by every principal); " +
         "a tenant one belongs in the second with its reason.",
-    ).toEqual([...PHASE7_TABLES, ...PUBLIC_READ_RELATIONS, ...PRE_PHASE7_RELATIONS].sort());
+    ).toEqual(
+      [...PHASE7_TABLES, ...PUBLIC_READ_RELATIONS, ...OWN_ROW_RELATIONS, ...PRE_PHASE7_RELATIONS].sort(),
+    );
 
     // And the seven this file probes are real TABLES with RLS on -- a view has
     // no RLS of its own, so the two facts have to be asserted together.
@@ -1778,6 +1822,98 @@ describe("table legal_documents (public-read by design)", () => {
       "title",
       "version",
     ]);
+  });
+});
+
+// =============================================================================
+// PHASE 8 TASK 2: A TABLE EACH PRINCIPAL READS ONLY ITS OWN ROWS OF
+// =============================================================================
+// `consents` is readable by every signed-in session, row-filtered to the
+// caller. The held grant (beforeAll) belongs to the Read Only member, so every
+// OTHER principal must read it as absent, the Read Only member must read it,
+// and the aal2 superuser must read it (oversight) -- the last two being the
+// positive controls that make the others' "absent" mean something.
+describe("table consents (own rows only)", () => {
+  const readsIt = new Set(["readOnlyMember", "superuserAal2"]);
+  const everyone: { key: string; client: () => SupabaseClient }[] = [
+    ...PRINCIPALS.map(({ key, client }) => ({ key: key as string, client })),
+    { key: "superuserAal2", client: () => superuser },
+  ];
+
+  it("DENOMINATOR: the held grant exists and is the Read Only member's", async () => {
+    const { rows } = await pool.query(
+      `select user_id, action from public.consents where id = $1`,
+      [ARGS.consentId],
+    );
+    expect(rows).toEqual([{ user_id: fx.activeByRole.read_only.userId, action: "granted" }]);
+  });
+
+  it.each(everyone)("$key reads the held grant only if it is theirs (or the aal2 operator)", async ({ key, client }) => {
+    const { data, error } = await client().from("consents").select("id, user_id").eq("id", ARGS.consentId);
+    if (key === "anonymous") {
+      // anon holds no grant at all -- refused, not merely filtered.
+      expect(error, "anon read the consent ledger").not.toBeNull();
+      expect(REFUSAL_CODES.has(error!.code ?? ""), error?.code).toBe(true);
+      return;
+    }
+    expect(error, error?.message).toBeNull();
+    expect((data ?? []).length, key).toBe(readsIt.has(key) ? 1 : 0);
+  });
+
+  it.each(everyone)("$key cannot write to it directly -- the aal2 superuser included", async ({ client }) => {
+    const before = await tableChecksum("consents");
+    await client()
+      .from("consents")
+      .insert({ purpose: "marketing_email", action: "withdrawn", policy_version: 2, mechanism: "account_settings" } as never);
+    await client().from("consents").update({ action: "withdrawn" } as never).eq("id", ARGS.consentId);
+    await client().from("consents").delete().eq("id", ARGS.consentId);
+    expect(await tableChecksum("consents"), "a direct write changed the consent ledger").toBe(before);
+  });
+
+  it("record_consent stamps the CALLER: a no-organisation user's grant is theirs, and a user argument does not exist", async () => {
+    const forged = await noOrgClient.rpc("record_consent", {
+      p_purpose: "marketing_email",
+      p_action: "withdrawn",
+      p_user_id: fx.activeByRole.read_only.userId,
+    } as never);
+    expect(forged.error, "record_consent accepted a user argument").not.toBeNull();
+    const { rows: before } = await pool.query(`select action from public.consents where id = $1`, [ARGS.consentId]);
+    expect(before, "the held grant was touched").toEqual([{ action: "granted" }]);
+
+    const { rows: v } = await pool.query<{ version: number }>(
+      `select version from public.legal_documents where slug = 'marketing-preferences' and status = 'published'`,
+    );
+    const { data, error } = await noOrgClient.rpc("record_consent", {
+      p_purpose: "marketing_email",
+      p_action: "granted",
+      p_policy_version: v[0].version,
+    });
+    expect(error, error?.message).toBeNull();
+    const id = ((data ?? []) as { consent_id: string }[])[0]?.consent_id;
+    const { rows } = await pool.query(`select user_id from public.consents where id = $1`, [id]);
+    expect(rows).toEqual([{ user_id: noOrgUserId }]);
+  });
+
+  it("anonymous cannot record a consent at all", async () => {
+    const before = await tableChecksum("consents");
+    const { error } = await fx.anonClient.rpc("record_consent", {
+      p_purpose: "marketing_email",
+      p_action: "granted",
+      p_policy_version: 2,
+    });
+    expect(error).not.toBeNull();
+    expect(REFUSAL_CODES.has(error!.code ?? ""), error?.code).toBe(true);
+    expect(await tableChecksum("consents")).toBe(before);
+  });
+
+  it("no client role holds a write privilege, and service_role holds nothing", async () => {
+    const { rows } = await pool.query<{ grantee: string; privilege_type: string }>(
+      `select distinct grantee, privilege_type from information_schema.column_privileges
+        where table_schema = 'public' and table_name = 'consents'
+          and grantee in ('anon','authenticated','service_role')
+        order by grantee, privilege_type`,
+    );
+    expect(rows).toEqual([{ grantee: "authenticated", privilege_type: "SELECT" }]);
   });
 });
 
