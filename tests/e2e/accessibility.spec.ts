@@ -427,15 +427,32 @@ test("custom-field settings, EDITABLE, has no automated accessibility violations
   //
   // `single_select` deliberately: it is the one type whose stored choices
   // render back into the row, so the list item is at its fullest.
+  // BY `name=`, NOT BY LABEL TEXT, and that was measured rather than chosen:
+  // components/ui/field.tsx appends a visible "Required"/"Optional" word
+  // INSIDE the <label>, so the accessible name of the label field is
+  // "Label Required" and `getByLabel("Label", { exact: true })` matches
+  // nothing at all -- a twenty-second timeout that looks like a missing
+  // control rather than a mis-spelled selector. The form's `name` attributes
+  // are the same strings the Server Action reads, so they cannot drift from
+  // the thing being filled in.
   await addDisclosure.click();
-  await page.getByLabel("Label", { exact: true }).fill("Dressing room tier");
-  await page.getByLabel("Name", { exact: true }).fill("dressing_room_tier");
-  await page.getByLabel("Kind of field").selectOption("single_select");
-  await page
-    .getByLabel("One per line")
-    .fill(["Green room", "Shared", "None"].join("\n"));
+  const addForm = page.locator('form:has(button:text-is("Add field"))');
+  await addForm.locator('input[name="label"]').fill("Dressing room tier");
+  await addForm.locator('input[name="key"]').fill("dressing_room_tier");
+  await addForm.locator('select[name="fieldType"]').selectOption("single_select");
+  // The choices box lives inside its OWN collapsed <details>, and a collapsed
+  // <details> hides its contents from the renderer as well as from the
+  // accessibility tree -- `fill` on it fails as "not visible". Opening it is
+  // what a person does too.
+  await addForm.locator("summary", { hasText: "Choices" }).click();
+  await addForm
+    .locator('textarea[name="options"]')
+    // `name = What people see`, one per line -- the stored key on the left.
+    // A bare label is refused by the form's own validation ("can't be a
+    // choice name"), which is the app working, not the scan.
+    .fill(["green_room = Green room", "shared = Shared", "none = None"].join("\n"));
   await page.getByRole("button", { name: "Add field" }).click();
-  await expect(page.getByText("Dressing room tier")).toBeVisible();
+  await expect(page.getByText("Dressing room tier").first()).toBeVisible();
 
   // BOTH DISCLOSURES OPEN BEFORE THE SCAN, and that is not tidiness. A
   // collapsed <details> hides its contents from the accessibility tree, so the
@@ -451,15 +468,64 @@ test("custom-field settings, EDITABLE, has no automated accessibility violations
     "no per-definition Edit disclosure rendered after creating a definition, " +
       "so the control this scan exists to measure is not on the page",
   ).toBeVisible();
-  await editDisclosure.click();
-  await page.locator("details > summary", { hasText: "Add a field" }).click();
+  // OPEN, NOT TOGGLE. A <summary> click toggles, and the add disclosure is
+  // still open after a successful submit (React keeps the DOM node), so a
+  // blind click on it SHUT the form -- measured. Each is clicked only if its
+  // <details> is not already open.
+  for (const summary of [
+    editDisclosure,
+    page.locator("details > summary", { hasText: "Add a field" }),
+  ]) {
+    const isOpen = await summary.evaluate(
+      (el) => (el.parentElement as HTMLDetailsElement).open,
+    );
+    if (!isOpen) await summary.click();
+  }
+  // The two "Choices" summaries -- one in the edit form, one in the add form
+  // -- are the OTHER control #23 resized, and they exist in the DOM whether
+  // or not their own <details> is open. What they need is a visible ANCESTOR:
+  // shut the add or edit disclosure above them and axe cannot see them at all.
   await expect(
-    page.locator("details[open] > summary", { hasText: "Choices" }).first(),
-    "the Choices disclosure is still collapsed, so axe cannot evaluate the " +
-      "target it is here to evaluate",
+    page.locator("summary", { hasText: "Choices" }),
+    "the Choices disclosures are not visible, so their parent forms are shut " +
+      "and axe cannot evaluate the targets this scan is here to evaluate",
+  ).toHaveCount(2);
+  await expect(
+    page.locator("summary", { hasText: "Choices" }).first(),
+  ).toBeVisible();
+  await expect(
+    page.locator("summary", { hasText: "Choices" }).last(),
   ).toBeVisible();
 
   await scan(page, "custom-field settings (editable, Owner)");
+
+  // ==========================================================================
+  // AXE DOES NOT CATCH THE DEFECT THIS PAGE WAS FIXED FOR -- MEASURED
+  // ==========================================================================
+  // With #23's padding reverted (the Edit summary bare, the Choices padding
+  // back on its <details>) and every disclosure rendered and open, the scan
+  // above still PASSED. axe's `target-size` rule exempts an undersized target
+  // with enough clear space around it, and these summaries sit alone on their
+  // lines -- so a clean scan here says nothing about SC 2.5.8 on them. The
+  // rule this page actually needs is the stricter house rule #23 applied
+  // (every summary target at least 24px tall), so it is measured directly.
+  // Height only: "Edit" is wider than 24px by its text alone, and the
+  // Choices summary spans its form.
+  const targets = [
+    { name: "Edit", locator: editDisclosure },
+    ...[0, 1].map((i) => ({
+      name: `Choices #${i + 1}`,
+      locator: page.locator("summary", { hasText: "Choices" }).nth(i),
+    })),
+  ];
+  for (const { name, locator } of targets) {
+    const box = await locator.boundingBox();
+    expect(box, `${name} summary has no box, so it was not rendered`).not.toBeNull();
+    expect(
+      box!.height,
+      `${name} summary is ${box!.height}px tall -- under SC 2.5.8's 24px`,
+    ).toBeGreaterThanOrEqual(24);
+  }
 
   // PUT THE WORKSPACE BACK. Every later test in this file scans contact
   // surfaces, and a live custom field renders on all of them -- leaving one
