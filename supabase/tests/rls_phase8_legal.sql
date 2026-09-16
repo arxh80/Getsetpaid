@@ -1,7 +1,10 @@
 -- ===========================================================================
 -- Phase 8 Task 1 (versioned legal documents) RLS suite.
 --
--- Covers 20260922000000_legal_documents.sql and its seed (20260922001000):
+-- Covers 20260922000000_legal_documents.sql, its seed (20260922001000) and
+-- the fix-round-1 migrations: the TRUNCATE guard (20260922003000), the
+-- placeholder-placement CHECKs (20260922004000) and version 2 of four pages
+-- (20260922005000):
 --   public.legal_documents                    the store
 --   legal_documents_select_current_published  the one anon-satisfiable policy
 --   the column grant                          what anon/authenticated may name
@@ -13,7 +16,8 @@
 -- RUN IT WITH: supabase/tests/run-rls-tests.sh
 --   It runs LAST of the psql suites, on the SAME fixtures (P7VARS), and
 --   touches nothing but legal_documents and the audit rows its own RPC calls
---   write. § LZ restores the fifteen seeded version-1 rows exactly and
+--   write. § LZ restores the migrated rows (fifteen documents, four of them
+--   at version 2 over a superseded version 1) exactly and
 --   deletes every version and audit row it created -- which needs the guard
 --   OFF, so it is done under `session_replication_role = replica`, the DBA
 --   escape hatch 20260922000000's header names, as `postgres`, by name.
@@ -25,7 +29,8 @@
 -- nothing is not a pass.
 --
 -- SECTIONS:
---   LF  fixtures: the seed is what it claims (15 published, unreviewed)
+--   LF  fixtures: the seed is what it claims (15 published, unreviewed;
+--       11 at version 1, 4 corrected to version 2)
 --   LG  grants, RLS and the trigger, from the catalogue
 --   LA  the public read: anon sees exactly the current published versions
 --   LW  no client role can write the table directly -- superuser included
@@ -95,16 +100,43 @@ grant execute on function lg.val(text,text,text)    to authenticated, anon, serv
 -- The seed, saved whole, so § LZ can prove it put it back byte for byte.
 create table lg.seed_before as select * from public.legal_documents;
 select count(*) as audit_before from public.audit_events \gset
-select md5(body) as privacy_md5 from public.legal_documents where slug = 'privacy' \gset
+-- acceptable-use: a page the fix-round-1 corrections did not touch, so its
+-- published version is still the seeded version 1.
+select md5(body) as au_md5 from public.legal_documents where slug = 'acceptable-use' \gset
 \set anon_c '{"role":"anon"}'
 
 -- ===========================================================================
 -- § LF  FIXTURES
 -- ===========================================================================
-select lg.val('LF1 FIXTURE: the seed holds exactly 15 rows',
-  $$select count(*)::text from public.legal_documents$$, '15');
-select lg.val('LF2 FIXTURE: all 15 are version 1 and published',
-  $$select count(*)::text from public.legal_documents where version = 1 and status = 'published'$$, '15');
+select lg.val('LF1 FIXTURE: the migrations hold exactly 19 rows (15 seeded + 4 corrected versions)',
+  $$select count(*)::text from public.legal_documents$$, '19');
+select lg.val('LF2 FIXTURE: 15 published -- 11 still at version 1, 4 at version 2',
+  $$select string_agg(version || '=' || n, ',' order by version) from (
+      select version, count(*) as n from public.legal_documents where status = 'published' group by version) v$$,
+  '1=11,2=4');
+select lg.val('LF2b FIXTURE: the superseded rows are exactly version 1 of the four corrected pages',
+  $$select string_agg(slug || ':' || version, ',' order by slug) from public.legal_documents where status = 'superseded'$$,
+  'data-processing-addendum:1,data-retention:1,privacy:1,security:1');
+select lg.val('LF2c FIXTURE: no current page repeats a version 1 overclaim (I2, M1, M2)',
+  $$select count(*)::text from public.legal_documents
+     where status = 'published'
+       and (body like '%We do not transfer personal data outside%'
+         or body like '%The only subprocessor outside the UK%'
+         or body like '%outside the default view%'
+         or body like '%which encrypts stored data%'
+         or body like '%You are signed out after 30 minutes without activity.%'
+         or body like '%We monitor the alerts above%')$$, '0');
+select lg.val('LF2d DENOMINATOR for LF2c: the superseded versions DO carry them',
+  $$select count(*)::text from public.legal_documents
+     where status = 'superseded'
+       and (body like '%We do not transfer personal data outside%'
+         or body like '%The only subprocessor outside the UK%'
+         or body like '%outside the default view%'
+         or body like '%which encrypts stored data%')$$, '4');
+select lg.val('LF2e FIXTURE: the security page attributes the encryption claim and marks deployment settings',
+  $$select (body like '%Supabase states that it encrypts%' and body like '%have not verified%'
+            and (length(body) - length(replace(body, '(deployment setting)', ''))) / length('(deployment setting)') >= 6)::text
+      from public.legal_documents where slug = 'security' and status = 'published'$$, 'true');
 select lg.val('LF3 FIXTURE: none carries a counsel review (the seed claims no review)',
   $$select count(*)::text from public.legal_documents
      where counsel_reviewed_at is not null or counsel_reviewer is not null
@@ -151,10 +183,15 @@ select lg.val('LG7 the guard trigger exists, is enabled, and covers insert/updat
   $$select string_agg(tgenabled::text || ':' || (tgtype & 28)::text, ',') from pg_trigger
      where tgrelid = 'public.legal_documents'::regclass and tgname = 'legal_documents_guard'$$,
   'O:28');
-select lg.val('LG7b exactly two user triggers, and the guard sorts BEFORE set_updated_at (20260922002000)',
+select lg.val('LG7b exactly three user triggers, and the row guard sorts BEFORE set_updated_at (20260922002000)',
   $$select string_agg(tgname, ',' order by tgname) from pg_trigger
      where tgrelid = 'public.legal_documents'::regclass and not tgisinternal$$,
-  'legal_documents_guard,set_updated_at');
+  'legal_documents_guard,legal_documents_truncate_guard,set_updated_at');
+select lg.val('LG7c the TRUNCATE guard is enabled, BEFORE, statement-level, on TRUNCATE only (20260922003000)',
+  $$select tgenabled::text || ':' || (tgtype & 60)::text || ':' || (tgtype & 2)::text || ':' || (tgtype & 1)::text
+      from pg_trigger
+     where tgrelid = 'public.legal_documents'::regclass and tgname = 'legal_documents_truncate_guard'$$,
+  'O:32:2:0');
 select lg.val('LG8 the five RPCs are granted to authenticated and NOT to anon',
   $$select string_agg(p.proname || '=' ||
             has_function_privilege('authenticated', p.oid, 'EXECUTE')::text || '/' ||
@@ -164,9 +201,11 @@ select lg.val('LG8 the five RPCs are granted to authenticated and NOT to anon',
                          'update_legal_document_draft','publish_legal_document',
                          'record_legal_document_counsel_review')$$,
   'create_legal_document_draft=true/false,operator_legal_document_versions=true/false,publish_legal_document=true/false,record_legal_document_counsel_review=true/false,update_legal_document_draft=true/false');
-select lg.val('LG9 the guard function is callable by no client role',
+select lg.val('LG9 the guard functions are callable by no client role',
   $$select (has_function_privilege('authenticated', 'private.legal_documents_guard()', 'EXECUTE')
-         or has_function_privilege('anon', 'private.legal_documents_guard()', 'EXECUTE'))::text$$,
+         or has_function_privilege('anon', 'private.legal_documents_guard()', 'EXECUTE')
+         or has_function_privilege('authenticated', 'private.legal_documents_truncate_guard()', 'EXECUTE')
+         or has_function_privilege('anon', 'private.legal_documents_truncate_guard()', 'EXECUTE'))::text$$,
   'false');
 
 -- ===========================================================================
@@ -371,6 +410,53 @@ select lg.try('LV8 the Cookie Policy cannot lose its storage table',
 select lg.try('LV9 an over-long title is refused',
   format($$select public.update_legal_document_draft(%L, repeat('t', 201), 'b', current_date)$$,
          :'terms_draft'), 'denied(23514)');
+-- Fix round 1, M4: the scheme is lower case only -- the CHECK always said
+-- so, and the parser now agrees.
+select lg.try('LV9b an HTTPS:// link (upper case) is refused, as the editor now refuses it',
+  format($$select public.update_legal_document_draft(%L, 'T', '[x](HTTPS://ico.org.uk/)', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV9c a MAILTO: link (upper case) is refused',
+  format($$select public.update_legal_document_draft(%L, 'T', '[x](MAILTO:x@example.test)', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+-- Fix round 1, M3: a placeholder only where it renders
+-- (legal_documents_body_placeholders_placed, 20260922004000).
+select lg.try('LV9d {{support_email}} inside bold is refused',
+  format($$select public.update_legal_document_draft(%L, 'T', 'Email **{{support_email}}** today.', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV9e {{support_email}} as link text is refused',
+  format($$select public.update_legal_document_draft(%L, 'T', '[{{support_email}}](/legal/contact)', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV9f {{support_email}} inside a link target is refused (the links CHECK alone allowed it)',
+  format($$select public.update_legal_document_draft(%L, 'T', '[write](/legal/x{{support_email}})', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV9g bold either side of a placeholder on one line is refused (conservative, like the editor)',
+  format($$select public.update_legal_document_draft(%L, 'T', '**Email** {{support_email}} or **call**', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV9h the Cookie Policy with its table mid-sentence is refused',
+  format($$select public.update_legal_document_draft(%L, 'Cookie Policy', 'Our storage: {{storage_inventory}}', current_date)$$,
+         :'cookies_draft'), 'denied(23514)');
+select lg.try('LV9i ...as a heading',
+  format($$select public.update_legal_document_draft(%L, 'Cookie Policy', E'Intro
+
+## {{storage_inventory}}', current_date)$$,
+         :'cookies_draft'), 'denied(23514)');
+select lg.try('LV9j ...as a list item',
+  format($$select public.update_legal_document_draft(%L, 'Cookie Policy', E'Intro
+
+- {{storage_inventory}}', current_date)$$,
+         :'cookies_draft'), 'denied(23514)');
+select lg.try('LV9k a block placeholder inline on a page that does not need one is refused too',
+  format($$select public.update_legal_document_draft(%L, 'T', 'Our providers: {{subprocessors}}', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV9l CONTROL: the Cookie Policy with its table alone on an indented, CR-terminated line is accepted',
+  format($$select public.update_legal_document_draft(%L, 'Cookie Policy', E'Intro
+  {{storage_inventory}}	
+More.', current_date)$$,
+         :'cookies_draft'), 'ok(1)');
+select lg.try('LV9m CONTROL: an inline {{support_email}} beside bold on another line is accepted',
+  format($$select public.update_legal_document_draft(%L, 'T', E'**Bold** first.
+Write to {{support_email}}.', current_date)$$,
+         :'terms_draft'), 'ok(1)');
 select lg.try('LV10 CONTROL: https, mailto and same-site links, and a bare <, are accepted',
   format($$select public.update_legal_document_draft(%L, 'Terms of Service',
              E'## Changed\n\nSENTINEL-BODY-7f3a see [a](https://ico.org.uk/) [b](mailto:x@example.test) [c](/legal/privacy), 3 < 4.',
@@ -572,6 +658,17 @@ select lg.val('LI21 ...and version 1 is byte-for-byte the seed apart from its su
              from public.legal_documents d join lg.seed_before s using (id) where d.id = %L$$, :'terms_v1'),
   'true');
 
+-- Fix round 1, M7: a row trigger never sees a TRUNCATE; the statement guard
+-- does (20260922003000).
+select count(*) as rows_before_truncate from public.legal_documents \gset
+select lg.try('LI22 postgres cannot TRUNCATE the legal store',
+  $$truncate public.legal_documents$$, 'denied(42501)');
+select lg.try('LI23 ...nor with RESTART IDENTITY CASCADE',
+  $$truncate public.legal_documents restart identity cascade$$, 'denied(42501)');
+select lg.val('LI24 ...and every row is still there',
+  format($$select (count(*) = %s and %s > 15)::text from public.legal_documents$$,
+         :rows_before_truncate, :rows_before_truncate), 'true');
+
 -- ===========================================================================
 -- § LR (part 2)  A REVIEW OF THE CURRENT PUBLISHED VERSION
 -- ===========================================================================
@@ -579,17 +676,17 @@ set role authenticated;
 set request.jwt.claims = :'super_c';
 select lg.try('LR11 a review of a SUPERSEDED version is refused',
   format($$select public.record_legal_document_counsel_review(%L, 'X LLP')$$, :'terms_v1'), 'denied(22023)');
-select lg.try('LR12 POSITIVE CONTROL: the superuser records a review of the published privacy notice',
+select lg.try('LR12 POSITIVE CONTROL: the superuser records a review of the published acceptable use policy',
   $$select public.record_legal_document_counsel_review(
-      (select id from public.operator_legal_document_versions('privacy') where status = 'published'),
+      (select id from public.operator_legal_document_versions('acceptable-use') where status = 'published'),
       'SENTINEL-REVIEWER-91c2 LLP')$$, 'ok(1)');
 reset role; reset request.jwt.claims;
 set role anon;
 set request.jwt.claims = :'anon_c';
-select lg.val('LR13 anon reads the privacy notice as reviewed -- and still version 1, same text',
+select lg.val('LR13 anon reads the acceptable use policy as reviewed -- and still version 1, same text',
   format($$select version || ':' || (counsel_reviewed_at is not null)::text || ':' ||
                   (md5(body) = %L)::text
-             from public.legal_documents where slug = 'privacy'$$, :'privacy_md5'), '1:true:true');
+             from public.legal_documents where slug = 'acceptable-use'$$, :'au_md5'), '1:true:true');
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
@@ -597,8 +694,8 @@ reset role; reset request.jwt.claims;
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'super_c';
-select lg.val('LO1 the aal2 superuser reads every version: 15 seeded + the terms and cookies drafts',
-  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '17');
+select lg.val('LO1 the aal2 superuser reads every version: 19 migrated + the terms and cookies drafts',
+  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '21');
 select lg.val('LO2 ...including the one open draft, which no table read can reach',
   $$select string_agg(slug || ':' || status, ',' order by slug)
       from public.operator_legal_document_versions(null) where status = 'draft'$$, 'cookies:draft');
@@ -637,12 +734,14 @@ select lg.val('LH1 the writes produced exactly these audit rows, all by `super`,
              select action, count(*) as n from public.audit_events
               where target_type = 'legal_document' and actor_user_id = %L and organisation_id is null
               group by action) a$$, :'super'),
-  'legal_document.counsel_review_recorded=3,legal_document.draft_created=2,legal_document.draft_updated=5,legal_document.published=1');
+  -- draft_updated=7: five from the original sections plus LV9l and LV9m, the
+  -- two accepted placement controls fix round 1 added.
+  'legal_document.counsel_review_recorded=3,legal_document.draft_created=2,legal_document.draft_updated=7,legal_document.published=1');
 select lg.val('LH2 every legal audit row is by `super` -- no refused call left a row',
   format($$select count(*)::text from public.audit_events
             where target_type = 'legal_document' and actor_user_id <> %L$$, :'super'), '0');
-select lg.val('LH3 the total audit rows added by this suite equal those eleven',
-  format($$select ((select count(*) from public.audit_events) - %s)::text$$, :audit_before), '11');
+select lg.val('LH3 the total audit rows added by this suite equal those thirteen',
+  format($$select ((select count(*) from public.audit_events) - %s)::text$$, :audit_before), '13');
 select lg.val('LH4 NO audit row carries the document text',
   $$select count(*)::text from public.audit_events
      where target_type = 'legal_document'
