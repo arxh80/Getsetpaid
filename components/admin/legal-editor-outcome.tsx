@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { unstable_rethrow } from "next/navigation";
 import type { FormState } from "@/lib/forms";
 import { Alert } from "@/components/ui/alert";
 
@@ -36,21 +37,79 @@ import { Alert } from "@/components/ui/alert";
 //
 // Keyed on the document slug by the page, so moving to another document
 // starts with an empty region rather than the last document's news.
+//
+// FIX ROUND 2:
+//   * EVERY OUTCOME IS A FRESH ANNOUNCEMENT. Two identical outcomes in a row
+//     ("Draft saved." twice) used to replace a text node with the same text,
+//     which some screen readers do not announce again. Each outcome now
+//     carries a sequence number and the Alert is keyed on it, so React
+//     removes the old node and inserts a new one -- an addition inside the
+//     live region, announced once (the Alert still has no role of its own).
+//   * A THROWN ACTION NO LONGER LEAVES THE PREVIOUS MESSAGE UP. A Server
+//     Action can reject instead of returning: a network failure, or Next.js's
+//     own redirect / not-found signal. The first becomes a generic error in
+//     the region (and the form keeps its previous state, so nothing typed is
+//     lost); the second clears the region and is re-thrown, so Next.js still
+//     performs the navigation.
+
+export type Outcome = {
+  readonly seq: number;
+  readonly tone: "success" | "error";
+  readonly text: string;
+} | null;
+
+/** What the region shows after an action resolved with `state`. Pure. */
+export function nextOutcome(previous: Outcome, state: FormState): Outcome {
+  const seq = (previous?.seq ?? 0) + 1;
+  if (state.error) return { seq, tone: "error", text: state.error };
+  if (state.message) return { seq, tone: "success", text: state.message };
+  return null;
+}
+
+/** The region's sentence when an action rejects rather than returning. */
+// It cannot say whether the change was made: a request can reach the server
+// and lose its response. So it says so, and points at the page's own state.
+export const ACTION_FAILED_MESSAGE =
+  "That request did not finish, so this page cannot tell whether it took effect. Reload the page to see the current state before trying again.";
 
 type Report = (state: FormState) => void;
+
+/**
+ * Run `action` and report its outcome -- the part of useReportedAction that
+ * needs no React, exported for tests/unit/legal/editor-outcome.test.ts.
+ *
+ * `rethrow` is Next.js's `unstable_rethrow`: it throws the error again if it
+ * is one of Next's control-flow signals (a redirect, notFound, ...) and
+ * returns otherwise.
+ */
+export async function runReported(
+  action: (prev: FormState, formData: FormData) => Promise<FormState>,
+  report: Report,
+  rethrow: (error: unknown) => void,
+  prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  let next: FormState;
+  try {
+    next = await action(prev, formData);
+  } catch (error) {
+    // Clear first: whatever happens next, the old message is stale.
+    report({});
+    rethrow(error);
+    report({ error: ACTION_FAILED_MESSAGE });
+    return prev;
+  }
+  report(next);
+  return next;
+}
 
 const OutcomeContext = createContext<Report | null>(null);
 
 export function LegalEditorOutcome({ children }: { children: ReactNode }) {
-  const [latest, setLatest] = useState<{
-    tone: "success" | "error";
-    text: string;
-  } | null>(null);
+  const [latest, setLatest] = useState<Outcome>(null);
 
   const report = useCallback<Report>((state) => {
-    if (state.error) setLatest({ tone: "error", text: state.error });
-    else if (state.message) setLatest({ tone: "success", text: state.message });
-    else setLatest(null);
+    setLatest((previous) => nextOutcome(previous, state));
   }, []);
 
   return (
@@ -58,14 +117,14 @@ export function LegalEditorOutcome({ children }: { children: ReactNode }) {
       <div className="flex flex-col gap-2" data-testid="legal-editor-outcome">
         <div role="status">
           {latest?.tone === "success" ? (
-            <Alert tone="success" live={false}>
+            <Alert key={latest.seq} tone="success" live={false}>
               {latest.text}
             </Alert>
           ) : null}
         </div>
         <div role="alert">
           {latest?.tone === "error" ? (
-            <Alert tone="error" live={false}>
+            <Alert key={latest.seq} tone="error" live={false}>
               {latest.text}
             </Alert>
           ) : null}
@@ -90,11 +149,8 @@ export function useReportedAction(
     );
   }
   return useCallback(
-    async (prev: FormState, formData: FormData) => {
-      const next = await action(prev, formData);
-      report(next);
-      return next;
-    },
+    (prev: FormState, formData: FormData) =>
+      runReported(action, report, unstable_rethrow, prev, formData),
     [action, report],
   );
 }
