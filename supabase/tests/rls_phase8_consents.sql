@@ -32,7 +32,8 @@
 --   CC  consent_is_granted(): the sender's check
 --   CM  the grant meter: 10/hour, PT429, the crossing alert, withdrawals free
 --   CA  the audit trail: one row per event, identifiers only, none on refusal
---   CD  deletion: the account's own deletion cascades past the guard
+--   CD  deletion: the account's own deletion cascades past the guard; a
+--       trigger's DELETE of a live account's rows does not
 --   CZ  housekeeping
 -- ===========================================================================
 \set ON_ERROR_STOP on
@@ -80,6 +81,21 @@ begin
   perform cs.record(p_label, p_expected, v_actual);
 end $$;
 
+-- The SQLSTATE and the MESSAGE, for a refusal whose SQLSTATE another guard
+-- (or the statement itself) could also raise.
+create function cs.try_msg(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_actual text;
+begin
+  begin
+    execute p_sql;
+    v_actual := 'ok';
+  exception when others then
+    v_actual := 'denied(' || sqlstate || ':' || sqlerrm || ')';
+  end;
+  perform cs.record(p_label, p_expected, v_actual);
+end $$;
+
 -- The SHAPE of a PT429's hint: 'seconds' when it is a whole number of
 -- seconds within one window, otherwise the raw value.
 create function cs.retry_hint_shape(p_sql text)
@@ -113,6 +129,7 @@ grant usage on schema cs to authenticated, anon, service_role;
 grant execute on function cs.record(text,text,text)   to authenticated, anon, service_role;
 grant execute on function cs.try(text,text,text)      to authenticated, anon, service_role;
 grant execute on function cs.try_hint(text,text,text) to authenticated, anon, service_role;
+grant execute on function cs.try_msg(text,text,text)  to authenticated, anon, service_role;
 grant execute on function cs.val(text,text,text)      to authenticated, anon, service_role;
 grant execute on function cs.retry_hint_shape(text)   to authenticated, anon, service_role;
 
@@ -627,9 +644,17 @@ select cs.try('CD2 ...and withdraws',
 reset role; reset request.jwt.claims;
 select cs.val('CD3 DENOMINATOR: the account has two events',
   format($$select count(*)::text from public.consents where user_id=%L$$, :'leaver'), '2');
--- audit_events.actor_user_id blocks an auth.users delete by design (Task 5's
--- tombstone question); clear the leaver's own audit rows first, as a real
--- erasure will have to decide how to.
+-- WHY THE AUDIT ROWS ARE DELETED FIRST (review finding M8): every consent
+-- event writes an audit_events row whose actor_user_id references auth.users
+-- with NO ON DELETE action, so deleting the account of anyone who has ever
+-- consented is REFUSED (23503) before the consents cascade is even reached.
+-- A real account deletion is therefore impossible today for exactly the
+-- people this ledger is about; how erasure removes or anonymises those audit
+-- rows is Task 5's decision (Q130), and what happens to the ledger is Q148.
+-- This suite clears the leaver's audit rows by hand ONLY to reach the
+-- guard's cascade branch -- it is not a model of erasure.
+select cs.try('CD3a WITHOUT that step, the account cannot be deleted at all (the audit FK)',
+  format($$delete from auth.users where id = %L$$, :'leaver'), 'denied(23503)');
 delete from public.audit_events where actor_user_id = :'leaver';
 select cs.try('CD4 deleting the auth account succeeds -- the guard lets the cascade through',
   format($$delete from auth.users where id = %L$$, :'leaver'), 'ok(1)');
@@ -637,6 +662,65 @@ select cs.val('CD5 ...and the account''s consent events went with it',
   format($$select count(*)::text from public.consents where user_id=%L$$, :'leaver'), '0');
 select cs.val('CD6 nobody else''s did',
   $$select count(distinct user_id)::text from public.consents$$, '4');
+
+-- A TRIGGER IS NOT AN ACCOUNT DELETION (review finding I2, 20260923002000).
+-- Before the fix, any DELETE at trigger depth >= 2 passed the guard: a table
+-- whose trigger ran `delete from public.consents` emptied the ledger with
+-- every account still present. Now the guard also requires the row's account
+-- to be gone. The eraser below deletes EVERY consent row; the live accounts'
+-- rows must stop it.
+create table cs.eraser (x int);
+create function cs.erase() returns trigger language plpgsql set search_path = '' as $f$
+begin
+  delete from public.consents;
+  return new;
+end $f$;
+create trigger cs_erase after insert on cs.eraser for each row execute function cs.erase();
+select count(*)::text as ledger_before_eraser from public.consents \gset
+select cs.val('CD7 DENOMINATOR: live accounts hold consent rows the eraser would reach',
+  $$select (count(*) > 0 and bool_and(exists (select 1 from auth.users u where u.id = c.user_id)))::text
+      from public.consents c$$, 'true');
+select cs.try_msg('CD8 a trigger-issued DELETE of a live account''s rows is refused -- by the consents guard',
+  $$insert into cs.eraser values (1)$$,
+  'denied(42501:consents: the consent ledger is append-only -- rows go only with the account they belong to)');
+select cs.val('CD9 ...and the ledger is unchanged',
+  $$select count(*)::text from public.consents$$, :'ledger_before_eraser');
+
+-- The other side of the same term: a trigger that deletes the AUTH ACCOUNT
+-- is an account deletion, and its cascade still passes -- grant, withdrawal
+-- and the self-referencing cascade between them, at trigger depth 3 and 4.
+select gen_random_uuid()::text as leaver2 \gset
+insert into auth.users (id, instance_id, aud, role, email)
+values (:'leaver2', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+        'consent-leaver2-' || :'leaver2' || '@test.local');
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'leaver2') as leaver2_c \gset
+set role authenticated;
+set request.jwt.claims = :'leaver2_c';
+select cs.try('CD10 POSITIVE: a second new account grants',
+  $$select * from public.record_consent('marketing_email','granted',3,null)$$, 'ok(1)');
+select cs.try('CD10a ...and withdraws',
+  $$select * from public.record_consent('marketing_email','withdrawn',null,null)$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+select cs.val('CD11 DENOMINATOR: it has a grant and a withdrawal naming it',
+  format($$select count(*)::text || '/' || count(withdraws_id)::text from public.consents where user_id=%L$$, :'leaver2'),
+  '2/1');
+create table cs.account_eraser (id uuid);
+create function cs.erase_account() returns trigger language plpgsql set search_path = '' as $f$
+begin
+  delete from auth.users where id = new.id;
+  return new;
+end $f$;
+create trigger cs_erase_account after insert on cs.account_eraser for each row execute function cs.erase_account();
+-- The same audit_events.actor_user_id block as CD4 (see there).
+delete from public.audit_events where actor_user_id = :'leaver2';
+select cs.try('CD12 a trigger that deletes the auth account succeeds -- its cascade passes the guard',
+  format($$insert into cs.account_eraser values (%L)$$, :'leaver2'), 'ok(1)');
+select cs.val('CD13 ...its two events went, nobody else''s did',
+  format($$select (select count(*) from public.consents where user_id=%L)::text || '/' ||
+                  ((select count(*) from public.consents) = %s)::text$$, :'leaver2', :'ledger_before_eraser'),
+  '0/true');
+drop table cs.eraser;
+drop table cs.account_eraser;
 
 -- ===========================================================================
 -- § CZ  HOUSEKEEPING
