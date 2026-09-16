@@ -32,5 +32,10 @@ export function supportContact(
   env: Record<string, string | undefined> = process.env,
 ): SupportContact {
   const raw = env.SUPPORT_CONTACT_EMAIL?.trim() ?? "";
-  return { address: ADDRESS.test(raw) ? raw : null };
+  // ADDRESS can backtrack quadratically on a long run of dots (`.` is in the
+  // domain class and is the separator). The value is configuration, not user
+  // input, but the check runs on every contact-page render, so it is bounded
+  // by the longest address RFC 5321 allows before the regex sees it (fix
+  // round 2, M5 sweep).
+  return { address: raw.length <= 254 && ADDRESS.test(raw) ? raw : null };
 }

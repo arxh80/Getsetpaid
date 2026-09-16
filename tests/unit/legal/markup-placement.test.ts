@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { supportContact } from "@/lib/legal/contact";
 import {
   PLACEMENT_PATTERNS,
+  isMailtoAddress,
+  matchLinePrefix,
   parseLegalMarkup,
   placementViolations,
   type Block,
   type Inline,
   type PlacementRule,
+  trimSpacesAndTabsEnd,
+  trimSpacesAndTabsStart,
 } from "@/lib/legal/markup";
 import { validateDraft } from "@/lib/legal/draft-validation";
 
@@ -191,10 +196,94 @@ describe("parseLegalMarkup is linear on hostile input at the 100 000-character l
     ["]( then {{ x N", "](" + "{{".repeat(N / 2)],
     ["** then {{ x N then **", "**" + "{{".repeat(N / 2) + "**"],
     ["< x N", "<".repeat(N)],
+    // Fix round 2: whitespace and repeated-separator runs. Each of these was
+    // quadratic in a regex the first fix round left in place (measured 4-6 s
+    // at this size) and each is a body the database accepts.
+    ["space x N then x (the /\s+$/ line trim)", " ".repeat(N) + "x"],
+    ["a, tab x N, x", "a" + "\t".repeat(N) + "x"],
+    ["space+nbsp x N/2 then x", " \u00a0".repeat(N / 2) + "x"],
+    ["# then space x N then a U+2028 (the heading regex)", "#" + " ".repeat(N) + "a\u2028b"],
+    ["- then space x N then a U+2028 (the bullet regex)", "-" + " ".repeat(N) + "a\u2028b"],
+    ["1. then space x N then a U+2028 (the numbered regex)", "1." + " ".repeat(N) + "a\u2028b"],
+    ["mailto:a@ then . x N then < (the mailto regex)", "[a](mailto:a@" + ".".repeat(N) + "<)"],
+    ["x, space x N, {{subprocessors}} (the placement trim)", "x" + " ".repeat(N) + "{{subprocessors}}"],
   ])("%s", (_label, source) => {
     const started = performance.now();
     parseLegalMarkup(source);
     const elapsed = performance.now() - started;
     expect(elapsed, `${elapsed.toFixed(0)} ms`).toBeLessThan(750);
+  });
+});
+
+// ===========================================================================
+// FIX ROUND 2 (M5 remainder): THE LINEAR HELPERS
+// ===========================================================================
+// Each helper replaced a regex that backtracked. The timing cases above prove
+// they are fast; these prove each one decides exactly what its regex decided,
+// over a generated corpus of the characters that regex cares about.
+describe("the linear helpers agree with the regular expressions they replaced", () => {
+  const ALPHABET = [" ", "\t", "\u00a0", "\u2028", "\u2029", "#", "-", "*", "1", ".", "@", "a", "<", "(", "x"];
+  let state = 0xc0ffee;
+  const next = () => {
+    state = (Math.imul(state, 1103515245) + 12345) & 0x7fffffff;
+    return state >>> 11;
+  };
+  const corpus: string[] = [];
+  for (let n = 0; n < 40000; n++) {
+    const len = next() % 14;
+    let sample = "";
+    for (let k = 0; k < len; k++) sample += ALPHABET[next() % ALPHABET.length];
+    corpus.push(sample);
+  }
+  // Seeds that the random corpus is unlikely to hit exactly.
+  corpus.push("a@b.c", "a@.c", "a@b.", "a@bc", "@b.c", "a@b@c.d", "a@b..", "a@.b.c", "# a", "#######  a", "1. a", "- a\u2028", "12.\u2028a");
+
+  it("isMailtoAddress", () => {
+    const old = /^[^\s@<>"'()]+@[^\s@<>"'()]+\.[^\s@<>"'()]+$/i;
+    let positives = 0;
+    for (const sample of corpus) {
+      const expected = old.test(sample);
+      if (expected) positives++;
+      expect(isMailtoAddress(sample), JSON.stringify(sample)).toBe(expected);
+    }
+    expect(positives).toBeGreaterThan(5);
+  });
+
+  it("trimSpacesAndTabsEnd / trimSpacesAndTabsStart / trimEnd", () => {
+    for (const sample of corpus) {
+      expect(trimSpacesAndTabsEnd(sample), JSON.stringify(sample)).toBe(sample.replace(/[ \t]+$/, ""));
+      expect(trimSpacesAndTabsStart(sample), JSON.stringify(sample)).toBe(sample.replace(/^[ \t]+/, ""));
+      expect(sample.trimEnd(), JSON.stringify(sample)).toBe(sample.replace(/\s+$/, ""));
+    }
+  });
+
+  it.each([
+    ["heading", /^#{1,6}\s+/, /^(#{1,6})\s+(.*)$/, 2],
+    ["bullet", /^[-*]\s+/, /^[-*]\s+(.*)$/, 1],
+    ["numbered", /^\d+\.\s+/, /^\d+\.\s+(.*)$/, 1],
+  ] as const)("matchLinePrefix: %s", (_label, prefix, old, group) => {
+    let positives = 0;
+    let separators = 0;
+    for (const raw of corpus) {
+      // The parser only ever passes a trimmed line.
+      const line = raw.trim();
+      const expected = old.exec(line)?.[group] ?? null;
+      if (expected !== null) positives++;
+      if (/^[#\-*1]/.test(line) && /[\u2028\u2029]/.test(line)) separators++;
+      expect(matchLinePrefix(prefix, line), JSON.stringify(line)).toBe(expected);
+    }
+    // DENOMINATOR: matches, and lines where the separator decides.
+    expect(positives).toBeGreaterThan(20);
+    expect(separators).toBeGreaterThan(20);
+  });
+});
+
+describe("the configured contact address is bounded before its regex runs", () => {
+  it("refuses a 100 000-character value quickly, and still accepts an ordinary one", () => {
+    const started = performance.now();
+    expect(supportContact({ SUPPORT_CONTACT_EMAIL: "a@" + ".".repeat(99_990) + "!" }).address).toBeNull();
+    const elapsed = performance.now() - started;
+    expect(elapsed, `${elapsed.toFixed(0)} ms`).toBeLessThan(750);
+    expect(supportContact({ SUPPORT_CONTACT_EMAIL: "help@example.org" }).address).toBe("help@example.org");
   });
 });

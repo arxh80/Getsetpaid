@@ -126,12 +126,80 @@ export function safeHref(raw: string): string | null {
     }
   }
   if (raw.startsWith("mailto:")) {
-    return /^mailto:[^\s@<>"'()]+@[^\s@<>"'()]+\.[^\s@<>"'()]+$/i.test(raw) ? raw : null;
+    return isMailtoAddress(raw.slice("mailto:".length)) ? raw : null;
   }
   if (/^\/(?![/\\])[A-Za-z0-9\-._~/#?=&%]*$/.test(raw)) {
     return raw;
   }
   return null;
+}
+
+// ===========================================================================
+// LINEAR HELPERS (fix round 2, M5)
+// ===========================================================================
+// Every regex below that could backtrack over a run of repeated characters
+// was replaced by one of these. The render path parses a stored body on every
+// public page view, and the database accepts bodies up to 100 000 characters,
+// so a quadratic step is a denial of service on an anonymous page. Each
+// helper states the regex it replaces and decides exactly what it decided;
+// tests/unit/legal/markup-placement.test.ts times the shapes that used to be
+// slow and compares each helper with its regex on a generated corpus.
+
+/** Characters an address part may hold: not whitespace, `@ < > " ' ( )`. */
+const ADDRESS_FORBIDDEN = /[\s@<>"'()]/;
+
+/**
+ * `/^[^\s@<>"'()]+@[^\s@<>"'()]+\.[^\s@<>"'()]+$/` -- the address after
+ * `mailto:` -- decided without backtracking. The regex was quadratic because
+ * `.` is both in the domain's class and the separator: `a@` + 100 000 dots +
+ * `<` took seconds, and the database's link CHECK accepts that target (it
+ * asks only that a link start with `mailto:`). Stated directly: exactly one
+ * `@`, not first; no forbidden character anywhere; and the domain has a `.`
+ * with at least one character on each side.
+ */
+export function isMailtoAddress(address: string): boolean {
+  const at = address.indexOf("@");
+  if (at < 1 || address.indexOf("@", at + 1) !== -1) return false;
+  if (ADDRESS_FORBIDDEN.test(address.slice(0, at)) || ADDRESS_FORBIDDEN.test(address.slice(at + 1))) {
+    return false;
+  }
+  const domain = address.slice(at + 1);
+  const dot = domain.indexOf(".", 1);
+  return dot !== -1 && dot < domain.length - 1;
+}
+
+/** `text.replace(/[ \t]+$/, "")`, linear. */
+export function trimSpacesAndTabsEnd(text: string): string {
+  let end = text.length;
+  while (end > 0 && (text[end - 1] === " " || text[end - 1] === "\t")) end--;
+  return text.slice(0, end);
+}
+
+/** `text.replace(/^[ \t]+/, "")`, linear. */
+export function trimSpacesAndTabsStart(text: string): string {
+  let start = 0;
+  while (start < text.length && (text[start] === " " || text[start] === "\t")) start++;
+  return text.slice(start);
+}
+
+/**
+ * `/^PREFIX\s+(.*)$/.exec(line)?.[1] ?? null`, linear, for a line with no
+ * `\n` or `\r` in it.
+ *
+ * The regex form is quadratic when the rest of the line holds a U+2028 or
+ * U+2029: `.` does not match those but `\s` does, so `.*$` fails and `\s+`
+ * gives back one character at a time, re-scanning the rest each time. Giving
+ * whitespace back can never help -- the rest only grows and still holds the
+ * separator -- so the regex matches exactly when `^PREFIX\s+` matches and the
+ * text after the WHOLE whitespace run has no separator, and that text is the
+ * capture. `prefix` is passed as `^PREFIX\s+`; its own backtracking is bounded
+ * (`#{1,6}`, `[-*]`, or a digit run that must be followed by `.`).
+ */
+export function matchLinePrefix(prefix: RegExp, line: string): string | null {
+  const head = prefix.exec(line);
+  if (head === null) return null;
+  const rest = line.slice(head[0].length);
+  return /[\u2028\u2029]/.test(rest) ? null : rest;
 }
 
 function describeTarget(raw: string): string {
@@ -208,8 +276,10 @@ export function placementViolations(source: string): Set<PlacementRule> {
       // occurrence is checked in both directions.
       const all = /\{\{(?:subprocessors|storage_inventory)\}\}/g;
       for (const m of line.matchAll(all)) {
-        const before = line.slice(0, m.index).replace(/[ \t]+$/, "");
-        const after = line.slice(m.index + m[0].length).replace(/^[ \t]+/, "");
+        // Linear trims (fix round 2): `.replace(/[ \t]+$/, "")` here was
+        // quadratic over a long run of spaces before an occurrence.
+        const before = trimSpacesAndTabsEnd(line.slice(0, m.index));
+        const after = trimSpacesAndTabsStart(line.slice(m.index + m[0].length));
         if (before !== "") found.add("blockTokenAfterText");
         if (after !== "") found.add("blockTokenBeforeText");
       }
@@ -439,7 +509,11 @@ export function parseLegalMarkup(source: string): ParsedMarkup {
   };
 
   for (const rawLine of text.split("\n")) {
-    const line = rawLine.replace(/\s+$/, "");
+    // trimEnd() strips exactly the set `/\s+$/` did (ECMAScript WhiteSpace
+    // plus LineTerminator), in linear time. The regex was quadratic on a long
+    // whitespace run followed by anything else: `" " x 99 990 + "x"` took
+    // 4-6 s on every public view (fix round 2, M5).
+    const line = rawLine.trimEnd();
     const trimmed = line.trim();
 
     if (trimmed === "") {
@@ -447,10 +521,10 @@ export function parseLegalMarkup(source: string): ParsedMarkup {
       continue;
     }
 
-    const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
-    if (heading) {
+    const headingText = matchLinePrefix(/^#{1,6}\s+/, trimmed);
+    if (headingText !== null) {
       flush();
-      const hashes = heading[1].length;
+      const hashes = /^#{1,6}/.exec(trimmed)![0].length;
       if (hashes !== 2 && hashes !== 3) {
         problems.push(
           `“${"#".repeat(hashes)}” headings are not allowed. Use ## for a section and ### for a sub-section — the page title is the document title.`,
@@ -459,7 +533,7 @@ export function parseLegalMarkup(source: string): ParsedMarkup {
       blocks.push({
         kind: "heading",
         level: hashes <= 2 ? 2 : 3,
-        content: parseInline([heading[2]], problems),
+        content: parseInline([headingText], problems),
       });
       continue;
     }
@@ -475,13 +549,13 @@ export function parseLegalMarkup(source: string): ParsedMarkup {
       continue;
     }
 
-    const bullet = /^[-*]\s+(.*)$/.exec(trimmed);
-    const numbered = /^\d+\.\s+(.*)$/.exec(trimmed);
+    const bullet = matchLinePrefix(/^[-*]\s+/, trimmed);
+    const numbered = matchLinePrefix(/^\d+\.\s+/, trimmed);
     const indented = /^\s/.test(line);
 
-    if ((bullet || numbered) && !(indented && pending?.kind === "list")) {
-      const ordered = Boolean(numbered);
-      const item = (bullet ?? numbered)![1];
+    if ((bullet !== null || numbered !== null) && !(indented && pending?.kind === "list")) {
+      const ordered = numbered !== null;
+      const item = (bullet ?? numbered)!;
       if (pending?.kind === "list" && pending.ordered === ordered) {
         pending.items.push([item]);
       } else {
