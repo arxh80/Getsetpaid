@@ -53,6 +53,14 @@
 //     script are trusted", which is the accurate description of what Next
 //     does. Note that it makes CSP3 browsers IGNORE the 'self' beside it --
 //     'self' is retained purely as the CSP2 fallback.
+//     THE CONSEQUENCE, stated because it is easy to over-read the policy:
+//     any script the page already trusts -- every app chunk, and anything in a
+//     future instrumentation-client.ts -- may insert a script from ANY host,
+//     and a first-party cookie such a script writes (`_ga`) is governed by no
+//     directive at all. So this policy names no third-party script host but
+//     does not BLOCK one; what stops trusted code loading a tracker is the
+//     source census (tests/unit/legal/storage-census.test.ts). Whether
+//     'strict-dynamic' should stay is DECISIONS-QUEUE Q155.
 //
 //   style-src 'unsafe-inline'
 //     THE ONE BROAD ALLOWANCE IN THIS POLICY, and it is stated plainly rather
