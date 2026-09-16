@@ -182,8 +182,22 @@ const ARGS = {
    * 12 of the 13 superuser-only RPCs went red on `superuserAal1` and this one
    * STAYED GREEN -- the guard was gone and the test said the guard held. With
    * the refusals pointed at a genuinely `accepted` session owned by the
-   * superuser, the guard is the only thing between the caller and success, and
-   * the same mutation reds it.
+   * superuser, the guard is the only thing between THE SUPERUSER'S OWN aal1
+   * SESSION and success, and the same mutation reds it.
+   *
+   * THAT QUALIFIER IS LOAD-BEARING, AND THE SENTENCE USED TO OMIT IT
+   * (pre-merge review). After `has_platform_permission`, the UPDATE also
+   * requires `superuser_user_id = (select auth.uid())`, which refuses
+   * `anonymous`, `noOrganisation`, `readOnlyMember`, `orgOwner`,
+   * `impersonatedOrgOwner` and `overriddenOrgOwner` with the identical
+   * `42501`. So for SIX OF THE SEVEN principals M1 replaced one non-guard
+   * refusal reason (row state) with another (row ownership); what it fixed
+   * is the ONE principal the mutation can move. The measurable consequence,
+   * stated rather than left for the next reader to discover: **dropping the
+   * `platform_admins` term leaves THIS SURFACE entirely green**, which is
+   * consistent with mutation 2's own arithmetic below -- its RPC refusals
+   * divide evenly across the three Owner principals, and this surface
+   * contributes none of them.
    */
   acceptedImpersonationSessionId: "",
   billingOverrideId: "",

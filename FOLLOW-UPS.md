@@ -2787,7 +2787,7 @@ next person does not have to re-derive it.
   design is name-only with a per-table structural allowlist in ONE function
   (`private.audit_crm_value_columns()`), soft-delete/restore are their own
   actions, the four multi-row RPCs share one correlation id per call, and
-  the retention/volume answer is measured (216 bytes per row, ~0.36 ms per
+  the retention/volume answer is measured (**472 bytes per row with its six non-PK indexes** — 216 was the row-only figure and `SECURITY.md` § 7 formally withdrew it as "understates real storage by more than half"; a volume projection built from this ledger was wrong by over 2×), ~0.36 ms per
   row of trigger cost, no per-table opt-out). Everything is in
   `SECURITY.md` § 7, "Every CRM INSERT and UPDATE is audited too". **What
   this did not do:** the Phase 3–6 tables (events, lineup, tasks, meetings,
@@ -2840,9 +2840,13 @@ next person does not have to re-derive it.
   is deployed. Owner: the founder. Added 2026-08-30 (final review I-9).** This
   is a refusal, not a reminder: if `SECURITY.md` § 5 is still unenforced when
   launch is otherwise ready, launch does not proceed. **The surface grew again in
-  Phase 4 and the gate is restated over the new number:** **24** list specs carry
-  a `searchColumn` (20 at the Phase 3 exit; Phase 4 added `TASK_LIST`,
-  `MEETING_LIST`, `NOTE_LIST`, `DOCUMENT_LIST`) **and Phase 4 added the first
+  Phase 4 and the gate is restated over the new number:** **~41** list specs carry
+  a `searchColumn` today (20 at the Phase 3 exit; 24 after Phase 4 added
+  `TASK_LIST`, `MEETING_LIST`, `NOTE_LIST`, `DOCUMENT_LIST`; Phases 5-7 took it
+  to 42 `searchColumn:` occurrences of which one is the type declaration in
+  `lib/list/spec.ts` — `grep -rc 'searchColumn:' lib components app` is the
+  count, and this entry says to re-count at each phase exit precisely because
+  the number in it goes stale) **and Phase 4 added the first
   write endpoint that does real per-call work — the document upload action (byte
   read + magic-byte sniff + synchronous malware scan) — which has no limiter
   either.** The unmetered `ilike` path this gate is about is now a fifth wider
@@ -4032,3 +4036,46 @@ worktree lasts; the exit document restates all nineteen in the same form.
   persistent, correctly-announced trigger, and replacing a native disclosure
   with a scripted one to gain Escape would trade real robustness for a
   courtesy. Revisit only if user feedback asks for it.
+
+---
+
+## Phase 7 Task 7 (the permission-test gate) — exit notes
+
+**DONE 2026-09-16.** The task itself is discharged; this section exists because
+the final review found it was the only task in the phase with no entry here,
+and because it shipped a real hardening change that appeared in none of the
+three documents.
+
+- **Q125 — three `UPDATE` grants were table-level where the write is
+  three columns. SHIPPED, not owed.** `20260919000000` narrows
+  `authenticated`'s `UPDATE` on `public.incident_alerts` to
+  `(resolved_at, resolved_by)`, and `20260919001000` narrows both
+  `organisation_billing_overrides` and `organisation_feature_overrides` to
+  `(revoked_at, revoked_by, revoked_reason)` — exactly what the two
+  `revoke_*` RPCs write. **The subtlety that makes such a narrowing real:** in
+  Postgres a column-level `grant` does NOT revoke a prior table-level one, so a
+  narrowing that forgets the `revoke` is a silent no-op. Both migrations issue
+  the `revoke` first, and the net effect was confirmed on the live catalogue
+  (`authenticated` holds `UPDATE` on exactly those columns, no later migration
+  re-widens, `20260920000000` is comment-only). Every trigger guard is kept as
+  defence in depth; three assertions were strengthened rather than relaxed to
+  match. Recorded here, in `CLAUDE.md` § Superuser dashboard and in
+  `SECURITY.md` § 2 — it was previously recorded only in
+  `DECISIONS-QUEUE.md`.
+- **Q126 — the server-action layer is not probed as a principal.** Mitigated
+  rather than open: no module under `lib/admin/` or `lib/feedback/` imports the
+  service-role client, and `tests/unit/email/service-client-census.test.ts`
+  makes that an assertion (exactly three `lib/email/*` importers allowed) rather
+  than an observation. **Genuinely open:** `lib/supabase/storage.ts` has no
+  equivalent census. Full reasoning in `DECISIONS-QUEUE.md` Q126.
+- **Two censuses, not two checklists.** The RPC and relation inventories in
+  `tests/integration/security/phase7-permission-matrix.test.ts` are unfiltered
+  `pg_proc`/`pg_class` queries asserted `toEqual` against the file's own lists
+  plus a declared pre-Phase-7 allowlist, so a Phase 8 grant lands as a red test
+  naming itself. **What a census still cannot catch** is named in
+  `SECURITY.md` § 2 and stays owed: the RPC census matches on `proname` rather
+  than signature (an overload is invisible), a function left with
+  `proacl is null` inherits EXECUTE to PUBLIC and yields zero rows from
+  `aclexplode`, and the page census globs `app/(app)/super/**` only, so a Phase
+  8 route handler under `app/api/**` reading platform data would not be seen.
+  Three one-line additions, all cheap, none of them made.
