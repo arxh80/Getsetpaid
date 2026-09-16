@@ -171,7 +171,7 @@ select fb.val('FP3 ...and NOT user_id / user_email / organisation_role / status 
       from information_schema.column_privileges
      where table_schema='public' and table_name='feedback'
        and grantee='authenticated' and privilege_type='INSERT'
-       and column_name in ('user_id','user_email','organisation_role','status','notified_at','created_at','during_support_access')$$,
+       and column_name in ('user_id','user_email','organisation_role','status','notified_at','created_at','during_support_access','support_access_session_id','support_access_organisation_id')$$,
   '0');
 select fb.val('FP4 authenticated may UPDATE exactly one column: status',
   $$select string_agg(column_name, ',' order by column_name)
@@ -641,6 +641,7 @@ select gen_random_uuid()::text as fx_named     \gset
 select gen_random_uuid()::text as fx_ownpage   \gset
 select gen_random_uuid()::text as fx_otherorg  \gset
 select gen_random_uuid()::text as fx_session   \gset
+select gen_random_uuid()::text as fx_shot      \gset
 \o
 
 select fb.val('FX1 FIXTURE: `super` holds NO membership of BETA -- the workspace it will impersonate',
@@ -654,6 +655,14 @@ select fb.val('FX3 `during_support_access` is OUTSIDE the authenticated INSERT g
      where table_schema='public' and table_name='feedback'
        and grantee='authenticated' and privilege_type='INSERT'
        and column_name='during_support_access'$$, '0');
+-- ...AND SO ARE THE TWO ATTRIBUTION COLUMNS (pre-merge review finding I2).
+-- Same shape, same reason: a column the audit trail trusts must not be
+-- nameable by the request it describes.
+select fb.val('FX3b the two support-access ATTRIBUTION columns are outside it too (I2)',
+  $$select count(*)::text from information_schema.column_privileges
+     where table_schema='public' and table_name='feedback'
+       and grantee='authenticated' and privilege_type='INSERT'
+       and column_name in ('support_access_session_id','support_access_organisation_id')$$, '0');
 
 -- ---- A MEMBER, NOT IMPERSONATING -----------------------------------------
 set role authenticated;
@@ -672,6 +681,11 @@ select fb.try('FX6 a member CANNOT name during_support_access -- 42501 at the co
   'denied(42501)');
 -- And a member cannot mint themselves a session to become one, either: the
 -- label's whole premise is a row on a table no member may write.
+select fb.try('FX6b ...nor support_access_organisation_id, which would forge the AUDIT (I2)',
+  format($$insert into public.feedback (id, organisation_id, category, message, route, support_access_organisation_id)
+           values (%L, null, 'idea', 'Attribute this to someone else.', '/invites', %L)$$,
+         :'fx_forge', :'alpha_org'),
+  'denied(42501)');
 select fb.try('FX8 a member cannot create an impersonation session to earn the label',
   format($$insert into public.impersonation_sessions
              (superuser_user_id, target_organisation_id, reason, status,
@@ -735,6 +749,70 @@ select fb.val('FX12 ...with the route the operator was on, and still no workspac
 select fb.val('FX13 ...attributed to the operator, like every other submission',
   format($$select (user_id = %L)::text from public.feedback where id=%L$$, :'super', :'fx_support'),
   'true');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- ...AND THE ROW'S AUDIT TRAIL NAMES THE WORKSPACE AND THE SESSION (I2)
+--
+-- Q121 makes organisation_id null on purpose -- the row is the OPERATOR's, and
+-- an impersonator holds no membership to attribute it to. But both audit
+-- writers passed that null straight through, so `feedback.submitted` and
+-- `feedback.screenshot_viewed` appeared under NO organisation filter on
+-- /super/audit-log and on NO correlation thread: strictly less attribution
+-- than an impersonated PAGE VIEW, which at least carries the organisation.
+-- 20260921003000 stamps two db-owned columns at insert and all three audit
+-- writers read them. The ROW is still not the workspace's -- only the audit of
+-- the operator's own actions on it is attributable.
+--
+-- Read as `postgres`: the submitter has no SELECT policy on their own row.
+-- ===========================================================================
+select fb.val('FX13a the row carries the SESSION it was sent from -- stamped, not supplied (I2)',
+  format($$select (support_access_session_id = %L)::text from public.feedback where id=%L$$,
+         :'fx_session', :'fx_support'), 'true');
+select fb.val('FX13b ...and the workspace that session names, while organisation_id stays NULL (Q121)',
+  format($$select (support_access_organisation_id = %L and organisation_id is null)::text
+            from public.feedback where id=%L$$, :'beta_org', :'fx_support'), 'true');
+select fb.val('FX13c ...so feedback.submitted lands on BETA''s audit filter AND the session''s thread',
+  format($$select count(*)::text from public.audit_events
+            where action='feedback.submitted' and target_id=%L
+              and organisation_id=%L and correlation_id=%L and actor_user_id=%L$$,
+         :'fx_support', :'beta_org', :'fx_session', :'super'), '1');
+select fb.val('FX13d CONTROL: an ORDINARY null-workspace submission still names no organisation',
+  format($$select count(*)::text from public.audit_events
+            where action='feedback.submitted' and target_id=%L
+              and organisation_id is null and correlation_id is null$$, :'fx_member'), '1');
+
+-- THE ROW THE FINDING WAS ACTUALLY ABOUT: a SCREENSHOT taken inside a support
+-- session and viewed on /super/feedback. An object is planted first, because
+-- the trigger refuses a declared key with no bytes behind it (fix round 1, M1).
+\o /dev/null
+insert into storage.objects (bucket_id, name)
+values ('feedback-screenshots', 'feedback/' || :'fx_shot');
+\o
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select fb.try('FX13e the operator submits a SCREENSHOT from inside the session -- accepted',
+  format($$insert into public.feedback (id, organisation_id, category, message, route,
+             screenshot_key, screenshot_mime, screenshot_size_bytes, screenshot_scan_status, screenshot_scanned_at)
+           values (%L, null, 'bug', 'The venue row renders wrong -- screenshot attached.',
+                   '/org-beta/venues', 'feedback/%s', 'image/png', 4096, 'clean', now())$$,
+         :'fx_shot', :'fx_shot'), 'ok(1)');
+select fb.val('FX13f ...and recording the VIEW succeeds for the aal2 operator',
+  format($$select (public.audit_feedback_screenshot_view(%L) is not null)::text$$, :'fx_shot'), 'true');
+reset role; reset request.jwt.claims;
+select fb.val('FX13g MEASURED: the screenshot-view row names the impersonated workspace AND the session',
+  format($$select count(*)::text from public.audit_events
+            where action='feedback.screenshot_viewed' and target_type='feedback'
+              and target_id=%L and actor_user_id=%L
+              and organisation_id=%L and correlation_id=%L$$,
+         :'fx_shot', :'super', :'beta_org', :'fx_session'), '1');
+select fb.val('FX13h ...and NO screenshot-view row for it names no organisation (the defect, gone)',
+  format($$select count(*)::text from public.audit_events
+            where action='feedback.screenshot_viewed' and target_id=%L
+              and organisation_id is null$$, :'fx_shot'), '0');
+
+set role authenticated;
+set request.jwt.claims = :'super_c';
 -- SUPPORT ACCESS STILL CANNOT CLAIM THE WORKSPACE. The reversal changed where
 -- the row lands, not what an impersonator may assert about a tenant.
 -- ---- FIX ROUND 1, M2: THE LABEL IS ABOUT THE REQUEST, NOT THE PERSON ------
@@ -796,8 +874,12 @@ select fb.val('FX17 ...unlabelled, measured',
   'false');
 reset role; reset request.jwt.claims;
 
-select fb.val('FX18 exactly ONE labelled row exists in the whole table',
-  $$select count(*)::text from public.feedback where during_support_access$$, '1');
+-- TWO since the pre-merge fix round (finding I2): FX10's text-only submission
+-- and FX13e's screenshot, both from inside the same live session. Still the
+-- EXACT count rather than a floor, so a label leaking onto a third row -- which
+-- is the whole failure mode this line guards -- still reds it.
+select fb.val('FX18 exactly TWO labelled rows exist in the whole table, both this section''s',
+  $$select count(*)::text from public.feedback where during_support_access$$, '2');
 
 -- ===========================================================================
 -- § FZ  HOUSEKEEPING
@@ -805,7 +887,7 @@ select fb.val('FX18 exactly ONE labelled row exists in the whole table',
 \o /dev/null
 delete from public.incident_alerts
  where (details->>'category'='feedback' and details->>'subject_id' in (:'pstd1', :'pstd2', :'super'))
-    or details->>'feedback_id' in (:'fa_quar', :'fa_shot');
+    or details->>'feedback_id' in (:'fa_quar', :'fa_shot', :'fx_shot');
 delete from public.audit_events where target_type='feedback';
 -- § FX added `super` as a submitter (the operator's own support-access row)
 -- and one planted impersonation session; both go back the way they came.
@@ -817,11 +899,13 @@ delete from public.impersonation_sessions where id = :'fx_session';
 -- row above never had bytes behind it, so the API cannot be asked; the guard
 -- is lifted for exactly this statement and put back.
 set storage.allow_delete_query = 'true';
-delete from storage.objects where bucket_id='feedback-screenshots' and name='feedback/' || :'fi_withobj';
+delete from storage.objects where bucket_id='feedback-screenshots'
+   and name in ('feedback/' || :'fi_withobj', 'feedback/' || :'fx_shot');
 reset storage.allow_delete_query;
 \o
-select fb.val('FZ6 the planted storage object is gone',
-  format($$select count(*)::text from storage.objects where bucket_id='feedback-screenshots' and name='feedback/%s'$$, :'fi_withobj'), '0');
+select fb.val('FZ6 both planted storage objects are gone',
+  format($$select count(*)::text from storage.objects where bucket_id='feedback-screenshots'
+            and name in ('feedback/%s','feedback/%s')$$, :'fi_withobj', :'fx_shot'), '0');
 select fb.val('FZ1 no feedback rows this suite created remain',
   format($$select count(*)::text from public.feedback where user_id in (%L,%L,%L)$$,
          :'pstd1', :'pstd2', :'super'), '0');
