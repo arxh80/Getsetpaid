@@ -259,8 +259,19 @@ select ov.try('OC3 the SUPERUSER cannot UPDATE the table directly (no transition
 -- organisation_billing_overrides_update_platform, passes its
 -- has_platform_permission term, and still matches nothing, because
 -- private.override_transition_in_progress() is false outside the RPCs. Drop
--- the marker term and this goes red; drop the policy and this goes red. OC3
--- above would not.
+-- the marker term and this goes red -- the UPDATE then matches the row and
+-- ok(0) becomes ok(1).
+--
+-- WHAT IT DOES *NOT* MEASURE, corrected in fix round 1 (review finding I4).
+-- This comment used to add "drop the policy and this goes red". It would not:
+-- with the UPDATE policy dropped, RLS default-deny matches zero rows and the
+-- expectation is ok(0) -- green. The same is true of OC2a for a non-platform
+-- Owner. So the honest denominator is: OC2a/OC3a measure that the three
+-- revocation columns are INSIDE the grant (a privilege error here would be
+-- 42501, not ok(0)) and that the marker term refuses; the policy's EXISTENCE
+-- is pinned by the /super/billing e2e walk and by § OG, which drive a real
+-- grant -> revoke through the RPCs and would fail outright with no policy for
+-- the RPCs' own SECURITY INVOKER statements to pass.
 select ov.try('OC3a ...and even naming only the GRANTED columns, the marker term matches no row',
   format($$update public.organisation_billing_overrides
              set revoked_at = now(), revoked_by = %L, revoked_reason = 'raw patch'
