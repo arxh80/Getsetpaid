@@ -10,10 +10,12 @@
 // Three checks hold this list to the truth:
 //   * tests/unit/legal/storage-inventory.test.ts pins each entry to the source
 //     constant it describes, so a RENAMED key is a red test;
-//   * tests/unit/legal/storage-census.test.ts (Phase 8 Task 2) scans the
-//     source for every cookie write, Web Storage write, IndexedDB / Cache API
-//     use and third-party script, and fails on one this list does not
-//     explain -- so a NEW key, or an analytics loader, is a red test;
+//   * tests/unit/legal/storage-census.test.ts (Phase 8 Task 2) parses every
+//     app-shipped source file for the cookie-write, Web Storage, IndexedDB /
+//     Cache API, third-party-load and tracker shapes that
+//     tests/unit/legal/storage-scanner.ts lists, and fails on one this list
+//     does not explain -- so a NEW key, or an analytics loader, written in a
+//     recognised shape is a red test;
 //   * tests/e2e/storage-census.spec.ts reads what a real browser actually
 //     holds after a signed-in walk and requires every cookie and storage key
 //     to match an entry's `matches` pattern -- which catches what a library

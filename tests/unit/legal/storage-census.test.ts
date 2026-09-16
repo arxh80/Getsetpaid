@@ -1,10 +1,22 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { BROWSER_STORAGE } from "@/lib/legal/storage-inventory";
 import { CURRENT_ORG_COOKIE } from "@/lib/org/current-org";
 import { activityStorageKey } from "@/lib/auth/idle-timeout";
 import { contentSecurityPolicy } from "@/lib/security/headers";
+import {
+  NON_SHIPPED_ROOT_DIRS,
+  REPO_ROOT as ROOT,
+  appSourceFiles,
+  existingEntryPoints,
+  moduleReferences,
+  parse,
+  relPath,
+  resolveSpecifier,
+} from "../support/app-source";
+import { scanSource, type Site, type SiteKind } from "./storage-scanner";
 
 // ===========================================================================
 // PHASE 8 TASK 2 -- THE STORAGE CENSUS. NO COOKIE BANNER (Q129), SO THIS IS
@@ -21,181 +33,35 @@ import { contentSecurityPolicy } from "@/lib/security/headers";
 // ("Browser storage and consent") says must ship together: consent before
 // load, a banner, the inventory entry, and the sub-processor register entry.
 //
-// WHAT IT SCANS: app/, components/, lib/, proxy.ts and next.config.ts
-// (.ts/.tsx/.js/.jsx/.mjs), with comments removed first so a sentence ABOUT
-// `document.cookie` is not a write. It looks for:
-//   cookie writes     `<x>.cookies.set(`, `<store>.set(` on a store obtained
-//                     from `await cookies()`, `document.cookie =`, a
-//                     `set-cookie` header, and the Supabase adapter's
-//                     `setAll(` (which writes whatever names the library
-//                     chooses)
-//   Supabase clients  `createBrowserClient(` / `createServerClient(` -- the
-//                     library manages the sb-* cookies behind them
-//   Web Storage       `localStorage` / `sessionStorage` `.setItem(`, index
-//                     assignment and property assignment
-//   IndexedDB         `indexedDB`, `IDBFactory`, `IDBDatabase`
-//   Cache / SW        `caches.`, `serviceWorker`, `navigator.storage`
-//   third parties     `next/script`, a `<script>` or `<iframe>` element,
-//                     `createElement('script'|'iframe'|'img')`,
-//                     `navigator.sendBeacon`, `new Image(`, a `src` pointing
-//                     at an absolute URL
-//   trackers          the usual globals and packages (gtag, fbq, dataLayer,
-//                     posthog, mixpanel, @vercel/analytics, ...)
-// plus: every RUNTIME DEPENDENCY in package.json must be declared with what it
+// WHAT IT SCANS: every app-shipped script file in the repository, derived
+// rather than listed (tests/unit/support/app-source.ts: everything outside
+// node_modules, .next, the root dot-directories, tests/, supabase/, scripts/
+// and test output), parsed with the TypeScript compiler -- so a comment is not
+// a site, a `//` inside a string does not hide the rest of the line, and an
+// aliased import, a destructured method, `?.` or a bracketed global is still
+// followed. tests/unit/legal/storage-scanner.ts lists exactly which shapes it
+// recognises and which it cannot see. Before fix round 1 it scanned five
+// named folders with regexes and missed `(await cookies()).set(...)` -- the
+// shape Next 15/16 actually writes -- and everything in a root
+// `instrumentation-client.ts`; each evasion the review measured is now a
+// fixture in "the census detector" below, run on every CI build.
+// Plus: every RUNTIME DEPENDENCY in package.json must be declared with what it
 // stores (a library can set storage without any line above), no `public/`
-// HTML or script may exist, and the Content-Security-Policy may load scripts
-// only from this origin.
+// HTML or script may exist, and the Content-Security-Policy may name no
+// script, frame or image host (see that test for what it does NOT prove).
 //
 // WHAT IT CANNOT SEE: what a dependency does at runtime (the declared list is
-// a claim, not a measurement), a key built at runtime from data, and anything
-// injected outside this repository (a host's analytics toggle, a browser
-// extension). The first two are what tests/e2e/storage-census.spec.ts exists
-// for -- it reads the storage a real browser holds after a signed-in walk.
-// The third is a deployment setting (SECURITY.md § 15).
+// a claim, not a measurement), a key built at runtime from data, a store
+// reached through a value the file did not create, and anything injected
+// outside this repository (a host's analytics toggle, a browser extension).
+// The first three are what tests/e2e/storage-census.spec.ts exists for -- it
+// reads the storage a real browser holds after a signed-in walk -- and that
+// spec runs only on a developer machine: e2e is not in CI. The last is a
+// deployment setting (SECURITY.md § 15).
 // ===========================================================================
 
-const ROOT = resolve(__dirname, "../../..");
-const SCAN = ["app", "components", "lib", "proxy.ts", "next.config.ts"];
-const EXT = /\.(ts|tsx|js|jsx|mjs)$/;
-
-type SiteKind =
-  | "cookie-write"
-  | "supabase-client"
-  | "web-storage-write"
-  | "indexeddb"
-  | "cache-storage"
-  | "third-party"
-  | "tracker";
-
-const DETECTORS: readonly { kind: SiteKind; pattern: RegExp }[] = [
-  { kind: "cookie-write", pattern: /\.cookies\s*\.\s*set\s*\(/g },
-  { kind: "cookie-write", pattern: /\bdocument\s*\.\s*cookie\s*=(?!=)/g },
-  { kind: "cookie-write", pattern: /["'`]set-cookie["'`]/gi },
-  { kind: "cookie-write", pattern: /\bsetAll\s*\(/g },
-  { kind: "supabase-client", pattern: /\bcreate(?:Browser|Server)Client\s*\(/g },
-  { kind: "web-storage-write", pattern: /\b(?:localStorage|sessionStorage)\s*\.\s*setItem\s*\(/g },
-  { kind: "web-storage-write", pattern: /\b(?:localStorage|sessionStorage)\s*\[/g },
-  {
-    kind: "web-storage-write",
-    pattern: /\b(?:localStorage|sessionStorage)\s*\.\s*(?!setItem\b|getItem\b|removeItem\b|clear\b|key\b|length\b)[A-Za-z_$][\w$]*\s*=(?!=)/g,
-  },
-  { kind: "indexeddb", pattern: /\b(?:indexedDB|IDBFactory|IDBDatabase)\b/g },
-  { kind: "cache-storage", pattern: /\bcaches\s*\.|\bserviceWorker\b|\bnavigator\s*\.\s*storage\b/g },
-  { kind: "third-party", pattern: /["']next\/script["']/g },
-  { kind: "third-party", pattern: /<\s*(?:script|iframe)\b/gi },
-  { kind: "third-party", pattern: /\bcreateElement\s*\(\s*["'`](?:script|iframe|img)["'`]/gi },
-  { kind: "third-party", pattern: /\bnavigator\s*\.\s*sendBeacon\b/g },
-  { kind: "third-party", pattern: /\bnew\s+Image\s*\(/g },
-  { kind: "third-party", pattern: /\bsrc\s*=\s*\{?\s*["'`](?:https?:)?\/\//gi },
-  {
-    kind: "tracker",
-    pattern:
-      /\b(?:gtag|fbq|_paq|dataLayer|posthog|mixpanel|amplitude|hotjar|plausible|umami)\b|@vercel\/analytics|@vercel\/speed-insights|@next\/third-parties|@segment\/|googletagmanager|google-analytics|clarity\.ms|connect\.facebook\.net/gi,
-  },
-];
-
-interface Site {
-  file: string;
-  line: number;
-  kind: SiteKind;
-  /** First argument of a write, when it has one (the key or cookie name). */
-  key: string | null;
-  text: string;
-}
-
-/**
- * Removes block and line comments, keeping every newline so line numbers stay
- * true. Deliberately simple: a `//` preceded by `:` (a URL) or inside a quote
- * run is left alone. The non-vacuity test below proves it did not eat the
- * real sites.
- */
-function stripComments(source: string): string {
-  const blocks = source.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
-  return blocks.replace(/(^|[^:"'`\\])\/\/[^\n]*/g, (_m, lead: string) => lead);
-}
-
-function firstArgument(text: string, from: number): string | null {
-  const open = text.indexOf("(", from);
-  if (open < 0) return null;
-  let depth = 0;
-  for (let i = open + 1; i < text.length; i++) {
-    const c = text[i];
-    if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") {
-      if (depth === 0) return text.slice(open + 1, i).trim() || null;
-      depth--;
-    } else if (c === "," && depth === 0) {
-      return text.slice(open + 1, i).trim();
-    }
-  }
-  return null;
-}
-
-function scanSource(file: string, raw: string): Site[] {
-  const text = stripComments(raw);
-  const lineOf = (index: number) => text.slice(0, index).split("\n").length;
-  const sites: Site[] = [];
-  const push = (kind: SiteKind, index: number, match: string, withKey: boolean) => {
-    sites.push({
-      file,
-      line: lineOf(index),
-      kind,
-      key: withKey ? firstArgument(text, index + match.length - 1) : null,
-      text: match.trim(),
-    });
-  };
-  for (const { kind, pattern } of DETECTORS) {
-    for (const m of text.matchAll(pattern)) {
-      const withKey =
-        (kind === "cookie-write" && /set\s*\($/.test(m[0]) && !/setAll/.test(m[0])) ||
-        (kind === "web-storage-write" && /setItem\s*\($/.test(m[0]));
-      push(kind, m.index!, m[0], withKey);
-    }
-  }
-  // `<store>.set(` where `<store>` came from `await cookies()`.
-  // A name declared twice (two functions, one `store` each) is one store.
-  const stores = new Set(
-    [...text.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+cookies\s*\(\s*\)/g)].map(
-      (decl) => decl[1],
-    ),
-  );
-  for (const store of stores) {
-    for (const m of text.matchAll(new RegExp(`\\b${store.replace(/\$/g, "\\$")}\\s*\\.\\s*set\\s*\\(`, "g"))) {
-      push("cookie-write", m.index!, m[0], true);
-    }
-  }
-  return sites.sort((a, b) => a.line - b.line);
-}
-
-function walk(dir: string, out: string[]): void {
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) {
-      if (entry === "node_modules" || entry === ".next") continue;
-      walk(full, out);
-    } else if (EXT.test(entry)) {
-      out.push(full);
-    }
-  }
-}
-
-function sourceFiles(): string[] {
-  const files: string[] = [];
-  for (const target of SCAN) {
-    const full = join(ROOT, target);
-    if (!existsSync(full)) continue;
-    if (statSync(full).isDirectory()) walk(full, files);
-    else files.push(full);
-  }
-  return files;
-}
-
-function rel(file: string): string {
-  return file.slice(ROOT.length + 1).replace(/\\/g, "/");
-}
-
 function scanTree(): Site[] {
-  return sourceFiles().flatMap((f) => scanSource(rel(f), readFileSync(f, "utf8")));
+  return appSourceFiles().flatMap((f) => scanSource(relPath(f), readFileSync(f, "utf8")));
 }
 
 // ===========================================================================
@@ -211,8 +77,12 @@ interface DeclaredSite {
   file: string;
   kind: SiteKind;
   count: number;
-  /** The BROWSER_STORAGE name this site produces. */
-  covers: string;
+  /**
+   * The BROWSER_STORAGE name this site produces, or null for a site that runs
+   * only on the server and so sets nothing in a browser -- allowed only in a
+   * module that imports "server-only" (asserted below).
+   */
+  covers: string | null;
   /** The first-argument expressions, in source order, for keyed writes. */
   keys?: readonly string[];
   why: string;
@@ -282,6 +152,36 @@ const DECLARED: readonly DeclaredSite[] = [
     keys: ["storageKey"],
     why: "the cross-tab idle timer (storageKey = activityStorageKey(userId))",
   },
+  // ---- server-only sites: they set nothing in a browser ----------------------
+  {
+    file: "lib/supabase/admin.ts",
+    kind: "supabase-client",
+    count: 1,
+    covers: null,
+    why: "the service-role Admin API client (no persisted session); server-only",
+  },
+  {
+    file: "lib/supabase/service.ts",
+    kind: "supabase-client",
+    count: 1,
+    covers: null,
+    why: "the service-role table client for the two email senders; server-only",
+  },
+  {
+    file: "lib/supabase/storage.ts",
+    kind: "supabase-client",
+    count: 1,
+    covers: null,
+    why: "the service-role Storage client for the private buckets; server-only",
+  },
+  {
+    file: "lib/email/send.ts",
+    kind: "third-party",
+    count: 1,
+    covers: null,
+    keys: ["BREVO_ENDPOINT"],
+    why: "the one Brevo HTTP call, made from the server (docs/sub-processors.md lists Brevo)",
+  },
 ];
 
 /**
@@ -305,11 +205,77 @@ function key(site: { file: string; kind: SiteKind }): string {
   return `${site.file} :: ${site.kind}`;
 }
 
+describe("the scanned file set is derived, so a new root file or folder cannot be missed", () => {
+  it("includes every entry point Next loads by convention that exists here, and a real volume of files", () => {
+    const files = appSourceFiles().map((f) => relPath(f));
+    expect(files.length).toBeGreaterThan(400);
+    const entries = existingEntryPoints();
+    // proxy.ts, next.config.ts and app/layout.tsx exist today; the others
+    // (instrumentation-client.ts, instrumentation.ts, middleware.ts) are in the
+    // set the day they are created -- the fixture below proves that.
+    for (const must of ["proxy.ts", "next.config.ts", "app/layout.tsx"]) expect(entries).toContain(must);
+    for (const entry of entries) expect(files).toContain(entry);
+    // Every script file at the repository root is scanned.
+    const rootScripts = readdirSync(ROOT).filter(
+      (f) => /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/.test(f) && !f.endsWith(".d.ts"),
+    );
+    expect(rootScripts.length).toBeGreaterThan(2);
+    for (const f of rootScripts) expect(files).toContain(f);
+    // ...and nothing from the excluded places leaks in.
+    expect(files.filter((f) => /^(tests|supabase|scripts|node_modules|\.next|\.claude|\.superpowers)\//.test(f))).toEqual(
+      [],
+    );
+  });
+
+  it("FIXTURE: a root instrumentation-client.ts and a new hooks/ folder are scanned; tests/ and node_modules are not", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gsp-census-"));
+    try {
+      const write = (rel: string, text: string) => {
+        mkdirSync(dirname(join(dir, rel)), { recursive: true });
+        writeFileSync(join(dir, rel), text);
+      };
+      write("instrumentation-client.ts", `localStorage.setItem("_ga", "1");`);
+      write("hooks/use-thing.ts", `export const x = 1;`);
+      write("app/.well-known/route.ts", `export const y = 1;`);
+      write("tests/a.test.ts", `localStorage.setItem("t", "1");`);
+      write("node_modules/pkg/index.js", `localStorage.setItem("n", "1");`);
+      write("app/node_modules/pkg/index.js", `x`);
+      write(".claude/x.ts", `x`);
+      write("scripts/x.mjs", `x`);
+      write("supabase/functions/f.ts", `x`);
+      write("types.d.ts", `declare const z: 1;`);
+      const found = appSourceFiles(dir).map((f) => relPath(f, dir));
+      expect(found).toEqual(["app/.well-known/route.ts", "hooks/use-thing.ts", "instrumentation-client.ts"]);
+      expect(existingEntryPoints(dir)).toEqual(["instrumentation-client.ts"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("no scanned file imports code from a place the scan skips", () => {
+    const leaks: string[] = [];
+    let references = 0;
+    for (const file of appSourceFiles()) {
+      const rel = relPath(file);
+      const sf = parse(rel, readFileSync(file, "utf8"));
+      for (const ref of moduleReferences(sf)) {
+        references++;
+        const target = ref.specifier === null ? null : resolveSpecifier(rel, ref.specifier);
+        const top = target?.split("/")[0];
+        if (top && (NON_SHIPPED_ROOT_DIRS.has(top) || top.startsWith(".") || top === "node_modules")) {
+          leaks.push(`${rel} -> ${ref.specifier}`);
+        }
+      }
+    }
+    expect(references, "DENOMINATOR: the import walk read imports").toBeGreaterThan(1000);
+    expect(leaks, "an app module imports from a folder the storage census does not scan").toEqual([]);
+  });
+});
+
 describe("the storage census (Phase 8 Task 2, Q129)", () => {
   const sites = scanTree();
 
   it("NON-VACUITY: the scan finds every declared site, so a pass below is not a scan of nothing", () => {
-    expect(sourceFiles().length).toBeGreaterThan(200);
     for (const declared of DECLARED) {
       const found = sites.filter((s) => key(s) === key(declared));
       expect(found.length, `${key(declared)} -- the scan no longer sees it`).toBeGreaterThan(0);
@@ -344,26 +310,42 @@ describe("the storage census (Phase 8 Task 2, Q129)", () => {
 
   it("keyed writes use exactly the declared key expressions", () => {
     for (const d of DECLARED.filter((x) => x.keys)) {
-      const found = sites
-        .filter((s) => key(s) === key(d) && s.key !== null)
-        .map((s) => s.key);
+      const found = sites.filter((s) => key(s) === key(d) && s.key !== null).map((s) => s.key);
       expect(found, key(d)).toEqual([...d.keys!]);
     }
   });
 
-  it("a literal key anywhere must match an inventory item", () => {
+  it("a literal key anywhere must match an inventory item of its own kind", () => {
     const literals = sites
+      .filter((s) => s.kind === "cookie-write" || s.kind === "web-storage-write")
       .map((s) => ({ s, lit: /^["'`]([^"'`$]*)["'`]$/.exec(s.key ?? "")?.[1] }))
       .filter((x): x is { s: Site; lit: string } => x.lit !== undefined);
     const unmatched = literals
-      .filter(({ lit }) => !BROWSER_STORAGE.some((item) => item.matches.test(lit)))
+      .filter(
+        ({ s, lit }) =>
+          !BROWSER_STORAGE.some(
+            (item) =>
+              item.kind === (s.kind === "cookie-write" ? "cookie" : "local-storage") && item.matches.test(lit),
+          ),
+      )
       .map(({ s, lit }) => `${s.file}:${s.line} "${lit}"`);
-    expect(unmatched, "a literal cookie/storage key that no inventory item covers").toEqual([]);
+    expect(unmatched, "a literal cookie/storage key that no inventory item of its kind covers").toEqual([]);
+  });
+
+  it("a server-only declaration is in a module that cannot reach a browser bundle", () => {
+    const serverOnly = DECLARED.filter((x) => x.covers === null);
+    expect(serverOnly.length).toBeGreaterThan(0);
+    for (const d of serverOnly) {
+      const text = readFileSync(join(ROOT, d.file), "utf8");
+      expect(text, `${d.file} declares a server-only site but does not import "server-only"`).toMatch(
+        /^import "server-only";$/m,
+      );
+    }
   });
 
   it("every declared site covers a real inventory item, and each key resolves to it", () => {
     const names = BROWSER_STORAGE.map((i) => i.name);
-    for (const d of DECLARED) expect(names, key(d)).toContain(d.covers);
+    for (const d of DECLARED.filter((x) => x.covers !== null)) expect(names, key(d)).toContain(d.covers);
     const covers = (name: string, value: string) =>
       BROWSER_STORAGE.find((i) => i.name === name)!.matches.test(value);
 
@@ -401,15 +383,24 @@ describe("the storage census (Phase 8 Task 2, Q129)", () => {
 
   it("no static HTML or script is served from public/", () => {
     const dir = join(ROOT, "public");
-    const files: string[] = [];
-    if (existsSync(dir)) walk(dir, files);
-    const html = existsSync(dir)
-      ? readdirSync(dir, { recursive: true }).map(String).filter((f) => /\.(html?|js|mjs)$/i.test(f))
+    const served = existsSync(dir)
+      ? readdirSync(dir, { recursive: true })
+          .map(String)
+          .filter((f) => /\.(html?|[cm]?js|jsx|tsx?)$/i.test(f))
       : [];
-    expect([...files.map(rel), ...html]).toEqual([]);
+    expect(served).toEqual([]);
   });
 
-  it("the Content-Security-Policy loads scripts, frames and beacons from nowhere but this origin", () => {
+  // WHAT THIS DOES AND DOES NOT PROVE (review finding M6). script-src carries
+  // 'strict-dynamic', so it names no host -- but under 'strict-dynamic' a
+  // script the page already trusts (every app chunk, and anything in
+  // instrumentation-client.ts) may insert a script from ANY host, and a
+  // first-party cookie such a script writes (`_ga`) is governed by no CSP
+  // directive at all. So this is NOT "scripts load only from this origin": it
+  // is "the policy names no third-party script, frame or image host", and the
+  // source scan above is what stops trusted code from inserting one. Whether
+  // 'strict-dynamic' should stay is DECISIONS-QUEUE Q155.
+  it("the Content-Security-Policy names no third-party script, frame or image host (not: blocks one)", () => {
     const csp = contentSecurityPolicy("census-nonce");
     const directive = (name: string) =>
       csp.split(";").map((d) => d.trim()).find((d) => d.startsWith(`${name} `)) ?? "";
@@ -427,12 +418,13 @@ describe("the storage census (Phase 8 Task 2, Q129)", () => {
 });
 
 // ===========================================================================
-// THE DETECTOR HAS TEETH -- the mutations the brief names, run against the
-// scanner itself on every run, so the proof does not live only in a report.
-// (The same two were also applied to the real tree once and reverted; see
-// task-2-report.md.)
+// THE DETECTOR HAS TEETH -- the two mutations the brief names, and every
+// evasion the Task 2 review measured green against the first (regex)
+// scanner, run against the scanner itself on every CI build.
 // ===========================================================================
 describe("the census detector", () => {
+  const kinds = (source: string, file = "x.tsx") => scanSource(file, source).map((s) => s.kind);
+
   it("sees a new localStorage key, and the key is not an inventory item", () => {
     const found = scanSource(
       "components/fake.tsx",
@@ -447,8 +439,127 @@ describe("the census detector", () => {
       "app/fake.tsx",
       `import Script from "next/script";\nexport default function L() { return <Script src="https://analytics.example/a.js" />; }`,
     );
-    expect(found.map((s) => s.text)).toEqual(['"next/script"', "<Script", 'src="https://']);
+    expect(found.map((s) => s.text)).toEqual([
+      'import Script from "next/script";',
+      "Script",
+      'src="https://analytics.example/a.js"',
+    ]);
     expect(new Set(found.map((s) => s.kind))).toEqual(new Set(["third-party"]));
+  });
+
+  // Each of the first group was GREEN under the regex scanner
+  // (task-2-review.md, I1); the rest are neighbours of the same shapes.
+  const EVASIONS: [string, string, SiteKind][] = [
+    [
+      "the Next 15/16 shape of cookies().set",
+      `import { cookies } from "next/headers";\nexport async function a() { (await cookies()).set("ab", "1"); }`,
+      "cookie-write",
+    ],
+    [
+      "an aliased cookies import",
+      `import { cookies as jar } from "next/headers";\nexport async function a() { const c = await jar(); c.set("x", "1"); }`,
+      "cookie-write",
+    ],
+    [
+      "a destructured set",
+      `import { cookies } from "next/headers";\nexport async function a() { const { set } = await cookies(); set("x", "1"); }`,
+      "cookie-write",
+    ],
+    ["a concatenated Set-Cookie header", `headers.push(["Set-" + "Cookie", v]);`, "cookie-write"],
+    ["optional-chained localStorage", `window.localStorage?.setItem("k", "1");`, "web-storage-write"],
+    ["an aliased localStorage", `const ls = window.localStorage; ls.setItem("k", "1");`, "web-storage-write"],
+    ["a bracketed localStorage", `window["localStorage"].setItem("k", "1");`, "web-storage-write"],
+    ["the Cookie Store API", `cookieStore.set("x", "1");`, "cookie-write"],
+    ["a dynamic import from a CDN", `await import("https://cdn.example/a.js");`, "third-party"],
+    ["a beacon by fetch", `fetch("https://beacon.example/p", { method: "POST" });`, "third-party"],
+    ["a preconnect link", `export const L = () => <link rel="preconnect" href="https://fonts.example" />;`, "third-party"],
+    ["window.open to a third party", `window.open("https://t.example/");`, "third-party"],
+    ["a write after a string containing //", `const u = "a //"; localStorage.setItem("k", "1");`, "web-storage-write"],
+    // -- neighbours --
+    [
+      "a namespace import of next/headers",
+      `import * as h from "next/headers";\nexport async function a() { (await h.cookies()).set("x", "1"); }`,
+      "cookie-write",
+    ],
+    [
+      "a cookie store's set taken and called later",
+      `import { cookies } from "next/headers";\nexport async function a() { const s = await cookies(); const f = s.set; f("x", "1"); }`,
+      "cookie-write",
+    ],
+    [
+      "the cookies function passed away",
+      `import { cookies as c } from "next/headers";\nexport const run = () => helper(c);`,
+      "cookie-write",
+    ],
+    [
+      "optional chaining on cookies()",
+      `import { cookies } from "next/headers";\nexport async function a() { (await cookies())?.set("x", "1"); }`,
+      "cookie-write",
+    ],
+    ["the Cookie Store API on window", `window.cookieStore?.set({ name: "x", value: "1" });`, "cookie-write"],
+    ["a templated set-cookie header", "const h = `set-${'cookie'}`;", "cookie-write"],
+    ["a meta set-cookie", `export const M = () => <meta httpEquiv="set-cookie" content="a=b" />;`, "cookie-write"],
+    ["an aliased document", `const d = document; d.cookie = "_ga=1";`, "cookie-write"],
+    ["a bracketed document.cookie", `document["cookie"] = "_ga=1";`, "cookie-write"],
+    ["compound assignment to document.cookie", `document.cookie += "; _ga=1";`, "cookie-write"],
+    ["an alias of an alias", `const a = window.sessionStorage; const b = a; b.setItem("k", "1");`, "web-storage-write"],
+    ["a destructured localStorage", `const { localStorage: ls } = window; ls.setItem("k", "1");`, "web-storage-write"],
+    ["a concatenated global name", `window["local" + "Storage"].setItem("k", "1");`, "web-storage-write"],
+    ["a constant global name", `const N = "sessionStorage"; globalThis[N].setItem("k", "1");`, "web-storage-write"],
+    ["storage passed to a function", `persist(window.localStorage);`, "web-storage-write"],
+    ["storage returned", `export const store = () => window.sessionStorage;`, "web-storage-write"],
+    ["storage put in an object", `export const deps = { s: localStorage };`, "web-storage-write"],
+    [
+      "a cookie store returned",
+      `import { cookies } from "next/headers";\nexport async function jar() { return await cookies(); }`,
+      "cookie-write",
+    ],
+    ["setItem via call()", `localStorage.setItem.call(localStorage, "k", "1");`, "web-storage-write"],
+    ["a conditional store", `(ok ? localStorage : sessionStorage).setItem("k", "1");`, "web-storage-write"],
+    ["a computed write", `localStorage[key] = "1";`, "web-storage-write"],
+    [
+      "a write after a template containing //",
+      "const u = `http://x/${y}`; localStorage.setItem(\"k\", \"1\");",
+      "web-storage-write",
+    ],
+    ["a dynamic import of a computed specifier", `await import(url);`, "third-party"],
+    ["a require of next/script", `const S = require("next/script");`, "third-party"],
+    ["a beacon by fetch through a constant", `const U = "//beacon.example/p"; fetch(U);`, "third-party"],
+    ["an XHR to a third party", `x.open("GET", "https://t.example/p");`, "third-party"],
+    ["a WebSocket to a third party", `new WebSocket("wss://t.example/s");`, "third-party"],
+    ["a link with a computed href", `export const L = () => <link rel="stylesheet" href={u} />;`, "third-party"],
+    ["a script src assignment", `const s = document.createElement(tag); s.src = "https://t.example/a.js";`, "third-party"],
+    ["an innerHTML injection", `el.innerHTML = "<script src=//t.example></script>";`, "third-party"],
+    ["insertAdjacentHTML", `el.insertAdjacentHTML("beforeend", html);`, "third-party"],
+    ["document.write", `document.write("<script></script>");`, "third-party"],
+    ["eval", `eval(code);`, "third-party"],
+    ["new Function", `new Function(code)();`, "third-party"],
+    ["an object element", `export const O = () => <object data="https://t.example/x.swf" />;`, "third-party"],
+    ["an absolute poster", `export const V = () => <video poster="https://t.example/p.png" />;`, "third-party"],
+    ["the GA loader as a string", `const s = "https://www.googletagmanager.com/gtag/js?id=G-1";`, "tracker"],
+    ["gtag on window", `window.gtag("config", "G-1");`, "tracker"],
+    ["dataLayer", `window.dataLayer = window.dataLayer || [];`, "tracker"],
+    ["an analytics package", `import { track } from "@vercel/analytics";`, "tracker"],
+    ["IndexedDB via window", `window["indexedDB"].open("db");`, "indexeddb"],
+    ["navigator.storage", `navigator.storage.persist();`, "cache-storage"],
+  ];
+
+  for (const [name, source, kind] of EVASIONS) {
+    it(`sees ${name}`, () => {
+      expect(kinds(source), source).toContain(kind);
+    });
+  }
+
+  it("sees a GA loader in a root instrumentation-client.ts, and that file is in the scanned set", () => {
+    const source = [
+      `const s = document.createElement("script");`,
+      `s.src = "https://www.googletagmanager.com/gtag/js?id=G-1";`,
+      `document.head.appendChild(s);`,
+      `localStorage.setItem("_ga_seen", "1");`,
+    ].join("\n");
+    expect(kinds(source, "instrumentation-client.ts")).toEqual(
+      expect.arrayContaining(["third-party", "tracker", "web-storage-write"]),
+    );
   });
 
   it("sees the other shapes", () => {
@@ -470,19 +581,37 @@ describe("the census detector", () => {
       [`window.gtag("event")`, "tracker"],
       [`import posthog from "posthog-js"`, "tracker"],
       [`import { Analytics } from "@vercel/analytics/react"`, "tracker"],
+      [`import { createClient } from "@supabase/supabase-js"; createClient(u, k);`, "supabase-client"],
+      [`import { createBrowserClient as mk } from "@supabase/ssr"; mk(u, k);`, "supabase-client"],
     ];
     for (const [source, kind] of shapes) {
-      expect(scanSource("x.tsx", source).map((s) => s.kind), source).toContain(kind);
+      expect(kinds(source), source).toContain(kind);
     }
   });
 
-  it("ignores what is only said in a comment, and reads (not writes) storage", () => {
+  it("keys a write by its first argument, however the store was reached", () => {
+    const keyOf = (source: string) => scanSource("x.ts", source).map((s) => s.key);
+    expect(keyOf(`import { cookies } from "next/headers";\n(await cookies()).set(NAME, v);`)).toEqual(["NAME"]);
+    expect(keyOf(`const ls = localStorage; ls.setItem("_ga", "1");`)).toEqual(['"_ga"']);
+    expect(keyOf(`localStorage.k = "v";`)).toEqual(['"k"']);
+  });
+
+  it("ignores what is only said in a comment or a string, and reads (not writes) storage", () => {
     const quiet = [
       `// document.cookie = "x"`,
       `/* localStorage.setItem("k", "v") <script> */`,
+      `const doc = "localStorage.setItem('k', 'v') and document.cookie = 1";`,
       `const v = window.localStorage.getItem(KEY); window.localStorage.removeItem(KEY);`,
       `const url = "https://example.com"; // a URL is not a comment`,
       `const c = store.get("x");`,
+      `import { cookies } from "next/headers";\nconst s = await cookies(); const v = s.get("x"); const all = s.getAll();`,
+      `import { cookies } from "next/headers";\nconst { get, getAll } = await cookies();`,
+      `if (typeof window !== "undefined" && window.localStorage) { read(); }`,
+      `export const A = () => <a href="https://example.com">x</a>;`,
+      `import Link from "next/link";\nexport const B = () => <Link href={dynamicHref}>x</Link>;`,
+      `window.location.href = "/login";`,
+      `const response = await fetch(url);`,
+      `const t: typeof localStorage = x;`,
     ];
     for (const source of quiet) expect(scanSource("x.tsx", source), source).toEqual([]);
   });
