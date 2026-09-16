@@ -1,4 +1,9 @@
 import Link from "next/link";
+// The shared empty-value marker (components/ui/absent.tsx). This row rendered
+// a BARE em dash, which one-absent.test.ts's marker census does not catch --
+// and which is exactly the defect that module exists for: a screen reader gets
+// "em dash" or silence where the value should be "Not recorded".
+import { Absent } from "@/components/ui/absent";
 import type { Cursor } from "@/lib/list/cursor";
 import { toolbarParamNames, type RawSearchParams } from "@/lib/list/params";
 import {
@@ -224,7 +229,9 @@ function Row({ row, basePath }: { row: FeedbackRow; basePath: string }) {
           {row.route}
         </dd>
         <dt className="text-ink-muted">Browser</dt>
-        <dd className="break-all text-ink-muted">{row.userAgent ?? "—"}</dd>
+        <dd className="break-all text-ink-muted">
+          {row.userAgent ?? <Absent />}
+        </dd>
       </dl>
       <p className="max-w-prose whitespace-pre-wrap text-base text-ink">{row.message}</p>
       {row.screenshot === "clean" ? (

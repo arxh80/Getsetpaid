@@ -9,6 +9,14 @@ import {
   type AuditLogParams,
 } from "@/lib/admin/audit-log";
 import { formatDateTime } from "@/lib/format/date";
+// THE SHARED EMPTY-VALUE MARKER, not a local copy. This file carried its own
+// byte-identical `function Absent()` while Phase 7 was on a base that had no
+// such module; main extracted one (components/ui/absent.tsx) and
+// tests/unit/design/one-absent.test.ts now fails any file that re-declares it
+// or inlines its markup -- because the dash being aria-hidden and the sr-only
+// text being the real content is an accessibility decision, and a drifted
+// twenty-first copy goes silent while looking right.
+import { Absent } from "@/components/ui/absent";
 
 // The audit log table, and its one-directional pager.
 //
@@ -193,15 +201,6 @@ function IdText({ value }: { value: string }) {
   return (
     <span translate="no" className="font-mono text-xs text-ink-muted">
       {value}
-    </span>
-  );
-}
-
-function Absent() {
-  return (
-    <span className="text-ink-muted">
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">Not recorded</span>
     </span>
   );
 }
