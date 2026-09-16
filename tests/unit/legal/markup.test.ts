@@ -39,7 +39,6 @@ function text(blocks: readonly Block[]): string {
 describe("safeHref -- the one link-target check", () => {
   it.each([
     "https://ico.org.uk/make-a-complaint/",
-    "HTTPS://example.com/x",
     "mailto:someone@example.test",
     "/legal/privacy",
     "/legal/privacy#rights",
@@ -51,6 +50,11 @@ describe("safeHref -- the one link-target check", () => {
   it.each([
     "javascript:alert(1)",
     "JavaScript:alert(1)",
+    // Fix round 1, M4: the scheme is lower case only, as the database's CHECK
+    // has always required -- these were accepted here and refused there.
+    "HTTPS://example.com/x",
+    "Https://example.com/x",
+    "MAILTO:someone@example.test",
     "  javascript:alert(1)",
     "java\tscript:alert(1)",
     "data:text/html;base64,PHNjcmlwdD4=",

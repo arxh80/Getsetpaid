@@ -48,6 +48,10 @@ function checkViolation(message: string): string | null {
   if (message.includes("legal_documents_body_tokens_known")) {
     return "The text contains a {{placeholder}} the page doesn’t know.";
   }
+  if (message.includes("legal_documents_body_placeholders_placed")) {
+    return "A {{placeholder}} is somewhere it can’t render. Put {{subprocessors}} and {{storage_inventory}} on a line of their own, and keep placeholders out of bold text and links.";
+  }
+  // Also matches legal_documents_required_blocks_standalone (fix round 1).
   if (message.includes("legal_documents_required_blocks")) {
     return "This document must keep its generated placeholder.";
   }

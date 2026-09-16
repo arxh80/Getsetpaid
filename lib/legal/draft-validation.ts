@@ -13,10 +13,12 @@ import {
   SUBPROCESSORS_TOKEN,
   SUPPORT_EMAIL_TOKEN,
   parseLegalMarkup,
+  type Block,
 } from "./markup";
 
-/** Placeholders a document must contain -- mirrors the
- *  `legal_documents_required_blocks` CHECK. */
+/** Placeholders a document must RENDER -- mirrors the
+ *  `legal_documents_required_blocks` and (since fix round 1)
+ *  `legal_documents_required_blocks_standalone` CHECKs. */
 export const REQUIRED_PLACEHOLDERS: Partial<Record<LegalSlug, readonly string[]>> = {
   cookies: [STORAGE_INVENTORY_TOKEN],
   subprocessors: [SUBPROCESSORS_TOKEN],
@@ -30,6 +32,24 @@ const REQUIRED_REASON: Record<string, string> = {
   [SUBPROCESSORS_TOKEN]: "it renders the subprocessor register",
   [SUPPORT_EMAIL_TOKEN]: "it renders the configured contact address",
 };
+
+/**
+ * Does the PARSED document render this placeholder? (Fix round 1, M3.) This
+ * used to be `body.includes(token)`, which a placeholder inside bold or link
+ * text satisfied while rendering nothing -- the required part was "present"
+ * and the page showed neither an address nor the "not configured" sentence.
+ */
+export function rendersPlaceholder(blocks: readonly Block[], token: string): boolean {
+  if (token === STORAGE_INVENTORY_TOKEN) return blocks.some((b) => b.kind === "storage-inventory");
+  if (token === SUBPROCESSORS_TOKEN) return blocks.some((b) => b.kind === "subprocessors");
+  if (token === SUPPORT_EMAIL_TOKEN) {
+    return blocks.some((b) => {
+      const runs = b.kind === "list" ? b.items : b.kind === "heading" || b.kind === "paragraph" ? [b.content] : [];
+      return runs.some((run) => run.some((part) => part.kind === "support-email"));
+    });
+  }
+  return false;
+}
 
 export interface DraftInput {
   readonly title: string;
@@ -71,9 +91,10 @@ export function validateDraft(slug: LegalSlug, input: DraftInput): DraftValidati
   } else if (body.length > MAX_BODY_LENGTH) {
     fieldErrors.body = `The document is longer than ${MAX_BODY_LENGTH.toLocaleString("en-GB")} characters.`;
   } else {
-    const problems = [...parseLegalMarkup(body).problems];
+    const parsed = parseLegalMarkup(body);
+    const problems = [...parsed.problems];
     for (const token of REQUIRED_PLACEHOLDERS[slug] ?? []) {
-      if (!body.includes(token)) {
+      if (!rendersPlaceholder(parsed.blocks, token)) {
         problems.push(`This document must contain ${token} — ${REQUIRED_REASON[token]}.`);
       }
     }

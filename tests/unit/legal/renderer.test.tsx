@@ -75,6 +75,20 @@ describe("the contact placeholder is filled from configuration", () => {
     expect(html).not.toContain("{{support_email}}");
   });
 
+  // Fix round 1, M3: these rendered the literal placeholder, with neither an
+  // address nor the "not configured" sentence.
+  it.each([
+    "Email **{{support_email}}** today.",
+    "[{{support_email}}](/legal/contact)",
+    "Our providers: {{subprocessors}}",
+  ])("never renders a raw placeholder, even for text the save path refuses: %j", (source) => {
+    for (const address of ["help@example.test", null]) {
+      const html = render(source, address);
+      expect(html).not.toContain("{{");
+      expect(html).not.toContain("}}");
+    }
+  });
+
   it("treats a malformed or injected configured value as unset", () => {
     expect(supportContact({ SUPPORT_CONTACT_EMAIL: "" }).address).toBeNull();
     expect(supportContact({}).address).toBeNull();
@@ -115,6 +129,25 @@ describe("the draft notice", () => {
     expect(html.slice(notice, html.indexOf('data-testid="legal-body"'))).not.toMatch(/<button|<input/);
   });
 
+  // Fix round 1, M9: the editor embeds the view below its own headings, and
+  // the document's outline must continue from there rather than restart.
+  it("keeps the outline in order at every embedding level", () => {
+    const levels = (html: string) => [...html.matchAll(/<h([1-6])\b/g)].map((m) => Number(m[1]));
+    for (const headingLevel of [1, 2, 3, 4] as const) {
+      const html = renderToStaticMarkup(
+        <LegalDocumentView
+          title="Terms"
+          version={3}
+          effectiveDate="2026-09-22"
+          reviewed
+          body={"## Section\n\nText.\n\n### Sub\n\nMore."}
+          headingLevel={headingLevel}
+        />,
+      );
+      expect(levels(html)).toEqual([headingLevel, headingLevel + 1, headingLevel + 2]);
+    }
+  });
+
   it("is absent on a reviewed version (the paired control)", () => {
     const html = view(true);
     expect(html).not.toContain("legal-draft-notice");
@@ -150,6 +183,7 @@ describe("no raw-HTML escape hatch exists on the legal path", () => {
       ...sources(join(ROOT, "app", "legal")),
       join(ROOT, "app", "(app)", "super", "legal", "page.tsx"),
       join(ROOT, "components", "admin", "legal-editor-forms.tsx"),
+      join(ROOT, "components", "admin", "legal-editor-outcome.tsx"),
     ];
     // The ATTRIBUTE or a DOM write, not the word: two headers name the prop in
     // order to say it is not used.
