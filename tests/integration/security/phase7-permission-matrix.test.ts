@@ -12,7 +12,7 @@
 // JWT -- the request a script sends, never the form.
 //
 // -----------------------------------------------------------------------------
-// THE INVENTORY IS MECHANICAL, NOT REMEMBERED
+// THE INVENTORY IS A CENSUS, NOT A LOOKUP -- AND THAT IS A FIX ROUND 1 CHANGE
 // -----------------------------------------------------------------------------
 // `SUPERUSER_ONLY_RPCS` and `PHASE7_TABLES` below were not written from memory.
 // They were produced by querying the live catalogue for everything Phase 7's
@@ -20,19 +20,77 @@
 //
 //   -- functions a session can call at all
 //   select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-//     left join lateral aclexplode(p.proacl) ax on true
+//     cross join lateral aclexplode(p.proacl) ax
 //    where n.nspname = 'public' and ax.privilege_type = 'EXECUTE'
 //      and pg_get_userbyid(ax.grantee) = 'authenticated';
 //
-//   -- tables a session can reach, and with what
-//   select c.relname, c.relrowsecurity, c.relacl from pg_class c
-//     join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public';
+//   -- relations a session can reach at all
+//   select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+//    where n.nspname = 'public' and c.relkind in ('r','p','v','m')
+//      and exists (select 1 from aclexplode(c.relacl) ax
+//                   where pg_get_userbyid(ax.grantee) = 'authenticated');
 //
-// and `INVENTORY IS COMPLETE` below re-runs the first of those queries at test
-// time and fails if the catalogue has grown past this file. An inventory built
-// from recollection is the failure this task exists to prevent, so the file
-// refuses to go stale silently: a Phase 8 RPC granted to `authenticated` on any
-// of these tables lands here as a red test naming itself.
+// AS FIRST SHIPPED, THIS HEADER CLAIMED MORE THAN THE CODE DID, and the review
+// caught it: the RPC query ended `and p.proname = any($1::text[])` -- it could
+// only confirm that names ALREADY on the list still existed and were still
+// granted -- and `PHASE7_TABLES` was a hardcoded literal with nothing derived
+// from `pg_class` at all. A Phase 8 function or table granted to
+// `authenticated` and never added to either list was invisible to both.
+//
+// Both are now genuine censuses (§ GATE 0). Each runs the query above with NO
+// name filter and asserts the FULL result set equals this file's lists plus a
+// declared, justified allowlist of the pre-Phase-7 surfaces this task is not
+// about (`PRE_PHASE7_RPCS`, `PRE_PHASE7_RELATIONS`). So a Phase 8 grant lands
+// here as a red test naming itself, which is what the sentence always meant to
+// promise. What a census still cannot catch: a surface reachable WITHOUT a
+// grant to `authenticated` (a SECURITY DEFINER function granted to `public`,
+// or a table in another exposed schema), and anything outside PostgREST
+// entirely -- see THE LAYER THIS FILE DOES NOT REACH, below.
+//
+// -----------------------------------------------------------------------------
+// THE LAYER THIS FILE DOES NOT REACH, NAMED RATHER THAN IMPLIED (Q126)
+// -----------------------------------------------------------------------------
+// The brief asks for a server-action layer probe: each of the fifteen exported
+// `*Action` functions behind these surfaces invoked directly as each principal.
+// THAT IS NOT TESTED HERE, by any test this task added. It is a real gap and it
+// is mitigated rather than closed, for one specific structural reason: NO
+// module under `lib/admin/` constructs a service-role client (`createServiceClient`
+// appears nowhere in that tree), so every one of those actions is enforced by
+// the RPC and table layers THIS file probes, one layer down -- eleven are thin
+// wrappers over the guarded RPCs above, and `resolveIncidentAlertAction` /
+// `updateFeedbackStatusAction` are plain RLS-gated `.update()`s covered by the
+// table-layer UPDATE probe (which asserts an md5 of the whole table, not a row
+// count). The residual is a FUTURE action that reaches for `createServiceClient()`
+// and is gated only by `isSuperuser()`: that action would bypass both layers
+// this file measures, and nothing here would notice. Queued as Q126, whose
+// recommended default is a source census asserting no module under `lib/admin/`
+// imports the service-role client.
+//
+// -----------------------------------------------------------------------------
+// WHAT THE TWO RED MUTATIONS PROVE, AND WHAT EACH DOES NOT
+// -----------------------------------------------------------------------------
+// `private.has_platform_permission()` is a conjunction of two terms. Dropping
+// EITHER, in the running database only, is a mutation this suite is measured
+// against -- and the two answers are different in a way that matters:
+//
+//   1. Drop `private.session_is_aal2()`, keeping the platform_admins term:
+//      23 of 224 red. This can only move ONE of the seven principals -- a
+//      caller who is on the allowlist and below aal2, i.e. `superuserAal1` --
+//      so 21 of the 23 are that principal (12 RPC refusals, 8 table reads, 1
+//      table write) and 2 are cascade. The GRANT layer necessarily goes 0 red,
+//      because grants do not read that function. It says nothing about the
+//      Owner rows, Read Only, no-org or anonymous.
+//   2. Drop the `platform_admins` term, keeping `session_is_aal2()`:
+//      53 of 224 red, ALL of them the three Owner principals (33 RPC refusals,
+//      19 table reads, 1 table write). THIS is the mutation that proves the
+//      plan's named case -- "unreachable by a non-superuser, EVEN AN ORG
+//      OWNER" -- is a measurement and not an argument, and it proves as a side
+//      effect that the Owner fixtures genuinely reach aal2: an aal1 Owner
+//      would not have gone red at all.
+//
+// Neither mutation can move `readOnlyMember`, `noOrganisation` or `anonymous`
+// (they are aal1 or sessionless, so neither term can flip them); their refusals
+// rest on the positive controls instead.
 //
 // -----------------------------------------------------------------------------
 // EVERY REFUSAL CARRIES A POSITIVE CONTROL. THIS IS THE POINT OF THE FILE.
@@ -107,6 +165,23 @@ let superuser: SupabaseClient;
  *  see SETUP DOUBLES AS THE POSITIVE CONTROL. */
 const ARGS = {
   impersonationSessionId: "",
+  /**
+   * M1, fix round 1. A session held in `accepted` for the whole run, on its own
+   * organisation, and the ONLY thing `start_impersonation_session`'s refusals
+   * are aimed at.
+   *
+   * They used to be aimed at `impersonationSessionId` -- the session beforeAll
+   * has already STARTED. That function refuses any row that is not `accepted`
+   * with `42501`, the guard's own SQLSTATE, so all seven principals were being
+   * refused by ROW STATE wearing the guard's code, and `REFUSAL_CODES` could
+   * not tell the two apart. It was not theoretical: under mutation 1 (above),
+   * 12 of the 13 superuser-only RPCs went red on `superuserAal1` and this one
+   * STAYED GREEN -- the guard was gone and the test said the guard held. With
+   * the refusals pointed at a genuinely `accepted` session owned by the
+   * superuser, the guard is the only thing between the caller and success, and
+   * the same mutation reds it.
+   */
+  acceptedImpersonationSessionId: "",
   billingOverrideId: "",
   featureOverrideId: "",
   feedbackId: "",
@@ -187,6 +262,16 @@ interface RpcSurface {
    * idempotent.
    */
   positiveControl?: () => Promise<void>;
+  /**
+   * An extra assertion run after EVERY refusal, for surfaces where "no side
+   * effect" is a change to an existing row rather than a new one -- which
+   * `sideEffectTable`'s row count cannot see. M1's surface is the only one
+   * that has this today: a successful start moves the disposable session out
+   * of `accepted`, so re-asserting the state it must still be in catches a
+   * guard that let one principal through before the next principal's refusal
+   * silently became a row-state refusal again.
+   */
+  invariant?: () => Promise<void>;
 }
 
 const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
@@ -217,8 +302,23 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
   },
   {
     fn: "start_impersonation_session",
-    args: () => ({ p_session_id: ARGS.impersonationSessionId }),
+    // M1: a session in `accepted`, not the one beforeAll already started. See
+    // ARGS.acceptedImpersonationSessionId.
+    args: () => ({ p_session_id: ARGS.acceptedImpersonationSessionId }),
     sideEffectTable: null,
+    invariant: async () => {
+      const { rows } = await pool.query<{ status: string; started_at: string | null }>(
+        `select status, started_at from public.impersonation_sessions where id = $1`,
+        [ARGS.acceptedImpersonationSessionId],
+      );
+      expect(
+        rows[0]?.status,
+        "the disposable session left `accepted` -- a principal STARTED it, so " +
+          "every refusal after this one is a refusal by row state rather than " +
+          "by the guard, which is exactly the false green M1 closed",
+      ).toBe("accepted");
+      expect(rows[0]?.started_at, "the refused start still stamped started_at").toBeNull();
+    },
     positiveControl: async () => {
       // A disposable session on org B, walked end to end: request (superuser),
       // accept (that workspace's own Owner), start (superuser), end. A replay
@@ -404,6 +504,83 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "discloses nobody else's counter.",
 };
 
+/**
+ * Everything ELSE `authenticated` may EXECUTE in `public`, declared so the
+ * census below can be an equality rather than a subset check.
+ *
+ * Each is pre-Phase-7 and outside this task's subject (Phase 2's CRM writes and
+ * dedup, Phase 4's document audit, the permission reads every page makes). They
+ * are not untested -- each has its own suite under `supabase/tests/` -- they are
+ * simply not platform-superuser surfaces. Adding a name here is the deliberate,
+ * reviewable act the census exists to force.
+ */
+const PRE_PHASE7_RPCS: Record<string, string> = {
+  accept_invite: "Phase 1 invites -- the invitee activating their own membership",
+  audit_document_action: "Phase 4 -- the document download/upload audit write",
+  create_organisation: "Phase 1 -- any signed-in user may found a workspace",
+  has_permission: "the permission read every gate in the product makes",
+  is_platform_admin: "the identity read /super's own layout makes; discloses a boolean about the CALLER only",
+  merge_records: "Phase 2 dedup -- tenant-scoped, gated on merge_records",
+  screen_for_duplicates: "Phase 2 dedup detection, tenant-scoped",
+  set_artist_primary_representation: "Phase 2 CRM write",
+  set_contact_primary_company: "Phase 2 CRM write",
+  set_custom_field_values: "Phase 2 custom fields, entitlement-gated",
+};
+
+/**
+ * Everything ELSE `authenticated` holds a grant on in `public` -- tables AND
+ * views, because a view is how Phase 6 exposes the network and a new one
+ * granted to `authenticated` is exactly as much of a read surface as a table.
+ *
+ * Same contract as `PRE_PHASE7_RPCS`: this is the declared exclusion list that
+ * makes the relation census an equality, so a Phase 8 table arrives as a red
+ * test naming itself rather than as a silent gap.
+ */
+const PRE_PHASE7_RELATIONS = [
+  "activity_events",
+  "agencies",
+  "artist_fee_history",
+  "artist_representations",
+  "artists",
+  "audit_events",
+  "companies",
+  "contact_companies",
+  "contacts",
+  "custom_field_definitions",
+  "custom_field_values",
+  "document_links",
+  "document_versions",
+  "documents",
+  "event_finance_summary",
+  "event_lineup",
+  "event_status_changes",
+  "events",
+  "financial_entries",
+  "meeting_links",
+  "meetings",
+  "merge_candidates",
+  "merges",
+  "network_connected_profiles",
+  "network_connection_requests",
+  "network_directory",
+  "network_links",
+  "network_profiles",
+  "note_links",
+  "notes",
+  "organisation_memberships",
+  "organisation_subscriptions",
+  "organisations",
+  "permissions",
+  "profiles",
+  "role_permissions",
+  "roles",
+  "subscription_plans",
+  "task_links",
+  "tasks",
+  "venue_rooms",
+  "venues",
+] as const;
+
 const PHASE7_TABLES = [
   "feedback",
   "impersonation_sessions",
@@ -514,6 +691,65 @@ beforeAll(async () => {
     }
   }
 
+  // ---- M1: a session held in `accepted`, on its OWN organisation ----------
+  // The target of start_impersonation_session's seven refusals, and the reason
+  // it needs a third workspace: org A's live-pair slot is taken by the session
+  // above and org B's is borrowed and released by three positive controls, so
+  // a row that must stay `accepted` for the whole run can live in neither
+  // (`impersonation_sessions_live_pair` is unique over superuser+organisation
+  // for requested/accepted/active).
+  //
+  // ownerA creates it deliberately: they are already the workspace-side
+  // principal that impersonation_sessions is documented as readable by, so the
+  // extra row changes no table-layer expectation. Creating it as ownerB would
+  // have handed `overriddenOrgOwner` -- a principal asserted to read NOTHING
+  // from that table -- a row it could legitimately see, turning an assertion
+  // into its opposite.
+  {
+    const orgCSlug = `rls-js-c-${fx.runId}`;
+    const { data: orgCId, error: orgCErr } = await fx.ownerA.client.rpc(
+      "create_organisation",
+      { p_name: `RLS JS Test Org C ${fx.runId}`, p_slug: orgCSlug },
+    );
+    if (orgCErr || !orgCId) {
+      throw new Error(`could not create the accepted-session workspace: ${orgCErr?.message}`);
+    }
+    // destroyFixtures() deletes by this array, so the third workspace is torn
+    // down with the other two rather than left behind for the next suite.
+    fx._allOrgIds.push(orgCId as string);
+
+    const { data: sessionId, error } = await superuser.rpc("request_impersonation", {
+      p_organisation_slug: orgCSlug,
+      p_reason: "permission matrix: a session that stays ACCEPTED, never started",
+    });
+    if (error || !sessionId) {
+      throw new Error(`POSITIVE CONTROL FAILED: request_impersonation (org C): ${error?.message}`);
+    }
+    ARGS.acceptedImpersonationSessionId = sessionId as string;
+    const accepted = await fx.ownerA.client.rpc("accept_impersonation_request", {
+      p_session_id: ARGS.acceptedImpersonationSessionId,
+    });
+    if (accepted.error) {
+      throw new Error(
+        `POSITIVE CONTROL FAILED: accept_impersonation_request (org C): ${accepted.error.message}`,
+      );
+    }
+    // THE DENOMINATOR FOR M1. If this row is not `accepted` with a null
+    // started_at, start_impersonation_session's refusals are back to being
+    // delivered by row state wearing the guard's own 42501.
+    const { rows } = await pool.query(
+      `select status, started_at from public.impersonation_sessions where id = $1`,
+      [ARGS.acceptedImpersonationSessionId],
+    );
+    if (rows.length !== 1 || rows[0].status !== "accepted" || rows[0].started_at !== null) {
+      throw new Error(
+        "the disposable session is not in `accepted` with a null started_at, so " +
+          "start_impersonation_session's refusals would be refusals of row state " +
+          "and not of the guard (M1)",
+      );
+    }
+  }
+
   // ---- Principal 7: an active Pro billing override on org B (Starter) -----
   {
     const { data: id, error } = await superuser.rpc("grant_billing_override", {
@@ -597,8 +833,10 @@ afterAll(async () => {
     [[fx.orgA.id, fx.orgB.id, ...fx._allUserIds]],
   );
   await pool.query(
+    // _allOrgIds, not [orgA, orgB]: M1's accepted session lives on the third
+    // workspace beforeAll creates and pushes onto that array.
     `delete from public.impersonation_sessions where target_organisation_id = any($1::uuid[])`,
-    [[fx.orgA.id, fx.orgB.id]],
+    [fx._allOrgIds],
   );
   await destroyFixtures(fx);
 });
@@ -607,10 +845,13 @@ afterAll(async () => {
 // GATE 0: THE INVENTORY IS COMPLETE
 // =============================================================================
 describe("the inventory is mechanical", () => {
-  it("every Phase 7 function `authenticated` can execute is on this file's list", async () => {
-    // The same query the header documents, re-run at test time. A Phase 8
-    // migration that grants EXECUTE on a new function to `authenticated`
-    // fails HERE, by name, instead of quietly never being tested.
+  it("every function `authenticated` can execute in `public` is accounted for", async () => {
+    // A CENSUS, since fix round 1. This query carries NO `proname = any(...)`
+    // filter -- the filter is what made the first cut able only to confirm
+    // names already on the list, while the header claimed a Phase 8 grant
+    // would land as a red test naming itself (review finding M2). Now it does:
+    // a new granted function appears in `granted` and in none of the three
+    // lists, and this assertion names it.
     const { rows } = await pool.query<{ proname: string }>(
       `select distinct p.proname
          from pg_proc p
@@ -618,34 +859,62 @@ describe("the inventory is mechanical", () => {
          cross join lateral aclexplode(p.proacl) ax
         where n.nspname = 'public'
           and ax.privilege_type = 'EXECUTE'
-          and pg_get_userbyid(ax.grantee) = 'authenticated'
-          and p.proname = any($1::text[])`,
-      [
-        [
-          ...SUPERUSER_ONLY_RPCS.map((r) => r.fn),
-          ...Object.keys(MEMBER_REACHABLE_RPCS),
-        ],
-      ],
+          and pg_get_userbyid(ax.grantee) = 'authenticated'`,
     );
-    const found = new Set(rows.map((r) => r.proname));
-    const expected = [
+    const granted = rows.map((r) => r.proname).sort();
+    const accounted = [
       ...SUPERUSER_ONLY_RPCS.map((r) => r.fn),
       ...Object.keys(MEMBER_REACHABLE_RPCS),
-    ];
-    // Every name this file tests must EXIST and be granted -- otherwise the
-    // 91 refusals below are refusals of a function that is not there.
-    expect([...found].sort()).toEqual([...expected].sort());
+      ...Object.keys(PRE_PHASE7_RPCS),
+    ].sort();
+    expect(
+      granted,
+      "a function `authenticated` may EXECUTE in `public` is on neither this " +
+        "file's Phase 7 lists nor PRE_PHASE7_RPCS. Either probe it as a " +
+        "principal-by-principal surface above, or add it to PRE_PHASE7_RPCS " +
+        "with the reason it is out of scope -- the equality is the whole point: " +
+        "a grant that nothing probes must not be able to arrive silently.",
+    ).toEqual(accounted);
+    // Both halves of the old test survive inside the equality: every name this
+    // file probes must also still EXIST and still be granted, or the refusals
+    // below are refusals of a function that is not there.
+    for (const fn of SUPERUSER_ONLY_RPCS.map((r) => r.fn)) {
+      expect(granted, `${fn} is probed by this file and is not granted`).toContain(fn);
+    }
   });
 
-  it("every Phase 7 table this file names exists with RLS enabled", async () => {
-    const { rows } = await pool.query<{ relname: string; relrowsecurity: boolean }>(
-      `select c.relname, c.relrowsecurity
+  it("every relation `authenticated` holds a grant on in `public` is accounted for", async () => {
+    // The same census, at the read layer, and the half that was weakest:
+    // `PHASE7_TABLES` was a hardcoded literal with nothing derived from
+    // `pg_class` at all, so a Phase 8 table granted to `authenticated` was
+    // invisible to this file entirely. Views are included deliberately --
+    // `network_directory` is how Phase 6 exposes the network, so a view is
+    // exactly as much of a read surface as a table.
+    const { rows } = await pool.query<{ relname: string; relrowsecurity: boolean; relkind: string }>(
+      `select c.relname, c.relrowsecurity, c.relkind
          from pg_class c join pg_namespace n on n.oid = c.relnamespace
-        where n.nspname = 'public' and c.relname = any($1::text[])`,
-      [[...PHASE7_TABLES]],
+        where n.nspname = 'public'
+          and c.relkind in ('r','p','v','m')
+          and exists (select 1 from aclexplode(c.relacl) ax
+                       where pg_get_userbyid(ax.grantee) = 'authenticated')`,
     );
-    expect(rows.map((r) => r.relname).sort()).toEqual([...PHASE7_TABLES].sort());
-    expect(rows.filter((r) => !r.relrowsecurity)).toEqual([]);
+    const granted = rows.map((r) => r.relname).sort();
+    expect(
+      granted,
+      "a relation `authenticated` holds a grant on in `public` is on neither " +
+        "PHASE7_TABLES nor PRE_PHASE7_RELATIONS. A platform table added by a " +
+        "later phase belongs in the first (and gets probed by every principal); " +
+        "a tenant one belongs in the second with its reason.",
+    ).toEqual([...PHASE7_TABLES, ...PRE_PHASE7_RELATIONS].sort());
+
+    // And the seven this file probes are real TABLES with RLS on -- a view has
+    // no RLS of its own, so the two facts have to be asserted together.
+    const phase7 = rows.filter((r) => (PHASE7_TABLES as readonly string[]).includes(r.relname));
+    expect(phase7.map((r) => r.relname).sort()).toEqual([...PHASE7_TABLES].sort());
+    expect(
+      phase7.filter((r) => r.relkind !== "r" || !r.relrowsecurity),
+      "a Phase 7 surface this file probes is not an RLS-enabled table",
+    ).toEqual([]);
   });
 });
 
@@ -654,7 +923,7 @@ describe("the inventory is mechanical", () => {
 // =============================================================================
 describe.each(SUPERUSER_ONLY_RPCS)(
   "RPC $fn",
-  ({ fn, args, sideEffectTable, positiveControl }) => {
+  ({ fn, args, sideEffectTable, positiveControl, invariant }) => {
     it("POSITIVE CONTROL: the aal2 platform superuser reaches it", async () => {
       // The load-bearing test of the whole block. By default it calls the
       // function with the SAME argument builder every refusal below uses, so a
@@ -710,6 +979,10 @@ describe.each(SUPERUSER_ONLY_RPCS)(
         // shape that leaks one on a refusal if the guard is in the wrong place.
         expect(await auditCount(), `${fn} minted an audit row while refusing ${key}`)
           .toBe(auditBefore);
+
+        // And for a surface whose success is an UPDATE rather than an INSERT,
+        // the row's own state -- which a count cannot see. See `invariant`.
+        if (invariant) await invariant();
       },
     );
   },
