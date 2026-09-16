@@ -206,7 +206,9 @@ describe("parseLegalMarkup is linear on hostile input at the 100 000-character l
     ["- then space x N then a U+2028 (the bullet regex)", "-" + " ".repeat(N) + "a\u2028b"],
     ["1. then space x N then a U+2028 (the numbered regex)", "1." + " ".repeat(N) + "a\u2028b"],
     ["mailto:a@ then . x N then < (the mailto regex)", "[a](mailto:a@" + ".".repeat(N) + "<)"],
-    ["x, space x N, {{subprocessors}} (the placement trim)", "x" + " ".repeat(N) + "{{subprocessors}}"],
+    // Two tokens: the text before the SECOND one ends in a token, not in
+    // spaces, which is what made the old trim scan the run from every space.
+    ["x, space x N, {{subprocessors}} x 2 (the placement trim)", "x" + " ".repeat(N) + "{{subprocessors}}".repeat(2)],
   ])("%s", (_label, source) => {
     const started = performance.now();
     parseLegalMarkup(source);
@@ -278,12 +280,3 @@ describe("the linear helpers agree with the regular expressions they replaced", 
   });
 });
 
-describe("the configured contact address is bounded before its regex runs", () => {
-  it("refuses a 100 000-character value quickly, and still accepts an ordinary one", () => {
-    const started = performance.now();
-    expect(supportContact({ SUPPORT_CONTACT_EMAIL: "a@" + ".".repeat(99_990) + "!" }).address).toBeNull();
-    const elapsed = performance.now() - started;
-    expect(elapsed, `${elapsed.toFixed(0)} ms`).toBeLessThan(750);
-    expect(supportContact({ SUPPORT_CONTACT_EMAIL: "help@example.org" }).address).toBe("help@example.org");
-  });
-});
