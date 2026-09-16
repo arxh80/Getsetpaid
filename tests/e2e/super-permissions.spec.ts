@@ -390,7 +390,10 @@ test("the platform superuser BELOW aal2 reaches no /super surface", async ({ pag
   // aal2 term itself is proved at the DATA layer instead, where every /super
   // page's reads go through private.has_platform_permission(): the permission
   // matrix drives `superuserAal1` against all thirteen RPCs and all seven
-  // tables, and mutation 1 (see that file's header) reds 21 of them.
+  // tables, and mutation 1 (see that file's header) reds 24 of 224 -- 21 of
+  // them this principal's own (13 RPC refusals, 7 table reads, 1 table write)
+  // and 3 cascade. Re-measured in the pre-merge fix round; fix round 1's own
+  // M1 change moved these figures and did not re-run them.
   await signInAsSuperuserAtAal1(page);
   const challenge = page.getByRole("heading", { name: "Enter your two-factor code" });
   for (const surface of SUPER_SURFACES) {

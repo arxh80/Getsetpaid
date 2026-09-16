@@ -77,20 +77,41 @@
 // EITHER, in the running database only, is a mutation this suite is measured
 // against -- and the two answers are different in a way that matters:
 //
+// BOTH NUMBERS BELOW WERE RE-MEASURED IN THE PRE-MERGE FIX ROUND, against the
+// suite as it stands. Fix round 1's own M1 change INVALIDATED mutation 1's
+// figures -- pointing the `start_impersonation_session` refusals at a genuinely
+// `accepted` session is exactly what makes that surface red under this mutation
+// -- and the round did not re-run them, so this header carried 23/12/8/2 while
+// the ledger's own re-measurement said 24. Each was run by replacing the
+// function body in the running database only, then RESTORED BY A FULL
+// `npx supabase db reset --local` and re-proved 224/224 green with
+// `pg_get_functiondef()` byte-identical to the pre-mutation dump.
+//
 //   1. Drop `private.session_is_aal2()`, keeping the platform_admins term:
-//      23 of 224 red. This can only move ONE of the seven principals -- a
-//      caller who is on the allowlist and below aal2, i.e. `superuserAal1` --
-//      so 21 of the 23 are that principal (12 RPC refusals, 8 table reads, 1
-//      table write) and 2 are cascade. The GRANT layer necessarily goes 0 red,
-//      because grants do not read that function. It says nothing about the
-//      Owner rows, Read Only, no-org or anonymous.
+//      **24 of 224 red** (200 passed). This can only move ONE of the seven
+//      principals -- a caller who is on the allowlist and below aal2, i.e.
+//      `superuserAal1` -- so 21 of the 24 are that principal (**13 RPC
+//      refusals, 7 table reads, 1 table write**) and 3 are cascade (the
+//      `start_impersonation_session` positive control, which the aal2
+//      superuser now shares a row with; one `accept_impersonation_request`
+//      member-reachability check; and one `impersonation_sessions` read by
+//      `overriddenOrgOwner`). The GRANT layer necessarily goes 0 red, because
+//      grants do not read that function. It says nothing about the Owner rows,
+//      Read Only, no-org or anonymous.
 //   2. Drop the `platform_admins` term, keeping `session_is_aal2()`:
-//      53 of 224 red, ALL of them the three Owner principals (33 RPC refusals,
-//      19 table reads, 1 table write). THIS is the mutation that proves the
-//      plan's named case -- "unreachable by a non-superuser, EVEN AN ORG
-//      OWNER" -- is a measurement and not an argument, and it proves as a side
-//      effect that the Owner fixtures genuinely reach aal2: an aal1 Owner
-//      would not have gone red at all.
+//      **53 of 224 red** (171 passed), ALL of them the three Owner principals
+//      (33 RPC refusals -- **11 of the 13 RPCs, three times over** -- 19 table
+//      reads, 1 table write). THIS is the mutation that proves the plan's named
+//      case -- "unreachable by a non-superuser, EVEN AN ORG OWNER" -- is a
+//      measurement and not an argument, and it proves as a side effect that the
+//      Owner fixtures genuinely reach aal2: an aal1 Owner would not have gone
+//      red at all.
+//      **THE TWO RPCs IT LEAVES GREEN ARE THE POINT OF THE CAVEAT AT `ARGS`
+//      BELOW**: `start_impersonation_session` and `audit_impersonated_page_view`
+//      both carry a second, row-OWNERSHIP term (`superuser_user_id =
+//      auth.uid()`, a live session held by the caller), so an Owner is refused
+//      by that rather than by the guard and this mutation cannot move them.
+//      Measured, not inferred -- the eleven names are in the run's own output.
 //
 // Neither mutation can move `readOnlyMember`, `noOrganisation` or `anonymous`
 // (they are aal1 or sessionless, so neither term can flip them); their refusals
