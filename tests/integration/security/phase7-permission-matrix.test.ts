@@ -1887,6 +1887,8 @@ describe("table consents (own rows only)", () => {
       p_purpose: "marketing_email",
       p_action: "granted",
       p_policy_version: v[0].version,
+      // A grant must name listed wording since 20260923003000 (review M1).
+      p_statement: "marketing-email-1",
     });
     expect(error, error?.message).toBeNull();
     const id = ((data ?? []) as { consent_id: string }[])[0]?.consent_id;
