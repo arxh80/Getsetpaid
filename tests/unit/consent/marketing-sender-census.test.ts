@@ -1,19 +1,42 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import {
+  appSourceFiles,
+  constDeclarations,
+  constantString,
+  moduleReferences,
+  namesModule,
+  parse,
+  relPath,
+  resolveSpecifier,
+  unwrap,
+} from "../support/app-source";
 
 // PHASE 8 TASK 2 -- NO MARKETING EMAIL WITHOUT THE CONSENT CHECK.
 //
 // GetSetPaid sends no marketing email, and lib/email/send.ts says it is for
 // transactional mail only. A comment is not a control. This census makes the
-// rule mechanical: every module that imports the one email sender is either
-// one of the three TRANSACTIONAL senders below (each justified), or it calls
-// `assertMarketingConsent` / `hasMarketingConsent` from lib/consent/marketing.ts
-// -- the check PECR requires before marketing email reaches an individual.
-// A fourth importer that does neither is a red test naming itself.
+// rule mechanical over every app-shipped source file
+// (tests/unit/support/app-source.ts):
+//   * every module that imports the one email sender -- by `@/lib/email/send`
+//     or by ANY relative path that resolves to it (`./send`, `../send`,
+//     `../../lib/email/send`), statically, dynamically or as a re-export -- is
+//     either one of the three TRANSACTIONAL senders below (each justified), or
+//     makes a REAL CALL to `assertMarketingConsent` / `hasMarketingConsent`
+//     imported from lib/consent/marketing.ts (a name in a comment or a string
+//     does not count; the file is parsed);
+//   * no module but lib/email/send.ts talks to the email provider directly
+//     (its API host or its API key), because a sender that skips
+//     lib/email/send.ts skips this census too.
+// Task 2 review M4 measured all three evasions green against the first
+// (regex) census; each is now a fixture below.
 
-const ROOT = resolve(__dirname, "../../..");
-const SCAN = ["app", "components", "lib", "proxy.ts"];
+const SENDER = "lib/email/send.ts";
+const CONSENT_MODULE = "lib/consent/marketing.ts";
+const CONSENT_CHECKS = new Set(["assertMarketingConsent", "hasMarketingConsent"]);
+/** The provider's API hosts and key names. A new provider is added here. */
+const PROVIDER_STRING = /\bapi\.brevo\.com\b|\bapi\.sendinblue\.com\b|\bBREVO_API_KEY\b|\bSENDINBLUE_API_KEY\b/;
 
 const TRANSACTIONAL: Record<string, string> = {
   "lib/email/feedback-notification.ts":
@@ -24,36 +47,72 @@ const TRANSACTIONAL: Record<string, string> = {
     "the account-lockout security notice to the affected account holder (Q114) -- a service message",
 };
 
-const IMPORT = /(?:from\s+|import\s*\(\s*)["'](?:@\/lib\/email\/send|\.\.?\/(?:[^"']*\/)?email\/send|\.\/send)["']/;
-const CHECK = /\b(?:assertMarketingConsent|hasMarketingConsent)\s*\(/;
+interface Analysis {
+  importsSender: boolean;
+  callsConsentCheck: boolean;
+  providerSites: string[];
+}
 
-function walk(dir: string, out: string[]): void {
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) {
-      if (entry === "node_modules" || entry === ".next") continue;
-      walk(full, out);
-    } else if (/\.(ts|tsx)$/.test(entry)) {
-      out.push(full);
+function analyse(file: string, text: string): Analysis {
+  const sf = parse(file, text);
+  const consts = constDeclarations(sf);
+  const refs = moduleReferences(sf, consts);
+  let importsSender = false;
+  const checkNames = new Set<string>();
+  const checkNamespaces = new Set<string>();
+  for (const ref of refs) {
+    const resolved = ref.specifier === null ? null : resolveSpecifier(file, ref.specifier);
+    if (namesModule(resolved, SENDER)) importsSender = true;
+    if (namesModule(resolved, CONSENT_MODULE)) {
+      for (const b of ref.bindings) {
+        if (CONSENT_CHECKS.has(b.imported)) checkNames.add(b.local);
+        if (b.imported === "*" || b.imported === "default") checkNamespaces.add(b.local);
+      }
     }
   }
+  let callsConsentCheck = false;
+  const providerSites: string[] = [];
+  const visit = (n: ts.Node): void => {
+    if (ts.isCallExpression(n)) {
+      const callee = unwrap(n.expression);
+      if (ts.isIdentifier(callee) && checkNames.has(callee.text)) callsConsentCheck = true;
+      if (
+        ts.isPropertyAccessExpression(callee) &&
+        CONSENT_CHECKS.has(callee.name.text) &&
+        ts.isIdentifier(unwrap(callee.expression)) &&
+        checkNamespaces.has((unwrap(callee.expression) as ts.Identifier).text)
+      ) {
+        callsConsentCheck = true;
+      }
+    }
+    if (
+      ts.isStringLiteral(n) ||
+      ts.isNoSubstitutionTemplateLiteral(n) ||
+      ts.isTemplateExpression(n) ||
+      (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.PlusToken)
+    ) {
+      const value = constantString(n as ts.Expression, consts) ?? n.getText(sf);
+      if (PROVIDER_STRING.test(value)) providerSites.push(n.getText(sf));
+    }
+    if (ts.isIdentifier(n) && PROVIDER_STRING.test(n.text)) providerSites.push(n.text);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return { importsSender, callsConsentCheck, providerSites };
 }
 
 describe("every importer of the email sender is transactional or checks marketing consent", () => {
-  const files: string[] = [];
-  for (const target of SCAN) {
-    const full = join(ROOT, target);
-    if (statSync(full).isDirectory()) walk(full, files);
-    else files.push(full);
-  }
-  const importers = files
-    .map((f) => ({ file: f.slice(ROOT.length + 1).replace(/\\/g, "/"), text: readFileSync(f, "utf8") }))
-    .filter(({ file, text }) => file !== "lib/email/send.ts" && IMPORT.test(text));
+  const files = appSourceFiles().map((f) => ({ file: relPath(f), text: readFileSync(f, "utf8") }));
+  const analysed = files.map((f) => ({ file: f.file, ...analyse(f.file, f.text) }));
+  const importers = analysed.filter((a) => a.file !== SENDER && a.importsSender);
 
-  it("NON-VACUITY: the census sees the three transactional senders", () => {
+  it("NON-VACUITY: the census sees the three transactional senders, and the sender itself", () => {
+    expect(files.map((f) => f.file)).toContain(SENDER);
     for (const file of Object.keys(TRANSACTIONAL)) {
       expect(importers.map((i) => i.file)).toContain(file);
     }
+    // ...and it sees the provider where it really is.
+    expect(analysed.find((a) => a.file === SENDER)?.providerSites.length).toBeGreaterThan(0);
   });
 
   it("each transactional sender is justified, and none of them sends marketing", () => {
@@ -65,7 +124,7 @@ describe("every importer of the email sender is transactional or checks marketin
   it("any other importer calls the consent check", () => {
     const unchecked = importers
       .filter(({ file }) => !(file in TRANSACTIONAL))
-      .filter(({ text }) => !CHECK.test(text))
+      .filter(({ callsConsentCheck }) => !callsConsentCheck)
       .map(({ file }) => file);
     expect(
       unchecked,
@@ -76,10 +135,81 @@ describe("every importer of the email sender is transactional or checks marketin
     ).toEqual([]);
   });
 
-  it("the detector: an importer with no check is caught, one with a check is not", () => {
-    const bare = `import { sendEmail } from "@/lib/email/send";\nawait sendEmail(x);`;
-    const checked = `import { sendEmail } from "@/lib/email/send";\nawait assertMarketingConsent(c, id);\nawait sendEmail(x);`;
-    expect(IMPORT.test(bare) && !CHECK.test(bare)).toBe(true);
-    expect(IMPORT.test(checked) && CHECK.test(checked)).toBe(true);
+  it("nothing but the sender talks to the email provider directly", () => {
+    const direct = analysed
+      .filter((a) => a.file !== SENDER && a.providerSites.length > 0)
+      .map((a) => `${a.file}: ${a.providerSites.join(", ")}`);
+    expect(
+      direct,
+      "a module reaches the email provider without going through lib/email/send.ts, so it escapes " +
+        "this census. Send through lib/email/send.ts.",
+    ).toEqual([]);
+  });
+});
+
+describe("the sender census detector", () => {
+  const CHECKED_IMPORT = `import { assertMarketingConsent } from "@/lib/consent/marketing";\n`;
+
+  it("catches an importer with no check, and passes one with a real check", () => {
+    const bare = analyse("lib/marketing/a.ts", `import { sendEmail } from "@/lib/email/send";\nawait sendEmail(x);`);
+    expect(bare).toMatchObject({ importsSender: true, callsConsentCheck: false });
+    const checked = analyse(
+      "lib/marketing/a.ts",
+      `${CHECKED_IMPORT}import { sendEmail } from "@/lib/email/send";\nawait assertMarketingConsent(c, id);\nawait sendEmail(x);`,
+    );
+    expect(checked).toMatchObject({ importsSender: true, callsConsentCheck: true });
+  });
+
+  // The three review evasions (M4), each GREEN under the regex census.
+  it("EVASION 1: a relative import from a subfolder resolves to the sender", () => {
+    expect(analyse("lib/email/marketing/newsletter.ts", `import { sendEmail } from "../send";`).importsSender).toBe(true);
+    expect(analyse("app/(app)/x/actions.ts", `import { sendEmail } from "../../../lib/email/send";`).importsSender).toBe(true);
+    expect(analyse("lib/email/digest.ts", `import { sendEmail } from "./send.ts";`).importsSender).toBe(true);
+    expect(analyse("lib/email/digest.ts", `const { sendEmail } = await import("./send");`).importsSender).toBe(true);
+    expect(analyse("lib/email/index.ts", `export { sendEmail } from "./send";`).importsSender).toBe(true);
+    // ...and a module that merely shares the name elsewhere does not.
+    expect(analyse("lib/sms/digest.ts", `import { send } from "./send";`).importsSender).toBe(false);
+  });
+
+  it("EVASION 2: a consent check that appears only in a comment or a string is not a check", () => {
+    const commented = analyse(
+      "lib/marketing/a.ts",
+      `import { sendEmail } from "@/lib/email/send";\n// assertMarketingConsent(client, id) -- TODO\nconst s = "hasMarketingConsent(";\nawait sendEmail(x);`,
+    );
+    expect(commented.callsConsentCheck).toBe(false);
+    // Nor is a same-named function that is not the real one.
+    const impostor = analyse(
+      "lib/marketing/a.ts",
+      `import { sendEmail } from "@/lib/email/send";\nconst assertMarketingConsent = async () => {};\nawait assertMarketingConsent();\nawait sendEmail(x);`,
+    );
+    expect(impostor.callsConsentCheck).toBe(false);
+    // A namespace or aliased import of the real one IS a check.
+    expect(
+      analyse(
+        "lib/marketing/a.ts",
+        `import * as consent from "../consent/marketing";\nawait consent.hasMarketingConsent(c, id);`,
+      ).callsConsentCheck,
+    ).toBe(true);
+    expect(
+      analyse(
+        "lib/marketing/a.ts",
+        `import { assertMarketingConsent as mustConsent } from "@/lib/consent/marketing";\nawait mustConsent(c, id);`,
+      ).callsConsentCheck,
+    ).toBe(true);
+  });
+
+  it("EVASION 3: a direct call to the provider is flagged, however the URL or key is written", () => {
+    const shapes = [
+      `await fetch("https://api.brevo.com/v3/smtp/email", { method: "POST" });`,
+      "const host = `https://api.${'brevo'}.com`; await fetch(host + '/v3/smtp/email');",
+      `const U = "https://api." + "brevo.com/v3/smtp/email"; await fetch(U);`,
+      `const key = process.env.BREVO_API_KEY;`,
+      `const key = process.env["BREVO_API_KEY"];`,
+      `await fetch("https://api.sendinblue.com/v3/smtp/email");`,
+    ];
+    for (const source of shapes) {
+      expect(analyse("lib/marketing/direct.ts", source).providerSites.length, source).toBeGreaterThan(0);
+    }
+    expect(analyse("lib/marketing/direct.ts", `// posts to api.brevo.com\nconst x = "Brevo";`).providerSites).toEqual([]);
   });
 });
