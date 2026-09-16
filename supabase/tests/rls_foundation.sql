@@ -1108,10 +1108,10 @@ select harness.try_hint('W5  ...however it is spelt (create_organisation lower-c
 select harness.try_hint('W6  ...and `magic-link` (a route inside the (auth) group)',
   $$select public.create_organisation('Magic','magic-link')$$, 'denied(22023:reserved_slug)');
 select harness.try('W7  POSITIVE: a slug that merely CONTAINS a reserved word is accepted',
-  $$do $d$ begin
+  $q$do $d$ begin
       perform public.create_organisation('Legal Team','legal-team');
       raise exception 'accepted' using errcode = 'P0098';
-    end $d$$$, 'denied(P0098)');
+    end $d$ $q$, 'denied(P0098)');
 reset role; reset request.jwt.claims;
 
 set role authenticated;
@@ -1123,11 +1123,11 @@ select harness.try_hint('W9  an Owner cannot MOVE her workspace onto a reserved 
 select harness.try_hint('W10 ...nor onto one spelt differently',
   $$update public.organisations set slug = 'Onboarding' where slug = 'org-a'$$, 'denied(22023:reserved_slug)');
 select harness.try('W11 POSITIVE: she CAN move it to an ordinary slug (rolled back)',
-  $$do $d$ begin
+  $q$do $d$ begin
       update public.organisations set slug = 'org-a-moved' where slug = 'org-a';
       if not found then raise exception 'no row' using errcode = 'P0097'; end if;
       raise exception 'accepted' using errcode = 'P0098';
-    end $d$$$, 'denied(P0098)');
+    end $d$ $q$, 'denied(P0098)');
 reset role; reset request.jwt.claims;
 
 -- A workspace that ALREADY holds a reserved slug (created before this
@@ -1135,26 +1135,26 @@ reset role; reset request.jwt.claims;
 -- so does moving it AWAY from the reserved slug. Planted in replica mode (no
 -- triggers), exercised with the triggers on, rolled back.
 select harness.try('W12 a pre-existing reserved-slug workspace can still be renamed, and moved off it',
-  $$do $d$
+  $q$do $d$
     declare v_id uuid;
     begin
-      perform pg_catalog.set_config('session_replication_role', 'replica', true);
+      execute 'set local session_replication_role = replica';
       insert into public.organisations (name, slug) values ('Grandfathered', 'invites') returning id into v_id;
-      perform pg_catalog.set_config('session_replication_role', 'origin', true);
+      execute 'set local session_replication_role = origin';
       update public.organisations set name = 'Grandfathered, renamed' where id = v_id;
       update public.organisations set slug = 'invites-team' where id = v_id;
       if (select slug from public.organisations where id = v_id) <> 'invites-team' then
         raise exception 'not moved' using errcode = 'P0097';
       end if;
       raise exception 'accepted' using errcode = 'P0098';
-    end $d$$$, 'denied(P0098)');
+    end $d$ $q$, 'denied(P0098)');
 select harness.try_hint('W13 ...but a workspace cannot be moved ONTO a reserved slug by postgres either',
-  $$do $d$
+  $q$do $d$
     declare v_id uuid;
     begin
       insert into public.organisations (name, slug) values ('Plain', 'plain-w13') returning id into v_id;
       update public.organisations set slug = 'api' where id = v_id;
-    end $d$$$, 'denied(22023:reserved_slug)');
+    end $d$ $q$, 'denied(22023:reserved_slug)');
 select harness.val('W14 no organisation was added or changed by this section',
   format($$select (count(*) = %s and count(*) filter (where slug = 'org-a') = 1)::text from public.organisations$$,
          :orgs_before_w), 'true');
