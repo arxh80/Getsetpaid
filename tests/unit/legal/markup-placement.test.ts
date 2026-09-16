@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { supportContact } from "@/lib/legal/contact";
 import {
   PLACEMENT_PATTERNS,
   isMailtoAddress,
