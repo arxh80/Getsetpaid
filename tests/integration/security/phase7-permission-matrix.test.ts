@@ -37,6 +37,13 @@
 // from `pg_class` at all. A Phase 8 function or table granted to
 // `authenticated` and never added to either list was invisible to both.
 //
+// SINCE PHASE 8 TASK 1'S FIX ROUND 1 (M8), BOTH CENSUSES COUNT `anon` TOO. A
+// relation or function granted to `anon` ALONE is exactly the public-read case
+// that task introduced, and a query keyed on `authenticated` could not see
+// one. (None exists today: `legal_documents` and `subscription_plans` are the
+// two anon-readable relations and both are granted to `authenticated` as
+// well; `anon` holds EXECUTE on no function in `public`.)
+//
 // Both are now genuine censuses (§ GATE 0). Each runs the query above with NO
 // name filter and asserts the FULL result set equals this file's lists plus a
 // declared, justified allowlist of the pre-Phase-7 surfaces this task is not
@@ -1040,7 +1047,7 @@ describe("the inventory is mechanical", () => {
          cross join lateral aclexplode(p.proacl) ax
         where n.nspname = 'public'
           and ax.privilege_type = 'EXECUTE'
-          and pg_get_userbyid(ax.grantee) = 'authenticated'`,
+          and pg_get_userbyid(ax.grantee) in ('authenticated', 'anon')`,
     );
     const granted = rows.map((r) => r.proname).sort();
     const accounted = [
@@ -1050,7 +1057,7 @@ describe("the inventory is mechanical", () => {
     ].sort();
     expect(
       granted,
-      "a function `authenticated` may EXECUTE in `public` is on neither this " +
+      "a function `authenticated` or `anon` may EXECUTE in `public` is on neither this " +
         "file's Phase 7 lists nor PRE_PHASE7_RPCS. Either probe it as a " +
         "principal-by-principal surface above, or add it to PRE_PHASE7_RPCS " +
         "with the reason it is out of scope -- the equality is the whole point: " +
@@ -1085,16 +1092,16 @@ describe("the inventory is mechanical", () => {
         where n.nspname = 'public'
           and c.relkind in ('r','p','v','m')
           and (exists (select 1 from aclexplode(c.relacl) ax
-                        where pg_get_userbyid(ax.grantee) = 'authenticated')
+                        where pg_get_userbyid(ax.grantee) in ('authenticated', 'anon'))
                or exists (select 1 from pg_attribute a
                             cross join lateral aclexplode(a.attacl) ax
                            where a.attrelid = c.oid and a.attacl is not null
-                             and pg_get_userbyid(ax.grantee) = 'authenticated'))`,
+                             and pg_get_userbyid(ax.grantee) in ('authenticated', 'anon')))`,
     );
     const granted = rows.map((r) => r.relname).sort();
     expect(
       granted,
-      "a relation `authenticated` holds a grant on in `public` is on neither " +
+      "a relation `authenticated` or `anon` holds a grant on in `public` is on neither " +
         "PHASE7_TABLES nor PRE_PHASE7_RELATIONS. A platform table added by a " +
         "later phase belongs in the first (and gets probed by every principal); " +
         "a tenant one belongs in the second with its reason.",
@@ -1789,9 +1796,10 @@ async function auditCount(): Promise<number> {
 }
 
 /**
- * Put the legal document store back: delete the given versions (and every
- * legal audit row), and re-publish any seeded version 1 a positive control
- * superseded. The immutability guard refuses all of that for every role, by
+ * Put the legal document store back: delete the given versions and the audit
+ * rows that name THEM (fix round 1, M8 -- this used to delete every
+ * `legal_document` audit row in the database), and re-publish any version a
+ * positive control superseded. The immutability guard refuses all of that for every role, by
  * design, so it runs with triggers off -- `session_replication_role =
  * replica`, the DBA escape hatch 20260922000000's header names -- inside one
  * transaction on one pooled connection, so the setting cannot leak.
@@ -1801,14 +1809,21 @@ async function discardLegalRows(ids: string[]): Promise<void> {
   try {
     await client.query("begin");
     await client.query("set local session_replication_role = replica");
-    await client.query(`delete from public.audit_events where target_type = 'legal_document'`);
+    await client.query(
+      `delete from public.audit_events where target_type = 'legal_document' and target_id = any($1::uuid[])`,
+      [ids],
+    );
     await client.query(`delete from public.legal_documents where id = any($1::uuid[])`, [ids]);
+    // The newest superseded version of a slug left with no published one --
+    // version 1 for both slugs this file borrows, but not assumed.
     await client.query(
       `update public.legal_documents d
           set status = 'published', superseded_at = null
-        where d.version = 1 and d.status = 'superseded'
+        where d.status = 'superseded'
           and not exists (select 1 from public.legal_documents p
-                           where p.slug = d.slug and p.status = 'published')`,
+                           where p.slug = d.slug and p.status = 'published')
+          and d.version = (select max(o.version) from public.legal_documents o
+                            where o.slug = d.slug and o.status = 'superseded')`,
     );
     await client.query("commit");
   } catch (err) {

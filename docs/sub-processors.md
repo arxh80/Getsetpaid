@@ -8,7 +8,17 @@ honestly whether it is done. This is a working draft for counsel review. The
 customer-facing list is the public Subprocessors page (`/legal/subprocessors`),
 which renders `lib/legal/sub-processors.ts` — **edit both in the same change**:
 `tests/unit/legal/sub-processors-drift.test.ts` fails if the two disagree on
-the vendors, their order, their location or their DPA status.
+the vendors, their order, their location or their DPA status, or if a
+vendor's Purpose or Personal-data cell below differs from the verbatim copy
+the module keeps beside its customer wording (so a change here forces that
+wording to be re-read; the test cannot judge the rewrite itself).
+
+**Not yet listed, and an open question (DECISIONS-QUEUE Q142):** the provider
+that hosts the application servers. Every request passes through them, so
+they see session cookies, IP addresses and page content; no deployment
+target is recorded in this repository. The public Privacy Notice, DPA and
+Security page say so in a "[Counsel to confirm]" gap rather than claiming the
+list is complete.
 
 | Sub-processor | Purpose | Personal data it processes | Location | Transfer basis (UK → there) | DPA |
 |---|---|---|---|---|---|

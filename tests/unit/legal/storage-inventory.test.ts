@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createServerClient } from "@supabase/ssr";
 import { describe, expect, it } from "vitest";
 import { BROWSER_STORAGE } from "@/lib/legal/storage-inventory";
 import { CURRENT_ORG_COOKIE } from "@/lib/org/current-org";
@@ -47,8 +50,35 @@ describe("the Cookie Policy's storage list matches the code", () => {
     expect(names).toContain(key);
   });
 
-  it("names the Supabase auth cookie by the prefix @supabase/ssr uses", () => {
-    // The project ref varies per deployment, so the policy names the pattern.
-    expect(names.some((n) => n.startsWith("sb-…-auth-token"))).toBe(true);
+  // FIX ROUND 1, M8: this used to compare the inventory with a literal written
+  // in this file, so it could not notice the library naming the cookie
+  // differently. It now asks the library the app actually uses.
+  it("names the Supabase auth cookie exactly as @supabase/ssr names it", () => {
+    // The project ref varies per deployment; the policy writes it as "…".
+    const ref = "abcdefghijklmnopqrst";
+    const client = createServerClient(`https://${ref}.supabase.co`, "public-key", {
+      cookies: { getAll: () => [], setAll: () => {} },
+    });
+    const storageKey = (client.auth as unknown as { storageKey: string }).storageKey;
+    expect(storageKey, "the library's own key").toMatch(new RegExp(`^sb-${ref}-`));
+
+    const declared = BROWSER_STORAGE.filter((item) => item.kind === "cookie" && item.name.startsWith("sb-"));
+    expect(declared, "exactly one declared Supabase cookie entry").toHaveLength(1);
+    const name = declared[0].name;
+    expect(name.replace(/…/, ref).startsWith(`${storageKey} `), name).toBe(true);
+
+    // "numbered parts": @supabase/ssr splits a large session into key.0, key.1...
+    const require = createRequire(import.meta.url);
+    const ssrDir = dirname(require.resolve("@supabase/ssr"));
+    expect(readFileSync(join(ssrDir, "utils", "chunker.js"), "utf8")).toContain("name: `${key}.${i}`");
+    expect(name).toMatch(/numbered parts/);
+
+    // "…-code-verifier": the PKCE verifier auth-js stores during a redirect
+    // sign-in, under a key ending in -code-verifier.
+    const supabaseJs = require.resolve("@supabase/supabase-js");
+    const authDir = dirname(require.resolve("@supabase/auth-js", { paths: [supabaseJs] }));
+    const auth = readFileSync(join(authDir, "GoTrueClient.js"), "utf8") + readFileSync(join(authDir, "lib", "helpers.js"), "utf8");
+    expect(auth).toMatch(/\$\{(this\.)?storageKey\}[^`]*-code-verifier`/);
+    expect(name).toMatch(/…-code-verifier/);
   });
 });
