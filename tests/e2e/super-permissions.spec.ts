@@ -255,13 +255,29 @@ for (const role of ["owner", "admin"] as const) {
     // returns canWrite, and the sentence "Your role in this workspace can view
     // records but not change them" in its place otherwise -- which is exactly
     // what a manager gets (asserted below).
-    const disclosure = page.getByText("Add a field", { exact: true });
+    // I6, fix round 1: THE DISCLOSURE AS A <summary>, not as the text "Add a
+    // field". `CustomFieldEditor` renders that exact string TWICE, and the two
+    // mean opposite things: a `<summary>` opening the real form when the key is
+    // held, and a bare `<h2>` above "All 5 of this plan's custom fields ... are
+    // in use" when the WORKSPACE IS AT ITS QUOTA -- a tier condition, not a
+    // permission one. A text-only assertion passed on both, so a quota failure
+    // would have arrived as this test's own message: "this session does not
+    // hold manage_custom_fields". The world org is Starter and uses fewer than
+    // five today, so it passes either way; the point is that when it stops
+    // passing, it says the true reason.
+    const disclosure = page.locator("details > summary", { hasText: "Add a field" });
     await expect(
       disclosure,
       `the ${role} persona reached the page without the control it is gated ` +
         `on, which means this session does not hold manage_custom_fields and ` +
         `every refusal it collects elsewhere is meaningless`,
     ).toBeVisible();
+    await expect(
+      page.getByText("custom fields for this record type are in use"),
+      `the workspace is AT its custom-field limit, so the form is withheld for ` +
+        `a TIER reason and this test can say nothing about manage_custom_fields. ` +
+        `Free a slot in the fixture rather than reading this as a refusal.`,
+    ).toHaveCount(0);
 
     // THEN THE FORM ITSELF, AFTER OPENING IT -- and the order is not
     // cosmetic. The submit button sits inside a COLLAPSED <details>, which the
@@ -363,6 +379,18 @@ test("the platform superuser BELOW aal2 reaches no /super surface", async ({ pag
   // one place. `isSuperuser()` is not aal-gated, so this session passes the
   // identity check and must still be stopped by the assurance level -- the
   // shape is the challenge screen persisting, not a not-found document.
+  //
+  // WHICH CONTROL IS BEING MEASURED HERE, stated because it is not /super's own
+  // (review finding I7). Every /super page gates on `isSuperuser()`, which
+  // reads identity and not assurance, so `generateMetadata()` would hand this
+  // session the real <title> and notFound() would not fire; what stops it is
+  // the APP-WIDE MFA challenge gate, and what this test therefore proves is
+  // that the challenge gate still covers /super -- a real property, and the one
+  // that goes red if a later phase exempts the operator's console from it. The
+  // aal2 term itself is proved at the DATA layer instead, where every /super
+  // page's reads go through private.has_platform_permission(): the permission
+  // matrix drives `superuserAal1` against all thirteen RPCs and all seven
+  // tables, and mutation 1 (see that file's header) reds 21 of them.
   await signInAsSuperuserAtAal1(page);
   const challenge = page.getByRole("heading", { name: "Enter your two-factor code" });
   for (const surface of SUPER_SURFACES) {
