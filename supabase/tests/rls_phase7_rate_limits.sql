@@ -1181,8 +1181,24 @@ select rl.val('RD27 ...and the OPERATOR digest seam is untouched by it',
 -- Start from a clean queue: every OTHER account's pending alert is STAMPED
 -- rather than deleted, so `RZ2`'s row-count denominator is untouched while the
 -- saturated queue below contains exactly the two accounts this block plants.
+--
+-- AND THE STAMP IS RECORDED SO § RZ CAN PUT IT BACK (pre-merge fix round). The
+-- first cut stamped every pending row blanket-fashion and restored none of
+-- them: § RZ deletes only this suite's own fixture ids, so a row planted by any
+-- other section or any other file stayed silently marked as delivered, and
+-- RZ2's count(*) comparison could not see a column change. Latent on a fresh
+-- reset (the pre-existing pending set is empty) and real the moment anything
+-- else plants one -- which is the shape of contamination that is discovered by
+-- a later suite failing for no visible reason.
+create temporary table rd_stamped_by_this_block as
+  select a.id
+  from public.incident_alerts a
+  where a.alert_type = 'repeated_login_failures'
+    and a.account_notified_at is null
+    and coalesce(a.details->>'subject_id', '') not in (:'pstd1', :'pstd2');
+select count(*)::text as rd_pending_before from rd_stamped_by_this_block \gset
 update public.incident_alerts set account_notified_at = now()
- where alert_type = 'repeated_login_failures' and account_notified_at is null;
+ where id in (select id from rd_stamped_by_this_block);
 delete from public.incident_alerts
  where alert_type = 'repeated_login_failures'
    and details->>'subject_id' in (:'pstd1', :'pstd2');
@@ -1271,6 +1287,53 @@ select rl.val('RD35 ...and dates the queue from the OLDEST unnotified crossing',
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
+-- AN ALERT THE SENDER CAN NEVER SERVE MUST NOT BE COUNTED AS WAITING
+-- (pre-merge fix round, the Task 6c fix-round-2 residual).
+--
+-- The health aggregate used to filter on TWO predicates (alert_type,
+-- account_notified_at is null) while public.pending_lockout_notifications()
+-- filters on EIGHT -- adding a uuid-shaped subject_id, integer-shaped
+-- max_requests/window_seconds, a join to auth.users and a non-empty address.
+-- So an alert whose subject cannot be resolved -- a deleted user, a malformed
+-- details payload, a permanently undeliverable address -- was counted forever
+-- and served never: the count pinned at >= 1 and the age froze, which is
+-- EXACTLY the reading /super/health tells the operator is a stalled delivery
+-- clock. The one diagnostic the count exists to provide had an unbounded
+-- false-positive mode, and § RD34/RD35 could not see it because this block's
+-- own setup stamps every other pending row first.
+--
+-- ONE unresolvable alert is planted, deliberately OLDER than anything else in
+-- the queue, so the old expression would have both counted it AND dated the
+-- queue from it. 20260921001000 reads both numbers off the sender's function.
+-- ===========================================================================
+\o /dev/null
+select pg_catalog.gen_random_uuid()::text as ghost_subject \gset
+insert into public.incident_alerts (alert_type, organisation_id, summary, details, created_at)
+values ('repeated_login_failures', null,
+        'Repeated failed sign-in attempts on one account (limit 5 per 900 seconds).',
+        jsonb_build_object('category','login_account','subject_scope','account',
+          'subject_id', :'ghost_subject', 'max_requests', 5, 'window_seconds', 900),
+        now() - interval '240 minutes');
+\o
+select rl.val('RD36 CONTROL: the planted subject resolves to NO auth.users row',
+  format($$select count(*)::text from auth.users where id = %L$$, :'ghost_subject'), '0');
+select rl.val('RD37 CONTROL: the naive two-predicate reading counts THREE subjects...',
+  $$select count(distinct details->>'subject_id')::text from public.incident_alerts
+     where alert_type='repeated_login_failures' and account_notified_at is null$$, '3');
+select rl.val('RD38 ...but the SENDER''s queue is two -- it can never serve the third',
+  $$select count(*)::text from public.pending_lockout_notifications(500)$$, '2');
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select rl.val('RD39 MEASURED: /super/health agrees with the SENDER, not with the naive filter',
+  $$select ((public.platform_health_snapshot()
+              ->'abuse'->>'lockout_notifications_pending')::int)::text$$, '2');
+select rl.val('RD40 ...and dates the queue from the oldest SERVABLE crossing, not the ghost''s',
+  $$select ((public.platform_health_snapshot()
+              ->'abuse'->>'lockout_notifications_oldest_at')::timestamptz
+            > pg_catalog.now() - interval '120 minutes')::text$$, 'true');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
 -- § RZ  HOUSEKEEPING
 --
 -- Every counter, alert and document this suite created is removed, so the
@@ -1282,10 +1345,25 @@ reset role; reset request.jwt.claims;
 delete from public.documents where id in (:'doc_a', :'doc_b');
 delete from public.incident_alerts
  where details->>'document_id' in (:'doc_a', :'doc_b')
-    or details->>'subject_id'  in (:'synth_a', :'synth_b', :'pstd1', :'pstd2', :'pmanager');
+    or details->>'subject_id'  in (:'synth_a', :'synth_b', :'pstd1', :'pstd2', :'pmanager', :'ghost_subject');
 delete from public.rate_limit_counters
  where subject_id in (:'synth_a', :'synth_b', :'pstd1', :'pstd2', :'pmanager', :'alpha_org');
+-- AND THE COLUMN § RD28 BLANKET-STAMPED IS PUT BACK (pre-merge fix round).
+-- Deleting this suite's own fixture ids was never enough: § RD28 stamped
+-- account_notified_at on every OTHER pending row to clear the queue, and a
+-- count(*) comparison cannot see a column that changed on rows that still
+-- exist. The ids were captured then; they are restored now, and asserted.
+update public.incident_alerts set account_notified_at = null
+ where id in (select id from rd_stamped_by_this_block);
 \o
+select rl.val('RZ0a § RD28''s blanket stamp is fully reverted',
+  $$select count(*)::text from public.incident_alerts a
+     join rd_stamped_by_this_block t on t.id = a.id
+     where a.account_notified_at is not null$$, '0');
+select rl.val('RZ0b ...so the pending denominator is back where § RD28 found it',
+  $$select count(*)::text from public.incident_alerts
+     where alert_type = 'repeated_login_failures' and account_notified_at is null$$,
+  :'rd_pending_before');
 select rl.val('RZ1 no counters this suite created remain',
   format($$select count(*)::text from public.rate_limit_counters
             where subject_id in (%L,%L,%L,%L,%L,%L)$$,
