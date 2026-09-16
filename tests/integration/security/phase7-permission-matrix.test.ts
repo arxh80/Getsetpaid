@@ -52,19 +52,23 @@
 // -----------------------------------------------------------------------------
 // The brief asks for a server-action layer probe: each of the fifteen exported
 // `*Action` functions behind these surfaces invoked directly as each principal.
-// THAT IS NOT TESTED HERE, by any test this task added. It is a real gap and it
-// is mitigated rather than closed, for one specific structural reason: NO
-// module under `lib/admin/` constructs a service-role client (`createServiceClient`
-// appears nowhere in that tree), so every one of those actions is enforced by
-// the RPC and table layers THIS file probes, one layer down -- eleven are thin
-// wrappers over the guarded RPCs above, and `resolveIncidentAlertAction` /
-// `updateFeedbackStatusAction` are plain RLS-gated `.update()`s covered by the
-// table-layer UPDATE probe (which asserts an md5 of the whole table, not a row
-// count). The residual is a FUTURE action that reaches for `createServiceClient()`
-// and is gated only by `isSuperuser()`: that action would bypass both layers
-// this file measures, and nothing here would notice. Queued as Q126, whose
-// recommended default is a source census asserting no module under `lib/admin/`
-// imports the service-role client.
+// THAT IS NOT TESTED HERE, by any test this task added. It is a real gap, and
+// it is mitigated by something stronger than reasoning: NO module under
+// `lib/admin/` -- nor `lib/feedback/admin-actions.ts` -- imports
+// `lib/supabase/service.ts`, the service-role table client. So all fifteen run
+// under the caller's own RLS and are enforced by the RPC and table layers THIS
+// file probes, one layer down: eleven are thin wrappers over the guarded RPCs
+// above, and `resolveIncidentAlertAction` / `updateFeedbackStatusAction` are
+// plain RLS-gated `.update()`s covered by the table-layer UPDATE probe (which
+// asserts an md5 of the whole table, not a row count). And that fact is
+// ASSERTED, not assumed: `tests/unit/email/service-client-census.test.ts`
+// censuses every file under `app`, `components`, `lib` and `proxy.ts` for
+// importers of that client and allows exactly three `lib/email/*` modules, so
+// a future `lib/admin/` action reaching for it is red before it merges.
+// What is left open, and why this is queued as Q126: `lib/supabase/storage.ts`
+// has no equivalent census (the feedback screenshot pipeline legitimately uses
+// it, and is probed at the ROUTE layer by super-permissions.spec.ts), so a new
+// operator surface could import that one with nothing going red.
 //
 // -----------------------------------------------------------------------------
 // WHAT THE TWO RED MUTATIONS PROVE, AND WHAT EACH DOES NOT
