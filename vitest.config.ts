@@ -29,11 +29,11 @@ import { defineConfig } from "vitest/config";
 // ROOT of this config, where they governed every file under tests/. Read the
 // comment that justified them: every word is about the RLS suite -- a real
 // stack, real round trips, fixture lifecycles that must not overlap on one
-// Postgres instance. None of it is true of tests/unit, which is 47 files of
+// Postgres instance. None of it is true of tests/unit, which is 75 files of
 // pure functions that share nothing and touch no socket.
 //
 // The cost was paid on every run and hardest in CI, which runs ONLY
-// `vitest run tests/unit` (.github/workflows/ci.yml): 47 independent files
+// `vitest run tests/unit` (.github/workflows/ci.yml): 75 independent files
 // executed strictly one at a time to protect a database none of them opens,
 // with a 20s default timeout so a hung pure-function test takes twenty
 // seconds to tell you.
