@@ -136,6 +136,12 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "feedback.submitted",
   "feedback.status_changed",
   "feedback.screenshot_viewed",
+  // Phase 8 Task 1 (20260922000000): the legal document store. Identifiers
+  // only -- slug and version, never the text or the reviewer's name.
+  "legal_document.draft_created",
+  "legal_document.draft_updated",
+  "legal_document.published",
+  "legal_document.counsel_review_recorded",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first
