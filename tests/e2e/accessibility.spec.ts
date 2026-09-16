@@ -363,6 +363,116 @@ test("the event page WITH the finance panel has no automated accessibility viola
   await scan(page, "event detail + finance panel");
 });
 
+test("custom-field settings, EDITABLE, has no automated accessibility violations", async ({
+  page,
+}) => {
+  // ==========================================================================
+  // THE SETTINGS AREA HAD NEVER BEEN SCANNED ONCE, AND THEN THE FIRST SCAN OF
+  // IT COULD NOT SEE THE CONTROLS IT WAS WRITTEN FOR
+  // ==========================================================================
+  // `SIGNED_IN_PAGES` covers lists, create forms, detail pages and the network
+  // surfaces, and no settings page at all. The scan that closed that (#23) had
+  // to sign in as a MANAGER, because `manage_custom_fields` is Owner/Admin only
+  // (20260828120000) and this suite had neither role -- so the editable render
+  // was never in the DOM, the two SC 2.5.8 target-size fixes that commit made
+  // were not covered by it, and its own body said so.
+  //
+  // Phase 7 Task 7 built the missing half: `E2eRole` now carries `owner` and
+  // `admin`, both in MFA_REQUIRED_ROLES with real TOTP secrets, so this scan
+  // signs in as the Owner and measures the render those fixes are about.
+  //
+  // ==========================================================================
+  // TWO NON-VACUITY CONTROLS, BECAUSE A GREEN SCAN HERE HAS TWO INNOCENT-
+  // LOOKING WAYS TO MEAN NOTHING
+  // ==========================================================================
+  // `CustomFieldEditor` withholds the add form for TWO unrelated reasons, and
+  // an axe scan cannot tell either of them from a clean page:
+  //
+  //   * PERMISSION -- no `manage_custom_fields`, which is what made the first
+  //     version of this test green against the pre-fix padding.
+  //   * QUOTA -- the workspace is at its tier's custom-field limit, in which
+  //     case the string "Add a field" still renders, as a bare <h2> over an
+  //     explanation, with no <summary> and no form.
+  //
+  // So the disclosure is asserted as a `details > summary` (the permission
+  // statement) and the at-limit sentence as absent (the tier statement), each
+  // with a message naming its own cause -- the same disambiguation
+  // super-permissions.spec.ts makes on this page, for the same reason.
+  await signIn(page, world, "owner");
+  await page.goto(`/${world.orgSlug}/settings/custom-fields?entity=contact`);
+  await expect(
+    page.getByRole("heading", { name: "Custom fields", level: 1 }),
+  ).toBeVisible();
+
+  const addDisclosure = page.locator("details > summary", {
+    hasText: "Add a field",
+  });
+  await expect(
+    addDisclosure,
+    "the Owner persona reached the page without the control it is gated on, " +
+      "so this session does not hold manage_custom_fields and a clean scan " +
+      "would only mean the controls were never rendered",
+  ).toBeVisible();
+  await expect(
+    page.getByText("custom fields for this record type are in use"),
+    "the workspace is AT its custom-field limit, so the form is withheld for " +
+      "a TIER reason and this scan covers none of the controls it is about. " +
+      "Free a slot in the fixture rather than reading this as coverage.",
+  ).toHaveCount(0);
+
+  // A REAL DEFINITION, CREATED THROUGH THE REAL FORM. The fixture seeds none,
+  // and the "Edit" <summary> -- one of the two controls #23 resized -- renders
+  // once PER DEFINITION. A bare visit renders zero of them, so the scan would
+  // still be measuring a page without its subject on it.
+  //
+  // `single_select` deliberately: it is the one type whose stored choices
+  // render back into the row, so the list item is at its fullest.
+  await addDisclosure.click();
+  await page.getByLabel("Label", { exact: true }).fill("Dressing room tier");
+  await page.getByLabel("Name", { exact: true }).fill("dressing_room_tier");
+  await page.getByLabel("Kind of field").selectOption("single_select");
+  await page
+    .getByLabel("One per line")
+    .fill(["Green room", "Shared", "None"].join("\n"));
+  await page.getByRole("button", { name: "Add field" }).click();
+  await expect(page.getByText("Dressing room tier")).toBeVisible();
+
+  // BOTH DISCLOSURES OPEN BEFORE THE SCAN, and that is not tidiness. A
+  // collapsed <details> hides its contents from the accessibility tree, so the
+  // "Choices" summary inside each form -- the OTHER control #23 resized, whose
+  // padding sat on the <details> instead of the <summary> -- is unreachable by
+  // axe while its parent is shut. Scanning with them closed is the same
+  // vacuity in a different costume.
+  const editDisclosure = page.locator("details > summary", {
+    hasText: "Edit",
+  });
+  await expect(
+    editDisclosure,
+    "no per-definition Edit disclosure rendered after creating a definition, " +
+      "so the control this scan exists to measure is not on the page",
+  ).toBeVisible();
+  await editDisclosure.click();
+  await page.locator("details > summary", { hasText: "Add a field" }).click();
+  await expect(
+    page.locator("details[open] > summary", { hasText: "Choices" }).first(),
+    "the Choices disclosure is still collapsed, so axe cannot evaluate the " +
+      "target it is here to evaluate",
+  ).toBeVisible();
+
+  await scan(page, "custom-field settings (editable, Owner)");
+
+  // PUT THE WORKSPACE BACK. Every later test in this file scans contact
+  // surfaces, and a live custom field renders on all of them -- leaving one
+  // behind would make an unrelated scan's subject depend on this one having
+  // run. Removing is a soft delete, which is enough: the field leaves the
+  // forms.
+  await page
+    .getByRole("button", { name: "Remove Dressing room tier" })
+    .click();
+  await expect(page.getByText("Removed fields")).toBeVisible();
+  await signOut(page);
+});
+
 // ===========================================================================
 // PHASE 6'S SURFACE: THE PUBLISH-FIELD EDITOR, POPULATED
 // ===========================================================================
@@ -373,45 +483,6 @@ test("the event page WITH the finance panel has no automated accessibility viola
 // draft with every field at its default, missing the seven radio ladders,
 // the publish summary sentence and the "Hide now" quick actions that only
 // render once a field is not hidden.
-test("custom-field settings (read-only view) has no automated accessibility violations", async ({
-  page,
-}) => {
-  // ==========================================================================
-  // THE SETTINGS AREA HAD NEVER BEEN SCANNED ONCE
-  // ==========================================================================
-  // SIGNED_IN_PAGES covers lists, create forms, detail pages and the network
-  // surfaces. It covers no settings page at all, so nothing under
-  // /[orgSlug]/settings was known-good. This closes the read-only half of that.
-  //
-  // ==========================================================================
-  // WHAT THIS CANNOT REACH, AND WHY THAT IS NOT A DETAIL
-  // ==========================================================================
-  // `manage_custom_fields` is OWNER AND ADMIN ONLY (20260828120000), and this
-  // suite has no owner and no admin: `E2eRole` is manager | standard_user |
-  // read_only | finance | booker, and sign-in.ts says so outright -- "owner and
-  // admin are the other two and nothing here is either".
-  //
-  // So the EDITABLE render of this page -- the "Add a field" disclosure, and an
-  // "Edit" disclosure per definition -- cannot be produced by any role this
-  // suite can sign in as. Those are exactly the two controls whose target size
-  // failed SC 2.5.8 and which this branch fixes, so THE FIX ITSELF IS NOT
-  // COVERED HERE and this test must not be read as covering it.
-  //
-  // Writing the scan anyway, as a manager, is still worth it: it is the first
-  // time anything under /settings has been scanned, and it arms every rule
-  // against the read-only render. But a scan that creates a definition and
-  // checks the disclosure needs an owner or admin in the shared fixture --
-  // both MFA-required (CLAUDE.md § Session security), so it needs the TOTP
-  // treatment `finance` already has. That is its own change, and it is the
-  // bigger half of this finding: no Owner/Admin-only surface in the product
-  // has ever been scanned, by anything.
-  await signIn(page, world, "manager");
-  await page.goto(`/${world.orgSlug}/settings/custom-fields`);
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-
-  await scan(page, "custom-field settings (read-only)");
-});
-
 test("the network profile editor, populated, has no automated accessibility violations", async ({
   page,
 }) => {
