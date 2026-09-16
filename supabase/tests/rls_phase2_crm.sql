@@ -1577,9 +1577,19 @@ select crm.val('M1f every permission key in use has a catalogue row',
   $$select count(*)::text from public.role_permissions rp
      where not exists (select 1 from public.permissions p where p.key = rp.permission_key)$$,
   '0');
-select crm.val('M1g exactly one key survives suspension today, and it is view_crm',
+-- TWO KEYS SINCE THE PHASE 7 PRE-MERGE FIX ROUND (finding I1), and the
+-- assertion is still the EXACT SET rather than a count, so a third cannot
+-- arrive unnoticed. `end_support_access` (20260921002000) lets a SUSPENDED
+-- workspace's Owner/Admin see and end a support-access session already running
+-- against them: suspending a workspace mid-session used to revoke the
+-- CUSTOMER's control while leaving the operator's read running, because
+-- view_crm survives suspension and manage_organisation does not. Withdrawing a
+-- grant is not a change to the workspace. It grants no read of any tenant
+-- table and no write anywhere; ACCEPTING a new request still needs
+-- manage_organisation and is still refused while suspended (Q98).
+select crm.val('M1g exactly two keys survive suspension today: view_crm and end_support_access',
   $$select coalesce(string_agg(key, ',' order by key), '<none>')
-      from public.permissions where survives_suspension$$, 'view_crm');
+      from public.permissions where survives_suspension$$, 'end_support_access,view_crm');
 -- The default is the control that protects Phase 5's author from themselves.
 select crm.val('M1h survives_suspension DEFAULTS to false (a new key arrives closed)',
   $$select column_default from information_schema.columns

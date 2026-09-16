@@ -235,8 +235,11 @@ export async function startImpersonationAction(
  * reason, and neither does signing out.
  *
  * The identity check stays, and the database's own guard
- * (public.end_impersonation_session: your session, or manage_organisation in
- * the target organisation) is unchanged and is the actual control.
+ * (public.end_impersonation_session: your session, or `end_support_access` in
+ * the target organisation) is unchanged and is the actual control -- that key
+ * replaced `manage_organisation` in the pre-merge fix round (finding I1),
+ * because manage_organisation does not survive suspension and the customer's
+ * ability to REVOKE consent has to.
  */
 export async function endImpersonationAction(
   _prev: FormState,
@@ -268,7 +271,8 @@ export async function endImpersonationAction(
 // 4/5/6. THE ORGANISATION'S SIDE: accept, decline, revoke
 //
 // NO STEP-UP HERE, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT.
-// manage_organisation is held only by Owner and Admin, both of which
+// manage_organisation -- and `end_support_access`, granted to exactly the roles
+// that hold it -- is held only by Owner and Admin, both of which
 // private.role_requires_mfa() covers, so the database already refuses these
 // three below aal2 -- the accepting admin has presented a factor this session.
 // CLAUDE.md's step-up list names "high-risk admin/superuser function", and

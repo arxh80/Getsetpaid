@@ -235,9 +235,12 @@ test("the golden walk: request → accept as the org admin → start → bannere
     // "Waiting for you" section stops rendering it. Asserting the message
     // would be asserting a race; asserting the ROW STATE is asserting the
     // outcome.
-    await expect(
-      adminPage.getByText("No open requests. Nobody at GetSetPaid can see this workspace."),
-    ).toBeVisible();
+    // The visibility claim moved OUT of this sentence in the pre-merge fix
+    // round (finding I1): "nobody can see this workspace" is a statement about
+    // SESSIONS and was being made by the section about REQUESTS, so it was
+    // false whenever a session ran with no new request pending. The section
+    // that can check it makes it.
+    await expect(adminPage.getByText("No open requests.")).toBeVisible();
     await expect(adminPage.locator("main")).toContainText("Accepted — not started");
 
     // ---- 3. ACCEPTANCE IS NOT A SESSION -----------------------------------
@@ -553,11 +556,24 @@ test("a SUSPENDED workspace's admin gets the paused explanation, not a bare 404"
     // in reverse.
     await expect(page).not.toHaveTitle(/Not found/);
 
-    // AND NOTHING ELSE. No request data, no accept/decline control: this
-    // branch adds a sentence, not a read.
+    // NO REQUEST DATA AND NO ACCEPT/DECLINE CONTROL. Q98 is untouched:
+    // answering a request is a change to the workspace and stays refused.
     await expect(page.getByRole("button", { name: /^Accept/ })).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^Decline/ })).toHaveCount(0);
     await expect(page.locator("main")).not.toContainText("Waiting for you");
+
+    // ...BUT THE SENTENCE ABOUT WHAT SUPPORT CAN SEE IS NOW TRUE, AND IS
+    // DERIVED (pre-merge review finding I1). This branch used to state flatly
+    // "Nobody at GetSetPaid can see this workspace in the meantime", which is
+    // false whenever a session granted before the suspension is still running
+    // -- `view_crm` is the one read key with survives_suspension = true, so the
+    // operator keeps reading while the customer, on manage_organisation, could
+    // neither see nor end it. The claim is now read out of the database, and
+    // the state asserted here is the one with no session running.
+    await expect(page.locator("main")).toContainText("No support session is running.");
+    await expect(page.locator("main")).not.toContainText(
+      "Nobody at GetSetPaid can see this workspace in the meantime",
+    );
   } finally {
     await setOrganisationSuspended(world.orgId, false);
     await context.close();

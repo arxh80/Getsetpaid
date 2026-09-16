@@ -783,6 +783,14 @@ select imp.val('IE13 the revoke names WHO ended it',
 -- rules the other way, the fix is `survives_suspension` on a NEW
 -- accept-support-access key -- not a special case in has_permission.
 --
+-- THAT SHAPE IS NOW SHIPPED FOR THE OTHER DIRECTION (pre-merge finding I1).
+-- `end_support_access` (20260921002000) is exactly that key, scoped to ENDING
+-- a running session rather than accepting a new one: withdrawing a grant is
+-- not a change to the workspace, so it survives suspension while
+-- manage_organisation does not. § IS9b-IS9f are the half this section never
+-- asked -- "can the CUSTOMER still end it?" -- and § IS1/§ IS2 below are
+-- unchanged, because the new policy carries `status = 'active'`.
+--
 -- IT RUNS LAST OF THE BEHAVIOURAL SECTIONS, and that is a constraint rather
 -- than a preference: impersonation_sessions_live_pair permits at most one
 -- live (requested/accepted/active) session per superuser per organisation, so
@@ -845,7 +853,58 @@ select imp.val('IS8 but view_network does NOT survive suspension, for the impers
   format($$select public.has_permission(%L,'view_network')::text$$, :'alpha_org'), 'false');
 select imp.val('IS9 and writes stay refused, suspended or not',
   format($$select public.has_permission(%L,'manage_contacts')::text$$, :'alpha_org'), 'false');
-select public.end_impersonation_session(:'s3'::uuid);
+-- THE GUARD ON THE OTHER HALF OF THE FIX BELOW: the key that lets the CUSTOMER
+-- end a session must never be reachable BY the session. It is granted to the
+-- roles holding manage_organisation, and private.impersonated_organisations()
+-- resolves the envelope from `read_only`'s grants (§ IP3), so this is a
+-- consequence rather than a special case -- which is exactly why it is worth a
+-- standing assertion rather than a comment.
+select imp.val('IS9a GUARD: the impersonator does NOT hold end_support_access (support access still cannot extend itself)',
+  format($$select public.has_permission(%L,'end_support_access')::text$$, :'alpha_org'), 'false');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- CAN THE CUSTOMER STILL END IT? (pre-merge review finding I1)
+--
+-- THE QUESTION NOTHING IN THIS SUITE -- OR ANYWHERE ELSE -- USED TO ASK.
+-- § IS6/§ IS7 above assert, deliberately, that the OPERATOR's read survives
+-- suspension. Nothing asserted the other half, and the other half was broken:
+-- public.end_impersonation_session()'s customer branch asked for
+-- `manage_organisation` (survives_suspension = false) and
+-- impersonation_sessions_select_target_admin is keyed on the same key, so a
+-- routine billing suspension landing mid-session left the operator reading and
+-- the customer unable to see the session, let alone end it -- while
+-- /[orgSlug]/support-access told them "Nobody at GetSetPaid can see this
+-- workspace in the meantime."
+--
+-- 20260921002000 gives the revocation its own key, `end_support_access`,
+-- seeded survives_suspension = true and granted to exactly the roles that hold
+-- manage_organisation. Q98 is NOT reopened: the new SELECT policy carries
+-- `status = 'active'`, so a suspended workspace still cannot SEE a pending
+-- request (§ IS1) or ACCEPT one (§ IS2). Only the withdrawal survives.
+--
+-- ALPHA IS STILL SUSPENDED HERE. That is the whole point of the block.
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select imp.val('IS9b MEASURED: a SUSPENDED organisation''s Owner CAN still SEE the LIVE session (I1)',
+  format($$select count(*)::text from public.impersonation_sessions
+            where id=%L and status='active'$$, :'s3'), '1');
+select imp.val('IS9c MEASURED: ...and CAN still END it -- revoking consent survives suspension (I1)',
+  format($$select public.end_impersonation_session(%L)$$, :'s3'), 'ended');
+reset role; reset request.jwt.claims;
+
+select imp.val('IS9d CONTROL: the audit names the CUSTOMER as the party that ended it',
+  format($$select after->>'ended_by' from public.audit_events
+           where correlation_id = %L and action='impersonation.ended'$$, :'s3'),
+  'organisation_admin');
+
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select imp.val('IS9e CONTROL: and the operator''s read is gone the moment the customer ends it',
+  format($$select public.has_permission(%L,'view_crm')::text$$, :'alpha_org'), 'false');
+select imp.val('IS9f CONTROL: ...reading 0 ALPHA contacts again, suspended workspace or not',
+  format($$select count(*)::text from public.contacts where organisation_id=%L$$, :'alpha_org'), '0');
 reset role; reset request.jwt.claims;
 
 update public.organisations set deleted_at = null where id = :'alpha_org';

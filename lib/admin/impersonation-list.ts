@@ -9,15 +9,18 @@ import "server-only";
 // sitting beside lib/network/connections.ts.
 //
 // BOTH QUERIES READ THROUGH THE CALLER'S OWN RLS and add no filter that is an
-// ACCESS decision. public.impersonation_sessions carries exactly two SELECT
-// policies (20260908020000): the superuser sees their own rows, a
-// manage_organisation holder sees rows for their own organisation. So
+// ACCESS decision. public.impersonation_sessions carries three SELECT
+// policies: the superuser sees their own rows, a manage_organisation holder
+// sees rows for their own organisation (20260908020000), and -- since the
+// pre-merge fix round, finding I1 -- an `end_support_access` holder sees an
+// ALREADY-ACTIVE session against their own organisation even while that
+// workspace is SUSPENDED (20260921002000). So
 // `listMyImpersonationSessions()` returns nothing at all for a non-superuser
 // and `listOrganisationImpersonationRequests()` returns nothing for a member
 // who cannot administer the workspace -- without either function saying so.
 //
 // THAT IS ABOUT AUTHORISATION, AND IT IS NOT THE WHOLE STORY (fix round 1,
-// Minor 5). The two policies are OR'd, so an unfiltered query gets their
+// Minor 5). The policies are OR'd, so an unfiltered query gets their
 // UNION -- which is a correctness problem for `listMyImpersonationSessions()`
 // even though it is not an access one. Its own header explains the filter it
 // therefore carries. The lesson is lib/auth/index.ts's getMemberships(), and
@@ -231,11 +234,13 @@ export async function roleWouldAdministerOrganisation(
  * THE `.eq("superuser_user_id", ...)` IS LOAD-BEARING -- FIX ROUND 1, MINOR 5
  * ===========================================================================
  * THIS FILE'S HEADER USED TO CLAIM THE POLICIES ALONE MADE THIS LIST CORRECT,
- * AND THAT WAS ONLY TRUE OF THE FIRST OF THE TWO. There are two SELECT
+ * AND THAT WAS ONLY TRUE OF THE FIRST OF THEM. There are three SELECT
  * policies on impersonation_sessions and an unfiltered query gets their
  * UNION: `impersonation_sessions_select_superuser` returns the caller's own
- * rows, and `impersonation_sessions_select_target_admin` returns EVERY row
- * for any organisation the caller holds manage_organisation in. So a
+ * rows, `impersonation_sessions_select_target_admin` returns EVERY row for any
+ * organisation the caller holds manage_organisation in, and
+ * `impersonation_sessions_select_target_live_session` returns the ACTIVE ones
+ * for any organisation they hold end_support_access in. So a
  * superuser who is also an Owner or Admin of any workspace would see that
  * workspace's sessions listed under the heading "Your sessions" -- including
  * ones another superuser opened.

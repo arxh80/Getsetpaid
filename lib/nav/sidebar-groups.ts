@@ -44,17 +44,29 @@ export async function buildSidebarGroups(
     canViewNetwork,
     canManageMembers,
     canManageCustomFields,
-    canManageOrganisation,
+    canManageOrganisationKey,
+    canEndSupportAccess,
   ] = await Promise.all([
     hasPermission(orgId, "view_network"),
     hasPermission(orgId, "manage_members"),
     hasPermission(orgId, "manage_custom_fields"),
     // Phase 7 Task 2: gates the "Support access" item. Owner/Admin only, and
-    // -- because manage_organisation does not survive suspension and is not in
-    // the impersonation envelope -- absent for a suspended workspace and for
-    // an impersonating superuser alike.
+    // -- because manage_organisation is not in the impersonation envelope --
+    // absent for an impersonating superuser.
     hasPermission(orgId, "manage_organisation"),
+    // ...AND THE SUSPENDED CASE, pre-merge review finding I1. The line above
+    // has survives_suspension = false, so a SUSPENDED workspace's own Owner
+    // lost the rail item -- including while a support session granted before
+    // the suspension was still running and still readable, since `view_crm`
+    // survives. The one screen carrying the "End access now" control was then
+    // reachable only by typing the URL. `end_support_access` is held by the
+    // same roles and DOES survive suspension, so the item stays put for
+    // exactly the person who may still end a session. It is not in the
+    // impersonation envelope either (rls_phase7_impersonation.sql § IS9a), so
+    // support access still cannot use it to extend itself.
+    hasPermission(orgId, "end_support_access"),
   ]);
+  const canManageOrganisation = canManageOrganisationKey || canEndSupportAccess;
 
   return [
     // The hub first (review finding 12): the rail's own way back to the

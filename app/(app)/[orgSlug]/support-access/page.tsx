@@ -113,6 +113,37 @@ export default async function SupportAccessPage({
   if (!canAdminister && !pausedBySuspension) notFound();
 
   if (pausedBySuspension) {
+    // ===========================================================================
+    // THE SENTENCE THAT USED TO SIT HERE WAS FALSE IN ONE STATE, AND IT WAS THE
+    // STATE THAT MATTERED (pre-merge review finding I1)
+    // ===========================================================================
+    // It read: "Nobody at GetSetPaid can see this workspace in the meantime."
+    // `view_crm` is the one READ key with survives_suspension = true, so a
+    // support session that was ALREADY RUNNING when the workspace was suspended
+    // keeps reading it (rls_phase7_impersonation.sql § IS6/§ IS7, deliberately).
+    // The operator's access survived; the customer's control of it did not, and
+    // this page then told them the opposite.
+    //
+    // 20260921002000 fixes the control half -- `end_support_access` survives
+    // suspension, so both the session row and the End control are reachable
+    // here. This branch fixes the sentence half: it no longer makes a claim
+    // about what support can see. It states only what is actually true of a
+    // suspended workspace (nothing new can be accepted) and then SHOWS the
+    // running sessions, or their absence, from the database.
+    //
+    // THE aal2 SPLIT IS WHY THE NEGATIVE CLAIM IS GATED. `hasPermission` carries
+    // the aal2 term; `roleWouldAdministerOrganisation` deliberately does not, so
+    // an aal1 Owner reaches this explanation and RLS correctly returns them no
+    // rows. Telling *them* "no session is running" would be the same untrue
+    // sentence in a smaller costume, so they get the second-factor line instead.
+    const canEndSupportAccess = await hasPermission(org.id, "end_support_access");
+    const now = new Date();
+    const liveSessions = canEndSupportAccess
+      ? (await listOrganisationImpersonationRequests(org.id)).filter((row) =>
+          isLive(row, now),
+        )
+      : [];
+
     return (
       <div className="flex flex-col gap-6">
         <div className="flex flex-col gap-3">
@@ -125,13 +156,55 @@ export default async function SupportAccessPage({
           </p>
         </div>
         <Alert tone="info">
-          Support-access requests are <strong>paused</strong> while this
+          New support-access requests are <strong>paused</strong> while this
           workspace is suspended. Answering one is a change to the workspace,
           and a suspended workspace is read-only — so nothing can be accepted
-          or declined here until it is reinstated. Nobody at GetSetPaid can see
-          this workspace in the meantime. Contact GetSetPaid support to have it
-          reinstated.
+          or declined here until it is reinstated. <strong>Access you have
+          already granted is not paused</strong>: any session still running is
+          listed below and you can end it at any moment. Contact GetSetPaid
+          support to have the workspace reinstated.
         </Alert>
+
+        {!canEndSupportAccess ? (
+          <p className="max-w-prose text-base text-ink-muted">
+            Sign in with your second factor to see whether a support session is
+            running and to end it.
+          </p>
+        ) : liveSessions.length === 0 ? (
+          <p className="max-w-prose text-base text-ink-muted">
+            No support session is running. Nobody at GetSetPaid can see this
+            workspace.
+          </p>
+        ) : (
+          <section className="flex flex-col gap-4">
+            <h2 className="text-xl font-bold text-ink">Access you have granted</h2>
+            <ul className="flex flex-col border-t border-rule">
+              {liveSessions.map((row) => (
+                <li key={row.id} className="flex flex-col gap-3 border-b border-rule py-4">
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <span className="text-base font-semibold text-ink">
+                      GetSetPaid support
+                    </span>
+                    <ImpersonationStatusChip status={displayStatus(row, now)} />
+                    {row.expiresAt ? (
+                      <span className="text-sm text-ink-muted tabular-nums">
+                        Ends {formatDateTime(row.expiresAt)}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="max-w-prose text-base text-ink">{row.reason}</p>
+                  <div>
+                    <RevokeImpersonationForm
+                      orgSlug={org.slug}
+                      sessionId={row.id}
+                      subject={`session started ${row.startedAt ? formatDateTime(row.startedAt) : ""}`}
+                    />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
       </div>
     );
   }
@@ -185,8 +258,14 @@ export default async function SupportAccessPage({
       <section className="flex flex-col gap-4">
         <h2 className="text-xl font-bold text-ink">Waiting for you</h2>
         {pending.length === 0 ? (
+          // NO VISIBILITY CLAIM HERE (pre-merge finding I1's second half). It
+          // used to add "Nobody at GetSetPaid can see this workspace", which is
+          // a statement about SESSIONS made in the section about REQUESTS --
+          // false whenever a session is running with no new request pending.
+          // The claim belongs to the section that can actually check it, which
+          // is "Access you have granted" below.
           <p className="max-w-prose text-base text-ink-muted">
-            No open requests. Nobody at GetSetPaid can see this workspace.
+            No open requests.
           </p>
         ) : (
           <ul className="flex flex-col border-t border-rule">
