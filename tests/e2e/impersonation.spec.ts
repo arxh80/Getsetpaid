@@ -182,6 +182,22 @@ async function expectStreamedRefusal(page: Page, url: string): Promise<void> {
 test("the golden walk: request → accept as the org admin → start → bannered read-only view → write refused → end", async ({
   browser,
 }) => {
+  // 180 s, not the config's 60 s, and the reason is arithmetic rather than
+  // taste. This is the longest single test in the suite by a wide margin: two
+  // browser contexts, two real MFA sign-ins with real TOTP, a request, an
+  // accept, a start, a client-side navigation into the bannered workspace, a
+  // refused write, a feedback submission and an end -- about a dozen full page
+  // loads against a dev server. It measured 21.6 s on an idle machine and
+  // EXCEEDED the 60 s cap on a loaded one during this task's own review, which
+  // took the file's remaining 7 tests down with it (`mode: "serial"`). Phase 7
+  // Task 7 also widened the gap: `setUpWorld` now enrols two more TOTP
+  // factors on every run, ahead of this test.
+  //
+  // Raising the cap rather than splitting the walk is deliberate -- the steps
+  // are not independent (see the comment above) and each one's assertion still
+  // names the step that broke, so the only thing the cap was buying was a
+  // false failure under load. 3x headroom over the measured worst case.
+  test.setTimeout(180_000);
   const superuserContext = await browser.newContext();
   const adminContext = await browser.newContext();
   const superuserPage = await superuserContext.newPage();
