@@ -17,9 +17,9 @@
 -- RUN IT WITH: supabase/tests/run-rls-tests.sh
 --   It runs LAST of the psql suites, on the SAME fixtures (P7VARS), and
 --   touches nothing but legal_documents and the audit rows its own RPC calls
---   write. § LZ restores the migrated rows (fifteen documents: ten at
---   version 1, three at version 2, two at version 3, over seven superseded
---   versions) exactly and
+--   write. § LZ restores the migrated rows (fifteen documents: nine at
+--   version 1, four at version 2, two at version 3, over eight superseded
+--   versions -- Task 2 published marketing-preferences v2) exactly and
 --   deletes every version and audit row it created -- which needs the guard
 --   OFF, so it is done under `session_replication_role = replica`, the DBA
 --   escape hatch 20260922000000's header names, as `postgres`, by name.
@@ -32,7 +32,7 @@
 --
 -- SECTIONS:
 --   LF  fixtures: the seed is what it claims (15 published, unreviewed;
---       10 at version 1, 3 at version 2, 2 at version 3)
+--       9 at version 1, 4 at version 2, 2 at version 3)
 --   LG  grants, RLS and the trigger, from the catalogue
 --   LA  the public read: anon sees exactly the current published versions
 --   LW  no client role can write the table directly -- superuser included
@@ -110,15 +110,15 @@ select md5(body) as au_md5 from public.legal_documents where slug = 'acceptable-
 -- ===========================================================================
 -- § LF  FIXTURES
 -- ===========================================================================
-select lg.val('LF1 FIXTURE: the migrations hold exactly 22 rows (15 seeded + 4 corrected + 3 made consistent)',
-  $$select count(*)::text from public.legal_documents$$, '22');
-select lg.val('LF2 FIXTURE: 15 published -- 10 still at version 1, 3 at version 2, 2 at version 3',
+select lg.val('LF1 FIXTURE: the migrations hold exactly 23 rows (15 seeded + 4 corrected + 3 made consistent + marketing v2, Task 2)',
+  $$select count(*)::text from public.legal_documents$$, '23');
+select lg.val('LF2 FIXTURE: 15 published -- 9 still at version 1, 4 at version 2, 2 at version 3',
   $$select string_agg(version || '=' || n, ',' order by version) from (
       select version, count(*) as n from public.legal_documents where status = 'published' group by version) v$$,
-  '1=10,2=3,3=2');
-select lg.val('LF2b FIXTURE: the superseded rows are exactly the versions fix rounds 1 and 2 replaced',
+  '1=9,2=4,3=2');
+select lg.val('LF2b FIXTURE: the superseded rows are exactly the versions fix rounds 1 and 2 (and Task 2) replaced',
   $$select string_agg(slug || ':' || version, ',' order by slug, version) from public.legal_documents where status = 'superseded'$$,
-  'data-processing-addendum:1,data-processing-addendum:2,data-retention:1,privacy:1,privacy:2,security:1,subprocessors:1');
+  'data-processing-addendum:1,data-processing-addendum:2,data-retention:1,marketing-preferences:1,privacy:1,privacy:2,security:1,subprocessors:1');
 select lg.val('LF2c FIXTURE: no current page repeats a version 1 overclaim (I2, M1, M2)',
   $$select count(*)::text from public.legal_documents
      where status = 'published'
@@ -674,8 +674,23 @@ select lg.val('LI21 ...and version 1 is byte-for-byte the seed apart from its su
 -- Fix round 1, M7: a row trigger never sees a TRUNCATE; the statement guard
 -- does (20260922003000).
 select count(*) as rows_before_truncate from public.legal_documents \gset
-select lg.try('LI22 postgres cannot TRUNCATE the legal store',
-  $$truncate public.legal_documents$$, 'denied(42501)');
+-- PHASE 8 TASK 2 CHANGED WHAT A PLAIN TRUNCATE MEETS FIRST. public.consents
+-- now holds a foreign key to (slug, version), and Postgres refuses to TRUNCATE
+-- a referenced table without CASCADE (0A000) before any trigger runs -- which
+-- would make "refused" true here whether or not the guard exists. So LI22 now
+-- takes the foreign key out of the way INSIDE the probe (a subtransaction that
+-- always ends in an error, so the DROP never survives) and asks the guard
+-- itself; LI22a records the FK's own refusal as the second layer it is.
+select lg.try('LI22 postgres cannot TRUNCATE the legal store (the guard, with the consents FK out of the way)',
+  $$do $d$ begin
+      alter table public.consents drop constraint consents_policy_version_fkey;
+      truncate public.legal_documents;
+      raise exception 'TRUNCATE SUCCEEDED' using errcode = 'P0099';
+    end $d$$$, 'denied(42501)');
+select lg.try('LI22a ...and a plain TRUNCATE is also refused by the consents foreign key (Task 2)',
+  $$truncate public.legal_documents$$, 'denied(0A000)');
+select lg.val('LI22b ...the consents foreign key is still in place after LI22',
+  $$select count(*)::text from pg_constraint where conname = 'consents_policy_version_fkey'$$, '1');
 select lg.try('LI23 ...nor with RESTART IDENTITY CASCADE',
   $$truncate public.legal_documents restart identity cascade$$, 'denied(42501)');
 select lg.val('LI24 ...and every row is still there',
@@ -707,8 +722,8 @@ reset role; reset request.jwt.claims;
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'super_c';
-select lg.val('LO1 the aal2 superuser reads every version: 22 migrated + the terms and cookies drafts',
-  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '24');
+select lg.val('LO1 the aal2 superuser reads every version: 23 migrated + the terms and cookies drafts',
+  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '25');
 select lg.val('LO2 ...including the one open draft, which no table read can reach',
   $$select string_agg(slug || ':' || status, ',' order by slug)
       from public.operator_legal_document_versions(null) where status = 'draft'$$, 'cookies:draft');

@@ -184,10 +184,19 @@ select rl.val('RV6a Connection requests: 10 / hour, per ORGANISATION (Q79 spam, 
 select rl.val('RV6b ...and it is org-scoped, not user-scoped, deliberately',
   $$select subject_scope from public.rate_limit_policies
      where category='network_connection_request'$$, 'organisation');
--- SEVEN ROWS AND NO MORE. An eighth category appearing without a § 5 row is
--- the drift this assertion exists to catch, in the direction the others cannot.
-select rl.val('RV7 the policy table holds exactly the seven § 5 categories',
-  $$select count(*)::text from public.rate_limit_policies$$, '7');
+-- Phase 8 Task 2 (20260923000000): consent GRANTS, 10 / hour per user,
+-- enforced at the insert. Withdrawals are never metered (SECURITY.md § 5).
+select rl.val('RV6c Consent grants: 10 / hour, per user (Phase 8 Task 2)',
+  $$select max_requests || '/' || window_seconds || '/' || subject_scope
+      from public.rate_limit_policies where category='consent_grant'$$,
+  '10/3600/user');
+-- EIGHT ROWS AND NO MORE (seven until Phase 8 Task 2 added consent_grant --
+-- which turned this assertion red until the row above and SECURITY.md § 5
+-- were written, exactly as designed). A ninth category appearing without a
+-- § 5 row is the drift this assertion exists to catch, in the direction the
+-- others cannot.
+select rl.val('RV7 the policy table holds exactly the eight § 5 categories',
+  $$select count(*)::text from public.rate_limit_policies$$, '8');
 -- network_discovery must never be folded into search (FOLLOW-UPS:3408-3419):
 -- its unit cost is O(platform-wide published rows), not O(tenant).
 select rl.val('RV8 network_discovery is a DISTINCT category from search',
@@ -207,8 +216,8 @@ select rl.try('RV10 ...nor INSERT a new category',
       (category, subject_scope, max_requests, window_seconds, description)
     values ('smuggled','user',1,1,'x')$$,
   'denied(42501)');
-select rl.val('RV11 the superuser CAN read the configuration (the health view states it)',
-  $$select count(*)::text from public.rate_limit_policies$$, '7');
+select rl.val('RV11 the superuser CAN read the configuration, all eight rows (the health view states it)',
+  $$select count(*)::text from public.rate_limit_policies$$, '8');
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -1380,8 +1389,8 @@ select rl.val('RZ3 the two suite documents are gone (not soft-deleted -- never e
 select rl.val('RZ4 ALPHA is still active and untouched',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
          :'alpha_org'), 'true');
-select rl.val('RZ5 the seven seeded policy rows are exactly as they were',
-  $$select count(*)::text from public.rate_limit_policies$$, '7');
+select rl.val('RZ5 the eight seeded policy rows (seven + Phase 8 consent_grant) are exactly as they were',
+  $$select count(*)::text from public.rate_limit_policies$$, '8');
 
 \pset format aligned
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual

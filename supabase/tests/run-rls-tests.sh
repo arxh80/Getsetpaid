@@ -832,6 +832,41 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 2 (THE CONSENT LEDGER) SUITE.
+#
+# Runs LAST of the psql suites, after the legal suite has put the legal store
+# back, on the SAME fixtures (P7VARS). It records real consents as the Phase 2
+# users, publishes (and then removes) a version 3 of the marketing page, and
+# its own § CZ deletes every consent, counter, alert and audit row it made and
+# proves the legal store is byte-for-byte what it found, so the HTTP block
+# below reads the migrated rows.
+# ============================================================================
+docker cp "$HERE/rls_phase8_consents.sql" "$CTR:/tmp/rls_phase8_consents.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off   "${P7VARS[@]}" -f /tmp/rls_phase8_consents.sql
+
+cs_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc            "select count(*) from cs.results where not pass" | tr -d '[:space:]')
+if [ "$cs_fails" != "0" ]; then
+  echo "PHASE 8 CONSENT LEDGER SUITE FAILED: $cs_fails failing assertion(s)" >&2
+  echo "  In CW, ATTRIBUTION IS FORGEABLE -- a consent landed for somebody other" >&2
+  echo "  than the session, a sessionless write landed, or a forged column" >&2
+  echo "  survived the trigger. Sev1: a consent record is evidence." >&2
+  echo "  In CR, A USER CAN READ SOMEBODY ELSE'S CONSENTS, or the oversight read" >&2
+  echo "  is no longer aal2-gated." >&2
+  echo "  In CH, HISTORY CAN BE REWRITTEN -- an update, delete or truncate got" >&2
+  echo "  past the guard." >&2
+  echo "  In CV, a consent can be recorded against a version the person was not" >&2
+  echo "  shown, or a withdrawal can be blocked by a stale page." >&2
+  echo "  In CC, the sender's check answers wrongly or is callable by a user." >&2
+  echo "  In CM, the grant meter moved, or a WITHDRAWAL is now metered." >&2
+  echo "  In CA, an event went unaudited or an audit row carries more than ids." >&2
+  echo "  In CZ, this suite left rows behind -- discard the run and reset." >&2
+  psql_status=1
+else
+  echo "Phase 8 consent ledger suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -3399,11 +3434,43 @@ p2_code "carol POST of a legal document -> 403"                     403 POST    
 p2_code "carol cannot create a draft through the RPC -> 403"        403 POST         "rpc/create_legal_document_draft" '{"p_slug":"terms"}' "$TOKEN"
 p2_code "anon cannot call the operator read -> 401"                 401 POST         "rpc/operator_legal_document_versions" '{}' "$ANON"
 p2_code "the immutability guard is not an RPC -> 404"               404 POST         "rpc/legal_documents_guard" '{}' "$TOKEN"
-lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where status = 'published' and title <> 'x' and version = case when slug in ('privacy','data-processing-addendum') then 3 when slug in ('data-retention','security','subprocessors') then 2 else 1 end" | tr -d '[:space:]')
+lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where status = 'published' and title <> 'x' and version = case when slug in ('privacy','data-processing-addendum') then 3 when slug in ('data-retention','security','subprocessors','marketing-preferences') then 2 else 1 end" | tr -d '[:space:]')
 if [ "$lg_same" = "15" ]; then printf '  PASS  %-58s %s
 ' "the refused writes changed nothing (15 current rows intact)" "$lg_same"
 else printf '  FAIL  %-58s got %s want 15
 ' "the refused writes changed nothing" "$lg_same"; api_fails=$((api_fails+1)); fi
+
+# ============================================================================
+# PHASE 8 TASK 2: THE CONSENT LEDGER OVER REAL HTTP.
+#
+# carol records and withdraws her own marketing consent through the one RPC,
+# reads back only her own rows, and cannot write the table, forge a user, or
+# call the sender's check. § CZ of rls_phase8_consents.sql left the ledger
+# empty, so every count below is carol's alone.
+# ============================================================================
+echo
+echo "=== Phase 8 consent ledger at the API surface ==="
+p2_code "anon cannot record a consent -> 401"                        401 POST "rpc/record_consent" '{"p_purpose":"marketing_email","p_action":"granted","p_policy_version":2}' "$ANON"
+p2_code "carol records a grant through the RPC -> 200"               200 POST "rpc/record_consent" '{"p_purpose":"marketing_email","p_action":"granted","p_policy_version":2,"p_statement":"marketing-email-1"}' "$TOKEN"
+p2_code "carol's grant against a stale version -> 400"               400 POST "rpc/record_consent" '{"p_purpose":"marketing_email","p_action":"granted","p_policy_version":1}' "$TOKEN"
+p2_code "carol withdraws in one call, no version -> 200"             200 POST "rpc/record_consent" '{"p_purpose":"marketing_email","p_action":"withdrawn"}' "$TOKEN"
+p2_code "carol cannot name a user: no such parameter -> 404"         404 POST "rpc/record_consent" '{"p_purpose":"marketing_email","p_action":"granted","p_policy_version":2,"p_user_id":"${ID[alice]}"}' "$TOKEN"
+p2_code "carol cannot POST the table directly -> 403"                403 POST "consents" '{"purpose":"marketing_email","action":"granted","policy_slug":"marketing-preferences","policy_version":2,"mechanism":"account_settings"}' "$TOKEN"
+p2_code "carol cannot PATCH her own consent -> 403"                  403 PATCH "consents?purpose=eq.marketing_email" '{"action":"granted"}' "$TOKEN"
+p2_code "carol cannot DELETE her own consent -> 403"                 403 DELETE "consents?purpose=eq.marketing_email" "" "$TOKEN"
+p2_code "anon cannot read the ledger -> 401"                         401 GET "consents?select=id" "" "$ANON"
+p2_code "carol cannot call the sender's check -> 404/403"            403 POST "rpc/consent_is_granted" '{"p_user_id":"00000000-0000-0000-0000-000000000000","p_purpose":"marketing_email"}' "$TOKEN"
+p2_rows "carol reads exactly her two events"                          2 "consents?select=id,action" "$TOKEN"
+cs_http=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select string_agg(action || ':' || (user_id = '${ID[carol]}')::text, ',' order by seq) from public.consents" | tr -d '[:space:]')
+if [ "$cs_http" = "granted:true,withdrawn:true" ]; then printf '  PASS  %-58s %s
+' "the ledger holds carol's grant then withdrawal, both hers" "$cs_http"
+else printf '  FAIL  %-58s got %s want granted:true,withdrawn:true
+' "the ledger holds carol's grant then withdrawal" "$cs_http"; api_fails=$((api_fails+1)); fi
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c   "set session_replication_role = replica;
+   delete from public.audit_events where target_type='consent' and actor_user_id='${ID[carol]}';
+   delete from public.consents where user_id='${ID[carol]}';
+   set session_replication_role = default;
+   delete from public.rate_limit_counters where category='consent_grant' and subject_id='${ID[carol]}';"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2
