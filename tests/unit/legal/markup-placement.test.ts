@@ -222,7 +222,12 @@ describe("parseLegalMarkup is linear on hostile input at the 100 000-character l
 // Each helper replaced a regex that backtracked. The timing cases above prove
 // they are fast; these prove each one decides exactly what its regex decided,
 // over a generated corpus of the characters that regex cares about.
-describe("the linear helpers agree with the regular expressions they replaced", () => {
+// TIMEOUT (Phase 8 Task 2): each case below makes ~40k-120k expect() calls
+// over a fixed corpus. Alone they take 3-4 s; under the full `pnpm test`
+// load (128 files) the trim case crossed vitest's 5 s default twice in a row.
+// The time is the corpus walk's, not the helpers' (the timing guarantees live
+// in their own tests), so the budget is raised and no assertion changes.
+describe("the linear helpers agree with the regular expressions they replaced", { timeout: 30_000 }, () => {
   const ALPHABET = [" ", "\t", "\u00a0", "\u2028", "\u2029", "#", "-", "*", "1", ".", "@", "a", "<", "(", "x"];
   let state = 0xc0ffee;
   const next = () => {
