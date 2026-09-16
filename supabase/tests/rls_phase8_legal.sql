@@ -122,7 +122,7 @@ select lg.val('LF6 FIXTURE: the seed commits no email address',
 select lg.val('LG1 RLS is enabled on legal_documents',
   $$select relrowsecurity::text from pg_class where oid = 'public.legal_documents'::regclass$$, 'true');
 select lg.val('LG2 exactly one policy, SELECT, for anon and authenticated',
-  $$select string_agg(polname || ':' || polcmd || ':' ||
+  $$select string_agg(polname::text || ':' || polcmd::text || ':' ||
             (select string_agg(r::regrole::text, ',' order by r::regrole::text) from unnest(polroles) r), ';')
       from pg_policy where polrelid = 'public.legal_documents'::regclass$$,
   'legal_documents_select_current_published:r:anon,authenticated');
@@ -149,8 +149,12 @@ select lg.val('LG6 service_role holds nothing at all',
      where table_schema='public' and table_name='legal_documents' and grantee='service_role'$$, '0');
 select lg.val('LG7 the guard trigger exists, is enabled, and covers insert/update/delete',
   $$select string_agg(tgenabled::text || ':' || (tgtype & 28)::text, ',') from pg_trigger
-     where tgrelid = 'public.legal_documents'::regclass and not tgisinternal$$,
+     where tgrelid = 'public.legal_documents'::regclass and tgname = 'legal_documents_guard'$$,
   'O:28');
+select lg.val('LG7b exactly two user triggers, and the guard sorts BEFORE set_updated_at (20260922002000)',
+  $$select string_agg(tgname, ',' order by tgname) from pg_trigger
+     where tgrelid = 'public.legal_documents'::regclass and not tgisinternal$$,
+  'legal_documents_guard,set_updated_at');
 select lg.val('LG8 the five RPCs are granted to authenticated and NOT to anon',
   $$select string_agg(p.proname || '=' ||
             has_function_privilege('authenticated', p.oid, 'EXECUTE')::text || '/' ||
@@ -550,11 +554,12 @@ select lg.try('LI17 a second PUBLISHED row for one slug is refused by the unique
 select lg.try('LI18 ALLOWED: erasing who published it (ON DELETE SET NULL)',
   format($$update public.legal_documents set published_by = null, counsel_review_recorded_by = null
              where id = %L$$, :'terms_draft'), 'ok(1)');
-select lg.try('LI19 ALLOWED: superseding it (the publish RPC''s own step), done and undone in a savepoint',
-  format($$do $d$ begin
+-- A different outer quote tag: `$d$$$` would close a `$$` string early.
+select lg.try('LI19 ALLOWED: superseding it (the publish RPC''s own step), done and undone in a subtransaction',
+  format($q$do $d$ begin
              update public.legal_documents set status = 'superseded', superseded_at = now() where id = %L;
              raise exception 'rollback' using errcode = 'P0001';
-           end $d$$$, :'terms_draft'),
+           end $d$$q$, :'terms_draft'),
   'denied(P0001)');
 select lg.val('LI20 after every attempt, version 2''s text, title, date and review are intact',
   format($$select (body like '%%SENTINEL-BODY-7f3a revised.%%' and title = 'Terms of Service'

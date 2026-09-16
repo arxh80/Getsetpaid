@@ -1275,11 +1275,14 @@ select crm.val('L5  every table carrying updated_at has the trigger',
 -- attaches it. That is this guard doing the exact job it was written for, so
 -- the fix was to add the trigger rather than to carve out the table -- see that
 -- migration's header for why an exception list would have destroyed the guard.
-select crm.val('L6  ...and that is 32 tables (+1 rate_limit_counters in Phase 7)',
+-- 33 SINCE PHASE 8 TASK 1, up from 32: public.legal_documents carries an
+-- updated_at column, and § L5 above caught it arriving without the trigger --
+-- 20260922002000 attaches it, the 20260909030000 way.
+select crm.val('L6  ...and that is 33 tables (+1 legal_documents in Phase 8)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '32');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '33');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together

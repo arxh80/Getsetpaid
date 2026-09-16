@@ -1071,13 +1071,25 @@ describe("the inventory is mechanical", () => {
     // invisible to this file entirely. Views are included deliberately --
     // `network_directory` is how Phase 6 exposes the network, so a view is
     // exactly as much of a read surface as a table.
+    // COLUMN-LEVEL GRANTS COUNT TOO (Phase 8 Task 1). The first cut read
+    // `pg_class.relacl` alone, and a relation whose only grant to
+    // `authenticated` is column-level has NO entry there -- `legal_documents`
+    // (eight granted columns, nothing table-level) was invisible to this
+    // census while being readable by every session. Measured: registering it
+    // in PUBLIC_READ_RELATIONS turned this equality RED, because the query
+    // could not see the table the list now named. `pg_attribute.attacl` is
+    // where a column grant lives.
     const { rows } = await pool.query<{ relname: string; relrowsecurity: boolean; relkind: string }>(
       `select c.relname, c.relrowsecurity, c.relkind
          from pg_class c join pg_namespace n on n.oid = c.relnamespace
         where n.nspname = 'public'
           and c.relkind in ('r','p','v','m')
-          and exists (select 1 from aclexplode(c.relacl) ax
-                       where pg_get_userbyid(ax.grantee) = 'authenticated')`,
+          and (exists (select 1 from aclexplode(c.relacl) ax
+                        where pg_get_userbyid(ax.grantee) = 'authenticated')
+               or exists (select 1 from pg_attribute a
+                            cross join lateral aclexplode(a.attacl) ax
+                           where a.attrelid = c.oid and a.attacl is not null
+                             and pg_get_userbyid(ax.grantee) = 'authenticated'))`,
     );
     const granted = rows.map((r) => r.relname).sort();
     expect(
