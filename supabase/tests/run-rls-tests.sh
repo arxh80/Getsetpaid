@@ -796,6 +796,42 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 1 (VERSIONED LEGAL DOCUMENTS) SUITE.
+#
+# Runs LAST of the psql suites, on the SAME fixtures and the SAME variable set
+# (P7VARS). It drafts, publishes and reviews real versions, then its own § LZ
+# puts the fifteen seeded rows back byte for byte (under
+# session_replication_role = replica, because the immutability guard refuses
+# the undo for every role -- which is the point) and deletes its audit rows,
+# so the HTTP block below reads exactly the seed.
+# ============================================================================
+docker cp "$HERE/rls_phase8_legal.sql" "$CTR:/tmp/rls_phase8_legal.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off   "${P7VARS[@]}" -f /tmp/rls_phase8_legal.sql
+
+lg_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc            "select count(*) from lg.results where not pass" | tr -d '[:space:]')
+if [ "$lg_fails" != "0" ]; then
+  echo "PHASE 8 LEGAL DOCUMENTS SUITE FAILED: $lg_fails failing assertion(s)" >&2
+  echo "  In LA/LD/LP, THE PUBLIC READ WIDENED -- a signed-out visitor can see a" >&2
+  echo "  draft, a superseded version, or a column outside the grant (the" >&2
+  echo "  reviewer name). Sev1: it is the one table anon can read." >&2
+  echo "  In LW/LG, A CLIENT ROLE CAN WRITE the store directly, around the" >&2
+  echo "  audited RPCs." >&2
+  echo "  In LI, A PUBLISHED TEXT IS NO LONGER IMMUTABLE -- the thing a consent" >&2
+  echo "  will point at can be edited after the fact." >&2
+  echo "  In LD/LP/LR/LO, A NON-SUPERUSER (or an aal1 superuser) can draft," >&2
+  echo "  publish, review or read drafts." >&2
+  echo "  In LV, THE GRAMMAR'S DATABASE HALF IS GONE -- a javascript:/data: link," >&2
+  echo "  a tag or an unknown placeholder can be stored." >&2
+  echo "  In LH, a write went unaudited, or an audit row carries document text or" >&2
+  echo "  the reviewer's name." >&2
+  echo "  In LZ, the seed was not restored -- discard the run and reset." >&2
+  psql_status=1
+else
+  echo "Phase 8 legal documents suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -3338,6 +3374,34 @@ MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c \
    delete from public.audit_events where target_type='feedback' and actor_user_id='${ID[carol]}';
    delete from public.feedback where user_id='${ID[carol]}';
    delete from public.rate_limit_counters where category='feedback' and subject_id='${ID[carol]}';"
+
+# ============================================================================
+# PHASE 8 TASK 1: THE LEGAL DOCUMENT STORE OVER REAL HTTP.
+#
+# The one table a signed-out caller can read, driven with nothing but the
+# public anon key -- the request any visitor's browser (or a scraper) sends.
+# § LZ of rls_phase8_legal.sql left exactly the fifteen seeded rows.
+# ============================================================================
+echo
+echo "=== Phase 8 legal documents at the API surface ==="
+p2_rows "anon (key only) reads the 15 current legal documents"     15         "legal_documents?select=slug,version,title,counsel_reviewed_at" "$ANON"
+p2_rows "carol reads the same 15"                                   15         "legal_documents?select=slug,version" "$TOKEN"
+p2_code "anon select=* is refused (column-level grant) -> 401"      401 GET         "legal_documents?select=*" "" "$ANON"
+p2_code "anon cannot select the reviewer name -> 401"               401 GET         "legal_documents?select=counsel_reviewer" "" "$ANON"
+p2_code "carol cannot select the reviewer name -> 403"              403 GET         "legal_documents?select=counsel_reviewer" "" "$TOKEN"
+p2_code "carol cannot select status (drafts are not a filter away) -> 403" 403 GET         "legal_documents?select=slug&status=eq.draft" "" "$TOKEN"
+p2_code "anon PATCH of a legal document -> 401"                     401 PATCH         "legal_documents?slug=eq.terms" '{"title":"x"}' "$ANON"
+p2_code "carol PATCH of a legal document -> 403"                    403 PATCH         "legal_documents?slug=eq.terms" '{"title":"x"}' "$TOKEN"
+p2_code "carol DELETE of a legal document -> 403"                   403 DELETE         "legal_documents?slug=eq.terms" "" "$TOKEN"
+p2_code "carol POST of a legal document -> 403"                     403 POST         "legal_documents" '{"slug":"terms","version":9,"title":"x","body":"y","effective_date":"2026-01-01"}' "$TOKEN"
+p2_code "carol cannot create a draft through the RPC -> 403"        403 POST         "rpc/create_legal_document_draft" '{"p_slug":"terms"}' "$TOKEN"
+p2_code "anon cannot call the operator read -> 401"                 401 POST         "rpc/operator_legal_document_versions" '{}' "$ANON"
+p2_code "the immutability guard is not an RPC -> 404"               404 POST         "rpc/legal_documents_guard" '{}' "$TOKEN"
+lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where version = 1 and status = 'published' and title <> 'x'" | tr -d '[:space:]')
+if [ "$lg_same" = "15" ]; then printf '  PASS  %-58s %s
+' "the refused writes changed nothing (15 seeded rows intact)" "$lg_same"
+else printf '  FAIL  %-58s got %s want 15
+' "the refused writes changed nothing" "$lg_same"; api_fails=$((api_fails+1)); fi
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

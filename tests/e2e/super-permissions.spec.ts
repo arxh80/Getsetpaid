@@ -84,6 +84,9 @@ const SUPER_SURFACES: SuperSurface[] = [
   { url: "/super/feedback", heading: "Feedback", title: /Feedback/ },
   { url: "/super/health", heading: "Platform health", title: /Platform health/ },
   { url: "/super/impersonation", heading: "Impersonation", title: /Impersonation/ },
+  // Phase 8 Task 1. One page for both views (the list and `?doc=<slug>`), so
+  // the census stays a list of literal URLs.
+  { url: "/super/legal", heading: "Legal documents", title: /Legal documents/ },
   { url: "/super/organisations", heading: "Organisations", title: /Organisations/ },
 ];
 

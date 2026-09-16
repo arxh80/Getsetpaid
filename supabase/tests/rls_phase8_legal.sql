@@ -1,0 +1,703 @@
+-- ===========================================================================
+-- Phase 8 Task 1 (versioned legal documents) RLS suite.
+--
+-- Covers 20260922000000_legal_documents.sql and its seed (20260922001000):
+--   public.legal_documents                    the store
+--   legal_documents_select_current_published  the one anon-satisfiable policy
+--   the column grant                          what anon/authenticated may name
+--   private.legal_documents_guard()           immutability, for EVERY role
+--   public.operator_legal_document_versions   the superuser's read
+--   public.create_legal_document_draft / update_legal_document_draft /
+--   publish_legal_document / record_legal_document_counsel_review
+--
+-- RUN IT WITH: supabase/tests/run-rls-tests.sh
+--   It runs LAST of the psql suites, on the SAME fixtures (P7VARS), and
+--   touches nothing but legal_documents and the audit rows its own RPC calls
+--   write. § LZ restores the fifteen seeded version-1 rows exactly and
+--   deletes every version and audit row it created -- which needs the guard
+--   OFF, so it is done under `session_replication_role = replica`, the DBA
+--   escape hatch 20260922000000's header names, as `postgres`, by name.
+--
+-- THE DENOMINATOR RULE (progress.md, standing lesson 1). Every "X cannot see
+-- a draft" assertion is preceded by the superuser's own read proving the
+-- draft EXISTS, and every "X is refused" RPC assertion by the same call
+-- succeeding for the aal2 superuser with the same arguments. A refusal of
+-- nothing is not a pass.
+--
+-- SECTIONS:
+--   LF  fixtures: the seed is what it claims (15 published, unreviewed)
+--   LG  grants, RLS and the trigger, from the catalogue
+--   LA  the public read: anon sees exactly the current published versions
+--   LW  no client role can write the table directly -- superuser included
+--   LD  drafts: created, invisible to everyone but the operator's RPC
+--   LV  the grammar's database half (23514s)
+--   LP  publishing: supersede, promote, and what everyone reads afterwards
+--   LI  immutability of a published / superseded version, for postgres too
+--   LR  counsel review: recorded once, removes nothing but the notice flag
+--   LO  the operator read: superuser at aal2 only
+--   LH  the audit trail: one row per write, identifiers only, none on refusal
+--   LZ  housekeeping: the seed is back exactly as it was
+--
+-- EXPECTATION VOCABULARY (rls_phase2_crm.sql's, unchanged):
+--   denied(42501)  no grant, a guard refusal, or a policy refusal
+--   denied(22023)  an explicit validation
+--   denied(23514)  a CHECK constraint
+--   ok(n)          accepted; n rows
+-- ===========================================================================
+\set ON_ERROR_STOP on
+\pset pager off
+
+drop schema if exists lg cascade;
+create schema lg;
+
+create table lg.results (
+  seq serial primary key, label text, expected text, actual text, pass boolean
+);
+
+create function lg.record(p_label text, p_expected text, p_actual text)
+returns void language sql security definer set search_path = '' as $$
+  insert into lg.results (label, expected, actual, pass)
+  values (p_label, p_expected, p_actual, p_expected is not distinct from p_actual);
+$$;
+
+create function lg.try(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_rows bigint; v_actual text;
+begin
+  begin
+    execute p_sql;
+    get diagnostics v_rows = row_count;
+    v_actual := 'ok(' || v_rows || ')';
+  exception when others then
+    v_actual := 'denied(' || sqlstate || ')';
+  end;
+  perform lg.record(p_label, p_expected, v_actual);
+end $$;
+
+create function lg.val(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_actual text;
+begin
+  begin
+    execute p_sql into v_actual;
+    v_actual := coalesce(v_actual, '<null>');
+  exception when others then
+    v_actual := 'denied(' || sqlstate || ')';
+  end;
+  perform lg.record(p_label, p_expected, v_actual);
+end $$;
+
+grant usage on schema lg to authenticated, anon, service_role;
+grant execute on function lg.record(text,text,text) to authenticated, anon, service_role;
+grant execute on function lg.try(text,text,text)    to authenticated, anon, service_role;
+grant execute on function lg.val(text,text,text)    to authenticated, anon, service_role;
+
+-- The seed, saved whole, so § LZ can prove it put it back byte for byte.
+create table lg.seed_before as select * from public.legal_documents;
+select count(*) as audit_before from public.audit_events \gset
+select md5(body) as privacy_md5 from public.legal_documents where slug = 'privacy' \gset
+\set anon_c '{"role":"anon"}'
+
+-- ===========================================================================
+-- § LF  FIXTURES
+-- ===========================================================================
+select lg.val('LF1 FIXTURE: the seed holds exactly 15 rows',
+  $$select count(*)::text from public.legal_documents$$, '15');
+select lg.val('LF2 FIXTURE: all 15 are version 1 and published',
+  $$select count(*)::text from public.legal_documents where version = 1 and status = 'published'$$, '15');
+select lg.val('LF3 FIXTURE: none carries a counsel review (the seed claims no review)',
+  $$select count(*)::text from public.legal_documents
+     where counsel_reviewed_at is not null or counsel_reviewer is not null
+        or counsel_review_recorded_by is not null$$, '0');
+select lg.val('LF4 FIXTURE: 15 distinct slugs',
+  $$select count(distinct slug)::text from public.legal_documents$$, '15');
+select lg.val('LF5 FIXTURE: `super` is on the platform_admins allowlist',
+  format($$select count(*)::text from public.platform_admins where user_id=%L$$, :'super'), '1');
+select lg.val('LF6 FIXTURE: the seed commits no email address',
+  $$select count(*)::text from public.legal_documents where body ~ '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]'$$, '0');
+
+-- ===========================================================================
+-- § LG  THE CATALOGUE
+-- ===========================================================================
+select lg.val('LG1 RLS is enabled on legal_documents',
+  $$select relrowsecurity::text from pg_class where oid = 'public.legal_documents'::regclass$$, 'true');
+select lg.val('LG2 exactly one policy, SELECT, for anon and authenticated',
+  $$select string_agg(polname || ':' || polcmd || ':' ||
+            (select string_agg(r::regrole::text, ',' order by r::regrole::text) from unnest(polroles) r), ';')
+      from pg_policy where polrelid = 'public.legal_documents'::regclass$$,
+  'legal_documents_select_current_published:r:anon,authenticated');
+select lg.val('LG3 anon may SELECT exactly the eight public columns',
+  $$select string_agg(column_name, ',' order by column_name) from information_schema.column_privileges
+     where table_schema='public' and table_name='legal_documents' and grantee='anon' and privilege_type='SELECT'$$,
+  'body,counsel_reviewed_at,effective_date,id,published_at,slug,title,version');
+select lg.val('LG4 ...and authenticated the same eight -- the reviewer name is outside both',
+  $$select string_agg(column_name, ',' order by column_name) from information_schema.column_privileges
+     where table_schema='public' and table_name='legal_documents' and grantee='authenticated' and privilege_type='SELECT'$$,
+  'body,counsel_reviewed_at,effective_date,id,published_at,slug,title,version');
+select lg.val('LG5 no client role holds any write privilege, at table or column level',
+  $$select count(*)::text from (
+      select grantee from information_schema.role_table_grants
+       where table_schema='public' and table_name='legal_documents'
+         and grantee in ('anon','authenticated','service_role') and privilege_type <> 'SELECT'
+      union all
+      select grantee from information_schema.column_privileges
+       where table_schema='public' and table_name='legal_documents'
+         and grantee in ('anon','authenticated','service_role') and privilege_type <> 'SELECT') g$$,
+  '0');
+select lg.val('LG6 service_role holds nothing at all',
+  $$select count(*)::text from information_schema.column_privileges
+     where table_schema='public' and table_name='legal_documents' and grantee='service_role'$$, '0');
+select lg.val('LG7 the guard trigger exists, is enabled, and covers insert/update/delete',
+  $$select string_agg(tgenabled::text || ':' || (tgtype & 28)::text, ',') from pg_trigger
+     where tgrelid = 'public.legal_documents'::regclass and not tgisinternal$$,
+  'O:28');
+select lg.val('LG8 the five RPCs are granted to authenticated and NOT to anon',
+  $$select string_agg(p.proname || '=' ||
+            has_function_privilege('authenticated', p.oid, 'EXECUTE')::text || '/' ||
+            has_function_privilege('anon', p.oid, 'EXECUTE')::text, ',' order by p.proname)
+      from pg_proc p where p.pronamespace = 'public'::regnamespace
+       and p.proname in ('operator_legal_document_versions','create_legal_document_draft',
+                         'update_legal_document_draft','publish_legal_document',
+                         'record_legal_document_counsel_review')$$,
+  'create_legal_document_draft=true/false,operator_legal_document_versions=true/false,publish_legal_document=true/false,record_legal_document_counsel_review=true/false,update_legal_document_draft=true/false');
+select lg.val('LG9 the guard function is callable by no client role',
+  $$select (has_function_privilege('authenticated', 'private.legal_documents_guard()', 'EXECUTE')
+         or has_function_privilege('anon', 'private.legal_documents_guard()', 'EXECUTE'))::text$$,
+  'false');
+
+-- ===========================================================================
+-- § LA  THE PUBLIC READ
+-- ===========================================================================
+set role anon;
+set request.jwt.claims = :'anon_c';
+select lg.val('LA1 anon reads 15 rows -- the current published version of each document',
+  $$select count(*)::text from public.legal_documents$$, '15');
+select lg.val('LA2 ...one per slug',
+  $$select count(distinct slug)::text from public.legal_documents$$, '15');
+select lg.val('LA3 anon reads a body (the positive control for the column grant)',
+  $$select (length(body) > 100)::text from public.legal_documents where slug = 'privacy'$$, 'true');
+select lg.val('LA4 anon reads counsel_reviewed_at (null: the page shows the notice)',
+  $$select coalesce(counsel_reviewed_at::text, 'unreviewed') from public.legal_documents where slug = 'terms'$$,
+  'unreviewed');
+select lg.try('LA5 anon cannot name counsel_reviewer (outside the grant)',
+  $$select counsel_reviewer from public.legal_documents$$, 'denied(42501)');
+select lg.try('LA6 anon cannot name status',
+  $$select status from public.legal_documents$$, 'denied(42501)');
+select lg.try('LA7 anon cannot name published_by',
+  $$select published_by from public.legal_documents$$, 'denied(42501)');
+select lg.try('LA8 anon cannot select * (the grant is column-level)',
+  $$select * from public.legal_documents$$, 'denied(42501)');
+select lg.try('LA9 anon cannot call the operator read',
+  $$select * from public.operator_legal_document_versions(null)$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- § LW  NO DIRECT WRITES, FROM ANY CLIENT ROLE
+-- ===========================================================================
+-- The superuser at aal2 is the sharpest case: the principal every RPC trusts
+-- is still refused at the GRANT, so a raw PostgREST PATCH from the operator's
+-- own browser cannot bypass the audited path.
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.try('LW1 the aal2 superuser cannot UPDATE a published row directly',
+  $$update public.legal_documents set title = 'x' where slug = 'terms'$$, 'denied(42501)');
+select lg.try('LW2 ...cannot DELETE one',
+  $$delete from public.legal_documents where slug = 'terms'$$, 'denied(42501)');
+select lg.try('LW3 ...cannot INSERT a draft directly',
+  $$insert into public.legal_documents (slug, version, title, body, effective_date)
+    values ('terms', 99, 't', 'b', current_date)$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select lg.try('LW4 an aal2 Org Owner cannot UPDATE a published row',
+  $$update public.legal_documents set title = 'x'$$, 'denied(42501)');
+select lg.try('LW5 ...cannot DELETE one',
+  $$delete from public.legal_documents$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role anon;
+set request.jwt.claims = :'anon_c';
+select lg.try('LW6 anon cannot UPDATE',
+  $$update public.legal_documents set title = 'x'$$, 'denied(42501)');
+select lg.try('LW7 anon cannot INSERT',
+  $$insert into public.legal_documents (slug, version, title, body, effective_date)
+    values ('terms', 98, 't', 'b', current_date)$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role service_role;
+select lg.try('LW8 service_role cannot UPDATE either (no grant; BYPASSRLS bypasses policies, not grants)',
+  $$update public.legal_documents set title = 'x'$$, 'denied(42501)');
+reset role;
+select lg.val('LW9 after all of that, the table is exactly the seed',
+  $$select (select count(*) from (select * from public.legal_documents
+                                   except select * from lg.seed_before) d)::text$$, '0');
+
+-- ===========================================================================
+-- § LD  DRAFTS
+-- ===========================================================================
+-- Refusals FIRST, with the arguments the superuser then succeeds with.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select lg.try('LD1 a Manager cannot create a draft',
+  $$select public.create_legal_document_draft('terms')$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select lg.try('LD2 an aal2 Org Owner cannot create a draft',
+  $$select public.create_legal_document_draft('terms')$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'super_c1';
+select lg.try('LD3 the superuser at aal1 cannot create a draft',
+  $$select public.create_legal_document_draft('terms')$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role anon;
+set request.jwt.claims = :'anon_c';
+select lg.try('LD4 anon cannot create a draft',
+  $$select public.create_legal_document_draft('terms')$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+select lg.val('LD5 ...and none of those four refusals created a row',
+  $$select count(*)::text from public.legal_documents where status = 'draft'$$, '0');
+
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.try('LD6 POSITIVE CONTROL: the aal2 superuser creates a draft of terms',
+  $$select public.create_legal_document_draft('terms')$$, 'ok(1)');
+select lg.try('LD7 a second draft of the same document is refused',
+  $$select public.create_legal_document_draft('terms')$$, 'denied(22023)');
+select lg.try('LD8 an unknown slug is refused',
+  $$select public.create_legal_document_draft('not-a-page')$$, 'denied(22023)');
+select lg.try('LD9 a draft of cookies too (used by § LV)',
+  $$select public.create_legal_document_draft('cookies')$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+\o /dev/null
+select id as terms_draft from public.legal_documents where slug = 'terms' and status = 'draft' \gset
+select id as cookies_draft from public.legal_documents where slug = 'cookies' and status = 'draft' \gset
+select id as terms_v1 from public.legal_documents where slug = 'terms' and version = 1 \gset
+\o
+
+select lg.val('LD10 DENOMINATOR: the terms draft exists, as version 2, copied from version 1',
+  format($$select version || ':' || (body = (select body from public.legal_documents where id = %L))::text
+             from public.legal_documents where id = %L$$, :'terms_v1', :'terms_draft'),
+  '2:true');
+select lg.val('LD11 ...with no review and no publish stamp',
+  format($$select (counsel_reviewed_at is null and published_at is null and published_by is null)::text
+             from public.legal_documents where id = %L$$, :'terms_draft'), 'true');
+
+set role anon;
+set request.jwt.claims = :'anon_c';
+select lg.val('LD12 anon still reads 15 rows, and no draft among them',
+  $$select count(*)::text from public.legal_documents$$, '15');
+select lg.val('LD13 anon reads version 1 of terms, not the draft',
+  $$select string_agg(version::text, ',') from public.legal_documents where slug = 'terms'$$, '1');
+select lg.val('LD14 anon cannot read the draft by id',
+  format($$select count(*)::text from public.legal_documents where id = %L$$, :'terms_draft'), '0');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select lg.val('LD15 an aal2 Org Owner cannot read the draft by id',
+  format($$select count(*)::text from public.legal_documents where id = %L$$, :'terms_draft'), '0');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select lg.val('LD16 a Read Only member cannot read the draft by id',
+  format($$select count(*)::text from public.legal_documents where id = %L$$, :'terms_draft'), '0');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.val('LD17 even the aal2 superuser cannot read the draft through the TABLE (only the RPC)',
+  format($$select count(*)::text from public.legal_documents where id = %L$$, :'terms_draft'), '0');
+reset role; reset request.jwt.claims;
+
+-- Editing the draft: refusals, then the control.
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select lg.try('LD18 an aal2 Org Owner cannot edit the draft',
+  format($$select public.update_legal_document_draft(%L, 'Terms of Service', 'Hijacked', current_date)$$,
+         :'terms_draft'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.try('LD19 POSITIVE CONTROL: the superuser edits the draft',
+  format($$select public.update_legal_document_draft(%L, 'Terms of Service',
+             E'## Changed\n\nSENTINEL-BODY-7f3a version two text.', date '2026-10-01')$$,
+         :'terms_draft'), 'ok(1)');
+select lg.try('LD20 editing a PUBLISHED id through the RPC is refused as not-a-draft',
+  format($$select public.update_legal_document_draft(%L, 'x', 'y', current_date)$$, :'terms_v1'),
+  'denied(22023)');
+select lg.try('LD21 a null body is refused',
+  format($$select public.update_legal_document_draft(%L, 'x', null, current_date)$$, :'terms_draft'),
+  'denied(22023)');
+reset role; reset request.jwt.claims;
+select lg.val('LD22 the edit landed on the draft, and version 1 is untouched',
+  format($$select (select body like '%%SENTINEL-BODY-7f3a%%' from public.legal_documents where id = %L)::text
+             || ':' || (select count(*) from (select * from public.legal_documents where id = %L
+                                              except select * from lg.seed_before) d)::text$$,
+         :'terms_draft', :'terms_v1'),
+  'true:0');
+
+-- ===========================================================================
+-- § LV  THE GRAMMAR'S DATABASE HALF
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.try('LV1 a javascript: link is refused by CHECK',
+  format($$select public.update_legal_document_draft(%L, 'T', '[x](javascript:alert(1))', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV2 a JavaScript: link in another case is refused',
+  format($$select public.update_legal_document_draft(%L, 'T', '[x](JavaScript:alert(1))', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV3 a data: link is refused',
+  format($$select public.update_legal_document_draft(%L, 'T', '[x](data:text/html,x)', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV4 a scheme-relative //host link is refused',
+  format($$select public.update_legal_document_draft(%L, 'T', '[x](//evil.example)', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV5 a link with a leading space is refused',
+  format($$select public.update_legal_document_draft(%L, 'T', '[x]( javascript:x)', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV6 a <script> tag is refused',
+  format($$select public.update_legal_document_draft(%L, 'T', '<script>alert(1)</script>', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV7 an unknown {{placeholder}} is refused',
+  format($$select public.update_legal_document_draft(%L, 'T', 'a {{service_role_key}} b', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV8 the Cookie Policy cannot lose its storage table',
+  format($$select public.update_legal_document_draft(%L, 'Cookie Policy', 'No table.', current_date)$$,
+         :'cookies_draft'), 'denied(23514)');
+select lg.try('LV9 an over-long title is refused',
+  format($$select public.update_legal_document_draft(%L, repeat('t', 201), 'b', current_date)$$,
+         :'terms_draft'), 'denied(23514)');
+select lg.try('LV10 CONTROL: https, mailto and same-site links, and a bare <, are accepted',
+  format($$select public.update_legal_document_draft(%L, 'Terms of Service',
+             E'## Changed\n\nSENTINEL-BODY-7f3a see [a](https://ico.org.uk/) [b](mailto:x@example.test) [c](/legal/privacy), 3 < 4.',
+             date '2026-10-01')$$, :'terms_draft'), 'ok(1)');
+select lg.try('LV11 CONTROL: the Cookie Policy keeping its table is accepted',
+  format($$select public.update_legal_document_draft(%L, 'Cookie Policy', E'Intro.\n\n{{storage_inventory}}', current_date)$$,
+         :'cookies_draft'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select lg.val('LV12 the refused edits changed nothing: the draft holds the LV10 text',
+  format($$select (body like '%%(mailto:x@example.test)%%')::text from public.legal_documents where id = %L$$,
+         :'terms_draft'), 'true');
+
+-- ===========================================================================
+-- § LR (part 1)  A REVIEW OF A DRAFT, CLEARED BY AN EDIT
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select lg.try('LR1 a Manager cannot record a counsel review',
+  format($$select public.record_legal_document_counsel_review(%L, 'Some Firm LLP')$$, :'terms_draft'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'super_c1';
+select lg.try('LR2 the aal1 superuser cannot record a counsel review',
+  format($$select public.record_legal_document_counsel_review(%L, 'Some Firm LLP')$$, :'terms_draft'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.try('LR3 a blank reviewer is refused',
+  format($$select public.record_legal_document_counsel_review(%L, '   ')$$, :'terms_draft'),
+  'denied(22023)');
+select lg.try('LR4 POSITIVE CONTROL: the superuser records a review of the draft',
+  format($$select public.record_legal_document_counsel_review(%L, 'SENTINEL-REVIEWER-91c2 LLP')$$, :'terms_draft'),
+  'ok(1)');
+select lg.try('LR5 a second review of the same version is refused',
+  format($$select public.record_legal_document_counsel_review(%L, 'Other LLP')$$, :'terms_draft'),
+  'denied(22023)');
+select lg.try('LR6 an unchanged save keeps the review',
+  format($$select public.update_legal_document_draft(%L, 'Terms of Service',
+             E'## Changed\n\nSENTINEL-BODY-7f3a see [a](https://ico.org.uk/) [b](mailto:x@example.test) [c](/legal/privacy), 3 < 4.',
+             date '2026-10-01')$$, :'terms_draft'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select lg.val('LR7 ...measured: the review is still there',
+  format($$select (counsel_reviewed_at is not null)::text from public.legal_documents where id = %L$$,
+         :'terms_draft'), 'true');
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.try('LR8 a CHANGED save clears it (a review is of a text)',
+  format($$select public.update_legal_document_draft(%L, 'Terms of Service',
+             E'## Changed again\n\nSENTINEL-BODY-7f3a revised.', date '2026-10-01')$$, :'terms_draft'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select lg.val('LR9 ...measured: review, reviewer and recorder all cleared',
+  format($$select (counsel_reviewed_at is null and counsel_reviewer is null
+                   and counsel_review_recorded_by is null)::text
+             from public.legal_documents where id = %L$$, :'terms_draft'), 'true');
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.try('LR10 the draft is reviewed again, for publishing reviewed (§ LP)',
+  format($$select public.record_legal_document_counsel_review(%L, 'SENTINEL-REVIEWER-91c2 LLP')$$, :'terms_draft'),
+  'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- § LP  PUBLISHING
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select lg.try('LP1 an aal2 Org Owner cannot publish',
+  format($$select public.publish_legal_document(%L)$$, :'terms_draft'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'super_c1';
+select lg.try('LP2 the aal1 superuser cannot publish',
+  format($$select public.publish_legal_document(%L)$$, :'terms_draft'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role anon;
+set request.jwt.claims = :'anon_c';
+select lg.try('LP3 anon cannot publish',
+  format($$select public.publish_legal_document(%L)$$, :'terms_draft'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+select lg.val('LP4 ...and terms is still at version 1 publicly',
+  $$select string_agg(version::text || ':' || status, ',') from public.legal_documents
+     where slug = 'terms' and status <> 'draft'$$, '1:published');
+
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.try('LP5 POSITIVE CONTROL: the superuser publishes the terms draft',
+  format($$select public.publish_legal_document(%L)$$, :'terms_draft'), 'ok(1)');
+select lg.try('LP6 publishing it again is refused (it is no longer a draft)',
+  format($$select public.publish_legal_document(%L)$$, :'terms_draft'), 'denied(22023)');
+select lg.try('LP7 publishing the SUPERSEDED version is refused',
+  format($$select public.publish_legal_document(%L)$$, :'terms_v1'), 'denied(22023)');
+reset role; reset request.jwt.claims;
+
+select lg.val('LP8 terms: version 1 superseded (stamped), version 2 published by `super`',
+  format($$select string_agg(version::text || ':' || status || ':' ||
+                   (case when status = 'superseded' then (superseded_at is not null)::text
+                         else (published_by = %L)::text end), ',' order by version)
+             from public.legal_documents where slug = 'terms'$$, :'super'),
+  '1:superseded:true,2:published:true');
+select lg.val('LP9 still exactly one published row per slug, for all 15',
+  $$select count(*)::text from (select slug from public.legal_documents where status = 'published'
+                                 group by slug having count(*) = 1) s$$, '15');
+
+set role anon;
+set request.jwt.claims = :'anon_c';
+select lg.val('LP10 anon now reads version 2 of terms -- the new text, reviewed',
+  $$select version || ':' || (body like '%SENTINEL-BODY-7f3a%')::text || ':' || (counsel_reviewed_at is not null)::text
+      from public.legal_documents where slug = 'terms'$$, '2:true:true');
+select lg.val('LP11 anon still reads 15 rows -- the superseded version is gone from view',
+  $$select count(*)::text from public.legal_documents$$, '15');
+select lg.val('LP12 anon cannot read superseded version 1 by id',
+  format($$select count(*)::text from public.legal_documents where id = %L$$, :'terms_v1'), '0');
+select lg.val('LP13 anon reads the other 14 unchanged, all unreviewed',
+  $$select count(*)::text from public.legal_documents where slug <> 'terms' and counsel_reviewed_at is null$$, '14');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select lg.val('LP14 a foreign Org Owner reads the same: version 2, and not version 1',
+  $$select string_agg(version::text, ',') from public.legal_documents where slug = 'terms'$$, '2');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- § LI  IMMUTABILITY -- AS POSTGRES, WHICH HOLDS EVERY PRIVILEGE
+-- ===========================================================================
+-- The grant refused every client above. These run as the table OWNER, so only
+-- the trigger stands in the way -- which is the property: no role edits a
+-- published text.
+select lg.try('LI1 postgres cannot change the body of the published version',
+  format($$update public.legal_documents set body = body || ' tampered' where id = %L$$, :'terms_draft'),
+  'denied(42501)');
+select lg.try('LI2 ...nor its title',
+  format($$update public.legal_documents set title = 'Tampered' where id = %L$$, :'terms_draft'),
+  'denied(42501)');
+select lg.try('LI3 ...nor its effective date',
+  format($$update public.legal_documents set effective_date = date '2020-01-01' where id = %L$$, :'terms_draft'),
+  'denied(42501)');
+select lg.try('LI4 ...nor its published_at',
+  format($$update public.legal_documents set published_at = now() - interval '1 year' where id = %L$$, :'terms_draft'),
+  'denied(42501)');
+select lg.try('LI5 ...nor send it back to draft',
+  format($$update public.legal_documents set status = 'draft', published_at = null where id = %L$$, :'terms_draft'),
+  'denied(42501)');
+select lg.try('LI6 ...nor change its recorded review',
+  format($$update public.legal_documents set counsel_reviewer = 'Someone else' where id = %L$$, :'terms_draft'),
+  'denied(42501)');
+select lg.try('LI7 ...nor withdraw that review',
+  format($$update public.legal_documents set counsel_reviewed_at = null, counsel_reviewer = null where id = %L$$,
+         :'terms_draft'), 'denied(42501)');
+select lg.try('LI8 ...nor reassign who published it',
+  format($$update public.legal_documents set published_by = %L where id = %L$$, :'pmanager', :'terms_draft'),
+  'denied(42501)');
+select lg.try('LI9 ...nor delete it',
+  format($$delete from public.legal_documents where id = %L$$, :'terms_draft'), 'denied(42501)');
+select lg.try('LI10 postgres cannot change the SUPERSEDED body',
+  format($$update public.legal_documents set body = 'tampered' where id = %L$$, :'terms_v1'), 'denied(42501)');
+select lg.try('LI11 ...nor revive it',
+  format($$update public.legal_documents set status = 'published', superseded_at = null where id = %L$$, :'terms_v1'),
+  'denied(42501)');
+select lg.try('LI12 ...nor delete it',
+  format($$delete from public.legal_documents where id = %L$$, :'terms_v1'), 'denied(42501)');
+select lg.try('LI13 ...nor mark it reviewed after the fact',
+  format($$update public.legal_documents set counsel_reviewed_at = now(), counsel_reviewer = 'X' where id = %L$$,
+         :'terms_v1'), 'denied(42501)');
+select lg.try('LI14 postgres cannot INSERT a version already published',
+  $$insert into public.legal_documents (slug, version, title, body, effective_date, status, published_at)
+    values ('terms', 50, 'T', 'B', current_date, 'published', now())$$, 'denied(42501)');
+select lg.try('LI15 postgres cannot INSERT a draft that claims a review',
+  $$insert into public.legal_documents (slug, version, title, body, effective_date, counsel_reviewed_at, counsel_reviewer)
+    values ('terms', 51, 'T', 'B', current_date, now(), 'Nobody')$$, 'denied(42501)');
+select lg.try('LI16 postgres cannot change a published row''s slug or version',
+  format($$update public.legal_documents set version = 99 where id = %L$$, :'terms_draft'), 'denied(42501)');
+select lg.try('LI17 a second PUBLISHED row for one slug is refused by the unique index',
+  format($$update public.legal_documents set status = 'published', published_at = now()
+             where id = %L$$, :'cookies_draft'), 'denied(23505)');
+-- The one change the guard ALLOWS on a frozen row: erasing attribution, which
+-- is what ON DELETE SET NULL does when an account is erased. Proved on the
+-- row, not argued, so the erasure task (Q130) does not find the guard
+-- blocking it.
+select lg.try('LI18 ALLOWED: erasing who published it (ON DELETE SET NULL)',
+  format($$update public.legal_documents set published_by = null, counsel_review_recorded_by = null
+             where id = %L$$, :'terms_draft'), 'ok(1)');
+select lg.try('LI19 ALLOWED: superseding it (the publish RPC''s own step), done and undone in a savepoint',
+  format($$do $d$ begin
+             update public.legal_documents set status = 'superseded', superseded_at = now() where id = %L;
+             raise exception 'rollback' using errcode = 'P0001';
+           end $d$$$, :'terms_draft'),
+  'denied(P0001)');
+select lg.val('LI20 after every attempt, version 2''s text, title, date and review are intact',
+  format($$select (body like '%%SENTINEL-BODY-7f3a revised.%%' and title = 'Terms of Service'
+                   and effective_date = date '2026-10-01' and status = 'published'
+                   and counsel_reviewer = 'SENTINEL-REVIEWER-91c2 LLP')::text
+             from public.legal_documents where id = %L$$, :'terms_draft'), 'true');
+select lg.val('LI21 ...and version 1 is byte-for-byte the seed apart from its supersede stamp',
+  format($$select (d.title, d.body, d.effective_date, d.published_at, d.counsel_reviewed_at)
+                  is not distinct from (s.title, s.body, s.effective_date, s.published_at, s.counsel_reviewed_at)
+             from public.legal_documents d join lg.seed_before s using (id) where d.id = %L$$, :'terms_v1'),
+  'true');
+
+-- ===========================================================================
+-- § LR (part 2)  A REVIEW OF THE CURRENT PUBLISHED VERSION
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.try('LR11 a review of a SUPERSEDED version is refused',
+  format($$select public.record_legal_document_counsel_review(%L, 'X LLP')$$, :'terms_v1'), 'denied(22023)');
+select lg.try('LR12 POSITIVE CONTROL: the superuser records a review of the published privacy notice',
+  $$select public.record_legal_document_counsel_review(
+      (select id from public.operator_legal_document_versions('privacy') where status = 'published'),
+      'SENTINEL-REVIEWER-91c2 LLP')$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+set role anon;
+set request.jwt.claims = :'anon_c';
+select lg.val('LR13 anon reads the privacy notice as reviewed -- and still version 1, same text',
+  format($$select version || ':' || (counsel_reviewed_at is not null)::text || ':' ||
+                  (md5(body) = %L)::text
+             from public.legal_documents where slug = 'privacy'$$, :'privacy_md5'), '1:true:true');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- § LO  THE OPERATOR READ
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select lg.val('LO1 the aal2 superuser reads every version: 15 seeded + the terms and cookies drafts',
+  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '17');
+select lg.val('LO2 ...including the one open draft, which no table read can reach',
+  $$select string_agg(slug || ':' || status, ',' order by slug)
+      from public.operator_legal_document_versions(null) where status = 'draft'$$, 'cookies:draft');
+select lg.val('LO3 ...and the reviewer of terms v2',
+  $$select counsel_reviewer from public.operator_legal_document_versions('terms') where version = 2$$,
+  'SENTINEL-REVIEWER-91c2 LLP');
+select lg.val('LO4 one slug narrows it',
+  $$select count(*)::text from public.operator_legal_document_versions('terms')$$, '2');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'super_c1';
+select lg.try('LO5 the aal1 superuser is refused',
+  $$select * from public.operator_legal_document_versions(null)$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'powner_c';
+select lg.try('LO6 an aal2 Org Owner is refused',
+  $$select * from public.operator_legal_document_versions(null)$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pro_c';
+select lg.try('LO7 a Read Only member is refused',
+  $$select * from public.operator_legal_document_versions('terms')$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select lg.try('LO8 a foreign Owner cannot read a reviewer name through the table (outside the grant)',
+  $$select counsel_reviewer from public.legal_documents$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- § LH  THE AUDIT TRAIL
+-- ===========================================================================
+select lg.val('LH1 the writes produced exactly these audit rows, all by `super`, all org-less',
+  format($$select string_agg(action || '=' || n, ',' order by action) from (
+             select action, count(*) as n from public.audit_events
+              where target_type = 'legal_document' and actor_user_id = %L and organisation_id is null
+              group by action) a$$, :'super'),
+  'legal_document.counsel_review_recorded=3,legal_document.draft_created=2,legal_document.draft_updated=5,legal_document.published=1');
+select lg.val('LH2 every legal audit row is by `super` -- no refused call left a row',
+  format($$select count(*)::text from public.audit_events
+            where target_type = 'legal_document' and actor_user_id <> %L$$, :'super'), '0');
+select lg.val('LH3 the total audit rows added by this suite equal those eleven',
+  format($$select ((select count(*) from public.audit_events) - %s)::text$$, :audit_before), '11');
+select lg.val('LH4 NO audit row carries the document text',
+  $$select count(*)::text from public.audit_events
+     where target_type = 'legal_document'
+       and (coalesce(after::text,'') || coalesce(before::text,'')) like '%SENTINEL-BODY%'$$, '0');
+select lg.val('LH5 NO audit row carries the reviewer name',
+  $$select count(*)::text from public.audit_events
+     where target_type = 'legal_document'
+       and (coalesce(after::text,'') || coalesce(before::text,'')) like '%SENTINEL-REVIEWER%'$$, '0');
+select lg.val('LH6 NO audit row carries a title',
+  $$select count(*)::text from public.audit_events
+     where target_type = 'legal_document'
+       and (coalesce(after::text,'') || coalesce(before::text,'')) like '%Terms of Service%'$$, '0');
+select lg.val('LH7 DENOMINATOR for LH4-6: the sentinels ARE in the table the audit rows describe',
+  $$select count(*)::text from public.legal_documents
+     where body like '%SENTINEL-BODY%' or counsel_reviewer like '%SENTINEL-REVIEWER%'$$, '2');
+select lg.val('LH8 the publish row names slug, version, the superseded version and the review flag -- nothing else',
+  $$select string_agg(k, ',' order by k) || '|' || (after->>'slug') || ':' || (after->>'version') || ':' ||
+           (after->>'superseded_version') || ':' || (after->>'counsel_reviewed')
+      from public.audit_events, jsonb_object_keys(after) k
+     where action = 'legal_document.published'
+     group by after$$,
+  'counsel_reviewed,slug,superseded_version,version|terms:2:1:true');
+select lg.val('LH9 every legal audit row targets a real legal_documents row',
+  $$select count(*)::text from public.audit_events a
+     where a.target_type = 'legal_document'
+       and not exists (select 1 from public.legal_documents d where d.id = a.target_id)$$, '0');
+
+-- ===========================================================================
+-- § LZ  HOUSEKEEPING -- the seed back exactly as it was
+-- ===========================================================================
+\o /dev/null
+set session_replication_role = replica;
+delete from public.audit_events where target_type = 'legal_document';
+delete from public.legal_documents where id not in (select id from lg.seed_before);
+update public.legal_documents d
+   set status = s.status, superseded_at = s.superseded_at, published_at = s.published_at,
+       published_by = s.published_by, counsel_reviewed_at = s.counsel_reviewed_at,
+       counsel_reviewer = s.counsel_reviewer, counsel_review_recorded_by = s.counsel_review_recorded_by,
+       updated_at = s.updated_at
+  from lg.seed_before s
+ where s.id = d.id;
+set session_replication_role = default;
+\o
+select lg.val('LZ1 the table is byte-for-byte the seed again',
+  $$select ((select count(*) from (select * from public.legal_documents except select * from lg.seed_before) a)
+          + (select count(*) from (select * from lg.seed_before except select * from public.legal_documents) b))::text$$,
+  '0');
+select lg.val('LZ2 no legal audit row remains',
+  $$select count(*)::text from public.audit_events where target_type = 'legal_document'$$, '0');
+select lg.val('LZ3 the audit table is back to its size before this suite',
+  format($$select ((select count(*) from public.audit_events) - %s)::text$$, :audit_before), '0');
+select lg.val('LZ4 the guard is ENABLED again (replica mode was session-local and is reset)',
+  $$select current_setting('session_replication_role')$$, 'origin');
+
+-- ===========================================================================
+-- REPORT
+-- ===========================================================================
+\echo
+\echo '=== Phase 8 legal documents suite ==='
+select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual
+from lg.results order by seq;
+select count(*) filter (where pass) as passed, count(*) filter (where not pass) as failed
+from lg.results;

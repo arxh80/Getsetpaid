@@ -225,7 +225,18 @@ const ARGS = {
   featureOverrideId: "",
   feedbackId: "",
   incidentAlertId: "",
+  /** Phase 8 Task 1: a legal-document DRAFT held open for the whole run --
+   *  the row every refused draft/publish/review call is aimed at, so a
+   *  refusal is the guard's and not "no such draft". */
+  legalDraftId: "",
 };
+
+// Phase 8 Task 1. The slug the long-lived draft lives on, and the one each
+// legal positive control borrows and gives back. Two different slugs, because
+// a document holds at most one draft.
+const LEGAL_HELD_SLUG = "accessibility";
+const LEGAL_SCRATCH_SLUG = "ai-use";
+const LEGAL_DRAFT_BODY = "## Matrix draft\n\nPermission matrix fixture text.";
 
 const PRINCIPALS: Principal[] = [
   {
@@ -516,6 +527,104 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
     args: () => ({ p_feedback_id: ARGS.feedbackId }),
     sideEffectTable: "audit_events",
   },
+  // ---- Phase 8 Task 1: the legal document store --------------------------
+  {
+    fn: "operator_legal_document_versions",
+    args: () => ({ p_slug: null }),
+    sideEffectTable: null,
+  },
+  {
+    fn: "create_legal_document_draft",
+    // The HELD slug: it already has its draft, so the superuser would get
+    // 22023 here and every refused principal must get the guard's 42501 --
+    // the row-state reason cannot be what refused them, because the guard
+    // runs first. The positive control uses the scratch slug instead.
+    args: () => ({ p_slug: LEGAL_HELD_SLUG }),
+    sideEffectTable: "legal_documents",
+    positiveControl: async () => {
+      const { data: id, error } = await superuser.rpc("create_legal_document_draft", {
+        p_slug: LEGAL_SCRATCH_SLUG,
+      });
+      expect(
+        error,
+        `create_legal_document_draft must be reachable by the aal2 superuser: ${error?.message}`,
+      ).toBeNull();
+      await discardLegalRows([id as string]);
+    },
+  },
+  {
+    fn: "update_legal_document_draft",
+    args: () => ({
+      p_document_id: ARGS.legalDraftId,
+      p_title: "Accessibility Statement",
+      p_body: LEGAL_DRAFT_BODY,
+      p_effective_date: "2026-09-22",
+    }),
+    // Idempotent for the superuser (the same text), so the default replay is
+    // the control -- and the invariant proves no principal changed the text.
+    sideEffectTable: "audit_events",
+    invariant: async () => {
+      const { rows } = await pool.query(
+        `select body, status from public.legal_documents where id = $1`,
+        [ARGS.legalDraftId],
+      );
+      expect(rows[0]?.status).toBe("draft");
+      expect(rows[0]?.body, "a refused principal rewrote the held draft").toBe(LEGAL_DRAFT_BODY);
+    },
+  },
+  {
+    fn: "publish_legal_document",
+    args: () => ({ p_document_id: ARGS.legalDraftId }),
+    sideEffectTable: "audit_events",
+    invariant: async () => {
+      const { rows } = await pool.query(
+        `select status from public.legal_documents where id = $1`,
+        [ARGS.legalDraftId],
+      );
+      expect(rows[0]?.status, "a refused principal PUBLISHED the held draft").toBe("draft");
+    },
+    positiveControl: async () => {
+      // A disposable draft on the scratch slug, published for real, then the
+      // scratch document put back exactly as the seed had it.
+      const { data: id, error } = await superuser.rpc("create_legal_document_draft", {
+        p_slug: LEGAL_SCRATCH_SLUG,
+      });
+      expect(error, `create_legal_document_draft: ${error?.message}`).toBeNull();
+      const published = await superuser.rpc("publish_legal_document", { p_document_id: id });
+      expect(
+        published.error,
+        `publish_legal_document must be reachable by the aal2 superuser: ${published.error?.message}`,
+      ).toBeNull();
+      await discardLegalRows([id as string]);
+    },
+  },
+  {
+    fn: "record_legal_document_counsel_review",
+    args: () => ({ p_document_id: ARGS.legalDraftId, p_reviewer: "Matrix Counsel LLP" }),
+    sideEffectTable: "audit_events",
+    invariant: async () => {
+      const { rows } = await pool.query(
+        `select counsel_reviewed_at from public.legal_documents where id = $1`,
+        [ARGS.legalDraftId],
+      );
+      expect(rows[0]?.counsel_reviewed_at, "a refused principal recorded a counsel review").toBeNull();
+    },
+    positiveControl: async () => {
+      const { data: id, error } = await superuser.rpc("create_legal_document_draft", {
+        p_slug: LEGAL_SCRATCH_SLUG,
+      });
+      expect(error, `create_legal_document_draft: ${error?.message}`).toBeNull();
+      const reviewed = await superuser.rpc("record_legal_document_counsel_review", {
+        p_document_id: id,
+        p_reviewer: "Matrix Counsel LLP",
+      });
+      expect(
+        reviewed.error,
+        `record_legal_document_counsel_review must be reachable by the aal2 superuser: ${reviewed.error?.message}`,
+      ).toBeNull();
+      await discardLegalRows([id as string]);
+    },
+  },
 ];
 
 /**
@@ -619,6 +728,15 @@ const PRE_PHASE7_RELATIONS = [
   "venue_rooms",
   "venues",
 ] as const;
+
+/**
+ * Phase 8 relations that are DELIBERATELY readable by every principal,
+ * anonymous included -- asserted in their own block below, row by row, rather
+ * than through the "reads nothing" contract the Phase 7 tables carry.
+ * `legal_documents`: the fifteen public legal pages (Q128); the policy admits
+ * the current published version only, and the grant is eight columns.
+ */
+const PUBLIC_READ_RELATIONS = ["legal_documents"] as const;
 
 const PHASE7_TABLES = [
   "feedback",
@@ -845,6 +963,29 @@ beforeAll(async () => {
     [ARGS.incidentAlertId, fx.orgA.id],
   );
 
+  // ---- Phase 8 Task 1: a legal-document draft held open for the run -------
+  // Created through the real RPC by the aal2 superuser, so it is also a
+  // positive control for create_legal_document_draft and
+  // update_legal_document_draft before any refusal is asserted.
+  {
+    const { data: id, error } = await superuser.rpc("create_legal_document_draft", {
+      p_slug: LEGAL_HELD_SLUG,
+    });
+    if (error || !id) {
+      throw new Error(`POSITIVE CONTROL FAILED: create_legal_document_draft: ${error?.message}`);
+    }
+    ARGS.legalDraftId = id as string;
+    const saved = await superuser.rpc("update_legal_document_draft", {
+      p_document_id: ARGS.legalDraftId,
+      p_title: "Accessibility Statement",
+      p_body: LEGAL_DRAFT_BODY,
+      p_effective_date: "2026-09-22",
+    });
+    if (saved.error) {
+      throw new Error(`POSITIVE CONTROL FAILED: update_legal_document_draft: ${saved.error.message}`);
+    }
+  }
+
   // `rate_limit_counters` needs a row too, and the honest way to get one is to
   // spend a real budget through the real meter as a real member.
   {
@@ -867,6 +1008,7 @@ afterAll(async () => {
     [ARGS.feedbackId],
   );
   await pool.query(`delete from public.feedback where id = $1`, [ARGS.feedbackId]);
+  if (ARGS.legalDraftId) await discardLegalRows([ARGS.legalDraftId]);
   await pool.query(
     `delete from public.rate_limit_counters where subject_id = any($1::uuid[])`,
     [[fx.orgA.id, fx.orgB.id, ...fx._allUserIds]],
@@ -944,7 +1086,7 @@ describe("the inventory is mechanical", () => {
         "PHASE7_TABLES nor PRE_PHASE7_RELATIONS. A platform table added by a " +
         "later phase belongs in the first (and gets probed by every principal); " +
         "a tenant one belongs in the second with its reason.",
-    ).toEqual([...PHASE7_TABLES, ...PRE_PHASE7_RELATIONS].sort());
+    ).toEqual([...PHASE7_TABLES, ...PUBLIC_READ_RELATIONS, ...PRE_PHASE7_RELATIONS].sort());
 
     // And the seven this file probes are real TABLES with RLS on -- a view has
     // no RLS of its own, so the two facts have to be asserted together.
@@ -1545,6 +1687,82 @@ describe("grants on Phase 7 tables are minimal", () => {
 });
 
 // =============================================================================
+// PHASE 8 TASK 1: THE ONE TABLE EVERY PRINCIPAL MAY READ
+// =============================================================================
+// `legal_documents` inverts the Phase 7 contract: EVERYONE reads it, anonymous
+// included. So the assertion is not "reads nothing" but "reads exactly the
+// fifteen current published versions, and never the draft beforeAll holds
+// open" -- with the draft's existence proved first, or "never the draft" is a
+// statement about nothing.
+describe("table legal_documents (public-read by design)", () => {
+  const everyone: { key: string; client: () => SupabaseClient }[] = [
+    ...PRINCIPALS.map(({ key, client }) => ({ key: key as string, client })),
+    { key: "superuserAal2", client: () => superuser },
+  ];
+
+  it("DENOMINATOR: the held draft exists and is a draft", async () => {
+    const { rows } = await pool.query(
+      `select slug, status, version from public.legal_documents where id = $1`,
+      [ARGS.legalDraftId],
+    );
+    expect(rows).toEqual([{ slug: LEGAL_HELD_SLUG, status: "draft", version: 2 }]);
+  });
+
+  it.each(everyone)("$key reads the 15 current versions and not the draft", async ({ client }) => {
+    const { data, error } = await client()
+      .from("legal_documents")
+      .select("id, slug, version")
+      .limit(100);
+    expect(error, error?.message).toBeNull();
+    const rows = (data ?? []) as { id: string; slug: string; version: number }[];
+    expect(rows).toHaveLength(15);
+    expect(new Set(rows.map((r) => r.slug)).size).toBe(15);
+    expect(rows.map((r) => r.id)).not.toContain(ARGS.legalDraftId);
+    expect(rows.find((r) => r.slug === LEGAL_HELD_SLUG)?.version).toBe(1);
+  });
+
+  it.each(everyone)("$key cannot name the reviewer or the status", async ({ client }) => {
+    for (const column of ["counsel_reviewer", "status", "published_by"]) {
+      const { data, error } = await client().from("legal_documents").select(column).limit(1);
+      expect(error, `${column} was selectable`).not.toBeNull();
+      expect(REFUSAL_CODES.has(error!.code ?? ""), `${column}: ${error!.code}`).toBe(true);
+      expect(data).toBeNull();
+    }
+  });
+
+  it.each(everyone)("$key cannot write to it -- the aal2 superuser included", async ({ client }) => {
+    const before = await tableChecksum("legal_documents");
+    await client()
+      .from("legal_documents")
+      .insert({ slug: "terms", version: 77, title: "t", body: "b", effective_date: "2026-01-01" } as never);
+    await client().from("legal_documents").update({ title: "matrix update probe" } as never).not("id", "is", null);
+    await client().from("legal_documents").delete().not("id", "is", null);
+    expect(await tableChecksum("legal_documents"), "a direct write changed the legal store").toBe(before);
+  });
+
+  it("no client role holds a write privilege, and anon holds exactly the eight-column read", async () => {
+    const { rows } = await pool.query<{ grantee: string; privilege_type: string; column_name: string }>(
+      `select grantee, privilege_type, column_name from information_schema.column_privileges
+        where table_schema = 'public' and table_name = 'legal_documents'
+          and grantee in ('anon','authenticated','service_role')
+        order by grantee, privilege_type, column_name`,
+    );
+    expect(rows.filter((r) => r.privilege_type !== "SELECT")).toEqual([]);
+    expect(rows.filter((r) => r.grantee === "service_role")).toEqual([]);
+    expect(rows.filter((r) => r.grantee === "anon").map((r) => r.column_name)).toEqual([
+      "body",
+      "counsel_reviewed_at",
+      "effective_date",
+      "id",
+      "published_at",
+      "slug",
+      "title",
+      "version",
+    ]);
+  });
+});
+
+// =============================================================================
 // HELPERS
 // =============================================================================
 async function countRows(table: string | null): Promise<number> {
@@ -1556,6 +1774,37 @@ async function countRows(table: string | null): Promise<number> {
 async function auditCount(): Promise<number> {
   const { rows } = await pool.query(`select count(*)::int as n from public.audit_events`);
   return rows[0].n as number;
+}
+
+/**
+ * Put the legal document store back: delete the given versions (and every
+ * legal audit row), and re-publish any seeded version 1 a positive control
+ * superseded. The immutability guard refuses all of that for every role, by
+ * design, so it runs with triggers off -- `session_replication_role =
+ * replica`, the DBA escape hatch 20260922000000's header names -- inside one
+ * transaction on one pooled connection, so the setting cannot leak.
+ */
+async function discardLegalRows(ids: string[]): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await client.query("set local session_replication_role = replica");
+    await client.query(`delete from public.audit_events where target_type = 'legal_document'`);
+    await client.query(`delete from public.legal_documents where id = any($1::uuid[])`, [ids]);
+    await client.query(
+      `update public.legal_documents d
+          set status = 'published', superseded_at = null
+        where d.version = 1 and d.status = 'superseded'
+          and not exists (select 1 from public.legal_documents p
+                           where p.slug = d.slug and p.status = 'published')`,
+    );
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /** Shared by grant_feature_override and revoke_feature_override's positive

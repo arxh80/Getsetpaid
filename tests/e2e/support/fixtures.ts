@@ -2257,3 +2257,75 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
   }
   await closeDb();
 }
+
+// ===========================================================================
+// PHASE 8 TASK 1: THE LEGAL DOCUMENT STORE
+// ===========================================================================
+// The e2e walk drafts, publishes and reviews a real version of one legal
+// document. The immutability guard (20260922000000) refuses the undo for
+// every role, by design, so restoring the seed is done with triggers off --
+// `session_replication_role = replica`, set LOCAL inside one transaction on one
+// pooled connection so it cannot leak to another query.
+
+export interface LegalDocumentRow {
+  id: string;
+  version: number;
+  status: string;
+  body: string;
+  counsel_reviewed_at: string | null;
+  counsel_reviewer: string | null;
+}
+
+/** Every version of one document, oldest first, read as `postgres`. */
+export async function legalDocumentVersions(slug: string): Promise<LegalDocumentRow[]> {
+  const result = await db().query<LegalDocumentRow>(
+    `select id, version, status, body, counsel_reviewed_at, counsel_reviewer
+       from public.legal_documents where slug = $1 order by version`,
+    [slug],
+  );
+  return result.rows;
+}
+
+/** The legal audit actions one actor wrote, with their `after` payloads. */
+export async function legalAuditRows(
+  actorUserId: string,
+): Promise<{ action: string; after: string }[]> {
+  const result = await db().query<{ action: string; after: string }>(
+    `select action, coalesce(after::text, '') as after from public.audit_events
+      where target_type = 'legal_document' and actor_user_id = $1
+      order by created_at`,
+    [actorUserId],
+  );
+  return result.rows;
+}
+
+/**
+ * Put one document back to its seeded version 1: delete every later version
+ * and every legal audit row this actor wrote, and republish version 1 as it
+ * was (unreviewed). Idempotent, so an afterAll can call it unconditionally.
+ */
+export async function restoreLegalDocumentSeed(slug: string, actorUserId: string): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local session_replication_role = replica");
+    await client.query(
+      `delete from public.audit_events where target_type = 'legal_document' and actor_user_id = $1`,
+      [actorUserId],
+    );
+    await client.query(`delete from public.legal_documents where slug = $1 and version > 1`, [slug]);
+    await client.query(
+      `update public.legal_documents
+          set status = 'published', superseded_at = null,
+              counsel_reviewed_at = null, counsel_reviewer = null, counsel_review_recorded_by = null
+        where slug = $1 and version = 1`,
+      [slug],
+    );
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
