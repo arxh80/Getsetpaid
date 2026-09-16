@@ -777,10 +777,17 @@ select fb.val('FX13c ...so feedback.submitted lands on BETA''s audit filter AND 
             where action='feedback.submitted' and target_id=%L
               and organisation_id=%L and correlation_id=%L and actor_user_id=%L$$,
          :'fx_support', :'beta_org', :'fx_session', :'super'), '1');
-select fb.val('FX13d CONTROL: an ORDINARY null-workspace submission still names no organisation',
-  format($$select count(*)::text from public.audit_events
-            where action='feedback.submitted' and target_id=%L
-              and organisation_id is null and correlation_id is null$$, :'fx_member'), '1');
+-- THE CONTROL THAT MAKES FX13c MEAN SOMETHING: the fallback must not invent an
+-- organisation for a submission that genuinely has none (/invites, /onboarding,
+-- /super). `correlation_id` is asserted as NOT the session's rather than as
+-- null, because private.log_audit_event()'s four-step coalesce ends in
+-- gen_random_uuid() -- every audit row has a thread, and the question is
+-- whether this one joined the SESSION's.
+select fb.val('FX13d CONTROL: an ORDINARY null-workspace submission names no organisation and joins no session thread',
+  format($$select (organisation_id is null and correlation_id <> %L)::text
+            from public.audit_events
+            where action='feedback.submitted' and target_id=%L$$,
+         :'fx_session', :'fx_member'), 'true');
 
 -- THE ROW THE FINDING WAS ACTUALLY ABOUT: a SCREENSHOT taken inside a support
 -- session and viewed on /super/feedback. An object is planted first, because

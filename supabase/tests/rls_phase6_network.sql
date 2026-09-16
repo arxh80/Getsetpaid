@@ -286,12 +286,18 @@ select nw.val('NB1 the three network keys exist',
      where key like 'view_network' or key like 'manage_network%'$$,
   'manage_network_connections,manage_network_profile,view_network');
 
--- M1f's SET IS UNCHANGED, and this is the assertion that says so from THIS
--- file as well as from rls_phase2_crm.sql -- a reviewer's first question about
--- a new READ key is whether it moved that set.
-select nw.val('NB2 view_crm is STILL the only survives_suspension key (M1f unchanged)',
+-- THE SURVIVING-KEY SET, ASSERTED FROM THIS FILE AS WELL AS FROM
+-- rls_phase2_crm.sql M1g -- a reviewer's first question about a new READ key
+-- is whether it moved that set. PHASE 6 DID NOT: all three network keys are
+-- survives_suspension = false. The set gained a SECOND member in the Phase 7
+-- pre-merge fix round (finding I1): `end_support_access` (20260921002000),
+-- which is not a read key at all -- it grants no read of any tenant table and
+-- no write anywhere, and exists only so a SUSPENDED workspace's Owner/Admin
+-- can still see and END a support-access session already running against them.
+-- Still the EXACT set rather than a count, in both files.
+select nw.val('NB2 exactly two keys survive suspension: view_crm (the only READ key) and end_support_access',
   $$select string_agg(key, ',' order by key) from public.permissions
-     where survives_suspension$$, 'view_crm');
+     where survives_suspension$$, 'end_support_access,view_crm');
 
 select nw.val('NB3 view_network is held by all NINE roles (Free is a view-only network tier)',
   $$select count(*)::text from public.role_permissions where permission_key='view_network'$$, '9');

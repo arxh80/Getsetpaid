@@ -19,7 +19,9 @@ import { totpCode } from "../support/totp";
 // ===========================================================================
 // WHAT THIS FILE IS FOR, GIVEN THAT THE psql SUITE ALREADY EXISTS
 // ===========================================================================
-// supabase/tests/rls_phase7_impersonation.sql (105 assertions) proves the
+// supabase/tests/rls_phase7_impersonation.sql (121 assertions -- 105 was this
+// header's count at the time it was written and is stale everywhere else)
+// proves the
 // DATABASE: no grant without consent, none after expiry, exactly the
 // read_only key set, one organisation, one correlation thread. None of that is
 // re-proved here, and re-proving it through a browser would be slower and
