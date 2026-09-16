@@ -81,6 +81,107 @@ describe("the legal document seed", () => {
   });
 });
 
+// ===========================================================================
+// FIX ROUND 1: VERSION 2 OF FOUR PAGES (20260922005000)
+// ===========================================================================
+// The migration builds each corrected body from the CURRENT published one by
+// exact replacement (security is written whole). Rebuilt here from the two
+// migration files, so the bodies the database will publish are validated,
+// and read for the overclaims they exist to remove, with no database.
+const corrections = readFileSync(`${MIGRATIONS}20260922005000_legal_documents_v2_corrections.sql`, "utf8");
+
+function correctedBodies(): Map<string, string> {
+  const bodies = new Map<string, string>();
+  const sections = corrections.split("select body into strict v_current").slice(1);
+  for (const section of sections) {
+    const slug = /where slug = '([a-z-]+)'/.exec(section)?.[1];
+    if (!slug) throw new Error("20260922005000: a correction section names no slug");
+    let body = seedRows().find((r) => r.slug === slug)?.body;
+    if (body === undefined) throw new Error(`20260922005000: ${slug} is not in the seed`);
+    for (const m of section.matchAll(/replace\(v_current,\n\$t\$([\s\S]*?)\$t\$,\n\$t\$([\s\S]*?)\$t\$\)/g)) {
+      if (!body.includes(m[1])) throw new Error(`20260922005000: ${slug}: a replaced passage is not in the seed`);
+      body = body.replace(m[1], m[2]);
+    }
+    bodies.set(slug, body);
+  }
+  const security = /insert into legal_v2 values \('security', \$t\$\n([\s\S]*?)\$t\$\);/.exec(corrections)?.[1];
+  if (!security) throw new Error("20260922005000: no security body");
+  bodies.set("security", `\n${security}`);
+  return bodies;
+}
+
+describe("version 2 of the four corrected pages", () => {
+  const bodies = correctedBodies();
+  const titles = new Map(LEGAL_DOCUMENTS.map((d) => [d.slug as string, d.title as string]));
+
+  it("corrects exactly the four pages the review named, each with at least one replacement", () => {
+    expect([...bodies.keys()].sort()).toEqual(["data-processing-addendum", "data-retention", "privacy", "security"]);
+    for (const [slug, body] of bodies) {
+      expect(body, slug).not.toBe(seedRows().find((r) => r.slug === slug)?.body);
+    }
+  });
+
+  it.each(["data-processing-addendum", "data-retention", "privacy", "security"])(
+    "%s version 2 passes the editor's own save-time validation",
+    (slug) => {
+      const result = validateDraft(slug as LegalSlug, {
+        title: titles.get(slug) ?? "",
+        body: bodies.get(slug) ?? "",
+        effectiveDate: "2026-09-22",
+      });
+      expect(result.ok ? {} : result.fieldErrors).toEqual({});
+    },
+  );
+
+  it("I2: the security page states no hosted-configuration control or vendor claim as bare fact", () => {
+    const body = bodies.get("security")!;
+    for (const overclaim of [
+      "is checked at every sign-in",
+      "You are signed out after 30 minutes without activity.",
+      "and the account holder is emailed",
+      "which encrypts stored data",
+      "We monitor the alerts above",
+    ]) {
+      expect(body, overclaim).not.toContain(overclaim);
+    }
+    // ONE RULE, EVERY SENTENCE: a list item or paragraph naming a control
+    // that SECURITY.md § 15 says depends on hosted configuration carries the
+    // marker; the provider's encryption claim is the provider's.
+    const dependent = /Google|two-factor settings|server|12 hours|locked|email|region/i;
+    const units = body.split("\n").filter((line) => dependent.test(line) && !line.startsWith("##"));
+    expect(units.length).toBeGreaterThanOrEqual(6);
+    for (const line of units) {
+      if (/Supabase states/.test(line)) continue;
+      if (/Information Commissioner/.test(line)) continue; // a commitment, not a control
+      if (/^\[Counsel to confirm|^- \[Counsel to confirm/.test(line)) continue;
+      expect(line, line).toContain("(deployment setting)");
+    }
+    expect(body).toMatch(/Supabase states that it encrypts stored data[^.]*\. We rely on that statement; we have not verified it ourselves\./);
+    expect(body).toContain("12 hours");
+  });
+
+  it("M1: neither transfer page asserts that nothing leaves the UK/EEA, and both name the two open facts", () => {
+    for (const slug of ["privacy", "data-processing-addendum"]) {
+      const body = bodies.get(slug)!;
+      expect(body, slug).not.toMatch(/do not transfer personal data outside|only subprocessor outside the UK/);
+      expect(body, slug).toMatch(/\[Counsel to confirm: [^\]]*Supabase, Inc\.[^\]]*United States[^\]]*application servers[^\]]*\]/);
+    }
+  });
+
+  it("M2: the retention page states the audit windows as a target, not as what happens", () => {
+    const body = bodies.get("data-retention")!;
+    expect(body).not.toContain("outside the default view");
+    expect(body).toContain("Neither limit is applied yet");
+  });
+
+  it("commits no email address and records no counsel review", () => {
+    expect(corrections).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/);
+    expect(corrections).not.toMatch(/mailto:/i);
+    expect(corrections).not.toMatch(/set\s+counsel_review|counsel_reviewer\s*=|counsel_review_recorded_by\s*=/);
+    expect(corrections).toMatch(/set status = 'published'/);
+  });
+});
+
 describe("the schema migration mirrors the app's closed sets", () => {
   it("the slug CHECK lists exactly the catalogue", () => {
     const check = /constraint legal_documents_slug_known check \(slug in \(([\s\S]*?)\)\)/.exec(schema)?.[1];
