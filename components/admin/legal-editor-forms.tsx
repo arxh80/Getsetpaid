@@ -10,20 +10,26 @@ import {
 } from "@/lib/legal/admin-actions";
 import { Field, TextAreaField } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
-import { Alert } from "@/components/ui/alert";
+import { useReportedAction } from "./legal-editor-outcome";
 
 // The four legal-editor forms. Uncontrolled, echoing submitted values back on
 // failure (lib/forms.ts' React 19 reset note), each carrying the slug and --
 // where it acts on a version -- the document id as hidden fields. Neither is
 // trusted: every action re-derives authority from the session, and every RPC
 // re-checks the id against the row's actual status.
+//
+// NO FORM RENDERS ITS OWN HEADLINE MESSAGE (fix round 1, I1). A successful
+// action re-renders the page into a tree that no longer holds the form that
+// submitted it, so a message kept in the form was never seen. Each action is
+// wrapped by useReportedAction(), which hands the result to the
+// <LegalEditorOutcome> region above the editor; only field-level errors stay
+// here, beside their fields.
 
 export function CreateDraftForm({ slug }: { slug: string }) {
-  const [state, formAction, pending] = useActionState(createLegalDraftAction, EMPTY_FORM_STATE);
+  const action = useReportedAction(createLegalDraftAction);
+  const [, formAction, pending] = useActionState(action, EMPTY_FORM_STATE);
   return (
     <form action={formAction} className="flex max-w-prose flex-col gap-3">
-      {state.error ? <Alert tone="error">{state.error}</Alert> : null}
-      {state.message ? <Alert tone="success">{state.message}</Alert> : null}
       <input type="hidden" name="slug" value={slug} />
       <p className="text-sm text-ink-muted">
         Starts the next version as a private draft, copied from the current
@@ -51,12 +57,11 @@ export function DraftEditForm({
   body: string;
   effectiveDate: string;
 }) {
-  const [state, formAction, pending] = useActionState(saveLegalDraftAction, EMPTY_FORM_STATE);
+  const action = useReportedAction(saveLegalDraftAction);
+  const [state, formAction, pending] = useActionState(action, EMPTY_FORM_STATE);
   const values = state.values;
   return (
     <form action={formAction} className="flex flex-col gap-4">
-      {state.error ? <Alert tone="error">{state.error}</Alert> : null}
-      {state.message ? <Alert tone="success">{state.message}</Alert> : null}
       <input type="hidden" name="slug" value={slug} />
       <input type="hidden" name="documentId" value={documentId} />
 
@@ -119,12 +124,11 @@ export function PublishDraftForm({
   version: number;
   reviewed: boolean;
 }) {
-  const [state, formAction, pending] = useActionState(publishLegalDocumentAction, EMPTY_FORM_STATE);
+  const action = useReportedAction(publishLegalDocumentAction);
+  const [state, formAction, pending] = useActionState(action, EMPTY_FORM_STATE);
   const confirmId = `publish-confirm-${documentId}`;
   return (
     <form action={formAction} className="flex max-w-prose flex-col gap-3">
-      {state.error ? <Alert tone="error">{state.error}</Alert> : null}
-      {state.message ? <Alert tone="success">{state.message}</Alert> : null}
       <input type="hidden" name="slug" value={slug} />
       <input type="hidden" name="documentId" value={documentId} />
       <p className="text-sm text-ink">
@@ -178,12 +182,11 @@ export function RecordReviewForm({
   /** "draft" or "current" -- only changes the wording. */
   which: "draft" | "current";
 }) {
-  const [state, formAction, pending] = useActionState(recordCounselReviewAction, EMPTY_FORM_STATE);
+  const action = useReportedAction(recordCounselReviewAction);
+  const [state, formAction, pending] = useActionState(action, EMPTY_FORM_STATE);
   const confirmId = `review-confirm-${documentId}`;
   return (
     <form action={formAction} className="flex max-w-prose flex-col gap-3">
-      {state.error ? <Alert tone="error">{state.error}</Alert> : null}
-      {state.message ? <Alert tone="success">{state.message}</Alert> : null}
       <input type="hidden" name="slug" value={slug} />
       <input type="hidden" name="documentId" value={documentId} />
       <Field

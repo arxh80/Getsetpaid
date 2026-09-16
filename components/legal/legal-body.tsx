@@ -144,18 +144,36 @@ function SubprocessorsTable() {
   );
 }
 
-function BlockView({ block, contactAddress }: { block: Block; contactAddress: string | null }) {
+type SectionLevel = 2 | 3 | 4 | 5;
+const HEADING_TAGS = { 2: "h2", 3: "h3", 4: "h4", 5: "h5", 6: "h6" } as const;
+
+function BlockView({
+  block,
+  contactAddress,
+  sectionLevel,
+}: {
+  block: Block;
+  contactAddress: string | null;
+  sectionLevel: SectionLevel;
+}) {
   switch (block.kind) {
-    case "heading":
-      return block.level === 2 ? (
-        <h2 className="mt-10 mb-3 text-xl font-extrabold text-ink">
+    case "heading": {
+      // `##` renders at the document's section level, `###` one below it.
+      if (block.level === 2) {
+        const Section = HEADING_TAGS[sectionLevel];
+        return (
+          <Section className="mt-10 mb-3 text-xl font-extrabold text-ink">
+            <Inlines content={block.content} contactAddress={contactAddress} />
+          </Section>
+        );
+      }
+      const Sub = HEADING_TAGS[(sectionLevel + 1) as 3 | 4 | 5 | 6];
+      return (
+        <Sub className="mt-6 mb-2 text-lg font-bold text-ink">
           <Inlines content={block.content} contactAddress={contactAddress} />
-        </h2>
-      ) : (
-        <h3 className="mt-6 mb-2 text-lg font-bold text-ink">
-          <Inlines content={block.content} contactAddress={contactAddress} />
-        </h3>
+        </Sub>
       );
+    }
     case "paragraph":
       return (
         <p className="my-4 text-base text-ink">
@@ -184,16 +202,19 @@ function BlockView({ block, contactAddress }: { block: Block; contactAddress: st
 export function LegalBody({
   source,
   contactAddress = supportContact().address,
+  sectionLevel = 2,
 }: {
   source: string;
   /** Injected by tests; defaults to SUPPORT_CONTACT_EMAIL. */
   contactAddress?: string | null;
+  /** The level `##` renders at: 2 on the public page, under its <h1>. */
+  sectionLevel?: SectionLevel;
 }) {
   const { blocks } = parseLegalMarkup(source);
   return (
     <div className="break-words" data-testid="legal-body">
       {blocks.map((block, index) => (
-        <BlockView key={index} block={block} contactAddress={contactAddress} />
+        <BlockView key={index} block={block} contactAddress={contactAddress} sectionLevel={sectionLevel} />
       ))}
     </div>
   );

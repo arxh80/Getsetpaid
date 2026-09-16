@@ -52,10 +52,14 @@ export function LegalDocumentView({
   effectiveDate: string;
   reviewed: boolean;
   body: string;
-  /** 1 on the public page; 2 inside the editor, whose own <h1> is the page's. */
-  headingLevel?: 1 | 2;
+  /**
+   * The title's level: 1 on the public page, deeper inside the editor (whose
+   * own <h1> is the page's). The body's sections start one level below it, so
+   * the outline stays in order wherever the document is embedded.
+   */
+  headingLevel?: 1 | 2 | 3 | 4;
 }) {
-  const Heading = headingLevel === 1 ? "h1" : "h2";
+  const Heading = (["h1", "h2", "h3", "h4"] as const)[headingLevel - 1];
   return (
     <article className="max-w-prose" data-testid="legal-document">
       <header className="flex flex-col gap-2 border-b border-rule pb-4">
@@ -67,7 +71,7 @@ export function LegalDocumentView({
         </p>
       </header>
       {reviewed ? null : <DraftNotice />}
-      <LegalBody source={body} />
+      <LegalBody source={body} sectionLevel={(headingLevel + 1) as 2 | 3 | 4 | 5} />
     </article>
   );
 }
