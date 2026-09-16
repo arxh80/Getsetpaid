@@ -1062,6 +1062,106 @@ select harness.val('K20 ...and no other seeded role is caught by it',
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
+-- W. workspace slugs that would shadow a route  (Phase 8 Task 2 review M7,
+--    20260923005000, Q151/Q154)
+-- ===========================================================================
+-- A workspace lives at /<slug>; a static top-level route with the same name
+-- wins, so a workspace called `legal` could be created and never opened.
+-- Both paths that set a slug -- create_organisation() and an Owner's direct
+-- UPDATE of organisations.slug -- pass private.organisations_slug_not_reserved().
+-- The positive controls run inside a DO block that raises a marker at the
+-- end, so they prove the write WAS accepted and then roll it back (the later
+-- suites count organisations and read org-a by slug).
+create function harness.try_hint(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_actual text; v_hint text;
+begin
+  begin
+    execute p_sql;
+    v_actual := 'ok';
+  exception when others then
+    get stacked diagnostics v_hint = pg_exception_hint;
+    v_actual := 'denied(' || sqlstate || ':' || coalesce(v_hint, '') || ')';
+  end;
+  perform harness.record(p_label, p_expected, v_actual);
+end $$;
+grant execute on function harness.try_hint(text,text,text) to authenticated, anon, service_role;
+
+select count(*)::text as orgs_before_w from public.organisations \gset
+
+select harness.val('W1  the reserved list is the ten static top-level routes',
+  $$select string_agg(slug, ',' order by slug) from private.reserved_workspace_slugs()$$,
+  'account,api,auth,invites,legal,login,magic-link,onboarding,signup,super');
+select harness.val('W2  the guard is a BEFORE INSERT OR UPDATE OF slug trigger, enabled',
+  $$select tgenabled::text || ':' || (pg_get_triggerdef(oid) ~ 'BEFORE INSERT OR UPDATE OF slug')::text
+      from pg_trigger where tgrelid = 'public.organisations'::regclass
+       and tgname = 'organisations_slug_not_reserved'$$, 'O:true');
+
+set role authenticated;
+set request.jwt.claims = :'carol_c';
+select harness.try_hint('W3  create_organisation refuses `legal` (the Task 1 route)',
+  $$select public.create_organisation('Legal Eagles','legal')$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W4  ...and `account` (this task''s route)',
+  $$select public.create_organisation('Account','account')$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W5  ...however it is spelt (create_organisation lower-cases and trims)',
+  $$select public.create_organisation('Super',' SUPER ')$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W6  ...and `magic-link` (a route inside the (auth) group)',
+  $$select public.create_organisation('Magic','magic-link')$$, 'denied(22023:reserved_slug)');
+select harness.try('W7  POSITIVE: a slug that merely CONTAINS a reserved word is accepted',
+  $$do $d$ begin
+      perform public.create_organisation('Legal Team','legal-team');
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$$$, 'denied(P0098)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+select harness.val('W8  DENOMINATOR: alice (Owner, aal2) can read org-a, whose slug she may change',
+  $$select count(*)::text from public.organisations where slug = 'org-a'$$, '1');
+select harness.try_hint('W9  an Owner cannot MOVE her workspace onto a reserved slug',
+  $$update public.organisations set slug = 'legal' where slug = 'org-a'$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W10 ...nor onto one spelt differently',
+  $$update public.organisations set slug = 'Onboarding' where slug = 'org-a'$$, 'denied(22023:reserved_slug)');
+select harness.try('W11 POSITIVE: she CAN move it to an ordinary slug (rolled back)',
+  $$do $d$ begin
+      update public.organisations set slug = 'org-a-moved' where slug = 'org-a';
+      if not found then raise exception 'no row' using errcode = 'P0097'; end if;
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$$$, 'denied(P0098)');
+reset role; reset request.jwt.claims;
+
+-- A workspace that ALREADY holds a reserved slug (created before this
+-- migration) is not locked: an update that leaves the slug alone passes, and
+-- so does moving it AWAY from the reserved slug. Planted in replica mode (no
+-- triggers), exercised with the triggers on, rolled back.
+select harness.try('W12 a pre-existing reserved-slug workspace can still be renamed, and moved off it',
+  $$do $d$
+    declare v_id uuid;
+    begin
+      perform pg_catalog.set_config('session_replication_role', 'replica', true);
+      insert into public.organisations (name, slug) values ('Grandfathered', 'invites') returning id into v_id;
+      perform pg_catalog.set_config('session_replication_role', 'origin', true);
+      update public.organisations set name = 'Grandfathered, renamed' where id = v_id;
+      update public.organisations set slug = 'invites-team' where id = v_id;
+      if (select slug from public.organisations where id = v_id) <> 'invites-team' then
+        raise exception 'not moved' using errcode = 'P0097';
+      end if;
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$$$, 'denied(P0098)');
+select harness.try_hint('W13 ...but a workspace cannot be moved ONTO a reserved slug by postgres either',
+  $$do $d$
+    declare v_id uuid;
+    begin
+      insert into public.organisations (name, slug) values ('Plain', 'plain-w13') returning id into v_id;
+      update public.organisations set slug = 'api' where id = v_id;
+    end $d$$$, 'denied(22023:reserved_slug)');
+select harness.val('W14 no organisation was added or changed by this section',
+  format($$select (count(*) = %s and count(*) filter (where slug = 'org-a') = 1)::text from public.organisations$$,
+         :orgs_before_w), 'true');
+select harness.val('W15 session_replication_role is back to origin',
+  $$select current_setting('session_replication_role')$$, 'origin');
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o
