@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { CONSENT_PURPOSES, MARKETING_EMAIL } from "@/lib/consent/catalogue";
@@ -78,5 +78,57 @@ describe("the consent catalogue", () => {
     // Bundling guard: agreeing to marketing must not read as a condition of,
     // or consent to, the service itself.
     expect(MARKETING_EMAIL.statement).not.toMatch(/terms|privacy|account|workspace|service/i);
+  });
+});
+
+// THE DATABASE'S STATEMENT LIST (review finding M1, 20260923003000). The
+// database refuses a grant whose wording id is not in
+// private.consent_statements(); this binds that list to the TypeScript one so
+// the two cannot drift, and binds every id the database will accept to a
+// SHA-256 pin above, so no id can be grantable without its exact words.
+function latestDefinition(fn: string): { file: string; body: string } {
+  const dir = fileURLToPath(new URL("../../../supabase/migrations/", import.meta.url));
+  const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
+  let found: { file: string; body: string } | null = null;
+  const escaped = fn.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`create or replace function ${escaped}\\(\\)[\\s\\S]*?\\$\\$([\\s\\S]*?)\\$\\$`);
+  for (const file of files) {
+    const text = readFileSync(`${dir}${file}`, "utf8").split(String.fromCharCode(13)).join("");
+    const m = pattern.exec(text);
+    if (m) found = { file, body: m[1] };
+  }
+  if (!found) throw new Error(`${fn} is defined in no migration`);
+  return found;
+}
+
+describe("the consent wording list is the same in the database and in TypeScript", () => {
+  const { file, body } = latestDefinition("private.consent_statements");
+  const rows = [...body.matchAll(/\('([a-z_]+)'::text, '([a-z0-9-]+)'::text\)/g)].map((m) => ({
+    purpose: m[1],
+    statementId: m[2],
+  }));
+
+  it("DENOMINATOR: the latest definition was found and parsed", () => {
+    expect(file >= "20260923003000").toBe(true);
+    expect(rows.length).toBeGreaterThan(0);
+    // Every VALUES tuple was understood -- a row the pattern skipped would
+    // make the equality below vacuous for that row.
+    expect(rows.length).toBe((body.match(/\(/g) ?? []).length);
+  });
+
+  it("private.consent_statements() lists exactly the statement each purpose shows", () => {
+    expect(rows).toEqual(CONSENT_PURPOSES.map(({ purpose, statementId }) => ({ purpose, statementId })));
+  });
+
+  it("every id the database accepts is pinned to its words", () => {
+    for (const r of rows) expect(STATEMENT_SHA256[r.statementId], r.statementId).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("the trigger that enforces the list is the latest before-insert definition", () => {
+    const trigger = latestDefinition("private.consents_before_insert");
+    expect(trigger.file >= "20260923003000").toBe(true);
+    expect(trigger.body).toContain("private.consent_statements()");
+    expect(trigger.body).toContain("hint = 'missing_statement'");
+    expect(trigger.body).toContain("hint = 'unknown_statement'");
   });
 });

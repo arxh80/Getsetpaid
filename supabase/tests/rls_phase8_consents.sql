@@ -304,15 +304,83 @@ select cs.val('CW16 ...and pstd2 still has nothing',
   format($$select count(*)::text from public.consents where user_id=%L$$, :'pstd2'), '0');
 
 set request.jwt.claims = :'pstd1_c';
-select cs.try('CW17 an unknown mechanism is refused by CHECK',
-  $$insert into public.consents (purpose, action, policy_version, mechanism)
-    values ('marketing_email','granted',2,'imported_from_crm')$$,
+select cs.try('CW17 an unknown mechanism is refused by CHECK (beside valid wording)',
+  $$insert into public.consents (purpose, action, policy_version, mechanism, technical_context)
+    values ('marketing_email','granted',2,'imported_from_crm','{"statement":"marketing-email-1"}')$$,
   'denied(23514)');
-select cs.try('CW18 a technical context carrying an ip key is refused by CHECK',
+select cs.try('CW18 a technical context carrying an ip key is refused by CHECK (beside valid wording)',
   format($$insert into public.consents (purpose, action, policy_version, mechanism, technical_context)
-           values ('marketing_email','granted',%s,'account_settings','{"ip":"192.0.2.1"}')$$, :mp_ver),
+           values ('marketing_email','granted',%s,'account_settings',
+                   '{"statement":"marketing-email-1","ip":"192.0.2.1"}')$$, :mp_ver),
   'denied(23514)');
 reset request.jwt.claims;
+
+-- THE WORDING IS PINNED IN THE DATABASE (review finding M1, 20260923003000).
+-- A fresh account, so a grant is otherwise valid here and each refusal below
+-- is about the wording and nothing else.
+select cs.val('CW19 the database lists exactly one wording id, for marketing email',
+  $$select string_agg(purpose || ':' || statement_id, ',') from private.consent_statements()$$,
+  'marketing_email:marketing-email-1');
+select gen_random_uuid()::text as worder \gset
+insert into auth.users (id, instance_id, aud, role, email)
+values (:'worder', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+        'consent-worder-' || :'worder' || '@test.local');
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'worder') as worder_c \gset
+set role authenticated;
+set request.jwt.claims = :'worder_c';
+select cs.try_hint('CW20 a grant with NO wording is refused',
+  format($$select * from public.record_consent('marketing_email','granted',%s,null)$$, :mp_ver),
+  'denied(22023:missing_statement)');
+select cs.try_hint('CW21 a grant naming made-up wording is refused (it was stored before the fix)',
+  format($$select * from public.record_consent('marketing_email','granted',%s,'totally-made-up-wording')$$, :mp_ver),
+  'denied(22023:unknown_statement)');
+select cs.try_hint('CW22 a grant naming well-formed wording that was never listed is refused',
+  format($$select * from public.record_consent('marketing_email','granted',%s,'marketing-email-0')$$, :mp_ver),
+  'denied(22023:unknown_statement)');
+select cs.try('CW23 wording that is not even a token is still the CHECK''s to refuse',
+  format($$select * from public.record_consent('marketing_email','granted',%s,'Marketing Email 1')$$, :mp_ver),
+  'denied(23514)');
+reset role;
+-- postgres, carrying the account's claims: the trigger, not the RPC, refuses.
+select cs.try_hint('CW24 a direct insert with no context is refused the same way',
+  format($$insert into public.consents (purpose, action, policy_version, mechanism)
+           values ('marketing_email','granted',%s,'account_settings')$$, :mp_ver),
+  'denied(22023:missing_statement)');
+select cs.try_hint('CW24a ...and a context whose statement is not a string counts as no wording',
+  format($$insert into public.consents (purpose, action, policy_version, mechanism, technical_context)
+           values ('marketing_email','granted',%s,'account_settings','{"statement":1}')$$, :mp_ver),
+  'denied(22023:missing_statement)');
+reset request.jwt.claims;
+select cs.val('CW25 ...none of the refused grants landed, and none spent the budget',
+  format($$select (select count(*) from public.consents where user_id = %L)::text || '/' ||
+                  coalesce((select request_count from public.rate_limit_counters
+                             where category='consent_grant' and subject_id = %L), 0)::text$$,
+         :'worder', :'worder'),
+  '0/0');
+set role authenticated;
+set request.jwt.claims = :'worder_c';
+select cs.try('CW26 POSITIVE: the same grant with the listed wording is accepted',
+  format($$select * from public.record_consent('marketing_email','granted',%s,'marketing-email-1')$$, :mp_ver),
+  'ok(1)');
+select cs.try_hint('CW27 a withdrawal naming made-up wording is refused',
+  $$select * from public.record_consent('marketing_email','withdrawn',null,'totally-made-up-wording')$$,
+  'denied(22023:unknown_statement)');
+select cs.try('CW28 POSITIVE: a withdrawal with no wording is accepted (never harder than granting)',
+  $$select * from public.record_consent('marketing_email','withdrawn',null,null)$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+select cs.val('CW29 every grant in the ledger names listed wording',
+  $$select count(*)::text || '/' ||
+           count(*) filter (where not exists (
+             select 1 from private.consent_statements() s
+              where s.purpose = c.purpose and s.statement_id = c.technical_context->>'statement'))::text
+      from public.consents c where c.action = 'granted'$$,
+  '2/0');
+\o /dev/null
+delete from public.audit_events where actor_user_id = :'worder';
+delete from auth.users where id = :'worder';
+\o
+select cs.val('CW30 the wording account and its events are gone again',
+  format($$select count(*)::text from public.consents where user_id = %L$$, :'worder'), '0');
 
 -- ===========================================================================
 -- § CR  READING
@@ -421,6 +489,29 @@ select cs.try('CH11 postgres cannot DELETE one from inside a function either (tr
 select cs.try('CH12 postgres cannot TRUNCATE the ledger',
   $$truncate public.consents$$, 'denied(42501)');
 select cs.val('CH13 ...and the ledger is unchanged', $$select count(*)::text from public.consents$$, :'ledger_n');
+
+-- ONE WITHDRAWAL PER GRANT, STRUCTURALLY (review finding M2,
+-- 20260923004000). The trigger's alternation rule holds only at READ
+-- COMMITTED; the unique index holds at every isolation level. Asked here
+-- with the triggers switched off (replica mode), so it is the INDEX that
+-- answers and not the alternation rule; the parallel REPEATABLE READ race
+-- itself is driven by run-rls-tests.sh.
+select cs.val('CH14 withdraws_id is unique (the index exists and is UNIQUE)',
+  $$select indisunique::text from pg_index where indexrelid = 'public.consents_withdraws_id_key'::regclass$$,
+  'true');
+select cs.val('CH15 DENOMINATOR: pstd2 has a withdrawal naming a grant',
+  format($$select count(*)::text from public.consents where user_id = %L and withdraws_id is not null$$, :'pstd2'),
+  '1');
+set session_replication_role = replica;
+select cs.try('CH16 a second withdrawal row naming the same grant is refused by the index',
+  format($q$insert into public.consents (user_id, category, purpose, action, policy_slug, policy_version,
+                                         mechanism, withdrawn_at, withdraws_id)
+            select user_id, category, purpose, action, policy_slug, policy_version,
+                   mechanism, now(), withdraws_id
+              from public.consents where user_id = %L and withdraws_id is not null$q$, :'pstd2'),
+  'denied(23505)');
+set session_replication_role = default;
+select cs.val('CH17 ...and the ledger is unchanged', $$select count(*)::text from public.consents$$, :'ledger_n');
 
 -- ===========================================================================
 -- § CV  VERSIONS
@@ -566,13 +657,13 @@ set request.jwt.claims = :'pbooker_c';
 select cs.try('CM1 pbooker withdraws (withdrawals are not metered)',
   $$select * from public.record_consent('marketing_email','withdrawn',null,null)$$, 'ok(1)');
 select cs.try('CM2 the 10th grant in the hour is accepted',
-  $$select * from public.record_consent('marketing_email','granted',3,null)$$, 'ok(1)');
+  $$select * from public.record_consent('marketing_email','granted',3,'marketing-email-1')$$, 'ok(1)');
 select cs.try('CM3 withdrawing after the budget is spent still works -- as easy as granting',
   $$select * from public.record_consent('marketing_email','withdrawn',null,null)$$, 'ok(1)');
 select cs.try('CM4 the 11th grant is refused with PT429',
-  $$select * from public.record_consent('marketing_email','granted',3,null)$$, 'denied(PT429)');
+  $$select * from public.record_consent('marketing_email','granted',3,'marketing-email-1')$$, 'denied(PT429)');
 select cs.val('CM5 ...with the seconds remaining in the hint (asked a second time: a refusal spends nothing)',
-  $q$select cs.retry_hint_shape('select * from public.record_consent(''marketing_email'',''granted'',3,null)')$q$,
+  $q$select cs.retry_hint_shape('select * from public.record_consent(''marketing_email'',''granted'',3,''marketing-email-1'')')$q$,
   'PT429:seconds');
 reset role; reset request.jwt.claims;
 
@@ -638,7 +729,7 @@ select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'leaver') as 
 set role authenticated;
 set request.jwt.claims = :'leaver_c';
 select cs.try('CD1 POSITIVE: a new account grants',
-  $$select * from public.record_consent('marketing_email','granted',3,null)$$, 'ok(1)');
+  $$select * from public.record_consent('marketing_email','granted',3,'marketing-email-1')$$, 'ok(1)');
 select cs.try('CD2 ...and withdraws',
   $$select * from public.record_consent('marketing_email','withdrawn',null,null)$$, 'ok(1)');
 reset role; reset request.jwt.claims;
@@ -697,7 +788,7 @@ select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'leaver2') as
 set role authenticated;
 set request.jwt.claims = :'leaver2_c';
 select cs.try('CD10 POSITIVE: a second new account grants',
-  $$select * from public.record_consent('marketing_email','granted',3,null)$$, 'ok(1)');
+  $$select * from public.record_consent('marketing_email','granted',3,'marketing-email-1')$$, 'ok(1)');
 select cs.try('CD10a ...and withdraws',
   $$select * from public.record_consent('marketing_email','withdrawn',null,null)$$, 'ok(1)');
 reset role; reset request.jwt.claims;

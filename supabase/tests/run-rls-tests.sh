@@ -867,6 +867,64 @@ else
 fi
 
 # ============================================================================
+# ONE WITHDRAWAL PER GRANT UNDER A REAL RACE (review finding M2).
+#
+# The trigger's alternation rule serialises events per (user, purpose), but
+# under REPEATABLE READ two sessions that took their snapshots before either
+# inserted both read the same grant as "newest" -- the review committed two
+# withdrawals of one grant that way. 20260923004000 makes withdraws_id unique.
+# This drives the race for real: two sessions, each REPEATABLE READ, each
+# takes its snapshot, sleeps, then withdraws. Exactly one may land.
+# ============================================================================
+race_user=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into auth.users (id, instance_id, aud, role, email)
+   values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+           'consent-race-' || gen_random_uuid() || '@test.local') returning id" | head -1 | tr -d '[:space:]')
+race_claims="{\"sub\":\"$race_user\",\"role\":\"authenticated\"}"
+race_ver=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select version from public.legal_documents where slug='marketing-preferences' and status='published'" \
+  | tr -d '[:space:]')
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -tA -c \
+  "set role authenticated; set request.jwt.claims = '$race_claims';
+   select count(*) from public.record_consent('marketing_email','granted',$race_ver,'marketing-email-1');" > /dev/null
+race_sql="begin isolation level repeatable read;
+  set local role authenticated;
+  set local request.jwt.claims = '$race_claims';
+  select count(*) from public.consents;
+  select pg_sleep(2);
+  select count(*) from public.record_consent('marketing_email','withdrawn',null,null);
+  commit;"
+race_dir=$(mktemp -d)
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -tA -c "$race_sql" > "$race_dir/a" 2>&1 &
+race_a=$!
+sleep 0.5
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -tA -c "$race_sql" > "$race_dir/b" 2>&1 &
+race_b=$!
+wait "$race_a" || true
+wait "$race_b" || true
+race_rows=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select count(*) || '/' || count(distinct withdraws_id) from public.consents
+    where user_id = '$race_user' and action = 'withdrawn'" | tr -d '[:space:]')
+race_errors=$(cat "$race_dir/a" "$race_dir/b" | grep -cE 'ERROR: .*(consents_withdraws_id_key|could not serialize)' || true)
+race_overlap=$(cat "$race_dir/a" "$race_dir/b" | grep -c 'ERROR' || true)
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c \
+  "delete from public.audit_events where actor_user_id = '$race_user';
+   delete from auth.users where id = '$race_user';
+   delete from public.rate_limit_counters where category = 'consent_grant' and subject_id = '$race_user';" > /dev/null
+if [ "$race_rows" != "1/1" ] || [ "$race_errors" != "1" ] || [ "$race_overlap" != "1" ]; then
+  echo "CONSENT WITHDRAWAL RACE FAILED: withdrawals/distinct-grants=$race_rows (want 1/1)," >&2
+  echo "  refusals by the unique index or a serialization failure=$race_errors (want 1)," >&2
+  echo "  errors of any kind=$race_overlap (want 1). Session output:" >&2
+  sed 's/^/    A: /' "$race_dir/a" >&2
+  sed 's/^/    B: /' "$race_dir/b" >&2
+  echo "  A GRANT CAN BE WITHDRAWN TWICE -- the ledger no longer alternates." >&2
+  psql_status=1
+else
+  echo "Consent withdrawal race (2 x REPEATABLE READ): one landed, the other was refused."
+fi
+rm -rf "$race_dir"
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
