@@ -15,8 +15,13 @@ import { SUB_PROCESSORS } from "@/lib/legal/sub-processors";
 // could not edit and re-save unchanged.
 
 const MIGRATIONS = fileURLToPath(new URL("../../../supabase/migrations/", import.meta.url));
-const schema = readFileSync(`${MIGRATIONS}20260922000000_legal_documents.sql`, "utf8");
-const seed = readFileSync(`${MIGRATIONS}20260922001000_legal_documents_seed.sql`, "utf8");
+// Line endings normalised: a Windows checkout with core.autocrlf writes CRLF,
+// and the parsers below match on LF.
+const CR = String.fromCharCode(13);
+const readMigration = (name: string) =>
+  readFileSync(`${MIGRATIONS}${name}`, "utf8").split(CR).join("");
+const schema = readMigration("20260922000000_legal_documents.sql");
+const seed = readMigration("20260922001000_legal_documents_seed.sql");
 
 interface SeedRow {
   slug: string;
@@ -89,7 +94,7 @@ describe("the legal document seed", () => {
 // exact replacement (security is written whole). Rebuilt here from the two
 // migration files, so the bodies the database will publish are validated,
 // and read for the overclaims they exist to remove, with no database.
-const corrections = readFileSync(`${MIGRATIONS}20260922005000_legal_documents_v2_corrections.sql`, "utf8");
+const corrections = readMigration("20260922005000_legal_documents_v2_corrections.sql");
 
 /**
  * Apply one corrections migration's exact-replacement sections to `base`
@@ -209,10 +214,7 @@ describe("version 2 of the four corrected pages", () => {
 // contradicting each other: the hosting region stated as bare fact, a
 // transfer position (either way) stated as settled, and the Subprocessors
 // page claiming to be complete.
-const consistency = readFileSync(
-  `${MIGRATIONS}20260922006000_legal_documents_hosting_and_transfer_consistency.sql`,
-  "utf8",
-);
+const consistency = readMigration("20260922006000_legal_documents_hosting_and_transfer_consistency.sql");
 
 function currentBodies(): Map<string, string> {
   const current = seedBodies();
