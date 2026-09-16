@@ -3381,7 +3381,8 @@ MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c \
 # The one table a signed-out caller can read, driven with nothing but the
 # public anon key -- the request any visitor's browser (or a scraper) sends.
 # § LZ of rls_phase8_legal.sql left exactly the migrated rows: fifteen
-# current documents (four of them at version 2 since fix round 1).
+# current documents (four at a later version since fix round 1, three more
+# since fix round 2).
 # ============================================================================
 echo
 echo "=== Phase 8 legal documents at the API surface ==="

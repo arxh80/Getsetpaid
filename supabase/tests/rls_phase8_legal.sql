@@ -4,7 +4,8 @@
 -- Covers 20260922000000_legal_documents.sql, its seed (20260922001000) and
 -- the fix-round-1 migrations: the TRUNCATE guard (20260922003000), the
 -- placeholder-placement CHECKs (20260922004000) and version 2 of four pages
--- (20260922005000):
+-- (20260922005000); and fix round 2's consistency versions (20260922006000:
+-- subprocessors v2, privacy v3, data-processing-addendum v3):
 --   public.legal_documents                    the store
 --   legal_documents_select_current_published  the one anon-satisfiable policy
 --   the column grant                          what anon/authenticated may name
@@ -16,8 +17,9 @@
 -- RUN IT WITH: supabase/tests/run-rls-tests.sh
 --   It runs LAST of the psql suites, on the SAME fixtures (P7VARS), and
 --   touches nothing but legal_documents and the audit rows its own RPC calls
---   write. § LZ restores the migrated rows (fifteen documents, four of them
---   at version 2 over a superseded version 1) exactly and
+--   write. § LZ restores the migrated rows (fifteen documents: ten at
+--   version 1, three at version 2, two at version 3, over seven superseded
+--   versions) exactly and
 --   deletes every version and audit row it created -- which needs the guard
 --   OFF, so it is done under `session_replication_role = replica`, the DBA
 --   escape hatch 20260922000000's header names, as `postgres`, by name.
@@ -30,7 +32,7 @@
 --
 -- SECTIONS:
 --   LF  fixtures: the seed is what it claims (15 published, unreviewed;
---       11 at version 1, 4 corrected to version 2)
+--       10 at version 1, 3 at version 2, 2 at version 3)
 --   LG  grants, RLS and the trigger, from the catalogue
 --   LA  the public read: anon sees exactly the current published versions
 --   LW  no client role can write the table directly -- superuser included
@@ -108,15 +110,15 @@ select md5(body) as au_md5 from public.legal_documents where slug = 'acceptable-
 -- ===========================================================================
 -- § LF  FIXTURES
 -- ===========================================================================
-select lg.val('LF1 FIXTURE: the migrations hold exactly 19 rows (15 seeded + 4 corrected versions)',
-  $$select count(*)::text from public.legal_documents$$, '19');
-select lg.val('LF2 FIXTURE: 15 published -- 11 still at version 1, 4 at version 2',
+select lg.val('LF1 FIXTURE: the migrations hold exactly 22 rows (15 seeded + 4 corrected + 3 made consistent)',
+  $$select count(*)::text from public.legal_documents$$, '22');
+select lg.val('LF2 FIXTURE: 15 published -- 10 still at version 1, 3 at version 2, 2 at version 3',
   $$select string_agg(version || '=' || n, ',' order by version) from (
       select version, count(*) as n from public.legal_documents where status = 'published' group by version) v$$,
-  '1=11,2=4');
-select lg.val('LF2b FIXTURE: the superseded rows are exactly version 1 of the four corrected pages',
-  $$select string_agg(slug || ':' || version, ',' order by slug) from public.legal_documents where status = 'superseded'$$,
-  'data-processing-addendum:1,data-retention:1,privacy:1,security:1');
+  '1=10,2=3,3=2');
+select lg.val('LF2b FIXTURE: the superseded rows are exactly the versions fix rounds 1 and 2 replaced',
+  $$select string_agg(slug || ':' || version, ',' order by slug, version) from public.legal_documents where status = 'superseded'$$,
+  'data-processing-addendum:1,data-processing-addendum:2,data-retention:1,privacy:1,privacy:2,security:1,subprocessors:1');
 select lg.val('LF2c FIXTURE: no current page repeats a version 1 overclaim (I2, M1, M2)',
   $$select count(*)::text from public.legal_documents
      where status = 'published'
@@ -133,6 +135,17 @@ select lg.val('LF2d DENOMINATOR for LF2c: the superseded versions DO carry them'
          or body like '%The only subprocessor outside the UK%'
          or body like '%outside the default view%'
          or body like '%which encrypts stored data%')$$, '4');
+select lg.val('LF2e FIXTURE: no current page claims the subprocessor list is complete or states the region flat (fix round 2)',
+  $$select count(*)::text from public.legal_documents
+     where status = 'published'
+       and (body like '%before it receives any personal data%'
+         or body ~ 'hosted in (the|a) UK/EU region\.')$$, '0');
+select lg.val('LF2f DENOMINATOR for LF2e: exactly these five superseded versions DO carry one',
+  $$select string_agg(slug || ':' || version, ',' order by slug, version) from public.legal_documents
+     where status = 'superseded'
+       and (body like '%before it receives any personal data%'
+         or body ~ 'hosted in (the|a) UK/EU region\.')$$,
+  'data-processing-addendum:1,data-processing-addendum:2,privacy:1,privacy:2,subprocessors:1');
 select lg.val('LF2e FIXTURE: the security page attributes the encryption claim and marks deployment settings',
   $$select (body like '%Supabase states that it encrypts%' and body like '%have not verified%'
             and (length(body) - length(replace(body, '(deployment setting)', ''))) / length('(deployment setting)') >= 6)::text

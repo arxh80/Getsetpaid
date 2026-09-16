@@ -306,6 +306,7 @@ Carried over from `CLAUDE.md` § Open decisions — these need founder/legal inp
 
 `supabase/config.toml` governs the **local CLI stack only**. Nothing in this repo pushes it to a hosted Supabase project, so every value below must be set by hand in the hosted project's dashboard before launch, or the control it represents does not exist in the environment that matters:
 
+- **Project region — a UK/EU region** (§ 8). Chosen when the hosted project is created, not settable from `config.toml`, and checked by nothing in this repository. The public Privacy Notice, DPA, Security page and Subprocessors table therefore mark "hosted in a UK/EU region" as a **(deployment setting)** rather than stating it as fact (Phase 8 Task 1 fix round 2); verify it in the project's settings before launch.
 - `jwt_expiry = 900` — bounds how long an already-issued access token keeps working after its underlying session has been invalidated server-side. Left at the 3600s default, that window is an hour.
 - `[auth.sessions] timebox = "12h"` and `inactivity_timeout = "30m"` — these are what actually enforce the session limits in § 4; the app-side idle tracker is a proactive UX layer on top, not the enforcement.
 - `[auth.mfa.totp] enroll_enabled` / `verify_enabled = true` — without these the MFA gate has nothing to enroll or challenge against.

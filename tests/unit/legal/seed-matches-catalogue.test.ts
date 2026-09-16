@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { LEGAL_DOCUMENTS, type LegalSlug } from "@/lib/legal/documents";
 import { validateDraft } from "@/lib/legal/draft-validation";
 import { KNOWN_TOKENS } from "@/lib/legal/markup";
+import { SUB_PROCESSORS } from "@/lib/legal/sub-processors";
 
 // THE SEED, THE CHECK CONSTRAINT AND THE CATALOGUE AGREE -- read from the
 // migration files, so this runs in CI with no database. (The live-database
@@ -90,20 +91,37 @@ describe("the legal document seed", () => {
 // and read for the overclaims they exist to remove, with no database.
 const corrections = readFileSync(`${MIGRATIONS}20260922005000_legal_documents_v2_corrections.sql`, "utf8");
 
-function correctedBodies(): Map<string, string> {
+/**
+ * Apply one corrections migration's exact-replacement sections to `base`
+ * (the bodies each section's `select ... where status = 'published'` would
+ * read). Returns only the slugs that migration corrects.
+ */
+function applyCorrections(sql: string, base: ReadonlyMap<string, string>, file: string): Map<string, string> {
   const bodies = new Map<string, string>();
-  const sections = corrections.split("select body into strict v_current").slice(1);
+  const sections = sql.split("select body into strict v_current").slice(1);
   for (const section of sections) {
     const slug = /where slug = '([a-z-]+)'/.exec(section)?.[1];
-    if (!slug) throw new Error("20260922005000: a correction section names no slug");
-    let body = seedRows().find((r) => r.slug === slug)?.body;
-    if (body === undefined) throw new Error(`20260922005000: ${slug} is not in the seed`);
+    if (!slug) throw new Error(`${file}: a correction section names no slug`);
+    let body = base.get(slug);
+    if (body === undefined) throw new Error(`${file}: ${slug} has no current body`);
+    let replaced = 0;
     for (const m of section.matchAll(/replace\(v_current,\n\$t\$([\s\S]*?)\$t\$,\n\$t\$([\s\S]*?)\$t\$\)/g)) {
-      if (!body.includes(m[1])) throw new Error(`20260922005000: ${slug}: a replaced passage is not in the seed`);
+      if (!body.includes(m[1])) throw new Error(`${file}: ${slug}: a replaced passage is not in the current body`);
       body = body.replace(m[1], m[2]);
+      replaced++;
     }
+    if (replaced === 0) throw new Error(`${file}: ${slug}: no replacement found`);
     bodies.set(slug, body);
   }
+  return bodies;
+}
+
+function seedBodies(): Map<string, string> {
+  return new Map(seedRows().map((r) => [r.slug, r.body]));
+}
+
+function correctedBodies(): Map<string, string> {
+  const bodies = applyCorrections(corrections, seedBodies(), "20260922005000");
   const security = /insert into legal_v2 values \('security', \$t\$\n([\s\S]*?)\$t\$\);/.exec(corrections)?.[1];
   if (!security) throw new Error("20260922005000: no security body");
   bodies.set("security", `\n${security}`);
@@ -179,6 +197,129 @@ describe("version 2 of the four corrected pages", () => {
     expect(corrections).not.toMatch(/mailto:/i);
     expect(corrections).not.toMatch(/set\s+counsel_review|counsel_reviewer\s*=|counsel_review_recorded_by\s*=/);
     expect(corrections).toMatch(/set status = 'published'/);
+  });
+});
+
+// ===========================================================================
+// FIX ROUND 2: ONE CONSISTENT STORY ABOUT HOSTING AND TRANSFERS (20260922006000)
+// ===========================================================================
+// Subprocessors v2, Privacy v3 and DPA v3, rebuilt from the three migration
+// files; then EVERY page's current published body is checked, together with
+// the generated Subprocessors table, for the statements fix round 1 left
+// contradicting each other: the hosting region stated as bare fact, a
+// transfer position (either way) stated as settled, and the Subprocessors
+// page claiming to be complete.
+const consistency = readFileSync(
+  `${MIGRATIONS}20260922006000_legal_documents_hosting_and_transfer_consistency.sql`,
+  "utf8",
+);
+
+function currentBodies(): Map<string, string> {
+  const current = seedBodies();
+  for (const [slug, body] of correctedBodies()) current.set(slug, body);
+  for (const [slug, body] of applyCorrections(consistency, current, "20260922006000")) current.set(slug, body);
+  return current;
+}
+
+/** A line that states where data is hosted. */
+const HOSTING = /\b(UK\/EU|UK\/EEA|EU\/UK)\b[^.]*\bregion\b|\bhosted (in|within) the (UK|EU|EEA)\b/i;
+/** A transfer position stated as settled, in either direction. */
+const SETTLED_TRANSFER =
+  /do not transfer|does not transfer|no (international |restricted )?transfer|not transferred|never (leaves|transferred)|only subprocessor outside|stays? (in|within) the UK|is transferred (to|outside)/i;
+/** The v1 Subprocessors completeness claim, and its obvious rewordings. */
+const COMPLETENESS = /before it receives any personal data|lists? every (provider|third party)|this list is complete/i;
+
+/** Each line of `body` that breaks the rule, labelled. */
+function unqualified(body: string): string[] {
+  const failures: string[] = [];
+  for (const line of body.split("\n")) {
+    const gap = /^(- )?\[Counsel to (confirm|draft)/.test(line.trim());
+    if (HOSTING.test(line) && !line.includes("(deployment setting)") && !gap) failures.push(`region: ${line}`);
+    if (SETTLED_TRANSFER.test(line) && !gap) failures.push(`transfer: ${line}`);
+    if (COMPLETENESS.test(line)) failures.push(`completeness: ${line}`);
+  }
+  return failures;
+}
+
+describe("fix round 2: every published page says one thing about hosting and transfers", () => {
+  const current = currentBodies();
+  const titles = new Map(LEGAL_DOCUMENTS.map((d) => [d.slug as string, d.title as string]));
+
+  it("20260922006000 corrects exactly subprocessors, privacy and the DPA", () => {
+    const before = new Map([...seedBodies(), ...correctedBodies()]);
+    const corrected = applyCorrections(consistency, before, "20260922006000");
+    expect([...corrected.keys()].sort()).toEqual(["data-processing-addendum", "privacy", "subprocessors"]);
+    for (const [slug, body] of corrected) expect(body, slug).not.toBe(before.get(slug));
+  });
+
+  it.each(["data-processing-addendum", "privacy", "subprocessors"])(
+    "%s, as now published, passes the editor's own save-time validation",
+    (slug) => {
+      const result = validateDraft(slug as LegalSlug, {
+        title: titles.get(slug) ?? "",
+        body: current.get(slug) ?? "",
+        effectiveDate: "2026-09-22",
+      });
+      expect(result.ok ? {} : result.fieldErrors).toEqual({});
+    },
+  );
+
+  it("DENOMINATOR: the rule finds what fix round 1 left behind, so a pass below means something", () => {
+    const before = new Map([...seedBodies(), ...correctedBodies()]);
+    // Privacy v2 and DPA v2 stated the region flat; Subprocessors v1 claimed
+    // completeness; the seeded Privacy v1 settled the transfer question.
+    expect(unqualified(before.get("privacy")!).some((f) => f.startsWith("region:"))).toBe(true);
+    expect(unqualified(before.get("data-processing-addendum")!).some((f) => f.startsWith("region:"))).toBe(true);
+    expect(unqualified(before.get("subprocessors")!).some((f) => f.startsWith("completeness:"))).toBe(true);
+    expect(unqualified(seedBodies().get("privacy")!).some((f) => f.startsWith("transfer:"))).toBe(true);
+    // The old generated row fails it too.
+    expect(unqualified("UK/EU region only. No international transfer: the data is hosted in the UK/EU region.")).toHaveLength(2);
+    // And the hosting sentences it must judge are really there today (the
+    // Subprocessors page's own region statement is in its generated table,
+    // judged in the next test).
+    const hostingPages = [...current].filter(([, body]) => body.split("\n").some((l) => HOSTING.test(l)));
+    expect(hostingPages.map(([slug]) => slug).sort()).toEqual(["data-processing-addendum", "privacy", "security"]);
+  });
+
+  it.each(LEGAL_DOCUMENTS.map((d) => d.slug))(
+    "%s states neither the region nor a transfer position as unqualified fact",
+    (slug) => {
+      const body = current.get(slug);
+      expect(body, `${slug} has no current body`).toBeDefined();
+      expect(unqualified(body!)).toEqual([]);
+    },
+  );
+
+  it("the generated Subprocessors table follows the same rule", () => {
+    expect(SUB_PROCESSORS.length).toBeGreaterThan(0);
+    for (const vendor of SUB_PROCESSORS) {
+      // The table renders "<location>. <transferBasis>" in one cell.
+      expect(unqualified(`${vendor.location}. ${vendor.transferBasis}`), vendor.name).toEqual([]);
+    }
+    const supabase = SUB_PROCESSORS.find((v) => v.name === "Supabase, Inc.");
+    expect(supabase?.location).toContain("United States");
+    expect(supabase?.location).toContain("(deployment setting)");
+    expect(supabase?.transferBasis).toMatch(/^Not yet confirmed/);
+    expect(supabase?.dpaSigned).toBe(false);
+  });
+
+  it("the three transfer-facing pages each name both open facts in a counsel gap", () => {
+    for (const slug of ["privacy", "data-processing-addendum", "subprocessors"]) {
+      expect(current.get(slug), slug).toMatch(
+        /\[Counsel to confirm: (?=[^\]]*United States)(?=[^\]]*application servers)[^\]]*\]/,
+      );
+    }
+  });
+
+  it("the Subprocessors page admits it is incomplete", () => {
+    expect(current.get("subprocessors")).toContain("This list is not complete yet.");
+  });
+
+  it("commits no email address and records no counsel review", () => {
+    expect(consistency).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/);
+    expect(consistency).not.toMatch(/mailto:/i);
+    expect(consistency).not.toMatch(/set\s+counsel_review|counsel_reviewer\s*=|counsel_review_recorded_by\s*=/);
+    expect(consistency).toMatch(/set status = 'published'/);
   });
 });
 

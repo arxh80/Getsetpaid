@@ -58,8 +58,14 @@ export const SUB_PROCESSORS: readonly SubProcessor[] = [
       "Hosts the database, sign-in and file storage — the system of record for everything the service stores.",
     personalData:
       "Everything the service stores: account details, workspace records, uploaded documents and the audit trail.",
-    location: "UK/EU region only",
-    transferBasis: "No international transfer: the data is hosted in the UK/EU region.",
+    // Fix round 2 (M1): this row said "UK/EU region only" and "No
+    // international transfer" as fact. The region is a hosted-account setting
+    // nothing in this repository enforces, and whether a US-incorporated
+    // provider with no signed DPA involves a transfer is for counsel -- the
+    // same two points the Privacy Notice and DPA leave open.
+    location: "Incorporated in the United States; data hosted in a UK/EU region (deployment setting)",
+    transferBasis:
+      "Not yet confirmed: whether this provider's incorporation in the United States involves a transfer of personal data outside the UK, and the safeguards for it, is for counsel to confirm.",
     dpaSigned: false,
     register: {
       purpose: "Database, authentication, file storage — the system of record",
