@@ -33,19 +33,28 @@ import { supabasePublicKey, supabaseUrl } from "./env";
  *  endpoint: it has no user, authenticates by a server-held bearer secret
  *  inside the handler, and answers 404 to everything else. Listing it here
  *  only stops this bounce redirecting a cron to /login -- per this file's
- *  header, nothing here is an authorisation control. */
-const PUBLIC_PATHS = [
+ *  header, nothing here is an authorisation control.
+ *
+ *  `/legal` (Phase 8 Task 1) is the fifteen PRD §12 pages, which must be
+ *  readable before anyone has an account. What they read is fenced in the
+ *  database (legal_documents_select_current_published + a column grant), not
+ *  here. isUnder() matches the root and `root/...` only, so `/legal` does not
+ *  make `/legalese` or `/legal-anything` public -- asserted in
+ *  tests/unit/security/public-paths.test.ts and, over real HTTP, in
+ *  tests/e2e/legal.spec.ts. */
+export const PUBLIC_PATHS = [
   "/login",
   "/signup",
   "/magic-link",
   "/auth",
   "/api/incident-alerts",
-];
+  "/legal",
+] as const;
 
 /** Signed-in users have no business on these -- bounce them to the hub. */
-const SIGNED_OUT_ONLY_PATHS = ["/login", "/signup", "/magic-link"];
+const SIGNED_OUT_ONLY_PATHS = ["/login", "/signup", "/magic-link"] as const;
 
-function isUnder(pathname: string, roots: string[]): boolean {
+export function isUnder(pathname: string, roots: readonly string[]): boolean {
   return roots.some(
     (root) => pathname === root || pathname.startsWith(`${root}/`),
   );

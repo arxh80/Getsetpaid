@@ -59,6 +59,12 @@ const SURFACES: readonly { href: string; label: string; blurb: string }[] = [
     blurb:
       "What people sent from the in-app Feedback control — identified, filterable by workspace, category and date, with a status you set by hand. Screenshots open through an audited link, never inline.",
   },
+  {
+    href: "/super/legal",
+    label: "Legal documents",
+    blurb:
+      "The fifteen public legal pages, versioned: draft, publish and record counsel’s review without a deploy. Every published version is frozen, and every unreviewed one says so on the public page.",
+  },
 ];
 
 export default async function SuperuserIndexPage() {

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Wordmark } from "@/components/wordmark";
 import { SkipLink } from "@/components/ui/skip-link";
+import { LegalFooter } from "@/components/legal/legal-footer";
 
 // Shell for every signed-out screen.
 //
@@ -38,11 +39,10 @@ export default function AuthLayout({
         {children}
       </main>
 
-      <footer className="border-t border-rule">
-        <div className="mx-auto w-full max-w-md px-4 py-5 text-sm text-ink-muted">
-          A CRM for the live events industry.
-        </div>
-      </footer>
+      {/* Phase 8 Task 1: every signed-out screen links all fifteen legal
+          pages (PRD §12). Wider than the form column on purpose -- three
+          short link lists do not fit a 28rem measure side by side. */}
+      <LegalFooter />
     </div>
   );
 }

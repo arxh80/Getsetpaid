@@ -296,6 +296,24 @@ export default async function AppLayout({
           <div aria-hidden className="hidden w-16 shrink-0 md:block" />
         ) : null}
       </div>
+
+      {/* Phase 8 Task 1: the legal pages, reachable from inside the app
+          (PRD §12). One link to the index rather than all fifteen -- the
+          signed-in shell is a working surface, and /legal lists them. It
+          renders on the MFA gate screens too, deliberately: a user being
+          asked to enrol a factor is exactly who may want the privacy notice
+          first, and /legal needs no session and reaches no CRM table. */}
+      <footer className="border-t border-rule">
+        <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-4 text-sm text-ink-muted">
+          <Link
+            href="/legal"
+            prefetch={false}
+            className="underline underline-offset-4 hover:text-ink"
+          >
+            Legal and privacy
+          </Link>
+        </div>
+      </footer>
     </div>
   );
 }
