@@ -7,11 +7,20 @@
 //
 // DECISIONS-QUEUE Q129: all four are strictly necessary, which PECR exempts
 // from consent, and no analytics vendor is chosen -- so no cookie banner ships.
-// Phase 8 Task 2 adds the census that fails the moment the codebase sets a
-// cookie or storage key that is not on this list, which is what turns "adding
-// analytics" into a forced banner decision rather than a silent one. Until
-// then, `tests/unit/legal/storage-inventory.test.ts` pins each entry to the
-// source constant it describes, so a renamed key is a red test.
+// Three checks hold this list to the truth:
+//   * tests/unit/legal/storage-inventory.test.ts pins each entry to the source
+//     constant it describes, so a RENAMED key is a red test;
+//   * tests/unit/legal/storage-census.test.ts (Phase 8 Task 2) scans the
+//     source for every cookie write, Web Storage write, IndexedDB / Cache API
+//     use and third-party script, and fails on one this list does not
+//     explain -- so a NEW key, or an analytics loader, is a red test;
+//   * tests/e2e/storage-census.spec.ts reads what a real browser actually
+//     holds after a signed-in walk and requires every cookie and storage key
+//     to match an entry's `matches` pattern -- which catches what a library
+//     sets and the source scan cannot see.
+// That is what turns "adding analytics" into a forced banner decision rather
+// than a silent one (SECURITY.md § 8, "Browser storage and consent", says what
+// has to ship with it).
 
 export type StorageKind = "cookie" | "local-storage";
 
@@ -25,6 +34,9 @@ export interface StorageItem {
   readonly duration: string;
   /** Why PECR's strictly-necessary exemption applies. */
   readonly necessity: string;
+  /** Every name, as a browser reports it, that this entry covers. Not
+   *  rendered: it is what the browser-level census matches against. */
+  readonly matches: RegExp;
 }
 
 export const BROWSER_STORAGE: readonly StorageItem[] = [
@@ -37,6 +49,9 @@ export const BROWSER_STORAGE: readonly StorageItem[] = [
     duration:
       "Up to 400 days in the browser, removed when you sign out. The session it carries expires much sooner — you are signed out after 30 minutes without activity.",
     necessity: "Required to provide the signed-in service you asked for.",
+    // sb-<project ref>-auth-token, its numbered chunks and the PKCE verifier.
+    // Locally the "ref" is the API host's first label (127).
+    matches: /^sb-[a-z0-9]+-auth-token(-code-verifier)?(\.[0-9]+)?$/,
   },
   {
     name: "gsp_current_org",
@@ -46,6 +61,7 @@ export const BROWSER_STORAGE: readonly StorageItem[] = [
       "Remembers which workspace you last opened, so you return to it after signing in. Not readable by page scripts.",
     duration: "180 days, renewed when you switch workspace.",
     necessity: "Part of the multi-workspace service you asked for; carries no tracking.",
+    matches: /^gsp_current_org$/,
   },
   {
     name: "gsp:last-activity-at:<your account id>",
@@ -55,6 +71,7 @@ export const BROWSER_STORAGE: readonly StorageItem[] = [
       "Records when you were last active, so an idle session is signed out after 30 minutes — including across open tabs.",
     duration: "Until you sign out (it is cleared then) or clear your browser storage.",
     necessity: "A security control on the signed-in service.",
+    matches: /^gsp:last-activity-at:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
   },
   {
     name: "gsp:sidebar-pinned",
@@ -64,6 +81,7 @@ export const BROWSER_STORAGE: readonly StorageItem[] = [
       "Remembers whether you pinned the navigation rail open. Only written when you press the pin control.",
     duration: "Until you change it or clear your browser storage.",
     necessity: "Remembers a display choice you made yourself.",
+    matches: /^gsp:sidebar-pinned$/,
   },
 ];
 

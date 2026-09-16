@@ -142,6 +142,11 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "legal_document.draft_updated",
   "legal_document.published",
   "legal_document.counsel_review_recorded",
+  // Phase 8 Task 2 (20260923000000): the consent ledger. Account-level, so
+  // no organisation; identifiers and enums only (purpose, policy version,
+  // mechanism).
+  "consent.granted",
+  "consent.withdrawn",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

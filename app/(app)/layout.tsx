@@ -312,6 +312,18 @@ export default async function AppLayout({
           >
             Legal and privacy
           </Link>
+          {/* Phase 8 Task 2: the account-level privacy control (marketing
+              consent). In the footer beside the legal index rather than in
+              the header, which is a working surface with a tested tab order;
+              the page itself is signed-in and MFA-gated like every route
+              under this layout. */}
+          <Link
+            href="/account/privacy"
+            prefetch={false}
+            className="underline underline-offset-4 hover:text-ink"
+          >
+            Your privacy choices
+          </Link>
         </div>
       </footer>
     </div>
