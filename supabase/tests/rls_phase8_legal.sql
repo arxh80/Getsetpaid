@@ -135,12 +135,12 @@ select lg.val('LF2d DENOMINATOR for LF2c: the superseded versions DO carry them'
          or body like '%The only subprocessor outside the UK%'
          or body like '%outside the default view%'
          or body like '%which encrypts stored data%')$$, '4');
-select lg.val('LF2e FIXTURE: no current page claims the subprocessor list is complete or states the region flat (fix round 2)',
+select lg.val('LF2g FIXTURE: no current page claims the subprocessor list is complete or states the region flat (fix round 2)',
   $$select count(*)::text from public.legal_documents
      where status = 'published'
        and (body like '%before it receives any personal data%'
          or body ~ 'hosted in (the|a) UK/EU region\.')$$, '0');
-select lg.val('LF2f DENOMINATOR for LF2e: exactly these five superseded versions DO carry one',
+select lg.val('LF2h DENOMINATOR for LF2g: exactly these five superseded versions DO carry one',
   $$select string_agg(slug || ':' || version, ',' order by slug, version) from public.legal_documents
      where status = 'superseded'
        and (body like '%before it receives any personal data%'
@@ -707,8 +707,8 @@ reset role; reset request.jwt.claims;
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'super_c';
-select lg.val('LO1 the aal2 superuser reads every version: 19 migrated + the terms and cookies drafts',
-  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '21');
+select lg.val('LO1 the aal2 superuser reads every version: 22 migrated + the terms and cookies drafts',
+  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '24');
 select lg.val('LO2 ...including the one open draft, which no table read can reach',
   $$select string_agg(slug || ':' || status, ',' order by slug)
       from public.operator_legal_document_versions(null) where status = 'draft'$$, 'cookies:draft');
