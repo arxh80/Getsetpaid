@@ -2329,3 +2329,78 @@ export async function restoreLegalDocumentSeed(slug: string, actorUserId: string
     client.release();
   }
 }
+
+// ===========================================================================
+// PHASE 8 TASK 2: THE CONSENT LEDGER
+// ===========================================================================
+// Read straight out of Postgres as `postgres`, so "the history shows both
+// events" is measured in the table rather than through the page that renders
+// it. The ledger is append-only for every role (20260923000000), so clearing
+// it runs with triggers off, set LOCAL on one pooled connection.
+
+export interface ConsentRowRead {
+  action: string;
+  policy_slug: string;
+  policy_version: number;
+  mechanism: string;
+  statement: string | null;
+  has_granted_at: boolean;
+  has_withdrawn_at: boolean;
+  withdraws_previous: boolean;
+}
+
+/** One person's consent events, oldest first. */
+export async function consentEvents(userId: string): Promise<ConsentRowRead[]> {
+  const result = await db().query<ConsentRowRead>(
+    `select c.action, c.policy_slug, c.policy_version, c.mechanism,
+            c.technical_context->>'statement' as statement,
+            c.granted_at is not null as has_granted_at,
+            c.withdrawn_at is not null as has_withdrawn_at,
+            (c.withdraws_id is not null and c.withdraws_id = lag(c.id) over (order by c.seq)) as withdraws_previous
+       from public.consents c where c.user_id = $1 order by c.seq`,
+    [userId],
+  );
+  return result.rows;
+}
+
+/** The audit actions one person's consent events wrote, oldest first. */
+export async function consentAuditActions(userId: string): Promise<string[]> {
+  const result = await db().query<{ action: string }>(
+    `select action from public.audit_events
+      where target_type = 'consent' and actor_user_id = $1 order by created_at, id`,
+    [userId],
+  );
+  return result.rows.map((r) => r.action);
+}
+
+/** The current published version of the marketing preferences page. */
+export async function marketingPolicyVersion(): Promise<number> {
+  const result = await db().query<{ version: number }>(
+    `select version from public.legal_documents where slug = 'marketing-preferences' and status = 'published'`,
+  );
+  return result.rows[0].version;
+}
+
+/** Remove these people's consent events, audit rows and grant counters. */
+export async function clearConsentState(userIds: string[]): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local session_replication_role = replica");
+    await client.query(
+      `delete from public.audit_events where target_type = 'consent' and actor_user_id = any($1::uuid[])`,
+      [userIds],
+    );
+    await client.query(`delete from public.consents where user_id = any($1::uuid[])`, [userIds]);
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+  await sql(
+    `delete from public.rate_limit_counters where category = 'consent_grant' and subject_id = any($1::uuid[])`,
+    [userIds],
+  );
+}

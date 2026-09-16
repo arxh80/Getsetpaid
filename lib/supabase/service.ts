@@ -46,6 +46,14 @@ import "server-only";
 // to this list gets the same three questions: who owns it, who may execute it,
 // and what can the caller ask it FOR.
 //
+// A SECOND RPC IS EXECUTABLE BY service_role SINCE PHASE 8 TASK 2, and no
+// sender calls it yet: `public.consent_is_granted(user_id, purpose)`
+// (20260923000000), the check a future marketing sender must make through
+// lib/consent/marketing.ts. The three answers: owned by `postgres`, executable
+// by `service_role` alone, and it returns ONE boolean about one person's
+// consent to one catalogued purpose -- no address, no row. It does take a
+// user argument, which is the point of it; a sender already holds the id.
+//
 // THE SAME FOUR PROPERTIES admin.ts and storage.ts keep:
 //   1. `import "server-only"` -- a Client Component reaching this file is a
 //      BUILD failure, not a review note.
