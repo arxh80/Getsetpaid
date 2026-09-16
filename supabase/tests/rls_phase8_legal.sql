@@ -81,6 +81,26 @@ begin
   perform lg.record(p_label, p_expected, v_actual);
 end $$;
 
+-- WHO refused, not only how: the SQLSTATE, the innermost PL/pgSQL function in
+-- the error context (so a 42501 raised by some OTHER guard, or by the
+-- statement itself, cannot pass for this one) and the message. Task 2 review
+-- M3: a SQLSTATE alone let LI23 pass with the guard under test disabled.
+create function lg.try_raiser(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_actual text; v_ctx text;
+begin
+  begin
+    execute p_sql;
+    v_actual := 'ok';
+  exception when others then
+    get stacked diagnostics v_ctx = pg_exception_context;
+    v_actual := 'denied(' || sqlstate || ' by '
+             || coalesce(substring(v_ctx from 'function ([A-Za-z0-9_.]+)\('), '<no function>')
+             || ': ' || sqlerrm || ')';
+  end;
+  perform lg.record(p_label, p_expected, v_actual);
+end $$;
+
 create function lg.val(p_label text, p_sql text, p_expected text)
 returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
 declare v_actual text;
@@ -681,17 +701,32 @@ select count(*) as rows_before_truncate from public.legal_documents \gset
 -- takes the foreign key out of the way INSIDE the probe (a subtransaction that
 -- always ends in an error, so the DROP never survives) and asks the guard
 -- itself; LI22a records the FK's own refusal as the second layer it is.
-select lg.try('LI22 postgres cannot TRUNCATE the legal store (the guard, with the consents FK out of the way)',
+\set legal_truncate_refusal 'denied(42501 by private.legal_documents_truncate_guard: legal_documents: the legal store cannot be truncated -- published versions are immutable, and a draft is deleted row by row)'
+select lg.try_raiser('LI22 postgres cannot TRUNCATE the legal store -- refused by THE LEGAL GUARD (consents FK out of the way)',
   $q$do $d$ begin
       alter table public.consents drop constraint consents_policy_version_fkey;
       truncate public.legal_documents;
       raise exception 'TRUNCATE SUCCEEDED' using errcode = 'P0099';
-    end $d$ $q$, 'denied(42501)');
+    end $d$ $q$, :'legal_truncate_refusal');
 select lg.try('LI22a ...and a plain TRUNCATE is also refused by the consents foreign key (Task 2)',
   $$truncate public.legal_documents$$, 'denied(0A000)');
-select lg.val('LI22b ...the consents foreign key is still in place after LI22',
+-- LI23: with the FK in place, CASCADE would also truncate public.consents and
+-- its own guard (consents_truncate_guard) answers -- measured by the Task 2
+-- review with the legal guard DISABLED, LI23 still returned 42501. So LI23
+-- takes the FK out of the way too; CASCADE then reaches only the legal store,
+-- and the raiser is asserted by name.
+select lg.try_raiser('LI23 ...nor with RESTART IDENTITY CASCADE -- refused by THE LEGAL GUARD (consents FK out of the way)',
+  $q$do $d$ begin
+      alter table public.consents drop constraint consents_policy_version_fkey;
+      truncate public.legal_documents restart identity cascade;
+      raise exception 'TRUNCATE SUCCEEDED' using errcode = 'P0099';
+    end $d$ $q$, :'legal_truncate_refusal');
+select lg.val('LI22b ...the consents foreign key is still in place after LI22 and LI23',
   $$select count(*)::text from pg_constraint where conname = 'consents_policy_version_fkey'$$, '1');
-select lg.try('LI23 ...nor with RESTART IDENTITY CASCADE',
+-- With the FK in place, CASCADE reaches both tables and two guards stand in
+-- its way; which answers first is an ordering detail, so only the refusal is
+-- asserted here -- LI23 above is the one that names the legal guard.
+select lg.try('LI23a ...and with the FK in place, CASCADE is refused too (by one of the two guards)',
   $$truncate public.legal_documents restart identity cascade$$, 'denied(42501)');
 select lg.val('LI24 ...and every row is still there',
   format($$select (count(*) = %s and %s > 15)::text from public.legal_documents$$,
