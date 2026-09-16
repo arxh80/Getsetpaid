@@ -682,11 +682,11 @@ select count(*) as rows_before_truncate from public.legal_documents \gset
 -- always ends in an error, so the DROP never survives) and asks the guard
 -- itself; LI22a records the FK's own refusal as the second layer it is.
 select lg.try('LI22 postgres cannot TRUNCATE the legal store (the guard, with the consents FK out of the way)',
-  $$do $d$ begin
+  $q$do $d$ begin
       alter table public.consents drop constraint consents_policy_version_fkey;
       truncate public.legal_documents;
       raise exception 'TRUNCATE SUCCEEDED' using errcode = 'P0099';
-    end $d$$$, 'denied(42501)');
+    end $d$q$, 'denied(42501)');
 select lg.try('LI22a ...and a plain TRUNCATE is also refused by the consents foreign key (Task 2)',
   $$truncate public.legal_documents$$, 'denied(0A000)');
 select lg.val('LI22b ...the consents foreign key is still in place after LI22',
