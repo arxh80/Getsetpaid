@@ -11,7 +11,8 @@ import { activityStorageKey } from "@/lib/auth/idle-timeout";
 // THE COOKIE POLICY NAMES WHAT THE CODE SETS -- each declared item is pinned
 // to the source constant it describes, so renaming a key without updating the
 // policy is red. (Q129. The reverse direction -- a NEW key the policy does not
-// declare -- is Phase 8 Task 2's census; this file does not claim it.)
+// declare -- is tests/unit/legal/storage-census.test.ts and, in a real
+// browser, tests/e2e/storage-census.spec.ts; this file does not claim it.)
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const names = BROWSER_STORAGE.map((item) => item.name);

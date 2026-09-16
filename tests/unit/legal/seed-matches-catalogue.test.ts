@@ -216,10 +216,16 @@ describe("version 2 of the four corrected pages", () => {
 // page claiming to be complete.
 const consistency = readMigration("20260922006000_legal_documents_hosting_and_transfer_consistency.sql");
 
+// Phase 8 Task 2: Marketing and Communications Preferences v2 (20260923001000),
+// same exact-replacement shape. Applied here so "every page's current body"
+// below is still every page's CURRENT body.
+const marketingV2 = readMigration("20260923001000_marketing_preferences_v2.sql");
+
 function currentBodies(): Map<string, string> {
   const current = seedBodies();
   for (const [slug, body] of correctedBodies()) current.set(slug, body);
   for (const [slug, body] of applyCorrections(consistency, current, "20260922006000")) current.set(slug, body);
+  for (const [slug, body] of applyCorrections(marketingV2, current, "20260923001000")) current.set(slug, body);
   return current;
 }
 
@@ -322,6 +328,51 @@ describe("fix round 2: every published page says one thing about hosting and tra
     expect(consistency).not.toMatch(/mailto:/i);
     expect(consistency).not.toMatch(/set\s+counsel_review|counsel_reviewer\s*=|counsel_review_recorded_by\s*=/);
     expect(consistency).toMatch(/set status = 'published'/);
+  });
+});
+
+// ===========================================================================
+// PHASE 8 TASK 2: MARKETING PREFERENCES v2 DESCRIBES THE CONTROL THAT EXISTS
+// ===========================================================================
+describe("Task 2: Marketing and Communications Preferences version 2", () => {
+  const before = new Map([...seedBodies(), ...correctedBodies()]);
+  const corrected = applyCorrections(marketingV2, before, "20260923001000");
+  const body = corrected.get("marketing-preferences") ?? "";
+
+  it("20260923001000 corrects exactly the marketing page", () => {
+    expect([...corrected.keys()]).toEqual(["marketing-preferences"]);
+    expect(body).not.toBe(before.get("marketing-preferences"));
+  });
+
+  it("passes the editor's own save-time validation", () => {
+    const result = validateDraft("marketing-preferences", {
+      title: "Marketing and Communications Preferences",
+      body,
+      effectiveDate: "2026-09-23",
+    });
+    expect(result.ok ? {} : result.fieldErrors).toEqual({});
+  });
+
+  it("DENOMINATOR: version 1 spoke of the control in the future tense", () => {
+    expect(before.get("marketing-preferences")).toContain("the preference controls added to your account");
+  });
+
+  it("names the real control, says no marketing is sent, and says what a record holds and omits", () => {
+    expect(body).not.toContain("the preference controls added to your account");
+    expect(body).toContain("[Privacy and communications](/account/privacy)");
+    expect(body).toContain("**No marketing email is sent today, whatever you choose.**");
+    expect(body).toMatch(/the version of this page in force/);
+    expect(body).toMatch(/We do not record your IP address or any details of your browser or device/);
+    expect(body).toMatch(/\[Counsel to confirm: how long consent records are kept/);
+    // The generic "GetSetPaid does not send marketing email" line is kept.
+    expect(body).toContain("GetSetPaid does not send marketing email or text messages.");
+  });
+
+  it("commits no email address and records no counsel review", () => {
+    expect(marketingV2).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/);
+    expect(marketingV2).not.toMatch(/mailto:/i);
+    expect(marketingV2).not.toMatch(/set\s+counsel_review|counsel_reviewer\s*=|counsel_review_recorded_by\s*=/);
+    expect(marketingV2).toMatch(/set status = 'published'/);
   });
 });
 
