@@ -31,12 +31,32 @@ import {
 //     lib/email/send.ts skips this census too.
 // Task 2 review M4 measured all three evasions green against the first
 // (regex) census; each is now a fixture below.
+//
+// WHAT THIS CANNOT SEE, and why that is inherent rather than a gap to close:
+//   * ORDER AND REACHABILITY. The rule is "a real call to the check exists in
+//     the module", not "the check runs before every send, for this recipient":
+//     a call placed in dead code (`if (false) await hasMarketingConsent(...)`)
+//     or after the send satisfies it (re-review N3). Proving the call
+//     dominates every send is data-flow analysis; the check itself fails
+//     closed, and a marketing sender is a reviewed change, not a drive-by.
+//   * A provider host or key name that is not a constant in the source (read
+//     from the environment or a database) is not a provider string here.
 
 const SENDER = "lib/email/send.ts";
 const CONSENT_MODULE = "lib/consent/marketing.ts";
 const CONSENT_CHECKS = new Set(["assertMarketingConsent", "hasMarketingConsent"]);
-/** The provider's API hosts and key names. A new provider is added here. */
-const PROVIDER_STRING = /\bapi\.brevo\.com\b|\bapi\.sendinblue\.com\b|\bBREVO_API_KEY\b|\bSENDINBLUE_API_KEY\b/;
+/**
+ * The provider's API hosts and key names. A new provider is added to each.
+ * Hosts are matched CASE-INSENSITIVELY, because DNS is (re-review N3:
+ * `https://API.Brevo.com` passed the first pattern). Environment variable
+ * names are case-sensitive, so the key name is matched exactly -- and any
+ * string literal that STARTS with the provider's variable prefix is flagged
+ * too, so a key name assembled at runtime (`"BREVO_" + ...`) is still seen.
+ */
+const PROVIDER_HOST = /\bapi\.(?:brevo|sendinblue)\.com\b/i;
+const PROVIDER_KEY = /\b(?:BREVO|SENDINBLUE)_API_KEY\b/;
+const PROVIDER_KEY_PREFIX = /^(?:BREVO|SENDINBLUE)_/;
+const isProviderString = (value: string) => PROVIDER_HOST.test(value) || PROVIDER_KEY.test(value);
 
 const TRANSACTIONAL: Record<string, string> = {
   "lib/email/feedback-notification.ts":
@@ -92,9 +112,12 @@ function analyse(file: string, text: string): Analysis {
       (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.PlusToken)
     ) {
       const value = constantString(n as ts.Expression, consts) ?? n.getText(sf);
-      if (PROVIDER_STRING.test(value)) providerSites.push(n.getText(sf));
+      if (isProviderString(value)) providerSites.push(n.getText(sf));
+      else if ((ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) && PROVIDER_KEY_PREFIX.test(n.text)) {
+        providerSites.push(n.getText(sf));
+      }
     }
-    if (ts.isIdentifier(n) && PROVIDER_STRING.test(n.text)) providerSites.push(n.text);
+    if (ts.isIdentifier(n) && PROVIDER_KEY.test(n.text)) providerSites.push(n.text);
     ts.forEachChild(n, visit);
   };
   visit(sf);
@@ -206,10 +229,20 @@ describe("the sender census detector", () => {
       `const key = process.env.BREVO_API_KEY;`,
       `const key = process.env["BREVO_API_KEY"];`,
       `await fetch("https://api.sendinblue.com/v3/smtp/email");`,
+      // re-review N3: hosts are case-insensitive, and so is the check now.
+      `await fetch("https://API.Brevo.com" + "/v3/smtp/email");`,
+      "await fetch(`https://Api.Brevo.Com/v3/smtp/email`);",
+      `await fetch("HTTPS://API.SENDINBLUE.COM/v3/smtp/email");`,
+      `const key = process.env["BREVO_" + "API_KEY".toString()];`,
+      `const key = process.env[["SENDINBLUE_", "API", "_KEY"].join("")];`,
     ];
     for (const source of shapes) {
       expect(analyse("lib/marketing/direct.ts", source).providerSites.length, source).toBeGreaterThan(0);
     }
     expect(analyse("lib/marketing/direct.ts", `// posts to api.brevo.com\nconst x = "Brevo";`).providerSites).toEqual([]);
+    // Case-sensitive where the platform is: a lower-case variable is a different variable.
+    expect(
+      analyse("lib/marketing/direct.ts", `const k = process.env.brevo_api_key; const b = "brevo_";`).providerSites,
+    ).toEqual([]);
   });
 });
