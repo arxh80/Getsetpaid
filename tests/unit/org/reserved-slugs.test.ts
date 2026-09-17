@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { RESERVED_WORKSPACE_SLUGS, isReservedWorkspaceSlug } from "@/lib/org/reserved-slugs";
+import { isMetadataRouteFile, isStaticMetadataFile } from "next/dist/lib/metadata/is-metadata-route";
 import { latestFunctionDefinition } from "../support/sql-definitions";
 
 // A WORKSPACE MAY NOT TAKE THE ADDRESS OF ONE OF THE APP'S PAGES
@@ -20,27 +21,87 @@ import { latestFunctionDefinition } from "../support/sql-definitions";
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const SLUG_SHAPE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
+// Next's own classifier for metadata route files (icon, apple-icon,
+// opengraph-image, twitter-image, sitemap, robots, manifest, favicon, with the
+// numbered variants) is imported above, so the list of names is Next's rather
+// than a copy.
+const PAGE_EXTENSIONS = ["tsx", "ts", "jsx", "js"];
+
+const isGroup = (entry: string) => /^\(.+\)$/.test(entry);
+const isSlot = (entry: string) => entry.startsWith("@");
+/** `(.)x` / `(..)x` / `(..)(..)x` / `(...)x`: the levels it climbs (Infinity = root), and the segment. */
+function intercept(entry: string): { up: number; name: string } | null {
+  const m = /^((?:\(\.\.\))+|\(\.\)|\(\.\.\.\))(.+)$/.exec(entry);
+  if (!m) return null;
+  const marker = m[1];
+  const up = marker === "(.)" ? 0 : marker === "(...)" ? Infinity : marker.length / 4;
+  return { up, name: m[2] };
+}
+
 /**
- * The static URL segments that sit at the top level of the app: every folder
- * directly under app/, looking THROUGH route groups `(name)` and parallel-route
- * slots `@name` (neither adds a URL segment), and skipping private folders
- * `_name` (never routed) and dynamic segments `[name]` (the workspace itself).
+ * The URL a top-level metadata route FILE serves (review N4), as Next 16
+ * serves it (next/dist/lib/metadata/get-metadata-route.js): a static file at
+ * its own name (`icon.svg` -> /icon.svg); a dynamic one at its base name
+ * (`icon.tsx` -> /icon, `opengraph-image.tsx` -> /opengraph-image), except
+ * robots -> /robots.txt, manifest -> /manifest.webmanifest and sitemap ->
+ * /sitemap.xml. null for anything that is not a metadata route.
+ */
+function metadataRouteSegment(file: string): string | null {
+  if (!isMetadataRouteFile(`/${file}`, PAGE_EXTENSIONS, true)) return null;
+  if (isStaticMetadataFile(`/${file}`)) return file;
+  const base = file.replace(/\.[^.]+$/, "");
+  if (base === "robots") return "robots.txt";
+  if (base === "manifest") return "manifest.webmanifest";
+  if (base === "sitemap") return "sitemap.xml";
+  return base;
+}
+
+/**
+ * The URL segments that sit at the top level of the app.
+ *
+ * FOLDERS directly under app/, looking THROUGH route groups `(name)` and
+ * parallel-route slots `@name` (neither adds a URL segment), and skipping
+ * private folders `_name` (never routed) and dynamic segments `[name]` (the
+ * workspace itself).
+ *
+ * FILES directly under app/ (through groups and slots) that Next serves as
+ * metadata routes (review N4): `app/icon.tsx` serves /icon, which would shadow
+ * a workspace called `icon`.
+ *
+ * INTERCEPTING folders anywhere in the tree (review N4) whose target is the
+ * top level: `(.)x` at the top level, `(..)x` one real segment down, and
+ * `(...)x` at any depth all intercept /x. Dynamic folders are walked for these
+ * (a `(...)x` under [orgSlug] still intercepts /x); private folders are not.
  */
 function topLevelSegments(appDir: string): string[] {
   const out = new Set<string>();
-  const visit = (dir: string) => {
+  const visit = (dir: string, depth: number) => {
     for (const entry of readdirSync(dir)) {
-      if (!statSync(join(dir, entry)).isDirectory()) continue;
-      if (/^\(.+\)$/.test(entry) || entry.startsWith("@")) {
-        visit(join(dir, entry));
-      } else if (entry.startsWith("_") || entry.startsWith("[")) {
+      const path = join(dir, entry);
+      if (!statSync(path).isDirectory()) {
+        if (depth === 0) {
+          const served = metadataRouteSegment(entry);
+          if (served !== null) out.add(served);
+        }
         continue;
-      } else {
-        out.add(entry);
       }
+      if (entry.startsWith("_")) continue;
+      if (isGroup(entry) || isSlot(entry)) {
+        visit(path, depth);
+        continue;
+      }
+      const intercepted = intercept(entry);
+      if (intercepted) {
+        const level = intercepted.up === Infinity ? 0 : depth - intercepted.up;
+        if (level === 0) out.add(intercepted.name);
+        visit(path, (level < 0 ? 0 : level) + 1);
+        continue;
+      }
+      if (depth === 0 && !entry.startsWith("[")) out.add(entry);
+      visit(path, depth + 1);
     }
   };
-  visit(appDir);
+  visit(appDir, 0);
   return [...out].sort();
 }
 
@@ -106,5 +167,86 @@ describe("reserved workspace slugs", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("FIXTURE (N4): top-level metadata route FILES are segments, under the URL Next serves them at", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gsp-routes-"));
+    try {
+      mkdirSync(join(dir, "(g)"), { recursive: true });
+      mkdirSync(join(dir, "_private"), { recursive: true });
+      mkdirSync(join(dir, "plain"), { recursive: true });
+      for (const f of [
+        "icon.tsx",
+        "icon1.tsx",
+        "apple-icon.ts",
+        "opengraph-image.tsx",
+        "sitemap.ts",
+        "robots.ts",
+        "manifest.ts",
+        "icon.svg",
+        "favicon.ico",
+        "page.tsx",
+        "layout.tsx",
+        "not-found.tsx",
+        "globals.css",
+        "iconic.tsx",
+        "(g)/twitter-image.jsx",
+        "_private/apple-icon.tsx",
+        "plain/opengraph-image.tsx",
+      ]) {
+        writeFileSync(join(dir, f), "");
+      }
+      const segments = topLevelSegments(dir);
+      expect(segments).toEqual([
+        "apple-icon",
+        "favicon.ico",
+        "icon",
+        "icon.svg",
+        "icon1",
+        "manifest.webmanifest",
+        "opengraph-image",
+        "plain",
+        "robots.txt",
+        "sitemap.xml",
+        "twitter-image",
+      ]);
+      // The slug-shaped ones are the ones a workspace could collide with.
+      expect(segments.filter((s) => SLUG_SHAPE.test(s))).toEqual([
+        "apple-icon",
+        "icon",
+        "icon1",
+        "opengraph-image",
+        "plain",
+        "twitter-image",
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("FIXTURE (N4): intercepting folders that target the top level are segments", () => {
+    const dir = mkdtempSync(join(tmpdir(), "gsp-routes-"));
+    try {
+      for (const d of [
+        "(.)photo",
+        "feed/(..)modal",
+        "feed/(.)inner-only",
+        "a/b/(..)(..)climbed",
+        "a/b/(..)not-root",
+        "[id]/deep/(...)anywhere",
+        "(g)/(.)grouped",
+        "_private/(...)hidden",
+      ]) {
+        mkdirSync(join(dir, d), { recursive: true });
+      }
+      expect(topLevelSegments(dir)).toEqual(["a", "anywhere", "climbed", "feed", "grouped", "modal", "photo"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("DENOMINATOR (N4): the real app/ has a top-level metadata file, and it is not slug-shaped", () => {
+    expect(segments).toContain("icon.svg");
+    expect(segments.filter((s) => !SLUG_SHAPE.test(s))).toEqual(["icon.svg"]);
   });
 });
