@@ -10,7 +10,9 @@
 // and the trigger private.organisations_slug_not_reserved()
 // (20260923005000) refuse a reserved slug on every insert and every slug
 // change. This copy exists only so the create form can say so in words before
-// the round trip. tests/unit/org/reserved-slugs.test.ts asserts that this
+// the round trip. The database also enforces the slug GRAMMAR on every write
+// (20260923006000, review N2), not only inside create_organisation().
+// tests/unit/org/reserved-slugs.test.ts asserts that this
 // list, the database's list and the static top-level segments app/ defines
 // are the same set -- so adding a top-level route without reserving it is a
 // red test.
@@ -28,8 +30,19 @@ export const RESERVED_WORKSPACE_SLUGS: readonly string[] = [
   "super",
 ];
 
+/**
+ * The key a slug is compared to the reserved list on -- the same as the
+ * database's private.workspace_slug_key() (20260923006000): NFKC, then trim
+ * whitespace, then lower-case. NFKC folds fullwidth letters and no-break
+ * spaces, so `ｌｅｇａｌ` and `legal<NBSP>` count as reserved; it does not fold
+ * cross-script look-alikes, which the ASCII grammar refuses anyway.
+ */
+export function workspaceSlugKey(slug: string): string {
+  return slug.normalize("NFKC").trim().toLowerCase();
+}
+
 export function isReservedWorkspaceSlug(slug: string): boolean {
-  return RESERVED_WORKSPACE_SLUGS.includes(slug.trim().toLowerCase());
+  return RESERVED_WORKSPACE_SLUGS.includes(workspaceSlugKey(slug));
 }
 
 /** The database's hint for the refusal (private.organisations_slug_not_reserved). */
