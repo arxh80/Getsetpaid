@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { RESERVED_WORKSPACE_SLUGS, isReservedWorkspaceSlug } from "@/lib/org/reserved-slugs";
+import { latestFunctionDefinition } from "../support/sql-definitions";
 
 // A WORKSPACE MAY NOT TAKE THE ADDRESS OF ONE OF THE APP'S PAGES
 // (Phase 8 Task 2 review, M7; DECISIONS-QUEUE Q151).
@@ -44,19 +45,11 @@ function topLevelSegments(appDir: string): string[] {
 }
 
 function latestReservedList(): { file: string; slugs: string[] } {
-  const dir = join(ROOT, "supabase", "migrations");
-  let found: { file: string; slugs: string[] } | null = null;
-  for (const file of readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
-    const text = readFileSync(join(dir, file), "utf8").split(String.fromCharCode(13)).join("");
-    const m = /create or replace function private\.reserved_workspace_slugs\(\)[\s\S]*?\$\$([\s\S]*?)\$\$/.exec(text);
-    if (m) {
-      const slugs = [...m[1].matchAll(/\('([^']+)'::text\)/g)].map((x) => x[1]);
-      expect(slugs.length, `${file}: every VALUES row was parsed`).toBe((m[1].match(/\(/g) ?? []).length);
-      found = { file, slugs };
-    }
-  }
-  if (!found) throw new Error("private.reserved_workspace_slugs() is defined in no migration");
-  return found;
+  // The LATEST definition, by an ordered, parsed walk of the migrations (N8).
+  const { file, body } = latestFunctionDefinition("private.reserved_workspace_slugs");
+  const slugs = [...body.matchAll(/\('([^']+)'::text\)/g)].map((x) => x[1]);
+  expect(slugs.length, `${file}: every VALUES row was parsed`).toBe((body.match(/\(/g) ?? []).length);
+  return { file, slugs };
 }
 
 describe("reserved workspace slugs", () => {
@@ -91,6 +84,13 @@ describe("reserved workspace slugs", () => {
   it("the check ignores case and surrounding space, as the database does", () => {
     expect(isReservedWorkspaceSlug("legal")).toBe(true);
     expect(isReservedWorkspaceSlug(" Legal ")).toBe(true);
+    // The database's key is NFKC + trim + lower (20260923006000); these are
+    // the look-alikes the scoped re-review had an Owner PATCH accepted.
+    expect(isReservedWorkspaceSlug("\uFF4C\uFF45\uFF47\uFF41\uFF4C")).toBe(true); // fullwidth
+    expect(isReservedWorkspaceSlug("legal\u00A0")).toBe(true);
+    expect(isReservedWorkspaceSlug("legal\t")).toBe(true);
+    expect(isReservedWorkspaceSlug("\u3000\uFF33\uFF29\uFF27\uFF2E\uFF35\uFF30")).toBe(true);
+    expect(isReservedWorkspaceSlug("l\u0435gal")).toBe(false); // Cyrillic: not folded, grammar refuses it
     expect(isReservedWorkspaceSlug("legal-team")).toBe(false);
     expect(isReservedWorkspaceSlug("org-alpha")).toBe(false);
   });

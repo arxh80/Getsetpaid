@@ -1,14 +1,18 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { latestFunctionDefinition, splitStatements } from "../support/sql-definitions";
 import { CONSENT_PURPOSES, MARKETING_EMAIL } from "@/lib/consent/catalogue";
 import { LEGAL_DOCUMENTS } from "@/lib/legal/documents";
 
 // THE CONSENT CATALOGUE: the TypeScript list equals the database's, the
 // wording is pinned to its identifier, and consent is asked only where the
-// law requires it. Read from the migration file, so it runs in CI with no
-// database (the live half is tests/integration/legal/consents.test.ts).
+// law requires it. Read from the migrations -- each function's LATEST
+// definition, by an ordered, parsed walk (tests/unit/support/sql-definitions.ts)
+// -- so it runs in CI with no database. The live half is
+// tests/integration/legal/catalogue-bindings-match-db.test.ts, which asserts
+// the walk picked the body the database actually runs.
 
 const MIGRATION = readFileSync(
   fileURLToPath(new URL("../../../supabase/migrations/20260923000000_consents.sql", import.meta.url)),
@@ -26,10 +30,15 @@ const STATEMENT_SHA256: Record<string, string> = {
 };
 
 describe("the consent catalogue", () => {
-  it("matches private.consent_purposes() row for row", () => {
-    const body = /create or replace function private\.consent_purposes\(\)[\s\S]*?\$\$([\s\S]*?)\$\$/.exec(MIGRATION)?.[1];
-    expect(body, "private.consent_purposes() not found").toBeTruthy();
-    const rows = [...body!.matchAll(/\('([a-z_]+)'::text, '([a-z]+)'::text, '([a-z-]+)'::text\)/g)].map((m) => ({
+  it("matches private.consent_purposes() row for row (its LATEST definition)", () => {
+    const { body } = latestFunctionDefinition("private.consent_purposes");
+    // Every VALUES tuple must be understood -- a row the pattern skipped would
+    // make the equality below vacuous for that row.
+    expect(
+      [...body.matchAll(/\('([a-z_]+)'::text, '([a-z]+)'::text, '([a-z-]+)'::text\)/g)].length,
+      "every VALUES tuple in private.consent_purposes() was parsed",
+    ).toBe((body.match(/\(/g) ?? []).length);
+    const rows = [...body.matchAll(/\('([a-z_]+)'::text, '([a-z]+)'::text, '([a-z-]+)'::text\)/g)].map((m) => ({
       purpose: m[1],
       category: m[2],
       policySlug: m[3],
@@ -86,23 +95,8 @@ describe("the consent catalogue", () => {
 // private.consent_statements(); this binds that list to the TypeScript one so
 // the two cannot drift, and binds every id the database will accept to a
 // SHA-256 pin above, so no id can be grantable without its exact words.
-function latestDefinition(fn: string): { file: string; body: string } {
-  const dir = fileURLToPath(new URL("../../../supabase/migrations/", import.meta.url));
-  const files = readdirSync(dir).filter((f) => f.endsWith(".sql")).sort();
-  let found: { file: string; body: string } | null = null;
-  const escaped = fn.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`create or replace function ${escaped}\\(\\)[\\s\\S]*?\\$\\$([\\s\\S]*?)\\$\\$`);
-  for (const file of files) {
-    const text = readFileSync(`${dir}${file}`, "utf8").split(String.fromCharCode(13)).join("");
-    const m = pattern.exec(text);
-    if (m) found = { file, body: m[1] };
-  }
-  if (!found) throw new Error(`${fn} is defined in no migration`);
-  return found;
-}
-
 describe("the consent wording list is the same in the database and in TypeScript", () => {
-  const { file, body } = latestDefinition("private.consent_statements");
+  const { file, body } = latestFunctionDefinition("private.consent_statements");
   const rows = [...body.matchAll(/\('([a-z_]+)'::text, '([a-z0-9-]+)'::text\)/g)].map((m) => ({
     purpose: m[1],
     statementId: m[2],
@@ -125,10 +119,71 @@ describe("the consent wording list is the same in the database and in TypeScript
   });
 
   it("the trigger that enforces the list is the latest before-insert definition", () => {
-    const trigger = latestDefinition("private.consents_before_insert");
+    const trigger = latestFunctionDefinition("private.consents_before_insert");
     expect(trigger.file >= "20260923003000").toBe(true);
     expect(trigger.body).toContain("private.consent_statements()");
     expect(trigger.body).toContain("hint = 'missing_statement'");
     expect(trigger.body).toContain("hint = 'unknown_statement'");
+  });
+});
+
+// THE WALKER ITSELF (review N8): the shapes a text regex got wrong.
+describe("latestFunctionDefinition reads the latest body, parsed", () => {
+  const m = (file: string, text: string) => ({ file, text });
+
+  it("FIXTURE: a later CREATE FUNCTION with odd spacing, quoted names and a $body$ tag wins", () => {
+    const found = latestFunctionDefinition("private.x", [
+      m("1.sql", "create or replace function private.x() returns int language sql as $$ select 1 $$;"),
+      m("2.sql", 'CREATE   FUNCTION\n  "private" . "x" ( ) RETURNS int LANGUAGE sql AS $body$ select 2 $$ $body$;'),
+    ]);
+    expect(found).toEqual({ file: "2.sql", body: " select 2 $$ " });
+  });
+
+  it("FIXTURE: a commented-out or quoted copy is not a definition", () => {
+    const found = latestFunctionDefinition("private.x", [
+      m("1.sql", "create or replace function private.x() returns int language sql as $$ select 1 $$;"),
+      m(
+        "2.sql",
+        [
+          "-- create or replace function private.x() returns int language sql as $$ select 9 $$;",
+          "/* create function private.x() as $$ select 8 $$; /* nested */ still comment */",
+          "select 'create or replace function private.x() as $$ select 7 $$';",
+          "comment on function private.x() is 'create function private.x() $$ select 6 $$';",
+          "do $$ begin execute 'create function private.x() returns int as $q$ select 5 $q$'; end $$;",
+        ].join("\n"),
+      ),
+    ]);
+    expect(found).toEqual({ file: "1.sql", body: " select 1 " });
+  });
+
+  it("FIXTURE: a later drop or rename clears it; a re-create after that is found", () => {
+    const create = (v: number) => `create or replace function private.x() returns int language sql as $$ select ${v} $$;`;
+    expect(() =>
+      latestFunctionDefinition("private.x", [m("1.sql", create(1)), m("2.sql", "drop function if exists private.x();")]),
+    ).toThrow(/defined in no migration/);
+    expect(() =>
+      latestFunctionDefinition("private.x", [m("1.sql", create(1)), m("2.sql", "alter function private.x() rename to y;")]),
+    ).toThrow(/defined in no migration/);
+    expect(
+      latestFunctionDefinition("private.x", [m("1.sql", create(1)), m("2.sql", "drop function private.x()"), m("3.sql", create(3))]),
+    ).toEqual({ file: "3.sql", body: " select 3 " });
+  });
+
+  it("FIXTURE: a similarly named function is not it", () => {
+    const found = latestFunctionDefinition("private.x", [
+      m("1.sql", "create function private.x() returns int language sql as $$ select 1 $$;"),
+      m("2.sql", "create function private.x_two() returns int language sql as $$ select 2 $$; create function other.x() returns int language sql as $$ select 3 $$;"),
+    ]);
+    expect(found.body).toBe(" select 1 ");
+  });
+
+  it("the lexer splits every real migration without error, and finds the statements it should", () => {
+    const text = readFileSync(
+      fileURLToPath(new URL("../../../supabase/migrations/20260923003000_consents_statement_pinned.sql", import.meta.url)),
+      "utf8",
+    );
+    const heads = splitStatements(text.split(String.fromCharCode(13)).join("")).map((s) => s.head.replace(/\s+/g, " ").trim());
+    expect(heads.filter((h) => /^create or replace function private\.consent_statements\(\)/.test(h))).toHaveLength(1);
+    expect(latestFunctionDefinition("private.consent_statements").file).toBe("20260923003000_consents_statement_pinned.sql");
   });
 });
