@@ -130,15 +130,15 @@ select md5(body) as au_md5 from public.legal_documents where slug = 'acceptable-
 -- ===========================================================================
 -- § LF  FIXTURES
 -- ===========================================================================
-select lg.val('LF1 FIXTURE: the migrations hold exactly 23 rows (15 seeded + 4 corrected + 3 made consistent + marketing v2, Task 2)',
-  $$select count(*)::text from public.legal_documents$$, '23');
-select lg.val('LF2 FIXTURE: 15 published -- 9 still at version 1, 4 at version 2, 2 at version 3',
+select lg.val('LF1 FIXTURE: the migrations hold exactly 24 rows (15 seeded + 4 corrected + 3 made consistent + marketing v2, Task 2 + data-subject-rights v2, Task 3)',
+  $$select count(*)::text from public.legal_documents$$, '24');
+select lg.val('LF2 FIXTURE: 15 published -- 8 still at version 1, 5 at version 2, 2 at version 3',
   $$select string_agg(version || '=' || n, ',' order by version) from (
       select version, count(*) as n from public.legal_documents where status = 'published' group by version) v$$,
-  '1=9,2=4,3=2');
+  '1=8,2=5,3=2');
 select lg.val('LF2b FIXTURE: the superseded rows are exactly the versions fix rounds 1 and 2 (and Task 2) replaced',
   $$select string_agg(slug || ':' || version, ',' order by slug, version) from public.legal_documents where status = 'superseded'$$,
-  'data-processing-addendum:1,data-processing-addendum:2,data-retention:1,marketing-preferences:1,privacy:1,privacy:2,security:1,subprocessors:1');
+  'data-processing-addendum:1,data-processing-addendum:2,data-retention:1,data-subject-rights:1,marketing-preferences:1,privacy:1,privacy:2,security:1,subprocessors:1');
 select lg.val('LF2c FIXTURE: no current page repeats a version 1 overclaim (I2, M1, M2)',
   $$select count(*)::text from public.legal_documents
      where status = 'published'

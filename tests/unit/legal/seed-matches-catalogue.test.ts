@@ -110,7 +110,10 @@ function applyCorrections(sql: string, base: ReadonlyMap<string, string>, file: 
     let body = base.get(slug);
     if (body === undefined) throw new Error(`${file}: ${slug} has no current body`);
     let replaced = 0;
-    for (const m of section.matchAll(/replace\(v_current,\n\$t\$([\s\S]*?)\$t\$,\n\$t\$([\s\S]*?)\$t\$\)/g)) {
+    // `v_current` or `v_next`: a migration that makes TWO replacements to one
+    // page chains them (20260924002000), and a parser that only knew the first
+    // name would silently apply half a correction and then assert against it.
+    for (const m of section.matchAll(/replace\(v_(?:current|next),\n\$t\$([\s\S]*?)\$t\$,\n\$t\$([\s\S]*?)\$t\$\)/g)) {
       if (!body.includes(m[1])) throw new Error(`${file}: ${slug}: a replaced passage is not in the current body`);
       body = body.replace(m[1], m[2]);
       replaced++;
@@ -221,11 +224,16 @@ const consistency = readMigration("20260922006000_legal_documents_hosting_and_tr
 // below is still every page's CURRENT body.
 const marketingV2 = readMigration("20260923001000_marketing_preferences_v2.sql");
 
+// Phase 8 Task 3: Your Data Protection Rights v2 (20260924002000), same exact-
+// replacement shape. Applied here for the same reason.
+const dsrV2 = readMigration("20260924002000_data_subject_rights_v2.sql");
+
 function currentBodies(): Map<string, string> {
   const current = seedBodies();
   for (const [slug, body] of correctedBodies()) current.set(slug, body);
   for (const [slug, body] of applyCorrections(consistency, current, "20260922006000")) current.set(slug, body);
   for (const [slug, body] of applyCorrections(marketingV2, current, "20260923001000")) current.set(slug, body);
+  for (const [slug, body] of applyCorrections(dsrV2, current, "20260924002000")) current.set(slug, body);
   return current;
 }
 
@@ -373,6 +381,69 @@ describe("Task 2: Marketing and Communications Preferences version 2", () => {
     expect(marketingV2).not.toMatch(/mailto:/i);
     expect(marketingV2).not.toMatch(/set\s+counsel_review|counsel_reviewer\s*=|counsel_review_recorded_by\s*=/);
     expect(marketingV2).toMatch(/set status = 'published'/);
+  });
+});
+
+// ===========================================================================
+// PHASE 8 TASK 3: DATA SUBJECT RIGHTS v2 DESCRIBES THE WORKFLOW THAT EXISTS
+// ===========================================================================
+describe("Task 3: Your Data Protection Rights version 2", () => {
+  const before = new Map([
+    ...seedBodies(),
+    ...correctedBodies(),
+    ...applyCorrections(consistency, new Map([...seedBodies(), ...correctedBodies()]), "20260922006000"),
+    ...applyCorrections(marketingV2, new Map([...seedBodies(), ...correctedBodies()]), "20260923001000"),
+  ]);
+  const corrected = applyCorrections(dsrV2, before, "20260924002000");
+  const body = corrected.get("data-subject-rights") ?? "";
+
+  it("20260924002000 corrects exactly the data-subject-rights page", () => {
+    expect([...corrected.keys()]).toEqual(["data-subject-rights"]);
+    expect(body).not.toBe(before.get("data-subject-rights"));
+  });
+
+  it("passes the editor's own save-time validation", () => {
+    const result = validateDraft("data-subject-rights", {
+      title: "Your Data Protection Rights",
+      body,
+      effectiveDate: "2026-09-24",
+    });
+    expect(result.ok ? {} : result.fieldErrors).toEqual({});
+  });
+
+  it("DENOMINATOR: version 1 said the form was still being built", () => {
+    expect(before.get("data-subject-rights")).toContain("A self-service request form is being built.");
+  });
+
+  it("names the real form, the email route for someone with no account, and what is recorded", () => {
+    expect(body).not.toContain("A self-service request form is being built.");
+    expect(body).toContain("[your data protection requests](/account/data-requests)");
+    expect(body).toMatch(/Being signed in is how we know the request is yours/);
+    expect(body).toMatch(/If you do not have a GetSetPaid account, or you cannot sign in/);
+    // The intake limit is stated WITH the unlimited alternative beside it, or
+    // the sentence would read as "we can refuse to take your request".
+    expect(body).toMatch(/limited to ten requests a day/);
+    expect(body).toMatch(/email is never limited/);
+    expect(body).toMatch(/never copied into our security log/);
+    expect(body).toMatch(/withdraw a request at any time/);
+  });
+
+  it("keeps the Q132 counsel gap: shipping the routing does not settle the law", () => {
+    expect(body).toContain(
+      "[Counsel to confirm: the controller and processor characterisation above.]",
+    );
+    expect(body).toMatch(/we pass it to that organisation and record that we did/);
+  });
+
+  it("still keeps the 30-day promise the database enforces", () => {
+    expect(body).toMatch(/within 30 days/);
+  });
+
+  it("commits no email address and records no counsel review", () => {
+    expect(dsrV2).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/);
+    expect(dsrV2).not.toMatch(/mailto:/i);
+    expect(dsrV2).not.toMatch(/set\s+counsel_review|counsel_reviewer\s*=|counsel_review_recorded_by\s*=/);
+    expect(dsrV2).toMatch(/set status = 'published'/);
   });
 });
 
