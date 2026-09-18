@@ -78,6 +78,61 @@ export function parse(file: string, text: string): ts.SourceFile {
   return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, kind);
 }
 
+/**
+ * The syntax errors the parser RECOVERED from (re-review N5).
+ * `ts.createSourceFile` never throws: a file with a syntax error is parsed
+ * with recovery, so a badly broken file can be scanned and found "clean"
+ * while the scanner simply could not see the statement that was broken.
+ * Every census asserts this is empty for every file it scans.
+ */
+export function parseProblems(sf: ts.SourceFile): string[] {
+  const diagnostics =
+    (sf as ts.SourceFile & { parseDiagnostics?: readonly ts.DiagnosticWithLocation[] }).parseDiagnostics ?? [];
+  return diagnostics.map((d) => {
+    const { line, character } = sf.getLineAndCharacterOfPosition(d.start);
+    return `${line + 1}:${character + 1} ${ts.flattenDiagnosticMessageText(d.messageText, " ")}`;
+  });
+}
+
+/** The directives (`"use client"`, `"use server"`) at the top of a file. */
+export function directives(sf: ts.SourceFile): string[] {
+  const out: string[] = [];
+  for (const statement of sf.statements) {
+    if (
+      !ts.isExpressionStatement(statement) ||
+      !(ts.isStringLiteral(statement.expression) || ts.isNoSubstitutionTemplateLiteral(statement.expression))
+    ) {
+      return out;
+    }
+    out.push(statement.expression.text);
+  }
+  return out;
+}
+
+export const isClientModule = (sf: ts.SourceFile): boolean => directives(sf).includes("use client");
+/**
+ * A `"use server"` module is a BOUNDARY, not a bundle edge: a client component
+ * that imports one gets an RPC stub, and nothing the action module imports is
+ * compiled into the browser. So a reachability walk from a client component
+ * stops here.
+ */
+export const isServerActionModule = (sf: ts.SourceFile): boolean => directives(sf).includes("use server");
+
+/**
+ * True when the file's first statements include a bare `import "server-only"`
+ * (re-review N6). Read from the parsed file, not matched with a regex: a
+ * regex matches the same line inside a block comment, which imports nothing.
+ */
+export function importsServerOnly(sf: ts.SourceFile): boolean {
+  return sf.statements.some(
+    (s) =>
+      ts.isImportDeclaration(s) &&
+      !s.importClause &&
+      ts.isStringLiteral(s.moduleSpecifier) &&
+      s.moduleSpecifier.text === "server-only",
+  );
+}
+
 /** Strips parentheses, `await`, `!`, `as`, `satisfies` and `<T>` casts. */
 export function unwrap(e: ts.Expression): ts.Expression {
   let cur = e;

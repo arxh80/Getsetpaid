@@ -4,7 +4,9 @@ import {
   constantString,
   lineOf,
   moduleReferences,
+  namesModule,
   parse,
+  resolveSpecifier,
   snippet,
   unwrap,
 } from "../support/app-source";
@@ -22,7 +24,10 @@ import {
 //     reached through a member called `cookies` (`res.cookies`,
 //     `request.cookies`); the Cookie Store API (`cookieStore`,
 //     `window.cookieStore`); and any variable ASSIGNED one of those, to any
-//     depth of aliasing;
+//     depth of aliasing. A `cookies` RE-EXPORTED by another module in the
+//     scanned set is followed across modules, under any alias and through
+//     `export *` chains, when the scan is given the whole set
+//     (`collectCookieReExports`, re-review N1);
 //   * a cookie store that ESCAPES -- passed to a function, returned, put in an
 //     object, destructured for anything but its read methods
 //     (`const { set } = await cookies()`), a write method taken without being
@@ -30,7 +35,16 @@ import {
 //     what happens to it next is not visible here;
 //   * next/headers' `cookies` function itself escaping as a value;
 //   * an assignment to any member named `cookie` (`document.cookie = ...`,
-//     `d["cookie"] += ...`, an aliased `document`);
+//     `d["cookie"] += ...`, an aliased `document`), INCLUDING as a
+//     destructuring or `for…of` target (`[document.cookie] = [v]`,
+//     `({ a: document.cookie } = o)`, `for (document.cookie of list)`);
+//   * `Object.assign` / `Object.defineProperty` / `Object.defineProperties` /
+//     `Reflect.set` / `Reflect.defineProperty` that write onto `document` (or
+//     an alias of it), or that name a `cookie` property on anything;
+//   * a HEADER NAME that is not a constant, where headers are written:
+//     `res.headers.set(name, v)`, `headers.append(name, v)`, `new Headers`
+//     and a `headers:` initialiser built from computed keys or pairs -- a
+//     name assembled at runtime can be `Set-Cookie` (re-review N1);
 //   * any constant string (literals, `"Set-" + "Cookie"`, constant templates,
 //     JSX attribute values such as `httpEquiv="set-cookie"`) containing
 //     `set-cookie`;
@@ -59,8 +73,14 @@ import {
 //     that is not constant;
 //   * `sendBeacon`, `new Image`, `window.open` / `open(`, an assignment to a
 //     `src` member, `innerHTML` / `outerHTML` / `srcdoc` assignment,
-//     `insertAdjacentHTML`, `document.write`, `eval`, `new Function`,
+//     `insertAdjacentHTML`, `document.write`, `eval`, `Function` with OR
+//     without `new` (and either of them taken as a value: `const F = Function`),
 //     `importScripts`;
+//   * `setTimeout` / `setInterval` whose first argument is not a function
+//     WRITTEN THERE (a function literal, or a name this file binds to one) --
+//     a string, a template, a concatenation, an imported name or anything
+//     computed is a finding, because the string form of a timer evaluates
+//     code (re-review N1);
 //   * fetch / XMLHttpRequest.open / WebSocket / EventSource / Worker /
 //     SharedWorker whose URL argument is a constant absolute URL (a server
 //     call is declared as such, and must live in a `server-only` module).
@@ -70,9 +90,11 @@ import {
 //
 // WHAT IT CANNOT SEE, stated so nobody reads more into a green run:
 //   * a store reached through a value this file did not create (a parameter,
-//     a property of an imported object other than `cookies`/`cookieStore`),
-//     a dynamically built global name that is not constant, `Reflect` /
-//     `Object.defineProperty` on `document`;
+//     a property of an imported object other than a `cookies` this scan
+//     followed), or a dynamically built global name that is not constant;
+//   * a cookie written through a member whose name is computed from data
+//     (`document[nameFromServer] = ...` IS flagged as a computed write on a
+//     global; `obj[n] = ...` on an unknown object is not);
 //   * anything a dependency does at runtime (the RUNTIME_DEPENDENCIES
 //     declaration is a claim), and anything injected outside the repository.
 // Those are what tests/e2e/storage-census.spec.ts exists for -- and that runs
@@ -184,6 +206,39 @@ function isValueIdentifier(id: ts.Identifier): boolean {
   return !isInTypePosition(id);
 }
 
+/**
+ * Is this node in a DESTRUCTURING position -- an element of an array or object
+ * literal that is itself being assigned to, or the target of `for…of` /
+ * `for…in`? `[document.cookie] = [v]`, `({ a: document.cookie } = o)` and
+ * `for (document.cookie of list)` all write, and all were invisible before
+ * (re-review N1).
+ */
+function isDestructuringTarget(n: ts.Node): boolean {
+  let cur = n;
+  for (let depth = 0; depth < 20; depth++) {
+    const p = cur.parent;
+    if (!p) return false;
+    if (ts.isParenthesizedExpression(p) || ts.isNonNullExpression(p) || ts.isSpreadElement(p) || ts.isSpreadAssignment(p)) {
+      cur = p;
+      continue;
+    }
+    if (ts.isPropertyAssignment(p) && p.initializer === cur) {
+      cur = p;
+      continue;
+    }
+    if (ts.isArrayLiteralExpression(p) || ts.isObjectLiteralExpression(p)) {
+      cur = p;
+      continue;
+    }
+    if ((ts.isForOfStatement(p) || ts.isForInStatement(p)) && p.initializer === cur) return true;
+    if (ts.isBinaryExpression(p) && p.operatorToken.kind === ts.SyntaxKind.EqualsToken && p.left === cur) {
+      return ts.isArrayLiteralExpression(cur) || ts.isObjectLiteralExpression(cur);
+    }
+    return false;
+  }
+  return false;
+}
+
 function isAssignmentTarget(n: ts.Node): boolean {
   let cur = n;
   while (ts.isParenthesizedExpression(cur.parent) || ts.isNonNullExpression(cur.parent)) cur = cur.parent;
@@ -196,10 +251,125 @@ function isAssignmentTarget(n: ts.Node): boolean {
     (p.operator === ts.SyntaxKind.PlusPlusToken || p.operator === ts.SyntaxKind.MinusMinusToken)) {
     return true;
   }
-  return false;
+  if ((ts.isForOfStatement(p) || ts.isForInStatement(p)) && p.initializer === cur) return true;
+  return isDestructuringTarget(cur);
 }
 
-export function scanSource(file: string, raw: string): Site[] {
+/** What a module re-exports of next/headers' `cookies` (re-review N1). */
+export interface CookieExports {
+  /** Exported names that ARE the cookies function. */
+  fns: Set<string>;
+  /** Exported names that are a namespace whose `cookies` member is it. */
+  namespaces: Set<string>;
+}
+
+export interface ScanContext {
+  /** Repo-relative module path (no extension) -> what it re-exports. */
+  cookieExports?: ReadonlyMap<string, CookieExports>;
+}
+
+const moduleKey = (file: string): string => file.replace(/\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/, "").replace(/\/index$/, "");
+
+/**
+ * Follows next/headers' `cookies` through re-exports, across the whole scanned
+ * set (re-review N1: `export { cookies as jar } from "next/headers"` in one
+ * module and `(await jar()).set(...)` in another was invisible). Runs to a
+ * fixpoint, so a barrel of a barrel is followed too.
+ */
+export function collectCookieReExports(files: readonly { file: string; text: string }[]): Map<string, CookieExports> {
+  const parsed = files.map(({ file, text }) => ({ file, key: moduleKey(file), sf: parse(file, text) }));
+  const out = new Map<string, CookieExports>();
+  for (const { key } of parsed) out.set(key, { fns: new Set(), namespaces: new Set() });
+
+  const resolveTo = (from: string, specifier: string | null): CookieExports | "next/headers" | null => {
+    if (specifier === null) return null;
+    if (specifier === "next/headers") return "next/headers";
+    const target = resolveSpecifier(from, specifier);
+    if (target === null) return null;
+    for (const [key, value] of out) if (namesModule(target, key)) return value;
+    return null;
+  };
+
+  let changed = true;
+  for (let round = 0; changed && round < 10; round++) {
+    changed = false;
+    for (const { file, key, sf } of parsed) {
+      const mine = out.get(key)!;
+      const add = (set: Set<string>, name: string) => {
+        if (!set.has(name)) {
+          set.add(name);
+          changed = true;
+        }
+      };
+      // Local names that are the cookies function, or a next/headers namespace.
+      const localFns = new Set<string>();
+      const localNamespaces = new Set<string>();
+      const visit = (n: ts.Node): void => {
+        if (ts.isImportDeclaration(n) && n.importClause) {
+          const source = resolveTo(file, constantString(n.moduleSpecifier as ts.Expression));
+          const c = n.importClause;
+          if (source !== null && c.namedBindings && ts.isNamespaceImport(c.namedBindings)) {
+            if (source === "next/headers") localNamespaces.add(c.namedBindings.name.text);
+          } else if (source !== null && c.namedBindings && ts.isNamedImports(c.namedBindings)) {
+            for (const el of c.namedBindings.elements) {
+              const imported = (el.propertyName ?? el.name).text;
+              if (source === "next/headers" ? imported === "cookies" : source.fns.has(imported)) {
+                localFns.add(el.name.text);
+              }
+              if (source !== "next/headers" && source.namespaces.has(imported)) localNamespaces.add(el.name.text);
+            }
+          }
+        }
+        if (ts.isExportDeclaration(n)) {
+          const source = n.moduleSpecifier
+            ? resolveTo(file, constantString(n.moduleSpecifier as ts.Expression))
+            : null;
+          if (n.exportClause && ts.isNamespaceExport(n.exportClause)) {
+            // `export * as h from "next/headers"`
+            if (source === "next/headers") add(mine.namespaces, n.exportClause.name.text);
+          } else if (n.exportClause && ts.isNamedExports(n.exportClause)) {
+            for (const el of n.exportClause.elements) {
+              const imported = (el.propertyName ?? el.name).text;
+              if (source === null) {
+                // `export { jar }` of a local binding.
+                if (localFns.has(imported)) add(mine.fns, el.name.text);
+                if (localNamespaces.has(imported)) add(mine.namespaces, el.name.text);
+              } else if (source === "next/headers") {
+                if (imported === "cookies") add(mine.fns, el.name.text);
+              } else {
+                if (source.fns.has(imported)) add(mine.fns, el.name.text);
+                if (source.namespaces.has(imported)) add(mine.namespaces, el.name.text);
+              }
+            }
+          } else if (!n.exportClause && source !== null) {
+            // `export * from "..."`
+            if (source === "next/headers") add(mine.fns, "cookies");
+            else {
+              for (const name of source.fns) add(mine.fns, name);
+              for (const name of source.namespaces) add(mine.namespaces, name);
+            }
+          }
+        }
+        // `export const jar = cookies;`
+        if (
+          ts.isVariableStatement(n) &&
+          n.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+        ) {
+          for (const d of n.declarationList.declarations) {
+            if (!d.initializer || !ts.isIdentifier(d.name)) continue;
+            const init = unwrap(d.initializer);
+            if (ts.isIdentifier(init) && localFns.has(init.text)) add(mine.fns, d.name.text);
+          }
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(sf);
+    }
+  }
+  return out;
+}
+
+export function scanSource(file: string, raw: string, context: ScanContext = {}): Site[] {
   const sf = parse(file, raw);
   const consts = constDeclarations(sf);
   const refs = moduleReferences(sf, consts);
@@ -220,12 +390,35 @@ export function scanSource(file: string, raw: string): Site[] {
   const headersNamespaces = new Set<string>(); // `import * as h from "next/headers"`
   const supabaseFactories = new Set<string>();
   const supabaseNamespaces = new Set<string>();
+  /** `barrel.jar` where `barrel` is a namespace import of a module re-exporting cookies. */
+  const namespaceMembers: { local: string; member: string }[] = [];
   for (const ref of refs) {
     const spec = ref.specifier;
     if (spec === "next/headers") {
       for (const b of ref.bindings) {
         if (b.imported === "cookies") cookiesFunctions.add(b.local);
         if (b.imported === "*" || b.imported === "default") headersNamespaces.add(b.local);
+      }
+    }
+    // A `cookies` re-exported by another scanned module, under any alias
+    // (re-review N1). The map is built by collectCookieReExports over the
+    // whole set; without it this file is read alone, as before.
+    if (spec !== null && context.cookieExports) {
+      const target = resolveSpecifier(file, spec);
+      if (target !== null) {
+        for (const [key, exported] of context.cookieExports) {
+          if (!namesModule(target, key)) continue;
+          for (const b of ref.bindings) {
+            if (exported.fns.has(b.imported)) cookiesFunctions.add(b.local);
+            if (exported.namespaces.has(b.imported)) headersNamespaces.add(b.local);
+            // `import * as barrel from "./barrel"` -- every re-exported name
+            // on that namespace is the cookies function.
+            if (b.imported === "*" || b.imported === "default") {
+              for (const name of exported.fns) namespaceMembers.push({ local: b.local, member: name });
+              if (exported.namespaces.size > 0) headersNamespaces.add(b.local);
+            }
+          }
+        }
       }
     }
     if (spec === "@supabase/ssr" || spec === "@supabase/supabase-js") {
@@ -256,11 +449,23 @@ export function scanSource(file: string, raw: string): Site[] {
     const callee = unwrap(x.expression);
     if (ts.isIdentifier(callee)) return cookiesFunctions.has(callee.text);
     const m = memberName(callee, consts);
-    if (m && m.name === "cookies") {
+    if (m && m.name !== null) {
       const obj = unwrap((callee as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression);
-      return ts.isIdentifier(obj) && headersNamespaces.has(obj.text);
+      if (!ts.isIdentifier(obj)) return false;
+      if (m.name === "cookies" && headersNamespaces.has(obj.text)) return true;
+      return namespaceMembers.some((x) => x.local === obj.text && x.member === m.name);
     }
     return false;
+  };
+
+  /** A namespace member that is the cookies FUNCTION, not a store. */
+  const isNamespacedCookiesFunction = (x: ts.Expression): boolean => {
+    const m = memberName(x, consts);
+    if (!m || m.name === null) return false;
+    const obj = unwrap((x as ts.PropertyAccessExpression).expression);
+    if (!ts.isIdentifier(obj)) return false;
+    if (m.name === "cookies" && headersNamespaces.has(obj.text)) return true;
+    return namespaceMembers.some((n) => n.local === obj.text && n.member === m.name);
   };
 
   const storeKind = (e: ts.Expression): StoreKind | null => {
@@ -275,8 +480,7 @@ export function scanSource(file: string, raw: string): Site[] {
       if (m.name !== null && WEB_STORAGE_NAMES.has(m.name)) return "web";
       if (m.name !== null && COOKIE_MEMBER_NAMES.has(m.name)) {
         // `h.cookies` on a next/headers namespace is the FUNCTION, not a store.
-        const obj = unwrap((x as ts.PropertyAccessExpression).expression);
-        if (m.name === "cookies" && ts.isIdentifier(obj) && headersNamespaces.has(obj.text)) return null;
+        if (isNamespacedCookiesFunction(x)) return null;
         return "cookie";
       }
       return null;
@@ -335,6 +539,105 @@ export function scanSource(file: string, raw: string): Site[] {
   while (rounds++ < 10 && collectAliases(sf)) {
     // until no new alias appears
   }
+
+  // ---- `document` under another name, for the Object/Reflect writes --------
+  const documentAliases = new Set<string>();
+  const isDocumentExpression = (e: ts.Expression): boolean => {
+    const x = unwrap(e);
+    if (ts.isIdentifier(x)) return x.text === "document" || documentAliases.has(x.text);
+    const m = memberName(x, consts);
+    return m?.name === "document";
+  };
+  const collectDocumentAliases = (n: ts.Node): boolean => {
+    let changed = false;
+    const visit = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && node.initializer && ts.isIdentifier(node.name)) {
+        if (isDocumentExpression(node.initializer) && !documentAliases.has(node.name.text)) {
+          documentAliases.add(node.name.text);
+          changed = true;
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(n);
+    return changed;
+  };
+  for (let r = 0; r < 10 && collectDocumentAliases(sf); r++) {
+    // until no new alias appears
+  }
+
+  /**
+   * A first argument that is a function WRITTEN IN THIS FILE: a function
+   * literal, or a name this file binds to one. Anything else -- a string, a
+   * template, a concatenation, an imported name, a computed value -- makes a
+   * `setTimeout`/`setInterval` a finding, because the string form evaluates
+   * code (re-review N1).
+   */
+  const localFunctionNames = new Set<string>();
+  {
+    const visit = (n: ts.Node): void => {
+      if (ts.isFunctionDeclaration(n) && n.name) localFunctionNames.add(n.name.text);
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+        let init = unwrap(n.initializer);
+        // `useCallback(() => {}, [])` / `useMemo(() => fn, [])`
+        if (ts.isCallExpression(init) && init.arguments.length > 0) {
+          const callee = unwrap(init.expression);
+          const name = ts.isIdentifier(callee) ? callee.text : memberName(callee, consts)?.name;
+          if (name && /^(?:useCallback|useMemo|useEvent)$/.test(name)) init = unwrap(init.arguments[0]);
+        }
+        if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) localFunctionNames.add(n.name.text);
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+  }
+  const isFunctionArgument = (e: ts.Expression | undefined): boolean => {
+    if (!e) return true; // no argument at all: nothing is evaluated as code
+    const x = unwrap(e);
+    if (ts.isArrowFunction(x) || ts.isFunctionExpression(x)) return true;
+    if (ts.isIdentifier(x)) return localFunctionNames.has(x.text);
+    // `fn.bind(this)` / `(0, fn)`
+    if (ts.isCallExpression(x)) {
+      const callee = unwrap(x.expression);
+      if (memberName(callee, consts)?.name === "bind") {
+        const target = unwrap((callee as ts.PropertyAccessExpression).expression);
+        return ts.isIdentifier(target) ? localFunctionNames.has(target.text) : false;
+      }
+      return false;
+    }
+    return false;
+  };
+
+  /** A header name that is not a constant string can be `Set-Cookie`. */
+  const HEADER_WRITE_METHODS = new Set(["set", "append"]);
+  const isHeadersExpression = (e: ts.Expression): boolean => {
+    const x = unwrap(e);
+    if (ts.isIdentifier(x)) return /headers$/i.test(x.text);
+    if (ts.isNewExpression(x)) {
+      const callee = unwrap(x.expression);
+      return ts.isIdentifier(callee) && callee.text === "Headers";
+    }
+    const m = memberName(x, consts);
+    return m?.name !== null && m?.name !== undefined && /^headers$/i.test(m.name);
+  };
+  /** The header-name expressions in a `new Headers(...)` argument or a `headers:` value. */
+  const headerNameExpressions = (init: ts.Expression | undefined): ts.Expression[] => {
+    if (!init) return [];
+    const x = unwrap(init);
+    const out: ts.Expression[] = [];
+    if (ts.isObjectLiteralExpression(x)) {
+      for (const p of x.properties) {
+        if (ts.isPropertyAssignment(p) && ts.isComputedPropertyName(p.name)) out.push(p.name.expression);
+      }
+    }
+    if (ts.isArrayLiteralExpression(x)) {
+      for (const el of x.elements) {
+        const pair = unwrap(el);
+        if (ts.isArrayLiteralExpression(pair) && pair.elements.length > 0) out.push(pair.elements[0]);
+      }
+    }
+    return out;
+  };
 
   /** Is `n` the start of a store chain (not a wrapper around one)? */
   const isStoreOrigin = (n: ts.Node): StoreKind | null => {
@@ -602,8 +905,50 @@ export function scanSource(file: string, raw: string): Site[] {
         }
         if (calleeName === "open" && onGlobal) push("third-party", n);
         if (calleeName === "eval" && onGlobal) push("third-party", n);
-        if ((calleeName === "setTimeout" || calleeName === "setInterval") && constantString(args[0], consts) !== null) {
-          push("third-party", n);
+        // `Function(code)` without `new` is `new Function(code)` (re-review N1).
+        if (calleeName === "Function" && onGlobal) push("third-party", n);
+        // A timer whose first argument is not a function written here.
+        if ((calleeName === "setTimeout" || calleeName === "setInterval") && !isFunctionArgument(args[0])) {
+          push("third-party", n, args[0] ? args[0].getText(sf) : null);
+        }
+        // Writes onto `document` (or an alias), and any `cookie` property
+        // named through Object/Reflect (re-review N1).
+        if (
+          calleeObj !== null &&
+          ts.isIdentifier(calleeObj) &&
+          (calleeObj.text === "Object" || calleeObj.text === "Reflect") &&
+          calleeName !== null &&
+          ["assign", "defineProperty", "defineProperties", "set", "setPrototypeOf"].includes(calleeName)
+        ) {
+          const target = args[0];
+          const namesCookie =
+            (calleeName === "defineProperty" || calleeName === "set") && constantString(args[1], consts) === "cookie";
+          const carriesCookie = args
+            .slice(1)
+            .some(
+              (a) =>
+                ts.isObjectLiteralExpression(unwrap(a)) &&
+                (unwrap(a) as ts.ObjectLiteralExpression).properties.some((p) => {
+                  const name = p.name;
+                  if (!name) return false;
+                  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text === "cookie";
+                  return ts.isComputedPropertyName(name) && constantString(name.expression, consts) !== "cookie"
+                    ? false
+                    : true;
+                }),
+            );
+          if ((target && isDocumentExpression(target)) || namesCookie || carriesCookie) push("cookie-write", n);
+        }
+        // A header written under a name that is not a constant.
+        if (
+          calleeName !== null &&
+          HEADER_WRITE_METHODS.has(calleeName) &&
+          calleeObj !== null &&
+          isHeadersExpression(calleeObj as ts.Expression) &&
+          args.length > 0 &&
+          constantString(args[0], consts) === null
+        ) {
+          push("cookie-write", n, args[0].getText(sf));
         }
         if (calleeName === "open" && calleeObj && !onGlobal) {
           // XMLHttpRequest.prototype.open(method, url)
@@ -613,6 +958,12 @@ export function scanSource(file: string, raw: string): Site[] {
       } else {
         if (calleeName === "Image" || calleeName === "Audio") push("third-party", n);
         if (calleeName === "Function") push("third-party", n);
+        // `new Headers([[name, v]])` / `new Headers({ [name]: v })`.
+        if (calleeName === "Headers") {
+          for (const name of headerNameExpressions(args[0])) {
+            if (constantString(name, consts) === null) push("cookie-write", n, name.getText(sf));
+          }
+        }
       }
       if (calleeName && NETWORK_CALLS.has(calleeName)) {
         const url = constantString(args[0], consts);
@@ -620,6 +971,24 @@ export function scanSource(file: string, raw: string): Site[] {
           push("third-party", n, args[0] ? args[0].getText(sf) : null);
         }
       }
+    }
+
+    // A `headers:` initialiser whose names are computed (re-review N1).
+    if (ts.isPropertyAssignment(n) && !ts.isComputedPropertyName(n.name) && n.name.getText(sf).replace(/["']/g, "") === "headers") {
+      for (const name of headerNameExpressions(n.initializer)) {
+        if (constantString(name, consts) === null) push("cookie-write", n, name.getText(sf));
+      }
+    }
+
+    // `Function` / `eval` taken as a value rather than called: `const F =
+    // Function; F(code)` evaluates code just the same (re-review N1).
+    if (ts.isIdentifier(n) && (n.text === "Function" || n.text === "eval") && isValueIdentifier(n)) {
+      let cur: ts.Node = n;
+      while (ts.isParenthesizedExpression(cur.parent) || ts.isNonNullExpression(cur.parent)) cur = cur.parent;
+      const p = cur.parent;
+      const isCallee = (ts.isCallExpression(p) || ts.isNewExpression(p)) && p.expression === cur;
+      const isMemberBase = ts.isPropertyAccessExpression(p) || ts.isElementAccessExpression(p);
+      if (!isCallee && !isMemberBase) push("third-party", n);
     }
 
     // The adapter's `setAll` declared as a method or property.

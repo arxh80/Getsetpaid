@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { BROWSER_STORAGE } from "@/lib/legal/storage-inventory";
 import { CURRENT_ORG_COOKIE } from "@/lib/org/current-org";
@@ -11,12 +12,17 @@ import {
   REPO_ROOT as ROOT,
   appSourceFiles,
   existingEntryPoints,
+  importsServerOnly,
+  isClientModule,
+  isServerActionModule,
   moduleReferences,
+  namesModule,
   parse,
+  parseProblems,
   relPath,
   resolveSpecifier,
 } from "../support/app-source";
-import { scanSource, type Site, type SiteKind } from "./storage-scanner";
+import { collectCookieReExports, scanSource, type Site, type SiteKind } from "./storage-scanner";
 
 // ===========================================================================
 // PHASE 8 TASK 2 -- THE STORAGE CENSUS. NO COOKIE BANNER (Q129), SO THIS IS
@@ -60,8 +66,17 @@ import { scanSource, type Site, type SiteKind } from "./storage-scanner";
 // deployment setting (SECURITY.md § 15).
 // ===========================================================================
 
+/** Every scanned file, read once: the scan, the parse check and the graph all use it. */
+function readTree(): { file: string; text: string }[] {
+  return appSourceFiles().map((f) => ({ file: relPath(f), text: readFileSync(f, "utf8") }));
+}
+
 function scanTree(): Site[] {
-  return appSourceFiles().flatMap((f) => scanSource(relPath(f), readFileSync(f, "utf8")));
+  const tree = readTree();
+  // The whole set, so a `cookies` re-exported by one module and called in
+  // another is followed across the two (re-review N1).
+  const cookieExports = collectCookieReExports(tree);
+  return tree.flatMap(({ file, text }) => scanSource(file, text, { cookieExports }));
 }
 
 // ===========================================================================
@@ -115,12 +130,14 @@ const DECLARED: readonly DeclaredSite[] = [
   {
     file: "lib/supabase/middleware.ts",
     kind: "cookie-write",
-    count: 4,
+    count: 5,
     covers: SUPABASE_ITEM,
-    keys: ["name", "name", "cookie"],
+    keys: ["name", "name", "key", "cookie"],
     why:
-      "the session refresh: setAll() onto the request and the response, and copyCookies() moving " +
-      "those same cookies onto a redirect",
+      "the session refresh: setAll() onto the request and the response, the loop that copies the " +
+      "cache headers Supabase hands us alongside them (a header name from a variable -- it is this " +
+      "loop's own `key`, and the census flags any non-constant header name because one could be " +
+      "Set-Cookie, re-review N1), and copyCookies() moving those same cookies onto a redirect",
   },
   {
     file: "lib/supabase/middleware.ts",
@@ -252,6 +269,26 @@ describe("the scanned file set is derived, so a new root file or folder cannot b
     }
   });
 
+  // re-review N5: ts.createSourceFile NEVER THROWS. A file with a syntax
+  // error is parsed with recovery, and the scan of it can quietly miss the
+  // broken statement. Nothing asserted the parse was clean, so a scan of
+  // rubble read as a scan of nothing.
+  it("every scanned file parses with no syntax errors, so no scan is a scan of rubble", () => {
+    const broken: string[] = [];
+    for (const { file, text } of readTree()) {
+      const problems = parseProblems(parse(file, text));
+      if (problems.length > 0) broken.push(`${file}: ${problems.slice(0, 3).join("; ")}`);
+    }
+    expect(broken, "a scanned file does not parse; the storage census cannot see what is in it").toEqual([]);
+  });
+
+  it("FIXTURE (N5): a file with a syntax error IS reported, and the scanner would have missed the write in it", () => {
+    const source = `function a( { localStorage.setItem("gsp:hidden", "1"); }`;
+    const sf = parse("broken.ts", source);
+    expect(parseProblems(sf).length).toBeGreaterThan(0);
+    expect(parseProblems(parse("fine.ts", `localStorage.setItem("k", "1");`))).toEqual([]);
+  });
+
   it("no scanned file imports code from a place the scan skips", () => {
     const leaks: string[] = [];
     let references = 0;
@@ -332,15 +369,90 @@ describe("the storage census (Phase 8 Task 2, Q129)", () => {
     expect(unmatched, "a literal cookie/storage key that no inventory item of its kind covers").toEqual([]);
   });
 
-  it("a server-only declaration is in a module that cannot reach a browser bundle", () => {
+  // WHERE THE ENFORCEMENT ACTUALLY IS (re-review N6). The `server-only`
+  // package throws when a Client Component graph imports it, and that happens
+  // when NEXT COMPILES the module -- `next dev` or `next build`, neither of
+  // which CI runs. So these two tests are what stands in for it here: the
+  // import is real (read from the parsed file, so the same line inside a
+  // block comment is not it), and no client component reaches one of those
+  // modules through any chain of repo imports. A client component that got
+  // one of these into a browser bundle would fail the build; this fails the
+  // unit suite first, and names the chain.
+  it("a server-only declaration is in a module that really imports \"server-only\" (parsed, not matched)", () => {
     const serverOnly = DECLARED.filter((x) => x.covers === null);
     expect(serverOnly.length).toBeGreaterThan(0);
     for (const d of serverOnly) {
-      const text = readFileSync(join(ROOT, d.file), "utf8");
-      expect(text, `${d.file} declares a server-only site but does not import "server-only"`).toMatch(
-        /^import "server-only";$/m,
-      );
+      const sf = parse(d.file, readFileSync(join(ROOT, d.file), "utf8"));
+      expect(
+        importsServerOnly(sf),
+        `${d.file} declares a server-only site but has no top-level \`import "server-only";\``,
+      ).toBe(true);
     }
+  });
+
+  it("no client component, and nothing a client component imports, reaches a server-only module", () => {
+    const tree = readTree();
+    const byModule = new Map(tree.map((f) => [f.file, f] as const));
+    const parsed = new Map(tree.map((f) => [f.file, parse(f.file, f.text)] as const));
+    const resolveToFile = (from: string, specifier: string): string | null => {
+      const target = resolveSpecifier(from, specifier);
+      if (target === null) return null;
+      for (const file of byModule.keys()) if (namesModule(target, file)) return file;
+      return null;
+    };
+    const serverOnlyModules = DECLARED.filter((d) => d.covers === null).map((d) => d.file);
+    expect(serverOnlyModules.length).toBe(4);
+
+    const clients = tree.filter((f) => isClientModule(parsed.get(f.file)!)).map((f) => f.file);
+    expect(clients.length, "DENOMINATOR: there are client components to walk").toBeGreaterThan(10);
+
+    const chains: string[] = [];
+    const boundaries: string[] = [];
+    for (const start of clients) {
+      const seen = new Set<string>([start]);
+      const queue: { file: string; path: string[] }[] = [{ file: start, path: [start] }];
+      while (queue.length > 0) {
+        const { file, path } = queue.shift()!;
+        if (serverOnlyModules.includes(file)) {
+          chains.push(path.join(" -> "));
+          continue;
+        }
+        // A "use server" module is an RPC boundary: the client gets a stub,
+        // and what the action imports never enters a browser bundle.
+        if (file !== start && isServerActionModule(parsed.get(file)!)) {
+          boundaries.push(path.join(" -> "));
+          continue;
+        }
+        for (const ref of moduleReferences(parsed.get(file)!)) {
+          if (ref.specifier === null) continue;
+          // `import type` is erased before bundling.
+          if (ts.isImportDeclaration(ref.node) && ref.node.importClause?.isTypeOnly) continue;
+          const next = resolveToFile(file, ref.specifier);
+          if (next === null || seen.has(next)) continue;
+          seen.add(next);
+          queue.push({ file: next, path: [...path, next] });
+        }
+      }
+    }
+    expect(
+      chains,
+      'a "use client" module reaches a module that imports "server-only" -- the service-role key or ' +
+        "the provider credential it holds would be compiled into a browser bundle (the build refuses " +
+        "this too, but nothing in CI runs a build)",
+    ).toEqual([]);
+    // DENOMINATOR: the walk really did reach the action modules that import
+    // them, and stopped at the RPC boundary rather than at nothing.
+    expect(boundaries.length, "the walk reached a `use server` module").toBeGreaterThan(3);
+    expect(boundaries.some((b) => b.includes("lib/org/actions.ts"))).toBe(true);
+  });
+
+  it("FIXTURE (N6): the server-only import is read from the parse, so a commented-out one does not count", () => {
+    expect(importsServerOnly(parse("a.ts", `import "server-only";\nexport const x = 1;`))).toBe(true);
+    expect(importsServerOnly(parse("b.ts", `/* import "server-only"; */\nexport const x = 1;`))).toBe(false);
+    expect(importsServerOnly(parse("c.ts", `// import "server-only";\nexport const x = 1;`))).toBe(false);
+    expect(importsServerOnly(parse("d.ts", `const s = 'import "server-only";';`))).toBe(false);
+    // A named import of the package is not the guard either.
+    expect(importsServerOnly(parse("e.ts", `import x from "server-only";`))).toBe(false);
   });
 
   it("every declared site covers a real inventory item, and each key resolves to it", () => {
@@ -549,6 +661,133 @@ describe("the census detector", () => {
       expect(kinds(source), source).toContain(kind);
     });
   }
+
+  // ---- re-review N1: shapes nobody had listed --------------------------------
+  it("N1: follows a `cookies` re-exported by another module, under an alias and through `export *`", () => {
+    const barrelShapes: [string, string][] = [
+      ["a named re-export", `export { cookies as jar } from "next/headers";`],
+      ["a star re-export", `export * from "next/headers";`],
+      ["a local re-export", `import { cookies as c } from "next/headers";\nexport { c as jar };`],
+      ["a const alias", `import { cookies } from "next/headers";\nexport const jar = cookies;`],
+    ];
+    for (const [name, barrel] of barrelShapes) {
+      const local = name === "a star re-export" ? "cookies" : "jar";
+      const tree = [
+        { file: "lib/next-headers.ts", text: barrel },
+        {
+          file: "lib/ab-test.ts",
+          text: `import { ${local} } from "./next-headers";\nexport async function ab() { (await ${local}()).set("ab_variant", "b"); }`,
+        },
+      ];
+      const cookieExports = collectCookieReExports(tree);
+      const kinds = scanSource(tree[1].file, tree[1].text, { cookieExports }).map((s) => s.kind);
+      expect(kinds, name).toContain("cookie-write");
+      // ...and without the cross-module pass it was invisible, which is the finding.
+      if (local !== "cookies") {
+        expect(scanSource(tree[1].file, tree[1].text).map((s) => s.kind), `${name} (alone)`).not.toContain(
+          "cookie-write",
+        );
+      }
+    }
+  });
+
+  it("N1: follows a re-export through a barrel of a barrel, and through a namespace import", () => {
+    const tree = [
+      { file: "lib/one.ts", text: `export { cookies as jar } from "next/headers";` },
+      { file: "lib/two.ts", text: `export * from "./one";` },
+      {
+        file: "lib/use.ts",
+        text: `import * as barrel from "./two";\nexport async function w() { (await barrel.jar()).set("x", "1"); }`,
+      },
+    ];
+    const cookieExports = collectCookieReExports(tree);
+    expect(cookieExports.get("lib/two")!.fns.has("jar")).toBe(true);
+    expect(scanSource(tree[2].file, tree[2].text, { cookieExports }).map((s) => s.kind)).toContain("cookie-write");
+  });
+
+  it("N1: sees Object.assign / Reflect writes onto document, and a `cookie` property named through them", () => {
+    const shapes = [
+      `Object.assign(document, { cookie: "_ga=1" });`,
+      `const d = document; Object.assign(d, { cookie: "_ga=1" });`,
+      `Object.assign(window.document, patch);`,
+      `Object.defineProperty(document, "cookie", { set(v) { real = v; } });`,
+      `Reflect.set(document, "cookie", "_ga=1");`,
+      `Reflect.set(target, "cookie", "_ga=1");`,
+      `Object.defineProperties(document, { cookie: descriptor });`,
+    ];
+    for (const source of shapes) expect(kinds(source, "x.ts"), source).toContain("cookie-write");
+    // An ordinary Object.assign is not a cookie write.
+    expect(kinds(`Object.assign(state, { open: true });`, "x.ts")).toEqual([]);
+  });
+
+  it("N1: sees a destructuring or for-of assignment that writes a cookie or a storage key", () => {
+    const shapes: [string, SiteKind][] = [
+      [`[document.cookie] = ["_ga=1"];`, "cookie-write"],
+      [`({ a: document.cookie } = payload);`, "cookie-write"],
+      [`for (document.cookie of values) { }`, "cookie-write"],
+      [`for (document["cookie"] in map) { }`, "cookie-write"],
+      [`[localStorage.k] = ["1"];`, "web-storage-write"],
+      [`({ v: sessionStorage.k } = payload);`, "web-storage-write"],
+      [`for (localStorage.k of values) { }`, "web-storage-write"],
+    ];
+    for (const [source, kind] of shapes) expect(kinds(source, "x.ts"), source).toContain(kind);
+    // Reading into a destructuring is not writing storage.
+    expect(kinds(`const [a] = [document.title];`, "x.ts")).toEqual([]);
+  });
+
+  it("N1: sees Function without `new`, and Function or eval taken as a value", () => {
+    for (const source of [
+      `Function("return 1")();`,
+      `globalThis.Function(code)();`,
+      `window.Function(code);`,
+      `const F = Function; F(code);`,
+      `const e = eval; e(code);`,
+      `run(Function);`,
+    ]) {
+      expect(kinds(source, "x.ts"), source).toContain("third-party");
+    }
+  });
+
+  it("N1: sees a timer whose first argument is not a function written here", () => {
+    for (const source of [
+      `setTimeout("doEvil()", 0);`,
+      "setTimeout(`${code}`, 0);",
+      `setTimeout("do" + "Evil()", 0);`,
+      `window.setInterval(codeFromServer, 1000);`,
+      `setTimeout(imported, 0);`,
+    ]) {
+      expect(kinds(source, "x.ts"), source).toContain("third-party");
+    }
+    // A function written here is not a finding -- the real tree's three timers.
+    for (const source of [
+      `window.setTimeout(() => close(), 100);`,
+      `function checkNow() {} window.setInterval(checkNow, 5000);`,
+      `const tick = () => {}; setTimeout(tick, 5);`,
+      `const cb = useCallback(() => {}, []); setTimeout(cb, 5);`,
+      `setTimeout(function () {}, 5);`,
+    ]) {
+      expect(kinds(source, "x.ts"), source).toEqual([]);
+    }
+  });
+
+  it("N1: sees a header written under a name that is not a constant", () => {
+    for (const source of [
+      `res.headers.set(["set", "cookie"].join("-"), v);`,
+      `response.headers.append(String.fromCharCode(83) + "et-Cookie", v);`,
+      `requestHeaders.set(nameFromData, v);`,
+      `new Headers([[name, v]]);`,
+      `new Headers({ [name]: v });`,
+      `return new Response(body, { headers: { [name]: v } });`,
+      `return new Response(body, { headers: [[name, v]] });`,
+    ]) {
+      expect(kinds(source, "x.ts"), source).toContain("cookie-write");
+    }
+    // A constant name is read by the string rule instead, and an ordinary
+    // constant header is not a cookie at all.
+    expect(kinds(`res.headers.set("Cache-Control", "no-store");`, "x.ts")).toEqual([]);
+    expect(kinds(`const H = "Cache-Control"; res.headers.set(H, "no-store");`, "x.ts")).toEqual([]);
+    expect(kinds(`map.set(key, value);`, "x.ts")).toEqual([]);
+  });
 
   it("sees a GA loader in a root instrumentation-client.ts, and that file is in the scanned set", () => {
     const source = [
