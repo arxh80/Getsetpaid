@@ -195,8 +195,8 @@ select rl.val('RV6c Consent grants: 10 / hour, per user (Phase 8 Task 2)',
 -- were written, exactly as designed). A ninth category appearing without a
 -- § 5 row is the drift this assertion exists to catch, in the direction the
 -- others cannot.
-select rl.val('RV7 the policy table holds exactly the eight § 5 categories',
-  $$select count(*)::text from public.rate_limit_policies$$, '8');
+select rl.val('RV7 the policy table holds exactly the nine § 5 categories',
+  $$select count(*)::text from public.rate_limit_policies$$, '9');
 -- network_discovery must never be folded into search (FOLLOW-UPS:3408-3419):
 -- its unit cost is O(platform-wide published rows), not O(tenant).
 select rl.val('RV8 network_discovery is a DISTINCT category from search',
@@ -216,8 +216,8 @@ select rl.try('RV10 ...nor INSERT a new category',
       (category, subject_scope, max_requests, window_seconds, description)
     values ('smuggled','user',1,1,'x')$$,
   'denied(42501)');
-select rl.val('RV11 the superuser CAN read the configuration, all eight rows (the health view states it)',
-  $$select count(*)::text from public.rate_limit_policies$$, '8');
+select rl.val('RV11 the superuser CAN read the configuration, all nine rows (the health view states it)',
+  $$select count(*)::text from public.rate_limit_policies$$, '9');
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -992,9 +992,14 @@ select rl.val('RD3 exactly ONE cron job exists -- the product has one scheduler'
 select rl.val('RD4 ...named incident-alert-delivery, every 10 minutes',
   $$select jobname || ' @ ' || schedule from cron.job$$,
   'incident-alert-delivery @ */10 * * * *');
-select rl.val('RD5 ...running private.deliver_incident_alerts(), and nothing else',
+-- ONE JOB STILL, and since Phase 8 Task 3 it does two things in a fixed
+-- order: raise the data subject request deadline alerts, then deliver every
+-- unnotified alert -- so an alert raised on a tick is emailed on the SAME
+-- tick. cron.schedule() is upsert-by-name, which is how that happened without
+-- a second scheduler (20260924001000).
+select rl.val('RD5 ...raising the DSR deadline alerts and then delivering, and nothing else',
   $$select command from cron.job where jobname='incident-alert-delivery'$$,
-  'select private.deliver_incident_alerts()');
+  'select private.raise_dsr_deadline_alerts(); select private.deliver_incident_alerts()');
 select rl.val('RD6 ...and it is active',
   $$select active::text from cron.job where jobname='incident-alert-delivery'$$, 'true');
 select rl.val('RD7 no client role may run the job body',
@@ -1389,8 +1394,8 @@ select rl.val('RZ3 the two suite documents are gone (not soft-deleted -- never e
 select rl.val('RZ4 ALPHA is still active and untouched',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
          :'alpha_org'), 'true');
-select rl.val('RZ5 the eight seeded policy rows (seven + Phase 8 consent_grant) are exactly as they were',
-  $$select count(*)::text from public.rate_limit_policies$$, '8');
+select rl.val('RZ5 the nine seeded policy rows (seven + Phase 8 consent_grant + data_subject_request) are exactly as they were',
+  $$select count(*)::text from public.rate_limit_policies$$, '9');
 
 \pset format aligned
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual

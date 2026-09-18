@@ -105,12 +105,32 @@ begin
   end;
 end $$;
 
+-- The outcome AS A VALUE, for the one block whose assertions are made inside a
+-- transaction that is then rolled back: a dsr.record() there would be rolled
+-- back with everything else, and the three assertions would VANISH from the
+-- report rather than fail -- which is exactly what the first run of this suite
+-- did. \gset captures a value CLIENT-side, so it survives the rollback and is
+-- recorded afterwards.
+create function dsr.outcome(p_sql text)
+returns text language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_hint text;
+begin
+  begin
+    execute p_sql;
+    return 'ok';
+  exception when others then
+    get stacked diagnostics v_hint = pg_exception_hint;
+    return 'denied(' || sqlstate || ':' || coalesce(v_hint, '') || ')';
+  end;
+end $$;
+
 grant usage on schema dsr to authenticated, anon, service_role;
 grant execute on function dsr.record(text,text,text)    to authenticated, anon, service_role;
 grant execute on function dsr.try(text,text,text)       to authenticated, anon, service_role;
 grant execute on function dsr.try_hint(text,text,text)  to authenticated, anon, service_role;
 grant execute on function dsr.val(text,text,text)       to authenticated, anon, service_role;
 grant execute on function dsr.retry_hint_shape(text)    to authenticated, anon, service_role;
+grant execute on function dsr.outcome(text)             to authenticated, anon, service_role;
 
 \o /dev/null
 select count(*)::text as audit_before  from public.audit_events \gset
@@ -260,8 +280,12 @@ select dsr.val('DW10 the DW2 row is pstd1''s, with their real email, open, and d
 
 set role authenticated;
 set request.jwt.claims = :'pstd1_c';
-select dsr.try('DW11 the requester cannot move their own due_by (GENERATED ALWAYS)',
-  $$update public.data_subject_requests set due_by = now() + interval '90 days'$$, 'denied(42501)');
+-- 428C9, not the 42501 a missing UPDATE grant would give: naming a GENERATED
+-- ALWAYS column is refused while the statement is being PREPARED, before
+-- privileges or policies are consulted at all. That is the stronger result --
+-- the deadline is not something any caller can even ask to move.
+select dsr.try('DW11 the requester cannot move their own due_by (GENERATED ALWAYS, refused before RLS)',
+  $$update public.data_subject_requests set due_by = now() + interval '90 days'$$, 'denied(428C9)');
 select dsr.try('DW12 ...nor rewrite what they asked for',
   $$update public.data_subject_requests set detail = 'something else'$$, 'denied(42501)');
 reset role; reset request.jwt.claims;
@@ -321,8 +345,11 @@ reset role; reset request.jwt.claims;
 
 set role anon;
 set request.jwt.claims = :'anon_c';
-select dsr.val('DR7 anon reads nothing',
-  $$select count(*)::text from public.data_subject_requests$$, '0');
+-- anon holds no grant on the table at all, so it is REFUSED rather than
+-- filtered to zero rows -- a stronger answer than the count, and the one the
+-- HTTP block sees as a 401.
+select dsr.val('DR7 anon is refused outright, not merely filtered to nothing',
+  $$select count(*)::text from public.data_subject_requests$$, 'denied(42501)');
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
@@ -359,9 +386,14 @@ select dsr.try_hint('DT5 a state that does not follow is refused (in_progress ->
 select dsr.try_hint('DT6 a no-op is not a transition',
   format($$select * from public.transition_data_subject_request(%L,'in_progress')$$, :'req_access'),
   'denied(22023:not_a_transition)');
-select dsr.try_hint('DT7 a state outside the vocabulary is refused',
+-- The TRANSITION TABLE answers first -- a BEFORE trigger runs before the CHECK
+-- constraint -- so an unknown state reads as "cannot go from in_progress to
+-- lost" rather than as a constraint violation. Both refuse; this records WHICH
+-- one does, so a later change that dropped the trigger and left the CHECK
+-- would show up here rather than pass quietly.
+select dsr.try_hint('DT7 a state outside the vocabulary is refused by the transition table',
   format($$select * from public.transition_data_subject_request(%L,'lost')$$, :'req_access'),
-  'denied(23514:)');
+  'denied(22023:illegal_transition)');
 select dsr.try_hint('DT8 a refusal with no reason is refused',
   format($$select * from public.transition_data_subject_request(%L,'rejected',null)$$, :'req_access'),
   'denied(22023:rejection_needs_reason)');
@@ -440,31 +472,37 @@ select dsr.try('DF10 POSITIVE (dormant): an account access request CAN be closed
   format($$select * from public.transition_data_subject_request(%L,'fulfilled')$$, :'req_access'), 'ok(1)');
 reset role; reset request.jwt.claims;
 
+\o /dev/null
 begin;
 create or replace function private.dsr_fulfilment_jobs_ready()
 returns boolean language sql immutable set search_path = '' as $mut$ select true $mut$;
-\o /dev/null
-select id::text as seam_req from public.data_subject_requests where status = 'fulfilled' limit 1 \gset
-\o
 -- A fresh account-scope access request to close, made by the requester.
 set local role authenticated;
 set local request.jwt.claims = :'pstd1_c';
-select dsr.try('DF11 SETUP: a new access request exists to test the live constraint against',
-  $$select * from public.submit_data_subject_request('access','account','Seam probe.')$$, 'ok(1)');
+select dsr.outcome($$select * from public.submit_data_subject_request('access','account','Seam probe.')$$)
+  as seam_made \gset
 reset role; reset request.jwt.claims;
-\o /dev/null
-select id::text as seam_new from public.data_subject_requests where detail = 'Seam probe.' \gset
-\o
+select coalesce((select id::text from public.data_subject_requests where detail = 'Seam probe.'),
+                '00000000-0000-0000-0000-000000000000') as seam_new \gset
 set local role authenticated;
 set local request.jwt.claims = :'super_c';
-select dsr.try_hint('DF12 with the jobs READY, an access request cannot be closed without one',
-  format($$select * from public.transition_data_subject_request(%L,'fulfilled')$$, :'seam_new'),
-  'denied(22023:fulfilment_not_recorded)');
-select dsr.try('DF13 ...but a RECTIFICATION request still can, because no job answers it',
-  format($$update public.data_subject_requests set status='in_progress' where id=%L$$, :'seam_new'),
-  'ok(1)');
+select dsr.outcome(
+  format($$select * from public.transition_data_subject_request(%L,'fulfilled')$$, :'seam_new'))
+  as seam_refused \gset
+select dsr.outcome(
+  format($$select * from public.transition_data_subject_request(%L,'in_progress')$$, :'seam_new'))
+  as seam_allowed \gset
 reset role; reset request.jwt.claims;
 rollback;
+\o
+
+-- Recorded AFTER the rollback, from the values \gset captured client-side.
+select dsr.record('DF11 SETUP: a new access request exists to test the live constraint against',
+  'ok', :'seam_made');
+select dsr.record('DF12 with the jobs READY, an access request cannot be closed without one',
+  'denied(22023:fulfilment_not_recorded)', :'seam_refused');
+select dsr.record('DF13 ...while a transition that is not `fulfilled` is untouched by the rule',
+  'ok', :'seam_allowed');
 
 select dsr.val('DF14 the dormant predicate is dormant again after the rollback',
   $$select private.dsr_fulfilment_jobs_ready()::text$$, 'false');
@@ -526,9 +564,17 @@ begin
     end;
   end loop;
 end $$;
+-- Read AFTER the role is reset: rate_limit_counters is readable only by the
+-- aal2 platform superuser, so asking it as pbooker returns null whatever the
+-- counter holds. That is how the first run of this suite reported "<null>"
+-- while the meter was working perfectly -- DM2 and DM5 below are the proof it
+-- was, and they are why this is a wrong QUESTION rather than a wrong answer.
+reset role; reset request.jwt.claims;
 select dsr.val('DM1 the counter stopped at the limit',
   format($$select request_count::text from public.rate_limit_counters
             where category='data_subject_request' and subject_id=%L$$, :'pbooker'), '10');
+set role authenticated;
+set request.jwt.claims = :'pbooker_c';
 select dsr.record('DM2 the eleventh is PT429 with the seconds left in the hint', 'PT429:seconds',
   dsr.retry_hint_shape($$select * from public.submit_data_subject_request('restriction','account','eleven')$$));
 select dsr.val('DM3 ...and it landed no row',
