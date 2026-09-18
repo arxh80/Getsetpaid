@@ -2382,6 +2382,140 @@ export async function marketingPolicyVersion(): Promise<number> {
 }
 
 /** Remove these people's consent events, audit rows and grant counters. */
+// ---------------------------------------------------------------------------
+// Phase 8 Task 3: data subject requests.
+// ---------------------------------------------------------------------------
+
+export interface DsrRowRead {
+  id: string;
+  right_type: string;
+  subject_scope: string;
+  status: string;
+  detail: string;
+  rejection_reason: string | null;
+  routed_to_organisation_id: string | null;
+  days_to_due: number;
+}
+
+/** One person's requests, oldest first, read straight out of Postgres. */
+export async function dataSubjectRequests(userId: string): Promise<DsrRowRead[]> {
+  const result = await db().query<DsrRowRead>(
+    `select d.id, d.right_type, d.subject_scope, d.status, d.detail, d.rejection_reason,
+            d.routed_to_organisation_id,
+            round(extract(epoch from (d.due_by - d.requested_at)) / 86400)::int as days_to_due
+       from public.data_subject_requests d where d.user_id = $1 order by d.seq`,
+    [userId],
+  );
+  return result.rows;
+}
+
+/** The audit actions one person's requests produced, oldest first. */
+export async function dsrAuditActions(userId: string): Promise<string[]> {
+  const result = await db().query<{ action: string }>(
+    `select a.action from public.audit_events a
+       join public.data_subject_requests d on d.id = a.target_id
+      where a.target_type = 'data_subject_request' and d.user_id = $1
+      order by a.created_at, a.id`,
+    [userId],
+  );
+  return result.rows.map((r) => r.action);
+}
+
+/** The operator notes on one request -- nothing in the app may show these to
+ *  the requester, so the spec reads them here to prove they EXIST. */
+export async function dsrNoteBodies(requestId: string): Promise<string[]> {
+  const result = await db().query<{ body: string }>(
+    `select body from public.data_subject_request_notes where request_id = $1 order by created_at`,
+    [requestId],
+  );
+  return result.rows.map((r) => r.body);
+}
+
+/**
+ * Backdate a request so it is overdue.
+ *
+ * The INSERT trigger forces `requested_at = now()` for every writer, which is
+ * exactly what makes the 30-day deadline unforgeable -- and therefore also
+ * what stops a fixture from making an old request the ordinary way. Disabling
+ * the trigger as the table's owner is the deliberate DBA escape hatch the
+ * migration's own header names; it is re-enabled in the same transaction, and
+ * the caller asserts the request is overdue afterwards rather than assuming.
+ */
+export async function backdateDataSubjectRequest(requestId: string, days: number): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query(
+      `alter table public.data_subject_requests disable trigger data_subject_requests_before_update`,
+    );
+    // The AFTER UPDATE audit trigger too: it would log a transition that is
+    // not one, from a sessionless connection that log_audit_event refuses.
+    await client.query(
+      `alter table public.data_subject_requests disable trigger data_subject_requests_audit_transition`,
+    );
+    await client.query(
+      `update public.data_subject_requests set requested_at = now() - make_interval(days => $2) where id = $1`,
+      [requestId, days],
+    );
+    await client.query(
+      `alter table public.data_subject_requests enable trigger data_subject_requests_before_update`,
+    );
+    await client.query(
+      `alter table public.data_subject_requests enable trigger data_subject_requests_audit_transition`,
+    );
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Run the deadline-alert writer the cron job runs, and say how many it wrote. */
+export async function raiseDsrDeadlineAlerts(): Promise<number> {
+  const result = await db().query<{ n: number }>(
+    `select private.raise_dsr_deadline_alerts() as n`,
+  );
+  return Number(result.rows[0].n);
+}
+
+export async function clearDataSubjectRequestState(userIds: string[]): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local session_replication_role = replica");
+    await client.query(
+      `delete from public.incident_alerts where details->>'request_id' in
+         (select id::text from public.data_subject_requests where user_id = any($1::uuid[]))`,
+      [userIds],
+    );
+    await client.query(
+      `delete from public.audit_events where target_type = 'data_subject_request'
+         and target_id in (select id from public.data_subject_requests where user_id = any($1::uuid[]))`,
+      [userIds],
+    );
+    await client.query(
+      `delete from public.data_subject_request_notes where request_id in
+         (select id from public.data_subject_requests where user_id = any($1::uuid[]))`,
+      [userIds],
+    );
+    await client.query(`delete from public.data_subject_requests where user_id = any($1::uuid[])`, [
+      userIds,
+    ]);
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+  await sql(
+    `delete from public.rate_limit_counters where category = 'data_subject_request' and subject_id = any($1::uuid[])`,
+    [userIds],
+  );
+}
+
 export async function clearConsentState(userIds: string[]): Promise<void> {
   const client = await db().connect();
   try {

@@ -81,6 +81,8 @@ const SUPER_SURFACES: SuperSurface[] = [
   { url: "/super", heading: "Platform", title: /Superuser/ },
   { url: "/super/audit-log", heading: "Audit log", title: /Audit log/ },
   { url: "/super/billing", heading: "Billing and feature overrides", title: /Billing overrides/ },
+  // Phase 8 Task 3.
+  { url: "/super/data-requests", heading: "Data requests", title: /Data requests/ },
   { url: "/super/feedback", heading: "Feedback", title: /Feedback/ },
   { url: "/super/health", heading: "Platform health", title: /Platform health/ },
   { url: "/super/impersonation", heading: "Impersonation", title: /Impersonation/ },
