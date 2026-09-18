@@ -189,29 +189,42 @@ export function isDsrStatus(value: string): value is DsrStatus {
   return Object.prototype.hasOwnProperty.call(DSR_STATUS_LABELS, value);
 }
 
-/**
- * Whole days from `now` until `dueBy`, negative once the deadline has passed.
- *
- * READ-TIME, the house pattern: nothing stores "days remaining" and nothing
- * sweeps it. Days are counted in whole UTC days between the two instants,
- * which is the same arithmetic the generated `due_by` column uses (30 ×
- * 86,400 s), so "0 days left" and "due today" mean the same thing on both
- * sides.
- */
-export function daysUntil(dueByIso: string, now: Date = new Date()): number {
+const DAY_MS = 86_400_000;
+
+function instant(dueByIso: string): number {
   const due = Date.parse(dueByIso);
   if (Number.isNaN(due)) {
-    throw new Error(`daysUntil: ${dueByIso} is not a timestamp`);
+    throw new Error(`dsr: ${dueByIso} is not a timestamp`);
   }
-  return Math.floor((due - now.getTime()) / 86_400_000);
+  return due;
+}
+
+/**
+ * Whole days from `now` until `dueBy` — 0 on the day it is due, negative once
+ * it has passed.
+ *
+ * READ-TIME, the house pattern: nothing stores "days remaining" and nothing
+ * sweeps it. `Math.floor` on the way up and `Math.ceil` on the way down, so
+ * the count is "whole days away in the direction it is going" in both
+ * directions — plain `Math.floor` calls 25 hours late "2 days overdue", which
+ * is the kind of small lie a person notices on the one screen that is telling
+ * them their statutory deadline slipped.
+ */
+export function daysUntil(dueByIso: string, now: Date = new Date()): number {
+  const delta = instant(dueByIso) - now.getTime();
+  return delta >= 0 ? Math.floor(delta / DAY_MS) : Math.ceil(delta / DAY_MS);
 }
 
 export type DsrUrgency = "overdue" | "due_soon" | "on_track" | "closed";
 
 /**
- * How loud the queue should be about one request. `due_soon` uses the same
- * lead time the database's early-warning alert does, so the screen and the
- * email cannot disagree about which requests are urgent.
+ * How loud the queue should be about one request.
+ *
+ * OVERDUE IS THE INSTANT COMPARISON, not the day count: an hour past the
+ * deadline is past the deadline, and rounding it to "0 days" would render it
+ * as on track. `due_soon` uses the same lead time the database's early-warning
+ * alert does, so the screen and the email cannot disagree about which requests
+ * are urgent.
  */
 export function dsrUrgency(
   status: string,
@@ -219,12 +232,13 @@ export function dsrUrgency(
   now: Date = new Date(),
 ): DsrUrgency {
   if (isDsrTerminal(status)) return "closed";
-  const days = daysUntil(dueByIso, now);
-  if (days < 0) return "overdue";
-  return days <= DSR_ALERT_LEAD_DAYS ? "due_soon" : "on_track";
+  const delta = instant(dueByIso) - now.getTime();
+  if (delta <= 0) return "overdue";
+  return delta <= DSR_ALERT_LEAD_DAYS * DAY_MS ? "due_soon" : "on_track";
 }
 
-/** "3 days left", "due today", "2 days overdue" — one sentence, both pages. */
+/** "3 days left", "Due today", "Overdue today", "2 days overdue" — one
+ *  sentence, both pages. */
 export function describeDeadline(
   status: string,
   dueByIso: string,
@@ -236,7 +250,9 @@ export function describeDeadline(
     const late = Math.abs(days);
     return late === 1 ? "1 day overdue" : `${late} days overdue`;
   }
-  if (days === 0) return "Due today";
+  if (days === 0) {
+    return instant(dueByIso) <= now.getTime() ? "Overdue today" : "Due today";
+  }
   return days === 1 ? "1 day left" : `${days} days left`;
 }
 

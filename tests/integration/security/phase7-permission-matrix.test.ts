@@ -240,6 +240,10 @@ const ARGS = {
    *  the real RPC -- the row every other principal must not be able to read
    *  or change. */
   consentId: "",
+  /** Phase 8 Task 3: a data subject request made through the real RPC by the
+   *  Read Only member -- the row every refused transition and note is aimed
+   *  at, so a refusal is the guard's and not "no such request". */
+  dsrRequestId: "",
 };
 
 // Phase 8 Task 2: the no-organisation principal's user id, for the
@@ -614,6 +618,63 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
     },
   },
   {
+    fn: "transition_data_subject_request",
+    args: () => ({ p_request_id: ARGS.dsrRequestId, p_status: "in_progress" }),
+    sideEffectTable: "audit_events",
+    invariant: async () => {
+      const { rows } = await pool.query(
+        `select status from public.data_subject_requests where id = $1`,
+        [ARGS.dsrRequestId],
+      );
+      expect(rows[0]?.status, "a refused principal moved a data subject request").toBe("open");
+    },
+    positiveControl: async () => {
+      // A DISPOSABLE request, so the held one stays `open` for the refusals.
+      const { data, error } = await fx.activeByRole.read_only.client.rpc(
+        "submit_data_subject_request",
+        { p_right_type: "rectification", p_subject_scope: "account", p_detail: "matrix positive control" },
+      );
+      const made = (data ?? []) as { request_id: string }[];
+      expect(error, `submit_data_subject_request: ${error?.message}`).toBeNull();
+      const moved = await superuser.rpc("transition_data_subject_request", {
+        p_request_id: made[0].request_id,
+        p_status: "in_progress",
+      });
+      expect(
+        moved.error,
+        `transition_data_subject_request must be reachable by the aal2 superuser: ${moved.error?.message}`,
+      ).toBeNull();
+    },
+  },
+  {
+    fn: "add_data_subject_request_note",
+    args: () => ({ p_request_id: ARGS.dsrRequestId, p_body: "matrix probe note" }),
+    sideEffectTable: "data_subject_request_notes",
+    invariant: async () => {
+      const { rows } = await pool.query(
+        `select count(*)::int as n from public.data_subject_request_notes where request_id = $1`,
+        [ARGS.dsrRequestId],
+      );
+      expect(rows[0]?.n, "a refused principal added an operator note").toBe(0);
+    },
+    positiveControl: async () => {
+      const { data, error } = await fx.activeByRole.read_only.client.rpc(
+        "submit_data_subject_request",
+        { p_right_type: "objection", p_subject_scope: "account", p_detail: "matrix note control" },
+      );
+      const made = (data ?? []) as { request_id: string }[];
+      expect(error, `submit_data_subject_request: ${error?.message}`).toBeNull();
+      const noted = await superuser.rpc("add_data_subject_request_note", {
+        p_request_id: made[0].request_id,
+        p_body: "matrix positive control note",
+      });
+      expect(
+        noted.error,
+        `add_data_subject_request_note must be reachable by the aal2 superuser: ${noted.error?.message}`,
+      ).toBeNull();
+    },
+  },
+  {
     fn: "record_legal_document_counsel_review",
     args: () => ({ p_document_id: ARGS.legalDraftId, p_reviewer: "Matrix Counsel LLP" }),
     sideEffectTable: "audit_events",
@@ -669,6 +730,14 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "Phase 8 Task 2 -- ANY signed-in person records their OWN marketing " +
     "consent or withdrawal. Takes no user argument; the database stamps the " +
     "session's (asserted below, and in rls_phase8_consents.sql § CW).",
+  submit_data_subject_request:
+    "Phase 8 Task 3 -- ANY signed-in person exercises their OWN statutory " +
+    "rights. Takes no user argument; the database stamps the session's, and " +
+    "the 30-day deadline is a generated column no caller can name.",
+  withdraw_data_subject_request:
+    "Phase 8 Task 3 -- the requester withdraws their OWN open request. The " +
+    "BEFORE UPDATE trigger refuses a withdrawal by anyone but the requester, " +
+    "and withdrawing must never be harder than asking.",
 };
 
 /**
@@ -764,7 +833,18 @@ const PUBLIC_READ_RELATIONS = ["legal_documents"] as const;
  * filtered to auth.uid() (plus the aal2 superuser's oversight read); writes go
  * through record_consent() alone.
  */
-const OWN_ROW_RELATIONS = ["consents"] as const;
+const OWN_ROW_RELATIONS = ["consents", "data_subject_requests"] as const;
+
+/**
+ * Phase 8 relations NO principal but the aal2 platform superuser may read a
+ * row of -- asserted in their own block below.
+ * `data_subject_request_notes`: the operator's working notes (Q103). The
+ * grant is to `authenticated` because the superuser's own PostgREST session
+ * authenticates as that role; the single policy is what makes it
+ * superuser-only, and the requester -- who CAN read the request the note is
+ * on -- must read zero of them.
+ */
+const SUPERUSER_ONLY_RELATIONS = ["data_subject_request_notes"] as const;
 
 const PHASE7_TABLES = [
   "feedback",
@@ -1035,6 +1115,25 @@ beforeAll(async () => {
     ARGS.consentId = recorded[0].consent_id;
   }
 
+  // ---- Phase 8 Task 3: a data subject request held open for the run -----
+  // Made by the Read Only member through the real RPC -- the positive control
+  // for submit_data_subject_request before any refusal is asserted.
+  {
+    const { data, error } = await fx.activeByRole.read_only.client.rpc(
+      "submit_data_subject_request",
+      {
+        p_right_type: "access",
+        p_subject_scope: "account",
+        p_detail: "matrix fixture: please send me a copy of my data",
+      },
+    );
+    const made = (data ?? []) as { request_id: string }[];
+    if (error || made.length !== 1) {
+      throw new Error(`POSITIVE CONTROL FAILED: submit_data_subject_request: ${error?.message}`);
+    }
+    ARGS.dsrRequestId = made[0].request_id;
+  }
+
   // `rate_limit_counters` needs a row too, and the honest way to get one is to
   // spend a real budget through the real meter as a real member.
   {
@@ -1058,6 +1157,21 @@ afterAll(async () => {
   );
   await pool.query(`delete from public.feedback where id = $1`, [ARGS.feedbackId]);
   if (ARGS.legalDraftId) await discardLegalRows([ARGS.legalDraftId]);
+  // Phase 8 Task 3: the register and its notes refuse every delete from every
+  // role (private.data_subject_requests_delete_guard), so the fixtures are
+  // removed the one way the schema permits -- with the triggers out of the
+  // way, as the owner, exactly as the psql suite's own housekeeping does.
+  await pool.query(`set session_replication_role = replica`);
+  await pool.query(`delete from public.audit_events where target_type = 'data_subject_request'`);
+  await pool.query(
+    `delete from public.data_subject_request_notes where request_id in
+       (select id from public.data_subject_requests where user_id = any($1::uuid[]))`,
+    [fx._allUserIds],
+  );
+  await pool.query(`delete from public.data_subject_requests where user_id = any($1::uuid[])`, [
+    fx._allUserIds,
+  ]);
+  await pool.query(`set session_replication_role = default`);
   await pool.query(
     `delete from public.rate_limit_counters where subject_id = any($1::uuid[])`,
     [[fx.orgA.id, fx.orgB.id, ...fx._allUserIds]],
@@ -1148,7 +1262,13 @@ describe("the inventory is mechanical", () => {
         "later phase belongs in the first (and gets probed by every principal); " +
         "a tenant one belongs in the second with its reason.",
     ).toEqual(
-      [...PHASE7_TABLES, ...PUBLIC_READ_RELATIONS, ...OWN_ROW_RELATIONS, ...PRE_PHASE7_RELATIONS].sort(),
+      [
+        ...PHASE7_TABLES,
+        ...PUBLIC_READ_RELATIONS,
+        ...OWN_ROW_RELATIONS,
+        ...SUPERUSER_ONLY_RELATIONS,
+        ...PRE_PHASE7_RELATIONS,
+      ].sort(),
     );
 
     // And the seven this file probes are real TABLES with RLS on -- a view has
@@ -1916,6 +2036,134 @@ describe("table consents (own rows only)", () => {
         order by grantee, privilege_type`,
     );
     expect(rows).toEqual([{ grantee: "authenticated", privilege_type: "SELECT" }]);
+  });
+});
+
+// =============================================================================
+// PHASE 8 TASK 3: THE REGISTER (OWN ROWS) AND THE NOTES (OPERATOR ONLY)
+// =============================================================================
+// The held request belongs to the Read Only member. Every other principal must
+// read it as absent; the Read Only member and the aal2 superuser must read it,
+// which is what makes the others' "absent" mean something. The NOTES are the
+// Q103 half: the requester can read the request and must read NONE of its
+// notes.
+describe("table data_subject_requests (own rows only) and its operator notes", () => {
+  const readsIt = new Set(["readOnlyMember", "superuserAal2"]);
+  const everyone: { key: string; client: () => SupabaseClient }[] = [
+    ...PRINCIPALS.map(({ key, client }) => ({ key: key as string, client })),
+    { key: "superuserAal2", client: () => superuser },
+  ];
+
+  it("DENOMINATOR: the held request exists, is the Read Only member's, and is open", async () => {
+    const { rows } = await pool.query(
+      `select user_id, status from public.data_subject_requests where id = $1`,
+      [ARGS.dsrRequestId],
+    );
+    expect(rows).toEqual([{ user_id: fx.activeByRole.read_only.userId, status: "open" }]);
+  });
+
+  it("DENOMINATOR: the held request carries a real operator note", async () => {
+    const { error } = await superuser.rpc("add_data_subject_request_note", {
+      p_request_id: ARGS.dsrRequestId,
+      p_body: "matrix denominator note -- the requester must not read this",
+    });
+    expect(error, `add_data_subject_request_note: ${error?.message}`).toBeNull();
+    const { rows } = await pool.query(
+      `select count(*)::int as n from public.data_subject_request_notes where request_id = $1`,
+      [ARGS.dsrRequestId],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it.each(everyone)("$key reads the held request only if it is theirs (or the aal2 operator)", async ({ key, client }) => {
+    const { data, error } = await client()
+      .from("data_subject_requests")
+      .select("id, user_id")
+      .eq("id", ARGS.dsrRequestId);
+    if (key === "anonymous") {
+      expect(error, "anon read the request register").not.toBeNull();
+      expect(REFUSAL_CODES.has(error!.code ?? ""), error?.code).toBe(true);
+      return;
+    }
+    expect(error, error?.message).toBeNull();
+    expect((data ?? []).length, key).toBe(readsIt.has(key) ? 1 : 0);
+  });
+
+  it.each(everyone)("$key reads an operator note only if it is the aal2 operator", async ({ key, client }) => {
+    const { data, error } = await client()
+      .from("data_subject_request_notes")
+      .select("id, body")
+      .eq("request_id", ARGS.dsrRequestId);
+    if (key === "anonymous") {
+      expect(error, "anon read the operator notes").not.toBeNull();
+      expect(REFUSAL_CODES.has(error!.code ?? ""), error?.code).toBe(true);
+      return;
+    }
+    expect(error, error?.message).toBeNull();
+    // THE Q103 ASSERTION: readOnlyMember CAN read the request above and must
+    // read none of its notes here.
+    expect((data ?? []).length, key).toBe(key === "superuserAal2" ? 1 : 0);
+  });
+
+  it.each(everyone)("$key cannot write to either table directly -- the aal2 superuser included", async ({ client }) => {
+    const before = await tableChecksum("data_subject_requests");
+    const notesBefore = await tableChecksum("data_subject_request_notes");
+    await client()
+      .from("data_subject_requests")
+      .insert({
+        user_id: fx.activeByRole.read_only.userId,
+        user_email: "matrix@test.local",
+        right_type: "access",
+        subject_scope: "account",
+        detail: "direct",
+      } as never);
+    await client()
+      .from("data_subject_requests")
+      .update({ status: "fulfilled" } as never)
+      .eq("id", ARGS.dsrRequestId);
+    await client().from("data_subject_requests").delete().eq("id", ARGS.dsrRequestId);
+    await client()
+      .from("data_subject_request_notes")
+      .insert({ request_id: ARGS.dsrRequestId, author_user_id: fx.activeByRole.read_only.userId, body: "x" } as never);
+    expect(await tableChecksum("data_subject_requests"), "a direct write changed the register").toBe(before);
+    expect(await tableChecksum("data_subject_request_notes"), "a direct write changed the notes").toBe(notesBefore);
+  });
+
+  it("submit_data_subject_request stamps the CALLER, and no user argument exists", async () => {
+    const forged = await noOrgClient.rpc("submit_data_subject_request", {
+      p_right_type: "access",
+      p_subject_scope: "account",
+      p_detail: "forged",
+      p_user_id: fx.activeByRole.read_only.userId,
+    } as never);
+    expect(forged.error, "submit_data_subject_request accepted a user argument").not.toBeNull();
+
+    const { data, error } = await noOrgClient.rpc("submit_data_subject_request", {
+      p_right_type: "access",
+      p_subject_scope: "account",
+      p_detail: "a no-workspace account has these rights too",
+    });
+    expect(error, error?.message).toBeNull();
+    const id = ((data ?? []) as { request_id: string }[])[0]?.request_id;
+    const { rows } = await pool.query(
+      `select user_id, (due_by - requested_at)::text as window from public.data_subject_requests where id = $1`,
+      [id],
+    );
+    expect(rows).toEqual([{ user_id: noOrgUserId, window: "30 days" }]);
+  });
+
+  it("no client role holds a write privilege on either table, and service_role holds nothing", async () => {
+    const { rows } = await pool.query<{ table_name: string; grantee: string; privilege_type: string }>(
+      `select distinct table_name, grantee, privilege_type from information_schema.column_privileges
+        where table_schema = 'public'
+          and table_name in ('data_subject_requests', 'data_subject_request_notes')
+          and grantee in ('anon','authenticated','service_role')
+        order by table_name, grantee, privilege_type`,
+    );
+    expect(rows).toEqual([
+      { table_name: "data_subject_request_notes", grantee: "authenticated", privilege_type: "SELECT" },
+      { table_name: "data_subject_requests", grantee: "authenticated", privilege_type: "SELECT" },
+    ]);
   });
 });
 

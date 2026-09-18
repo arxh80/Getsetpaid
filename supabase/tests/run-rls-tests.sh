@@ -867,6 +867,40 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 3 (DATA SUBJECT REQUESTS) SUITE.
+#
+# Runs after the consent suite, on the same P7VARS fixtures, and its own
+# section DZ removes every request, note, counter, alert and audit row it
+# made -- so the HTTP block below and the race above still meet the database
+# they were written against.
+# ============================================================================
+docker cp "$HERE/rls_phase8_data_subject_requests.sql" "$CTR:/tmp/rls_phase8_data_subject_requests.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off "${P7VARS[@]}" -f /tmp/rls_phase8_data_subject_requests.sql
+
+dsr_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select count(*) from dsr.results where not pass" | tr -d '[:space:]')
+if [ "$dsr_fails" != "0" ]; then
+  echo "PHASE 8 DATA SUBJECT REQUEST SUITE FAILED: $dsr_fails failing assertion(s)" >&2
+  echo "  In DF, THE 30-DAY CLOCK OR THE TASK 4/5 SEAM HAS MOVED -- a deadline" >&2
+  echo "  that can be written, or a fulfilment a client can declare." >&2
+  echo "  In DW, ATTRIBUTION IS FORGEABLE, or a request can be rewritten after" >&2
+  echo "  the fact. Sev1: a request and its deadline are the evidence." >&2
+  echo "  In DR, SOMEBODY CAN READ ANOTHER PERSON'S REQUEST, or the operator's" >&2
+  echo "  oversight read is no longer aal2-gated." >&2
+  echo "  In DT, THE STATE MACHINE IS GONE -- an illegal transition landed, the" >&2
+  echo "  operator withdrew for the requester, or the requester progressed one." >&2
+  echo "  In DN, THE REQUESTER CAN READ OPERATOR NOTES (Q103)." >&2
+  echo "  In DM, the submission meter moved, or a WITHDRAWAL is now metered." >&2
+  echo "  In DA, a transition went unaudited or an audit row carries free text." >&2
+  echo "  In DD, AN OVERDUE REQUEST RAISES NO ALERT -- the deadline can now be" >&2
+  echo "  missed silently -- or a closed one raises one, or a tick duplicates." >&2
+  echo "  In DZ, this suite left rows behind -- discard the run and reset." >&2
+  psql_status=1
+else
+  echo "Phase 8 data subject request suite: all assertions passed."
+fi
+
+# ============================================================================
 # ONE WITHDRAWAL PER GRANT UNDER A REAL RACE (review finding M2).
 #
 # The trigger's alternation rule serialises events per (user, purpose), but
@@ -3529,6 +3563,43 @@ MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c   "set 
    delete from public.consents where user_id='${ID[carol]}';
    set session_replication_role = default;
    delete from public.rate_limit_counters where category='consent_grant' and subject_id='${ID[carol]}';"
+
+# ============================================================================
+# PHASE 8 TASK 3: DATA SUBJECT REQUESTS OVER REAL HTTP.
+#
+# The psql suite proves the policies and the triggers. This proves which of
+# them PostgREST actually exposes: carol makes and withdraws her own request
+# through the two RPCs, reads back only her own row, cannot write either table,
+# cannot progress her own request, and cannot read the operator's notes.
+# rls_phase8_data_subject_requests.sql's DZ left both tables empty, so every
+# count below is carol's alone.
+# ============================================================================
+echo
+echo "=== Phase 8 data subject requests at the API surface ==="
+p2_code "anon cannot make a request -> 401"                          401 POST "rpc/submit_data_subject_request" '{"p_right_type":"access","p_subject_scope":"account","p_detail":"x"}' "$ANON"
+p2_code "carol makes a request through the RPC -> 200"               200 POST "rpc/submit_data_subject_request" '{"p_right_type":"access","p_subject_scope":"account","p_detail":"HTTP probe request"}' "$TOKEN"
+p2_code "carol cannot name a user: no such parameter -> 404"         404 POST "rpc/submit_data_subject_request" '{"p_right_type":"access","p_subject_scope":"account","p_detail":"x","p_user_id":"'"${ID[alice]}"'"}' "$TOKEN"
+p2_code "an unknown right -> 400"                                    400 POST "rpc/submit_data_subject_request" '{"p_right_type":"compensation","p_subject_scope":"account","p_detail":"x"}' "$TOKEN"
+p2_code "carol cannot POST the register directly -> 403"             403 POST "data_subject_requests" '{"user_id":"'"${ID[carol]}"'","user_email":"c@t.l","right_type":"access","subject_scope":"account","detail":"direct"}' "$TOKEN"
+p2_code "carol cannot PATCH her own request -> 403"                  403 PATCH "data_subject_requests?right_type=eq.access" '{"status":"fulfilled"}' "$TOKEN"
+p2_code "carol cannot DELETE her own request -> 403"                 403 DELETE "data_subject_requests?right_type=eq.access" "" "$TOKEN"
+p2_code "carol cannot progress her own request -> 403"               403 POST "rpc/transition_data_subject_request" '{"p_request_id":"00000000-0000-0000-0000-000000000000","p_status":"fulfilled"}' "$TOKEN"
+p2_code "carol cannot add an operator note -> 403"                   403 POST "rpc/add_data_subject_request_note" '{"p_request_id":"00000000-0000-0000-0000-000000000000","p_body":"x"}' "$TOKEN"
+p2_code "anon cannot read the register -> 401"                       401 GET "data_subject_requests?select=id" "" "$ANON"
+p2_rows "carol reads exactly her one request"                         1 "data_subject_requests?select=id,status" "$TOKEN"
+p2_rows "carol reads ZERO operator notes"                             0 "data_subject_request_notes?select=id" "$TOKEN"
+dsr_http=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select status || ':' || (user_id = '${ID[carol]}')::text || ':' || (due_by - requested_at)::text from public.data_subject_requests" | tr -d '[:space:]')
+if [ "$dsr_http" = "open:true:30days" ]; then printf '  PASS  %-58s %s
+' "the request is carol's, open, and due in 30 days" "$dsr_http"
+else printf '  FAIL  %-58s got %s want open:true:30days
+' "the request is carol's, open, due in 30 days" "$dsr_http"; api_fails=$((api_fails+1)); fi
+p2_code "carol withdraws her own request -> 200"                     200 POST "rpc/withdraw_data_subject_request" '{"p_request_id":"'"$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select id from public.data_subject_requests limit 1" | tr -d '[:space:]')"'"}' "$TOKEN"
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c   "set session_replication_role = replica;
+   delete from public.audit_events where target_type='data_subject_request';
+   delete from public.data_subject_request_notes;
+   delete from public.data_subject_requests;
+   set session_replication_role = default;
+   delete from public.rate_limit_counters where category='data_subject_request';"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

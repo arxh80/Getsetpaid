@@ -13,6 +13,14 @@ import { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
 import { latestFunctionDefinition } from "../../unit/support/sql-definitions";
 import { CONSENT_PURPOSES } from "@/lib/consent/catalogue";
+import {
+  DSR_ALERT_LEAD_DAYS,
+  DSR_RESPONSE_DAYS,
+  DSR_RIGHTS,
+  DSR_RIGHT_COPY,
+  DSR_STATUSES,
+  dsrTransitionAllowed,
+} from "@/lib/dsr/contract";
 import { RESERVED_WORKSPACE_SLUGS, workspaceSlugKey } from "@/lib/org/reserved-slugs";
 
 const pool = new Pool({ connectionString: getLocalSupabaseStatus().dbUrl, max: 2 });
@@ -28,6 +36,12 @@ const BOUND_FUNCTIONS = [
   "private.reserved_workspace_slugs",
   "private.organisations_slug_not_reserved",
   "private.workspace_slug_key",
+  // Phase 8 Task 3.
+  "private.dsr_rights",
+  "private.dsr_response_days",
+  "private.dsr_alert_lead_days",
+  "private.dsr_transition_allowed",
+  "private.data_subject_requests_before_insert",
 ] as const;
 
 async function prosrc(qualified: string): Promise<string[]> {
@@ -73,6 +87,47 @@ describe("the live lists equal the TypeScript lists", () => {
     expect(rows.map((r) => ({ purpose: r.purpose, statementId: r.statement_id }))).toEqual(
       CONSENT_PURPOSES.map(({ purpose, statementId }) => ({ purpose, statementId })),
     );
+  });
+
+  it("private.dsr_rights() returns DSR_RIGHTS with the same fulfilment kinds", async () => {
+    const { rows } = await pool.query<{ right_type: string; fulfilment_kind: string | null }>(
+      `select right_type, fulfilment_kind from private.dsr_rights() order by right_type`,
+    );
+    expect(rows.length).toBe(6);
+    expect(
+      rows.map((r) => ({ right: r.right_type, kind: r.fulfilment_kind })),
+    ).toEqual(
+      [...DSR_RIGHTS]
+        .sort()
+        .map((right) => ({ right, kind: DSR_RIGHT_COPY[right].fulfilmentKind })),
+    );
+  });
+
+  it("the two clocks are the numbers lib/dsr/contract.ts carries", async () => {
+    const { rows } = await pool.query<{ days: number; lead: number }>(
+      `select private.dsr_response_days() as days, private.dsr_alert_lead_days() as lead`,
+    );
+    expect(Number(rows[0].days)).toBe(DSR_RESPONSE_DAYS);
+    expect(Number(rows[0].lead)).toBe(DSR_ALERT_LEAD_DAYS);
+  });
+
+  it("private.dsr_transition_allowed() answers as dsrTransitionAllowed() does, for EVERY pair", async () => {
+    // The full 6x6 grid, not just the legal ones: a mirror that only agrees
+    // about the transitions it expects to be legal would miss a widened
+    // database side entirely.
+    const disagreements: string[] = [];
+    for (const from of DSR_STATUSES) {
+      for (const to of DSR_STATUSES) {
+        const { rows } = await pool.query<{ ok: boolean }>(
+          `select private.dsr_transition_allowed($1, $2) as ok`,
+          [from, to],
+        );
+        if (rows[0].ok !== dsrTransitionAllowed(from, to)) {
+          disagreements.push(`${from}->${to}: db=${rows[0].ok} ts=${dsrTransitionAllowed(from, to)}`);
+        }
+      }
+    }
+    expect(disagreements).toEqual([]);
   });
 
   it("private.reserved_workspace_slugs() returns RESERVED_WORKSPACE_SLUGS", async () => {
