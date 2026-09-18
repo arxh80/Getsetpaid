@@ -147,6 +147,22 @@ export const PLATFORM_AUDIT_ACTIONS = [
   // mechanism).
   "consent.granted",
   "consent.withdrawn",
+  // Phase 8 Task 3 (20260924000000): data subject requests. Identifiers,
+  // enums and timestamps only -- never the requester's words, never a
+  // rejection reason, never a note's body (the audit log is read across every
+  // tenant). The six state actions are `'data_subject_request.' || new.status`
+  // built in private.audit_dsr_transition(), so the scanner below finds only
+  // the two literal ones; all of them are listed by hand, the same way
+  // impersonation.ended/.expired are. There is no `.open`: `open` is where a
+  // request starts, never a state it transitions INTO.
+  "data_subject_request.submitted",
+  "data_subject_request.in_progress",
+  "data_subject_request.routed",
+  "data_subject_request.fulfilled",
+  "data_subject_request.rejected",
+  "data_subject_request.withdrawn",
+  "data_subject_request.fulfilment_recorded",
+  "data_subject_request.note_added",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first
