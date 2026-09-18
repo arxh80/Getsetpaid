@@ -418,6 +418,35 @@ select dsr.val('DT13 routing stamped the workspace and the time, and the databas
              from public.data_subject_requests where id = %L$$, :'alpha_org', :'req_erasure'),
   'true|true|routed');
 
+-- ---------------------------------------------------------------------------
+-- THE TRIGGER'S OWN who-may-do-it CHECK, asked directly.
+--
+-- DT1 and DT12 above go through the RPCs, and each RPC carries its own guard
+-- (has_platform_permission for the operator's function, an explicit refusal of
+-- `withdrawn` in it) -- so they cannot tell whether the TRIGGER's check is
+-- there at all. A mutation that replaced the trigger's two-branch rule with
+-- `v_is_owner or v_operator` -- letting the requester close their own request
+-- and the operator withdraw on the requester's behalf -- left the whole suite
+-- GREEN. These two ask the trigger itself, with the update issued as postgres
+-- (which bypasses RLS) under each principal's session, exactly as DT15 does.
+-- ---------------------------------------------------------------------------
+set request.jwt.claims = :'pstd1_c';
+select dsr.try('DT13a the TRIGGER refuses the REQUESTER closing their own request',
+  format($$update public.data_subject_requests set status='fulfilled' where id=%L$$, :'req_access'),
+  'denied(42501)');
+reset request.jwt.claims;
+
+set request.jwt.claims = :'super_c';
+select dsr.try('DT13b the TRIGGER refuses the OPERATOR withdrawing on the requester''s behalf',
+  format($$update public.data_subject_requests set status='withdrawn' where id=%L$$, :'req_erasure'),
+  'denied(42501)');
+reset request.jwt.claims;
+
+select dsr.val('DT13c neither attempt moved anything',
+  format($$select (select status from public.data_subject_requests where id=%L) || '|' ||
+                  (select status from public.data_subject_requests where id=%L)$$,
+         :'req_access', :'req_erasure'), 'in_progress|routed');
+
 set role authenticated;
 set request.jwt.claims = :'pstd2_c';
 select dsr.try('DT14 a stranger cannot withdraw somebody else''s request',
