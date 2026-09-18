@@ -134,6 +134,13 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
     await requester.getByRole("radio", { name: "My GetSetPaid account" }).check();
     await requester.getByLabel("Tell us what you want").fill(detail);
     await requester.getByRole("button", { name: "Send this request" }).click();
+    // THE LIST IS THE SIGNAL, NOT THE MESSAGE. `useActionState` keeps the last
+    // outcome on screen across re-renders, so "Your request has been sent."
+    // stays visible after the first submission and a second `toBeVisible()`
+    // would pass before the second submission had landed -- which is exactly
+    // how this walk first went red (one row where it expected two). The row
+    // count only changes when the database has the row.
+    await expect(requester.getByTestId("own-request")).toHaveCount(1);
     await expect(requester.getByText("Your request has been sent.")).toBeVisible();
 
     // THE DATABASE COMPUTED THE DEADLINE, and the page shows that deadline.
@@ -172,7 +179,7 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
       .getByLabel("Tell us what you want")
       .fill("A promoter has me saved as a contact. Please ask them to delete me.");
     await requester.getByRole("button", { name: "Send this request" }).click();
-    await expect(requester.getByText("Your request has been sent.")).toBeVisible();
+    await expect(requester.getByTestId("own-request")).toHaveCount(2);
     const both = await dataSubjectRequests(manager.id);
     expect(both.map((r) => r.subject_scope)).toEqual(["account", "workspace_records"]);
     const processorId = both[1].id;
@@ -191,7 +198,9 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
     // ---- 4. THE OPERATOR READS THE QUEUE ----------------------------------
     await signInAsSuperuser(operator);
     await operator.goto("/super");
-    await operator.getByRole("link", { name: "Data requests" }).click();
+    // `exact`, because the signed-in footer this layout also renders carries
+    // "Your data requests" -- the requester's half of the same feature.
+    await operator.getByRole("link", { name: "Data requests", exact: true }).click();
     await expect(operator).toHaveURL(/\/super\/data-requests$/);
     await expect(
       operator.getByRole("heading", { level: 1, name: "Data requests" }),
@@ -246,7 +255,10 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
     const written = await raiseDsrDeadlineAlerts();
     expect(written, "the overdue request must raise an alert").toBeGreaterThanOrEqual(1);
     await operator.goto("/super/health");
-    await expect(operator.getByText("Data request OVERDUE")).toBeVisible();
+    // The label appears twice on this page -- once as an <option> in the
+    // alert-type filter and once on the row itself. The row is the one that
+    // means an alert was written, so match its line rather than the filter's.
+    await expect(operator.getByText(/Data request OVERDUE\s+·/)).toBeVisible();
     await expect(operator.getByText(requestId)).toBeVisible();
     // The alert carries identifiers only -- never what the person wrote.
     await expect(operator.locator("body")).not.toContainText(detail);
@@ -255,8 +267,11 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
     await requester.reload();
     const rows = requester.getByTestId("own-request");
     await expect(rows).toHaveCount(2);
-    await expect(requester.getByText("Being worked on")).toBeVisible();
-    await expect(requester.getByText("Passed to the business")).toBeVisible();
+    // `exact`, and the CHIP is the assertion: the deadline sentence for an
+    // overdue request also ends "...it is still being worked on", which a
+    // substring match would satisfy without any status having changed.
+    await expect(requester.getByText("Being worked on", { exact: true })).toBeVisible();
+    await expect(requester.getByText("Passed to the business", { exact: true })).toBeVisible();
     await expect(
       requester.getByText("We passed this to the business that holds the records"),
     ).toBeVisible();
@@ -308,14 +323,24 @@ test("a workspace Manager gets the same not-found document at /super/data-reques
   await expectStreamedRefusal(page, "/super/data-requests");
 });
 
-test("the superuser below aal2 is refused too", async ({ page }) => {
+// The aal1 superuser does NOT get the streamed not-found document, and that is
+// correct rather than a gap: the MFA gate in app/(app)/layout.tsx swaps
+// <main> for the challenge screen before any page under it renders at all, so
+// the refusal it meets is the challenge, not the 404. platform-health.spec.ts
+// asserts this same shape for the same reason. What matters is that no queue
+// content is reachable.
+test("an aal1 superuser session reaches no request queue", async ({ page }) => {
   await page.goto("/login");
   await page.locator('input[name="email"]').fill(world.superuser.email);
   await page.locator('input[name="password"]').fill(PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
+  const challenge = page.getByRole("heading", { name: "Enter your two-factor code" });
   await expect(
-    page.getByRole("heading", { name: "Enter your two-factor code" }),
+    challenge,
     "the superuser must be CHALLENGED, or this principal is not aal1 and the refusal proves nothing",
   ).toBeVisible();
-  await expectStreamedRefusal(page, "/super/data-requests");
+  await page.goto("/super/data-requests");
+  await expect(challenge, "an aal1 superuser session must not reach the queue").toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Data requests" })).toHaveCount(0);
+  await expect(page.getByTestId("dsr-row")).toHaveCount(0);
 });

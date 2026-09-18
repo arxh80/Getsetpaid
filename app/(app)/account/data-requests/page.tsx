@@ -206,7 +206,12 @@ export default async function AccountDataRequestsPage() {
                       </div>
                     ) : null}
 
-                    {closed ? null : <DataRequestWithdrawForm requestId={request.id} />}
+                    {/* Rendered for every request, open or closed: a
+                        successful withdrawal CLOSES the request, and an
+                        outcome rendered by a component the revalidated page
+                        no longer holds is an outcome nobody reads (Task 1's
+                        I1). The component hides its own button instead. */}
+                    <DataRequestWithdrawForm requestId={request.id} open={!closed} />
                   </li>
                 );
               })}
