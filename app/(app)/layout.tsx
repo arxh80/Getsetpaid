@@ -324,6 +324,17 @@ export default async function AppLayout({
           >
             Your privacy choices
           </Link>
+          {/* Phase 8 Task 3: the data-subject-request form and tracker. Beside
+              the consent page for the same reason -- both are account-level
+              rights, neither belongs to a workspace, and the footer is where
+              somebody looks for them. */}
+          <Link
+            href="/account/data-requests"
+            prefetch={false}
+            className="underline underline-offset-4 hover:text-ink"
+          >
+            Your data requests
+          </Link>
         </div>
       </footer>
     </div>

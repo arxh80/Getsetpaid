@@ -208,12 +208,19 @@ export async function loadPlatformHealthSnapshot(): Promise<PlatformHealthOutcom
 export type IncidentAlertType =
   | "rate_limit_tripped"
   | "repeated_login_failures"
-  | "upload_quarantined";
+  | "upload_quarantined"
+  // Phase 8 Task 3. Not abuse signals like the three above: these are the
+  // platform's own statutory obligation arriving at the operator without
+  // anyone opening /super/data-requests.
+  | "dsr_deadline_approaching"
+  | "dsr_overdue";
 
 export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {
   rate_limit_tripped: "Rate limit tripped",
   repeated_login_failures: "Repeated failed sign-ins",
   upload_quarantined: "Upload quarantined",
+  dsr_deadline_approaching: "Data request due soon",
+  dsr_overdue: "Data request OVERDUE",
 };
 
 /**

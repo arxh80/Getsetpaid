@@ -60,6 +60,12 @@ const SURFACES: readonly { href: string; label: string; blurb: string }[] = [
       "What people sent from the in-app Feedback control — identified, filterable by workspace, category and date, with a status you set by hand. Screenshots open through an audited link, never inline.",
   },
   {
+    href: "/super/data-requests",
+    label: "Data requests",
+    blurb:
+      "What people have asked us to do with their own data — access, correction, erasure, restriction, objection, portability — nearest statutory deadline first. An overdue one raises an alert without anyone opening this page.",
+  },
+  {
     href: "/super/legal",
     label: "Legal documents",
     blurb:
