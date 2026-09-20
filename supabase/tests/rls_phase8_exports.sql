@@ -461,15 +461,39 @@ set request.jwt.claims = :'powner_c';
 -- BY CONSTRUCTION, not by the guard: `authenticated` holds no UPDATE
 -- privilege on any column of this table, so the statement never reaches
 -- private.export_jobs_before_update(). The guard is for the other caller --
--- service_role, which DOES hold one, and which XJ2 onwards exercise.
+-- service_role, which DOES hold one, and which XJ1b below exercises directly.
 select xp.try('XJ1 the requester holds no UPDATE privilege at all -- a job''s progress is not theirs',
   format($$update public.export_jobs set status='running' where id=%L$$, :'alpha_job'),
   'denied(42501)');
 
+-- THE GUARD ITSELF, asked by the one caller that HOLDS THE GRANT.
+--
+-- XJ1 is a refusal by a MISSING PRIVILEGE, which is a real control and is not
+-- this one: removing private.export_jobs_before_update()'s server-only leg
+-- entirely leaves XJ1 green, measured (mutation `update_session`: 0 of 121
+-- red before this assertion existed -- a guard nothing exercised). The leg
+-- exists for the caller that does hold a column-level UPDATE: the runner,
+-- as service_role. If that session ever carried a person's claims -- a
+-- compromised runner, or a future code path that forwarded them -- it would
+-- be writing a job's outcome on behalf of somebody, and this is what refuses
+-- it, by its own hint.
+reset role;
+set role service_role;
+set request.jwt.claims = :'powner_c';
+select xp.try_hint('XJ1b THE GUARD: service_role -- which HOLDS the grant -- is refused while a person''s claims are on the session',
+  format($$update public.export_jobs set status='running' where id=%L$$, :'alpha_job'),
+  'denied(42501:export_outcome_is_server_only)');
+reset request.jwt.claims;
+select xp.try_hint('XJ1c DENOMINATOR: the same statement from the same role, claims cleared, IS admitted',
+  format($$update public.export_jobs set status='running' where id=%L$$, :'alpha_job'), 'ok');
+select xp.try_hint('XJ1d ...and running -> running is then refused as a non-transition, so XJ1c really wrote',
+  format($$update public.export_jobs set status='running' where id=%L$$, :'alpha_job'),
+  'denied(22023:illegal_export_transition)');
 reset role;
 reset request.jwt.claims;
-select xp.try_hint('XJ2 as POSTGRES, queued -> running is admitted',
-  format($$update public.export_jobs set status='running' where id=%L$$, :'alpha_job'), 'ok');
+select xp.try_hint('XJ2 as POSTGRES, a job already running cannot be claimed again',
+  format($$update public.export_jobs set status='running' where id=%L$$, :'alpha_job'),
+  'denied(22023:illegal_export_transition)');
 select xp.val('XJ3 ...and started_at is the DATABASE''s clock, not a caller''s',
   format($$select (started_at is not null and started_at <= now()
                    and started_at > now() - interval '1 minute')::text
