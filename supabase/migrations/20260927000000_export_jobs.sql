@@ -228,6 +228,9 @@ values
   ('workspace', 'feedback', 'excused',
    'Platform-scoped by design (CLAUDE.md, In-app feedback): no submitter can read any row, their own included (Q103), because RLS filters rows and not columns and status / notified_at / organisation_role are GetSetPaid''s rather than theirs. A person''s own submissions are in the ACCOUNT export.',
    null, null, null, null),
+  ('workspace', 'export_jobs', 'excused',
+   'The register of exports themselves. It is metadata about this feature rather than a record of the business, there is no cross-member read of it (an export of it would hold only the reader''s own jobs), and it necessarily contains the job building the archive -- a record of itself. The reader sees every one of their own on the export page, live.',
+   null, null, null, null),
   ('workspace', 'data_subject_requests', 'excused',
    'Another person''s statutory request. The workspace appears on it only as the organisation an operator ROUTED it to (Q160), and the row holds the requester''s identity, their own words and our handling of them -- none of which is the workspace''s data. The requester gets it in their own account export.',
    null, null, null, null),
@@ -259,6 +262,9 @@ values
    'elevated', array['admin_accepted_by','declined_by'], 'id', null),
 
   -- ---- EXCUSED ---------------------------------------------------------
+  ('account', 'export_jobs', 'excused',
+   'The register of exports themselves -- metadata about this feature rather than data about the person, and a record of itself: the job building the archive would be in it. Every one of their own jobs is on /account/exports, live, with its status, its counts and what it withheld.',
+   null, null, null, null),
   ('account', 'data_subject_request_notes', 'excused',
    'The operator''s working notes on statutory requests (Q103). The requester has no read of them anywhere in the product -- they are a separate table with no own-rows policy precisely so that there is nothing for a page to decline to render -- and an export that included them would hand back exactly what that split exists to withhold. The only author is the operator.',
    null, null, null, null),

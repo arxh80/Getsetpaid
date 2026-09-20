@@ -35,37 +35,49 @@ import {
 } from "./contract";
 import { nudgeExportRunner } from "./runner";
 
-export async function startAccountExportAction(
+/**
+ * ONE ACTION FOR BOTH KINDS, driven by the form's own `kind` field.
+ *
+ * Not a shortcut: the kind decides only WHICH of the two shapes is inserted,
+ * and neither shape is authorised here. An account export needs nothing but
+ * a session (it is the person's own data about themselves, and the statutory
+ * route must not be the only route); a workspace export needs a workspace,
+ * `export_organisation_data` in it and a fresh credential. The first two of
+ * those three are the database's answers, at the insert; only the step-up is
+ * this file's, because "was a credential presented in the last five minutes"
+ * is a fact about a JWT that no database rule can see.
+ */
+export async function startExportAction(
   _prev: FormState,
-  _formData: FormData,
+  formData: FormData,
 ): Promise<FormState> {
+  const kind = formData.get("kind");
+  if (kind !== "account" && kind !== "workspace") {
+    return { error: "That export could not be started." };
+  }
+
   const user = await getCurrentUser();
   if (!user) return { error: "Sign in to export your data." };
 
   const supabase = await createClient();
-  const { error } = await supabase.from("export_jobs").insert({ kind: "account" });
-  const refusal = refusalFor(error);
-  if (refusal) return { error: refusal };
 
-  nudgeExportRunner();
-  revalidatePath(ACCOUNT_EXPORTS_PATH);
-  return { message: EXPORT_STARTED_MESSAGE };
-}
+  if (kind === "account") {
+    const { error } = await supabase.from("export_jobs").insert({ kind: "account" });
+    const refusal = refusalFor(error);
+    if (refusal) return { error: refusal };
 
-export async function startWorkspaceExportAction(
-  _prev: FormState,
-  formData: FormData,
-): Promise<FormState> {
+    nudgeExportRunner();
+    revalidatePath(ACCOUNT_EXPORTS_PATH);
+    return { message: EXPORT_STARTED_MESSAGE };
+  }
+
   const slug = formData.get("orgSlug");
   if (typeof slug !== "string" || slug === "") {
     return { error: "That workspace could not be exported." };
   }
 
-  const user = await getCurrentUser();
-  if (!user) return { error: "Sign in to export this workspace." };
-
   // getCurrentOrg() returns null for a slug that does not exist, belongs to
-  // another tenant, or names a membership that is not active — and does not
+  // another tenant, or names a membership that is not active -- and does not
   // distinguish them, which is the tenant-isolation rule. One sentence for
   // all three.
   const org = await getCurrentOrg(slug);
@@ -73,10 +85,7 @@ export async function startWorkspaceExportAction(
 
   // STEP-UP. CLAUDE.md § Session security names "large data exports"
   // explicitly, and a workspace export is the largest thing this product
-  // hands out. The account export is deliberately NOT gated: it is the
-  // person's own data about themselves, the statutory route must not be the
-  // only route, and a prompt on it would make exercising a right harder than
-  // exercising it through a form.
+  // hands out.
   if (!(await checkStepUp())) {
     return {
       error:
@@ -84,7 +93,6 @@ export async function startWorkspaceExportAction(
     };
   }
 
-  const supabase = await createClient();
   const { error } = await supabase
     .from("export_jobs")
     .insert({ kind: "workspace", organisation_id: org.id });

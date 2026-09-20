@@ -1,8 +1,8 @@
 "use client";
 
 import { useActionState } from "react";
-import { startAccountExportAction, startWorkspaceExportAction } from "@/lib/export/actions";
-import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
+import { startExportAction } from "@/lib/export/actions";
+import { EMPTY_FORM_STATE } from "@/lib/forms";
 import { Button } from "@/components/ui/button";
 import { useReportedAction } from "@/components/ui/action-outcome";
 
@@ -30,13 +30,12 @@ export function ExportStartForm({
   disabled?: boolean;
   disabledReason?: string;
 }) {
-  const action: (prev: FormState, data: FormData) => Promise<FormState> =
-    kind === "account" ? startAccountExportAction : startWorkspaceExportAction;
-  const reported = useReportedAction(action);
+  const reported = useReportedAction(startExportAction);
   const [, formAction, pending] = useActionState(reported, EMPTY_FORM_STATE);
 
   return (
     <form action={formAction} className="flex flex-col items-start gap-2">
+      <input type="hidden" name="kind" value={kind} />
       {orgSlug ? <input type="hidden" name="orgSlug" value={orgSlug} /> : null}
       <Button type="submit" pending={pending} pendingLabel="Starting…" disabled={disabled}>
         {kind === "account" ? "Export my account data" : "Export this workspace"}
