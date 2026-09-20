@@ -228,12 +228,28 @@ const marketingV2 = readMigration("20260923001000_marketing_preferences_v2.sql")
 // replacement shape. Applied here for the same reason.
 const dsrV2 = readMigration("20260924002000_data_subject_rights_v2.sql");
 
+// Phase 8 Task 3 fix round 1: Your Data Protection Rights v3 (20260925004000),
+// the same exact-replacement shape again. Version 2 is published and
+// therefore immutable, so the review's three corrections are a new version.
+const dsrV3 = readMigration("20260925004000_data_subject_rights_v3.sql");
+
+/** Every page's current body as it stood before version 3 of the DSR page. */
+function currentBodiesBeforeV3(): Map<string, string> {
+  const current = seedBodies();
+  for (const [slug, body] of correctedBodies()) current.set(slug, body);
+  for (const [slug, body] of applyCorrections(consistency, current, "20260922006000")) current.set(slug, body);
+  for (const [slug, body] of applyCorrections(marketingV2, current, "20260923001000")) current.set(slug, body);
+  for (const [slug, body] of applyCorrections(dsrV2, current, "20260924002000")) current.set(slug, body);
+  return current;
+}
+
 function currentBodies(): Map<string, string> {
   const current = seedBodies();
   for (const [slug, body] of correctedBodies()) current.set(slug, body);
   for (const [slug, body] of applyCorrections(consistency, current, "20260922006000")) current.set(slug, body);
   for (const [slug, body] of applyCorrections(marketingV2, current, "20260923001000")) current.set(slug, body);
   for (const [slug, body] of applyCorrections(dsrV2, current, "20260924002000")) current.set(slug, body);
+  for (const [slug, body] of applyCorrections(dsrV3, current, "20260925004000")) current.set(slug, body);
   return current;
 }
 
@@ -387,6 +403,74 @@ describe("Task 2: Marketing and Communications Preferences version 2", () => {
 // ===========================================================================
 // PHASE 8 TASK 3: DATA SUBJECT RIGHTS v2 DESCRIBES THE WORKFLOW THAT EXISTS
 // ===========================================================================
+describe("Task 3 fix round 1: Your Data Protection Rights version 3", () => {
+  const before = currentBodiesBeforeV3();
+  const corrected = applyCorrections(dsrV3, before, "20260925004000");
+  const body = corrected.get("data-subject-rights") ?? "";
+
+  it("20260925004000 corrects exactly the data-subject-rights page", () => {
+    expect([...corrected.keys()]).toEqual(["data-subject-rights"]);
+    expect(body).not.toBe(before.get("data-subject-rights"));
+  });
+
+  it("passes the editor's own save-time validation", () => {
+    const result = validateDraft("data-subject-rights", {
+      title: "Your Data Protection Rights",
+      body,
+      effectiveDate: "2026-09-25",
+    });
+    expect(result.ok ? {} : result.fieldErrors).toEqual({});
+  });
+
+  it("DENOMINATOR: version 2 contradicted itself and promised an unlimited mailbox", () => {
+    const v2 = before.get("data-subject-rights") ?? "";
+    expect(v2).toContain("never shown to anyone else");
+    expect(v2).toContain("we pass it to that organisation");
+    expect(v2).toContain("email is never limited");
+    expect(v2).not.toContain("## If you cannot sign in");
+  });
+
+  it("keeps only the promise the product can keep, and names the exception", () => {
+    expect(body).not.toContain("never shown to anyone else");
+    expect(body).toMatch(/never copied into our security log/);
+    expect(body).toMatch(/we have to tell that business that you asked/);
+    expect(body).toMatch(/we tell you which business we asked/);
+  });
+
+  it("says the form's limit does not apply to email, rather than that email is unlimited", () => {
+    expect(body).not.toContain("email is never limited");
+    expect(body).toContain("That limit does not apply to email");
+    expect(body).toMatch(/limited to ten requests a day/);
+  });
+
+  it("writes down the identity procedure for a request with no account", () => {
+    expect(body).toContain("## If you cannot sign in");
+    // The four properties the procedure has to have to be a procedure: ask
+    // little, disclose nothing first, the clock starts when identity is
+    // settled, and there is a written refusal with a route to the ICO.
+    expect(body).toMatch(/as little as we can/);
+    expect(body).toMatch(/tell you nothing about what we hold/);
+    expect(body).toMatch(/runs from the day we have what we need/);
+    expect(body).toMatch(/complain to the ICO/);
+  });
+
+  it("says routing is something WE do by hand, not something the product sends", () => {
+    expect(body).not.toContain("we pass it to that organisation and record that we did;");
+    expect(body).toMatch(/we write to it ourselves/);
+    expect(body).toMatch(/nothing in GetSetPaid tells a business/);
+  });
+
+  it("keeps the Q132 counsel gap", () => {
+    expect(body).toContain("[Counsel to confirm: the controller and processor characterisation above.]");
+  });
+
+  it("records no counsel review and publishes by transition", () => {
+    expect(dsrV3).not.toMatch(/set\s+counsel_review|counsel_reviewer\s*=|counsel_review_recorded_by\s*=/);
+    expect(dsrV3).toMatch(/set status = 'published'/);
+    expect(dsrV3).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/);
+  });
+});
+
 describe("Task 3: Your Data Protection Rights version 2", () => {
   const before = new Map([
     ...seedBodies(),
