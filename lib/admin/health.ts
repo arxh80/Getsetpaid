@@ -231,6 +231,29 @@ export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {
 };
 
 /**
+ * WHY AN ALERT STOPPED BEING OPEN, WHEN NOBODY PRESSED ANYTHING.
+ *
+ * `incident_alerts.auto_resolved_reason` (20260925002000) is null on a
+ * person's resolution and carries one of these two values on the system's.
+ * FIX ROUND 2, RE-REVIEW FINDING M-R7: the column existed but was neither
+ * projected nor rendered, so a one-week SNOOZE (the operator pressed Resolve;
+ * the request is still open and still overdue) and a CLOSURE (the request
+ * reached a terminal state, there is nothing left to do) both read
+ * "resolved <time>" on /super/health. Q159 made "resolved" mean two opposite
+ * things, and the operator could not tell which one they were looking at.
+ *
+ * The keys are the database CHECK's values, bound to it by
+ * tests/integration/admin/incident-alert-vocabularies-match-db.test.ts --
+ * which is also the binding task-3-report.md claimed for
+ * INCIDENT_ALERT_TYPE_LABELS and did not have (M-R6).
+ */
+export const INCIDENT_ALERT_AUTO_RESOLUTION_LABELS: Record<string, string> = {
+  data_subject_request_closed:
+    "resolved automatically — the request was closed",
+  alert_writer_recovered: "cleared automatically — the writer recovered",
+};
+
+/**
  * OWN KEYS ONLY, not `in`.
  *
  * Found by the unit suite this cleanup round added while covering the two new
@@ -287,6 +310,15 @@ export interface IncidentAlertRow {
   readonly summary: string;
   readonly createdAt: string;
   readonly resolvedAt: string | null;
+  /**
+   * Null when a PERSON resolved it, one of
+   * INCIDENT_ALERT_AUTO_RESOLUTION_LABELS' keys when the SYSTEM did (fix round
+   * 2, M-R7). Projected because "resolved" means two opposite things since
+   * Q159 -- a snooze on a request that is still overdue, or a closure with
+   * nothing left to do -- and the row is the only place that distinction
+   * exists.
+   */
+  readonly autoResolvedReason: string | null;
 }
 
 /** Which alerts the operator is looking at. `any` is the default because a
@@ -499,7 +531,7 @@ export async function fetchIncidentAlertPage(
   let query = supabase
     .from("incident_alerts")
     .select(
-      "id, alert_type, organisation_id, details, summary, created_at, resolved_at",
+      "id, alert_type, organisation_id, details, summary, created_at, resolved_at, auto_resolved_reason",
     );
 
   // THE ALLOWLISTED FILTERS: two columns, two fixed operators, and both values
@@ -601,6 +633,7 @@ export async function fetchIncidentAlertPage(
     summary: row.summary as string,
     createdAt: row.created_at as string,
     resolvedAt: (row.resolved_at as string | null) ?? null,
+    autoResolvedReason: (row.auto_resolved_reason as string | null) ?? null,
   }));
 
   const lastRow = mapped[mapped.length - 1];

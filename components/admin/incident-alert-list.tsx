@@ -4,6 +4,7 @@ import { toolbarParamNames, type RawSearchParams } from "@/lib/list/params";
 import {
   INCIDENT_ALERT_FILTER_PARAMS,
   INCIDENT_ALERT_SPEC,
+  INCIDENT_ALERT_AUTO_RESOLUTION_LABELS,
   INCIDENT_ALERT_TYPE_LABELS,
   buildIncidentAlertNextHref,
   buildIncidentAlertSelfHref,
@@ -200,6 +201,33 @@ function FilterStrip({
  * alert is suspend/close or an impersonation request must read that as a fact
  * rather than as a blank. Identifiers only, the discipline the summary keeps.
  */
+/**
+ * "resolved" or something more specific.
+ *
+ * FIX ROUND 2, RE-REVIEW FINDING M-R7. Since Q159 a resolution means one of
+ * three things and the row read the same for all three: an alert the operator
+ * resolved themselves (a ONE-WEEK SNOOZE -- the request is still open and
+ * still overdue, and the alert will come back), one the system resolved
+ * because the request reached a terminal state (nothing left to do), and a
+ * dsr_alert_writer_failed that cleared itself when the writer ran clean again.
+ * The whole point of 20260925002000's auto_resolved_reason is that "nobody is
+ * named as having resolved an alert they never saw"; the page was not saying
+ * so. An unmirrored reason falls back to the plain word rather than rendering
+ * a raw enum -- the overrides list's M4 rule, applied to the reason instead of
+ * the type.
+ */
+function resolutionWording(autoResolvedReason: string | null): string {
+  if (autoResolvedReason === null) return "resolved by you";
+  return (
+    Object.prototype.hasOwnProperty.call(
+      INCIDENT_ALERT_AUTO_RESOLUTION_LABELS,
+      autoResolvedReason,
+    )
+      ? INCIDENT_ALERT_AUTO_RESOLUTION_LABELS[autoResolvedReason]
+      : "resolved automatically"
+  );
+}
+
 function AlertAttribution({ alert }: { alert: IncidentAlertRow }) {
   if (alert.organisationName !== null) {
     return (
@@ -240,7 +268,7 @@ function Rows({ alerts }: { alerts: readonly IncidentAlertRow[] }) {
             <p className="text-sm text-ink-muted">
               Raised {formatDateTime(alert.createdAt)}
               {alert.resolvedAt !== null
-                ? ` · resolved ${formatDateTime(alert.resolvedAt)}`
+                ? ` · ${resolutionWording(alert.autoResolvedReason)} ${formatDateTime(alert.resolvedAt)}`
                 : null}
             </p>
           </div>

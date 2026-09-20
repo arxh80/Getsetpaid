@@ -246,7 +246,16 @@ test("the superuser reads live counts and a real alert row at /super/health", as
       page.getByText(alertSummary),
       "a resolved alert stays listed -- it is evidence, and resolving is a flag",
     ).toBeVisible();
-    await expect(row).toContainText(/resolved/i);
+    // AND IT SAYS WHO RESOLVED IT (fix round 2, M-R7). Since Q159 "resolved"
+    // means two opposite things -- a one-week SNOOZE the operator pressed on a
+    // request that is still overdue, or a SYSTEM closure with nothing left to
+    // do -- and both used to read the same four words. This is the operator's
+    // own press, so the row must say so.
+    await expect(row).toContainText(/resolved by you/i);
+    await expect(
+      row,
+      "the operator's own resolution must not read as the system's",
+    ).not.toContainText(/resolved automatically/i);
   } finally {
     await deleteIncidentAlert(alertId);
   }
