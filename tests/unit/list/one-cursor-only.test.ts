@@ -375,8 +375,43 @@ describe("every paginated list shares one implementation", () => {
     // every list endpoint, and a bare `.limit()` IS a ceiling. What it is not
     // is a page-2, which is why nothing offers one.
     expect(callers(".range(")).toEqual([]);
-    const offsets = SOURCES.filter((f) => /\boffset:\s/.test(code(f.text)));
+    // NOT A TYPE ANNOTATION. `offset: ` alone also matches a FIELD DECLARED
+    // to be a number, and that is measured rather than guessed: Phase 8
+    // Task 4's `lib/export/zip.ts` declares `offset: number` on a ZIP
+    // central-directory record -- a byte position in a binary container, in
+    // a module that imports `node:zlib` and nothing else and could not reach
+    // PostgREST if it tried. The negative lookahead excludes the primitive
+    // type keywords and nothing else, so `offset: 20`, `offset: page * size`
+    // and `offset: cursor` are all still caught -- the fixtures below are
+    // what keeps that true rather than a comment claiming it.
+    //
+    // THE WHITESPACE LIVES INSIDE THE LOOKAHEAD, and the first draft had it
+    // outside: `offset:\s*(?!number)` matches `offset: number` anyway,
+    // because the engine is free to let `\s*` consume nothing and then
+    // find that a SPACE is not the word `number`. Measured -- it failed on
+    // the very file it was written for.
+    const OFFSET_PAGINATION =
+      /\boffset:(?!\s*(?:number|string|bigint|boolean)\b)/;
+    const offsets = SOURCES.filter((f) => OFFSET_PAGINATION.test(code(f.text)));
     expect(offsets.map((f) => f.path)).toEqual([]);
+
+    // The pattern still sees every shape a real offset page takes...
+    for (const shape of [
+      "const q = { offset: 20, limit: 10 };",
+      "supabase.from('x').select('*', { offset: page * size })",
+      "  offset: cursor,",
+      "{ offset: 0 }",
+    ]) {
+      expect(OFFSET_PAGINATION.test(shape), shape).toBe(true);
+    }
+    // ...and none of the type positions it is being narrowed away from.
+    for (const shape of [
+      "  readonly offset: number;",
+      "interface E { offset: number }",
+      "let offset: bigint;",
+    ]) {
+      expect(OFFSET_PAGINATION.test(shape), shape).toBe(false);
+    }
   });
 });
 
