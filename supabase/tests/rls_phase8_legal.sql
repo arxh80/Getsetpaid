@@ -132,10 +132,10 @@ select md5(body) as au_md5 from public.legal_documents where slug = 'acceptable-
 -- ===========================================================================
 select lg.val('LF1 FIXTURE: the migrations hold exactly 28 rows (25, plus the three Phase 8 Task 4 rewrote because the export made them false)',
   $$select count(*)::text from public.legal_documents$$, '28');
-select lg.val('LF2 FIXTURE: 15 published -- 7 still at version 1, 4 at version 2, 2 at version 3, 2 at version 4',
+select lg.val('LF2 FIXTURE: 15 published -- 8 still at version 1, 3 at version 2, 2 at version 3, 2 at version 4',
   $$select string_agg(version || '=' || n, ',' order by version) from (
       select version, count(*) as n from public.legal_documents where status = 'published' group by version) v$$,
-  '1=7,2=4,3=2,4=2');
+  '1=8,2=3,3=2,4=2');
 -- WHICH THREE, AND WHAT EACH NOW SAYS. Shipping a feature makes prose about
 -- it out of date, and the published version is immutable -- so the DPA's "a
 -- self-service export is being built", the rights page's single route to a
@@ -775,8 +775,8 @@ reset role; reset request.jwt.claims;
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'super_c';
-select lg.val('LO1 the aal2 superuser reads every version: 25 migrated + the terms and cookies drafts',
-  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '27');
+select lg.val('LO1 the aal2 superuser reads every version: 28 migrated + the terms and cookies drafts',
+  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '30');
 select lg.val('LO2 ...including the one open draft, which no table read can reach',
   $$select string_agg(slug || ':' || status, ',' order by slug)
       from public.operator_legal_document_versions(null) where status = 'draft'$$, 'cookies:draft');
