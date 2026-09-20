@@ -4,8 +4,6 @@ import { useActionState, useId, useState } from "react";
 import {
   routeDataSubjectRequestAction,
   transitionDataSubjectRequestAction,
-  ROUTING_CONFIRMED_SLUG_KEY,
-  ROUTING_RESOLVED_NAME_KEY,
 } from "@/lib/dsr/admin-actions";
 import { EMPTY_FORM_STATE } from "@/lib/forms";
 import {
@@ -13,7 +11,9 @@ import {
   DSR_REJECTION_REASON_MAX,
   DSR_STATUS_LABELS,
   REJECTION_REASON_WARNING,
+  ROUTING_CONFIRMED_SLUG_KEY,
   ROUTING_HANDOVER_HINT,
+  ROUTING_RESOLVED_NAME_KEY,
   ROUTING_SENDS_NOTHING,
   operatorMayRoute,
   operatorTransitionsFrom,

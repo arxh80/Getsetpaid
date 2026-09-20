@@ -48,18 +48,12 @@ import {
   DSR_NOTE_MAX,
   DSR_REJECTION_REASON_MAX,
   DSR_STATUS_LABELS,
+  ROUTING_CONFIRMED_SLUG_KEY,
+  ROUTING_RESOLVED_NAME_KEY,
   SUPER_DATA_REQUESTS_PATH,
   UUID_RE,
   isDsrStatus,
 } from "./contract";
-
-/**
- * The key the routing form reads a resolved workspace name back from, and the
- * key it sends the operator's confirmation on. Exported so the form and the
- * unit suite cannot drift from the action.
- */
-export const ROUTING_RESOLVED_NAME_KEY = "resolvedOrganisationName";
-export const ROUTING_CONFIRMED_SLUG_KEY = "confirmedSlug";
 
 const NOT_ALLOWED =
   "That can’t be done from here. Reload the page — the request may have changed since it was opened.";

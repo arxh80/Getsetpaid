@@ -331,3 +331,22 @@ export function routedNoticeFor(organisationName: string | null): string {
 
 export const NO_ACCOUNT_ROUTE =
   "This form is for people with a GetSetPaid account: being signed in is how we know the request is really yours. If you have no account, or cannot sign in, email us instead and we will verify your identity another way.";
+
+/**
+ * The key the routing form reads a resolved workspace name back from, and the
+ * key it sends the operator's confirmation on. Shared so the form, the action
+ * and the unit suite cannot drift.
+ *
+ * THESE LIVE HERE AND NOT BESIDE THE ACTION, AND THAT IS NOT A PREFERENCE.
+ * `lib/dsr/admin-actions.ts` carries `"use server"`, and a "use server" module
+ * may export nothing but async functions. Exporting these two string constants
+ * from it did not fail the build or the type check: Next's compiler dropped
+ * EVERY export from the module for the client and SSR graphs, so
+ * `/super/data-requests` — the whole operator queue — failed to compile at
+ * request time with "the module has no exports at all". Nothing caught it
+ * because the unit suite imports the module directly (where the constants are
+ * ordinary exports) and the gates were not run in the round that added them;
+ * the first real browser run found it in seconds.
+ */
+export const ROUTING_RESOLVED_NAME_KEY = "resolvedOrganisationName";
+export const ROUTING_CONFIRMED_SLUG_KEY = "confirmedSlug";

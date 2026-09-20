@@ -60,9 +60,15 @@ import {
   addDataSubjectRequestNoteAction,
   routeDataSubjectRequestAction,
   transitionDataSubjectRequestAction,
+} from "@/lib/dsr/admin-actions";
+// NOT from the action module: it carries "use server", which may export only
+// async functions — see the comment on these two in lib/dsr/contract.ts. This
+// import is also the census that keeps them out of there, because importing
+// them from the action module here is exactly what hid the broken build.
+import {
   ROUTING_CONFIRMED_SLUG_KEY,
   ROUTING_RESOLVED_NAME_KEY,
-} from "@/lib/dsr/admin-actions";
+} from "@/lib/dsr/contract";
 import { STEP_UP_MAX_AGE_SECONDS } from "@/lib/auth/step-up";
 import { EMPTY_FORM_STATE } from "@/lib/forms";
 
