@@ -48,12 +48,17 @@ import {
   DSR_NOTE_MAX,
   DSR_REJECTION_REASON_MAX,
   DSR_STATUS_LABELS,
+  ROUTING_CONFIRMATION_TOKEN_KEY,
   ROUTING_CONFIRMED_SLUG_KEY,
   ROUTING_RESOLVED_NAME_KEY,
   SUPER_DATA_REQUESTS_PATH,
   UUID_RE,
   isDsrStatus,
 } from "./contract";
+import {
+  mintRoutingConfirmation,
+  verifyRoutingConfirmation,
+} from "./routing-confirmation";
 
 const NOT_ALLOWED =
   "That can’t be done from here. Reload the page — the request may have changed since it was opened.";
@@ -243,21 +248,34 @@ export async function routeDataSubjectRequestAction(
   }
   const organisationName = org.name as string;
 
-  if ((field(formData, ROUTING_CONFIRMED_SLUG_KEY) ?? "").toLowerCase() !== slug) {
+  const organisationId = org.id as string;
+
+  // THE CONFIRMATION IS A SERVER-MINTED TOKEN OVER THE RESOLVED ORGANISATION
+  // ID (fix round 2, R3 / Q163), not two fields of this same POST compared
+  // against each other. Before this, `confirmedSlug === organisationSlug`
+  // within one submission meant a single crafted POST routed with the
+  // workspace's NAME never rendered to anybody -- an interlock against the
+  // form rather than against a submission -- and it bound the TYPED SLUG, so a
+  // slug reassigned between the two presses routed to a workspace nobody had
+  // been shown. See lib/dsr/routing-confirmation.ts.
+  if (!verifyRoutingConfirmation(field(formData, ROUTING_CONFIRMATION_TOKEN_KEY), requestId, organisationId)) {
     // NOT AN ERROR AND NOT A SUCCESS: the form renders the name and asks for
     // one more press. Nothing has been written.
     return {
       values: {
         ...echoedValues(formData),
         [ROUTING_RESOLVED_NAME_KEY]: organisationName,
+        // DISPLAY ONLY. The panel shows the operator which slug it resolved;
+        // it authorises nothing, and the action never reads it back.
         [ROUTING_CONFIRMED_SLUG_KEY]: slug,
+        [ROUTING_CONFIRMATION_TOKEN_KEY]: mintRoutingConfirmation(requestId, organisationId),
       },
     };
   }
 
   const { error } = await supabase.rpc("route_data_subject_request", {
     p_request_id: requestId,
-    p_organisation_id: org.id as string,
+    p_organisation_id: organisationId,
     p_handover_note: handoverNote,
   });
   if (error) {

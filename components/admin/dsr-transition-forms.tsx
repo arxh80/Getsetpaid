@@ -11,6 +11,7 @@ import {
   DSR_REJECTION_REASON_MAX,
   DSR_STATUS_LABELS,
   REJECTION_REASON_WARNING,
+  ROUTING_CONFIRMATION_TOKEN_KEY,
   ROUTING_CONFIRMED_SLUG_KEY,
   ROUTING_HANDOVER_HINT,
   ROUTING_RESOLVED_NAME_KEY,
@@ -173,6 +174,10 @@ function DsrRoutingForm({ row, formId }: { row: DsrQueueRow; formId: string }) {
   const [state, formAction, pending] = useActionState(action, EMPTY_FORM_STATE);
   const resolvedName = state.values?.[ROUTING_RESOLVED_NAME_KEY];
   const confirmedSlug = state.values?.[ROUTING_CONFIRMED_SLUG_KEY];
+  // The server's own token, bound to the request AND the organisation the slug
+  // resolved to (fix round 2, R3). `confirmedSlug` is what the panel SHOWS;
+  // this is what the second press is accepted on.
+  const confirmationToken = state.values?.[ROUTING_CONFIRMATION_TOKEN_KEY];
 
   return (
     <form
@@ -221,7 +226,7 @@ function DsrRoutingForm({ row, formId }: { row: DsrQueueRow; formId: string }) {
       {/* The confirmation lives IN the form: nothing has been written yet, so
           this is a question rather than an outcome, and the form is still on
           screen to answer it. */}
-      {resolvedName && confirmedSlug ? (
+      {resolvedName && confirmedSlug && confirmationToken ? (
         <div
           role="status"
           data-testid="dsr-routing-confirm"
@@ -233,7 +238,11 @@ function DsrRoutingForm({ row, formId }: { row: DsrQueueRow; formId: string }) {
             {confirmedSlug} — press “Pass it on” again to record it. Change the slug above if this
             is not them.
           </p>
-          <input type="hidden" name={ROUTING_CONFIRMED_SLUG_KEY} value={confirmedSlug} />
+          <input
+            type="hidden"
+            name={ROUTING_CONFIRMATION_TOKEN_KEY}
+            value={confirmationToken}
+          />
         </div>
       ) : null}
 

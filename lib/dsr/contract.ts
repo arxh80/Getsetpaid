@@ -350,3 +350,26 @@ export const NO_ACCOUNT_ROUTE =
  */
 export const ROUTING_RESOLVED_NAME_KEY = "resolvedOrganisationName";
 export const ROUTING_CONFIRMED_SLUG_KEY = "confirmedSlug";
+
+/**
+ * The key the SECOND press sends the server-minted confirmation on
+ * (fix round 2, re-review finding R3 / Q163).
+ *
+ * The first cut of the confirm gate compared two fields of the SAME POST --
+ * `confirmedSlug === organisationSlug` -- so a single crafted submission
+ * (`organisationSlug=acme&confirmedSlug=acme&handoverNote=x`) routed
+ * immediately, with the workspace name never rendered to anybody. Q160a asked
+ * for an interlock against the operator's own typo, and that is an interlock
+ * against the FORM rather than against a submission. It also bound the TYPED
+ * SLUG rather than the organisation the slug RESOLVED to, so a slug
+ * reassigned between the two presses would route to a workspace whose name
+ * was never shown -- which is exactly the property the unit test's own comment
+ * claimed ("a confirmation carried over from one workspace must not authorise
+ * a write to another").
+ *
+ * The value is now minted by the server on the first press, over the request
+ * id AND the resolved organisation id, and is unforgeable without the
+ * server's key. `confirmedSlug` stays as the string the confirmation panel
+ * DISPLAYS; it authorises nothing.
+ */
+export const ROUTING_CONFIRMATION_TOKEN_KEY = "routingConfirmation";

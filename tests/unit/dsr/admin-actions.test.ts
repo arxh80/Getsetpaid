@@ -66,6 +66,7 @@ import {
 // import is also the census that keeps them out of there, because importing
 // them from the action module here is exactly what hid the broken build.
 import {
+  ROUTING_CONFIRMATION_TOKEN_KEY,
   ROUTING_CONFIRMED_SLUG_KEY,
   ROUTING_RESOLVED_NAME_KEY,
 } from "@/lib/dsr/contract";
@@ -203,12 +204,19 @@ describe("passing a request to the workspace that is its controller (Q160)", () 
     expect(result.message).toBeUndefined();
     expect(result.values?.[ROUTING_RESOLVED_NAME_KEY]).toBe(ORG.name);
     expect(result.values?.[ROUTING_CONFIRMED_SLUG_KEY]).toBe("neon-nights");
+    expect(
+      result.values?.[ROUTING_CONFIRMATION_TOKEN_KEY],
+      "the first press must MINT the confirmation the second one is accepted on (R3)",
+    ).toBeTruthy();
   });
 
   it("writes on the second press, and says that nothing was sent to anybody", async () => {
+    const first = await routeDataSubjectRequestAction(EMPTY_FORM_STATE, routing());
     const result = await routeDataSubjectRequestAction(
       EMPTY_FORM_STATE,
-      routing({ [ROUTING_CONFIRMED_SLUG_KEY]: "neon-nights" }),
+      routing({
+        [ROUTING_CONFIRMATION_TOKEN_KEY]: first.values?.[ROUTING_CONFIRMATION_TOKEN_KEY] ?? "",
+      }),
     );
     expect(stubs.rpc).toHaveBeenCalledWith("route_data_subject_request", {
       p_request_id: REQUEST,
@@ -225,12 +233,83 @@ describe("passing a request to the workspace that is its controller (Q160)", () 
   it("RE-ASKS when the slug has changed since it was confirmed", async () => {
     // The typo case the confirmation exists for: a confirmation carried over
     // from one workspace must not authorise a write to another.
+    const first = await routeDataSubjectRequestAction(EMPTY_FORM_STATE, routing());
+    stubs.organisation = { id: "0f2e1c6a-9f4a-4a2b-9e7c-11111111aaaa", name: "Neon Nightz Ltd" };
     const result = await routeDataSubjectRequestAction(
       EMPTY_FORM_STATE,
-      routing({ organisationSlug: "neon-nightz", [ROUTING_CONFIRMED_SLUG_KEY]: "neon-nights" }),
+      routing({
+        organisationSlug: "neon-nightz",
+        [ROUTING_CONFIRMATION_TOKEN_KEY]: first.values?.[ROUTING_CONFIRMATION_TOKEN_KEY] ?? "",
+      }),
     );
     expect(stubs.rpc).not.toHaveBeenCalled();
     expect(result.values?.[ROUTING_CONFIRMED_SLUG_KEY]).toBe("neon-nightz");
+  });
+
+  // ========================================================================
+  // R3 (fix round 2, Q163): THE CONFIRMATION IS THE SERVER'S, AND IT NAMES
+  // THE ORGANISATION RATHER THAN THE STRING.
+  // ========================================================================
+
+  it("a single crafted POST cannot route: the confirmation is not a field the caller can write", async () => {
+    // The whole of the first cut's gate was `confirmedSlug === organisationSlug`
+    // WITHIN ONE SUBMISSION, so this exact form data routed at once with the
+    // workspace's name never rendered to anybody.
+    const result = await routeDataSubjectRequestAction(
+      EMPTY_FORM_STATE,
+      routing({
+        [ROUTING_CONFIRMED_SLUG_KEY]: "neon-nights",
+        [ROUTING_CONFIRMATION_TOKEN_KEY]: "neon-nights",
+      }),
+    );
+    expect(
+      stubs.rpc,
+      "a crafted submission routed a statutory request with no confirmation ever shown",
+    ).not.toHaveBeenCalled();
+    expect(result.values?.[ROUTING_RESOLVED_NAME_KEY]).toBe(ORG.name);
+  });
+
+  it("nor can a plausible forgery: the token is HMACed, not merely structured", async () => {
+    const forged = `${Date.now()}.${"a".repeat(64)}`;
+    const result = await routeDataSubjectRequestAction(
+      EMPTY_FORM_STATE,
+      routing({ [ROUTING_CONFIRMATION_TOKEN_KEY]: forged }),
+    );
+    expect(stubs.rpc).not.toHaveBeenCalled();
+    expect(result.values?.[ROUTING_CONFIRMATION_TOKEN_KEY]).not.toBe(forged);
+  });
+
+  it("RE-ASKS when the SAME slug now resolves to a DIFFERENT workspace", async () => {
+    // The hole the old gate had that its own comment denied: it bound the
+    // typed STRING, so a slug reassigned between the two presses -- a rename,
+    // a slug freed and taken -- routed to a workspace whose name was never
+    // shown. The token binds the organisation ID.
+    const first = await routeDataSubjectRequestAction(EMPTY_FORM_STATE, routing());
+    expect(first.values?.[ROUTING_RESOLVED_NAME_KEY]).toBe(ORG.name);
+
+    stubs.organisation = { id: "0f2e1c6a-9f4a-4a2b-9e7c-222222bbbbbb", name: "Someone Else Ltd" };
+    const second = await routeDataSubjectRequestAction(
+      EMPTY_FORM_STATE,
+      routing({
+        [ROUTING_CONFIRMATION_TOKEN_KEY]: first.values?.[ROUTING_CONFIRMATION_TOKEN_KEY] ?? "",
+      }),
+    );
+    expect(
+      stubs.rpc,
+      "the slug resolved elsewhere and the confirmation still authorised the write",
+    ).not.toHaveBeenCalled();
+    expect(second.values?.[ROUTING_RESOLVED_NAME_KEY]).toBe("Someone Else Ltd");
+  });
+
+  it("a confirmation minted for ONE request does not route ANOTHER", async () => {
+    const first = await routeDataSubjectRequestAction(EMPTY_FORM_STATE, routing());
+    const other = routing({
+      [ROUTING_CONFIRMATION_TOKEN_KEY]: first.values?.[ROUTING_CONFIRMATION_TOKEN_KEY] ?? "",
+    });
+    other.set("requestId", "3f9a1b2c-4d5e-4f60-8a1b-999999999999");
+    const result = await routeDataSubjectRequestAction(EMPTY_FORM_STATE, other);
+    expect(stubs.rpc).not.toHaveBeenCalled();
+    expect(result.message).toBeUndefined();
   });
 
   it("refuses a routing with no handover note, before it looks anything up", async () => {
@@ -252,7 +331,7 @@ describe("passing a request to the workspace that is its controller (Q160)", () 
     stubs.organisation = null;
     const unknown = await routeDataSubjectRequestAction(
       EMPTY_FORM_STATE,
-      routing({ [ROUTING_CONFIRMED_SLUG_KEY]: "neon-nights" }),
+      routing({ [ROUTING_CONFIRMATION_TOKEN_KEY]: "anything" }),
     );
     expect(unknown.error).toBe("No workspace has that slug.");
     expect(stubs.rpc).not.toHaveBeenCalled();
