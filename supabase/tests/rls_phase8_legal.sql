@@ -130,15 +130,15 @@ select md5(body) as au_md5 from public.legal_documents where slug = 'acceptable-
 -- ===========================================================================
 -- § LF  FIXTURES
 -- ===========================================================================
-select lg.val('LF1 FIXTURE: the migrations hold exactly 24 rows (15 seeded + 4 corrected + 3 made consistent + marketing v2, Task 2 + data-subject-rights v2, Task 3)',
-  $$select count(*)::text from public.legal_documents$$, '24');
-select lg.val('LF2 FIXTURE: 15 published -- 8 still at version 1, 5 at version 2, 2 at version 3',
+select lg.val('LF1 FIXTURE: the migrations hold exactly 25 rows (15 seeded + 4 corrected + 3 made consistent + marketing v2, Task 2 + data-subject-rights v2 and v3, Task 3 and its fix round)',
+  $$select count(*)::text from public.legal_documents$$, '25');
+select lg.val('LF2 FIXTURE: 15 published -- 8 still at version 1, 4 at version 2, 3 at version 3',
   $$select string_agg(version || '=' || n, ',' order by version) from (
       select version, count(*) as n from public.legal_documents where status = 'published' group by version) v$$,
-  '1=8,2=5,3=2');
-select lg.val('LF2b FIXTURE: the superseded rows are exactly the versions fix rounds 1 and 2 (and Task 2) replaced',
+  '1=8,2=4,3=3');
+select lg.val('LF2b FIXTURE: the superseded rows are exactly the versions fix rounds 1 and 2 (and Task 2, and Task 3 and its fix round) replaced',
   $$select string_agg(slug || ':' || version, ',' order by slug, version) from public.legal_documents where status = 'superseded'$$,
-  'data-processing-addendum:1,data-processing-addendum:2,data-retention:1,data-subject-rights:1,marketing-preferences:1,privacy:1,privacy:2,security:1,subprocessors:1');
+  'data-processing-addendum:1,data-processing-addendum:2,data-retention:1,data-subject-rights:1,data-subject-rights:2,marketing-preferences:1,privacy:1,privacy:2,security:1,subprocessors:1');
 select lg.val('LF2c FIXTURE: no current page repeats a version 1 overclaim (I2, M1, M2)',
   $$select count(*)::text from public.legal_documents
      where status = 'published'
@@ -757,8 +757,8 @@ reset role; reset request.jwt.claims;
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'super_c';
-select lg.val('LO1 the aal2 superuser reads every version: 24 migrated + the terms and cookies drafts',
-  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '26');
+select lg.val('LO1 the aal2 superuser reads every version: 25 migrated + the terms and cookies drafts',
+  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '27');
 select lg.val('LO2 ...including the one open draft, which no table read can reach',
   $$select string_agg(slug || ':' || status, ',' order by slug)
       from public.operator_legal_document_versions(null) where status = 'draft'$$, 'cookies:draft');

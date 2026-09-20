@@ -3542,7 +3542,7 @@ p2_code "carol POST of a legal document -> 403"                     403 POST    
 p2_code "carol cannot create a draft through the RPC -> 403"        403 POST         "rpc/create_legal_document_draft" '{"p_slug":"terms"}' "$TOKEN"
 p2_code "anon cannot call the operator read -> 401"                 401 POST         "rpc/operator_legal_document_versions" '{}' "$ANON"
 p2_code "the immutability guard is not an RPC -> 404"               404 POST         "rpc/legal_documents_guard" '{}' "$TOKEN"
-lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where status = 'published' and title <> 'x' and version = case when slug in ('privacy','data-processing-addendum') then 3 when slug in ('data-retention','security','subprocessors','marketing-preferences','data-subject-rights') then 2 else 1 end" | tr -d '[:space:]')
+lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where status = 'published' and title <> 'x' and version = case when slug in ('privacy','data-processing-addendum','data-subject-rights') then 3 when slug in ('data-retention','security','subprocessors','marketing-preferences') then 2 else 1 end" | tr -d '[:space:]')
 if [ "$lg_same" = "15" ]; then printf '  PASS  %-58s %s
 ' "the refused writes changed nothing (15 current rows intact)" "$lg_same"
 else printf '  FAIL  %-58s got %s want 15
