@@ -213,7 +213,13 @@ export type IncidentAlertType =
   // platform's own statutory obligation arriving at the operator without
   // anyone opening /super/data-requests.
   | "dsr_deadline_approaching"
-  | "dsr_overdue";
+  | "dsr_overdue"
+  // Phase 8 Task 3 fix round 1 (M3): the alert the WATCHER files about
+  // itself. The deadline raiser now runs in its own subtransaction inside the
+  // cron tick so a failure cannot take the digest down with it -- and a
+  // failure that was merely survived would be a silent stop to the only
+  // proactive signal a statutory deadline has.
+  | "dsr_alert_writer_failed";
 
 export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {
   rate_limit_tripped: "Rate limit tripped",
@@ -221,6 +227,7 @@ export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {
   upload_quarantined: "Upload quarantined",
   dsr_deadline_approaching: "Data request due soon",
   dsr_overdue: "Data request OVERDUE",
+  dsr_alert_writer_failed: "Data request alerts FAILED to run",
 };
 
 /**
