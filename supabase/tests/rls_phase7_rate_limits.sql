@@ -996,10 +996,18 @@ select rl.val('RD4 ...named incident-alert-delivery, every 10 minutes',
 -- order: raise the data subject request deadline alerts, then deliver every
 -- unnotified alert -- so an alert raised on a tick is emailed on the SAME
 -- tick. cron.schedule() is upsert-by-name, which is how that happened without
--- a second scheduler (20260924001000).
-select rl.val('RD5 ...raising the DSR deadline alerts and then delivering, and nothing else',
+-- a second scheduler (20260924001000). Since that task's fix round 1
+-- (20260925002000, M3) the command is ONE function call: as two statements of
+-- one cron command they shared an implicit transaction, so a raiser that threw
+-- would have stopped THIS suite's digest and lockout notices too. The order,
+-- and that the digest is reached when the raiser throws, are asserted in
+-- rls_phase8_data_subject_requests.sql (DG14a, DD32-DD36).
+select rl.val('RD5 ...running the one tick function, and nothing else',
   $$select command from cron.job where jobname='incident-alert-delivery'$$,
-  'select private.raise_dsr_deadline_alerts(); select private.deliver_incident_alerts()');
+  'select private.run_incident_alert_tick()');
+select rl.val('RD5a ...which still ends by calling the digest this suite is about',
+  $$select (position('perform private.deliver_incident_alerts()' in prosrc) > 0)::text
+      from pg_proc where oid = 'private.run_incident_alert_tick()'::regprocedure$$, 'true');
 select rl.val('RD6 ...and it is active',
   $$select active::text from cron.job where jobname='incident-alert-delivery'$$, 'true');
 select rl.val('RD7 no client role may run the job body',

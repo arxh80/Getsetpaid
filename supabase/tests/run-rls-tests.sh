@@ -876,7 +876,23 @@ fi
 # ============================================================================
 docker cp "$HERE/rls_phase8_data_subject_requests.sql" "$CTR:/tmp/rls_phase8_data_subject_requests.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off "${P7VARS[@]}" -f /tmp/rls_phase8_data_subject_requests.sql
+# THE OUTPUT IS KEPT, because an assertion can VANISH instead of failing: a
+# statement that raises before dsr.val()/dsr.record() is reached records
+# nothing, so "0 failing" stays true while the assertion never ran. Task 3
+# shipped one exactly so -- DW10's LIKE pattern ended `%'` inside format() and
+# the statement died on "unrecognized format() type specifier" -- and nobody
+# saw it for a whole review, because `psql -f` without ON_ERROR_STOP prints the
+# error and carries on. ON_ERROR_STOP is not the answer -- it would hide every
+# assertion after the first accident. The suite's DELIBERATE refusals are
+# caught inside plpgsql and never reach psql, so any psql ERROR line is red.
+dsr_out=$(mktemp)
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off "${P7VARS[@]}" -f /tmp/rls_phase8_data_subject_requests.sql 2>&1 | tee "$dsr_out"
+dsr_errors=$(grep -c '^psql:.*ERROR:' "$dsr_out" || true)
+rm -f "$dsr_out"
+if [ "$dsr_errors" != "0" ]; then
+  echo "PHASE 8 DATA SUBJECT REQUEST SUITE: $dsr_errors psql ERROR line(s) -- an assertion that raised before it was recorded has VANISHED from the report above, which is worse than failing." >&2
+  psql_status=1
+fi
 
 dsr_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select count(*) from dsr.results where not pass" | tr -d '[:space:]')
 if [ "$dsr_fails" != "0" ]; then
@@ -3587,7 +3603,30 @@ p2_code "carol cannot progress her own request -> 403"               403 POST "r
 p2_code "carol cannot add an operator note -> 403"                   403 POST "rpc/add_data_subject_request_note" '{"p_request_id":"00000000-0000-0000-0000-000000000000","p_body":"x"}' "$TOKEN"
 p2_code "anon cannot read the register -> 401"                       401 GET "data_subject_requests?select=id" "" "$ANON"
 p2_rows "carol reads exactly her one request"                         1 "data_subject_requests?select=id,status" "$TOKEN"
-p2_rows "carol reads ZERO operator notes"                             0 "data_subject_request_notes?select=id" "$TOKEN"
+# M2 (Task 3 review): "carol reads ZERO operator notes" used to run against an
+# EMPTY notes table -- nobody in this block holds an aal2 operator token, and
+# the psql suite's DZ had emptied it -- so it would have passed with the notes
+# policy replaced by `using (true)`. A note is planted on CAROL'S OWN request
+# through the real RPC under the operator's aal2 session, the operator is shown
+# to read it back through the same policy, and only then is carol asked: by the
+# table, by a resource embed on the row she CAN read, and by both bounded reads.
+dsr_req=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select id from public.data_subject_requests where user_id='${ID[carol]}' limit 1" | tr -d '[:space:]')
+DSR_OP_CLAIMS="{\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal2\"}"
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -tAc "set request.jwt.claims = '$DSR_OP_CLAIMS'; set role authenticated; select public.add_data_subject_request_note('$dsr_req', 'HTTP probe note: not for carol');" >/dev/null
+dsr_note_op=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -tAc "set request.jwt.claims = '$DSR_OP_CLAIMS'; set role authenticated; select count(*) from public.data_subject_request_notes where request_id = '$dsr_req' and body like 'HTTP probe note%';" | tr -d '[:space:]')
+if [ "$dsr_note_op" = "1" ]; then printf '  PASS  %-58s %s
+' "DENOMINATOR: the operator reads the planted note" "$dsr_note_op"
+else printf '  FAIL  %-58s got %s want 1
+' "DENOMINATOR: the operator reads the planted note" "$dsr_note_op"; api_fails=$((api_fails+1)); fi
+p2_rows "carol reads ZERO operator notes, with one on HER request"    0 "data_subject_request_notes?select=id" "$TOKEN"
+dsr_embed=$(curl -s "$API/rest/v1/data_subject_requests?select=id,data_subject_request_notes(id,body)" -H "apikey: $ANON" -H "Authorization: Bearer $TOKEN"   | python -c "import sys,json;d=json.load(sys.stdin);print(str(len(d))+':'+str(sum(len(r.get('data_subject_request_notes') or []) for r in d)) if isinstance(d,list) else 'error')")
+if [ "$dsr_embed" = "1:0" ]; then printf '  PASS  %-58s %s
+' "...not through an embed on her own readable row either" "$dsr_embed"
+else printf '  FAIL  %-58s got %s want 1:0
+' "...not through an embed on her own readable row either" "$dsr_embed"; api_fails=$((api_fails+1)); fi
+p2_rows "...nor through the bounded COUNT read"                        0 "rpc/data_subject_request_note_counts?p_request_ids=%7B$dsr_req%7D" "$TOKEN"
+p2_rows "...nor through the bounded RECENT read"                       0 "rpc/data_subject_request_recent_notes?p_request_ids=%7B$dsr_req%7D&p_per_request=20" "$TOKEN"
+p2_code "carol cannot route her own request -> 403"                  403 POST "rpc/route_data_subject_request" '{"p_request_id":"'"$dsr_req"'","p_organisation_id":"00000000-0000-0000-0000-000000000000","p_handover_note":"x"}' "$TOKEN"
 dsr_http=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select status || ':' || (user_id = '${ID[carol]}')::text || ':' || (due_by - requested_at)::text from public.data_subject_requests" | tr -d '[:space:]')
 if [ "$dsr_http" = "open:true:30days" ]; then printf '  PASS  %-58s %s
 ' "the request is carol's, open, and due in 30 days" "$dsr_http"
