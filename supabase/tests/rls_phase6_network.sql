@@ -294,10 +294,15 @@ select nw.val('NB1 the three network keys exist',
 -- which is not a read key at all -- it grants no read of any tenant table and
 -- no write anywhere, and exists only so a SUSPENDED workspace's Owner/Admin
 -- can still see and END a support-access session already running against them.
+-- A THIRD ARRIVED IN PHASE 8 TASK 4: `export_organisation_data`
+-- (20260927000000), so a suspended or closed workspace's Owner/Admin can take
+-- a copy of their own data during the 60-day retention window (Q88/Q92) --
+-- the window in which they most need it. Like view_crm it is a READ, and it
+-- grants no write anywhere.
 -- Still the EXACT set rather than a count, in both files.
-select nw.val('NB2 exactly two keys survive suspension: view_crm (the only READ key) and end_support_access',
+select nw.val('NB2 exactly three keys survive suspension: view_crm, end_support_access and export_organisation_data',
   $$select string_agg(key, ',' order by key) from public.permissions
-     where survives_suspension$$, 'end_support_access,view_crm');
+     where survives_suspension$$, 'end_support_access,export_organisation_data,view_crm');
 
 select nw.val('NB3 view_network is held by all NINE roles (Free is a view-only network tier)',
   $$select count(*)::text from public.role_permissions where permission_key='view_network'$$, '9');

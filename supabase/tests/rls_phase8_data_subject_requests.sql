@@ -215,10 +215,15 @@ select dsr.val('DF7 the early warning fires 7 days out',
   $$select private.dsr_alert_lead_days()::text$$, '7');
 select dsr.val('DF3a FIXTURE: org-beta exists too, to RE-route to',
   format($$select count(*)::text from public.organisations where id=%L$$, :'beta_org'), '1');
-select dsr.val('DF8 the fulfilment constraint is DORMANT for BOTH jobs, one line each (I5a)',
+-- ONE LINE PER JOB, AND THEY MOVE INDEPENDENTLY -- which is the whole point
+-- of I5a and is now MEASURED rather than argued: Phase 8 Task 4 woke the
+-- EXPORT line (20260927003000) and the erasure line did not move. Had this
+-- stayed a single boolean, that migration would have made every account
+-- ERASURE request impossible to close until Task 5 shipped.
+select dsr.val('DF8 the EXPORT line is awake (Task 4) and the ERASURE line is not (Task 5), one line each (I5a)',
   $$select private.dsr_fulfilment_job_ready('export')::text || '|' ||
            private.dsr_fulfilment_job_ready('erasure')::text || '|' ||
-           private.dsr_fulfilment_job_ready('nonsense')::text$$, 'false|false|false');
+           private.dsr_fulfilment_job_ready('nonsense')::text$$, 'true|false|false');
 select dsr.val('DF8a the single-boolean predicate is GONE, not left behind for Task 4 to flip by mistake',
   $$select count(*)::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'private' and p.proname = 'dsr_fulfilment_jobs_ready'$$, '0');
@@ -242,15 +247,31 @@ select dsr.val('DG4 exactly ONE policy on the notes, and it is the superuser''s 
 select dsr.val('DG5 authenticated holds SELECT on the register and nothing else',
   $$select string_agg(distinct privilege_type, ',') from information_schema.role_table_grants
      where table_schema='public' and table_name='data_subject_requests' and grantee='authenticated'$$, 'SELECT');
-select dsr.val('DG6 no client role holds a write privilege, at table or column level',
+select dsr.val('DG6 NO CLIENT ROLE holds a write privilege, at table or column level',
   $$select count(*)::text from (
       select grantee from information_schema.role_table_grants
        where table_schema='public' and table_name in ('data_subject_requests','data_subject_request_notes')
-         and grantee in ('anon','authenticated','service_role') and privilege_type <> 'SELECT'
+         and grantee in ('anon','authenticated') and privilege_type <> 'SELECT'
       union all
       select grantee from information_schema.column_privileges
        where table_schema='public' and table_name in ('data_subject_requests','data_subject_request_notes')
-         and grantee in ('anon','authenticated','service_role') and privilege_type <> 'SELECT') x$$, '0');
+         and grantee in ('anon','authenticated') and privilege_type <> 'SELECT') x$$, '0');
+-- service_role IS NOT A CLIENT ROLE, and since Phase 8 Task 4 it holds a
+-- deliberate, column-level write: the export job records its outcome on the
+-- register as `service_role` through a two-column UPDATE grant
+-- (20260927003000 § 1), which is what finally gives § DF9h a positive control
+-- rather than a refusal by a missing privilege. Asserted as the EXACT set, so
+-- a third column arriving is red.
+select dsr.val('DG6a service_role''s write is EXACTLY the two seam columns, on the register alone',
+  $$select coalesce(string_agg(table_name || '.' || column_name || ':' || privilege_type,
+                               ',' order by table_name, column_name), '<none>')
+      from information_schema.column_privileges
+     where table_schema='public' and table_name in ('data_subject_requests','data_subject_request_notes')
+       and grantee='service_role' and privilege_type <> 'SELECT'$$,
+  'data_subject_requests.fulfilment_kind:UPDATE,data_subject_requests.fulfilment_reference:UPDATE');
+select dsr.val('DG6b ...and fulfilment_recorded_at is NOT in it -- the clock stays the database''s',
+  $$select (not has_column_privilege('service_role','public.data_subject_requests',
+                                     'fulfilment_recorded_at','update'))::text$$, 'true');
 select dsr.val('DG7 every trigger on the register is present, the two fix-round ones included',
   $$select string_agg(tgname::text, ',' order by tgname) from pg_trigger
      where tgrelid = 'public.data_subject_requests'::regclass and not tgisinternal$$,
@@ -722,7 +743,11 @@ select dsr.try_hint('DF9m the seam cannot be CLEARED once recorded',
 
 set role authenticated;
 set request.jwt.claims = :'super_c';
-select dsr.try('DF10 POSITIVE (dormant): an account access request CAN be closed by hand today',
+-- WAS "POSITIVE (dormant): an account access request CAN be closed by hand
+-- today". Since Phase 8 Task 4 woke the export line it cannot -- unless an
+-- export has recorded itself on it, which DF9j has just done. The assertion
+-- is the same call and now proves the other half of the rule.
+select dsr.try('DF10 POSITIVE: with DF9j''s seam recorded, the operator''s fulfilment IS admitted',
   format($$select * from public.transition_data_subject_request(%L,'fulfilled')$$, :'req_access'), 'ok(1)');
 reset role; reset request.jwt.claims;
 
@@ -816,9 +841,9 @@ select dsr.record('DF18 with the ERASURE line awake too, an erasure request is r
 select dsr.record('DF19 I5b: the erasure half IS satisfiable -- the row survives, the job records, the operator closes',
   'ok(1)|ok', :'seam_erasure_recorded' || '|' || :'seam_erasure_admitted');
 
-select dsr.val('DF20 both lines are dormant again after the rollback',
+select dsr.val('DF20 the rollback put the real function back: export awake, erasure dormant',
   $$select private.dsr_fulfilment_job_ready('export')::text || '|' ||
-           private.dsr_fulfilment_job_ready('erasure')::text$$, 'false|false');
+           private.dsr_fulfilment_job_ready('erasure')::text$$, 'true|false');
 select dsr.val('DF21 ...and the seam probe rows are gone with the rolled-back transaction',
   $$select count(*)::text from public.data_subject_requests where detail like 'Seam probe%'$$, '0');
 
@@ -1229,11 +1254,23 @@ select dsr.val('DD0 the insert trigger is ENABLED again',
 
 -- Close the fourth one, so "a closed request raises nothing" has a subject
 -- that WOULD otherwise be forty days overdue.
+--
+-- CLOSED AS REJECTED, NOT FULFILLED, SINCE PHASE 8 TASK 4. It is an
+-- account-scope ACCESS request, and the export half of the fulfilment
+-- constraint is awake (DF8), so `fulfilled` now needs an export job to have
+-- run for this requester -- which is exactly the rule and not a bug. A
+-- refusal is a closure too, and asserting BOTH here keeps the deadline
+-- section honest about which one it used.
 set role authenticated;
 set request.jwt.claims = :'super_c';
-select dsr.try('DD1 SETUP: the operator closes the forty-day-old one',
+select dsr.try_hint('DD1a THE TASK 4 CONSTRAINT REACHES HERE: the operator cannot mark it ANSWERED, because no export ran',
   $$select * from public.transition_data_subject_request(
-      (select id from public.data_subject_requests where detail='DD closed late'),'fulfilled')$$, 'ok(1)');
+      (select id from public.data_subject_requests where detail='DD closed late'),'fulfilled')$$,
+  'denied(22023:fulfilment_not_recorded)');
+select dsr.try('DD1 SETUP: the operator closes the forty-day-old one, by REFUSING it with a reason',
+  $$select * from public.transition_data_subject_request(
+      (select id from public.data_subject_requests where detail='DD closed late'),'rejected',
+      'Closed for the deadline-alert fixture.')$$, 'ok(1)');
 reset role; reset request.jwt.claims;
 
 select dsr.val('DD2 POSITIVE: the run writes an alert for each of the two overdue ones and the due-soon one',

@@ -917,6 +917,61 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 4 (DATA EXPORTS) SUITE.
+#
+# Runs after the data subject request suite, on the same P7VARS fixtures,
+# and its own section XZ removes every job, note, counter, request and audit
+# row it made -- so the HTTP block below still meets the database it was
+# written against.
+#
+# It is the suite that finally gives the data subject register's fulfilment
+# seam a POSITIVE CONTROL: until this task `service_role` held no grant at
+# all on public.data_subject_requests, so § DF of the suite above could not
+# tell a working guard from a missing privilege and had to open the grant
+# inside its own rolled-back transaction. § XS asks the same question through
+# the real catalogue.
+# ============================================================================
+docker cp "$HERE/rls_phase8_exports.sql" "$CTR:/tmp/rls_phase8_exports.sql"
+
+# The output is kept for the same reason the suite above keeps its own: an
+# assertion that raises before xp.record() is reached VANISHES rather than
+# failing, and "0 failing" stays true while it never ran.
+exp_out=$(mktemp)
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off "${P7VARS[@]}" -f /tmp/rls_phase8_exports.sql 2>&1 | tee "$exp_out"
+exp_errors=$(grep -c '^psql:.*ERROR:' "$exp_out" || true)
+rm -f "$exp_out"
+if [ "$exp_errors" != "0" ]; then
+  echo "PHASE 8 EXPORT SUITE: $exp_errors psql ERROR line(s) -- an assertion that raised before it was recorded has VANISHED from the report above, which is worse than failing." >&2
+  psql_status=1
+fi
+
+exp_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select count(*) from xp.results where not pass" | tr -d '[:space:]')
+if [ "$exp_fails" != "0" ]; then
+  echo "PHASE 8 EXPORT SUITE FAILED: $exp_fails failing assertion(s)" >&2
+  echo "  In XG, a client role gained a write on the register, the bucket lost" >&2
+  echo "  its fence, or a runner RPC became reachable from a browser." >&2
+  echo "  In XC, THE EXPORT IS NO LONGER COMPLETE -- a table with a row ->" >&2
+  echo "  organisation or row -> user path is in neither disposition." >&2
+  echo "  In XW, ATTRIBUTION IS FORGEABLE, a Manager can export a workspace," >&2
+  echo "  or a meter moved. Sev1." >&2
+  echo "  In XR, SOMEBODY CAN SEE ANOTHER PERSON'S EXPORT JOB." >&2
+  echo "  In XJ, a person's session can write a job's outcome, or a finished" >&2
+  echo "  job became rewritable." >&2
+  echo "  In XP, THE READ ENGINE LEAKS: a colleague's PRIVATE note or another" >&2
+  echo "  tenant's row reached an archive, or -- read XP2-XP4 first -- the" >&2
+  echo "  engine returned nothing at all and the absences mean nothing. Sev1." >&2
+  echo "  In XD, THE IDOR OR EXPIRY GATE ON DOWNLOADS IS GONE, or a download" >&2
+  echo "  stopped being audited." >&2
+  echo "  In XS, the fulfilment seam: the export half went back to sleep, the" >&2
+  echo "  service_role grant widened past its two columns, or the guard's" >&2
+  echo "  role leg went back to naming the CLIENT roles." >&2
+  echo "  In XZ, this suite left rows behind -- discard the run and reset." >&2
+  psql_status=1
+else
+  echo "Phase 8 data export suite: all assertions passed."
+fi
+
+# ============================================================================
 # ONE WITHDRAWAL PER GRANT UNDER A REAL RACE (review finding M2).
 #
 # The trigger's alternation rule serialises events per (user, purpose), but

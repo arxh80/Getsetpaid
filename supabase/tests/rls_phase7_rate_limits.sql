@@ -190,13 +190,25 @@ select rl.val('RV6c Consent grants: 10 / hour, per user (Phase 8 Task 2)',
   $$select max_requests || '/' || window_seconds || '/' || subject_scope
       from public.rate_limit_policies where category='consent_grant'$$,
   '10/3600/user');
--- EIGHT ROWS AND NO MORE (seven until Phase 8 Task 2 added consent_grant --
--- which turned this assertion red until the row above and SECURITY.md § 5
--- were written, exactly as designed). A ninth category appearing without a
--- § 5 row is the drift this assertion exists to catch, in the direction the
--- others cannot.
-select rl.val('RV7 the policy table holds exactly the nine § 5 categories',
-  $$select count(*)::text from public.rate_limit_policies$$, '9');
+-- TEN ROWS AND NO MORE (seven until Phase 8 Task 2 added consent_grant, nine
+-- after Task 3's data_subject_request, ten since Task 4's account_export --
+-- each of which turned this assertion red until SECURITY.md § 5 was written,
+-- exactly as designed). An eleventh category appearing without a § 5 row is
+-- the drift this assertion exists to catch, in the direction the others
+-- cannot.
+select rl.val('RV7 the policy table holds exactly the ten § 5 categories',
+  $$select count(*)::text from public.rate_limit_policies$$, '10');
+-- The ACCOUNT export's budget is its own category and not `exports`, because
+-- `exports` is organisation-scoped and an account export belongs to no
+-- workspace: metering it against one would be the caller-supplied attribution
+-- Phase 7 finding I1 closed.
+select rl.val('RV7a account_export is 5 per hour per USER, and exports is per ORGANISATION',
+  $$select (select max_requests || '/' || window_seconds || '/' || subject_scope
+              from public.rate_limit_policies where category='account_export')
+        || ' | ' ||
+           (select max_requests || '/' || window_seconds || '/' || subject_scope
+              from public.rate_limit_policies where category='exports')$$,
+  '5/3600/user | 5/3600/organisation');
 -- network_discovery must never be folded into search (FOLLOW-UPS:3408-3419):
 -- its unit cost is O(platform-wide published rows), not O(tenant).
 select rl.val('RV8 network_discovery is a DISTINCT category from search',
@@ -216,8 +228,8 @@ select rl.try('RV10 ...nor INSERT a new category',
       (category, subject_scope, max_requests, window_seconds, description)
     values ('smuggled','user',1,1,'x')$$,
   'denied(42501)');
-select rl.val('RV11 the superuser CAN read the configuration, all nine rows (the health view states it)',
-  $$select count(*)::text from public.rate_limit_policies$$, '9');
+select rl.val('RV11 the superuser CAN read the configuration, all ten rows (the health view states it)',
+  $$select count(*)::text from public.rate_limit_policies$$, '10');
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -1402,8 +1414,8 @@ select rl.val('RZ3 the two suite documents are gone (not soft-deleted -- never e
 select rl.val('RZ4 ALPHA is still active and untouched',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
          :'alpha_org'), 'true');
-select rl.val('RZ5 the nine seeded policy rows (seven + Phase 8 consent_grant + data_subject_request) are exactly as they were',
-  $$select count(*)::text from public.rate_limit_policies$$, '9');
+select rl.val('RZ5 the ten seeded policy rows (seven + consent_grant + data_subject_request + account_export) are exactly as they were',
+  $$select count(*)::text from public.rate_limit_policies$$, '10');
 
 \pset format aligned
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual

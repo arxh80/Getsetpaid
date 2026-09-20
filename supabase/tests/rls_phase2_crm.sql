@@ -1590,9 +1590,20 @@ select crm.val('M1f every permission key in use has a catalogue row',
 -- grant is not a change to the workspace. It grants no read of any tenant
 -- table and no write anywhere; ACCEPTING a new request still needs
 -- manage_organisation and is still refused while suspended (Q98).
-select crm.val('M1g exactly two keys survive suspension today: view_crm and end_support_access',
+-- THREE SINCE PHASE 8 TASK 4. `export_organisation_data` (20260927000000)
+-- lets a suspended or CLOSED workspace's Owner/Admin take a copy of their own
+-- data during the 60-day retention window (Q88/Q92) -- which is the window in
+-- which they most need it, and locking them out of it would make the
+-- retention promise unkeepable. It is a READ, like view_crm, and it grants no
+-- write anywhere: starting an export inserts one row in public.export_jobs
+-- and the archive is built under the requester's own read rights, so a
+-- suspended workspace's export is read-only by construction rather than by a
+-- rule somebody has to remember. The assertion stays the EXACT SET rather
+-- than a count, so a fourth cannot arrive unnoticed.
+select crm.val('M1g exactly three keys survive suspension today: view_crm, end_support_access and export_organisation_data',
   $$select coalesce(string_agg(key, ',' order by key), '<none>')
-      from public.permissions where survives_suspension$$, 'end_support_access,view_crm');
+      from public.permissions where survives_suspension$$,
+  'end_support_access,export_organisation_data,view_crm');
 -- The default is the control that protects Phase 5's author from themselves.
 select crm.val('M1h survives_suspension DEFAULTS to false (a new key arrives closed)',
   $$select column_default from information_schema.columns
