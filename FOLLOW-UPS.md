@@ -4079,3 +4079,61 @@ three documents.
   `aclexplode`, and the page census globs `app/(app)/super/**` only, so a Phase
   8 route handler under `app/api/**` reading platform data would not be seen.
   Three one-line additions, all cheap, none of them made.
+
+## Phase 8 Task 4 (data exports)
+
+- **Task 6 owes the bytes, and read-time expiry is only half a retention
+  rule.** `public.export_jobs.expires_at` makes an archive unreachable after
+  seven days, by everybody including its own requester, with nothing
+  scheduled. The OBJECT in the `exports` bucket is still there. Three orphan
+  classes join the retention/GC job: an expired archive; the object of a job
+  whose requester's account was deleted (the row cascades, the bytes do not);
+  and the object of a job that uploaded and then failed to stamp (the runner
+  removes it on the spot, so only a crash between the two leaves one).
+  `/legal/data-retention` version 3 says all of this in words rather than
+  implying the file is gone.
+- **A job stuck in `running` blocks its subject, and nothing reaps it.** The
+  runner marks a failure itself, but if the stamp of that failure also fails
+  (a database blip at exactly the wrong moment) the row stays `running`, the
+  one-live-job partial unique index refuses the next request, and the person
+  sees "an export is already being prepared" for ever. It is loud rather than
+  silent — the page says so and the log says so — and the fix is one line in
+  Task 6's sweep (fail anything `running` for more than an hour). Q166.
+- **The account export is ONE live job per person and the workspace export is
+  one per WORKSPACE**, which means two Admins pressing at once queue rather
+  than double the work. The second Admin's refusal is a `23505` rendered as
+  "an export is already being prepared", and they cannot see whose it is —
+  there is no cross-member read of the register. That is the deliberate
+  consequence of "an archive is a snapshot taken under ONE person's rights";
+  if it ever reads as a bug, the fix is a shared *workspace* export with a
+  stated access basis, not a relaxed SELECT policy.
+- **Nothing tells the requester the export is ready.** Q45 for the seventh
+  feature: the page is the whole notification, and a person who starts an
+  export and closes the tab finds out by coming back. The sender exists
+  (`lib/email/send.ts`) and the seam is obvious (a `notified_at` column would
+  do it); it is not built.
+- **`export_organisation_data` is the THIRD permission key with
+  `survives_suspension = true`**, after `view_crm` and `end_support_access`,
+  and the set is asserted BY NAME in two psql suites so a fourth cannot
+  arrive unnoticed. The justification is Q88/Q92's own: the 60-day window
+  after a suspension or closure is exactly when a customer needs their copy.
+  An export grants no write, and the archive is built under the requester's
+  own read rights, so a suspended workspace's export is read-only by
+  construction rather than by a rule somebody has to remember.
+- **`lib/supabase/storage.ts` still has no importer census** (Q126, above),
+  and this task added a fourth importer (`lib/export/runner.ts`). The
+  service-role TABLE client's census WAS extended, so the runner is declared
+  there; the storage one remains the gap Q126 names.
+- **The ZIP writer is a 150-line subset of the format** (local headers,
+  DEFLATE from `node:zlib`, a central directory, an end-of-central-directory
+  record) written rather than depended on, because a ninth runtime dependency
+  is a supply-chain decision and `tests/unit/legal/storage-census.test.ts`
+  makes adding one deliberate. No ZIP64: the limits it implies (4 GiB
+  archive, 65 535 entries, 4 GiB per entry) are all unreachable under a 40 MiB
+  ceiling and all three are refused explicitly anyway. If an archive ever
+  needs to be bigger, ZIP64 is the change, not a bigger ceiling.
+- **A second bearer secret and a second Vault pair are owed at deploy**
+  (`SECURITY.md` § 15). Unlike the digest's, a missing pair does not stop
+  exports — the in-process nudge still runs them — it removes the RETRY for a
+  job whose nudge died with its process. That failure is invisible from
+  inside the product and its cost is a person waiting.

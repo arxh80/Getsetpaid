@@ -23,6 +23,71 @@ This is not the public-facing Trust Centre page (PRD §12) — it is written for
 - `SECURITY DEFINER` functions are used only where necessary, with `search_path` locked and `EXECUTE` restricted; every one is reviewed individually.
 - Service-role/secret keys bypass RLS entirely and must never reach the browser.
 
+### The export reads as the requester (Phase 8 Task 4)
+
+A data export is the densest read in the product: one archive is every
+tenant-owned table of a workspace, or everything the platform holds about one
+person. The question that decides whether it is safe is **whose access rights
+build it**, and the answer is *the requester's*, enforced by the same policies
+their browser meets rather than by a second copy of the rules.
+
+`public.export_read_page()` runs the read through
+`private.export_read_page_as_requester()`, a `SECURITY DEFINER` function owned
+by a purpose-made role, **`export_reader`**. Three properties make RLS apply
+inside it, and all three are load-bearing:
+
+1. `export_reader` owns no table, so RLS is never skipped for it as an owner;
+2. it has no `BYPASSRLS` and cannot log in;
+3. it is a MEMBER of `authenticated`, and every policy in this schema is
+   written `to authenticated` — a policy applies to any role that
+   `pg_has_role(..., 'MEMBER')` of the one it names.
+
+The caller installs the requester's claims in `request.jwt.claims` **from the
+job row** — `sub` is `export_jobs.requested_by` and `aal` is
+`export_jobs.requested_aal`, both stamped at insert by the trigger and
+immutable afterwards — so neither the subject nor the assurance level is the
+runner's to choose, and a replay cannot promote an `aal1` request to `aal2`.
+The claims are restored after the read.
+
+The consequence worth stating: **an Owner's workspace export contains no other
+member's `private` notes**, because `notes_select_by_visibility` decides it,
+not this code. Measured both ways in `supabase/tests/rls_phase8_exports.sql`
+§ XP and in `tests/integration/export/runner.test.ts`, each of which asserts
+the requester's OWN private note is PRESENT before asserting a colleague's is
+absent — an engine that returned nothing would otherwise pass the security
+assertion perfectly, and the first cut of this mechanism did exactly that
+(Postgres refuses `SET role` inside a `SECURITY DEFINER` caller; the positive
+control is what caught it).
+
+**Four account-export tables are the exception, and each is an exception for
+a stated reason.** `audit_events` and `feedback` are superuser-only by policy,
+`platform_admins` has no SELECT policy at all, and `impersonation_sessions` is
+reachable only through a permission in a workspace the person may have left —
+so a requester-RLS read of any of them would have returned zero rows and
+passed. They are read as the definer, each filtered to the catalogue's scope
+column and, for the two that hold more than the requester's own data,
+PROJECTED to named columns (`audit_events` without `before`/`after`, which
+carry other tenants' structural values; `feedback` without the storage key).
+`private.export_catalogue_is_sound()` refuses an elevated row with no reason,
+and refuses one in the WORKSPACE export outright.
+
+**Completeness is a census, not a promise.**
+`tests/integration/export/completeness-census.test.ts` derives the table list
+from `pg_constraint` — every table with a foreign key to
+`public.organisations`, and every table with one to `auth.users` — and fails
+when a table is in neither disposition of `private.export_catalogue()`. The
+derivation is a FOREIGN-KEY walk rather than a column-name match on purpose:
+four organisation paths in this schema are not called `organisation_id`, and a
+name-keyed census would have dropped all four silently.
+
+**Download is the requester's alone**, for both kinds — not "any Admin of that
+workspace", because an archive is a snapshot taken under one person's rights
+at one moment. There is therefore no cross-member read of `public.export_jobs`
+at all, and the audit log is where an export is visible to anybody else. The
+download route mints nothing until `public.audit_export_download()` has
+written its row, and that function re-asks the ownership question inside a
+definer so the audit path cannot be the weaker of the two.
+
 ## 3. Input handling
 
 - All queries are parameterised or built with a trusted query builder — no string-concatenated SQL, anywhere.
@@ -85,7 +150,7 @@ Two `SECURITY DEFINER` functions are also outside the gate, because they must be
 
 ## 5. Rate limiting and abuse prevention
 
-These are the numbers the product is built against. **The Status column is the point of this table** — an unimplemented control listed as if it were live is the worst thing this document can contain, and so is an implemented one still listed as absent. Every row says what is true on **2026-09-16**, after Phase 8 Task 2 (which added the consent-grant row). (It said 2026-09-11 through three further tasks; the date is part of the claim, so it is re-stamped whenever the table is.)
+These are the numbers the product is built against. **The Status column is the point of this table** — an unimplemented control listed as if it were live is the worst thing this document can contain, and so is an implemented one still listed as absent. Every row says what is true on **2026-09-20**, after Phase 8 Task 4 (which added the `account_export` row and made the `exports` row's status true for the first time). (It said 2026-09-11 through three further tasks; the date is part of the claim, so it is re-stamped whenever the table is.)
 
 | Endpoint category | Limit | Status |
 |---|---|---|
@@ -93,7 +158,8 @@ These are the numbers the product is built against. **The Status column is the p
 | Login | per IP | **ENFORCED, AT A DIFFERENT NUMBER** — GoTrue's own `sign_in_sign_ups` = 30 sign-in/sign-up requests per 5 min per IP (`config.toml:264`). Not 5/15min: that granularity is not configurable. Q108 |
 | Password recovery / verification | 3 / hour, per account | **MECHANISM BUILT, NO ENFORCEMENT POINT** — the budget row exists and the counter works; GoTrue exposes no per-account hook on the recovery endpoints. Q109 |
 | Search | 60 requests / min, per user | **ENFORCED** — `lib/list/query.ts`, on every list request carrying a search term. Metered at the chokepoint, not per page, so every list spec with a `searchColumn` inherits it by construction and a new one cannot be forgotten — the command palette's per-entity fan-out included, which `cache()` collapses to one counted unit |
-| Exports | 5 / hour, per organisation | **MECHANISM BUILT, NO ENDPOINT** — no export endpoint exists yet; the org-scoped budget and its membership check are ready for it |
+| Workspace exports | 5 / hour, per organisation | **ENFORCED IN THE DATABASE, AT THE WRITE** — `private.export_jobs_before_insert()` (`20260927001000`), the `BEFORE INSERT` trigger every writer of `public.export_jobs` passes. This row said **MECHANISM BUILT, NO ENDPOINT** from Phase 7 Task 5 until Phase 8 Task 4, which is the endpoint. The feedback row's shape (read-before-write, `PT429` with the remaining seconds in `hint`, no counting past the limit), and the meter is at the trigger rather than in the server action because the table carries a client `INSERT` grant, so a scripted `POST` straight to PostgREST is a real path and two meters would halve the limit. **Organisation-scoped, and the note at § 5's foot about membership not being permission does NOT apply here**: unlike the generic path, this budget is only reachable by an insert that has already passed `export_organisation_data` in that workspace, so a Read Only member cannot burn it. Measured: `rls_phase8_exports.sql` § XW |
+| Account exports (Phase 8 Task 4) | 5 / hour, per user | **ENFORCED IN THE DATABASE, AT THE WRITE** — the same trigger, under its own category, because an ACCOUNT export belongs to no workspace: the person may hold five memberships or none, and metering it against one of them would be the caller-supplied attribution Phase 7 Task 5's finding I1 closed. Five an hour is the same number as the workspace budget and is a proposed one (Q164), not a founder ruling: an account export is cheap to build and its whole cost is the archive, which one live job per person already bounds. **Starting it needs no permission at all** — it is the person's own data about themselves, and the statutory route must not be the only route. Measured: `rls_phase8_exports.sql` § XW14-XW17 |
 | Network discovery | 30 requests / min, per user | **ENFORCED IN THE APP, WITH A NAMED RESIDUAL** — every `network_directory` read through `lib/list/query.ts`. Direct `GET /rest/v1/network_directory` with the anon key + a session JWT is NOT metered. Q107 |
 | In-app feedback submission | 10 / hour, per user | **ENFORCED IN THE DATABASE, AT THE WRITE** — `private.feedback_before_insert()` (`20260911000000`), a `BEFORE INSERT` trigger on `public.feedback`, so the app's dialog, a stripped form post and a direct PostgREST `INSERT` are bound identically (the Connection-requests row's shape, for its reason). The seed comment in `20260909020000` says Task 6 "calls `consume_rate_limit('feedback')`" — it does **not**, deliberately: the table carries a client INSERT grant, an app-side meter would be bypassable, and two meters would halve the limit. Read-before-write, `PT429` + remaining seconds in `hint`, crossing alert at the last accepted submission, no counting past the limit (Q115). **The app also READS the budget before any Storage I/O** (fix round 1: `public.feedback_budget_remaining()`, `20260911010000`, a `STABLE` definer read of the caller's own counter) — the row is the cheap half of a submission, and without the pre-check a spent budget could loop a 5 MiB service-role upload plus a malware scan with the counter flat at 10; a read spends nothing, so it cannot double-meter, and the trigger stays the enforcement. Measured: `rls_phase7_feedback.sql` § FM (incl. FM0/FM8–FM10), the runner's HTTP block (a real `POST` → 429, then the budget read → 0), `tests/integration/security/feedback-budget.test.ts`, `tests/unit/feedback/submit-action-budget.test.ts` (no upload/scan on a spent budget), and `tests/e2e/feedback.spec.ts` (`storage.objects` unchanged around a refused submission with a screenshot attached) |
 | Connection requests sent | 10 / hour, per **organisation** | **ENFORCED IN THE DATABASE, AT THE WRITE** — `private.meter_connection_request()` (`20260909060000`), a `BEFORE INSERT` trigger on `public.network_connection_requests`, so it binds the app's own form, a stripped-form post and a direct PostgREST `INSERT` identically. It shipped app-side-only in `sendConnectionRequestAction` and that was bypassable — see below. **A number this document PROPOSED rather than inherited, CONFIRMED AS SHIPPED by the founder on 2026-09-15** — the row did not exist before Phase 7 Task 5; Q112, answered |
@@ -101,7 +167,7 @@ These are the numbers the product is built against. **The Status column is the p
 | Data subject requests submitted (Phase 8 Task 3) | 10 / **24 hours**, per user | **ENFORCED IN THE DATABASE, AT THE WRITE** — `private.data_subject_requests_before_insert()` (`20260924000000`), the `BEFORE INSERT` trigger every writer of `public.data_subject_requests` passes. The consent ledger's shape (read-before-write, `PT429` with the remaining seconds in `hint`, crossing alert at the last accepted submission, no counting past the limit), and **withdrawing a request is metered nowhere**. The window is a DAY rather than an hour because a DSR form is a spam vector but refusing a genuine statutory request is a legal failure, so the number sits far above any honest burst: six rights × two scopes is twelve conceivable distinct requests and nobody makes twelve in a day, while ten covers filing several, mistyping one and re-filing it, and changing one's mind. **The limit can never be why a request goes unmade** — `/legal/data-subject-rights` (v3) gives the contact address as the route this limit does not apply to, and says so on the page — **v2 said "email is never limited"**, which is a promise about a mailbox this repository does not operate (review finding M5). A proposed number, like Q112; Q157.
 
 - Every unbounded list/API endpoint is paginated (cursor/keyset for activity feeds); server-side page-size ceilings, never a client-defined unlimited limit.
-- Exports are async and bounded — no synchronous unbounded export endpoint.
+- Exports are async and bounded — no synchronous unbounded export endpoint. **True as built since Phase 8 Task 4, and here is what each half means.** *Async*: a request writes a `public.export_jobs` row and returns; the archive is built outside that request, by `lib/export/runner.ts`, reached two ways — the request nudges it through `after()` once its response has been sent (the latency), and `pg_cron` calls `POST /api/exports/run` on the same ten-minute tick as the incident digest (the retry, for a job whose nudge died with its process). *Bounded*: `private.export_limits()` is the one declared place, with a page size (500, keyset, never OFFSET), a per-table row ceiling, a whole-job row ceiling and a 40 MiB archive ceiling, plus one live job per subject as a partial unique index. **A job that would exceed a ceiling FAILS with a recorded reason and never truncates** — a truncated statutory access response is a wrong answer given with confidence.
 
 **The Connection-requests row is new, and org-scoped on purpose.** Founder ruling Q79 (2026-09-07) made a declined connection request re-requestable, which removed the one zero-cost anti-harassment control in a product with no blocking, muting or moderation; `FOLLOW-UPS.md`'s own Q79 entry names this limiter as the mitigation. Metering the DIRECTORY does not cover it — that bounds how fast an abuser can FIND organisations, not how fast they can pester ones they already found, and a request is a server action that never passes the list chokepoint. The budget binds the **organisation**, not the user: a per-user budget is bypassed by inviting a colleague (six roles hold `manage_network_connections`), and the pestered workspace experiences one workspace regardless of whose account clicked. The crossing files a `rate_limit_tripped` alert, which is the first time network harassment is visible to anyone at all. **The number was a recommended default and is now a founder ruling** (Q112, CONFIRMED AS SHIPPED 2026-09-15) — changing it is still one UPDATE to `rate_limit_policies` and one line here, no code.
 
@@ -208,7 +274,9 @@ The pipeline is built as of Phase 4 Task 5 (`lib/crm/documents.ts` + `lib/securi
 - Working defaults (pending legal sign-off — see `CLAUDE.md` § Legal and regulatory compliance): **7 years** for financial records, **2 years** for inactive-account data (also applied to in-app feedback submissions — see `CLAUDE.md` § In-app feedback), **30 days hot / 1 year archived** for audit logs.
 - **Feedback retention is enforced at READ time (Phase 7 Task 6):** `feedback_select_platform` carries `created_at >= private.feedback_retention_cutoff()` (now − 2 years), and the screenshot-view RPC re-tests the same cutoff, so an expired row is unreadable on every path — the app, a direct PostgREST GET, the signed-URL route — with nothing scheduled (the Q88 / Task 4 pattern). Measured: `rls_phase7_feedback.sql` FR6/FA7. **The rows and their screenshot bytes are not yet purged**; that joins the Phase 8 retention job Q110/Q52 already owe (Q120). A submitter's account erasure cascades to their feedback rows (`on delete cascade`, unlike `audit_events`), so a DSR does not wait on that job.
 - **The public Data Retention Policy (`/legal/data-retention`, Phase 8 Task 1) states these working defaults as pending counsel**, and says in words that the automated deletion job is not running yet (Task 6 of this phase builds it). **Its version 1 described an audit "default view" that does not exist** — neither `audit_events_select_platform_superuser` nor `/super/audit-log` applies any time window, so every audit row is searchable for as long as it is stored; version 2 (`20260922005000`) states the 30-day/1-year windows as the target Task 6 will apply. **The public Security and Trust page follows one rule since the same migration:** every control this § 15 lists as hosted configuration is marked "(deployment setting)" there, and the host's encryption/TLS is attributed to Supabase as unverified.
+- **Export archives are a new store with a seven-day clock, and READ-TIME EXPIRY is only half of it (Phase 8 Task 4).** `public.export_jobs.expires_at` is `completed_at + private.export_limits().archive_days`, stamped by the database, and the download path refuses a job past it — so after seven days the archive is unreachable by everyone including its own requester, with nothing scheduled (the Q88 pattern). **The BYTES are still in the `exports` bucket until Task 6's retention job removes them**, and that difference is stated on `/legal/data-retention` (version 3) rather than implied away. Two further orphan classes join the same job: the object of a job whose requester's account is deleted (the ROW cascades, the bytes do not), and the object of a job that uploaded and then failed to stamp (the runner removes it on the spot, and a crash between the two leaves one behind).
 - GDPR data subject requests (export/erasure): **30-day** target, matching the ICO statutory maximum.
+- **The ACCESS and PORTABILITY half of that is now a real job rather than a promise (Phase 8 Task 4), and the register enforces it.** `private.dsr_fulfilment_job_ready('export')` answers `true` from `20260927003000`, so an account-scope `access` or `portability` request can no longer be marked fulfilled by hand: an export job for that requester must have completed **after the request was made** and recorded itself on the row, or the transition is refused (22023, hint `fulfilment_not_recorded`). The seam is written by the runner as `service_role` through a **two-column** `UPDATE` grant (`fulfilment_kind`, `fulfilment_reference`) and nothing wider; `fulfilment_recorded_at` is stamped by the trigger and is deliberately outside the grant. `private.dsr_fulfilment_job_ready('erasure')` is still `false` — Task 5.
 - **Since Phase 8 Task 3 that 30 days is a deadline the DATABASE computes and alerts on, not a target.** `public.data_subject_requests.due_by` is a `GENERATED ALWAYS` column — `requested_at + 30 days`, unwritable by every role including `postgres` (428C9) — and `requested_at` is stamped by the `BEFORE INSERT` trigger, so neither end of the window can be moved by a client, an operator or a repair script. Every state change goes through one `BEFORE UPDATE` trigger that is the transition table, the who-may-do-it check and the stamper at once (`private.data_subject_requests_before_update`); nothing is enforced only in a server action. See § Data subject requests below.
 - **Data residency: UK/EU Supabase region only** — no US-region hosting for customer data.
 - Currency: **GBP only at MVP**; schema (`financial_entries` etc.) stores a currency column and minor units so multi-currency UI can be added later without a migration.
@@ -354,6 +422,7 @@ Carried over from `CLAUDE.md` § Open decisions — these need founder/legal inp
 - `[auth.mfa.totp] enroll_enabled` / `verify_enabled = true` — without these the MFA gate has nothing to enroll or challenge against.
 - `minimum_password_length = 10` — must match `MIN_PASSWORD_LENGTH` in `lib/forms.ts`, or the app's validation is bypassable by calling GoTrue directly.
 - **Email delivery (Phase 7 Task 6) — four environment values and one cron, none of which ships itself:** `BREVO_API_KEY` / `BREVO_SENDER_EMAIL` / `BREVO_SENDER_NAME` (`docs/email-setup.md` — domain authentication first, or mail lands in spam), `SUPPORT_CONTACT_EMAIL` (§ 13), and `INCIDENT_ALERT_DELIVERY_SECRET` (≥ 32 chars) **plus the two Supabase Vault entries the database's own clock reads** (Q118): `select vault.create_secret('https://<host>/api/incident-alerts/deliver', 'incident_alert_delivery_url', '…');` and `select vault.create_secret('<the same value as INCIDENT_ALERT_DELIVERY_SECRET>', 'incident_alert_delivery_secret', '…');`. The `pg_cron` job ships with the schema (`20260916000000`, every 10 minutes) and is a silent no-op until both entries exist — so a deploy that sets the environment variables and forgets the Vault entries has a scheduler that runs and delivers nothing. Verify with `select * from cron.job_run_details order by start_time desc limit 5;` and `select status_code from net._http_response order by created desc limit 5;`. With any of these missing the product degrades honestly — feedback is stored and shown "email not sent", alerts stay rows — but silently as far as the inbox is concerned. Verify after deploy by submitting one feedback and confirming the receipt arrives and the row on `/super/feedback` no longer reads "email not sent"; then `curl -X POST -H "Authorization: Bearer …" https://<host>/api/incident-alerts/deliver` and confirm a JSON `outcome`, never a 404. Sign Brevo's DPA before real personal data flows (`docs/sub-processors.md`). Every Brevo call carries a 10-second timeout (`BREVO_TIMEOUT_MS`, fix round 1 I2) and the feedback receipt runs after the submission's response through `next/server`'s `after()`, so a Brevo stall can neither hang a submission nor, via the retry it invited, duplicate the row. **Supabase Auth's own mail (sign-up, magic link, reset) is NOT relayed through Brevo today** — that is a hosted-project SMTP setting nothing in this repository configures (`docs/email-setup.md` § 3); until it is done, auth mail is Supabase's built-in sender and Brevo processes only the support contact's address and feedback receipts.
+- **The export runner's own secret and Vault pair (Phase 8 Task 4)** — `EXPORT_RUNNER_SECRET` (≥ 32 chars, and **a different value from `INCIDENT_ALERT_DELIVERY_SECRET`**: leaking one must not hand over the other, and this one can be made to run every queued export) plus `select vault.create_secret('https://<host>/api/exports/run', 'export_runner_url', '…');` and `select vault.create_secret('<the same value as EXPORT_RUNNER_SECRET>', 'export_runner_secret', '…');`. The same `pg_cron` job carries it — there is still exactly one — and it is a silent no-op until both entries exist. **Unlike the digest, a missing pair is not the whole failure:** the request that starts a job also nudges the runner in-process, so exports still run; what is lost is the RETRY for a job whose nudge died with its process, which is a person waiting for a statutory response while nothing happens. Verify with `curl -X POST -H "Authorization: Bearer …" https://<host>/api/exports/run` and confirm a JSON `outcome`, never a 404.
 - **`[auth.hook.password_verification_attempt] enabled = true`, pointing at `pg-functions://postgres/public/hook_password_verification_attempt`** — this is the whole of § 5's per-account login limit. A hook that is not enabled in the hosted dashboard is a limit that does not exist, and it fails silently: sign-in keeps working, brute force is simply unmetered, and nothing in the app can tell. Verify after deploy by making six failed sign-ins against a test account and confirming the sixth is refused *and* that a `repeated_login_failures` row appears in `public.incident_alerts`.
 
 ### The platform superuser grant
