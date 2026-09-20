@@ -184,6 +184,7 @@ describe("no raw-HTML escape hatch exists on the legal path", () => {
       join(ROOT, "app", "(app)", "super", "legal", "page.tsx"),
       join(ROOT, "components", "admin", "legal-editor-forms.tsx"),
       join(ROOT, "components", "admin", "legal-editor-outcome.tsx"),
+      join(ROOT, "components", "ui", "action-outcome.tsx"),
     ];
     // The ATTRIBUTE or a DOM write, not the word: two headers name the prop in
     // order to say it is not used.

@@ -54,7 +54,7 @@ describe("nextOutcome: every outcome is a fresh announcement", () => {
 
   it("the component keys each Alert on the sequence number, in both regions", () => {
     const source = readFileSync(
-      fileURLToPath(new URL("../../../components/admin/legal-editor-outcome.tsx", import.meta.url)),
+      fileURLToPath(new URL("../../../components/ui/action-outcome.tsx", import.meta.url)),
       "utf8",
     );
     expect(source.match(/<Alert key=\{latest\.seq\}[^>]*live=\{false\}>/g)).toHaveLength(2);
