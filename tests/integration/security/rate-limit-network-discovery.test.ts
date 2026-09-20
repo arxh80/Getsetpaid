@@ -188,19 +188,37 @@ describe("the 31st network-directory read in a minute is refused", () => {
   // the same helper from `beforeAll` with an explicit hook timeout, and this
   // is that precedent applied to the file that has actually been flaking.
   //
-  // The head-room is MEASURED rather than guessed. The old hard-coded 25 was a
-  // second failure mode: when the burst outran it the window turned over
-  // mid-burst, which is the "counter 0, not 31" cascade -- not a second bug,
-  // the same one. One timed round trip under whatever load this process is
-  // already carrying says what 33 of them will cost.
+  // THE HEAD-ROOM IS 25 SECONDS, AND THE MEASURED TERM IS A SAFETY VALVE
+  // RATHER THAN THE NUMBER (fix round 2, re-review finding M-R4). The first
+  // write-up of this said the head-room was "MEASURED rather than guessed",
+  // which overstated it: the re-reviewer instrumented the hook and measured
+  // one directory read at 0.032-0.046 s across three full runs, so
+  // (33 x warmUp x 3 + 3) comes to about 7.4 s and `Math.max` takes the
+  // literal 25 every time. In practice 25 IS the head-room.
+  //
+  // It is not a guess either, and this is its basis: the burst itself was
+  // measured at 0.86-1.11 s across four green runs, so 25 s is roughly
+  // twenty times the observed cost of the thing it has to fit, inside a
+  // 60 s window. The old hard-coded 25 failed not because 25 was wrong but
+  // because nothing NOTICED when it was -- the window turned over mid-burst
+  // and the run reported "counter 0, not 31", which reads as a product bug.
+  //
+  // So the measured term earns its place by doing the two jobs 25 cannot:
+  // it raises the head-room on a stack slow enough to need more, and -- the
+  // one that matters -- the `need >= DISCOVERY_WINDOW` branch below FIRES
+  // when one read costs more than (60 - 3) / 99 = 0.576 s, thirteen times
+  // the observed cost, and says in words that the stack is the problem.
+  // Without it that same stack silently produces the counter-0 cascade.
   beforeAll(async () => {
     const startedAt = Date.now();
     await loadNetworkDirectory({});
     warmUpSeconds = (Date.now() - startedAt) / 1000;
 
     // 33 trips (the burst, its refusal and the two reads after it) at the
-    // measured cost, times three for head-room, plus a fixed three seconds --
-    // and never below the 25 the old guess used.
+    // measured cost, times three, plus a fixed three seconds -- and never
+    // below 25, which at every cost observed on this machine is the value
+    // this actually returns. See the paragraph above for why both halves are
+    // here.
     const need = Math.max(25, (DISCOVERY_MAX + 3) * warmUpSeconds * 3 + 3);
     if (need >= DISCOVERY_WINDOW) {
       // At this point the burst cannot be run honestly inside one bin. Say so
