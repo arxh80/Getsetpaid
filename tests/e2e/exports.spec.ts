@@ -71,6 +71,11 @@ async function waitForReady(page: Page, url: string, userId: string): Promise<vo
       },
     )
     .toBe("succeeded");
+  // ONE MORE LOAD, and it is not belt and braces: the poll reads the database
+  // AFTER each navigation, so the render that satisfied it was made while the
+  // job was still queued. Asserting the link on that page would be asserting
+  // it on a stale one.
+  await page.goto(url);
   await expect(page.getByTestId("export-download")).toBeVisible();
 }
 

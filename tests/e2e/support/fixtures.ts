@@ -2592,12 +2592,17 @@ export async function countExportDownloadAudit(jobId: string): Promise<number> {
  * statement batch.
  */
 export async function expireExportArchive(jobId: string): Promise<void> {
-  await db().query(
-    `alter table public.export_jobs disable trigger export_jobs_before_update;
-     update public.export_jobs set expires_at = now() - interval '1 day' where id = $1;
-     alter table public.export_jobs enable trigger export_jobs_before_update;`,
-    [jobId],
-  );
+  // Three statements, not one: a PARAMETERISED query may carry only a single
+  // command, and the middle one has to be parameterised.
+  await db().query(`alter table public.export_jobs disable trigger export_jobs_before_update`);
+  try {
+    await db().query(
+      `update public.export_jobs set expires_at = now() - interval '1 day' where id = $1`,
+      [jobId],
+    );
+  } finally {
+    await db().query(`alter table public.export_jobs enable trigger export_jobs_before_update`);
+  }
 }
 
 /** Remove every export job these people made, between specs. */
