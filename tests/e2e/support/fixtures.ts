@@ -2546,3 +2546,71 @@ export async function clearConsentState(userIds: string[]): Promise<void> {
     [userIds],
   );
 }
+
+// ===========================================================================
+// PHASE 8 TASK 4 -- DATA EXPORTS
+// ===========================================================================
+
+export interface ExportJobRead {
+  id: string;
+  kind: string;
+  organisation_id: string | null;
+  status: string;
+  storage_key: string | null;
+  byte_size: string | null;
+  row_count: string | null;
+  failure_reason: string | null;
+}
+
+/** One person's export jobs, newest first, read straight out of Postgres. */
+export async function exportJobsFor(userId: string): Promise<ExportJobRead[]> {
+  const result = await db().query<ExportJobRead>(
+    `select id, kind, organisation_id, status, storage_key, byte_size, row_count, failure_reason
+       from public.export_jobs where requested_by = $1 order by seq desc`,
+    [userId],
+  );
+  return result.rows;
+}
+
+/** How many downloads have been audited, for the "no audit row, no URL" check. */
+export async function countExportDownloadAudit(jobId: string): Promise<number> {
+  const result = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.audit_events
+      where action = 'export_job.downloaded' and target_id = $1`,
+    [jobId],
+  );
+  return Number(result.rows[0]?.n ?? "0");
+}
+
+/**
+ * Age an archive past its read-time expiry.
+ *
+ * NEEDS THE UPDATE TRIGGER OUT OF THE WAY, and that is itself the evidence
+ * that a finished job is immutable for every writer, postgres included
+ * (private.export_jobs_before_update()). Disabling a trigger as the table's
+ * owner is the deliberate DBA escape hatch; it is re-enabled in the same
+ * statement batch.
+ */
+export async function expireExportArchive(jobId: string): Promise<void> {
+  await db().query(
+    `alter table public.export_jobs disable trigger export_jobs_before_update;
+     update public.export_jobs set expires_at = now() - interval '1 day' where id = $1;
+     alter table public.export_jobs enable trigger export_jobs_before_update;`,
+    [jobId],
+  );
+}
+
+/** Remove every export job these people made, between specs. */
+export async function clearExportState(userIds: string[]): Promise<void> {
+  if (userIds.length === 0) return;
+  await db().query(
+    `delete from public.audit_events
+      where action in ('export_job.requested','export_job.downloaded')
+        and target_id in (select id from public.export_jobs where requested_by = any($1::uuid[]))`,
+    [userIds],
+  );
+  await db().query(`delete from public.export_jobs where requested_by = any($1::uuid[])`, [userIds]);
+  await db().query(
+    `delete from public.rate_limit_counters where category in ('exports','account_export')`,
+  );
+}
