@@ -15,6 +15,7 @@ import {
   isDsrScope,
   isDsrStatus,
   isDsrTerminal,
+  routedNoticeFor,
 } from "@/lib/dsr/contract";
 import { supportContact } from "@/lib/legal/contact";
 import { formatDateTime } from "@/lib/format/date";
@@ -186,11 +187,17 @@ export default async function AccountDataRequestsPage() {
                       {request.detail}
                     </p>
 
+                    {/* "WE HAVE ASKED", AND WHO (review finding I7 / Q160b).
+                        This used to read "We passed this to the business ...
+                        It is the one that must answer you" — a statement of
+                        delivery, for a product that sends nothing to anybody
+                        and did not even name the business. */}
                     {request.routedAt ? (
-                      <p className="max-w-prose text-sm text-ink-muted">
-                        We passed this to the business that holds the records, because it — not
-                        GetSetPaid — decides what it keeps and why. It is the one that must
-                        answer you.
+                      <p
+                        className="max-w-prose text-sm text-ink-muted"
+                        data-testid="own-request-routed"
+                      >
+                        {routedNoticeFor(request.routedToOrganisationName)}
                       </p>
                     ) : null}
 

@@ -4,6 +4,22 @@
 // its states, route a processor request to the workspace that is its
 // controller (Q132), and add a working note the requester cannot read.
 //
+// ROUTING IS ITS OWN ACTION SINCE FIX ROUND 1 (review finding I7, Q160a),
+// because it is no longer one UPDATE with a label on it:
+//
+//   * it calls public.route_data_subject_request(), which writes the routing
+//     and the mandatory handover note in ONE transaction (a deferred
+//     constraint trigger refuses a routing with no note, from any writer);
+//   * it CONFIRMS THE WORKSPACE BY NAME before it writes. A slug is typed,
+//     and a typo that happens to match another workspace used to be
+//     uncorrectable and invisible: the operator saw the slug they typed and
+//     the requester was told "we passed this on". Now the first submission
+//     resolves the slug and hands the NAME back for the operator to check,
+//     and only a submission that carries that same slug back as
+//     `confirmedSlug` writes anything;
+//   * the same action CORRECTS a routed request (Q160c) -- the database reads
+//     a different workspace on a routed row as a re-route.
+//
 // NOTHING HERE IS THE ENFORCEMENT except the step-up check. Each RPC carries
 // its own `has_platform_permission('oversee_data_subject_requests')` guard —
 // allowlisted superuser at aal2 — and the BEFORE UPDATE trigger behind it is
@@ -36,6 +52,14 @@ import {
   UUID_RE,
   isDsrStatus,
 } from "./contract";
+
+/**
+ * The key the routing form reads a resolved workspace name back from, and the
+ * key it sends the operator's confirmation on. Exported so the form and the
+ * unit suite cannot drift from the action.
+ */
+export const ROUTING_RESOLVED_NAME_KEY = "resolvedOrganisationName";
+export const ROUTING_CONFIRMED_SLUG_KEY = "confirmedSlug";
 
 const NOT_ALLOWED =
   "That can’t be done from here. Reload the page — the request may have changed since it was opened.";
@@ -75,6 +99,22 @@ function rpcRefusal(code: string | undefined, hint: string | undefined, formData
         return refuse("Name the workspace this goes to.", formData, {
           organisationSlug: "Type the workspace’s slug.",
         });
+      case "use_route_data_subject_request":
+        return refuse(
+          "Passing a request to a business has its own form, which records the handover.",
+          formData,
+        );
+      case "handover_note_required":
+      case "routing_needs_handover_note":
+        return refuse("Say how you told the workspace. Nothing in this product tells it.", formData, {
+          handoverNote: "Write down the address you emailed and when.",
+        });
+      case "not_a_transition":
+        return refuse(
+          "That request already names that workspace. Name a different one, or leave it as it is.",
+          formData,
+          { organisationSlug: "This is the workspace it was already passed to." },
+        );
       case "fulfilment_not_recorded":
         return refuse(
           "This request cannot be marked answered until the export or erasure has actually run.",
@@ -102,6 +142,14 @@ export async function transitionDataSubjectRequestAction(
       formData,
     );
   }
+  if (status === "routed") {
+    // The RPC refuses it by name too (22023 use_route_data_subject_request);
+    // this names the reason without a round trip.
+    return refuse(
+      "Passing a request to a business has its own form, which records the handover.",
+      formData,
+    );
+  }
 
   const reason = (field(formData, "rejectionReason") ?? "").trim();
   if (status === "rejected") {
@@ -121,39 +169,10 @@ export async function transitionDataSubjectRequestAction(
 
   const supabase = await createClient();
 
-  // ROUTING takes a workspace SLUG typed into a text box rather than a select
-  // of every workspace on the platform — that select would be the unbounded
-  // list "paginate everything" forbids (the feedback list's own reasoning).
-  let routeTo: string | null = null;
-  if (status === "routed") {
-    const slug = (field(formData, "organisationSlug") ?? "").trim().toLowerCase();
-    if (slug === "") {
-      return refuse("Name the workspace this goes to.", formData, {
-        organisationSlug: "Type the workspace’s slug.",
-      });
-    }
-    const { data: org, error: orgError } = await supabase
-      .from("organisations")
-      .select("id")
-      .eq("slug", slug)
-      .maybeSingle();
-    if (orgError) {
-      console.error("[dsr] workspace lookup failed:", orgError.message);
-      return refuse(FAILED_MESSAGE, formData);
-    }
-    if (!org) {
-      return refuse("No workspace has that slug.", formData, {
-        organisationSlug: "Check the spelling — it is the name in the workspace’s address bar.",
-      });
-    }
-    routeTo = org.id as string;
-  }
-
   const { error } = await supabase.rpc("transition_data_subject_request", {
     p_request_id: requestId,
     p_status: status,
     p_rejection_reason: status === "rejected" ? reason : null,
-    p_route_to_organisation_id: routeTo,
   });
 
   if (error) {
@@ -163,6 +182,101 @@ export async function transitionDataSubjectRequestAction(
 
   revalidatePath(SUPER_DATA_REQUESTS_PATH);
   return { message: `Marked ${DSR_STATUS_LABELS[status]}.`, values: {} };
+}
+
+/**
+ * Pass a `workspace_records` request to the workspace that is its controller
+ * -- or correct the workspace a routed one names (Q160c).
+ *
+ * TWO SUBMISSIONS, DELIBERATELY. The first resolves the typed slug and hands
+ * the workspace's NAME back for the operator to read; only a submission whose
+ * `confirmedSlug` equals the slug it resolves writes anything. A slug is a
+ * typed identifier that can silently match a DIFFERENT real workspace, and
+ * the consequence of routing the wrong one is telling a business that a named
+ * person made a privacy request.
+ *
+ * NOT BEHIND STEP-UP, as built, for the reason the review agreed with: today
+ * a routing discloses nothing to anybody, because nothing is sent. THE DAY
+ * ROUTING NOTIFIES A WORKSPACE IN-PRODUCT it becomes a disclosure of personal
+ * data to a third party chosen by a typed slug, and it goes behind step-up
+ * with the confirmation step kept (Q160).
+ */
+export async function routeDataSubjectRequestAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  if (!(await isSuperuser())) return refuse(FAILED_MESSAGE, formData);
+
+  const requestId = field(formData, "requestId") ?? "";
+  if (!UUID_RE.test(requestId)) return refuse(FAILED_MESSAGE, formData);
+
+  const slug = (field(formData, "organisationSlug") ?? "").toLowerCase();
+  if (slug === "") {
+    return refuse("Name the workspace this goes to.", formData, {
+      organisationSlug: "Type the workspace’s slug.",
+    });
+  }
+
+  const handoverNote = field(formData, "handoverNote") ?? "";
+  if (handoverNote === "") {
+    return refuse("Say how you told the workspace. Nothing in this product tells it.", formData, {
+      handoverNote: "Write down the address you emailed and when.",
+    });
+  }
+  if (handoverNote.length > DSR_NOTE_MAX) {
+    return refuse("That note is too long.", formData, {
+      handoverNote: `Keep it under ${DSR_NOTE_MAX.toLocaleString("en-GB")} characters.`,
+    });
+  }
+
+  // A SELECT of every workspace on the platform would be the unbounded list
+  // "paginate everything" forbids (the feedback list's own reasoning), so the
+  // slug is typed -- and therefore has to be confirmed by name below.
+  const supabase = await createClient();
+  const { data: org, error: orgError } = await supabase
+    .from("organisations")
+    .select("id, name")
+    .eq("slug", slug)
+    .maybeSingle();
+  if (orgError) {
+    console.error("[dsr] workspace lookup failed:", orgError.message);
+    return refuse(FAILED_MESSAGE, formData);
+  }
+  if (!org) {
+    return refuse("No workspace has that slug.", formData, {
+      organisationSlug: "Check the spelling — it is the name in the workspace’s address bar.",
+    });
+  }
+  const organisationName = org.name as string;
+
+  if ((field(formData, ROUTING_CONFIRMED_SLUG_KEY) ?? "").toLowerCase() !== slug) {
+    // NOT AN ERROR AND NOT A SUCCESS: the form renders the name and asks for
+    // one more press. Nothing has been written.
+    return {
+      values: {
+        ...echoedValues(formData),
+        [ROUTING_RESOLVED_NAME_KEY]: organisationName,
+        [ROUTING_CONFIRMED_SLUG_KEY]: slug,
+      },
+    };
+  }
+
+  const { error } = await supabase.rpc("route_data_subject_request", {
+    p_request_id: requestId,
+    p_organisation_id: org.id as string,
+    p_handover_note: handoverNote,
+  });
+  if (error) {
+    console.error("[dsr] routing failed:", error.code, error.message);
+    return rpcRefusal(error.code, error.hint ?? undefined, formData);
+  }
+
+  revalidatePath(SUPER_DATA_REQUESTS_PATH);
+  return {
+    message:
+      `Recorded as passed to ${organisationName}. Nothing was sent — email their Owner yourself if you have not already.`,
+    values: {},
+  };
 }
 
 export async function addDataSubjectRequestNoteAction(

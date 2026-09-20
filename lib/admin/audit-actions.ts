@@ -163,6 +163,10 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "data_subject_request.withdrawn",
   "data_subject_request.fulfilment_recorded",
   "data_subject_request.note_added",
+  // Fix round 1 (review finding I7 / Q160c): correcting the workspace a
+  // routed request names. Not a transition -- the status is `routed` before
+  // and after -- so it has its own action, carrying both workspaces.
+  "data_subject_request.rerouted",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

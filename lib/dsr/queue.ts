@@ -171,7 +171,7 @@ export async function fetchDsrQueuePage(params: DsrQueueParams): Promise<DsrQueu
   let query = supabase
     .from("data_subject_requests")
     .select(
-      "id, user_email, right_type, subject_scope, detail, status, requested_at, due_by, rejection_reason, routed_at, routed_to_organisation_id, fulfilment_kind",
+      "id, user_email, right_type, subject_scope, detail, status, requested_at, due_by, rejection_reason, routed_at, routed_to_organisation_id, routed_to_organisation_name, fulfilment_kind",
     );
 
   // ALLOWLISTED FILTERS: every value passed a closed allowlist above; nothing
@@ -203,42 +203,27 @@ export async function fetchDsrQueuePage(params: DsrQueueParams): Promise<DsrQueu
   const more = raw.length > pageSize;
   const rows = more ? raw.slice(0, pageSize) : raw;
 
-  // The workspace NAME for a routed request — the superuser's existing
-  // cross-tenant read of organisation rows. A name is not record content.
-  const orgIds = [
-    ...new Set(
-      rows
-        .map((row) => row.routed_to_organisation_id as string | null)
-        .filter((id): id is string => id !== null),
-    ),
-  ];
-  let names = new Map<string, string>();
-  if (orgIds.length > 0) {
-    const { data: orgRows, error: nameError } = await supabase
-      .from("organisations")
-      .select("id, name")
-      .in("id", orgIds);
-    if (nameError) console.error("[dsr] workspace name lookup failed:", nameError.message);
-    else names = new Map((orgRows ?? []).map((r) => [r.id as string, r.name as string]));
-  }
+  // THE WORKSPACE NAME IS ON THE ROW (fix round 1, I4/I7). The transition
+  // trigger snapshots it at routing time, so the requester -- who holds no
+  // read of public.organisations for a workspace they do not belong to -- can
+  // be told WHICH business was asked, and so the evidence survives that
+  // workspace being purged. This read no longer joins organisations at all.
 
-  // How many working notes each request carries. The BODIES are not read here
-  // — the queue shows a count and the detail view shows the notes — but the
-  // count tells the operator at a glance which ones have been worked.
+  // How many working notes each request carries, COUNTED IN THE DATABASE
+  // (review finding M9). The read this replaces selected every note row for
+  // the page and counted them here, bounded only by PostgREST's max_rows
+  // (1000), which truncates silently: past that the "(n)" in a row header
+  // under-counted with no sign at all.
   const noteCounts = new Map<string, number>();
   if (rows.length > 0) {
-    const { data: noteRows, error: noteError } = await supabase
-      .from("data_subject_request_notes")
-      .select("request_id")
-      .in(
-        "request_id",
-        rows.map((r) => r.id as string),
-      );
+    const { data: countRows, error: noteError } = await supabase.rpc(
+      "data_subject_request_note_counts",
+      { p_request_ids: rows.map((r) => r.id as string) },
+    );
     if (noteError) console.error("[dsr] note count read failed:", noteError.message);
     else {
-      for (const note of noteRows ?? []) {
-        const key = note.request_id as string;
-        noteCounts.set(key, (noteCounts.get(key) ?? 0) + 1);
+      for (const entry of (countRows ?? []) as { request_id: string; note_count: number }[]) {
+        noteCounts.set(entry.request_id, Number(entry.note_count));
       }
     }
   }
@@ -255,10 +240,7 @@ export async function fetchDsrQueuePage(params: DsrQueueParams): Promise<DsrQueu
     rejectionReason: (row.rejection_reason as string | null) ?? null,
     routedAt: (row.routed_at as string | null) ?? null,
     routedToOrganisationId: (row.routed_to_organisation_id as string | null) ?? null,
-    routedToOrganisationName:
-      row.routed_to_organisation_id === null
-        ? null
-        : (names.get(row.routed_to_organisation_id as string) ?? "(unknown workspace)"),
+    routedToOrganisationName: (row.routed_to_organisation_name as string | null) ?? null,
     fulfilmentKind: (row.fulfilment_kind as string | null) ?? null,
     noteCount: noteCounts.get(row.id as string) ?? 0,
   }));
@@ -277,20 +259,28 @@ export interface DsrNote {
   readonly createdAt: string;
 }
 
-/** The operator's notes on the requests currently on screen. Bounded, like
- *  every other read: the newest few per request are what a queue needs. */
+/** How many of a request's notes the queue shows under its header. */
+export const DSR_NOTES_PER_REQUEST = 5;
+
+/**
+ * The operator's notes on the requests currently on screen: the newest
+ * DSR_NOTES_PER_REQUEST **per request**, by a window function in the database
+ * (review finding M9).
+ *
+ * The read this replaces took the newest 200 notes across the WHOLE page, so
+ * one heavily annotated request could starve every other row on it: a header
+ * saying "(3)" above a list saying "No notes yet."
+ */
 export async function fetchDsrNotes(
   requestIds: readonly string[],
 ): Promise<Map<string, DsrNote[]>> {
   const byRequest = new Map<string, DsrNote[]>();
   if (requestIds.length === 0) return byRequest;
   const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("data_subject_request_notes")
-    .select("id, request_id, body, created_at")
-    .in("request_id", [...requestIds])
-    .order("created_at", { ascending: false })
-    .limit(200);
+  const { data, error } = await supabase.rpc("data_subject_request_recent_notes", {
+    p_request_ids: [...requestIds],
+    p_per_request: DSR_NOTES_PER_REQUEST,
+  });
   if (error) {
     console.error("[dsr] notes read failed:", error.message);
     return byRequest;

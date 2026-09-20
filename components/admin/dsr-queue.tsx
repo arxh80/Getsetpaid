@@ -29,6 +29,7 @@ import { formatDateTime } from "@/lib/format/date";
 import { Button } from "@/components/ui/button";
 import { DsrTransitionForms } from "@/components/admin/dsr-transition-forms";
 import { DsrNoteForm } from "@/components/admin/dsr-note-form";
+import { ActionOutcome } from "@/components/ui/action-outcome";
 
 // The operator's data subject request queue: a filter strip, the rows oldest
 // deadline first, a forward pager.
@@ -42,6 +43,14 @@ import { DsrNoteForm } from "@/components/admin/dsr-note-form";
 // an overdue row carries a word — "OVERDUE" — in a bordered chip, the
 // deadline sentence says how many days late in text, and the row's left edge
 // is a --danger rule. Three signals, of which colour is the least.
+//
+// WHERE THIS PAGE SAYS WHAT AN ACTION DID (review finding I6). Above the
+// list, in <ActionOutcome>, and NOT inside the row the action was submitted
+// from: the default view lists open requests only, so answering or refusing a
+// request re-renders the page without that row — taking the confirmation the
+// row was holding with it. Refusing a statutory request, after a step-up
+// prompt, used to be answered by the row vanishing. components/ui/
+// action-outcome.tsx carries the full account of the bug class.
 //
 // METADATA AND THE REQUESTER'S OWN WORDS. There is no tenant CRM content on
 // this page, and cannot be: the tables behind it hold none. The requester's
@@ -320,6 +329,7 @@ export function DsrQueue({
   return (
     <>
       <FilterStrip params={params} basePath={basePath} />
+      <ActionOutcome testId="dsr-outcome">
       {overdue.length > 0 ? (
         <p
           role="status"
@@ -374,6 +384,7 @@ export function DsrQueue({
           </nav>
         </>
       )}
+      </ActionOutcome>
     </>
   );
 }

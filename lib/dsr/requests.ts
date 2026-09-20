@@ -28,6 +28,14 @@ export interface OwnDsrRequest {
   readonly closedAt: string | null;
   readonly rejectionReason: string | null;
   readonly routedAt: string | null;
+  /**
+   * WHICH BUSINESS WAS ASKED (review finding I7 / Q160b). Snapshotted onto the
+   * row by the transition trigger, because the requester holds no read of
+   * public.organisations for a workspace they do not belong to -- so before
+   * this they were told "we passed this to the business that holds the
+   * records" and never which one.
+   */
+  readonly routedToOrganisationName: string | null;
 }
 
 /**
@@ -50,6 +58,7 @@ interface Row {
   withdrawn_at: string | null;
   rejection_reason: string | null;
   routed_at: string | null;
+  routed_to_organisation_name: string | null;
 }
 
 export interface OwnDsrState {
@@ -67,7 +76,7 @@ export async function getOwnDataSubjectRequests(userId: string): Promise<OwnDsrS
   const { data, error } = await supabase
     .from("data_subject_requests")
     .select(
-      "id, right_type, subject_scope, detail, status, requested_at, due_by, fulfilled_at, rejected_at, withdrawn_at, rejection_reason, routed_at",
+      "id, right_type, subject_scope, detail, status, requested_at, due_by, fulfilled_at, rejected_at, withdrawn_at, rejection_reason, routed_at, routed_to_organisation_name",
     )
     .eq("user_id", userId)
     .order("seq", { ascending: false })
@@ -94,5 +103,6 @@ function toRequest(row: Row): OwnDsrRequest {
     closedAt: row.fulfilled_at ?? row.rejected_at ?? row.withdrawn_at ?? null,
     rejectionReason: row.rejection_reason ?? null,
     routedAt: row.routed_at ?? null,
+    routedToOrganisationName: row.routed_to_organisation_name ?? null,
   };
 }

@@ -244,6 +244,11 @@ const ARGS = {
    *  Read Only member -- the row every refused transition and note is aimed
    *  at, so a refusal is the guard's and not "no such request". */
   dsrRequestId: "",
+  /** Phase 8 Task 3 fix round 1: a PROCESSOR-scope request held open, because
+   *  routing is refused on an account-scope one by the database whoever asks
+   *  -- a refusal on that row would prove the scope check and not the
+   *  permission gate. */
+  dsrProcessorRequestId: "",
 };
 
 // Phase 8 Task 2: the no-organisation principal's user id, for the
@@ -647,6 +652,48 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
     },
   },
   {
+    // Phase 8 Task 3 FIX ROUND 1 (review finding I7 / Q160a): routing left
+    // transition_data_subject_request() and became its own function, because
+    // it must write the handover note in the same transaction.
+    fn: "route_data_subject_request",
+    args: () => ({
+      p_request_id: ARGS.dsrProcessorRequestId,
+      p_organisation_id: fx.orgA.id,
+      p_handover_note: "matrix probe handover",
+    }),
+    sideEffectTable: "audit_events",
+    invariant: async () => {
+      const { rows } = await pool.query(
+        `select status, routed_at from public.data_subject_requests where id = $1`,
+        [ARGS.dsrProcessorRequestId],
+      );
+      expect(rows[0]?.status, "a refused principal routed a data subject request").toBe("open");
+      expect(rows[0]?.routed_at, "a refused principal stamped a routing").toBeNull();
+    },
+    positiveControl: async () => {
+      // A DISPOSABLE processor-scope request, so the held one stays `open`.
+      const { data, error } = await fx.activeByRole.read_only.client.rpc(
+        "submit_data_subject_request",
+        {
+          p_right_type: "erasure",
+          p_subject_scope: "workspace_records",
+          p_detail: "matrix routing positive control",
+        },
+      );
+      const made = (data ?? []) as { request_id: string }[];
+      expect(error, `submit_data_subject_request: ${error?.message}`).toBeNull();
+      const routed = await superuser.rpc("route_data_subject_request", {
+        p_request_id: made[0].request_id,
+        p_organisation_id: fx.orgA.id,
+        p_handover_note: "matrix positive control handover: emailed the Owner",
+      });
+      expect(
+        routed.error,
+        `route_data_subject_request must be reachable by the aal2 superuser: ${routed.error?.message}`,
+      ).toBeNull();
+    },
+  },
+  {
     fn: "add_data_subject_request_note",
     args: () => ({ p_request_id: ARGS.dsrRequestId, p_body: "matrix probe note" }),
     sideEffectTable: "data_subject_request_notes",
@@ -734,6 +781,16 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "Phase 8 Task 3 -- ANY signed-in person exercises their OWN statutory " +
     "rights. Takes no user argument; the database stamps the session's, and " +
     "the 30-day deadline is a generated column no caller can name.",
+  data_subject_request_note_counts:
+    "Phase 8 Task 3 fix round 1 (M9) -- SECURITY INVOKER, so the notes " +
+    "table's one SELECT policy (the aal2 platform superuser's) decides the " +
+    "answer: any other caller gets NO ROWS rather than a refusal, for their " +
+    "own request included. Asserted below and in § DN of the psql suite.",
+  data_subject_request_recent_notes:
+    "The sibling read of the same table, under the same SECURITY INVOKER " +
+    "argument: it can return only rows the caller's own policy would have " +
+    "returned. Granted to `authenticated` because the operator IS an " +
+    "authenticated session; it is not an access path to anything.",
   withdraw_data_subject_request:
     "Phase 8 Task 3 -- the requester withdraws their OWN open request. The " +
     "BEFORE UPDATE trigger refuses a withdrawal by anyone but the requester, " +
@@ -1134,6 +1191,23 @@ beforeAll(async () => {
     ARGS.dsrRequestId = made[0].request_id;
   }
 
+  // ...and a PROCESSOR-scope one, the subject of the routing refusals.
+  {
+    const { data, error } = await fx.activeByRole.read_only.client.rpc(
+      "submit_data_subject_request",
+      {
+        p_right_type: "erasure",
+        p_subject_scope: "workspace_records",
+        p_detail: "matrix fixture: a promoter has me saved as a contact",
+      },
+    );
+    const made = (data ?? []) as { request_id: string }[];
+    if (error || made.length !== 1) {
+      throw new Error(`POSITIVE CONTROL FAILED: submit_data_subject_request (processor): ${error?.message}`);
+    }
+    ARGS.dsrProcessorRequestId = made[0].request_id;
+  }
+
   // `rate_limit_counters` needs a row too, and the honest way to get one is to
   // spend a real budget through the real meter as a real member.
   {
@@ -1381,6 +1455,53 @@ describe("RPCs Phase 7 added that are deliberately member-reachable", () => {
       p_organisation_id: fx.orgB.id,
     });
     expect(error, "a member metered a workspace they do not belong to").not.toBeNull();
+  });
+
+  it("the two note reads return the OPERATOR's rows and none of the requester's own", async () => {
+    // Phase 8 Task 3 fix round 1 (M9). Both functions are SECURITY INVOKER
+    // over public.data_subject_request_notes, whose only SELECT policy is the
+    // aal2 superuser's -- so the grant to `authenticated` is not an access
+    // path. POSITIVE CONTROL FIRST, or "the requester reads no notes" passes
+    // because there are none: plant a real note and prove the operator reads
+    // it through the same function before asserting the requester does not.
+    const planted = await superuser.rpc("add_data_subject_request_note", {
+      p_request_id: ARGS.dsrRequestId,
+      p_body: "matrix note-read boundary probe",
+    });
+    expect(planted.error, `add_data_subject_request_note: ${planted.error?.message}`).toBeNull();
+
+    const operatorNotes = await superuser.rpc("data_subject_request_recent_notes", {
+      p_request_ids: [ARGS.dsrRequestId],
+      p_per_request: 5,
+    });
+    expect(operatorNotes.error, `${operatorNotes.error?.message}`).toBeNull();
+    expect(
+      (operatorNotes.data ?? []).length,
+      "DENOMINATOR: the operator must read the planted note through this function",
+    ).toBeGreaterThanOrEqual(1);
+    const operatorCounts = await superuser.rpc("data_subject_request_note_counts", {
+      p_request_ids: [ARGS.dsrRequestId],
+    });
+    expect(
+      Number(((operatorCounts.data ?? []) as { note_count: number }[])[0]?.note_count ?? 0),
+    ).toBeGreaterThanOrEqual(1);
+
+    // The REQUESTER of that very request -- the sharpest principal there is.
+    const requester = fx.activeByRole.read_only.client;
+    const ownNotes = await requester.rpc("data_subject_request_recent_notes", {
+      p_request_ids: [ARGS.dsrRequestId],
+      p_per_request: 5,
+    });
+    expect(ownNotes.error, `${ownNotes.error?.message}`).toBeNull();
+    expect(ownNotes.data ?? [], "the requester read an operator note (Q103)").toEqual([]);
+    const ownCounts = await requester.rpc("data_subject_request_note_counts", {
+      p_request_ids: [ARGS.dsrRequestId],
+    });
+    expect(ownCounts.error, `${ownCounts.error?.message}`).toBeNull();
+    expect(
+      ownCounts.data ?? [],
+      "the requester learned HOW MANY operator notes their request carries",
+    ).toEqual([]);
   });
 
   it("accept_impersonation_request refuses a member of the target org who lacks manage_organisation", async () => {

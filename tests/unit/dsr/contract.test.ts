@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   DSR_ALERT_LEAD_DAYS,
@@ -204,13 +205,23 @@ describe("the column limits match the CHECK constraints", () => {
   // Read from the migration rather than mirrored by hand: a widened column
   // that the form still caps at the old number is a form that refuses valid
   // input, and a narrowed one is a 23514 the person cannot act on.
-  const migrations = latestFunctionDefinition("private.data_subject_requests_before_insert").file;
-
-  it("the binding reads the migration this task added", () => {
-    expect(migrations).toContain("20260924000000");
-  });
+  //
+  // THE CHECKS ARE READ WHERE THEY ARE DECLARED, not through a function that
+  // happens to sit beside them. The first cut pinned the FILE that carries
+  // the latest definition of private.data_subject_requests_before_insert(),
+  // which was 20260924000000 until fix round 1 rebuilt that trigger in
+  // 20260925000000 -- so the binding went red for a migration that changed no
+  // limit at all, and would have gone green again if somebody had widened one
+  // while re-issuing the trigger.
+  const ddl = readFileSync(
+    new URL("../../../supabase/migrations/20260924000000_data_subject_requests.sql", import.meta.url),
+    "utf8",
+  );
 
   it("detail, rejection reason and note caps are the shipped ones", () => {
+    expect(ddl).toContain(`between 1 and ${DSR_DETAIL_MAX}`);
+    expect(ddl).toContain(`between 1 and ${DSR_REJECTION_REASON_MAX}`);
+    expect(ddl).toContain(`between 1 and ${DSR_NOTE_MAX}`);
     expect(DSR_DETAIL_MAX).toBe(4000);
     expect(DSR_REJECTION_REASON_MAX).toBe(2000);
     expect(DSR_NOTE_MAX).toBe(4000);

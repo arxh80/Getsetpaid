@@ -142,15 +142,44 @@ export function dsrTransitionAllowed(from: string, to: string): boolean {
 }
 
 /**
- * The transitions the OPERATOR may make. `withdrawn` is the requester's act
- * alone (`public.withdraw_data_subject_request`), and
- * `transition_data_subject_request` refuses it by name.
+ * The transitions the OPERATOR may make through
+ * `public.transition_data_subject_request`, which refuses two of the table's
+ * states BY NAME and so cannot be a button:
+ *
+ *   * `withdrawn` is the requester's act alone
+ *     (`public.withdraw_data_subject_request`);
+ *   * `routed` has its own function since fix round 1 (Q160a),
+ *     `public.route_data_subject_request`, because a routing must also carry
+ *     the workspace and the handover note and a deferred constraint trigger
+ *     refuses one without a note. `operatorMayRoute()` below is the control
+ *     that draws it.
  */
 export function operatorTransitionsFrom(status: string): readonly DsrStatus[] {
   const next = Object.prototype.hasOwnProperty.call(DSR_TRANSITIONS, status)
     ? DSR_TRANSITIONS[status]
     : undefined;
-  return (next ?? []).filter((s) => s !== "withdrawn");
+  return (next ?? []).filter((s) => s !== "withdrawn" && s !== "routed");
+}
+
+/**
+ * Whether the operator may pass this request to a customer workspace -- or
+ * CORRECT the workspace a routed one already names (Q160c).
+ *
+ * SCOPE, NOT ONLY STATUS (review finding M7). `routed` was drawn from the
+ * transition table alone, so an ACCOUNT-scope row -- one GetSetPaid itself is
+ * the controller of -- offered "Pass to the business", and the only outcome
+ * the click could ever have was the trigger's `not_a_processor_request`. A
+ * control whose sole result is an error, on a page where the wrong click on
+ * the RIGHT kind of row is irreversible.
+ *
+ * A routed request stays routable so a mistyped slug is correctable: the
+ * database treats naming a DIFFERENT workspace as a re-route (audited as
+ * `data_subject_request.rerouted`) and naming the same one as
+ * `not_a_transition`.
+ */
+export function operatorMayRoute(status: string, subjectScope: string): boolean {
+  if (subjectScope !== "workspace_records") return false;
+  return status === "open" || status === "in_progress" || status === "routed";
 }
 
 /** The statutory window — `private.dsr_response_days()`. */
@@ -272,5 +301,33 @@ export const REJECTION_REASON_WARNING =
  * The sentence the requester's page shows about requests we cannot take here.
  * The Data Subject Rights page carries the same position (version 2).
  */
+/**
+ * The warning beside the operator's routing form, verbatim and in one place
+ * (review finding I7 / founder question Q160a).
+ *
+ * "Pass it on" used to tell the requester "we passed this to the business
+ * ... it is the one that must answer you", and the product passes nothing to
+ * anybody: routing is one UPDATE, the routed workspace has no read of the
+ * request, no page, no count and no email (Q45). So the form says what is
+ * really true -- nothing is sent, and the operator is the one who has to
+ * write -- and the handover note below records that they did.
+ */
+export const ROUTING_SENDS_NOTHING =
+  "Nothing is sent. There is no workspace-side inbox and no notification in this product, so recording this does not tell the business anything: you must email the workspace’s Owner yourself, now. The note below is the record that you did.";
+
+/** The hint on the routing form's mandatory handover note (Q160a). */
+export const ROUTING_HANDOVER_HINT =
+  "Say how and when you told them — the address you wrote to, and when. Kept in the operator notes, which the requester never sees. The database refuses a routing that records no handover.";
+
+/** What the REQUESTER reads once a request has been passed on (Q160b). */
+export function routedNoticeFor(organisationName: string | null): string {
+  const who = organisationName ?? "the business that holds the records";
+  return (
+    `We have asked ${who} to answer this. It — not GetSetPaid — decides what it keeps ` +
+    "about you and why, so it is the one that has to reply to you. If you do not hear from " +
+    "them, tell us and we will chase it."
+  );
+}
+
 export const NO_ACCOUNT_ROUTE =
   "This form is for people with a GetSetPaid account: being signed in is how we know the request is really yours. If you have no account, or cannot sign in, email us instead and we will verify your identity another way.";
