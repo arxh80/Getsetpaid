@@ -34,6 +34,11 @@ const REPORTED_SURFACES = [
   "components/admin/legal-editor-forms.tsx",
   "components/admin/dsr-transition-forms.tsx",
   "components/admin/dsr-note-form.tsx",
+  // Phase 8 Task 4. Starting an export revalidates the page into a tree where
+  // this form's own button may now be disabled and a list that did not exist
+  // is rendered, so a message held by its useActionState is thrown away by
+  // exactly the re-render it caused.
+  "components/account/export-start-form.tsx",
 ];
 
 /**

@@ -18,6 +18,7 @@ describe("PUBLIC_PATHS and isUnder()", () => {
       "/magic-link",
       "/auth",
       "/api/incident-alerts",
+      "/api/exports",
       "/legal",
     ]);
   });

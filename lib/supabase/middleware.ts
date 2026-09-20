@@ -41,13 +41,21 @@ import { supabasePublicKey, supabaseUrl } from "./env";
  *  here. isUnder() matches the root and `root/...` only, so `/legal` does not
  *  make `/legalese` or `/legal-anything` public -- asserted in
  *  tests/unit/security/public-paths.test.ts and, over real HTTP, in
- *  tests/e2e/legal.spec.ts. */
+ *  tests/e2e/legal.spec.ts.
+ *
+ *  `/api/exports/run` (Phase 8 Task 4) is the export runner's retry endpoint,
+ *  called by the SAME pg_cron tick through pg_net. Same shape as
+ *  `/api/incident-alerts`: no user, a server-held bearer compared in constant
+ *  time inside the handler, 404 to everything else including an unset secret.
+ *  Listed under `/api/exports` rather than the exact path so a future
+ *  sibling under it is a deliberate edit here. */
 export const PUBLIC_PATHS = [
   "/login",
   "/signup",
   "/magic-link",
   "/auth",
   "/api/incident-alerts",
+  "/api/exports",
   "/legal",
 ] as const;
 

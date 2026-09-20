@@ -167,6 +167,16 @@ export const PLATFORM_AUDIT_ACTIONS = [
   // routed request names. Not a transition -- the status is `routed` before
   // and after -- so it has its own action, carrying both workspaces.
   "data_subject_request.rerouted",
+
+  // Phase 8 Task 4 (20260927001000, 20260927005000): data exports. TWO
+  // actions and not four, because the other two events have no actor: a job
+  // SUCCEEDS or FAILS in a session with no person on it, and
+  // private.log_audit_event() refuses an unattributable row
+  // (audit_events.actor_user_id is NOT NULL and there is no system actor).
+  // The job row carries status, timestamps, counts and any failure reason,
+  // and it is the record of those.
+  "export_job.requested",
+  "export_job.downloaded",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

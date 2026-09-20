@@ -22,6 +22,11 @@ const ALLOWED = new Set([
   "lib/email/feedback-notification.ts",
   "lib/email/incident-alerts.ts",
   "lib/email/lockout-notification.ts",
+  // Phase 8 Task 4. The export runner is the second kind of sessionless
+  // caller this client exists for: it has no user, so no RLS policy can name
+  // it, and its whole reach is the column-narrow grants in 20260927001000 § 7
+  // and 20260927003000 § 1 plus four RPCs granted to service_role alone.
+  "lib/export/runner.ts",
 ]);
 
 function walk(dir: string, out: string[]): void {
@@ -50,7 +55,7 @@ describe("lib/supabase/service.ts has exactly the importers its header names", (
     .map((f) => f.slice(ROOT.length + 1).replace(/\\/g, "/"))
     .filter((f) => f !== "lib/supabase/service.ts");
 
-  it("the census sees the three known importers (non-vacuity)", () => {
+  it("the census sees the four known importers (non-vacuity)", () => {
     for (const allowed of ALLOWED) expect(importers).toContain(allowed);
   });
 
