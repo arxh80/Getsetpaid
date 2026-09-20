@@ -12,6 +12,14 @@ import {
   tearDownWorld,
   type E2eWorld,
 } from "./support/fixtures";
+import {
+  REJECTION_REASON_WARNING,
+  ROUTING_SENDS_NOTHING,
+  // A RELATIVE PATH, not "@/lib/...": no other spec under tests/e2e uses the
+  // alias, and Playwright resolves these files itself. lib/dsr/contract.ts is
+  // pure (no "server-only", no Supabase import), so importing it here costs
+  // nothing and keeps the two sentences below verbatim rather than retyped.
+} from "../../lib/dsr/contract";
 import { signIn } from "./support/sign-in";
 import { totpCode } from "../support/totp";
 
@@ -37,10 +45,29 @@ import { totpCode } from "../support/totp";
 //      the note's text read straight out of the table first, so "not on the
 //      page" cannot pass because no note was written.
 //
+//   5. THE TWO TRANSITIONS THAT CLOSE A REQUEST ARE CONFIRMED TO THE PERSON
+//      WHO MADE THEM (fix round 1, review finding I6). Both were driven only
+//      through Postgres before: the walk moved a request to `in_progress` and
+//      `routed`, the two states where the row survives, so the defect -- the
+//      row (and the message it held) unmounting from the open-only queue --
+//      was invisible to it. "Marked Answered." and "Marked Refused." are now
+//      asserted VISIBLE, in the view where the row has gone.
+//   6. REFUSING GOES THROUGH THE REAL STEP-UP GATE, with the warning that the
+//      requester reads the reason verbatim asserted visible beside the field,
+//      and the reason then read on the requester's own page.
+//   7. PASSING A REQUEST ON SAYS WHAT IT REALLY DOES (I7/Q160): the operator
+//      reads that nothing is sent, confirms the workspace by NAME before
+//      anything is written, and records how they told it; the requester is
+//      told WHICH business, and that we have asked.
+//
 // AXE SCANS BOTH NEW PAGES POPULATED, never empty: an empty-state scan of the
 // queue would miss the row, the overdue chip, the transition controls, the
 // note form and the reveal forms -- which is the whole of what this task
-// added.
+// added. THE REVEAL FORMS ARE ASSERTED PRESENT BEFORE THE SCAN (fix round 1,
+// M4): the comment used to claim "an open reveal form in the tree" and there
+// was none -- the routing form had closed itself when the request left the
+// state that drew it -- so the refusal textarea, its warning and the
+// workspace field had never been scanned at all.
 
 test.describe.configure({ mode: "serial" });
 
@@ -184,6 +211,21 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
     expect(both.map((r) => r.subject_scope)).toEqual(["account", "workspace_records"]);
     const processorId = both[1].id;
 
+    // ---- 2b. A THIRD, SO THERE IS ONE TO ANSWER ---------------------------
+    // The walk used to stop at two, and both of them ended in a state where
+    // the operator's row SURVIVES (`in_progress`, `routed`). The two
+    // transitions that close a request -- the ones whose confirmation was
+    // never rendered to anybody (I6) -- had no browser coverage at all.
+    await requester.getByRole("radio", { name: "Correct something wrong (rectification)" }).check();
+    await requester.getByRole("radio", { name: "My GetSetPaid account" }).check();
+    await requester
+      .getByLabel("Tell us what you want")
+      .fill("My surname is spelled wrong on my profile. It should be Mullins.");
+    await requester.getByRole("button", { name: "Send this request" }).click();
+    await expect(requester.getByTestId("own-request")).toHaveCount(3);
+    const all = await dataSubjectRequests(manager.id);
+    const rectificationId = all[2].id;
+
     // ---- 3. AN OVERDUE ONE, SO THE QUEUE HAS SOMETHING TO SHOUT ABOUT ------
     // Backdated through the fixture, because the insert trigger forces
     // requested_at = now() for every writer -- which is exactly the property
@@ -207,7 +249,7 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
     ).toBeVisible();
 
     const queueRows = operator.getByTestId("dsr-row");
-    await expect(queueRows).toHaveCount(2);
+    await expect(queueRows).toHaveCount(3);
     // OLDEST DEADLINE FIRST: the backdated one leads.
     await expect(queueRows.nth(0)).toContainText(detail);
     await expect(queueRows.nth(0).getByTestId("dsr-overdue-chip")).toBeVisible();
@@ -232,24 +274,76 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
     await queueRows.nth(0).getByRole("button", { name: "Mark being worked on" }).click();
     await expect(operator.getByText("Marked Being worked on.")).toBeVisible();
 
-    // The processor one is PASSED ON rather than answered (Q132).
+    // AN ACCOUNT-SCOPE ROW OFFERS NO "PASS TO THE BUSINESS" (M7): the database
+    // always answers not_a_processor_request, so the control could only ever
+    // produce an error. Asserted on the row that HAS the other controls, so it
+    // is the scope filter being measured and not an unrendered row.
+    await expect(queueRows.nth(0).getByRole("button", { name: "Mark answered" })).toBeVisible();
+    await expect(
+      queueRows.nth(0).getByRole("button", { name: "Pass to the business" }),
+    ).toHaveCount(0);
+
+    // ---- 5b. THE PROCESSOR ONE IS PASSED ON (Q132), AND SAYS WHAT THAT MEANS
     const processorRow = operator
       .getByTestId("dsr-row")
       .filter({ hasText: "A promoter has me saved as a contact" });
     await processorRow.getByRole("button", { name: "Pass to the business" }).click();
+
+    // The operator reads that the product sends nothing (Q160a) -- verbatim
+    // from lib/dsr/contract.ts, so the copy and this assertion cannot drift.
+    await expect(processorRow.getByText(ROUTING_SENDS_NOTHING)).toBeVisible();
+
     await processorRow.getByLabel("Workspace slug").fill(world.orgSlug);
+    await processorRow
+      .getByLabel("How you told the workspace")
+      .fill("Emailed the workspace Owner on the day this was received.");
+
+    // FIRST PRESS: NOTHING IS WRITTEN. The workspace is resolved and its NAME
+    // is shown for the operator to check -- a slug is typed, and a typo that
+    // matches a different real workspace used to be uncorrectable.
+    const routedRowCountBefore = (await dataSubjectRequests(manager.id)).filter(
+      (r) => r.status === "routed",
+    ).length;
     await processorRow.getByRole("button", { name: "Pass it on" }).click();
-    await expect(operator.getByText("Marked Passed to the business.")).toBeVisible();
+    const confirmation = processorRow.getByTestId("dsr-routing-confirm");
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation).toContainText(world.orgName);
+    expect(
+      (await dataSubjectRequests(manager.id)).filter((r) => r.status === "routed").length,
+      "the first press wrote a routing before the operator had confirmed the workspace",
+    ).toBe(routedRowCountBefore);
+
+    // SECOND PRESS: now it is recorded, and the confirmation names the
+    // workspace and says nothing was sent.
+    await processorRow.getByRole("button", { name: `Pass it on to ${world.orgName}` }).click();
+    await expect(operator.getByText(`Recorded as passed to ${world.orgName}`)).toBeVisible();
+    await expect(operator.getByText("Nothing was sent")).toBeVisible();
 
     const afterRouting = await dataSubjectRequests(manager.id);
     expect(afterRouting.find((r) => r.id === processorId)).toMatchObject({
       status: "routed",
       routed_to_organisation_id: world.orgId,
+      routed_to_organisation_name: world.orgName,
     });
 
-    // Scanned WITH rows, an overdue chip, a note, the transition controls and
-    // an open reveal form all in the tree.
-    await scan(operator);
+    // ---- 5c. AND ONE IS ANSWERED -- THE CONFIRMATION I6 SAYS NOBODY SAW ----
+    // The default view lists OPEN requests only, so this is the exact shape of
+    // the defect: the row goes, and before the fix the message went with it.
+    const rectificationRow = operator
+      .getByTestId("dsr-row")
+      .filter({ hasText: "My surname is spelled wrong" });
+    await rectificationRow.getByRole("button", { name: "Mark answered" }).click();
+    await expect(
+      operator.getByText("Marked Answered."),
+      "answering a request must be confirmed to the operator, not answered by the row vanishing",
+    ).toBeVisible();
+    await expect(
+      operator.getByTestId("dsr-row").filter({ hasText: "My surname is spelled wrong" }),
+      "an answered request must leave the open-only queue",
+    ).toHaveCount(0);
+    expect(
+      (await dataSubjectRequests(manager.id)).find((r) => r.id === rectificationId)?.status,
+    ).toBe("fulfilled");
 
     // ---- 6. THE ALERT NOBODY HAD TO GO LOOKING FOR -------------------------
     const written = await raiseDsrDeadlineAlerts();
@@ -263,22 +357,84 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
     // The alert carries identifiers only -- never what the person wrote.
     await expect(operator.locator("body")).not.toContainText(detail);
 
+    // ---- 6b. THE SCAN, WITH THE REVEAL FORMS ACTUALLY IN THE TREE ---------
+    // Review finding M4. Both reveal forms are OPENED and asserted visible
+    // first: the refusal textarea with its warning, and the routing form on
+    // the request that was just passed on (a routed request stays routable so
+    // a wrong workspace is correctable, Q160c). Before this the scan ran with
+    // neither in the DOM while its comment claimed one of them.
+    await operator.goto("/super/data-requests");
+    const overdueRow = operator.getByTestId("dsr-row").filter({ hasText: detail });
+    await overdueRow.getByRole("button", { name: "Refuse this request" }).click();
+    const reasonField = overdueRow.getByLabel("Why this request is refused");
+    await expect(reasonField).toBeVisible();
+    // The Q103 warning: the requester reads this text exactly as typed.
+    await expect(overdueRow.getByText(REJECTION_REASON_WARNING)).toBeVisible();
+
+    const routedRow = operator
+      .getByTestId("dsr-row")
+      .filter({ hasText: "A promoter has me saved as a contact" });
+    await routedRow.getByRole("button", { name: "Correct the workspace" }).click();
+    await expect(routedRow.getByLabel("Workspace slug")).toBeVisible();
+    await expect(routedRow.getByLabel("How you told the workspace")).toBeVisible();
+
+    // Scanned WITH rows, an overdue chip, a note, the transition controls and
+    // TWO open reveal forms in the tree.
+    await scan(operator);
+
+    // ---- 6c. REFUSING, THROUGH THE REAL STEP-UP GATE ----------------------
+    // The operator's credential is minutes old (the TOTP challenge above), so
+    // the gate is satisfied rather than bypassed -- tests/unit/dsr/
+    // admin-actions.test.ts drives the stale side, which a browser cannot
+    // reach without waiting five minutes.
+    const rejectionReason =
+      "Refused under UK GDPR Art 12(5)(b): this is the fourth identical request this week.";
+    await reasonField.fill(rejectionReason);
+    // `.last()`: the reveal button and the form's submit share an accessible
+    // name, and the submit is the later of the two in the DOM.
+    await overdueRow.getByRole("button", { name: "Refuse this request" }).last().click();
+    await expect(
+      operator.getByText("Marked Refused."),
+      "refusing a statutory request, after a step-up prompt, must be confirmed in words",
+    ).toBeVisible();
+    await expect(
+      operator.getByTestId("dsr-row").filter({ hasText: detail }),
+      "a refused request must leave the open-only queue",
+    ).toHaveCount(0);
+    expect(
+      (await dataSubjectRequests(manager.id)).find((r) => r.id === requestId),
+    ).toMatchObject({ status: "rejected", rejection_reason: rejectionReason });
+
     // ---- 7. THE REQUESTER SEES THE NEW STATE, AND NEVER THE NOTE ----------
     await requester.reload();
     const rows = requester.getByTestId("own-request");
-    await expect(rows).toHaveCount(2);
-    // `exact`, and the CHIP is the assertion: the deadline sentence for an
-    // overdue request also ends "...it is still being worked on", which a
-    // substring match would satisfy without any status having changed.
-    await expect(requester.getByText("Being worked on", { exact: true })).toBeVisible();
+    await expect(rows).toHaveCount(3);
     await expect(requester.getByText("Passed to the business", { exact: true })).toBeVisible();
+    await expect(requester.getByText("Refused", { exact: true })).toBeVisible();
+    await expect(requester.getByText("Answered", { exact: true })).toBeVisible();
+
+    // THE REASON, VERBATIM AND INERT (it is operator-typed text).
+    await expect(requester.getByTestId("own-request-rejection")).toHaveText(rejectionReason);
+
+    // "WE HAVE ASKED", AND WHO (Q160b). The page used to say "We passed this
+    // to the business ... It is the one that must answer you" and name
+    // nobody -- a statement of delivery, for a product that sends nothing.
+    const routedNotice = requester.getByTestId("own-request-routed");
+    await expect(routedNotice).toContainText("We have asked");
+    await expect(routedNotice).toContainText(world.orgName);
     await expect(
-      requester.getByText("We passed this to the business that holds the records"),
-    ).toBeVisible();
+      requester.locator("body"),
+      "the requester must not be told their request was DELIVERED to anybody",
+    ).not.toContainText("We passed this to the business");
+
     await expect(
       requester.locator("body"),
       "THE Q103 ASSERTION: the operator's note must not reach the requester's page",
     ).not.toContainText(noteText);
+    await expect(
+      requester.locator("body"),
+      "nor may the handover note the routing wrote -- it is an operator note like any other",
+    ).not.toContainText("Emailed the workspace Owner");
 
     // ---- 8. WITHDRAWING IS ONE PRESS, NO DIALOG ---------------------------
     const dialogs: string[] = [];
@@ -299,14 +455,30 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
 
     // ---- 9. THE AUDIT TRAIL, READ OUT OF POSTGRES -------------------------
     const actions = await dsrAuditActions(manager.id);
-    expect(actions).toEqual([
+    // SORTED, NOT IN ORDER, FOR ONE ROW ONLY: routing writes its mandatory
+    // handover note in the SAME transaction as the routing (Q160a), so those
+    // two rows share a transaction timestamp and the query's tiebreak is a
+    // random uuid. The first three are ordered (three separate submissions),
+    // and the rest is a multiset.
+    expect(actions.slice(0, 3)).toEqual([
       "data_subject_request.submitted",
       "data_subject_request.submitted",
-      "data_subject_request.note_added",
-      "data_subject_request.in_progress",
-      "data_subject_request.routed",
-      "data_subject_request.withdrawn",
+      "data_subject_request.submitted",
     ]);
+    expect([...actions].sort()).toEqual(
+      [
+        "data_subject_request.submitted",
+        "data_subject_request.submitted",
+        "data_subject_request.submitted",
+        "data_subject_request.note_added",
+        "data_subject_request.note_added",
+        "data_subject_request.in_progress",
+        "data_subject_request.routed",
+        "data_subject_request.fulfilled",
+        "data_subject_request.rejected",
+        "data_subject_request.withdrawn",
+      ].sort(),
+    );
   } finally {
     await requesterContext.close();
     await operatorContext.close();

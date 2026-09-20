@@ -362,6 +362,8 @@ export interface E2eUser {
 export interface E2eWorld {
   /** Slug of the workspace the golden path is walked in. */
   orgSlug: string;
+  /** Its display NAME -- what a confirmation step shows a person. */
+  orgName: string;
   orgId: string;
   /**
    * A SECOND tenant, for the breakout run.
@@ -1279,6 +1281,10 @@ export async function setUpWorld(): Promise<E2eWorld> {
   const orgId = randomUUID();
   const otherOrgId = randomUUID();
   const orgSlug = `e2e-${suffix}`;
+  // The workspace's NAME, not only its slug: since Phase 8 Task 3's fix round
+  // the DSR routing form makes the operator confirm a workspace by name
+  // before it writes, and the requester is told which business was asked.
+  const orgName = `E2E ${suffix}`;
   const otherOrgSlug = `e2e-other-${suffix}`;
 
   const users: Record<E2eRole, E2eUser> = {
@@ -1322,7 +1328,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
 
   await sql(
     `insert into public.organisations (id, name, slug) values ($1,$2,$3), ($4,$5,$6)`,
-    [orgId, `E2E ${suffix}`, orgSlug, otherOrgId, `E2E Other ${suffix}`, otherOrgSlug],
+    [orgId, orgName, orgSlug, otherOrgId, `E2E Other ${suffix}`, otherOrgSlug],
   );
 
   // A REAL Starter subscription row for both, WHERE THIS USED TO SAY "NO ROW
@@ -2089,6 +2095,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
 
   return {
     orgSlug,
+    orgName,
     orgId,
     otherOrgSlug,
     otherOrgId,
@@ -2394,6 +2401,7 @@ export interface DsrRowRead {
   detail: string;
   rejection_reason: string | null;
   routed_to_organisation_id: string | null;
+  routed_to_organisation_name: string | null;
   days_to_due: number;
 }
 
@@ -2401,7 +2409,7 @@ export interface DsrRowRead {
 export async function dataSubjectRequests(userId: string): Promise<DsrRowRead[]> {
   const result = await db().query<DsrRowRead>(
     `select d.id, d.right_type, d.subject_scope, d.status, d.detail, d.rejection_reason,
-            d.routed_to_organisation_id,
+            d.routed_to_organisation_id, d.routed_to_organisation_name,
             round(extract(epoch from (d.due_by - d.requested_at)) / 86400)::int as days_to_due
        from public.data_subject_requests d where d.user_id = $1 order by d.seq`,
     [userId],
