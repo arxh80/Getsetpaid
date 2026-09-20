@@ -536,9 +536,14 @@ select xp.val('XP5 THE RULE Q54 CLOSED: a colleague''s PRIVATE note is NOT in th
 select xp.val('XP6 the other tenant''s note is not in it either',
   format($$select (public.export_read_page(%L, 'notes', '', 100)::text like '%%XBETA%%')::text$$,
          :'alpha_job'), 'false');
-select xp.val('XP7 three notes, not four and not five',
-  format($$select jsonb_array_length(public.export_read_page(%L, 'notes', '', 100))::text$$,
-         :'alpha_job'), '3');
+-- THREE OF THE FOUR PLANTED ONES, counted by their bodies rather than by the
+-- page's length: the Phase 4 operations suite leaves notes of its own in
+-- ALPHA and the Owner can read those too, so a raw length would be an
+-- assertion about what ran before this file.
+select xp.val('XP7 three of the four planted notes, not two and not four',
+  format($$select count(*)::text
+             from jsonb_array_elements(public.export_read_page(%L, 'notes', '', 100)) e
+            where e->>'body' like 'X%%'$$, :'alpha_job'), '3');
 
 select xp.try_hint('XP8 a table the catalogue does not export for this kind is refused BY NAME',
   format($$select public.export_read_page(%L, 'audit_events', '', 10)$$, :'alpha_job'),

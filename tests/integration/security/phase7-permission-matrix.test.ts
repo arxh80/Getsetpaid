@@ -249,6 +249,14 @@ const ARGS = {
    *  -- a refusal on that row would prove the scope check and not the
    *  permission gate. */
   dsrProcessorRequestId: "",
+  /**
+   * Phase 8 Task 4: an ACCOUNT export job started by the Read Only member
+   * through the real path -- the row every other principal must not be able
+   * to read, download or move. An account export needs no workspace
+   * permission at all (it is the person's own data about themselves), so the
+   * Read Only member is a real requester rather than a contrivance.
+   */
+  exportJobId: "",
 };
 
 // Phase 8 Task 2: the no-organisation principal's user id, for the
@@ -791,6 +799,12 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "argument: it can return only rows the caller's own policy would have " +
     "returned. Granted to `authenticated` because the operator IS an " +
     "authenticated session; it is not an access path to anything.",
+  audit_export_download:
+    "Phase 8 Task 4 -- the download route calls it BEFORE it mints a signed " +
+    "URL, so it has to be reachable by whoever may download. It refuses any " +
+    "job that is not the caller's own (42501 not_your_export), one with no " +
+    "archive, and one past its read-time expiry; on success it writes an " +
+    "identifier-only audit row and nothing else. It returns no data at all.",
   withdraw_data_subject_request:
     "Phase 8 Task 3 -- the requester withdraws their OWN open request. The " +
     "BEFORE UPDATE trigger refuses a withdrawal by anyone but the requester, " +
@@ -890,7 +904,17 @@ const PUBLIC_READ_RELATIONS = ["legal_documents"] as const;
  * filtered to auth.uid() (plus the aal2 superuser's oversight read); writes go
  * through record_consent() alone.
  */
-const OWN_ROW_RELATIONS = ["consents", "data_subject_requests"] as const;
+const OWN_ROW_RELATIONS = [
+  "consents",
+  "data_subject_requests",
+  // Phase 8 Task 4: the export register. SELECT to authenticated filtered to
+  // requested_by = auth.uid(); INSERT granted on TWO COLUMNS only (kind,
+  // organisation_id) with everything else stamped by the trigger; no UPDATE
+  // or DELETE for any client role at all. Deliberately NOT readable by a
+  // second Admin of the same workspace -- an archive is a snapshot taken
+  // under one person's access rights.
+  "export_jobs",
+] as const;
 
 /**
  * Phase 8 relations NO principal but the aal2 platform superuser may read a
@@ -1206,6 +1230,24 @@ beforeAll(async () => {
       throw new Error(`POSITIVE CONTROL FAILED: submit_data_subject_request (processor): ${error?.message}`);
     }
     ARGS.dsrProcessorRequestId = made[0].request_id;
+  }
+
+  // ---- Phase 8 Task 4: an export job held for the run -------------------
+  // Started by the Read Only member through the real INSERT path -- the
+  // positive control for the register's own attribution before any refusal is
+  // asserted. It is left QUEUED: nothing in this file runs the runner, so the
+  // job never acquires an archive, which is exactly what makes the download
+  // RPC's refusals below distinguishable from "there is no archive".
+  {
+    const { data, error } = await fx.activeByRole.read_only.client
+      .from("export_jobs")
+      .insert({ kind: "account" } as never)
+      .select("id");
+    const made = (data ?? []) as { id: string }[];
+    if (error || made.length !== 1) {
+      throw new Error(`POSITIVE CONTROL FAILED: export_jobs insert: ${error?.message}`);
+    }
+    ARGS.exportJobId = made[0].id;
   }
 
   // `rate_limit_counters` needs a row too, and the honest way to get one is to
@@ -2168,6 +2210,108 @@ describe("table consents (own rows only)", () => {
 // which is what makes the others' "absent" mean something. The NOTES are the
 // Q103 half: the requester can read the request and must read NONE of its
 // notes.
+describe("table export_jobs (own rows only, Phase 8 Task 4)", () => {
+  const everyone: { key: string; client: () => SupabaseClient }[] = [
+    ...PRINCIPALS.map(({ key, client }) => ({ key: key as string, client })),
+    { key: "superuserAal2", client: () => superuser },
+  ];
+
+  it("DENOMINATOR: the held job exists, is the Read Only member's, and is still queued", async () => {
+    const { rows } = await pool.query(
+      `select requested_by, kind, status, organisation_id from public.export_jobs where id = $1`,
+      [ARGS.exportJobId],
+    );
+    expect(rows).toEqual([
+      {
+        requested_by: fx.activeByRole.read_only.userId,
+        kind: "account",
+        status: "queued",
+        organisation_id: null,
+      },
+    ]);
+  });
+
+  it.each(everyone)(
+    "$key reads the held job only if it is theirs -- THE AAL2 OPERATOR INCLUDED",
+    async ({ key, client }) => {
+      const { data, error } = await client()
+        .from("export_jobs")
+        .select("id, requested_by")
+        .eq("id", ARGS.exportJobId);
+      if (key === "anonymous") {
+        // anon holds no grant on the table at all -- refused, not filtered.
+        expect(error, "anon read the export register").not.toBeNull();
+        expect(REFUSAL_CODES.has(error!.code ?? ""), error?.code).toBe(true);
+        return;
+      }
+      expect(error, error?.message).toBeNull();
+      // There is NO oversight policy on this table: the platform superuser
+      // reads nobody's export jobs either, which is a deliberate difference
+      // from consents and data subject requests.
+      expect((data ?? []).length, key).toBe(key === "readOnlyMember" ? 1 : 0);
+    },
+  );
+
+  it.each(everyone)("$key cannot move or delete it -- the aal2 superuser included", async ({ client }) => {
+    const before = await tableChecksum("export_jobs");
+    await client()
+      .from("export_jobs")
+      .update({ status: "succeeded" } as never)
+      .eq("id", ARGS.exportJobId);
+    await client().from("export_jobs").delete().eq("id", ARGS.exportJobId);
+    expect(await tableChecksum("export_jobs"), "a direct write changed the export register").toBe(
+      before,
+    );
+  });
+
+  it("the insert stamps the CALLER, and the forgeable columns are outside the grant", async () => {
+    const forged = await noOrgClient
+      .from("export_jobs")
+      .insert({
+        kind: "account",
+        requested_by: fx.activeByRole.read_only.userId,
+        status: "succeeded",
+      } as never);
+    expect(forged.error, "export_jobs accepted a forged requester or status").not.toBeNull();
+
+    // ...and the honest insert from the same principal IS accepted, so the
+    // refusal above is the grant's and not "this caller cannot insert".
+    const { data, error } = await noOrgClient
+      .from("export_jobs")
+      .insert({ kind: "account" } as never)
+      .select("id, requested_by, status");
+    expect(error, error?.message).toBeNull();
+    const made = (data ?? []) as { id: string; requested_by: string; status: string }[];
+    expect(made[0]?.requested_by).toBe(noOrgUserId);
+    expect(made[0]?.status).toBe("queued");
+    await pool.query(`delete from public.export_jobs where id = $1`, [made[0].id]);
+  });
+
+  it.each(everyone)("$key cannot audit-and-download a job that is not theirs", async ({ key, client }) => {
+    if (key === "readOnlyMember") return;
+    const { error } = await client().rpc("audit_export_download", { p_job_id: ARGS.exportJobId });
+    expect(error, `${key} passed the export download gate`).not.toBeNull();
+  });
+
+  it("POSITIVE CONTROL: even the requester is refused while the job has no archive", async () => {
+    // The gate is three rules, not one, and this is the only way to tell them
+    // apart: the owner passes `not_your_export` and is stopped by
+    // `export_has_no_archive`.
+    const { error } = await fx.activeByRole.read_only.client.rpc("audit_export_download", {
+      p_job_id: ARGS.exportJobId,
+    });
+    expect(error, "the owner was let through a job with no archive").not.toBeNull();
+    expect(error?.hint ?? error?.message).toContain("export_has_no_archive");
+  });
+
+  it("no download was audited by any of that", async () => {
+    const { rows } = await pool.query<{ n: string }>(
+      `select count(*)::text as n from public.audit_events where action = 'export_job.downloaded'`,
+    );
+    expect(rows[0]?.n).toBe("0");
+  });
+});
+
 describe("table data_subject_requests (own rows only) and its operator notes", () => {
   const readsIt = new Set(["readOnlyMember", "superuserAal2"]);
   const everyone: { key: string; client: () => SupabaseClient }[] = [
@@ -2293,17 +2437,39 @@ describe("table data_subject_requests (own rows only) and its operator notes", (
     expect(rows).toEqual([{ user_id: noOrgUserId, window: "30 days" }]);
   });
 
-  it("no client role holds a write privilege on either table, and service_role holds nothing", async () => {
+  it("no CLIENT role holds a write privilege on either table", async () => {
     const { rows } = await pool.query<{ table_name: string; grantee: string; privilege_type: string }>(
       `select distinct table_name, grantee, privilege_type from information_schema.column_privileges
         where table_schema = 'public'
           and table_name in ('data_subject_requests', 'data_subject_request_notes')
-          and grantee in ('anon','authenticated','service_role')
+          and grantee in ('anon','authenticated')
         order by table_name, grantee, privilege_type`,
     );
     expect(rows).toEqual([
       { table_name: "data_subject_request_notes", grantee: "authenticated", privilege_type: "SELECT" },
       { table_name: "data_subject_requests", grantee: "authenticated", privilege_type: "SELECT" },
+    ]);
+  });
+
+  // service_role IS NOT A CLIENT ROLE, and since Phase 8 Task 4 it holds a
+  // deliberate, COLUMN-LEVEL write on the register: the export job records
+  // its outcome there (20260927003000 § 1), which is what finally gives the
+  // psql suite's seam probe a positive control rather than a refusal by a
+  // missing privilege. Asserted as the EXACT set of columns, so a third one
+  // arriving is red -- and `fulfilment_recorded_at` is deliberately absent,
+  // because the trigger stamps it and a BEFORE trigger may assign a column
+  // the updating role holds no privilege on.
+  it("service_role's write is EXACTLY the two seam columns, and nothing on the notes", async () => {
+    const { rows } = await pool.query<{ table_name: string; column_name: string; privilege_type: string }>(
+      `select distinct table_name, column_name, privilege_type from information_schema.column_privileges
+        where table_schema = 'public'
+          and table_name in ('data_subject_requests', 'data_subject_request_notes')
+          and grantee = 'service_role' and privilege_type <> 'SELECT'
+        order by table_name, column_name, privilege_type`,
+    );
+    expect(rows).toEqual([
+      { table_name: "data_subject_requests", column_name: "fulfilment_kind", privilege_type: "UPDATE" },
+      { table_name: "data_subject_requests", column_name: "fulfilment_reference", privilege_type: "UPDATE" },
     ]);
   });
 });
