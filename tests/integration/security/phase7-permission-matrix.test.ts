@@ -2183,17 +2183,33 @@ describe("table data_subject_requests (own rows only) and its operator notes", (
     expect(rows).toEqual([{ user_id: fx.activeByRole.read_only.userId, status: "open" }]);
   });
 
+  /** The notes this request really carries, straight out of Postgres. */
+  async function heldRequestNoteCount(): Promise<number> {
+    const { rows } = await pool.query(
+      `select count(*)::int as n from public.data_subject_request_notes where request_id = $1`,
+      [ARGS.dsrRequestId],
+    );
+    return rows[0].n as number;
+  }
+
   it("DENOMINATOR: the held request carries a real operator note", async () => {
+    // RELATIVE, NOT ABSOLUTE, AND THAT IS THE POINT. This block used to assert
+    // the count was exactly 1, which silently depended on nothing earlier in
+    // the file having written to the SAME held request. Fix round 1 broke that
+    // by adding the note-read boundary test above, which plants its own probe
+    // on this very row -- so the assertion failed for a reason that had
+    // nothing to do with what it measures. What has to be true is that THIS
+    // call wrote exactly one note; the total is then read from the database by
+    // the reads below rather than assumed.
+    const before = await heldRequestNoteCount();
     const { error } = await superuser.rpc("add_data_subject_request_note", {
       p_request_id: ARGS.dsrRequestId,
       p_body: "matrix denominator note -- the requester must not read this",
     });
     expect(error, `add_data_subject_request_note: ${error?.message}`).toBeNull();
-    const { rows } = await pool.query(
-      `select count(*)::int as n from public.data_subject_request_notes where request_id = $1`,
-      [ARGS.dsrRequestId],
-    );
-    expect(rows[0].n).toBe(1);
+    const after = await heldRequestNoteCount();
+    expect(after, "one call must write exactly one note").toBe(before + 1);
+    expect(after, "DENOMINATOR: there is a real note to fail to read").toBeGreaterThanOrEqual(1);
   });
 
   it.each(everyone)("$key reads the held request only if it is theirs (or the aal2 operator)", async ({ key, client }) => {
@@ -2222,8 +2238,12 @@ describe("table data_subject_requests (own rows only) and its operator notes", (
     }
     expect(error, error?.message).toBeNull();
     // THE Q103 ASSERTION: readOnlyMember CAN read the request above and must
-    // read none of its notes here.
-    expect((data ?? []).length, key).toBe(key === "superuserAal2" ? 1 : 0);
+    // read none of its notes here. The operator's expected number is the
+    // database's own count, so this is strictly stronger than the literal 1 it
+    // replaces -- the operator must read EVERY note on the row, not just one.
+    const total = await heldRequestNoteCount();
+    expect(total, "DENOMINATOR: the row must carry at least one note").toBeGreaterThanOrEqual(1);
+    expect((data ?? []).length, key).toBe(key === "superuserAal2" ? total : 0);
   });
 
   it.each(everyone)("$key cannot write to either table directly -- the aal2 superuser included", async ({ client }) => {
