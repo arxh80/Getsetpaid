@@ -1342,6 +1342,48 @@ select dsr.val('DD20 and the next tick writes nothing -- never two unresolved al
   $$select private.raise_dsr_deadline_alerts()::text$$, '0');
 
 -- ---------------------------------------------------------------------------
+-- R1 (fix round 2, Q162): THE RESOLUTION CLOCK IS THE DATABASE'S.
+--
+-- Everything above hangs off `resolved_at`, and `authenticated` holds a
+-- COLUMN-LEVEL UPDATE on it (20260919000000). Nothing pinned its VALUE: the
+-- shape constraint says a resolution carries a timestamp, not which one. So a
+-- resolution dated into the future was a permanent snooze -- the scoped
+-- re-reviewer measured `open / 75 days overdue / 0 unresolved alerts`, the
+-- original finding I3's sentence word for word -- and on the ordinary path
+-- lib/admin/health-actions.ts was filling the column from the OPERATOR'S
+-- BROWSER. 20260926000000 makes the guard overwrite it with now().
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select dsr.try('DD20a SETUP: the operator reopens the early warning, so there is a live resolution to forge',
+  format($$update public.incident_alerts set resolved_at = null, resolved_by = null where id = %L$$,
+         :'alert_soon'), 'ok(1)');
+select dsr.try('DD20b the operator resolves it and NAMES THE YEAR 2999 -- ACCEPTED, because the guard corrects rather than refuses',
+  format($$update public.incident_alerts set resolved_at = timestamptz '2999-01-01', resolved_by = %L
+            where id = %L$$, :'super', :'alert_soon'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select dsr.val('DD20c ...and what LANDED is now(): a client session cannot buy itself a 973-year snooze from the Q159 re-raise',
+  format($$select (resolved_at > now() - interval '1 minute')::text || '|' ||
+                  (resolved_at < now() + interval '1 minute')::text || '|' ||
+                  (date_part('year', resolved_at) <> 2999)::text
+             from public.incident_alerts where id = %L$$, :'alert_soon'), 'true|true|true');
+select dsr.val('DD20c2 ...so the snooze this resolution bought expires within the week Q159 declares, rather than in the year 3006',
+  format($$select ((resolved_at + make_interval(days => private.dsr_alert_reraise_days()))
+                    <= now() + make_interval(days => private.dsr_alert_reraise_days()))::text
+             from public.incident_alerts where id = %L$$, :'alert_soon'), 'true');
+-- DENOMINATOR. The column really does take a year-2999 value, and the write
+-- above really was capable of landing one: it is the CLIENT path the guard
+-- pins, and the system writers (row security inactive -> the early return)
+-- keep stamping their own clock, which is what DD24 measures.
+update public.incident_alerts set resolved_at = timestamptz '2999-01-01' where id = :'alert_soon';
+select dsr.val('DD20d DENOMINATOR: the same write from a session the guard exempts DOES land 2999 -- so DD20c measures the pin, not the column',
+  format($$select date_part('year', resolved_at)::int::text from public.incident_alerts where id = %L$$,
+         :'alert_soon'), '2999');
+update public.incident_alerts set resolved_at = now() where id = :'alert_soon';
+select dsr.val('DD20e ...and with the resolution back at now(), the tick is silent again -- the snooze is a WEEK, and the week is measured from the database''s clock',
+  $$select private.raise_dsr_deadline_alerts()::text$$, '0');
+
+-- ---------------------------------------------------------------------------
 -- M1: CLOSING A REQUEST RESOLVES ITS OPEN ALERTS -- ATTRIBUTED TO THE SYSTEM.
 -- ---------------------------------------------------------------------------
 select dsr.val('DD21 DENOMINATOR: each of the two overdue requests has an OPEN alert to resolve',
