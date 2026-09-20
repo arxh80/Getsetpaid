@@ -203,21 +203,35 @@ async function buildAndStore(supabase: ServiceClient, job: ClaimedJob): Promise<
       });
     }
 
-    const rows = await readWholeTable(supabase, job.id, entry.table_name, limits);
-    totalRows += rows.length;
+    // KEEP THE ROWS only for the two tables whose FILES are fetched from
+    // them. Everything else is serialised straight to bytes as it arrives and
+    // never held as objects — see writeTable's header.
+    const keepRows =
+      (job.kind === "workspace" && entry.table_name === "documents") ||
+      (job.kind === "account" && entry.table_name === "feedback");
+
+    const written = await writeTable(
+      supabase,
+      zip,
+      job.id,
+      entry.table_name,
+      limits,
+      keepRows,
+      generatedAt,
+    );
+    totalRows += written.count;
     if (totalRows > limits.max_total_rows) {
       throw new Error(
         `The export passed its ${limits.max_total_rows}-row ceiling at public.${entry.table_name}. Nothing was truncated: the export failed instead.`,
       );
     }
-    rowCounts[entry.table_name] = rows.length;
-    zip.addJson(`tables/${entry.table_name}.json`, rows, generatedAt);
+    rowCounts[entry.table_name] = written.count;
 
     if (job.kind === "workspace" && entry.table_name === "documents") {
-      await addDocumentBytes(zip, rows, withheld, files, generatedAt);
+      await addDocumentBytes(zip, written.rows, withheld, files, generatedAt);
     }
     if (job.kind === "account" && entry.table_name === "feedback") {
-      await addScreenshotBytes(zip, rows, withheld, files, generatedAt);
+      await addScreenshotBytes(zip, written.rows, withheld, files, generatedAt);
     }
   }
 
@@ -278,48 +292,92 @@ async function buildAndStore(supabase: ServiceClient, job: ClaimedJob): Promise<
 }
 
 /**
- * Every page of one table, keyset, bounded.
+ * Write one table's rows into the archive, a page at a time.
  *
- * The cursor is the last row's key column as TEXT, which is what
- * private.export_page_sql orders on. A page shorter than the page size is the
- * last one.
+ * WHAT IS IN MEMORY AND WHY IT IS BOUNDED. Each page's rows are serialised to
+ * JSON bytes as they arrive and the objects are dropped, so no table's rows
+ * are ever all held as objects — except for the two tables whose FILES are
+ * fetched from them (`documents`, `feedback`), which is what `keepRows` is
+ * for, and where the rows are small and the row ceiling applies anyway. The
+ * serialised bytes ARE held until the entry is written, and they are declared
+ * to the ZipWriter through `hold()`, so they count against the same archive
+ * ceiling as everything else: a table whose JSON alone would blow the ceiling
+ * fails the job there rather than being discovered after the deflate.
+ *
+ * PAGINATION IS KEYSET, never OFFSET. The cursor is the last row's key column
+ * as TEXT, which is what private.export_page_sql orders on; a page shorter
+ * than the page size is the last one; and a cursor that does not advance is a
+ * refusal rather than an infinite loop or a quietly short table.
  */
-async function readWholeTable(
+async function writeTable(
   supabase: ServiceClient,
+  zip: ZipWriter,
   jobId: string,
   table: string,
   limits: Limits,
-): Promise<Record<string, unknown>[]> {
-  const rows: Record<string, unknown>[] = [];
+  keepRows: boolean,
+  at: Date,
+): Promise<{ count: number; rows: Record<string, unknown>[] }> {
+  const chunks: Buffer[] = [Buffer.from("[\n", "utf8")];
+  let held = chunks[0].length;
+  zip.hold(held);
+
+  const kept: Record<string, unknown>[] = [];
+  let count = 0;
   let after = "";
-  for (;;) {
-    const { data, error } = await supabase.rpc("export_read_page", {
-      p_job_id: jobId,
-      p_table: table,
-      p_after: after,
-      p_limit: limits.page_size,
-    });
-    if (error) throw new Error(`export read ${table}: ${error.message}`);
-    const page = (data ?? []) as Record<string, unknown>[];
-    if (page.length === 0) return rows;
 
-    rows.push(...page);
-    if (rows.length > limits.max_rows_per_table) {
-      throw new Error(
-        `public.${table} has more than the ${limits.max_rows_per_table}-row ceiling for one table. Nothing was truncated: the export failed instead.`,
-      );
-    }
-    if (page.length < limits.page_size) return rows;
+  try {
+    for (;;) {
+      const { data, error } = await supabase.rpc("export_read_page", {
+        p_job_id: jobId,
+        p_table: table,
+        p_after: after,
+        p_limit: limits.page_size,
+      });
+      if (error) throw new Error(`export read ${table}: ${error.message}`);
+      const page = (data ?? []) as Record<string, unknown>[];
+      if (page.length === 0) break;
 
-    const last = page[page.length - 1];
-    const cursor = cursorOf(last);
-    if (cursor === null || cursor === after) {
-      // Cannot advance: refuse to loop for ever, and refuse to pretend the
-      // table was fully read.
-      throw new Error(`export read ${table}: the page cursor did not advance`);
+      for (const row of page) {
+        const piece = Buffer.from(
+          `${count === 0 ? "" : ",\n"}${JSON.stringify(row)}`,
+          "utf8",
+        );
+        chunks.push(piece);
+        held += piece.length;
+        zip.hold(piece.length);
+        if (keepRows) kept.push(row);
+        count += 1;
+      }
+
+      if (count > limits.max_rows_per_table) {
+        throw new Error(
+          `public.${table} has more than the ${limits.max_rows_per_table}-row ceiling for one table. Nothing was truncated: the export failed instead.`,
+        );
+      }
+      if (page.length < limits.page_size) break;
+
+      const cursor = cursorOf(page[page.length - 1]);
+      if (cursor === null || cursor === after) {
+        throw new Error(`export read ${table}: the page cursor did not advance`);
+      }
+      after = cursor;
     }
-    after = cursor;
+
+    const tail = Buffer.from("\n]\n", "utf8");
+    chunks.push(tail);
+    held += tail.length;
+    zip.hold(tail.length);
+  } catch (cause) {
+    zip.releaseHold(held);
+    throw cause;
   }
+
+  // Release BEFORE writing: the held bytes and the entry are the same bytes,
+  // and counting them twice would fail a job that fits.
+  zip.releaseHold(held);
+  zip.addEntry(`tables/${table}.json`, Buffer.concat(chunks), at);
+  return { count, rows: kept };
 }
 
 /**
