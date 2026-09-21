@@ -18,10 +18,35 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-CTR="supabase_db_$(grep -E '^project_id' "$ROOT/supabase/config.toml" | cut -d'"' -f2)"
-API="http://127.0.0.1:54321"
+# WHICH STACK. Both of these used to be constants -- the committed project_id
+# and a hardcoded 127.0.0.1:54321 -- which meant this script always ran against
+# the one shared stack no matter which worktree invoked it. A worktree that has
+# run `node scripts/stack.mjs claim` owns a different project id and a different
+# API port, so both are now derived:
+#
+#   WORKDIR  $SUPABASE_WORKDIR (the Supabase CLI's own variable, exported by
+#            `stack.mjs claim`), else this worktree's generated
+#            .supabase-slot/, else the repo root -- unchanged behaviour.
+#   CTR      the project_id of whichever config.toml that workdir holds.
+#   API      read from `supabase status`, which already knows -- so it moves
+#            with the slot instead of being pinned to 54321.
+WORKDIR="${SUPABASE_WORKDIR:-}"
+if [ -z "$WORKDIR" ]; then
+  if [ -f "$ROOT/.supabase-slot/supabase/config.toml" ]; then
+    WORKDIR="$ROOT/.supabase-slot"
+  else
+    WORKDIR="$ROOT"
+  fi
+fi
+CTR="supabase_db_$(grep -E '^project_id' "$WORKDIR/supabase/config.toml" | cut -d'"' -f2)"
+API=$(cd "$ROOT" && supabase status -o json --workdir "$WORKDIR" 2>/dev/null \
+      | python -c "import sys,json;print(json.load(sys.stdin)['API_URL'])")
+if [ -z "${API:-}" ]; then
+  echo "Could not read API_URL from 'supabase status'. Is the local stack up?" >&2
+  exit 1
+fi
 
-SRK=$(cd "$ROOT" && supabase status -o json 2>/dev/null \
+SRK=$(cd "$ROOT" && supabase status -o json --workdir "$WORKDIR" 2>/dev/null \
       | python -c "import sys,json;print(json.load(sys.stdin)['SERVICE_ROLE_KEY'])")
 if [ -z "${SRK:-}" ]; then
   echo "Could not read SERVICE_ROLE_KEY from 'supabase status'. Is the local stack up?" >&2
