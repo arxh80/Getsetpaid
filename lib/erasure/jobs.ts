@@ -82,6 +82,9 @@ export async function getOwnErasureBlockers(): Promise<readonly ErasureBlocker[]
   if (error) throw new Error(`erasure blockers could not be read: ${error.message}`);
   return ((data ?? []) as { organisation_name: string; reason: string }[]).map((r) => ({
     organisationName: r.organisation_name,
-    reason: r.reason === "other_members" ? "other_members" : "workspace_has_data",
+    reason:
+      r.reason === "other_members" || r.reason === "no_owner_to_transfer"
+        ? r.reason
+        : "workspace_has_data",
   }));
 }

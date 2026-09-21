@@ -30,7 +30,16 @@ export const ERASURE_STATUS_LABELS: Record<ErasureStatus, string> = {
 export const ACCOUNT_ERASE_PATH = "/account/erase";
 
 /** What `private.account_erasure_blockers()` says is in the way. */
-export type ErasureBlockerReason = "other_members" | "workspace_has_data";
+export type ErasureBlockerReason =
+  | "other_members"
+  | "workspace_has_data"
+  /**
+   * The subject is NOT an Owner of this workspace -- it has no active Owner
+   * at all and they are its last active member. Neither Q131 remedy is
+   * theirs: there is nobody to promote, and no member-facing route to close
+   * a workspace exists anywhere in this product (fix round 2, N2/Q178).
+   */
+  | "no_owner_to_transfer";
 
 export interface ErasureBlocker {
   readonly organisationName: string;
@@ -48,17 +57,42 @@ export interface ErasureBlocker {
  */
 export function describeBlockers(blockers: readonly ErasureBlocker[]): string | null {
   if (blockers.length === 0) return null;
+  const owned = blockers.filter((b) => b.reason !== "no_owner_to_transfer");
+  const unowned = blockers.filter((b) => b.reason === "no_owner_to_transfer");
+  const sentences: string[] = [];
+
+  if (owned.length > 0) {
+    const list = nameList(owned);
+    const plural = owned.length === 1 ? "this workspace" : "these workspaces";
+    sentences.push(
+      `You are the only owner of ${list}. Deleting your account would leave ${plural} ` +
+        `with nobody able to manage it, so we cannot do it yet. Make somebody else an owner ` +
+        `there, or close the workspace, and then come back.`,
+    );
+  }
+
+  if (unowned.length > 0) {
+    // N2/Q178: the other branch used to be told to do two things it cannot
+    // do. There is nobody to promote and no member-facing route to close a
+    // workspace, so the only door that opens is support's.
+    const list = nameList(unowned);
+    const plural = unowned.length === 1 ? "it" : "them";
+    sentences.push(
+      `${list} ${unowned.length === 1 ? "has" : "have"} no owner at all, and you are the last ` +
+        `person in ${plural}. Deleting your account would leave ${plural} with nobody able to ` +
+        `manage ${plural}, so we cannot do it yet — and you cannot make somebody else an owner ` +
+        `or close ${plural} yourself. Contact support and ask them to close ${plural}, and then come back.`,
+    );
+  }
+
+  return sentences.join(" ");
+}
+
+function nameList(blockers: readonly ErasureBlocker[]): string {
   const names = blockers.map((b) => b.organisationName);
-  const list =
-    names.length === 1
-      ? names[0]
-      : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-  const plural = names.length === 1 ? "this workspace" : "these workspaces";
-  return (
-    `You are the only owner of ${list}. Deleting your account would leave ${plural} ` +
-    `with nobody able to manage it, so we cannot do it yet. Make somebody else an owner ` +
-    `there, or close the workspace, and then come back.`
-  );
+  return names.length === 1
+    ? names[0]
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 /**

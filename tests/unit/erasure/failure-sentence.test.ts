@@ -43,7 +43,7 @@ describe("the derived hint roll", () => {
     expect(WALKED).toContain("private.erase_organisation");
     expect(WALKED).toContain("private.assert_account_is_erasable");
     expect(WALKED).toContain("private.assert_fkless_identifier_roll");
-    expect(HINTS.length).toBeGreaterThanOrEqual(17);
+    expect(HINTS.length).toBeGreaterThanOrEqual(18);
   });
 
   it("carries the hints the hand-written roll was missing", () => {
@@ -73,15 +73,16 @@ describe("failureSentence", () => {
     }
   });
 
-  it("tells the four refusals a person or an operator acts on differently apart", () => {
+  it("keeps the five refusals that ask for different things apart", () => {
     // Sharing a sentence is deliberate for the "this needs a person" family;
-    // these four must never collapse into one another, because each asks for
+    // these five must never collapse into one another, because each asks for
     // a different thing to happen next.
     const distinct = [
       "last_owner_of_workspace",
       "bytes_not_purged",
       "workspace_left_ownerless",
       "replication_role_must_be_origin",
+      "workspace_has_no_owner",
     ].map((hint) => failureSentence({ hint }));
     expect(new Set(distinct).size).toBe(distinct.length);
   });
@@ -107,6 +108,16 @@ describe("failureSentence", () => {
     // column is read by the operator too, and the runner does not relay a
     // PostgreSQL message verbatim.
     expect(sentence).not.toContain("%");
+  });
+
+  it("names the way out when the subject is not an owner and cannot transfer anything", () => {
+    // N2/Q178: the refusal used to send a non-owner to two doors that are
+    // both locked. This is the hint the branched guard raises instead.
+    const sentence = failureSentence({ hint: "workspace_has_no_owner" });
+    expect(sentence).toContain("no owner");
+    expect(sentence).toContain("support");
+    expect(sentence).not.toContain("Transfer ownership");
+    expect(sentence).not.toBe(failureSentence({ hint: "last_owner_of_workspace" }));
   });
 
   it("says a bytes failure will be retried rather than that the account is gone", () => {

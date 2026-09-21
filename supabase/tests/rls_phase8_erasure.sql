@@ -118,6 +118,25 @@ begin
   perform er.record(p_label, 'says it', v_actual);
 end $$;
 
+-- AND THE OTHER HALF OF THAT, for fix round 2's N2: a branched sentence is
+-- only right if it also STOPS saying the thing the other branch says. "Says
+-- X" and "does not say Y" are different assertions and a refusal that said
+-- both would pass the first one.
+create function er.try_lacks(p_label text, p_sql text, p_needle text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_msg text; v_actual text;
+begin
+  begin
+    execute p_sql;
+    v_actual := 'no refusal at all';
+  exception when others then
+    get stacked diagnostics v_msg = message_text;
+    v_actual := case when pg_catalog.strpos(coalesce(v_msg, ''), p_needle) > 0
+                     then 'said it: ' || coalesce(v_msg, '') else 'does not say it' end;
+  end;
+  perform er.record(p_label, 'does not say it', v_actual);
+end $$;
+
 create function er.val(p_label text, p_sql text, p_expected text)
 returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
 declare v_actual text;
@@ -137,6 +156,7 @@ grant execute on function er.try(text,text,text)      to authenticated, anon, se
 grant execute on function er.try_hint(text,text,text) to authenticated, anon, service_role;
 grant execute on function er.val(text,text,text)      to authenticated, anon, service_role;
 grant execute on function er.try_says(text,text,text) to authenticated, anon, service_role;
+grant execute on function er.try_lacks(text,text,text) to authenticated, anon, service_role;
 
 
 -- ===========================================================================
@@ -808,6 +828,61 @@ update public.organisation_memberships set role = 'owner'
  where organisation_id = :'org_blocked' and user_id = :'emate';
 \o
 select er.val('EM11 BLOCKED is back to two active owners for the erasure that follows',
+  $$select count(*)::text from public.organisation_memberships
+     where organisation_id = '$$ || :'org_blocked' || $$' and role = 'owner' and status = 'active'$$, '2');
+
+
+-- ===========================================================================
+-- EN  THE REFUSAL A NON-OWNER READS (fix round 2, N2/Q178)
+-- ===========================================================================
+-- Fix round 1 re-founded the question as "would this leave the workspace with
+-- no active OWNER", which correctly blocks a NON-OWNER who is the last active
+-- member of an already-ownerless workspace. The sentence did not follow: it
+-- told them to "make somebody else an owner there, or close the workspace",
+-- and neither is available to a member -- there is nobody to promote, and
+-- there is NO member-facing route to close a workspace anywhere in this
+-- product. The working escape hatch is the operator closing it, and nothing
+-- said so. 20261002001000 branches the sentence and gives the branch its own
+-- hint so lib/erasure/runner.ts can brand the recorded failure_reason too.
+--
+-- Reaching the state needs the fix-round-1 trigger out of the way for exactly
+-- one statement, which is itself the evidence that no client route can make
+-- an ownerless workspace any more (§ EM proved that directly). Everything is
+-- put back, and EN7 is the assertion that it was.
+
+\o /dev/null
+alter table public.organisation_memberships disable trigger membership_keeps_an_owner;
+update public.organisation_memberships set role = 'admin'
+ where organisation_id = :'org_blocked';
+alter table public.organisation_memberships enable trigger membership_keeps_an_owner;
+\o
+
+select er.val('EN1 DENOMINATOR: BLOCKED is live, holds a record, has two members and NO active owner',
+  $$select (select count(*) from public.organisation_memberships
+             where organisation_id = '$$ || :'org_blocked' || $$' and status = 'active')::text
+        || '/' || (select count(*) from public.organisation_memberships
+             where organisation_id = '$$ || :'org_blocked' || $$'
+               and role = 'owner' and status = 'active')::text
+        || '/' || (not private.organisation_is_empty('$$ || :'org_blocked' || $$'))::text$$,
+  '2/0/true');
+select er.val('EN2 the blocker''s reason is the third one -- there is nobody to promote',
+  $$select reason from private.account_erasure_blockers('$$ || :'esub' || $$')
+     where organisation_name = 'Erasure Blocked Ltd'$$, 'no_owner_to_transfer');
+select er.try_hint('EN3 the erasure is still refused -- the guard is unchanged',
+  $$select private.erase_account('$$ || :'esub' || $$', null)$$,
+  'denied(22023:workspace_has_no_owner)');
+select er.try_says('EN4 the refusal NAMES the workspace, as Q131 requires either way',
+  $$select private.erase_account('$$ || :'esub' || $$', null)$$, 'Erasure Blocked Ltd');
+select er.try_says('EN5 and names the one door that opens: support closing it',
+  $$select private.erase_account('$$ || :'esub' || $$', null)$$, 'Contact support');
+select er.try_lacks('EN6 and does NOT tell them to make somebody else an owner -- they cannot',
+  $$select private.erase_account('$$ || :'esub' || $$', null)$$, 'Make somebody else an owner');
+
+\o /dev/null
+update public.organisation_memberships set role = 'owner'
+ where organisation_id = :'org_blocked';
+\o
+select er.val('EN7 BLOCKED is put back the way § EM left it: two active owners',
   $$select count(*)::text from public.organisation_memberships
      where organisation_id = '$$ || :'org_blocked' || $$' and role = 'owner' and status = 'active'$$, '2');
 
