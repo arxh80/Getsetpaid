@@ -212,7 +212,27 @@ export function failureSentence(cause: unknown): string {
       return "Nothing was deleted: the database session was not in a state where deleting safely was possible.";
     case "reference_survived_the_repoint":
     case "reference_survived_the_delete":
+    // `reference_survived_the_purge` and `custom_field_values_orphaned` are
+    // private.erase_organisation()'s own post-checks, and an ACCOUNT erasure
+    // reaches them through step 8b (Q131's narrow case purges the subject's
+    // empty solo workspace). The first is the literal twin of
+    // `reference_survived_the_delete` and was falling through to "It will be
+    // retried" -- the precise wrong sentence finding I4 was raised about,
+    // surviving in a narrower form (fix round 2, N5).
+    case "reference_survived_the_purge":
+    case "custom_field_values_orphaned":
       return "Nothing was deleted: a check that every trace of the account had been anonymised did not pass, so the whole deletion was rolled back. This needs a person to look at it.";
+    case "unknown_custom_field_entity_type":
+      return "Nothing was deleted: the database has grown a kind of record this deletion does not know how to remove. This needs a person to look at it.";
+    case "workspace_is_live":
+      return "Nothing was deleted: a workspace this deletion had to remove is still open, and only a closed workspace can be removed. This needs a person to look at it.";
+    case "unknown_job":
+    case "job_is_not_running":
+      return "Nothing was deleted: the record of this deletion had already moved on by the time it ran, so nothing was attempted. This needs a person to look at it.";
+    case "erasure_runner_is_server_only":
+      return "Nothing was deleted: the deletion was attempted from somewhere that is not allowed to run one. This needs a person to look at it.";
+    case "tombstone_is_nobody":
+      return "Nothing was deleted: the account named is the shared anonymous identity that deleted accounts are re-pointed at, and it is not a person. This needs a person to look at it.";
     case "composite_fk_to_auth_users":
     case "unclassified_fkless_identifier":
     case "array_identifier_needs_a_named_step":
