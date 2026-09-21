@@ -322,3 +322,68 @@ export async function addDataSubjectRequestNoteAction(
   revalidatePath(SUPER_DATA_REQUESTS_PATH);
   return { message: "Note added. The requester never sees it.", values: {} };
 }
+
+/**
+ * RUN THE ERASURE A REQUEST ASKED FOR (Phase 8 Task 5).
+ *
+ * The operator's FOURTH write, and the only one that destroys anything. It is
+ * here rather than in lib/erasure/actions.ts because it belongs to the queue's
+ * surface and shares this file's step-up and refusal wiring — and because
+ * lib/erasure/actions.ts is the PERSON's path, whose rules are different in
+ * every respect (a typed phrase, the caller's own account, no permission).
+ *
+ * STEP-UP, like a rejection and unlike the ordinary casework: this is
+ * irreversible and it happens to somebody else's account.
+ *
+ * `public.start_erasure_for_request()` takes the REQUEST and derives the
+ * subject from the row — there is no way from here to name a user — and the
+ * insert trigger independently re-checks the operator permission, the
+ * request's scope, its right and that it is still open. Nothing in this file
+ * is the gate.
+ *
+ * IT DOES NOT CLOSE THE REQUEST. The job is queued; when it has run, the
+ * fulfilment seam records itself on the row and only then can the request be
+ * marked answered. That separation is the whole point of 20260930004000: a
+ * request marked fulfilled before the job ran is a statement about the future.
+ */
+export async function runErasureForRequestAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  if (!(await isSuperuser())) return { error: "That request could not be changed." };
+
+  const requestId = field(formData, "requestId");
+  if (requestId === "") return { error: "That request could not be changed." };
+
+  if (!(await checkStepUp())) {
+    return {
+      error:
+        "Confirm it is you before deleting somebody's account. Use the prompt at the top of this page, then press this again.",
+    };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("start_erasure_for_request", {
+    p_request_id: requestId,
+  });
+  if (error) {
+    console.error("[dsr] start erasure failed:", error.code, error.message);
+    if (error.code === "22023" && error.hint === "last_owner_of_workspace") {
+      // The database's own sentence names the workspaces and says what has to
+      // happen first. It is written for a person; the operator is the person
+      // who has to relay it.
+      return { error: error.message ?? "That account is the last owner of a workspace." };
+    }
+    if (error.code === "23505") {
+      return { error: "An erasure of that account is already under way." };
+    }
+    return rpcRefusal(error.code, error.hint ?? undefined, formData);
+  }
+
+  revalidatePath(SUPER_DATA_REQUESTS_PATH);
+  return {
+    message:
+      "The erasure has started. It runs in the background; when it has finished, this request can be marked answered.",
+    values: {},
+  };
+}

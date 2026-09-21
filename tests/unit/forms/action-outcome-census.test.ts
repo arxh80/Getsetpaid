@@ -44,6 +44,11 @@ const REPORTED_SURFACES = [
   // same shape as its sibling, on the one action in the product that cannot be
   // repeated to find out whether it worked.
   "components/account/erasure-form.tsx",
+  // Phase 8 Task 5, the operator's side. Running an erasure revalidates the
+  // queue; the default view is open-only and the request it was started from
+  // will leave it as soon as it is marked answered -- the same I6 shape the
+  // two transition forms above carry.
+  "components/admin/dsr-erasure-run-form.tsx",
 ];
 
 /**

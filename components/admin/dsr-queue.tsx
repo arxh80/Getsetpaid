@@ -27,6 +27,7 @@ import {
 } from "@/lib/dsr/contract";
 import { formatDateTime } from "@/lib/format/date";
 import { Button } from "@/components/ui/button";
+import { DsrErasureRunForm } from "@/components/admin/dsr-erasure-run-form";
 import { DsrTransitionForms } from "@/components/admin/dsr-transition-forms";
 import { DsrNoteForm } from "@/components/admin/dsr-note-form";
 import { ActionOutcome } from "@/components/ui/action-outcome";
@@ -253,6 +254,8 @@ function Row({ row, notes }: { row: DsrQueueRow; notes: readonly DsrNote[] }) {
         )}
         <DsrNoteForm requestId={row.id} />
       </section>
+
+      <DsrErasureRunForm row={row} />
 
       <DsrTransitionForms row={row} />
     </li>
