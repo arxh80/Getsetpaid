@@ -97,9 +97,16 @@ test("the last Owner of a workspace with people and records in it is refused, an
 
   // THE SERVER REFUSED, in the region the action cannot unmount, with the
   // database's own sentence.
-  await expect(page.getByTestId("erasure-outcome")).toContainText(
-    /only owner of|last owner of/i,
-  );
+  // Since fix round 1 the database's sentence is "Deleting this account would
+  // leave <workspace> with no owner ...", because the guard stopped being
+  // keyed on the word "owner" and started asking whether the workspace is
+  // left with one (Q176). Asserted in the two parts that are the promise
+  // rather than by a loose pattern: it NAMES the workspace, and it says what
+  // to do first.
+  const outcome = page.getByTestId("erasure-outcome");
+  await expect(outcome).toContainText(/with no owner|last owner of/i);
+  await expect(outcome).toContainText(world.orgName);
+  await expect(outcome).toContainText("Make somebody else an owner");
   expect(await countErasureJobs(), "a refused erasure wrote a job row").toBe(before);
   expect(
     await accountStillExists(world.users.owner.id),
