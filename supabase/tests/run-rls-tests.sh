@@ -1028,7 +1028,7 @@ fi
 # refused" and "a privilege was missing" would otherwise be indistinguishable.
 # ============================================================================
 
-run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 167 "${P7VARS[@]}"
+run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 172 "${P7VARS[@]}"
 ret_fails=$SUITE_FAILS
 if [ "$ret_fails" != "0" ]; then
   echo "PHASE 8 RETENTION SUITE FAILED: $ret_fails failing assertion(s)" >&2
@@ -1071,6 +1071,26 @@ if [ "$ret_fails" != "0" ]; then
   psql_status=1
 else
   echo "Phase 8 retention suite: all assertions passed."
+fi
+
+# ============================================================================
+# ONE RETENTION RUN AT A TIME, UNDER A REAL RACE (Task 6 fix round 1, I2).
+#
+# The suite above is single-session: RR17-RR19 prove a second start is refused
+# AFTER the first has committed. They cannot prove the thing the review
+# measured -- two starts IN FLIGHT AT ONCE -- because an unlocked
+# `if exists (... running)` passes every one of them and still lets two
+# concurrent sessions both read "nothing is running". The probe drives it for
+# real: two psql sessions, each holding its transaction open for two seconds.
+# ============================================================================
+if bash "$HERE/retention_concurrency_probe.sh"; then
+  :
+else
+  echo "RETENTION CONCURRENCY PROBE FAILED: two retention runs were \`running\` at once." >&2
+  echo "  The per-run ceiling, the sanity ceiling and the before/after totals are" >&2
+  echo "  all arithmetic over ONE run; retention_runs_one_running_idx is what" >&2
+  echo "  serialises them (20261004003000)." >&2
+  psql_status=1
 fi
 
 # ============================================================================

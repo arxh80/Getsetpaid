@@ -1325,6 +1325,42 @@ select rt.try_hint('RR12 the SWEEP refuses `replica` at its own outermost gate',
     select public.run_retention_sweep((select id from rt.run_ids where name = 'rr12'), 500)$$,
   'denied(55000:replication_role_must_be_origin)');
 select public.fail_retention_run((select id from rt.run_ids where name = 'rr12'), 'rt probe');
+-- ---------------------------------------------------------------------------
+-- ONE RUN AT A TIME (fix round 1, review finding I2). Two starts used to give
+-- two `running` rows, which defeats the per-run ceiling, the sanity ceiling
+-- and the before/after totals -- all three are arithmetic over ONE run. This
+-- is the single-session half; the REAL race, two sessions each holding a
+-- transaction open, is supabase/tests/retention_concurrency_probe.sh, which
+-- run-rls-tests.sh runs straight after this suite.
+-- ---------------------------------------------------------------------------
+select rt.val('RR16 the serialisation is a PARTIAL UNIQUE INDEX over the running state, not a check in a function',
+  $$select (indexdef like 'CREATE UNIQUE INDEX%' and indexdef like '%WHERE (status = ''running''::text)%')::text
+      from pg_indexes where schemaname = 'public' and indexname = 'retention_runs_one_running_idx'$$, 'true');
+insert into rt.run_ids select 'rr17', (public.start_retention_run(false)).id;
+select rt.val('RR17 with a run `running`, a SECOND start is recorded as refused -- live or dry alike',
+  $$select (a).status || '/' || ((a).refused->>'*') || ',' || (b).status || '/' || ((b).refused->>'*')
+      from (select public.start_retention_run(false) as a, public.start_retention_run(true) as b) t$$,
+  'refused/retention_run_in_progress,refused/retention_run_in_progress');
+select rt.val('RR18 ...and there is still exactly ONE `running` row, the first',
+  $$select count(*)::text || '/' || bool_and(id = (select id from rt.run_ids where name = 'rr17'))::text
+      from public.retention_runs where status = 'running'$$, '1/true');
+select rt.try('RR19 the index refuses a second `running` row to a DIRECT insert too -- it is not the function''s rule',
+  $$insert into public.retention_runs (correlation_id, mode, status) values (gen_random_uuid(), 'live', 'running')$$,
+  'denied(23505)');
+-- AN ABANDONED RUN MUST NOT WEDGE THE JOB FOR EVER. The index makes the
+-- reaper load-bearing: without it a crashed run would refuse every later one.
+update public.retention_runs set started_at = now() - interval '2 hours'
+ where id = (select id from rt.run_ids where name = 'rr17');
+insert into rt.run_ids select 'rr20', (public.start_retention_run(false)).id;
+select rt.val('RR20 a run abandoned two hours ago is REAPED by the next start, which then opens normally',
+  $$select (select status || '/' || (refused->>'*') from public.retention_runs
+             where id = (select id from rt.run_ids where name = 'rr17'))
+        || ',' ||
+           (select status from public.retention_runs
+             where id = (select id from rt.run_ids where name = 'rr20'))$$,
+  'failed/run_abandoned,running');
+select public.fail_retention_run((select id from rt.run_ids where name = 'rr20'), 'rt probe');
+
 select rt.val('RR13 no run this section opened was left `running`',
   $$select count(*)::text from public.retention_runs where status = 'running'$$, '0');
 
