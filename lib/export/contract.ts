@@ -135,8 +135,51 @@ export const ACCOUNT_EXPORT_EXCLUDES =
 export const WORKSPACE_EXPORT_INCLUDES =
   "Every record this workspace holds, deleted ones included and marked as deleted, as one JSON file per table, plus the files themselves.";
 
+/**
+ * WHAT THE WORKSPACE EXPORT LEAVES OUT, one entry per EXCUSED catalogue row.
+ *
+ * ===========================================================================
+ * THE PAGE'S LIST AND THE MANIFEST'S ARE NOW ONE LIST (Task 4 review, M8)
+ * ===========================================================================
+ * The sentence below used to be written out by hand and named three of the
+ * five tables `private.export_catalogue()` excuses: the audit log, the alerts
+ * and the feedback. `export_jobs` and `data_subject_requests` were in the
+ * archive's manifest.json with their full reasons and NOT on the page, so the
+ * archive was honest and the page was short — and the missing one a customer
+ * would most want named is the second: "a data subject request routed to this
+ * workspace is not in this file" is exactly what somebody answering a routed
+ * request needs to know.
+ *
+ * So the page's sentence is BUILT from this roll, and
+ * tests/integration/export/excluded-tables-match-db.test.ts asserts the roll
+ * is the catalogue's five, by name. A sixth excused table lands as a red test
+ * and then as a clause on the page, rather than silently only in the
+ * manifest. The plain-English phrases are the page's own voice — the
+ * catalogue's reasons are written for an engineer reading a census — which is
+ * why the binding is on the NAMES.
+ */
+export const WORKSPACE_EXCLUDED_TABLES: readonly {
+  readonly table: string;
+  readonly plainEnglish: string;
+}[] = [
+  { table: "audit_events", plainEnglish: "the security audit log" },
+  { table: "incident_alerts", plainEnglish: "operational alerts" },
+  { table: "feedback", plainEnglish: "feedback sent to us" },
+  { table: "export_jobs", plainEnglish: "the record of exports like this one" },
+  {
+    table: "data_subject_requests",
+    plainEnglish: "data protection requests routed to this workspace, which belong to the person who made them",
+  },
+];
+
+function listPhrases(items: readonly string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
 export const WORKSPACE_EXPORT_EXCLUDES =
-  "It is built with YOUR access, not with everybody’s: anything you cannot see in the product is not in the archive either — a colleague’s private notes, for example. It also leaves out the platform’s own records about this workspace: the security audit log, operational alerts, and feedback sent to us.";
+  "It is built with YOUR access, not with everybody’s: anything you cannot see in the product is not in the archive either — a colleague’s private notes, for example. It also leaves out the platform’s own records about this workspace: " +
+  `${listPhrases(WORKSPACE_EXCLUDED_TABLES.map((t) => t.plainEnglish))}.`;
 
 /** The one sentence about who may open the file. */
 export const EXPORT_DOWNLOAD_IS_YOURS =
