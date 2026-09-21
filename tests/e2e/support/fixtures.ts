@@ -1053,48 +1053,134 @@ export async function retentionRuns(): Promise<RetentionRunRead[]> {
 }
 
 /**
- * A row count PER TABLE, over the whole set the retention job can delete from.
+ * WHICH TABLES THE RETENTION JOB CAN DELETE FROM -- DERIVED, NOT LISTED
+ * (Phase 8 Task 6 fix round 1, review finding m4a).
  *
- * PER TABLE, AND COMPARED WITH `>=` RATHER THAN `===`, and both halves of
- * that were learned the hard way:
+ * This was eight literal strings. `private.retention_subjects()` exists so
+ * that exactly this list is DERIVED and refuses to go stale: a ninth sweep
+ * added by a later phase would have been invisible to the
+ * preview-deletes-nothing test without anybody noticing -- the phase's
+ * recurring bug class, in the one file written to answer it.
  *
- *   * NOT ONE TABLE, because the preview reaches eight sweeps and a dry run
- *     that quietly deleted from any ONE of them would be invisible to a check
- *     on the others.
- *   * NOT A SUM, and not an equality. The first cut summed these eight and
- *     asserted the total was unchanged -- which FAILED on the real run, with
- *     31 where 29 was expected. Nothing had been deleted: a retention run
- *     legitimately APPENDS two audit rows (its own `retention.swept` summary,
- *     and the `platform_health.viewed` row the page writes when it re-renders),
- *     and `audit_events` is one of the eight. A sum cannot tell an insert from
- *     a deletion somewhere else, so the assertion was measuring the wrong
- *     thing and would have been satisfied by a preview that deleted two
- *     documents and wrote two audit rows.
- *
- * So the claim is the exact one the preview makes: NO TABLE LOST A ROW.
- * Growth is expected and allowed; a decrease anywhere is the failure.
+ * The names come from the database, so each is checked against `pg_class`
+ * before it is interpolated into a statement: a derived name is not a
+ * parameter, and it is not a literal either.
  */
-export const RETENTION_SWEEPABLE_TABLES = [
-  "audit_events",
-  "documents",
-  "erasure_jobs",
-  "export_jobs",
-  "feedback",
-  "incident_alerts",
-  "organisations",
-  "rate_limit_counters",
-] as const;
+export async function retentionSweepableTables(): Promise<string[]> {
+  const { rows } = await db().query<{ table_name: string }>(
+    `select s.table_name
+       from private.retention_subjects() s
+       join pg_class c on c.relname = s.table_name and c.relnamespace = 'public'::regnamespace
+      where s.treatment = 'swept' and s.table_name ~ '^[a-z_]+$'
+      order by 1`,
+  );
+  return rows.map((r) => r.table_name);
+}
 
-export async function retentionSweepableRowCounts(): Promise<Record<string, number>> {
-  const counts: Record<string, number> = {};
-  for (const table of RETENTION_SWEEPABLE_TABLES) {
-    // The table name is from the frozen list above, never from a parameter.
-    const { rows } = await db().query<{ n: string }>(
-      `select count(*)::text as n from public.${table}`,
+/**
+ * THE IDENTITY OF EVERY ROW the retention job could delete, per table -- its
+ * primary key, read out of `pg_index` rather than assumed to be `id`
+ * (`rate_limit_counters` has a four-column key).
+ *
+ * KEYS, NOT COUNTS, and that is the third form this assertion has taken:
+ *
+ *   1. A SUM over the tables, asserted equal. It FAILED on a real run with 31
+ *      where 29 was expected, having deleted nothing: a run appends its own
+ *      `retention.swept` row and the page appends `platform_health.viewed`. A
+ *      sum cannot tell an insert from a deletion somewhere else.
+ *   2. A COUNT per table, asserted `>=`. Stronger, and the review (m3)
+ *      confirmed it as a strengthening -- and named its residual: `>=` cannot
+ *      see "deleted two and inserted two IN THE SAME TABLE", and
+ *      `audit_events` grows by exactly that much during the test.
+ *   3. This: every key present BEFORE must be present AFTER. Inserts are
+ *      irrelevant to it and a deletion cannot hide behind one.
+ */
+export async function retentionSweepableRowKeys(): Promise<Record<string, Set<string>>> {
+  const keys: Record<string, Set<string>> = {};
+  for (const table of await retentionSweepableTables()) {
+    const pk = await db().query<{ attname: string }>(
+      `select a.attname
+         from pg_index i
+         join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any(i.indkey)
+        where i.indrelid = ('public.' || $1)::regclass and i.indisprimary
+        order by array_position(i.indkey::int2[], a.attnum)`,
+      [table],
     );
-    counts[table] = Number(rows[0].n);
+    const columns = pk.rows.map((r) => r.attname).filter((c) => /^[a-z_]+$/.test(c));
+    if (columns.length === 0) throw new Error(`public.${table} has no primary key to identify a row by`);
+    const expression = columns.map((c) => `"${c}"::text`).join(" || '|' || ");
+    const { rows } = await db().query<{ k: string }>(`select ${expression} as k from public."${table}"`);
+    keys[table] = new Set(rows.map((r) => r.k));
   }
-  return counts;
+  return keys;
+}
+
+/**
+ * ONE ROW PAST ITS PERIOD IN EACH OF FOUR SWEEPS, so "the preview deleted
+ * nothing" is a claim about rows a LIVE run WOULD HAVE TAKEN (review finding
+ * m3, second half).
+ *
+ * The denominator used to be "the tables are not all empty". That is true of
+ * any fixture world and says nothing about whether there was anything to
+ * delete: a preview that deleted every EXPIRED row in a world with no expired
+ * rows deletes nothing and passes. These four are expired by construction, the
+ * test asserts the preview COUNTED each of them, and then that each is still
+ * there.
+ */
+export async function plantExpiredRetentionSubjects(userId: string): Promise<{
+  keys: Record<string, string>;
+  remove: () => Promise<void>;
+}> {
+  const tag = randomUUID();
+  const counter = await db().query<{ k: string }>(
+    `insert into public.rate_limit_counters (category, subject_scope, subject_id, window_start, request_count)
+     values ('search', 'user', $1, now() - interval '30 days', 1)
+     returning category || '|' || subject_scope || '|' || subject_id::text || '|' || window_start::text as k`,
+    [tag],
+  );
+  const alert = await db().query<{ id: string }>(
+    `insert into public.incident_alerts
+       (alert_type, summary, details, created_at, resolved_at, auto_resolved_reason)
+     values ('rate_limit_tripped', 'E2E expired retention fixture', '{}'::jsonb,
+             now() - interval '3 years', now() - interval '2 years', 'alert_writer_recovered')
+     returning id`,
+  );
+  const feedback = await db().query<{ id: string }>(
+    `insert into public.feedback (user_id, category, message, route, created_at)
+     values ($1, 'other', 'E2E expired retention fixture', '/e2e', now() - interval '3 years')
+     returning id`,
+    [userId],
+  );
+  const audit = await db().query<{ id: string }>(
+    `insert into public.audit_events
+       (organisation_id, actor_user_id, action, target_type, correlation_id, created_at)
+     values (null, $1, 'e2e.expired_retention_fixture', 'platform', gen_random_uuid(),
+             now() - interval '3 years')
+     returning id`,
+    [userId],
+  );
+  return {
+    keys: {
+      rate_limit_counters: counter.rows[0].k,
+      incident_alerts: alert.rows[0].id,
+      feedback: feedback.rows[0].id,
+      audit_events: audit.rows[0].id,
+    },
+    remove: async () => {
+      await sql(`delete from public.rate_limit_counters where subject_id = '${tag}'`);
+      await sql(`delete from public.incident_alerts where summary = 'E2E expired retention fixture'`);
+      await sql(`delete from public.feedback where message = 'E2E expired retention fixture'`);
+      await sql(`delete from public.audit_events where action = 'e2e.expired_retention_fixture'`);
+    },
+  };
+}
+
+/** What the most recent run COUNTED, read out of the run log. */
+export async function latestRetentionRunSwept(): Promise<Record<string, number | boolean>> {
+  const { rows } = await db().query<{ swept: Record<string, number | boolean> }>(
+    `select swept from public.retention_runs order by started_at desc limit 1`,
+  );
+  return rows[0]?.swept ?? {};
 }
 
 /**
@@ -1127,6 +1213,10 @@ export async function plantRetentionRun(): Promise<string> {
 /** Remove the runs and the summary audit rows a spec's previews created. */
 export async function clearRetentionRuns(): Promise<void> {
   await sql(`delete from public.audit_events where action = 'retention.swept'`);
+  // A LIVE run that carries a refusal files a `retention_run_refused` alert
+  // (20261004004000) -- plantRetentionRun() plants exactly such a run, so the
+  // alert it caused goes with it or it outlives the spec on /super/health.
+  await sql(`delete from public.incident_alerts where alert_type = 'retention_run_refused'`);
   await sql(`delete from public.retention_runs`);
 }
 

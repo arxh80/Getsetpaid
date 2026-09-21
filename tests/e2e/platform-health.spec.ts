@@ -7,7 +7,9 @@ import {
   plantIncidentAlert,
   plantRetentionRun,
   retentionRuns,
-  retentionSweepableRowCounts,
+  latestRetentionRunSwept,
+  plantExpiredRetentionSubjects,
+  retentionSweepableRowKeys,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
@@ -331,53 +333,72 @@ test("the superuser previews a retention run, and the preview deletes nothing", 
   ).toBeVisible();
   await expect(page.getByTestId("retention-no-runs")).toBeVisible();
 
-  // THE DENOMINATOR: every row the job could touch, before the press, per
-  // table. If the fixture world had nothing in these tables the assertion at
-  // the end would be satisfied by a preview that deleted everything there was
-  // to delete, which is nothing.
-  const before = await retentionSweepableRowCounts();
-  expect(
-    Object.values(before).reduce((a, b) => a + b, 0),
-    "the fixture world should have rows the job could sweep",
-  ).toBeGreaterThan(0);
+  // THE DENOMINATOR, AND IT IS NOT "THE TABLES ARE NOT EMPTY" (review finding
+  // m3). That was true of any fixture world and said nothing about whether
+  // there was anything to DELETE. Four rows are planted PAST THEIR PERIOD, one
+  // in each of four sweeps, so what follows is a claim about rows a live run
+  // would have taken -- and the preview is asserted to have COUNTED them,
+  // which is what proves it reached them at all.
+  const expired = await plantExpiredRetentionSubjects(world.users.manager.id);
+  try {
+    const before = await retentionSweepableRowKeys();
+    // The list of tables is DERIVED from private.retention_subjects() (m4a);
+    // these are the floor it must at least contain, so a derivation that
+    // resolved nothing cannot pass.
+    expect(Object.keys(before)).toEqual(
+      expect.arrayContaining(["audit_events", "documents", "feedback", "incident_alerts", "organisations"]),
+    );
+    for (const [table, key] of Object.entries(expired.keys)) {
+      expect(before[table].has(key), `the expired ${table} fixture was not planted`).toBe(true);
+    }
 
-  await page.getByRole("button", { name: "Preview the next run" }).click();
+    await page.getByRole("button", { name: "Preview the next run" }).click();
 
-  // The outcome lives in the region the action cannot unmount, and it says
-  // in words that nothing was deleted.
-  const outcome = page.getByTestId("retention-outcome");
-  await expect(outcome).toContainText("Preview complete");
-  await expect(outcome).toContainText("Nothing was deleted");
+    // The outcome lives in the region the action cannot unmount, and it says
+    // in words that nothing was deleted.
+    const outcome = page.getByTestId("retention-outcome");
+    await expect(outcome).toContainText("Preview complete");
+    await expect(outcome).toContainText("Nothing was deleted");
 
-  // THE RUN IS RENDERED, marked as a preview rather than as work done.
-  await expect(page.getByTestId("retention-runs")).toBeVisible();
-  await expect(page.getByTestId("retention-runs")).toContainText("preview");
+    // THE RUN IS RENDERED, marked as a preview rather than as work done.
+    await expect(page.getByTestId("retention-runs")).toBeVisible();
+    await expect(page.getByTestId("retention-runs")).toContainText("preview");
 
-  // AND IT WAS A DRY RUN IN THE DATABASE, not merely a label on the page.
-  const runs = await retentionRuns();
-  expect(runs.map((r) => `${r.mode}/${r.status}`)).toEqual(["dry/completed"]);
+    // AND IT WAS A DRY RUN IN THE DATABASE, not merely a label on the page.
+    const runs = await retentionRuns();
+    expect(runs.map((r) => `${r.mode}/${r.status}`)).toEqual(["dry/completed"]);
 
-  // THE ASSERTION THE WHOLE TEST EXISTS FOR: NO TABLE LOST A ROW.
-  //
-  // Not "the total is unchanged" -- the first cut asserted that and failed on
-  // the real run with 31 where 29 was expected, having deleted nothing: a
-  // retention run legitimately appends its own `retention.swept` summary row
-  // and the page appends a `platform_health.viewed` one, and `audit_events`
-  // is one of the tables being counted. A sum cannot tell an insert from a
-  // deletion elsewhere, so it was the wrong claim -- and a lenient one, since
-  // it would have been satisfied by a preview that deleted two documents
-  // while two audit rows were written.
-  const after = await retentionSweepableRowCounts();
-  for (const table of Object.keys(before)) {
-    expect(
-      after[table],
-      `A PREVIEW DELETED ROWS FROM public.${table}. It is the one control on ` +
-        "this page that reaches the machinery which deletes the audit log, and " +
-        "it is supposed to count and stop.",
-    ).toBeGreaterThanOrEqual(before[table]);
+    // THE PREVIEW REACHED THE EXPIRED ROWS: it counted every one of them. A
+    // preview that never looked would also "delete nothing".
+    const swept = await latestRetentionRunSwept();
+    for (const key of ["rate_limit_counters.rows", "incident_alerts.rows", "feedback.rows", "audit_events.rows"]) {
+      expect(Number(swept[key] ?? 0), `the preview did not count the expired row behind ${key}`).toBeGreaterThanOrEqual(1);
+    }
+
+    // THE ASSERTION THE WHOLE TEST EXISTS FOR: NO ROW WAS LOST, BY KEY.
+    //
+    // Its third form. A SUM failed on a real run (31 where 29 was expected,
+    // having deleted nothing -- a run appends its own summary row). A COUNT per
+    // table with `>=` was stronger, and the review named its residual: it cannot
+    // see "deleted two and inserted two in the SAME table", and audit_events
+    // grows by exactly that during this test. So: every primary key present
+    // before the press is present after it. Inserts cannot hide a deletion.
+    const after = await retentionSweepableRowKeys();
+    for (const table of Object.keys(before)) {
+      const lost = [...before[table]].filter((key) => !after[table]?.has(key));
+      expect(
+        lost,
+        `A PREVIEW DELETED ROWS FROM public.${table}. It is the one control on ` +
+          "this page that reaches the machinery which deletes the audit log, and " +
+          "it is supposed to count and stop.",
+      ).toEqual([]);
+    }
+  } finally {
+    // The planted audit row names a real fixture user, and an audit row is a
+    // no-ON-DELETE reference: left behind, it blocks that user's teardown.
+    await expired.remove();
+    await clearRetentionRuns();
   }
-
-  await clearRetentionRuns();
 });
 
 // ===========================================================================
