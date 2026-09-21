@@ -4240,3 +4240,110 @@ three documents.
   (`SECURITY.md` § 15), and this one runs DELETIONS. It cannot choose one —
   the route takes no argument — but a missing pair removes the retry, and the
   cost of that is higher than for exports: the person cannot even ask again.
+
+## Phase 8 Task 6 — the retention and garbage-collection job
+
+**Six long-open entries close here, and each one closes with what actually
+shipped rather than with "done".**
+
+- **Q52 — document bytes. CLOSED.** A soft-deleted document's file is purged
+  by `private.sweep_document_bytes()` plus the runner, once the parent
+  record's retention class has run out.
+  `private.document_retention_class()` derives that class rather than being
+  told it: `financial` (7 years) when the document is attached to an EVENT
+  that carries financial entries, `operational` (2 years) otherwise — which
+  is the only reachable meaning of "the parent record is financial", because
+  `document_links.entity_type` is allowlisted to six CRM entities and
+  `financial_entry` is not one of them. It counts SOFT-DELETED links and
+  soft-deleted financial entries too: misreading a class as financial costs
+  five years of storage, misreading it as operational destroys a record five
+  years early. `documents.bytes_purged_at` is the new column, and it is the
+  difference between "we deleted this file because we are no longer allowed
+  to keep it" and "this file is missing and we do not know why".
+  **One claim in the original Q52 wording was NOT re-confirmed and should
+  not be repeated:** "deleted documents still count toward storage". The
+  health snapshot's storage figures filter on `deleted_at is null`, so a
+  soft-deleted document was already outside the number the operator reads.
+  What was true, and is what this fixes, is that the BYTES were still stored.
+- **Q110 — stale rate-limit counters. CLOSED.** Swept seven days after the
+  window closes; the longest live window is 24 hours, so seven days is a
+  week of slack past the longest thing that could still be counting.
+  `FOR UPDATE SKIP LOCKED`, because a counter is written by every request in
+  the product and a sweep must never make one wait.
+- **Q117 — incident alerts. CLOSED, with the rule proposed here because
+  nothing had ever been written.** A RESOLVED alert and its `details` JSON
+  (which carries subject ids) go one year after resolution — the same period
+  as the audit rows they are evidence alongside. **An OPEN alert is never
+  purged at any age**, and that is the half that matters: an unresolved alert
+  is an outstanding operational problem, and deleting it because it is old
+  would delete the reason nobody has looked at it yet. The clock therefore
+  runs from `resolved_at` and not from `created_at`.
+- **Q120 — feedback and its screenshots. CLOSED.** The row goes at two years,
+  and the object goes FIRST: the row sweep refuses a row whose screenshot is
+  still in the bucket, because deleting it there would leave an untracked
+  image of somebody's screen that only the orphan sweep would find, a day
+  later.
+- **Q166 — a job stuck `running`. CLOSED, and it is not a deletion.**
+  Anything `running` for more than an hour is marked `failed` with a recorded
+  reason. The row survives and now says what happened; what is released is
+  the one-live-job partial unique index, which was permanently locking a
+  person out of a statutory right because of a transient fault at exactly the
+  wrong moment. The erasure sentence says NOTHING WAS DELETED and means it:
+  the whole erasure is one transaction, so an interrupted one rolled back.
+- **Q175 — failed erasure jobs. CLOSED at 90 days**, as Task 5 recommended.
+  A SUCCEEDED job is kept FOR EVER and is deliberately not on the schedule:
+  both its user columns are already null, so it is pseudonymous, and it is
+  the evidence that a statutory deletion was performed.
+- **Q88/Q92/Q102 — the 60-day workspace purge. CLOSED**, by calling
+  `private.erase_organisation()` — the first caller that primitive has ever
+  had. Reinstatement needs no special case at all:
+  `private.organisation_lifecycle_sync()` clears `retention_expires_at` the
+  moment `deleted_at` is cleared, so a reinstated workspace has no deadline
+  for the sweep to find. The rule is "while it is closed", not "59 days yes,
+  60 days no". Closing an already-suspended workspace restarts the clock, by
+  the same trigger.
+- **Q126 — the storage-client census. CLOSED AND BUILT**, in
+  `tests/unit/security/storage-client-census.test.ts`, because this task is
+  its SIXTH importer and the first whose reach is deletion across every
+  bucket. It found two things on its first two runs: the real importer list
+  is SEVEN files and not the five the inventory implied
+  (`lib/feedback/actions.ts` and `lib/feedback/screenshot.ts` are two, not
+  one), and its own table-access detector flagged `lib/crm/documents.ts` and
+  `lib/feedback/actions.ts` — the product's correct
+  `storage.storage.from(...)` shape — for want of a lookbehind.
+- **Q135 — what "archived" means. CLOSED as the recommended default.** The
+  audit-log viewer defaults to the last 30 days and SAYS SO on the page: a
+  silent default makes "the log does not go back that far" and "we are only
+  showing you a month" look identical, and only the second is fixed by typing
+  a date. The rows stay in Postgres; the delete happens at a year. There is
+  no cold store and `/legal/data-retention` v5 says so in those words.
+- **Q179 — the unsanctioned account deletion. CLOSED**, with the reach
+  measured rather than feared: the refusal fires ONLY where the old code
+  would have stranded something (the subject is the last active Owner of a
+  live, non-empty workspace), so every other `delete from auth.users` in the
+  repository is unaffected. The marker is a `PGC_USERSET` GUC, so a direct
+  database session can still set it — Q123's admitted limit, restated: this
+  turns an accident into a refusal, it does not stop somebody with a shell
+  who has decided to do it.
+
+**And what is owed after it.**
+
+- **Soft-deleted CRM rows are on NO clock of their own (Q180).** Every
+  contact, company, artist, agency, venue, event, task, meeting, note and
+  financial entry a workspace soft-deletes stays until the WORKSPACE is
+  purged. `CLAUDE.md`'s "soft-delete operational records ... subject to the
+  retention policy" arguably asks for more than that. This task deliberately
+  did not build it — a job that silently began hard-deleting customers' own
+  records two years on wants a founder's signature first — and every such
+  table is classified `retained_with_workspace` in
+  `private.retention_subjects()` so the question is visible in the roll
+  rather than absent from it.
+- **Nothing emails anybody about a retention run** (Q45, for the ninth
+  feature). A run that has been refusing its sanity ceiling every hour for a
+  month is visible on `/super/health` and nowhere else.
+- **A fourth bearer secret and Vault pair are owed at deploy**
+  (`SECURITY.md` § 15), and the consequence of forgetting this one is QUIET
+  rather than loud: the job simply never runs, `/super/health` shows no runs
+  at all, and data past its retention period is kept.
+- **The retention periods are still a working default pending counsel**
+  (Q133). What this task bought is that the answer is one migration.

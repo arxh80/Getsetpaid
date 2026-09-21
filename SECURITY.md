@@ -209,7 +209,7 @@ The pipeline is built as of Phase 4 Task 5 (`lib/crm/documents.ts` + `lib/securi
 - **Every file action is logged.** Upload, download and soft-delete each write an audit row through `public.audit_document_action` (`20260902031000`) — the client-callable thin RPC over `private.log_audit_event` (which stays granted to no client role). A clean upload records `document_uploaded`, a malware hit `document_quarantined`, a download `document_downloaded` (written **before** the signed URL is issued — no audit, no URL), a soft-delete `document_deleted`. Identifiers only (org, document id): no filename, no bytes, because `audit_events` is superuser-readable. See § 7.
 - **The feedback screenshot rides the same pipeline, on a second bucket (Phase 7 Task 6).** `feedback-screenshots` is `public = false`, 5 MiB, images only, with the same four **RESTRICTIVE** deny-all client fences (`20260911000000`); bytes go in through `submitFeedbackAction` (service-role Storage client, after `sniffAndAllow` reads the bytes as PNG/JPEG/WebP/GIF — a PDF is refused, a screenshot is an image), are scanned synchronously by the same `getScanner()`, and land on the row as a terminal verdict under an opaque `feedback/{id}` key pinned by CHECK. A quarantined screenshot is stored, never served, and files an `upload_quarantined` alert by trigger with the feedback id and never the message. **A session writer cannot DECLARE a screenshot** (fix round 1, `20260911020000`): the five screenshot columns are in the client INSERT grant because the app writes them after uploading, so on the raw PostgREST path a caller could name `feedback/<own id>` with a `clean` (or `quarantined`) verdict and no bytes; the trigger now requires the object to exist in `storage.objects` for the bucket, or 42501 — so "the row says there is a screenshot" means "the server put bytes there, sniffed and scanned". Bytes come out through one route, `/super/feedback/[id]/screenshot`, which checks the object exists, then audits, then signs — § 4 and § 7.
 - **The framework body cap sits above both promises (Phase 7 Task 6 cleanup round, N5).** Both uploads travel as a Server Action body, which Next caps at `serverActions.bodySizeLimit` — **default 1 MB** — *before* the action runs, as a framework 413 and a generic client error. Measured: a 4.9 MiB screenshot behind "up to 5 MiB" and a 2 MB PDF behind "25 MiB" both died there, unseen by every gate because every upload fixture was a few hundred bytes. The cap is now **26 MiB** (`lib/security/upload-limits.ts`, read by `next.config.ts`): the largest promise (documents, 25 MiB) plus headroom for the multipart framing, deliberately above rather than equal to the promise so an upload just over it reaches the action and the *app's* "larger than the N MiB limit" sentence is the refusal the user reads (`feedback.spec.ts` drives a 6 MiB screenshot to it). Above 26 MiB the framework still answers first — a band no screen in the product accepts. Fails closed: nothing over the cap reaches storage. `tests/unit/security/upload-limits.test.ts` holds the cap to both promises so a raised promise cannot silently outgrow it again.
-- **The download gate.** `issueDownloadUrl` loads the document **through RLS** (a cross-tenant id or a soft-deleted row returns nothing → 404, no existence leak), refuses anything but `scan_status = 'clean'` (→ 409, the quarantine gate), audits, and only then mints a **60-second** signed URL. The route redirects to it. A `pending`/`quarantined`/`error` document never yields a URL. Soft-delete marks `deleted_at` and audits; the **bytes are deliberately not hard-deleted** (soft-delete discipline — a retention/GC job that purges bytes for rows past retention is a Phase 8 follow-up). A **scan-status transition guard** (`before update` trigger) makes a terminal verdict immutable, so a stray PATCH cannot un-quarantine a file — defence in depth behind the fact that only the server sets `scan_status`.
+- **The download gate.** `issueDownloadUrl` loads the document **through RLS** (a cross-tenant id or a soft-deleted row returns nothing → 404, no existence leak), refuses anything but `scan_status = 'clean'` (→ 409, the quarantine gate), audits, and only then mints a **60-second** signed URL. The route redirects to it. A `pending`/`quarantined`/`error` document never yields a URL. Soft-delete marks `deleted_at` and audits; the **bytes are deliberately not hard-deleted at that moment** (soft-delete discipline). **Since Phase 8 Task 6 they are purged on a clock** (Q52): `private.sweep_document_bytes()` and `public.retention_object_manifest()` remove the object once the document's parent record's retention class has run out — `financial` (7 years) when it is attached to an event that carries financial entries, `operational` (2 years) otherwise, derived by `private.document_retention_class()` — and stamp `documents.bytes_purged_at`, which is the difference between "we deleted this file because we are no longer allowed to keep it" and "this file is missing and we do not know why". The row survives; the file does not. A **scan-status transition guard** (`before update` trigger) makes a terminal verdict immutable, so a stray PATCH cannot un-quarantine a file — defence in depth behind the fact that only the server sets `scan_status`.
 
 ## 7. Audit logging
 
@@ -272,13 +272,71 @@ The pipeline is built as of Phase 4 Task 5 (`lib/crm/documents.ts` + `lib/securi
 
 **APP-SIDE, not a trigger — the opposite decision from the CRM hard-delete audit above, on purpose.** The CRM audit is a trigger because `grant … to authenticated` plus the browser's anon key makes a raw `DELETE /rest/v1/contact_companies?id=eq…` reachable **without the app**, so the database is the only chokepoint. A document's **bytes have no such second path**: `storage.objects` for the `documents` bucket is deny-all fenced to every client role (`20260902030000`), and the only principal that can read or write a `documents` object is `service_role`, on the server. There is no PostgREST-reachable "download this file" endpoint to bypass — an upload is a Server Action and a download is a Route Handler, and both run the audit before they touch Storage. So for documents the **application is the only path in and out**, and an app-side audit is sufficient and correct. The **download audit in particular is written before the signed URL is issued** (`issueDownloadUrl`), so a logged access is a precondition of a served file, not a side effect of it. The metadata row *is* client-reachable, but a metadata write is not the audited event — the sensitive action is the movement of bytes, which is server-only; the scan-status transition guard is the metadata-side defence in depth.
 
+### Deleting audit rows: the one narrowly controlled process, as built (Phase 8 Task 6)
+
+`CLAUDE.md` promises the audit log is "hot/queryable for 30 days, archived
+(cold storage) for up to 1 year total, then purged", and until Phase 8 Task 6
+nothing applied either limit. Both are applied now, and the two halves are
+different things:
+
+- **"Hot for 30 days" is the VIEWER'S DEFAULT RANGE, not a storage boundary**
+  (founder ruling Q135). `/super/audit-log` applies a 30-day floor when the
+  operator supplies no `from` date, and says so on the page — a silent default
+  makes "the log does not go back that far" and "we are only showing you a
+  month" look identical, and only the second is fixed by typing a date.
+  Setting `from` reaches straight past the floor. `AUDIT_HOT_WINDOW_DAYS` is
+  the one retention period that had to leave the database (a PostgREST query
+  cannot call a `private` function), and
+  `tests/integration/rls/retention-matches-db.test.ts` binds it to
+  `private.retention_periods()`'s `audit_hot` class.
+- **"Archived" means the rows are still in Postgres.** There is no cold store
+  and the public page says so. At one year they are deleted.
+
+**`private.purge_audit_events()` is the deletion, and it is the most dangerous
+code in this phase** — it destroys the evidence that the product did what it
+says it did, and an audit log that has been wrongly emptied cannot be noticed
+by reading it. Five rails, each independently mutable and each with its own
+refusal hint so that "the floor refused", "the ceiling refused" and "a
+privilege was missing" cannot be confused with one another:
+
+1. **A HARD FLOOR of one year that no configuration can lower.** Compared
+   against `private.audit_retention_floor()` AND against the purge's own
+   literal, so editing either alone does not move it. If
+   `private.retention_periods()` ever declares a shorter `audit_total`, this
+   REFUSES (`55000` / `audit_retention_below_floor`) rather than obeying it.
+   That is the difference between a floor and a default.
+2. **Its own kill switch**, `public.retention_settings.audit_purge_enabled`,
+   asked before anything is counted and separate from the master switch —
+   "stop deleting audit rows until we know the clock is right" and "stop
+   reaping stuck export jobs" are different decisions.
+3. **A SANITY CEILING**: a run that would delete more than a fifth of the
+   table, when that is also more than a thousand rows, refuses
+   (`audit_purge_over_ceiling`). At steady state a run deletes ten minutes'
+   worth of rows; a fifth means the clock, the declared period or the column
+   is wrong, and a job that has deleted nothing yet is recoverable while one
+   that has deleted a year is not.
+4. **A per-run ceiling, oldest first, resumable** — a backlog drains in order
+   rather than locking the table, and `capped` in the run log says one exists.
+5. **The totals before and after**, counted in the same transaction as the
+   delete, so the run log's arithmetic is checkable rather than trusted.
+
+Plus a **dry run** over the same query, which is what makes the rails usable:
+the founder can ask what a run WOULD delete, from `/super/health`, and get the
+numbers with nothing removed.
+
+**It exempts no action, deliberately.** An exemption list for "actions too
+important to delete" is a retention policy written twice, and only one of the
+two is on the published page. If some actions should be kept longer, that is a
+class in `private.retention_periods()` and a sentence on
+`/legal/data-retention`.
+
 ## 8. Data retention and residency
 
 - Soft-delete operational records rather than hard deletion, subject to retention policy.
 - Working defaults (pending legal sign-off — see `CLAUDE.md` § Legal and regulatory compliance): **7 years** for financial records, **2 years** for inactive-account data (also applied to in-app feedback submissions — see `CLAUDE.md` § In-app feedback), **30 days hot / 1 year archived** for audit logs.
-- **Feedback retention is enforced at READ time (Phase 7 Task 6):** `feedback_select_platform` carries `created_at >= private.feedback_retention_cutoff()` (now − 2 years), and the screenshot-view RPC re-tests the same cutoff, so an expired row is unreadable on every path — the app, a direct PostgREST GET, the signed-URL route — with nothing scheduled (the Q88 / Task 4 pattern). Measured: `rls_phase7_feedback.sql` FR6/FA7. **The rows and their screenshot bytes are not yet purged**; that joins the Phase 8 retention job Q110/Q52 already owe (Q120). A submitter's account erasure cascades to their feedback rows (`on delete cascade`, unlike `audit_events`), so a DSR does not wait on that job.
-- **The public Data Retention Policy (`/legal/data-retention`, Phase 8 Task 1) states these working defaults as pending counsel**, and says in words that the automated deletion job is not running yet (Task 6 of this phase builds it). **Its version 1 described an audit "default view" that does not exist** — neither `audit_events_select_platform_superuser` nor `/super/audit-log` applies any time window, so every audit row is searchable for as long as it is stored; version 2 (`20260922005000`) states the 30-day/1-year windows as the target Task 6 will apply. **The public Security and Trust page follows one rule since the same migration:** every control this § 15 lists as hosted configuration is marked "(deployment setting)" there, and the host's encryption/TLS is attributed to Supabase as unverified.
-- **Export archives are a new store with a seven-day clock, and READ-TIME EXPIRY is only half of it (Phase 8 Task 4).** `public.export_jobs.expires_at` is `completed_at + private.export_limits().archive_days`, stamped by the database, and the download path refuses a job past it — so after seven days the archive is unreachable by everyone including its own requester, with nothing scheduled (the Q88 pattern). **The BYTES are still in the `exports` bucket until Task 6's retention job removes them**, and that difference is stated on `/legal/data-retention` (version 3) rather than implied away. Two further orphan classes join the same job: the object of a job whose requester's account is deleted (the ROW cascades, the bytes do not), and the object of a job that uploaded and then failed to stamp (the runner removes it on the spot, and a crash between the two leaves one behind).
+- **Feedback retention is enforced at READ time (Phase 7 Task 6):** `feedback_select_platform` carries `created_at >= private.feedback_retention_cutoff()` (now − 2 years), and the screenshot-view RPC re-tests the same cutoff, so an expired row is unreadable on every path — the app, a direct PostgREST GET, the signed-URL route — with nothing scheduled (the Q88 / Task 4 pattern). Measured: `rls_phase7_feedback.sql` FR6/FA7. **Since Phase 8 Task 6 the rows and their screenshot bytes ARE purged** (Q120): `private.sweep_feedback()` deletes an expired row, and the runner removes the `feedback/{id}` object first — the row sweep REFUSES a row whose screenshot is still in the bucket, because deleting it there would leave an untracked image of somebody's screen that only the orphan sweep would find, a day later. A submitter's account erasure cascades to their feedback rows (`on delete cascade`, unlike `audit_events`), so a DSR does not wait on that job.
+- **The public Data Retention Policy (`/legal/data-retention`, Phase 8 Task 1) states these working defaults as pending counsel.** Its version 4 said in words that the automated deletion job was not running; **version 5 (`20261003009000`) says it runs, and says what that does and does not mean** — about hourly, bounded per run so a backlog drains over several, a failed deletion retried rather than forgotten, so a record can outlive its period by hours. It also keeps saying there is no separate archive store, because there is not: "archived" means the record stays in the same database and falls out of the operator's default 30-day view (Q135), which is less than the word suggests. **Its version 1 described an audit "default view" that does not exist** — neither `audit_events_select_platform_superuser` nor `/super/audit-log` applies any time window, so every audit row is searchable for as long as it is stored; version 2 (`20260922005000`) states the 30-day/1-year windows as the target Task 6 will apply. **The public Security and Trust page follows one rule since the same migration:** every control this § 15 lists as hosted configuration is marked "(deployment setting)" there, and the host's encryption/TLS is attributed to Supabase as unverified.
+- **Export archives are a new store with a seven-day clock, and READ-TIME EXPIRY is only half of it (Phase 8 Task 4).** `public.export_jobs.expires_at` is `completed_at + private.export_limits().archive_days`, stamped by the database, and the download path refuses a job past it — so after seven days the archive is unreachable by everyone including its own requester, with nothing scheduled (the Q88 pattern). **Task 6's retention job now removes the BYTES too**: `public.retention_object_manifest()` names every archive past its own `expires_at`, and the runner deletes it. Before that, every archive anyone had ever taken was still in the bucket — measured, not assumed: there was no other caller of `remove()` for that bucket anywhere in the repository. The two orphan classes join the same job and are covered by the same manifest's ORPHAN half — the object of a job whose requester's account is deleted (the ROW cascades, the bytes do not), and the object of a job that uploaded and then failed to stamp — through a sweep of objects no row names at all, older than a one-day grace period. The grace period is not caution for its own sake: an upload writes the object and THEN the row, so for a fraction of a second every healthy upload is an orphan.
 - GDPR data subject requests (export/erasure): **30-day** target, matching the ICO statutory maximum.
 - **The ACCESS and PORTABILITY half of that is now a real job rather than a promise (Phase 8 Task 4), and the register enforces it.** `private.dsr_fulfilment_job_ready('export')` answers `true` from `20260927003000`, so an account-scope `access` or `portability` request can no longer be marked fulfilled by hand: an export job for that requester must have completed **after the request was made** and recorded itself on the row, or the transition is refused (22023, hint `fulfilment_not_recorded`). The seam is written by the runner as `service_role` through a **two-column** `UPDATE` grant (`fulfilment_kind`, `fulfilment_reference`) and nothing wider; `fulfilment_recorded_at` is stamped by the trigger and is deliberately outside the grant. `private.dsr_fulfilment_job_ready('erasure')` is still `false` — Task 5.
 - **Since Phase 8 Task 3 that 30 days is a deadline the DATABASE computes and alerts on, not a target.** `public.data_subject_requests.due_by` is a `GENERATED ALWAYS` column — `requested_at + 30 days`, unwritable by every role including `postgres` (428C9) — and `requested_at` is stamped by the `BEFORE INSERT` trigger, so neither end of the window can be moved by a client, an operator or a repair script. Every state change goes through one `BEFORE UPDATE` trigger that is the transition table, the who-may-do-it check and the stamper at once (`private.data_subject_requests_before_update`); nothing is enforced only in a server action. See § Data subject requests below.
@@ -295,6 +353,85 @@ The pipeline is built as of Phase 4 Task 5 (`lib/crm/documents.ts` + `lib/securi
 - **Erasure is metered and stepped up.** `account_erasure`, 3 per 24 hours per user, enforced at the INSERT like every other write budget (`public.erasure_jobs` carries a client INSERT grant). Step-up re-auth is app-layer, at `startAccountErasureAction` and at the operator's `runErasureForRequestAction`, because `amr` freshness is a fact about a JWT no database rule can see; the typed confirmation phrase is checked on the server as well as in the browser.
 - **Data residency: UK/EU Supabase region only** — no US-region hosting for customer data.
 - Currency: **GBP only at MVP**; schema (`financial_entries` etc.) stores a currency column and minor units so multi-currency UI can be added later without a migration.
+
+### The retention job, as built (Phase 8 Task 6)
+
+**One `pg_cron`-scheduled job, not a second clock.** The product still has
+exactly one scheduler and one job — `incident-alert-delivery`, every ten
+minutes — and the retention sweep is its **fifth half**, after the erasure
+runner, the export runner, the data-subject-request deadline alerts and the
+incident digest. Each half is its own subtransaction, so none can take another
+down, and `rls_phase8_retention.sql` § RC14 pins all five BY NAME: a Phase 7
+alert type or a Task 4 runner dropped by a future rebuild would be a silent
+regression, and a count would not catch it. The sweep is **throttled in the
+database** to about hourly (`private.retention_sweep_interval()`) rather than
+given a cron entry of its own: the other four halves are latency-sensitive and
+this one is not, and "there is one clock" is worth more than a cheaper
+predicate.
+
+**Every period lives in ONE declared place**, `private.retention_periods()` —
+eleven classes, each with its interval, what it applies to, the column its
+clock runs from and the authority that set it. Counsel's answer to Q133 is a
+reissue of that one function. It is a FUNCTION and not a settings table on
+purpose: these numbers are a legal position stated on a published page, and a
+row anybody can UPDATE is a legal position that can change with no diff, no
+review and no record. `private.organisation_retention_days()` and
+`private.feedback_retention_cutoff()` — the two read-time expiry paths that
+predate it — were rebuilt to derive their numbers from it.
+
+**A table nobody has decided a retention answer for stops the job.**
+`private.retention_subjects()` classifies every table in `public` as swept
+under a named class, cascading with its parent, retained with its workspace,
+platform reference data or never purged; `private.assert_retention_roll()`
+derives the same list from `pg_class` at step 0 of every run and refuses an
+unclassified table, a roll entry naming a table that does not exist, a table
+classified twice, or a `swept` entry whose class is not declared. It earned
+its keep on its first day, refusing because the task's own two new tables were
+not on it.
+
+**Eight sweeps:** stale rate-limit counters (Q110), expired feedback and its
+screenshots (Q120), resolved incident alerts and their `details` JSON (Q117 —
+an OPEN alert is never purged at any age, because an unresolved alert is an
+outstanding problem and deleting it would delete the reason nobody has looked
+at it), failed erasure jobs at 90 days (Q175 — a SUCCEEDED one is kept for
+ever, because both its user columns are already null and it is the proof a
+statutory deletion happened), jobs stuck `running` (Q166 — FAILED, not
+deleted: what is released is the one-live-job index that was locking somebody
+out of a statutory right), document bytes (Q52), the audit purge above, and
+the 60-day workspace purge (Q88/Q92/Q102), which CALLS
+`private.erase_organisation()` rather than reimplementing it and is the first
+caller that primitive has ever had.
+
+**Storage is the half that cannot be transactional, and both directions are
+handled.** `public.retention_object_manifest()` derives every object key in
+the DATABASE — the runner deletes what Postgres named and can name nothing
+itself, the erasure runner's rule — and the runner deletes bytes BEFORE the
+rows, because the feedback sweep and the workspace purge both refuse to remove
+a row whose object is still stored. If a run dies in between, the residue is
+bytes gone and rows not, which is the direction of "the data is deleted" and
+never of "the data is exposed", and the next run finishes the job from the
+object's ABSENCE (`documents.bytes_purged_at` is derived, not bookkept). The
+other direction — an object no row names — is the manifest's orphan half.
+
+**Nothing is deleted silently.** One correlation thread per run plus one
+summary audit row (`retention.swept`, counts and never content, actor = the
+Q130 tombstone, because a scheduled job has nobody on it and
+`private.log_audit_event()` requires an `auth.uid()`). A DRY run writes one
+too, marked `"mode": "dry"`. Every run — including a refused one — writes a
+row to `public.retention_runs` with what it swept, how long it took and what
+it REFUSED, and `/super/health` renders the last five: "the audit purge has
+refused its ceiling on every run for a month" is exactly what an operator
+needs to see, and a warning in the Postgres log on a hosted database is not
+visible from anywhere.
+
+**A fourth Vault pair and a fourth bearer secret** (`retention_runner_url` /
+`retention_runner_secret`, § 15), separate from the digest's, the export
+runner's and the erasure runner's. The argument for separation is at its
+strongest here: the erasure secret, leaked, makes already-requested deletions
+happen sooner; **this one runs the sweep that deletes the audit log.** It
+still cannot choose what to delete — every period is declared in the database
+and the audit purge's floor, ceiling and switch are beyond the endpoint's
+reach.
 
 ### Data subject requests (Phase 8 Task 3)
 
@@ -438,6 +575,7 @@ Carried over from `CLAUDE.md` § Open decisions — these need founder/legal inp
 - `minimum_password_length = 10` — must match `MIN_PASSWORD_LENGTH` in `lib/forms.ts`, or the app's validation is bypassable by calling GoTrue directly.
 - **Email delivery (Phase 7 Task 6) — four environment values and one cron, none of which ships itself:** `BREVO_API_KEY` / `BREVO_SENDER_EMAIL` / `BREVO_SENDER_NAME` (`docs/email-setup.md` — domain authentication first, or mail lands in spam), `SUPPORT_CONTACT_EMAIL` (§ 13), and `INCIDENT_ALERT_DELIVERY_SECRET` (≥ 32 chars) **plus the two Supabase Vault entries the database's own clock reads** (Q118): `select vault.create_secret('https://<host>/api/incident-alerts/deliver', 'incident_alert_delivery_url', '…');` and `select vault.create_secret('<the same value as INCIDENT_ALERT_DELIVERY_SECRET>', 'incident_alert_delivery_secret', '…');`. The `pg_cron` job ships with the schema (`20260916000000`, every 10 minutes) and is a silent no-op until both entries exist — so a deploy that sets the environment variables and forgets the Vault entries has a scheduler that runs and delivers nothing. Verify with `select * from cron.job_run_details order by start_time desc limit 5;` and `select status_code from net._http_response order by created desc limit 5;`. With any of these missing the product degrades honestly — feedback is stored and shown "email not sent", alerts stay rows — but silently as far as the inbox is concerned. Verify after deploy by submitting one feedback and confirming the receipt arrives and the row on `/super/feedback` no longer reads "email not sent"; then `curl -X POST -H "Authorization: Bearer …" https://<host>/api/incident-alerts/deliver` and confirm a JSON `outcome`, never a 404. Sign Brevo's DPA before real personal data flows (`docs/sub-processors.md`). Every Brevo call carries a 10-second timeout (`BREVO_TIMEOUT_MS`, fix round 1 I2) and the feedback receipt runs after the submission's response through `next/server`'s `after()`, so a Brevo stall can neither hang a submission nor, via the retry it invited, duplicate the row. **Supabase Auth's own mail (sign-up, magic link, reset) is NOT relayed through Brevo today** — that is a hosted-project SMTP setting nothing in this repository configures (`docs/email-setup.md` § 3); until it is done, auth mail is Supabase's built-in sender and Brevo processes only the support contact's address and feedback receipts.
 - **The export runner's own secret and Vault pair (Phase 8 Task 4)** — `EXPORT_RUNNER_SECRET` (≥ 32 chars, and **a different value from `INCIDENT_ALERT_DELIVERY_SECRET`**: leaking one must not hand over the other, and this one can be made to run every queued export) plus `select vault.create_secret('https://<host>/api/exports/run', 'export_runner_url', '…');` and `select vault.create_secret('<the same value as EXPORT_RUNNER_SECRET>', 'export_runner_secret', '…');`. The same `pg_cron` job carries it — there is still exactly one — and it is a silent no-op until both entries exist. **Unlike the digest, a missing pair is not the whole failure:** the request that starts a job also nudges the runner in-process, so exports still run; what is lost is the RETRY for a job whose nudge died with its process, which is a person waiting for a statutory response while nothing happens. Verify with `curl -X POST -H "Authorization: Bearer …" https://<host>/api/exports/run` and confirm a JSON `outcome`, never a 404.
+- **The retention runner's own secret and Vault pair (Phase 8 Task 6)** — `RETENTION_RUNNER_SECRET` (≥ 32 chars, and **a different value from all three of the above**) plus `select vault.create_secret('https://<host>/api/retention/run', 'retention_runner_url', '…');` and `select vault.create_secret('<the same value as RETENTION_RUNNER_SECRET>', 'retention_runner_secret', '…');`. The same `pg_cron` job a fourth time — there is still exactly one — and a silent no-op until both entries exist. **This is the one whose blast radius includes the audit log**, which is why it is not allowed to be the erasure runner's secret under another name. It still cannot choose what to delete: every period is declared in `private.retention_periods()`, and the audit purge's hard floor, sanity ceiling and kill switch are all beyond this endpoint's reach. **A missing pair is a real consequence rather than a quiet one:** the job never runs, `/super/health` shows no runs at all and says in words that a deployment with no runner URL never records one, and data past its retention period is simply kept. Verify with `curl -X POST -H "Authorization: Bearer …" -d '{"dry":true}' https://<host>/api/retention/run` — a DRY run, which counts and deletes nothing — and confirm a JSON `outcome`, never a 404.
 - **The erasure runner's own secret and Vault pair (Phase 8 Task 5)** — `ERASURE_RUNNER_SECRET` (≥ 32 chars, and **a different value from both of the above**: this is the one that makes queued DELETIONS happen sooner) plus `select vault.create_secret('https://<host>/api/erasure/run', 'erasure_runner_url', '…');` and `select vault.create_secret('<the same value as ERASURE_RUNNER_SECRET>', 'erasure_runner_secret', '…');`. The same `pg_cron` job again — there is still exactly one — and a silent no-op until both entries exist. It cannot CHOOSE a deletion: the route takes no argument, and every job it can reach is one somebody already asked for through a gate the endpoint does not control. **A missing pair matters more here than it does for exports:** without the retry, a person whose account is "being deleted" and is not being deleted cannot even ask again, because the one-live-job index refuses. Verify with `curl -X POST -H "Authorization: Bearer …" https://<host>/api/erasure/run` and confirm a JSON `outcome`, never a 404. **`EXPORT_RUNNER_SECRET` was documented here by Task 4 and never added to `.env.example`; Task 5 added both.**
 - **`[auth.hook.password_verification_attempt] enabled = true`, pointing at `pg-functions://postgres/public/hook_password_verification_attempt`** — this is the whole of § 5's per-account login limit. A hook that is not enabled in the hosted dashboard is a limit that does not exist, and it fails silently: sign-in keeps working, brute force is simply unmetered, and nothing in the app can tell. Verify after deploy by making six failed sign-ins against a test account and confirming the sixth is refused *and* that a `repeated_login_failures` row appears in `public.incident_alerts`.
 
