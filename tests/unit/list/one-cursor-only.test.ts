@@ -375,43 +375,55 @@ describe("every paginated list shares one implementation", () => {
     // every list endpoint, and a bare `.limit()` IS a ceiling. What it is not
     // is a page-2, which is why nothing offers one.
     expect(callers(".range(")).toEqual([]);
-    // NOT A TYPE ANNOTATION. `offset: ` alone also matches a FIELD DECLARED
-    // to be a number, and that is measured rather than guessed: Phase 8
-    // Task 4's `lib/export/zip.ts` declares `offset: number` on a ZIP
-    // central-directory record -- a byte position in a binary container, in
-    // a module that imports `node:zlib` and nothing else and could not reach
-    // PostgREST if it tried. The negative lookahead excludes the primitive
-    // type keywords and nothing else, so `offset: 20`, `offset: page * size`
-    // and `offset: cursor` are all still caught -- the fixtures below are
-    // what keeps that true rather than a comment claiming it.
+    // THE BAN IS TOTAL AGAIN, AND ONE FILE IS EXCLUDED BY PATH.
     //
-    // THE WHITESPACE LIVES INSIDE THE LOOKAHEAD, and the first draft had it
-    // outside: `offset:\s*(?!number)` matches `offset: number` anyway,
-    // because the engine is free to let `\s*` consume nothing and then
-    // find that a SPACE is not the word `number`. Measured -- it failed on
-    // the very file it was written for.
-    const OFFSET_PAGINATION =
-      /\boffset:(?!\s*(?:number|string|bigint|boolean)\b)/;
-    const offsets = SOURCES.filter((f) => OFFSET_PAGINATION.test(code(f.text)));
+    // 53507a5 narrowed the pattern instead -- `offset:` with a negative
+    // lookahead for the primitive type keywords -- to accommodate Phase 8
+    // Task 4's `lib/export/zip.ts`, which declares `offset: number` on a ZIP
+    // central-directory record (a byte position in a binary container, in a
+    // module that imports `node:zlib` and could not reach PostgREST if it
+    // tried). That narrowing was GLOBAL, so it also blinded the census to the
+    // shape offset pagination actually takes in a typed codebase:
+    // `interface ListParams { readonly offset: number }`. Measured, and the
+    // fixtures below now pin it (Task 4 review, finding M5).
+    //
+    // A path exclusion costs nothing -- this file already owns its own
+    // SOURCES list -- and keeps the pattern total everywhere else. An entry
+    // here is a declaration that a module's `offset` is not a page, so it is
+    // deliberately one line and deliberately visible.
+    const OFFSET_EXEMPT: readonly string[] = [
+      // A ZIP local-header byte position, written into a 46-byte central
+      // directory record. Not a query parameter and not reachable from one.
+      "lib/export/zip.ts",
+    ];
+    const OFFSET_PAGINATION = /\boffset:\s/;
+    const offsets = SOURCES.filter(
+      (f) => !OFFSET_EXEMPT.includes(f.path) && OFFSET_PAGINATION.test(code(f.text)),
+    );
     expect(offsets.map((f) => f.path)).toEqual([]);
 
-    // The pattern still sees every shape a real offset page takes...
+    // The exemption names a file that EXISTS and that really does carry the
+    // shape, so a stale entry cannot sit here granting a pass to nothing.
+    for (const path of OFFSET_EXEMPT) {
+      expect(OFFSET_PAGINATION.test(code(byPath(path))), path).toBe(true);
+    }
+
+    // The restored pattern sees every shape a real offset page takes...
     for (const shape of [
       "const q = { offset: 20, limit: 10 };",
       "supabase.from('x').select('*', { offset: page * size })",
       "  offset: cursor,",
       "{ offset: 0 }",
+      // ...INCLUDING THE TYPED ONE, which is the whole of M5.
+      "interface ListParams { readonly offset: number }",
+      "  offset: bigint;",
     ]) {
       expect(OFFSET_PAGINATION.test(shape), shape).toBe(true);
     }
-    // ...and none of the type positions it is being narrowed away from.
-    for (const shape of [
-      "  readonly offset: number;",
-      "interface E { offset: number }",
-      "let offset: bigint;",
-    ]) {
-      expect(OFFSET_PAGINATION.test(shape), shape).toBe(false);
-    }
+    // And `{ offset: 0 }` written without the space is still not a page in
+    // any formatter this repo uses, so the one-space requirement is the
+    // pattern's only looseness and it is stated rather than accidental.
+    expect(OFFSET_PAGINATION.test("{offset:0}")).toBe(false);
   });
 });
 
