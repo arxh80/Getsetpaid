@@ -1028,7 +1028,7 @@ fi
 # refused" and "a privilege was missing" would otherwise be indistinguishable.
 # ============================================================================
 
-run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 116 "${P7VARS[@]}"
+run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 156 "${P7VARS[@]}"
 ret_fails=$SUITE_FAILS
 if [ "$ret_fails" != "0" ]; then
   echo "PHASE 8 RETENTION SUITE FAILED: $ret_fails failing assertion(s)" >&2
@@ -1054,6 +1054,13 @@ if [ "$ret_fails" != "0" ]; then
   echo "  SAVES A WORKSPACE. RW9 red = closing an already-suspended workspace" >&2
   echo "  no longer restarts the clock, so a customer loses days they were" >&2
   echo "  promised. Sev1 either way -- this deletes a whole tenant." >&2
+  echo "  In RK, WHO CAN WRITE A CLOCK (fix round 1, C1). RK4-RK10 red = a" >&2
+  echo "  TENANT CAN SET documents.deleted_at, forge bytes_purged_at or re-point" >&2
+  echo "  storage_key again -- a seven-year file deleted within the hour. Sev1." >&2
+  echo "  RK26 red = a NEW SWEEP reads a timestamp column nobody classified;" >&2
+  echo "  RK27/RK28 red = a client role gained a write on a clock, or a named" >&2
+  echo "  guard is gone; RK29 red = a client-writable clock has no passing" >&2
+  echo "  behavioural probe. RK31-RK33 are the standing mutation of all three." >&2
   echo "  In RQ, Q179: a direct auth.users delete can strand a workspace again." >&2
   echo "  In RR, the run. RR8 red = a sweep failure can now stop the others," >&2
   echo "  or step 0 no longer runs before a row moves." >&2

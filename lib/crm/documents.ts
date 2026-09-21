@@ -439,11 +439,15 @@ export async function issueDownloadUrl(
 
 // ===========================================================================
 // SOFT-DELETE. The row's deleted_at is set; the BYTES are deliberately NOT
-// removed from the bucket -- soft-delete discipline (CLAUDE.md § Non-negotiable
-// rules). A retention/GC job that purges the bytes of rows past retention is a
-// documented Phase 8 follow-up (FOLLOW-UPS.md), not built here. { count:
-// "exact" } because a 204 is not a save (lib/crm/write.ts), and audit after the
-// row really moves.
+// removed from the bucket here -- soft-delete discipline (CLAUDE.md §
+// Non-negotiable rules). The Phase 8 Task 6 retention job purges them once the
+// document's retention class has run from deleted_at, which makes that column
+// A RETENTION CLOCK: the value sent below is a courtesy, and the database
+// OVERWRITES it with its own now() (private.guard_document_retention_columns(),
+// 20261004000000 -- review finding C1: a client-chosen deleted_at could have a
+// seven-year document's file destroyed within the hour). { count: "exact" }
+// because a 204 is not a save (lib/crm/write.ts), and audit after the row
+// really moves.
 // ===========================================================================
 export async function deleteDocumentAction(
   orgSlug: string | null,
@@ -547,7 +551,13 @@ export async function restoreDocumentAction(
       .update({ deleted_at: null }, { count: "exact" })
       .eq("organisation_id", org.id)
       .eq("id", documentId)
-      .filter("deleted_at", "not.is", null),
+      .filter("deleted_at", "not.is", null)
+      // A document whose file the retention job has already purged cannot come
+      // back: there is nothing behind it. The database refuses that for every
+      // writer (documents_purged_implies_deleted, 20261004000000); matching
+      // nothing here turns a constraint violation logged as a fault into the
+      // ordinary "nothing to restore" answer.
+      .is("bytes_purged_at", null),
   );
 
   if (result.outcome === "applied") {

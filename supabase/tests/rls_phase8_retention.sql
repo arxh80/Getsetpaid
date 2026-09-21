@@ -710,6 +710,371 @@ select rt.val('RX2 ...and every workspace this suite did not make is still there
 
 
 -- ===========================================================================
+-- RK  WHO CAN WRITE A CLOCK? (fix round 1, review finding C1)
+-- ===========================================================================
+-- Until this section existed NOTHING in this suite asked who can write the
+-- columns a sweep's cutoff reads. `authenticated` held table-wide INSERT and
+-- UPDATE on public.documents, so an ordinary Owner could write
+-- `deleted_at = now() - interval '8 years'` and have a SEVEN-YEAR financial
+-- document's file named in the next manifest, or forge `bytes_purged_at` and
+-- keep a file out of every future sweep while the row claimed a lawful
+-- deletion that never happened.
+--
+-- TWO HALVES:
+--   RK1-RK19a  public.documents, asked AS THE TENANT (an aal2 Owner of their
+--              own paid workspace -- the session a real browser has), and then
+--              asked of the TRIGGER DIRECTLY with the column grant switched
+--              back on, because a rule only ever asked through a path that
+--              carries its own guard has not been asked.
+--   RK20-      THE DERIVATION. Every timestamp column any retention function
+--              reads is derived from the functions' own source, must be on
+--              private.retention_clock_columns(), and -- if any client role
+--              can write it -- must name a guard that exists AND have a
+--              passing behavioural probe recorded by THIS RUN of this suite.
+-- ===========================================================================
+
+insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
+                        email_confirmed_at, created_at, updated_at)
+values ('00000000-0000-4000-9000-0000000067a3', '00000000-0000-0000-0000-000000000000',
+        'authenticated', 'authenticated', 'rt-super@rt.invalid', 'x', now(), now(), now());
+insert into public.platform_admins (user_id) values ('00000000-0000-4000-9000-0000000067a3');
+
+-- A PAID PLAN, or documents_update_manage_documents' WITH CHECK refuses every
+-- write for an entitlement reason and every refusal below is a false one.
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values ('00000000-0000-4000-9000-0000000067b1', 'pro', 'monthly', 1, 'active', now() + interval '30 days');
+
+insert into public.documents (id, organisation_id, owner_user_id, filename, storage_key, mime_type,
+                              size_bytes, scan_status, scanned_at) values
+  ('00000000-0000-4000-9000-000000006703', '00000000-0000-4000-9000-0000000067b1',
+   '00000000-0000-4000-9000-0000000067a1', 'settlement.pdf',
+   '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-000000006703',
+   'application/pdf', 10, 'clean', now()),
+  ('00000000-0000-4000-9000-000000006704', '00000000-0000-4000-9000-0000000067b1',
+   '00000000-0000-4000-9000-0000000067a1', 'pending.pdf',
+   '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-000000006704',
+   'application/pdf', 10, 'pending', null);
+-- THE REVIEWER'S EXACT CASE: a FINANCIAL-class document. 6703 goes on the
+-- event RS23 gave a financial entry, so its class is seven years.
+insert into public.document_links (organisation_id, parent_id, entity_type, entity_id)
+values ('00000000-0000-4000-9000-0000000067b1', '00000000-0000-4000-9000-000000006703',
+        'event', '00000000-0000-4000-9000-000000006711');
+
+select rt.val('RK1 DENOMINATOR: the target is a LIVE, FINANCIAL-class (7-year) document nothing would sweep',
+  $$select private.document_retention_class('00000000-0000-4000-9000-000000006703') || '/' ||
+           (deleted_at is null)::text || '/' ||
+           ((private.sweep_document_bytes(true, 500))->>'documents.bytes_purged')
+      from public.documents where id = '00000000-0000-4000-9000-000000006703'$$, 'financial/true/0');
+
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}';
+
+select rt.val('RK2 DENOMINATOR: the Owner really can see and reach the row (so a refusal below is a refusal)',
+  $$select count(*)::text from public.documents where id = '00000000-0000-4000-9000-000000006703'$$, '1');
+-- THE ORDINARY PRESS KEEPS WORKING. The value is OVERWRITTEN, not refused --
+-- the incident-alert resolution guard's rule: a person says THAT they deleted
+-- it, never WHEN.
+select rt.try('RK3 the Owner soft-deletes it NAMING A TIME EIGHT YEARS AGO -- the write is accepted',
+  $$update public.documents set deleted_at = now() - interval '8 years'
+     where id = '00000000-0000-4000-9000-000000006703'$$, 'ok(1)');
+reset role;
+select rt.val('CLOCK public.documents.deleted_at -- RK4: the clock it got is THE DATABASE''S, not the one it named',
+  $$select (deleted_at > now() - interval '1 minute')::text
+      from public.documents where id = '00000000-0000-4000-9000-000000006703'$$, 'true');
+select rt.val('RK5 ...so the sweep still sees NOTHING to purge, seconds after an "8 years ago" delete',
+  $$select (private.sweep_document_bytes(true, 500))->>'documents.bytes_purged'$$, '0');
+set role authenticated;
+select rt.try_hint('RK6 RE-DATING an already-deleted document is refused outright',
+  $$update public.documents set deleted_at = now() - interval '8 years'
+     where id = '00000000-0000-4000-9000-000000006703'$$,
+  'denied(42501:document_deleted_at_is_the_databases_clock)');
+select rt.try('RK7 forging bytes_purged_at is refused BY THE GRANT, before any trigger runs',
+  $$update public.documents set bytes_purged_at = now() - interval '1 day'
+     where id = '00000000-0000-4000-9000-000000006703'$$, 'denied(42501)');
+select rt.try('RK8 re-pointing storage_key at another object is refused by the grant',
+  $$update public.documents
+       set storage_key = '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-000000006704x'
+     where id = '00000000-0000-4000-9000-000000006703'$$, 'denied(42501)');
+select rt.try('RK9 a document cannot be BORN deleted',
+  $$insert into public.documents (organisation_id, filename, storage_key, mime_type, size_bytes, deleted_at)
+    values ('00000000-0000-4000-9000-0000000067b1', 'born-deleted.pdf',
+            '00000000-0000-4000-9000-0000000067b1/rk9', 'application/pdf', 1, now() - interval '8 years')$$,
+  'denied(42501)');
+select rt.try('RK10 ...or born purged',
+  $$insert into public.documents (organisation_id, filename, storage_key, mime_type, size_bytes, bytes_purged_at)
+    values ('00000000-0000-4000-9000-0000000067b1', 'born-purged.pdf',
+            '00000000-0000-4000-9000-0000000067b1/rk10', 'application/pdf', 1, now())$$,
+  'denied(42501)');
+-- THE CONTROLS. A narrowing that also broke the product's own three writes
+-- would satisfy every refusal above.
+select rt.try('RK11 CONTROL: the upload INSERT, with exactly the columns lib/crm/documents.ts sends',
+  $$insert into public.documents (id, organisation_id, owner_user_id, filename, storage_key,
+                                  mime_type, size_bytes, scan_status)
+    values ('00000000-0000-4000-9000-000000006705', '00000000-0000-4000-9000-0000000067b1',
+            '00000000-0000-4000-9000-0000000067a1', 'control.pdf',
+            '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-000000006705',
+            'application/pdf', 10, 'pending')$$, 'ok(1)');
+select rt.try('RK12 CONTROL: the scan-verdict UPDATE',
+  $$update public.documents set scan_status = 'clean', scanned_at = now()
+     where id = '00000000-0000-4000-9000-000000006704'$$, 'ok(1)');
+select rt.try('RK13 CONTROL: RESTORE (deleted_at back to null) still works',
+  $$update public.documents set deleted_at = null
+     where id = '00000000-0000-4000-9000-000000006703'$$, 'ok(1)');
+reset role;
+reset request.jwt.claims;
+select rt.val('RK14 ...and the restored document is live and unpurged',
+  $$select (deleted_at is null)::text || '/' || (bytes_purged_at is null)::text
+      from public.documents where id = '00000000-0000-4000-9000-000000006703'$$, 'true/true');
+
+-- A PURGED DOCUMENT IS A DELETED DOCUMENT, FOR EVERY WRITER. 6701 was stamped
+-- by RS20. Restoring it would produce a live row whose file is gone; stamping
+-- a live row (the review's mutation MD) would produce the same thing from the
+-- other side.
+select rt.try('RK15 a document whose bytes were purged cannot be RESTORED, even by `postgres`',
+  $$update public.documents set deleted_at = null
+     where id = '00000000-0000-4000-9000-000000006701'$$, 'denied(23514)');
+select rt.try('RK16 ...and a LIVE document cannot be stamped purged, even by `postgres`',
+  $$update public.documents set bytes_purged_at = now()
+     where id = '00000000-0000-4000-9000-000000006703'$$, 'denied(23514)');
+select rt.try_hint('RK17 storage_key is immutable for EVERY writer -- `postgres` included',
+  $$update public.documents set storage_key = '00000000-0000-4000-9000-0000000067b1/moved'
+     where id = '00000000-0000-4000-9000-000000006703'$$,
+  'denied(42501:document_storage_key_is_immutable)');
+
+-- THE TRIGGER, ASKED DIRECTLY. RK7 is answered by the column grant, so on its
+-- own it says nothing about the trigger behind it. Here the grant is switched
+-- BACK ON inside a subtransaction, the same write is made as the same Owner,
+-- the outcome is carried out of the subtransaction in the exception message
+-- (so the grant is rolled back and the record() row is not), and the trigger
+-- has to be the thing that refuses.
+do $$
+declare v_out text; v_a text; v_b text; v_h text;
+begin
+  begin
+    execute 'grant insert (deleted_at, bytes_purged_at), update (bytes_purged_at) on public.documents to authenticated';
+    perform pg_catalog.set_config('request.jwt.claims',
+      '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}', true);
+    execute 'set local role authenticated';
+    begin
+      update public.documents set bytes_purged_at = now() - interval '1 day'
+       where id = '00000000-0000-4000-9000-000000006702';
+      v_a := 'ok';
+    exception when others then
+      get stacked diagnostics v_h = pg_exception_hint;
+      v_a := 'denied(' || sqlstate || ':' || coalesce(v_h, '') || ')';
+    end;
+    begin
+      insert into public.documents (organisation_id, filename, storage_key, mime_type, size_bytes, deleted_at)
+      values ('00000000-0000-4000-9000-0000000067b1', 'born-deleted.pdf',
+              '00000000-0000-4000-9000-0000000067b1/rk18', 'application/pdf', 1, now() - interval '8 years');
+      v_b := 'ok';
+    exception when others then
+      get stacked diagnostics v_h = pg_exception_hint;
+      v_b := 'denied(' || sqlstate || ':' || coalesce(v_h, '') || ')';
+    end;
+    raise exception 'RK_RESULT %|%', v_a, v_b;
+  exception when others then
+    v_out := sqlerrm;
+  end;
+  perform rt.record('RK18 THE TRIGGER ITSELF refuses a forged bytes_purged_at, with the grant switched back on',
+                    'denied(42501:document_bytes_purged_at_is_the_sweeps)',
+                    pg_catalog.split_part(pg_catalog.replace(v_out, 'RK_RESULT ', ''), '|', 1));
+  perform rt.record('RK19 ...and a born-deleted INSERT',
+                    'denied(42501:document_is_born_live)',
+                    pg_catalog.split_part(pg_catalog.replace(v_out, 'RK_RESULT ', ''), '|', 2));
+end $$;
+select rt.val('RK19a the probe''s grant was rolled back with its subtransaction',
+  $$select has_column_privilege('authenticated', 'public.documents', 'bytes_purged_at', 'UPDATE')::text$$, 'false');
+
+
+-- ---------------------------------------------------------------------------
+-- RK20-  THE DERIVATION: EVERY CLOCK, AND THE NEXT ONE.
+--
+-- A probe whose label begins `CLOCK <schema.table.column> ` is THE behavioural
+-- proof for that column, and RK27 requires one -- recorded by THIS run, and
+-- PASSING -- for every clock column any client role can write. RK4 above is
+-- the first, which is why it carries that label.
+-- ---------------------------------------------------------------------------
+
+-- incident_alerts.resolved_at: the aal2 operator is the only client that can
+-- reach it, so the probe is the operator naming a date five years ago.
+insert into public.incident_alerts (id, alert_type, summary, created_at)
+values ('00000000-0000-4000-9000-0000000067e4', 'rate_limit_tripped', 'rt clock probe',
+        now() - interval '6 years');
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a3","role":"authenticated","aal":"aal2"}';
+select rt.try('RK20 DENOMINATOR: the operator resolves an alert NAMING A DATE FIVE YEARS AGO -- accepted',
+  $$update public.incident_alerts
+       set resolved_at = now() - interval '5 years', resolved_by = '00000000-0000-4000-9000-0000000067a3'
+     where id = '00000000-0000-4000-9000-0000000067e4'$$, 'ok(1)');
+reset role;
+reset request.jwt.claims;
+select rt.val('CLOCK public.incident_alerts.resolved_at -- the operator''s "5 years ago" became now(), and the sweep takes nothing',
+  $$select (resolved_at > now() - interval '1 minute')::text || '/' ||
+           ((private.sweep_incident_alerts(true, 500))->>'incident_alerts.rows')
+      from public.incident_alerts where id = '00000000-0000-4000-9000-0000000067e4'$$, 'true/0');
+
+-- organisations: a LIVE workspace (rt-keep) and a CLOSED one (rt-back, which
+-- RW9 left closed with its clock restarted), both asked as their own Owner.
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}';
+select rt.val('RK21 DENOMINATOR: the Owner can see both workspaces, the live one and the closed one',
+  $$select count(*)::text from public.organisations where slug in ('rt-keep', 'rt-back')$$, '2');
+select rt.try('RK22 DENOMINATOR: the Owner writes BOTH workspace clocks on their LIVE workspace -- accepted',
+  $$update public.organisations
+       set retention_expires_at = now() - interval '1 day',
+           lifecycle_changed_at = now() - interval '61 days'
+     where slug = 'rt-keep'$$, 'ok(1)');
+select rt.try('CLOCK public.organisations.deleted_at -- a tenant write to it is refused by the lifecycle guard',
+  $$update public.organisations set deleted_at = now() - interval '61 days' where slug = 'rt-keep'$$,
+  'denied(42501)');
+select rt.try('RK23 ...and the CLOSED workspace admits no tenant UPDATE at all (0 rows, with the row visible)',
+  $$update public.organisations set lifecycle_changed_at = now() - interval '61 days' where slug = 'rt-back'$$,
+  'ok(0)');
+reset role;
+reset request.jwt.claims;
+select rt.val('CLOCK public.organisations.retention_expires_at -- nulled by the sync trigger on the live workspace, untouched on the closed one',
+  $$select (select coalesce(retention_expires_at::text, 'null') from public.organisations where slug = 'rt-keep')
+        || '/' || (select (retention_expires_at > now())::text from public.organisations where slug = 'rt-back')$$,
+  'null/true');
+select rt.val('CLOCK public.organisations.lifecycle_changed_at -- likewise, and nothing became sweepable',
+  $$select (select coalesce(lifecycle_changed_at::text, 'null') from public.organisations where slug = 'rt-keep')
+        || '/' || ((private.sweep_expired_workspaces(true, 50))->>'organisations.purged')$$,
+  'null/0');
+
+-- storage.objects.created_at, THE ORPHAN CLOCK. psql can plant an object and
+-- cannot remove one (storage.protect_delete()), so the whole probe runs in a
+-- subtransaction that is rolled back, and its outcome is carried out in the
+-- exception message -- the RK18 shape.
+do $$
+declare v_out text; v_seen bigint; v_rows bigint; v_ins text;
+begin
+  begin
+    insert into storage.objects (bucket_id, name) values ('documents', 'rt-clock-probe/object');
+    select pg_catalog.count(*) into v_seen from storage.objects where name = 'rt-clock-probe/object';
+    perform pg_catalog.set_config('request.jwt.claims',
+      '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}', true);
+    execute 'set local role authenticated';
+    update storage.objects set created_at = pg_catalog.now() - interval '10 years'
+     where name = 'rt-clock-probe/object';
+    get diagnostics v_rows = row_count;
+    begin
+      insert into storage.objects (bucket_id, name, created_at)
+      values ('documents', 'rt-clock-probe/forged', pg_catalog.now() - interval '10 years');
+      v_ins := 'ok';
+    exception when others then
+      v_ins := 'denied(' || sqlstate || ')';
+    end;
+    raise exception 'RK_RESULT planted=%/update=ok(%)/insert=%', v_seen, v_rows, v_ins;
+  exception when others then
+    v_out := sqlerrm;
+  end;
+  perform rt.record('CLOCK storage.objects.created_at -- a client can neither back-date a stored object nor insert a back-dated one',
+                    'planted=1/update=ok(0)/insert=denied(42501)',
+                    pg_catalog.replace(v_out, 'RK_RESULT ', ''));
+end $$;
+select rt.val('RK24 the storage probe left nothing behind',
+  $$select count(*)::text from storage.objects where name like 'rt-clock-probe/%'$$, '0');
+
+-- ---- THE DERIVED ASSERTIONS ------------------------------------------------
+select rt.val('RK25 DENOMINATOR: the derivation sees the retention functions -- and the column C1 was about',
+  $$select ((select count(*) from private.retention_clock_candidates()) >= 10)::text || '/' ||
+           (select count(*)::text from private.retention_clock_candidates()
+             where schema_name = 'public' and table_name = 'documents' and column_name = 'deleted_at')$$,
+  'true/1');
+select rt.val('RK26 every date/timestamp column a retention function reads is CLASSIFIED',
+  $$select coalesce(string_agg(c.schema_name || '.' || c.table_name || '.' || c.column_name, ','), 'none')
+      from private.retention_clock_candidates() c
+     where not exists (select 1 from private.retention_clock_columns() d
+                        where d.schema_name = c.schema_name and d.table_name = c.table_name
+                          and d.column_name = c.column_name)$$, 'none');
+-- BY NAME, so the day this list changes is a day somebody reads this section.
+select rt.val('RK27 the clocks a CLIENT ROLE can write are exactly these six',
+  $$select string_agg(schema_name || '.' || table_name || '.' || column_name, ',' order by 1)
+      from private.retention_clock_exposure() where client_insert or client_update$$,
+  'public.documents.deleted_at,public.incident_alerts.resolved_at,public.organisations.deleted_at,public.organisations.lifecycle_changed_at,public.organisations.retention_expires_at,storage.objects.created_at');
+select rt.val('RK28 ...EVERY ONE of them names a guard that really exists',
+  $$select coalesce(string_agg(schema_name || '.' || table_name || '.' || column_name, ','), 'none')
+      from private.retention_clock_exposure()
+     where (client_insert or client_update) and (guard is null or guard_missing is not null)$$, 'none');
+select rt.val('RK29 ...and EVERY ONE of them has a PASSING behavioural probe recorded by this run',
+  $$select coalesce(string_agg(c, ',' order by c), 'none')
+      from (select schema_name || '.' || table_name || '.' || column_name as c
+              from private.retention_clock_exposure() where client_insert or client_update
+            except
+            select substring(label from '^CLOCK ([a-z_.]+) ') from rt.results
+             where label like 'CLOCK %' and pass) x$$, 'none');
+select rt.try('RK30 the refusal passes on the live schema (CALLED, not wrapped in `where false`)',
+  $$select private.assert_retention_clocks()$$, 'ok(1)');
+
+-- THE STANDING MUTATION: A NEW SWEEP WHOSE CLOCK A CLIENT CAN WRITE. A table
+-- with a client-writable timestamp, a sweep that reads it, and the sweep body
+-- rewritten to call that sweep -- which is exactly what the next phase's
+-- retention work will look like. First with the column unclassified, then
+-- classified as a clock with no guard. Both must refuse. Everything is
+-- restored byte-identically afterwards and RK34 proves it.
+create table public.rt_clock_probe (id uuid primary key default gen_random_uuid(), expired_at timestamptz);
+grant select, insert, update on public.rt_clock_probe to authenticated;
+create function private.sweep_rt_clock_probe(p_dry boolean, p_limit integer) returns jsonb
+language sql security definer set search_path = '' as $$
+  select pg_catalog.jsonb_build_object('rt_clock_probe.rows',
+    (select pg_catalog.count(*) from public.rt_clock_probe p where p.expired_at < pg_catalog.now()))
+$$;
+insert into rt.saved_defs values
+  ('sweep_body', pg_get_functiondef('private.retention_sweep_body(boolean,integer)'::regprocedure)),
+  ('clock_roll', pg_get_functiondef('private.retention_clock_columns()'::regprocedure));
+do $$
+declare v_def text; v_new text;
+begin
+  v_def := (select def from rt.saved_defs where name = 'sweep_body');
+  v_new := pg_catalog.replace(v_def, 'return query select v_swept, v_refused;',
+             'v_swept := v_swept || private.sweep_rt_clock_probe(p_dry, p_limit);' || chr(10) ||
+             '  return query select v_swept, v_refused;');
+  if v_new = v_def then
+    raise exception 'RK31 could not inject the new sweep -- the probe would have proved nothing';
+  end if;
+  execute v_new;
+end $$;
+select rt.try_hint('RK31 MUTATION: a NEW SWEEP reading an unclassified timestamp column REFUSES the job',
+  $$select private.assert_retention_clocks()$$, 'denied(55000:undeclared_retention_clock)');
+do $$
+declare v_def text; v_new text;
+begin
+  v_def := (select def from rt.saved_defs where name = 'clock_roll');
+  v_new := pg_catalog.regexp_replace(v_def, 'values',
+             'values (''public'', ''rt_clock_probe'', ''expired_at'', ''clock'', null, ''mutation probe''),', '');
+  if v_new = v_def then
+    raise exception 'RK32 could not inject the roll entry -- the probe would have proved nothing';
+  end if;
+  execute v_new;
+end $$;
+select rt.try_hint('RK32 MUTATION: ...and classifying it as a clock is NOT ENOUGH while a client can write it',
+  $$select private.assert_retention_clocks()$$, 'denied(55000:forgeable_retention_clock)');
+select rt.val('RK33 ...and RK29''s own query names it as having no probe',
+  $$select coalesce(string_agg(c, ',' order by c), 'none')
+      from (select schema_name || '.' || table_name || '.' || column_name as c
+              from private.retention_clock_exposure() where client_insert or client_update
+            except
+            select substring(label from '^CLOCK ([a-z_.]+) ') from rt.results
+             where label like 'CLOCK %' and pass) x$$, 'public.rt_clock_probe.expired_at');
+do $$ begin
+  execute (select def from rt.saved_defs where name = 'sweep_body');
+  execute (select def from rt.saved_defs where name = 'clock_roll');
+end $$;
+drop function private.sweep_rt_clock_probe(boolean, integer);
+drop table public.rt_clock_probe;
+select rt.val('RK34 the sweep body and the clock roll are restored byte-identically, and the refusal passes again',
+  $$select (pg_get_functiondef('private.retention_sweep_body(boolean,integer)'::regprocedure)
+            = (select def from rt.saved_defs where name = 'sweep_body'))::text || '/' ||
+           (pg_get_functiondef('private.retention_clock_columns()'::regprocedure)
+            = (select def from rt.saved_defs where name = 'clock_roll'))::text || '/' ||
+           (select count(*)::text from private.retention_clock_exposure()
+             where (client_insert or client_update) and (guard is null or guard_missing is not null))$$,
+  'true/true/0');
+
+
+-- ===========================================================================
 -- RQ  Q179: AN UNSANCTIONED ACCOUNT DELETION REFUSES
 -- ===========================================================================
 -- rt-keep has an Owner, another member and a contact: deleting the Owner's
@@ -945,6 +1310,7 @@ delete from public.audit_events where action in ('rt.recent','rt.old','rt.edge',
 delete from public.audit_events where action = 'organisation.erased'
    and target_id = '00000000-0000-4000-9000-0000000067b2';
 delete from public.retention_runs;
+delete from public.audit_events where actor_user_id = '00000000-0000-4000-9000-0000000067a3';
 delete from public.feedback where route = '/rt';
 delete from public.incident_alerts where summary like 'rt %';
 alter table public.erasure_jobs disable trigger user;
