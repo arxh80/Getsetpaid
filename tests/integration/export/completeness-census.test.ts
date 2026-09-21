@@ -445,7 +445,7 @@ describe("the tables in NEITHER derivation are a disposition, not a residue", ()
         "in the catalogue or in NEITHER_DERIVATION (the rolls above will say which). If this is 0, " +
         "the relkind or the schema name in this query is wrong and every 'is in neither derivation' " +
         "assertion in this file has been answered by an empty set.",
-    ).toBe(51);
+    ).toBe(52);
     // Kept, and no longer pretending to be the load-bearing one: the two
     // derivations overlap (a table can have both paths), so the remainder is
     // the complement by construction. What makes it worth a line is that it

@@ -340,7 +340,16 @@ describe("every literal action a function INSERTS into audit_events directly is 
       `select n.nspname || '.' || p.proname as fqn, pg_get_functiondef(p.oid) as body
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname in ('public', 'private') and p.prokind = 'f'
-          and pg_get_functiondef(p.oid) ~* 'insert\s+into\s+public\.audit_events'`,
+          -- POSIX CHARACTER CLASSES, NOT BACKSLASH ESCAPES, AND THAT IS NOT
+          -- A STYLE CHOICE. This query is a JS template literal, in which a
+          -- lone backslash-s is not a recognised escape and is silently
+          -- DROPPED to a bare s -- so the pattern that reached Postgres read
+          -- insertss+intoss+public... and matched nothing at all. Measured on
+          -- this census's first run against a real database: it returned an
+          -- EMPTY row set, and the DENOMINATOR assertion below is the only
+          -- reason that was a red test rather than a green census of nothing.
+          -- [[:space:]] carries no backslash and therefore cannot be eaten.
+          and pg_get_functiondef(p.oid) ~* 'insert[[:space:]]+into[[:space:]]+public[.]audit_events'`,
     );
 
     // DENOMINATOR. private.log_audit_event itself, plus the two Task 5
