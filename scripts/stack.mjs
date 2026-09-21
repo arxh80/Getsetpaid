@@ -356,10 +356,14 @@ function release() {
     return;
   }
   try {
-    execFileSync("npx", ["--yes", "supabase", "stop", "--workdir", OVERLAY], {
-      stdio: "inherit",
-      shell: process.platform === "win32",
-    });
+    // `npx.cmd` rather than `npx` with `shell: true`: node deprecates the
+    // latter (DEP0190) because the arguments are concatenated into a command
+    // line rather than escaped, and OVERLAY is a path that can contain spaces.
+    execFileSync(
+      process.platform === "win32" ? "npx.cmd" : "npx",
+      ["--yes", "supabase", "stop", "--workdir", OVERLAY],
+      { stdio: "inherit" },
+    );
   } catch {
     process.stderr.write(
       `  \`supabase stop\` failed for slot ${meta.slot}. Removing the overlay anyway; ` +
