@@ -198,6 +198,103 @@ test("every /super page in the tree is on this file's list", async () => {
 });
 
 // =============================================================================
+// GATE 0b: EVERY ROUTE HANDLER IN THE TREE IS ACCOUNTED FOR
+// =============================================================================
+// CENSUS AUDIT, FINDING 10. The header above this file's inventory says it was
+// produced by a `find` for `page.tsx` AND for `route.ts`. The walk tested
+// `page.tsx` only -- and `app/(app)/super/feedback/[feedbackId]/screenshot/
+// route.ts` is live proof the shape exists, so the claim at the top of this
+// file ("a Phase 8 page added under /super without a row here is a red test")
+// was true for pages and FALSE for route handlers. A second route handler
+// under /super would have been added, probed by nobody, and named by nothing.
+//
+// Worse, `app/api/**` was outside the walk root entirely, so
+// `app/api/exports/run` and `app/api/incident-alerts/deliver` -- two
+// sessionless entry points, one of which can be made to read every queued
+// export -- had no principal-matrix coverage of any kind.
+//
+// So the walk is the WHOLE `app/` tree now, and every route handler is
+// enumerated with how it is gated. A new one is red here until somebody says
+// which of the four gates it is behind.
+const ROUTE_HANDLERS: Record<string, string> = {
+  "app/(app)/account/exports/[jobId]/download/route.ts":
+    "session + own-row RLS: only the requester of that job, audited before the signed URL is minted",
+  "app/(app)/[orgSlug]/documents/[documentId]/download/route.ts":
+    "session + org membership + scan-status gate, audited before the signed URL is minted",
+  "app/(app)/super/feedback/[feedbackId]/screenshot/route.ts":
+    "platform superuser at aal2 -- probed principal by principal in this file",
+  "app/api/exports/run/route.ts":
+    "BEARER SECRET (EXPORT_RUNNER_SECRET), no session; 404 when the secret is unset and 404 on a wrong one, so a prober cannot tell the two apart -- probed below",
+  "app/api/incident-alerts/deliver/route.ts":
+    "BEARER SECRET (INCIDENT_ALERT_DELIVERY_SECRET), no session, same 404-either-way rule -- probed below",
+  "app/auth/callback/route.ts":
+    "the OAuth/magic-link exchange. Unauthenticated BY DESIGN -- it is what turns a code into a session -- and gated by the code itself",
+};
+
+test("every route handler in the app tree is accounted for", async () => {
+  const { readdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const root = join(process.cwd(), "app");
+  const found: string[] = [];
+  const walk = (dir: string, rel: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const next = rel === "" ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(join(dir, entry.name), next);
+      else if (entry.name === "route.ts" || entry.name === "route.tsx") found.push(`app/${next}`);
+    }
+  };
+  walk(root, "");
+  expect(
+    found.sort(),
+    "a route handler exists that this file does not know about. A route handler " +
+      "is a full read/write surface: add it to ROUTE_HANDLERS with the gate it " +
+      "is behind, and probe it as a wrong principal if it is not already.",
+  ).toEqual(Object.keys(ROUTE_HANDLERS).sort());
+  for (const [file, gate] of Object.entries(ROUTE_HANDLERS)) {
+    expect(gate.length, file).toBeGreaterThan(40);
+  }
+});
+
+// =============================================================================
+// THE TWO SESSIONLESS API ROUTES
+// =============================================================================
+test("the bearer-secret API routes refuse a browser session and an anonymous caller", async ({
+  page,
+}) => {
+  // Neither carries a session gate at all -- the credential is a bearer secret
+  // the DATABASE holds in Vault -- so the thing to prove is that a browser,
+  // signed in or not, gets nothing from them. A wrong or absent bearer is 404
+  // BY DESIGN, so that a prober cannot tell a misconfigured deployment from a
+  // protected one; that makes 404 the assertion, and the body must not say
+  // which it was.
+  const ROUTES = ["/api/exports/run", "/api/incident-alerts/deliver"];
+
+  for (const url of ROUTES) {
+    const anonymous = await page.request.post(url, { failOnStatusCode: false });
+    expect(anonymous.status(), `${url} answered an anonymous POST`).toBe(404);
+    expect(await anonymous.text(), `${url} leaked a reason`).not.toMatch(/secret|vault|bearer|unset/i);
+  }
+
+  for (const role of ["read_only", "owner"] as const) {
+    await signIn(page, world, role);
+    for (const url of ROUTES) {
+      const response = await page.request.post(url, { failOnStatusCode: false });
+      expect(response.status(), `${url} answered a ${role} session`).toBe(404);
+    }
+    await signOut(page);
+  }
+
+  await signInAsSuperuser(page);
+  for (const url of ROUTES) {
+    // ...AND THE SUPERUSER IS NOT AN EXCEPTION. The credential is not a
+    // person, so the operator's own session buys nothing here either.
+    const response = await page.request.post(url, { failOnStatusCode: false });
+    expect(response.status(), `${url} answered the platform superuser's session`).toBe(404);
+  }
+  await signOut(page);
+});
+
+// =============================================================================
 // POSITIVE CONTROL 1: THE SURFACES EXIST AND ANSWER
 // =============================================================================
 test("POSITIVE CONTROL: the aal2 platform superuser reaches every /super surface", async ({
