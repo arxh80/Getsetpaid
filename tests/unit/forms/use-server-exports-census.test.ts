@@ -37,32 +37,27 @@
 //      new server-action module is red until it is added here deliberately.
 // That last one is the property that makes a census a census; the permission
 // matrix's catalogue censuses already have it.
+//
+// CENSUS AUDIT (finding 6). R2 pinned MEMBERSHIP, which is the right property,
+// and the subject set was still three hardcoded top-level directories:
+// `const ROOTS = ["lib", "components", "app"]`. A `"use server"` module
+// anywhere else -- a new root `server/`, `hooks/` or `actions/`, or a
+// root-level `actions.ts` -- was in NEITHER side of the DENOMINATOR equality,
+// so the equality passed and the module's exports were never checked. MEASURED
+// before this change, with `server/planted.ts` carrying the directive and
+// `export const PLANTED = 1`: DENOMINATOR passes, offenders [], suite green
+// with the bug present.
+//
+// The set is now `appSourceFiles()` -- the whole repository minus a NAMED
+// exclusion list -- the helper the storage and marketing-sender censuses
+// already use, and which GROWS BY DEFAULT. The directive is read from the
+// PARSED file rather than matched with a regex over a hand-stripped head, and
+// every file's recovered parse errors are asserted empty: `ts.createSourceFile`
+// never throws, so a badly broken file would otherwise be scanned, found to
+// carry no directive, and counted as clean.
 import { describe, expect, it } from "vitest";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
-
-const ROOTS = ["lib", "components", "app"];
-
-function walk(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry.startsWith(".")) continue;
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) out.push(...walk(full));
-    else if (/\.tsx?$/.test(entry)) out.push(full);
-  }
-  return out;
-}
-
-/** True for a file whose FIRST statement is the "use server" directive. */
-function isUseServerModule(source: string): boolean {
-  // Strip a leading block/line comment run, then look at the first token.
-  const head = source.replace(/^(\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*/, "");
-  // The semicolon is OPTIONAL: ASI makes `"use server"` on its own line a
-  // directive just the same, and Next.js honours it. Requiring the semicolon
-  // is how the first cut of this census let a planted export through (R2).
-  return /^["']use server["']\s*;?/.test(head);
-}
+import { readFileSync } from "node:fs";
+import { appSourceFiles, isServerActionModule, parse, parseProblems, relPath } from "../support/app-source";
 
 /**
  * Every top-level `export` in a file, as {name, kind}. Syntactic and
@@ -143,11 +138,29 @@ const SERVER_ACTION_MODULES = [
   "lib/palette/search.ts",
 ];
 
-const files = ROOTS.flatMap((root) => walk(root))
-  .map((path) => ({ path: path.replace(/\\/g, "/"), source: readFileSync(path, "utf8") }))
-  .filter((f) => isUseServerModule(f.source));
+const scanned = appSourceFiles().map((full) => {
+  const source = readFileSync(full, "utf8");
+  const sf = parse(full, source);
+  return { path: relPath(full), source, problems: parseProblems(sf), isAction: isServerActionModule(sf) };
+});
+const files = scanned.filter((f) => f.isAction);
 
 describe('every "use server" module exports only async functions', () => {
+  it("DENOMINATOR: the walk is the whole repository and every file parsed", () => {
+    // The floor is on the DENOMINATOR, not the numerator: the roll below pins
+    // what the filter KEPT, and this pins that the filter had something to
+    // keep from. 400 is the same floor the storage census uses.
+    expect(scanned.length, "the app-source walk stopped seeing the repository").toBeGreaterThan(400);
+    // What the filter THREW AWAY is a set too, and a file that cannot be
+    // parsed is thrown away silently -- so it is asserted, not assumed.
+    const broken = scanned.filter((f) => f.problems.length > 0).map((f) => `${f.path}: ${f.problems[0]}`);
+    expect(broken, "these files were scanned for the directive with syntax errors recovered from").toEqual([]);
+    // And the walk reaches OUTSIDE the three directories the old ROOTS list
+    // held, which is the hole this replaced.
+    expect(scanned.map((f) => f.path)).toContain("next.config.ts");
+    expect(scanned.some((f) => !/^(lib|components|app)\//.test(f.path))).toBe(true);
+  });
+
   it("DENOMINATOR: the census roll is exactly the modules on disk", () => {
     // Not vacuous, and not merely non-empty. If the directive detection broke
     // -- or one file's directive lost its semicolon -- every assertion below
