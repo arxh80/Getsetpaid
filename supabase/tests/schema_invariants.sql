@@ -1318,12 +1318,17 @@ select invariants.val('R1  no private function a CHECK calls is unreachable by `
 
 -- THE POSITIVE CONTROL for R1: the sweep is looking at something. If the roll
 -- of functions were empty, R1 would pass for want of a subject.
-select invariants.val('R1a DENOMINATOR: the sweep finds the three private CHECK functions',
+select invariants.val('R1a DENOMINATOR: the sweep finds the FOUR private CHECK functions',
   $$select pg_catalog.string_agg(distinct function_name, ',' order by function_name)
       from private.constraint_function_reachability()
      where function_name like 'private.%'$$,
+  -- FOUR since Phase 8 Task 6 added private.jsonb_is_retention_summary(), the
+  -- CHECK on public.retention_runs.swept. This denominator is meant to move
+  -- with the schema: a sweep that stopped finding these would pass R1 and R2
+  -- perfectly on an empty set.
   'private.custom_field_options_valid,'
   'private.jsonb_is_count_map,'
+  'private.jsonb_is_retention_summary,'
   'private.network_visibility_is_valid');
 
 -- AND THE PINNED ROLL OF THE UNREACHABLE. Three functions, unreachable by
@@ -1331,14 +1336,23 @@ select invariants.val('R1a DENOMINATOR: the sweep finds the three private CHECK 
 -- (which has no USAGE on schema `private` at all). Every one is evaluated in
 -- practice as a SECURITY DEFINER's, which is why nothing is broken today --
 -- and a fourth member arriving here is the warning that was missing.
-select invariants.val('R2  the roll of unreachable CHECK functions is exactly the six known pairs',
+select invariants.val('R2  the roll of unreachable CHECK functions is exactly the eight known pairs',
   $$select pg_catalog.string_agg(function_name || '/' || role_name, ' ' order by function_name, role_name)
       from private.constraint_function_reachability()
      where not reachable and function_name like 'private.%'$$,
+  -- EIGHT since Phase 8 Task 6, and the two new ones are the same two every
+  -- other entry here has: `anon` and `service_role`. R1 above is what keeps
+  -- `authenticated` off this roll -- 20261003010000 grants EXECUTE on
+  -- private.jsonb_is_retention_summary() to that role although no client role
+  -- can write public.retention_runs at all, because a CHECK is evaluated with
+  -- the privileges of the role performing the WRITE and Task 5 section 5(a)
+  -- is what the other answer costs.
   'private.custom_field_options_valid/anon '
   'private.custom_field_options_valid/service_role '
   'private.jsonb_is_count_map/anon '
   'private.jsonb_is_count_map/service_role '
+  'private.jsonb_is_retention_summary/anon '
+  'private.jsonb_is_retention_summary/service_role '
   'private.network_visibility_is_valid/anon '
   'private.network_visibility_is_valid/service_role');
 
