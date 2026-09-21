@@ -360,6 +360,11 @@ describe("every literal action a function INSERTS into audit_events directly is 
       "the direct-insert census lost a writer it used to see",
     ).toEqual(
       [
+        // Fix round 1, M6: the erasure closes the register row it answered,
+        // from a sessionless server role, and audit_dsr_transition() writes
+        // that one row directly with the tombstone as the actor, because
+        // log_audit_event() refuses an unattributable row.
+        "private.audit_dsr_transition",
         "private.audit_erasure_job_requested",
         "private.erase_account",
         // Fix round 1, M2: the workspace purge writes its own summary row now,

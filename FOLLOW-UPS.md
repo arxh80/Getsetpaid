@@ -4182,6 +4182,19 @@ three documents.
   caller. Until then it is a tested primitive with one exception path reaching
   it (Q131's empty-solo-workspace case), which is deliberately the narrowest
   possible first consumer.
+- **The Q131 guard is now "would this leave no active OWNER", locked, and
+  asked at the membership table too (Task 5 fix round 1, Q176).** Two routes
+  to an ownerless, memberless, unmanageable workspace were reproduced: an
+  aal2 Admin demoting the sole Owner (nothing guarded
+  `public.organisation_memberships`), and two co-Owners erasing concurrently
+  past an unlocked read. Both are closed — advisory lock plus `FOR UPDATE`
+  before the guard reads, a post-delete re-assertion, and
+  `private.membership_keeps_an_owner()`. **What is still owed:** the guard now
+  also blocks a NON-owner member's own erasure when they are the last active
+  member of an ownerless workspace that still holds records, and the way out
+  it names (transfer ownership, or close the workspace) needs an Owner they do
+  not have — the operator closing the workspace at `/super/organisations` is
+  the escape hatch, and nothing in the product tells them so. Q176 carries it.
 - **A third bearer secret and a third Vault pair are owed at deploy**
   (`SECURITY.md` § 15), and this one runs DELETIONS. It cannot choose one —
   the route takes no argument — but a missing pair removes the retry, and the

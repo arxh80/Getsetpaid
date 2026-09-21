@@ -525,12 +525,18 @@ select er.val('EG4 authenticated holds NO update and NO delete on the register',
   $$select (has_table_privilege('authenticated', 'public.erasure_jobs', 'UPDATE'))::text || '/' ||
            (has_table_privilege('authenticated', 'public.erasure_jobs', 'DELETE'))::text$$,
   'false/false');
-select er.val('EG5 service_role may UPDATE exactly the five outcome columns',
+-- FOUR SINCE FIX ROUND 1, NOT FIVE (review finding I2). `summary` left the
+-- grant: it is the one column whose CHECK calls private.jsonb_is_count_map(),
+-- and `service_role` cannot reach that function -- it has no USAGE on schema
+-- `private` at all -- so the first direct PostgREST write of it would have met
+-- `permission denied for schema private`. Every writer of `summary` is a
+-- SECURITY DEFINER RPC, evaluated as the definer, so nothing needed it.
+select er.val('EG5 service_role may UPDATE exactly the four outcome columns, and not `summary`',
   $$select string_agg(a.attname, ',' order by a.attname)
       from pg_catalog.pg_attribute a
      where a.attrelid = 'public.erasure_jobs'::pg_catalog.regclass and a.attnum > 0
        and has_column_privilege('service_role', a.attrelid, a.attname, 'UPDATE')$$,
-  'completed_at,failure_reason,started_at,status,summary');
+  'completed_at,failure_reason,started_at,status');
 select er.val('EG6 the two triggers are on the table',
   $$select string_agg(tgname, ',' order by tgname) from pg_catalog.pg_trigger
      where tgrelid = 'public.erasure_jobs'::pg_catalog.regclass and not tgisinternal$$,
@@ -1214,15 +1220,27 @@ select er.val('ES3 the erasure recorded itself on the register row it answered',
       from public.data_subject_requests where id = '$$ || :'dsr_id' || $$'$$,
   'erasure/true/true');
 
--- THE POSITIVE CONTROL THE SUITE HAS NEVER HAD (review I5c): a LEGITIMATE
--- fulfilment is ADMITTED. Without this, every refusal below could be a
--- constraint that refuses everything.
+-- AND SINCE FIX ROUND 1 (M6) THE ERASURE CLOSED IT ITSELF. Nothing else was
+-- ever going to: the operator could, and nothing tells them to (Q45), so the
+-- row stayed `open` and private.raise_dsr_deadline_alerts() re-raised
+-- dsr_overdue for it weekly -- about a request that had been answered.
+select er.val('ES4 the erasure CLOSED the request it answered, in its own transaction (M6)',
+  $$select status || '/' || fulfilment_kind || '/' || (fulfilled_at is not null)::text
+      from public.data_subject_requests where id = '$$ || :'dsr_id' || $$'$$,
+  'fulfilled/erasure/true');
+
+-- THE POSITIVE CONTROL THE SUITE HAS NEVER HAD (review I5c) now reads the
+-- other way round: the closure is REAL, so the operator's own attempt to
+-- close it again is refused as a closed request rather than admitted. A
+-- constraint that refused everything would have reddened ES4.
 set role authenticated;
 set request.jwt.claims to :'super_c';
-select er.try('ES4 POSITIVE CONTROL: the operator CAN now mark that request fulfilled',
-  $$select public.transition_data_subject_request('$$ || :'dsr_id' || $$', 'fulfilled', null)$$, 'ok(1)');
+select er.try('ES4b and the operator is refused a second closure, because it is already closed',
+  $$select public.transition_data_subject_request('$$ || :'dsr_id' || $$', 'fulfilled', null)$$,
+  'denied(22023)');
 reset role;
 reset request.jwt.claims;
+
 
 select er.val('ES5 and the request is closed, with its outcome still on it',
   $$select status || '/' || fulfilment_kind
@@ -1253,6 +1271,17 @@ select er.try_hint('ES6 a request whose erasure has NOT run cannot be marked ful
   'denied(22023:fulfilment_not_recorded)');
 reset role;
 reset request.jwt.claims;
+
+-- AND THE BRANCH OPENS NOTHING. It applies only while the erasure job named
+-- on the row is `running`; any other session of the same shape falls through
+-- to the ordinary transition rules, which is why the operator's own closure
+-- (ES6, and the export suite's XS1) still works and why this sessionless
+-- direct write -- no auth.uid(), so not the operator -- is refused.
+select er.try('ES4c a sessionless write cannot close a request with no erasure in flight',
+  $$update public.data_subject_requests
+       set status = 'fulfilled', fulfilment_kind = 'erasure',
+           fulfilment_reference = gen_random_uuid()
+     where id = '$$ || :'seam_dsr' || $$'$$, 'denied(42501)');
 
 -- THE OPERATOR ON BEHALF (20260930005000). Bounded by data, not a flag.
 set role authenticated;
@@ -1293,7 +1322,8 @@ select er.val('ES10 and the job it made names the REQUESTER, not the operator',
 delete from public.erasure_jobs;
 set session_replication_role = replica;
 delete from public.audit_events
- where action in ('erasure_job.requested', 'account.erased', 'erase.fixture.actor', 'erase.fixture.target')
+ where action in ('erasure_job.requested', 'account.erased', 'organisation.erased',
+                  'erase.fixture.actor', 'erase.fixture.target')
     or (action like 'data_subject_request.%'
         and target_id in (select id from public.data_subject_requests));
 delete from public.data_subject_request_notes;
