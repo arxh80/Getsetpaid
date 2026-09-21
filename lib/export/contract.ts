@@ -201,6 +201,10 @@ export const WORKSPACE_EXCLUDED_TABLES: readonly {
   { table: "feedback", plainEnglish: "feedback sent to us" },
   { table: "export_jobs", plainEnglish: "the record of exports like this one" },
   {
+    table: "erasure_jobs",
+    plainEnglish: "the record of any request to delete this workspace or an account",
+  },
+  {
     table: "data_subject_requests",
     plainEnglish: "data protection requests routed to this workspace, which belong to the person who made them",
   },

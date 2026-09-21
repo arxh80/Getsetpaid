@@ -868,9 +868,13 @@ select xp.val('XD9 nothing audits a job SUCCEEDING or FAILING -- there is no act
 -- suite had to open one inside its own transaction. It holds one now, so the
 -- probe below is a POSITIVE CONTROL through the real catalogue.
 -- ===========================================================================
-select xp.val('XS1 the export half of the constraint is AWAKE and the erasure half is not',
+-- The erasure half woke in Phase 8 Task 5 (20260930004000), which is why the
+-- expectation below moved from `true/false` to `true/true` and XS15/XS16
+-- changed with it. rls_phase8_erasure.sql § ES is where the second half is
+-- proved, POSITIVE CONTROL included.
+select xp.val('XS1 BOTH halves of the constraint are AWAKE (Task 4, Task 5)',
   $$select private.dsr_fulfilment_job_ready('export')::text || '/' ||
-           private.dsr_fulfilment_job_ready('erasure')::text$$, 'true/false');
+           private.dsr_fulfilment_job_ready('erasure')::text$$, 'true/true');
 select xp.val('XS2 service_role''s UPDATE on the register is EXACTLY the two seam columns the job writes',
   $$select coalesce(string_agg(column_name, ',' order by column_name), '<none>')
       from information_schema.column_privileges
@@ -954,16 +958,19 @@ select xp.val('XS14 ...and the closing audit row carries the job the archive cam
             where action='data_subject_request.fulfilled' and target_id=%L$$, :'dsr_id'),
   :'std_job');
 
--- The ERASURE half is still dormant, which is what one-line-per-job bought.
+-- THE ERASURE HALF IS AWAKE TOO SINCE TASK 5, so the request pstd2 files
+-- below can no longer be closed by hand -- which is the same sentence XS8
+-- makes about an export, now true of the other job as well.
 set role authenticated;
 set request.jwt.claims = :'pstd2_c';
 select xp.try_hint('XS15 pstd2 files an ERASURE request',
   $$select public.submit_data_subject_request('erasure','account','delete me')$$, 'ok');
 set request.jwt.claims = :'super_c';
-select xp.try_hint('XS16 ...and it can still be closed by hand, because Task 5 has not shipped',
+select xp.try_hint('XS16 ...and it can NO LONGER be closed by hand: the erasure must actually have run',
   format($$select * from public.transition_data_subject_request(
              (select id from public.data_subject_requests
-               where user_id=%L and right_type='erasure'), 'fulfilled')$$, :'pstd2'), 'ok');
+               where user_id=%L and right_type='erasure'), 'fulfilled')$$, :'pstd2'),
+  'denied(22023:fulfilment_not_recorded)');
 reset role;
 reset request.jwt.claims;
 

@@ -959,6 +959,60 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 5 (ERASURE) SUITE.
+#
+# Runs after the export suite, on the same P7VARS fixtures. It is the only
+# suite in this directory that DELETES auth accounts -- and every account it
+# deletes is one it created itself in its own section EF, with its own
+# throwaway workspaces. Its section EX counts organisation ALPHA's rows before
+# and after the erasure, and its section EZ removes every row it made, so the
+# HTTP block below still meets the database it was written against.
+#
+# It is also where the Q130 TOMBSTONE's three enforced properties are asserted
+# (it cannot sign in, cannot be a member of anything, cannot be deleted), and
+# where the thirteen no-ON-DELETE foreign keys to auth.users are PINNED BY
+# NAME -- the erasure derives them from pg_constraint rather than listing
+# them, so this is the only place a fourteenth arrives as a red assertion
+# instead of as an account that silently cannot be deleted.
+# ============================================================================
+
+run_suite "PHASE 8 ERASURE" rls_phase8_erasure.sql er 143 "${P7VARS[@]}"
+era_fails=$SUITE_FAILS
+if [ "$era_fails" != "0" ]; then
+  echo "PHASE 8 ERASURE SUITE FAILED: $era_fails failing assertion(s)" >&2
+  echo "  In ET, THE TOMBSTONE IS NOT SAFE -- it can be given a password, have" >&2
+  echo "  its ban lifted, hold a membership, or be deleted. Every pseudonymised" >&2
+  echo "  audit row in the product hangs from that one identity. Sev1." >&2
+  echo "  In EB, THE BLOCKER LIST MOVED. A fourteenth no-ON-DELETE foreign key" >&2
+  echo "  to auth.users, or a COMPOSITE one the re-point walk cannot see." >&2
+  echo "  Re-measure, update EB1/EB2, and check erase_account still passes." >&2
+  echo "  In EG, a client role gained a write on the register, or a runner RPC" >&2
+  echo "  became reachable from a browser." >&2
+  echo "  In EW, ATTRIBUTION IS FORGEABLE -- somebody can ask for SOMEBODY" >&2
+  echo "  ELSE'S account to be deleted. Sev1." >&2
+  echo "  In EL, THE Q131 LAST-OWNER GUARD IS GONE, or it has stopped saying" >&2
+  echo "  what the person must do first." >&2
+  echo "  In EE, THE ERASURE ITSELF. Read EE1-EE10 FIRST: they are the" >&2
+  echo "  denominators, and if one of them is red then every absence below it" >&2
+  echo "  proves nothing. A red EE22 means a PRIVATE note was left" >&2
+  echo "  unreadable-but-stored; a red EE31 means the register row that is the" >&2
+  echo "  evidence of the deadline was destroyed by the deletion it recorded." >&2
+  echo "  In EJ, a finished job became rewritable or re-pointable." >&2
+  echo "  In EX, THE ERASURE REACHED ANOTHER TENANT. Sev1." >&2
+  echo "  In ER, THE ERASURE IS NOT ALL-OR-NOTHING -- a mid-sequence failure" >&2
+  echo "  left part of an account deleted. Sev1." >&2
+  echo "  In EO, the workspace purge: an entity type went unswept, the" >&2
+  echo "  discarded record's values survived, or the \`replica\` refusal is gone" >&2
+  echo "  -- which is what would leave a routed request pointing at nothing." >&2
+  echo "  In ES, the fulfilment seam. ES4 is the POSITIVE CONTROL: if it is" >&2
+  echo "  red, every refusal beside it may be a constraint refusing everything." >&2
+  echo "  In EZ, this suite left rows behind -- discard the run and reset." >&2
+  psql_status=1
+else
+  echo "Phase 8 erasure suite: all assertions passed."
+fi
+
+# ============================================================================
 # ONE WITHDRAWAL PER GRANT UNDER A REAL RACE (review finding M2).
 #
 # The trigger's alternation rule serialises events per (user, purpose), but

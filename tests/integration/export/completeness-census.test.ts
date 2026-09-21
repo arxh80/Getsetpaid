@@ -185,6 +185,10 @@ const WORKSPACE_EXPORTED = [
 const WORKSPACE_EXCUSED = [
   "audit_events",
   "data_subject_requests",
+  // Phase 8 Task 5. The erasure register: a workspace appears on it only as
+  // the subject of its own 60-day purge, which is the platform's operational
+  // state rather than one of the business's records.
+  "erasure_jobs",
   "export_jobs",
   "feedback",
   "incident_alerts",
@@ -223,6 +227,10 @@ const ACCOUNT_EXCUSED = [
   "contacts",
   "data_subject_request_notes",
   "documents",
+  // Phase 8 Task 5. Unreachable in practice -- a SUCCEEDED account erasure
+  // has already deleted the account that would export it -- and what is left
+  // (a queued or failed job) is on /account/erase, live.
+  "erasure_jobs",
   "event_status_changes",
   "events",
   "export_jobs",

@@ -196,8 +196,11 @@ select rl.val('RV6c Consent grants: 10 / hour, per user (Phase 8 Task 2)',
 -- exactly as designed). An eleventh category appearing without a § 5 row is
 -- the drift this assertion exists to catch, in the direction the others
 -- cannot.
-select rl.val('RV7 the policy table holds exactly the ten § 5 categories',
-  $$select count(*)::text from public.rate_limit_policies$$, '10');
+-- ELEVEN SINCE PHASE 8 TASK 5 (`account_erasure`, 3 per 24 hours per user).
+-- The number is raised to what was MEASURED, not lowered to fit: a category
+-- appearing without a § 5 row is what this catches, and § 5 carries the new one.
+select rl.val('RV7 the policy table holds exactly the eleven § 5 categories',
+  $$select count(*)::text from public.rate_limit_policies$$, '11');
 -- The ACCOUNT export's budget is its own category and not `exports`, because
 -- `exports` is organisation-scoped and an account export belongs to no
 -- workspace: metering it against one would be the caller-supplied attribution
@@ -228,8 +231,8 @@ select rl.try('RV10 ...nor INSERT a new category',
       (category, subject_scope, max_requests, window_seconds, description)
     values ('smuggled','user',1,1,'x')$$,
   'denied(42501)');
-select rl.val('RV11 the superuser CAN read the configuration, all ten rows (the health view states it)',
-  $$select count(*)::text from public.rate_limit_policies$$, '10');
+select rl.val('RV11 the superuser CAN read the configuration, all eleven rows (the health view states it)',
+  $$select count(*)::text from public.rate_limit_policies$$, '11');
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -1414,8 +1417,8 @@ select rl.val('RZ3 the two suite documents are gone (not soft-deleted -- never e
 select rl.val('RZ4 ALPHA is still active and untouched',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
          :'alpha_org'), 'true');
-select rl.val('RZ5 the ten seeded policy rows (seven + consent_grant + data_subject_request + account_export) are exactly as they were',
-  $$select count(*)::text from public.rate_limit_policies$$, '10');
+select rl.val('RZ5 the eleven seeded policy rows (seven + consent_grant + data_subject_request + account_export + account_erasure) are exactly as they were',
+  $$select count(*)::text from public.rate_limit_policies$$, '11');
 
 \pset format aligned
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual

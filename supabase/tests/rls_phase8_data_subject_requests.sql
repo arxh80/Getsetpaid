@@ -220,10 +220,16 @@ select dsr.val('DF3a FIXTURE: org-beta exists too, to RE-route to',
 -- EXPORT line (20260927003000) and the erasure line did not move. Had this
 -- stayed a single boolean, that migration would have made every account
 -- ERASURE request impossible to close until Task 5 shipped.
-select dsr.val('DF8 the EXPORT line is awake (Task 4) and the ERASURE line is not (Task 5), one line each (I5a)',
+-- BOTH LINES ARE AWAKE SINCE PHASE 8 TASK 5 (20260930004000). The
+-- independence I5a bought is STILL the thing being measured, and it is still
+-- measurable: `nonsense` -- a right with no job -- stays false, and the
+-- rolled-back probes below flip each line alone. The predicate was
+-- deliberately not collapsed to `true` when its second line woke, so a NINTH
+-- right type added later still starts dormant.
+select dsr.val('DF8 BOTH lines are awake (Task 4, Task 5) and a right with no job is still false (I5a)',
   $$select private.dsr_fulfilment_job_ready('export')::text || '|' ||
            private.dsr_fulfilment_job_ready('erasure')::text || '|' ||
-           private.dsr_fulfilment_job_ready('nonsense')::text$$, 'true|false|false');
+           private.dsr_fulfilment_job_ready('nonsense')::text$$, 'true|true|false');
 select dsr.val('DF8a the single-boolean predicate is GONE, not left behind for Task 4 to flip by mistake',
   $$select count(*)::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname = 'private' and p.proname = 'dsr_fulfilment_jobs_ready'$$, '0');
@@ -841,9 +847,9 @@ select dsr.record('DF18 with the ERASURE line awake too, an erasure request is r
 select dsr.record('DF19 I5b: the erasure half IS satisfiable -- the row survives, the job records, the operator closes',
   'ok(1)|ok', :'seam_erasure_recorded' || '|' || :'seam_erasure_admitted');
 
-select dsr.val('DF20 the rollback put the real function back: export awake, erasure dormant',
+select dsr.val('DF20 the rollback put the real function back: both halves awake',
   $$select private.dsr_fulfilment_job_ready('export')::text || '|' ||
-           private.dsr_fulfilment_job_ready('erasure')::text$$, 'true|false');
+           private.dsr_fulfilment_job_ready('erasure')::text$$, 'true|true');
 select dsr.val('DF21 ...and the seam probe rows are gone with the rolled-back transaction',
   $$select count(*)::text from public.data_subject_requests where detail like 'Seam probe%'$$, '0');
 
