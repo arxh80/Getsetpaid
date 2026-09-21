@@ -1053,27 +1053,48 @@ export async function retentionRuns(): Promise<RetentionRunRead[]> {
 }
 
 /**
- * The counts a DRY run must not move.
+ * A row count PER TABLE, over the whole set the retention job can delete from.
  *
- * Not a count of one table: the preview reaches eight sweeps, and a dry run
- * that quietly deleted from any ONE of them would be invisible to a check on
- * the others. This is the whole set the job can touch, in one number each,
- * summed -- so "nothing moved" is one comparison over the whole blast radius.
+ * PER TABLE, AND COMPARED WITH `>=` RATHER THAN `===`, and both halves of
+ * that were learned the hard way:
+ *
+ *   * NOT ONE TABLE, because the preview reaches eight sweeps and a dry run
+ *     that quietly deleted from any ONE of them would be invisible to a check
+ *     on the others.
+ *   * NOT A SUM, and not an equality. The first cut summed these eight and
+ *     asserted the total was unchanged -- which FAILED on the real run, with
+ *     31 where 29 was expected. Nothing had been deleted: a retention run
+ *     legitimately APPENDS two audit rows (its own `retention.swept` summary,
+ *     and the `platform_health.viewed` row the page writes when it re-renders),
+ *     and `audit_events` is one of the eight. A sum cannot tell an insert from
+ *     a deletion somewhere else, so the assertion was measuring the wrong
+ *     thing and would have been satisfied by a preview that deleted two
+ *     documents and wrote two audit rows.
+ *
+ * So the claim is the exact one the preview makes: NO TABLE LOST A ROW.
+ * Growth is expected and allowed; a decrease anywhere is the failure.
  */
-export async function retentionSweepableRowCount(): Promise<number> {
-  const { rows } = await db().query<{ n: string }>(
-    `select (
-        (select count(*) from public.audit_events)
-      + (select count(*) from public.feedback)
-      + (select count(*) from public.incident_alerts)
-      + (select count(*) from public.rate_limit_counters)
-      + (select count(*) from public.erasure_jobs)
-      + (select count(*) from public.export_jobs)
-      + (select count(*) from public.documents)
-      + (select count(*) from public.organisations)
-     )::text as n`,
-  );
-  return Number(rows[0].n);
+export const RETENTION_SWEEPABLE_TABLES = [
+  "audit_events",
+  "documents",
+  "erasure_jobs",
+  "export_jobs",
+  "feedback",
+  "incident_alerts",
+  "organisations",
+  "rate_limit_counters",
+] as const;
+
+export async function retentionSweepableRowCounts(): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const table of RETENTION_SWEEPABLE_TABLES) {
+    // The table name is from the frozen list above, never from a parameter.
+    const { rows } = await db().query<{ n: string }>(
+      `select count(*)::text as n from public.${table}`,
+    );
+    counts[table] = Number(rows[0].n);
+  }
+  return counts;
 }
 
 /**

@@ -7,7 +7,7 @@ import {
   plantIncidentAlert,
   plantRetentionRun,
   retentionRuns,
-  retentionSweepableRowCount,
+  retentionSweepableRowCounts,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
@@ -331,9 +331,15 @@ test("the superuser previews a retention run, and the preview deletes nothing", 
   ).toBeVisible();
   await expect(page.getByTestId("retention-no-runs")).toBeVisible();
 
-  // THE DENOMINATOR: every row the job could touch, before the press.
-  const before = await retentionSweepableRowCount();
-  expect(before, "the fixture world should have rows the job could sweep").toBeGreaterThan(0);
+  // THE DENOMINATOR: every row the job could touch, before the press, per
+  // table. If the fixture world had nothing in these tables the assertion at
+  // the end would be satisfied by a preview that deleted everything there was
+  // to delete, which is nothing.
+  const before = await retentionSweepableRowCounts();
+  expect(
+    Object.values(before).reduce((a, b) => a + b, 0),
+    "the fixture world should have rows the job could sweep",
+  ).toBeGreaterThan(0);
 
   await page.getByRole("button", { name: "Preview the next run" }).click();
 
@@ -351,13 +357,25 @@ test("the superuser previews a retention run, and the preview deletes nothing", 
   const runs = await retentionRuns();
   expect(runs.map((r) => `${r.mode}/${r.status}`)).toEqual(["dry/completed"]);
 
-  // THE ASSERTION THE WHOLE TEST EXISTS FOR.
-  expect(
-    await retentionSweepableRowCount(),
-    "A PREVIEW DELETED ROWS. It is the one control on this page that reaches " +
-      "the machinery which deletes the audit log, and it is supposed to count " +
-      "and stop.",
-  ).toBe(before);
+  // THE ASSERTION THE WHOLE TEST EXISTS FOR: NO TABLE LOST A ROW.
+  //
+  // Not "the total is unchanged" -- the first cut asserted that and failed on
+  // the real run with 31 where 29 was expected, having deleted nothing: a
+  // retention run legitimately appends its own `retention.swept` summary row
+  // and the page appends a `platform_health.viewed` one, and `audit_events`
+  // is one of the tables being counted. A sum cannot tell an insert from a
+  // deletion elsewhere, so it was the wrong claim -- and a lenient one, since
+  // it would have been satisfied by a preview that deleted two documents
+  // while two audit rows were written.
+  const after = await retentionSweepableRowCounts();
+  for (const table of Object.keys(before)) {
+    expect(
+      after[table],
+      `A PREVIEW DELETED ROWS FROM public.${table}. It is the one control on ` +
+        "this page that reaches the machinery which deletes the audit log, and " +
+        "it is supposed to count and stop.",
+    ).toBeGreaterThanOrEqual(before[table]);
+  }
 
   await clearRetentionRuns();
 });
