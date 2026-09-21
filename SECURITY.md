@@ -444,9 +444,13 @@ document's file named in the next manifest, forge `bytes_purged_at` (the file
 stays for ever while the row claims a lawful deletion), or re-point
 `storage_key` (turning a live document's object into an orphan the sweep
 deletes a day later). `20261004000000` closes it three ways, each
-mutation-tested alone: **column-level grants** (INSERT on the nine columns the
-upload sends, UPDATE on `scan_status`, `scanned_at`, `deleted_at` — revoked
-table-level FIRST, the Q125 lesson); a **BEFORE INSERT OR UPDATE guard** that
+mutation-tested alone: **column-level grants** (INSERT on nine columns — the
+eight the upload sends plus `scanned_at`, which a row born with a terminal
+scan verdict must carry (`documents_scanned_at_iff_terminal`); the migration's
+own header says "the nine columns `lib/crm/documents.ts` sends", which is one
+too many and, being a `--` comment in an applied migration, is corrected here
+rather than there — and UPDATE on `scan_status`, `scanned_at`, `deleted_at`;
+revoked table-level FIRST, the Q125 lesson); a **BEFORE INSERT OR UPDATE guard** that
 OVERWRITES a null → value `deleted_at` with `now()` (a person says THAT they
 deleted a document, never WHEN — the incident-alert guard's rule), refuses a
 re-date, refuses any client write to `bytes_purged_at`, and makes
