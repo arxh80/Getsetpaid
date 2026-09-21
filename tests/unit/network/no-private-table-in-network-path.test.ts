@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { repoRoot as root, stripComments } from "../../support/source";
 import { appSourceFiles, relPath } from "../support/app-source";
@@ -45,23 +45,6 @@ import { appSourceFiles, relPath } from "../support/app-source";
 // the `.from(...)` call-site count is asserted non-zero, the needle list's own
 // size is asserted, and a planted hostile fixture containing `from("notes")`
 // is run through the SAME detector and must be flagged.
-
-/** Every file under `relative`, recursively, with a source extension. */
-function sourceFilesUnder(relative: string): string[] {
-  const out: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(root + dir)) {
-      const path = `${dir}/${entry}`;
-      if (statSync(root + path).isDirectory()) {
-        walk(path);
-      } else if (/\.(ts|tsx)$/.test(entry)) {
-        out.push(path);
-      }
-    }
-  };
-  walk(relative);
-  return out.sort();
-}
 
 /** Comments stripped, so a doc comment that NAMES a forbidden table -- as this
  *  file's own header does, and as several modules' headers do at length --
