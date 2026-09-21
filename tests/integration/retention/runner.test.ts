@@ -90,6 +90,10 @@ afterAll(async () => {
   await storage.from("feedback-screenshots").remove([screenshotKey].filter(Boolean));
   await storage.from("documents").remove([ORPHAN_KEY]);
   await pool.query(`delete from public.audit_events where action = 'retention.swept'`);
+  // The refused run in the C2 test files a `retention_run_refused` incident
+  // alert (20261004004000), and the control run after it resolves it. Left
+  // behind, it is an alert on /super/health about a fault that was a fixture.
+  await pool.query(`delete from public.incident_alerts where alert_type = 'retention_run_refused'`);
   await pool.query(`delete from public.retention_runs`);
   await pool.query(`delete from public.feedback where id = $1`, [FEEDBACK_ID]);
   await pool.query(`delete from public.documents where id = any($1::uuid[])`, [
@@ -363,6 +367,18 @@ describe("the retention runner removes bytes from the buckets, and only the righ
     );
     expect(stamped.rows[0].purged, "a refused run stamped a document").toBeNull();
 
+    // AND IT WAS NOT SILENT (review finding m5 / Q182): the refusal is an
+    // incident alert, which the existing digest emails -- a refusal that is
+    // only a column on /super/health is visible to nobody who is not looking.
+    const alert = await pool.query<{ n: string; open: string }>(
+      `select count(*)::text as n, count(*) filter (where resolved_at is null)::text as open
+         from public.incident_alerts
+        where alert_type = 'retention_run_refused' and details->>'run_id' = $1`,
+      [refusedRun.runId],
+    );
+    expect(alert.rows[0].n, "the refused run filed no incident alert").toBe("1");
+    expect(alert.rows[0].open, "the alert should still be open: nothing has recovered yet").toBe("1");
+
     // THE CONTROL: with the table gone the SAME file is taken by the next
     // run, so the survival above was the refusal and not a job that never
     // deletes anything.
@@ -372,5 +388,14 @@ describe("the retention runner removes bytes from the buckets, and only the righ
       await objectExists("documents", refusedDocKey),
       "the control run did not take the file, so the refusal above proved nothing",
     ).toBe(false);
+    // ...and the clean run RESOLVED the alert, as the system.
+    const recovered = await pool.query<{ reason: string | null }>(
+      `select auto_resolved_reason as reason from public.incident_alerts
+        where alert_type = 'retention_run_refused' and details->>'run_id' = $1`,
+      [refusedRun.runId],
+    );
+    expect(recovered.rows[0]?.reason, "a clean run did not resolve the refusal's alert").toBe(
+      "retention_run_recovered",
+    );
   }, 180_000);
 });

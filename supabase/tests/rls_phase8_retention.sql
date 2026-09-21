@@ -1808,13 +1808,19 @@ select rt.val('RN3 the LIVE structural refusal (RR8b) DID file one, naming the w
            string_agg(details->>'run_status', ',')
       from public.incident_alerts
      where alert_type = 'retention_run_refused'
-       and details->>'reason' = 'unclassified_retention_subject'$$, '1/*/refused');
+       and details->>'reason' = 'unclassified_retention_subject'
+       -- THIS SUITE'S OWN RUN, not any alert of that reason: the storage
+       -- integration test plants an unclassified table too, and on a database
+       -- it has run against its (resolved) alert is still there. Measured:
+       -- this read 2 the first time the two were run back to back.
+       and (details->>'run_id')::uuid in (select id from public.retention_runs)$$, '1/*/refused');
 select rt.val('RN4 ...and the completed live runs after it RESOLVED it, as the SYSTEM, with nobody named',
   $$select (resolved_at is not null)::text || '/' || coalesce(auto_resolved_reason, '-') || '/' ||
            (resolved_by is null)::text
       from public.incident_alerts
      where alert_type = 'retention_run_refused'
-       and details->>'reason' = 'unclassified_retention_subject'$$,
+       and details->>'reason' = 'unclassified_retention_subject'
+       and (details->>'run_id')::uuid in (select id from public.retention_runs)$$,
   'true/retention_run_recovered/true');
 -- THE SECTION ABOVE ALSO LEFT TWO ALERTS OPEN, and they are worth reading
 -- rather than tidying away: rr17 was REAPED (`run_abandoned` -- a crashed run
