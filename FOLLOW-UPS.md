@@ -4195,6 +4195,47 @@ three documents.
   it names (transfer ownership, or close the workspace) needs an Owner they do
   not have — the operator closing the workspace at `/super/organisations` is
   the escape hatch, and nothing in the product tells them so. Q176 carries it.
+  **Fix round 2 fixed the readable half of that (N2/Q178):**
+  `private.account_erasure_blockers()` carries a third reason,
+  `no_owner_to_transfer`, and both the database's refusal and the
+  `/account/erase` page now tell that person the workspace has no owner, that
+  they cannot fix it, and that support must close it, under its own hint
+  `workspace_has_no_owner`. The escape hatch is unchanged and is now named.
+  **What is still owed is the founder half of Q178:** whether step 8b should
+  widen from `other_members = 0 and is_empty` to `other_members = 0` for a
+  workspace with no active Owner at all, so the last member of an ownerless
+  workspace takes it with them. That destroys records rather than stranding
+  them, which is why a fix round did not take it.
+- **A direct `delete from auth.users` still strands a workspace (Task 5 fix
+  round 2, N3 -- risk accepted, not closed).**
+  `private.membership_keeps_an_owner()`'s account-cascade exemption is keyed
+  on "the `auth.users` row has already gone", which only an account deletion
+  can satisfy, so it cannot be borrowed by something that is not one -- but
+  it does not tell `private.erase_account()`'s deletion from an out-of-band
+  one. There is no `auth.admin.deleteUser` call site anywhere in the product;
+  the residual is an operator using Supabase Studio's Auth page, after which
+  `private.account_last_owner_workspaces()` names what was stranded and
+  `/super/organisations` closes it. Closing it properly, with a
+  transaction-local GUC the chokepoint sets so the cascade FAILS instead of
+  stranding, is **Q179**.
+- **The C2 lock's cost is now written down (Task 5 fix round 2, N4).**
+  `FOR UPDATE` on every membership row of every live workspace the subject is
+  an active member of, held for the whole erasure transaction, blocks every
+  concurrent role change, revoke and removal in those workspaces; inserts are
+  unaffected, so invitations still work. Measured: 1.22 ms to take the locks
+  over 5 workspaces and 250 membership rows, held for the 29 ms an erasure
+  takes end to end. `private.account_lock_workspaces()`'s own comment carries
+  it, which is where a future reader will look.
+- **The roll's catalogue query was widened in fix round 2 (N1), and three
+  shapes are deliberately left open.** A natural `user_id uuid primary key`, a
+  uuid inside a composite primary key, a `uuid[]`, a domain over uuid and a
+  materialized view's column now all make the erasure refuse. A uuid inside
+  `jsonb` or `text` does not (a content scan is the only thing that would
+  find one; `incident_alerts.details` is the single instance and is rewritten
+  by hand for exactly that reason), and nor does a column in any schema but
+  `public`/`private` (widening pulls in `auth`, `storage`, `realtime` and
+  `vault`, which this product does not own and cannot classify -- every
+  erasure would refuse on somebody else's catalogue).
 - **A third bearer secret and a third Vault pair are owed at deploy**
   (`SECURITY.md` § 15), and this one runs DELETIONS. It cannot choose one —
   the route takes no argument — but a missing pair removes the retry, and the
