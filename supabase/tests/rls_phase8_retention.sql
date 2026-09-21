@@ -248,9 +248,15 @@ select rt.val('RC15 and the retention half is in its OWN subtransaction, so it c
   $$select (pg_get_functiondef('private.run_incident_alert_tick()'::regprocedure)
             like '%begin%perform private.deliver_retention_sweep();%exception when others%')::text$$,
   'true');
-select rt.val('RC16 the tick runs, with every half reached, and raises nothing',
-  $$select coalesce((select 'raised' from (select private.run_incident_alert_tick()) t where false), 'ran')$$,
-  'ran');
+-- CALLED, NOT WRAPPED (fix round 1). RC16, RD8, RD10 and RZ6 shipped as
+--   select coalesce((select 'raised' from (select f()) t where false), 'ok')
+-- and `where false` is a One-Time Filter: the planner never puts f() in the
+-- plan at all (EXPLAIN shows a bare Result), so all four recorded a cheerful
+-- pass against a function nobody had called. RR6's own comment describes this
+-- exact bug in this exact suite, and four copies of it were still here. rt.try
+-- executes the statement and records `ok(1)` or the SQLSTATE.
+select rt.try('RC16 the tick RUNS, with every half reached, and raises nothing',
+  $$select private.run_incident_alert_tick()$$, 'ok(1)');
 -- LOCAL DEV IS A REAL NO-OP, MEASURED: with no Vault entries the poster
 -- returns before it builds a request rather than POSTing an empty bearer.
 select rt.val('RC17 the retention poster queues no request on an unconfigured stack',
@@ -299,8 +305,8 @@ select rt.val('RD6 the roll is exactly the size of the catalogue',
 select rt.val('RD7 ...and carries no table twice',
   $$select ((select count(*) from private.retention_subjects())
           = (select count(distinct table_name) from private.retention_subjects()))::text$$, 'true');
-select rt.val('RD8 the derivation passes on the live schema',
-  $$select coalesce((select 'raised' from (select private.assert_retention_roll()) t where false), 'ok')$$, 'ok');
+select rt.try('RD8 the derivation passes on the live schema (CALLED -- see RC16)',
+  $$select private.assert_retention_roll()$$, 'ok(1)');
 
 -- AND THE DERIVATION'S THREE REFUSALS, EACH PLANTED AND ASKED DIRECTLY.
 -- This is the "assert what it dropped" half: a roll that classifies nothing
@@ -309,8 +315,8 @@ create table public.rt_unclassified_probe (id uuid primary key default gen_rando
 select rt.try_hint('RD9 a NEW TABLE nobody classified refuses the whole job',
   $$select private.assert_retention_roll()$$, 'denied(55000:unclassified_retention_subject)');
 drop table public.rt_unclassified_probe;
-select rt.val('RD10 ...and the refusal goes away when the table does (the control)',
-  $$select coalesce((select 'raised' from (select private.assert_retention_roll()) t where false), 'ok')$$, 'ok');
+select rt.try('RD10 ...and the refusal goes away when the table does (the control, CALLED)',
+  $$select private.assert_retention_roll()$$, 'ok(1)');
 
 -- The stale and duplicate halves, by rewriting the roll and restoring it
 -- byte-identically -- the erasure suite's EC10 shape, so this probe does not
@@ -386,6 +392,35 @@ select rt.val('RS7 the live sweep deletes exactly the expired one',
   $$select (private.sweep_feedback(false, 500))->>'feedback.rows'$$, '1');
 select rt.val('RS8 ...and the one a day INSIDE its period survives',
   $$select string_agg(message, ',') from public.feedback where route = '/rt'$$, 'rt fresh');
+-- THE BYTES-FIRST GATE, WHICH THIS SUITE USED TO BE BLIND TO (the first
+-- round's mutation M8: 0 of 116). The reason given then was that psql can
+-- plant a storage object and cannot remove one. True -- and a subtransaction
+-- that is ROLLED BACK removes it. So: an expired row WITH its screenshot still
+-- stored, swept live, its outcome carried out in the exception message. The
+-- wrong-KIND survivor for this sweep: past its period in every respect, and
+-- kept, because deleting it would orphan an image of somebody's screen.
+do $$
+declare v_out text; v_r jsonb; v_still bigint;
+begin
+  begin
+    insert into storage.objects (bucket_id, name)
+    values ('feedback-screenshots', 'feedback/00000000-0000-4000-9000-0000000067d3');
+    insert into public.feedback (id, user_id, category, message, route, screenshot_key, screenshot_mime,
+                                 screenshot_size_bytes, screenshot_scan_status, screenshot_scanned_at, created_at)
+    values ('00000000-0000-4000-9000-0000000067d3', '00000000-0000-4000-9000-0000000067a1', 'bug',
+            'rt with a screenshot', '/rt', 'feedback/00000000-0000-4000-9000-0000000067d3', 'image/png', 10,
+            'clean', pg_catalog.now(), pg_catalog.now() - interval '2 years' - interval '1 day');
+    v_r := private.sweep_feedback(false, 500);
+    select pg_catalog.count(*) into v_still from public.feedback
+     where id = '00000000-0000-4000-9000-0000000067d3';
+    raise exception 'RS_RESULT rows=%/waiting=%/still_there=%',
+      v_r->>'feedback.rows', v_r->>'feedback.waiting_on_bytes', v_still;
+  exception when others then
+    v_out := sqlerrm;
+  end;
+  perform rt.record('RS8a WRONG KIND: an EXPIRED feedback row whose screenshot is STILL STORED is deferred, counted as waiting, and survives',
+                    'rows=0/waiting=1/still_there=1', pg_catalog.replace(v_out, 'RS_RESULT ', ''));
+end $$;
 
 -- ---- Q117, resolved incident alerts ----------------------------------------
 insert into public.incident_alerts (id, alert_type, summary, created_at, resolved_at, resolved_by) values
@@ -423,6 +458,17 @@ update public.erasure_jobs set status = 'failed', failure_reason = 'rt probe',
 update public.erasure_jobs set status = 'failed', failure_reason = 'rt probe',
        started_at = now() - interval '100 days', completed_at = now() - interval '89 days'
  where id = '00000000-0000-4000-9000-0000000067f2';
+-- THE WRONG-KIND SURVIVOR (fix round 1, I4). A SUCCEEDED job, THREE YEARS
+-- old, pseudonymous as a real one is. It is "the evidence that a statutory
+-- deletion was performed, which is the last thing a retention job should
+-- destroy" -- and as shipped, deleting `j.status = 'failed'` from the sweep
+-- (the review's mutation MC) reddened NOTHING, because every row this section
+-- planted was a failed one and the only survivor was a YOUNG failed one. RS9's
+-- five-year-old OPEN alert is the model: a survivor of the wrong KIND.
+insert into public.erasure_jobs (id, kind, subject_user_id, requested_by, status, summary,
+                                 requested_at, started_at, completed_at)
+values ('00000000-0000-4000-9000-0000000067f4', 'account', null, null, 'succeeded', '{"rt_probe": 1}',
+        now() - interval '3 years', now() - interval '3 years', now() - interval '3 years');
 alter table public.erasure_jobs enable trigger user;
 select rt.val('RS12 DENOMINATOR: two failed erasure jobs, one either side of 90 days',
   $$select count(*)::text from public.erasure_jobs where failure_reason = 'rt probe'$$, '2');
@@ -431,6 +477,9 @@ select rt.val('RS13 the sweep deletes exactly the one past 90 days',
 select rt.val('RS14 ...and the one a day INSIDE survives',
   $$select id::text from public.erasure_jobs where failure_reason = 'rt probe'$$,
   '00000000-0000-4000-9000-0000000067f2');
+select rt.val('RS14a WRONG KIND: a SUCCEEDED erasure job THREE YEARS old survives -- it is the proof the deletion happened',
+  $$select status || '/' || (completed_at < now() - interval '90 days')::text
+      from public.erasure_jobs where id = '00000000-0000-4000-9000-0000000067f4'$$, 'succeeded/true');
 select rt.val('RS15 the write guard is BACK ON, so nothing after this is weakened',
   $$select (select count(*)::text from pg_trigger
              where tgrelid = 'public.erasure_jobs'::regclass
@@ -464,14 +513,23 @@ insert into public.documents (id, organisation_id, filename, storage_key, mime_t
   ('00000000-0000-4000-9000-000000006702', '00000000-0000-4000-9000-0000000067b1', 'newer.pdf',
    '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-000000006702',
    'application/pdf', 10, 'clean', now(), now() - interval '2 years' + interval '1 day');
+-- THE WRONG-KIND SURVIVOR (I4): a LIVE document, three years old, whose object
+-- is absent -- everything the sweep looks for EXCEPT being deleted.
+insert into public.documents (id, organisation_id, filename, storage_key, mime_type, size_bytes,
+                              scan_status, scanned_at, created_at) values
+  ('00000000-0000-4000-9000-000000006706', '00000000-0000-4000-9000-0000000067b1', 'live-and-old.pdf',
+   '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-000000006706',
+   'application/pdf', 10, 'clean', now() - interval '3 years', now() - interval '3 years');
 select rt.val('RS19 DENOMINATOR: two soft-deleted documents, one either side of two years, neither purged',
   $$select count(*)::text from public.documents
-     where organisation_id = '00000000-0000-4000-9000-0000000067b1' and bytes_purged_at is null$$, '2');
+     where organisation_id = '00000000-0000-4000-9000-0000000067b1' and bytes_purged_at is null
+       and deleted_at is not null$$, '2');
 select rt.val('RS20 the sweep stamps exactly the expired one',
   $$select (private.sweep_document_bytes(false, 500))->>'documents.bytes_purged'$$, '1');
-select rt.val('RS21 ...and the one a day INSIDE its period is untouched',
+select rt.val('RS21 ...and the one a day INSIDE its period is untouched -- and so is the LIVE one three years old (wrong kind)',
   $$select string_agg(filename, ',' order by filename) from public.documents
-     where organisation_id = '00000000-0000-4000-9000-0000000067b1' and bytes_purged_at is null$$, 'newer.pdf');
+     where organisation_id = '00000000-0000-4000-9000-0000000067b1' and bytes_purged_at is null$$,
+  'live-and-old.pdf,newer.pdf');
 -- THE CLASS IS DERIVED, NOT ASSUMED. Attaching the newer document to an event
 -- that carries financial entries moves it from the two-year class to the
 -- seven-year one -- so a document DELETED TWO YEARS AND A DAY AGO would now
@@ -507,10 +565,15 @@ insert into public.audit_events (organisation_id, actor_user_id, action, target_
 select '00000000-0000-4000-9000-0000000067b1', '00000000-0000-4000-9000-0000000067a1',
        'rt.recent', 'platform', gen_random_uuid(), now() - interval '1 day'
   from generate_series(1, 200);
+-- THREE DIFFERENT AGES, INSERTED NEWEST FIRST (fix round 1, m2). As shipped all
+-- three shared one timestamp, so "oldest first" could only ever be asserted as
+-- a COUNT -- and removing `order by a.created_at` from the purge reddened
+-- nothing. Heap order here is the OPPOSITE of age order, so an unordered
+-- `limit 2` takes the two newest and RA10a names the wrong survivor.
 insert into public.audit_events (organisation_id, actor_user_id, action, target_type, correlation_id, created_at)
 select '00000000-0000-4000-9000-0000000067b1', '00000000-0000-4000-9000-0000000067a1',
-       'rt.old', 'platform', gen_random_uuid(), now() - interval '1 year' - interval '1 day'
-  from generate_series(1, 3);
+       'rt.old', 'platform', gen_random_uuid(), now() - interval '1 year' - make_interval(days => g)
+  from generate_series(1, 3) g order by g;
 insert into public.audit_events (organisation_id, actor_user_id, action, target_type, correlation_id, created_at)
 values ('00000000-0000-4000-9000-0000000067b1', '00000000-0000-4000-9000-0000000067a1',
         'rt.edge', 'platform', gen_random_uuid(), now() - interval '1 year' + interval '1 day');
@@ -585,8 +648,10 @@ select rt.val('RA9 the DRY run counts three and deletes none, reporting the tota
 select rt.val('RA10 a run limited to 2 deletes 2 and REPORTS that it was capped',
   $$select ((private.purge_audit_events(false, 2))->>'audit_events.rows') || '/' ||
            ((private.purge_audit_events(true, 2))->>'audit_events.capped')$$, '2/false');
-select rt.val('RA10a ...leaving exactly the remainder, oldest-first',
-  $$select count(*)::text from public.audit_events where action = 'rt.old'$$, '1');
+select rt.val('RA10a ...leaving exactly ONE, and it is the NEWEST of the three -- the two OLDEST went first',
+  $$select count(*)::text || '/' ||
+           bool_and(created_at > now() - interval '1 year' - interval '1 day' - interval '1 hour')::text
+      from public.audit_events where action = 'rt.old'$$, '1/true');
 select rt.val('RA11 ...and the next run finishes the remainder rather than skipping it',
   $$select (private.purge_audit_events(false, 500))->>'audit_events.rows'$$, '1');
 select rt.val('RA11a ...with none of them left',
@@ -596,6 +661,119 @@ select rt.val('RA12 the row ONE DAY INSIDE the year survives, and so do the 200 
            (select count(*) from public.audit_events where action = 'rt.recent')::text$$, '1/200');
 select rt.val('RA13 running it again deletes nothing (idempotent)',
   $$select (private.purge_audit_events(false, 500))->>'audit_events.rows'$$, '0');
+
+-- ---------------------------------------------------------------------------
+-- RA-I1: "THE PURGE EXEMPTS NO ACTION" -- ASSERTED, IN BOTH DIRECTIONS
+-- (fix round 1, review finding I1).
+--
+-- 20261003003000 states it as a design promise: "exempts no action, because
+-- an exemption list is a retention policy written twice". Nothing measured
+-- it. The reviewer added `or a.action like 'impersonation%'` to the purge's
+-- WHERE clause -- which deletes THE ENTIRE RECORD OF SUPERUSER ACCESS TO
+-- TENANT DATA, AT ANY AGE -- and all 116 assertions passed, because every
+-- survivor in this section carried one of the suite's own action values
+-- (`rt.edge`, `rt.recent`) and a term keyed on `action` missed them all. A
+-- term keyed on organisation_id or actor_user_id had the same hole.
+--
+-- So: EVERY action the product writes, DERIVED from the live catalogue and
+-- not listed -- every literal `p_action => '...'` in any function, every
+-- literal in a function that inserts into audit_events directly, every
+-- CRM trigger's target x verb, and every action already in the table -- is
+-- planted FOUR times: one day inside the period and one day past it, each
+-- once as a TENANT row (organisation set, a person as actor) and once as a
+-- PLATFORM row (no organisation, the Q130 tombstone as actor). The derivation
+-- over-collects (`auth.users` is not an action) and that is harmless: the
+-- purge must treat any string alike, which is the property.
+--
+-- Then the purged and surviving SETS are asserted. An exemption added reds
+-- RA-I1d; an over-delete added reds RA-I1e.
+-- ---------------------------------------------------------------------------
+create table rt.i1_actions as
+  with fn as (
+    select p.prosrc, p.proname, p.oid from pg_proc p
+     where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
+  )
+  select distinct action from (
+    select m[1] as action from fn, lateral regexp_matches(fn.prosrc, 'p_action\s*=>\s*''([a-z_0-9.]+)''', 'g') m
+    union all
+    select m[1] from fn, lateral regexp_matches(fn.prosrc, '''([a-z_0-9]+\.[a-z_0-9]+)''', 'g') m
+     where fn.prosrc ~ 'insert\s+into\s+public\.audit_events'
+    union all
+    select replace(encode(t.tgargs, 'escape'), '\000', '') || '.' || v[1]
+      from pg_trigger t
+      join pg_proc p on p.oid = t.tgfoid and p.proname = 'audit_crm_change',
+           lateral regexp_matches(p.prosrc, '''\.([a-z_]+)''', 'g') v
+     where not t.tgisinternal
+    union all
+    select split_part(replace(encode(t.tgargs, 'escape'), '\000', chr(1)), chr(1), 1)
+      from pg_trigger t
+      join pg_proc p on p.oid = t.tgfoid and p.proname = 'audit_crm_row'
+     where not t.tgisinternal
+    union all
+    select a.action from public.audit_events a where a.action not like 'rt.%'
+  ) x
+  where action is not null and action <> '' and action not like '%.';
+
+select rt.val('RA-I1a DENOMINATOR: the catalogue is derived and SEES the classes that matter -- impersonation, organisation, a CRM write, a platform read, this job',
+  $$select ((select count(*) from rt.i1_actions) >= 60)::text || '/' ||
+           (select string_agg(c, ',' order by c)
+              from (select unnest(array['impersonation.started', 'organisation.erased', 'contact.updated',
+                                        'platform_health.viewed', 'retention.swept']) c) t
+             where exists (select 1 from rt.i1_actions a where a.action = t.c))$$,
+  'true/contact.updated,impersonation.started,organisation.erased,platform_health.viewed,retention.swept');
+
+insert into public.audit_events
+  (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, created_at)
+select case when v.tenant then '00000000-0000-4000-9000-0000000067b1'::uuid end,
+       case when v.tenant then '00000000-0000-4000-9000-0000000067a1'::uuid else private.erased_user_id() end,
+       a.action, 'platform',
+       case when v.past then '00000000-0000-4000-9000-000000006aa2'::uuid
+            else '00000000-0000-4000-9000-000000006aa1'::uuid end,
+       gen_random_uuid(),
+       case when v.past then now() - interval '1 year' - interval '1 day'
+            else now() - interval '1 year' + interval '1 day' end
+  from rt.i1_actions a
+ cross join (values (true, true), (true, false), (false, true), (false, false)) v(tenant, past);
+
+select rt.val('RA-I1b DENOMINATOR: every action is planted four times -- inside and past, tenant and platform',
+  $$select ((select count(*) from public.audit_events where target_id = '00000000-0000-4000-9000-000000006aa1')
+          = 2 * (select count(*) from rt.i1_actions))::text || '/' ||
+           ((select count(*) from public.audit_events where target_id = '00000000-0000-4000-9000-000000006aa2')
+          = 2 * (select count(*) from rt.i1_actions))::text$$, 'true/true');
+select rt.val('RA-I1c the purge takes EXACTLY the rows past the period -- two per action, no more and no fewer',
+  $$select (((private.purge_audit_events(false, 5000))->>'audit_events.rows')::bigint
+          = 2 * (select count(*) from rt.i1_actions))::text$$, 'true');
+select rt.val('RA-I1d NO ACTION IS EXEMPT: of the rows a day PAST the period, none of any action survives',
+  $$select coalesce(string_agg(distinct action, ',' order by action), 'none')
+      from public.audit_events where target_id = '00000000-0000-4000-9000-000000006aa2'$$, 'none');
+select rt.val('RA-I1e NO ACTION IS OVER-DELETED: of the rows a day INSIDE it, every action survives, as a tenant row AND as a platform row',
+  $$select coalesce(string_agg(w.action || case when w.tenant then '(tenant)' else '(platform)' end, ','
+                               order by w.action, w.tenant), 'none')
+      from (select a.action, v.tenant from rt.i1_actions a cross join (values (true), (false)) v(tenant)) w
+     where not exists (
+       select 1 from public.audit_events e
+        where e.target_id = '00000000-0000-4000-9000-000000006aa1'
+          and e.action = w.action
+          and (e.organisation_id is not null) = w.tenant)$$, 'none');
+delete from public.audit_events
+ where target_id in ('00000000-0000-4000-9000-000000006aa1', '00000000-0000-4000-9000-000000006aa2');
+
+-- "OLDEST FIRST", FROM THE CATALOGUE AS WELL (m2). RA10a measures it for the
+-- audit purge; this asks it of EVERY bounded query in EVERY sweep at once --
+-- a `limit p_limit` with no `order by` in front of it takes an arbitrary
+-- slice, and a capped run that does that can skip the same rows for ever.
+select rt.val('RA-M2 every `limit p_limit` in every sweep, the purge and the reaper sits directly under an ORDER BY',
+  $$select string_agg(p.proname || ':' ||
+             (regexp_count(pg_get_functiondef(p.oid), 'limit p_limit')
+            = regexp_count(pg_get_functiondef(p.oid), 'order by [a-z_.]+\s+limit p_limit'))::text
+             || '/' || (regexp_count(pg_get_functiondef(p.oid), 'limit p_limit') > 0)::text,
+           ',' order by p.proname)
+      from pg_proc p
+     where p.pronamespace = 'private'::regnamespace
+       and p.proname in ('purge_audit_events', 'reap_stuck_jobs', 'sweep_document_bytes', 'sweep_erasure_jobs',
+                         'sweep_expired_workspaces', 'sweep_feedback', 'sweep_incident_alerts',
+                         'sweep_rate_limit_counters')$$,
+  'purge_audit_events:true/true,reap_stuck_jobs:true/true,sweep_document_bytes:true/true,sweep_erasure_jobs:true/true,sweep_expired_workspaces:true/true,sweep_feedback:true/true,sweep_incident_alerts:true/true,sweep_rate_limit_counters:true/true');
 
 -- RAIL 3 -- THE SANITY CEILING. 1200 rows past a year against a table that
 -- is mostly them: at steady state a run deletes ten minutes of rows, so this
@@ -643,6 +821,27 @@ update public.organisations set deleted_at = now(), lifecycle_state = 'suspended
 update public.organisations set lifecycle_changed_at = now() - interval '59 days'
  where id = '00000000-0000-4000-9000-0000000067b3';
 
+-- THE WRONG-KIND SURVIVOR (I4): a LIVE workspace carrying a PAST
+-- retention_expires_at. The review's mutation MA -- the sweep losing
+-- `o.deleted_at is not null` -- reddened nothing, and its note was that the
+-- state is unreachable "only because a trigger nulls the column". MEASURED
+-- HERE, IT IS STRONGER THAN THAT: organisations_lifecycle_matches_deleted_at
+-- is a CHECK whose third term is
+--   (lifecycle_state = 'active') = (retention_expires_at is null)
+-- so the state is unrepresentable for EVERY writer, with the trigger out of
+-- the way. RW0 asks that directly. RW5a/RW5b then ask the sweep's and the
+-- manifest's OWN term anyway, with the constraint dropped inside a rolled-back
+-- subtransaction -- because a second line of defence nobody has ever asked is
+-- one nobody knows is there.
+alter table public.organisations disable trigger organisation_lifecycle_sync;
+select rt.try('RW0 a LIVE workspace cannot carry a retention deadline AT ALL -- the CHECK refuses it with the sync trigger disabled',
+  $$update public.organisations set retention_expires_at = now() - interval '1 day'
+     where id = '00000000-0000-4000-9000-0000000067b1'$$, 'denied(23514)');
+alter table public.organisations enable trigger organisation_lifecycle_sync;
+select rt.val('RW0a ...and the trigger is back on, so nothing after this is weakened',
+  $$select count(*)::text from pg_trigger where tgrelid = 'public.organisations'::regclass
+       and not tgisinternal and tgenabled = 'D'$$, '0');
+
 select rt.val('RW1 DENOMINATOR: one workspace one day PAST its 60 days, one one day inside',
   $$select string_agg(slug || '=' || (retention_expires_at < now())::text, ',' order by slug)
       from public.organisations where slug in ('rt-purge','rt-back')$$,
@@ -657,6 +856,50 @@ select rt.val('RW4 ...and it is gone, records and all',
            (select count(*) from public.contacts where id = '00000000-0000-4000-9000-0000000067c2')::text$$, '0/0');
 select rt.val('RW5 the workspace one day INSIDE its window is untouched',
   $$select count(*)::text from public.organisations where slug = 'rt-back'$$, '1');
+-- THE SWEEP'S AND THE MANIFEST'S OWN `deleted_at is not null`, ASKED WITH THE
+-- CONSTRAINT OUT OF THE WAY. Everything below happens in one subtransaction
+-- that is rolled back -- the dropped CHECK, the disabled trigger, the planted
+-- deadline, the planted storage object (psql can plant one and cannot remove
+-- one) and the dry run -- and the answer is carried out in the exception
+-- message (the RK18 shape). rt-purge is already gone and rt-back is inside its
+-- window, so an honest dry count here is ZERO.
+do $$
+declare v_out text; v_run uuid; v_named bigint; v_seen bigint; v_dry text; v_live text;
+begin
+  begin
+    alter table public.organisations drop constraint organisations_lifecycle_matches_deleted_at;
+    alter table public.organisations disable trigger organisation_lifecycle_sync;
+    update public.organisations set retention_expires_at = pg_catalog.now() - interval '1 day'
+     where id = '00000000-0000-4000-9000-0000000067b1';
+    -- BACK ON BEFORE THE RUN IS OPENED, and not as tidiness: that trigger is the
+    -- named guard of two retention clocks, and with it disabled
+    -- private.assert_retention_clocks() REFUSES the run (`forgeable_retention_
+    -- clock`). It did exactly that to the first cut of this probe.
+    alter table public.organisations enable trigger organisation_lifecycle_sync;
+    select (o.deleted_at is null)::text || (o.retention_expires_at < pg_catalog.now())::text into v_live
+      from public.organisations o where o.id = '00000000-0000-4000-9000-0000000067b1';
+    insert into storage.objects (bucket_id, name)
+    values ('documents', '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-000000006706');
+    select pg_catalog.count(*) into v_seen from storage.objects
+     where name = '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-000000006706';
+    v_dry := (private.sweep_expired_workspaces(true, 50))->>'organisations.purged';
+    v_run := (public.start_retention_run(true)).id;
+    select pg_catalog.count(*) into v_named
+      from public.retention_object_manifest(v_run, 500) m
+     where m.object_key like '00000000-0000-4000-9000-0000000067b1/%';
+    raise exception 'RW_RESULT planted=%/object=%/dry=%/named=%', v_live, v_seen, v_dry, v_named;
+  exception when others then
+    v_out := sqlerrm;
+  end;
+  perform rt.record('RW5a WRONG KIND: a LIVE workspace with a past deadline is not COUNTED by the sweep, and the manifest NAMES none of its files -- with a real object there to name',
+                    'planted=truetrue/object=1/dry=0/named=0', pg_catalog.replace(v_out, 'RW_RESULT ', ''));
+end $$;
+select rt.val('RW5b the probe rolled everything back: the CHECK and the trigger are both there, and rt-keep carries no deadline',
+  $$select (select count(*)::text from pg_constraint where conname = 'organisations_lifecycle_matches_deleted_at')
+        || '/' || (select count(*)::text from pg_trigger where tgrelid = 'public.organisations'::regclass
+                     and not tgisinternal and tgenabled = 'D')
+        || '/' || (select coalesce(retention_expires_at::text, 'none') from public.organisations
+                    where id = '00000000-0000-4000-9000-0000000067b1')$$, '1/0/none');
 -- TRAP 1: reinstatement works right up to the deadline, and needs no special
 -- case -- the lifecycle trigger clears retention_expires_at when deleted_at
 -- is cleared, so a reinstated workspace has no deadline for the sweep to find.
@@ -1414,7 +1657,7 @@ delete from public.feedback where route = '/rt';
 delete from public.incident_alerts where summary like 'rt %';
 alter table public.erasure_jobs disable trigger user;
 delete from public.erasure_jobs where failure_reason in ('rt probe')
-   or id = '00000000-0000-4000-9000-0000000067f3';
+   or id in ('00000000-0000-4000-9000-0000000067f3', '00000000-0000-4000-9000-0000000067f4');
 alter table public.erasure_jobs enable trigger user;
 delete from public.rate_limit_counters
  where subject_id in ('00000000-0000-4000-9000-0000000067a1','00000000-0000-4000-9000-0000000067a2');
@@ -1433,8 +1676,8 @@ select rt.val('RZ4 the switches are back to their seeded state',
 select rt.val('RZ5 the erasure write guard is enabled',
   $$select count(*)::text from pg_trigger
      where tgrelid = 'public.erasure_jobs'::regclass and not tgisinternal and tgenabled = 'D'$$, '0');
-select rt.val('RZ6 the derivation still passes on the schema this suite leaves behind',
-  $$select coalesce((select 'raised' from (select private.assert_retention_roll()) t where false), 'ok')$$, 'ok');
+select rt.try('RZ6 BOTH derivations still pass on the schema this suite leaves behind (CALLED)',
+  $$select private.assert_retention_roll(), private.assert_retention_clocks()$$, 'ok(1)');
 
 \echo ''
 \echo '--- PHASE 8 RETENTION: failures ---'

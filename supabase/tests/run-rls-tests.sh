@@ -1028,7 +1028,7 @@ fi
 # refused" and "a privilege was missing" would otherwise be indistinguishable.
 # ============================================================================
 
-run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 172 "${P7VARS[@]}"
+run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 184 "${P7VARS[@]}"
 ret_fails=$SUITE_FAILS
 if [ "$ret_fails" != "0" ]; then
   echo "PHASE 8 RETENTION SUITE FAILED: $ret_fails failing assertion(s)" >&2
@@ -1050,6 +1050,13 @@ if [ "$ret_fails" != "0" ]; then
   echo "  red = the sanity ceiling is gone. Either is Sev1: SECURITY.md § 7" >&2
   echo "  calls this 'a narrowly controlled platform security process' and" >&2
   echo "  these are the controls." >&2
+  echo "  RA-I1d red = THE PURGE EXEMPTS AN ACTION (a retention policy written" >&2
+  echo "  twice); RA-I1e red = IT DELETES AN ACTION'S ROWS INSIDE THE PERIOD --" >&2
+  echo "  the reviewer's one-term mutation destroyed every impersonation row" >&2
+  echo "  at any age with 116 of 116 green. RA10a/RA-M2 red = not oldest-first." >&2
+  echo "  A red WRONG KIND assertion (RS8a, RS14a, RS21, RW5a) means a sweep" >&2
+  echo "  took something it is documented never to take: a row whose file is" >&2
+  echo "  still stored, a SUCCEEDED erasure job, a LIVE document or workspace." >&2
   echo "  In RW, the 60-day purge. RW6/RW7 red = REINSTATEMENT NO LONGER" >&2
   echo "  SAVES A WORKSPACE. RW9 red = closing an already-suspended workspace" >&2
   echo "  no longer restarts the clock, so a customer loses days they were" >&2

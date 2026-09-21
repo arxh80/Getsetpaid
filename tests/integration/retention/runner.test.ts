@@ -53,11 +53,13 @@ const LIVE_DOC = "11111111-1111-4111-8111-000000000002";
 const FEEDBACK_ID = "11111111-1111-4111-8111-000000000003";
 const ORPHAN_KEY = "11111111-1111-4111-8111-00000000000f/orphan-probe";
 const REFUSED_DOC = "11111111-1111-4111-8111-000000000004";
+const NEVER_DELETED_DOC = "11111111-1111-4111-8111-000000000005";
 
 let expiredDocKey = "";
 let liveDocKey = "";
 let screenshotKey = "";
 let refusedDocKey = "";
+let neverDeletedDocKey = "";
 
 async function objectExists(bucket: string, key: string): Promise<boolean> {
   const { data, error } = await createStorageClient().storage.from(bucket).download(key);
@@ -82,14 +84,16 @@ afterAll(async () => {
   if (!fx) return;
   const storage = createStorageClient().storage;
   await pool.query(`drop table if exists public.c2_unclassified_probe`);
-  await storage.from("documents").remove([expiredDocKey, liveDocKey, refusedDocKey].filter(Boolean));
+  await storage
+    .from("documents")
+    .remove([expiredDocKey, liveDocKey, refusedDocKey, neverDeletedDocKey].filter(Boolean));
   await storage.from("feedback-screenshots").remove([screenshotKey].filter(Boolean));
   await storage.from("documents").remove([ORPHAN_KEY]);
   await pool.query(`delete from public.audit_events where action = 'retention.swept'`);
   await pool.query(`delete from public.retention_runs`);
   await pool.query(`delete from public.feedback where id = $1`, [FEEDBACK_ID]);
   await pool.query(`delete from public.documents where id = any($1::uuid[])`, [
-    [EXPIRED_DOC, LIVE_DOC, REFUSED_DOC],
+    [EXPIRED_DOC, LIVE_DOC, REFUSED_DOC, NEVER_DELETED_DOC],
   ]);
   await destroyFixtures(fx);
 });
@@ -101,6 +105,7 @@ describe("the retention runner removes bytes from the buckets, and only the righ
     expiredDocKey = `${orgId}/${EXPIRED_DOC}`;
     liveDocKey = `${orgId}/${LIVE_DOC}`;
     screenshotKey = `feedback/${FEEDBACK_ID}`;
+    neverDeletedDocKey = `${orgId}/${NEVER_DELETED_DOC}`;
 
     // ---- (a) TWO DOCUMENTS, both soft-deleted, one past its two years and
     //          one a day inside them. Same bucket, same workspace, same
@@ -126,6 +131,25 @@ describe("the retention runner removes bytes from the buckets, and only the righ
          ($2, $3, 'live.pdf',    $5, 'application/pdf', $6, 'clean', now(),
           now() - interval '2 years' + interval '1 day')`,
       [EXPIRED_DOC, LIVE_DOC, orgId, expiredDocKey, liveDocKey, PDF.length],
+    );
+
+    // ---- (a2) THE WRONG-KIND SURVIVOR (fix round 1, review finding I4). The
+    //           document above survives because of its DATE. This one is three
+    //           years old -- older than the file that goes -- and survives
+    //           because it was NEVER DELETED. A manifest keyed on age alone
+    //           would take it, and nothing but a download can say it did not.
+    const neverDeleted = await storage.from("documents").upload(neverDeletedDocKey, PDF, {
+      contentType: "application/pdf",
+      upsert: true,
+    });
+    expect(neverDeleted.error, `the never-deleted fixture failed: ${neverDeleted.error?.message}`).toBeNull();
+    await pool.query(
+      `insert into public.documents
+         (id, organisation_id, filename, storage_key, mime_type, size_bytes,
+          scan_status, scanned_at, created_at)
+       values ($1, $2, 'never-deleted.pdf', $3, 'application/pdf', $4, 'clean',
+               now() - interval '3 years', now() - interval '3 years')`,
+      [NEVER_DELETED_DOC, orgId, neverDeletedDocKey, PDF.length],
     );
 
     // ---- (b) AN EXPIRED FEEDBACK ROW WITH A REAL SCREENSHOT BEHIND IT.
@@ -161,6 +185,7 @@ describe("the retention runner removes bytes from the buckets, and only the righ
     // ---- THE DENOMINATOR. Every one of the four is DOWNLOADABLE first.
     expect(await objectExists("documents", expiredDocKey), "the expired document's bytes").toBe(true);
     expect(await objectExists("documents", liveDocKey), "the live document's bytes").toBe(true);
+    expect(await objectExists("documents", neverDeletedDocKey), "the never-deleted document's bytes").toBe(true);
     expect(await objectExists("feedback-screenshots", screenshotKey), "the screenshot").toBe(true);
     expect(await objectExists("documents", ORPHAN_KEY), "the orphan").toBe(true);
 
@@ -229,6 +254,11 @@ describe("the retention runner removes bytes from the buckets, and only the righ
     expect(
       await objectExists("documents", liveDocKey),
       "A DOCUMENT INSIDE ITS RETENTION PERIOD WAS DELETED",
+    ).toBe(true);
+
+    expect(
+      await objectExists("documents", neverDeletedDocKey),
+      "A DOCUMENT THAT WAS NEVER DELETED HAD ITS FILE DESTROYED -- it is three years old and LIVE",
     ).toBe(true);
 
     // ---- The rows follow the bytes, in that order.
