@@ -41,6 +41,7 @@
 import { revalidatePath } from "next/cache";
 import { isSuperuser } from "@/lib/admin/superuser";
 import { createClient } from "@/lib/supabase/server";
+import { nudgeErasureRunner } from "@/lib/erasure/runner";
 import { checkStepUp } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
@@ -379,6 +380,16 @@ export async function runErasureForRequestAction(
     }
     return rpcRefusal(error.code, error.hint ?? undefined, formData);
   }
+
+  // AND WAKE THE RUNNER -- fix round 1, review finding I5. Without this the
+  // job waited for the pg_cron tick, and FOR EVER in any deployment where the
+  // Vault pair behind private.deliver_erasure_jobs() has not been created,
+  // which is every local and e2e environment by design. The message below
+  // said "it runs in the background", and on the one surface where an
+  // operator is answering a statutory request against a 30-day clock that
+  // sentence has to be true everywhere, not only in production. The
+  // self-service action has always done this (lib/erasure/actions.ts).
+  nudgeErasureRunner();
 
   revalidatePath(SUPER_DATA_REQUESTS_PATH);
   return {
