@@ -372,6 +372,11 @@ describe("every literal action a function INSERTS into audit_events directly is 
         // deliberate edit here -- that is what this census is for.
         "private.erase_organisation",
         "private.log_audit_event",
+        // Phase 8 Task 6: the retention run's ONE summary row. Sixth writer,
+        // and here for the same reason as the erasure's two -- a scheduled
+        // sweep has nobody on it, and log_audit_event() raises 28000 without
+        // an auth.uid(). Actor = the Q130 tombstone.
+        "public.run_retention_sweep",
       ],
     );
 

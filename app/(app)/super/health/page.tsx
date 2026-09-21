@@ -9,6 +9,9 @@ import {
 } from "@/lib/admin/health";
 import type { RawSearchParams } from "@/lib/list/params";
 import { IncidentAlertList } from "@/components/admin/incident-alert-list";
+import { loadRetentionView } from "@/lib/admin/retention";
+import { RetentionPanel } from "@/components/admin/retention-panel";
+import { ActionOutcome } from "@/components/ui/action-outcome";
 import { formatDateTime } from "@/lib/format/date";
 import { humanFileSize } from "@/lib/format/bytes";
 
@@ -214,9 +217,10 @@ export default async function PlatformHealthPage({
   const raw = (await searchParams) as RawSearchParams;
   const alertParams = parseIncidentAlertParams(raw);
 
-  const [health, alerts] = await Promise.all([
+  const [health, alerts, retention] = await Promise.all([
     loadPlatformHealthSnapshot(),
     fetchIncidentAlertPage(alertParams),
+    loadRetentionView(),
   ]);
 
   return (
@@ -254,6 +258,37 @@ export default async function PlatformHealthPage({
           <SnapshotSections snapshot={health.snapshot} />
         </>
       )}
+
+      {/* PHASE 8 TASK 6, requirement 4. The retention job's switches, its
+          preview and its last runs, beside the counts rather than on a page
+          of their own: the question "has the garbage collector been running"
+          belongs next to "how much storage is in use", and a separate page
+          is a page nobody visits. */}
+      <section className="flex flex-col gap-4 border-t border-rule pt-8">
+        <h2 className="text-xl font-bold text-ink">Retention</h2>
+        <p className="max-w-prose text-sm text-ink-muted">
+          The one scheduled job that enforces the retention policy: expired
+          document bytes, feedback and its screenshots, stale rate-limit
+          counters, resolved incident alerts, failed erasure jobs, jobs stuck
+          part-way, closed workspaces past their 60 days, and — behind its own
+          switch, a hard floor of one year and a sanity ceiling — the audit
+          log. Every period is declared in one place in the database and every
+          one is a working default pending counsel’s review.
+        </p>
+        {retention.outcome === "unavailable" ? (
+          <p
+            role="status"
+            className="max-w-prose border border-danger bg-surface px-3 py-3 text-base text-ink"
+          >
+            <span className="font-semibold text-danger">Error.</span> We
+            couldn’t read the retention job’s state just now.
+          </p>
+        ) : (
+          <ActionOutcome testId="retention-outcome">
+            <RetentionPanel settings={retention.settings} runs={retention.runs} />
+          </ActionOutcome>
+        )}
+      </section>
 
       <section className="flex flex-col gap-4 border-t border-rule pt-8">
         <h2 className="text-xl font-bold text-ink">Incident alerts</h2>

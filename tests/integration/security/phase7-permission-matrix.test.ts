@@ -267,6 +267,13 @@ const ARGS = {
    * member's account is therefore never touched.
    */
   dsrErasureRequestId: "",
+  /**
+   * Phase 8 Task 6. A real retention run, made by a real DRY run through the
+   * real RPCs in beforeAll -- the row public.retention_runs' positive control
+   * needs before "nobody else can read it" means anything. A dry run deletes
+   * nothing, so planting it costs the rest of the fixture nothing.
+   */
+  retentionRunId: "",
 };
 
 // Phase 8 Task 2: the no-organisation principal's user id, for the
@@ -775,6 +782,46 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
     },
   },
   {
+    // Phase 8 Task 6. THE RETENTION KILL SWITCH -- the one retention RPC any
+    // client role can reach at all (the other four are granted to
+    // service_role alone and are probed by the relation/function censuses
+    // rather than here). It is the control that stops the product enforcing
+    // its own published retention policy, so a principal who is not the aal2
+    // superuser reaching it would be able to switch the audit purge back on
+    // -- or off -- with a reason of their choosing in the operator's own
+    // audit log.
+    fn: "set_retention_enabled",
+    args: () => ({
+      p_enabled: true,
+      p_audit_purge_enabled: false,
+      p_reason: "matrix probe",
+    }),
+    sideEffectTable: "audit_events",
+    invariant: async () => {
+      // A COUNT OF audit_events CANNOT SEE THIS. The switches must still be
+      // in the state the migration seeded them in: both on. A refused
+      // principal that had somehow turned the audit purge off would leave no
+      // row for the side-effect check to find and a product that had quietly
+      // stopped deleting audit rows.
+      const { rows } = await pool.query<{ enabled: boolean; audit: boolean }>(
+        `select enabled, audit_purge_enabled as audit from public.retention_settings`,
+      );
+      expect(rows[0]?.enabled, "a refused principal stopped the retention job").toBe(true);
+      expect(rows[0]?.audit, "a refused principal stopped the audit purge").toBe(true);
+    },
+    positiveControl: async () => {
+      const { error } = await superuser.rpc("set_retention_enabled", {
+        p_enabled: true,
+        p_audit_purge_enabled: true,
+        p_reason: "matrix positive control",
+      });
+      expect(
+        error,
+        `set_retention_enabled must be reachable by the aal2 superuser: ${error?.message}`,
+      ).toBeNull();
+    },
+  },
+  {
     fn: "record_legal_document_counsel_review",
     args: () => ({ p_document_id: ARGS.legalDraftId, p_reviewer: "Matrix Counsel LLP" }),
     sideEffectTable: "audit_events",
@@ -994,6 +1041,13 @@ const PHASE7_TABLES = [
   "organisation_feature_overrides",
   "rate_limit_counters",
   "rate_limit_policies",
+  // Phase 8 Task 6. The retention job's run log and its two kill switches:
+  // platform state, readable by the aal2 superuser alone through
+  // `view_platform_health`, with no INSERT/UPDATE/DELETE policy or grant for
+  // any client role (public.set_retention_enabled() is the only writer of the
+  // settings, and private.run_retention_sweep() of the runs).
+  "retention_runs",
+  "retention_settings",
 ] as const;
 
 // =============================================================================
@@ -1342,10 +1396,27 @@ beforeAll(async () => {
       throw new Error(`POSITIVE CONTROL FAILED: consume_rate_limit as a member: ${error.message}`);
     }
   }
+  // Phase 8 Task 6: public.retention_runs needs a row, or "nobody but the
+  // superuser can read it" measures nothing -- the positive control above
+  // says exactly that and said it on this table's first run here. The honest
+  // way to get one is a REAL DRY RUN through the real RPCs, as the
+  // sessionless server role they are granted to: it deletes nothing (that is
+  // what `dry` means) and it proves the two RPCs work at the same time.
+  {
+    const { rows } = await pool.query<{ id: string }>(
+      `select (public.start_retention_run(true)).id as id`,
+    );
+    ARGS.retentionRunId = rows[0].id;
+    await pool.query(`select public.run_retention_sweep($1, 500)`, [ARGS.retentionRunId]);
+  }
 }, 180_000);
 
 afterAll(async () => {
   if (!fx) return;
+  if (ARGS.retentionRunId) {
+    await pool.query(`delete from public.audit_events where action = 'retention.swept'`);
+    await pool.query(`delete from public.retention_runs`);
+  }
   await pool.query(`delete from public.incident_alerts where id = $1`, [
     ARGS.incidentAlertId,
   ]);
@@ -1883,6 +1954,26 @@ function validInsert(table: string): Record<string, unknown> {
         window_seconds: 1,
         description: "permission matrix write probe",
       };
+    // Phase 8 Task 6. Both bodies are fully valid -- they satisfy every CHECK
+    // on their table -- so what refuses them is the missing grant and the
+    // missing policy, which is the only thing this probe is allowed to be
+    // measuring.
+    case "retention_runs":
+      return {
+        correlation_id: "00000000-0000-4000-8000-0000000000f6",
+        mode: "dry",
+        status: "running",
+      };
+    case "retention_settings":
+      // The singleton row already exists, so this would be a 23505 even for a
+      // permitted caller -- which is why the SECOND id is used: `false` is
+      // refused by the CHECK, and `true` by the primary key, and neither is
+      // the refusal we are asking about. So the probe writes the row that IS
+      // valid in every way but the grant: an UPSERT-shaped insert of the same
+      // id, which PostgREST sends as a plain INSERT and which a permitted
+      // caller would see refused by the primary key AFTER the policy has
+      // admitted it. The checksum below is what carries the weight either way.
+      return { id: true, enabled: false, audit_purge_enabled: false };
     default:
       throw new Error(`no valid INSERT body for ${table}`);
   }
@@ -1900,7 +1991,10 @@ const MEMBER_INSERTABLE = new Set(["feedback"]);
 /** A column every row of the table has, for a filter that matches everything.
  *  The two rate-limit tables have no `id`. */
 function anyColumn(table: string): string {
-  return table.startsWith("rate_limit_") ? "category" : "id";
+  if (table.startsWith("rate_limit_")) return "category";
+  // public.retention_settings' primary key is the boolean singleton `id`,
+  // which is an `id` and filters fine.
+  return "id";
 }
 
 /**
@@ -1921,6 +2015,12 @@ const UPDATE_PROBE: Record<string, Record<string, unknown>> = {
   organisation_feature_overrides: { reason: "matrix update probe" },
   rate_limit_counters: { request_count: 999_999 },
   rate_limit_policies: { description: "matrix update probe" },
+  // Phase 8 Task 6. Both are VALID single-column writes -- duration_ms has
+  // only a >= 0 CHECK, and `reason` a non-blank one -- so what refuses them
+  // is the absent grant and the absent policy, not a constraint that would
+  // have refused the superuser too.
+  retention_runs: { duration_ms: 999 },
+  retention_settings: { reason: "matrix update probe" },
 };
 
 /**

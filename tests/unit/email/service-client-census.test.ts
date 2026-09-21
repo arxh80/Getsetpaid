@@ -61,6 +61,13 @@ const ALLOWED = new Set([
   // column-narrow grants in 20260930001000 § 7 plus four RPCs granted to
   // service_role alone.
   "lib/erasure/runner.ts",
+  // Phase 8 Task 6. The retention runner, the FOURTH sessionless caller and
+  // the first that is not answering anybody's request: it has no user, so no
+  // RLS policy can name it, and its whole reach is three RPCs granted to
+  // service_role alone (start_retention_run, run_retention_sweep,
+  // fail_retention_run) plus the object manifest. It writes no table
+  // directly.
+  "lib/retention/runner.ts",
 ]);
 
 interface Scanned {
@@ -93,7 +100,7 @@ describe("lib/supabase/service.ts has exactly the importers its header names", (
     for (const entry of existingEntryPoints()) expect(scanned.map((s) => s.file)).toContain(entry);
   });
 
-  it("the census sees the four known importers (non-vacuity)", () => {
+  it("the census sees the known importers (non-vacuity)", () => {
     for (const allowed of ALLOWED) expect(importers).toContain(allowed);
   });
 
@@ -101,7 +108,7 @@ describe("lib/supabase/service.ts has exactly the importers its header names", (
     const extra = importers.filter((f) => !ALLOWED.has(f));
     expect(
       extra,
-      `${extra.join(", ")} import the service-role table client -- only the three senders may; a new privileged table need is a SECURITY DEFINER function in a migration (lib/supabase/admin.ts's rule)`,
+      `${extra.join(", ")} import the service-role table client -- only the senders and the four sessionless runners named above may; a new privileged table need is a SECURITY DEFINER function in a migration (lib/supabase/admin.ts's rule)`,
     ).toEqual([]);
   });
 });

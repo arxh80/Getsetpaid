@@ -106,6 +106,8 @@ const SERVER_ACTION_MODULES = [
   "lib/admin/impersonation.ts",
   "lib/admin/lifecycle.ts",
   "lib/admin/overrides.ts",
+  // Phase 8 Task 6: the retention kill switch and the dry-run preview.
+  "lib/admin/retention-actions.ts",
   "lib/auth/actions.ts",
   "lib/auth/mfa-actions.ts",
   "lib/auth/step-up-actions.ts",
