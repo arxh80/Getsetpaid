@@ -133,6 +133,44 @@ describe("ZipWriter", () => {
     expect(() => zip.addEntry("small.json", Buffer.from("[]"), AT)).not.toThrow();
   });
 
+  it("counts the central directory against the ceiling too", () => {
+    // THE DIRECTORY IS PART OF THE DELIVERED FILE. `push()` guards every
+    // local header and payload; the central directory and the 22-byte end
+    // record are appended by finish(), so before Task 4's fix round the
+    // archive HANDED TO STORAGE could exceed max_archive_bytes by ~46 bytes
+    // plus the name per entry, plus 22 (review finding M4).
+    //
+    // A ceiling chosen to fit every entry and NOT the directory: the entry
+    // costs 30 + name + payload, and the directory costs 46 + name.
+    const name = "tables/notes.json";
+    const payload = Buffer.from("[]");
+    const entryBytes = 30 + name.length + payload.length;
+    const ceiling = entryBytes + 10; // room for the entry, not for 46 + name + 22
+
+    const zip = new ZipWriter(ceiling);
+    zip.addEntry(name, payload, AT);
+    expect(zip.byteLength).toBe(entryBytes); // the entry itself fitted
+    expect(() => zip.finish()).toThrow(ExportTooLargeError);
+  });
+
+  it("still finishes when the directory fits, and the end record is correct", () => {
+    // The positive control for the assertion above: with room for the
+    // directory the archive is produced, and the end record's
+    // central-directory OFFSET is the byte where the directory starts, not
+    // the archive's length -- which is what the ceiling accounting must not
+    // disturb. Read back through the test's own parser.
+    const name = "tables/notes.json";
+    const payload = Buffer.from("[]");
+    const entryBytes = 30 + name.length + payload.length;
+    const zip = new ZipWriter(entryBytes + 46 + name.length + 22);
+    zip.addEntry(name, payload, AT);
+    const bytes = zip.finish();
+    expect(readZip(bytes).map((e) => e.name)).toEqual([name]);
+    // offset of the central directory, from the end-of-central-directory record
+    expect(bytes.readUInt32LE(bytes.length - 22 + 16)).toBe(entryBytes);
+    expect(bytes.readUInt32LE(bytes.length - 22 + 12)).toBe(46 + name.length);
+  });
+
   it("refuses to be finished twice", () => {
     const zip = new ZipWriter(1000);
     zip.addEntry("a.json", Buffer.from("1"), AT);

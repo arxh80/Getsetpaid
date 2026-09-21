@@ -58,6 +58,8 @@ function dosDateTime(at: Date): { date: number; time: number } {
 
 const MAX_ENTRIES = 65_535;
 const MAX_UINT32 = 0xffffffff;
+/** The end-of-central-directory record is a fixed 22 bytes (no comment). */
+const END_RECORD_BYTES = 22;
 
 interface Entry {
   readonly name: string;
@@ -208,7 +210,29 @@ export class ZipWriter {
       directorySize += record.length + nameBytes.length;
     }
 
+    // The byte at which the central directory starts, captured BEFORE the
+    // ceiling accounting below adds the directory to the running total: the
+    // end record carries this offset and it is not the archive's length.
+    const directoryOffset = this.size;
+
     if (this.size > MAX_UINT32) throw new Error("zip: an archive over 4 GiB needs ZIP64");
+
+    // THE DIRECTORY COUNTS TOO. `push()` guards every local header and every
+    // payload, but the central directory and the end record are appended
+    // here, so without this the DELIVERED archive could exceed
+    // private.export_limits().max_archive_bytes by ~46 bytes plus the name
+    // per entry, plus 22. Today that is about two kilobytes against ten
+    // mebibytes of headroom between the 40 MiB job ceiling and the 50 MiB
+    // bucket limit -- unreachable, and exactly the argument this file's own
+    // header rejects when it declines ZIP64 ("a limit we are far below is how
+    // a silent corruption ships two years later"). Task 4 review, finding M4.
+    //
+    // It is counted through `size`/`checkCeiling()` rather than compared by
+    // hand, so the one ceiling expression stays in one place and a job that
+    // trips it fails with the same ExportTooLargeError and the same recorded
+    // reason as one that tripped on a row.
+    this.size += directorySize + END_RECORD_BYTES;
+    this.checkCeiling();
 
     const end = Buffer.alloc(22);
     end.writeUInt32LE(0x06054b50, 0);
@@ -217,7 +241,7 @@ export class ZipWriter {
     end.writeUInt16LE(this.entries.length, 8);
     end.writeUInt16LE(this.entries.length, 10);
     end.writeUInt32LE(directorySize, 12);
-    end.writeUInt32LE(this.size, 16);
+    end.writeUInt32LE(directoryOffset, 16);
     end.writeUInt16LE(0, 20);
 
     return Buffer.concat([...this.chunks, ...directory, end]);
