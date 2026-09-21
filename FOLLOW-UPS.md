@@ -4137,3 +4137,52 @@ three documents.
   exports — the in-process nudge still runs them — it removes the RETRY for a
   job whose nudge died with its process. That failure is invisible from
   inside the product and its cost is a person waiting.
+
+## Phase 8 Task 5 (erasure)
+
+- **THE STORAGE-CLIENT CENSUS (Q126) IS STILL OWED, AND THIS TASK ADDED A
+  FIFTH IMPORTER.** `lib/supabase/storage.ts` has no importer roll;
+  `lib/erasure/runner.ts` joins `lib/crm/documents.ts`,
+  `lib/feedback/screenshot.ts`, `lib/export/runner.ts` and the feedback
+  screenshot route. The service-role TABLE client's census was extended (the
+  runner is declared there), so what is missing is the same shape for the
+  STORAGE client — and the erasure runner is the first importer whose reach
+  includes `remove()`, which is the one Storage verb that destroys something.
+  Whoever builds it should start from
+  `tests/unit/email/service-client-census.test.ts`, which is the working
+  pattern.
+- **Nothing tells the person their account has been deleted.** Q45 for the
+  eighth feature. The page says "being deleted" and the session then stops
+  working; there is no email, no final confirmation and no receipt. For this
+  one feature that is arguably correct — the address to send it to is one of
+  the things being deleted — but it is a decision, not an oversight, and it
+  means a FAILED erasure is discovered only by signing back in and looking at
+  `/account/erase`.
+- **A job left `running` blocks its subject for ever**, exactly as Q166 says
+  of the export runner, and the consequence is worse here: the
+  `erasure_jobs_one_live_account_job` index refuses the next ask, so a person
+  whose erasure died between the claim and the outcome-write cannot try again
+  and is told "your account is already being deleted". Task 6's sweep should
+  reap both registers with one rule.
+- **`data_subject_requests.fulfilment_reference` can dangle.** An `access`
+  request fulfilled by an export points at a `public.export_jobs` row, and
+  that row is `ON DELETE CASCADE` on `requested_by` — so erasing the account
+  deletes the export job and leaves the (kept, anonymised) register row
+  pointing at an id that no longer resolves. The column has no foreign key, so
+  nothing breaks; what is lost is the ability to say WHICH archive answered a
+  request, for an account that no longer exists. Either give the reference a
+  soft resolution ("an export, since deleted") or accept it in words on the
+  operator's page.
+- **The consent ledger goes with the account and the register does not**, and
+  the asymmetry is deliberate with a measured reason (the alternating-chain
+  invariant — see `SECURITY.md` § 8 and Q173). It is the one place where two
+  sibling questions, Q148 and Q158, were answered differently, and it is the
+  thing counsel is most likely to want changed.
+- **`erase_organisation()` has no caller in the product yet.** Task 6 is the
+  caller. Until then it is a tested primitive with one exception path reaching
+  it (Q131's empty-solo-workspace case), which is deliberately the narrowest
+  possible first consumer.
+- **A third bearer secret and a third Vault pair are owed at deploy**
+  (`SECURITY.md` § 15), and this one runs DELETIONS. It cannot choose one —
+  the route takes no argument — but a missing pair removes the retry, and the
+  cost of that is higher than for exports: the person cannot even ask again.
