@@ -1013,6 +1013,57 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 6 -- RETENTION AND GARBAGE COLLECTION.
+#
+# The twenty-first psql file, and the one that proves a set of DELETIONS. That
+# makes its DENOMINATORS the load-bearing half: every sweep here is a function
+# whose job is to make things absent, so a suite asserting only absences would
+# pass perfectly against a job that did nothing at all. Every "it is gone" is
+# preceded by "it was there", and every period is asserted from BOTH sides --
+# the row one day inside it survives the same run that takes the row one day
+# past it.
+#
+# Section RA is the one to read first on a failure: the audit purge's five
+# rails, each with its own hint, because "the floor refused" and "the ceiling
+# refused" and "a privilege was missing" would otherwise be indistinguishable.
+# ============================================================================
+
+run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 114 "${P7VARS[@]}"
+ret_fails=$SUITE_FAILS
+if [ "$ret_fails" != "0" ]; then
+  echo "PHASE 8 RETENTION SUITE FAILED: $ret_fails failing assertion(s)" >&2
+  echo "  In RC, a client role gained a write on the run log or the kill" >&2
+  echo "  switches, a sweep became reachable from a browser, or THE CRON JOB" >&2
+  echo "  LOST A HALF. RC14 names all five: a Phase 7 alert type, an export" >&2
+  echo "  runner or an erasure runner dropped by a rebuild is a silent" >&2
+  echo "  regression, which is why they are pinned by name and not by count." >&2
+  echo "  In RD, the declaration or the roll. A red RD5/RD6/RD7 means the roll" >&2
+  echo "  and the catalogue have come apart -- a table this product grew that" >&2
+  echo "  nobody has decided a retention answer for." >&2
+  echo "  In RS, a sweep. Read the DENOMINATOR assertion above each one FIRST" >&2
+  echo "  (RS1, RS5, RS9, RS12, RS16, RS19): if one is red then every absence" >&2
+  echo "  below it proves nothing. A red SURVIVOR assertion is worse than a" >&2
+  echo "  red deletion one -- it means the sweep deleted something inside its" >&2
+  echo "  retention period." >&2
+  echo "  In RA, THE AUDIT PURGE. RA4 red = the hard floor is gone and a" >&2
+  echo "  shorter declared period would now DELETE A YEAR OF EVIDENCE. RA15" >&2
+  echo "  red = the sanity ceiling is gone. Either is Sev1: SECURITY.md § 7" >&2
+  echo "  calls this 'a narrowly controlled platform security process' and" >&2
+  echo "  these are the controls." >&2
+  echo "  In RW, the 60-day purge. RW6/RW7 red = REINSTATEMENT NO LONGER" >&2
+  echo "  SAVES A WORKSPACE. RW9 red = closing an already-suspended workspace" >&2
+  echo "  no longer restarts the clock, so a customer loses days they were" >&2
+  echo "  promised. Sev1 either way -- this deletes a whole tenant." >&2
+  echo "  In RQ, Q179: a direct auth.users delete can strand a workspace again." >&2
+  echo "  In RR, the run. RR8 red = a sweep failure can now stop the others," >&2
+  echo "  or step 0 no longer runs before a row moves." >&2
+  echo "  In RZ, this suite left rows behind -- discard the run and reset." >&2
+  psql_status=1
+else
+  echo "Phase 8 retention suite: all assertions passed."
+fi
+
+# ============================================================================
 # ONE WITHDRAWAL PER GRANT UNDER A REAL RACE (review finding M2).
 #
 # The trigger's alternation rule serialises events per (user, purpose), but
