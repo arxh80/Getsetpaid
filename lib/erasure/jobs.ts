@@ -31,10 +31,22 @@ const COLUMNS = "id, kind, status, requested_at, completed_at, failure_reason, s
  */
 export async function getOwnErasureJobs(): Promise<readonly OwnErasureJob[]> {
   const supabase = await createClient();
+  // WHOSE, EXPLICITLY -- fix round 1, review finding M3. `erasure_jobs_select_own`
+  // also admits the aal2 operator's oversight read, which is right for
+  // /super/data-requests and wrong here: /account/erase is headed "What you
+  // have asked for" and its empty state reads "You have not asked us to
+  // delete your account", so a signed-in superuser was reading other people's
+  // jobs on their own account page. RLS is the boundary; this is the page
+  // saying which rows it means.
+  const { data: auth } = await supabase.auth.getUser();
+  const userId = auth.user?.id ?? null;
+  if (userId === null) return [];
+
   const { data, error } = await supabase
     .from("erasure_jobs")
     .select(COLUMNS)
     .eq("kind", "account")
+    .eq("subject_user_id", userId)
     .order("requested_at", { ascending: false })
     .limit(OWN_ERASURE_LIMIT);
 
