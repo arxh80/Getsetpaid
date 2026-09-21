@@ -179,6 +179,32 @@ export function latestFunctionDefinition(
   const create = new RegExp(`^create (or replace )?function ${escaped}\\(`);
   const drop = new RegExp(`^drop function (if exists )?(.*[ ,])?${escaped}(\\(|[ ,;]|$)`);
   const rename = new RegExp(`^alter function ${escaped}(\\(|\\s).* rename to `);
+
+  // ===========================================================================
+  // THE THREE WAYS THIS WALK COULD RETURN A **STALE** BODY (census audit, 11)
+  // ===========================================================================
+  // The walk above matches a SCHEMA-QUALIFIED create and a literal
+  // `drop function`. Three shapes go past it, and each one leaves this helper
+  // returning an OLDER body than the database runs, silently -- which four
+  // unit tests then bind TypeScript to. It is closed today only by
+  // `catalogue-bindings-match-db.test.ts`, which asserts byte equality with
+  // `pg_proc.prosrc` -- and that is an INTEGRATION test, which CI does not
+  // run (CLAUDE.md § CI). So on CI the bindings could be checking a body the
+  // database does not have.
+  //
+  // This helper cannot RESOLVE any of the three (that needs a search_path
+  // model, a DO-block interpreter and overload resolution). What it can do is
+  // refuse to answer, which is what the rest of this file already does with
+  // "has no dollar-quoted body" and "is defined in no migration". A loud
+  // refusal is a red test naming the migration; a stale body is a green test
+  // over the wrong code.
+  const [schema, bare] = name.split(".");
+  const bareEscaped = (bare ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const unqualifiedCreate = new RegExp(`^create (or replace )?function ${bareEscaped}\\(`);
+  const unqualifiedDrop = new RegExp(`^drop function (if exists )?(.*[ ,])?${bareEscaped}(\\(|[ ,;]|$)`);
+  const dropSchema = new RegExp(`^drop schema (if exists )?(.*[ ,])?${schema}( |,|;|$)`);
+  const inBody = new RegExp(`(create (or replace )?function|drop function)[^;]{0,200}?(${escaped}|${bareEscaped})\\s*\\(`);
+
   let found: SqlFunctionDefinition | null = null;
   for (const { file, text } of migrations) {
     for (const statement of splitStatements(text)) {
@@ -188,6 +214,26 @@ export function latestFunctionDefinition(
         found = { file, body: statement.dollars[0] };
       } else if (drop.test(head) || rename.test(head)) {
         found = null;
+      } else if (unqualifiedCreate.test(head) || unqualifiedDrop.test(head)) {
+        // (1) `set search_path = private; create or replace function <name>(...)`.
+        throw new Error(
+          `${file}: ${qualifiedName} is created or dropped UNQUALIFIED ("${head.slice(0, 80)}"). ` +
+            `This walker resolves no search_path, so it would keep the older body and every binding ` +
+            `built on it would check code the database does not run. Write the schema.`,
+        );
+      } else if (dropSchema.test(head)) {
+        // (2a) `drop schema private cascade`.
+        throw new Error(
+          `${file}: schema ${schema} is dropped ("${head.slice(0, 80)}"), which takes ` +
+            `${qualifiedName} with it. This walker only follows a literal \`drop function\`.`,
+        );
+      } else if (head.includes("$$") && statement.dollars.some((d) => inBody.test(d.toLowerCase()))) {
+        // (2b) a create or drop of this function inside a `DO $$ ... $$` block
+        // or any other dollar-quoted body.
+        throw new Error(
+          `${file}: ${qualifiedName} is created or dropped INSIDE a dollar-quoted block, which this ` +
+            `walker does not execute. It would keep whatever body it had, which may be stale.`,
+        );
       }
     }
   }

@@ -149,11 +149,47 @@ describe("latestFunctionDefinition reads the latest body, parsed", () => {
           "/* create function private.x() as $$ select 8 $$; /* nested */ still comment */",
           "select 'create or replace function private.x() as $$ select 7 $$';",
           "comment on function private.x() is 'create function private.x() $$ select 6 $$';",
-          "do $$ begin execute 'create function private.x() returns int as $q$ select 5 $q$'; end $$;",
         ].join("\n"),
       ),
     ]);
     expect(found).toEqual({ file: "1.sql", body: " select 1 " });
+  });
+
+  it("FIXTURE: a create inside a DO block REFUSES rather than keeping a stale body", () => {
+    // CENSUS AUDIT, FINDING 11. This fixture used to sit in the case above and
+    // assert that a `do $$ ... execute 'create function private.x() ...' $$`
+    // left the body at `select 1`. But that DO block REALLY DOES create the
+    // function, so "not a definition" was a stale body presented as an answer
+    // -- and four unit tests bind TypeScript to whatever this returns. The
+    // walker executes no DO block and resolves no search_path, so it cannot
+    // work out the truth; what it can do is refuse, loudly, naming the
+    // migration. A red test naming a file is recoverable. A green test over
+    // the wrong body is the thing this whole audit is about.
+    expect(() =>
+      latestFunctionDefinition("private.x", [
+        m("1.sql", "create or replace function private.x() returns int language sql as $$ select 1 $$;"),
+        m("2.sql", "do $$ begin execute 'create function private.x() returns int as $q$ select 5 $q$'; end $$;"),
+      ]),
+    ).toThrow(/INSIDE a dollar-quoted block/);
+  });
+
+  it("FIXTURE: an UNQUALIFIED re-creation refuses, and so does a dropped schema", () => {
+    // The other two stale-body shapes. `set search_path = private; create or
+    // replace function x(...)` never matched the qualified head, so the walk
+    // kept the OLDER body; and `drop schema private cascade` takes the
+    // function with it while the walk only follows a literal `drop function`.
+    expect(() =>
+      latestFunctionDefinition("private.x", [
+        m("1.sql", "create or replace function private.x() returns int language sql as $$ select 1 $$;"),
+        m("2.sql", "set search_path = private;\ncreate or replace function x() returns int language sql as $$ select 9 $$;"),
+      ]),
+    ).toThrow(/UNQUALIFIED/);
+    expect(() =>
+      latestFunctionDefinition("private.x", [
+        m("1.sql", "create or replace function private.x() returns int language sql as $$ select 1 $$;"),
+        m("2.sql", "drop schema private cascade;"),
+      ]),
+    ).toThrow(/schema private is dropped/);
   });
 
   it("FIXTURE: a later drop or rename clears it; a re-create after that is found", () => {
