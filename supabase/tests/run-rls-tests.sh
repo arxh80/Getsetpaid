@@ -1028,7 +1028,7 @@ fi
 # refused" and "a privilege was missing" would otherwise be indistinguishable.
 # ============================================================================
 
-run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 156 "${P7VARS[@]}"
+run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 167 "${P7VARS[@]}"
 ret_fails=$SUITE_FAILS
 if [ "$ret_fails" != "0" ]; then
   echo "PHASE 8 RETENTION SUITE FAILED: $ret_fails failing assertion(s)" >&2
@@ -1062,8 +1062,11 @@ if [ "$ret_fails" != "0" ]; then
   echo "  guard is gone; RK29 red = a client-writable clock has no passing" >&2
   echo "  behavioural probe. RK31-RK33 are the standing mutation of all three." >&2
   echo "  In RQ, Q179: a direct auth.users delete can strand a workspace again." >&2
-  echo "  In RR, the run. RR8 red = a sweep failure can now stop the others," >&2
-  echo "  or step 0 no longer runs before a row moves." >&2
+  echo "  In RR, the run. RR8/RR8a/RR8b are the THREE gates a refusal passes" >&2
+  echo "  (fix round 1, C2): RR8b red = a run is OPENED although the roll would" >&2
+  echo "  refuse it; RR8a red = THE MANIFEST NAMES OBJECTS FOR A RUN THAT WILL" >&2
+  echo "  REFUSE, which is bytes deleted before the tripwire fires. Sev1. RR8" >&2
+  echo "  red = step 0 no longer runs before a row moves." >&2
   echo "  In RZ, this suite left rows behind -- discard the run and reset." >&2
   psql_status=1
 else

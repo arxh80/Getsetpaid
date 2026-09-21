@@ -42,6 +42,32 @@ import "server-only";
 // A DRY RUN DELETES NOTHING, including objects. It counts the manifest and
 // reports it, so the founder reads what a live run would remove before one
 // does.
+//
+// ===========================================================================
+// BYTES-FIRST MEANS EVERY REFUSAL HAS TO COME BEFORE THE BYTES (review C2)
+// ===========================================================================
+// This file used to read the manifest, delete the objects, and only then call
+// public.run_retention_sweep() -- which is where the roll was asserted. The
+// reviewer planted an unclassified table and measured it: the tripwire fired,
+// the run was recorded `failed`, and the expired file was ALREADY GONE.
+// Object deletion is the half that cannot be rolled back, and it was the half
+// nothing guarded.
+//
+// The fix is deliberately NOT "call an assert RPC first" -- that would rest
+// the property on the order of three lines here. It is in the database
+// (20261004002000), in two places that each hold alone:
+//
+//   1. public.start_retention_run() evaluates the kill switch, the table roll
+//      and the clock roll BEFORE it opens the run, and records a refusal as a
+//      `refused` row. This file only ever proceeds on a `running` row.
+//   2. public.retention_object_manifest() takes the RUN ID and names NOTHING
+//      unless that run is `running`, the job is enabled, `replica` is off and
+//      both rolls pass -- asked in the same call that produces the keys. There
+//      is no way to obtain a key from a database that would refuse the run,
+//      whatever order this file does things in.
+//
+// tests/integration/retention/runner.test.ts is the proof: a refused run's
+// expired file is STILL DOWNLOADABLE afterwards.
 
 import { createServiceClient } from "@/lib/supabase/service";
 import { createStorageClient } from "@/lib/supabase/storage";
@@ -55,6 +81,7 @@ interface RetentionRunRow {
   correlation_id: string;
   mode: "dry" | "live";
   status: "running" | "completed" | "refused" | "failed";
+  refused: Record<string, string> | null;
 }
 
 export interface RetentionRunnerOutcome {
@@ -102,18 +129,27 @@ export async function runRetentionSweep(
   const run = startData as unknown as RetentionRunRow | null;
   if (!run) return { outcome: "unavailable", ...empty };
 
-  // THE KILL SWITCH ANSWERED FIRST. The database still wrote a row, so the
-  // refusal is visible on /super/health rather than being indistinguishable
-  // from a quiet run.
+  // EVERY REFUSAL ANSWERED FIRST -- the kill switch, the table roll, the clock
+  // roll and an overlapping run (review findings C2 and I2). The database
+  // still wrote a row, so the refusal is visible on /super/health rather than
+  // being indistinguishable from a quiet run. NOTHING BELOW THIS LINE RUNS
+  // WITHOUT A `running` ROW, and the manifest would name no key for one that
+  // is not.
   if (run.status !== "running") {
-    return { ...empty, outcome: "refused", runId: run.id, mode: run.mode };
+    return {
+      ...empty,
+      outcome: "refused",
+      runId: run.id,
+      mode: run.mode,
+      refused: run.refused ?? null,
+    };
   }
 
   let objectsNamed = 0;
   let objectsRemoved = 0;
 
   try {
-    const manifest = await readManifest(supabase);
+    const manifest = await readManifest(supabase, run.id);
     objectsNamed = manifest.length;
     if (!dry) objectsRemoved = await removeObjects(manifest);
 
@@ -158,11 +194,23 @@ interface ManifestRow {
   reason: string;
 }
 
-async function readManifest(supabase: ServiceClient): Promise<ManifestRow[]> {
+/**
+ * The keys, FOR THIS RUN. The database names nothing unless `runId` is a
+ * `running` run and every refusal that could stop it has been asked again in
+ * the same call (C2) -- so an error here is a refusal, and its HINT is what is
+ * recorded, not a generic "unreadable".
+ */
+async function readManifest(supabase: ServiceClient, runId: string): Promise<ManifestRow[]> {
   const { data, error } = await supabase.rpc("retention_object_manifest", {
+    p_run_id: runId,
     p_limit: OBJECTS_PER_RUN,
   });
-  if (error) throw new Error(`the object manifest could not be read: ${error.message}`);
+  if (error) {
+    throw Object.assign(
+      new Error(`the object manifest could not be read: ${error.code ?? "?"}: ${error.message}`),
+      { hint: error.hint ?? "" },
+    );
+  }
   const rows = (data ?? []) as ManifestRow[];
   return rows.filter(
     (row) => typeof row.bucket === "string" && typeof row.object_key === "string",

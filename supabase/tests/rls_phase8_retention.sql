@@ -1234,15 +1234,73 @@ select rt.val('RR7 with the job off, a run is RECORDED as refused rather than sk
            ((public.start_retention_run(false)).refused->>'*')$$, 'refused/retention_disabled');
 update public.retention_settings set enabled = true where id;
 
--- A FAILING SWEEP CANNOT STOP ANY OTHER SWEEP. Proved by breaking one: the
--- roll's derivation refuses while an unclassified table exists, and every
--- other sweep still runs and is still counted.
+-- ---------------------------------------------------------------------------
+-- RR8: THE ROLL REFUSES A RUN -- IN THREE PLACES, EACH ASKED DIRECTLY (C2).
+--
+-- As shipped, RR8 was one assertion: start a run and sweep it with an
+-- unclassified table planted, and step 0 refuses. True, and blind to the
+-- finding: the runner DELETES OBJECTS between those two calls, so a refusal
+-- at step 0 arrives after the bytes are gone. psql cannot see a bucket, but
+-- it CAN ask each of the three gates on its own, in the order the runner
+-- meets them -- and it has to ask them separately, because the first one
+-- refusing hides the other two from any end-to-end probe.
+--
+-- The run is opened BEFORE the table is planted for RR8/RR8a, which is also
+-- the real race they exist for: a migration landing between the start and the
+-- manifest.
+-- ---------------------------------------------------------------------------
+create table rt.run_ids (name text primary key, id uuid);
+insert into rt.run_ids select 'rr8', (public.start_retention_run(false)).id;
+select rt.val('RR8-0 DENOMINATOR: the run opened before the table appeared is `running`',
+  $$select status from public.retention_runs where id = (select id from rt.run_ids where name = 'rr8')$$,
+  'running');
 create table public.rt_unclassified_probe (id uuid primary key default gen_random_uuid());
-select rt.try_hint('RR8 an unclassified table stops the run at STEP 0, before a row moves',
-  $$with r as (select public.start_retention_run(false) as run)
-    select public.run_retention_sweep((r.run).id, 500) from r$$,
+select rt.try_hint('RR8 GATE 3: an unclassified table stops the SWEEP at step 0, before a row moves',
+  $$select public.run_retention_sweep((select id from rt.run_ids where name = 'rr8'), 500)$$,
   'denied(55000:unclassified_retention_subject)');
+select rt.try_hint('RR8a GATE 2: ...and the MANIFEST names no object for that run -- the gate that protects the BYTES',
+  $$select count(*) from public.retention_object_manifest((select id from rt.run_ids where name = 'rr8'), 500)$$,
+  'denied(55000:unclassified_retention_subject)');
+select public.fail_retention_run((select id from rt.run_ids where name = 'rr8'), 'rt probe');
+select rt.val('RR8b GATE 1: ...and a NEW run is never opened at all: it is RECORDED as refused, with the reason',
+  $$select (r).status || '/' || ((r).refused->>'*') from (select public.start_retention_run(false) as r) t$$,
+  'refused/unclassified_retention_subject');
+select rt.val('RR8c ...and that refused run is in the log, finished, for /super/health to render',
+  $$select status || '/' || (finished_at is not null)::text || '/' || (refused->>'*')
+      from public.retention_runs order by started_at desc, id desc limit 1$$,
+  'refused/true/unclassified_retention_subject');
 drop table public.rt_unclassified_probe;
+
+-- THE MANIFEST'S OTHER REFUSALS. Each used to be asked only by the sweep --
+-- after the objects were gone.
+select rt.try_hint('RR8d the manifest refuses a run id that does not exist',
+  $$select count(*) from public.retention_object_manifest('00000000-0000-4000-9000-00000000dead', 500)$$,
+  'denied(22023:unknown_retention_run)');
+select rt.try_hint('RR8e ...and a run that is not `running` (the failed rr8)',
+  $$select count(*) from public.retention_object_manifest((select id from rt.run_ids where name = 'rr8'), 500)$$,
+  'denied(22023:retention_run_is_not_running)');
+insert into rt.run_ids select 'rr8f', (public.start_retention_run(false)).id;
+update public.retention_settings set enabled = false where id;
+select rt.try_hint('RR8f ...and a run whose KILL SWITCH was thrown after it started: stop means before the next object',
+  $$select count(*) from public.retention_object_manifest((select id from rt.run_ids where name = 'rr8f'), 500)$$,
+  'denied(55000:retention_disabled)');
+update public.retention_settings set enabled = true where id;
+select rt.try_hint('RR8g ...and `replica`',
+  $$set local session_replication_role = replica;
+    select count(*) from public.retention_object_manifest((select id from rt.run_ids where name = 'rr8f'), 500)$$,
+  'denied(55000:replication_role_must_be_origin)');
+select rt.try_hint('RR8h ...and START refuses `replica` too, so it is asked before the runner holds anything',
+  $$set local session_replication_role = replica;
+    select public.start_retention_run(false)$$,
+  'denied(55000:replication_role_must_be_origin)');
+select rt.val('RR8i CONTROL: for a healthy running run the manifest ANSWERS (or every refusal above is a broken function)',
+  $$select (select count(*) >= 0 from public.retention_object_manifest(
+              (select id from rt.run_ids where name = 'rr8f'), 10))::text$$, 'true');
+select public.fail_retention_run((select id from rt.run_ids where name = 'rr8f'), 'rt probe');
+select rt.val('RR8j the one-argument manifest -- keys with no gate in front of them -- no longer exists',
+  $$select count(*)::text from pg_proc
+     where pronamespace = 'public'::regnamespace and proname = 'retention_object_manifest'
+       and pg_get_function_identity_arguments(oid) <> 'p_run_id uuid, p_limit integer'$$, '0');
 
 select rt.val('RR9 a LIVE run now completes and every sweep is represented in its counts',
   $$with r as (select public.start_retention_run(false) as run)
@@ -1257,13 +1315,18 @@ select rt.val('RR11 a run cannot be completed twice',
   $$select (public.run_retention_sweep(
               (select id from public.retention_runs order by started_at desc limit 1), 500)) is not null$$,
   'denied(22023)');
-select rt.try_hint('RR12 the run refuses `replica` at its outermost gate',
+-- ASKED OF THE SWEEP ITSELF: the run is opened under `origin` and only the
+-- sweep is called under `replica`. (start_retention_run() refuses `replica`
+-- first now -- RR8h -- so the shipped form of this probe would be answered by
+-- the wrong gate and go on passing if this one were deleted.)
+insert into rt.run_ids select 'rr12', (public.start_retention_run(true)).id;
+select rt.try_hint('RR12 the SWEEP refuses `replica` at its own outermost gate',
   $$set local session_replication_role = replica;
-    with r as (select public.start_retention_run(true) as run)
-    select public.run_retention_sweep((r.run).id, 500) from r$$,
+    select public.run_retention_sweep((select id from rt.run_ids where name = 'rr12'), 500)$$,
   'denied(55000:replication_role_must_be_origin)');
-select rt.val('RR13 the object manifest is readable and derives keys rather than taking them',
-  $$select (select count(*) >= 0 from public.retention_object_manifest(10))::text$$, 'true');
+select public.fail_retention_run((select id from rt.run_ids where name = 'rr12'), 'rt probe');
+select rt.val('RR13 no run this section opened was left `running`',
+  $$select count(*)::text from public.retention_runs where status = 'running'$$, '0');
 
 -- ---------------------------------------------------------------------------
 -- RR14/RR15: THE ONE THING THIS SUITE CANNOT ASK BY CALLING, ASSERTED FROM

@@ -1,7 +1,7 @@
 // THE RETENTION RUNNER, AND THE BYTES IT IS SUPPOSED TO REMOVE.
 //
 // The row side of this task is proved in psql (supabase/tests/
-// rls_phase8_retention.sql, 114 assertions). This file exists for the one
+// rls_phase8_retention.sql). This file exists for the one
 // thing psql cannot reach: STORAGE. Object bytes do not live in Postgres, so
 // "the document was purged" asserted against a row is not the claim the
 // retention policy makes -- the claim is that the FILE IS GONE FROM THE
@@ -52,10 +52,12 @@ const EXPIRED_DOC = "11111111-1111-4111-8111-000000000001";
 const LIVE_DOC = "11111111-1111-4111-8111-000000000002";
 const FEEDBACK_ID = "11111111-1111-4111-8111-000000000003";
 const ORPHAN_KEY = "11111111-1111-4111-8111-00000000000f/orphan-probe";
+const REFUSED_DOC = "11111111-1111-4111-8111-000000000004";
 
 let expiredDocKey = "";
 let liveDocKey = "";
 let screenshotKey = "";
+let refusedDocKey = "";
 
 async function objectExists(bucket: string, key: string): Promise<boolean> {
   const { data, error } = await createStorageClient().storage.from(bucket).download(key);
@@ -79,14 +81,15 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!fx) return;
   const storage = createStorageClient().storage;
-  await storage.from("documents").remove([expiredDocKey, liveDocKey].filter(Boolean));
+  await pool.query(`drop table if exists public.c2_unclassified_probe`);
+  await storage.from("documents").remove([expiredDocKey, liveDocKey, refusedDocKey].filter(Boolean));
   await storage.from("feedback-screenshots").remove([screenshotKey].filter(Boolean));
   await storage.from("documents").remove([ORPHAN_KEY]);
   await pool.query(`delete from public.audit_events where action = 'retention.swept'`);
   await pool.query(`delete from public.retention_runs`);
   await pool.query(`delete from public.feedback where id = $1`, [FEEDBACK_ID]);
   await pool.query(`delete from public.documents where id = any($1::uuid[])`, [
-    [EXPIRED_DOC, LIVE_DOC],
+    [EXPIRED_DOC, LIVE_DOC, REFUSED_DOC],
   ]);
   await destroyFixtures(fx);
 });
@@ -257,5 +260,87 @@ describe("the retention runner removes bytes from the buckets, and only the righ
       [runs.rows.map((r) => r.corr)],
     );
     expect(audit.rows[0].n, "each run should write exactly one summary row, on its own thread").toBe("2");
+  }, 180_000);
+  // =========================================================================
+  // REVIEW FINDING C2 (fix round 1): STEP 0 RAN AFTER THE BYTES WERE GONE.
+  //
+  // The runner read the manifest, DELETED THE OBJECTS, and only then called
+  // public.run_retention_sweep() -- which is where the roll was asserted. The
+  // reviewer planted an unclassified table and measured it end to end: the
+  // tripwire fired, the run was recorded `failed`, and the expired document's
+  // file had already been destroyed. `objectsRemoved: 1`.
+  //
+  // psql CANNOT SEE THIS AT ALL -- RR8 proved step 0 refuses and has no way
+  // of knowing what the runner did to a bucket before asking. So the
+  // assertion lives here, and it is the reviewer's: plant a table nobody
+  // classified, run, and require the file to be STILL DOWNLOADABLE.
+  // =========================================================================
+  it("C2: a run the roll refuses touches NO object -- the expired file is still downloadable afterwards", async () => {
+    const storage = createStorageClient().storage;
+    refusedDocKey = `${fx.orgA.id}/${REFUSED_DOC}`;
+
+    const up = await storage.from("documents").upload(refusedDocKey, PDF, {
+      contentType: "application/pdf",
+      upsert: true,
+    });
+    expect(up.error, `the fixture object could not be stored: ${up.error?.message}`).toBeNull();
+    await pool.query(
+      `insert into public.documents
+         (id, organisation_id, filename, storage_key, mime_type, size_bytes,
+          scan_status, scanned_at, deleted_at)
+       values ($1, $2, 'refused.pdf', $3, 'application/pdf', $4, 'clean', now(),
+               now() - interval '2 years' - interval '1 day')`,
+      [REFUSED_DOC, fx.orgA.id, refusedDocKey, PDF.length],
+    );
+
+    // THE DENOMINATOR, TWICE: the file is there, AND the job would take it.
+    // Without the second half, "still downloadable" would be satisfied by a
+    // fixture the manifest never named.
+    expect(await objectExists("documents", refusedDocKey), "the fixture file").toBe(true);
+    const named = await pool.query<{ n: string }>(
+      `select count(*)::text as n from public.documents d
+        where d.id = $1 and d.deleted_at < now() - private.retention_period(private.document_retention_class(d.id))`,
+      [REFUSED_DOC],
+    );
+    expect(named.rows[0].n, "the fixture document is not past its period, so nothing is being tested").toBe("1");
+
+    await pool.query(`create table public.c2_unclassified_probe (id uuid primary key default gen_random_uuid())`);
+    let refusedRun: Awaited<ReturnType<typeof runRetentionSweep>>;
+    try {
+      refusedRun = await runRetentionSweep();
+    } finally {
+      await pool.query(`drop table if exists public.c2_unclassified_probe`);
+    }
+
+    expect(refusedRun.objectsRemoved, "A REFUSED RUN REMOVED OBJECTS FROM A BUCKET").toBe(0);
+    expect(
+      await objectExists("documents", refusedDocKey),
+      "THE RUN REFUSED -- AND THE EXPIRED DOCUMENT'S FILE WAS DESTROYED ANYWAY (C2)",
+    ).toBe(true);
+
+    // AND THE REFUSAL IS RECORDED, WITH ITS REASON, BEFORE THE MANIFEST WAS
+    // EVER READ: the run never reached `running`.
+    expect(refusedRun.outcome, "the run should have been refused").toBe("refused");
+    const run = await pool.query<{ status: string; reason: string | null }>(
+      `select status, refused->>'*' as reason from public.retention_runs where id = $1`,
+      [refusedRun.runId],
+    );
+    expect(run.rows[0]?.status, "the refused run was not recorded as refused").toBe("refused");
+    expect(run.rows[0]?.reason).toBe("unclassified_retention_subject");
+    const stamped = await pool.query<{ purged: string | null }>(
+      `select bytes_purged_at as purged from public.documents where id = $1`,
+      [REFUSED_DOC],
+    );
+    expect(stamped.rows[0].purged, "a refused run stamped a document").toBeNull();
+
+    // THE CONTROL: with the table gone the SAME file is taken by the next
+    // run, so the survival above was the refusal and not a job that never
+    // deletes anything.
+    const next = await runRetentionSweep();
+    expect(next.outcome, `the control run failed: ${JSON.stringify(next.refused)}`).toBe("ok");
+    expect(
+      await objectExists("documents", refusedDocKey),
+      "the control run did not take the file, so the refusal above proved nothing",
+    ).toBe(false);
   }, 180_000);
 });

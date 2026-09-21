@@ -122,9 +122,28 @@ export async function previewRetentionRunAction(
     };
   }
   if (result.outcome === "refused") {
+    // A REFUSAL HAS MORE THAN ONE CAUSE NOW (fix round 1, C2/I2), and saying
+    // "switched off" for all of them would send the founder to a switch that
+    // is already on. The row on the panel carries the hint either way.
+    revalidatePath("/super/health");
+    const why = result.refused?.["*"] ?? "";
+    if (why === "retention_disabled") {
+      return {
+        message:
+          "Nothing was previewed: the retention job is switched off. Turn it back on to see what a run would remove.",
+        values: {},
+      };
+    }
+    if (why === "retention_run_in_progress") {
+      return {
+        message:
+          "Nothing was previewed: another retention run is in progress, and only one runs at a time. Try again in a minute.",
+        values: {},
+      };
+    }
     return {
-      message:
-        "Nothing was previewed: the retention job is switched off. Turn it back on to see what a run would remove.",
+      error:
+        "Nothing was previewed, and nothing was deleted: the retention job refused to start. The run below says why, and it will keep refusing until that is fixed.",
       values: {},
     };
   }
