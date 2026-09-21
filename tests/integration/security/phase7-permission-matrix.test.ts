@@ -257,6 +257,16 @@ const ARGS = {
    * Read Only member is a real requester rather than a contrivance.
    */
   exportJobId: "",
+  /**
+   * Phase 8 Task 5: an account-scope ERASURE request made by the Read Only
+   * member through the real RPC and held OPEN -- the row every refused
+   * `start_erasure_for_request` call is aimed at, so a refusal is the
+   * operator gate's and not "no such request" or "that request is closed".
+   * Nothing ever runs the job it would create: this suite has no runner, the
+   * positive control deletes the queued row it makes, and the Read Only
+   * member's account is therefore never touched.
+   */
+  dsrErasureRequestId: "",
 };
 
 // Phase 8 Task 2: the no-organisation principal's user id, for the
@@ -730,6 +740,41 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
     },
   },
   {
+    // Phase 8 Task 5. The operator running the erasure a statutory request
+    // asked for -- necessary since 20260930004000, because the fulfilment
+    // seam now requires a job to have RUN before such a request can be closed.
+    fn: "start_erasure_for_request",
+    args: () => ({ p_request_id: ARGS.dsrErasureRequestId }),
+    sideEffectTable: "erasure_jobs",
+    invariant: async () => {
+      // THE ONE THAT MATTERS: no refused principal started an erasure of
+      // ANYBODY, and the Read Only member still exists. A count of
+      // erasure_jobs cannot see the second half.
+      const { rows } = await pool.query<{ n: string }>(
+        `select count(*)::text as n from auth.users u
+          where u.id = (select d.user_id from public.data_subject_requests d where d.id = $1)`,
+        [ARGS.dsrErasureRequestId],
+      );
+      expect(rows[0]?.n, "a refused principal erased the requester's account").toBe("1");
+    },
+    positiveControl: async () => {
+      const { data: id, error } = await superuser.rpc("start_erasure_for_request", {
+        p_request_id: ARGS.dsrErasureRequestId,
+      });
+      expect(
+        error,
+        `start_erasure_for_request must be reachable by the aal2 superuser: ${error?.message}`,
+      ).toBeNull();
+      // TIDIES ITS OWN ROW, for the reason request_impersonation does:
+      // `erasure_jobs_one_live_account_job` is unique over a live job per
+      // subject, so a queued job left behind makes the NEXT legitimate call
+      // fail with 23505 -- and a refusal that fails for a fixture reason is
+      // indistinguishable from the guard holding. Deleting it also means
+      // nothing is ever left for a runner to pick up.
+      await pool.query(`delete from public.erasure_jobs where id = $1`, [id]);
+    },
+  },
+  {
     fn: "record_legal_document_counsel_review",
     args: () => ({ p_document_id: ARGS.legalDraftId, p_reviewer: "Matrix Counsel LLP" }),
     sideEffectTable: "audit_events",
@@ -805,6 +850,12 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "job that is not the caller's own (42501 not_your_export), one with no " +
     "archive, and one past its read-time expiry; on success it writes an " +
     "identifier-only audit row and nothing else. It returns no data at all.",
+  my_erasure_blockers:
+    "Phase 8 Task 5 -- ANY signed-in person asks what would stop them deleting " +
+    "their OWN account (Q131). It takes no argument and reads " +
+    "auth.uid(), so it cannot be pointed at anybody else, and it discloses " +
+    "only the names of workspaces the caller is already an Owner of. A " +
+    "signed-out caller gets no rows rather than an error.",
   withdraw_data_subject_request:
     "Phase 8 Task 3 -- the requester withdraws their OWN open request. The " +
     "BEFORE UPDATE trigger refuses a withdrawal by anyone but the requester, " +
@@ -914,6 +965,14 @@ const OWN_ROW_RELATIONS = [
   // second Admin of the same workspace -- an archive is a snapshot taken
   // under one person's access rights.
   "export_jobs",
+  // Phase 8 Task 5: the erasure register. SELECT to authenticated, rows
+  // filtered to the caller as SUBJECT or REQUESTER -- plus the aal2
+  // operator's oversight read, which export_jobs deliberately does NOT have
+  // (an erasure request is fulfilled from /super/data-requests and the
+  // operator has to be able to see whether the job ran). INSERT granted on
+  // ONE column (kind) with everything else stamped by the trigger; no UPDATE
+  // or DELETE for any client role at all.
+  "erasure_jobs",
 ] as const;
 
 /**
@@ -1248,6 +1307,29 @@ beforeAll(async () => {
       throw new Error(`POSITIVE CONTROL FAILED: export_jobs insert: ${error?.message}`);
     }
     ARGS.exportJobId = made[0].id;
+  }
+
+  // ---- Phase 8 Task 5: an ACCOUNT-scope erasure request held OPEN --------
+  // The row every refused `start_erasure_for_request` call is aimed at, so a
+  // refusal is the operator gate's and not "no such request" or "that request
+  // is closed". Nothing here runs the erasure runner, and the positive
+  // control deletes the queued job it creates, so the Read Only member's
+  // account survives this file intact -- asserted, not assumed, in the
+  // surface's own `invariant`.
+  {
+    const { data, error } = await fx.activeByRole.read_only.client.rpc(
+      "submit_data_subject_request",
+      {
+        p_right_type: "erasure",
+        p_subject_scope: "account",
+        p_detail: "matrix fixture: please delete my account",
+      },
+    );
+    const made = (data ?? []) as { request_id: string }[];
+    if (error || made.length !== 1) {
+      throw new Error(`POSITIVE CONTROL FAILED: submit_data_subject_request (erasure): ${error?.message}`);
+    }
+    ARGS.dsrErasureRequestId = made[0].request_id;
   }
 
   // `rate_limit_counters` needs a row too, and the honest way to get one is to

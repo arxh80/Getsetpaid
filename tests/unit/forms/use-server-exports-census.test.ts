@@ -125,6 +125,7 @@ const SERVER_ACTION_MODULES = [
   "lib/crm/venues.ts",
   "lib/dsr/actions.ts",
   "lib/dsr/admin-actions.ts",
+  "lib/erasure/actions.ts",
   "lib/export/actions.ts",
   "lib/feedback/actions.ts",
   "lib/feedback/admin-actions.ts",

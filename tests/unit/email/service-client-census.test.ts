@@ -56,6 +56,11 @@ const ALLOWED = new Set([
   // it, and its whole reach is the column-narrow grants in 20260927001000 § 7
   // and 20260927003000 § 1 plus four RPCs granted to service_role alone.
   "lib/export/runner.ts",
+  // Phase 8 Task 5. The erasure runner, the third sessionless caller: it has
+  // no user, so no RLS policy can name it, and its whole reach is the
+  // column-narrow grants in 20260930001000 § 7 plus four RPCs granted to
+  // service_role alone.
+  "lib/erasure/runner.ts",
 ]);
 
 interface Scanned {

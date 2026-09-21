@@ -177,6 +177,17 @@ export const PLATFORM_AUDIT_ACTIONS = [
   // and it is the record of those.
   "export_job.requested",
   "export_job.downloaded",
+
+  // Phase 8 Task 5 (20260930001000, 20260930003000): erasure. TWO actions,
+  // and the second one is unlike every other row in this table: it is the
+  // SUMMARY of a completed account erasure, its payload is counts and never
+  // content, and its actor is the Q130 TOMBSTONE -- because the person who
+  // asked no longer exists by the time it is written. It is deliberately not
+  // "written by nobody": audit_events.actor_user_id is NOT NULL and there is
+  // no system actor, and an erasure that left no record of itself would
+  // destroy the evidence that a statutory deletion was performed.
+  "erasure_job.requested",
+  "account.erased",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

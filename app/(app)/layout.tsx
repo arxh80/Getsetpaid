@@ -335,6 +335,18 @@ export default async function AppLayout({
           >
             Your data requests
           </Link>
+          {/* Phase 8 Task 5: account erasure. In the footer with the other
+              three account-level rights rather than hidden behind a settings
+              screen -- a statutory right that is hard to find is a right the
+              product is making harder to exercise, and the page itself
+              explains what happens before anything can be pressed. */}
+          <Link
+            href="/account/erase"
+            prefetch={false}
+            className="underline underline-offset-4 hover:text-ink"
+          >
+            Delete your account
+          </Link>
         </div>
       </footer>
     </div>

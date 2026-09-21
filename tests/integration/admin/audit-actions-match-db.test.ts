@@ -315,3 +315,70 @@ describe("every literal action any database function writes is in the catalogue"
     expect(OLD.test(`log_audit_event(p_action => 'gdpr.art17_erasure',`)).toBe(false);
   });
 });
+
+// ===========================================================================
+// THE THIRD WAY AN ACTION NAME REACHES THE TABLE, AND IT WAS INVISIBLE UNTIL
+// PHASE 8 TASK 5 NEEDED IT.
+// ===========================================================================
+// Everything above reads `private.log_audit_event(...)` and its two wrappers.
+// That function REQUIRES `auth.uid()` -- it raises 28000 without one -- so a
+// sessionless writer cannot use it at all, and Task 5 has two: the erasure
+// job's request trigger (a workspace purge is started by the platform) and
+// the erasure summary itself (by the time it is written, the person who asked
+// does not exist). Both INSERT into public.audit_events directly, with the
+// Q130 tombstone as the actor.
+//
+// A direct insert was outside every census in this file. Its action name
+// could be renamed, mistyped or added without the operator's filter ever
+// learning it existed -- the "a check that cannot see its own subject" class,
+// on the exact surface this file is about. So: find every function that
+// inserts into public.audit_events directly, read the literal it puts in the
+// `action` column, and require it to be in the catalogue.
+describe("every literal action a function INSERTS into audit_events directly is in the catalogue", () => {
+  it("finds the direct writers and reads their action names", async () => {
+    const { rows } = await pool.query<{ fqn: string; body: string }>(
+      `select n.nspname || '.' || p.proname as fqn, pg_get_functiondef(p.oid) as body
+         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname in ('public', 'private') and p.prokind = 'f'
+          and pg_get_functiondef(p.oid) ~* 'insert\s+into\s+public\.audit_events'`,
+    );
+
+    // DENOMINATOR. private.log_audit_event itself, plus the two Task 5
+    // writers. Fewer than three means this stopped finding them -- which is
+    // how a census of this shape goes quietly green.
+    expect(
+      rows.map((r) => r.fqn).sort(),
+      "the direct-insert census lost a writer it used to see",
+    ).toEqual(
+      ["private.audit_erasure_job_requested", "private.erase_account", "private.log_audit_event"],
+    );
+
+    const known = new Set(knownAuditActions());
+    const found: string[] = [];
+    const missing: string[] = [];
+    for (const { fqn, body } of rows) {
+      if (fqn === "private.log_audit_event") continue; // forwards its parameter
+      const code = body.replace(/--[^\n]*/g, "");
+      // SCOPED TO THE INSERT STATEMENT ITSELF, from the keyword to that
+      // statement's terminating semicolon -- not the whole function body.
+      // private.erase_account() is full of dotted literals that are jsonb
+      // COUNT KEYS ('notes.private_deleted', 'merges.owner_snapshots'), and a
+      // whole-body scan would report every one of them as an unknown audit
+      // action. Inside the statement, the action is the one dotted literal:
+      // 'erasure_job' (the target type) and 'account' (a kind) carry no dot.
+      for (const at of code.matchAll(/insert\s+into\s+public\.audit_events/gi)) {
+        const from = at.index ?? 0;
+        const end = code.indexOf(";", from);
+        const statement = code.slice(from, end === -1 ? code.length : end);
+        for (const m of statement.matchAll(/'([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)'/g)) {
+          found.push(`${fqn}: ${m[1]}`);
+          if (!known.has(m[1])) missing.push(`${fqn}: ${m[1]}`);
+        }
+      }
+    }
+    // POSITIVE CONTROL: the reader found something. Without this, a regex
+    // that matched nothing would satisfy `missing` perfectly.
+    expect(found.length, "no action name was read out of any direct writer").toBeGreaterThan(1);
+    expect(missing).toEqual([]);
+  });
+});

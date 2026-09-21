@@ -48,7 +48,12 @@ import { supabasePublicKey, supabaseUrl } from "./env";
  *  `/api/incident-alerts`: no user, a server-held bearer compared in constant
  *  time inside the handler, 404 to everything else including an unset secret.
  *  Listed under `/api/exports` rather than the exact path so a future
- *  sibling under it is a deliberate edit here. */
+ *  sibling under it is a deliberate edit here.
+ *
+ *  `/api/erasure/run` (Phase 8 Task 5) is the erasure runner's retry
+ *  endpoint, on the same tick, with the same shape and its OWN bearer secret
+ *  -- a leak of the export one must not run deletions. Listed under
+ *  `/api/erasure` for the same reason as its sibling. */
 export const PUBLIC_PATHS = [
   "/login",
   "/signup",
@@ -56,6 +61,7 @@ export const PUBLIC_PATHS = [
   "/auth",
   "/api/incident-alerts",
   "/api/exports",
+  "/api/erasure",
   "/legal",
 ] as const;
 

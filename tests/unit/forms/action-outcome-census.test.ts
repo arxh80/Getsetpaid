@@ -39,6 +39,11 @@ const REPORTED_SURFACES = [
   // is rendered, so a message held by its useActionState is thrown away by
   // exactly the re-render it caused.
   "components/account/export-start-form.tsx",
+  // Phase 8 Task 5. Starting an erasure revalidates the page into a tree where
+  // this form is disabled and a job list that did not exist is rendered -- the
+  // same shape as its sibling, on the one action in the product that cannot be
+  // repeated to find out whether it worked.
+  "components/account/erasure-form.tsx",
 ];
 
 /**

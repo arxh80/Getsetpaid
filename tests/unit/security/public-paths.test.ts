@@ -19,11 +19,20 @@ describe("PUBLIC_PATHS and isUnder()", () => {
       "/auth",
       "/api/incident-alerts",
       "/api/exports",
+      "/api/erasure",
       "/legal",
     ]);
   });
 
-  it.each(["/legal", "/legal/", "/legal/privacy", "/legal/cookies", "/legal/not-a-page"])(
+  it.each([
+    "/legal",
+    "/legal/",
+    "/legal/privacy",
+    "/legal/cookies",
+    "/legal/not-a-page",
+    "/api/erasure",
+    "/api/erasure/run",
+  ])(
     "%s is public",
     (path) => {
       expect(isUnder(path, PUBLIC_PATHS)).toBe(true);
@@ -40,6 +49,11 @@ describe("PUBLIC_PATHS and isUnder()", () => {
     "/",
     "/super",
     "/onboarding",
+    // Phase 8 Task 5. The erasure runner's retry endpoint is public in the
+    // bounce's sense; its NEIGHBOURS are not, and `/api/erasures` is one
+    // character from the real thing.
+    "/api/erasures",
+    "/api/erasure-run",
   ])("%s is NOT public", (path) => {
     expect(isUnder(path, PUBLIC_PATHS)).toBe(false);
   });
