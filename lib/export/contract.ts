@@ -102,6 +102,40 @@ export interface ExportWithholding {
   readonly detail: string;
 }
 
+/**
+ * THE TABLES THE CATALOGUE CANNOT HOLD A ROW FOR, AND THAT ARE STILL WITHHELD.
+ *
+ * RR4 (Task 4 scoped re-review). `manifest.withheld` is built from the PLAN's
+ * excused rows, and a table in the completeness census's `NEITHER_DERIVATION`
+ * remainder has no catalogue row BY CONSTRUCTION -- a table with no foreign
+ * key cannot be catalogued without the both-directions assertions reporting it
+ * as `extra`. So it contributed nothing to `withheld`, and
+ * `public.rate_limit_counters` -- the one table in that remainder with a real
+ * row -> user path -- was left out of an account export with NO STATEMENT OF
+ * THAT FACT ANYWHERE THE DATA SUBJECT CAN READ. Every other excluded table
+ * says so in the archive. That is a transparency gap in a GDPR artefact, not
+ * an untidiness: the `withheld` array exists precisely so that what is absent
+ * is absent ON THE RECORD.
+ *
+ * Reference data in that remainder (the tier catalogue, the rate-limit
+ * policies, the permission catalogue) is NOT listed: it holds nothing about
+ * anybody, so naming it would pad the honest list with noise.
+ *
+ * `tests/integration/export/completeness-census.test.ts` binds this list to
+ * the census's own roll, so a later table with a subject path and no foreign
+ * key cannot join the remainder without joining this too.
+ */
+export const REMAINDER_WITHHELD: readonly { readonly table: string; readonly detail: string }[] = [
+  {
+    table: "rate_limit_counters",
+    detail:
+      "Rate-limit counters are GetSetPaid's own enforcement state -- how many times a budget has been " +
+      "spent in the current window -- rather than a record about you. A counter's subject can be a user " +
+      "or a whole workspace, chosen per budget, so including them would put one person's throttling " +
+      "history into another's copy. They are deliberately and permanently excluded.",
+  },
+] as const;
+
 export interface ExportManifest {
   readonly schemaVersion: number;
   readonly kind: ExportKind;

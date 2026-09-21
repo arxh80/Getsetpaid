@@ -45,6 +45,7 @@ import {
   type ExportKind,
   type ExportManifest,
   type ExportWithholding,
+  REMAINDER_WITHHELD,
   WITHHOLDING_COPY,
 } from "./contract";
 import { ExportTooLargeError, ZipWriter } from "./zip";
@@ -185,6 +186,14 @@ async function buildAndStore(supabase: ServiceClient, job: ClaimedJob): Promise<
 
   const rowCounts: Record<string, number> = {};
   const withheld: ExportWithholding[] = [];
+  // RR4. A table with no foreign key has no catalogue row, so the plan loop
+  // below can never produce a `withheld` entry for it -- see
+  // REMAINDER_WITHHELD's header. These are the ones that hold something about
+  // a person and are excluded anyway, and they are stated here so the archive
+  // answers for them like every other exclusion.
+  for (const entry of REMAINDER_WITHHELD) {
+    withheld.push({ what: `public.${entry.table}`, reason: "table_excused", detail: entry.detail });
+  }
   const files: { path: string; bytes: number }[] = [];
   let totalRows = 0;
 

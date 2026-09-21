@@ -32,6 +32,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
+import { REMAINDER_WITHHELD } from "@/lib/export/contract";
 
 const pool = new Pool({ connectionString: getLocalSupabaseStatus().dbUrl, max: 2 });
 
@@ -493,6 +494,27 @@ describe("the tables in NEITHER derivation are a disposition, not a residue", ()
     // exported; what it must not be is UNSEEN.
     expect(Object.keys(NEITHER_DERIVATION)).toContain("rate_limit_counters");
     expect(NEITHER_DERIVATION.rate_limit_counters).toContain("subject_id");
+  });
+
+  it("RR4: and it is stated IN THE ARCHIVE, not only in this file's comment", () => {
+    // A remainder table has no catalogue row by construction, so the runner's
+    // `withheld` array -- built from the plan's EXCUSED rows -- could never
+    // carry one. Every other excluded table says so in the manifest the data
+    // subject can read; this one said so only in the TypeScript comment above.
+    // REMAINDER_WITHHELD is the product-side roll that closes that, and this
+    // is the assertion that keeps the two from drifting: a later table with a
+    // subject path and no foreign key cannot join the remainder without
+    // joining the archive's own statement of what it left out.
+    expect(REMAINDER_WITHHELD.map((r) => r.table)).toEqual(["rate_limit_counters"]);
+    for (const entry of REMAINDER_WITHHELD) {
+      expect(Object.keys(NEITHER_DERIVATION), `${entry.table} is withheld but not in the remainder`).toContain(
+        entry.table,
+      );
+      // The detail is what the person actually reads, so it has to be a
+      // sentence rather than a table name.
+      expect(entry.detail.length, entry.table).toBeGreaterThan(120);
+      expect(entry.detail).not.toContain("_");
+    }
   });
 
   it("and the column that makes it so is still there, unconstrained", async () => {
