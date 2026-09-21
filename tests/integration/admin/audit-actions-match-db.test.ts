@@ -167,37 +167,151 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
   });
 });
 
+/** The argument list that follows an open paren, split at depth 0. */
+function splitArgs(tail: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of tail) {
+    if (ch === "(" || ch === "[") depth += 1;
+    else if (ch === "]") depth -= 1;
+    else if (ch === ")") {
+      if (depth === 0) break;
+      depth -= 1;
+    }
+    if (ch === "," && depth === 0) {
+      args.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  args.push(current);
+  return args;
+}
+
 describe("every literal action any database function writes is in the catalogue", () => {
   it("scans every public/private function body for log_audit_event(... p_action => '<name>' ...)", async () => {
     const { rows } = await pool.query<{ fqn: string; body: string }>(
       `select n.nspname || '.' || p.proname as fqn, pg_get_functiondef(p.oid) as body
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname in ('public', 'private') and p.prokind = 'f'
-          and pg_get_functiondef(p.oid) ~ 'log_audit_event'`,
+          and pg_get_functiondef(p.oid) ~ 'log_audit_event|log_organisation_lifecycle_event|log_override_event'`,
     );
     expect(rows.length).toBeGreaterThan(5);
 
     const known = new Set(knownAuditActions());
     const missing: string[] = [];
+    // EVERY CALL SITE IS ACCOUNTED FOR, NOT JUST THE ONES SPELLED ONE WAY
+    // (census audit, finding 12). This matched `p_action => '<name>'` and
+    // nothing else, so a PERFECTLY LEGAL positional call --
+    // `perform private.log_audit_event('org.suspended', 'organisation', ...)`
+    // -- was invisible, and the enclosing `rows.length > 5` denominator did
+    // not move, because the function still matches `log_audit_event` and still
+    // appears in `rows`. All 33 call sites use named notation today by house
+    // convention, asserted by nothing until now.
+    //
+    // The character class was also `[a-z_.]+`, which does not match a digit or
+    // a capital: `gdpr.art17_erasure` failed the pattern entirely (the closing
+    // quote does not follow `gdpr.art`) and was skipped in silence rather than
+    // reported as unknown.
+    //
+    // So: every `log_audit_event` call site is found, its action resolved
+    // named-or-positional, and any site whose action this cannot read is
+    // reported as UNRESOLVED and has to be named in DYNAMIC_ACTION_SITES with
+    // the reason. That is what makes this a census rather than a sample.
+    const unresolved: string[] = [];
     for (const { fqn, body } of rows) {
       // Strip `--` comments so a name mentioned in prose does not count.
       const code = body.replace(/--[^\n]*/g, "");
-      // A COMPLETE literal only: `p_action => 'x.y',` or `... 'x.y')`.
-      // public.end_impersonation_session builds its name as
-      // `'impersonation.' || case ... end`, and both of its outcomes
-      // (.ended/.expired) are listed by hand; the prefix alone is not a name.
-      for (const m of code.matchAll(/p_action\s*=>\s*'([a-z_.]+)'\s*[,)]/g)) {
-        if (!known.has(m[1])) missing.push(`${fqn}: ${m[1]}`);
+      if (fqn === "private.log_audit_event") continue; // its own definition
+      // THE TWO PARAMETERISED WRAPPERS ARE ENTRY POINTS TOO. A function that
+      // calls `private.log_override_event('billing_override.granted', ...)`
+      // does not name `log_audit_event` at all, so it was outside the row set
+      // ENTIRELY -- not merely unmatched. Resolving one level of wrapper is
+      // what makes the equality below a statement about every literal action
+      // the schema writes.
+      for (const call of code.matchAll(/(log_audit_event|log_organisation_lifecycle_event|log_override_event)\s*\(/g)) {
+        const entry = call[1]!;
+        // Skip the function's OWN `create function ...(` header.
+        if (fqn.endsWith(`.${entry}`)) continue;
+        const tail = code.slice(call.index! + call[0].length, call.index! + call[0].length + 400);
+        const named = /p_action\s*=>\s*'([A-Za-z0-9_.]+)'\s*[,)]/.exec(tail.split(")")[0] ?? "");
+        // Where p_action sits when the call is POSITIONAL, per entry point.
+        const at = entry === "log_organisation_lifecycle_event" ? 1 : 0;
+        const positional = /^'([A-Za-z0-9_.]+)'$/.exec((splitArgs(tail)[at] ?? "").trim());
+        const action = named?.[1] ?? positional?.[1];
+        if (action === undefined) {
+          unresolved.push(`${fqn}: ${tail.slice(0, 60).replace(/\s+/g, " ").trim()}`);
+        } else if (!known.has(action)) {
+          missing.push(`${fqn}: ${action}`);
+        }
       }
       // The document audit RPC validates p_action against a closed set
       // written as `p_action not in ('a', 'b', ...)`.
       const closed = code.match(/p_action\s+not\s+in\s*\(([^)]*)\)/);
       if (closed) {
-        for (const m of closed[1].matchAll(/'([a-z_.]+)'/g)) {
+        for (const m of closed[1].matchAll(/'([A-Za-z0-9_.]+)'/g)) {
           if (!known.has(m[1])) missing.push(`${fqn} (closed set): ${m[1]}`);
         }
       }
     }
     expect(missing).toEqual([]);
+
+    // WHAT THE RESOLUTION DROPPED, PINNED. A call whose action is built at
+    // runtime cannot be read out of the body, and dropping it silently is the
+    // whole bug class: each one is named, with the reason its outcomes are
+    // listed by hand instead.
+    const DYNAMIC_ACTION_SITES: Record<string, string> = {
+      "private.audit_crm_row":
+        "the Phase 2 CRM audit trigger: p_action => tg_argv[0], so the name is the trigger's own " +
+        "argument. Every such trigger is censused BY NAME in the trigger block above (22 pinned), " +
+        "which is where those action names are actually checked.",
+      "private.audit_crm_change":
+        "the Phase 7 Task 6b CRM audit trigger: v_target || '.created' and v_action, both built from " +
+        "the table name. The forty names they produce are pinned by crmAuditActions() and asserted " +
+        "against the catalogue in the block above.",
+      "private.audit_network_row":
+        "the network audit trigger: v_action is built from TG_OP, and its outcomes are in the " +
+        "catalogue under network_profile.* / network_connection_request.*.",
+      "private.audit_dsr_transition":
+        "'data_subject_request.' || new.status -- the status values are a CHECK constraint the state " +
+        "machine owns, and each resulting name is in the catalogue.",
+      "private.audit_incident_alert_resolution":
+        "a `case` over new.resolved_at, producing incident_alert.resolved / .reopened, both listed.",
+      "public.end_impersonation_session":
+        "builds 'impersonation.' || v_status; both outcomes (.ended, .expired) are listed by hand " +
+        "in the catalogue, and the prefix alone is not a name.",
+      "private.audit_document_action":
+        "p_action IS ITS OWN PARAMETER, reached from TypeScript rather than from SQL, and validated " +
+        "against a closed `p_action not in (...)` set -- which the branch above reads and checks " +
+        "name by name. That closed set is the census for this one.",
+      "private.log_organisation_lifecycle_event":
+        "a WRAPPER: it forwards its own p_action parameter. Its callers are resolved above, since " +
+        "the row set now includes functions that name the wrapper rather than log_audit_event.",
+      "private.log_override_event":
+        "a WRAPPER, exactly as above.",
+    };
+    const unresolvedFns = [...new Set(unresolved.map((u) => u.split(":")[0]!))].sort();
+    expect(
+      unresolvedFns,
+      "a function calls log_audit_event with an action this census cannot read out of the body. " +
+        "Either write the action as a literal, or name the function in DYNAMIC_ACTION_SITES with " +
+        "the reason its outcomes are pinned somewhere else. Sites: " + unresolved.join(" | "),
+    ).toEqual(Object.keys(DYNAMIC_ACTION_SITES).sort());
+  });
+
+  it("POSITIVE CONTROL: the resolver reads a positional call and a name with a digit", () => {
+    // Measured against the two shapes the old pattern could not see. Without
+    // this the widening above is an untested claim.
+    const read = (tail: string): string | undefined =>
+      (/^\s*p_action\s*=>\s*'([A-Za-z0-9_.]+)'\s*[,)]/.exec(tail) ?? /^\s*'([A-Za-z0-9_.]+)'\s*[,)]/.exec(tail))?.[1];
+    expect(read(`'org.suspended', 'organisation', v_id)`)).toBe("org.suspended");
+    expect(read(`\n      p_action => 'gdpr.art17_erasure',`)).toBe("gdpr.art17_erasure");
+    expect(read(`\n      p_action => tg_argv[0],`)).toBeUndefined();
+    // ...and the OLD pattern misses both of the first two.
+    const OLD = /p_action\s*=>\s*'([a-z_.]+)'\s*[,)]/;
+    expect(OLD.test(`log_audit_event('org.suspended', 'organisation', v_id)`)).toBe(false);
+    expect(OLD.test(`log_audit_event(p_action => 'gdpr.art17_erasure',`)).toBe(false);
   });
 });
