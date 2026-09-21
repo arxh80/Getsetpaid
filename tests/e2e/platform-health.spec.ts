@@ -2,8 +2,12 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
   PASSWORD,
+  clearRetentionRuns,
   deleteIncidentAlert,
   plantIncidentAlert,
+  plantRetentionRun,
+  retentionRuns,
+  retentionSweepableRowCount,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
@@ -258,6 +262,7 @@ test("the superuser reads live counts and a real alert row at /super/health", as
     ).not.toContainText(/resolved automatically/i);
   } finally {
     await deleteIncidentAlert(alertId);
+    await clearRetentionRuns();
   }
 });
 
@@ -294,11 +299,81 @@ test("an aal1 superuser session reaches no health numbers", async ({ page }) => 
 });
 
 // ===========================================================================
+// PHASE 8 TASK 6: THE RETENTION JOB'S PANEL, AND ITS PREVIEW
+//
+// Requirement 4 is two claims and only a browser can check either:
+//
+//   * "Surface the last run and its outcome on /super/health" -- the psql
+//     suite proves the run writes a row; it cannot tell whether anything
+//     renders it, and a run log nobody can see is not a control.
+//   * "must be able to see what a run WOULD delete before it deletes it" --
+//     asserted here by pressing the real control and COUNTING THE ROWS EITHER
+//     SIDE OF IT, across the whole set of tables the job can touch. A preview
+//     that quietly deleted from any one of eight sweeps would be invisible to
+//     a check on one table.
+//
+// THE PRESS IS THE POINT. previewRetentionRunAction is behind step-up and
+// behind isSuperuser(); nothing short of a real signed-in, MFA-satisfied
+// superuser reaching the real form proves the control is usable at all.
+// ===========================================================================
+test("the superuser previews a retention run, and the preview deletes nothing", async ({
+  page,
+}) => {
+  await clearRetentionRuns();
+  await signInAsSuperuser(page);
+  await page.goto("/super/health");
+
+  // THE PANEL IS THERE, AND IT IS THERE EMPTY FIRST -- which is the state
+  // that says "no run has been recorded", and is itself a fact an operator
+  // needs (a deployment with no runner URL never records one).
+  await expect(
+    page.getByRole("heading", { name: "Retention", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("retention-no-runs")).toBeVisible();
+
+  // THE DENOMINATOR: every row the job could touch, before the press.
+  const before = await retentionSweepableRowCount();
+  expect(before, "the fixture world should have rows the job could sweep").toBeGreaterThan(0);
+
+  await page.getByRole("button", { name: "Preview the next run" }).click();
+
+  // The outcome lives in the region the action cannot unmount, and it says
+  // in words that nothing was deleted.
+  const outcome = page.getByTestId("retention-outcome");
+  await expect(outcome).toContainText("Preview complete");
+  await expect(outcome).toContainText("Nothing was deleted");
+
+  // THE RUN IS RENDERED, marked as a preview rather than as work done.
+  await expect(page.getByTestId("retention-runs")).toBeVisible();
+  await expect(page.getByTestId("retention-runs")).toContainText("preview");
+
+  // AND IT WAS A DRY RUN IN THE DATABASE, not merely a label on the page.
+  const runs = await retentionRuns();
+  expect(runs.map((r) => `${r.mode}/${r.status}`)).toEqual(["dry/completed"]);
+
+  // THE ASSERTION THE WHOLE TEST EXISTS FOR.
+  expect(
+    await retentionSweepableRowCount(),
+    "A PREVIEW DELETED ROWS. It is the one control on this page that reaches " +
+      "the machinery which deletes the audit log, and it is supposed to count " +
+      "and stop.",
+  ).toBe(before);
+
+  await clearRetentionRuns();
+});
+
+// ===========================================================================
 // ACCESSIBILITY
 //
 // Scanned WITH an alert on the page, so the list, its labels and its Resolve
 // control are all in the tree. An empty-state scan would reach the counts and
 // miss every component the alerting half of this task added.
+//
+// AND, SINCE PHASE 8 TASK 6, WITH A RETENTION RUN ON IT TOO -- one carrying a
+// REFUSAL as well as counts, because the refusal line only exists when
+// something has gone wrong and is exactly the part an empty-state scan would
+// never reach. The two switches, their hint text and the reason field are in
+// the tree either way; the run card, its count list and its refusal are not.
 // ===========================================================================
 test("/super/health has no detectable accessibility violations", async ({
   page,
@@ -307,12 +382,17 @@ test("/super/health has no detectable accessibility violations", async ({
     world.orgId,
     "E2E accessibility scan fixture",
   );
+  await plantRetentionRun();
   try {
     await signInAsSuperuser(page);
     await page.goto("/super/health");
     await expect(
       page.getByText("E2E accessibility scan fixture"),
     ).toBeVisible();
+    // PROVED IN THE TREE BEFORE IT IS SCANNED, the rule this whole suite is
+    // written to: a scan of a component that did not render is a pass that
+    // means nothing.
+    await expect(page.getByTestId("retention-runs")).toContainText("bytes_not_purged");
 
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
@@ -323,5 +403,6 @@ test("/super/health has no detectable accessibility violations", async ({
     ).toEqual([]);
   } finally {
     await deleteIncidentAlert(alertId);
+    await clearRetentionRuns();
   }
 });

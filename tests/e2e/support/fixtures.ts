@@ -1034,6 +1034,82 @@ export async function deleteIncidentAlert(id: string): Promise<void> {
 }
 
 // ===========================================================================
+// PHASE 8 TASK 6: THE RETENTION JOB
+// ===========================================================================
+
+export interface RetentionRunRead {
+  id: string;
+  mode: string;
+  status: string;
+}
+
+/** Every retention run, newest first. The e2e reads this to prove that the
+ *  PREVIEW the founder pressed produced a `dry` run and not a live one. */
+export async function retentionRuns(): Promise<RetentionRunRead[]> {
+  const { rows } = await db().query<{ id: string; mode: string; status: string }>(
+    `select id, mode, status from public.retention_runs order by started_at desc`,
+  );
+  return rows;
+}
+
+/**
+ * The counts a DRY run must not move.
+ *
+ * Not a count of one table: the preview reaches eight sweeps, and a dry run
+ * that quietly deleted from any ONE of them would be invisible to a check on
+ * the others. This is the whole set the job can touch, in one number each,
+ * summed -- so "nothing moved" is one comparison over the whole blast radius.
+ */
+export async function retentionSweepableRowCount(): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select (
+        (select count(*) from public.audit_events)
+      + (select count(*) from public.feedback)
+      + (select count(*) from public.incident_alerts)
+      + (select count(*) from public.rate_limit_counters)
+      + (select count(*) from public.erasure_jobs)
+      + (select count(*) from public.export_jobs)
+      + (select count(*) from public.documents)
+      + (select count(*) from public.organisations)
+     )::text as n`,
+  );
+  return Number(rows[0].n);
+}
+
+/**
+ * Plant one completed retention run, so the panel can be scanned POPULATED.
+ *
+ * Planted rather than driven, for public.incident_alerts' reason: the table
+ * has no INSERT grant or policy for any client role, the only writer is a
+ * SECURITY DEFINER function the runner calls, and a real run inside an axe
+ * test would make the scan depend on a sweep's timing. What is being scanned
+ * is the RENDERING of a run -- its counts, its capped note and its refusal
+ * line -- and that is the same markup whichever way the row arrived.
+ *
+ * It carries a REFUSAL as well as counts, because the refusal line is the
+ * one piece of this panel that only exists when something has gone wrong,
+ * and an empty-state scan of it would miss the component entirely.
+ */
+export async function plantRetentionRun(): Promise<string> {
+  const { rows } = await db().query<{ id: string }>(
+    `insert into public.retention_runs
+       (correlation_id, mode, status, finished_at, duration_ms, swept, refused)
+     values (gen_random_uuid(), 'live', 'completed', now(), 12,
+             '{"audit_events.rows": 0, "audit_events.capped": false,
+               "feedback.rows": 2, "organisations.purged": 0}'::jsonb,
+             '{"documents": "bytes_not_purged"}'::jsonb)
+     returning id`,
+  );
+  return rows[0].id;
+}
+
+/** Remove the runs and the summary audit rows a spec's previews created. */
+export async function clearRetentionRuns(): Promise<void> {
+  await sql(`delete from public.audit_events where action = 'retention.swept'`);
+  await sql(`delete from public.retention_runs`);
+}
+
+// ===========================================================================
 // PHASE 7 TASK 6: IN-APP FEEDBACK
 // ===========================================================================
 

@@ -225,6 +225,8 @@ const ROUTE_HANDLERS: Record<string, string> = {
     "platform superuser at aal2 -- probed principal by principal in this file",
   "app/api/erasure/run/route.ts":
     "BEARER SECRET (ERASURE_RUNNER_SECRET), no session, the same 404-either-way rule -- and its own secret, deliberately, because this is the one that makes queued DELETIONS happen sooner and a leak of the export runner's must not reach it. It takes no argument, so it cannot choose a deletion: every job it can reach is one somebody already asked for. Probed below",
+  "app/api/retention/run/route.ts":
+    "BEARER SECRET (RETENTION_RUNNER_SECRET), no session, the same 404-either-way rule -- a FOURTH secret, because this is the one that runs the sweep which DELETES THE AUDIT LOG, and neither of the other three should reach it. It cannot choose what to delete: every period is declared in the database and the audit purge behind it carries a hard floor, a kill switch and a sanity ceiling this endpoint cannot touch. Probed below",
   "app/api/exports/run/route.ts":
     "BEARER SECRET (EXPORT_RUNNER_SECRET), no session; 404 when the secret is unset and 404 on a wrong one, so a prober cannot tell the two apart -- probed below",
   "app/api/incident-alerts/deliver/route.ts":
@@ -258,7 +260,7 @@ test("every route handler in the app tree is accounted for", async () => {
 });
 
 // =============================================================================
-// THE TWO SESSIONLESS API ROUTES
+// THE FOUR SESSIONLESS API ROUTES
 // =============================================================================
 test("the bearer-secret API routes refuse a browser session and an anonymous caller", async ({
   page,
@@ -269,7 +271,12 @@ test("the bearer-secret API routes refuse a browser session and an anonymous cal
   // BY DESIGN, so that a prober cannot tell a misconfigured deployment from a
   // protected one; that makes 404 the assertion, and the body must not say
   // which it was.
-  const ROUTES = ["/api/exports/run", "/api/erasure/run", "/api/incident-alerts/deliver"];
+  const ROUTES = [
+    "/api/exports/run",
+    "/api/erasure/run",
+    "/api/incident-alerts/deliver",
+    "/api/retention/run",
+  ];
 
   for (const url of ROUTES) {
     const anonymous = await page.request.post(url, { failOnStatusCode: false });
