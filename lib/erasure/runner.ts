@@ -215,6 +215,7 @@ export function failureSentence(cause: unknown): string {
       return "Nothing was deleted: a check that every trace of the account had been anonymised did not pass, so the whole deletion was rolled back. This needs a person to look at it.";
     case "composite_fk_to_auth_users":
     case "unclassified_fkless_identifier":
+    case "array_identifier_needs_a_named_step":
       // Both mean the same thing to the person reading it: the schema has
       // grown something this deletion cannot promise anything about, so it
       // refused rather than leaving an identifier behind (fix round 1, C1).

@@ -504,6 +504,93 @@ drop table public.er_unclassified_probe;
 select er.val('EC6 and with the probe gone the chokepoint gets past step 0 again',
   $$select (private.erase_account(gen_random_uuid(), null) ->> 'already_erased')$$, 'true');
 
+-- ---------------------------------------------------------------------------
+-- THE FIVE SHAPES THE ROLL USED TO BE BLIND TO (fix round 2, N1).
+--
+-- The scoped re-review planted ten column shapes and called the chokepoint:
+-- E1/E1p/E10 (an ordinary FK-less uuid, in `private`, and UNLOGGED) refused
+-- and are EC5 above; THREE got past step 0 in silence and are EC7-EC9 here;
+-- two more are closed with them (EC10, EC11). The remaining three are left
+-- open on purpose and 20261002000000's header says why: a uuid inside jsonb
+-- or text (a content scan), and any schema but public/private (auth, storage
+-- and the rest are not ours to classify).
+--
+-- Each one is a MUTATION with EC12 as its shared control: plant, refuse,
+-- drop. EC13 is the NEGATIVE control the narrowing needs -- the surrogate
+-- `id uuid primary key` is still exempt, or this would refuse every table in
+-- the schema and pass for the wrong reason.
+-- ---------------------------------------------------------------------------
+
+create table public.er_natural_pk_probe (user_id uuid primary key);
+select er.try_hint('EC7 MUTATION: a NATURAL uuid primary key refuses the erasure',
+  $$select private.erase_account(gen_random_uuid(), null)$$,
+  'denied(55000:unclassified_fkless_identifier)');
+drop table public.er_natural_pk_probe;
+
+create table public.er_composite_pk_probe (user_id uuid, k int, primary key (user_id, k));
+select er.try_hint('EC8 MUTATION: a uuid inside a COMPOSITE primary key refuses it too',
+  $$select private.erase_account(gen_random_uuid(), null)$$,
+  'denied(55000:unclassified_fkless_identifier)');
+drop table public.er_composite_pk_probe;
+
+create table public.er_array_probe (
+  id uuid primary key default gen_random_uuid(), whos uuid[]);
+select er.try_hint('EC9 MUTATION: a uuid[] refuses it -- the shape NO foreign key can protect',
+  $$select private.erase_account(gen_random_uuid(), null)$$,
+  'denied(55000:unclassified_fkless_identifier)');
+
+-- AND AN ARRAY ON THE ROLL WITH A TREATMENT THE LOOPS CANNOT RUN. The roll is
+-- saved from the catalogue and put back from the catalogue, so this probe
+-- does not restate the roll's own contents and cannot go stale when it grows.
+create table er.saved_roll as
+  select pg_catalog.pg_get_functiondef('private.fkless_identifier_columns()'::pg_catalog.regprocedure) as def;
+do $mut$
+declare v_def text;
+begin
+  select s.def into v_def from er.saved_roll s;
+  execute pg_catalog.replace(v_def, 'from (values',
+    'from (values (''public.er_array_probe'', ''whos'', ''user'', ''null_on_match'', null, ''fix round 2 probe''),');
+end;
+$mut$;
+select er.try_hint('EC10 MUTATION: a uuid[] CLASSIFIED for the generic loops refuses, by its own hint',
+  $$select private.erase_account(gen_random_uuid(), null)$$,
+  'denied(55000:array_identifier_needs_a_named_step)');
+do $res$
+declare v_def text;
+begin
+  select s.def into v_def from er.saved_roll s;
+  execute v_def;
+end;
+$res$;
+select er.val('EC10a the roll is back the way it was found',
+  $$select (pg_catalog.pg_get_functiondef('private.fkless_identifier_columns()'::pg_catalog.regprocedure)
+            = (select def from er.saved_roll))::text$$, 'true');
+drop table public.er_array_probe;
+
+create domain public.er_uid as uuid;
+create table public.er_domain_probe (
+  id uuid primary key default gen_random_uuid(), who public.er_uid);
+select er.try_hint('EC11 MUTATION: a DOMAIN over uuid refuses it -- the base type is what counts',
+  $$select private.erase_account(gen_random_uuid(), null)$$,
+  'denied(55000:unclassified_fkless_identifier)');
+drop table public.er_domain_probe;
+drop domain public.er_uid;
+
+create materialized view public.er_matview_probe as select gen_random_uuid() as who;
+select er.try_hint('EC12 MUTATION: a MATERIALIZED VIEW is storage and refuses it (a plain view is not)',
+  $$select private.erase_account(gen_random_uuid(), null)$$,
+  'denied(55000:unclassified_fkless_identifier)');
+drop materialized view public.er_matview_probe;
+
+select er.val('EC13 CONTROL: every probe gone, the chokepoint gets past step 0 again',
+  $$select (private.erase_account(gen_random_uuid(), null) ->> 'already_erased')$$, 'true');
+
+create table public.er_surrogate_pk_probe (
+  id uuid primary key default gen_random_uuid(), name text);
+select er.val('EC14 NEGATIVE CONTROL: the surrogate `id uuid primary key` is still exempt',
+  $$select (private.erase_account(gen_random_uuid(), null) ->> 'already_erased')$$, 'true');
+drop table public.er_surrogate_pk_probe;
+
 
 -- ===========================================================================
 -- EG  THE CATALOGUE
