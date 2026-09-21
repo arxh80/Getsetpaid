@@ -170,6 +170,38 @@ describe("the retention runner removes bytes from the buckets, and only the righ
     expect(await objectExists("feedback-screenshots", screenshotKey), "the dry run deleted a screenshot").toBe(true);
     expect(await objectExists("documents", ORPHAN_KEY), "the dry run deleted an orphan").toBe(true);
 
+    // ---- THE BYTES-FIRST GATE, ASKED DIRECTLY AND BEFORE THE RUNNER TOUCHES
+    //      THE BUCKET. private.sweep_feedback() must DEFER a row whose
+    //      screenshot is still stored -- deleting it there would leave an
+    //      untracked image of somebody's screen that only the orphan sweep
+    //      would find, a day later.
+    //
+    //      THIS ASSERTION EXISTS BECAUSE A MUTATION FOUND NOTHING. Removing
+    //      the gate's `not exists (... storage.objects ...)` term reddened
+    //      ZERO assertions in the 116-assertion psql suite, and zero here --
+    //      psql cannot plant a storage object it is able to remove again
+    //      (`storage.protect_delete()` refuses a direct DELETE and `postgres`
+    //      is not the owner of that table, so the trigger cannot be disabled
+    //      for one statement either, and `session_replication_role = replica`
+    //      is forbidden in this feature). This file is the only place the
+    //      rule can be asked at all.
+    const deferred = await pool.query<{ r: Record<string, number> }>(
+      `select private.sweep_feedback(false, 500) as r`,
+    );
+    expect(
+      deferred.rows[0].r["feedback.waiting_on_bytes"],
+      "the sweep did not notice that the screenshot is still stored",
+    ).toBe(1);
+    expect(
+      deferred.rows[0].r["feedback.rows"],
+      "THE FEEDBACK ROW WAS DELETED WHILE ITS SCREENSHOT WAS STILL IN THE BUCKET",
+    ).toBe(0);
+    const stillThere = await pool.query<{ n: string }>(
+      `select count(*)::text as n from public.feedback where id = $1`,
+      [FEEDBACK_ID],
+    );
+    expect(stillThere.rows[0].n, "the deferred row did not survive its own sweep").toBe("1");
+
     // ---- THE LIVE RUN.
     const live = await runRetentionSweep();
     expect(live.outcome, `the live run failed: ${JSON.stringify(live.refused)}`).toBe("ok");
