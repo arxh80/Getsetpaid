@@ -163,6 +163,32 @@ else
 fi
 echo
 
+
+# ---------------------------------------------------------------------------
+# RECORD THE FIXTURE VARIABLES FOR run-one.sh.
+#
+# Every suite after rls_foundation.sql is handed a -v array of fixture user
+# uuids and session claims that this script builds from auth.users it creates
+# over the Auth admin API. Nothing else can reconstruct them, which is why a
+# single suite could not be re-run on its own -- and re-running one is exactly
+# what iterating on a psql file wants (a full run is ~19 suites and minutes).
+#
+# So each array is written out as it is built, and supabase/tests/run-one.sh
+# replays it against the still-live database. The suites do not tear their
+# fixtures down (see the preflight above), so after a full run the rows the
+# variables point at are all still there.
+#
+# The file holds throwaway local-stack user uuids and unsigned claim JSON --
+# no keys, no tokens, nothing signed -- and is gitignored regardless.
+VARS_DUMP="$HERE/.last-run-vars.sh"
+dump_vars() {
+  local name=$1; shift
+  printf '%s=(' "$name" >> "$VARS_DUMP"
+  printf ' %q' "$@" >> "$VARS_DUMP"
+  printf ')\n' >> "$VARS_DUMP"
+}
+: > "$VARS_DUMP"
+
 docker cp "$HERE/rls_foundation.sql" "$CTR:/tmp/rls_foundation.sql"
 
 VARS=()
@@ -172,6 +198,7 @@ for u in alice bob carol dave super; do
   VARS+=( -v "${u}_c1={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
   VARS+=( -v "${u}_c0={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\"}" )
 done
+dump_vars FOUNDATION_VARS "${VARS[@]}"
 
 MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
   "${VARS[@]}" -f /tmp/rls_foundation.sql
@@ -556,6 +583,7 @@ fi
 # ============================================================================
 P7VARS=( "${P6VARS[@]}" )
 P7VARS+=( -v "super_c1={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
+dump_vars SUITE_VARS "${P7VARS[@]}"
 
 docker cp "$HERE/rls_phase7_impersonation.sql" "$CTR:/tmp/rls_phase7_impersonation.sql"
 

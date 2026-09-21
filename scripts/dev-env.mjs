@@ -42,10 +42,24 @@ function readLocalStack() {
     // fails with ENOENT, which this script would then report as "the stack is
     // not running", sending the reader to fix the wrong thing. Nothing here is
     // interpolated, so there is nothing for a shell to expand.
-    raw = execSync(`npx --yes supabase status -o env --workdir "${WORKDIR}"`, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // A `supabase` ALREADY ON PATH IS PREFERRED, and this is not a
+    // micro-optimisation: on a CI runner the CLI is installed by
+    // supabase/setup-cli and `npx --yes supabase` would download a SECOND,
+    // possibly different version of it before every dev-server start. On a
+    // developer machine there is usually no `supabase` on PATH and the npx
+    // fallback is what has always run.
+    const status = `status -o env --workdir "${WORKDIR}"`;
+    try {
+      raw = execSync(`supabase ${status}`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      raw = execSync(`npx --yes supabase ${status}`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
   } catch {
     return null;
   }

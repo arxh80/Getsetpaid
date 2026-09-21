@@ -23,6 +23,11 @@ service-role*
 supabase/.temp/
 supabase/.branches/
 
+# Fixture uuids + session-claim JSON recorded by supabase/tests/run-rls-tests.sh
+# so supabase/tests/run-one.sh can replay one suite. Throwaway local-stack ids,
+# no keys and nothing signed, but per-machine and regenerated on every run.
+supabase/tests/.last-run-vars.sh
+
 # .claude/skills/<name> is a local junction into .agents/skills/<name>.
 # The real skill content is committed under .agents/ — committing both makes
 # git write duplicate real files on clone and breaks the junction.
