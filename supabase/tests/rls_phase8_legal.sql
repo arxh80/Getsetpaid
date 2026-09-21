@@ -130,12 +130,12 @@ select md5(body) as au_md5 from public.legal_documents where slug = 'acceptable-
 -- ===========================================================================
 -- § LF  FIXTURES
 -- ===========================================================================
-select lg.val('LF1 FIXTURE: the migrations hold exactly 31 rows (30, plus the one Phase 8 Task 6 rewrote because the retention job made the Data Retention page incomplete)',
-  $$select count(*)::text from public.legal_documents$$, '31');
-select lg.val('LF2 FIXTURE: 15 published -- 8 still at version 1, 3 at version 2, 1 at version 3, 1 at version 4, 2 at version 5',
+select lg.val('LF1 FIXTURE: the migrations hold exactly 32 rows (30, plus the one Phase 8 Task 6 rewrote because the retention job made the Data Retention page incomplete, plus the one its fix round 1 rewrote because THAT version overclaimed -- review finding I3)',
+  $$select count(*)::text from public.legal_documents$$, '32');
+select lg.val('LF2 FIXTURE: 15 published -- 8 still at version 1, 3 at version 2, 1 at version 3, 1 at version 4, 1 at version 5, 1 at version 6',
   $$select string_agg(version || '=' || n, ',' order by version) from (
       select version, count(*) as n from public.legal_documents where status = 'published' group by version) v$$,
-  '1=8,2=3,3=1,4=1,5=2');
+  '1=8,2=3,3=1,4=1,5=1,6=1');
 -- WHICH THREE, AND WHAT EACH NOW SAYS. Shipping a feature makes prose about
 -- it out of date, and the published version is immutable -- so the DPA's "a
 -- self-service export is being built", the rights page's single route to a
@@ -152,7 +152,8 @@ select lg.val('LF2i FIXTURE: the three export corrections are published, unrevie
   -- incomplete in the same way the export made them false. The BODY tests
   -- above are unchanged and still have to hold, which is the point of
   -- matching on text rather than on a version number alone.
-  'data-processing-addendum:4,data-retention:5,data-subject-rights:5');
+  -- Task 6's fix round 1 moved data-retention on once more, 5 -> 6 (I3).
+  'data-processing-addendum:4,data-retention:6,data-subject-rights:5');
 -- ---------------------------------------------------------------------------
 -- PHASE 8 TASK 5. The same shape, for the two pages erasure rewrote.
 -- ---------------------------------------------------------------------------
@@ -166,7 +167,7 @@ select lg.val('LF2l FIXTURE: the two erasure corrections are published, unreview
          or (slug = 'data-retention'
              and body like '%A deleted account:%'
              and body like '%never delete part of an account%'))$$,
-  'data-retention:5,data-subject-rights:5');
+  'data-retention:6,data-subject-rights:5');
 select lg.val('LF2m ...and the rights page says what SURVIVES an erasure, not just what goes',
   $$select count(*)::text from public.legal_documents
      where status = 'published' and slug = 'data-subject-rights'
@@ -184,7 +185,7 @@ select lg.val('LF2k DENOMINATOR for LF2j: the superseded DPA versions DO say it'
      where status = 'superseded' and body like '%A self-service export is being built%'$$, '3');
 select lg.val('LF2b FIXTURE: the superseded rows are exactly the versions fix rounds 1 and 2 (and Task 2, and Task 3 and its fix round) replaced',
   $$select string_agg(slug || ':' || version, ',' order by slug, version) from public.legal_documents where status = 'superseded'$$,
-  'data-processing-addendum:1,data-processing-addendum:2,data-processing-addendum:3,data-retention:1,data-retention:2,data-retention:3,data-retention:4,data-subject-rights:1,data-subject-rights:2,data-subject-rights:3,data-subject-rights:4,marketing-preferences:1,privacy:1,privacy:2,security:1,subprocessors:1');
+  'data-processing-addendum:1,data-processing-addendum:2,data-processing-addendum:3,data-retention:1,data-retention:2,data-retention:3,data-retention:4,data-retention:5,data-subject-rights:1,data-subject-rights:2,data-subject-rights:3,data-subject-rights:4,marketing-preferences:1,privacy:1,privacy:2,security:1,subprocessors:1');
 select lg.val('LF2c FIXTURE: no current page repeats a version 1 overclaim (I2, M1, M2)',
   $$select count(*)::text from public.legal_documents
      where status = 'published'
@@ -803,7 +804,7 @@ reset role; reset request.jwt.claims;
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'super_c';
-select lg.val('LO1 the aal2 superuser reads every version: 31 migrated + the terms and cookies drafts',
+select lg.val('LO1 the aal2 superuser reads every version: 32 migrated + the terms and cookies drafts',
   $$select count(*)::text from public.operator_legal_document_versions(null)$$, '33');
 select lg.val('LO2 ...including the one open draft, which no table read can reach',
   $$select string_agg(slug || ':' || status, ',' order by slug)

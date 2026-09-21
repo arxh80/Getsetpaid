@@ -381,6 +381,118 @@ select rt.val('RD12 ...and the roll is restored byte-identically',
 
 
 -- ===========================================================================
+-- RL  THE PUBLISHED PAGE AND THE DECLARATION SAY THE SAME THING
+--     (fix round 1, review finding I3 / Q183)
+-- ===========================================================================
+-- /legal/data-retention v5 deleted "Automated deletion is still being built"
+-- and left two sentences standing that were only survivable under it:
+-- "Inactive account data: 2 years" (nothing sweeps it) and "When a period
+-- ends, the data is permanently deleted or anonymised" (false for every
+-- `retained_with_workspace` table). v6 (20261004006000) says plainly what is
+-- NOT deleted. This section is what stops v7 drifting the same way:
+--
+--   RL2  every one of the ELEVEN declared periods appears on the page, IN THE
+--        SENTENCE THAT STATES IT, with the number read out of
+--        private.retention_periods() -- so counsel's answer to Q133, a reissue
+--        of that one function, reds the page until somebody corrects it too.
+--   RL4  every table the roll calls `retained_with_workspace` is NAMED in the
+--        page's "What is not deleted automatically" list -- so a new tenant
+--        table nobody told the page about is a red assertion.
+-- ===========================================================================
+
+create function rt.period_words(p interval) returns text language sql immutable as $$
+  select case
+    when extract(year from p)  > 0 then extract(year from p)::int  || ' year' || case when extract(year from p)  > 1 then 's' else '' end
+    when extract(day from p)   > 0 then extract(day from p)::int   || ' day'  || case when extract(day from p)   > 1 then 's' else '' end
+    when extract(hour from p)  > 0 then extract(hour from p)::int  || ' hour' || case when extract(hour from p)  > 1 then 's' else '' end
+  end
+$$;
+
+-- THE SENTENCE EACH CLASS IS STATED IN, with {p} where the period goes. The
+-- fragments are the page's; the NUMBERS are the database's.
+create table rt.page_sentences (class text primary key, fragment text not null);
+insert into rt.page_sentences values
+  ('operational',        '**The file behind a deleted document:** {p} after the document was deleted'),
+  ('financial',          '-- or {p} if the document is attached to an event that carries financial entries'),
+  ('feedback',           'including any screenshot: {p} from submission'),
+  ('audit_hot',          'searchable by our operator for {p},'),
+  ('audit_total',        'kept for up to {p} in total, then deleted'),
+  ('workspace',          '**A suspended or closed workspace:** {p} from suspension or closure'),
+  ('incident_alert',     '**Security alerts raised for our operator:** {p} after the alert was resolved'),
+  ('erasure_job_failed', '**The record of an account deletion that failed:** {p} after it failed'),
+  ('rate_limit_counter', 'in a recent window): {p} after that window closed'),
+  ('storage_orphan',     'by an upload that did not complete): {p}.'),
+  ('stuck_job',          'stuck "in progress" for more than {p} is marked as failed');
+
+select rt.val('RL1 DENOMINATOR: eleven classes are declared, every one has a sentence to be found in, and the page is the unreviewed current version',
+  $$select (select count(*)::text from private.retention_periods()) || '/' ||
+           (select coalesce(string_agg(p.class, ','), 'none') from private.retention_periods() p
+             where not exists (select 1 from rt.page_sentences s where s.class = p.class)) || '/' ||
+           (select (version >= 6)::text || '/' || (counsel_reviewed_at is null)::text
+              from public.legal_documents where slug = 'data-retention' and status = 'published')$$,
+  '11/none/true/true');
+select rt.val('RL2 EVERY declared period is on the published page, in the sentence that states it, with the DATABASE''S number',
+  $$select coalesce(string_agg(p.class, ',' order by p.class), 'none')
+      from private.retention_periods() p
+      join rt.page_sentences s on s.class = p.class
+     where strpos((select body from public.legal_documents where slug = 'data-retention' and status = 'published'),
+                  replace(s.fragment, '{p}', rt.period_words(p.period))) = 0$$, 'none');
+-- THE STANDING MUTATION: counsel answers Q133 -- "seven years is six" -- by
+-- reissuing the one function. The page must go red until it is corrected.
+do $$
+declare v_def text; v_new text;
+begin
+  v_def := (select def from rt.saved_defs where name = 'periods');
+  v_new := pg_catalog.replace(v_def, 'interval ''7 years''', 'interval ''6 years''');
+  if v_new = v_def then
+    raise exception 'RL3 could not change the declared period -- the probe would have proved nothing';
+  end if;
+  execute v_new;
+end $$;
+select rt.val('RL3 MUTATION: when the declaration changes to 6 years, the page that still says 7 is NAMED',
+  $$select coalesce(string_agg(p.class, ',' order by p.class), 'none')
+      from private.retention_periods() p
+      join rt.page_sentences s on s.class = p.class
+     where strpos((select body from public.legal_documents where slug = 'data-retention' and status = 'published'),
+                  replace(s.fragment, '{p}', rt.period_words(p.period))) = 0$$, 'financial');
+do $$ begin execute (select def from rt.saved_defs where name = 'periods'); end $$;
+discard plans;
+select rt.val('RL3a ...and the declaration is restored byte-identically',
+  $$select (pg_get_functiondef('private.retention_periods()'::regprocedure)
+            = (select def from rt.saved_defs where name = 'periods'))::text$$, 'true');
+
+select rt.val('RL4 every table the roll calls `retained_with_workspace` is NAMED in the page''s list of what is NOT deleted',
+  $$select (select count(*)::text from private.retention_subjects() where treatment = 'retained_with_workspace')
+        || '/' ||
+           coalesce((select string_agg(s.table_name, ',' order by s.table_name)
+                       from private.retention_subjects() s
+                      where s.treatment = 'retained_with_workspace'
+                        and strpos(
+                              split_part(split_part(
+                                (select body from public.legal_documents
+                                  where slug = 'data-retention' and status = 'published'),
+                                '## What is not deleted automatically', 2), '## A deleted account', 1),
+                              replace(s.table_name, '_', ' ')) = 0), 'none')$$, '11/none');
+select rt.val('RL5 the page says PLAINLY that nothing removes a deleted record, an inactive account or a financial record -- and no longer promises that every period ends in deletion',
+  $$select (body like '%**No period removes it after that.**%')::text || '/' ||
+           (body like '%**No automated process applies it today:**%')::text || '/' ||
+           (body like '%**Nothing deletes them when the 7 years end.**%')::text || '/' ||
+           (body like '%When a period ends, the data is permanently deleted or anonymised%')::text
+      from public.legal_documents where slug = 'data-retention' and status = 'published'$$,
+  'true/true/true/false');
+select rt.val('RL6 DENOMINATOR for RL5: the version it superseded DID make that promise, with nothing beside it to qualify it',
+  $$select (body like '%When a period ends, the data is permanently deleted or anonymised%')::text || '/' ||
+           (body like '%still being built%')::text
+      from public.legal_documents where slug = 'data-retention' and version = 5$$, 'true/false');
+-- m4: v5's migration published EVERY draft of the slug. v6 publishes by id.
+select rt.val('RL7 exactly ONE data-retention version is published, and no draft of it was swept up (m4)',
+  $$select (select count(*)::text from public.legal_documents where slug = 'data-retention' and status = 'published')
+        || '/' ||
+           (select count(*)::text from public.legal_documents where slug = 'data-retention' and status = 'draft')$$,
+  '1/0');
+
+
+-- ===========================================================================
 -- RS  THE SIX ROW SWEEPS
 -- ===========================================================================
 -- Each one: the subject is PLANTED and COUNTED, a sibling ONE DAY INSIDE the
