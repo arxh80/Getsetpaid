@@ -731,21 +731,37 @@ select xp.val('XP13 the requester''s claims do not outlive the read',
 -- only `request.jwt.claims`. So the two that were not restored were exactly
 -- the two nothing asked about: the invisible denominator, one more time.
 --
--- WHAT WRITING THESE ASSERTIONS MEASURED, and it changes the reading of the
--- finding: on this stack `auth.uid()` is
+-- THE COMMENT THAT USED TO BE HERE SAID THE OPPOSITE OF THE TRUTH, AND IT IS
+-- CORRECTED RATHER THAN QUIETLY DELETED (Task 4 scoped re-review, RR1).
+--
+-- Half of it is right, and measured on this stack: `auth.uid()` is
 --   coalesce(nullif(current_setting('request.jwt.claim.sub', true), ''),
 --            current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::uuid
--- -- the PER-CLAIM GUC FIRST. So blanking it is not a defence against a shape
--- this schema does not use; it is what makes the installed `request.jwt.claims`
--- authoritative for the requester read. The two set_config calls stay, and the
--- restore is the fix.
+-- -- the PER-CLAIM GUC IS READ FIRST.
 --
--- It is also why `request.jwt.claim.sub` cannot be measured behaviourally here:
--- any value auth.uid() can parse makes the read REFUSE (XP13b proves exactly
--- that, which is the other half of the sentence above), and any value it
--- cannot raises 22P02 before the function is entered. So role is measured, sub
--- is proved load-bearing, and the restore of all three is pinned on the
--- function's own body.
+-- The inference drawn from that was wrong. `public.export_read_page()`
+-- computes `v_uid := (select auth.uid())` as its FIRST statement and REFUSES
+-- when it is non-null (20260928002000:63, 42501
+-- export_reads_are_server_only). So by the time control reaches
+-- `set_config('request.jwt.claim.sub','',true)` at :120, that GUC is provably
+-- '' or unset: any castable value was refused twenty lines earlier, and any
+-- uncastable one raised 22P02 before the body ran. `nullif('','')` and
+-- `nullif(NULL,'')` are both NULL, so THE BLANKING CANNOT CHANGE ANY OUTCOME.
+-- It is belt and braces, not load-bearing, and XP13b below MEASURES THAT
+-- UNREACHABILITY -- it was labelled as proving the opposite.
+--
+-- The same is true of `role` for a different reason: `auth.role()` does read
+-- `request.jwt.claim.role` first (measured), but NOTHING IN THIS SCHEMA CALLS
+-- `auth.role()` -- 0 functions in public/private, 0 policies referencing it --
+-- so that blanking is inert too.
+--
+-- None of this changes the code, and the restore that shipped is right anyway:
+-- a function that changes a session setting and does not put it back is a
+-- defect whether or not anything currently reads it, and the cost is one
+-- set_config. What was wrong was the reasoning written beside it. The
+-- migration is immutable, so its header and its `comment on function` still
+-- carry the old claim; this block, the XP13b label below and the RR1 entry in
+-- task-4-rereview.md are the correction of record.
 set request.jwt.claim.role = 'XP13-SENTINEL-ROLE';
 select xp.val('XP13a request.jwt.claim.role is PUT BACK, not left blanked',
   format($$with r as (select public.export_read_page(%L, 'notes', '', 10))
@@ -754,7 +770,7 @@ select xp.val('XP13a request.jwt.claim.role is PUT BACK, not left blanked',
 reset request.jwt.claim.role;
 
 set request.jwt.claim.sub = '00000000-0000-4000-8000-0000000013ab';
-select xp.try_hint('XP13b DENOMINATOR: auth.uid() reads the PER-CLAIM sub first -- so blanking it is load-bearing, and a sentinel there is a person on the session',
+select xp.try_hint('XP13b the gate ABOVE the blanking refuses any sub a person could set, which is why blanking it is belt-and-braces rather than load-bearing (RR1)',
   format($$select public.export_read_page(%L, 'notes', '', 10)$$, :'alpha_job'),
   'denied(42501:export_reads_are_server_only)');
 reset request.jwt.claim.sub;
