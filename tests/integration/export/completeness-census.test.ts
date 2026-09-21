@@ -65,6 +65,65 @@ const USER_TABLES_SQL = `
    where k.contype = 'f' and n.nspname = 'public'
      and tn.nspname = 'auth' and tc.relname = 'users'`;
 
+/**
+ * THE REMAINDER: every `public` BASE TABLE in NEITHER derivation.
+ *
+ * ===========================================================================
+ * WHY A FOREIGN-KEY WALK NEEDS ONE (Task 4 review, finding I2)
+ * ===========================================================================
+ * The two walks above are strictly stronger than a column-name match against
+ * a RENAMED column, and strictly WEAKER against a MISSING CONSTRAINT — and
+ * that case is live rather than hypothetical. `public.rate_limit_counters`
+ * carries `subject_id`, which is a user id OR an organisation id chosen by
+ * `subject_scope`, with no foreign key on it. It therefore has a genuine
+ * row -> organisation path and a genuine row -> user path, and BOTH walks are
+ * blind to it: it is neither exported nor excused, simply unseen, and the
+ * census was green.
+ *
+ * Nothing leaks — rate-limit internals must never be exported — but the
+ * GUARANTEE was holed, which is what a census is for. So the unexamined
+ * residue becomes a DISPOSITION: the six tables in neither derivation are
+ * pinned by name with a reason each, and a seventh arrives as a red test
+ * naming itself.
+ *
+ * These are NOT catalogue rows. A table with no foreign key cannot be added
+ * to private.export_catalogue() without the both-directions assertions above
+ * reporting it as `extra` — the catalogue's subject is the derivation, and
+ * this roll is the complement of it.
+ */
+const NEITHER_DERIVATION: Readonly<Record<string, string>> = {
+  // ---- PLATFORM REFERENCE DATA. Seeded by migration, identical in every
+  // ---- deployment, about nobody. Exporting it would be exporting the
+  // ---- product's own configuration to a customer.
+  permissions:
+    "The permission-key catalogue. Seeded by migration, the same rows in every deployment, about no person and no workspace.",
+  roles:
+    "The role catalogue. Seeded by migration, the same rows in every deployment.",
+  role_permissions:
+    "Which role holds which permission key. Seeded by migration; the product's own policy, not a customer record.",
+  subscription_plans:
+    "The tier catalogue (Free / Starter / Pro) and what each one entitles. Seeded by migration; price-list data.",
+  rate_limit_policies:
+    "The rate-limit budgets from SECURITY.md section 5, seeded by migration. Platform configuration.",
+
+  // ---- THE ONE THAT IS NOT REFERENCE DATA, and the reason this roll exists.
+  rate_limit_counters:
+    "SUBJECT-SCOPED AND NOT DERIVABLE. `subject_id` is a user id OR an organisation id, chosen by `subject_scope`, with no foreign key on it — so it has a real row -> organisation path and a real row -> user path and the foreign-key walks cannot see either. It is EXCUSED, deliberately and permanently: the Task 4 brief names rate-limit internals among the things an export may never contain, the row is GetSetPaid's own enforcement state rather than the subject's data, and a counter naming a user id would put one person's throttling history into another's archive whenever the scope is `organisation`. Listed here rather than in the catalogue because a table with no foreign key cannot be catalogued without the both-directions assertions reporting it as `extra`.",
+};
+
+async function neitherDerivation(): Promise<string[]> {
+  const { rows } = await pool.query<{ tbl: string }>(
+    `select c.relname as tbl
+       from pg_class c
+       join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relkind = 'r'
+        and c.relname not in (${ORGANISATION_TABLES_SQL})
+        and c.relname not in (${USER_TABLES_SQL})
+      order by c.relname`,
+  );
+  return rows.map((r) => r.tbl);
+}
+
 async function derived(sql: string): Promise<string[]> {
   const { rows } = await pool.query<{ tbl: string }>(sql);
   return rows.map((r) => r.tbl).sort();
@@ -139,6 +198,47 @@ const ACCOUNT_EXPORTED = [
   "organisation_memberships",
   "platform_admins",
   "profiles",
+];
+
+/**
+ * THE ACCOUNT HALF'S OTHER ROLL, and the whole of Task 4 review finding I1.
+ *
+ * The workspace half pinned both rolls and a denominator; the account half
+ * pinned `ACCOUNT_EXPORTED` and `ACCOUNT_ELEVATED` and NOTHING ELSE. So a
+ * table that left the derivation AND left the catalogue together — which is
+ * what a later phase dropping a table, or a migration dropping the foreign
+ * key that made it visible, produces — was invisible. Measured by the
+ * reviewer: dropping `legal_documents`' three foreign keys to `auth.users`
+ * and deleting its catalogue row gave **13 passed, 0 failed**, while the same
+ * shape on the workspace half reddened 2.
+ *
+ * An absence satisfied by the denominator shrinking is the one failure shape
+ * this whole file was written against, and it was still in it.
+ */
+const ACCOUNT_EXCUSED = [
+  "agencies",
+  "artists",
+  "companies",
+  "contacts",
+  "data_subject_request_notes",
+  "documents",
+  "event_status_changes",
+  "events",
+  "export_jobs",
+  "financial_entries",
+  "incident_alerts",
+  "legal_documents",
+  "meetings",
+  "merge_candidates",
+  "merges",
+  "network_connection_requests",
+  "network_links",
+  "network_profiles",
+  "notes",
+  "organisation_billing_overrides",
+  "organisation_feature_overrides",
+  "tasks",
+  "venues",
 ];
 
 /** The four reads that cannot run under the requester's own RLS, and why. */
@@ -228,6 +328,28 @@ describe("every user-scoped table is exported or excused", () => {
     ).toEqual([]);
   });
 
+  it("DENOMINATOR: the derivation is not empty and is the size it was", async () => {
+    // THE ASSERTION THE ACCOUNT HALF DID NOT HAVE (review finding I1). Its
+    // twin on the workspace half is 40 lines above; without it a table
+    // leaving the derivation and the catalogue together is silently green,
+    // which was measured at 0 of 13.
+    const want = await derived(USER_TABLES_SQL);
+    expect(want.length).toBe(ACCOUNT_EXPORTED.length + ACCOUNT_EXCUSED.length);
+    expect(want.length).toBeGreaterThan(0);
+  });
+
+  it("the exported and excused rolls are exactly these", async () => {
+    const { rows } = await pool.query<{ table_name: string; disposition: string }>(
+      "select table_name, disposition from private.export_catalogue() where export_kind = 'account' order by table_name",
+    );
+    expect(rows.filter((r) => r.disposition === "exported").map((r) => r.table_name)).toEqual(
+      ACCOUNT_EXPORTED,
+    );
+    expect(rows.filter((r) => r.disposition === "excused").map((r) => r.table_name)).toEqual(
+      ACCOUNT_EXCUSED,
+    );
+  });
+
   it("the exported roll is exactly these", async () => {
     const { rows } = await pool.query<{ table_name: string }>(
       "select table_name from private.export_catalogue() where export_kind = 'account' and disposition = 'exported' order by table_name",
@@ -245,13 +367,26 @@ describe("every user-scoped table is exported or excused", () => {
         80,
       );
     }
-    // The two that hold more than the requester's own data must be PROJECTED.
+    // EVERY elevated row is PROJECTED, not just the two whose withholdings
+    // are named below (review finding M2). The catalogue's rule was prose in
+    // three places and machinery in none, and impersonation_sessions shipped
+    // with a null projection — `select *` — handing the requester the
+    // operator's break-glass reason and a staff user id. The rule now lives
+    // in private.export_catalogue_is_sound() as well as here.
+    for (const row of rows) {
+      expect(row.projection, `${row.table_name} is elevated with no projection`).not.toBeNull();
+      expect((row.projection ?? []).length, row.table_name).toBeGreaterThan(0);
+    }
     const byName = new Map(rows.map((r) => [r.table_name, r]));
-    expect(byName.get("audit_events")?.projection).not.toBeNull();
     expect(byName.get("audit_events")?.projection).not.toContain("before");
     expect(byName.get("audit_events")?.projection).not.toContain("after");
-    expect(byName.get("feedback")?.projection).not.toBeNull();
     expect(byName.get("feedback")?.projection).not.toContain("screenshot_key");
+    // Q167: the operator's own words and the operator's own identity are not
+    // the requester's data. The columns describing THEIR decision are.
+    expect(byName.get("impersonation_sessions")?.projection).not.toContain("reason");
+    expect(byName.get("impersonation_sessions")?.projection).not.toContain("superuser_user_id");
+    expect(byName.get("impersonation_sessions")?.projection).toContain("admin_accepted_by");
+    expect(byName.get("impersonation_sessions")?.projection).toContain("declined_at");
   });
 
   it("no workspace export table is read with elevated rights", async () => {
@@ -259,6 +394,77 @@ describe("every user-scoped table is exported or excused", () => {
       "select table_name from private.export_catalogue() where export_kind = 'workspace' and authorisation = 'elevated'",
     );
     expect(rows).toEqual([]);
+  });
+});
+
+describe("the tables in NEITHER derivation are a disposition, not a residue", () => {
+  it("the remainder is exactly the pinned roll, and each one says why", async () => {
+    const remainder = await neitherDerivation();
+    expect(
+      remainder,
+      "a public base table is in neither foreign-key derivation. If it holds nothing about a person or a workspace, add it to NEITHER_DERIVATION with a reason. If it does — a subject id with no foreign key, a polymorphic entity id — then the census cannot see it and it needs a disposition, not a comment.",
+    ).toEqual(Object.keys(NEITHER_DERIVATION).sort());
+    for (const [table, reason] of Object.entries(NEITHER_DERIVATION)) {
+      expect(reason.length, `${table} is in neither derivation with no real reason`).toBeGreaterThan(60);
+    }
+  });
+
+  it("DENOMINATOR: the remainder query really is looking at the whole schema", async () => {
+    // Without this, a remainder query that matched nothing (a typo in the
+    // relkind, a schema rename) would agree with any roll that was empty —
+    // and the roll is not empty, so the two together are load-bearing.
+    const { rows } = await pool.query<{ n: string }>(
+      "select count(*)::text as n from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r'",
+    );
+    const all = Number(rows[0]?.n ?? 0);
+    const org = (await derived(ORGANISATION_TABLES_SQL)).length;
+    const user = (await derived(USER_TABLES_SQL)).length;
+    const remainder = (await neitherDerivation()).length;
+    expect(all).toBeGreaterThan(40);
+    // Every public base table is in at least one of the three sets, and the
+    // two derivations overlap (a table can have both paths), so the only
+    // exact arithmetic available is that the remainder is the complement.
+    expect(remainder).toBe(all - new Set([
+      ...(await derived(ORGANISATION_TABLES_SQL)),
+      ...(await derived(USER_TABLES_SQL)),
+    ]).size);
+    expect(org).toBeGreaterThan(0);
+    expect(user).toBeGreaterThan(0);
+  });
+
+  it("rate_limit_counters is the one that is not reference data, and it is named as such", () => {
+    // The review's finding in one assertion: this table has a real
+    // row -> organisation path and a real row -> user path through a column
+    // with NO foreign key, so both walks are blind to it. It must never be
+    // exported; what it must not be is UNSEEN.
+    expect(Object.keys(NEITHER_DERIVATION)).toContain("rate_limit_counters");
+    expect(NEITHER_DERIVATION.rate_limit_counters).toContain("subject_id");
+  });
+
+  it("and the column that makes it so is still there, unconstrained", async () => {
+    // If a later migration gives `subject_id` a foreign key, the table joins
+    // a derivation and needs a catalogue row instead — so this reds rather
+    // than leaving the reason above quietly stale.
+    const { rows } = await pool.query<{ n: string }>(
+      `select count(*)::text as n
+         from pg_attribute a
+         join pg_class c on c.oid = a.attrelid
+         join pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public' and c.relname = 'rate_limit_counters'
+          and a.attname = 'subject_id' and a.attnum > 0 and not a.attisdropped`,
+    );
+    expect(rows[0]?.n).toBe("1");
+    const { rows: fks } = await pool.query<{ conname: string }>(
+      `select k.conname
+         from pg_constraint k
+         join pg_class c on c.oid = k.conrelid
+         join pg_namespace n on n.oid = c.relnamespace
+        where k.contype = 'f' and n.nspname = 'public' and c.relname = 'rate_limit_counters'
+          and 'subject_id' = any (
+            select a.attname from pg_attribute a
+             where a.attrelid = c.oid and a.attnum = any (k.conkey))`,
+    );
+    expect(fks, "subject_id grew a foreign key: rate_limit_counters now lands in a derivation and needs a catalogue disposition, not a remainder entry").toEqual([]);
   });
 });
 
@@ -332,6 +538,50 @@ describe("the census sees a table nobody has told it about", () => {
         )`);
       const { rows } = await client.query<{ tbl: string }>(USER_TABLES_SQL);
       expect(rows.map((r) => r.tbl)).toContain("census_probe_user");
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
+  it("A TABLE WITH A BARE uuid organisation_id AND NO FOREIGN KEY is caught by the remainder", async () => {
+    // THE SHAPE NONE OF THE THREE PLANTS ABOVE COVERS (review finding I2).
+    // All three plant a table WITH a foreign key, so all three are caught by
+    // the derivation — and the hole the review found is a table with a real
+    // row -> organisation path and no constraint to walk. `rate_limit_counters`
+    // is that shape today; this is the proof that a SECOND one arrives as a
+    // red test rather than as silence.
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(`
+        create table public.census_probe_bare (
+          id uuid primary key default gen_random_uuid(),
+          organisation_id uuid not null
+        )`);
+
+      // Invisible to BOTH walks — which is the whole problem.
+      const { rows: org } = await client.query<{ tbl: string }>(ORGANISATION_TABLES_SQL);
+      expect(org.map((r) => r.tbl)).not.toContain("census_probe_bare");
+      const { rows: usr } = await client.query<{ tbl: string }>(USER_TABLES_SQL);
+      expect(usr.map((r) => r.tbl)).not.toContain("census_probe_bare");
+
+      // And therefore in the remainder, where it does not match the roll.
+      const { rows } = await client.query<{ tbl: string }>(
+        `select c.relname as tbl
+           from pg_class c
+           join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public' and c.relkind = 'r'
+            and c.relname not in (${ORGANISATION_TABLES_SQL})
+            and c.relname not in (${USER_TABLES_SQL})
+          order by c.relname`,
+      );
+      const remainderNow = rows.map((r) => r.tbl);
+      expect(remainderNow).toContain("census_probe_bare");
+      expect(
+        remainderNow,
+        "this is the assertion that would have gone red: the remainder no longer equals its pinned roll",
+      ).not.toEqual(Object.keys(NEITHER_DERIVATION).sort());
     } finally {
       await client.query("rollback");
       client.release();
