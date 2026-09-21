@@ -1028,7 +1028,7 @@ fi
 # refused" and "a privilege was missing" would otherwise be indistinguishable.
 # ============================================================================
 
-run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 184 "${P7VARS[@]}"
+run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 208 "${P7VARS[@]}"
 ret_fails=$SUITE_FAILS
 if [ "$ret_fails" != "0" ]; then
   echo "PHASE 8 RETENTION SUITE FAILED: $ret_fails failing assertion(s)" >&2
@@ -1074,6 +1074,10 @@ if [ "$ret_fails" != "0" ]; then
   echo "  refuse it; RR8a red = THE MANIFEST NAMES OBJECTS FOR A RUN THAT WILL" >&2
   echo "  REFUSE, which is bytes deleted before the tripwire fires. Sev1. RR8" >&2
   echo "  red = step 0 no longer runs before a row moves." >&2
+  echo "  In RN, a refused run is SILENT again (RN3/RN8: no incident alert for" >&2
+  echo "  a live refusal), files one alert per HOUR instead of per fault (RN9a)," >&2
+  echo "  alerts on a switch somebody chose (RN2), or A PREVIEW POSTPONES THE" >&2
+  echo "  LIVE RUN again (RN16/RN17)." >&2
   echo "  In RZ, this suite left rows behind -- discard the run and reset." >&2
   psql_status=1
 else

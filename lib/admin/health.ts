@@ -219,7 +219,14 @@ export type IncidentAlertType =
   // cron tick so a failure cannot take the digest down with it -- and a
   // failure that was merely survived would be a silent stop to the only
   // proactive signal a statutory deadline has.
-  | "dsr_alert_writer_failed";
+  | "dsr_alert_writer_failed"
+  // Phase 8 Task 6 fix round 1 (Q182, review finding m5): a LIVE retention run
+  // that refused or failed for any reason but a switch somebody chose. Filed
+  // by a trigger on public.retention_runs, one open alert per distinct
+  // (sweep, reason), so "the audit purge has refused its ceiling every hour
+  // for a month" arrives in the digest instead of sitting in a column on this
+  // page that somebody has to look at.
+  | "retention_run_refused";
 
 export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {
   rate_limit_tripped: "Rate limit tripped",
@@ -228,6 +235,7 @@ export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {
   dsr_deadline_approaching: "Data request due soon",
   dsr_overdue: "Data request OVERDUE",
   dsr_alert_writer_failed: "Data request alerts FAILED to run",
+  retention_run_refused: "Retention job REFUSED to run",
 };
 
 /**
@@ -251,6 +259,8 @@ export const INCIDENT_ALERT_AUTO_RESOLUTION_LABELS: Record<string, string> = {
   data_subject_request_closed:
     "resolved automatically — the request was closed",
   alert_writer_recovered: "cleared automatically — the writer recovered",
+  retention_run_recovered:
+    "cleared automatically — a later retention run completed without it",
 };
 
 /**

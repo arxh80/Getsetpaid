@@ -697,7 +697,7 @@ create table rt.i1_actions as
     select m[1] as action from fn, lateral regexp_matches(fn.prosrc, 'p_action\s*=>\s*''([a-z_0-9.]+)''', 'g') m
     union all
     select m[1] from fn, lateral regexp_matches(fn.prosrc, '''([a-z_0-9]+\.[a-z_0-9]+)''', 'g') m
-     where fn.prosrc ~ 'insert\s+into\s+public\.audit_events'
+     where fn.prosrc ~ 'insert\s+into\s+public\.audit_events' or fn.prosrc ~ 'log_audit_event'
     union all
     select replace(encode(t.tgargs, 'escape'), '\000', '') || '.' || v[1]
       from pg_trigger t
@@ -1643,6 +1643,156 @@ select rt.val('RR15 ...and NONE of them consults request.jwt.claims, which Postg
 
 
 -- ===========================================================================
+-- RN  A REFUSED RUN IS NEVER SILENT, AND A PREVIEW POSTPONES NOTHING
+--     (fix round 1: review findings m5 and m6, Q182)
+-- ===========================================================================
+-- By this point the section above has produced, as a side effect of its own
+-- probes: two `retention_disabled` refusals (RR7), one LIVE structural refusal
+-- (RR8b), three failed probe runs, two `retention_run_in_progress` refusals
+-- (RR17) and one reaped run (RR20) -- and then completed live runs. So the
+-- first half of this section READS what the trigger made of all that, which
+-- is a better test than staging it again: nothing here was arranged to suit
+-- the raiser.
+-- ===========================================================================
+
+select rt.val('RN1 DENOMINATOR: the section above left chosen-state and overlap refusals in the run log',
+  $$select string_agg(distinct refused->>'*', ',' order by refused->>'*')
+      from public.retention_runs
+     where refused->>'*' in ('retention_disabled', 'retention_run_in_progress')$$,
+  'retention_disabled,retention_run_in_progress');
+select rt.val('RN2 ...and NEITHER filed an alert: a switch somebody chose and an overlap are not faults',
+  $$select count(*)::text from public.incident_alerts
+     where alert_type = 'retention_run_refused'
+       and details->>'reason' in ('retention_disabled', 'retention_run_in_progress')$$, '0');
+select rt.val('RN3 the LIVE structural refusal (RR8b) DID file one, naming the whole run and the hint -- and nothing else',
+  $$select count(*)::text || '/' || string_agg(details->>'sweep', ',') || '/' ||
+           string_agg(details->>'run_status', ',')
+      from public.incident_alerts
+     where alert_type = 'retention_run_refused'
+       and details->>'reason' = 'unclassified_retention_subject'$$, '1/*/refused');
+select rt.val('RN4 ...and the completed live runs after it RESOLVED it, as the SYSTEM, with nobody named',
+  $$select (resolved_at is not null)::text || '/' || coalesce(auto_resolved_reason, '-') || '/' ||
+           (resolved_by is null)::text
+      from public.incident_alerts
+     where alert_type = 'retention_run_refused'
+       and details->>'reason' = 'unclassified_retention_subject'$$,
+  'true/retention_run_recovered/true');
+-- THE SECTION ABOVE ALSO LEFT TWO ALERTS OPEN, and they are worth reading
+-- rather than tidying away: rr17 was REAPED (`run_abandoned` -- a crashed run
+-- is a fault) and rr20 was failed by this suite with the reason 'rt probe',
+-- which has a SPACE in it and is therefore not a code -- so it was recorded as
+-- `unknown`. Nothing arranged that; it is the sanitiser working on the
+-- suite's own carelessness.
+select rt.val('RN4a the two faults still open are the reaped run and a reason that was not a code',
+  $$select string_agg(details->>'reason', ',' order by details->>'reason')
+      from public.incident_alerts
+     where alert_type = 'retention_run_refused' and resolved_at is null$$, 'run_abandoned,unknown');
+-- THE RUN AND THE COUNT ARE TWO STATEMENTS, for RA10's reason: both halves of
+-- one `select` share a snapshot, so a count beside the run reads the alerts as
+-- they were BEFORE it. (This probe's first cut did exactly that and read 2.)
+select rt.val('RN4b a clean live run completes with nothing refused',
+  $$with r as (select public.start_retention_run(false) as run)
+    select ((public.run_retention_sweep((r.run).id, 500))->'refused')::text from r$$, '{}');
+select rt.val('RN4c ...and resolved both',
+  $$select count(*)::text from public.incident_alerts
+     where alert_type = 'retention_run_refused' and resolved_at is null$$, '0');
+select rt.val('RN5 a DRY run''s refusal files nothing -- a preview is the founder looking, not the job failing',
+  $$select count(*)::text from public.incident_alerts a
+      join public.retention_runs r on r.id = (a.details->>'run_id')::uuid
+     where a.alert_type = 'retention_run_refused' and r.mode = 'dry'$$, '0');
+
+-- THE REVIEWER'S CASE: the sanity ceiling, which CANNOT DRAIN ITSELF. 1200
+-- rows past the period against a table that is mostly them. The purge refuses
+-- (RA15 asked that of the purge directly); what matters here is that the RUN
+-- says so where somebody will read it, ONCE, however often it repeats.
+delete from public.audit_events where action = 'rt.recent';
+insert into public.audit_events (organisation_id, actor_user_id, action, target_type, correlation_id, created_at)
+select null, private.erased_user_id(), 'rt.flood', 'platform', gen_random_uuid(), now() - interval '2 years'
+  from generate_series(1, greatest(1200, (select count(*) from public.audit_events)::integer));
+select rt.val('RN6 DENOMINATOR: the flood is more than a thousand rows and more than a fifth of the table',
+  $$select ((select count(*) from public.audit_events where action = 'rt.flood') > 1000
+            and (select count(*) from public.audit_events where action = 'rt.flood')::numeric
+                / (select count(*) from public.audit_events)::numeric > 0.20)::text$$, 'true');
+select rt.val('RN7 a LIVE run COMPLETES with the audit purge refused -- the other sweeps are not held hostage',
+  $$with r as (select public.start_retention_run(false) as run)
+    select (public.run_retention_sweep((r.run).id, 500))->'refused'->>'audit_events' from r$$,
+  'audit_purge_over_ceiling');
+select rt.val('RN8 ...and that files ONE alert, carrying the two COUNTS an operator needs and no content',
+  $$select count(*)::text || '/' || string_agg(details->>'sweep', ',') || '/' ||
+           bool_and((details->>'audit_rows_past_period')::bigint >= 1200
+                    and (details->>'audit_rows_total')::bigint >= 1200)::text || '/' ||
+           bool_and(summary like '%audit_events: audit_purge_over_ceiling%')::text
+      from public.incident_alerts
+     where alert_type = 'retention_run_refused' and resolved_at is null$$, '1/audit_events/true/true');
+select rt.val('RN9 the NEXT run refuses the same way',
+  $$with r as (select public.start_retention_run(false) as run)
+    select (public.run_retention_sweep((r.run).id, 500))->'refused'->>'audit_events' from r$$,
+  'audit_purge_over_ceiling');
+select rt.val('RN9a ...and files NOTHING NEW: one open alert per fault, not one per hour (two alerts in all would be 2/2)',
+  $$select (select count(*)::text from public.incident_alerts
+             where alert_type = 'retention_run_refused' and resolved_at is null) || '/' ||
+           (select count(*)::text from public.incident_alerts
+             where alert_type = 'retention_run_refused'
+               and details->>'reason' = 'audit_purge_over_ceiling')$$, '1/1');
+select rt.val('RN10 THE STATED LIMIT: the ceiling cannot drain itself -- not one flood row went in two runs',
+  $$select ((select count(*) from public.audit_events where action = 'rt.flood')
+          = (select (details->>'audit_rows_past_period')::bigint from public.incident_alerts
+              where alert_type = 'retention_run_refused' and resolved_at is null))::text$$, 'true');
+delete from public.audit_events where action = 'rt.flood';
+select rt.val('RN11 with the cause gone, the next completed live run RESOLVES the alert as the system',
+  $$with r as (select public.start_retention_run(false) as run),
+         s as (select public.run_retention_sweep((r.run).id, 500) as out from r)
+    select (select (out->'refused')::text from s)$$, '{}');
+select rt.val('RN12 ...leaving no open retention alert at all, and the ceiling one marked recovered',
+  $$select (select count(*)::text from public.incident_alerts
+             where alert_type = 'retention_run_refused' and resolved_at is null) || '/' ||
+           (select count(*)::text from public.incident_alerts
+             where alert_type = 'retention_run_refused'
+               and details->>'reason' = 'audit_purge_over_ceiling'
+               and auto_resolved_reason = 'retention_run_recovered')$$, '0/1');
+
+-- THE TRIGGER, ASKED DIRECTLY, with a `refused` value no function of this
+-- product would write: anything that is not a code is recorded as `unknown`
+-- and never reaches an operator surface.
+insert into public.retention_runs (correlation_id, mode, status, finished_at, duration_ms, refused)
+values (gen_random_uuid(), 'live', 'failed', now(), 0,
+        '{"*": "Jane Doe <jane@example.test> said: DROP TABLE"}'::jsonb);
+select rt.val('RN13 a `refused` value that is not a code is recorded as `unknown`, and its text appears NOWHERE in the alert',
+  $$select string_agg(details->>'reason', ',') || '/' ||
+           bool_or(summary like '%Jane%' or details::text like '%Jane%')::text
+      from public.incident_alerts
+     where alert_type = 'retention_run_refused' and resolved_at is null$$, 'unknown/false');
+
+-- ---- m6: A PREVIEW MUST NOT MOVE THE LIVE JOB'S CLOCK -----------------------
+-- The poster's only other observable effect is an HTTP request an unconfigured
+-- stack never makes, so the throttle is a function that can be ASKED.
+delete from public.retention_runs;
+select rt.val('RN14 with no run at all, the live sweep is due',
+  $$select private.retention_sweep_is_due()::text$$, 'true');
+select public.fail_retention_run((public.start_retention_run(true)).id, 'rt probe');
+select rt.val('RN15 DENOMINATOR: a DRY run began a moment ago',
+  $$select count(*)::text || '/' || string_agg(mode, ',') from public.retention_runs
+     where started_at > now() - interval '1 minute'$$, '1/dry');
+select rt.val('RN16 ...and the live sweep is STILL due: a preview postpones nothing',
+  $$select private.retention_sweep_is_due()::text$$, 'true');
+insert into public.retention_runs (correlation_id, mode, status, finished_at, duration_ms, refused)
+values (gen_random_uuid(), 'live', 'refused', now(), 0, '{"*": "retention_run_in_progress"}'::jsonb);
+select rt.val('RN17 ...nor does a live wake that merely COLLIDED with a preview',
+  $$select private.retention_sweep_is_due()::text$$, 'true');
+select public.fail_retention_run((public.start_retention_run(false)).id, 'rt probe');
+select rt.val('RN18 a LIVE run that began a moment ago is what holds the next one back',
+  $$select private.retention_sweep_is_due()::text$$, 'false');
+update public.retention_runs set started_at = now() - interval '2 hours' where mode = 'live';
+select rt.val('RN19 ...until the interval has passed',
+  $$select private.retention_sweep_is_due()::text$$, 'true');
+select rt.val('RN20 and the poster consults THAT function and no longer reads max(started_at) over every run',
+  $$select (pg_get_functiondef('private.deliver_retention_sweep()'::regprocedure) like '%private.retention_sweep_is_due()%')::text
+        || '/' ||
+           (pg_get_functiondef('private.deliver_retention_sweep()'::regprocedure) like '%max(r.started_at)%')::text$$,
+  'true/false');
+
+
+-- ===========================================================================
 -- RZ  HOUSEKEEPING
 -- ===========================================================================
 -- Every row this suite made, removed -- so a second run over the same database
@@ -1655,6 +1805,7 @@ delete from public.retention_runs;
 delete from public.audit_events where actor_user_id = '00000000-0000-4000-9000-0000000067a3';
 delete from public.feedback where route = '/rt';
 delete from public.incident_alerts where summary like 'rt %';
+delete from public.incident_alerts where alert_type = 'retention_run_refused';
 alter table public.erasure_jobs disable trigger user;
 delete from public.erasure_jobs where failure_reason in ('rt probe')
    or id in ('00000000-0000-4000-9000-0000000067f3', '00000000-0000-4000-9000-0000000067f4');
