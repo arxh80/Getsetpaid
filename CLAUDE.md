@@ -69,7 +69,7 @@ refuses its own requester identically; and a Standard User reads the page
 (not a 404 — that would imply the feature does not exist), is offered no
 control, gets the same 404 from the Owner's real archive and from an invented
 id, and is still free to export their OWN account. One more `new AxeBuilder`
-site, one more scan. **Prerequisite:** `npx playwright install chromium` once per machine. It starts its own dev server; set `PLAYWRIGHT_REUSE_SERVER=1` only to reuse one on port 3000 that you know is current. |
+site, one more scan. **Prerequisite:** `npx playwright install chromium` once per machine. It starts its own dev server on this worktree's port (3000, or 3000+slot once `pnpm stack:claim` has run — see `docs/parallel-stacks.md`); set `PLAYWRIGHT_REUSE_SERVER=1` only to reuse one on that port that you know is current. |
 
 The psql/HTTP RLS suite is separate and needs a fresh database (nineteen psql files since Phase 8 Task 4 — `rls_phase8_exports.sql` is the newest, and is described at the end of this list; eighteen since Phase 8 Task 3 — `rls_phase8_data_subject_requests.sql`; seventeen since Phase 8 Task 2 — `schema_invariants.sql` plus sixteen RLS/leakage suites — the last being `rls_phase8_consents.sql` — 143 assertions (117 until Task 2's fix round 1 added the wording, one-withdrawal and trigger-deletion sections; the runner also drives a real two-session REPEATABLE READ withdrawal race) proving that a consent is attributed to the session for every writer (a sessionless `postgres` insert is refused; a forged user, category, timestamp, version or withdrawal target is overwritten), that a user reads only their own events and the aal2 superuser all of them, that no role — `postgres` included — can update, delete or truncate the ledger except through the account's own deletion cascade (and that a trigger deleting a live account's rows is refused), that a grant must carry wording the database lists, that a grant must name the currently published version while a withdrawal can never fail for one, that `consent_is_granted()` answers correctly and only to `service_role`, that grants are metered at 10/hour and withdrawals never, and that each event writes one identifier-only audit row; its predecessor `rls_phase8_legal.sql` — 162 assertions (159 until Task 2: LI22 now removes the new consents foreign key inside its own probe to ask the TRUNCATE guard itself, and LI22a/LI22b record the key's own refusal; 162 since Task 2's fix round 1, where LI22 and LI23 assert the raising guard by NAME — LI23's `CASCADE` had been answered by the consents guard with the legal guard disabled — and LI23a keeps the realistic cascade) (137 as Task 1 shipped; fix round 1 added the TRUNCATE guard, the placeholder-placement and lower-case-scheme CHECKs, and the four corrected version-2 pages to what it proves; fix round 2 added LF2g/LF2h, that no current page claims the subprocessor list is complete or states the hosting region flat) proving that a signed-out caller reads exactly the fifteen current published legal documents and only the eight granted columns (never a draft, a superseded version or the reviewer's name); that no client role — the aal2 superuser and `service_role` included — can write the table directly; that only the aal2 superuser can draft, edit, publish, record a counsel review or read drafts, and that each of those writes one identifier-only audit row and a refused call writes none; that the grammar's CHECKs refuse `javascript:`/`data:`/scheme-relative links, tags and unknown placeholders; and that **as `postgres`** a published or superseded version cannot be edited, un-published, re-reviewed or deleted while attribution can still be erased — with § LZ restoring the seed byte for byte; its predecessor `rls_phase7_crm_audit.sql` — 128 assertions proving that every INSERT and UPDATE on the eleven mutable CRM tables writes an audit row naming the changed columns and carrying old/new values for the structural allowlist only, with a sentinel written into a content column on every table and searched for in the row (never found); that soft-delete and restore are their own actions; that the exemption is `auth.uid()` (a write from inside a SECURITY DEFINER function IS audited, a sessionless one is not, a no-op is not, `service_role` has no path); and that `merge_records` and the `set_*` RPCs write every row of one call on one correlation id with the thread closed before the wrapper returns — and, since that task's fix round 1, that the thread is **re-entrant**: a wrapper called inside an already-open thread JOINS it instead of replacing the marker and then clearing it, so one composed operation reads as one correlation id rather than three (§ CB5, and the id is no longer a caller-supplied parameter — it cannot be **passed in**, which is not the same as unforgeable: `app.crm_bulk_correlation_id` is a custom placeholder GUC and therefore `PGC_USERSET`, so a **direct database session** can still `set_config` it in one statement and have its writes join a chosen thread. That is **forensic integrity only** — unreachable over PostgREST, granting no privilege, corrupting no data, and every row still carries its own `actor_user_id` so a forged thread misgroups without misattributing — and § CB5f asserts the forgery rather than pretending it closed; Q123 holds whether to raise the bar. § CB5f also pins the deliberate cost of re-entrancy: `end()` no longer clears a marker it did not open, because clearing unconditionally is exactly what split one operation into three threads); its predecessor `rls_phase7_feedback.sql` — 151 assertions proving a submitter cannot name their own user id, role or status, cannot attribute a row to a workspace they are not a member of, cannot declare a screenshot key with no stored object behind it, and cannot read a row back including their own; that the app's pre-check read of the budget spends nothing and reads 0 once the budget is spent; that ten raw inserts pass and the eleventh is `PT429` with the counter stopping at the limit; that only the aal2 superuser can record a screenshot view and only for a row that has one and is inside its two-year window; and that the retention clock hides an old row at read time — with the runner's HTTP block driving the same budget over a real PostgREST `POST` to a real 429; its predecessor `rls_phase7_rate_limits.sql` — 181 assertions over nine sections (179 until Phase 8 Task 3's fix round 1 updated § RD5 and added § RD5a, which asserts the one cron tick still reaches `deliver_incident_alerts()` after the raiser was folded into it) plus a tenth that puts the tenant back the way it found it, proving the window arithmetic at its boundaries, that a counter counts past its own limit, that no client role can write or read one, that the login lockout does not lift for a correct password, that a quarantine raises an alert carrying the document id and never the filename, and that the health snapshot's projection is counts, sums and organisation names only; its predecessor `rls_phase7_overrides.sql` — 56 assertions, the suite that proves the shared effective-tier function consults an active billing/feature override on both sides of its expiry boundary and that a downgrading override denies a new write without deleting anything already there; its predecessor `rls_phase7_lifecycle.sql` — 89 assertions — proves an Owner still cannot un-suspend their own workspace while the platform superuser can; `rls_phase7_impersonation.sql` — 121 assertions, six of them added in the pre-merge fix round to ask the half § IS never asked (can the CUSTOMER still end a session while their workspace is suspended?) — remains the one suite in the repo that proves a boundary OPENS rather than holds):
 `npx supabase db reset --local` then `bash supabase/tests/run-rls-tests.sh`. It
@@ -98,26 +98,53 @@ and its § DD has to disable the insert trigger to make an overdue request at
 all, which is itself the evidence that `requested_at` cannot be forged
 (§ DD0 asserts the trigger is back on before anything is measured).
 
-**CI runs a subset, and knowing which subset is the point.**
-`.github/workflows/ci.yml` runs on every pull request, and on pushes to
-`main` only, in two jobs:
-`pnpm lint`, `npx next typegen`, `pnpm typecheck` and
-`pnpm exec vitest run tests/unit`; and `pnpm audit --audit-level high` plus a
-gitleaks secret scan. (`next typegen` is there for the same reason it is named
-above — a clean checkout has no `.next/types/`, so `tsc` cannot find
-`PageProps`.) It does **not**
-run `tests/integration`, the psql/HTTP suite or Playwright — all three need a
-running Supabase stack (`npx supabase start` plus a reset), which is a
-container pull and minutes per run, and is a deliberate decision nobody has
-made yet. **So a green tick on CI is not a green phase**, and the
-tenant-boundary suites `CLAUDE.md` § Testing gates calls the ones that "matter
-most" still run only on a developer's machine. Every action in that workflow is
-pinned to a full commit SHA; bump one by looking the new SHA up with
+**CI runs all five gates, in five jobs.** `.github/workflows/ci.yml` runs on
+every pull request and on pushes to `main`, in:
+**gates** (`pnpm lint`, `npx next typegen`, `pnpm typecheck`,
+`pnpm exec vitest run tests/unit`); **scan** (`pnpm audit --audit-level high`
+plus a gitleaks secret scan); and — since the parallel-stacks change — three
+jobs that each start a real local Supabase stack on their own runner:
+**integration** (`pnpm exec vitest run tests/integration`), **psql**
+(`supabase db reset` then `bash supabase/tests/run-rls-tests.sh`) and **e2e**
+(`pnpm test:e2e` with chromium). (`next typegen` is there for the same reason
+it is named above — a clean checkout has no `.next/types/`, so `tsc` cannot
+find `PageProps`.) The three heavy jobs are separate so they parallelise and a
+red tick names the suite; one stack to a runner, so none of them needs
+`scripts/stack.mjs`. The workflow's own header carries the estimated cost
+(~50 runner-minutes a pull request against about 5 before) and says plainly
+that those figures are local estimates, not measurements of a real run.
+
+**This paragraph said the opposite until 2026-09-21**, and the sentence it
+replaced — that the three suites which "matter most" run only on a developer's
+machine, "a deliberate decision nobody has made yet" — is how the decision came
+to be made. **A green tick is still not a green phase**: nothing in CI says
+whether the hosted project's auth settings, its MFA hook or its region are
+configured (`SECURITY.md` § 15), and no job here proves a malware engine
+exists. **And the three new jobs are unproven** — they were validated
+statically only and have never executed; the first real pull request is the
+first evidence, which is the lesson that file's own header already records
+from its first three failed runs. Every action in the workflow is pinned to a
+full commit SHA; bump one by looking the new SHA up with
 `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and updating the `# vX.Y.Z`
 trailer beside it.
 
 `pnpm build` and `pnpm start` resolve to the **hosted** project and must not be
 run from a worktree that is deliberately unlinked from it.
+
+**One stack per worktree, and which gate to run while iterating, are both in
+`docs/parallel-stacks.md`.** Until 2026-09-21 every worktree on a machine
+shared one local Supabase stack and one port 3000, so every test run was
+exclusive and a `db reset` in one worktree wiped another session's fixtures
+mid-run. `pnpm stack:claim` now gives a worktree its own project id and port
+range through a gitignored `.supabase-slot/` overlay; the committed
+`supabase/config.toml` is untouched and stays the default for anyone who does
+nothing. **Export `SUPABASE_WORKDIR` as `claim` prints it** — without it a
+bare `npx supabase db reset` typed in a claimed worktree still resets the
+SHARED stack, which is the accident the whole change exists to prevent. The
+same document holds the tiered-gate policy: which single psql file, vitest
+project or Playwright spec to run in the loop, and the rule that the full
+five-gate sweep is still mandatory before any handback or review — the
+tiering is for the loop, never for the final claim.
 
 **After adding or renaming a route, run `npx next typegen` before
 `pnpm typecheck`.** Next.js types `PageProps<"/some/route">` against a
