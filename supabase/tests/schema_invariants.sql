@@ -792,6 +792,26 @@ select invariants.val('D5  every grant on the 29 is justified by a policy, and v
           on g.table_schema='public' and g.table_name=t.relname
          and g.grantee='authenticated'
        where g.privilege_type in ('SELECT','INSERT','UPDATE','DELETE')
+      -- COLUMN-LEVEL GRANTS ARE GRANTS (Phase 8 Task 6 fix round 1). Until
+      -- 20261004000000 every one of the 29 held its privileges table-wide, so
+      -- role_table_grants was the whole truth. public.documents now holds
+      -- INSERT and UPDATE on NAMED COLUMNS ONLY -- the retention clock
+      -- deleted_at, and bytes_purged_at and storage_key, were writable by the
+      -- tenant (review finding C1) -- and a column-level grant does not
+      -- appear in role_table_grants at all. Read without this arm, the
+      -- narrowing looks like "an INSERT and an UPDATE policy with no grant
+      -- behind them", i.e. dead code, which is the opposite of what it is.
+      -- The same blindness the permission matrix's relation census had, and
+      -- was taught out of in Phase 8 Task 2.
+      union
+      select distinct c.relname, g.privilege_type::text
+        from invariants.phase2_tables t
+        join pg_catalog.pg_class c on c.relname=t.relname
+         and c.relnamespace='public'::regnamespace
+        join information_schema.column_privileges g
+          on g.table_schema='public' and g.table_name=t.relname
+         and g.grantee='authenticated'
+       where g.privilege_type in ('SELECT','INSERT','UPDATE')
     ), policed as (
       select distinct c.relname,
              case p.polcmd when 'r' then 'SELECT' when 'a' then 'INSERT'

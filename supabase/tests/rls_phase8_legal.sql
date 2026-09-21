@@ -805,7 +805,7 @@ reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'super_c';
 select lg.val('LO1 the aal2 superuser reads every version: 32 migrated + the terms and cookies drafts',
-  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '33');
+  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '34');
 select lg.val('LO2 ...including the one open draft, which no table read can reach',
   $$select string_agg(slug || ':' || status, ',' order by slug)
       from public.operator_legal_document_versions(null) where status = 'draft'$$, 'cookies:draft');
