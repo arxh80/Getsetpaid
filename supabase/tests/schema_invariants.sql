@@ -1301,6 +1301,61 @@ select invariants.val('Z1  teardown left no fixture rows behind',
   '0/0/0/0/0/0/0/0/0/0/0');
 
 -- ===========================================================================
+-- R. A CHECK's FUNCTION IS ONLY AS REACHABLE AS ITS SCHEMA (Task 5 fix 1, I3)
+-- ===========================================================================
+-- A CHECK constraint is evaluated with the privileges of the role performing
+-- the write. A `private` helper a CHECK calls that a client role cannot reach
+-- therefore makes the table unwritable by that role -- which is how
+-- public.erasure_jobs came to refuse every account deletion request, and it is
+-- a CLASS rather than an incident. `has_function_privilege` alone reports all
+-- of these as fine; `has_schema_privilege` is the column that shows it, which
+-- is why the sweep asks for both.
+
+select invariants.val('R1  no private function a CHECK calls is unreachable by `authenticated`',
+  $$select count(*)::text from private.constraint_function_reachability()
+     where not reachable and role_name = 'authenticated'
+       and function_name like 'private.%'$$, '0');
+
+-- THE POSITIVE CONTROL for R1: the sweep is looking at something. If the roll
+-- of functions were empty, R1 would pass for want of a subject.
+select invariants.val('R1a DENOMINATOR: the sweep finds the three private CHECK functions',
+  $$select pg_catalog.string_agg(distinct function_name, ',' order by function_name)
+      from private.constraint_function_reachability()
+     where function_name like 'private.%'$$,
+  'private.custom_field_options_valid,'
+  'private.jsonb_is_count_map,'
+  'private.network_visibility_is_valid');
+
+-- AND THE PINNED ROLL OF THE UNREACHABLE. Three functions, unreachable by
+-- `anon` (which holds no write on any of these tables) and by `service_role`
+-- (which has no USAGE on schema `private` at all). Every one is evaluated in
+-- practice as a SECURITY DEFINER's, which is why nothing is broken today --
+-- and a fourth member arriving here is the warning that was missing.
+select invariants.val('R2  the roll of unreachable CHECK functions is exactly the six known pairs',
+  $$select pg_catalog.string_agg(function_name || '/' || role_name, ' ' order by function_name, role_name)
+      from private.constraint_function_reachability()
+     where not reachable and function_name like 'private.%'$$,
+  'private.custom_field_options_valid/anon '
+  'private.custom_field_options_valid/service_role '
+  'private.jsonb_is_count_map/anon '
+  'private.jsonb_is_count_map/service_role '
+  'private.network_visibility_is_valid/anon '
+  'private.network_visibility_is_valid/service_role');
+
+select invariants.val('R3  `authenticated` really can reach jsonb_is_count_map -- the half that was broken',
+  $$select (has_function_privilege('authenticated', 'private.jsonb_is_count_map(jsonb)', 'execute')
+            and has_schema_privilege('authenticated', 'private', 'usage'))::text$$, 'true');
+
+select invariants.val('R4  and `service_role` holds no EXECUTE on it -- I2 removed a grant that granted nothing',
+  $$select has_function_privilege('service_role', 'private.jsonb_is_count_map(jsonb)', 'execute')::text$$,
+  'false');
+
+select invariants.val('R5  nor any direct write of erasure_jobs.summary, the one path that made I2 live',
+  $$select has_column_privilege('service_role', 'public.erasure_jobs', 'summary', 'update')::text$$,
+  'false');
+
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o

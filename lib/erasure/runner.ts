@@ -97,7 +97,19 @@ export async function runPendingErasureJobs(): Promise<ErasureRunnerOutcome> {
     try {
       await purgeBytes(supabase, job);
       const { error } = await supabase.rpc("run_erasure_job", { p_job_id: job.id });
-      if (error) throw new Error(`${error.code ?? "?"}: ${error.message}`);
+      // THE HINT TRAVELS WITH THE THROW. It used to be dropped here --
+      // `new Error(code + message)` keeps neither the hint nor anything
+      // failureSentence() switches on -- so EVERY refusal from the chokepoint,
+      // the Q131 one included, was recorded as the generic "could not be
+      // completed ... will be retried" sentence, which is also wrong: a last
+      // owner's erasure is not retried into succeeding, it is waiting for them
+      // to do something. Found by this file's own integration test, which did
+      // not exist before fix round 1 (review finding I4).
+      if (error) {
+        throw Object.assign(new Error(`${error.code ?? "?"}: ${error.message}`), {
+          hint: error.hint ?? "",
+        });
+      }
       succeeded += 1;
     } catch (cause) {
       failed += 1;
@@ -202,7 +214,16 @@ export function failureSentence(cause: unknown): string {
     case "reference_survived_the_delete":
       return "Nothing was deleted: a check that every trace of the account had been anonymised did not pass, so the whole deletion was rolled back. This needs a person to look at it.";
     case "composite_fk_to_auth_users":
+    case "unclassified_fkless_identifier":
+      // Both mean the same thing to the person reading it: the schema has
+      // grown something this deletion cannot promise anything about, so it
+      // refused rather than leaving an identifier behind (fix round 1, C1).
       return "Nothing was deleted: the database has grown a reference this deletion does not know how to anonymise. This needs a person to look at it.";
+    case "workspace_left_ownerless":
+      // C2: the loser of a race between two co-owners' erasures. The retry is
+      // real -- by then the workspace has one owner and the Q131 sentence
+      // above is what they will be told.
+      return "Nothing was deleted: somebody else's deletion finished first and this one would have left a workspace with no owner. Nothing has changed, and this will be tried again.";
     default:
       return "Nothing was deleted: the deletion could not be completed. It will be retried, and nothing has changed in the meantime.";
   }

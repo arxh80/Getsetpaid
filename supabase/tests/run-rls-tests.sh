@@ -203,7 +203,7 @@ done
 # rls_foundation.sql opens with `drop schema if exists harness cascade`, and it
 # tears its own fixtures down so the suite below still meets an empty schema.
 # ============================================================================
-run_suite "SCHEMA INVARIANTS" schema_invariants.sql invariants 82
+run_suite "SCHEMA INVARIANTS" schema_invariants.sql invariants 88
 inv_fails=$SUITE_FAILS
 if [ "$inv_fails" != "0" ]; then
   echo "SCHEMA INVARIANT SUITE FAILED: $inv_fails failing assertion(s)" >&2
