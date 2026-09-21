@@ -195,6 +195,13 @@ export const PLATFORM_AUDIT_ACTIONS = [
   // in the payload as well as in target_id, because organisation_id on the
   // audit row is a foreign key to a workspace that has just been deleted.
   "organisation.erased",
+
+  // Phase 8 Task 6 (20261003001000): the retention job's kill switch. The
+  // before/after are the two booleans plus the operator's mandatory reason --
+  // the organisation_billing_overrides shape, and for the same reason: a
+  // destructive scheduled job that was switched off (or back on) with no
+  // recorded why is a decision nobody can reason about six months later.
+  "retention_settings.changed",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first
