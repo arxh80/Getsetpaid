@@ -335,7 +335,7 @@ class in `private.retention_periods()` and a sentence on
 - Soft-delete operational records rather than hard deletion, subject to retention policy.
 - Working defaults (pending legal sign-off — see `CLAUDE.md` § Legal and regulatory compliance): **7 years** for financial records, **2 years** for inactive-account data (also applied to in-app feedback submissions — see `CLAUDE.md` § In-app feedback), **30 days hot / 1 year archived** for audit logs.
 - **Feedback retention is enforced at READ time (Phase 7 Task 6):** `feedback_select_platform` carries `created_at >= private.feedback_retention_cutoff()` (now − 2 years), and the screenshot-view RPC re-tests the same cutoff, so an expired row is unreadable on every path — the app, a direct PostgREST GET, the signed-URL route — with nothing scheduled (the Q88 / Task 4 pattern). Measured: `rls_phase7_feedback.sql` FR6/FA7. **Since Phase 8 Task 6 the rows and their screenshot bytes ARE purged** (Q120): `private.sweep_feedback()` deletes an expired row, and the runner removes the `feedback/{id}` object first — the row sweep REFUSES a row whose screenshot is still in the bucket, because deleting it there would leave an untracked image of somebody's screen that only the orphan sweep would find, a day later. A submitter's account erasure cascades to their feedback rows (`on delete cascade`, unlike `audit_events`), so a DSR does not wait on that job.
-- **The public Data Retention Policy (`/legal/data-retention`, Phase 8 Task 1) states these working defaults as pending counsel.** Its version 4 said in words that the automated deletion job was not running; **version 5 (`20261003009000`) says it runs, and says what that does and does not mean** — about hourly, bounded per run so a backlog drains over several, a failed deletion retried rather than forgotten, so a record can outlive its period by hours. It also keeps saying there is no separate archive store, because there is not: "archived" means the record stays in the same database and falls out of the operator's default 30-day view (Q135), which is less than the word suggests. **Its version 1 described an audit "default view" that does not exist** — neither `audit_events_select_platform_superuser` nor `/super/audit-log` applies any time window, so every audit row is searchable for as long as it is stored; version 2 (`20260922005000`) states the 30-day/1-year windows as the target Task 6 will apply. **The public Security and Trust page follows one rule since the same migration:** every control this § 15 lists as hosted configuration is marked "(deployment setting)" there, and the host's encryption/TLS is attributed to Supabase as unverified.
+- **The public Data Retention Policy (`/legal/data-retention`, Phase 8 Task 1) states these working defaults as pending counsel.** Its version 4 said in words that the automated deletion job was not running; **version 5 (`20261003009000`) says it runs, and says what that does and does not mean** — about hourly, bounded per run so a backlog drains over several, a failed deletion retried rather than forgotten, so a record can outlive its period by hours. **Version 5 OVERCLAIMED, and version 6 (`20261004006000`, Task 6 fix round 1, review finding I3 / Q183) is the correction:** deleting "Automated deletion is still being built" removed the shield over "Inactive account data: 2 years" (nothing sweeps it — Q180 says deliberately not), over "when a period ends, the data is permanently deleted or anonymised" (false for every table `private.retention_subjects()` calls `retained_with_workspace` — a soft-deleted contact is kept for as long as its workspace exists, by design) and, found by the sentence-by-sentence check rather than by the review, over "Financial records: 7 years", which read as a deletion date and is not one. Version 6 has a section saying plainly what is **NOT** automatically deleted, states all eleven declared periods including the 90 days for a FAILED account deletion, and is bound so it cannot drift the same way again: `rls_phase8_retention.sql` § RL finds every declared period on the page in the sentence that states it with the DATABASE'S number (so counsel's answer to Q133 reds the page until it is corrected too) and every `retained_with_workspace` table in the not-deleted list. It also keeps saying there is no separate archive store, because there is not: "archived" means the record stays in the same database and falls out of the operator's default 30-day view (Q135), which is less than the word suggests. **Its version 1 described an audit "default view" that does not exist** — neither `audit_events_select_platform_superuser` nor `/super/audit-log` applies any time window, so every audit row is searchable for as long as it is stored; version 2 (`20260922005000`) states the 30-day/1-year windows as the target Task 6 will apply. **The public Security and Trust page follows one rule since the same migration:** every control this § 15 lists as hosted configuration is marked "(deployment setting)" there, and the host's encryption/TLS is attributed to Supabase as unverified.
 - **Export archives are a new store with a seven-day clock, and READ-TIME EXPIRY is only half of it (Phase 8 Task 4).** `public.export_jobs.expires_at` is `completed_at + private.export_limits().archive_days`, stamped by the database, and the download path refuses a job past it — so after seven days the archive is unreachable by everyone including its own requester, with nothing scheduled (the Q88 pattern). **Task 6's retention job now removes the BYTES too**: `public.retention_object_manifest()` names every archive past its own `expires_at`, and the runner deletes it. Before that, every archive anyone had ever taken was still in the bucket — measured, not assumed: there was no other caller of `remove()` for that bucket anywhere in the repository. The two orphan classes join the same job and are covered by the same manifest's ORPHAN half — the object of a job whose requester's account is deleted (the ROW cascades, the bytes do not), and the object of a job that uploaded and then failed to stamp — through a sweep of objects no row names at all, older than a one-day grace period. The grace period is not caution for its own sake: an upload writes the object and THEN the row, so for a fraction of a second every healthy upload is an orphan.
 - GDPR data subject requests (export/erasure): **30-day** target, matching the ICO statutory maximum.
 - **The ACCESS and PORTABILITY half of that is now a real job rather than a promise (Phase 8 Task 4), and the register enforces it.** `private.dsr_fulfilment_job_ready('export')` answers `true` from `20260927003000`, so an account-scope `access` or `portability` request can no longer be marked fulfilled by hand: an export job for that requester must have completed **after the request was made** and recorded itself on the row, or the transition is refused (22023, hint `fulfilment_not_recorded`). The seam is written by the runner as `service_role` through a **two-column** `UPDATE` grant (`fulfilment_kind`, `fulfilment_reference`) and nothing wider; `fulfilment_recorded_at` is stamped by the trigger and is deliberately outside the grant. `private.dsr_fulfilment_job_ready('erasure')` is still `false` — Task 5.
@@ -364,7 +364,9 @@ incident digest. Each half is its own subtransaction, so none can take another
 down, and `rls_phase8_retention.sql` § RC14 pins all five BY NAME: a Phase 7
 alert type or a Task 4 runner dropped by a future rebuild would be a silent
 regression, and a count would not catch it. The sweep is **throttled in the
-database** to about hourly (`private.retention_sweep_interval()`) rather than
+database** to about hourly (`private.retention_sweep_is_due()` — LIVE runs
+only since fix round 1: the throttle used to read every run, so the dry-run
+preview button postponed the live sweep it was previewing) rather than
 given a cron entry of its own: the other four halves are latency-sensitive and
 this one is not, and "there is one clock" is worth more than a cheaper
 predicate.
@@ -383,7 +385,10 @@ predate it — were rebuilt to derive their numbers from it.
 `private.retention_subjects()` classifies every table in `public` as swept
 under a named class, cascading with its parent, retained with its workspace,
 platform reference data or never purged; `private.assert_retention_roll()`
-derives the same list from `pg_class` at step 0 of every run and refuses an
+derives the same list from `pg_class` — **since fix round 1 before a run is
+opened, before the object manifest names a key, AND at step 0 (see "What the
+review found" below), and over materialized views and the `private` schema
+as well as tables in `public`** — and refuses an
 unclassified table, a roll entry naming a table that does not exist, a table
 classified twice, or a `swept` entry whose class is not declared. It earned
 its keep on its first day, refusing because the task's own two new tables were
@@ -403,9 +408,10 @@ the 60-day workspace purge (Q88/Q92/Q102), which CALLS
 caller that primitive has ever had.
 
 **Storage is the half that cannot be transactional, and both directions are
-handled.** `public.retention_object_manifest()` derives every object key in
+handled.** `public.retention_object_manifest(p_run_id, p_limit)` derives every object key in
 the DATABASE — the runner deletes what Postgres named and can name nothing
-itself, the erasure runner's rule — and the runner deletes bytes BEFORE the
+itself, the erasure runner's rule, **and since fix round 1 Postgres names
+nothing at all for a run that would refuse** — and the runner deletes bytes BEFORE the
 rows, because the feedback sweep and the workspace purge both refuse to remove
 a row whose object is still stored. If a run dies in between, the residue is
 bytes gone and rows not, which is the direction of "the data is deleted" and
@@ -422,7 +428,108 @@ row to `public.retention_runs` with what it swept, how long it took and what
 it REFUSED, and `/super/health` renders the last five: "the audit purge has
 refused its ceiling on every run for a month" is exactly what an operator
 needs to see, and a warning in the Postgres log on a hosted database is not
-visible from anywhere.
+visible from anywhere. **Since fix round 1 it is also an incident alert**
+(`retention_run_refused`, below), because a column on a page is visible only
+to somebody who looks.
+
+### What the review of the retention job found, and what holds now (Task 6 fix round 1)
+
+The review graded the job MAJOR: two ways it could delete something it should
+not, neither visible to any of the 116 + 1 + 164 assertions it shipped with.
+
+**C1 — a tenant could write the retention clock.** `authenticated` held
+table-wide INSERT and UPDATE on `public.documents`, so an ordinary Owner could
+write `deleted_at = now() - interval '8 years'` and have a SEVEN-YEAR financial
+document's file named in the next manifest, forge `bytes_purged_at` (the file
+stays for ever while the row claims a lawful deletion), or re-point
+`storage_key` (turning a live document's object into an orphan the sweep
+deletes a day later). `20261004000000` closes it three ways, each
+mutation-tested alone: **column-level grants** (INSERT on the nine columns the
+upload sends, UPDATE on `scan_status`, `scanned_at`, `deleted_at` — revoked
+table-level FIRST, the Q125 lesson); a **BEFORE INSERT OR UPDATE guard** that
+OVERWRITES a null → value `deleted_at` with `now()` (a person says THAT they
+deleted a document, never WHEN — the incident-alert guard's rule), refuses a
+re-date, refuses any client write to `bytes_purged_at`, and makes
+**`storage_key` immutable for every writer, `postgres` included**; and a
+**CHECK** that a purged document is a deleted document, which closes restoring
+a document whose file is gone and stamping a live one.
+
+**And the question is now asked of every clock, and of the next one**
+(`20261004001000`). `private.retention_clock_candidates()` DERIVES every
+date/timestamp column a retention function's own source names — where "a
+retention function" is itself derived, the manifest plus everything
+`private.retention_sweep_body()` calls, so a new sweep is in the set by
+construction. `private.retention_clock_columns()` classifies each, and
+`private.assert_retention_clocks()` **REFUSES THE JOB** on an unclassified
+candidate or on a clock any client role (`private.retention_client_roles()`,
+derived from what `authenticator` can become) holds INSERT or UPDATE on
+without a named guard that really exists as an enabled BEFORE ROW trigger or
+RESTRICTIVE policy. Six clocks are client-writable today and pinned by name —
+`documents.deleted_at`, `incident_alerts.resolved_at`,
+`organisations.{deleted_at, retention_expires_at, lifecycle_changed_at}` and
+`storage.objects.created_at` — and `rls_phase8_retention.sql` § RK requires a
+PASSING BEHAVIOURAL PROBE, recorded by that same run, for each: that a guard
+exists is a catalogue fact, that it pins the value is behaviour. **The
+derivation's stated limits:** it matches column NAMES in function source, so
+it over-approximates (two false candidates, each excused with a reason); it
+cannot see a clock a TRIGGER computes from another column (one exists,
+`organisations.lifecycle_changed_at`, and the roll names it by hand); and
+`service_role` is excluded as a server credential.
+
+**C2 — step 0 ran after the bytes were gone.** The runner read the manifest,
+DELETED THE OBJECTS and only then called `run_retention_sweep()`, where the
+roll was asserted: the reviewer measured a run recorded `failed` whose file
+had already been destroyed. The fix (`20261004002000`) is in the database
+rather than in the order of three TypeScript lines: **`start_retention_run()`
+asks every refusal first** — `replica` raises; the kill switch, the table roll
+and the clock roll are each RECORDED as a `refused` run carrying the hint, so
+the runner never holds a `running` row — **and the manifest takes the run id
+and names NOTHING** unless that run is `running`, the job is enabled,
+`replica` is off and both rolls pass, in the same call that produces the keys.
+The ungated one-argument signature is dropped. Step 0 stays as the third line.
+`tests/integration/retention/runner.test.ts` is the proof psql cannot give: a
+refused run's expired file is **still downloadable** afterwards.
+
+**One run at a time** (`20261004003000`, I2). Two starts used to give two
+`running` rows, which defeats the per-run ceiling, the sanity ceiling and the
+before/after totals — all arithmetic over ONE run — and was reachable from the
+cron tick, a direct POST and the preview button. A partial unique index over
+`status = 'running'` is the serialisation (the export and erasure jobs'
+shape; under a real race the second INSERT blocks and then fails, where an
+`if exists` would let both pass an unlocked read), the loser is recorded as
+`refused` / `retention_run_in_progress`, and
+`supabase/tests/retention_concurrency_probe.sh` drives it with two real
+sessions on every `run-rls-tests.sh`.
+
+**The purge exempts no action, and that is now measured** (I1). Every action
+the product writes is derived from the live catalogue and planted either side
+of the period as a tenant row and as a platform row; the purged and surviving
+SETS are asserted, so an exemption added or an over-delete added both redden.
+Before this, adding `or a.action like 'impersonation%'` — which deletes the
+entire record of superuser access to tenant data, at any age — reddened 0 of
+116.
+
+#### When a retention run refuses
+
+A LIVE run that refuses or fails files ONE `retention_run_refused` incident
+alert per distinct (sweep, reason) — a trigger on `public.retention_runs`, so
+every writer of a refusal passes it; codes and counts, never content — and
+the existing digest emails it. A later live run that completes without
+repeating the fault resolves it as the system (`retention_run_recovered`), so
+**an alert that is still open is a fault that is still happening.** It is NOT
+filed for `retention_disabled` (a switch somebody chose, already audited with
+its reason) or `retention_run_in_progress` (an overlap), nor for a preview.
+What the operator does next, by reason:
+
+| reason | what it means | what to do |
+|---|---|---|
+| `unclassified_retention_subject` | a migration added a table or materialized view to `public`/`private` that `private.retention_subjects()` does not classify. **Nothing is being deleted at all** until it is | decide its retention answer and reissue the roll in a migration. This is the job working |
+| `undeclared_retention_clock` / `forgeable_retention_clock` | a sweep reads a timestamp column nobody classified, or a client role can write a clock with no guard | classify it in `private.retention_clock_columns()`; if it is client-writable, guard it FIRST. Do not add a guard name that does not exist — the assertion checks |
+| `audit_purge_over_ceiling` | more than a fifth of the audit log, and more than 1,000 rows, are past the period. Either the clock/period/column is wrong, or the job was off for a long time and this is a genuine backlog. **The ceiling cannot drain itself** — each run deletes at most 500 and the ceiling judges every candidate — so it refuses every hour until a person acts | the alert's `details` carry both row counts. If it is a wrong clock, fix that. If it is a genuine backlog, release it with a reviewed migration reissuing `private.audit_purge_ceiling()` and restore it afterwards; the hard floor still holds. A no-deploy, time-boxed, audited release is **Q184** |
+| `audit_retention_below_floor` | `private.retention_periods()` declares an audit period under one year | it is refusing to delete a year of evidence. Correct the declaration |
+| `run_abandoned` | a run crashed and was reaped past the `stuck_job` period | read the runner's logs for that run id; the next run has already started normally |
+| `storage_remove_failed` / `manifest_unreadable` | Storage or the manifest faulted; rows were NOT swept, which is the safe direction | check Storage; the next run retries the identical set |
+| `unknown` | the runner recorded a reason that is not a code | read the runner's logs for that run id |
 
 **A fourth Vault pair and a fourth bearer secret** (`retention_runner_url` /
 `retention_runner_secret`, § 15), separate from the digest's, the export

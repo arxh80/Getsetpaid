@@ -4340,10 +4340,73 @@ shipped rather than with "done".**
   rather than absent from it.
 - **Nothing emails anybody about a retention run** (Q45, for the ninth
   feature). A run that has been refusing its sanity ceiling every hour for a
-  month is visible on `/super/health` and nowhere else.
+  month is visible on `/super/health` and nowhere else. **NO LONGER TRUE since
+  Task 6's fix round 1** (Q182, `20261004004000`): a refused or failed LIVE run
+  files a `retention_run_refused` incident alert, which the existing digest
+  emails to the operator. See the fix-round ledger below.
 - **A fourth bearer secret and Vault pair are owed at deploy**
   (`SECURITY.md` § 15), and the consequence of forgetting this one is QUIET
   rather than loud: the job simply never runs, `/super/health` shows no runs
   at all, and data past its retention period is kept.
 - **The retention periods are still a working default pending counsel**
   (Q133). What this task bought is that the answer is one migration.
+
+### Task 6 fix round 1 — what the review changed, and what is still owed
+
+The review graded the job MAJOR. `SECURITY.md` § 8 ("What the review of the
+retention job found") carries the as-built description; this is the ledger.
+
+- **"Nothing emails anybody about a retention run" (above) IS NO LONGER TRUE
+  — CLOSED as Q182's recommended default.** A LIVE run that refuses or fails
+  files one `retention_run_refused` incident alert per distinct
+  (sweep, reason), which the existing digest emails; a later clean run
+  resolves it as the system. Not for a switch somebody chose, not for an
+  overlap, not for a preview. The customer still hears nothing about
+  anything (Q45); this is the OPERATOR's signal.
+- **The audit purge's sanity ceiling still cannot drain itself, and that is
+  now a stated limit rather than a surprise (m5, Q184).** It judges EVERY row
+  past the period while each run deletes at most 500, so a genuine backlog
+  (the job switched off for months, or first enabled on an old database)
+  refuses every hour for ever. What changed is that it is never silent: the
+  alert carries both row counts. **Today the only release is a reviewed
+  migration reissuing `private.audit_purge_ceiling()`, restored afterwards.**
+  Q184 asks whether to build a no-deploy, time-boxed, audited release on
+  `/super/health`; recommended default yes, behind step-up, 24 hours, the
+  hard floor and the per-run ceiling untouched.
+- **A purged document cannot be restored, and the page does not say so yet.**
+  The database refuses it for every writer
+  (`documents_purged_implies_deleted`) and `restoreDocumentAction` matches
+  nothing, so the person reads the ordinary "nothing to restore" answer.
+  `/[orgSlug]/documents/deleted` still OFFERS Restore on a row whose file is
+  gone, and shows nothing that distinguishes "deleted under the retention
+  policy" from "deleted". Nothing reads `bytes_purged_at` in the application
+  at all. Two years away at the earliest; **Q185.**
+- **The clock derivation's three stated limits** (`20261004001000`): it
+  matches column NAMES in function source, so it over-approximates (two
+  false candidates today, each excused with a reason in the roll); it cannot
+  see a clock that a TRIGGER computes from another column (one exists,
+  `organisations.lifecycle_changed_at`, named by hand); and it asks about
+  client roles only — `service_role` holds UPDATE on the job tables' outcome
+  columns for the runners, and those guards are their own suites' subject.
+- **The retention roll's schema limit** (`20261004005000`, m1): `public` and
+  `private`, plus materialized views in both. A table in any OTHER schema is
+  not seen. Decided the way Task 5's roll decided it; a schema allowlist was
+  rejected because every psql suite creates a results schema and would trip
+  it on every developer database.
+- **`/legal/data-retention` is at version 6 and still unreviewed.** It now
+  says what is NOT deleted (Q183, recommended default, taken) and carries
+  three new counsel gaps that are real questions, not placeholders: whether
+  financial records must be DELETED at seven years and from what date;
+  whether inactive accounts should be deleted at all and with what notice
+  (Q180); and whether a customer-facing permanent delete of a single record
+  is required before launch — there is none today, short of closing the
+  workspace.
+- **`tests/unit/legal/seed-matches-catalogue.test.ts` stops at
+  `20260925004000`.** Its `currentBodies()` rebuilds "every page's current
+  body" from five migrations and has not been extended for the four
+  data-retention versions since (v3 Task 4, v4 Task 5, v5 and v6 Task 6) or
+  for data-subject-rights v4/v5. So its hosting-and-transfer consistency
+  check has not read the CURRENT retention or rights page for three tasks.
+  Pre-existing; found while binding v6. `data-retention-v6.test.ts` covers
+  v6 on its own. Owed: extend the chain, or replace it with a read of the
+  final body per slug.
