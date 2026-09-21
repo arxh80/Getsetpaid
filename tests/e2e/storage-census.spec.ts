@@ -54,7 +54,12 @@ interface BrowserStorage {
   local: string[];
   session: string[];
   indexedDb: string[];
+  /** Whether `indexedDB.databases()` EXISTS here. A capability miss used to
+   *  collapse to [] with nothing recording that the probe was blind. */
+  indexedDbApi: boolean;
   caches: string[];
+  /** Whether Cache Storage exists here -- the same asymmetry. */
+  cachesApi: boolean;
   serviceWorkerApi: boolean;
   serviceWorkers: string[];
 }
@@ -62,18 +67,28 @@ interface BrowserStorage {
 async function readStorage(page: Page): Promise<BrowserStorage> {
   return page.evaluate(async () => {
     const keys = (s: Storage) => Array.from({ length: s.length }, (_, i) => s.key(i) ?? "");
-    const idb =
-      typeof indexedDB !== "undefined" && "databases" in indexedDB
-        ? (await indexedDB.databases()).map((d) => d.name ?? "")
-        : [];
-    const cacheNames = typeof caches !== "undefined" ? await caches.keys() : [];
+    // CENSUS AUDIT, FINDING 14. These two used to collapse to [] on a
+    // capability miss, with nothing recording that the probe was blind, while
+    // the service-worker line one row below returned its capability as a
+    // boolean and pinned it. `indexedDB.databases()` is not implemented in
+    // Firefox, and `caches` is absent outside a secure context -- so the day
+    // this runs on a second Playwright project, or the base URL stops being
+    // localhost, "the product declares no IndexedDB database" and "no Cache
+    // Storage" would pass green over an UNREAD subject. The fix was already
+    // demonstrated one line below the bug.
+    const indexedDbApi = typeof indexedDB !== "undefined" && "databases" in indexedDB;
+    const idb = indexedDbApi ? (await indexedDB.databases()).map((d) => d.name ?? "") : [];
+    const cachesApi = typeof caches !== "undefined";
+    const cacheNames = cachesApi ? await caches.keys() : [];
     const serviceWorkerApi = "serviceWorker" in navigator;
     const registrations = serviceWorkerApi ? await navigator.serviceWorker.getRegistrations() : [];
     return {
       local: keys(window.localStorage),
       session: keys(window.sessionStorage),
       indexedDb: idb,
+      indexedDbApi,
       caches: cacheNames,
+      cachesApi,
       serviceWorkerApi,
       serviceWorkers: registrations.map((r) => r.scope),
     };
@@ -198,6 +213,17 @@ test("after a signed-in walk, every cookie and storage key the browser holds is 
   expect(storage.local, "the idle-timeout key is missing").toContain(`gsp:last-activity-at:${world.users.manager.id}`);
   expect(storage.local, "the pinned-rail key is missing").toContain("gsp:sidebar-pinned");
   expect(storage.serviceWorkerApi, "DENOMINATOR: the service worker API exists here, so 'none registered' means something").toBe(true);
+  expect(
+    storage.indexedDbApi,
+    "DENOMINATOR: indexedDB.databases() exists here, so 'no IndexedDB database' means something. " +
+      "It does NOT exist in Firefox -- the day this suite runs on a second project, this line is " +
+      "what says so instead of the census quietly passing over an unread subject.",
+  ).toBe(true);
+  expect(
+    storage.cachesApi,
+    "DENOMINATOR: Cache Storage exists here, so 'no Cache Storage' means something. It is absent " +
+      "outside a secure context, which a changed base URL is enough to cause.",
+  ).toBe(true);
   // ...and the workspace cookie really is unreadable by page scripts, as the
   // policy says.
   expect(cookies.find((c) => c.name === "gsp_current_org")?.httpOnly).toBe(true);

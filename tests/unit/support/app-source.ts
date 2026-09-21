@@ -308,6 +308,23 @@ export const KNOWN_ENTRY_POINTS = [
   "app/layout.tsx",
 ] as const;
 
+/**
+ * The entry points that exist, AND it throws when none does.
+ *
+ * Census audit, finding 16: this was an `existsSync` filter that returned `[]`
+ * on a total miss and never threw -- so a consumer asking "did the walk see
+ * the entry points?" could be answered with an empty list. Every one of them
+ * is a file Next loads with no import pointing at it, so ALL of them
+ * disappearing at once means the walk is pointed at the wrong tree, not that
+ * the app stopped having entry points.
+ */
 export function existingEntryPoints(root: string = REPO_ROOT): string[] {
-  return KNOWN_ENTRY_POINTS.filter((p) => existsSync(join(root, p)));
+  const found = KNOWN_ENTRY_POINTS.filter((p) => existsSync(join(root, p)));
+  if (found.length === 0) {
+    throw new Error(
+      `[app-source] none of the ${KNOWN_ENTRY_POINTS.length} known entry points exists under ${root}. ` +
+        `That is a wrong root, not an app without entry points.`,
+    );
+  }
+  return found;
 }

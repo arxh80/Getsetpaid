@@ -116,7 +116,7 @@ async function neitherDerivation(): Promise<string[]> {
     `select c.relname as tbl
        from pg_class c
        join pg_namespace n on n.oid = c.relnamespace
-      where n.nspname = 'public' and c.relkind = 'r'
+      where n.nspname = 'public' and c.relkind in ('r', 'p')
         and c.relname not in (${ORGANISATION_TABLES_SQL})
         and c.relname not in (${USER_TABLES_SQL})
       order by c.relname`,
@@ -410,26 +410,80 @@ describe("the tables in NEITHER derivation are a disposition, not a residue", ()
   });
 
   it("DENOMINATOR: the remainder query really is looking at the whole schema", async () => {
-    // Without this, a remainder query that matched nothing (a typo in the
-    // relkind, a schema rename) would agree with any roll that was empty —
-    // and the roll is not empty, so the two together are load-bearing.
+    // RR5 (Task 4 scoped re-review). The middle assertion here USED to be
+    // `remainder === all − |org ∪ user|`, and its comment claimed it would
+    // catch "a typo in the relkind, a schema rename". It would not:
+    // `neitherDerivation()` IS `allBaseTables` minus those same two
+    // subqueries, written with the same two SQL constants, so the equality
+    // held by construction for any value of the constants, INCLUDING a broken
+    // one. A typo in the relkind changes both sides together, which is the
+    // exact failure shape this file is named against.
+    //
+    // It is a LITERAL COUNT now: 51 base tables in `public` at 163 migrations,
+    // measured. A relkind typo takes it to 0 and this reds; a new table takes
+    // it to 52 and this reds, which is correct -- a new table needs a
+    // disposition, and the rolls below are where it gets one.
     const { rows } = await pool.query<{ n: string }>(
-      "select count(*)::text as n from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind = 'r'",
+      "select count(*)::text as n from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind in ('r', 'p')",
     );
     const all = Number(rows[0]?.n ?? 0);
     const org = (await derived(ORGANISATION_TABLES_SQL)).length;
     const user = (await derived(USER_TABLES_SQL)).length;
     const remainder = (await neitherDerivation()).length;
-    expect(all).toBeGreaterThan(40);
-    // Every public base table is in at least one of the three sets, and the
-    // two derivations overlap (a table can have both paths), so the only
-    // exact arithmetic available is that the remainder is the complement.
+    expect(
+      all,
+      "the number of base tables in `public` has changed. If you ADDED one it needs a disposition " +
+        "in the catalogue or in NEITHER_DERIVATION (the rolls above will say which). If this is 0, " +
+        "the relkind or the schema name in this query is wrong and every 'is in neither derivation' " +
+        "assertion in this file has been answered by an empty set.",
+    ).toBe(51);
+    // Kept, and no longer pretending to be the load-bearing one: the two
+    // derivations overlap (a table can have both paths), so the remainder is
+    // the complement by construction. What makes it worth a line is that it
+    // fails LOUDLY if `neitherDerivation()` and the count above ever stop
+    // being written over the same relkinds.
     expect(remainder).toBe(all - new Set([
       ...(await derived(ORGANISATION_TABLES_SQL)),
       ...(await derived(USER_TABLES_SQL)),
     ]).size);
     expect(org).toBeGreaterThan(0);
     expect(user).toBeGreaterThan(0);
+  });
+
+  it("RR3: a PARTITIONED table is in the walk, not invisible to both halves", async () => {
+    // The completeness walks filtered `relkind = 'r'`, so a partitioned table
+    // (`relkind = 'p'`) with no foreign key was in neither derivation, neither
+    // remainder AND neither count -- the two halves blind together, so the
+    // arithmetic still balanced and nothing reported it. Not live today (51
+    // `r`, 0 `p`), and partitioning `audit_events` for the hot/cold retention
+    // split (SECURITY.md § 7) is a NAMED future task, so this is the exact
+    // change that would have done it.
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `create table public.census_probe_partitioned (id uuid not null, at timestamptz not null) partition by range (at)`,
+      );
+      const { rows } = await client.query<{ tbl: string }>(
+        `select c.relname as tbl
+           from pg_class c join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public' and c.relkind in ('r', 'p')
+            and c.relname not in (${ORGANISATION_TABLES_SQL})
+            and c.relname not in (${USER_TABLES_SQL})
+          order by c.relname`,
+      );
+      expect(rows.map((r) => r.tbl)).toContain("census_probe_partitioned");
+      // ...and the OLD filter is asserted to MISS it, so the widening is
+      // measured rather than claimed.
+      const { rows: old } = await client.query<{ tbl: string }>(
+        `select c.relname as tbl from pg_class c join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public' and c.relkind = 'r' and c.relname = 'census_probe_partitioned'`,
+      );
+      expect(old, "relkind = 'r' is supposed to miss a partitioned table").toEqual([]);
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
   });
 
   it("rate_limit_counters is the one that is not reference data, and it is named as such", () => {
@@ -571,7 +625,7 @@ describe("the census sees a table nobody has told it about", () => {
         `select c.relname as tbl
            from pg_class c
            join pg_namespace n on n.oid = c.relnamespace
-          where n.nspname = 'public' and c.relkind = 'r'
+          where n.nspname = 'public' and c.relkind in ('r', 'p')
             and c.relname not in (${ORGANISATION_TABLES_SQL})
             and c.relname not in (${USER_TABLES_SQL})
           order by c.relname`,
