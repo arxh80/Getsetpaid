@@ -1278,11 +1278,17 @@ select crm.val('L5  every table carrying updated_at has the trigger',
 -- 33 SINCE PHASE 8 TASK 1, up from 32: public.legal_documents carries an
 -- updated_at column, and § L5 above caught it arriving without the trigger --
 -- 20260922002000 attaches it, the 20260909030000 way.
-select crm.val('L6  ...and that is 33 tables (+1 legal_documents in Phase 8)',
+-- 34 SINCE PHASE 8 TASK 6: public.retention_settings, the retention job's two
+-- kill switches, and § L5 caught THAT one arriving without the trigger too --
+-- for the third time, which is the whole argument for a count here rather than
+-- a list. 20261003010000 attaches it. The RPC that writes the row sets
+-- updated_at itself, so the trigger changes nothing today; "the one writer
+-- remembers to" is exactly the guarantee it replaces.
+select crm.val('L6  ...and that is 34 tables (+1 legal_documents, +1 retention_settings in Phase 8)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '33');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '34');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together
