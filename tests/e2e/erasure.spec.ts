@@ -69,11 +69,16 @@ test("the last Owner of a workspace with people and records in it is refused, an
   // answer than "not yet, and here is what to do".
   await expect(page.getByRole("heading", { name: "Delete your account", level: 1 })).toBeVisible();
 
-  // Q131, in words, naming the workspace.
+  // Q131, in words, naming the workspace. TWICE, and that is asserted rather
+  // than worked around with `.first()`: the page renders the reason once as
+  // the standing Alert above the control and once under the disabled button,
+  // because a person who has scrolled to the button should not have to scroll
+  // back to find out why it is dead.
   const warning = page.getByText(/You are the only owner of/);
-  await expect(warning).toBeVisible();
-  await expect(warning).toContainText(world.orgName);
-  await expect(warning).toContainText("Make somebody else an owner");
+  await expect(warning, "the Q131 reason should appear as the alert AND under the button").toHaveCount(2);
+  await expect(warning.first()).toBeVisible();
+  await expect(warning.first()).toContainText(world.orgName);
+  await expect(warning.first()).toContainText("Make somebody else an owner");
 
   // THE CONTROL IS OFFERED AND DISABLED -- and that is a courtesy, not the
   // gate. Strip the attribute and submit for real.
