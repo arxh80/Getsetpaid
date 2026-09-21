@@ -1312,6 +1312,13 @@ describe("the inventory is mechanical", () => {
     // would land as a red test naming itself (review finding M2). Now it does:
     // a new granted function appears in `granted` and in none of the three
     // lists, and this assertion names it.
+    // AND THE GRANTEE PREDICATE COUNTS `PUBLIC` (census audit, finding 2).
+    // `aclexplode` yields `grantee = 0` for the pseudo-role PUBLIC, and
+    // `pg_get_userbyid(0)` is neither 'authenticated' nor 'anon' -- so an
+    // explicit `grant execute ... to public` was absent from this census
+    // entirely while PostgREST exposed the function to an anonymous browser.
+    // The sibling test below covers the OTHER, commoner shape, which no ACL
+    // query can see at all.
     const { rows } = await pool.query<{ proname: string }>(
       `select distinct p.proname
          from pg_proc p
@@ -1319,7 +1326,7 @@ describe("the inventory is mechanical", () => {
          cross join lateral aclexplode(p.proacl) ax
         where n.nspname = 'public'
           and ax.privilege_type = 'EXECUTE'
-          and pg_get_userbyid(ax.grantee) in ('authenticated', 'anon')`,
+          and (ax.grantee = 0 or pg_get_userbyid(ax.grantee) in ('authenticated', 'anon'))`,
     );
     const granted = rows.map((r) => r.proname).sort();
     const accounted = [
@@ -1340,6 +1347,86 @@ describe("the inventory is mechanical", () => {
     // below are refusals of a function that is not there.
     for (const fn of SUPERUSER_ONLY_RPCS.map((r) => r.fn)) {
       expect(granted, `${fn} is probed by this file and is not granted`).toContain(fn);
+    }
+  });
+
+  it("no function in `public` has NO ACL AT ALL -- the shape the census above cannot see", async () => {
+    // CENSUS AUDIT, FINDING 2, and the half that matters. A function created
+    // in `public` WITHOUT the house
+    //
+    //   revoke all on function ... from public, anon, authenticated, service_role;
+    //
+    // has `proacl IS NULL`. Postgres's default for a function is EXECUTE to
+    // the pseudo-role PUBLIC, which INCLUDES `anon` -- so it is callable
+    // through PostgREST by an unauthenticated browser. `aclexplode(NULL)`
+    // returns NO ROWS, so such a function is absent from the census above
+    // entirely: it is matched against nothing and named by nothing. This
+    // assertion is the only thing in the repository between a forgotten
+    // `revoke` and an unauthenticated RPC, and a forgotten `revoke` is the
+    // commonest way that exact failure ships.
+    //
+    // Measured clean at 163 migrations (0 with a PUBLIC grant, 0 with a null
+    // ACL) -- clean purely because every migration happens to carry the
+    // revoke, a convention that until now was enforced by nothing.
+    const { rows } = await pool.query<{ proname: string }>(
+      `select p.proname
+         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public' and p.prokind in ('f','p') and p.proacl is null
+        order by p.proname`,
+    );
+    expect(
+      rows.map((r) => r.proname),
+      "this function was created in `public` with no explicit ACL, so it carries Postgres's " +
+        "default of EXECUTE to PUBLIC -- which includes `anon`, and PostgREST will call it for " +
+        "an unauthenticated browser. Add the house " +
+        "`revoke all on function ... from public, anon, authenticated, service_role;` and then " +
+        "grant it to exactly the roles that need it. NOTE that no ACL-based census can see this " +
+        "function: aclexplode(NULL) returns no rows, so it is invisible to the equality above.",
+    ).toEqual([]);
+  });
+
+  it("POSITIVE CONTROL: a function created without the house revoke is caught", async () => {
+    // Both halves of the finding, planted and rolled back. Without this the
+    // two assertions above are a pair of empty results, which is exactly the
+    // shape this whole audit is about.
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(`create function public.zzz_planted_no_revoke() returns int language sql as $$ select 1 $$`);
+      const nullAcl = await client.query<{ proname: string }>(
+        `select proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname = 'public' and p.proacl is null and p.proname = 'zzz_planted_no_revoke'`,
+      );
+      expect(nullAcl.rows.map((r) => r.proname)).toEqual(["zzz_planted_no_revoke"]);
+
+      // ...and it is INVISIBLE to the ACL census, which is the point.
+      const aclCensus = await client.query<{ proname: string }>(
+        `select distinct p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           cross join lateral aclexplode(p.proacl) ax
+          where n.nspname = 'public' and ax.privilege_type = 'EXECUTE'
+            and p.proname = 'zzz_planted_no_revoke'`,
+      );
+      expect(aclCensus.rows, "aclexplode(NULL) returns no rows -- that IS the hole").toEqual([]);
+
+      // The other shape: an EXPLICIT grant to PUBLIC, which the widened
+      // grantee predicate now catches and the old one did not.
+      await client.query(`revoke all on function public.zzz_planted_no_revoke() from public`);
+      await client.query(`grant execute on function public.zzz_planted_no_revoke() to public`);
+      const widened = await client.query<{ proname: string; old_predicate: boolean }>(
+        `select distinct p.proname,
+                bool_or(pg_get_userbyid(ax.grantee) in ('authenticated','anon')) as old_predicate
+           from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+           cross join lateral aclexplode(p.proacl) ax
+          where n.nspname = 'public' and ax.privilege_type = 'EXECUTE'
+            and (ax.grantee = 0 or pg_get_userbyid(ax.grantee) in ('authenticated','anon'))
+            and p.proname = 'zzz_planted_no_revoke'
+          group by p.proname`,
+      );
+      expect(widened.rows.map((r) => r.proname)).toEqual(["zzz_planted_no_revoke"]);
+      expect(widened.rows[0]!.old_predicate, "the OLD grantee predicate is supposed to miss this").toBe(false);
+    } finally {
+      await client.query("rollback");
+      client.release();
     }
   });
 
@@ -1364,11 +1451,13 @@ describe("the inventory is mechanical", () => {
         where n.nspname = 'public'
           and c.relkind in ('r','p','v','m')
           and (exists (select 1 from aclexplode(c.relacl) ax
-                        where pg_get_userbyid(ax.grantee) in ('authenticated', 'anon'))
+                        where ax.grantee = 0
+                           or pg_get_userbyid(ax.grantee) in ('authenticated', 'anon'))
                or exists (select 1 from pg_attribute a
                             cross join lateral aclexplode(a.attacl) ax
                            where a.attrelid = c.oid and a.attacl is not null
-                             and pg_get_userbyid(ax.grantee) in ('authenticated', 'anon')))`,
+                             and (ax.grantee = 0
+                                  or pg_get_userbyid(ax.grantee) in ('authenticated', 'anon'))))`,
     );
     const granted = rows.map((r) => r.relname).sort();
     expect(

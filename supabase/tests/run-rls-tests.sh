@@ -34,6 +34,86 @@ psql_status=0
 http_status=0
 
 # ============================================================================
+# run_suite -- THE ONE PLACE A PSQL SUITE IS RUN (census audit, findings 1, 8, 9)
+# ============================================================================
+# Until this existed, each of the nineteen suites was invoked by its own
+# hand-written block and the runner's ONLY gate per suite was
+#
+#   select count(*) from <schema>.results where not pass
+#
+# which is a count of RECORDED FAILURES. An assertion that never records a row
+# is invisible to it, and there are two ways for that to happen:
+#
+#  1. THE STATEMENT RAISES BEFORE ITS HELPER IS ENTERED. An error raised while
+#     the CALLER's own statement is being built -- the shipped case was a
+#     format() specifier, `%'` -- happens before val()/try()/record() runs, so
+#     no row is inserted, the failure count stays zero and the suite reports
+#     "all assertions passed". `psql -f` without ON_ERROR_STOP prints
+#     `psql:<file>:<line>: ERROR: ...` and EXITS 0, so `set -euo pipefail`
+#     never trips. ON_ERROR_STOP is deliberately NOT the answer: it would hide
+#     every assertion after the first accident, and every DELIBERATE refusal in
+#     these suites is caught inside plpgsql and never reaches psql. So any psql
+#     ERROR line is red, and the output is kept in order to count them. This
+#     guard existed twice (the DSR and export suites, commits acc83b3 and
+#     b3de527) and nowhere else -- adding a twentieth suite silently opted out
+#     of it, which is why it is here and not copy-pasted a third time.
+#
+#  2. THE record() ROW IS ROLLED BACK WITH ITS OWN TRANSACTION. That produces
+#     no ERROR line at all and is invisible to (1) -- the DF11-DF13 class,
+#     task-3-report.md:151-158. The ONLY thing that catches it is a PINNED
+#     EXPECTED TOTAL, which no suite had. So run_suite takes one: the number of
+#     rows the suite must have recorded, measured on a clean run and written
+#     into the call. A suite that records 213 assertions where 214 are pinned
+#     is RED, whether the missing one failed, raised or vanished.
+#
+# Pass `-` as the expected total to MEASURE instead of asserting (the run that
+# establishes a new suite's number). That is deliberately visible in the call
+# site rather than an environment variable, so an unpinned suite cannot sit
+# unpinned quietly.
+#
+#   run_suite <LABEL> <file.sql> <results schema> <expected|-> [psql args...]
+#
+# Sets SUITE_FAILS to that suite's recorded-failure count, which each suite's
+# own diagnostic block below still reads and explains section by section.
+SUITE_FAILS=0
+run_suite() {
+  local label="$1" file="$2" schema="$3" expected="$4"
+  shift 4
+  docker cp "$HERE/$file" "$CTR:/tmp/$file" >/dev/null
+
+  local out
+  out=$(mktemp)
+  MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+    "$@" -f "/tmp/$file" 2>&1 | tee "$out"
+
+  local errors
+  errors=$(grep -c '^psql:.*ERROR:' "$out" || true)
+  rm -f "$out"
+  if [ "$errors" != "0" ]; then
+    echo "$label: $errors psql ERROR line(s) -- an assertion that raised before it was recorded has VANISHED from the report above, which is worse than failing." >&2
+    psql_status=1
+  fi
+
+  local recorded
+  recorded=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+             "select count(*) from $schema.results" | tr -d '[:space:]')
+  if [ "$expected" = "-" ]; then
+    echo "$label: $recorded assertions recorded (NOT PINNED -- put this number in the run_suite call)."
+  elif [ "$recorded" != "$expected" ]; then
+    echo "$label: RECORDED $recorded ASSERTIONS, PINNED AT $expected." >&2
+    echo "  Fewer means an assertion VANISHED rather than failed -- it raised before" >&2
+    echo "  its helper, or its record() row was rolled back with its own transaction." >&2
+    echo "  More means assertions were added: re-measure and update the run_suite call." >&2
+    psql_status=1
+  else
+    echo "$label: $recorded assertions recorded, as pinned."
+  fi
+
+  SUITE_FAILS=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+                "select count(*) from $schema.results where not pass" | tr -d '[:space:]')
+}
+
+# ============================================================================
 # PREFLIGHT: REFUSE TO RUN AGAINST A DIRTY DATABASE.
 #
 # NEW-6. Neither rls_foundation.sql nor rls_phase2_crm.sql tears its fixtures
@@ -123,12 +203,8 @@ done
 # rls_foundation.sql opens with `drop schema if exists harness cascade`, and it
 # tears its own fixtures down so the suite below still meets an empty schema.
 # ============================================================================
-docker cp "$HERE/schema_invariants.sql" "$CTR:/tmp/schema_invariants.sql"
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  -f /tmp/schema_invariants.sql
-
-inv_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-            "select count(*) from invariants.results where not pass" | tr -d '[:space:]')
+run_suite "SCHEMA INVARIANTS" schema_invariants.sql invariants 82
+inv_fails=$SUITE_FAILS
 if [ "$inv_fails" != "0" ]; then
   echo "SCHEMA INVARIANT SUITE FAILED: $inv_fails failing assertion(s)" >&2
   echo "  A failure in section A is a REOPENED TENANT BOUNDARY -- treat as Sev1." >&2
@@ -138,7 +214,6 @@ else
 fi
 echo
 
-docker cp "$HERE/rls_foundation.sql" "$CTR:/tmp/rls_foundation.sql"
 
 VARS=()
 for u in alice bob carol dave super; do
@@ -148,12 +223,8 @@ for u in alice bob carol dave super; do
   VARS+=( -v "${u}_c0={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\"}" )
 done
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${VARS[@]}" -f /tmp/rls_foundation.sql
-
-# Non-zero exit if anything failed, so this is usable as a gate.
-fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-        "select count(*) from harness.results where not pass" | tr -d '[:space:]')
+run_suite "RLS FOUNDATION" rls_foundation.sql harness 181 "${VARS[@]}"
+fails=$SUITE_FAILS
 if [ "$fails" != "0" ]; then
   echo "RLS SUITE FAILED: $fails failing assertion(s)" >&2
   psql_status=1
@@ -202,7 +273,6 @@ for u in powner padmin pmanager pbooker pvenuemgr pfinance pmarketing \
   P2ID[$u]=$id
 done
 
-docker cp "$HERE/rls_phase2_crm.sql" "$CTR:/tmp/rls_phase2_crm.sql"
 
 P2VARS=()
 for u in powner padmin pmanager pbooker pvenuemgr pfinance pmarketing \
@@ -212,11 +282,8 @@ for u in powner padmin pmanager pbooker pvenuemgr pfinance pmarketing \
   P2VARS+=( -v "${u}_c1={\"sub\":\"${P2ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
 done
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P2VARS[@]}" -f /tmp/rls_phase2_crm.sql
-
-p2_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from crm.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 2 CRM" rls_phase2_crm.sql crm 694 "${P2VARS[@]}"
+p2_fails=$SUITE_FAILS
 if [ "$p2_fails" != "0" ]; then
   echo "PHASE 2 CRM SUITE FAILED: $p2_fails failing assertion(s)" >&2
   echo "  A failure in section B or E is a REOPENED TENANT BOUNDARY -- treat as Sev1." >&2
@@ -239,13 +306,9 @@ fi
 # stays a statement about the Phase 2 suite alone and a Phase 3 failure is not
 # reported under a Phase 2 heading.
 # ============================================================================
-docker cp "$HERE/rls_phase3_events.sql" "$CTR:/tmp/rls_phase3_events.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P2VARS[@]}" -f /tmp/rls_phase3_events.sql
-
-p3_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from ev.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 3 EVENTS" rls_phase3_events.sql ev 187 "${P2VARS[@]}"
+p3_fails=$SUITE_FAILS
 if [ "$p3_fails" != "0" ]; then
   echo "PHASE 3 EVENTS SUITE FAILED: $p3_fails failing assertion(s)" >&2
   echo "  A failure in section EB, EF or EK is a REOPENED TENANT BOUNDARY -- treat as Sev1." >&2
@@ -265,13 +328,9 @@ fi
 # meetings, notes, documents, links) are created, in its OWN `op` schema, so the
 # count below is a statement about the Phase 4 suite alone.
 # ============================================================================
-docker cp "$HERE/rls_phase4_operations.sql" "$CTR:/tmp/rls_phase4_operations.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P2VARS[@]}" -f /tmp/rls_phase4_operations.sql
-
-p4_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from op.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 4 OPERATIONS" rls_phase4_operations.sql op 91 "${P2VARS[@]}"
+p4_fails=$SUITE_FAILS
 if [ "$p4_fails" != "0" ]; then
   echo "PHASE 4 OPERATIONS SUITE FAILED: $p4_fails failing assertion(s)" >&2
   echo "  A failure in OC, OD, OE or OF is a REOPENED TENANT BOUNDARY or a" >&2
@@ -293,13 +352,9 @@ fi
 # org-alpha/org-beta and the P2VARS claims), and tears down every row it plants
 # so the HTTP checks below start clean.
 # ============================================================================
-docker cp "$HERE/file_access_phase4.sql" "$CTR:/tmp/file_access_phase4.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P2VARS[@]}" -f /tmp/file_access_phase4.sql
-
-fa_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from fa.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 4 FILE ACCESS" file_access_phase4.sql fa 11 "${P2VARS[@]}"
+fa_fails=$SUITE_FAILS
 if [ "$fa_fails" != "0" ]; then
   echo "PHASE 4 FILE-ACCESS SUITE FAILED: $fa_fails failing assertion(s)" >&2
   echo "  A failure in A is a BROKEN storage-key invariant (a cross-tenant" >&2
@@ -323,13 +378,9 @@ fi
 # one contact and the one artist it adds (its section FJ), so the HTTP block
 # below still meets the contact and artist censuses it was written against.
 # ============================================================================
-docker cp "$HERE/rls_phase5_finance.sql" "$CTR:/tmp/rls_phase5_finance.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P2VARS[@]}" -f /tmp/rls_phase5_finance.sql
-
-p5_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from fin.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 5 FINANCE" rls_phase5_finance.sql fin 151 "${P2VARS[@]}"
+p5_fails=$SUITE_FAILS
 if [ "$p5_fails" != "0" ]; then
   echo "PHASE 5 FINANCE SUITE FAILED: $p5_fails failing assertion(s)" >&2
   echo "  A failure in FD is a BREACHED ROLE GATE (a non-finance role reads or" >&2
@@ -362,13 +413,9 @@ fi
 # and § Testing gates calls network-leakage tests the ones that "matter most".
 # This is that suite.
 # ============================================================================
-docker cp "$HERE/rls_phase6_network.sql" "$CTR:/tmp/rls_phase6_network.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P2VARS[@]}" -f /tmp/rls_phase6_network.sql
-
-p6_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from nw.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 6 NETWORK" rls_phase6_network.sql nw 127 "${P2VARS[@]}"
+p6_fails=$SUITE_FAILS
 if [ "$p6_fails" != "0" ]; then
   echo "PHASE 6 NETWORK SUITE FAILED: $p6_fails failing assertion(s)" >&2
   echo "  A failure in ND is a PRIVATE TABLE IN A DISCOVERY PATH (N2) -- a view" >&2
@@ -465,13 +512,9 @@ done
 P6VARS+=( -v "super=${ID[super]}" )
 P6VARS+=( -v "super_c={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal2\"}" )
 
-docker cp "$HERE/network_leakage_phase6.sql" "$CTR:/tmp/network_leakage_phase6.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P6VARS[@]}" -f /tmp/network_leakage_phase6.sql
-
-lk_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from leak.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 214 "${P6VARS[@]}"
+lk_fails=$SUITE_FAILS
 if [ "$lk_fails" != "0" ]; then
   echo "PHASE 6 NETWORK-LEAKAGE SUITE FAILED: $lk_fails failing assertion(s)" >&2
   echo "  In LA, THE FIXTURE ITSELF IS WRONG -- the counterparties are not the" >&2
@@ -532,13 +575,9 @@ fi
 P7VARS=( "${P6VARS[@]}" )
 P7VARS+=( -v "super_c1={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
 
-docker cp "$HERE/rls_phase7_impersonation.sql" "$CTR:/tmp/rls_phase7_impersonation.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P7VARS[@]}" -f /tmp/rls_phase7_impersonation.sql
-
-p7_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from imp.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 7 IMPERSONATION" rls_phase7_impersonation.sql imp 121 "${P7VARS[@]}"
+p7_fails=$SUITE_FAILS
 if [ "$p7_fails" != "0" ]; then
   echo "PHASE 7 IMPERSONATION SUITE FAILED: $p7_fails failing assertion(s)" >&2
   echo "  In IP, THE READ-ONLY ENVELOPE HAS WIDENED -- somebody granted a" >&2
@@ -589,11 +628,9 @@ fi
 # the normaliser off) and re-enables it in the same DO block, which is why it
 # runs after everything that depends on public.organisations behaving normally.
 # ============================================================================
-docker cp "$HERE/rls_phase7_lifecycle.sql" "$CTR:/tmp/rls_phase7_lifecycle.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off   "${P7VARS[@]}" -f /tmp/rls_phase7_lifecycle.sql
-
-lc_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc            "select count(*) from lc.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 7 LIFECYCLE" rls_phase7_lifecycle.sql lc 89 "${P7VARS[@]}"
+lc_fails=$SUITE_FAILS
 if [ "$lc_fails" != "0" ]; then
   echo "PHASE 7 LIFECYCLE SUITE FAILED: $lc_fails failing assertion(s)" >&2
   echo "  In LV, THE INVARIANT IS BROKEN -- a row can now be 'active' with" >&2
@@ -626,13 +663,9 @@ fi
 # its own Pro subscription for ALPHA and restores it to nothing at its own
 # § OZ, the same save/plant/restore discipline every suite in this chain uses.
 # ============================================================================
-docker cp "$HERE/rls_phase7_overrides.sql" "$CTR:/tmp/rls_phase7_overrides.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P7VARS[@]}" -f /tmp/rls_phase7_overrides.sql
-
-ov_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from ov.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 7 OVERRIDES" rls_phase7_overrides.sql ov 56 "${P7VARS[@]}"
+ov_fails=$SUITE_FAILS
 if [ "$ov_fails" != "0" ]; then
   echo "PHASE 7 OVERRIDES SUITE FAILED: $ov_fails failing assertion(s)" >&2
   echo "  In OB, THE EFFECTIVE-TIER RESOLUTION IS WRONG -- an active override" >&2
@@ -667,13 +700,9 @@ fi
 # against. It also takes an alert-table denominator at § RF rather than
 # assuming zero, because an earlier suite could raise one.
 # ============================================================================
-docker cp "$HERE/rls_phase7_rate_limits.sql" "$CTR:/tmp/rls_phase7_rate_limits.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P7VARS[@]}" -f /tmp/rls_phase7_rate_limits.sql
-
-rl_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from rl.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 7 RATE LIMITS" rls_phase7_rate_limits.sql rl 182 "${P7VARS[@]}"
+rl_fails=$SUITE_FAILS
 if [ "$rl_fails" != "0" ]; then
   echo "PHASE 7 RATE-LIMIT SUITE FAILED: $rl_fails failing assertion(s)" >&2
   echo "  In RV, A SHIPPED RATE LIMIT NO LONGER MATCHES SECURITY.md § 5." >&2
@@ -729,13 +758,9 @@ fi
 # event it created, so the HTTP block below -- which spends CAROL's budget,
 # not theirs -- runs against the state it was written against.
 # ============================================================================
-docker cp "$HERE/rls_phase7_feedback.sql" "$CTR:/tmp/rls_phase7_feedback.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P7VARS[@]}" -f /tmp/rls_phase7_feedback.sql
-
-fb_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from fb.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 7 FEEDBACK" rls_phase7_feedback.sql fb 151 "${P7VARS[@]}"
+fb_fails=$SUITE_FAILS
 if [ "$fb_fails" != "0" ]; then
   echo "PHASE 7 FEEDBACK SUITE FAILED: $fb_fails failing assertion(s)" >&2
   echo "  In FP, THE COLUMN-NARROW GRANTS HAVE WIDENED -- a submitter can now" >&2
@@ -770,13 +795,9 @@ fi
 # § CZ deletes every row and audit event it created, so the HTTP block below
 # runs against the state it was written against.
 # ============================================================================
-docker cp "$HERE/rls_phase7_crm_audit.sql" "$CTR:/tmp/rls_phase7_crm_audit.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
-  "${P7VARS[@]}" -f /tmp/rls_phase7_crm_audit.sql
-
-ca_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from ca.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 7 CRM AUDIT" rls_phase7_crm_audit.sql ca 128 "${P7VARS[@]}"
+ca_fails=$SUITE_FAILS
 if [ "$ca_fails" != "0" ]; then
   echo "PHASE 7 CRM AUDIT SUITE FAILED: $ca_fails failing assertion(s)" >&2
   echo "  In CA, THE TRIGGER CENSUS OR THE ALLOWLIST MOVED -- a table lost its" >&2
@@ -805,11 +826,9 @@ fi
 # the undo for every role -- which is the point) and deletes its audit rows,
 # so the HTTP block below reads exactly the seed.
 # ============================================================================
-docker cp "$HERE/rls_phase8_legal.sql" "$CTR:/tmp/rls_phase8_legal.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off   "${P7VARS[@]}" -f /tmp/rls_phase8_legal.sql
-
-lg_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc            "select count(*) from lg.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 8 LEGAL" rls_phase8_legal.sql lg 165 "${P7VARS[@]}"
+lg_fails=$SUITE_FAILS
 if [ "$lg_fails" != "0" ]; then
   echo "PHASE 8 LEGAL DOCUMENTS SUITE FAILED: $lg_fails failing assertion(s)" >&2
   echo "  In LA/LD/LP, THE PUBLIC READ WIDENED -- a signed-out visitor can see a" >&2
@@ -841,11 +860,9 @@ fi
 # proves the legal store is byte-for-byte what it found, so the HTTP block
 # below reads the migrated rows.
 # ============================================================================
-docker cp "$HERE/rls_phase8_consents.sql" "$CTR:/tmp/rls_phase8_consents.sql"
 
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off   "${P7VARS[@]}" -f /tmp/rls_phase8_consents.sql
-
-cs_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc            "select count(*) from cs.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 8 CONSENTS" rls_phase8_consents.sql cs 143 "${P7VARS[@]}"
+cs_fails=$SUITE_FAILS
 if [ "$cs_fails" != "0" ]; then
   echo "PHASE 8 CONSENT LEDGER SUITE FAILED: $cs_fails failing assertion(s)" >&2
   echo "  In CW, ATTRIBUTION IS FORGEABLE -- a consent landed for somebody other" >&2
@@ -874,27 +891,9 @@ fi
 # made -- so the HTTP block below and the race above still meet the database
 # they were written against.
 # ============================================================================
-docker cp "$HERE/rls_phase8_data_subject_requests.sql" "$CTR:/tmp/rls_phase8_data_subject_requests.sql"
 
-# THE OUTPUT IS KEPT, because an assertion can VANISH instead of failing: a
-# statement that raises before dsr.val()/dsr.record() is reached records
-# nothing, so "0 failing" stays true while the assertion never ran. Task 3
-# shipped one exactly so -- DW10's LIKE pattern ended `%'` inside format() and
-# the statement died on "unrecognized format() type specifier" -- and nobody
-# saw it for a whole review, because `psql -f` without ON_ERROR_STOP prints the
-# error and carries on. ON_ERROR_STOP is not the answer -- it would hide every
-# assertion after the first accident. The suite's DELIBERATE refusals are
-# caught inside plpgsql and never reach psql, so any psql ERROR line is red.
-dsr_out=$(mktemp)
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off "${P7VARS[@]}" -f /tmp/rls_phase8_data_subject_requests.sql 2>&1 | tee "$dsr_out"
-dsr_errors=$(grep -c '^psql:.*ERROR:' "$dsr_out" || true)
-rm -f "$dsr_out"
-if [ "$dsr_errors" != "0" ]; then
-  echo "PHASE 8 DATA SUBJECT REQUEST SUITE: $dsr_errors psql ERROR line(s) -- an assertion that raised before it was recorded has VANISHED from the report above, which is worse than failing." >&2
-  psql_status=1
-fi
-
-dsr_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select count(*) from dsr.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 8 DATA SUBJECT REQUESTS" rls_phase8_data_subject_requests.sql dsr 225 "${P7VARS[@]}"
+dsr_fails=$SUITE_FAILS
 if [ "$dsr_fails" != "0" ]; then
   echo "PHASE 8 DATA SUBJECT REQUEST SUITE FAILED: $dsr_fails failing assertion(s)" >&2
   echo "  In DF, THE 30-DAY CLOCK OR THE TASK 4/5 SEAM HAS MOVED -- a deadline" >&2
@@ -931,21 +930,9 @@ fi
 # inside its own rolled-back transaction. § XS asks the same question through
 # the real catalogue.
 # ============================================================================
-docker cp "$HERE/rls_phase8_exports.sql" "$CTR:/tmp/rls_phase8_exports.sql"
 
-# The output is kept for the same reason the suite above keeps its own: an
-# assertion that raises before xp.record() is reached VANISHES rather than
-# failing, and "0 failing" stays true while it never ran.
-exp_out=$(mktemp)
-MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off "${P7VARS[@]}" -f /tmp/rls_phase8_exports.sql 2>&1 | tee "$exp_out"
-exp_errors=$(grep -c '^psql:.*ERROR:' "$exp_out" || true)
-rm -f "$exp_out"
-if [ "$exp_errors" != "0" ]; then
-  echo "PHASE 8 EXPORT SUITE: $exp_errors psql ERROR line(s) -- an assertion that raised before it was recorded has VANISHED from the report above, which is worse than failing." >&2
-  psql_status=1
-fi
-
-exp_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select count(*) from xp.results where not pass" | tr -d '[:space:]')
+run_suite "PHASE 8 EXPORTS" rls_phase8_exports.sql xp 137 "${P7VARS[@]}"
+exp_fails=$SUITE_FAILS
 if [ "$exp_fails" != "0" ]; then
   echo "PHASE 8 EXPORT SUITE FAILED: $exp_fails failing assertion(s)" >&2
   echo "  In XG, a client role gained a write on the register, the bucket lost" >&2
