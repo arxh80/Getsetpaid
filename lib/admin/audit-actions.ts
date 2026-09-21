@@ -202,6 +202,15 @@ export const PLATFORM_AUDIT_ACTIONS = [
   // destructive scheduled job that was switched off (or back on) with no
   // recorded why is a decision nobody can reason about six months later.
   "retention_settings.changed",
+  // ... and the run itself (20261003004000). ONE summary row per run, counts
+  // and never content, actor = the Q130 tombstone, on the run's own
+  // correlation thread — the 20260908030000 § 6 pattern requirement 3 asks
+  // for. A DRY run writes one too, marked `"mode": "dry"`: the founder
+  // previewing what would be deleted is itself a thing the audit log should
+  // be able to answer. It is written DIRECTLY into public.audit_events,
+  // because private.log_audit_event() requires auth.uid() and a scheduled
+  // retention run has nobody on it.
+  "retention.swept",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first
