@@ -188,6 +188,13 @@ export const PLATFORM_AUDIT_ACTIONS = [
   // destroy the evidence that a statutory deletion was performed.
   "erasure_job.requested",
   "account.erased",
+  // ... and its workspace twin, added in fix round 1 (review finding M2):
+  // private.erase_organisation() wrote no summary row at all, although the
+  // requirement asked every erasure for one. Same shape as account.erased --
+  // counts, never content, actor = the tombstone -- with the workspace's id
+  // in the payload as well as in target_id, because organisation_id on the
+  // audit row is a foreign key to a workspace that has just been deleted.
+  "organisation.erased",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

@@ -206,7 +206,11 @@ insert into public.notes (id, organisation_id, owner_user_id, body, visibility) 
 insert into public.audit_events
   (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, before, after)
 values
-  (:'org_blocked', :'esub', 'erase.fixture.actor',  'contact', gen_random_uuid(), gen_random_uuid(), null, null),
+  -- The ACTOR row carries a payload, because M1 is about exactly that column
+  -- on exactly this shape of row: the page promises the description of the
+  -- change is dropped, and before fix round 1 only the TARGET rows lost it.
+  (:'org_blocked', :'esub', 'erase.fixture.actor',  'contact', gen_random_uuid(), gen_random_uuid(),
+   '{"erasure_fixture_payload": "a change the subject made"}'::jsonb, null),
   (:'org_blocked', :'emate', 'erase.fixture.target', 'contact', :'esub', gen_random_uuid(),
    '{"erasure_fixture_payload": "about the subject"}'::jsonb, null);
 
@@ -355,6 +359,20 @@ select er.val('ET5 it has a profile, so a pseudonymised audit row reads as a sen
 select er.try_hint('ET6 it CANNOT be given a password',
   $$update auth.users set encrypted_password = 'x' where id = private.erased_user_id()$$,
   'denied(42501:tombstone_is_not_a_login)');
+-- M4: the guard was a column list, and these two were not on it. Neither is a
+-- live path -- both need direct database access, and the tombstone has no
+-- password and no identity row -- but they are the two columns that would
+-- decide what a token SAID if one were ever minted.
+select er.try_hint('ET6b it CANNOT have its role changed (M4)',
+  $$update auth.users set role = 'service_role' where id = private.erased_user_id()$$,
+  'denied(42501:tombstone_is_not_a_login)');
+select er.try_hint('ET6c nor its app metadata, where a role claim would also live (M4)',
+  $$update auth.users set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || '{"role":"service_role"}'::jsonb
+     where id = private.erased_user_id()$$,
+  'denied(42501:tombstone_is_not_a_login)');
+select er.val('ET6d and neither write landed',
+  $$select role || '/' || coalesce(raw_app_meta_data ->> 'role', 'none')
+      from auth.users where id = private.erased_user_id()$$, 'authenticated/none');
 select er.try_hint('ET7 it CANNOT have its ban lifted',
   $$update auth.users set banned_until = null where id = private.erased_user_id()$$,
   'denied(42501:tombstone_is_not_a_login)');
@@ -710,6 +728,9 @@ select er.val('EM11 BLOCKED is back to two active owners for the erasure that fo
 
 select er.val('EE1 DENOMINATOR: audit_events.actor_user_id names the subject',
   $$select count(*)::text from public.audit_events where actor_user_id = '$$ || :'esub' || $$'$$, '2');
+select er.val('EE1b DENOMINATOR: an audit row the subject ACTED on carries a payload',
+  $$select count(*)::text from public.audit_events
+     where actor_user_id = '$$ || :'esub' || $$' and before is not null$$, '1');
 select er.val('EE2 DENOMINATOR: merges.merged_by names the subject',
   $$select count(*)::text from public.merges where merged_by = '$$ || :'esub' || $$'$$, '1');
 select er.val('EE3 DENOMINATOR: merge_candidates.resolved_by names the subject',
@@ -866,6 +887,12 @@ select er.val('EE24 audit_events.actor_user_id is the tombstone, and the rows ar
   $$select count(*)::text from public.audit_events
      where actor_user_id = private.erased_user_id()
        and action in ('erase.fixture.actor', 'erasure_job.requested')$$, '2');
+-- M1: /legal/data-subject-rights v5 says "any description of the change is
+-- dropped" for every entry of theirs. It was true of the rows that TARGETED
+-- them and not of the rows they ACTED on.
+select er.val('EE24b and the payload of the row the subject ACTED on is dropped (M1)',
+  $$select (before is null and after is null)::text from public.audit_events
+     where action = 'erase.fixture.actor'$$, 'true');
 select er.val('EE25 merges.merged_by is the tombstone and the merge row survives',
   $$select (merged_by = private.erased_user_id())::text
       from public.merges where id = '$$ || :'merge_id' || $$'$$, 'true');
@@ -1062,6 +1089,14 @@ values (:'org_purge', 'purged.pdf', :'org_purge' || '/' || gen_random_uuid()::te
         'application/pdf', 10, 'clean', pg_catalog.now(), pg_catalog.now());
 select storage_key as doc_key from public.documents where organisation_id = :'org_purge' \gset
 insert into storage.objects (bucket_id, name, owner) values ('documents', :'doc_key', null);
+-- THE TWO WORKSPACE-BEARING COLUMNS NO FOREIGN KEY PROTECTS (fix round 1).
+-- A feedback row of the bystander's that names this workspace as the one a
+-- superuser was inside, and a rate-limit counter metered against the
+-- workspace itself. Neither is reachable by the purge's pg_constraint walk.
+insert into public.feedback (user_id, category, message, route, support_access_organisation_id)
+values (:'ebyst', 'bug', 'erasure purge fixture', '/', :'org_purge');
+insert into public.rate_limit_counters (category, subject_scope, subject_id, window_start, request_count)
+values ('network_connection_request', 'organisation', :'org_purge', pg_catalog.date_trunc('hour', pg_catalog.now()), 1);
 \o
 
 select er.val('EO1 the seven entity types are read from the LIVE CHECK, not a list',
@@ -1080,6 +1115,12 @@ select er.val('EO5 DENOMINATOR: merges.field_resolution holds the discarded reco
   $$select count(*)::text from public.merges
      where organisation_id = '$$ || :'org_purge' || $$'
        and field_resolution::text like '%ROLLBACK-DISCARDED%'$$, '1');
+select er.val('EO5b DENOMINATOR: feedback names this workspace in a column with no foreign key',
+  $$select count(*)::text from public.feedback
+     where support_access_organisation_id = '$$ || :'org_purge' || $$'$$, '1');
+select er.val('EO5c DENOMINATOR: a rate-limit counter is metered against this workspace',
+  $$select count(*)::text from public.rate_limit_counters
+     where subject_scope = 'organisation' and subject_id = '$$ || :'org_purge' || $$'$$, '1');
 select er.val('EO6 DENOMINATOR: a SOFT-DELETED document still has its bytes (Q52)',
   $$select count(*)::text from storage.objects
      where bucket_id = 'documents' and name = '$$ || :'doc_key' || $$'$$, '1');
@@ -1133,6 +1174,29 @@ select er.val('EO15 purging a workspace that is already gone is NOT an error',
   $$select private.erase_organisation('$$ || :'org_purge' || $$', null, true) ->> 'already_erased'$$, 'true');
 select er.val('EO16 the bystander''s ACCOUNT survives a purge of his workspace',
   $$select count(*)::text from auth.users where id = '$$ || :'ebyst' || $$'$$, '1');
+
+-- FIX ROUND 1. The workspace-bearing columns no foreign key protects, and the
+-- summary row the purge never wrote (M2).
+select er.val('EO17 feedback no longer names the purged workspace, and the row itself survives',
+  $$select (select count(*) from public.feedback
+             where support_access_organisation_id = '$$ || :'org_purge' || $$')::text
+        || '/' || (select count(*) from public.feedback
+                    where message = 'erasure purge fixture')::text$$, '0/1');
+select er.val('EO18 and the workspace''s rate-limit counters went with it',
+  $$select count(*)::text from public.rate_limit_counters
+     where subject_scope = 'organisation' and subject_id = '$$ || :'org_purge' || $$'$$, '0');
+select er.val('EO19 ONE summary audit row, counts only, actor = the tombstone (M2)',
+  $$select (actor_user_id = private.erased_user_id())::text || '/' || target_type
+      from public.audit_events
+     where action = 'organisation.erased'
+       and target_id = '$$ || :'org_purge' || $$'$$, 'true/organisation');
+select er.val('EO20 and it says what was erased in COUNTS, never in content',
+  $$select ((after ->> 'organisations') = '1'
+            and (after ->> 'custom_field_values') is not null
+            and after::text not like '%ROLLBACK-DISCARDED%')::text
+      from public.audit_events
+     where action = 'organisation.erased'
+       and target_id = '$$ || :'org_purge' || $$'$$, 'true');
 
 
 -- ===========================================================================

@@ -359,7 +359,15 @@ describe("every literal action a function INSERTS into audit_events directly is 
       rows.map((r) => r.fqn).sort(),
       "the direct-insert census lost a writer it used to see",
     ).toEqual(
-      ["private.audit_erasure_job_requested", "private.erase_account", "private.log_audit_event"],
+      [
+        "private.audit_erasure_job_requested",
+        "private.erase_account",
+        // Fix round 1, M2: the workspace purge writes its own summary row now,
+        // so the roll of direct writers is four. Adding one is meant to be a
+        // deliberate edit here -- that is what this census is for.
+        "private.erase_organisation",
+        "private.log_audit_event",
+      ],
     );
 
     const known = new Set(knownAuditActions());
