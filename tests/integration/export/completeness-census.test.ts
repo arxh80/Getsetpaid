@@ -110,6 +110,11 @@ const NEITHER_DERIVATION: Readonly<Record<string, string>> = {
   // ---- THE ONE THAT IS NOT REFERENCE DATA, and the reason this roll exists.
   rate_limit_counters:
     "SUBJECT-SCOPED AND NOT DERIVABLE. `subject_id` is a user id OR an organisation id, chosen by `subject_scope`, with no foreign key on it — so it has a real row -> organisation path and a real row -> user path and the foreign-key walks cannot see either. It is EXCUSED, deliberately and permanently: the Task 4 brief names rate-limit internals among the things an export may never contain, the row is GetSetPaid's own enforcement state rather than the subject's data, and a counter naming a user id would put one person's throttling history into another's archive whenever the scope is `organisation`. Listed here rather than in the catalogue because a table with no foreign key cannot be catalogued without the both-directions assertions reporting it as `extra`.",
+
+  // ---- PHASE 8 TASK 6. The second table with a real disposition and no
+  // ---- foreign key for either walk to follow.
+  retention_runs:
+    "The retention job's run log: one row per run, with what it swept, how long it took and what it refused. It reaches no organisation and no person BY CONSTRUCTION -- every value in it is a count or a boolean (the CHECK on `swept` enforces exactly that), and `correlation_id` is a thread id rather than a reference to anything. It is in neither derivation because there is nothing for either walk to follow, and it belongs in no export for the same reason: it is the platform's record of its own housekeeping, about nobody. It is NOT catalogued, because a table with no foreign key cannot be catalogued without the both-directions assertions reporting it as `extra` -- rate_limit_counters' reason, for the opposite cause (that one is invisible DESPITE having both paths; this one has neither).",
 };
 
 async function neitherDerivation(): Promise<string[]> {
@@ -246,6 +251,14 @@ const ACCOUNT_EXCUSED = [
   "notes",
   "organisation_billing_overrides",
   "organisation_feature_overrides",
+  // Phase 8 Task 6. public.retention_settings.updated_by is a reference to
+  // auth.users, so the foreign-key walk claims it -- which is the census
+  // working, not a gap. It is the retention job's two kill switches, ONE ROW
+  // for the whole deployment: the platform's operational state, not a record
+  // about the superuser who last flipped them. The act itself is a
+  // `retention_settings.changed` audit row, and a superuser's own audit rows
+  // are already in their account export.
+  "retention_settings",
   "tasks",
   "venues",
 ];
@@ -445,7 +458,7 @@ describe("the tables in NEITHER derivation are a disposition, not a residue", ()
         "in the catalogue or in NEITHER_DERIVATION (the rolls above will say which). If this is 0, " +
         "the relkind or the schema name in this query is wrong and every 'is in neither derivation' " +
         "assertion in this file has been answered by an empty set.",
-    ).toBe(52);
+    ).toBe(54);
     // Kept, and no longer pretending to be the load-bearing one: the two
     // derivations overlap (a table can have both paths), so the remainder is
     // the complement by construction. What makes it worth a line is that it
