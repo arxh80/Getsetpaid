@@ -481,9 +481,28 @@ reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'alice_c';
 
+-- TWO GUARDS NOW ANSWER THIS WRITE, AND BOTH ARE ASSERTED (Phase 8 Task 5 fix
+-- round 1, I1). Alice is the sole Owner of org A, so the new BEFORE trigger
+-- private.membership_keeps_an_owner() refuses her role change first, with
+-- 22023 -- which would have quietly replaced this section's proof that the
+-- POLICY refuses a self-escalation. So D1 keeps its original assertion with
+-- the new trigger held off, and D1a records the new one beside it. Never one
+-- instead of the other: a policy that stopped refusing escalation would
+-- otherwise be invisible behind a trigger that refuses everything.
+reset role; reset request.jwt.claims;
+alter table public.organisation_memberships disable trigger membership_keeps_an_owner;
+set role authenticated;
+set request.jwt.claims = :'alice_c';
 select harness.try('D1  owner cannot UPDATE own row to platform_superuser',
   format($$update public.organisation_memberships set role='platform_superuser' where user_id=%L$$, :'alice'),
   'denied(42501)');
+reset role; reset request.jwt.claims;
+alter table public.organisation_memberships enable trigger membership_keeps_an_owner;
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+select harness.try('D1a and the owner guard refuses it too, first, because she is org A''s only owner',
+  format($$update public.organisation_memberships set role='platform_superuser' where user_id=%L$$, :'alice'),
+  'denied(22023)');
 
 -- status='invited' so the ONLY thing wrong with this row is the role -- this
 -- isolates the platform_superuser guard rather than passing on the status one.
@@ -506,9 +525,22 @@ select harness.try('D4b owner cannot DELETE from the platform_admins allowlist',
 select harness.try('D4c owner cannot REPOINT an allowlist row at herself',
   format($$update public.platform_admins set user_id=%L$$, :'alice'), 'denied(42501)');
 
+-- The same pair, for the same reason: moving her row out of org A leaves org A
+-- with no owner, so the trigger answers before the policy does.
+reset role; reset request.jwt.claims;
+alter table public.organisation_memberships disable trigger membership_keeps_an_owner;
+set role authenticated;
+set request.jwt.claims = :'alice_c';
 select harness.try('D5  owner cannot hop her membership into org B',
   format($$update public.organisation_memberships set organisation_id=%L where user_id=%L$$, :'org_b_id', :'alice'),
   'denied(42501)');
+reset role; reset request.jwt.claims;
+alter table public.organisation_memberships enable trigger membership_keeps_an_owner;
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+select harness.try('D5a and the owner guard refuses the hop too -- org A would be left ownerless',
+  format($$update public.organisation_memberships set organisation_id=%L where user_id=%L$$, :'org_b_id', :'alice'),
+  'denied(22023)');
 
 -- status='invited' so the forged invited_by is the ONLY defect in the row.
 select harness.try('D6  owner cannot forge invited_by attribution',

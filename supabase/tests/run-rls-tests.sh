@@ -223,7 +223,7 @@ for u in alice bob carol dave super; do
   VARS+=( -v "${u}_c0={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\"}" )
 done
 
-run_suite "RLS FOUNDATION" rls_foundation.sql harness 181 "${VARS[@]}"
+run_suite "RLS FOUNDATION" rls_foundation.sql harness 183 "${VARS[@]}"
 fails=$SUITE_FAILS
 if [ "$fails" != "0" ]; then
   echo "RLS SUITE FAILED: $fails failing assertion(s)" >&2
@@ -976,7 +976,7 @@ fi
 # instead of as an account that silently cannot be deleted.
 # ============================================================================
 
-run_suite "PHASE 8 ERASURE" rls_phase8_erasure.sql er 153 "${P7VARS[@]}"
+run_suite "PHASE 8 ERASURE" rls_phase8_erasure.sql er 166 "${P7VARS[@]}"
 era_fails=$SUITE_FAILS
 if [ "$era_fails" != "0" ]; then
   echo "PHASE 8 ERASURE SUITE FAILED: $era_fails failing assertion(s)" >&2

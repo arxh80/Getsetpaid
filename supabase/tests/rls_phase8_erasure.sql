@@ -626,6 +626,82 @@ select er.val('EL8 with a second owner the guard lets go',
 
 
 -- ===========================================================================
+-- EM  Q131 AT THE MEMBERSHIP (fix round 1, I1/Q176)
+-- ===========================================================================
+-- The erasure guard used to be keyed on the word "owner", and NOTHING guarded
+-- public.organisation_memberships -- so an Admin at aal2 holding
+-- manage_members could demote the sole Owner, after which the erasure guard
+-- stopped firing for everybody and the remaining members could erase
+-- themselves one by one. Asked DIRECTLY of the trigger here: as `postgres`,
+-- which no policy binds, and as a real authenticated Admin, which is the
+-- product route.
+\set emate_a2 '{"sub":"' :emate '","role":"authenticated","aal":"aal2"}'
+
+select er.val('EM1 DENOMINATOR: BLOCKED has two active owners',
+  $$select count(*)::text from public.organisation_memberships
+     where organisation_id = '$$ || :'org_blocked' || $$' and role = 'owner' and status = 'active'$$, '2');
+select er.try('EM2 POSITIVE CONTROL: demoting ONE of two owners is allowed',
+  $$update public.organisation_memberships set role = 'admin'
+     where organisation_id = '$$ || :'org_blocked' || $$' and user_id = '$$ || :'emate' || $$'$$, 'ok(1)');
+select er.val('EM3 leaving exactly one active owner',
+  $$select count(*)::text from public.organisation_memberships
+     where organisation_id = '$$ || :'org_blocked' || $$' and role = 'owner' and status = 'active'$$, '1');
+
+select er.try_hint('EM4 demoting the SOLE owner is refused -- as postgres, which no policy binds',
+  $$update public.organisation_memberships set role = 'standard_user'
+     where organisation_id = '$$ || :'org_blocked' || $$' and user_id = '$$ || :'esub' || $$'$$,
+  'denied(22023:last_owner_of_workspace)');
+
+set role authenticated;
+set request.jwt.claims to :'emate_a2';
+select er.try_hint('EM5 and refused for the aal2 ADMIN who holds manage_members -- the route that reached it',
+  $$update public.organisation_memberships set role = 'standard_user'
+     where organisation_id = '$$ || :'org_blocked' || $$' and user_id = '$$ || :'esub' || $$'$$,
+  'denied(22023:last_owner_of_workspace)');
+reset role;
+reset request.jwt.claims;
+
+select er.try_hint('EM6 REMOVING the sole owner is refused by the same rule',
+  $$delete from public.organisation_memberships
+     where organisation_id = '$$ || :'org_blocked' || $$' and user_id = '$$ || :'esub' || $$'$$,
+  'denied(22023:last_owner_of_workspace)');
+select er.try_hint('EM7 and so is revoking their membership -- status, not only role',
+  $$update public.organisation_memberships set status = 'revoked'
+     where organisation_id = '$$ || :'org_blocked' || $$' and user_id = '$$ || :'esub' || $$'$$,
+  'denied(22023:last_owner_of_workspace)');
+select er.try_says('EM8 the refusal NAMES the workspace',
+  $$update public.organisation_memberships set role = 'standard_user'
+     where organisation_id = '$$ || :'org_blocked' || $$' and user_id = '$$ || :'esub' || $$'$$,
+  'Erasure Blocked Ltd');
+select er.val('EM9 and nothing moved -- the owner is still an active owner',
+  $$select role || '/' || status from public.organisation_memberships
+     where organisation_id = '$$ || :'org_blocked' || $$' and user_id = '$$ || :'esub' || $$'$$,
+  'owner/active');
+
+-- THE EXEMPTION, AS A POSITIVE CONTROL: an EMPTY workspace with nobody else
+-- in it has nothing to strand, so its sole owner may leave.
+\o /dev/null
+select gen_random_uuid()::text as org_shell \gset
+insert into public.organisations (id, name, slug)
+values (:'org_shell', 'Erasure Shell Ltd', 'erasure-shell');
+insert into public.organisation_memberships (organisation_id, user_id, role, status)
+values (:'org_shell', :'emate', 'owner', 'active');
+\o
+select er.try('EM10 POSITIVE CONTROL: the sole owner of an EMPTY, memberless workspace may leave',
+  $$delete from public.organisation_memberships
+     where organisation_id = '$$ || :'org_shell' || $$'$$, 'ok(1)');
+\o /dev/null
+delete from public.organisations where id = :'org_shell';
+-- ... and BLOCKED goes back to two owners, which is what § EE assumes.
+update public.organisation_memberships set role = 'owner'
+ where organisation_id = :'org_blocked' and user_id = :'emate';
+\o
+select er.val('EM11 BLOCKED is back to two active owners for the erasure that follows',
+  $$select count(*)::text from public.organisation_memberships
+     where organisation_id = '$$ || :'org_blocked' || $$' and role = 'owner' and status = 'active'$$, '2');
+
+
+-- ===========================================================================
 -- EE  THE ERASURE ITSELF
 -- ===========================================================================
 -- THE DENOMINATOR FIRST. Every blocking reference planted in § EF is counted
