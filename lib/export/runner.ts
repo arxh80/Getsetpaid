@@ -75,6 +75,8 @@ interface PlanRow {
   disposition: "exported" | "excused";
   reason: string | null;
   authorisation: string | null;
+  /** The catalogue's declared keyset column — `null` on an excused row. */
+  key_column: string | null;
 }
 
 export interface RunnerOutcome {
@@ -210,11 +212,28 @@ async function buildAndStore(supabase: ServiceClient, job: ClaimedJob): Promise<
       (job.kind === "workspace" && entry.table_name === "documents") ||
       (job.kind === "account" && entry.table_name === "feedback");
 
+    // THE KEY COLUMN IS THE CATALOGUE'S, not this file's. It arrives in the
+    // plan (20260928003000) because private.export_page_sql() builds the
+    // `order by` and the `> $2` predicate from the same declaration, and one
+    // fact with two homes is what this runner is built to avoid — it holds no
+    // table list and no ceilings for exactly that reason.
+    //
+    // `typeof`, not `=== null`: an older public.export_plan() that does not
+    // SELECT the column at all returns `undefined` here rather than null, and
+    // that must fail loudly rather than page once on `row[undefined]` and then
+    // raise the cursor-did-not-advance error two screens away.
+    if (typeof entry.key_column !== "string" || entry.key_column === "") {
+      throw new Error(
+        `export plan: public.${entry.table_name} is exported with no key column. private.export_catalogue_is_sound() refuses that shape, so the catalogue and the plan disagree — or public.export_plan() is an older definition that does not return it.`,
+      );
+    }
+
     const written = await writeTable(
       supabase,
       zip,
       job.id,
       entry.table_name,
+      entry.key_column,
       limits,
       keepRows,
       generatedAt,
@@ -314,6 +333,7 @@ async function writeTable(
   zip: ZipWriter,
   jobId: string,
   table: string,
+  keyColumn: string,
   limits: Limits,
   keepRows: boolean,
   at: Date,
@@ -357,7 +377,7 @@ async function writeTable(
       }
       if (page.length < limits.page_size) break;
 
-      const cursor = cursorOf(page[page.length - 1]);
+      const cursor = cursorOf(page[page.length - 1], keyColumn);
       if (cursor === null || cursor === after) {
         throw new Error(`export read ${table}: the page cursor did not advance`);
       }
@@ -383,12 +403,17 @@ async function writeTable(
 /**
  * The key column's value, as the pager's cursor type.
  *
- * `private.export_catalogue()` guarantees the key column survives the
- * projection, so it is always present; `id` for all but one table and
- * `user_id` for public.platform_admins.
+ * THE COLUMN IS THE CATALOGUE'S, passed down from `public.export_plan()`.
+ * This used to be `row.id ?? row.user_id` — the two key columns the catalogue
+ * happens to use today, hard-coded here as well as declared there (review
+ * finding M9). A third key column added later paged correctly for the first
+ * 500 rows and then raised `the page cursor did not advance`.
+ *
+ * `private.export_catalogue_is_sound()` guarantees the key column is a real
+ * column and that it survives the projection, so the value is always present.
  */
-function cursorOf(row: Record<string, unknown>): string | null {
-  const candidate = row.id ?? row.user_id;
+function cursorOf(row: Record<string, unknown>, keyColumn: string): string | null {
+  const candidate = row[keyColumn];
   return typeof candidate === "string" ? candidate : null;
 }
 

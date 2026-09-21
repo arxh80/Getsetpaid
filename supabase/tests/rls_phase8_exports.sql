@@ -326,6 +326,40 @@ select xp.val('XC7 the audit projection withholds the before/after payload',
 select xp.val('XC8 the feedback projection withholds the screenshot key',
   $$select (not ('screenshot_key' = any(projection)))::text
       from private.export_catalogue() where export_kind='account' and table_name='feedback'$$, 'true');
+-- XC10-XC13  THE RULES THE FIX ROUND MADE MACHINERY (review findings M2, M9).
+--
+-- XC7/XC8 pin the two projections whose WITHHOLDINGS are named. Neither of
+-- them, nor private.export_catalogue_is_sound() as it shipped, said anything
+-- about an elevated row that carries NO projection -- and `select *` is what a
+-- null projection means. impersonation_sessions shipped that way, so an
+-- account archive carried the operator's break-glass `reason` and a GetSetPaid
+-- staff user id. 20260928001000 projects it and makes "elevated implies a
+-- projection" a rule of the soundness check rather than prose in three files.
+select xp.val('XC10 EVERY elevated read is projected -- an unprojected one is select *',
+  $$select count(*)::text from private.export_catalogue()
+     where authorisation='elevated'
+       and (projection is null or array_length(projection,1) is null)$$, '0');
+select xp.val('XC11 the impersonation projection withholds the operator''s reason and identity, and keeps the requester''s own decision',
+  $$select (not ('reason' = any(projection))
+            and not ('superuser_user_id' = any(projection))
+            and 'admin_accepted_by' = any(projection)
+            and 'declined_at' = any(projection))::text
+      from private.export_catalogue()
+     where export_kind='account' and table_name='impersonation_sessions'$$, 'true');
+select xp.val('XC12 DENOMINATOR: those two columns really are on the table, so XC11 is not a typo passing',
+  $$select count(*)::text from pg_attribute a
+      join pg_class c on c.oid=a.attrelid
+      join pg_namespace n on n.oid=c.relnamespace
+     where n.nspname='public' and c.relname='impersonation_sessions'
+       and a.attname in ('reason','superuser_user_id')
+       and a.attnum>0 and not a.attisdropped$$, '2');
+-- M9: the plan carries the catalogue's key column, so the runner's cursor is
+-- not a second home for the same fact.
+select xp.val('XC13 public.export_plan names key_column in its own result type',
+  $$select (pg_get_function_result(p.oid) like '%key_column text%')::text
+      from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+     where n.nspname='public' and p.proname='export_plan'$$, 'true');
+
 select xp.val('XC9 every excused table says why',
   $$select count(*)::text from private.export_catalogue()
      where disposition='excused' and (reason is null or length(btrim(reason)) < 60)$$, '0');
@@ -489,6 +523,88 @@ select xp.try_hint('XJ1c DENOMINATOR: the same statement from the same role, cla
 select xp.try_hint('XJ1d ...and running -> running is then refused as a non-transition, so XJ1c really wrote',
   format($$update public.export_jobs set status='running' where id=%L$$, :'alpha_job'),
   'denied(22023:illegal_export_transition)');
+-- XJ1e/XJ1f  THE INVERSION ITSELF (20260928000000; review finding M1).
+--
+-- Until that migration this guard held a CLOSED LIST of client roles
+-- (`v_session_role in ('authenticated','anon')`), so a role the schema has
+-- never heard of was admitted BY OMISSION -- the exact shape the brief for
+-- this task sent it to remove from the data subject register's seam, shipped
+-- one migration earlier in the same series. XJ1b cannot see the difference:
+-- it carries a person's claims, and BOTH shapes refuse that.
+--
+-- So ask it with a role that is neither: a real role, created here, holding
+-- the SAME column-level UPDATE grant service_role holds (or the answer would
+-- be a missing privilege again -- XJ1 is that assertion and it is not this
+-- one), with NO claims on the session. Under the closed list this statement
+-- was ADMITTED. It is now refused, by this guard's own hint.
+reset role;
+reset request.jwt.claims;
+\o /dev/null
+do $xjf$ begin
+  if not exists (select 1 from pg_roles where rolname = 'xp_future_client') then
+    create role xp_future_client;
+  end if;
+end $xjf$;
+-- `postgres` is NOT a superuser on Supabase, so it cannot `set role` into a
+-- role it is not a member of -- measured, the first run of this block failed
+-- with 42501 "permission denied to set role". It created the role, so it
+-- holds ADMIN OPTION and can grant it to itself.
+grant xp_future_client to postgres;
+grant usage on schema public to xp_future_client;
+-- ...and on the probe harness's own schema, or xp.try_hint() itself is 42501
+-- before the statement it is meant to run ever gets there (measured).
+grant usage on schema xp to xp_future_client;
+grant select on public.export_jobs to xp_future_client;
+grant update (status, started_at, completed_at, expires_at, storage_key,
+              byte_size, row_count, table_count, manifest, failure_reason)
+  on public.export_jobs to xp_future_client;
+-- AND A POLICY, or this probe would measure the wrong thing twice over. RLS is
+-- on and `postgres` bypasses it as the table's owner; this role does not, and
+-- every shipped policy is `to authenticated`. Without a policy the UPDATE
+-- matches NO ROWS, the BEFORE UPDATE trigger never fires, and the statement
+-- answers `ok` -- a green assertion measuring nothing. Measured: the first run
+-- of this block answered denied(42501:) with no hint, which was the missing
+-- SELECT privilege the WHERE clause needs, not the guard.
+--
+-- So the probe hands itself EVERYTHING except the guard's own verdict, which
+-- is the only way its refusal can mean what it says.
+--
+-- FOR ALL, not FOR UPDATE: an `update ... where id = ...` references a column,
+-- so Postgres applies the SELECT policies too, and with an UPDATE-only policy
+-- the statement matched NO ROWS and answered `ok`. Measured -- this assertion
+-- went green-by-vacuity on its second run, which is the same false-green shape
+-- the whole of section XJ exists to close. XJ1e2 below is the denominator that
+-- would now catch it.
+create policy xp_future_client_probe on public.export_jobs
+  for all to xp_future_client using (true) with check (true);
+\o
+
+set role xp_future_client;
+select xp.val('XJ1e2 DENOMINATOR: that role really can SEE the job, so an `ok` from XJ1e would mean the write LANDED',
+  format($$select count(*)::text from public.export_jobs where id=%L$$, :'alpha_job'), '1');
+select xp.try_hint('XJ1e A ROLE NEITHER LIST NAMES, holding the runner''s own grant and carrying no claims, is REFUSED',
+  format($$update public.export_jobs set status='succeeded' where id=%L$$, :'alpha_job'),
+  'denied(42501:export_outcome_is_server_only)');
+reset role;
+select xp.val('XJ1f DENOMINATOR: that role really does hold the grant, so XJ1e is not a missing privilege',
+  $$select (count(*) = 10)::text from information_schema.column_privileges
+     where grantee='xp_future_client' and table_schema='public'
+       and table_name='export_jobs' and privilege_type='UPDATE'$$, 'true');
+\o /dev/null
+drop policy xp_future_client_probe on public.export_jobs;
+revoke all on public.export_jobs from xp_future_client;
+revoke usage on schema public from xp_future_client;
+revoke usage on schema xp from xp_future_client;
+revoke xp_future_client from postgres;
+drop role if exists xp_future_client;
+\o
+select xp.val('XJ1g ...and the probe role and its policy are gone',
+  $$select (select count(*) from pg_roles where rolname='xp_future_client')::text
+           || '|' ||
+           (select count(*) from pg_policies
+             where schemaname='public' and tablename='export_jobs'
+               and policyname='xp_future_client_probe')::text$$, '0|0');
+
 reset role;
 reset request.jwt.claims;
 select xp.try_hint('XJ2 as POSTGRES, a job already running cannot be claimed again',
@@ -520,6 +636,20 @@ select xp.try_hint('XJ9 A FINISHED JOB IS IMMUTABLE -- a failure cannot become a
 select xp.val('XJ10 ...and completed_at is stamped while expires_at is not',
   format($$select (completed_at is not null and expires_at is null)::text
              from public.export_jobs where id=%L$$, :'beta_job'), 'true');
+
+-- XJ11/XJ12  THE PLAN'S KEY COLUMN, read the way the runner reads it
+-- (20260928003000, review finding M9). lib/export/runner.ts's cursor used to
+-- be `row.id ?? row.user_id` -- the two key columns the catalogue happens to
+-- use today, hard-coded beside the declaration. A third one added later would
+-- page once and then raise. The plan carries it now.
+reset role;
+reset request.jwt.claims;
+select xp.val('XJ11 every EXPORTED row of the plan carries its key column',
+  format($$select count(*)::text from public.export_plan(%L)
+            where disposition='exported' and key_column is null$$, :'alpha_job'), '0');
+select xp.val('XJ12 ...and it is the catalogue''s, not a guess -- platform_admins keys on user_id',
+  $$select key_column from private.export_catalogue()
+     where export_kind='account' and table_name='platform_admins'$$, 'user_id');
 
 -- ===========================================================================
 -- § XP  THE READ ENGINE
@@ -591,6 +721,56 @@ select xp.val('XP13 the requester''s claims do not outlive the read',
   format($$with r as (select public.export_read_page(%L, 'notes', '', 10))
            select coalesce(nullif(current_setting('request.jwt.claims', true), ''), '<none>')
              from r$$, :'alpha_job'), '<none>');
+
+-- XP13a-XP13c  ALL THREE CLAIM GUCS, not just the one that was measured
+-- (20260928002000, review finding M7).
+--
+-- The read installs the requester's claims and puts them back. It ALSO blanked
+-- `request.jwt.claim.sub` and `request.jwt.claim.role`, the two GoTrue-legacy
+-- per-claim settings -- and never restored them, while XP13 above measured
+-- only `request.jwt.claims`. So the two that were not restored were exactly
+-- the two nothing asked about: the invisible denominator, one more time.
+--
+-- WHAT WRITING THESE ASSERTIONS MEASURED, and it changes the reading of the
+-- finding: on this stack `auth.uid()` is
+--   coalesce(nullif(current_setting('request.jwt.claim.sub', true), ''),
+--            current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::uuid
+-- -- the PER-CLAIM GUC FIRST. So blanking it is not a defence against a shape
+-- this schema does not use; it is what makes the installed `request.jwt.claims`
+-- authoritative for the requester read. The two set_config calls stay, and the
+-- restore is the fix.
+--
+-- It is also why `request.jwt.claim.sub` cannot be measured behaviourally here:
+-- any value auth.uid() can parse makes the read REFUSE (XP13b proves exactly
+-- that, which is the other half of the sentence above), and any value it
+-- cannot raises 22P02 before the function is entered. So role is measured, sub
+-- is proved load-bearing, and the restore of all three is pinned on the
+-- function's own body.
+set request.jwt.claim.role = 'XP13-SENTINEL-ROLE';
+select xp.val('XP13a request.jwt.claim.role is PUT BACK, not left blanked',
+  format($$with r as (select public.export_read_page(%L, 'notes', '', 10))
+           select coalesce(nullif(current_setting('request.jwt.claim.role', true), ''), '<blanked>')
+             from r$$, :'alpha_job'), 'XP13-SENTINEL-ROLE');
+reset request.jwt.claim.role;
+
+set request.jwt.claim.sub = '00000000-0000-4000-8000-0000000013ab';
+select xp.try_hint('XP13b DENOMINATOR: auth.uid() reads the PER-CLAIM sub first -- so blanking it is load-bearing, and a sentinel there is a person on the session',
+  format($$select public.export_read_page(%L, 'notes', '', 10)$$, :'alpha_job'),
+  'denied(42501:export_reads_are_server_only)');
+reset request.jwt.claim.sub;
+
+-- Two set_config calls per per-claim GUC is the whole claim: one to blank it
+-- before the read, one to put it back after. The shipped function had ONE for
+-- each of these two and TWO for request.jwt.claims (a restore on the success
+-- path and one in the exception handler); it now has three for each.
+select xp.val('XP13c the function BLANKS AND RESTORES both per-claim settings, sub included',
+  $$select (select count(*) from regexp_matches(prosrc,
+              'set_config\(''request\.jwt\.claim\.sub''', 'g'))::text
+         || '|' ||
+           (select count(*) from regexp_matches(prosrc,
+              'set_config\(''request\.jwt\.claim\.role''', 'g'))::text
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname='public' and p.proname='export_read_page'$$, '3|3');
 
 -- ===========================================================================
 -- § XD  THE DOWNLOAD AUDIT RPC -- THE IDOR GATE AND THE EXPIRY GATE
