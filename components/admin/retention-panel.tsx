@@ -5,7 +5,14 @@ import {
   previewRetentionRunAction,
   setRetentionEnabledAction,
 } from "@/lib/admin/retention-actions";
-import { sweptLines, type RetentionRun, type RetentionSettings } from "@/lib/admin/retention";
+// THE CONTRACT, NOT THE READ. lib/admin/retention.ts is `server-only`;
+// importing so much as a TYPE from it here fails the build with
+// "'server-only' cannot be imported from a Client Component module".
+import {
+  sweptLines,
+  type RetentionRun,
+  type RetentionSettings,
+} from "@/lib/admin/retention-contract";
 import { EMPTY_FORM_STATE } from "@/lib/forms";
 import { formatDateTime } from "@/lib/format/date";
 import { Button } from "@/components/ui/button";

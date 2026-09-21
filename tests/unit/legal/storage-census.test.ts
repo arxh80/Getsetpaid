@@ -400,8 +400,40 @@ describe("the storage census (Phase 8 Task 2, Q129)", () => {
       for (const file of byModule.keys()) if (namesModule(target, file)) return file;
       return null;
     };
-    const serverOnlyModules = DECLARED.filter((d) => d.covers === null).map((d) => d.file);
-    expect(serverOnlyModules.length).toBe(4);
+    // THE SUBJECT SET IS DERIVED, NOT LISTED -- Phase 8 Task 6, and it took a
+    // real failure to earn the change. It used to be
+    // `DECLARED.filter(covers === null)`: FOUR HARDCODED FILES, the
+    // service-role clients this census was written around. Every other
+    // `server-only` module in the repository -- and there are dozens -- was
+    // simply not looked for, so this test could not see most of its own
+    // subject.
+    //
+    // MEASURED: `components/admin/retention-panel.tsx` ("use client") imported
+    // types and a pure formatter from `lib/admin/retention.ts`
+    // (`import "server-only"`). lint clean, tsc clean, THIS TEST GREEN -- and
+    // `next dev` refused to compile it: "'server-only' cannot be imported from
+    // a Client Component module". It was found by `pnpm test:e2e` on the run
+    // that was supposed to be the last one: 43 passed, 80 failed, every
+    // failure downstream of one module that would not build.
+    //
+    // So the set is now every module in the tree that really imports
+    // "server-only", read from the parse. The four declared ones are asserted
+    // to be IN it rather than to BE it, which keeps the declaration's own
+    // denominator without capping the walk at it.
+    const serverOnlyModules = tree
+      .filter((f) => importsServerOnly(parsed.get(f.file)!))
+      .map((f) => f.file);
+    const declaredServerOnly = DECLARED.filter((d) => d.covers === null).map((d) => d.file);
+    expect(declaredServerOnly.length).toBe(4);
+    for (const file of declaredServerOnly) {
+      expect(serverOnlyModules, `${file} declares itself server-only but the walk did not derive it`)
+        .toContain(file);
+    }
+    expect(
+      serverOnlyModules.length,
+      "DENOMINATOR: the derivation found the server-only modules. If this is 4 it has " +
+        "silently fallen back to the declared list and the walk is blind again",
+    ).toBeGreaterThan(20);
 
     const clients = tree.filter((f) => isClientModule(parsed.get(f.file)!)).map((f) => f.file);
     expect(clients.length, "DENOMINATOR: there are client components to walk").toBeGreaterThan(10);

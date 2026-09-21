@@ -17,24 +17,16 @@ import "server-only";
 // than by this file remembering.
 
 import { createClient } from "@/lib/supabase/server";
+import type { RetentionRun, RetentionSettings } from "@/lib/admin/retention-contract";
 
-export interface RetentionRun {
-  readonly id: string;
-  readonly mode: "dry" | "live";
-  readonly status: "running" | "completed" | "refused" | "failed";
-  readonly startedAt: string;
-  readonly finishedAt: string | null;
-  readonly durationMs: number | null;
-  readonly swept: Readonly<Record<string, number | boolean>>;
-  readonly refused: Readonly<Record<string, string>>;
-}
-
-export interface RetentionSettings {
-  readonly enabled: boolean;
-  readonly auditPurgeEnabled: boolean;
-  readonly reason: string | null;
-  readonly updatedAt: string;
-}
+// THE SHAPE LIVES IN lib/admin/retention-contract.ts, NOT HERE, and the
+// reason is written down there at length: this file is `server-only`, the
+// panel that renders what it returns is a Client Component, and a Client
+// Component importing a type from a `server-only` module fails the BUILD --
+// which neither lint nor tsc can see and which `pnpm test:e2e` found, on the
+// run that was meant to be the last one. The lifecycle/overrides/impersonation
+// `-contract.ts` split, for the fourth time and the same reason.
+export type { RetentionRun, RetentionSettings } from "@/lib/admin/retention-contract";
 
 export type RetentionView =
   | {
@@ -95,25 +87,7 @@ export async function loadRetentionView(): Promise<RetentionView> {
   };
 }
 
-/**
- * The lines a run's `swept` map becomes on the page: `{table}.{what}` split
- * into a readable label and a number, with the booleans folded in as a
- * suffix rather than shown as "true".
- *
- * ZERO IS RENDERED, NOT HIDDEN. "The sweep deleted nothing" and "the sweep
- * did not run" are different facts, and a panel that shows only non-zero
- * counts makes them look the same — which is the whole reason `refused` is
- * a column and not a log line.
- */
-export function sweptLines(
-  run: RetentionRun,
-): readonly { readonly label: string; readonly value: number; readonly capped: boolean }[] {
-  const out: { label: string; value: number; capped: boolean }[] = [];
-  for (const [key, value] of Object.entries(run.swept)) {
-    if (typeof value !== "number") continue;
-    if (key.endsWith(".capped")) continue;
-    const capped = run.swept[`${key.split(".")[0]}.capped`] === true;
-    out.push({ label: key, value, capped });
-  }
-  return out.sort((a, b) => a.label.localeCompare(b.label));
-}
+// sweptLines() moved to the contract module with the types, for the same
+// reason: it is a pure function over a run, the panel calls it, and the panel
+// is a Client Component.
+export { sweptLines } from "@/lib/admin/retention-contract";
