@@ -298,10 +298,12 @@ select rt.val('RD4 the two read-time paths derive from the declaration, unchange
 select rt.val('RD5 every table in `public` is classified',
   $$select coalesce(string_agg(t, ','), 'none') from private.unclassified_retention_subjects() t$$,
   'none');
-select rt.val('RD6 the roll is exactly the size of the catalogue',
+select rt.val('RD6 the roll is exactly the size of the catalogue -- and the catalogue is at least every table in `public`',
   $$select ((select count(*) from private.retention_subjects())
-          = (select count(*) from pg_class
-              where relnamespace = 'public'::regnamespace and relkind in ('r','p')))::text$$, 'true');
+          = (select count(*) from private.retention_roll_relations()))::text || '/' ||
+           ((select count(*) from private.retention_roll_relations())
+         >= (select count(*) from pg_class
+              where relnamespace = 'public'::regnamespace and relkind in ('r','p')))::text$$, 'true/true');
 select rt.val('RD7 ...and carries no table twice',
   $$select ((select count(*) from private.retention_subjects())
           = (select count(distinct table_name) from private.retention_subjects()))::text$$, 'true');
@@ -316,6 +318,31 @@ select rt.try_hint('RD9 a NEW TABLE nobody classified refuses the whole job',
   $$select private.assert_retention_roll()$$, 'denied(55000:unclassified_retention_subject)');
 drop table public.rt_unclassified_probe;
 select rt.try('RD10 ...and the refusal goes away when the table does (the control, CALLED)',
+  $$select private.assert_retention_roll()$$, 'ok(1)');
+
+-- WHAT ELSE COUNTS AS "A NEW RETAINED THING" (fix round 1, review finding m1).
+-- As shipped the derivation saw ordinary and partitioned tables in `public`
+-- and nothing else. The reviewer planted four more shapes; two of them HOLD
+-- DATA and passed silently.
+create materialized view public.rt_probe_mv as select id, name from public.contacts;
+select rt.try_hint('RD10a a MATERIALIZED VIEW holds a copy of the data, and refuses the job until it is classified',
+  $$select private.assert_retention_roll()$$, 'denied(55000:unclassified_retention_subject)');
+select rt.val('RD10b ...and the refusal NAMES it',
+  $$select string_agg(t, ',') from private.unclassified_retention_subjects() t$$, 'rt_probe_mv');
+drop materialized view public.rt_probe_mv;
+create table private.rt_probe_private (id uuid primary key default gen_random_uuid());
+select rt.val('RD10c a table in `private` is seen too, under its qualified name',
+  $$select string_agg(t, ',') from private.unclassified_retention_subjects() t$$, 'private.rt_probe_private');
+drop table private.rt_probe_private;
+create view public.rt_probe_v as select id from public.contacts;
+select rt.try('RD10d CONTROL: a plain VIEW stores nothing and is not asked about',
+  $$select private.assert_retention_roll()$$, 'ok(1)');
+drop view public.rt_probe_v;
+-- THE STATED LIMIT, MEASURED RATHER THAN IMPLIED: a table in a schema this
+-- product's migrations do not own is NOT seen. 20261004005000's header says
+-- why that is a decision (Task 5's roll made the same one) and why a schema
+-- allowlist was rejected -- this very suite's `rt` schema would trip it.
+select rt.try('RD10e STATED LIMIT: a table in another schema (this suite''s own `rt`) does not refuse the job',
   $$select private.assert_retention_roll()$$, 'ok(1)');
 
 -- The stale and duplicate halves, by rewriting the roll and restoring it
