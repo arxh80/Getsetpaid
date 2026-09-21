@@ -133,6 +133,12 @@ export interface AuditLogFilters {
 
 export interface AuditLogParams {
   readonly filters: AuditLogFilters;
+  /** Q135, Phase 8 Task 6. True when the reader supplied no `from`, so the
+   *  view is showing the HOT WINDOW -- the last AUDIT_HOT_WINDOW_DAYS days --
+   *  rather than everything the table holds. The page says so; without that
+   *  sentence a default range is a silent one, and "the audit log does not go
+   *  back that far" and "we are only showing you a month" look identical. */
+  readonly hotWindowOnly: boolean;
   /** The lib/list/ half: pageSize, cursor, and the (unused) q/sort/dir --
    *  kept whole, rather than picked apart, because buildListHref (the
    *  "Next" link) needs the same shape back. */
@@ -152,6 +158,21 @@ export interface AuditLogRow {
   readonly before: unknown;
   readonly after: unknown;
   readonly createdAt: string;
+}
+
+/** Q135: how long an audit row stays in the viewer's DEFAULT range. Bound to
+ *  the database's own declaration -- private.retention_periods()'s `audit_hot`
+ *  class, the one declared place every period in this product lives -- by
+ *  tests/integration/rls/retention-matches-db.test.ts, the fifth instance of
+ *  the pattern past-due-grace-matches-db.test.ts named. A constant in two
+ *  languages with nothing binding them is how this gets broken in six
+ *  months. */
+export const AUDIT_HOT_WINDOW_DAYS = 30;
+
+/** The instant AUDIT_HOT_WINDOW_DAYS ago, as the lower bound the viewer
+ *  applies when the reader supplied no `from`. */
+export function auditLogHotWindowStart(now: Date = new Date()): string {
+  return new Date(now.getTime() - AUDIT_HOT_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
 }
 
 export type AuditLogPage =
@@ -225,7 +246,7 @@ export function parseAuditLogParams(raw: RawSearchParams): AuditLogParams {
     dateTo: parseWallClockFilter(first(raw[AUDIT_LOG_FILTER_PARAMS.dateTo])),
   };
 
-  return { filters, list };
+  return { filters, list, hotWindowOnly: filters.dateFrom === null };
 }
 
 /** True when any filter is set -- drives the "no matches" vs. "nothing yet"
@@ -344,6 +365,19 @@ export async function fetchAuditLogPage(
   }
   if (filters.dateFrom) {
     query = query.gte("created_at", filters.dateFrom);
+  } else {
+    // Q135 -- WHAT "ARCHIVED" MEANS AT MVP. CLAUDE.md promises the audit log
+    // is "hot/queryable for 30 days, archived (cold storage) for up to 1 year
+    // total, then purged", and no cold store exists. The founder's answer to
+    // Q135 is that at MVP the rows stay in Postgres and simply fall out of
+    // THIS VIEWER'S DEFAULT RANGE at 30 days; the delete happens at a year
+    // (private.purge_audit_events(), 20261003003000).
+    //
+    // So the default is a floor, not a fixed window: setting `from` reaches
+    // straight past it into the archive, with nothing else to enable and no
+    // second surface to build. Before this the default range was UNBOUNDED,
+    // and "archived" described nothing that happened.
+    query = query.gte("created_at", auditLogHotWindowStart());
   }
   if (filters.dateTo) {
     query = query.lte("created_at", filters.dateTo);
