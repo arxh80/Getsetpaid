@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { repoRoot as root } from "../../support/source";
+import { repoRoot as root, stripComments } from "../../support/source";
+import { appSourceFiles, relPath } from "../support/app-source";
 
 // ONE CURSOR, AND A CENSUS THAT SAYS SO.
 //
@@ -69,28 +70,41 @@ import { repoRoot as root } from "../../support/source";
 // goes red naming your file -- which is what a number never did.
 
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(root + dir)) {
-    const rel = `${dir}/${name}`;
-    if (statSync(root + rel).isDirectory()) walk(rel, out);
-    else if (rel.endsWith(".ts") || rel.endsWith(".tsx")) out.push(rel);
-  }
-  return out;
-}
+// ===========================================================================
+// THE SUBJECT SET IS THE WHOLE REPOSITORY (census audit finding 13)
+// ===========================================================================
+// It used to be `[...walk("app"), ...walk("lib"), ...walk("components")]` with
+// no floor at all, so every assertion in this file -- the `decodeCursor`/
+// `encodeCursor` ban, the `.range(`/`offset:` ban, the hand-rolled-cursor
+// backstop -- was scoped to three hardcoded directories. A cursor in a new
+// root `hooks/`, `server/`, in `middleware.ts` or in `proxy.ts` was invisible
+// to all of them and nothing said the walk had shrunk. Third instance of the
+// root cause shared with findings 5 and 6, and the fix is the same helper.
+//
+// `appSourceFiles()` is the whole repository minus a NAMED exclusion list, so
+// the set grows by default. `lib/list/` itself is removed -- it is the subject
+// these assertions are about, not a suspect -- and what the filter DROPPED is
+// pinned below rather than being thrown away silently.
+const ALL_SOURCES = appSourceFiles().map((full) => ({ path: relPath(full), text: readFileSync(full, "utf8") }));
 
-/** Every source file outside `lib/list` and outside `tests`. */
-const SOURCES = [...walk("app"), ...walk("lib"), ...walk("components")]
-  .filter((f) => !f.startsWith("lib/list/"))
-  .map((path) => ({ path, text: readFileSync(root + path, "utf8") }));
+/** Every source file outside `lib/list` (and outside `tests`, which the walk never enters). */
+const SOURCES = ALL_SOURCES.filter((f) => !f.path.startsWith("lib/list/"));
 
-/** Comment lines stripped, for the same reason source-shape.test.ts strips
- *  them: prose about `.range(` is not a call to `.range(`, and this file's
- *  neighbours are heavily commented. */
+/** The files the `lib/list/` filter removed. Assert what a derivation drops. */
+const EXCLUDED = ALL_SOURCES.filter((f) => f.path.startsWith("lib/list/")).map((f) => f.path);
+
+/** Comments stripped, for the same reason source-shape.test.ts strips them:
+ *  prose about `.range(` is not a call to `.range(`, and this file's
+ *  neighbours are heavily commented. The stripper is the parser's (census
+ *  audit A4) -- the line-based one this used to carry also kept a TRAILING
+ *  comment, so `foo(); // .range(` read as a call. */
+const CODE_CACHE = new Map<string, string>();
 function code(text: string): string {
-  return text
-    .split("\n")
-    .map((line) => (line.trimStart().startsWith("//") ? "" : line))
-    .join("\n");
+  const hit = CODE_CACHE.get(text);
+  if (hit !== undefined) return hit;
+  const stripped = stripComments(text);
+  CODE_CACHE.set(text, stripped);
+  return stripped;
 }
 
 const callers = (needle: string) =>
@@ -149,9 +163,71 @@ const SPEC_PARAM_WRAPPERS = [
   { call: "financeParams", module: "lib/crm/finance-list.ts" },
 ] as const;
 
+// ===========================================================================
+// THE HAND-ROLLED-CURSOR DETECTOR, AND THE CONTROLS IT NEVER HAD
+// ===========================================================================
+// Census audit finding 7: this was two inline regexes and
+// `expect(readers).toEqual([])`, with NO fixture anywhere in the file proving
+// either regex ever matches anything -- so a tidy-up that broke them would be
+// green for ever -- and a receiver allowlist of four literals, which
+// `const sp = await searchParams; sp.after` walks straight through. The file's
+// own header names this assertion as THE backstop for its largest blind spot.
+//
+// It is a function now, so the fixtures at the bottom of this file can drive
+// it, and the receiver set is resolved rather than listed.
+
+/** Identifiers bound to a params-shaped expression in this file. */
+function paramsAliases(text: string): Set<string> {
+  const names = new Set(["searchParams", "params", "query", "raw"]);
+  // `const sp = await searchParams`, `const sp = props.searchParams`,
+  // `let q = searchParams`, and the same through one more hop.
+  for (let pass = 0; pass < 3; pass += 1) {
+    for (const m of text.matchAll(
+      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:await\s+)?([A-Za-z_$][\w$.]*)/g,
+    )) {
+      const head = m[2]!.split(".")[0]!;
+      const tail = m[2]!.split(".").pop()!;
+      if (names.has(head) || names.has(tail)) names.add(m[1]!);
+    }
+  }
+  return names;
+}
+
+/** Every site in `text` that reads `after`/`before` off a params-shaped receiver. */
+export function cursorReads(text: string): string[] {
+  // Every name here is a JavaScript identifier, so there is nothing to escape.
+  const receiver = `(?:${[...paramsAliases(text)].join("|")})`;
+  const out: string[] = [];
+  const patterns = [
+    // sp.after / sp["before"] / sp?.after
+    new RegExp(String.raw`\b${receiver}\s*\??\s*(?:\.\s*|\[\s*["'` + "`" + String.raw`]\s*)(?:after|before)\b`, "g"),
+    // const { after } = await searchParams  /  const { before: b } = sp
+    new RegExp(String.raw`\{[^}]*\b(?:after|before)\b[^}]*\}\s*=\s*(?:await\s+)?${receiver}\b`, "g"),
+  ];
+  for (const re of patterns) for (const m of text.matchAll(re)) out.push(m[0]);
+  return out;
+}
+
 describe("every paginated list shares one implementation", () => {
   const fetchers = callers("fetchListPage<");
   const parsers = callers("parseListParams(");
+
+  it("DENOMINATOR: the walk is the whole repository, and what it dropped is pinned", () => {
+    // No floor existed at all before this (census audit finding 13): every ban
+    // in this file was scoped to three hardcoded directories and a shrinking
+    // walk was indistinguishable from a clean repository.
+    expect(ALL_SOURCES.length, "the app-source walk stopped seeing the repository").toBeGreaterThan(400);
+    // The walk reaches outside the three old roots...
+    expect(ALL_SOURCES.map((f) => f.path)).toContain("proxy.ts");
+    expect(ALL_SOURCES.some((f) => !/^(app|lib|components)\//.test(f.path))).toBe(true);
+    // ...and the ONE thing the filter removes is lib/list itself, named, so a
+    // filter that started swallowing the subject would be red here.
+    expect(EXCLUDED.length).toBeGreaterThanOrEqual(5);
+    expect(EXCLUDED.every((p) => p.startsWith("lib/list/"))).toBe(true);
+    expect(EXCLUDED).toContain("lib/list/query.ts");
+    expect(EXCLUDED).toContain("lib/list/params.ts");
+    expect(SOURCES.length).toBe(ALL_SOURCES.length - EXCLUDED.length);
+  });
 
   it("every route that renders a list reaches the one cursor", () => {
     // ======================================================================
@@ -345,14 +421,23 @@ describe("every paginated list shares one implementation", () => {
     // `code()` first, which matters here -- a dozen files discuss `after` in
     // prose (the artist detail page, the activity timeline, the artists list)
     // and none of them reads it.
-    const reads = [
-      /\b(?:searchParams|params|query|raw)\s*(?:\.\s*|\[\s*["'`]\s*)(?:after|before)\b/,
-      /\{[^}]*\b(?:after|before)\b[^}]*\}\s*=\s*(?:await\s+)?(?:searchParams|params|query|raw)\b/,
-    ];
-    const readers = SOURCES.filter((f) =>
-      reads.some((re) => re.test(code(f.text))),
-    );
-    expect(readers.map((f) => f.path)).toEqual([]);
+    //
+    // THE RECEIVER IS NO LONGER A FOUR-NAME ALLOWLIST (census audit finding 7).
+    // `searchParams|params|query|raw` missed the commonest spelling there is:
+    //   const sp = await searchParams;  const cur = sp.after;
+    // -- the receiver is whatever the page happened to call it. So the aliases
+    // are RESOLVED out of the file first, and the four literals are kept as
+    // the seed. The `(record as Record<string, unknown>).before` false
+    // positive that shaped the original scope is still excluded, because
+    // `record` is bound to no params expression.
+    const readers = SOURCES.filter((f) => cursorReads(code(f.text)).length > 0);
+    expect(
+      readers.map((f) => f.path),
+      "a module outside lib/list reads `after`/`before` off a params object. " +
+        "That is a hand-rolled keyset: it passes every other assertion in this " +
+        "file, because it calls neither fetchListPage nor parseListParams and " +
+        "uses neither .range( nor offset:.",
+    ).toEqual([]);
   });
 
   it("no module outside lib/list encodes or decodes a cursor itself", () => {
@@ -483,5 +568,53 @@ describe("the list specs that differ from the others say how", () => {
     // `after`, and the two cursors belong to different specs. `paramPrefix` is
     // off by default, so no existing spec changed.
     expect(activity).toContain("paramPrefix");
+  });
+});
+
+// ===========================================================================
+// THE BACKSTOP'S OWN POSITIVE CONTROLS (census audit finding 7)
+// ===========================================================================
+// The hand-rolled-cursor assertion above was `expect(readers).toEqual([])` over
+// two inline regexes, and NOTHING in this file proved either regex had ever
+// matched anything -- contrast the `offset:` ban, which carries six positive
+// shapes and one negative. A pattern with no fixture is a pattern one tidy-up
+// away from matching nothing, permanently and silently. These are those
+// fixtures, plus the receiver evasion the four-name allowlist let through.
+describe("the hand-rolled-cursor detector", () => {
+  const FIRES: [string, string][] = [
+    ["the direct read", `const cur = searchParams.after;`],
+    ["the bracketed read", `const cur = params["before"];`],
+    ["the destructured read", `const { after } = await searchParams;`],
+    ["a renamed destructured read", `const { before: b } = await searchParams;`],
+    ["an optional chain", `const cur = searchParams?.after;`],
+    // THE EVASION. Green under the four-literal receiver allowlist.
+    ["an aliased receiver", `const sp = await searchParams;\nconst cur = sp.after;`],
+    ["an aliased receiver, bracketed", `const sp = await props.searchParams;\nconst cur = sp["before"];`],
+    ["an aliased receiver, destructured", `const sp = await searchParams;\nconst { after } = sp;`],
+    ["two hops", `const sp = await searchParams;\nconst q = sp;\nconst cur = q.after;`],
+  ];
+
+  it.each(FIRES)("fires on %s", (_label, source) => {
+    expect(cursorReads(source).length).toBeGreaterThan(0);
+  });
+
+  it("MEASURED: the aliased receiver defeated the four-name allowlist it replaced", () => {
+    const OLD = [
+      /\b(?:searchParams|params|query|raw)\s*(?:\.\s*|\[\s*["'`]\s*)(?:after|before)\b/,
+      /\{[^}]*\b(?:after|before)\b[^}]*\}\s*=\s*(?:await\s+)?(?:searchParams|params|query|raw)\b/,
+    ];
+    const evasion = `const sp = await searchParams;\nconst cur = sp.after;`;
+    expect(OLD.some((re) => re.test(evasion)), "the old pattern is supposed to MISS this").toBe(false);
+    expect(cursorReads(evasion).length).toBeGreaterThan(0);
+  });
+
+  it("does not fire on the false positive that shaped its scope", () => {
+    // lib/crm/dedup.ts:345 -- a merge `field_resolution` snapshot, nothing to
+    // do with pagination.
+    expect(cursorReads(`const prev = (record as Record<string, unknown>).before;`)).toEqual([]);
+    expect(cursorReads(`const after = event.after;`)).toEqual([]);
+    // ...and in prose, once `code()` has been through it, as every caller
+    // above does.
+    expect(cursorReads(code(`// searchParams.after is read by lib/list only\nconst x = 1;`))).toEqual([]);
   });
 });
