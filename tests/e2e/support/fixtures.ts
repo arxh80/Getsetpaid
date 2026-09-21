@@ -2619,3 +2619,68 @@ export async function clearExportState(userIds: string[]): Promise<void> {
     `delete from public.rate_limit_counters where category in ('exports','account_export')`,
   );
 }
+
+// ===========================================================================
+// PHASE 8 TASK 5 -- ERASURE.
+// ===========================================================================
+// A DISPOSABLE ACCOUNT, and the reason it is disposable rather than one of the
+// world's: the spec's second test DELETES it. Erasing `world.users.manager`
+// would leave every later assertion in that run reading a database the
+// fixtures no longer describe, and tearDownWorld would be deleting an account
+// that is already gone. So the account this suite destroys is one it made.
+
+export async function createDisposableUser(label: string): Promise<E2eUser> {
+  return createUser(`e2e-erase-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`);
+}
+
+/** Does this account still exist? The only fact the erasure e2e needs. */
+export async function accountStillExists(userId: string): Promise<boolean> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from auth.users where id = $1`,
+    [userId],
+  );
+  return rows[0].n !== "0";
+}
+
+export interface ErasureJobRead {
+  readonly id: string;
+  readonly status: string;
+  readonly failureReason: string | null;
+}
+
+/**
+ * The erasure jobs for a subject.
+ *
+ * `subject_user_id` goes NULL by the foreign key when the erasure succeeds,
+ * so this stops returning a completed job -- which is the register keeping
+ * what happened and losing whose it was. A test that wants "did it finish"
+ * asks accountStillExists() instead, and that asymmetry is the feature.
+ */
+export async function erasureJobsFor(userId: string): Promise<ErasureJobRead[]> {
+  const { rows } = await db().query<{ id: string; status: string; failure_reason: string | null }>(
+    `select id, status, failure_reason from public.erasure_jobs
+      where subject_user_id = $1 order by requested_at desc`,
+    [userId],
+  );
+  return rows.map((r) => ({ id: r.id, status: r.status, failureReason: r.failure_reason }));
+}
+
+/** How many erasure jobs exist at all -- the count a refusal must not move. */
+export async function countErasureJobs(): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.erasure_jobs`,
+  );
+  return Number(rows[0].n);
+}
+
+export async function clearErasureState(userIds: string[]): Promise<void> {
+  await db().query(
+    `delete from public.audit_events
+      where action in ('erasure_job.requested','account.erased')`,
+  );
+  await db().query(`delete from public.erasure_jobs`);
+  await db().query(`delete from public.rate_limit_counters where category = 'account_erasure'`);
+  if (userIds.length > 0) {
+    await db().query(`delete from auth.users where id = any($1::uuid[])`, [userIds]);
+  }
+}

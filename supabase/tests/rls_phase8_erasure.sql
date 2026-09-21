@@ -974,6 +974,14 @@ select er.val('EO12 the sweep counted them PER TYPE, so a removed step is visibl
   $$select ('$$ || :'purge_summary' || $$'::jsonb ->> 'custom_field_values.contact')$$, '1');
 select er.val('EO13 the merge scrub counted itself too',
   $$select ('$$ || :'purge_summary' || $$'::jsonb ->> 'merges.field_resolution')$$, '1');
+-- EO14 IS NOT THE SCRUB'S PROOF, AND SAYING SO IS THE POINT. `merges` is
+-- org-scoped with an ON DELETE CASCADE, so the discarded record's values
+-- would be gone whether the scrub ran or not: deleting the scrub statement
+-- leaves this assertion GREEN and reds EO13 alone (measured). EO14 is the
+-- end-state check; EO13 is the step check. What the scrub actually buys is
+-- the window between itself and the delete -- a backup or a replica taken
+-- mid-transaction already has nothing in it -- and no assertion from outside
+-- that transaction can observe it.
 select er.val('EO14 the discarded record''s values are gone from the database entirely',
   $$select count(*)::text from public.merges where field_resolution::text like '%ROLLBACK-DISCARDED%'$$, '0');
 select er.val('EO15 purging a workspace that is already gone is NOT an error',

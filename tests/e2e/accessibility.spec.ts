@@ -232,6 +232,14 @@ const SIGNED_IN_PAGES: [string, (w: E2eWorld) => string][] = [
   // needs a real profile to scan and gets its own dedicated test below,
   // the same shape the finance panel's dedicated test uses.
   ["network profiles list", (w) => `/${w.orgSlug}/network/profiles`],
+  // ---- PHASE 8 TASK 5 (ERASURE) ------------------------------------------
+  // /account/erase, scanned as the MANAGER and therefore with its control
+  // REACHABLE: a Manager is the last Owner of nothing, so the Q131 warning is
+  // absent, the step-up gate is satisfied by the sign-in that just happened,
+  // and the typed-confirmation field and its danger button are both in the
+  // tree. Scanned as an Owner it would be a page of prose with a disabled
+  // button and no field -- the state that proves least.
+  ["delete your account", () => "/account/erase"],
 ];
 
 for (const [label, url] of SIGNED_IN_PAGES) {
