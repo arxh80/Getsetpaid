@@ -223,12 +223,18 @@ values (:'merge_id', :'org_blocked', 'contact', gen_random_uuid(), gen_random_uu
 -- `merge_candidates_resolution_complete` requires deleted_at, resolution and
 -- resolved_by to arrive together, so a resolved candidate is the only shape
 -- that can carry the column at all.
+-- ... AND THE TWO OWNER-ID SNAPSHOTS BESIDE IT, which have no foreign key at
+-- all. This fixture originally left them null, and that omission is the whole
+-- reason C1 shipped green: screen_for_duplicates() writes both on every
+-- flagged duplicate, so the real table's common row carries them.
 insert into public.merge_candidates
   (organisation_id, entity_type, keep_id, duplicate_id, label, reason,
-   deleted_at, resolution, resolved_by)
+   deleted_at, resolution, resolved_by,
+   keep_owner_user_id, duplicate_owner_user_id)
 values (:'org_blocked', 'contact', gen_random_uuid(), gen_random_uuid(),
         'Erasure fixture candidate', 'fuzzy_name',
-        pg_catalog.now(), 'dismissed', :'esub');
+        pg_catalog.now(), 'dismissed', :'esub',
+        :'esub', :'esub');
 
 -- impersonation_sessions x3, organisation_*_overrides x2, incident_alerts:
 -- the remaining blocking families, planted so § EE can count them by name.
@@ -436,6 +442,52 @@ select er.val('EB5 and notes.owner_user_id is ON DELETE SET NULL, not a blocker'
 
 
 -- ===========================================================================
+-- EC  THE COLUMNS NO FOREIGN KEY PROTECTS (fix round 1, C1)
+-- ===========================================================================
+-- § EB pins what pg_constraint CAN see. This section pins what it cannot: a
+-- uuid column in no foreign key is invisible to every walk in the erasure, so
+-- private.fkless_identifier_columns() is the roll and
+-- private.assert_fkless_identifier_roll() is what stops the roll going stale.
+-- EC5 is the MUTATION, standing: a new FK-less uuid column makes the erasure
+-- REFUSE rather than report a success that left an identifier behind.
+
+select er.val('EC1 every FK-less uuid column in public/private is classified on the roll',
+  $$select count(*)::text from private.unclassified_fkless_identifiers()$$, '0');
+select er.val('EC2a the roll classifies merge_candidates.keep_owner_user_id as a person''s id',
+  $$select r.identifies || '/' || r.treatment from private.fkless_identifier_columns() r
+     where r.table_name = 'public.merge_candidates' and r.column_name = 'keep_owner_user_id'$$,
+  'user/null_on_match');
+select er.val('EC2b and merge_candidates.duplicate_owner_user_id likewise',
+  $$select r.identifies || '/' || r.treatment from private.fkless_identifier_columns() r
+     where r.table_name = 'public.merge_candidates' and r.column_name = 'duplicate_owner_user_id'$$,
+  'user/null_on_match');
+select er.val('EC3 the roll names FIVE person-bearing columns, and they are the ones the erasure runs',
+  $$select pg_catalog.string_agg(r.table_name || '.' || r.column_name, ',' order by r.table_name, r.column_name)
+      from private.fkless_identifier_columns() r
+     where r.identifies = 'user' and r.treatment in ('null_on_match', 'delete_row')$$,
+  'public.merge_candidates.duplicate_owner_user_id,'
+  'public.merge_candidates.keep_owner_user_id,'
+  'public.merges.loser_owner_user_id,'
+  'public.merges.winner_owner_user_id,'
+  'public.rate_limit_counters.subject_id');
+
+-- THE POSITIVE CONTROL FIRST: with the catalogue and the roll agreeing, an
+-- erasure of a subject who does not exist answers `already_erased`. So EC5's
+-- refusal is the planted column's and not the subject's.
+select er.val('EC4 POSITIVE CONTROL: with the roll intact the chokepoint gets past step 0',
+  $$select (private.erase_account(gen_random_uuid(), null) ->> 'already_erased')$$, 'true');
+
+create table public.er_unclassified_probe (
+  id uuid primary key default gen_random_uuid(), who uuid);
+select er.try_hint('EC5 MUTATION: an unclassified FK-less uuid column REFUSES the erasure',
+  $$select private.erase_account(gen_random_uuid(), null)$$,
+  'denied(55000:unclassified_fkless_identifier)');
+drop table public.er_unclassified_probe;
+select er.val('EC6 and with the probe gone the chokepoint gets past step 0 again',
+  $$select (private.erase_account(gen_random_uuid(), null) ->> 'already_erased')$$, 'true');
+
+
+-- ===========================================================================
 -- EG  THE CATALOGUE
 -- ===========================================================================
 
@@ -586,6 +638,13 @@ select er.val('EE2 DENOMINATOR: merges.merged_by names the subject',
   $$select count(*)::text from public.merges where merged_by = '$$ || :'esub' || $$'$$, '1');
 select er.val('EE3 DENOMINATOR: merge_candidates.resolved_by names the subject',
   $$select count(*)::text from public.merge_candidates where resolved_by = '$$ || :'esub' || $$'$$, '1');
+-- C1: the two columns in the same table that NO foreign key protects, so no
+-- pg_constraint walk in the erasure can see them. EE26b/EE26c are the halves
+-- that were measured naming an erased person before fix round 1.
+select er.val('EE3b DENOMINATOR: merge_candidates.keep_owner_user_id names the subject',
+  $$select count(*)::text from public.merge_candidates where keep_owner_user_id = '$$ || :'esub' || $$'$$, '1');
+select er.val('EE3c DENOMINATOR: merge_candidates.duplicate_owner_user_id names the subject',
+  $$select count(*)::text from public.merge_candidates where duplicate_owner_user_id = '$$ || :'esub' || $$'$$, '1');
 select er.val('EE4 DENOMINATOR: all three impersonation_sessions columns name the subject',
   $$select (select count(*) from public.impersonation_sessions where superuser_user_id = '$$ || :'esub' || $$')::text
         || '/' || (select count(*) from public.impersonation_sessions where admin_accepted_by = '$$ || :'esub' || $$')::text
@@ -737,6 +796,16 @@ select er.val('EE25 merges.merged_by is the tombstone and the merge row survives
 select er.val('EE26 merge_candidates.resolved_by is the tombstone',
   $$select count(*)::text from public.merge_candidates
      where resolved_by = private.erased_user_id()$$, '1');
+-- C1. NULLED rather than tombstoned: the snapshot said who owned the record at
+-- the moment of the merge, and "the erased user owned it" is not a fact about
+-- anything. What matters is that the subject's uuid is not there.
+select er.val('EE26b merge_candidates.keep_owner_user_id no longer names the subject',
+  $$select count(*)::text from public.merge_candidates where keep_owner_user_id = '$$ || :'esub' || $$'$$, '0');
+select er.val('EE26c merge_candidates.duplicate_owner_user_id no longer names the subject',
+  $$select count(*)::text from public.merge_candidates where duplicate_owner_user_id = '$$ || :'esub' || $$'$$, '0');
+select er.val('EE26d and the candidate row itself survives -- the workspace''s, not the member''s',
+  $$select count(*)::text from public.merge_candidates
+     where label = 'Erasure fixture candidate'$$, '1');
 select er.val('EE27 all three impersonation_sessions columns are the tombstone',
   $$select (select count(*) from public.impersonation_sessions where superuser_user_id = private.erased_user_id())::text
         || '/' || (select count(*) from public.impersonation_sessions where admin_accepted_by = private.erased_user_id())::text

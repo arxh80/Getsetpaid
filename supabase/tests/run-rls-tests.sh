@@ -976,7 +976,7 @@ fi
 # instead of as an account that silently cannot be deleted.
 # ============================================================================
 
-run_suite "PHASE 8 ERASURE" rls_phase8_erasure.sql er 143 "${P7VARS[@]}"
+run_suite "PHASE 8 ERASURE" rls_phase8_erasure.sql er 153 "${P7VARS[@]}"
 era_fails=$SUITE_FAILS
 if [ "$era_fails" != "0" ]; then
   echo "PHASE 8 ERASURE SUITE FAILED: $era_fails failing assertion(s)" >&2
