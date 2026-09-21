@@ -900,6 +900,40 @@ select rt.try_hint('RR12 the run refuses `replica` at its outermost gate',
 select rt.val('RR13 the object manifest is readable and derives keys rather than taking them',
   $$select (select count(*) >= 0 from public.retention_object_manifest(10))::text$$, 'true');
 
+-- ---------------------------------------------------------------------------
+-- RR14/RR15: THE ONE THING THIS SUITE CANNOT ASK BY CALLING, ASSERTED FROM
+-- THE CATALOGUE INSTEAD.
+--
+-- The three runner RPCs shipped with a gate that refused `request.jwt.claims
+-- is not null` -- which PostgREST sets on EVERY request INCLUDING the
+-- service_role one the runner makes, so the job refused its own runner and
+-- every run returned `unavailable`. Every assertion in this section passed
+-- anyway, because as `postgres` over psql there is no such setting at all:
+-- the suite could not see its own subject. It was found by
+-- tests/integration/retention/runner.test.ts, which is the only test in the
+-- estate that calls these over PostgREST.
+--
+-- So the SHAPE of the gate is pinned here, read out of the live function
+-- bodies: it must consult the session ROLE against the same open list of
+-- server roles its three siblings use, and it must not consult
+-- `request.jwt.claims` at all -- whose presence says only that a request came
+-- through PostgREST and nothing whatever about who made it.
+-- ---------------------------------------------------------------------------
+select rt.val('RR14 all three runner RPCs gate on the session ROLE, like their siblings',
+  $$select string_agg(p.proname || ':' ||
+        (pg_get_functiondef(p.oid) like '%''postgres'', ''service_role'', ''none''%')::text,
+        ',' order by p.proname)
+      from pg_proc p
+     where p.pronamespace = 'public'::regnamespace
+       and p.proname in ('fail_retention_run', 'run_retention_sweep', 'start_retention_run')$$,
+  'fail_retention_run:true,run_retention_sweep:true,start_retention_run:true');
+select rt.val('RR15 ...and NONE of them consults request.jwt.claims, which PostgREST always sets',
+  $$select count(*)::text
+      from pg_proc p
+     where p.pronamespace = 'public'::regnamespace
+       and p.proname in ('fail_retention_run', 'run_retention_sweep', 'start_retention_run')
+       and pg_get_functiondef(p.oid) like '%request.jwt.claims%'$$, '0');
+
 
 -- ===========================================================================
 -- RZ  HOUSEKEEPING
