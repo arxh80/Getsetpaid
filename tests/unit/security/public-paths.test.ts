@@ -20,6 +20,7 @@ describe("PUBLIC_PATHS and isUnder()", () => {
       "/api/incident-alerts",
       "/api/exports",
       "/api/erasure",
+      "/api/retention",
       "/legal",
     ]);
   });
@@ -32,6 +33,8 @@ describe("PUBLIC_PATHS and isUnder()", () => {
     "/legal/not-a-page",
     "/api/erasure",
     "/api/erasure/run",
+    "/api/retention",
+    "/api/retention/run",
   ])(
     "%s is public",
     (path) => {
@@ -54,6 +57,9 @@ describe("PUBLIC_PATHS and isUnder()", () => {
     // character from the real thing.
     "/api/erasures",
     "/api/erasure-run",
+    // Phase 8 Task 6, the same pair for the retention runner.
+    "/api/retentions",
+    "/api/retention-run",
   ])("%s is NOT public", (path) => {
     expect(isUnder(path, PUBLIC_PATHS)).toBe(false);
   });

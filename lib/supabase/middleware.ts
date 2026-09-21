@@ -53,7 +53,13 @@ import { supabasePublicKey, supabaseUrl } from "./env";
  *  `/api/erasure/run` (Phase 8 Task 5) is the erasure runner's retry
  *  endpoint, on the same tick, with the same shape and its OWN bearer secret
  *  -- a leak of the export one must not run deletions. Listed under
- *  `/api/erasure` for the same reason as its sibling. */
+ *  `/api/erasure` for the same reason as its sibling.
+ *
+ *  `/api/retention/run` (Phase 8 Task 6) is the retention sweep's ONLY entry
+ *  point -- not a retry behind a nudge, because nobody is waiting for a
+ *  garbage collection -- on the same tick, throttled in the database to about
+ *  hourly, with its OWN bearer secret: this is the one that runs the sweep
+ *  which deletes the audit log. Listed under `/api/retention`. */
 export const PUBLIC_PATHS = [
   "/login",
   "/signup",
@@ -62,6 +68,7 @@ export const PUBLIC_PATHS = [
   "/api/incident-alerts",
   "/api/exports",
   "/api/erasure",
+  "/api/retention",
   "/legal",
 ] as const;
 
