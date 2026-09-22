@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { readMigrations, type MigrationText } from "../support/sql-definitions";
 import { LEGAL_DOCUMENTS, type LegalSlug } from "@/lib/legal/documents";
 import { validateDraft } from "@/lib/legal/draft-validation";
 import { KNOWN_TOKENS } from "@/lib/legal/markup";
@@ -233,25 +234,191 @@ const dsrV2 = readMigration("20260924002000_data_subject_rights_v2.sql");
 // therefore immutable, so the review's three corrections are a new version.
 const dsrV3 = readMigration("20260925004000_data_subject_rights_v3.sql");
 
+// ===========================================================================
+// EVERY PAGE'S CURRENT BODY, DERIVED FROM THE MIGRATION WALK
+// (Phase 8 Task 6 scoped re-review, m-N7)
+// ===========================================================================
+// currentBodies() used to chain five named migrations and stop at
+// 20260925004000 -- four legal-page migrations short of the truth by the time
+// the re-review read it (DPA v4, rights v5, retention v3-v6 had never been
+// read by the consistency rule below). The census-audit class exactly: a
+// derivation with a hand-typed end. It let nothing through (the re-review
+// applied the three regexes to all fifteen live bodies: 0 violations) but it
+// could not have said so.
+//
+// So the chain is DERIVED: every migration after the seed, in filename order
+// (the order the CLI applies them), that publishes a body -- recognised by
+// the one insert column list every publisher in this repository uses -- is
+// applied in one of the three shapes a publisher takes:
+//   (a) exact replacement:  select body into strict v_current ... where slug =
+//       '<slug>' ... replace(v_current|v_next, $t$old$t$, $t$new$t$)
+//   (b) whole body, staged: insert into legal_v2 values ('<slug>', $t$...$t$)
+//   (c) whole body, declared: v_body text := $t$...$t$ with one slug named
+// and a publisher matching NONE of them throws, naming the file -- a loud
+// refusal is a red test; a stale body is a green test over the wrong page.
+// The denominator is pinned below (the files walked and the slugs they
+// touched), and a PLANTED migration is proved to be read.
+
+const SEED_FILE = "20260922001000_legal_documents_seed.sql";
+/** The insert every body-publishing migration in this repository issues. The
+ *  RPCs' own inserts (20260922000000) name a different column list. */
+const PUBLISHER = /insert into public\.legal_documents \(slug, version, title, effective_date, body\)/;
+
+/** Whether a migration publishes at least one legal document body. */
+function publishesLegalBodies(text: string): boolean {
+  return PUBLISHER.test(text);
+}
+
+/** Apply one publishing migration, in whichever of the three shapes it takes. */
+function applyLegalMigration(file: string, text: string, current: Map<string, string>): string[] {
+  const touched: string[] = [];
+  let recognised = 0;
+  if (text.includes("select body into strict v_current")) {
+    for (const [slug, body] of applyCorrections(text, current, file)) {
+      current.set(slug, body);
+      touched.push(slug);
+    }
+    recognised++;
+  }
+  for (const m of text.matchAll(/insert into legal_v2 values \('([a-z-]+)', \$t\$\n([\s\S]*?)\$t\$\);/g)) {
+    current.set(m[1], `\n${m[2]}`);
+    touched.push(m[1]);
+    recognised++;
+  }
+  const whole = /v_body\s+text\s*:=\s*\$t\$([\s\S]*?)\$t\$;/.exec(text);
+  if (whole) {
+    const slugs = [...new Set([...text.matchAll(/where slug = '([a-z-]+)'/g)].map((m) => m[1]))];
+    if (slugs.length !== 1) throw new Error(`${file}: a whole-body publisher must name exactly one slug (found ${slugs.join(", ")})`);
+    if (!current.has(slugs[0])) throw new Error(`${file}: ${slugs[0]} has no current body`);
+    current.set(slugs[0], whole[1]);
+    touched.push(slugs[0]);
+    recognised++;
+  }
+  if (recognised === 0) {
+    throw new Error(
+      `${file} publishes a legal document body in a shape this walk does not recognise. ` +
+        "Every page's current body is rebuilt from the migrations so the consistency rule reads what is live; " +
+        "teach applyLegalMigration() the new shape, or the rule checks a stale page.",
+    );
+  }
+  return touched;
+}
+
+interface LegalWalk {
+  bodies: Map<string, string>;
+  /** Every publishing migration applied, in order, with the slugs it touched. */
+  applied: { file: string; slugs: string[] }[];
+}
+
+/**
+ * Every page's current body: the seed, then every publishing migration in
+ * filename order. `before` stops the walk (exclusive) at that file name.
+ */
+function walkLegalBodies(migrations: MigrationText[] = readMigrations(), before?: string): LegalWalk {
+  const bodies = seedBodies();
+  const applied: { file: string; slugs: string[] }[] = [];
+  for (const { file, text } of migrations) {
+    if (file <= SEED_FILE) continue;
+    if (before !== undefined && file >= before) break;
+    if (!publishesLegalBodies(text)) continue;
+    applied.push({ file, slugs: applyLegalMigration(file, text, bodies) });
+  }
+  return { bodies, applied };
+}
+
 /** Every page's current body as it stood before version 3 of the DSR page. */
 function currentBodiesBeforeV3(): Map<string, string> {
-  const current = seedBodies();
-  for (const [slug, body] of correctedBodies()) current.set(slug, body);
-  for (const [slug, body] of applyCorrections(consistency, current, "20260922006000")) current.set(slug, body);
-  for (const [slug, body] of applyCorrections(marketingV2, current, "20260923001000")) current.set(slug, body);
-  for (const [slug, body] of applyCorrections(dsrV2, current, "20260924002000")) current.set(slug, body);
-  return current;
+  return walkLegalBodies(readMigrations(), "20260925004000_data_subject_rights_v3.sql").bodies;
 }
 
 function currentBodies(): Map<string, string> {
-  const current = seedBodies();
-  for (const [slug, body] of correctedBodies()) current.set(slug, body);
-  for (const [slug, body] of applyCorrections(consistency, current, "20260922006000")) current.set(slug, body);
-  for (const [slug, body] of applyCorrections(marketingV2, current, "20260923001000")) current.set(slug, body);
-  for (const [slug, body] of applyCorrections(dsrV2, current, "20260924002000")) current.set(slug, body);
-  for (const [slug, body] of applyCorrections(dsrV3, current, "20260925004000")) current.set(slug, body);
-  return current;
+  return walkLegalBodies().bodies;
 }
+
+describe("m-N7: the current bodies are derived from every publishing migration, not a named chain", () => {
+  const walk = walkLegalBodies();
+
+  it("DENOMINATOR: the files walked and the slugs each touched, pinned -- a new publisher is a red line here", () => {
+    expect(walk.applied).toEqual([
+      { file: "20260922005000_legal_documents_v2_corrections.sql", slugs: ["privacy", "data-processing-addendum", "data-retention", "security"] },
+      { file: "20260922006000_legal_documents_hosting_and_transfer_consistency.sql", slugs: ["subprocessors", "privacy", "data-processing-addendum"] },
+      { file: "20260923001000_marketing_preferences_v2.sql", slugs: ["marketing-preferences"] },
+      { file: "20260924002000_data_subject_rights_v2.sql", slugs: ["data-subject-rights"] },
+      { file: "20260925004000_data_subject_rights_v3.sql", slugs: ["data-subject-rights"] },
+      // The four the hand-typed chain never read (re-review, m-N7).
+      { file: "20260927008000_legal_pages_describe_export.sql", slugs: ["data-processing-addendum", "data-subject-rights", "data-retention"] },
+      { file: "20260930009000_legal_pages_describe_erasure.sql", slugs: ["data-subject-rights", "data-retention"] },
+      { file: "20261003009000_legal_retention_job_runs.sql", slugs: ["data-retention"] },
+      { file: "20261004006000_legal_retention_says_what_is_not_deleted.sql", slugs: ["data-retention"] },
+    ]);
+    // Seven distinct slugs have a version past 1; the other eight are still
+    // their seed. Fifteen bodies either way.
+    expect(new Set(walk.applied.flatMap((a) => a.slugs)).size).toBe(7);
+    expect(walk.bodies.size).toBe(15);
+  });
+
+  it("the walk agrees with the hand-typed chain it replaces, up to where that chain stopped", () => {
+    const chain = seedBodies();
+    for (const [slug, body] of correctedBodies()) chain.set(slug, body);
+    for (const [slug, body] of applyCorrections(consistency, chain, "20260922006000")) chain.set(slug, body);
+    for (const [slug, body] of applyCorrections(marketingV2, chain, "20260923001000")) chain.set(slug, body);
+    for (const [slug, body] of applyCorrections(dsrV2, chain, "20260924002000")) chain.set(slug, body);
+    for (const [slug, body] of applyCorrections(dsrV3, chain, "20260925004000")) chain.set(slug, body);
+    expect(walkLegalBodies(readMigrations(), "20260927008000_legal_pages_describe_export.sql").bodies).toEqual(chain);
+  });
+
+  it("reads past where the chain stopped: the data-retention body is v6's, which says what is NOT deleted", () => {
+    expect(walk.bodies.get("data-retention")).toContain("## What is not deleted automatically");
+    expect(walk.bodies.get("data-subject-rights")).toContain("## Deleting your account");
+  });
+
+  it("PLANTED: a publishing migration added after the last real one is read and applied", () => {
+    const planted: MigrationText = {
+      file: "20991231000000_planted_ai_use_v2.sql",
+      text: [
+        "do $$ declare v_current text; v_next text; begin",
+        "  select body into strict v_current",
+        "    from public.legal_documents where slug = 'ai-use' and status = 'published';",
+        "  v_next := replace(v_current,",
+        "$t$does not use AI$t$,",
+        "$t$does not use AI (planted by seed-matches-catalogue.test.ts)$t$);",
+        "end $$;",
+        "insert into public.legal_documents (slug, version, title, effective_date, body)",
+        "select p.slug, p.version + 1, p.title, (now() at time zone 'Europe/London')::date, v.body from p, v;",
+        "update public.legal_documents set status = 'published' where slug = 'ai-use';",
+      ].join("\n"),
+    };
+    const { bodies, applied } = walkLegalBodies([...readMigrations(), planted]);
+    expect(applied.at(-1)).toEqual({ file: planted.file, slugs: ["ai-use"] });
+    expect(bodies.get("ai-use")).toContain("(planted by seed-matches-catalogue.test.ts)");
+    expect(walk.bodies.get("ai-use")).not.toContain("(planted by");
+  });
+
+  it("PLANTED: a publishing migration in a shape the walk does not recognise is a loud refusal, not a stale page", () => {
+    const planted: MigrationText = {
+      file: "20991231000001_planted_unknown_shape.sql",
+      text: [
+        "insert into public.legal_documents (slug, version, title, effective_date, body)",
+        "values ('ai-use', 99, 'AI Use Policy', current_date, 'a body written in a way nobody taught the walk');",
+      ].join("\n"),
+    };
+    expect(() => walkLegalBodies([...readMigrations(), planted])).toThrow(/does not recognise/);
+  });
+
+  it("PLANTED: a replacement whose passage is not in the current body is a loud refusal too", () => {
+    const planted: MigrationText = {
+      file: "20991231000002_planted_stale_replacement.sql",
+      text: [
+        "select body into strict v_current from public.legal_documents where slug = 'ai-use';",
+        "v_next := replace(v_current,",
+        "$t$a passage that was never on the page$t$,",
+        "$t$replaced$t$);",
+        "insert into public.legal_documents (slug, version, title, effective_date, body) select 1;",
+      ].join("\n"),
+    };
+    expect(() => walkLegalBodies([...readMigrations(), planted])).toThrow(/not in the current body/);
+  });
+});
 
 /** A line that states where data is hosted. */
 const HOSTING = /\b(UK\/EU|UK\/EEA|EU\/UK)\b[^.]*\bregion\b|\bhosted (in|within) the (UK|EU|EEA)\b/i;
