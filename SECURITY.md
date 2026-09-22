@@ -478,7 +478,47 @@ derivation's stated limits:** it matches column NAMES in function source, so
 it over-approximates (two false candidates, each excused with a reason); it
 cannot see a clock a TRIGGER computes from another column (one exists,
 `organisations.lifecycle_changed_at`, and the roll names it by hand); and
-`service_role` is excluded as a server credential.
+`service_role` is excluded as a server credential. **Two more, which the
+scoped re-review measured and fix round 1 did not state:** it followed ONE
+HOP — the manifest and the sweep body's direct callees — so a clock read
+through a helper function, a wrapper or a view was invisible; and it asked
+about date/timestamp columns only, so a column that decides WHICH PERIOD
+applies was not a candidate by type. Both are stated in
+`private.retention_clock_candidates()`'s own `comment on` as well; the
+first is widened by fix round 2's m-N1 migration (below).
+
+**I-N1 — the PERIOD half of the document clock was still tenant-writable**
+(scoped re-review of fix round 1; Q186 at its recommended default,
+`20261005000000`). A document is judged on WHEN its clock started and on
+WHICH PERIOD applies, and the second was computed at sweep time by
+`private.document_retention_class()` from whether the document's event
+carries a financial entry — and `financial_entries.event_id` is
+client-writable, table-wide, with no guard, sent on every edit from a hidden
+form field in `lib/crm/finance.ts`. Reproduced as an aal2 Owner: a document
+on a money event, deleted three years ago, read `financial / 0`; one
+`update financial_entries set event_id = <other event>` and it read
+`operational / 1` — sweepable that hour. Bounded (never below two years from
+a database-written stamp, one tenant's own file, finance write needed) but it
+was the only lever a tenant had left for the permanent destruction of a file,
+and `/legal/data-retention` v6 promises there is none. **Now the class is
+frozen when the clock starts, in both directions:** `documents.retention_class`
+is stamped by the same guard that owns the null → value `deleted_at`
+transition (for EVERY writer, because it is derived and never supplied),
+cleared on restore, refused for any other write by anyone (`postgres`
+included — the `storage_key` rule), outside every client grant, held to
+`deleted_at` by a CHECK, and read by the sweep and the manifest, which never
+recompute it. Money moved off the event afterwards does not shorten the
+period; money arriving afterwards does not lengthen it; the honest route to
+the shorter period is restore and delete again, both the person's own audited
+writes. The derivation sees it: a second arm makes the column a sweep hands
+to `private.retention_period()` a candidate whatever its type, so a sweep
+that goes back to recomputing names no column and leaves the roll entry
+unread. `rls_phase8_retention.sql` § RK-N1 reproduces the flip and asserts
+the sweep still takes nothing (with the recomputing sweep as a standing
+mutation, `operational / 1`), and `tests/integration/retention/runner.test.ts`
+pulls the same lever over real PostgREST as the Owner and runs the runner for
+real: the file is still in the bucket, and the restore-and-delete-again
+control takes it.
 
 **C2 — step 0 ran after the bytes were gone.** The runner read the manifest,
 DELETED THE OBJECTS and only then called `run_retention_sweep()`, where the

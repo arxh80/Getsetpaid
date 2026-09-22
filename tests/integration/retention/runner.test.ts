@@ -54,12 +54,16 @@ const FEEDBACK_ID = "11111111-1111-4111-8111-000000000003";
 const ORPHAN_KEY = "11111111-1111-4111-8111-00000000000f/orphan-probe";
 const REFUSED_DOC = "11111111-1111-4111-8111-000000000004";
 const NEVER_DELETED_DOC = "11111111-1111-4111-8111-000000000005";
+const FROZEN_DOC = "11111111-1111-4111-8111-000000000006";
+const MONEY_EVENT = "11111111-1111-4111-8111-000000000007";
+const DRY_EVENT = "11111111-1111-4111-8111-000000000008";
 
 let expiredDocKey = "";
 let liveDocKey = "";
 let screenshotKey = "";
 let refusedDocKey = "";
 let neverDeletedDocKey = "";
+let frozenDocKey = "";
 
 async function objectExists(bucket: string, key: string): Promise<boolean> {
   const { data, error } = await createStorageClient().storage.from(bucket).download(key);
@@ -86,7 +90,7 @@ afterAll(async () => {
   await pool.query(`drop table if exists public.c2_unclassified_probe`);
   await storage
     .from("documents")
-    .remove([expiredDocKey, liveDocKey, refusedDocKey, neverDeletedDocKey].filter(Boolean));
+    .remove([expiredDocKey, liveDocKey, refusedDocKey, neverDeletedDocKey, frozenDocKey].filter(Boolean));
   await storage.from("feedback-screenshots").remove([screenshotKey].filter(Boolean));
   await storage.from("documents").remove([ORPHAN_KEY]);
   await pool.query(`delete from public.audit_events where action = 'retention.swept'`);
@@ -97,8 +101,12 @@ afterAll(async () => {
   await pool.query(`delete from public.retention_runs`);
   await pool.query(`delete from public.feedback where id = $1`, [FEEDBACK_ID]);
   await pool.query(`delete from public.documents where id = any($1::uuid[])`, [
-    [EXPIRED_DOC, LIVE_DOC, REFUSED_DOC, NEVER_DELETED_DOC],
+    [EXPIRED_DOC, LIVE_DOC, REFUSED_DOC, NEVER_DELETED_DOC, FROZEN_DOC],
   ]);
+  await pool.query(`delete from public.financial_entries where event_id = any($1::uuid[])`, [
+    [MONEY_EVENT, DRY_EVENT],
+  ]);
+  await pool.query(`delete from public.events where id = any($1::uuid[])`, [[MONEY_EVENT, DRY_EVENT]]);
   await destroyFixtures(fx);
 });
 
@@ -333,7 +341,7 @@ describe("the retention runner removes bytes from the buckets, and only the righ
     expect(await objectExists("documents", refusedDocKey), "the fixture file").toBe(true);
     const named = await pool.query<{ n: string }>(
       `select count(*)::text as n from public.documents d
-        where d.id = $1 and d.deleted_at < now() - private.retention_period(private.document_retention_class(d.id))`,
+        where d.id = $1 and d.deleted_at < now() - private.retention_period(d.retention_class)`,
       [REFUSED_DOC],
     );
     expect(named.rows[0].n, "the fixture document is not past its period, so nothing is being tested").toBe("1");
@@ -397,5 +405,140 @@ describe("the retention runner removes bytes from the buckets, and only the righ
     expect(recovered.rows[0]?.reason, "a clean run did not resolve the refusal's alert").toBe(
       "retention_run_recovered",
     );
+  }, 180_000);
+
+  // =========================================================================
+  // FIX ROUND 2, RE-REVIEW FINDING I-N1: THE PERIOD HALF OF THE CLOCK.
+  //
+  // Fix round 1 pinned WHEN a document's clock starts. The re-review found
+  // WHICH PERIOD applies was still the tenant's to choose: the class was
+  // computed at sweep time from financial_entries.event_id, which an Owner
+  // writes on every finance edit from a hidden form field. Reproduced in
+  // psql (rls_phase8_retention.sql § RK-N1); this is the same lever pulled
+  // OVER REAL POSTGREST, as the workspace's own aal2 Owner, with the runner
+  // then run for real -- because "sweepable" asserted on a dry count is not
+  // the claim; the claim is that THE FILE IS STILL IN THE BUCKET.
+  // =========================================================================
+  it("I-N1: moving a financial entry off a deleted document's event, over PostgREST as its Owner, does not shorten its period -- the file survives a live run", async () => {
+    const storage = createStorageClient().storage;
+    const orgId = fx.orgA.id;
+    frozenDocKey = `${orgId}/${FROZEN_DOC}`;
+
+    const up = await storage.from("documents").upload(frozenDocKey, PDF, {
+      contentType: "application/pdf",
+      upsert: true,
+    });
+    expect(up.error, `the fixture object could not be stored: ${up.error?.message}`).toBeNull();
+
+    // A money event and a dry one; the document is LIVE on the money event.
+    await pool.query(
+      `insert into public.events (id, organisation_id, name, starts_at, status)
+       values ($1, $3, 'Money Night', now(), 'draft'), ($2, $3, 'Dry Night', now(), 'draft')`,
+      [MONEY_EVENT, DRY_EVENT, orgId],
+    );
+    const entry = await pool.query<{ id: string }>(
+      `insert into public.financial_entries
+         (organisation_id, event_id, category, status, amount_minor, currency, occurred_on)
+       values ($1, $2, 'fee', 'actual', 1000, 'GBP', current_date) returning id`,
+      [orgId, MONEY_EVENT],
+    );
+    await pool.query(
+      `insert into public.documents
+         (id, organisation_id, owner_user_id, filename, storage_key, mime_type, size_bytes,
+          scan_status, scanned_at)
+       values ($1, $2, $3, 'fee-agreement.pdf', $4, 'application/pdf', $5, 'clean', now())`,
+      [FROZEN_DOC, orgId, fx.ownerA.userId, frozenDocKey, PDF.length],
+    );
+    await pool.query(
+      `insert into public.document_links (organisation_id, parent_id, entity_type, entity_id)
+       values ($1, $2, 'event', $3)`,
+      [orgId, FROZEN_DOC, MONEY_EVENT],
+    );
+
+    // THE OWNER DELETES IT -- the real press, over HTTP. The class is frozen
+    // by the database at that moment.
+    const del = await fx.ownerA.client
+      .from("documents")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("id", FROZEN_DOC)
+      .select("id");
+    expect(del.error, `the Owner's delete failed: ${del.error?.message}`).toBeNull();
+    expect(del.data?.length, "the Owner's delete matched no row").toBe(1);
+    // ...and aged three years as postgres: inside 7 years, past 2.
+    await pool.query(`update public.documents set deleted_at = now() - interval '3 years' where id = $1`, [
+      FROZEN_DOC,
+    ]);
+    const frozen = await pool.query<{ cls: string; live: string }>(
+      `select retention_class as cls, private.document_retention_class(id) as live
+         from public.documents where id = $1`,
+      [FROZEN_DOC],
+    );
+    expect(frozen.rows[0], "the delete did not freeze a financial class").toEqual({
+      cls: "financial",
+      live: "financial",
+    });
+    expect(await objectExists("documents", frozenDocKey), "the fixture file").toBe(true);
+
+    // THE LEVER, PULLED OVER POSTGREST: the Owner moves the one entry to the
+    // dry event -- exactly what lib/crm/finance.ts's edit form sends.
+    const move = await fx.ownerA.client
+      .from("financial_entries")
+      .update({ event_id: DRY_EVENT })
+      .eq("id", entry.rows[0].id)
+      .select("id");
+    expect(move.error, `the Owner's finance write failed: ${move.error?.message}`).toBeNull();
+    expect(move.data?.length, "the finance write matched no row -- the lever was not pulled").toBe(1);
+    const after = await pool.query<{ cls: string; live: string }>(
+      `select retention_class as cls, private.document_retention_class(id) as live
+         from public.documents where id = $1`,
+      [FROZEN_DOC],
+    );
+    // The live derivation flipped -- that is the re-review's `operational` --
+    // and the frozen class did not.
+    expect(after.rows[0]).toEqual({ cls: "financial", live: "operational" });
+
+    // THE RUN, FOR REAL. The file must still be in the bucket afterwards.
+    const run = await runRetentionSweep();
+    expect(run.outcome, `the live run failed: ${JSON.stringify(run.refused)}`).toBe("ok");
+    expect(
+      await objectExists("documents", frozenDocKey),
+      "A TENANT SHORTENED A SEVEN-YEAR DOCUMENT'S PERIOD BY MOVING A FINANCIAL ENTRY (I-N1)",
+    ).toBe(true);
+    const stamped = await pool.query<{ purged: string | null }>(
+      `select bytes_purged_at as purged from public.documents where id = $1`,
+      [FROZEN_DOC],
+    );
+    expect(stamped.rows[0].purged, "the row was stamped purged").toBeNull();
+
+    // THE CONTROL: the honest route to the shorter period is restore and
+    // delete again, which re-freezes what is true THEN. Aged the same three
+    // years, the SAME file is taken by the next run -- so the survival above
+    // was the freeze, not a runner that never takes anything.
+    const restore = await fx.ownerA.client
+      .from("documents")
+      .update({ deleted_at: null })
+      .eq("id", FROZEN_DOC)
+      .select("id");
+    expect(restore.error, `restore failed: ${restore.error?.message}`).toBeNull();
+    const again = await fx.ownerA.client
+      .from("documents")
+      .update({ deleted_at: new Date().toISOString() })
+      .eq("id", FROZEN_DOC)
+      .select("id");
+    expect(again.error, `the second delete failed: ${again.error?.message}`).toBeNull();
+    await pool.query(`update public.documents set deleted_at = now() - interval '3 years' where id = $1`, [
+      FROZEN_DOC,
+    ]);
+    const refrozen = await pool.query<{ cls: string }>(
+      `select retention_class as cls from public.documents where id = $1`,
+      [FROZEN_DOC],
+    );
+    expect(refrozen.rows[0].cls, "the second delete did not freeze the class that is true now").toBe("operational");
+    const control = await runRetentionSweep();
+    expect(control.outcome, `the control run failed: ${JSON.stringify(control.refused)}`).toBe("ok");
+    expect(
+      await objectExists("documents", frozenDocKey),
+      "the control run did not take the file, so the survival above proved nothing",
+    ).toBe(false);
   }, 180_000);
 });

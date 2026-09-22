@@ -669,11 +669,13 @@ select rt.val('RS21 ...and the one a day INSIDE its period is untouched -- and s
   $$select string_agg(filename, ',' order by filename) from public.documents
      where organisation_id = '00000000-0000-4000-9000-0000000067b1' and bytes_purged_at is null$$,
   'live-and-old.pdf,newer.pdf');
--- THE CLASS IS DERIVED, NOT ASSUMED. Attaching the newer document to an event
--- that carries financial entries moves it from the two-year class to the
--- seven-year one -- so a document DELETED TWO YEARS AND A DAY AGO would now
--- survive. Asserted on the function directly, because by RS21 the row that
--- would demonstrate it has already been stamped.
+-- THE CLASS IS DERIVED, NOT ASSUMED -- and, since fix round 2 (I-N1 / Q186),
+-- FROZEN WHEN THE CLOCK STARTS. Attaching the newer document to an event that
+-- carries financial entries moves what the LIVE derivation answers from the
+-- two-year class to the seven-year one; it does NOT move the class the sweep
+-- reads, which was stamped `operational` when 6702 was born deleted with no
+-- link at all. § RK-N1 walks both directions of that; RS23a is the half of
+-- it this fixture can show.
 insert into public.events (id, organisation_id, name, starts_at, status)
 values ('00000000-0000-4000-9000-000000006711', '00000000-0000-4000-9000-0000000067b1',
         'RT Money Night', now(), 'draft');
@@ -685,8 +687,10 @@ select rt.val('RS22 a document on an event with NO money is `operational` (2 yea
 insert into public.financial_entries (organisation_id, event_id, category, status, amount_minor, currency, occurred_on)
 values ('00000000-0000-4000-9000-0000000067b1', '00000000-0000-4000-9000-000000006711',
         'fee', 'actual', 1000, 'GBP', current_date);
-select rt.val('RS23 ...and the SAME document becomes `financial` (7 years) the moment the event carries money',
+select rt.val('RS23 ...and the SAME document becomes `financial` (7 years) the moment the event carries money -- in the LIVE derivation',
   $$select private.document_retention_class('00000000-0000-4000-9000-000000006702')$$, 'financial');
+select rt.val('RS23a ...while the class the SWEEP reads was frozen `operational` when its clock started, and money arriving later does not promote it (I-N1 / Q186)',
+  $$select retention_class from public.documents where id = '00000000-0000-4000-9000-000000006702'$$, 'operational');
 
 
 -- ===========================================================================
@@ -1268,6 +1272,234 @@ begin
 end $$;
 select rt.val('RK19a the probe''s grant was rolled back with its subtransaction',
   $$select has_column_privilege('authenticated', 'public.documents', 'bytes_purged_at', 'UPDATE')::text$$, 'false');
+
+
+-- ---------------------------------------------------------------------------
+-- RK-N1  THE PERIOD HALF OF THE CLOCK (fix round 2, re-review finding I-N1)
+--
+-- Fix round 1 pinned the TIMESTAMP half of the document clock -- deleted_at
+-- is the database's. The re-review found the PERIOD half still open: which
+-- class a document falls in, `financial` (7 years) or `operational` (2), was
+-- computed AT SWEEP TIME by private.document_retention_class() from
+-- financial_entries.event_id -- a column the tenant writes on every edit,
+-- from a hidden form field (lib/crm/finance.ts). Measured as an aal2 Owner:
+-- a document on a money event, deleted three years ago, read `financial/0`;
+-- one `update financial_entries set event_id = <other event>` and it read
+-- `operational/1` -- sweepable that hour. The one lever a tenant had left for
+-- the permanent destruction of a file, and the page promised there was none.
+--
+-- Q186, recommended default, taken: THE CLASS IS FROZEN WHEN THE CLOCK
+-- STARTS, in both directions. documents.retention_class is stamped by the
+-- same guard that owns the null -> value deleted_at transition, cleared on
+-- restore, outside every client grant, immutable otherwise for every writer,
+-- and the sweep and the manifest read the STAMP and never recompute it.
+-- Every assertion below was red against the fix-round-1 schema first.
+-- ---------------------------------------------------------------------------
+insert into public.events (id, organisation_id, name, starts_at, status)
+values ('00000000-0000-4000-9000-000000006712', '00000000-0000-4000-9000-0000000067b1',
+        'RT Dry Night', now(), 'draft');
+insert into public.documents (id, organisation_id, owner_user_id, filename, storage_key, mime_type,
+                              size_bytes, scan_status, scanned_at) values
+  ('00000000-0000-4000-9000-000000006707', '00000000-0000-4000-9000-0000000067b1',
+   '00000000-0000-4000-9000-0000000067a1', 'fee-agreement.pdf',
+   '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-000000006707',
+   'application/pdf', 10, 'clean', now());
+insert into public.document_links (organisation_id, parent_id, entity_type, entity_id)
+values ('00000000-0000-4000-9000-0000000067b1', '00000000-0000-4000-9000-000000006707',
+        'event', '00000000-0000-4000-9000-000000006711');
+
+select rt.val('RK-N1a DENOMINATOR: a LIVE document on the money event carries NO frozen class yet, and the live derivation says financial',
+  $$select coalesce(retention_class, 'null') || '/' || private.document_retention_class(id)
+      from public.documents where id = '00000000-0000-4000-9000-000000006707'$$, 'null/financial');
+
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}';
+select rt.try('RK-N1b the Owner soft-deletes it -- the ordinary press',
+  $$update public.documents set deleted_at = now()
+     where id = '00000000-0000-4000-9000-000000006707'$$, 'ok(1)');
+select rt.try('RK-N1c ...and cannot write the frozen class at all: the column is outside the grant',
+  $$update public.documents set retention_class = 'operational'
+     where id = '00000000-0000-4000-9000-000000006707'$$, 'denied(42501)');
+reset role;
+reset request.jwt.claims;
+select rt.val('RK-N1d THE CLASS WAS FROZEN AT THE PRESS: financial, stamped by the database',
+  $$select retention_class from public.documents where id = '00000000-0000-4000-9000-000000006707'$$,
+  'financial');
+-- Aged three years AS POSTGRES (a re-date by a non-session writer keeps the
+-- frozen class): inside the 7-year period, past the 2-year one -- the
+-- re-review's exact fixture.
+update public.documents set deleted_at = now() - interval '3 years'
+ where id = '00000000-0000-4000-9000-000000006707';
+select rt.val('RK-N1e DENOMINATOR: deleted 3 years ago, financial, the dry sweep takes nothing -- the re-review''s `financial/0`',
+  $$select retention_class || '/' || ((private.sweep_document_bytes(true, 500))->>'documents.bytes_purged')
+      from public.documents where id = '00000000-0000-4000-9000-000000006707'$$, 'financial/0');
+
+-- THE REPRODUCTION. The Owner moves the one financial entry off the event --
+-- the hidden-field edit -- and the LIVE derivation flips to operational.
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}';
+select rt.try('RK-N1f the Owner moves the financial entry to another event (finance write, accepted)',
+  $$update public.financial_entries set event_id = '00000000-0000-4000-9000-000000006712'
+     where event_id = '00000000-0000-4000-9000-000000006711'$$, 'ok(1)');
+reset role;
+reset request.jwt.claims;
+select rt.val('RK-N1g ...the live derivation now says operational -- the lever the re-review pulled',
+  $$select private.document_retention_class('00000000-0000-4000-9000-000000006707')$$, 'operational');
+select rt.val('RK-N1h ...AND THE SWEEP STILL TAKES NOTHING: it reads the frozen class, which is still financial',
+  $$select retention_class || '/' || ((private.sweep_document_bytes(true, 500))->>'documents.bytes_purged')
+      from public.documents where id = '00000000-0000-4000-9000-000000006707'$$, 'financial/0');
+select rt.val('RK-N1i ...and the manifest''s own predicate names it for no key either (it has no object, so the arm is asked directly)',
+  $$select count(*)::text from public.documents d
+     where d.id = '00000000-0000-4000-9000-000000006707'
+       and d.deleted_at < now() - private.retention_period(d.retention_class)$$, '0');
+
+-- THE STANDING MUTATION: the sweep RECOMPUTES the class -- fix round 1's
+-- shipped behaviour -- and the same row is sweepable that hour.
+insert into rt.saved_defs values
+  ('doc_sweep', pg_get_functiondef('private.sweep_document_bytes(boolean,integer)'::regprocedure));
+do $$
+declare v_def text; v_new text;
+begin
+  v_def := (select def from rt.saved_defs where name = 'doc_sweep');
+  v_new := pg_catalog.replace(v_def, 'private.retention_period(d.retention_class)',
+                                     'private.retention_period(private.document_retention_class(d.id))');
+  if v_new = v_def then
+    raise exception 'RK-N1j could not make the sweep recompute the class -- the probe would have proved nothing';
+  end if;
+  execute v_new;
+end $$;
+select rt.val('RK-N1j MUTATION: a sweep that recomputes the class at sweep time takes the file -- `operational/1`, the re-review''s reproduction',
+  $$select private.document_retention_class('00000000-0000-4000-9000-000000006707') || '/' ||
+           ((private.sweep_document_bytes(true, 500))->>'documents.bytes_purged')$$, 'operational/1');
+do $$ begin execute (select def from rt.saved_defs where name = 'doc_sweep'); end $$;
+select rt.val('RK-N1k ...the sweep is restored byte-identically and takes nothing again',
+  $$select (pg_get_functiondef('private.sweep_document_bytes(boolean,integer)'::regprocedure)
+            = (select def from rt.saved_defs where name = 'doc_sweep'))::text || '/' ||
+           ((private.sweep_document_bytes(true, 500))->>'documents.bytes_purged')$$, 'true/0');
+
+-- THE FROZEN CLASS IS IMMUTABLE FOR EVERY WRITER outside the two transitions
+-- that own it -- `postgres` included, the storage_key rule -- and asked of
+-- the TRIGGER DIRECTLY with the grant switched back on (the RK18 shape).
+select rt.try_hint('RK-N1m re-writing a frozen class is refused for `postgres` too',
+  $$update public.documents set retention_class = 'operational'
+     where id = '00000000-0000-4000-9000-000000006707'$$,
+  'denied(42501:document_retention_class_is_frozen_at_deletion)');
+-- THE CHECK IS THE SECOND LAYER, asked with the guard DISABLED for exactly
+-- these two statements (the erasure § EN7 pattern): a live document cannot
+-- carry a class and a deleted one cannot lose it, for any writer.
+do $$
+declare v_a text; v_b text;
+begin
+  execute 'alter table public.documents disable trigger guard_retention_columns';
+  begin
+    update public.documents set retention_class = 'financial'
+     where id = '00000000-0000-4000-9000-000000006704';
+    v_a := 'ok';
+  exception when others then v_a := 'denied(' || sqlstate || ')';
+  end;
+  begin
+    update public.documents set retention_class = null
+     where id = '00000000-0000-4000-9000-000000006707';
+    v_b := 'ok';
+  exception when others then v_b := 'denied(' || sqlstate || ')';
+  end;
+  execute 'alter table public.documents enable trigger guard_retention_columns';
+  perform rt.record('RK-N1n with the guard DISABLED, the CHECK alone refuses a LIVE document carrying a class', 'denied(23514)', v_a);
+  perform rt.record('RK-N1n2 ...and a DELETED document losing its class', 'denied(23514)', v_b);
+end $$;
+select rt.val('RK-N1n3 the guard is back on',
+  $$select tgenabled from pg_trigger where tgrelid = 'public.documents'::regclass and tgname = 'guard_retention_columns'$$, 'O');
+do $$
+declare v_out text; v_a text; v_b text; v_h text;
+begin
+  begin
+    execute 'grant insert (retention_class), update (retention_class) on public.documents to authenticated';
+    perform pg_catalog.set_config('request.jwt.claims',
+      '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}', true);
+    execute 'set local role authenticated';
+    begin
+      update public.documents set retention_class = 'operational'
+       where id = '00000000-0000-4000-9000-000000006707';
+      v_a := 'ok';
+    exception when others then
+      get stacked diagnostics v_h = pg_exception_hint;
+      v_a := 'denied(' || sqlstate || ':' || coalesce(v_h, '') || ')';
+    end;
+    begin
+      insert into public.documents (organisation_id, filename, storage_key, mime_type, size_bytes, retention_class)
+      values ('00000000-0000-4000-9000-0000000067b1', 'born-classed.pdf',
+              '00000000-0000-4000-9000-0000000067b1/rkn1', 'application/pdf', 1, 'operational');
+      v_b := 'ok';
+    exception when others then
+      get stacked diagnostics v_h = pg_exception_hint;
+      v_b := 'denied(' || sqlstate || ':' || coalesce(v_h, '') || ')';
+    end;
+    raise exception 'RK_RESULT %|%', v_a, v_b;
+  exception when others then
+    v_out := sqlerrm;
+  end;
+  perform rt.record('RK-N1o THE TRIGGER ITSELF refuses a session re-class, with the grant switched back on',
+                    'denied(42501:document_retention_class_is_frozen_at_deletion)',
+                    pg_catalog.split_part(pg_catalog.replace(v_out, 'RK_RESULT ', ''), '|', 1));
+  perform rt.record('RK-N1p ...and a document born with a class',
+                    'denied(42501:document_is_born_live)',
+                    pg_catalog.split_part(pg_catalog.replace(v_out, 'RK_RESULT ', ''), '|', 2));
+end $$;
+select rt.val('RK-N1q the probe''s grant was rolled back with its subtransaction',
+  $$select (has_column_privilege('authenticated', 'public.documents', 'retention_class', 'UPDATE')
+         or has_column_privilege('authenticated', 'public.documents', 'retention_class', 'INSERT'))::text$$, 'false');
+
+-- RESTORE CLEARS THE FREEZE, and a fresh delete freezes what is true THEN --
+-- which is the honest answer to "the workspace moved the money and wants the
+-- shorter period": restore, and delete again.
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}';
+select rt.try('RK-N1r the Owner restores it',
+  $$update public.documents set deleted_at = null where id = '00000000-0000-4000-9000-000000006707'$$, 'ok(1)');
+reset role;
+reset request.jwt.claims;
+select rt.val('RK-N1s ...and the frozen class is CLEARED with the clock',
+  $$select coalesce(retention_class, 'null') from public.documents where id = '00000000-0000-4000-9000-000000006707'$$,
+  'null');
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}';
+select rt.try('RK-N1t the Owner deletes it again, with the money now elsewhere',
+  $$update public.documents set deleted_at = now() where id = '00000000-0000-4000-9000-000000006707'$$, 'ok(1)');
+select rt.try('RK-N1u ...and moves the money back (so the rest of this suite sees the event it expects)',
+  $$update public.financial_entries set event_id = '00000000-0000-4000-9000-000000006711'
+     where event_id = '00000000-0000-4000-9000-000000006712'$$, 'ok(1)');
+reset role;
+reset request.jwt.claims;
+select rt.val('RK-N1v the second deletion froze `operational` -- what was true at THAT press -- and the money coming back does not promote it',
+  $$select retention_class || '/' || private.document_retention_class(id)
+      from public.documents where id = '00000000-0000-4000-9000-000000006707'$$, 'operational/financial');
+
+-- THE OTHER DIRECTION (Q186, "in both directions"): a document frozen
+-- `operational` is not PROMOTED when money arrives later. 6702 was born
+-- deleted in § RS with no link at all; RS23 then made its event a money
+-- event, and the live derivation has said financial since (the money is
+-- back on 6711 as of RK-N1u).
+select rt.val('RK-N1l the other direction: 6702''s live derivation says financial, its FROZEN class is still operational',
+  $$select private.document_retention_class(id) || '/' || retention_class
+      from public.documents where id = '00000000-0000-4000-9000-000000006702'$$, 'financial/operational');
+
+-- THE ROLL KNOWS THE PERIOD HALF IS A CLOCK. It is a text column, so the
+-- date/timestamp derivation cannot see it; it is derived instead as THE
+-- COLUMN A SWEEP HANDS TO private.retention_period(), which is what makes a
+-- sweep that goes back to recomputing it visible: `retention_period(
+-- private.document_retention_class(d.id))` names no column, and the roll
+-- entry for the stamped one is then a clock nothing reads.
+select rt.val('RK-N1w documents.retention_class is a derived candidate, read by the sweep and the manifest, and on the roll as a clock guarded by the same trigger',
+  $$select (select read_by from private.retention_clock_candidates()
+             where table_name = 'documents' and column_name = 'retention_class')
+        || ' :: ' ||
+           (select role || ':' || guard from private.retention_clock_columns()
+             where table_name = 'documents' and column_name = 'retention_class')$$,
+  'retention_object_manifest,sweep_document_bytes :: clock:trigger:private.guard_document_retention_columns');
+select rt.val('RK-N1x ...and no client role can write it (non-forgeable by construction, the better answer)',
+  $$select (client_insert or client_update)::text || '/' || coalesce(guard_missing, 'none')
+      from private.retention_clock_exposure()
+     where table_name = 'documents' and column_name = 'retention_class'$$, 'false/none');
 
 
 -- ---------------------------------------------------------------------------
