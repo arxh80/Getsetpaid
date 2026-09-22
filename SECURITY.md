@@ -581,7 +581,19 @@ and names NOTHING** unless that run is `running`, the job is enabled,
 `replica` is off and both rolls pass, in the same call that produces the keys.
 The ungated one-argument signature is dropped. Step 0 stays as the third line.
 `tests/integration/retention/runner.test.ts` is the proof psql cannot give: a
-refused run's expired file is **still downloadable** afterwards.
+refused run's expired file is **still downloadable** afterwards. **The window
+that remains is stated rather than implied** (re-review, m-N3): the manifest
+answers in one snapshot and `removeObjects()` then issues one Storage call
+per bucket, so a refusal condition that ARRIVES between the two — an
+unclassified table created, a client grant added to a clock — is not seen
+until step 0, by which time the named objects are gone and the run is
+recorded `failed`. The window is bounded by the runner's own execution time
+between one RPC response and its `remove()` calls (tens of milliseconds
+locally, `lib/retention/runner.ts` from `readManifest` to `removeObjects`),
+it takes a concurrent DDL to hit, and every object named was legitimately
+expired at the instant it was named. It is the inherent residual of
+bytes-first, not a defect the gates cover, and no code change closes it
+short of a two-phase delete nobody can have.
 
 **One run at a time** (`20261004003000`, I2). Two starts used to give two
 `running` rows, which defeats the per-run ceiling, the sanity ceiling and the

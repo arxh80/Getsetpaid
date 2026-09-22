@@ -149,6 +149,14 @@ export async function runRetentionSweep(
   let objectsRemoved = 0;
 
   try {
+    // THE WINDOW BETWEEN THESE TWO LINES IS REAL AND STATED (SECURITY.md § 8,
+    // re-review finding m-N3): the manifest answered in one snapshot with
+    // every refusal asserted; a refusal condition that ARRIVES before the
+    // remove() below -- a concurrent DDL -- is not seen until step 0, by
+    // which time the named objects are gone. Bounded by this function's own
+    // execution time between the two calls; every object named was
+    // legitimately expired at the instant it was named. Inherent to
+    // bytes-first; not closable short of a two-phase delete.
     const manifest = await readManifest(supabase, run.id);
     objectsNamed = manifest.length;
     if (!dry) objectsRemoved = await removeObjects(manifest);
