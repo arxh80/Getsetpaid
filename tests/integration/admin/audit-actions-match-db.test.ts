@@ -61,7 +61,10 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
           and n.nspname = 'private' and p.proname = 'audit_crm_change'
         order by 1, 2`,
     );
-    expect(rows.length).toBe(22);
+    // MOVED in Phase 8 Task 7: 22 -> 54 (sixteen more tables, two triggers
+    // each: 20261006000000). Pinned rather than derived from the catalogue so
+    // a lost pair is a red NUMBER here and a red NAME in the loop below.
+    expect(rows.length).toBe(54);
 
     const byTable = new Map<string, { target: string; triggers: string[] }>();
     for (const r of rows) {
@@ -146,8 +149,15 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
         order by 1, 2`,
     );
     // contact_company.deleted, custom_field_value.deleted, records.merged
-    // (20260828141000) -- fewer than three means this stopped finding them.
-    expect(rows.length).toBeGreaterThanOrEqual(3);
+    // (20260828141000) and membership.deleted (20261006000000) -- fewer than
+    // four means this stopped finding them.
+    expect(rows.length).toBeGreaterThanOrEqual(4);
+    expect(rows.map((r) => r.args.split(/\\000|\0/)[0]).sort()).toEqual([
+      "contact_company.deleted",
+      "custom_field_value.deleted",
+      "membership.deleted",
+      "records.merged",
+    ]);
 
     const known = new Set(knownAuditActions());
     const missing = rows
@@ -173,16 +183,19 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
     // Sorted on THIS side on both sides: Postgres orders by the database
     // collation, JavaScript by code point, and "." against "_" differs.
     const live = rows.map((r) => r.action).sort();
-    expect(live.length).toBeGreaterThan(90);
+    // MOVED in Phase 8 Task 7: 40 + 4 + 52 = 96 before it, 100 + 5 + 57 = 162
+    // after (sixteen targets, membership.deleted, five network_connection.*).
+    expect(live.length).toBe(162);
     expect(new Set(live).size, "the database catalogue lists a name twice").toBe(live.length);
     expect(live).toEqual([...knownAuditActions()].sort());
   });
 
   it("the derived CRM action set is exactly what the trigger can emit", () => {
-    // 9 soft-deletable x 4 verbs + 2 x 2 verbs. The verbs themselves are
-    // pinned by rls_phase7_crm_audit.sql § CI/CU/CD against real writes; this
+    // 23 soft-deletable x 4 verbs + 4 x 2 verbs (MOVED 40 -> 100 in Phase 8
+    // Task 7). The verbs themselves are pinned by rls_phase7_crm_audit.sql
+    // § CI/CU/CD and rls_phase8_crm_audit_p3_6.sql against real writes; this
     // is the count that the two facts above imply.
-    expect(crmAuditActions()).toHaveLength(40);
+    expect(crmAuditActions()).toHaveLength(100);
   });
 });
 
@@ -288,11 +301,15 @@ describe("every literal action any database function writes is in the catalogue"
         "which is where those action names are actually checked.",
       "private.audit_crm_change":
         "the Phase 7 Task 6b CRM audit trigger: v_target || '.created' and v_action, both built from " +
-        "the table name. The forty names they produce are pinned by crmAuditActions() and asserted " +
+        "the table name. The hundred names they produce are pinned by crmAuditActions() and asserted " +
         "against the catalogue in the block above.",
       "private.audit_network_row":
-        "the network audit trigger: v_action is built from TG_OP, and its outcomes are in the " +
-        "catalogue under network_profile.* / network_connection_request.*.",
+        "the network audit trigger: v_action is assigned from one of eight literals in a CASE chain. " +
+        "Its outcomes are network_profile.published / .unpublished / .visibility_changed and " +
+        "network_connection.requested / .accepted / .declined / .withdrawn / .updated, all listed by " +
+        "hand in PLATFORM_AUDIT_ACTIONS -- and asserted BELOW by reading the literals out of the " +
+        "body, because this entry used to claim they were listed under a name that never existed " +
+        "(network_connection_request.*) while three of them were on neither side of the catalogue.",
       "private.audit_dsr_transition":
         "'data_subject_request.' || new.status -- the status values are a CHECK constraint the state " +
         "machine owns, and each resulting name is in the catalogue.",
@@ -318,6 +335,36 @@ describe("every literal action any database function writes is in the catalogue"
         "Either write the action as a literal, or name the function in DYNAMIC_ACTION_SITES with " +
         "the reason its outcomes are pinned somewhere else. Sites: " + unresolved.join(" | "),
     ).toEqual(Object.keys(DYNAMIC_ACTION_SITES).sort());
+  });
+
+  // PHASE 8 TASK 7: the dynamic site whose reason was wrong. Read every
+  // `v_action := '<literal>'` out of private.audit_network_row() and require
+  // each to be in the catalogue -- with a denominator, so an assignment
+  // shape this cannot read is a red test rather than a silent skip.
+  it("every literal private.audit_network_row() assigns to v_action is in the catalogue", async () => {
+    const { rows } = await pool.query<{ body: string }>(
+      `select pg_get_functiondef(p.oid) as body
+         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'private' and p.proname = 'audit_network_row'`,
+    );
+    expect(rows.length).toBe(1);
+    const code = rows[0].body.replace(/--[^\n]*/g, "");
+    const assignments = [...code.matchAll(/v_action\s*:=\s*([^;]+);/g)].map((m) => m[1].trim());
+    expect(assignments.length, "no v_action assignment was read out of the body").toBeGreaterThanOrEqual(8);
+    const literals = assignments.map((a) => /^'([A-Za-z0-9_.]+)'$/.exec(a)?.[1]);
+    expect(literals, "an assignment that is not a bare literal: " + assignments.join(" | ")).not.toContain(undefined);
+    const known = new Set(knownAuditActions());
+    expect(literals.filter((l) => !known.has(l!))).toEqual([]);
+    expect([...new Set(literals)].sort()).toEqual([
+      "network_connection.accepted",
+      "network_connection.declined",
+      "network_connection.requested",
+      "network_connection.updated",
+      "network_connection.withdrawn",
+      "network_profile.published",
+      "network_profile.unpublished",
+      "network_profile.visibility_changed",
+    ]);
   });
 
   it("POSITIVE CONTROL: the resolver reads a positional call and a name with a digit", () => {
