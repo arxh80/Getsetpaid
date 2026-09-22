@@ -1565,9 +1565,15 @@ select rt.try('RK22 DENOMINATOR: the Owner writes BOTH workspace clocks on their
        set retention_expires_at = now() - interval '1 day',
            lifecycle_changed_at = now() - interval '61 days'
      where slug = 'rt-keep'$$, 'ok(1)');
-select rt.try('CLOCK public.organisations.deleted_at -- a tenant write to it is refused by the lifecycle guard',
+-- BY HINT, NOT BY SQLSTATE (fix round 2, m-N2). organisations_update_manage_
+-- organisation's WITH CHECK (`deleted_at is null`) refuses this same write
+-- with the same 42501, so with the named guard fully dead the bare code
+-- still read `denied(42501)` -- 0 of 221 red. The guard now carries a hint
+-- (20261005002000), BEFORE ROW runs before WITH CHECK, and the probe asks
+-- for the hint: the policy answering instead reads `denied(42501:)`.
+select rt.try_hint('CLOCK public.organisations.deleted_at -- a tenant write to it is refused BY THE LIFECYCLE GUARD, named by its hint',
   $$update public.organisations set deleted_at = now() - interval '61 days' where slug = 'rt-keep'$$,
-  'denied(42501)');
+  'denied(42501:organisation_lifecycle_is_the_rpcs)');
 select rt.try('RK23 ...and the CLOSED workspace admits no tenant UPDATE at all (0 rows, with the row visible)',
   $$update public.organisations set lifecycle_changed_at = now() - interval '61 days' where slug = 'rt-back'$$,
   'ok(0)');
@@ -1615,6 +1621,92 @@ begin
 end $$;
 select rt.val('RK24 the storage probe left nothing behind',
   $$select count(*)::text from storage.objects where name like 'rt-clock-probe/%'$$, '0');
+
+-- WHICH LAYER REFUSES A CLIENT WRITE TO storage.objects? (fix round 2, m-N2.)
+-- The roll named the six RESTRICTIVE deny-all policies, and the re-review
+-- rewrote two of them to `true` and watched the probe above stay green --
+-- because no PERMISSIVE policy admits a client role at all, and RLS
+-- default-denies. The roll now names that layer too, `no_permissive_policy`,
+-- and this is the standing mutation for both layers, in one rolled-back
+-- subtransaction (the RK18 shape): a permissive policy is created, and the
+-- existence check must name it; THEN the documents-bucket restrictive
+-- policies are opened as the re-review opened them (plus SELECT), and the probe's own two
+-- statements must now SUCCEED -- which is what shows the probe measures
+-- behaviour and not the catalogue.
+do $$
+declare v_out text; v_missing text; v_hint text; v_refusal text; v_fence text; v_rows bigint; v_ins text;
+begin
+  begin
+    execute 'create policy rt_permissive_probe on storage.objects for all to authenticated using (true) with check (true)';
+    select guard_missing into v_missing from private.retention_clock_exposure()
+     where schema_name = 'storage' and table_name = 'objects' and column_name = 'created_at';
+    begin
+      perform private.assert_retention_clocks();
+      v_refusal := 'ok';
+    exception when others then
+      get stacked diagnostics v_hint = pg_exception_hint;
+      v_refusal := 'denied(' || sqlstate || ':' || coalesce(v_hint, '') || ')';
+    end;
+    -- THE RESTRICTIVE LAYER, ISOLATED: with default deny gone (the permissive
+    -- policy above) the fence alone must still refuse the probe's writes.
+    -- This is the assertion the re-review's G5 (the fence opened, default
+    -- deny still there) could not redden -- and it reds it now.
+    insert into storage.objects (bucket_id, name) values ('documents', 'rt-clock-probe/object');
+    perform pg_catalog.set_config('request.jwt.claims',
+      '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}', true);
+    execute 'set local role authenticated';
+    update storage.objects set created_at = pg_catalog.now() - interval '10 years'
+     where name = 'rt-clock-probe/object';
+    get diagnostics v_rows = row_count;
+    begin
+      insert into storage.objects (bucket_id, name, created_at)
+      values ('documents', 'rt-clock-probe/forged', pg_catalog.now() - interval '10 years');
+      v_ins := 'ok';
+    exception when others then
+      v_ins := 'denied(' || sqlstate || ')';
+    end;
+    v_fence := 'update=ok(' || v_rows || ')/insert=' || v_ins;
+    execute 'reset role';
+    -- Both layers open: the re-review's G5 on top of the permissive policy,
+    -- plus the SELECT half of the fence, because an UPDATE with a WHERE
+    -- clause reads the row through the SELECT policies first and a row it
+    -- cannot see is `ok(0)` whatever the UPDATE policies say.
+    execute 'alter policy documents_deny_client_select on storage.objects using (true)';
+    execute 'alter policy documents_deny_client_insert on storage.objects with check (true)';
+    execute 'alter policy documents_deny_client_update on storage.objects using (true) with check (true)';
+    execute 'set local role authenticated';
+    update storage.objects set created_at = pg_catalog.now() - interval '10 years'
+     where name = 'rt-clock-probe/object';
+    get diagnostics v_rows = row_count;
+    begin
+      insert into storage.objects (bucket_id, name, created_at)
+      values ('documents', 'rt-clock-probe/forged', pg_catalog.now() - interval '10 years');
+      v_ins := 'ok';
+    exception when others then
+      v_ins := 'denied(' || sqlstate || ')';
+    end;
+    raise exception 'RK_RESULT %|%|%|update=ok(%)/insert=%', coalesce(v_missing, 'none'), v_refusal, v_fence, v_rows, v_ins;
+  exception when others then
+    v_out := pg_catalog.replace(sqlerrm, 'RK_RESULT ', '');
+  end;
+  perform rt.record('RK24a MUTATION: a PERMISSIVE policy admitting a client on storage.objects -- the existence check names default deny as the guard now missing',
+                    'no_permissive_policy', pg_catalog.split_part(v_out, '|', 1));
+  perform rt.record('RK24b ...and the clock roll REFUSES the job for it',
+                    'denied(55000:forgeable_retention_clock)', pg_catalog.split_part(v_out, '|', 2));
+  perform rt.record('RK24e ...and with default deny gone, THE RESTRICTIVE FENCE ALONE still refuses the probe''s writes (the layer the re-review''s G5 opened, isolated)',
+                    'update=ok(0)/insert=denied(42501)', pg_catalog.split_part(v_out, '|', 3));
+  perform rt.record('RK24c ...and with the restrictive documents policies opened as well, the probe''s own writes SUCCEED -- so the probe measures behaviour, not the catalogue',
+                    'update=ok(1)/insert=ok', pg_catalog.split_part(v_out, '|', 4));
+end $$;
+select rt.val('RK24d the mutation was rolled back: no permissive policy, the restrictive policies as fenced, no object left behind',
+  $$select (select count(*)::text from pg_policy where polrelid = 'storage.objects'::regclass and polpermissive)
+        || '/' ||
+           (select count(*)::text from pg_policy
+             where polrelid = 'storage.objects'::regclass and polname like 'documents_deny_client_%'
+               and coalesce(pg_get_expr(polqual, polrelid), pg_get_expr(polwithcheck, polrelid))
+                   = '(bucket_id <> ''documents''::text)')
+        || '/' || (select count(*)::text from storage.objects where name like 'rt-clock-probe/%')$$,
+  '0/4/0');
 
 -- ---- THE DERIVED ASSERTIONS ------------------------------------------------
 select rt.val('RK25 DENOMINATOR: the derivation sees the retention functions -- and the column C1 was about',
@@ -1690,6 +1782,46 @@ begin
 end $$;
 select rt.try_hint('RK32 MUTATION: ...and classifying it as a clock is NOT ENOUGH while a client can write it',
   $$select private.assert_retention_clocks()$$, 'denied(55000:forgeable_retention_clock)');
+
+-- A GUARD THAT CANNOT FIRE ON THE CLOCK COLUMN IS NOT A GUARD (fix round 2,
+-- m-N2, the re-review's probes H and I). The existence check used to read
+-- tgtype alone, so a trigger declared `BEFORE UPDATE OF <another column>`
+-- or `WHEN (false)` counted as present. Named now, with each shape planted.
+create function private.rt_clock_guard() returns trigger language plpgsql as $$
+begin return new; end $$;
+do $$
+declare v_def text; v_new text;
+begin
+  v_def := (select def from rt.saved_defs where name = 'clock_roll');
+  v_new := pg_catalog.regexp_replace(v_def, 'values',
+             'values (''public'', ''rt_clock_probe'', ''expired_at'', ''clock'', ''trigger:private.rt_clock_guard'', ''mutation probe''),', '');
+  if v_new = v_def then
+    raise exception 'RK32a could not inject the guarded roll entry -- the probe would have proved nothing';
+  end if;
+  execute v_new;
+end $$;
+-- INSERT OR UPDATE OF <another column>: every other test the existence check
+-- makes passes, so the column list is the ONLY thing that can fail it here.
+create trigger rt_guard before insert or update of id on public.rt_clock_probe
+  for each row execute function private.rt_clock_guard();
+select rt.val('RK32a MUTATION: a guard declared BEFORE INSERT OR UPDATE OF <another column> is reported MISSING',
+  $$select guard_missing from private.retention_clock_exposure()
+     where table_name = 'rt_clock_probe' and column_name = 'expired_at'$$, 'trigger:private.rt_clock_guard');
+drop trigger rt_guard on public.rt_clock_probe;
+create trigger rt_guard before insert or update on public.rt_clock_probe
+  for each row when (false) execute function private.rt_clock_guard();
+select rt.val('RK32b MUTATION: ...and so is one declared WHEN (false)',
+  $$select guard_missing from private.retention_clock_exposure()
+     where table_name = 'rt_clock_probe' and column_name = 'expired_at'$$, 'trigger:private.rt_clock_guard');
+select rt.try_hint('RK32c ...and the clock roll refuses the job for it',
+  $$select private.assert_retention_clocks()$$, 'denied(55000:forgeable_retention_clock)');
+drop trigger rt_guard on public.rt_clock_probe;
+create trigger rt_guard before insert or update on public.rt_clock_probe
+  for each row execute function private.rt_clock_guard();
+select rt.val('RK32d CONTROL: the same guard with no column list and no WHEN clause is present, and the roll passes',
+  $$select coalesce((select guard_missing from private.retention_clock_exposure()
+                      where table_name = 'rt_clock_probe' and column_name = 'expired_at'), 'none')
+        || '/' || (select 'ok' from (select private.assert_retention_clocks()) t)$$, 'none/ok');
 select rt.val('RK33 ...and RK29''s own query names it as having no probe',
   $$select coalesce(string_agg(c, ',' order by c), 'none')
       from (select schema_name || '.' || table_name || '.' || column_name as c
@@ -1703,6 +1835,7 @@ do $$ begin
 end $$;
 drop function private.sweep_rt_clock_probe(boolean, integer);
 drop table public.rt_clock_probe;
+drop function private.rt_clock_guard();
 select rt.val('RK34 the sweep body and the clock roll are restored byte-identically, and the refusal passes again',
   $$select (pg_get_functiondef('private.retention_sweep_body(boolean,integer)'::regprocedure)
             = (select def from rt.saved_defs where name = 'sweep_body'))::text || '/' ||

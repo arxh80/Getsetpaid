@@ -520,6 +520,26 @@ pulls the same lever over real PostgREST as the Owner and runs the runner for
 real: the file is still in the bucket, and the restore-and-delete-again
 control takes it.
 
+**m-N2 — two probes measured a layer the roll did not name**
+(`20261005002000`). The re-review neutered each named guard and found two
+of the six probes still green: `organisations.deleted_at`'s, answered by the
+UPDATE policy's WITH CHECK with the same SQLSTATE, and
+`storage.objects.created_at`'s, answered by default deny rather than the six
+RESTRICTIVE policies the roll named. Now the lifecycle guard raises with a
+hint (`organisation_lifecycle_is_the_rpcs`) and the probe asserts it (a
+BEFORE ROW trigger runs before WITH CHECK, so when present it is the layer
+that answers); the roll has a third guard kind, `no_permissive_policy` —
+default deny, named as the layer it is: no PERMISSIVE policy can admit a
+client role for an operation it holds, so adding one is a
+`forgeable_retention_clock` refusal — named first for `storage.objects`
+with the restrictive six behind it, and § RK24a–e measure each layer in
+isolation (a permissive policy planted: the existence check names it and the
+fence alone still refuses; the fence opened as well: the probe's own writes
+succeed), all in one rolled-back subtransaction. The existence check also
+refuses a trigger whose column list omits the clock column or that carries
+any WHEN clause (which cannot be judged statically), with both shapes planted
+in § RK32a–d.
+
 **C2 — step 0 ran after the bytes were gone.** The runner read the manifest,
 DELETED THE OBJECTS and only then called `run_retention_sweep()`, where the
 roll was asserted: the reviewer measured a run recorded `failed` whose file
