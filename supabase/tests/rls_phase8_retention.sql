@@ -821,8 +821,10 @@ select rt.val('RA13 running it again deletes nothing (idempotent)',
 -- So: EVERY action the product writes, DERIVED from the live catalogue and
 -- not listed -- every literal `p_action => '...'` in any function, every
 -- literal in a function that inserts into audit_events directly, every
--- CRM trigger's target x verb, and every action already in the table -- is
--- planted FOUR times: one day inside the period and one day past it, each
+-- CRM trigger's target x verb, every action already in the table, and
+-- (since fix round 2, m-N4) the whole of private.audit_action_catalogue(),
+-- the database's copy of lib/admin/audit-actions.ts -- is planted FOUR
+-- times: one day inside the period and one day past it, each
 -- once as a TENANT row (organisation set, a person as actor) and once as a
 -- PLATFORM row (no organisation, the Q130 tombstone as actor). The derivation
 -- over-collects (`auth.users` is not an action) and that is harmless: the
@@ -854,9 +856,32 @@ create table rt.i1_actions as
      where not t.tgisinternal
     union all
     select a.action from public.audit_events a where a.action not like 'rt.%'
+    -- AND THE PRODUCT'S OWN CATALOGUE (fix round 2, re-review finding m-N4):
+    -- ELEVEN catalogue names were outside every arm above -- the five DSR
+    -- transitions built as 'data_subject_request.' || status, the two
+    -- impersonation terminals built from the state, and the four dot-less
+    -- document_* actions passed in from TypeScript -- and exempting three of
+    -- them by name reddened 0 of 221. private.audit_action_catalogue() is the
+    -- database's copy of lib/admin/audit-actions.ts, bound to it both ways.
+    union all
+    select private.audit_action_catalogue()
   ) x
   where action is not null and action <> '' and action not like '%.';
 
+select rt.val('RA-I1a2 DENOMINATOR (m-N4): the eleven names the regexes could not see are planted BY NAME, and the whole catalogue is in the set',
+  $$select (select count(*)::text from (
+              select unnest(array['data_subject_request.fulfilment_recorded', 'data_subject_request.in_progress',
+                                  'data_subject_request.rejected', 'data_subject_request.routed',
+                                  'data_subject_request.withdrawn', 'document_deleted', 'document_downloaded',
+                                  'document_quarantined', 'document_uploaded', 'impersonation.ended',
+                                  'impersonation.expired']) as c) t
+             where exists (select 1 from rt.i1_actions a where a.action = t.c))
+        || '/' ||
+           (select coalesce(string_agg(c, ','), 'none')
+              from private.audit_action_catalogue() c
+             where not exists (select 1 from rt.i1_actions a where a.action = c))
+        || '/' || (select (count(*) >= 96)::text from private.audit_action_catalogue())$$,
+  '11/none/true');
 select rt.val('RA-I1a DENOMINATOR: the catalogue is derived and SEES the classes that matter -- impersonation, organisation, a CRM write, a platform read, this job',
   $$select ((select count(*) from rt.i1_actions) >= 60)::text || '/' ||
            (select string_agg(c, ',' order by c)

@@ -551,7 +551,16 @@ of the period as a tenant row and as a platform row; the purged and surviving
 SETS are asserted, so an exemption added or an over-delete added both redden.
 Before this, adding `or a.action like 'impersonation%'` — which deletes the
 entire record of superuser access to tenant data, at any age — reddened 0 of
-116.
+116. **And since fix round 2 the planted set is the whole catalogue** (m-N4,
+`20261005001000`): the regex derivation could not see eleven names the
+product builds at runtime (the DSR transitions, `impersonation.ended` /
+`.expired`, the four dot-less `document_*` actions), so exempting three of
+them by name reddened 0 of 221. `private.audit_action_catalogue()` is the
+database's copy of `lib/admin/audit-actions.ts` — the hand-listed half bound
+to it in CI by reading the migration body, the CRM half derived from the same
+triggers, the whole asserted equal to `knownAuditActions()` against the live
+database — and it is unioned into the planted set; the same three-name
+exemption now reds RA-I1c and RA-I1d, naming all three.
 
 #### When a retention run refuses
 

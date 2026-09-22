@@ -42,6 +42,9 @@ const BOUND_FUNCTIONS = [
   "private.dsr_alert_lead_days",
   "private.dsr_transition_allowed",
   "private.data_subject_requests_before_insert",
+  // Phase 8 Task 6 fix round 2 (m-N4): the audit action catalogue's
+  // hand-listed half, bound in CI by tests/unit/admin/audit-action-catalogue.test.ts.
+  "private.platform_audit_actions",
 ] as const;
 
 async function prosrc(qualified: string): Promise<string[]> {

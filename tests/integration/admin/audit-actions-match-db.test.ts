@@ -159,6 +159,25 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
     expect(missing).toEqual([]);
   });
 
+  // FIX ROUND 2 OF PHASE 8 TASK 6 (re-review finding m-N4): the catalogue
+  // now exists in the database too -- private.audit_action_catalogue(),
+  // the hand-listed half in private.platform_audit_actions() plus the CRM
+  // half derived from the same triggers this file reads -- so that the
+  // retention suite can plant the WHOLE catalogue either side of the audit
+  // period. Two lists that must be the same list: asserted as sets in both
+  // directions, and non-empty.
+  it("private.audit_action_catalogue() is exactly knownAuditActions()", async () => {
+    const { rows } = await pool.query<{ action: string }>(
+      `select a as action from private.audit_action_catalogue() a`,
+    );
+    // Sorted on THIS side on both sides: Postgres orders by the database
+    // collation, JavaScript by code point, and "." against "_" differs.
+    const live = rows.map((r) => r.action).sort();
+    expect(live.length).toBeGreaterThan(90);
+    expect(new Set(live).size, "the database catalogue lists a name twice").toBe(live.length);
+    expect(live).toEqual([...knownAuditActions()].sort());
+  });
+
   it("the derived CRM action set is exactly what the trigger can emit", () => {
     // 9 soft-deletable x 4 verbs + 2 x 2 verbs. The verbs themselves are
     // pinned by rls_phase7_crm_audit.sql § CI/CU/CD against real writes; this
