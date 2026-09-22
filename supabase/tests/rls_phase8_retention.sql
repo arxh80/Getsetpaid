@@ -1739,6 +1739,100 @@ select rt.val('RK29 ...and EVERY ONE of them has a PASSING behavioural probe rec
 select rt.try('RK30 the refusal passes on the live schema (CALLED, not wrapped in `where false`)',
   $$select private.assert_retention_clocks()$$, 'ok(1)');
 
+-- THE SHAPES THE DERIVATION USED TO MISS (fix round 2, m-N1). The re-review
+-- planted seven ways for a sweep to read a client-writable clock and found
+-- the derivation refused only the direct read and a new client role. Four
+-- are closed by 20261005003000 and planted here, all at once, in one chain:
+--   G  the sweep body calls a WRAPPER,
+--   B  which calls the sweep, which reads through a HELPER FUNCTION,
+--   A  which reads one table through a VIEW that ALIASES the column,
+--   E  and another table in `private`.
+-- Nothing in the sweep body's own source names a table. All three columns
+-- must be derived, each read by the helper, and the job must refuse. The
+-- other three shapes (jsonb, epoch/text, a helper outside `private`) are
+-- STATED limits in the function's comment, not closed, and RK30d records
+-- the one that is cheapest to show.
+create table public.rt_clock_probe (id uuid primary key default gen_random_uuid(), expired_at timestamptz);
+grant select, insert, update on public.rt_clock_probe to authenticated;
+create table public.rt_clock_probe_v (id uuid primary key default gen_random_uuid(), expired_at timestamptz);
+grant select, insert, update on public.rt_clock_probe_v to authenticated;
+create view public.rt_clock_view as select id, expired_at as when_it_expired from public.rt_clock_probe_v;
+-- (`authenticated` already holds USAGE on `private`: every RLS policy calls a
+-- private function as the querying role. Revoking it afterwards would break
+-- the product for the rest of this suite, which the first cut of this block
+-- did.)
+create table private.rt_clock_probe_p (id uuid primary key default gen_random_uuid(), expired_at timestamptz);
+grant select, insert, update on private.rt_clock_probe_p to authenticated;
+create function private.rt_clock_helper() returns bigint
+language sql security definer set search_path = '' as $$
+  select (select pg_catalog.count(*) from public.rt_clock_probe p where p.expired_at < pg_catalog.now())
+       + (select pg_catalog.count(*) from public.rt_clock_view v where v.when_it_expired < pg_catalog.now())
+       + (select pg_catalog.count(*) from private.rt_clock_probe_p q where q.expired_at < pg_catalog.now())
+$$;
+create function private.sweep_rt_clock_probe(p_dry boolean, p_limit integer) returns jsonb
+language sql security definer set search_path = '' as $$
+  select pg_catalog.jsonb_build_object('rt_clock_probe.rows', private.rt_clock_helper())
+$$;
+create function private.sweep_rt_wrapper(p_dry boolean, p_limit integer) returns jsonb
+language sql security definer set search_path = '' as $$
+  select private.sweep_rt_clock_probe(p_dry, p_limit)
+$$;
+insert into rt.saved_defs values
+  ('sweep_body', pg_get_functiondef('private.retention_sweep_body(boolean,integer)'::regprocedure)),
+  ('clock_roll', pg_get_functiondef('private.retention_clock_columns()'::regprocedure));
+do $$
+declare v_def text; v_new text;
+begin
+  v_def := (select def from rt.saved_defs where name = 'sweep_body');
+  v_new := pg_catalog.replace(v_def, 'return query select v_swept, v_refused;',
+             'v_swept := v_swept || private.sweep_rt_wrapper(p_dry, p_limit);' || chr(10) ||
+             '  return query select v_swept, v_refused;');
+  if v_new = v_def then
+    raise exception 'RK30a could not inject the wrapped sweep -- the probe would have proved nothing';
+  end if;
+  execute v_new;
+end $$;
+select rt.val('RK30a MUTATION (m-N1): through a wrapper, a helper, a view with an aliased column and a `private` table, all three clocks are DERIVED, each read by the helper',
+  $$select string_agg(schema_name || '.' || table_name || '.' || column_name || '<-' || read_by, ',' order by 1)
+      from private.retention_clock_candidates() where table_name like 'rt_clock_probe%'$$,
+  'private.rt_clock_probe_p.expired_at<-rt_clock_helper,public.rt_clock_probe.expired_at<-rt_clock_helper,public.rt_clock_probe_v.expired_at<-rt_clock_helper');
+select rt.try_hint('RK30b ...and the job REFUSES for them',
+  $$select private.assert_retention_clocks()$$, 'denied(55000:undeclared_retention_clock)');
+select rt.val('RK30c DENOMINATOR: the sweep body''s own source names none of the three -- the walk found them, not a name match at depth one',
+  $$select (pg_get_functiondef('private.retention_sweep_body(boolean,integer)'::regprocedure) ~ 'rt_clock_probe')::text$$, 'false');
+-- THE STATED LIMIT, MEASURED (the re-review's D): a clock stored as an epoch
+-- integer is not a candidate by type. Recorded so the limit is a measurement
+-- and not a sentence.
+create table public.rt_clock_probe_e (id uuid primary key default gen_random_uuid(), expired_epoch bigint);
+grant select, insert, update on public.rt_clock_probe_e to authenticated;
+create or replace function private.rt_clock_helper() returns bigint
+language sql security definer set search_path = '' as $$
+  select (select pg_catalog.count(*) from public.rt_clock_probe_e e
+           where e.expired_epoch < extract(epoch from pg_catalog.now()))
+$$;
+select rt.val('RK30d STATED LIMIT (D): an epoch-integer clock is NOT derived -- by type -- while the TABLE roll refuses the table until classified, which is where a person is made to look',
+  $$select (select count(*)::text from private.retention_clock_candidates() where table_name = 'rt_clock_probe_e')
+        || '/' || (select string_agg(u, ',') from private.unclassified_retention_subjects() u
+                    where u like '%rt_clock_probe_e%')$$,
+  '0/rt_clock_probe_e');
+select rt.try('RK30d2 ...and the CLOCK roll passes over it (CALLED): the limit is a measurement, not a sentence',
+  $$select private.assert_retention_clocks()$$, 'ok(1)');
+do $$ begin execute (select def from rt.saved_defs where name = 'sweep_body'); end $$;
+drop function private.sweep_rt_wrapper(boolean, integer);
+drop function private.sweep_rt_clock_probe(boolean, integer);
+drop function private.rt_clock_helper();
+drop view public.rt_clock_view;
+drop table public.rt_clock_probe_v;
+drop table public.rt_clock_probe_e;
+drop table private.rt_clock_probe_p;
+drop table public.rt_clock_probe;
+select rt.val('RK30e the m-N1 probes are gone, the sweep body is restored byte-identically, and the roll passes',
+  $$select (select count(*)::text from pg_class where relname like 'rt_clock_probe%' or relname = 'rt_clock_view')
+        || '/' || (pg_get_functiondef('private.retention_sweep_body(boolean,integer)'::regprocedure)
+                   = (select def from rt.saved_defs where name = 'sweep_body'))::text
+        || '/' || (select 'ok' from (select private.assert_retention_clocks()) t)$$, '0/true/ok');
+delete from rt.saved_defs where name in ('sweep_body', 'clock_roll');
+
 -- THE STANDING MUTATION: A NEW SWEEP WHOSE CLOCK A CLIENT CAN WRITE. A table
 -- with a client-writable timestamp, a sweep that reads it, and the sweep body
 -- rewritten to call that sweep -- which is exactly what the next phase's

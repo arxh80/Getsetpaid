@@ -487,6 +487,35 @@ applies was not a candidate by type. Both are stated in
 `private.retention_clock_candidates()`'s own `comment on` as well; the
 first is widened by fix round 2's m-N1 migration (below).
 
+**m-N1 — the derivation walks to a fixed point, resolves views and sees
+`private`, and states what it still cannot see** (`20261005003000`). The
+re-review planted seven shapes of a sweep reading a client-writable clock;
+the derivation refused the direct read and a new client role and passed the
+other five silently. Closed, each with a standing mutation (§ RK30a–e, one
+chain: the sweep body calls a WRAPPER, which calls the sweep, which reads
+through a HELPER, which reads one table through a VIEW that aliases the
+column and another in `private` — the sweep body's own source names no table,
+all three columns are derived, the job refuses): "a retention function" is now
+the transitive closure of every `private` function the manifest or the sweep
+body reaches, however deep (the two candidates that adds are classified
+`not_a_clock` with the reason); a named view is resolved to its base tables
+through `pg_depend`, and every timestamp column of every base table is a
+candidate because the alias hides the name; and the relation regex names
+`private`. **Stated limits, each with its reason:** a clock stored in jsonb
+or as an epoch integer/text is not a candidate by type — the only closure is
+every column of every named table, a roll nobody would maintain — and
+§ RK30d measures it (the TABLE roll refuses such a table until classified, so
+a person is at least made to look); a helper or wrapper in a schema other
+than `private` is not followed, on purpose — following `public.` was
+measured and pulls the erasure's permission machinery in, and the eight
+entitlement expiries it reads would halt the retention job until classified;
+a relation reached only through dynamic SQL names no table in source
+(`erase_organisation()` walks `organisation_data_tables()` that way; those
+tables are `cascades` on the retention roll, never judged on a column); a
+clock a TRIGGER computes from another column, and a period selector reached
+through a function call (the I-N1 shape, which is why the class is frozen
+into a column).
+
 **I-N1 — the PERIOD half of the document clock was still tenant-writable**
 (scoped re-review of fix round 1; Q186 at its recommended default,
 `20261005000000`). A document is judged on WHEN its clock started and on
