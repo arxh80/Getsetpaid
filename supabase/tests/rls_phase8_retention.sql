@@ -255,13 +255,20 @@ select rt.val('RC15 and the retention half is in its OWN subtransaction, so it c
 -- pass against a function nobody had called. RR6's own comment describes this
 -- exact bug in this exact suite, and four copies of it were still here. rt.try
 -- executes the statement and records `ok(1)` or the SQLSTATE.
+-- THE QUEUE'S HIGH-WATER MARK, TAKEN BEFORE THE TICK (fix round 2, m-N5).
+-- RC17 shipped comparing a live count of net.http_request_queue to ITSELF in
+-- one statement -- had the poster queued a request, both sides would have
+-- read 1 -- so it could not fail. The mark is the queue's max id: a row the
+-- pg_net worker consumes between the two reads cannot make a queued request
+-- disappear from a comparison on ids.
+create table rt.net_before as
+  select coalesce(max(id), 0) as max_id from net.http_request_queue;
 select rt.try('RC16 the tick RUNS, with every half reached, and raises nothing',
   $$select private.run_incident_alert_tick()$$, 'ok(1)');
 -- LOCAL DEV IS A REAL NO-OP, MEASURED: with no Vault entries the poster
 -- returns before it builds a request rather than POSTing an empty bearer.
-select rt.val('RC17 the retention poster queues no request on an unconfigured stack',
-  $$select (select count(*) from net.http_request_queue)::text$$,
-  (select count(*)::text from net.http_request_queue));
+select rt.val('RC17 the retention poster queues no request on an unconfigured stack: nothing newer than the mark taken before the tick',
+  $$select count(*)::text from net.http_request_queue where id > (select max_id from rt.net_before)$$, '0');
 
 
 -- ===========================================================================
@@ -460,6 +467,39 @@ discard plans;
 select rt.val('RL3a ...and the declaration is restored byte-identically',
   $$select (pg_get_functiondef('private.retention_periods()'::regprocedure)
             = (select def from rt.saved_defs where name = 'periods'))::text$$, 'true');
+
+-- THE TWELFTH NUMBER (fix round 2, m-N6). "Export archives ... 7 days from
+-- when the file is ready" is private.export_limits().archive_days, not one
+-- of the eleven classes, so RL2 could not see it; the only binding was a
+-- string literal in a unit test, and raising archive_days to 14 would have
+-- left the page saying 7 with every gate green.
+select rt.val('RL3b the export archive''s life on the page is the DATABASE''S export_limits().archive_days, in the sentence that states it',
+  $$select (strpos((select body from public.legal_documents where slug = 'data-retention' and status = 'published'),
+                   replace('that someone asked us to prepare): {p} from when the file is ready', '{p}',
+                           rt.period_words((select archive_days from private.export_limits()) * interval '1 day'))) > 0)::text
+        || '/' || (select archive_days::text from private.export_limits())$$, 'true/7');
+insert into rt.saved_defs values
+  ('export_limits', pg_get_functiondef('private.export_limits()'::regprocedure));
+do $$
+declare v_def text; v_new text;
+begin
+  v_def := (select def from rt.saved_defs where name = 'export_limits');
+  v_new := pg_catalog.replace(v_def, '41943040::bigint, 7', '41943040::bigint, 14');
+  if v_new = v_def then
+    raise exception 'RL3c could not change archive_days -- the probe would have proved nothing';
+  end if;
+  execute v_new;
+end $$;
+select rt.val('RL3c MUTATION: archive_days raised to 14 -- the page that still says 7 is red',
+  $$select (strpos((select body from public.legal_documents where slug = 'data-retention' and status = 'published'),
+                   replace('that someone asked us to prepare): {p} from when the file is ready', '{p}',
+                           rt.period_words((select archive_days from private.export_limits()) * interval '1 day'))) > 0)::text$$,
+  'false');
+do $$ begin execute (select def from rt.saved_defs where name = 'export_limits'); end $$;
+discard plans;
+select rt.val('RL3d ...and export_limits() is restored byte-identically',
+  $$select (pg_get_functiondef('private.export_limits()'::regprocedure)
+            = (select def from rt.saved_defs where name = 'export_limits'))::text$$, 'true');
 
 select rt.val('RL4 every table the roll calls `retained_with_workspace` is NAMED in the page''s list of what is NOT deleted',
   $$select (select count(*)::text from private.retention_subjects() where treatment = 'retained_with_workspace')

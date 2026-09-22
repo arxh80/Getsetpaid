@@ -84,6 +84,8 @@ describe("/legal/data-retention version 6", () => {
       "searchable by our operator for 30 days",
       "kept for up to 1 year in total",
       "60 days from suspension or closure",
+      // Bound to private.export_limits().archive_days by rls_phase8_retention.sql
+      // § RL3b-d as well, since fix round 2 (m-N6); this literal is the CI half.
       "7 days from when the file is ready",
       "1 year after the alert was resolved",
       // The review named this omission: a row that names a person and says
