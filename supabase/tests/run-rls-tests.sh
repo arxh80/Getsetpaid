@@ -817,6 +817,41 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 7 (CRM WRITE AUDITING FOR THE PHASE 3-6 TABLES, Q122) SUITE.
+#
+# Runs right after the Phase 7 CRM audit suite, on the SAME fixtures and the
+# SAME variable set (P7VARS). It plants its own rows as postgres (sessionless,
+# so un-audited -- PA10 measures that), writes to them as pmanager / padmin /
+# pbowner / super across all sixteen tables 20261006000000 put the generic
+# pair on, plants a sentinel in every free-text column and proves it is in the
+# ROW before proving it is in no audit row, and its § PZ deletes every row and
+# audit event it created.
+# ============================================================================
+
+run_suite "PHASE 8 CRM AUDIT P3-6" rls_phase8_crm_audit_p3_6.sql c7 186 "${P7VARS[@]}"
+c7_fails=$SUITE_FAILS
+if [ "$c7_fails" != "0" ]; then
+  echo "PHASE 8 CRM AUDIT (PHASE 3-6 TABLES) SUITE FAILED: $c7_fails failing assertion(s)" >&2
+  echo "  In PA, THE TRIGGER CENSUS OR THE ALLOWLIST MOVED -- one of the sixteen" >&2
+  echo "  tables lost half its pair, or private.audit_crm_value_columns() now" >&2
+  echo "  names a CONTENT column (PA5): a superuser-readable channel for tenant" >&2
+  echo "  data (notes.body, meetings.attendees, documents.filename, amounts)." >&2
+  echo "  In PC, THE DERIVED COVERAGE CENSUS MOVED: a client-writable tenant table" >&2
+  echo "  is unaudited, or the planted-table denominator is no longer seen." >&2
+  echo "  In PI/PU/PD, A WRITE IS UNAUDITED, MISATTRIBUTED, OR CARRIES CONTENT." >&2
+  echo "  A sentinel hit here is Sev1 -- CLAUDE.md § Superuser dashboard." >&2
+  echo "  In PN, a network write is filed against the wrong tenant or unaudited." >&2
+  echo "  In PM, a membership escalation or removal left no row." >&2
+  echo "  In PX, THE EXEMPTION IS WRONG (a sessionless cascade now writes an" >&2
+  echo "  erased person's id into a payload, or a no-op/refused write emits)." >&2
+  echo "  In PS, THE SWEEP FOUND A SENTINEL in some audit row, or its denominator" >&2
+  echo "  is empty. In PZ, this suite left rows behind -- discard and reset." >&2
+  psql_status=1
+else
+  echo "Phase 8 CRM audit (Phase 3-6 tables) suite: all assertions passed."
+fi
+
+# ============================================================================
 # PHASE 8 TASK 1 (VERSIONED LEGAL DOCUMENTS) SUITE.
 #
 # Runs LAST of the psql suites, on the SAME fixtures and the SAME variable set
