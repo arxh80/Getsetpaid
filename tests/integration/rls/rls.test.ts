@@ -680,3 +680,89 @@ describe("G. reference-data tables reject writes from a non-superuser", () => {
     expect(data).toEqual([{ crm_writes: false, finance_module: false }]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// H. Phase 7 Task 1: the audit log viewer's self-audit RPC
+// ---------------------------------------------------------------------------
+// public.audit_superuser_audit_log_view() (20260908010000) is the ONE NEW
+// WRITE surface this task adds -- everything it READS goes through the
+// EXISTING has_platform_permission('view_audit_log') policy section D above
+// already proves cross-tenant (audit_events, platform superuser only). This
+// section proves the RPC's own guard: it writes NOTHING for a non-superuser,
+// even a fully aal2'd Org Owner -- the most privileged org-scoped role that
+// exists, same "top of the hierarchy still cannot" shape section G uses for
+// the reference-data tables -- and it writes EXACTLY the row CLAUDE.md's
+// "Superuser access audits itself" describes for the superuser: one
+// audit_log.viewed row, actor forced to the caller, no organisation, no
+// target, `after` holding only the filter blob passed in.
+describe("H. audit log self-audit RPC (public.audit_superuser_audit_log_view)", () => {
+  it("an aal2 org OWNER (highest org role) is refused, and writes no row", async () => {
+    const before = await fx.superuser.client
+      .from("audit_events")
+      .select("id", { count: "exact", head: true })
+      .eq("action", "audit_log.viewed");
+
+    const { error } = await fx.ownerA.client.rpc("audit_superuser_audit_log_view", {
+      p_filters: { probe: "H-owner-refused" },
+    });
+    expect(error?.code).toBe("42501");
+
+    const after = await fx.superuser.client
+      .from("audit_events")
+      .select("id", { count: "exact", head: true })
+      .eq("action", "audit_log.viewed");
+    expect(after.count).toBe(before.count);
+  });
+
+  it("an aal1 caller (no membership at all, the anon-key-plus-stolen-password shape) is also refused", async () => {
+    // fx.invitedAdminA is a REAL auth session (Task 6's invite-acceptance
+    // path), never activated, so it holds no active membership anywhere and
+    // is certainly not the superuser -- the same "not on the allowlist"
+    // refusal an aal1 stranger gets, exercised through a real session rather
+    // than the anon key.
+    const { error } = await fx.invitedAdminA.client.rpc(
+      "audit_superuser_audit_log_view",
+      { p_filters: { probe: "H-stranger-refused" } },
+    );
+    expect(error?.code).toBe("42501");
+  });
+
+  it("the platform superuser (aal2) succeeds and writes exactly the described row", async () => {
+    const marker = `H-${fx.runId}`;
+    const { data, error } = await fx.superuser.client.rpc(
+      "audit_superuser_audit_log_view",
+      { p_filters: { probe: marker } },
+    );
+    expect(error).toBeNull();
+    expect(typeof data).toBe("string");
+
+    const { data: rows, error: readError } = await fx.superuser.client
+      .from("audit_events")
+      .select(
+        "actor_user_id, organisation_id, action, target_type, target_id, before, after",
+      )
+      .eq("id", data as string);
+    expect(readError).toBeNull();
+    expect(rows).toHaveLength(1);
+    const row = (rows ?? [])[0] as {
+      actor_user_id: string;
+      organisation_id: string | null;
+      action: string;
+      target_type: string;
+      target_id: string | null;
+      before: unknown;
+      after: unknown;
+    };
+    // Actor is forced to the CALLER -- log_audit_event's own guarantee,
+    // inherited unchanged (20260826154304).
+    expect(row.actor_user_id).toBe(fx.superuser.userId);
+    expect(row.action).toBe("audit_log.viewed");
+    expect(row.organisation_id).toBeNull();
+    expect(row.target_type).toBe("audit_log");
+    expect(row.target_id).toBeNull();
+    expect(row.before).toBeNull();
+    // "no result content" (Task 1's brief): `after` is exactly the filter
+    // blob the caller passed, never a row or a count.
+    expect(row.after).toEqual({ probe: marker });
+  });
+});

@@ -28,6 +28,7 @@
 // planted positive control that proves the parse would catch one.
 
 import { loadNetworkDirectory } from "@/lib/network/discovery";
+import { formatRetryAfter } from "@/lib/format/duration";
 import {
   EMPTY_LINK_PICKER_SEARCH_STATE,
   type LinkPickerSearchState,
@@ -65,6 +66,17 @@ export async function searchNetworkDirectoryForLinkAction(
   if (query === "") return EMPTY_LINK_PICKER_SEARCH_STATE;
 
   const page = await loadNetworkDirectory({ net_q: query });
+  // A rate-limited read is not a failed one, and the copy must not say "try
+  // again in a moment" to someone the limiter is asking to slow down: this
+  // picker reads the directory, the named 30/min network-discovery budget
+  // (SECURITY.md § 5), and shares it with the directory page itself.
+  if (page.outcome === "rate_limited") {
+    return {
+      query,
+      results: [],
+      error: `You’ve reached the network-search limit for now — nothing is wrong. Try again in ${formatRetryAfter(page.retryAfterSeconds)}.`,
+    };
+  }
   if (page.outcome !== "loaded") {
     return {
       query,

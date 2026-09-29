@@ -21,6 +21,7 @@ import { SuspendedBanner } from "@/components/org/suspended-banner";
 import { Wordmark } from "@/components/wordmark";
 import { SkipLink } from "@/components/ui/skip-link";
 import { PaletteTrigger } from "@/components/palette/palette-trigger";
+import { FeedbackDialog } from "@/components/feedback/feedback-dialog";
 
 // Shell for every signed-in screen.
 //
@@ -145,6 +146,29 @@ export default async function AppLayout({
                 the rail, so trigger and palette exist together or not at
                 all. */}
             {sidebarGroups ? <PaletteTrigger /> : null}
+            {/* Phase 7 Task 6: in-app feedback, "reachable from anywhere in
+                the app" -- every signed-in screen, org-scoped or not, /super
+                included. Gated on the MFA gate passing, like the rail: a
+                user still enrolling is not "in the app" yet. Its server
+                action reaches `feedback` and no CRM table
+                (tests/unit/list/app-shell-has-no-crm-query.test.ts walks
+                this import).
+
+                RENDERED UNDER IMPERSONATION TOO, since founder ruling Q121
+                reversed Task 6 fix round 1's M4. That round hid this control
+                whenever the render knew the request was impersonated, because
+                a support-access session holds no membership and the row would
+                have been refused at the trigger. The submission is now
+                ACCEPTED with no workspace on it and labelled "Sent during
+                support access" -- so there is nothing to hide, and the gating
+                that could never be reliable anyway (this layout does not
+                re-render on a client-side navigation into the workspace, the
+                impersonation banner's own lesson below) is gone rather than
+                left as a control that appears and disappears. The workspace
+                is dropped in submitFeedbackAction and the LABEL is stamped by
+                the database (20260916002000), which is the only place it can
+                be enforced for a direct PostgREST write. */}
+            {mfaGate.kind === "pass" ? <FeedbackDialog /> : null}
             {/* Task 8: only rendered on an org-scoped page (currentOrg !==
                 null). A single-org user never sees the switcher at all -- a
                 control with exactly one destination is not a control, it is
@@ -191,8 +215,38 @@ export default async function AppLayout({
           target, so "skip to content" still lands on the content and the
           banner is still read before it in DOM order. */}
       {currentOrg?.isSuspended ? (
-        <SuspendedBanner orgName={currentOrg.name} />
+        <SuspendedBanner
+          orgName={currentOrg.name}
+          lifecycle={currentOrg.lifecycle}
+        />
       ) : null}
+
+      {/* THE IMPERSONATION BANNER IS NOT HERE, AND THAT IS FIX ROUND 1,
+          IMPORTANT 1 — MEASURED, NOT REASONED.
+
+          It was here, beside SuspendedBanner, on the argument that both are
+          facts about the whole workspace and `currentOrg` is already
+          resolved at this level. The argument is fine and the LOCATION was
+          wrong, for the same reason lib/admin/impersonation-session.ts gives
+          for keeping the page audit out of a layout: THIS LAYOUT DOES NOT
+          RE-RENDER ON A CLIENT-SIDE NAVIGATION. `(app)` is a shared ancestor
+          of both /super/impersonation and /[orgSlug], so clicking the
+          operator's own "Open workspace" link — the primary way into a
+          session — reused this segment, and the FIRST impersonated page a
+          human ever saw was the one page with no banner.
+
+          Measured by clicking the real control in
+          tests/e2e/impersonation.spec.ts: the URL assertion passed and the
+          banner assertion failed. Every other navigation in that file is
+          page.goto(), a full document load, which re-renders every layout —
+          which is exactly why the suite could not see it before.
+
+          It now renders from app/(app)/[orgSlug]/layout.tsx, the segment
+          boundary every impersonated route crosses: entering the segment
+          renders it fresh, navigating within the segment keeps it mounted.
+          SuspendedBanner stays here because its own audience is different —
+          it is about a workspace a MEMBER is in, reached from the switcher
+          and from routes outside the segment. */}
 
       {/* Rail and content are SIBLINGS in one full-width row -- the rail at
           the true viewport edge (the standard CRM shell this build wanted;

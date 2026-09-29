@@ -27,8 +27,20 @@ import { createServerClient } from "@supabase/ssr";
 import { contentSecurityPolicy } from "@/lib/security/headers";
 import { supabasePublicKey, supabaseUrl } from "./env";
 
-/** Routes reachable without a session. Everything else requires one. */
-const PUBLIC_PATHS = ["/login", "/signup", "/magic-link", "/auth"];
+/** Routes reachable without a session. Everything else requires one.
+ *
+ *  `/api/incident-alerts` (Phase 7 Task 6) is the cron-called delivery
+ *  endpoint: it has no user, authenticates by a server-held bearer secret
+ *  inside the handler, and answers 404 to everything else. Listing it here
+ *  only stops this bounce redirecting a cron to /login -- per this file's
+ *  header, nothing here is an authorisation control. */
+const PUBLIC_PATHS = [
+  "/login",
+  "/signup",
+  "/magic-link",
+  "/auth",
+  "/api/incident-alerts",
+];
 
 /** Signed-in users have no business on these -- bounce them to the hub. */
 const SIGNED_OUT_ONLY_PATHS = ["/login", "/signup", "/magic-link"];

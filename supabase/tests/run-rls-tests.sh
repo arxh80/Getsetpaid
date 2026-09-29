@@ -368,7 +368,7 @@ MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=foo
   "${P2VARS[@]}" -f /tmp/rls_phase6_network.sql
 
 p6_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
-           "select count(*) from net.results where not pass" | tr -d '[:space:]')
+           "select count(*) from nw.results where not pass" | tr -d '[:space:]')
 if [ "$p6_fails" != "0" ]; then
   echo "PHASE 6 NETWORK SUITE FAILED: $p6_fails failing assertion(s)" >&2
   echo "  A failure in ND is a PRIVATE TABLE IN A DISCOVERY PATH (N2) -- a view" >&2
@@ -507,6 +507,295 @@ else
 fi
 
 # ============================================================================
+# PHASE 7 TASK 2 (IMPERSONATION) SUITE -- THE BREAK-GLASS PROOF.
+#
+# Runs LAST of the psql suites and reuses the SAME fixtures whole: the twelve
+# Phase 2 users, orgs ALPHA and BETA, and their CRM rows. It creates only
+# impersonation_sessions rows (plus the audit_events those produce) and its
+# § IZ asserts it leaves NONE of the former behind -- which matters more here
+# than for any other suite, because a live session row would hand `super`
+# view_crm over ALPHA for the whole of the HTTP block below, and those checks
+# were written against a superuser who can read audit_events and nothing else.
+#
+# P7VARS = P6VARS. It needs the Phase 2 users' claims (powner accepts,
+# pbowner is the foreign admin, pmanager is the in-tenant non-admin) plus
+# `super`/`super_c`/`super_c1` -- and P6VARS is already exactly that set,
+# built for the leakage suite's own audit_events positive control. `super_c1`
+# (the aal1 form) is added here because § IG18/IG19 measure that a stolen
+# password with no second factor holds nothing even mid-session.
+#
+# CLAUDE.md § Superuser dashboard makes impersonation the ONLY sanctioned deep-
+# access path in the product. Every other suite in this directory proves a
+# boundary HOLDS; this is the one that proves a boundary OPENS, exactly as far
+# as it was supposed to.
+# ============================================================================
+P7VARS=( "${P6VARS[@]}" )
+P7VARS+=( -v "super_c1={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
+
+docker cp "$HERE/rls_phase7_impersonation.sql" "$CTR:/tmp/rls_phase7_impersonation.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P7VARS[@]}" -f /tmp/rls_phase7_impersonation.sql
+
+p7_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from imp.results where not pass" | tr -d '[:space:]')
+if [ "$p7_fails" != "0" ]; then
+  echo "PHASE 7 IMPERSONATION SUITE FAILED: $p7_fails failing assertion(s)" >&2
+  echo "  In IP, THE READ-ONLY ENVELOPE HAS WIDENED -- somebody granted a" >&2
+  echo "  manage_/merge_ key to the read_only role, which widens what an" >&2
+  echo "  impersonating superuser holds, in a migration whose diff says" >&2
+  echo "  nothing about impersonation." >&2
+  echo "  In IR, THE CONSENT GATE IS GONE -- a foreign admin can see or answer" >&2
+  echo "  another tenant's request, or the superuser has a direct write path" >&2
+  echo "  into the table and can grant themselves access unilaterally." >&2
+  echo "  In IG1-IG5, ACCESS WITHOUT CONSENT: a merely REQUESTED or ACCEPTED" >&2
+  echo "  session now grants tenant reads. This is the finding." >&2
+  echo "  In IG18/IG19, THE MFA GATE: an aal1 session now holds the grant." >&2
+  echo "  In IW, AN IMPERSONATOR CAN WRITE INTO A TENANT." >&2
+  echo "  In IX, THE SCOPE BOUNDARY: one organisation's session now reaches" >&2
+  echo "  another tenant." >&2
+  echo "  In IM, THE TWO HALVES OF THE PERMISSION RULE HAVE DRIFTED -- the" >&2
+  echo "  impersonation disjunct is in one function body and not the other." >&2
+  echo "  In IE1-IE5, THE TIME-BOX IS NOT ENFORCED: an expired session still" >&2
+  echo "  grants. Sev1." >&2
+  echo "  In IA, THE AUDIT TRAIL is incomplete, unthreaded, misattributed, or" >&2
+  echo "  has started carrying tenant record content." >&2
+  echo "  In IS, SUSPENSION BEHAVIOUR CHANGED -- these expectations are a" >&2
+  echo "  RECORD of measured behaviour (Q98), so a failure means re-measure" >&2
+  echo "  and re-record, not relax." >&2
+  echo "  In IZ, this suite left session rows behind and the HTTP checks below" >&2
+  echo "  are now running with a superuser who can read a tenant -- discard" >&2
+  echo "  the run and reset." >&2
+  echo "  Every one of those is Sev1." >&2
+  psql_status=1
+else
+  echo "Phase 7 impersonation suite: all assertions passed."
+fi
+
+# ============================================================================
+# PHASE 7 TASK 3 (ORGANISATION LIFECYCLE) SUITE.
+#
+# Runs LAST of the psql suites, after impersonation, and reuses the SAME
+# fixtures and the SAME variable set (P7VARS). It suspends, closes and
+# reinstates ALPHA repeatedly -- the only suite in this directory that WRITES
+# a lifecycle state through the product's own RPCs rather than through a
+# postgres-role UPDATE -- and its § LZ asserts it leaves ALPHA active,
+# unchanged, and with its original subscription period. That matters more here
+# than anywhere else: a workspace left suspended would make every HTTP check
+# below run against a read-only tenant, and those were written against a live
+# one.
+#
+# It also DISABLES A TRIGGER for one assertion (§ LV4, the CHECK proved with
+# the normaliser off) and re-enables it in the same DO block, which is why it
+# runs after everything that depends on public.organisations behaving normally.
+# ============================================================================
+docker cp "$HERE/rls_phase7_lifecycle.sql" "$CTR:/tmp/rls_phase7_lifecycle.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off   "${P7VARS[@]}" -f /tmp/rls_phase7_lifecycle.sql
+
+lc_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc            "select count(*) from lc.results where not pass" | tr -d '[:space:]')
+if [ "$lc_fails" != "0" ]; then
+  echo "PHASE 7 LIFECYCLE SUITE FAILED: $lc_fails failing assertion(s)" >&2
+  echo "  In LV, THE INVARIANT IS BROKEN -- a row can now be 'active' with" >&2
+  echo "  deleted_at set, or wound down without it. Thirty-odd permission" >&2
+  echo "  gates read deleted_at alone on the strength of that invariant." >&2
+  echo "  In LP, CONSEQUENCE P7 IS GONE -- an Owner, a foreign admin or an" >&2
+  echo "  aal1 superuser can un-suspend a workspace. Sev1." >&2
+  echo "  In LR, EITHER THE WAY BACK IS BROKEN (a one-way door: suspend with" >&2
+  echo "  no reinstate) OR THE SANCTIONED-PATH MARKER IS GONE, which means a" >&2
+  echo "  raw PATCH can now make an un-audited, un-reasoned lifecycle change." >&2
+  echo "  In LA, THE AUDIT TRAIL is incomplete, unthreaded, misattributed, or" >&2
+  echo "  has started carrying tenant record content." >&2
+  echo "  In LN, THE Q88/Q92/Q101 CLOCKS have moved. These expectations are" >&2
+  echo "  FOUNDER RULINGS, so a failure means the code changed, not that the" >&2
+  echo "  expectation should." >&2
+  echo "  In LZ, this suite left ALPHA wound down and every HTTP check below" >&2
+  echo "  is now running against a read-only tenant -- discard the run and" >&2
+  echo "  reset." >&2
+  psql_status=1
+else
+  echo "Phase 7 lifecycle suite: all assertions passed."
+fi
+
+# ============================================================================
+# PHASE 7 TASK 4 (BILLING + FEATURE OVERRIDES) SUITE.
+#
+# Runs LAST of the psql suites, after lifecycle, and reuses the SAME fixtures
+# and the SAME variable set (P7VARS). ALPHA arrives here with no subscription
+# row (the lifecycle suite's own § LZ leaves it that way) -- this suite plants
+# its own Pro subscription for ALPHA and restores it to nothing at its own
+# § OZ, the same save/plant/restore discipline every suite in this chain uses.
+# ============================================================================
+docker cp "$HERE/rls_phase7_overrides.sql" "$CTR:/tmp/rls_phase7_overrides.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P7VARS[@]}" -f /tmp/rls_phase7_overrides.sql
+
+ov_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from ov.results where not pass" | tr -d '[:space:]')
+if [ "$ov_fails" != "0" ]; then
+  echo "PHASE 7 OVERRIDES SUITE FAILED: $ov_fails failing assertion(s)" >&2
+  echo "  In OB, THE EFFECTIVE-TIER RESOLUTION IS WRONG -- an active override" >&2
+  echo "  is not being consulted, or a foreign organisation can now read" >&2
+  echo "  another tenant's overrides." >&2
+  echo "  In OC, THE SANCTIONED-PATH MARKER IS GONE -- an Owner or the" >&2
+  echo "  superuser's own raw PATCH can now write an override directly," >&2
+  echo "  un-audited." >&2
+  echo "  In OD, READ-TIME EXPIRY IS BROKEN -- an expired override is still" >&2
+  echo "  being applied, or a live one is being denied early." >&2
+  echo "  In OG, DOWNGRADE SAFETY HAS REGRESSED -- an override that lowers" >&2
+  echo "  the tier either failed to deny a new write, or deleted existing" >&2
+  echo "  data. Sev1." >&2
+  echo "  In OH/OI11, THE AUDIT TRAIL is incomplete or misattributed." >&2
+  echo "  In OZ, this suite left ALPHA's subscription/override state changed" >&2
+  echo "  and every HTTP check below is now running against a different" >&2
+  echo "  tenant than the one it was written against -- discard the run and" >&2
+  echo "  reset." >&2
+  psql_status=1
+else
+  echo "Phase 7 overrides suite: all assertions passed."
+fi
+
+# ============================================================================
+# PHASE 7 TASK 5 (RATE LIMITING + INCIDENT ALERTS + PLATFORM HEALTH) SUITE.
+#
+# Runs LAST of the psql suites, after overrides, and reuses the SAME fixtures
+# and the SAME variable set (P7VARS). It is the only suite here that plants a
+# row in a TENANT table (two documents, to fire the malware-quarantine
+# trigger) -- its own § RZ deletes both, along with every counter and alert it
+# created, so the HTTP block below runs against the state it was written
+# against. It also takes an alert-table denominator at § RF rather than
+# assuming zero, because an earlier suite could raise one.
+# ============================================================================
+docker cp "$HERE/rls_phase7_rate_limits.sql" "$CTR:/tmp/rls_phase7_rate_limits.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P7VARS[@]}" -f /tmp/rls_phase7_rate_limits.sql
+
+rl_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from rl.results where not pass" | tr -d '[:space:]')
+if [ "$rl_fails" != "0" ]; then
+  echo "PHASE 7 RATE-LIMIT SUITE FAILED: $rl_fails failing assertion(s)" >&2
+  echo "  In RV, A SHIPPED RATE LIMIT NO LONGER MATCHES SECURITY.md § 5." >&2
+  echo "  The table in that document IS the requirement -- so a failure here" >&2
+  echo "  means either the seed changed without the document, or a seventh" >&2
+  echo "  category appeared with no § 5 row. Fix the drift, do not relax the" >&2
+  echo "  assertion." >&2
+  echo "  In RW, THE WINDOW ARITHMETIC MOVED -- windows are no longer" >&2
+  echo "  epoch-aligned or no longer close at the boundary, which silently" >&2
+  echo "  changes every budget in the product." >&2
+  echo "  In RC, COUNTER INTEGRITY IS GONE: an increment is lost, a refusal" >&2
+  echo "  is no longer counted (which breaks the exactly-once alert), or a" >&2
+  echo "  client role can now write or read counters. Sev1 on the last one --" >&2
+  echo "  a client that can UPDATE a counter can zero its own budget." >&2
+  echo "  In RS, THE WRAPPER'S SCOPE BINDING BROKE -- a session can spend an" >&2
+  echo "  account-scoped budget (locking a stranger out by user id), or a" >&2
+  echo "  non-member can burn another tenant's export allowance. Sev1." >&2
+  echo "  RS7d/RS7e/RS7g are fix round 1's I1: a user-scoped category must" >&2
+  echo "  take NO organisation, so an incident alert can never be attributed" >&2
+  echo "  to a workspace the caller merely named. A failure there means the" >&2
+  echo "  operator's alert feed can be made to blame an innocent tenant. Sev1." >&2
+  echo "  In RA, THE ALERT BOUNDARY: a non-superuser can read platform" >&2
+  echo "  alerts, a client can forge or delete one, or the resolve guard now" >&2
+  echo "  lets an operator rewrite alert content or stamp notified_at (which" >&2
+  echo "  would let them silence Task 6's email without sending it)." >&2
+  echo "  In RH, THE LOGIN LOCKOUT IS BROKEN. RH4 is the load-bearing one: a" >&2
+  echo "  lockout that lifts for a correct password is not a lockout -- the" >&2
+  echo "  brute force simply continues until it succeeds. Sev1." >&2
+  echo "  In RQ, A MALWARE QUARANTINE NO LONGER RAISES AN ALERT, or the" >&2
+  echo "  alert has started carrying the filename (user-entered content on a" >&2
+  echo "  platform surface)." >&2
+  echo "  In RP, THE HEALTH SNAPSHOT is reachable by a non-superuser or by" >&2
+  echo "  an aal1 session, has stopped auditing itself, or RP10 failed --" >&2
+  echo "  which means its projection has grown a field that is not a count," >&2
+  echo "  a sum or an organisation name, i.e. the no-direct-tenant-data rule" >&2
+  echo "  is broken on the operator's own dashboard. Sev1." >&2
+  echo "  In RZ, this suite left counters, alerts or DOCUMENTS behind and" >&2
+  echo "  every HTTP check below is now running against a tenant it was not" >&2
+  echo "  written against -- discard the run and reset." >&2
+  psql_status=1
+else
+  echo "Phase 7 rate-limit suite: all assertions passed."
+fi
+
+# ============================================================================
+# PHASE 7 TASK 6 (IN-APP FEEDBACK) SUITE.
+#
+# Runs LAST of the psql suites, after rate limits, and reuses the SAME
+# fixtures and the SAME variable set (P7VARS). It writes feedback rows as
+# pstd1/pstd2 (spending pstd2's whole hourly budget on purpose), plants three
+# rows as postgres (one three years old, one with a screenshot, one
+# quarantined), and its own § FZ deletes every row, counter, alert and audit
+# event it created, so the HTTP block below -- which spends CAROL's budget,
+# not theirs -- runs against the state it was written against.
+# ============================================================================
+docker cp "$HERE/rls_phase7_feedback.sql" "$CTR:/tmp/rls_phase7_feedback.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P7VARS[@]}" -f /tmp/rls_phase7_feedback.sql
+
+fb_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from fb.results where not pass" | tr -d '[:space:]')
+if [ "$fb_fails" != "0" ]; then
+  echo "PHASE 7 FEEDBACK SUITE FAILED: $fb_fails failing assertion(s)" >&2
+  echo "  In FP, THE COLUMN-NARROW GRANTS HAVE WIDENED -- a submitter can now" >&2
+  echo "  name user_id/role/status, or a client can DELETE, or the sender can" >&2
+  echo "  rewrite content." >&2
+  echo "  In FI, ATTRIBUTION IS FORGEABLE (FI6-FI11: Task 5 finding I1's class," >&2
+  echo "  on a second platform table) or a refused forgery now spends budget" >&2
+  echo "  (FI12) or the submission is no longer audited (FI13). Sev1 on FI9." >&2
+  echo "  In FR, A NON-SUPERUSER READS FEEDBACK (the submitter, a colleague, a" >&2
+  echo "  foreign Owner or an aal1 superuser), or RETENTION HAS STOPPED" >&2
+  echo "  EXPIRING AT READ TIME (FR6)." >&2
+  echo "  In FU, THE STATUS-ONLY GATE IS GONE (FU3/FU4/FU10) or the status" >&2
+  echo "  change is no longer audited (FU2)." >&2
+  echo "  In FM, THE 10/HOUR BUDGET NO LONGER BINDS THE WRITE (Task 5 finding" >&2
+  echo "  I2's class): a direct PostgREST INSERT is unmetered, or refusals are" >&2
+  echo "  being counted, or the crossing alert is missing/attributed." >&2
+  echo "  In FA, A SCREENSHOT VIEW CAN GO UNAUDITED -- a non-superuser or an" >&2
+  echo "  aal1 session can mint the audit row, or a quarantine files no alert." >&2
+  echo "  In FZ, this suite left rows behind and the HTTP block below is now" >&2
+  echo "  running against state it was not written against -- discard the run." >&2
+  psql_status=1
+else
+  echo "Phase 7 feedback suite: all assertions passed."
+fi
+
+# ============================================================================
+# PHASE 7 TASK 6b (FULL CRM WRITE AUDITING) SUITE.
+#
+# Runs LAST of the psql suites, after feedback, on the SAME fixtures and the
+# SAME variable set (P7VARS). It plants its own CRM rows in ALPHA as postgres
+# (sessionless, so un-audited), writes to them as pmanager/padmin, and its own
+# § CZ deletes every row and audit event it created, so the HTTP block below
+# runs against the state it was written against.
+# ============================================================================
+docker cp "$HERE/rls_phase7_crm_audit.sql" "$CTR:/tmp/rls_phase7_crm_audit.sql"
+
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  "${P7VARS[@]}" -f /tmp/rls_phase7_crm_audit.sql
+
+ca_fails=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+           "select count(*) from ca.results where not pass" | tr -d '[:space:]')
+if [ "$ca_fails" != "0" ]; then
+  echo "PHASE 7 CRM AUDIT SUITE FAILED: $ca_fails failing assertion(s)" >&2
+  echo "  In CA, THE TRIGGER CENSUS OR THE ALLOWLIST MOVED -- a table lost its" >&2
+  echo "  audit pair, or private.audit_crm_value_columns() now names a CONTENT" >&2
+  echo "  column (CA5), which is a superuser-readable channel for tenant data." >&2
+  echo "  In CU, THE NO-CONTENT-LEAK PROPERTY IS BROKEN: an UPDATE's audit row" >&2
+  echo "  carries a user-entered value. Sev1 -- CLAUDE.md § Superuser dashboard." >&2
+  echo "  In CD, soft-delete/restore are no longer distinguishable actions." >&2
+  echo "  In CX, THE EXEMPTION IS WRONG: a definer-context write is un-audited" >&2
+  echo "  (Task 5 I4's class), or a sessionless/no-op write now emits rows." >&2
+  echo "  In CB, A BULK PATH SPRAYS UN-CORRELATED ROWS, or the thread is left" >&2
+  echo "  open past the wrapper, or an *_unthreaded body became reachable." >&2
+  echo "  In CZ, this suite left rows behind -- discard the run and reset." >&2
+  psql_status=1
+else
+  echo "Phase 7 CRM audit suite: all assertions passed."
+fi
+
+# ============================================================================
 # API-SURFACE CHECKS (PostgREST, over HTTP).
 #
 # The psql suite above proves the policies are right. It CANNOT prove which
@@ -555,6 +844,14 @@ probe "private helper handle_new_user not an RPC"                404 "rpc/handle
 # not in `public` and must never be an RPC (rpc/audit_document_action resolves
 # to the PUBLIC thin wrapper, tested below; there is no private path at the API).
 probe "private helper guard_document_scan_status not an RPC"     404 "rpc/guard_document_scan_status"
+# Task 6b: the four multi-row CRM RPCs were MOVED to private.*_unthreaded and
+# wrapped under their own names so every call opens one audit thread. The
+# moved bodies must not be routable, or a caller could skip the thread.
+probe "private merge_records_unthreaded not an RPC"              404 "rpc/merge_records_unthreaded"
+probe "private set_contact_primary_company_unthreaded not an RPC" 404 "rpc/set_contact_primary_company_unthreaded"
+probe "private set_artist_primary_representation_unthreaded not an RPC" 404 "rpc/set_artist_primary_representation_unthreaded"
+probe "private set_custom_field_values_unthreaded not an RPC"    404 "rpc/set_custom_field_values_unthreaded"
+probe "private begin_crm_bulk_audit not an RPC"                  404 "rpc/begin_crm_bulk_audit"
 # public.audit_document_action IS the client-callable thin RPC, and it is
 # GUARDED: a null org and a forged arbitrary org both fail closed (42501 -> 403),
 # so it is reachable (not 404) yet cannot mint an audit row for an org the caller
@@ -676,6 +973,26 @@ BETA_ORG=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -t
            "select id from public.organisations where slug='org-beta'" | tr -d '[:space:]')
 ALPHA_ORG=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
             "select id from public.organisations where slug='org-alpha'" | tr -d '[:space:]')
+
+# PHASE 7 TASK A: the psql suites above (specifically network_leakage_phase6.sql's
+# LZ2/LI, the last thing to touch it) deliberately leave ALPHA row-less when
+# they finish -- that is the state their OWN assertions are about, and it is
+# unrelated to this section. Before Task A that was harmless here too, because
+# private.crm_write_organisations()'s "no subscription row" escape meant a
+# row-less ALPHA still accepted every CRM write below (e.g. "booker POSTs an
+# artist"). That escape is gone, so a row-less ALPHA now REFUSES those writes,
+# for a reason this section's own text says nothing about. Give both fixture
+# organisations a real, working row before any write assertion below runs --
+# `on conflict` because BETA already carries the Starter row
+# public.create_organisation() writes at birth, and this section's writers act
+# as ALPHA members only, so BETA only needs enough to not be row-less should a
+# future assertion here name it.
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c \
+  "insert into public.organisation_subscriptions
+     (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+   values ('$ALPHA_ORG','pro','monthly',1,'active', now() + interval '30 days'),
+          ('$BETA_ORG','pro','monthly',1,'active', now() + interval '30 days')
+   on conflict (organisation_id) do update set plan_id='pro', status='active';" > /dev/null
 
 p2_token() { # email -> access token
   curl -s -X POST "$API/auth/v1/token?grant_type=password" \
@@ -885,10 +1202,22 @@ p2_sub "update public.organisation_subscriptions
 p2_code "CANCELLED inside the window: no grace, closed at once"  403 POST "artists" \
         "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"cancelled artist\"}" "$BKR"
 
-# Restore the shipped state -- no subscription row, so the gate is inert again.
+# STRIP the row entirely -- PHASE 7 TASK A FLIPPED THIS. It used to prove "no
+# subscription row = the escape = writes allowed again"; the escape is gone,
+# so the same statement now proves the opposite: a row-less organisation is
+# DENIED, not returned to some inert default. Matches rls_phase2_crm.sql
+# § N's N1/N16 at this same layer.
 p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
-p2_code "RESTORED: no subscription row, writes allowed again" 201 POST "artists" \
-        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"inert artist\"}" "$BKR"
+p2_code "STRIPPED: no subscription row, writes are now DENIED (escape removed)" 403 POST "artists" \
+        "{\"organisation_id\":\"$ALPHA_ORG\",\"name\":\"stripped artist\"}" "$BKR"
+
+# ...and leave ALPHA on a REAL, working row. There is no more inert state to
+# rest on between sections -- "Phase 3 events at the API surface" immediately
+# below needs ALPHA's CRM writes to keep working, and so does every HTTP
+# section after it.
+p2_sub "insert into public.organisation_subscriptions
+          (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+        values ('$ALPHA_ORG','pro','monthly',1,'active', now() + interval '30 days');"
 
 echo
 echo "=== Read-only suspension at the API surface (Q6 / Task 3a) ==="
@@ -1060,10 +1389,13 @@ p2_range_written() { # name want_total METHOD path body token -- count=exact
 #
 # PLACED HERE, and the position is load-bearing: it needs p2_range_shape and
 # p2_range_written (defined immediately above) and it must run while org ALPHA
-# is LIVE and UNSUBSCRIBED -- the subscription block above deletes its row on
-# its last line, and the suspension block below is about to soft-delete the
-# organisation. Between those two is the only window where a 201 means "the
-# policy allowed it" rather than "the entitlement gate happened to be open".
+# is LIVE and SUBSCRIBED (the block above restores a real Pro row on its last
+# line -- PHASE 7 TASK A removed private.crm_write_organisations()'s "no
+# subscription row" escape, so a 201 below is meaningful only with a real,
+# working row behind it, not despite the absence of one), and BEFORE the
+# suspension block further down soft-deletes the organisation. Between those
+# two is the only window where a 201 means "the policy allowed it" and not
+# "the entitlement gate happened to be open" (or, pre-Task-A, "closed").
 #
 # THE PATCH-COUNT CHECK IS THE ONE THAT MATTERS. A PostgREST PATCH that changed
 # NOTHING answers `204 No Content` -- byte-identical, in the status line, to one
@@ -1831,9 +2163,15 @@ else
   api_fails=$((api_fails+1))
 fi
 
-# Restore the shipped state: no subscription row, so the gate is inert again --
-# the same clean-up the entitlement block above performs for the same reason.
-p2_sub "delete from public.organisation_subscriptions where organisation_id='$ALPHA_ORG';"
+# PHASE 7 TASK A: there is no more "no subscription row = inert" state to
+# restore ALPHA to -- private.crm_write_organisations()'s escape is gone, and
+# the "Custom field VALUES at the API surface" section immediately below
+# writes through set_custom_field_values(), which is itself a CRM write
+# gated by that same function (20260829011000). Deleting the row here would
+# deny that section's own LIVE CONTROL. Restore to STARTER instead -- a real,
+# working tier, same as ALPHA already carries above this block.
+p2_sub "update public.organisation_subscriptions set plan_id='starter', status='active'
+        where organisation_id='$ALPHA_ORG';"
 
 echo
 echo "=== Custom field VALUES at the API surface (Task 5) ==="
@@ -1938,6 +2276,13 @@ cf_rpc "REINSTATED: the same save applies again (positive control)" 200 \
 #
 # Its own organisation, because the psql § W fixtures have already been merged
 # and dismissed by the time this runs, and a merge is not idempotent.
+#
+# IT NEEDS A REAL SUBSCRIPTION ROW (PHASE 7 TASK A), planted below alongside
+# it. screen_for_duplicates() and merge_records() are CRM writes, gated by
+# private.crm_write_organisations() (rls_phase2_crm.sql's § W header names it
+# explicitly), and that function's "no subscription row" escape is gone --
+# without a row of its own this organisation would refuse every merge in this
+# section before its own logic was ever reached.
 # ----------------------------------------------------------------------------
 echo
 echo "=== Dedup and merge at the API surface (Task 6) ==="
@@ -1957,6 +2302,10 @@ HM_OL="4d0000ff-0000-0000-0000-000000000005"  # newer -> the Owner's loser
 p2_sub "insert into public.organisations (id, name, slug)
         values ('$MERGE_ORG','Org HTTP Merge','org-http-merge')
         on conflict (id) do nothing;
+        insert into public.organisation_subscriptions
+          (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+        values ('$MERGE_ORG','starter','monthly',1,'active', now() + interval '30 days')
+        on conflict (organisation_id) do nothing;
         insert into public.organisation_memberships
           (organisation_id, user_id, role, status, joined_at)
         values ('$MERGE_ORG','${P2ID[pmanager]}','manager','active',now()),
@@ -2917,6 +3266,78 @@ p2_rows "UNCONNECTED reads 0 network_links with NO filter"     0 "network_links?
 p2_rows "CONNECTED reads 0 network_links with NO filter (Q82)" 0 "network_links?select=id" "$CONN"
 p2_rows_min "CONTROL: the CONNECTED caller DOES read its own BETA contacts" 1 \
         "contacts?select=id&organisation_id=eq.$BETA_ORG" "$CONN"
+
+# ============================================================================
+# PHASE 7 TASK 6: IN-APP FEEDBACK OVER REAL HTTP -- THE DIRECT-POSTGREST PATH.
+#
+# The psql suite above proves the trigger from `set role authenticated`. This
+# is the request a script actually sends: the anon key plus a real password-
+# grant token, POSTed straight at PostgREST with no Next.js in the way. Task
+# 5's finding I2 was precisely a budget this path skipped; here it must not.
+#
+# carol is org A's ACTIVE standard_user (rls_foundation.sql) with a fresh
+# feedback budget -- the psql suite spent pstd1/pstd2's, not hers.
+# ============================================================================
+echo
+echo "=== Phase 7 feedback at the API surface ==="
+
+CAROL_ORG=$(curl -s "$API/rest/v1/organisations?select=id" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $TOKEN" \
+  | python -c "import sys,json;d=json.load(sys.stdin);print(d[0]['id'] if d else '')")
+[ -n "$CAROL_ORG" ] || { echo "carol could not read her own org over HTTP" >&2; exit 1; }
+
+fb_post() { # name want_http body
+  local name="$1" want="$2" body="$3" code
+  code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/rest/v1/feedback" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" -H "Prefer: return=minimal" -d "$body")
+  if [ "$code" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$code"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$code" "$want"; api_fails=$((api_fails+1)); fi
+}
+
+fb_post "carol POSTs feedback naming her own workspace -> 201" 201 \
+  "{\"organisation_id\":\"$CAROL_ORG\",\"category\":\"bug\",\"message\":\"http one\",\"route\":\"/org-a\"}"
+fb_post "FORGERY: naming user_id is refused at the column grant -> 403" 403 \
+  "{\"user_id\":\"${ID[super]}\",\"organisation_id\":\"$CAROL_ORG\",\"category\":\"bug\",\"message\":\"x\",\"route\":\"/\"}"
+fb_post "FORGERY: naming a workspace she is not a member of -> 403" 403 \
+  "{\"organisation_id\":\"$BETA_ORG\",\"category\":\"bug\",\"message\":\"x\",\"route\":\"/\"}"
+fb_post "FORGERY: naming status is refused at the column grant -> 403" 403 \
+  "{\"status\":\"actioned\",\"organisation_id\":\"$CAROL_ORG\",\"category\":\"bug\",\"message\":\"x\",\"route\":\"/\"}"
+p2_rows "carol reads 0 feedback rows -- not even her own"  0 "feedback?select=id" "$TOKEN"
+probe "private helper feedback_before_insert not an RPC"          404 "rpc/feedback_before_insert"
+probe "private helper feedback_update_guard not an RPC"           404 "rpc/feedback_update_guard"
+probe "audit_feedback_screenshot_view IS routable and refuses carol (403)" 403 \
+      "rpc/audit_feedback_screenshot_view" '{"p_feedback_id":"00000000-0000-4000-8000-0000000000cc"}'
+# THE BUDGET, ON THE RAW PATH: nine more accepted (ten in all), the eleventh a
+# real HTTP 429 -- the PT429 SQLSTATE escape, through PostgREST.
+for i in 2 3 4 5 6 7 8 9 10; do
+  fb_post "carol's submission #$i -> 201" 201 \
+    "{\"organisation_id\":\"$CAROL_ORG\",\"category\":\"idea\",\"message\":\"http $i\",\"route\":\"/org-a\"}"
+done
+fb_post "carol's ELEVENTH direct-PostgREST submission in the hour -> 429" 429 \
+  "{\"organisation_id\":\"$CAROL_ORG\",\"category\":\"idea\",\"message\":\"http 11\",\"route\":\"/org-a\"}"
+# FIX ROUND 1 (I1): the pre-check the app runs BEFORE any Storage I/O, over
+# the same session -- carol's budget is spent, so it must read 0 (and reading
+# it must not change the ten-row count asserted next).
+fb_budget=$(curl -s -X POST "$API/rest/v1/rpc/feedback_budget_remaining" \
+  -H "apikey: $ANON" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}' \
+  | python -c "import sys,json;r=json.load(sys.stdin);r=r[0] if isinstance(r,list) else r;print(r.get('remaining'))")
+if [ "$fb_budget" = "0" ]; then printf '  PASS  %-58s %s\n' "feedback_budget_remaining reads 0 for carol over HTTP" "$fb_budget"
+else printf '  FAIL  %-58s got %s want 0\n' "feedback_budget_remaining reads 0 for carol over HTTP" "$fb_budget"; api_fails=$((api_fails+1)); fi
+fb_n=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+       "select count(*) from public.feedback where user_id='${ID[carol]}'" | tr -d '[:space:]')
+if [ "$fb_n" = "10" ]; then printf '  PASS  %-58s %s\n' "exactly ten rows landed for carol (the 429 wrote nothing)" "$fb_n"
+else printf '  FAIL  %-58s got %s want 10\n' "exactly ten rows landed for carol" "$fb_n"; api_fails=$((api_fails+1)); fi
+fb_role=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+       "select string_agg(distinct coalesce(organisation_role,'null'), ',') from public.feedback where user_id='${ID[carol]}'" | tr -d '[:space:]')
+if [ "$fb_role" = "standard_user" ]; then printf '  PASS  %-58s %s\n' "every row's role was stamped from carol's membership" "$fb_role"
+else printf '  FAIL  %-58s got %s want standard_user\n' "every row's role was stamped from carol's membership" "$fb_role"; api_fails=$((api_fails+1)); fi
+# Housekeeping: carol's rows, counters, the crossing alert and the audit rows.
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c \
+  "delete from public.incident_alerts where details->>'category'='feedback' and details->>'subject_id'='${ID[carol]}';
+   delete from public.audit_events where target_type='feedback' and actor_user_id='${ID[carol]}';
+   delete from public.feedback where user_id='${ID[carol]}';
+   delete from public.rate_limit_counters where category='feedback' and subject_id='${ID[carol]}';"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

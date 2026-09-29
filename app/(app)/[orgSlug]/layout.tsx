@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { getCurrentOrg } from "@/lib/auth";
 import { buildSidebarGroups } from "@/lib/nav/sidebar-groups";
 import { CommandPalette } from "@/components/palette/command-palette";
+import { ImpersonationBanner } from "@/components/admin/impersonation-banner";
 
 // The org segment's guard, and deliberately nothing else. The sidebar this
 // layout used to render moved UP to app/(app)/layout.tsx (review finding 1):
@@ -53,6 +54,40 @@ export default async function OrgLayout({
   return (
     <>
       <CommandPalette orgSlug={org.slug} groups={groups} />
+      {/* ===================================================================
+          THE IMPERSONATION BANNER RENDERS HERE, AND THE LOCATION IS THE
+          CONTROL (fix round 1, Important 1)
+          ===================================================================
+          The brief requires that EVERY org-scoped page the superuser reaches
+          during impersonation is visibly bannered. It first shipped in
+          app/(app)/layout.tsx beside SuspendedBanner — and that layout is a
+          shared ancestor of /super/impersonation and /[orgSlug] alike, so the
+          router reused the segment on the operator's own "Open workspace"
+          link and the first impersonated page rendered UNBANNERED. Measured
+          in a browser, not argued: tests/e2e/impersonation.spec.ts now clicks
+          that link and asserts the banner, and that assertion failed against
+          the shell-level placement.
+
+          THIS layout is the segment boundary every impersonated route
+          crosses. Entering /[orgSlug] from anywhere outside it renders this
+          fresh; navigating between two routes INSIDE it keeps this mounted
+          and the banner on screen. So the banner is guaranteed by structure
+          rather than by which link happened to be clicked — the same
+          property that makes this layout's own notFound() guard trustworthy.
+
+          It sits INSIDE <main> (this layout renders within the shell's
+          <main id="main">), unlike SuspendedBanner which is a sibling of it.
+          That is acceptable and arguably better: it is a role="status" line,
+          not repeated navigation, so it is not the WCAG 2.4.1 bypass problem
+          the rail's placement was — and a keyboard user following "skip to
+          content" now reads who they are viewing as BEFORE the page content,
+          which is exactly when they need it. */}
+      {org.isImpersonated ? (
+        <ImpersonationBanner
+          orgName={org.name}
+          expiresAt={org.impersonationExpiresAt}
+        />
+      ) : null}
       {children}
     </>
   );

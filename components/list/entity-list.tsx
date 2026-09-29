@@ -9,6 +9,7 @@ import {
 import type { ListPage, RecoveryReason } from "@/lib/list/query";
 import type { ListColumn, ListSpec } from "@/lib/list/spec";
 import { ListPager } from "./list-pager";
+import { RateLimitNotice } from "./rate-limit-notice";
 
 // The shared CRM list surface: count, table, sort controls, pager, and the
 // three states a list is actually in most of the time.
@@ -86,6 +87,21 @@ export function EntityList<TRow, TSort extends string, TFilter extends string>({
           couldn’t load {spec.noun.many} just now. Refresh the page to try
           again — nothing has been deleted.
         </p>
+      </div>
+    );
+  }
+
+  // A RATE-LIMITED REQUEST IS NOT A FAILED ONE (SECURITY.md § 5). See
+  // RateLimitNotice for why the copy is the opposite of the error state's.
+  // The seconds come from the database's own window clock, so the sentence is
+  // a promise the next request can keep.
+  if (page.outcome === "rate_limited") {
+    return (
+      <div className="flex flex-col gap-4">
+        <RateLimitNotice
+          retryAfterSeconds={page.retryAfterSeconds}
+          subject={spec.noun.many}
+        />
       </div>
     );
   }

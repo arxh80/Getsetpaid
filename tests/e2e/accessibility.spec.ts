@@ -2,11 +2,13 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
   FINANCE_LINES,
+  PASSWORD,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
 } from "./support/fixtures";
 import { signIn, signOut } from "./support/sign-in";
+import { totpCode } from "../support/totp";
 
 // THE AUTOMATED ACCESSIBILITY PASS THE PLAN ASKED FOR.
 //
@@ -73,6 +75,32 @@ interface Deferred {
  * other page. Each entry names a violation this scan actually found and that
  * Task 8 deliberately did not fix, with a pointer into FOLLOW-UPS.md.
  */
+/**
+ * WAIT FOR THE REAL PAGE, NOT FOR `main` (fix round 2, review finding N6).
+ *
+ * Every signed-in scan in this file used to wait only for
+ * `expect(page.locator("main").first()).toBeVisible()`. That is satisfied by
+ * the ROUTE'S `loading.tsx`, which renders a skeleton INSIDE the shell's
+ * `main` -- so on a slow stream axe could analyse the skeleton instead of the
+ * page. It did: a full-suite run failed `contact detail + timeline` on
+ * `page-has-heading-one (1 nodes)` and passed the same test in isolation.
+ *
+ * The failure direction was safe -- no `loading.tsx` in this app contains an
+ * `<h1>`, so a scan that caught a skeleton always failed loudly on that rule
+ * rather than passing green against a subject that was never rendered -- but a
+ * gate that is only accidentally correct is not a gate. Waiting for the page's
+ * own `<h1>` makes "the scan saw the real page" structural: the skeleton
+ * cannot satisfy it, and the element it waits for is the same one the rule
+ * that flaked is about.
+ *
+ * Deliberately the `<h1>` and not a networkidle/timeout: every page this file
+ * scans has exactly one, which is what `page-has-heading-one` asserts, so this
+ * is the cheapest witness that is also load-bearing.
+ */
+async function settled(page: Page) {
+  await expect(page.getByRole("heading", { level: 1 }).first()).toBeVisible();
+}
+
 async function scan(page: Page, label: string, deferred: Deferred[] = []) {
   const results = await new AxeBuilder({ page })
     .withTags(WCAG_TAGS)
@@ -210,7 +238,7 @@ for (const [label, url] of SIGNED_IN_PAGES) {
   test(`${label} has no automated accessibility violations`, async ({ page }) => {
     await signIn(page, world, "manager");
     await page.goto(url(world));
-    await expect(page.locator("main").first()).toBeVisible();
+    await settled(page);
     await scan(page, label);
   });
 }
@@ -233,6 +261,10 @@ test("a page with the sidebar pinned open has no automated accessibility violati
 }) => {
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}/contacts`);
+  // BEFORE THE MEASUREMENT, not just before the scan (fix round 2, N6): the
+  // skeleton and the page are different DOM, so measuring the columns' left
+  // edges against a still-streaming route would measure the wrong thing.
+  await settled(page);
 
   // REST-STATE REGISTER (re-review N2), measured, not eyeballed: <main>
   // centres itself with `mx-auto` in the flex row's LEFTOVER space, so the
@@ -322,13 +354,189 @@ test("the event page WITH the finance panel has no automated accessibility viola
 }) => {
   await signIn(page, world, "finance");
   await page.goto(`/${world.proOrgSlug}/events/${world.proLedgerEventId}`);
-  await expect(page.locator("main").first()).toBeVisible();
+  await settled(page);
   // NON-VACUITY: the panel is actually on the page being scanned. Without this
   // the test would report a clean scan of an event page with no finance on it,
   // which is the one thing it must not be able to do.
   await expect(page.getByRole("region", { name: "Finance", exact: true })).toHaveCount(1);
   await expect(page.locator("main")).toContainText(FINANCE_LINES.fixtureFee.description);
   await scan(page, "event detail + finance panel");
+});
+
+test("custom-field settings, EDITABLE, has no automated accessibility violations", async ({
+  page,
+}) => {
+  // ==========================================================================
+  // THE SETTINGS AREA HAD NEVER BEEN SCANNED ONCE, AND THEN THE FIRST SCAN OF
+  // IT COULD NOT SEE THE CONTROLS IT WAS WRITTEN FOR
+  // ==========================================================================
+  // `SIGNED_IN_PAGES` covers lists, create forms, detail pages and the network
+  // surfaces, and no settings page at all. The scan that closed that (#23) had
+  // to sign in as a MANAGER, because `manage_custom_fields` is Owner/Admin only
+  // (20260828120000) and this suite had neither role -- so the editable render
+  // was never in the DOM, the two SC 2.5.8 target-size fixes that commit made
+  // were not covered by it, and its own body said so.
+  //
+  // Phase 7 Task 7 built the missing half: `E2eRole` now carries `owner` and
+  // `admin`, both in MFA_REQUIRED_ROLES with real TOTP secrets, so this scan
+  // signs in as the Owner and measures the render those fixes are about.
+  //
+  // ==========================================================================
+  // TWO NON-VACUITY CONTROLS, BECAUSE A GREEN SCAN HERE HAS TWO INNOCENT-
+  // LOOKING WAYS TO MEAN NOTHING
+  // ==========================================================================
+  // `CustomFieldEditor` withholds the add form for TWO unrelated reasons, and
+  // an axe scan cannot tell either of them from a clean page:
+  //
+  //   * PERMISSION -- no `manage_custom_fields`, which is what made the first
+  //     version of this test green against the pre-fix padding.
+  //   * QUOTA -- the workspace is at its tier's custom-field limit, in which
+  //     case the string "Add a field" still renders, as a bare <h2> over an
+  //     explanation, with no <summary> and no form.
+  //
+  // So the disclosure is asserted as a `details > summary` (the permission
+  // statement) and the at-limit sentence as absent (the tier statement), each
+  // with a message naming its own cause -- the same disambiguation
+  // super-permissions.spec.ts makes on this page, for the same reason.
+  await signIn(page, world, "owner");
+  await page.goto(`/${world.orgSlug}/settings/custom-fields?entity=contact`);
+  await expect(
+    page.getByRole("heading", { name: "Custom fields", level: 1 }),
+  ).toBeVisible();
+
+  const addDisclosure = page.locator("details > summary", {
+    hasText: "Add a field",
+  });
+  await expect(
+    addDisclosure,
+    "the Owner persona reached the page without the control it is gated on, " +
+      "so this session does not hold manage_custom_fields and a clean scan " +
+      "would only mean the controls were never rendered",
+  ).toBeVisible();
+  await expect(
+    page.getByText("custom fields for this record type are in use"),
+    "the workspace is AT its custom-field limit, so the form is withheld for " +
+      "a TIER reason and this scan covers none of the controls it is about. " +
+      "Free a slot in the fixture rather than reading this as coverage.",
+  ).toHaveCount(0);
+
+  // A REAL DEFINITION, CREATED THROUGH THE REAL FORM. The fixture seeds none,
+  // and the "Edit" <summary> -- one of the two controls #23 resized -- renders
+  // once PER DEFINITION. A bare visit renders zero of them, so the scan would
+  // still be measuring a page without its subject on it.
+  //
+  // `single_select` deliberately: it is the one type whose stored choices
+  // render back into the row, so the list item is at its fullest.
+  // BY `name=`, NOT BY LABEL TEXT, and that was measured rather than chosen:
+  // components/ui/field.tsx appends a visible "Required"/"Optional" word
+  // INSIDE the <label>, so the accessible name of the label field is
+  // "Label Required" and `getByLabel("Label", { exact: true })` matches
+  // nothing at all -- a twenty-second timeout that looks like a missing
+  // control rather than a mis-spelled selector. The form's `name` attributes
+  // are the same strings the Server Action reads, so they cannot drift from
+  // the thing being filled in.
+  await addDisclosure.click();
+  const addForm = page.locator('form:has(button:text-is("Add field"))');
+  await addForm.locator('input[name="label"]').fill("Dressing room tier");
+  await addForm.locator('input[name="key"]').fill("dressing_room_tier");
+  await addForm.locator('select[name="fieldType"]').selectOption("single_select");
+  // The choices box lives inside its OWN collapsed <details>, and a collapsed
+  // <details> hides its contents from the renderer as well as from the
+  // accessibility tree -- `fill` on it fails as "not visible". Opening it is
+  // what a person does too.
+  await addForm.locator("summary", { hasText: "Choices" }).click();
+  await addForm
+    .locator('textarea[name="options"]')
+    // `name = What people see`, one per line -- the stored key on the left.
+    // A bare label is refused by the form's own validation ("can't be a
+    // choice name"), which is the app working, not the scan.
+    .fill(["green_room = Green room", "shared = Shared", "none = None"].join("\n"));
+  await page.getByRole("button", { name: "Add field" }).click();
+  await expect(page.getByText("Dressing room tier").first()).toBeVisible();
+
+  // BOTH DISCLOSURES OPEN BEFORE THE SCAN, and that is not tidiness. A
+  // collapsed <details> hides its contents from the accessibility tree, so the
+  // "Choices" summary inside each form -- the OTHER control #23 resized, whose
+  // padding sat on the <details> instead of the <summary> -- is unreachable by
+  // axe while its parent is shut. Scanning with them closed is the same
+  // vacuity in a different costume.
+  const editDisclosure = page.locator("details > summary", {
+    hasText: "Edit",
+  });
+  await expect(
+    editDisclosure,
+    "no per-definition Edit disclosure rendered after creating a definition, " +
+      "so the control this scan exists to measure is not on the page",
+  ).toBeVisible();
+  // OPEN, NOT TOGGLE. A <summary> click toggles, and the add disclosure is
+  // still open after a successful submit (React keeps the DOM node), so a
+  // blind click on it SHUT the form -- measured. Each is clicked only if its
+  // <details> is not already open.
+  for (const summary of [
+    editDisclosure,
+    page.locator("details > summary", { hasText: "Add a field" }),
+  ]) {
+    const isOpen = await summary.evaluate(
+      (el) => (el.parentElement as HTMLDetailsElement).open,
+    );
+    if (!isOpen) await summary.click();
+  }
+  // The two "Choices" summaries -- one in the edit form, one in the add form
+  // -- are the OTHER control #23 resized, and they exist in the DOM whether
+  // or not their own <details> is open. What they need is a visible ANCESTOR:
+  // shut the add or edit disclosure above them and axe cannot see them at all.
+  await expect(
+    page.locator("summary", { hasText: "Choices" }),
+    "the Choices disclosures are not visible, so their parent forms are shut " +
+      "and axe cannot evaluate the targets this scan is here to evaluate",
+  ).toHaveCount(2);
+  await expect(
+    page.locator("summary", { hasText: "Choices" }).first(),
+  ).toBeVisible();
+  await expect(
+    page.locator("summary", { hasText: "Choices" }).last(),
+  ).toBeVisible();
+
+  await scan(page, "custom-field settings (editable, Owner)");
+
+  // ==========================================================================
+  // AXE DOES NOT CATCH THE DEFECT THIS PAGE WAS FIXED FOR -- MEASURED
+  // ==========================================================================
+  // With #23's padding reverted (the Edit summary bare, the Choices padding
+  // back on its <details>) and every disclosure rendered and open, the scan
+  // above still PASSED. axe's `target-size` rule exempts an undersized target
+  // with enough clear space around it, and these summaries sit alone on their
+  // lines -- so a clean scan here says nothing about SC 2.5.8 on them. The
+  // rule this page actually needs is the stricter house rule #23 applied
+  // (every summary target at least 24px tall), so it is measured directly.
+  // Height only: "Edit" is wider than 24px by its text alone, and the
+  // Choices summary spans its form.
+  const targets = [
+    { name: "Edit", locator: editDisclosure },
+    ...[0, 1].map((i) => ({
+      name: `Choices #${i + 1}`,
+      locator: page.locator("summary", { hasText: "Choices" }).nth(i),
+    })),
+  ];
+  for (const { name, locator } of targets) {
+    const box = await locator.boundingBox();
+    expect(box, `${name} summary has no box, so it was not rendered`).not.toBeNull();
+    expect(
+      box!.height,
+      `${name} summary is ${box!.height}px tall -- under SC 2.5.8's 24px`,
+    ).toBeGreaterThanOrEqual(24);
+  }
+
+  // PUT THE WORKSPACE BACK. Every later test in this file scans contact
+  // surfaces, and a live custom field renders on all of them -- leaving one
+  // behind would make an unrelated scan's subject depend on this one having
+  // run. Removing is a soft delete, which is enough: the field leaves the
+  // forms.
+  await page
+    .getByRole("button", { name: "Remove Dressing room tier" })
+    .click();
+  await expect(page.getByText("Removed fields")).toBeVisible();
+  await signOut(page);
 });
 
 // ===========================================================================
@@ -341,45 +549,6 @@ test("the event page WITH the finance panel has no automated accessibility viola
 // draft with every field at its default, missing the seven radio ladders,
 // the publish summary sentence and the "Hide now" quick actions that only
 // render once a field is not hidden.
-test("custom-field settings (read-only view) has no automated accessibility violations", async ({
-  page,
-}) => {
-  // ==========================================================================
-  // THE SETTINGS AREA HAD NEVER BEEN SCANNED ONCE
-  // ==========================================================================
-  // SIGNED_IN_PAGES covers lists, create forms, detail pages and the network
-  // surfaces. It covers no settings page at all, so nothing under
-  // /[orgSlug]/settings was known-good. This closes the read-only half of that.
-  //
-  // ==========================================================================
-  // WHAT THIS CANNOT REACH, AND WHY THAT IS NOT A DETAIL
-  // ==========================================================================
-  // `manage_custom_fields` is OWNER AND ADMIN ONLY (20260828120000), and this
-  // suite has no owner and no admin: `E2eRole` is manager | standard_user |
-  // read_only | finance | booker, and sign-in.ts says so outright -- "owner and
-  // admin are the other two and nothing here is either".
-  //
-  // So the EDITABLE render of this page -- the "Add a field" disclosure, and an
-  // "Edit" disclosure per definition -- cannot be produced by any role this
-  // suite can sign in as. Those are exactly the two controls whose target size
-  // failed SC 2.5.8 and which this branch fixes, so THE FIX ITSELF IS NOT
-  // COVERED HERE and this test must not be read as covering it.
-  //
-  // Writing the scan anyway, as a manager, is still worth it: it is the first
-  // time anything under /settings has been scanned, and it arms every rule
-  // against the read-only render. But a scan that creates a definition and
-  // checks the disclosure needs an owner or admin in the shared fixture --
-  // both MFA-required (CLAUDE.md § Session security), so it needs the TOTP
-  // treatment `finance` already has. That is its own change, and it is the
-  // bigger half of this finding: no Owner/Admin-only surface in the product
-  // has ever been scanned, by anything.
-  await signIn(page, world, "manager");
-  await page.goto(`/${world.orgSlug}/settings/custom-fields`);
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-
-  await scan(page, "custom-field settings (read-only)");
-});
-
 test("the network profile editor, populated, has no automated accessibility violations", async ({
   page,
 }) => {
@@ -551,6 +720,47 @@ test("the connection requests page (received and sent) has no automated accessib
   // NON-VACUITY: the Sent list's one accepted row is really on the page.
   await expect(page.getByText(world.networkBetaAnchorProfileName)).toBeVisible();
   await scan(page, "connection requests page");
+});
+
+// ===========================================================================
+// PHASE 7 TASK 1'S SURFACE: THE SUPERUSER AUDIT LOG, POPULATED
+// ===========================================================================
+// Its own dedicated test, same shape as the finance panel's above: NOT one
+// of the fixed `E2eRole` personas `signIn()` addresses (platform-superuser
+// status is `platform_admins` membership, not an organisation role -- see
+// tests/e2e/support/fixtures.ts's own header on `world.superuser`), and MFA-
+// required, so this test also pays for a real TOTP challenge. It scans the
+// route area's own minimal header (app/(app)/super/layout.tsx -- no org
+// rail, a different landmark structure from every other page this file
+// scans), the five-field filter form, and a POPULATED results table: an
+// empty table would miss the `<details>` before/after disclosures, the
+// monospace id cells and the pager, which is exactly the markup a duplicate
+// `id` or an orphaned `aria-describedby` would land in.
+async function signInAsSuperuser(page: Page): Promise<void> {
+  await page.goto("/login");
+  await page.locator('input[name="email"]').fill(world.superuser.email);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).not.toHaveURL(/\/login/);
+
+  const heading = page.getByRole("heading", { name: "Enter your two-factor code" });
+  await expect(heading).toBeVisible();
+  await page.locator('input[name="code"]').fill(totpCode(world.superuserTotpSecret));
+  await page.getByRole("button", { name: "Verify and continue" }).click();
+  await expect(heading).toHaveCount(0);
+}
+
+test("the superuser audit log, populated, has no automated accessibility violations", async ({
+  page,
+}) => {
+  await signInAsSuperuser(page);
+  await page.goto(
+    `/super/audit-log?action=${encodeURIComponent("e2e.audit_probe_alpha")}`,
+  );
+  await expect(page.getByRole("heading", { name: "Audit log", level: 1 })).toBeVisible();
+  // NON-VACUITY: the filtered probe row is really on the page being scanned.
+  await expect(page.locator("main")).toContainText("e2e.audit_probe_alpha");
+  await scan(page, "superuser audit log");
 });
 
 test("the in-app 404 -- where every refusal lands -- is clean, exclusions and all", async ({

@@ -415,6 +415,22 @@ inactivity_timeout = "30m"
 # enabled = true
 # uri = "pg-functions://<database>/<schema>/<hook_name>"
 
+# THE PER-ACCOUNT HALF OF SECURITY.md § 5's LOGIN ROW (Phase 7 Task 5).
+# GoTrue calls public.hook_password_verification_attempt (migration
+# 20260909020000) on every password check; the function counts FAILED
+# attempts per account in public.rate_limit_counters (5 per 15-minute fixed
+# window), rejects every attempt while the budget is spent, resets on a
+# successful sign-in, and files a repeated_login_failures incident alert at
+# the exactly-once crossing. The per-IP half stays GoTrue's own
+# sign_in_sign_ups limit above -- see SECURITY.md § 5 for the honest
+# per-row status. ON HOSTED SUPABASE THIS HOOK MUST BE ENABLED IN THE
+# DASHBOARD TOO (SECURITY.md § 15's pre-launch checklist): config.toml only
+# configures the local stack, and a hook that is not enabled is a limit that
+# does not exist.
+[auth.hook.password_verification_attempt]
+enabled = true
+uri = "pg-functions://postgres/public/hook_password_verification_attempt"
+
 # Configure one of the supported SMS providers: `twilio`, `twilio_verify`, `messagebird`, `textlocal`, `vonage`.
 [auth.sms.twilio]
 enabled = false

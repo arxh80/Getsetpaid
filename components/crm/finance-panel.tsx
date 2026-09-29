@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { RawSearchParams } from "@/lib/list/params";
 import type { ListPage, RecoveryReason } from "@/lib/list/query";
 import { ListPager } from "@/components/list/list-pager";
+import { RateLimitNotice } from "@/components/list/rate-limit-notice";
 import {
   FINANCIAL_ENTRY_LIST,
   type FinancialEntryRow,
@@ -162,6 +163,14 @@ export function FinancePanel({
           load this event’s finance lines just now. Refresh the page to try
           again — nothing has been removed.
         </p>
+      ) : page.outcome === "rate_limited" ? (
+        // Reachable when the URL carries a search term (the finance list's
+        // spec searches `description`) and the caller's search budget is
+        // spent -- SECURITY.md § 5. Not the error state: see RateLimitNotice.
+        <RateLimitNotice
+          retryAfterSeconds={page.retryAfterSeconds}
+          subject="this event’s finance lines"
+        />
       ) : (
         <LineItems
           orgSlug={orgSlug}

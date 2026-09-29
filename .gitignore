@@ -28,6 +28,12 @@ supabase/.branches/
 # Per-machine Claude Code settings (permissions differ per developer).
 .claude/settings.local.json
 
+# Agent planning/review scratch (briefs, reports, ledgers, review diffs). It
+# was excluded only by an untracked, self-ignoring .superpowers/sdd/.gitignore
+# that exists on one machine; listed here so it holds on every clone. The two
+# DECISIONS-QUEUE files already tracked under it stay tracked.
+.superpowers/
+
 # graphify knowledge-graph output — regenerated from source, not source itself.
 graphify-out/
 

@@ -248,7 +248,10 @@ These become live the moment a real tenant table exists.
   a complete automated pass, and "0 violations" from any scanner is worth
   exactly as much as its rule set (the spec carries a `passes.length > 0`
   non-vacuity control for the same reason).
-- **NOTHING IN THE PRODUCT ENFORCES `SECURITY.md` § 5, AND SEARCH IS THE
+- **[SUPERSEDED 2026-09-09 by Phase 7 Task 5 -- § 5 IS NOW ENFORCED. The
+  measurement below is kept as the record of what the gap was and why it
+  mattered; do not read it as a current statement of the product.]**
+  **NOTHING IN THE PRODUCT ENFORCES `SECURITY.md` § 5, AND SEARCH IS THE
   SURFACE THAT MATTERS.** A codebase-wide grep for
   `rate.?limit|ratelimit|throttl` returns one hit, `ACTIVITY_WRITE_THROTTLE_MS`
   in `lib/auth/idle-timeout.ts`, which throttles a `sessionStorage` write. The
@@ -2510,17 +2513,90 @@ debts it carried forward.
 This is where the privileged surface actually lands, so these must be fixed
 before the first real consumer exists rather than alongside it.
 
-- **`private.custom_field_limit()` has the SAME escape, and it dies in the same
-  migration.** Task 5 (`20260829010500`) mirrors
+### Opened by Task 2 (break-glass impersonation)
+
+Everything below is a KNOWN, MEASURED property of what shipped, not a defect
+found later. Each is queued in
+`.superpowers/sdd/plan-the-whole-build-synthetic-thompson/DECISIONS-QUEUE.md`
+with the default that shipped, and each names what the fix would be so the
+next person does not have to re-derive it.
+
+- **A SUSPENDED organisation cannot accept a support-access request (Q98).**
+  `manage_organisation` has `survives_suspension = false`, so a suspended
+  workspace's own Owner/Admin can neither see nor answer one. Consistent with
+  consequence P7 (suspension is not self-serviceable) and measured in
+  `rls_phase7_impersonation.sql` § IS — but it bites the support case most
+  likely to need impersonation. **The fix, if the founder wants one, is a NEW
+  catalogue key** (`accept_support_access`, `survives_suspension = true`,
+  granted to Owner/Admin) — never a special case inside `has_permission()`,
+  which is the one function in the schema that must stay readable in one pass.
+  Note the other half is already right: an ALREADY-LIVE session survives
+  suspension for reads, because `view_crm` does.
+- **Consent cannot be withdrawn between accept and start (Q100).**
+  `public.end_impersonation_session()` acts on a RUNNING session. The window is
+  minutes in practice and the page says so in as many words, but a customer who
+  changes their mind in it has no control. **The fix needs a SEVENTH status**
+  (`withdrawn`), not a reuse of `declined`: the state CHECK ties `declined` to
+  `accepted_at is null`, deliberately, so that no reader has to consult
+  `status` to know what a timestamp column means.
+- **The accepting admin is `aal2` but not step-up-fresh (Q99).** The superuser
+  side has both. Cheap to add if wanted: wrap the accept CONTROL (never the
+  page — a re-auth prompt in place of a list would be the first read in the
+  product to demand one) in `<StepUpGate>`, and add the `checkStepUp()` call
+  the superuser actions already carry to
+  `acceptImpersonationRequestAction`.
+- **Nothing notifies the customer that a request exists.** Q45 for the third
+  time (after `reminder_at` and connection requests): there is no notification
+  subsystem at MVP, so `/[orgSlug]/support-access` is the whole discovery
+  surface. **This is the entry the email fold-in later in Phase 7 should
+  discharge** — an impersonation request is a better first transactional email
+  than most, because the customer cannot act on it if they never see it.
+- **The page-access audit is APP-SIDE and over-records.** It fires at
+  `getCurrentOrg()`, which is the only choke point every org-scoped page
+  passes through (an `[orgSlug]` layout does not re-run on a client-side
+  navigation between two routes that share it). Two consequences, both
+  deliberate and both worth a reviewer's attention: a Next.js **prefetch**
+  lands a `page_viewed` row for a page nobody opened — the opposite of Task
+  1's decision for the audit-log viewer, because here the safe direction is
+  over-recording; and a **direct PostgREST read** by an impersonating
+  superuser would be authorised by the grant and not recorded as a page view,
+  though the session and its start/end remain audited. Closing the second
+  needs a trigger-based read audit, which does not exist anywhere in this
+  product and should not be invented for one feature.
+- **`/super` is now a landing page, and the next operator surface adds a row
+  to `SURFACES` in `app/(app)/super/page.tsx`.** It stopped being a redirect
+  to `/super/audit-log` the moment a second surface existed. Its own loading
+  skeleton moved with it.
+- **The impersonated view has one fidelity gap worth naming:**
+  `public.profiles` is readable via `private.shares_active_organisation()`,
+  and an impersonating superuser shares no organisation — so a name resolved
+  from `profiles` (an activity-timeline actor, a record owner) may render
+  blank during a session where the customer would see a person's name. Not a
+  leak (the direction is less information, not more) and not measured as a
+  defect anywhere, but it is the class of thing that makes a support engineer
+  doubt what they are looking at. If it matters, the fix is the same shape as
+  every other policy here: one additional SELECT policy probing
+  `private.impersonated_organisations('view_crm')`.
+
+- ~~**`private.custom_field_limit()` has the SAME escape, and it dies in the
+  same migration.**~~ **DISCHARGED 2026-09-08, Phase 7 Task A
+  (`20260908000000`).** Task 5 (`20260829010500`) mirrored
   `private.crm_write_organisations()` clause for clause, including reading "no
   subscription row" as **unlimited** rather than as Free. That is not a
   copy-paste convenience: Free's `custom_field_limit` is `0`, so reading a
   missing row as Free would give every organisation in the product zero custom
   fields on every entity type and ship the feature dead. The TypeScript half
-  (`customFieldLimit()` in `lib/crm/custom-fields.ts`) carries the same branch,
+  (`customFieldLimit()` in `lib/crm/custom-fields.ts`) carried the same branch,
   and `tests/integration/crm/custom-field-limit-matches-db.test.ts` binds the
-  two. When the escape below is removed, remove it in **three** places — that
-  function, this one, and the TypeScript mirror — in the same change.
+  two. **Removed in exactly the three places this entry names, in the same
+  migration/change as the entry below** — but NOT by deleting the branch the
+  way `crm_write_organisations()` was fixed: falling through to the Free case
+  would still zero every organisation's fields, so `private.custom_field_limit()`
+  now RAISES (`errcode XX000`) when an organisation exists with no subscription
+  row instead, an invariant the backfill + `create_organisation()`'s new write
+  make structurally impossible. `customFieldLimit()` and the binding test were
+  updated to match (the TS half falls through to Free's `0`, the safe default,
+  rather than raising).
 - **Custom field slot cycling is a billing question, not a schema one.** Founder
   decision Q12 (2026-08-29): a soft-deleted `custom_field_definitions` row frees
   its tier slot, so an organisation on Starter can remove five definitions and
@@ -2533,20 +2609,47 @@ before the first real consumer exists rather than alongside it.
   toward the limit for some window, meter stored values rather than definitions,
   or decide it does not matter. `private.custom_field_slot_available()` is the
   one function that changes.
-- **Switch the subscription entitlement gate on: remove the escape and backfill,
-  in ONE migration.** `private.crm_write_organisations()` (`20260828140000`) is
-  on all 25 CRM write policies and is **deliberately inert**: its
-  `s.organisation_id is null` branch means an organisation with no subscription
-  row is not gated, and `create_organisation()` writes no such row, so today it
-  gates nothing. Without that branch it would deny every CRM write in the
-  product on the day it shipped. Phase 7 must (1) backfill an
-  `organisation_subscriptions` row for every existing organisation, (2) make
-  `create_organisation()` write one, and (3) delete the branch — in the same
-  migration, in that order. Do it in the wrong order and every tenant loses
-  write access to their own CRM. `rls_phase2_crm.sql` § N and the HTTP
-  "Subscription entitlement" block are what prove the machinery works while it
-  is switched off; N1 and N16 are the two assertions that must change when the
-  escape goes.
+- ~~**Switch the subscription entitlement gate on: remove the escape and
+  backfill, in ONE migration.**~~ **DISCHARGED 2026-09-08, Phase 7 Task A
+  (`20260908000000`, commits `02e944d`/`5a4af78`/`41aa9c3`/`dabd986` on
+  `worktree-admin-phase`).** `private.crm_write_organisations()`
+  (`20260828140000`) was on all 25 CRM write policies and was **deliberately
+  inert**: its `s.organisation_id is null` branch meant an organisation with
+  no subscription row was not gated, and `create_organisation()` wrote no such
+  row, so it gated nothing. Without that branch it would have denied every CRM
+  write in the product on the day it shipped. **Done, in exactly the order
+  this entry specified**: (1) backfilled an `organisation_subscriptions` row
+  for every existing organisation, (2) made `create_organisation()` write one,
+  and (3) deleted the branch — in one migration, in that order. `rls_phase2_crm.sql`
+  § N's N1 and N16 were flipped to prove the gate now DENIES a stripped
+  organisation rather than proving the machinery works while switched off, and
+  every fixture across the psql/HTTP suite that relied on "no subscription
+  row" as its ambient state (ALPHA/BETA, `org-merge`, `org-http-merge`,
+  `rls_foundation.sql`'s org_a/org_b) was given a real row of its own. Full
+  psql/HTTP suite and `pnpm test` verified green — see `task-A-report.md`.
+- **`private.finance_module_organisations()` and `private.network_publish_organisations()`
+  carry the SAME "no subscription row" escape Task A did not touch.** Added
+  2026-09-08, alongside the entry above going DISCHARGED, so the gap does not
+  just disappear with it. Both mirror `private.crm_write_organisations()`'s
+  pre-Task-A shape clause for clause (`finance_module_organisations()`:
+  `20260903001000`; `network_publish_organisations()`: `20260904001000`) —
+  "no row => not yet billed => not yet gated" — and Task A deliberately scoped
+  around them (`.superpowers/sdd/plan-the-whole-build-synthetic-thompson/progress.md`'s
+  Task A description names only `crm_write_organisations()` and
+  `custom_field_limit()`), not by oversight. Two things a future task should
+  know going in: (1) `financial_entries`' own write policies (`20260903003000`)
+  are gated ONLY by `finance_module_organisations()`, never by
+  `crm_write_organisations()`, so removing the finance escape needs no
+  `custom_field_values`-style double-gate fix; `custom_field_values` writes for
+  `entity_type = 'financial_entry'` DO carry both, which is exactly the
+  interaction Task A's `rls_phase5_finance.sql` § FI fixes hit. (2) Every
+  fixture organisation across the whole psql/HTTP/e2e suite now carries a real
+  subscription row from birth (Task A's `create_organisation()` change), which
+  already forced every fixture that relied on "no row" for the finance/network
+  escapes specifically (`rls_phase5_finance.sql` FE1/FE12,
+  `rls_phase6_network.sql` § NT's NT1, `network_leakage_phase6.sql` § LI) to
+  strip that row explicitly before testing it — so removing these two escapes
+  is a smaller fixture-ripple than Task A's was, not a repeat of it.
 - **Replace the `past_due` grace proxy with a real column, in BOTH halves.**
   The founder's 3-day grace window (`lib/entitlements/policy.ts`, 2026-08-28) is
   now enforced in the database too — `private.past_due_grace_days()` and
@@ -2560,8 +2663,35 @@ before the first real consumer exists rather than alongside it.
   the SQL function **and** in `policy.ts`, in the same change.
   `tests/integration/entitlements/past-due-grace-matches-db.test.ts` is what
   fails if only one of them moves.
-- **Ship the superuser REINSTATE path in the same change as the suspend
-  button.** **CORRECTED IN TASK 3a FIX ROUND 1 — the first sentence used to say
+- ~~**Ship the superuser REINSTATE path in the same change as the suspend
+  button.**~~ **DISCHARGED 2026-09-08, Phase 7 Task 3 (`20260908030000`).**
+  Built to the shape this entry specifies, exactly: a NEW permissive policy,
+  `organisations_update_platform_lifecycle`, which is the only policy in the
+  schema whose `USING` clause can match a soft-deleted organisation row and
+  therefore the only way `deleted_at` can ever be cleared.
+  `organisations_update_manage_organisation` is untouched, `manage_organisation`
+  is still `survives_suspension = false`, and `rls_phase2_crm.sql` P7/P7a/P7b
+  and P11-P11f all pass unchanged. **Three things this entry could not have
+  anticipated, recorded because the next reader should not have to re-derive
+  them:**
+  (1) the new policy needed a matching SELECT policy,
+  `organisations_select_platform_lifecycle`, because Postgres applies SELECT
+  policies to an UPDATE's row-matching and the superuser is a member of
+  nothing, so without it every reinstate would match zero rows and report
+  success (`20260826154304` documents the same trap on
+  `organisation_subscriptions`); that widening is why
+  `rls_phase7_impersonation.sql` IX4/IZ3 were re-measured.
+  (2) the three RPCs are `SECURITY INVOKER`, against the house pattern, so the
+  new policy is the *enforcement* rather than dead code beside a definer that
+  bypasses RLS.
+  (3) the policy carries a second term, `private.lifecycle_transition_in_progress()`,
+  so a raw `PATCH /rest/v1/organisations` from the superuser's own browser
+  cannot make an un-audited, un-reasoned lifecycle change; the marker is set
+  only inside the three RPCs and closed again by them.
+  `rls_phase7_lifecycle.sql` sections LP and LR are the proof, driven from the
+  Owner, a foreign aal2 Owner and an aal1 superuser. **ORIGINAL ENTRY BELOW,
+  kept because its mechanism description is what made the fix buildable.**
+  **CORRECTED IN TASK 3a FIX ROUND 1 — the first sentence used to say
   "since `20260828140000`, a soft-deleted organisation grants no permission at
   all", which has been false since `20260828210000` and cites a superseded
   migration. The conclusion below is unchanged; the mechanism behind it is
@@ -2603,11 +2733,40 @@ before the first real consumer exists rather than alongside it.
   `private.audit_crm_row()` now resolves the organisation through a live lookup,
   so a vanished parent degrades to `NULL` rather than aborting. R12/R13 assert it
   **with `request.jwt.claims` set**, and go red as `denied(23503)` when reverted.
-  **What genuinely remains for Phase 7** is the volume half: one audit row per
+  ~~**What genuinely remains for Phase 7** is the volume half: one audit row per
   cascaded child row, each with its own `correlation_id` because
   `private.log_audit_event()` mints a fresh one per call. Either thread one
   correlation id through the deletion path or suppress row-level audit inside the
-  bulk operation and write a single summary row. This matters beyond tidiness —
+  bulk operation and write a single summary row.~~ **THE VOLUME HALF IS
+  DISCHARGED 2026-09-08, Phase 7 Task 3 (`20260908030000`), AS THREADING PLUS
+  SUMMARY — and the mechanism is deliberately general, so the hard purge and the
+  DSR erasure reuse it rather than inventing their own.**
+  `private.log_audit_event()` now resolves its correlation id in THREE steps
+  rather than two: an explicit `p_correlation_id` wins, then the thread
+  `private.begin_lifecycle_transition()` declares, then — unchanged — a fresh
+  uuid per call. An operation declares itself once and every audit row written
+  anywhere inside it, **by any trigger, including one added years later**, joins
+  one thread with no call site edited. `private.end_lifecycle_transition()`
+  closes it, and that pairing is not optional: an `is_local` GUC stands to the
+  end of the *transaction* whatever `SET` clauses the call stack carries
+  (measured, after the first cut assumed otherwise). Beside it,
+  `private.log_organisation_lifecycle_event()` writes ONE summary row per
+  transition whose `after` payload carries the new state, both clocks, the
+  operator's reason and COUNTS of what the transition touched (active members,
+  published profiles) — counts, never rows, so the audit table stays free of
+  tenant record content.
+  **Suppression was considered and rejected**: it discards evidence to save
+  space, in the table whose whole purpose is evidence, and unrecoverably — a
+  summary saying "1,412 rows" cannot answer "was contact X among them".
+  Threading keeps both, and if a purge is ever large enough that per-row rows
+  are genuinely intolerable, the place to add suppression is that one function,
+  on the same GUC, not thirty call sites.
+  `rls_phase7_lifecycle.sql` LA6/LA6b is the proof, and it is deliberately TWO
+  writes inside one declared operation: every real lifecycle transition happens
+  to be alone on its thread, so a one-row-per-thread assertion would have passed
+  identically against the old function. **The purge itself is still Phase 8+
+  machinery and still does not exist** — Task 3 shipped the states, the clocks
+  and the reversibility, not the deletion. This matters beyond tidiness —
   it is the path superuser organisation deletion and GDPR erasure both take, and
   erasure carries a 30-day statutory clock.
 - **DSR erasure must scrub `merges.field_resolution`, not just the entity row.**
@@ -2621,11 +2780,19 @@ before the first real consumer exists rather than alongside it.
   control; it no longer is. The data was always *in* the table and erasure
   always had to purge it — what changed is that nothing now hides it in the
   meantime. Same 30-day statutory clock as the entry above.
-- **Full CRM write auditing** — INSERT and UPDATE on all twelve tables, which
-  fix round 1 deliberately did not build (only the two hard DELETEs and merges
-  are audited). Belongs with the audit log viewer, and needs a before/after diff
-  design plus a retention answer for the diffs. See `SECURITY.md` § 7, "CRM
-  writes: what is audited today, and what is not".
+- **Full CRM write auditing — DONE 2026-09-12 (Phase 7 Task 6b,
+  `20260912000000` + `20260912001000`).** INSERT and UPDATE on all eleven
+  mutable Phase 2 tables are audited by trigger (the twelfth, `merges`, is
+  append-only and its INSERT was already audited); the before/after diff
+  design is name-only with a per-table structural allowlist in ONE function
+  (`private.audit_crm_value_columns()`), soft-delete/restore are their own
+  actions, the four multi-row RPCs share one correlation id per call, and
+  the retention/volume answer is measured (**472 bytes per row with its six non-PK indexes** — 216 was the row-only figure and `SECURITY.md` § 7 formally withdrew it as "understates real storage by more than half"; a volume projection built from this ledger was wrong by over 2×), ~0.36 ms per
+  row of trigger cost, no per-table opt-out). Everything is in
+  `SECURITY.md` § 7, "Every CRM INSERT and UPDATE is audited too". **What
+  this did not do:** the Phase 3–6 tables (events, lineup, tasks, meetings,
+  notes, documents, links, financial entries) carry no INSERT/UPDATE audit —
+  Q94 scoped this to "the twelve" and the extension is queued as Q122.
 - **Restore-from-audit is not possible, by design.** The audit payload is an
   allowlist of identifiers — `private.audit_crm_payload()` drops
   `custom_field_values.value` and `merges.field_resolution` — because
@@ -2673,9 +2840,13 @@ before the first real consumer exists rather than alongside it.
   is deployed. Owner: the founder. Added 2026-08-30 (final review I-9).** This
   is a refusal, not a reminder: if `SECURITY.md` § 5 is still unenforced when
   launch is otherwise ready, launch does not proceed. **The surface grew again in
-  Phase 4 and the gate is restated over the new number:** **24** list specs carry
-  a `searchColumn` (20 at the Phase 3 exit; Phase 4 added `TASK_LIST`,
-  `MEETING_LIST`, `NOTE_LIST`, `DOCUMENT_LIST`) **and Phase 4 added the first
+  Phase 4 and the gate is restated over the new number:** **~41** list specs carry
+  a `searchColumn` today (20 at the Phase 3 exit; 24 after Phase 4 added
+  `TASK_LIST`, `MEETING_LIST`, `NOTE_LIST`, `DOCUMENT_LIST`; Phases 5-7 took it
+  to 42 `searchColumn:` occurrences of which one is the type declaration in
+  `lib/list/spec.ts` — `grep -rc 'searchColumn:' lib components app` is the
+  count, and this entry says to re-count at each phase exit precisely because
+  the number in it goes stale) **and Phase 4 added the first
   write endpoint that does real per-call work — the document upload action (byte
   read + magic-byte sniff + synchronous malware scan) — which has no limiter
   either.** The unmetered `ilike` path this gate is about is now a fifth wider
@@ -2687,6 +2858,50 @@ before the first real consumer exists rather than alongside it.
   than something applied afterwards, and the Task 8 exit document was explicit
   that closing this as "accepted" rather than scheduled would have blocked the
   Phase 2 merge.
+  **DISCHARGED 2026-09-09, Phase 7 Task 5 (`20260909020000`), with one
+  narrowed residual that stays a gate.** `SECURITY.md` § 5 is now built: one
+  mechanism, one config table holding the values, metered at the single
+  `lib/list/query.ts` chokepoint every one of those `searchColumn` specs flows
+  through (so the count that kept growing is no longer the thing to re-count --
+  a twenty-fifth spec inherits the meter by construction), plus a genuine
+  per-account login lockout in GoTrue's password-verification hook. § 5's
+  table now carries a per-row status. **The narrowed gate that replaces this
+  one:** a direct `GET /rest/v1/network_directory` with the anon key and a
+  session JWT is still unmetered and cannot be metered from inside a
+  PostgREST GET (read-only transaction; a counter increment is a write) --
+  DECISIONS-QUEUE Q107, whose recommended closure is a `pgrst.db_pre_request`
+  DENY of the direct path for the two directory views. **The document-upload
+  action named above is still unmetered** and is the second residual: its
+  budget is not in § 5's table at all, so it needs a founder decision on a
+  number before it can be added -- queued as part of Q107's follow-on rather
+  than invented here.
+- **PRE-LAUNCH GATE: an impersonating superuser's DIRECT PostgREST reads are
+  authorised and unrecorded. Owner: the founder. Added 2026-09-08 (Phase 7
+  Task 2, fix round 1, Important 4.)** This is a NAMED GATE, not a note, and
+  it is here so that a residual disposed of as "acceptable at MVP" cannot
+  quietly become "done". **The measured fact:** `authenticated` holds `SELECT`
+  on every tenant table, those policies call
+  `private.permitted_organisations()` / `private.full_scope_organisations()`,
+  and both now consult `private.impersonated_organisations()`. So
+  `GET /rest/v1/contacts?organisation_id=eq.<target>` with the browser's anon
+  key and a live session **returns rows and mints no
+  `impersonation.page_viewed` row**. The app-side audit at `getCurrentOrg()`
+  is complete for every path through the Next.js app and fails closed, but it
+  is not a database-level control, and Postgres cannot fire a trigger on
+  SELECT. **Why it was accepted at MVP:** no read-audit mechanism exists
+  anywhere in this product; the *session itself* — request, consent, start,
+  end/expiry — remains audited in-transaction at the database, which is
+  exactly the set the binding constraint enumerates ("actor, org, reason,
+  start/end"); and the window is consented, time-boxed and read-only.
+  **What closing it looks like, so the next person does not have to derive
+  it:** either `pgaudit` (session/object audit on the impersonating role) or
+  an RPC-only read surface for this grant — i.e. revoking direct table SELECT
+  for an impersonating session and routing its reads through auditing
+  definer functions. Both are real work and neither is a one-line fix, which
+  is precisely why it is a gate with an owner rather than a TODO.
+  Cross-referenced in `SECURITY.md` § 10's "Break-glass impersonation" risk
+  row (residual 1) and § 7's page-access subsection; **if this entry and
+  those disagree, this one is the schedule and they are the description.**
 - **SCREEN-READER PASS. Owner: the founder (or a nominee). Due: before Phase 10
   exit. Script: `task-8-report.md` § 3.** Added 2026-08-30 (final review I-13).
   No screen-reader pass has ever been run on this product -- it has now been
@@ -3274,6 +3489,21 @@ recorded for the history and the residual each leaves; the rest are open.
   tenant, index-backed) would be many times too generous for a query whose
   unit cost scales with the whole platform instead.
 
+  **BUILT 2026-09-09, Phase 7 Task 5, and it DID name the endpoint by name.**
+  `rate_limit_policies` carries `network_discovery` as its own category at
+  30/60s, keyed on the TABLE (`network_directory`) in `lib/list/query.ts`
+  rather than on a spec flag, so a copied spec cannot opt out and a plain
+  BROWSE is metered as well as a search -- the O(platform) cost is paid with
+  or without a term typed. The 31st read in a minute is refused through the
+  real page function against a real Postgres in
+  `tests/integration/security/rate-limit-network-discovery.test.ts`, which
+  also proves the search budget is a genuinely separate one. **The sentence
+  above stays true of ONE path:** a script hitting
+  `/rest/v1/network_directory?display_name=ilike.*` DIRECTLY, without the
+  app, is still unmetered and cannot be metered inside a PostgREST GET
+  (read-only transaction vs. a counter write). DECISIONS-QUEUE Q107, and a
+  named gate in `SECURITY.md` § 5 and § 10.
+
 ### Opened by Task 4 (request-to-connect, the accept unlock, the link picker)
 
 - **There is no notification of any kind when a connection request is sent,
@@ -3716,7 +3946,17 @@ worktree lasts; the exit document restates all nineteen in the same form.
   organisation can be asked again immediately and indefinitely, and nothing
   meters it — the mitigation is the Phase 7 network rate limiter (Q86/Q87),
   NOT anything in the Phase 6 change, so that limiter is now more load-bearing
-  than when it was deferred.
+  than when it was deferred. **METERED 2026-09-09 (Phase 7 Task 5,
+  `20260909040000`).** Note it needed its OWN budget rather than the discovery
+  one: metering the directory bounds how fast an abuser can FIND
+  organisations, not how fast they can pester ones they already found, and
+  sending is a server action that never passes the list chokepoint. 10/hour
+  **per organisation** — per-user is bypassed by inviting a colleague — and
+  the crossing files a `rate_limit_tripped` alert, which is the first
+  operator-visible signal of network harassment this product has had. The
+  NUMBER is a recommended default rather than a founder ruling
+  (DECISIONS-QUEUE Q112): it is the one row in `SECURITY.md` § 5 that document
+  proposes rather than inherits, and changing it is one UPDATE plus one line.
 - **Q80 (connection scope):** organisation-to-organisation, symmetric, and
   ORG-WIDE — accepting one request also resolves the requester org's other
   published profiles' `connections`-level fields.
@@ -3743,13 +3983,19 @@ worktree lasts; the exit document restates all nineteen in the same form.
   one that leaks); keyset pagination with a server page ceiling; measure the
   real cost on a seeded corpus and record it honestly. The 30 req/min limiter
   named in `SECURITY.md` § 5 is deferred to Phase 7 and disclosed as
-  unimplemented, not left implied.
+  unimplemented, not left implied. **CLOSED by Phase 7 Task 5**: built as
+  specified, app-side at the list chokepoint, with no `SECURITY DEFINER`
+  search function added -- the constraint held. The direct-PostgREST
+  residual is Q107.
 - **Q87 (accept the linear search ceiling, or build a dedicated search path —
   found mid-phase, Task 3):** accept the linear-with-the-platform search cost
   for MVP (measured: 44-86ms at 20k profiles, growing with the WHOLE
   platform's published-row count, not one tenant's), with the Phase 7 rate
   limiter as the mitigant; a dedicated, separately-reviewed search path is
   scoped future work rather than a default reached under time pressure.
+  **The mitigant exists as of Phase 7 Task 5**, so the ceiling is now
+  accepted WITH its throttle rather than bare; the dedicated search path is
+  still unbuilt and still deliberately so.
 - **Q88 (suspended-org network visibility — found mid-phase, Task 5):** leave
   the behaviour as measured for MVP — a suspended org's published profile
   stays visible to a counterparty AND to the suspended org's own members —
@@ -3790,3 +4036,46 @@ worktree lasts; the exit document restates all nineteen in the same form.
   persistent, correctly-announced trigger, and replacing a native disclosure
   with a scripted one to gain Escape would trade real robustness for a
   courtesy. Revisit only if user feedback asks for it.
+
+---
+
+## Phase 7 Task 7 (the permission-test gate) — exit notes
+
+**DONE 2026-09-16.** The task itself is discharged; this section exists because
+the final review found it was the only task in the phase with no entry here,
+and because it shipped a real hardening change that appeared in none of the
+three documents.
+
+- **Q125 — three `UPDATE` grants were table-level where the write is
+  three columns. SHIPPED, not owed.** `20260919000000` narrows
+  `authenticated`'s `UPDATE` on `public.incident_alerts` to
+  `(resolved_at, resolved_by)`, and `20260919001000` narrows both
+  `organisation_billing_overrides` and `organisation_feature_overrides` to
+  `(revoked_at, revoked_by, revoked_reason)` — exactly what the two
+  `revoke_*` RPCs write. **The subtlety that makes such a narrowing real:** in
+  Postgres a column-level `grant` does NOT revoke a prior table-level one, so a
+  narrowing that forgets the `revoke` is a silent no-op. Both migrations issue
+  the `revoke` first, and the net effect was confirmed on the live catalogue
+  (`authenticated` holds `UPDATE` on exactly those columns, no later migration
+  re-widens, `20260920000000` is comment-only). Every trigger guard is kept as
+  defence in depth; three assertions were strengthened rather than relaxed to
+  match. Recorded here, in `CLAUDE.md` § Superuser dashboard and in
+  `SECURITY.md` § 2 — it was previously recorded only in
+  `DECISIONS-QUEUE.md`.
+- **Q126 — the server-action layer is not probed as a principal.** Mitigated
+  rather than open: no module under `lib/admin/` or `lib/feedback/` imports the
+  service-role client, and `tests/unit/email/service-client-census.test.ts`
+  makes that an assertion (exactly three `lib/email/*` importers allowed) rather
+  than an observation. **Genuinely open:** `lib/supabase/storage.ts` has no
+  equivalent census. Full reasoning in `DECISIONS-QUEUE.md` Q126.
+- **Two censuses, not two checklists.** The RPC and relation inventories in
+  `tests/integration/security/phase7-permission-matrix.test.ts` are unfiltered
+  `pg_proc`/`pg_class` queries asserted `toEqual` against the file's own lists
+  plus a declared pre-Phase-7 allowlist, so a Phase 8 grant lands as a red test
+  naming itself. **What a census still cannot catch** is named in
+  `SECURITY.md` § 2 and stays owed: the RPC census matches on `proname` rather
+  than signature (an overload is invisible), a function left with
+  `proacl is null` inherits EXECUTE to PUBLIC and yields zero rows from
+  `aclexplode`, and the page census globs `app/(app)/super/**` only, so a Phase
+  8 route handler under `app/api/**` reading platform data would not be seen.
+  Three one-line additions, all cheap, none of them made.

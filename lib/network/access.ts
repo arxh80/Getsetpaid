@@ -52,17 +52,28 @@ import "server-only";
 // EVERY NETWORK WRITE CONTROL IN THE PRODUCT
 // ===========================================================================
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
-// to { status: "no-subscription", tier: "free" }, and every organisation has no
-// subscription today (create_organisation writes no row).
+// to { status: "no-subscription", tier: "free" }.
 // private.network_publish_organisations() exempts exactly that case ("not yet
-// billed => not yet gated"). So entitlementsPermitNetworkPublish MUST return
-// TRUE for "no-subscription" -- reading networkPublish straight off
-// TIER_MATRIX.free (which is FALSE) would disable every network write control
-// in every workspace while the database happily accepted the write. The mirror
-// is explicit and bound by
+// billed => not yet gated") -- STILL, as of Phase 7 Task A (2026-09-08): that
+// task closed the identical escape on private.crm_write_organisations() and
+// private.custom_field_limit(), but deliberately left this one (and private.
+// finance_module_organisations()'s twin) untouched -- see FOLLOW-UPS.md
+// § "Phase 7 -- superuser dashboard" for the follow-up entry Task A added when
+// it discharged the CRM one. public.create_organisation() DOES write a
+// subscription row now (a Starter one, at birth), so "no subscription row" is
+// no longer the state every organisation is in -- it is reachable only by an
+// organisation planted directly (bypassing create_organisation()), which is
+// exactly how the binding test below constructs it. So
+// entitlementsPermitNetworkPublish MUST still return TRUE for
+// "no-subscription" -- reading networkPublish straight off TIER_MATRIX.free
+// (which is FALSE) would disable every network write control in every
+// workspace still reachable in that state, while the database happily
+// accepted the write. The mirror is explicit and bound by
 // tests/integration/network/network-access-matches-db.test.ts, which drives
-// BOTH sides across every subscription status and both grace sides; when Phase
-// 7 removes the escape from the function, that test goes red here.
+// BOTH sides across every subscription status and both grace sides; when a
+// future task removes the escape from the function, that test goes red here
+// -- the same way crm-write-access-matches-db.test.ts did for the CRM escape
+// in Task A.
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import { hasPermission, type CurrentOrg } from "@/lib/auth";

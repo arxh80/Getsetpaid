@@ -95,6 +95,39 @@ test("a clean upload lands Ready and downloads via a signed URL", async ({
   expect(res.headers()["location"], "signed URL in Location header").toBeTruthy();
 });
 
+// Phase 7 Task 6 cleanup round (N5): the product promises 25 MiB in three
+// agreeing places (DOCUMENT_MAX_SIZE_BYTES, documents.size_bytes' CHECK, the bucket's
+// file_size_limit), but `uploadDocumentAction` is a Server Action and Next's
+// DEFAULT body cap is 1 MB. Every fixture above is ~200 bytes, so no gate had
+// ever posted a body over 1 MB, and an ordinary 2 MB contract PDF got a
+// framework 413 before the action ran. This posts a 2 MiB PDF -- generated
+// here, never a committed fixture -- through the real page and asserts the
+// APP's own outcome. It fails on f71b2bb with "Body exceeded 1 MB limit".
+test("a 2 MiB document uploads through the page and lands Ready", async ({
+  page,
+}) => {
+  const name = "walk-two-mib.pdf";
+  const twoMiB = Buffer.alloc(2 * 1024 * 1024);
+  CLEAN_PDF.copy(twoMiB, 0);
+
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}/documents`);
+  await page.locator("#document-file").setInputFiles({
+    name,
+    mimeType: "application/pdf",
+    buffer: twoMiB,
+  });
+  await page.getByRole("button", { name: "Upload", exact: true }).click();
+  await expect(page.getByText("Done. Uploaded.", { exact: true })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("A server error occurred");
+
+  const link = page.getByRole("link", { name });
+  await expect(link).toHaveCount(1);
+  const row = page.getByRole("row").filter({ has: link });
+  await expect(row.getByText("Ready")).toBeVisible();
+  await expect(row.getByText("2 MiB", { exact: false })).toBeVisible();
+});
+
 test("an EICAR upload lands Quarantined with no download link", async ({
   page,
 }) => {
