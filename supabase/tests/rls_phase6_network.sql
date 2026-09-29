@@ -1403,11 +1403,20 @@ select nw.val('NX3b CONTROL: those payloads DO carry field_visibility (NX3 is no
      where action='network_profile.visibility_changed'
        and after ? 'field_visibility'$$, '2');
 
--- No audit row for a link (Q82: private, grants nothing) -- stated so the
--- absence reads as a decision rather than an oversight.
-select nw.val('NX4 network_links emits NO audit row, on purpose (Q82)',
-  $$select count(*)::text from public.audit_events
-     where target_type='network_link' or action like 'network_link%'$$, '0');
+-- MOVED IN PHASE 8 TASK 7 (20261006000000, Q122). This asserted that a link
+-- emits NO audit row "on purpose (Q82)", and Q82's actual rule is narrower:
+-- the PUBLISHER is never told who linked its profile. Task 7 put the generic
+-- audit pair on network_links because a link is a client write like any other
+-- and an unaudited one is a gap an incident review cannot close; Q82 is kept
+-- by where the row is FILED -- under the LINKING organisation, whose own
+-- workspace it is -- and by the fact that no member of any tenant can read
+-- audit_events at all (only the platform superuser can). So the assertion is
+-- now the property Q82 needs: every network_link audit row is filed under the
+-- link's own organisation, and there is at least one (NL's insert above).
+select nw.val('NX4 network_links IS audited since Q122, and every row is filed under the LINKING organisation, never the publisher''s (Q82)',
+  $$select count(*)::text || '/' || count(*) filter (where e.organisation_id is distinct from l.organisation_id)::text
+      from public.audit_events e join public.network_links l on l.id = e.target_id
+     where e.target_type='network_link'$$, '1/0');
 
 -- ===========================================================================
 -- NX5. INSERT-AS-PUBLISHED IS AUDITED (final-review finding, 20260907001000).
@@ -1458,9 +1467,20 @@ select nw.val('NX5c ...and it emits EXACTLY ONE network_profile.published row',
   $$select count(*)::text from public.audit_events
      where action='network_profile.published'
        and target_id='e0110000-0000-0000-0000-0000000000a2'$$, '1');
-select nw.val('NX5d ...while the draft INSERT emitted none (the else-arm survives the fix)',
-  $$select count(*)::text from public.audit_events
-     where target_id='e0110000-0000-0000-0000-0000000000a1'$$, '0');
+-- MOVED IN PHASE 8 TASK 7. This asserted the draft INSERT emitted NO row at
+-- all, which was true while private.audit_network_row() was the table's only
+-- writer. Since 20261006000000 the generic pair records a draft insert as
+-- network_profile.created; what must still hold is the part this assertion
+-- existed for -- the dedicated writer's else-arm: a DRAFT is not a PUBLISH.
+-- Filtered by entity as well as id -- the generic row carries it under
+-- values, the dedicated one at the top level -- because this id was used once
+-- already (earlier in this file, deleted at the end of that section) and its
+-- earlier rows are in the log.
+select nw.val('NX5d ...while the draft INSERT emitted exactly one network_profile.created and NO .published (the else-arm survives the fix)',
+  $$select coalesce(string_agg(action, ',' order by created_at), '<none>') from public.audit_events
+     where target_id='e0110000-0000-0000-0000-0000000000a1'
+       and '55550000-0000-0000-0000-000000000031' in (after->'values'->>'entity_id', after->>'entity_id')$$,
+  'network_profile.created');
 
 -- The published-at-birth profile leaves the platform-wide directory it just
 -- entered, so no later suite inherits an extra discoverable row from this
