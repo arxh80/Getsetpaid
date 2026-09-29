@@ -1433,6 +1433,52 @@ export async function impersonationAuditActions(
   return result.rows.map((r) => r.action);
 }
 
+export interface CrmAuditRowRead {
+  action: string;
+  target_type: string;
+  organisation_id: string | null;
+  actor_user_id: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+}
+
+/**
+ * PHASE 8 TASK 7 (Q122). Every audit row for one CRM target, oldest first,
+ * straight out of Postgres as `postgres` -- the SERVER-ACTION half of "a
+ * direct PostgREST write is audited identically to a server action"
+ * (`tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts` is
+ * the other half). Both halves compare the payload's keys against
+ * `crmAuditAllowlist()` below, read from the database, so "identically"
+ * means "held to the same list", not "two tests that happen to agree".
+ */
+export async function crmAuditRows(targetId: string): Promise<CrmAuditRowRead[]> {
+  const result = await db().query<CrmAuditRowRead>(
+    `select action, target_type, organisation_id, actor_user_id, before, after
+       from public.audit_events where target_id = $1
+      order by created_at, id`,
+    [targetId],
+  );
+  return result.rows;
+}
+
+/** The ids of a task's link rows, so their audit rows can be read. */
+export async function taskLinkIdsFor(taskId: string): Promise<string[]> {
+  const result = await db().query<{ id: string }>(
+    `select id from public.task_links where parent_id = $1 order by created_at`,
+    [taskId],
+  );
+  return result.rows.map((r) => r.id);
+}
+
+/** `private.audit_crm_value_columns(target)`, sorted: the ONE allowlist. */
+export async function crmAuditAllowlist(target: string): Promise<string[]> {
+  const result = await db().query<{ c: string[] }>(
+    `select private.audit_crm_value_columns($1) as c`,
+    [target],
+  );
+  return [...result.rows[0].c].sort();
+}
+
 /**
  * PHASE 7 TASK 2. Every DISTINCT route recorded against this organisation's
  * impersonation page views, in order of first appearance.
