@@ -1114,6 +1114,70 @@ select c7.val('PS4 VOLUME, measured: the rows this suite''s walk produced, by ta
   'document=4 document_link=3 event=5 event_lineup=4 financial_entry=4 meeting=4 meeting_link=3 membership=3 merge_candidate=1 network_connection_request=7 network_link=4 network_profile=6 note=4 note_link=3 subscription=2 task=4 task_link=4');
 
 -- ===========================================================================
+-- § PQ  merge_candidate.created AND .restored, BEHAVIOURALLY (fix round 1, M3)
+-- ===========================================================================
+-- § PM exercised only `.soft_deleted`: its fixture pair is planted
+-- sessionless, so the `.created` every flagged pair writes in production --
+-- from public.screen_for_duplicates(), under the creating member's session
+-- -- had no assertion, and nor did `.restored`. AFTER § PS on purpose, so the
+-- walk's measured volume (PS4/PS5) is unchanged; § PZ removes it by actor.
+\set p_sc1 '''c7000000-0000-4000-8000-000000000061'''
+\set p_sc2 '''c7000000-0000-4000-8000-000000000062'''
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select c7.try('PQ1 pmanager creates two contacts a screen will pair (no email, so fuzzy_name)',
+  format($$insert into public.contacts (id, organisation_id, owner_user_id, name) values
+           (%L, %L, %L, 'ZQ7 Screenpair Harriet Okonkwo'),
+           (%L, %L, %L, 'ZQ7 Screenpair Harriet Okonkwo')$$,
+         :p_sc1, :'alpha_org', :'pmanager', :p_sc2, :'alpha_org', :'pmanager'), 'ok(2)');
+select c7.try('PQ2 ...and runs the screen the create action runs, as themselves',
+  format($$select public.screen_for_duplicates(%L, 'contact', %L)$$, :'alpha_org', :p_sc2), 'ok(1)');
+reset role; reset request.jwt.claims;
+\o /dev/null
+select id::text as p_sq from public.merge_candidates
+ where organisation_id = :'alpha_org' and keep_id in (:p_sc1, :p_sc2) and duplicate_id in (:p_sc1, :p_sc2) \gset
+\o
+select c7.val('PQ2b DENOMINATOR: the screen really flagged the pair, and its LABEL carries the sentinel',
+  format($$select count(*)::text || '/' || bool_and(label like '%%ZQ7%%')::text || '/' || min(reason)
+            from public.merge_candidates where id = %L$$, :'p_sq'), '1/true/fuzzy_name');
+select c7.val('PQ2c merge_candidate.created from the SCREEN: actor pmanager, org ALPHA, allowlisted keys, owners carried, label not',
+  format($$select r.action || ' ' || (r.actor_user_id = %L)::text || ' ' || (r.organisation_id = %L)::text
+              || ' | ' || (select string_agg(k, ',' order by k collate "C") from jsonb_object_keys(r.after -> 'values') k)
+              || ' | ' || (r.after->'values'->>'keep_owner_user_id' = %L)::text
+              || ' ' || c7.leaks(%L, 'ZQ7')::text || ' ' || c7.leaks(%L, 'Okonkwo')::text
+            from (select * from public.audit_events where target_id = %L and action = 'merge_candidate.created') r$$,
+         :'pmanager', :'alpha_org', trim(both '''' from :'pmanager'), :'p_sq', :'p_sq', :'p_sq'),
+  'merge_candidate.created true true | deleted_at,duplicate_id,duplicate_owner_user_id,entity_type,keep_id,keep_owner_user_id,reason,resolution,resolved_by | true false false');
+-- .restored: NOT REACHABLE FROM A CLIENT, measured rather than assumed. The
+-- one UPDATE policy's WITH CHECK requires resolved_by = auth.uid(), and
+-- merge_candidates_resolution_complete requires deleted_at, resolution and
+-- resolved_by to be null or set together -- so un-dismissing a pair means a
+-- null resolved_by, which the policy refuses. The verb is in the catalogue
+-- because the generic writer emits it for any session-attributed restore
+-- (PQ5 is that shape, through a definer path that bypasses the policy).
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select c7.try('PQ3 pmanager dismisses the screened pair',
+  format($$update public.merge_candidates set deleted_at = now(), resolution = 'dismissed', resolved_by = %L where id = %L$$,
+         :'pmanager', :'p_sq'), 'ok(1)');
+select c7.try('PQ4 ...and CANNOT un-dismiss it: the resolve policy''s WITH CHECK refuses a null resolved_by',
+  format($$update public.merge_candidates set deleted_at = null, resolution = null, resolved_by = null where id = %L$$,
+         :'p_sq'), 'denied(42501)');
+reset role;
+-- The definer shape: a session is set, RLS is not in the way (postgres), so
+-- only the trigger decides. This is what a future restore RPC would do.
+update public.merge_candidates set deleted_at = null, resolution = null, resolved_by = null where id = :'p_sq';
+reset request.jwt.claims;
+select c7.val('PQ5 a session-attributed restore writes merge_candidate.restored, attributed, the dismissal''s values carried',
+  format($$select r.action || ' ' || (r.actor_user_id = %L)::text || ' ' || (r.after->'changed')::text
+              || ' ' || coalesce(r.before->'values'->>'resolution', '<null>') || '->' || coalesce(r.after->'values'->>'resolution', '<null>')
+            from c7.last_row(%L) r$$, :'pmanager', :'p_sq'),
+  'merge_candidate.restored true ["deleted_at", "resolution", "resolved_by"] dismissed-><null>');
+select c7.val('PQ6 the screened pair''s whole story: created, soft_deleted, restored -- and the refused write wrote nothing',
+  format($$select c7.actions_for(%L)$$, :'p_sq'),
+  'merge_candidate.created,merge_candidate.soft_deleted,merge_candidate.restored');
+
+-- ===========================================================================
 -- § PZ  HOUSEKEEPING -- every row and audit event this suite created goes.
 -- Sessionless, so the deletes below are themselves un-audited.
 -- ===========================================================================
@@ -1134,10 +1198,10 @@ delete from public.tasks where id = :p_tk;
 delete from public.event_lineup where id = :p_lu;
 delete from public.event_status_changes where event_id = :p_ev;
 delete from public.events where id = :p_ev;
-delete from public.merge_candidates where id = :p_mc;
+delete from public.merge_candidates where id in (:p_mc, :'p_sq');
 delete from public.organisation_memberships where id = :p_mb;
 delete from public.companies where id in (:p_co, :p_co2, :p_bco);
-delete from public.contacts where id in (:p_ct, :p_ct2);
+delete from public.contacts where id in (:p_ct, :p_ct2, :p_sc1, :p_sc2);
 delete from public.artists where id = :p_ar;
 delete from public.venues where id = :p_ve;
 delete from public.rate_limit_counters where category = 'network_connection_request'
