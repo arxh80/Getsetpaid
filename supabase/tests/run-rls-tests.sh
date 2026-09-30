@@ -1120,6 +1120,33 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 8: THE SEAMS THAT SHIP CLOSED (rls_phase8_permissions.sql)
+#
+# public.document_versions ships with no write path at all (Phase 4, Release
+# 1.1). This suite asserts it is closed, then OPENS it the way a Release 1.1
+# migration would -- one INSERT grant and one write policy -- and measures that
+# the fences already there hold on that day (the composite tenant foreign key,
+# the read policy, the audit-coverage census noticing the new write), then
+# closes it again and asserts it is exactly as it was found.
+# ============================================================================
+run_suite "PHASE 8 PERMISSIONS" rls_phase8_permissions.sql pm 19 "${P7VARS[@]}"
+pm_fails=$SUITE_FAILS
+if [ "$pm_fails" != "0" ]; then
+  echo "PHASE 8 PERMISSIONS SUITE FAILED: $pm_fails failing assertion(s)" >&2
+  echo "  DV0 red: a fixture is missing and nothing below means anything." >&2
+  echo "  DV1-DV4 red: document_versions GAINED A WRITE PATH (a grant or a" >&2
+  echo "  policy) without the Release 1.1 work that is supposed to come with it." >&2
+  echo "  DV6 red: THE COMPOSITE TENANT FOREIGN KEY IS GONE -- a version could" >&2
+  echo "  point at another workspace's document. DV9 red: the read policy lets" >&2
+  echo "  a version cross tenants. DV10 red: the audit-coverage census no longer" >&2
+  echo "  notices a new client write. DV12-DV15 red: this suite did not put the" >&2
+  echo "  table back; reset before trusting anything after it." >&2
+  psql_status=1
+else
+  echo "Phase 8 permissions suite: all assertions passed."
+fi
+
+# ============================================================================
 # ONE RETENTION RUN AT A TIME, UNDER A REAL RACE (Task 6 fix round 1, I2).
 #
 # The suite above is single-session: RR17-RR19 prove a second start is refused
