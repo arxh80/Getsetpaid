@@ -316,8 +316,16 @@ test("a Manager asks for a copy of their data, the operator works it, and an ove
     // SECOND PRESS: now it is recorded, and the confirmation names the
     // workspace and says nothing was sent.
     await processorRow.getByRole("button", { name: `Pass it on to ${world.orgName}` }).click();
-    await expect(operator.getByText(`Recorded as passed to ${world.orgName}`)).toBeVisible();
-    await expect(operator.getByText("Nothing was sent")).toBeVisible();
+    // SCOPED TO THE OUTCOME REGION. `getByText` is a case-insensitive
+    // substring match, and once the routed row re-renders, the still-open
+    // routing form says "Currently recorded as passed to <org>" -- which
+    // contains this sentence. Whether the form's copy was in the tree by the
+    // time the locator resolved was a race (one full run in several hit it as
+    // a strict-mode violation), so the assertion is pinned to the one element
+    // that carries the confirmation: the page's <ActionOutcome> status region.
+    const outcome = operator.getByTestId("dsr-outcome").getByRole("status");
+    await expect(outcome).toContainText(`Recorded as passed to ${world.orgName}`);
+    await expect(outcome).toContainText("Nothing was sent");
 
     const afterRouting = await dataSubjectRequests(manager.id);
     expect(afterRouting.find((r) => r.id === processorId)).toMatchObject({
