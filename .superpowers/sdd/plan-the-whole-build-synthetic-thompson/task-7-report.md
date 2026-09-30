@@ -247,7 +247,7 @@ migration edited.
 | Finding | Status | Commit |
 |---|---|---|
 | C1 third-party ids survive erasure in audit payloads | **closed** | `5595f9a` |
-| I1 gate 5 + honest e2e record; O3 through the real suite | **closed** (see Gates) | `838ecc3` |
+| I1 gate 5 + honest e2e record; O3 through the real suite | **closed** (163/1 full run + 20/20 spec rerun; see Gates; N6 corrected) | `838ecc3` |
 | M1 census counts a disabled trigger | **closed** | `50d47c2` |
 | M2 census blind shapes | **closed where cheap (3); the rest stated** | `50d47c2` |
 | M3 merge_candidate .created/.restored never exercised | **closed** | `81d7d8b` |
@@ -506,7 +506,7 @@ run**.
      per-file cases for the two new migrations.
    - Permission matrix **447** (unmoved).
    - 210 -> 210.
-5. Fresh reset + `pnpm test:e2e`: RUNNING (launched detached 15:25:49 at 0c0be4b, 210 migrations; log in the session scratchpad). Resume point if this line is still here: read that log, record passed/failed/did-not-run and the duration, and check the migration count.
+5. Fresh reset + `pnpm test:e2e` (at 0c0be4b, 210 -> 210): **163 passed / 1 failed / 0 did not run (46.8m)**. The one red: `tenant-breakout.spec.ts:172` REFUSAL PARITY hit the 60 s test timeout with the ghost page still on the "Loading..." skeleton (Protocol error: session closed) -- the machine was memory-starved. Re-run of that spec alone after a fresh reset (recorded by the controller): **20 / 20 passed (5.3m)**, the parity test at 54.8 s. Not a Task 7 regression (no page, loader or tenant-breakout change in range); it IS a latent near-timeout: a 50+ s test under a 60 s ceiling. Logged as follow-up F-T7-1 (split the per-family loop or raise that one test's timeout -- never retries).
 
 ### Questions queued
 

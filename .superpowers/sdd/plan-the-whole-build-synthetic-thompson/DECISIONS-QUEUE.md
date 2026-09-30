@@ -1055,3 +1055,32 @@ runs on every pull request, and the catalogue one still runs before a merge.
   populated by `private.log_audit_event()`, which turns both steps into an
   index lookup -- a schema change to the audit writer, so not taken silently
   here.
+
+## FOUNDER ANSWERS — 2026-09-30
+
+The founder answered every open question from Q89 to Q187. These are rulings, not defaults; cite "founder 2026-09-30".
+
+**Rulings that change or add work.** These are Phase 8 Tasks 9a/9b/9c; see `task-9*-brief.md`.
+- **Q142:** the app host is an **IONOS VPS** (IONOS SE). The region is most likely the UK and the server is not bought yet, so mark the region PENDING.
+- **Q145:** the production Supabase region is **Ireland (eu-west-1)**.
+- **Q157(3)/Q174/Q45:** build **all** notification emails: DSR received/closed, erasure failure, export ready, connection requests and task reminders. They go through the one Brevo sender.
+- **Q176/Q178 CHANGED, and this reverses Q104:** an **Owner may close their own workspace**.
+  - Closing takes an automatic full backup, emails the superuser and raises a superuser-dashboard item. From that item the founder either reassigns the workspace to a new Owner or deletes it permanently.
+  - Members keep read-only access while it is closed.
+  - The 60-day purge still applies.
+- **Q167 CHANGED:** the account export **includes** the operator's break-glass reason and the superuser's identity.
+- **Q184:** build the audit-purge ceiling release. It is step-up gated and lasts **3 days**.
+- **Q185:** show "File deleted under the retention policy on <date>" in place of Restore.
+- **Q113:** uploads are limited to **10/hour per user**. The **25 MiB** cap stays, enforced at the write.
+- **Q111:** incident alerts go by **email, a dashboard notification and a Telegram bot**. Telegram replaces SMS.
+  - The bot is `@getsetpaid_bot`. The env vars are `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALERT_CHAT_ID`.
+  - A message carries the alert type, counts and a `/super/health` link only. It contains no personal data.
+- **Q169:** heavy CI jobs run on PRs and on main for a month (option a).
+- **Q172:** covered by those heavy jobs (option c).
+- **Merge `infra-parallel-stacks` at the start of Phase 9.**
+
+**Kept as shipped or as recommended:** Q180, Q161, Q165, the numbers for Q164/Q157/Q159/Q152, Q171 (Phase 10), Q141, Q138, Q136, Q187, Q147, Q106, Q99 and Q100. For every other open technical question, keep the shipped default.
+
+**Waiting for counsel:** Q130, Q132, Q133, Q139, Q140, Q146, Q148–Q150, Q158, Q173, Q177 and the retention-page gaps.
+
+**Opened after the answers, with defaults:** Q188–Q190 (Task 7), Q191 (`merge_candidate.restored` has no client path; keep the catalogue entry) and Q192 (the erasure payload scan; no change for MVP, and a GIN `person_ids` column at around 2M rows).
