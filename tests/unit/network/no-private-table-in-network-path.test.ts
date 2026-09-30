@@ -240,6 +240,48 @@ describe("the network path names no tenant-private relation (the CI-visible half
     expect(new Set(NETWORK_RELATIONS).size).toBe(5);
   });
 
+  // Phase 8 Task 7 fix round 1, M4. The audit catalogue's exemption says "it
+  // issues no query", and that was a sentence rather than an assertion: the
+  // exemption covers the whole file for ever, so a query on network_profiles
+  // added here later would be exempt too. These are the off-path files whose
+  // justification is that they are CATALOGUES, and this makes the claim
+  // binding -- no module import of any kind (so no client), no dynamic
+  // import or require, no `.rpc(`, no `fetch(`, and no `.from(` other than
+  // the standard library's `Array.from(`.
+  const CATALOGUE_ONLY_OFF_PATH = ["lib/admin/audit-actions.ts"] as const;
+  function queryShapes(text: string): string[] {
+    const found: string[] = [];
+    if (/^\s*import\b/m.test(text)) found.push("an import");
+    if (/\bimport\s*\(/.test(text)) found.push("a dynamic import");
+    if (/\brequire\s*\(/.test(text)) found.push("a require");
+    if (/\.rpc\s*\(/.test(text)) found.push("an .rpc( call");
+    if (/\bfetch\s*\(/.test(text)) found.push("a fetch( call");
+    if (/(?<!\bArray)\.from\s*\(/.test(text)) found.push("a .from( call");
+    return found;
+  }
+
+  it("a CATALOGUE-ONLY off-path file stays query-free, so its exemption cannot shelter a read (M4)", () => {
+    for (const file of CATALOGUE_ONLY_OFF_PATH) {
+      expect(Object.keys(OFF_PATH_NETWORK_READERS), file).toContain(file);
+      const text = stripComments(readFileSync(root + file, "utf8").replace(/\r\n/g, "\n"));
+      // DENOMINATOR: the file really is the catalogue and really names a
+      // network relation -- otherwise "no query in it" would be vacuous.
+      expect(text, file).toContain("CRM_AUDIT_TARGET_TABLE");
+      expect(NETWORK_RELATIONS.some((r) => text.includes(r)), file).toBe(true);
+      expect(queryShapes(text), `${file} is declared a catalogue and now issues a query`).toEqual([]);
+    }
+  });
+
+  it("POSITIVE CONTROL: the query-shape detector flags each shape it claims to, and not Array.from", () => {
+    expect(queryShapes(`const a = Array.from(new Set(["x"]));`)).toEqual([]);
+    expect(queryShapes(`import { createClient } from "@/lib/supabase/server";`)).toEqual(["an import"]);
+    expect(queryShapes(`const m = await import("./x");`)).toEqual(["a dynamic import"]);
+    expect(queryShapes(`const m = require("./x");`)).toEqual(["a require"]);
+    expect(queryShapes(`await supabase.rpc("f");`)).toEqual(["an .rpc( call"]);
+    expect(queryShapes(`await fetch("/rest/v1/network_profiles");`)).toEqual(["a fetch( call"]);
+    expect(queryShapes(`await db.from("network_profiles").select("*");`)).toEqual(["a .from( call"]);
+  });
+
   it("DENOMINATOR: all three directories contributed files", () => {
     // A floor over the union is satisfied by one very full directory. This is
     // what stops `components/network` quietly dropping out of the sweep.
