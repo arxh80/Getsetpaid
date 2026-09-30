@@ -120,7 +120,14 @@ test("a task links to an event, completes, and lands on the event timeline", asy
     expect(r.actor_user_id).toBe(manager);
     expect(r.organisation_id).toBe(world.orgId);
     expect(r.target_type).toBe("task");
-    expect(Object.keys((r.after as { values: object }).values).sort()).toEqual(taskKeys);
+    // A .created row carries every allowlisted column; an .updated row
+    // carries the allowlisted columns that CHANGED -- never anything else.
+    const keys = Object.keys((r.after as { values: object }).values).sort();
+    const expected =
+      r.action === "task.created"
+        ? taskKeys
+        : taskKeys.filter((k) => ((r.after as { changed: string[] }).changed ?? []).includes(k));
+    expect(keys).toEqual(expected);
     expect(JSON.stringify(r)).not.toContain("advance the settlement");
   }
   const completion = taskRows[1];
