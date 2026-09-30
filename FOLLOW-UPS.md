@@ -2813,7 +2813,16 @@ next person does not have to re-derive it.
   registered. **Still open:** an Owner's rename of `organisations` is the one
   excused table (Q189); whether a `network_link.*` row is compatible with Q82
   is Q188 (shipped default: yes). `SECURITY.md` § 7 has the as-built text and
-  the measured volume.
+  the measured volume. **Fix round 1 (`20261007000000`, `20261007001000`)**:
+  the allowlist's person ids (an invitee's `user_id`, a reassigned
+  `owner_user_id`) survived a completed account erasure on rows whose actor
+  and target were someone else -- the erasure now replaces the id inside
+  every audit payload and refuses if one survives (C1); the census now
+  requires an ENABLED trigger, RLS on for the RPC-only class, and sees an
+  FK-less `organisation_id` table and a writable view (M1/M2). **Still open
+  from it:** Q191 (`merge_candidate.restored` has no client path) and Q192
+  (the erasure's payload scan is a sequential scan; measured 0.45 s at 500k
+  rows).
 - **Restore-from-audit is not possible, by design.** The audit payload is an
   allowlist of identifiers — `private.audit_crm_payload()` drops
   `custom_field_values.value` and `merges.field_resolution` — because
