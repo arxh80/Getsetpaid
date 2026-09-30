@@ -118,8 +118,17 @@ const OFF_PATH_NETWORK_READERS: Record<string, string> = {
     "the caller's spec names -- so it names every relation in the product " +
     "and a private-relation needle here would be a false positive on the " +
     "generic mechanism rather than a finding.",
+  // PHASE 8 TASK 7 (20261006000000, Q122): the audit catalogue maps each
+  // audited target to its physical table, and network_profiles /
+  // network_links are two of the sixteen tables that task audited.
+  "lib/admin/audit-actions.ts":
+    "the audit ACTION CATALOGUE, not a read path. CRM_AUDIT_TARGET_TABLE " +
+    "names network_profiles and network_links as the physical tables two " +
+    "audit targets live on (and AUDIT_COVERAGE_EXCUSALS names " +
+    "network_connection_requests' dedicated writer); it issues no query, " +
+    "and the integration census binds those strings to pg_trigger.",
 };
-// MEASURED at 163 migrations: exactly ONE. Two other files name a network
+// MEASURED at 163 migrations: exactly ONE; TWO since 208 (Phase 8 Task 7). Two other files name a network
 // relation in PROSE only -- `lib/admin/audit-log.ts` and the company detail
 // page -- and the comment stripper removes both, which is the first thing this
 // assertion happens to prove about the stripper rewritten in this same task.
