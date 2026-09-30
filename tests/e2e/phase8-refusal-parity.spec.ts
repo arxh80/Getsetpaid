@@ -1,0 +1,262 @@
+// =============================================================================
+// PHASE 8 TASK 8 -- REFUSAL PARITY ON EVERY PAGE PHASE 8 ADDED
+// =============================================================================
+// "Refused" is not the property. INDISTINGUISHABLE FROM ABSENT is: a refusal
+// that looks different from a page or record that does not exist tells a
+// prober what exists, which is the enumeration oracle `DESIGN.md` § Error
+// pages and tenant-breakout.spec.ts's REFUSAL PARITY test exist to close.
+// super-permissions.spec.ts asserts each /super refusal carries "Page not
+// found" and none of the page's own chrome; that is necessary and it is not
+// the oracle property, because it never compares the refusal with the
+// document a page that DOES NOT EXIST produces. This file does, directly, for
+// every Phase 8 surface that can refuse:
+//
+//   /super/legal, /super/data-requests  -- vs a /super URL that matches no
+//                                          route, per principal
+//   /[orgSlug]/settings/export          -- workspace-slug refusal: a real
+//                                          foreign slug vs a slug nobody has,
+//                                          and the literal 404 on both
+//   /account/exports/[jobId]/download   -- route handler: a real job that is
+//                                          not yours vs an id nobody has, and
+//                                          the literal 404 on both
+//   /account/*                          -- a signed-out caller is bounced the
+//                                          same way for a real page and a
+//                                          ghost one
+//
+// and it walks the two principals Phase 8 made meaningful: a person with no
+// workspace, and a member of a SUSPENDED workspace, who must still reach the
+// four /account pages (their statutory rights) while being refused /super.
+//
+// Compared as rendered innerText plus the document title -- raw bytes differ
+// on every response (CSP nonce, React stream ids), the argument
+// tenant-breakout.spec.ts's REFUSAL PARITY header makes in full.
+import { expect, test, type Page } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
+import {
+  deleteExportJob,
+  localStack,
+  PASSWORD,
+  plantQueuedAccountExport,
+  setOrganisationSuspended,
+  setUpWorld,
+  tearDownWorld,
+  type E2eWorld,
+} from "./support/fixtures";
+import { signIn, signOut } from "./support/sign-in";
+import { totpCode } from "../support/totp";
+
+let world: E2eWorld;
+let noWorkspace: { id: string; email: string };
+
+test.beforeAll(async () => {
+  world = await setUpWorld();
+  const { apiUrl, serviceRoleKey } = localStack();
+  const admin = createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const email = `t8-no-workspace-${Date.now()}@test.local`;
+  const { data, error } = await admin.auth.admin.createUser({ email, password: PASSWORD, email_confirm: true });
+  if (error || !data.user) throw new Error(`no-workspace principal: ${error?.message}`);
+  noWorkspace = { id: data.user.id, email };
+});
+
+test.afterAll(async () => {
+  const { apiUrl, serviceRoleKey } = localStack();
+  const admin = createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  if (noWorkspace) await admin.auth.admin.deleteUser(noWorkspace.id).catch(() => undefined);
+  await tearDownWorld(world);
+});
+
+/** A /super URL that matches no route at all -- the baseline a refusal must equal. */
+const SUPER_GHOST = "/super/zzz-phase8-no-such-page";
+/** The Phase 8 /super surfaces, including the editor's query-string view. */
+const PHASE8_SUPER = ["/super/legal", "/super/legal?doc=terms", "/super/data-requests"];
+/** A slug nothing can own: reserved-grammar-valid, never created. */
+const GHOST_SLUG = "zzz-phase8-ghost-workspace";
+const GHOST_ID = "00000000-0000-4000-8000-0000000000f8";
+
+async function signInByEmail(page: Page, email: string): Promise<void> {
+  await page.goto("/login");
+  await page.locator('input[name="email"]').fill(email);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).not.toHaveURL(/\/login/);
+}
+
+async function signInAsSuperuser(page: Page): Promise<void> {
+  await page.goto("/login");
+  await page.locator('input[name="email"]').fill(world.superuser.email);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  const heading = page.getByRole("heading", { name: "Enter your two-factor code" });
+  await expect(heading).toBeVisible();
+  await page.locator('input[name="code"]').fill(totpCode(world.superuserTotpSecret));
+  await page.getByRole("button", { name: "Verify and continue" }).click();
+  await expect(heading).toHaveCount(0);
+}
+
+/** One document, reduced to what a prober can compare. */
+async function documentOf(page: Page, url: string) {
+  const response = await page.goto(url);
+  await expect(page.locator("body")).toContainText("Page not found");
+  return {
+    status: response?.status() ?? -1,
+    text: await page.locator("body").innerText(),
+    title: await page.title(),
+    url: page.url(),
+  };
+}
+
+/** The oracle property, for a page refusal: the refused surface and the ghost
+ *  are the same document, and neither is a 403 or a bounce to /login. */
+async function expectParity(page: Page, who: string, real: string, ghost: string) {
+  const a = await documentOf(page, real);
+  const b = await documentOf(page, ghost);
+  expect([200, 404], `${who} ${real}: never 403, never a redirect; got ${a.status}`).toContain(a.status);
+  expect(a.url, `${who} ${real} bounced to /login`).not.toMatch(/\/login/);
+  // SOFT, so one run reports every channel that differs rather than the first.
+  expect.soft(a.status, `${who}: ${real} and ${ghost} must share one status`).toBe(b.status);
+  expect.soft(a.text, `${who}: ${real} and ${ghost} must render the identical document`).toBe(b.text);
+  expect.soft(a.title, `${who}: ${real} and ${ghost} must carry the same title`).toBe(b.title);
+}
+
+test("POSITIVE CONTROL: the aal2 superuser reaches each Phase 8 /super page, and the ghost is not-found for them too", async ({
+  page,
+}) => {
+  // Without this, "the refusal equals the ghost" could be two not-found
+  // documents for a URL that is broken for everybody.
+  await signInAsSuperuser(page);
+  for (const url of PHASE8_SUPER) {
+    const response = await page.goto(url);
+    expect(response?.status(), url).toBe(200);
+    await expect(page.locator("body"), url).not.toContainText("Page not found");
+  }
+  await documentOf(page, SUPER_GHOST);
+});
+
+for (const who of ["read_only", "owner", "no-workspace", "suspended manager"] as const) {
+  test(`REFUSAL PARITY: ${who} -- every Phase 8 /super page equals a /super page that does not exist`, async ({
+    page,
+  }) => {
+    if (who === "no-workspace") await signInByEmail(page, noWorkspace.email);
+    else if (who === "suspended manager") {
+      await setOrganisationSuspended(world.orgId, true);
+      await signIn(page, world, "manager");
+    } else await signIn(page, world, who);
+    try {
+      for (const url of PHASE8_SUPER) await expectParity(page, who, url, SUPER_GHOST);
+    } finally {
+      if (who === "suspended manager") await setOrganisationSuspended(world.orgId, false);
+    }
+  });
+}
+
+test("REFUSAL PARITY: /[orgSlug]/settings/export -- a real foreign workspace equals one nobody has, as a literal 404", async ({
+  page,
+}) => {
+  // A workspace-slug refusal happens in the layout, above every loading
+  // boundary, so the literal 404 is still assertable and is asserted.
+  await signIn(page, world, "manager");
+  const foreign = await documentOf(page, `/${world.otherOrgSlug}/settings/export`);
+  const ghost = await documentOf(page, `/${GHOST_SLUG}/settings/export`);
+  expect(foreign.status).toBe(404);
+  expect(ghost.status).toBe(404);
+  expect(foreign.text).toBe(ghost.text);
+  expect(foreign.title).toBe(ghost.title);
+  // POSITIVE CONTROL: the same person reaches the page in their OWN workspace
+  // (as a Manager they read the page and are offered no control), so the
+  // refusal above is the tenant boundary and not a broken route.
+  const own = await page.goto(`/${world.orgSlug}/settings/export`);
+  expect(own?.status()).toBe(200);
+  await expect(page.getByRole("heading", { level: 1, name: "Export this workspace" })).toBeVisible();
+});
+
+test("REFUSAL PARITY: the export download route -- somebody else's real job equals an id nobody has", async ({
+  page,
+}) => {
+  const jobId = await plantQueuedAccountExport(world.users.owner.id);
+  try {
+    const probe = async (who: string) => {
+      const real = await page.request.get(`/account/exports/${jobId}/download`, { maxRedirects: 0 });
+      const ghost = await page.request.get(`/account/exports/${GHOST_ID}/download`, { maxRedirects: 0 });
+      expect(real.status(), `${who}: a colleague's real export`).toBe(ghost.status());
+      // Each id is replaced by one placeholder before comparing: a redirect
+      // to /login echoes the REQUESTED path back (the caller's own input,
+      // which says nothing about whether the job exists). Anything else that
+      // differs is the oracle.
+      const norm = (body: string) => body.split(jobId).join("<id>").split(GHOST_ID).join("<id>");
+      expect(norm(await real.text()), `${who}: the two refusals must be the same body`).toBe(
+        norm(await ghost.text()),
+      );
+      expect(
+        (real.headers()["location"] ?? "").split(jobId).join("<id>"),
+        `${who}: the same redirect, or none`,
+      ).toBe((ghost.headers()["location"] ?? "").split(GHOST_ID).join("<id>"));
+      return real.status();
+    };
+    // Signed out: bounced, identically, before anything reads the register.
+    const anonStatus = await probe("anonymous");
+    expect([302, 303, 307, 308, 404], `anonymous got ${anonStatus}`).toContain(anonStatus);
+    for (const role of ["read_only", "admin"] as const) {
+      await signIn(page, world, role);
+      expect(await probe(role), `${role}: a route handler refuses with the literal 404`).toBe(404);
+      await signOut(page);
+    }
+    await signInByEmail(page, noWorkspace.email);
+    expect(await probe("no-workspace"), "no-workspace: the literal 404").toBe(404);
+  } finally {
+    await deleteExportJob(jobId);
+  }
+});
+
+test("REFUSAL PARITY: signed out, each /account page is bounced exactly like an /account page that does not exist", async ({
+  page,
+}) => {
+  const ghost = await page.request.get("/account/zzz-phase8-ghost", { maxRedirects: 0 });
+  for (const path of ["privacy", "data-requests", "exports", "erase"]) {
+    const real = await page.request.get(`/account/${path}`, { maxRedirects: 0 });
+    expect(real.status(), `/account/${path}`).toBe(ghost.status());
+    const loc = (r: typeof real) => new URL(r.headers()["location"] ?? "http://x/", "http://x").pathname;
+    expect(loc(real), `/account/${path} bounced somewhere other than the ghost did`).toBe(loc(ghost));
+  }
+  expect([302, 303, 307, 308], "the ghost is a bounce, so the comparison is between two bounces").toContain(
+    ghost.status(),
+  );
+});
+
+test("a SUSPENDED workspace's members keep every /account page, and its Owner keeps the workspace export", async ({
+  page,
+}) => {
+  // Suspension is read-only for the WORKSPACE. A statutory right is not a
+  // write to the workspace, and export_organisation_data is one of the three
+  // keys with survives_suspension = true. Both are promises the product makes;
+  // this is the first browser that has been pointed at either while a
+  // workspace was actually suspended.
+  await setOrganisationSuspended(world.orgId, true);
+  try {
+    await signIn(page, world, "manager");
+    for (const [path, heading] of [
+      ["privacy", "Privacy and communications"],
+      ["data-requests", "Your data protection requests"],
+      ["exports", "A copy of your data"],
+      ["erase", "Delete your account"],
+    ] as const) {
+      const response = await page.goto(`/account/${path}`);
+      expect(response?.status(), `/account/${path} for a suspended workspace's member`).toBe(200);
+      await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
+    }
+    await signOut(page);
+    await signIn(page, world, "owner");
+    const response = await page.goto(`/${world.orgSlug}/settings/export`);
+    expect(response?.status()).toBe(200);
+    await expect(page.getByRole("heading", { level: 1, name: "Export this workspace" })).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Export this workspace" }),
+      "the one key that survives suspension must still offer its control",
+    ).toBeVisible();
+  } finally {
+    await setOrganisationSuspended(world.orgId, false);
+  }
+});

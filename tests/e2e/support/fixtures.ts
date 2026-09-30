@@ -2917,3 +2917,34 @@ export async function clearErasureState(userIds: string[]): Promise<void> {
     await db().query(`delete from auth.users where id = any($1::uuid[])`, [userIds]);
   }
 }
+
+/**
+ * PHASE 8 TASK 8. A QUEUED account export owned by `userId`, planted through
+ * the register's own INSERT trigger (the requester is stamped from the claims,
+ * exactly as a real request is) so a refusal of it is a refusal of a REAL row.
+ * It has no archive and nothing runs it; the caller deletes it in a `finally`.
+ */
+export async function plantQueuedAccountExport(userId: string): Promise<string> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query(`select set_config('request.jwt.claims', $1, true)`, [
+      JSON.stringify({ sub: userId, role: "authenticated" }),
+    ]);
+    const { rows } = await client.query<{ id: string; requested_by: string }>(
+      `insert into public.export_jobs (kind) values ('account') returning id, requested_by`,
+    );
+    if (rows[0]?.requested_by !== userId) throw new Error("planted export is not the user's");
+    await client.query("commit");
+    return rows[0].id;
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteExportJob(id: string): Promise<void> {
+  await sql(`delete from public.export_jobs where id = $1`, [id]);
+}
