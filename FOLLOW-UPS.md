@@ -2791,8 +2791,29 @@ next person does not have to re-derive it.
   row of trigger cost, no per-table opt-out). Everything is in
   `SECURITY.md` § 7, "Every CRM INSERT and UPDATE is audited too". **What
   this did not do:** the Phase 3–6 tables (events, lineup, tasks, meetings,
-  notes, documents, links, financial entries) carry no INSERT/UPDATE audit —
-  Q94 scoped this to "the twelve" and the extension is queued as Q122.
+  notes, documents, links, financial entries) carried no INSERT/UPDATE audit —
+  Q94 scoped this to "the twelve" and the extension was queued as Q122.
+- **Q122 — DONE 2026-09-30 (Phase 8 Task 7, `20261006000000`).** The same
+  trigger function and the same allowlist now cover **sixteen more tables**,
+  derived from the catalogue rather than copied from a list: `events`,
+  `event_lineup`, `tasks`, `meetings`, `notes`, `documents`, the four
+  `*_links`, `financial_entries`, `network_profiles`, `network_links`, and
+  three the derivation found that nobody had named —
+  `organisation_memberships` (an invite, a role escalation and a removal were
+  all unaudited; removal is `membership.deleted`), `organisation_subscriptions`
+  and `merge_candidates`. Structural columns only: never `notes.body`,
+  `meetings.attendees`, `documents.filename`, an amount or any free text.
+  `private.audit_coverage()` derives every tenant-owned table a client can
+  write and classifies its coverage, and
+  `tests/integration/admin/crm-audit-coverage-census.test.ts` is red by NAME
+  for a new one nobody decided about (proved with a planted table, and by
+  dropping a real trigger). The connection-request writer gained `.withdrawn`
+  and a name-only `.updated`; three `network_connection.*` names the database
+  had written since Phase 6 were on neither side of the catalogue and are now
+  registered. **Still open:** an Owner's rename of `organisations` is the one
+  excused table (Q189); whether a `network_link.*` row is compatible with Q82
+  is Q188 (shipped default: yes). `SECURITY.md` § 7 has the as-built text and
+  the measured volume.
 - **Restore-from-audit is not possible, by design.** The audit payload is an
   allowlist of identifiers — `private.audit_crm_payload()` drops
   `custom_field_values.value` and `merges.field_resolution` — because
