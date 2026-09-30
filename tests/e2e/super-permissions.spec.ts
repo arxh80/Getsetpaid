@@ -185,11 +185,14 @@ test("every /super page in the tree is on this file's list", async () => {
   // /super page in another route group, or the true URL of a grouped one --
   // tests/unit/security/super-page-census.test.ts plants each and measures it.
   const { join } = await import("node:path");
-  const { superPageUrls, SUPER_PAGE_URLS } = await import("../support/super-route-census");
+  const { superPageUrls, SUPER_PAGE_URLS, SUPER_NON_SURFACE_URLS } = await import(
+    "../support/super-route-census"
+  );
   const found = superPageUrls(join(process.cwd(), "app"));
   // A page added under /super by a later phase lands HERE, by URL, instead of
-  // quietly never being probed by any principal.
-  expect(found).toEqual(SUPER_SURFACES.map((s) => s.url).sort());
+  // quietly never being probed by any principal. The one non-surface is the
+  // catch-all that makes a nonexistent /super URL refuse like a real one.
+  expect(found).toEqual([...SUPER_SURFACES.map((s) => s.url), ...SUPER_NON_SURFACE_URLS].sort());
   // ...and the list the unit test pins in CI is this file's list.
   expect([...SUPER_PAGE_URLS].sort()).toEqual(SUPER_SURFACES.map((s) => s.url).sort());
 });

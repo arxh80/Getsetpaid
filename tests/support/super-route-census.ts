@@ -94,3 +94,12 @@ export const SUPER_PAGE_URLS = [
   "/super/legal",
   "/super/organisations",
 ] as const;
+
+/**
+ * /super page FILES that are not surfaces: nothing renders on them for anybody.
+ * The catch-all exists only so a /super URL that matches no page is refused by
+ * the same streamed document a refused real page is (Phase 8 Task 8 -- see its
+ * own header). Declared here so the census still accounts for every page file.
+ */
+export const SUPER_NON_SURFACE_URLS = ["/super/[...unknown]"] as const;
+

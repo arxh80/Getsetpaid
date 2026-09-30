@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   legacySuperPageUrls,
+  SUPER_NON_SURFACE_URLS,
   SUPER_PAGE_URLS,
   superPageUrls,
 } from "../../support/super-route-census";
@@ -31,7 +32,9 @@ const BASE = ["(app)/super/page.tsx", "(app)/super/health/page.tsx", "(app)/cont
 
 describe("the /super page census", () => {
   it("the real tree's /super pages are exactly the ones the e2e spec probes", () => {
-    expect(superPageUrls(join(process.cwd(), "app"))).toEqual([...SUPER_PAGE_URLS].sort());
+    expect(superPageUrls(join(process.cwd(), "app"))).toEqual(
+      [...SUPER_PAGE_URLS, ...SUPER_NON_SURFACE_URLS].sort(),
+    );
   });
 
   it("DENOMINATOR: the new derivation agrees with the old one on the real tree", () => {
