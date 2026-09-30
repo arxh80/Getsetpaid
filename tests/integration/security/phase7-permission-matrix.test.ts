@@ -152,8 +152,28 @@ import type { Pool } from "pg";
 import {
   createFixtures,
   destroyFixtures,
+  elevateToAal2,
   type RlsFixtures,
 } from "../rls/support/fixtures";
+import {
+  cronJobs,
+  destructivePrimitiveAcl,
+  difference,
+  exposedNullAclFunctions,
+  exposedOverloads,
+  exposedRpcSignatures,
+  exposedSchemas,
+  publicPrivileges,
+  publicRelationsGranted,
+  publicRpcNames,
+  serviceRoleRpcSignatures,
+  storageBuckets,
+  storageFences,
+  storagePermissivePolicies,
+  tickCallees,
+  type Queryable,
+} from "./support/catalogue-census";
+import { DECLARED_PRIVILEGES } from "./support/privilege-census";
 
 // The SQLSTATEs a Phase 7 guard refuses with. 42501 is the house code for
 // "caller is not the platform superuser at aal2" (every Phase 7 guard raises
@@ -162,6 +182,41 @@ import {
 // what `anon` gets when a function it holds no grant on is not even in its
 // schema cache view.
 const REFUSAL_CODES = new Set(["42501", "28000", "PGRST202", "PGRST301", "P0001"]);
+
+/**
+ * Phase 8 Task 8: WHICH MECHANISM refused, which REFUSAL_CODES cannot say.
+ * `42501` is both "the function's own guard refused you" and "you hold no
+ * grant on the function" -- and a refusal by a missing grant is how Task 3's
+ * dead seam guard stayed green. Classified from the error PostgREST returns:
+ *   no-grant    -- Postgres' own "permission denied for <object>"
+ *   not-exposed -- PGRST202, not in the role's schema cache at all
+ *   no-session  -- 28000, raised by a function that found no auth.uid()
+ *   guard       -- any other 42501: raised by the function or trigger itself
+ *   other       -- anything else (a CHECK, a unique index, row state...)
+ *   none        -- no error at all
+ */
+type Mechanism = "no-grant" | "not-exposed" | "no-session" | "guard" | "other" | "none";
+function mechanismOf(error: { code?: string; message: string } | null | undefined): Mechanism {
+  if (!error) return "none";
+  if (error.code === "PGRST202") return "not-exposed";
+  if (/permission denied for (function|table|view|relation|schema|sequence|column)/i.test(error.message)) {
+    return "no-grant";
+  }
+  if (error.code === "28000") return "no-session";
+  if (error.code === "42501") return "guard";
+  return "other";
+}
+/** What may refuse a caller with no session. Never "guard": a guard that is
+ *  what refuses anon means anon was granted something it should not hold. */
+const ANON_MECHANISMS = new Set<Mechanism>(["no-grant", "not-exposed", "no-session"]);
+/** The three lifecycle RPCs share ONE guard helper, whose message names the
+ *  helper rather than the function -- still the function's own guard, reached
+ *  on its first line. */
+const GUARD_PREFIX: Record<string, string> = {
+  suspend_organisation: "organisation lifecycle:",
+  delete_organisation: "organisation lifecycle:",
+  reinstate_organisation: "organisation lifecycle:",
+};
 
 // =============================================================================
 // THE PRINCIPALS -- the Task 7 brief's list, built rather than described
@@ -173,6 +228,7 @@ type PrincipalKey =
   | "orgOwner"
   | "impersonatedOrgOwner"
   | "overriddenOrgOwner"
+  | "suspendedMember"
   | "superuserAal1";
 
 interface Principal {
@@ -192,6 +248,18 @@ let noOrgClient: SupabaseClient;
 let superuserAal1Client: SupabaseClient;
 /** Principal 8's positive control: the superuser at aal2. */
 let superuser: SupabaseClient;
+/**
+ * Phase 8 Task 8: a member -- the OWNER, at aal2 -- of a SUSPENDED workspace.
+ * Phase 8 makes this principal meaningful for the first time: a suspended
+ * workspace is read-only, but its people keep their statutory rights, and one
+ * Phase 8 key (`export_organisation_data`) is deliberately
+ * `survives_suspension = true`. So this principal must be refused every
+ * operator surface like everybody else, and must STILL be able to exercise
+ * the rights the product says survive suspension -- both asserted below.
+ */
+let suspendedClient: SupabaseClient;
+let suspendedUserId = "";
+const suspendedOrg = { id: "", slug: "" };
 
 /** Rows the matrix addresses. All created through real paths in beforeAll --
  *  see SETUP DOUBLES AS THE POSITIVE CONTROL. */
@@ -274,6 +342,9 @@ const ARGS = {
    * nothing, so planting it costs the rest of the fixture nothing.
    */
   retentionRunId: "",
+  /** Phase 8 Task 8: an account erasure job the no-workspace principal
+   *  queued for themself, held for the run and never run. */
+  erasureJobId: "",
 };
 
 // Phase 8 Task 2: the no-organisation principal's user id, for the
@@ -327,6 +398,15 @@ const PRINCIPALS: Principal[] = [
       "billing override. Subscription entitlement must not leak into platform " +
       "policy: a comped tier buys features, never the operator's console.",
     client: () => fx.ownerB.client,
+  },
+  {
+    key: "suspendedMember",
+    why:
+      "Phase 8 Task 8 -- the Owner, AT aal2, of a SUSPENDED workspace. Holds " +
+      "every in-tenant key the Owner role has; suspension switches off every " +
+      "key but the three with survives_suspension = true. Refused every " +
+      "operator surface, and still free to exercise their own rights.",
+    client: () => suspendedClient,
   },
   {
     key: "superuserAal1",
@@ -1050,6 +1130,98 @@ const PHASE7_TABLES = [
   "retention_settings",
 ] as const;
 
+/** Every function name the matrix accounts for, in any role. */
+function accountedRpcNames(): string[] {
+  return [
+    ...SUPERUSER_ONLY_RPCS.map((r) => r.fn),
+    ...Object.keys(MEMBER_REACHABLE_RPCS),
+    ...Object.keys(PRE_PHASE7_RPCS),
+  ].sort();
+}
+
+/** Every relation the matrix accounts for, in any role. */
+function accountedRelations(): string[] {
+  return [
+    ...PHASE7_TABLES,
+    ...PUBLIC_READ_RELATIONS,
+    ...OWN_ROW_RELATIONS,
+    ...SUPERUSER_ONLY_RELATIONS,
+    ...PRE_PHASE7_RELATIONS,
+  ].sort();
+}
+
+/**
+ * Phase 8 Task 8. Every `public` function `service_role` may EXECUTE -- the
+ * sessionless runners' whole surface, keyed by SIGNATURE. None of these is
+ * reachable from a browser (the API-role census proves that half); this list
+ * is the other half: a new server-only entry point arrives as a red test
+ * naming itself, instead of as a function nobody has asked "who calls this,
+ * and what stops anybody else?" about.
+ */
+const SERVER_ONLY_RPCS: Record<string, string> = {
+  "claim_erasure_job()": "Task 5 -- the erasure runner takes the next queued job; bearer-secret route only",
+  "claim_export_job()": "Task 4 -- the export runner takes the next queued job; bearer-secret route only",
+  "consent_is_granted(p_user_id uuid, p_purpose text)":
+    "Task 2 -- the check a future marketing sender must make; server-side because it names a user",
+  "erasure_purge_manifest(p_job_id uuid)":
+    "Task 5 -- the storage keys the runner deletes BEFORE run_erasure_job may proceed",
+  "export_limits_for_runner()": "Task 4 -- the declared ceilings, read by the export runner",
+  "export_plan(p_job_id uuid)": "Task 4 -- which tables a job reads, taken from the catalogue",
+  "export_read_page(p_job_id uuid, p_table text, p_after text, p_limit integer)":
+    "Task 4 -- the read engine; reads AS THE REQUESTER through export_reader, never as a definer",
+  "fail_erasure_job(p_job_id uuid, p_reason text)": "Task 5 -- records a refused erasure's reason on the job",
+  "fail_retention_run(p_run_id uuid, p_reason text)": "Task 6 -- records a refused sweep's reason on the run",
+  "pending_lockout_notifications(p_limit integer)":
+    "Phase 7 Task 6c -- the account-holder lockout notice queue, read by the sender",
+  "retention_object_manifest(p_run_id uuid, p_limit integer)":
+    "Task 6 -- names objects only for a run that would not refuse (fix round 1, C2)",
+  "run_erasure_job(p_job_id uuid)":
+    "Task 5 -- THE erasure entry point, and the only caller of private.erase_account",
+  "run_retention_sweep(p_run_id uuid, p_limit integer)":
+    "Task 6 -- THE sweep entry point, and the only caller of the audit purge",
+  "start_retention_run(p_dry boolean)": "Task 6 -- every refusal is asked here, before a run exists",
+};
+
+/** Phase 8 Task 8. The three private buckets. */
+const DECLARED_BUCKETS = [
+  "documents|public=false",
+  "exports|public=false",
+  "feedback-screenshots|public=false",
+];
+
+/** Phase 8 Task 8. The product's ONE clock, and the five halves it drives. */
+const DECLARED_CRON = [
+  "incident-alert-delivery|*/10 * * * *|select private.run_incident_alert_tick()",
+];
+const DECLARED_TICK_CALLEES = [
+  "deliver_erasure_jobs",
+  "deliver_export_jobs",
+  "deliver_incident_alerts",
+  "deliver_retention_sweep",
+  "raise_dsr_deadline_alerts",
+];
+
+/**
+ * Runs `plant` inside a transaction on one pooled connection, hands the SAME
+ * connection to `measure`, and rolls everything back -- so a plant can never
+ * leak into the rest of the run, and the census sees exactly what the plant
+ * made.
+ */
+async function withPlant<T>(
+  plant: (c: Queryable) => Promise<void>,
+  measure: (c: Queryable) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await plant(client);
+    return await measure(client);
+  } finally {
+    await client.query("rollback");
+    client.release();
+  }
+}
+
 // =============================================================================
 // SETUP -- AND IT DOUBLES AS THE POSITIVE CONTROL FOR HALF THE RPC INVENTORY
 // =============================================================================
@@ -1110,6 +1282,63 @@ beforeAll(async () => {
       throw new Error(
         `the aal1 superuser principal is ${aal?.currentLevel} -- it must be aal1 ` +
           `or every refusal it collects proves nothing about the aal2 gate`,
+      );
+    }
+  }
+
+  // ---- Phase 8 Task 8: the Owner of a SUSPENDED workspace, at aal2 -------
+  // Built through the real paths end to end: a real account, a real TOTP
+  // factor, a workspace founded through create_organisation(), and a
+  // suspension through the operator's own audited RPC. The DENOMINATOR is
+  // asserted before anything relies on it: the workspace really is suspended,
+  // this person really is its active Owner, and the session really is aal2 --
+  // otherwise every "refused" below could be the MFA gate or a missing
+  // membership wearing the suspension's clothes.
+  {
+    const email = `matrix-suspended-${fx.runId}@test.local`;
+    const { data: made, error } = await fx.adminAuth.auth.admin.createUser({
+      email,
+      password: "Test-Passw0rd!-rls-js",
+      email_confirm: true,
+    });
+    if (error || !made.user) throw new Error(`suspended principal: ${error?.message}`);
+    fx._allUserIds.push(made.user.id);
+    suspendedUserId = made.user.id;
+    suspendedClient = createClient(fx.apiUrl, fx.anonKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    const signedIn = await suspendedClient.auth.signInWithPassword({
+      email,
+      password: "Test-Passw0rd!-rls-js",
+    });
+    if (signedIn.error) throw new Error(`suspended principal sign-in: ${signedIn.error.message}`);
+    await elevateToAal2(suspendedClient, "suspendedMember");
+    suspendedOrg.slug = `rls-js-s-${fx.runId}`;
+    const { data: orgId, error: orgErr } = await suspendedClient.rpc("create_organisation", {
+      p_name: `RLS JS Suspended Org ${fx.runId}`,
+      p_slug: suspendedOrg.slug,
+    });
+    if (orgErr || !orgId) throw new Error(`suspended principal's workspace: ${orgErr?.message}`);
+    suspendedOrg.id = orgId as string;
+    fx._allOrgIds.push(suspendedOrg.id);
+    const suspended = await superuser.rpc("suspend_organisation", {
+      p_organisation_slug: suspendedOrg.slug,
+      p_reason: "permission matrix: the suspended-workspace principal",
+    });
+    if (suspended.error) {
+      throw new Error(`POSITIVE CONTROL FAILED: suspend_organisation: ${suspended.error.message}`);
+    }
+    const { rows } = await pool.query<{ state: string; role: string; status: string }>(
+      `select o.lifecycle_state as state, m.role as role, m.status
+         from public.organisations o
+         join public.organisation_memberships m on m.organisation_id = o.id
+        where o.id = $1 and m.user_id = $2`,
+      [suspendedOrg.id, suspendedUserId],
+    );
+    if (rows.length !== 1 || rows[0].state !== "suspended" || rows[0].role !== "owner" || rows[0].status !== "active") {
+      throw new Error(
+        `DENOMINATOR: the suspended principal is not the active Owner of a suspended ` +
+          `workspace (${JSON.stringify(rows)}), so nothing it is refused says anything about suspension`,
       );
     }
   }
@@ -1386,6 +1615,21 @@ beforeAll(async () => {
     ARGS.dsrErasureRequestId = made[0].request_id;
   }
 
+  // ---- Phase 8 Task 8: an account erasure the no-workspace principal queued
+  // for themself, through the real one-column INSERT -- the row the new
+  // erasure_jobs block reads. Nothing in this file runs a runner.
+  {
+    const { data, error } = await noOrgClient
+      .from("erasure_jobs")
+      .insert({ kind: "account" } as never)
+      .select("id");
+    const made = (data ?? []) as { id: string }[];
+    if (error || made.length !== 1) {
+      throw new Error(`POSITIVE CONTROL FAILED: erasure_jobs insert: ${error?.message}`);
+    }
+    ARGS.erasureJobId = made[0].id;
+  }
+
   // `rate_limit_counters` needs a row too, and the honest way to get one is to
   // spend a real budget through the real meter as a real member.
   {
@@ -1420,6 +1664,9 @@ afterAll(async () => {
   await pool.query(`delete from public.incident_alerts where id = $1`, [
     ARGS.incidentAlertId,
   ]);
+  // Phase 8 Task 8: the held erasure job and anything the new principals made.
+  await pool.query(`delete from public.erasure_jobs where subject_user_id = any($1::uuid[])`, [fx._allUserIds]);
+  await pool.query(`delete from public.export_jobs where requested_by = any($1::uuid[])`, [fx._allUserIds]);
   await pool.query(
     `delete from public.audit_events where target_type = 'feedback' and target_id = $1`,
     [ARGS.feedbackId],
@@ -1472,21 +1719,11 @@ describe("the inventory is mechanical", () => {
     // entirely while PostgREST exposed the function to an anonymous browser.
     // The sibling test below covers the OTHER, commoner shape, which no ACL
     // query can see at all.
-    const { rows } = await pool.query<{ proname: string }>(
-      `select distinct p.proname
-         from pg_proc p
-         join pg_namespace n on n.oid = p.pronamespace
-         cross join lateral aclexplode(p.proacl) ax
-        where n.nspname = 'public'
-          and ax.privilege_type = 'EXECUTE'
-          and (ax.grantee = 0 or pg_get_userbyid(ax.grantee) in ('authenticated', 'anon'))`,
-    );
-    const granted = rows.map((r) => r.proname).sort();
-    const accounted = [
-      ...SUPERUSER_ONLY_RPCS.map((r) => r.fn),
-      ...Object.keys(MEMBER_REACHABLE_RPCS),
-      ...Object.keys(PRE_PHASE7_RPCS),
-    ].sort();
+    // Phase 8 Task 8: the query is catalogue-census.ts's publicRpcNames(),
+    // unchanged in meaning, so the denominator block below can run the SAME
+    // census on a connection that has just planted something.
+    const granted = await publicRpcNames(pool);
+    const accounted = accountedRpcNames();
     expect(
       granted,
       "a function `authenticated` or `anon` may EXECUTE in `public` is on neither this " +
@@ -1598,20 +1835,7 @@ describe("the inventory is mechanical", () => {
     // in PUBLIC_READ_RELATIONS turned this equality RED, because the query
     // could not see the table the list now named. `pg_attribute.attacl` is
     // where a column grant lives.
-    const { rows } = await pool.query<{ relname: string; relrowsecurity: boolean; relkind: string }>(
-      `select c.relname, c.relrowsecurity, c.relkind
-         from pg_class c join pg_namespace n on n.oid = c.relnamespace
-        where n.nspname = 'public'
-          and c.relkind in ('r','p','v','m')
-          and (exists (select 1 from aclexplode(c.relacl) ax
-                        where ax.grantee = 0
-                           or pg_get_userbyid(ax.grantee) in ('authenticated', 'anon'))
-               or exists (select 1 from pg_attribute a
-                            cross join lateral aclexplode(a.attacl) ax
-                           where a.attrelid = c.oid and a.attacl is not null
-                             and (ax.grantee = 0
-                                  or pg_get_userbyid(ax.grantee) in ('authenticated', 'anon'))))`,
-    );
+    const rows = await publicRelationsGranted(pool);
     const granted = rows.map((r) => r.relname).sort();
     expect(
       granted,
@@ -1619,15 +1843,7 @@ describe("the inventory is mechanical", () => {
         "PHASE7_TABLES nor PRE_PHASE7_RELATIONS. A platform table added by a " +
         "later phase belongs in the first (and gets probed by every principal); " +
         "a tenant one belongs in the second with its reason.",
-    ).toEqual(
-      [
-        ...PHASE7_TABLES,
-        ...PUBLIC_READ_RELATIONS,
-        ...OWN_ROW_RELATIONS,
-        ...SUPERUSER_ONLY_RELATIONS,
-        ...PRE_PHASE7_RELATIONS,
-      ].sort(),
-    );
+    ).toEqual(accountedRelations());
 
     // And the seven this file probes are real TABLES with RLS on -- a view has
     // no RLS of its own, so the two facts have to be asserted together.
@@ -1637,6 +1853,298 @@ describe("the inventory is mechanical", () => {
       phase7.filter((r) => r.relkind !== "r" || !r.relrowsecurity),
       "a Phase 7 surface this file probes is not an RLS-enabled table",
     ).toEqual([]);
+  });
+});
+
+// =============================================================================
+// GATE 0, PHASE 8 TASK 8: EVERY CENSUS REACHES PHASE 8, AND EACH SEES ITS PLANT
+// =============================================================================
+// The equality tests above prove the lists match the catalogue TODAY. They
+// cannot prove the census would notice TOMORROW's surface: a census whose
+// query cannot see a shape passes perfectly over a catalogue that has none.
+// So every census below is run twice -- once against the live catalogue, once
+// on a connection that has just planted one unregistered thing -- and the
+// planted run must name the plant and nothing else. Where an OLDER census
+// could not see a plant, that is asserted too, as the hole it was.
+describe("GATE 0 (Phase 8): the censuses reach every Phase 8 surface", () => {
+  it("the exposed schemas are read from config.toml, and they are public + graphql_public", () => {
+    expect(exposedSchemas()).toEqual(["graphql_public", "public"]);
+  });
+
+  it("no exposed function carries a second overload -- the shape the NAME census cannot see", async () => {
+    expect(await exposedOverloads(pool, exposedSchemas())).toEqual([]);
+  });
+
+  it("no function in ANY exposed schema has a NULL ACL", async () => {
+    expect(await exposedNullAclFunctions(pool, exposedSchemas())).toEqual([]);
+  });
+
+  it("every exposed signature is a public name the matrix accounts for, or graphql_public.graphql", async () => {
+    const sigs = await exposedRpcSignatures(pool, exposedSchemas());
+    const accounted = new Set(accountedRpcNames().map((n) => `public.${n}`));
+    const stray = sigs.filter((s) => {
+      const name = s.slice(0, s.indexOf("("));
+      return !accounted.has(name) && name !== "graphql_public.graphql";
+    });
+    expect(stray, "an exposed function the matrix does not account for").toEqual([]);
+    // DENOMINATOR: the graphql_public entry is real, so deriving the exposed
+    // schemas reaches something the old public-only query did not.
+    expect(sigs.filter((s) => s.startsWith("graphql_public."))).toHaveLength(1);
+  });
+
+  it("EVERY privilege on `public` -- table and column level, API roles and service_role -- is declared", async () => {
+    const d = difference(await publicPrivileges(pool), DECLARED_PRIVILEGES);
+    expect(d, "a privilege was added or removed; see support/privilege-census.ts").toEqual({
+      unaccounted: [],
+      missing: [],
+    });
+  });
+
+  it("every service_role RPC is declared, with its reason", async () => {
+    expect(await serviceRoleRpcSignatures(pool)).toEqual(Object.keys(SERVER_ONLY_RPCS).sort());
+    for (const [sig, why] of Object.entries(SERVER_ONLY_RPCS)) {
+      expect(why.length, sig).toBeGreaterThan(30);
+    }
+  });
+
+  it("the destructive primitives are executable by postgres ALONE", async () => {
+    const acl = await destructivePrimitiveAcl(pool);
+    // REACH: the census must contain the erasure primitive and the retention
+    // job's bodies, or "every entry is postgres-only" is about nothing.
+    const names = acl.map((e) => e.split("|")[0]);
+    for (const must of ["erase_account", "erase_organisation", "purge_audit_events", "retention_sweep_body"]) {
+      expect(names, `REACH: ${must}`).toContain(must);
+    }
+    expect(names.filter((n) => n.startsWith("sweep_")).length).toBeGreaterThanOrEqual(7);
+    expect(acl.filter((e) => !e.endsWith("|postgres"))).toEqual([]);
+  });
+
+  it("storage: exactly the three buckets, all private, deny-all, each fenced four ways", async () => {
+    expect(await storageBuckets(pool)).toEqual(DECLARED_BUCKETS);
+    expect(await storagePermissivePolicies(pool)).toEqual([]);
+    const fences = await storageFences(pool);
+    for (const b of DECLARED_BUCKETS.map((x) => x.split("|")[0])) {
+      expect(fences.filter((f) => f.startsWith(`${b}|`)).sort(), b).toEqual(
+        ["DELETE", "INSERT", "SELECT", "UPDATE"].map((c) => `${b}|${c}`),
+      );
+    }
+  });
+
+  it("cron: exactly one job, and it drives exactly the five declared halves", async () => {
+    expect(await cronJobs(pool)).toEqual(DECLARED_CRON);
+    expect(await tickCallees(pool)).toEqual(DECLARED_TICK_CALLEES);
+  });
+
+  it("REACH: the relation and privilege censuses contain every Phase 8 table", async () => {
+    const rels = (await publicRelationsGranted(pool)).map((r) => r.relname);
+    const privs = await publicPrivileges(pool);
+    for (const t of [
+      "legal_documents",
+      "consents",
+      "data_subject_requests",
+      "data_subject_request_notes",
+      "export_jobs",
+      "erasure_jobs",
+      "retention_runs",
+      "retention_settings",
+    ]) {
+      expect(rels, `REACH: ${t}`).toContain(t);
+      expect(privs.some((p) => p.startsWith(`${t}|`)), `REACH (privileges): ${t}`).toBe(true);
+    }
+    // The column-level Phase 8 controls are IN the privilege census by column.
+    expect(privs).toContain("legal_documents|anon|SELECT|body");
+    expect(privs).toContain("erasure_jobs|authenticated|INSERT|kind");
+    expect(privs).toContain("data_subject_requests|service_role|UPDATE|fulfilment_kind");
+  });
+
+  it("REACH: the Phase 3-6 audit triggers are in the coverage census, and only the declared excusal is uncovered", async () => {
+    const { rows } = await pool.query<{ table_name: string; uncovered_ops: string[]; coverage: string }>(
+      `select table_name, uncovered_ops, coverage from private.audit_coverage() order by 1`,
+    );
+    const generic = rows.filter((r) => r.coverage === "generic").map((r) => r.table_name);
+    for (const t of [
+      "events",
+      "event_lineup",
+      "tasks",
+      "notes",
+      "documents",
+      "financial_entries",
+      "network_profiles",
+      "organisation_memberships",
+    ]) {
+      expect(generic, `REACH: ${t}`).toContain(t);
+    }
+    expect(rows.filter((r) => r.uncovered_ops.length > 0).map((r) => r.table_name)).toEqual(["organisations"]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // THE PLANTS
+  // ---------------------------------------------------------------------------
+  it("PLANT: an unregistered RPC granted to authenticated is named by the RPC census", async () => {
+    const d = await withPlant(
+      async (c) => {
+        await c.query(`create function public.zzz_t8_rpc() returns int language sql as $$ select 1 $$`);
+        await c.query(`revoke all on function public.zzz_t8_rpc() from public, anon, authenticated, service_role`);
+        await c.query(`grant execute on function public.zzz_t8_rpc() to authenticated`);
+      },
+      async (c) => difference(await publicRpcNames(c), accountedRpcNames()),
+    );
+    expect(d).toEqual({ unaccounted: ["zzz_t8_rpc"], missing: [] });
+  });
+
+  it("PLANT: an OVERLOAD of a registered RPC -- invisible to the name census, named by the overload census", async () => {
+    const m = await withPlant(
+      async (c) => {
+        await c.query(
+          `create function public.record_consent(p_user_id uuid, p_purpose text) returns int language sql as $$ select 1 $$`,
+        );
+        await c.query(
+          `revoke all on function public.record_consent(uuid, text) from public, anon, authenticated, service_role`,
+        );
+        await c.query(`grant execute on function public.record_consent(uuid, text) to authenticated`);
+      },
+      async (c) => ({
+        names: difference(await publicRpcNames(c), accountedRpcNames()),
+        overloads: await exposedOverloads(c, exposedSchemas()),
+        sigs: await exposedRpcSignatures(c, exposedSchemas()),
+      }),
+    );
+    // THE HOLE, measured: the name census does not move.
+    expect(m.names).toEqual({ unaccounted: [], missing: [] });
+    expect(m.overloads).toEqual(["public.record_consent"]);
+    expect(m.sigs).toContain("public.record_consent(p_user_id uuid, p_purpose text)");
+  });
+
+  it("PLANT: a THIRD exposed schema in config.toml -- missed by the public-only census, named by the derived one", async () => {
+    // The pool role cannot create objects in graphql_public (supabase_admin
+    // owns it), so the derivation is proved the way it would really fail: a
+    // config.toml that exposes one more schema, and a function granted to
+    // anon in it.
+    const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const root = mkdtempSync(join(tmpdir(), "t8-config-"));
+    try {
+      mkdirSync(join(root, "supabase"));
+      const real = readFileSync(join(process.cwd(), "supabase", "config.toml"), "utf8");
+      const planted = real.replace(
+        /^schemas = \["public", "graphql_public"\]/m,
+        'schemas = ["public", "graphql_public", "zzz_t8_exposed"]',
+      );
+      expect(planted, "the plant must actually change config.toml's [api].schemas").not.toBe(real);
+      writeFileSync(join(root, "supabase", "config.toml"), planted);
+      const m = await withPlant(
+        async (c) => {
+          await c.query(`create schema zzz_t8_exposed`);
+          await c.query(`create function zzz_t8_exposed.leak() returns int language sql as $$ select 1 $$`);
+          await c.query(`revoke all on function zzz_t8_exposed.leak() from public`);
+          await c.query(`grant execute on function zzz_t8_exposed.leak() to anon`);
+        },
+        async (c) => ({
+          old: difference(await publicRpcNames(c), accountedRpcNames()),
+          sigs: await exposedRpcSignatures(c, exposedSchemas(root)),
+        }),
+      );
+      expect(exposedSchemas(root)).toEqual(["graphql_public", "public", "zzz_t8_exposed"]);
+      expect(m.old, "the OLD public-only census cannot see it -- that is the hole").toEqual({
+        unaccounted: [],
+        missing: [],
+      });
+      expect(m.sigs).toContain("zzz_t8_exposed.leak()");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("PLANT: an unregistered table is named by the relation census AND the privilege census", async () => {
+    const m = await withPlant(
+      async (c) => {
+        await c.query(`create table public.zzz_t8_table (id uuid primary key)`);
+        await c.query(`grant select on public.zzz_t8_table to authenticated`);
+      },
+      async (c) => ({
+        rel: difference((await publicRelationsGranted(c)).map((r) => r.relname), accountedRelations()),
+        priv: difference(await publicPrivileges(c), DECLARED_PRIVILEGES),
+      }),
+    );
+    expect(m.rel).toEqual({ unaccounted: ["zzz_t8_table"], missing: [] });
+    expect(m.priv.unaccounted).toContain("zzz_t8_table|authenticated|SELECT|*");
+    expect(m.priv.missing).toEqual([]);
+  });
+
+  it("PLANT: a COLUMN-level grant on a registered table -- invisible to the relation census, named by the privilege census", async () => {
+    const m = await withPlant(
+      async (c) => {
+        await c.query(`grant update (action) on public.consents to authenticated`);
+      },
+      async (c) => ({
+        rel: difference((await publicRelationsGranted(c)).map((r) => r.relname), accountedRelations()),
+        priv: difference(await publicPrivileges(c), DECLARED_PRIVILEGES),
+      }),
+    );
+    // THE HOLE, measured: consents is already on the relation list.
+    expect(m.rel).toEqual({ unaccounted: [], missing: [] });
+    expect(m.priv).toEqual({ unaccounted: ["consents|authenticated|UPDATE|action"], missing: [] });
+  });
+
+  it("PLANT: a service_role grant on a new public function is named", async () => {
+    const d = await withPlant(
+      async (c) => {
+        await c.query(`create function public.zzz_t8_server() returns int language sql as $$ select 1 $$`);
+        await c.query(
+          `revoke all on function public.zzz_t8_server() from public, anon, authenticated, service_role`,
+        );
+        await c.query(`grant execute on function public.zzz_t8_server() to service_role`);
+      },
+      async (c) => difference(await serviceRoleRpcSignatures(c), Object.keys(SERVER_ONLY_RPCS)),
+    );
+    expect(d).toEqual({ unaccounted: ["zzz_t8_server()"], missing: [] });
+  });
+
+  it("PLANT: EXECUTE on a destructive primitive for service_role is named", async () => {
+    const acl = await withPlant(
+      async (c) => {
+        await c.query(`grant execute on function private.purge_audit_events to service_role`);
+      },
+      (c) => destructivePrimitiveAcl(c),
+    );
+    expect(acl.filter((e) => !e.endsWith("|postgres"))).toEqual(["purge_audit_events|postgres,service_role"]);
+  });
+
+  it("PLANT: a new public bucket and a permissive storage policy are each named, and the bucket is unfenced", async () => {
+    const m = await withPlant(
+      async (c) => {
+        await c.query(`insert into storage.buckets (id, name, public) values ('zzz-t8', 'zzz-t8', true)`);
+        await c.query(`create policy zzz_t8_open on storage.objects for select to authenticated using (true)`);
+      },
+      async (c) => ({
+        buckets: difference(await storageBuckets(c), DECLARED_BUCKETS),
+        permissive: await storagePermissivePolicies(c),
+        fenced: (await storageFences(c)).filter((f) => f.startsWith("zzz-t8|")),
+      }),
+    );
+    expect(m.buckets).toEqual({ unaccounted: ["zzz-t8|public=true"], missing: [] });
+    expect(m.permissive).toEqual(["objects|zzz_t8_open"]);
+    expect(m.fenced, "a bucket with no fence is what the four-fence check exists to report").toEqual([]);
+  });
+
+  it("PLANT: a second cron job, and a sixth half of the tick, are each named", async () => {
+    const m = await withPlant(
+      async (c) => {
+        await c.query(`select cron.schedule('zzz-t8', '* * * * *', 'select 1')`);
+        await c.query(`create function private.zzz_t8_sixth_half() returns void language sql as $$ select $$`);
+        const { rows } = await c.query<{ def: string }>(
+          `select pg_get_functiondef('private.run_incident_alert_tick'::regproc) as def`,
+        );
+        await c.query(rows[0].def.replace(/\bbegin\b/i, "begin\n  perform private.zzz_t8_sixth_half();"));
+      },
+      async (c) => ({ cron: difference(await cronJobs(c), DECLARED_CRON), tick: await tickCallees(c) }),
+    );
+    expect(m.cron).toEqual({ unaccounted: ["zzz-t8|* * * * *|select 1"], missing: [] });
+    expect(difference(m.tick, DECLARED_TICK_CALLEES)).toEqual({
+      unaccounted: ["zzz_t8_sixth_half"],
+      missing: [],
+    });
   });
 });
 
@@ -1704,6 +2212,33 @@ describe.each(SUPERUSER_ONLY_RPCS)(
 
         // And for a surface whose success is an UPDATE rather than an INSERT,
         // the row's own state -- which a count cannot see. See `invariant`.
+
+        // PHASE 8 TASK 8: THE MECHANISM, NOT JUST THE CODE. `REFUSAL_CODES`
+        // cannot tell "the function's own guard refused me" from "I hold no
+        // EXECUTE grant" -- both are 42501 -- and Task 3's DF9 passed for
+        // exactly that reason (a grant was absent, so a dead guard looked
+        // alive). Every surface in this block is GRANTED to `authenticated`
+        // (GATE 0 proves it), so for a signed-in principal the only honest
+        // refusal is one raised BY THE FUNCTION ITSELF: its own name prefixes
+        // the message. A "permission denied for function" here would mean the
+        // grant moved and the guard was never reached.
+        const mechanism = mechanismOf(error);
+        if (key === "anonymous") {
+          expect(
+            ANON_MECHANISMS.has(mechanism),
+            `${fn} refused anonymous by an unexpected mechanism ${mechanism}: ${error!.message}`,
+          ).toBe(true);
+        } else {
+          expect(
+            mechanism,
+            `${fn} refused ${key} by ${mechanism}, not by its own guard: ${error!.message}`,
+          ).toBe("guard");
+          expect(
+            error!.message.startsWith(GUARD_PREFIX[fn] ?? `${fn}:`),
+            `${fn}'s refusal of ${key} was not raised by ${fn} itself: ${error!.message}`,
+          ).toBe(true);
+        }
+
         if (invariant) await invariant();
       },
     );
@@ -1877,6 +2412,8 @@ function organisationOf(key: PrincipalKey): string | null {
       return fx.orgA.id;
     case "overriddenOrgOwner":
       return fx.orgB.id;
+    case "suspendedMember":
+      return suspendedOrg.id;
     default:
       // anonymous, noOrganisation, and the aal1 superuser -- who is a member
       // of no organisation at all, which is precisely why platform_admins and
@@ -2742,6 +3279,235 @@ describe("table data_subject_requests (own rows only) and its operator notes", (
       { table_name: "data_subject_requests", column_name: "fulfilment_kind", privilege_type: "UPDATE" },
       { table_name: "data_subject_requests", column_name: "fulfilment_reference", privilege_type: "UPDATE" },
     ]);
+  });
+});
+
+// =============================================================================
+// PHASE 8 TASK 8: THE ERASURE REGISTER (OWN ROWS, WITH OPERATOR OVERSIGHT)
+// =============================================================================
+// `erasure_jobs` was registered in OWN_ROW_RELATIONS by Task 5 and then probed
+// by NOTHING at the table layer -- the only assertions about it were the
+// side-effect row count around start_erasure_for_request. Declared as an
+// own-rows relation and never read as one is the invisible-denominator shape
+// this whole file exists to refuse. The held job belongs to the no-workspace
+// principal (a person with nothing that could block an erasure), and NOTHING
+// in this file runs a runner: the invariant at the end of the block proves the
+// account is still there.
+describe("table erasure_jobs (own rows + operator oversight, Phase 8 Task 8)", () => {
+  const readsIt = new Set(["noOrganisation", "superuserAal2"]);
+  const everyone: { key: string; client: () => SupabaseClient }[] = [
+    ...PRINCIPALS.map(({ key, client }) => ({ key: key as string, client })),
+    { key: "superuserAal2", client: () => superuser },
+  ];
+
+  it("DENOMINATOR: the held job exists, is the no-workspace principal's, and is queued", async () => {
+    const { rows } = await pool.query(
+      `select subject_user_id, requested_by, kind, status from public.erasure_jobs where id = $1`,
+      [ARGS.erasureJobId],
+    );
+    expect(rows).toEqual([
+      { subject_user_id: noOrgUserId, requested_by: noOrgUserId, kind: "account", status: "queued" },
+    ]);
+  });
+
+  it.each(everyone)("$key reads the held job only if it is theirs or they are the aal2 operator", async ({ key, client }) => {
+    const { data, error } = await client().from("erasure_jobs").select("id").eq("id", ARGS.erasureJobId);
+    if (key === "anonymous") {
+      expect(error, "anon read the erasure register").not.toBeNull();
+      expect(mechanismOf(error), error?.message).toBe("no-grant");
+      return;
+    }
+    // RLS FILTER, not an error: the grant is there and the policy decides.
+    expect(error, error?.message).toBeNull();
+    expect((data ?? []).length, key).toBe(readsIt.has(key) ? 1 : 0);
+  });
+
+  it.each(everyone)("$key cannot move, re-point or delete it -- the aal2 operator included", async ({ client }) => {
+    const before = await tableChecksum("erasure_jobs");
+    await client().from("erasure_jobs").update({ status: "succeeded" } as never).eq("id", ARGS.erasureJobId);
+    await client()
+      .from("erasure_jobs")
+      .update({ subject_user_id: fx.activeByRole.read_only.userId } as never)
+      .eq("id", ARGS.erasureJobId);
+    await client().from("erasure_jobs").delete().eq("id", ARGS.erasureJobId);
+    expect(await tableChecksum("erasure_jobs"), "a direct write changed the erasure register").toBe(before);
+  });
+
+  it("the insert names nobody: a forged subject is refused by the grant, and the honest insert is stamped", async () => {
+    // A member of org A trying to erase SOMEBODY ELSE -- the IDOR the one-column
+    // INSERT grant exists to make impossible.
+    const forged = await fx.activeByRole.manager.client
+      .from("erasure_jobs")
+      .insert({ kind: "account", subject_user_id: noOrgUserId } as never);
+    expect(forged.error, "erasure_jobs accepted a caller-chosen subject").not.toBeNull();
+    expect(mechanismOf(forged.error), forged.error?.message).toBe("no-grant");
+    // Same principal, honest body: admitted as far as the TRIGGER, which is
+    // what proves the refusal above was the grant and not "a manager cannot
+    // insert at all". Rolled straight back out; nothing runs it.
+    const { data, error } = await fx.activeByRole.manager.client
+      .from("erasure_jobs")
+      .insert({ kind: "account" } as never)
+      .select("id, subject_user_id, requested_by");
+    expect(error, error?.message).toBeNull();
+    const made = (data ?? []) as { id: string; subject_user_id: string; requested_by: string }[];
+    expect(made[0]?.subject_user_id).toBe(fx.activeByRole.manager.userId);
+    expect(made[0]?.requested_by).toBe(fx.activeByRole.manager.userId);
+    await pool.query(`delete from public.erasure_jobs where id = $1`, [made[0].id]);
+  });
+
+  it("INVARIANT: nothing in this file erased the held job's subject", async () => {
+    const { rows } = await pool.query(`select count(*)::int as n from auth.users where id = $1`, [noOrgUserId]);
+    expect(rows[0].n).toBe(1);
+  });
+});
+
+// =============================================================================
+// PHASE 8 TASK 8: WHAT EACH PRINCIPAL MAY DO WITH ITS OWN RIGHTS
+// =============================================================================
+// Every block above asks what a principal is REFUSED. Phase 8's surfaces are
+// mostly the other kind: a person's statutory rights over their own data,
+// which must be AVAILABLE to anybody signed in -- including the two principals
+// Phase 8 made meaningful: a member of a SUSPENDED workspace (suspension is
+// read-only, and a statutory right is not a write to the workspace) and the
+// platform superuser below aal2 (they are also a person). Each assertion names
+// the mechanism that decides the answer.
+describe("Phase 8: each principal's own rights, and the mechanism behind each answer", () => {
+  it("anonymous: every rights RPC refuses, and by the missing session or grant -- never by a guard it reached", async () => {
+    const calls: [string, Record<string, unknown>][] = [
+      ["record_consent", { p_purpose: "marketing_email", p_action: "granted", p_policy_version: 1, p_statement: "marketing-email-1" }],
+      ["submit_data_subject_request", { p_right_type: "access", p_subject_scope: "account", p_detail: "anon" }],
+      ["withdraw_data_subject_request", { p_request_id: ARGS.dsrRequestId }],
+      ["audit_export_download", { p_job_id: ARGS.exportJobId }],
+    ];
+    for (const [fn, args] of calls) {
+      const { error } = await fx.anonClient.rpc(fn, args as never);
+      expect(error, `${fn} served anonymous`).not.toBeNull();
+      expect(ANON_MECHANISMS.has(mechanismOf(error)), `${fn}: ${mechanismOf(error)} ${error?.message}`).toBe(true);
+    }
+    // my_erasure_blockers answers a sessionless caller with NO ROWS (asserted in
+    // MEMBER_REACHABLE_RPCS' reason); measured here rather than trusted.
+    const blockers = await fx.anonClient.rpc("my_erasure_blockers");
+    if (blockers.error) {
+      expect(ANON_MECHANISMS.has(mechanismOf(blockers.error)), blockers.error.message).toBe(true);
+    } else {
+      expect(blockers.data ?? []).toEqual([]);
+    }
+  });
+
+  it("the SUSPENDED workspace's Owner records a consent, and it is theirs", async () => {
+    const { rows } = await pool.query<{ version: number }>(
+      `select version from public.legal_documents where slug = 'marketing-preferences' and status = 'published'`,
+    );
+    const { data, error } = await suspendedClient.rpc("record_consent", {
+      p_purpose: "marketing_email",
+      p_action: "granted",
+      p_policy_version: rows[0].version,
+      p_statement: "marketing-email-1",
+    });
+    expect(error, `a suspended member could not record their own consent: ${error?.message}`).toBeNull();
+    const id = ((data ?? []) as { consent_id: string }[])[0]?.consent_id;
+    const owner = await pool.query(`select user_id from public.consents where id = $1`, [id]);
+    expect(owner.rows).toEqual([{ user_id: suspendedUserId }]);
+  });
+
+  it("the SUSPENDED workspace's Owner makes a data subject request, and it is theirs", async () => {
+    const { data, error } = await suspendedClient.rpc("submit_data_subject_request", {
+      p_right_type: "access",
+      p_subject_scope: "account",
+      p_detail: "matrix: a suspended workspace's member keeps their rights",
+    });
+    expect(error, `a suspended member could not exercise a statutory right: ${error?.message}`).toBeNull();
+    const id = ((data ?? []) as { request_id: string }[])[0]?.request_id;
+    const owner = await pool.query(`select user_id from public.data_subject_requests where id = $1`, [id]);
+    expect(owner.rows).toEqual([{ user_id: suspendedUserId }]);
+  });
+
+  it("the SUSPENDED workspace's Owner exports their account AND their workspace (export_organisation_data survives suspension)", async () => {
+    const account = await suspendedClient
+      .from("export_jobs")
+      .insert({ kind: "account" } as never)
+      .select("id, requested_by");
+    expect(account.error, `account export refused to a suspended member: ${account.error?.message}`).toBeNull();
+    const workspace = await suspendedClient
+      .from("export_jobs")
+      .insert({ kind: "workspace", organisation_id: suspendedOrg.id } as never)
+      .select("id, requested_by, organisation_id");
+    expect(
+      workspace.error,
+      `the workspace export -- the one Phase 8 key that survives suspension -- was refused: ${workspace.error?.message}`,
+    ).toBeNull();
+    const ids = [
+      ...((account.data ?? []) as { id: string }[]),
+      ...((workspace.data ?? []) as { id: string }[]),
+    ].map((r) => r.id);
+    expect(ids).toHaveLength(2);
+    await pool.query(`delete from public.export_jobs where id = any($1::uuid[])`, [ids]);
+  });
+
+  it("CONTROL: a SUSPENDED Owner still cannot export a workspace they are not in -- the RLS check, not the suspension", async () => {
+    const { error } = await suspendedClient
+      .from("export_jobs")
+      .insert({ kind: "workspace", organisation_id: fx.orgA.id } as never);
+    expect(error, "a suspended Owner exported a workspace they are not a member of").not.toBeNull();
+  });
+
+  it("the SUSPENDED workspace's Owner reads what would stop an erasure, and it names nobody else's workspace", async () => {
+    const { data, error } = await suspendedClient.rpc("my_erasure_blockers");
+    expect(error, error?.message).toBeNull();
+    // Sole Owner of an EMPTY workspace: it goes with them (Q131), so nothing blocks.
+    expect(data ?? []).toEqual([]);
+  });
+
+  it("the superuser BELOW aal2 is still a person: they record a consent and make a request of their own", async () => {
+    const { rows } = await pool.query<{ version: number }>(
+      `select version from public.legal_documents where slug = 'marketing-preferences' and status = 'published'`,
+    );
+    const consent = await superuserAal1Client.rpc("record_consent", {
+      p_purpose: "marketing_email",
+      p_action: "granted",
+      p_policy_version: rows[0].version,
+      p_statement: "marketing-email-1",
+    });
+    expect(consent.error, consent.error?.message).toBeNull();
+    const dsr = await superuserAal1Client.rpc("submit_data_subject_request", {
+      p_right_type: "access",
+      p_subject_scope: "account",
+      p_detail: "matrix: the operator's own account has these rights too",
+    });
+    expect(dsr.error, dsr.error?.message).toBeNull();
+    const id = ((dsr.data ?? []) as { request_id: string }[])[0]?.request_id;
+    const owner = await pool.query(`select user_id from public.data_subject_requests where id = $1`, [id]);
+    expect(owner.rows).toEqual([{ user_id: fx.superuser.userId }]);
+    // ...and, at aal1, still cannot OPERATE on it -- the guard's refusal.
+    const op = await superuserAal1Client.rpc("transition_data_subject_request", {
+      p_request_id: id,
+      p_status: "in_progress",
+    });
+    expect(mechanismOf(op.error), op.error?.message).toBe("guard");
+  });
+
+  it("the DATA SUBJECT withdraws their own request; nobody else can, and the refusal is the trigger's", async () => {
+    const { data, error } = await fx.activeByRole.read_only.client.rpc("submit_data_subject_request", {
+      p_right_type: "objection",
+      p_subject_scope: "account",
+      p_detail: "matrix: withdrawal boundary",
+    });
+    expect(error, error?.message).toBeNull();
+    const id = ((data ?? []) as { request_id: string }[])[0]!.request_id;
+    for (const [who, client] of [
+      ["orgOwner", fx.ownerA.client],
+      ["suspendedMember", suspendedClient],
+      ["superuserAal2", superuser],
+    ] as const) {
+      const { error: e } = await client.rpc("withdraw_data_subject_request", { p_request_id: id });
+      expect(e, `${who} withdrew somebody else's request`).not.toBeNull();
+    }
+    const still = await pool.query(`select status from public.data_subject_requests where id = $1`, [id]);
+    expect(still.rows).toEqual([{ status: "open" }]);
+    const own = await fx.activeByRole.read_only.client.rpc("withdraw_data_subject_request", { p_request_id: id });
+    expect(own.error, own.error?.message).toBeNull();
+    const after = await pool.query(`select status from public.data_subject_requests where id = $1`, [id]);
+    expect(after.rows).toEqual([{ status: "withdrawn" }]);
   });
 });
 
