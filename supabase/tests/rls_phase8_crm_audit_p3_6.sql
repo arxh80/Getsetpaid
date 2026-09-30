@@ -1075,7 +1075,10 @@ select c7.val('PS1 SWEEP: no audit row written since the suite began carries the
 select c7.val('PS1b DENOMINATOR: rows WERE written since the suite began -- at least fifty, by this suite''s four actors',
   format($$select (count(*) >= 50)::text from public.audit_events
             where created_at >= %L and actor_user_id in (%L, %L, %L, %L)$$, :'c7_t0', :'pmanager', :'padmin', :'pbowner', :'super'), 'true');
-select c7.val('PS1c DENOMINATOR: the sentinel is in TEN planted rows right now (events, lineup, tasks, meetings, notes, documents, entries, profile, candidate ... and the ticket link)',
+-- Fix round 1, M5: this said TEN rows and counted `events` twice. It is NINE
+-- rows, and the event's ticket_link is a second sentinel COLUMN on one of
+-- them -- reported apart, so neither number is a double count.
+select c7.val('PS1c DENOMINATOR: the sentinel is in NINE planted rows right now (events, lineup, tasks, meetings, notes, documents, entries, profile, candidate), and in the event''s ticket_link as well',
   format($$select (
       (select count(*) from public.events where id=%L and (name||location||coalesce(notes,'')||coalesce(ticket_link,'')) ilike '%%ZQ7%%')
     + (select count(*) from public.event_lineup where id=%L and notes ilike '%%ZQ7%%')
@@ -1085,9 +1088,9 @@ select c7.val('PS1c DENOMINATOR: the sentinel is in TEN planted rows right now (
     + (select count(*) from public.documents where id=%L and (filename||storage_key) ilike '%%ZQ7%%')
     + (select count(*) from public.financial_entries where id=%L and description ilike '%%ZQ7%%')
     + (select count(*) from public.network_profiles where id=%L and (display_name||coalesce(bio,'')) ilike '%%ZQ7%%')
-    + (select count(*) from public.merge_candidates where id=%L and label ilike '%%ZQ7%%')
-    + (select count(*) from public.events where id=%L and ticket_link ilike '%%zq7%%'))::text$$,
-    :p_ev, :p_lu, :p_tk, :p_mt, :p_nt, :p_dc, :p_fe, :p_np, :p_mc, :p_ev), '10');
+    + (select count(*) from public.merge_candidates where id=%L and label ilike '%%ZQ7%%'))::text
+    || '/' || (select count(*) from public.events where id=%L and ticket_link ilike '%%zq7%%')::text$$,
+    :p_ev, :p_lu, :p_tk, :p_mt, :p_nt, :p_dc, :p_fe, :p_np, :p_mc, :p_ev), '9/1');
 select c7.val('PS2 the two amounts appear in no audit row either',
   format($$select count(*)::text from public.audit_events where created_at >= %L
             and (coalesce(before::text,'') || coalesce(after::text,'')) ~ '(987654321|123456789)'$$, :'c7_t0'), '0');
