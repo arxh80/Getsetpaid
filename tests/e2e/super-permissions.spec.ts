@@ -178,23 +178,20 @@ async function expectRefused(page: Page, surface: SuperSurface, who: string) {
 // GATE 0: THE INVENTORY IS COMPLETE
 // =============================================================================
 test("every /super page in the tree is on this file's list", async () => {
-  const { readdirSync } = await import("node:fs");
+  // Phase 8 Task 8: the derivation lives in tests/support/super-route-census.ts
+  // and walks the WHOLE app tree for every page extension Next serves, mapping
+  // route groups and slots to the URL they really serve. The old walk read
+  // `app/(app)/super` for `page.tsx` alone and could not see a `page.ts`, a
+  // /super page in another route group, or the true URL of a grouped one --
+  // tests/unit/security/super-page-census.test.ts plants each and measures it.
   const { join } = await import("node:path");
-  const root = join(process.cwd(), "app", "(app)", "super");
-  const found: string[] = [];
-  const walk = (dir: string, url: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        walk(join(dir, entry.name), `${url}/${entry.name}`);
-      } else if (entry.name === "page.tsx") {
-        found.push(url);
-      }
-    }
-  };
-  walk(root, "/super");
-  // A page added under /super by a later phase lands HERE, by path, instead of
+  const { superPageUrls, SUPER_PAGE_URLS } = await import("../support/super-route-census");
+  const found = superPageUrls(join(process.cwd(), "app"));
+  // A page added under /super by a later phase lands HERE, by URL, instead of
   // quietly never being probed by any principal.
-  expect(found.sort()).toEqual(SUPER_SURFACES.map((s) => s.url).sort());
+  expect(found).toEqual(SUPER_SURFACES.map((s) => s.url).sort());
+  // ...and the list the unit test pins in CI is this file's list.
+  expect([...SUPER_PAGE_URLS].sort()).toEqual(SUPER_SURFACES.map((s) => s.url).sort());
 });
 
 // =============================================================================
