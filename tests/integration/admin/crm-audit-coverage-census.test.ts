@@ -203,6 +203,20 @@ describe("private.audit_coverage(): every tenant-owned client-writable table is 
       expect(covered.target_type).toBe("zz_planted");
       expect(covered.uncovered_ops).toEqual([]);
 
+      // M1 (fix round 1): a trigger that EXISTS is not a trigger that FIRES.
+      // Disabled, and then replica-only, the update half is a hole again --
+      // before 20261007001000 both read `generic` (measured: O2).
+      await client.query(`alter table public.zz_task7_planted disable trigger audit_update`);
+      rows = await coverage(client);
+      expect(rows.find((r) => r.table_name === "zz_task7_planted")!.coverage).toBe("unaudited");
+      expect(rows.find((r) => r.table_name === "zz_task7_planted")!.uncovered_ops).toEqual(["UPDATE"]);
+      await client.query(`alter table public.zz_task7_planted enable replica trigger audit_update`);
+      rows = await coverage(client);
+      expect(rows.find((r) => r.table_name === "zz_task7_planted")!.uncovered_ops).toEqual(["UPDATE"]);
+      await client.query(`alter table public.zz_task7_planted enable always trigger audit_update`);
+      rows = await coverage(client);
+      expect(rows.find((r) => r.table_name === "zz_task7_planted")!.coverage).toBe("generic");
+
       // ...and a DELETE grant reopens it, because the pair cannot see one.
       await client.query(`grant delete on public.zz_task7_planted to authenticated`);
       rows = await coverage(client);
@@ -232,6 +246,72 @@ describe("private.audit_coverage(): every tenant-owned client-writable table is 
       const arrived = rows.find((r) => r.table_name === "zz_task7_dormant");
       expect(arrived?.coverage, "an anon column grant puts it in, unaudited").toBe("unaudited");
       expect(arrived?.client_writes).toEqual(["UPDATE"]);
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
+  it("M2, PLANTED: the three shapes the first census could not see are each in the denominator and red", async () => {
+    // Fix round 1. Each shape is planted in one rolled-back transaction and
+    // must read `unaudited` BY NAME -- and each has a positive control, so the
+    // red is the shape's and not the plant's.
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+
+      // (a) rpc_only with row security OFF: every policy carries the marker
+      // term, so the first census called it rpc_only -- and no policy is
+      // consulted at all.
+      await client.query(
+        `create table public.zz_task7_rpc (
+           id uuid primary key default gen_random_uuid(),
+           organisation_id uuid not null references public.organisations(id) on delete cascade,
+           body text)`,
+      );
+      await client.query(`grant insert (organisation_id, body) on public.zz_task7_rpc to authenticated`);
+      await client.query(
+        `create policy zz_task7_rpc_insert on public.zz_task7_rpc for insert to authenticated
+           with check (private.override_transition_in_progress())`,
+      );
+      await client.query(`alter table public.zz_task7_rpc enable row level security`);
+      let rows = await coverage(client);
+      expect(rows.find((r) => r.table_name === "zz_task7_rpc")?.coverage, "positive control: RLS on").toBe("rpc_only");
+      await client.query(`alter table public.zz_task7_rpc disable row level security`);
+      rows = await coverage(client);
+      expect(rows.find((r) => r.table_name === "zz_task7_rpc")?.coverage, "RLS off ignores the policy").toBe("unaudited");
+
+      // (b) an org path that is not a direct FK: an organisation_id column
+      // with no foreign key at all.
+      await client.query(
+        `create table public.zz_task7_orgcol (
+           id uuid primary key default gen_random_uuid(),
+           organisation_id uuid not null,
+           body text)`,
+      );
+      await client.query(`alter table public.zz_task7_orgcol enable row level security`);
+      await client.query(`grant update (body) on public.zz_task7_orgcol to authenticated`);
+      rows = await coverage(client);
+      expect(rows.find((r) => r.table_name === "zz_task7_orgcol")?.coverage).toBe("unaudited");
+
+      // (c) a client-writable auto-updatable view over a table no client can
+      // write -- the base table is outside the denominator, the view is not.
+      await client.query(
+        `create table public.zz_task7_base (
+           id uuid primary key default gen_random_uuid(),
+           organisation_id uuid not null references public.organisations(id) on delete cascade,
+           body text)`,
+      );
+      await client.query(`alter table public.zz_task7_base enable row level security`);
+      await client.query(`create view public.zz_task7_view as select id, organisation_id, body from public.zz_task7_base`);
+      rows = await coverage(client);
+      expect(rows.some((r) => r.table_name === "zz_task7_view"), "positive control: no grant, not in").toBe(false);
+      await client.query(`grant insert, update on public.zz_task7_view to authenticated`);
+      rows = await coverage(client);
+      const view = rows.find((r) => r.table_name === "zz_task7_view");
+      expect(view?.coverage).toBe("unaudited");
+      expect(view?.uncovered_ops).toEqual(["INSERT", "UPDATE"]);
+      expect(rows.some((r) => r.table_name === "zz_task7_base"), "the base table still has no client grant").toBe(false);
     } finally {
       await client.query("rollback");
       client.release();

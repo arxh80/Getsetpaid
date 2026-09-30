@@ -420,9 +420,38 @@ begin
       create trigger audit_insert after insert on public.zz_c7_planted
         for each row execute function private.audit_crm_change('zz_planted');
     end if;
-    if p_mode = 'pair' then
+    if p_mode in ('pair', 'pair_disabled', 'pair_replica') then
       create trigger audit_update after update on public.zz_c7_planted
         for each row execute function private.audit_crm_change('zz_planted');
+    end if;
+    if p_mode in ('pair_disabled', 'pair_replica') then
+      create trigger audit_insert after insert on public.zz_c7_planted
+        for each row execute function private.audit_crm_change('zz_planted');
+    end if;
+    -- Fix round 1, M1: a trigger that exists but does not fire.
+    if p_mode = 'pair_disabled' then
+      alter table public.zz_c7_planted disable trigger audit_update;
+    elsif p_mode = 'pair_replica' then
+      alter table public.zz_c7_planted enable replica trigger audit_update;
+    end if;
+    -- ...and the same for a DEDICATED writer (any AFTER ROW private.audit_*).
+    if p_mode in ('dedicated', 'dedicated_disabled') then
+      create trigger zz_c7_dedicated after insert or update on public.zz_c7_planted
+        for each row execute function private.audit_crm_row('zz.x', 'zz_planted');
+    end if;
+    if p_mode = 'dedicated_disabled' then
+      alter table public.zz_c7_planted disable trigger zz_c7_dedicated;
+    end if;
+    -- Fix round 1, M2a: marker-guarded policies, with row security on or off.
+    if p_mode in ('rpc_rls_on', 'rpc_rls_off') then
+      create policy zz_c7_ins on public.zz_c7_planted for insert to authenticated
+        with check (private.override_transition_in_progress());
+      create policy zz_c7_upd on public.zz_c7_planted for update to authenticated
+        using (private.override_transition_in_progress())
+        with check (private.override_transition_in_progress());
+    end if;
+    if p_mode = 'rpc_rls_off' then
+      alter table public.zz_c7_planted disable row level security;
     end if;
     select coalesce(string_agg(coverage || ':' || array_to_string(uncovered_ops, '/') || ':' || coalesce(target_type, '-'), ','), '<absent>')
       into v from private.audit_coverage() where table_name = 'zz_c7_planted';
@@ -439,8 +468,67 @@ select c7.val('PC8b ...with HALF the pair it is still unaudited on UPDATE (half 
   $$select c7.probe_planted('half')$$, 'unaudited:UPDATE:zz_planted');
 select c7.val('PC8c ...with the pair it is generic under its own argument',
   $$select c7.probe_planted('pair')$$, 'generic::zz_planted');
+-- FIX ROUND 1, M1: a DISABLED or REPLICA-ONLY trigger does not fire, so it
+-- is not coverage. Before 20261007001000 all three of PC8e-PC8g read
+-- `generic::zz_planted` / `dedicated::-` (the reviewer's O2, measured).
+select c7.val('PC8e M1 ...with the pair but audit_update DISABLED it is unaudited on UPDATE again',
+  $$select c7.probe_planted('pair_disabled')$$, 'unaudited:UPDATE:zz_planted');
+select c7.val('PC8f M1 ...and with audit_update REPLICA-ONLY (never fires for a client) likewise',
+  $$select c7.probe_planted('pair_replica')$$, 'unaudited:UPDATE:zz_planted');
+select c7.val('PC8g positive control: a DEDICATED AFTER ROW writer on both ops is `dedicated`',
+  $$select c7.probe_planted('dedicated')$$, 'dedicated::-');
+select c7.val('PC8h M1 ...and DISABLED it covers nothing',
+  $$select c7.probe_planted('dedicated_disabled')$$, 'unaudited:INSERT/UPDATE:-');
+-- M2a: the marker-guarded policy set is only a gate while row security is on.
+select c7.val('PC8i positive control: marker-only policies with RLS ON are `rpc_only`',
+  $$select c7.probe_planted('rpc_rls_on')$$, 'rpc_only::-');
+select c7.val('PC8j M2a ...and with RLS OFF every policy is ignored: unaudited',
+  $$select c7.probe_planted('rpc_rls_off')$$, 'unaudited:INSERT/UPDATE:-');
 select c7.val('PC8d ...and the planted table is gone (the subtransaction rolled back)',
   $$select (to_regclass('public.zz_c7_planted') is null)::text$$, 'true');
+
+-- M2b / M2c: the two shapes outside the first census's denominator. Each
+-- probe plants its relation in a subtransaction and carries the census's
+-- answer out through the exception that rolls it back.
+create function c7.probe_shape(p_mode text) returns text
+language plpgsql security definer set search_path = 'pg_catalog, public' as $$
+declare v text;
+begin
+  begin
+    if p_mode = 'orgcol' then
+      -- an organisation_id column with NO foreign key at all
+      create table public.zz_c7_shape (
+        id uuid primary key default gen_random_uuid(),
+        organisation_id uuid not null,
+        body text);
+      alter table public.zz_c7_shape enable row level security;
+      grant update (body) on public.zz_c7_shape to authenticated;
+    elsif p_mode in ('view', 'view_nogrant') then
+      create table public.zz_c7_shape_base (
+        id uuid primary key default gen_random_uuid(),
+        organisation_id uuid not null references public.organisations(id) on delete cascade,
+        body text);
+      alter table public.zz_c7_shape_base enable row level security;
+      create view public.zz_c7_shape as select id, organisation_id, body from public.zz_c7_shape_base;
+      if p_mode = 'view' then
+        grant insert, update on public.zz_c7_shape to authenticated;
+      end if;
+    end if;
+    select coalesce(string_agg(table_name || ':' || coverage || ':' || array_to_string(uncovered_ops, '/'), ',' order by table_name), '<absent>')
+      into v from private.audit_coverage() where table_name like 'zz\_c7\_shape%';
+    raise exception using message = v, errcode = 'P7777';
+  exception when sqlstate 'P7777' then
+    return sqlerrm;
+  end;
+end $$;
+select c7.val('PC8k M2b an organisation_id column with no FK is in the denominator, unaudited',
+  $$select c7.probe_shape('orgcol')$$, 'zz_c7_shape:unaudited:UPDATE');
+select c7.val('PC8l positive control: an auto-updatable view with NO client grant is outside it',
+  $$select c7.probe_shape('view_nogrant')$$, '<absent>');
+select c7.val('PC8m M2c ...granted, the VIEW is in and unaudited, and its un-granted base table is not',
+  $$select c7.probe_shape('view')$$, 'zz_c7_shape:unaudited:INSERT/UPDATE');
+select c7.val('PC8n ...and nothing the shape probes planted is left',
+  $$select (to_regclass('public.zz_c7_shape') is null and to_regclass('public.zz_c7_shape_base') is null)::text$$, 'true');
 
 -- ===========================================================================
 -- § PI  INSERT IS AUDITED, per table: one .created row, allowlisted keys only,
@@ -1056,6 +1144,7 @@ delete from public.rate_limit_counters where category = 'network_connection_requ
    and subject_id in (:'alpha_org', :'beta_org');
 delete from public.incident_alerts where created_at >= :'c7_t0' and organisation_id in (:'alpha_org', :'beta_org');
 drop function c7.probe_planted(text);
+drop function c7.probe_shape(text);
 -- Both subscriptions go back to what they were (nothing, today).
 delete from public.organisation_subscriptions where organisation_id in (:'alpha_org', :'beta_org');
 insert into public.organisation_subscriptions select * from c7.saved_sub;
