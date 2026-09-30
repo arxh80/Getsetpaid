@@ -57,6 +57,8 @@ describe("the derived hint roll", () => {
       "workspace_is_live",
       "unknown_job",
       "job_is_not_running",
+      // Phase 8 Task 7 fix round 1 (C1): erase_account() step 10b.
+      "identifier_survived_in_audit_payload",
     ]) {
       expect(HINTS, `${hint} is no longer derived from the migrations`).toContain(hint);
     }

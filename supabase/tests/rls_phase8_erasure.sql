@@ -358,6 +358,61 @@ select er.val('EF6 the note audit trigger is ENABLED again before anything is me
      where tgrelid = 'public.data_subject_request_notes'::pg_catalog.regclass
        and tgname = 'data_subject_request_notes_audit'$$, 'O');
 
+-- ---------------------------------------------------------------------------
+-- EP FIXTURES (Phase 8 Task 7 fix round 1, C1): THE SUBJECT NAMED ON
+-- SOMEBODY ELSE'S AUDIT ROW. Since 20261006000000 an Admin's invitation and a
+-- colleague's reassignment write the subject's uuid into a payload whose
+-- actor is the Admin and whose target is a membership or a task -- a row
+-- neither step 6b (target) nor 6e (actor) can see. It is written HERE
+-- THROUGH A REAL SESSION, by a fourth account in a fourth workspace, so the
+-- rows are the product's own writers' rows rather than a planted shape: the
+-- fixture that avoided the bug is how Task 5's C1 shipped green.
+--
+--   eadmin  Owner (aal2) of AUDITWS. Invites the subject, and reassigns a
+--           task to them. Never erased, so nothing here moves § EL-§ ES.
+--
+-- PLUS ONE PLANTED ROW PER ENTRY OF private.audit_payload_person_columns():
+-- the value in `before`, in `after` UPPER-CASED, and again one level down,
+-- so the scrub is measured on every derived person column, in every position
+-- and case, rather than on the two a writer happened to produce.
+-- ---------------------------------------------------------------------------
+\o /dev/null
+select gen_random_uuid()::text as eadmin    \gset
+select gen_random_uuid()::text as org_audit \gset
+select gen_random_uuid()::text as ep_task   \gset
+insert into auth.users (id, instance_id, aud, role, email)
+values (:'eadmin', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+        'erase-admin-' || :'eadmin' || '@test.local');
+insert into public.organisations (id, name, slug) values (:'org_audit', 'Erasure Audit Ltd', 'erasure-audit');
+insert into public.organisation_memberships (organisation_id, user_id, role, status)
+values (:'org_audit', :'eadmin', 'owner', 'active');
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'org_audit', 'pro', 'monthly', 3, 'active', pg_catalog.now() + interval '30 days')
+on conflict (organisation_id) do update set plan_id = 'pro', status = 'active';
+\o
+\set eadmin_c '{"sub":"' :eadmin '","role":"authenticated","aal":"aal2"}'
+\o /dev/null
+set request.jwt.claims to :'eadmin_c';
+set role authenticated;
+insert into public.organisation_memberships (organisation_id, user_id, role, status, invited_by)
+values (:'org_audit', :'esub', 'standard_user', 'invited', :'eadmin');
+insert into public.tasks (id, organisation_id, owner_user_id, title)
+values (:'ep_task', :'org_audit', :'eadmin', 'EP fixture task');
+update public.tasks set owner_user_id = :'esub' where id = :'ep_task';
+reset role;
+reset request.jwt.claims;
+
+insert into public.audit_events
+  (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, before, after)
+select :'org_audit', :'eadmin', 'erase.fixture.person_column', r.target_type,
+       gen_random_uuid(), gen_random_uuid(),
+       pg_catalog.jsonb_build_object(r.column_name, :'esub'),
+       pg_catalog.jsonb_build_object(r.column_name, pg_catalog.upper(:'esub'),
+                                     'nested', pg_catalog.jsonb_build_object(r.column_name, :'esub'))
+  from private.audit_payload_person_columns() r;
+\o
+
 
 -- ===========================================================================
 -- ET  THE TOMBSTONE (Q130)
@@ -943,6 +998,70 @@ select er.val('EE9 DENOMINATOR: the audit row that TARGETS the subject carries a
   $$select (before is not null)::text from public.audit_events
      where action = 'erase.fixture.target'$$, 'true');
 
+-- ---------------------------------------------------------------------------
+-- EP  THE PERSON IDS INSIDE AUDIT PAYLOADS (Task 7 fix round 1, C1) -- THE
+--     DENOMINATOR, before anything is erased.
+-- ---------------------------------------------------------------------------
+-- EP1 IS THE DERIVED GUARD, PINNED BY NAME. Every (target, column, writer)
+-- the two generic audit writers copy BY VALUE that identifies a person. A
+-- future allowlist entry holding a user id -- or a projection that starts
+-- copying one -- changes this string, and the failure names it. The fix for a
+-- red here is to read the new entry, confirm § EP's planted row for it is
+-- scrubbed (it is generated from the same roll, so it will be), and extend
+-- the literal; it is never to drop the entry.
+select er.val('EP1 the derived roll of person ids copied into audit payloads, by name',
+  $$select string_agg(target_type || '.' || column_name || ':' || writer || ':' || identified_by,
+                      ',' order by target_type, column_name, writer)
+      from private.audit_payload_person_columns()$$,
+  'agency.owner_user_id:audit_crm_change:foreign_key,'
+  'artist.owner_user_id:audit_crm_change:foreign_key,'
+  'company.owner_user_id:audit_crm_change:foreign_key,'
+  'contact.owner_user_id:audit_crm_change:foreign_key,'
+  'document.owner_user_id:audit_crm_change:foreign_key,'
+  'event.owner_user_id:audit_crm_change:foreign_key,'
+  'financial_entry.created_by:audit_crm_change:foreign_key,'
+  'meeting.owner_user_id:audit_crm_change:foreign_key,'
+  'membership.invited_by:audit_crm_change:foreign_key,'
+  'membership.user_id:audit_crm_change:foreign_key,'
+  'membership.user_id:audit_crm_row:foreign_key,'
+  'merge_candidate.duplicate_owner_user_id:audit_crm_change:fkless_roll,'
+  'merge_candidate.keep_owner_user_id:audit_crm_change:fkless_roll,'
+  'merge_candidate.resolved_by:audit_crm_change:foreign_key,'
+  'network_link.created_by:audit_crm_change:foreign_key,'
+  'network_profile.created_by:audit_crm_change:foreign_key,'
+  'note.owner_user_id:audit_crm_change:foreign_key,'
+  'task.owner_user_id:audit_crm_change:foreign_key,'
+  'venue.owner_user_id:audit_crm_change:foreign_key');
+select er.val('EP2 DENOMINATOR: the Admin''s real membership.created names the subject, by the Admin, about a membership',
+  $$select count(*)::text || '/' || bool_and(actor_user_id = '$$ || :'eadmin' || $$')::text
+               || '/' || bool_and(target_id is distinct from '$$ || :'esub' || $$')::text
+      from public.audit_events
+     where action = 'membership.created' and organisation_id = '$$ || :'org_audit' || $$'
+       and after -> 'values' ->> 'user_id' = '$$ || :'esub' || $$'
+       and after -> 'values' ->> 'invited_by' = '$$ || :'eadmin' || $$'$$, '1/true/true');
+select er.val('EP3 DENOMINATOR: the real task.updated reassigning a task to the subject names them',
+  $$select count(*)::text || '/' || bool_and(actor_user_id = '$$ || :'eadmin' || $$')::text
+      from public.audit_events
+     where action = 'task.updated' and target_id = '$$ || :'ep_task' || $$'
+       and before -> 'values' ->> 'owner_user_id' = '$$ || :'eadmin' || $$'
+       and after  -> 'values' ->> 'owner_user_id' = '$$ || :'esub' || $$'$$, '1/true');
+select er.val('EP4 DENOMINATOR: one planted payload per derived person column, each carrying the subject three times',
+  $$select (select count(*) from public.audit_events
+             where action = 'erase.fixture.person_column'
+               and pg_catalog.strpos(before::text, '$$ || :'esub' || $$') > 0
+               and pg_catalog.strpos(after::text, upper('$$ || :'esub' || $$')) > 0)::text
+        || '/' || (select count(*) from private.audit_payload_person_columns())::text$$,
+  '19/19');
+select er.val('EP5 DENOMINATOR: every audit payload that contains the subject, in any case, anywhere',
+  $$select count(*)::text from public.audit_events
+     where pg_catalog.strpos(lower(coalesce(before::text, '')), '$$ || :'esub' || $$') > 0
+        or pg_catalog.strpos(lower(coalesce(after::text, '')), '$$ || :'esub' || $$') > 0$$,
+  -- 21 = EP2's one + EP3's one + EP4's nineteen, measured. Nothing else in
+  -- this suite puts the subject's id inside a payload: the rows they ACTED on
+  -- (their own request, their job) carry no id of theirs -- which EP10
+  -- confirms from the other side, since the scrub rewrote exactly these 21.
+  '21');
+
 -- THE BYTES GATE. A stored object under a key the subject's own rows name is
 -- planted, and the erasure must REFUSE while it is there.
 \o /dev/null
@@ -1160,6 +1279,81 @@ select er.val('EE48 running it again is NOT an error -- it says the account was 
   $$select (private.erase_account('$$ || :'esub' || $$', null) ->> 'already_erased')$$, 'true');
 select er.val('EE49 and the second run changed nothing',
   $$select count(*)::text from public.audit_events where action = 'account.erased'$$, '1');
+
+-- ---------------------------------------------------------------------------
+-- EP  AFTER THE ERASURE (C1). Not one payload anywhere still names the
+--     subject -- and the rows are still there, saying what happened.
+-- ---------------------------------------------------------------------------
+select er.val('EP6 NOT ONE audit payload still contains the subject''s id, in any case, anywhere',
+  $$select count(*)::text from public.audit_events
+     where pg_catalog.strpos(lower(coalesce(before::text, '')), '$$ || :'esub' || $$') > 0
+        or pg_catalog.strpos(lower(coalesce(after::text, '')), '$$ || :'esub' || $$') > 0$$, '0');
+select er.val('EP7 the Admin''s invitation survives: invitee = the tombstone, inviter kept',
+  $$select count(*)::text from public.audit_events
+     where action = 'membership.created' and organisation_id = '$$ || :'org_audit' || $$'
+       and actor_user_id = '$$ || :'eadmin' || $$'
+       and after -> 'values' ->> 'user_id' = private.erased_user_id()::text
+       and after -> 'values' ->> 'invited_by' = '$$ || :'eadmin' || $$'$$, '1');
+select er.val('EP8 the reassignment survives: from the Admin, to the tombstone',
+  $$select count(*)::text from public.audit_events
+     where action = 'task.updated' and target_id = '$$ || :'ep_task' || $$'
+       and before -> 'values' ->> 'owner_user_id' = '$$ || :'eadmin' || $$'
+       and after  -> 'values' ->> 'owner_user_id' = private.erased_user_id()::text$$, '1');
+-- DISTINCT e.id: `membership.user_id` is on the roll twice (both writers copy
+-- it), so a join on target_type pairs each planted user_id row with two roll
+-- rows. The first run counted 21 for that reason; the planted rows are 19.
+select er.val('EP9 every derived person column is the tombstone in before, after (upper-cased) and nested',
+  $$select count(distinct e.id)::text from public.audit_events e
+      join private.audit_payload_person_columns() r
+        on r.target_type = e.target_type
+     where e.action = 'erase.fixture.person_column'
+       and e.before ->> r.column_name = private.erased_user_id()::text
+       and e.after  ->> r.column_name = private.erased_user_id()::text
+       and e.after -> 'nested' ->> r.column_name = private.erased_user_id()::text$$, '19');
+select er.val('EP10 and the summary counts the rows the scrub rewrote',
+  $$select summary ->> 'audit_events.payload_values'
+      from public.erasure_jobs where id = '$$ || :'job_id' || $$'$$, '21');
+
+-- EP11 IS THE STANDING MUTATION OF STEP 10b. A throwaway AFTER DELETE trigger
+-- on public.profiles -- which the account's delete at step 9 cascades into,
+-- sessionless -- writes an audit row carrying the account's id AFTER step 6f
+-- has run. That is the shape a future cascade-time writer would have, and 6f
+-- cannot see it by construction. 10b must refuse the whole erasure, by its
+-- own hint; the subtransaction er.try_hint runs in rolls it back, and EP12
+-- proves the account is still there.
+\o /dev/null
+select gen_random_uuid()::text as ep_y \gset
+insert into auth.users (id, instance_id, aud, role, email)
+values (:'ep_y', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+        'erase-late-writer-' || :'ep_y' || '@test.local');
+create function er.write_late_payload() returns trigger
+language plpgsql security definer set search_path = '' as $fn$
+begin
+  insert into public.audit_events (organisation_id, actor_user_id, action, target_type,
+                                   target_id, correlation_id, after)
+  values (null, private.erased_user_id(), 'erase.fixture.late_writer', 'profile',
+          gen_random_uuid(), gen_random_uuid(), pg_catalog.jsonb_build_object('who', old.id));
+  return old;
+end $fn$;
+create trigger er_late_writer after delete on public.profiles
+  for each row execute function er.write_late_payload();
+\o
+select er.try_hint('EP11 a payload written DURING the delete (after 6f) fails the erasure closed',
+  $$select private.erase_account('$$ || :'ep_y' || $$', null)$$,
+  'denied(55000:identifier_survived_in_audit_payload)');
+select er.val('EP12 and it rolled back: the account and its profile are still there, no late row kept',
+  $$select (select count(*) from auth.users where id = '$$ || :'ep_y' || $$')::text || '/' ||
+           (select count(*) from public.profiles where id = '$$ || :'ep_y' || $$')::text || '/' ||
+           (select count(*) from public.audit_events where action = 'erase.fixture.late_writer')::text$$,
+  '1/1/0');
+\o /dev/null
+drop trigger er_late_writer on public.profiles;
+drop function er.write_late_payload();
+\o
+select er.val('EP13 the throwaway trigger is gone again',
+  $$select count(*)::text from pg_catalog.pg_trigger
+     where tgrelid = 'public.profiles'::pg_catalog.regclass and tgname = 'er_late_writer'$$, '0');
+
 
 
 -- ===========================================================================
@@ -1485,7 +1679,12 @@ delete from public.erasure_jobs;
 set session_replication_role = replica;
 delete from public.audit_events
  where action in ('erasure_job.requested', 'account.erased', 'organisation.erased',
-                  'erase.fixture.actor', 'erase.fixture.target')
+                  'erase.fixture.actor', 'erase.fixture.target',
+                  'erase.fixture.person_column', 'erase.fixture.late_writer')
+    -- § EP's real session writes in AUDITWS: the invitation, the task's
+    -- create and reassignment. Deleted BEFORE the workspace, whose delete
+    -- would null their organisation_id and hide them from this predicate.
+    or organisation_id = :'org_audit'
     or (action like 'data_subject_request.%'
         and target_id in (select id from public.data_subject_requests));
 delete from public.data_subject_request_notes;
@@ -1495,7 +1694,7 @@ delete from public.incident_alerts where summary = 'erasure fixture alert';
 delete from public.rate_limit_counters
  where category in ('account_erasure', 'data_subject_request', 'search')
    and subject_id in (select id from auth.users where email like 'erase-%@test.local');
-delete from public.organisations where id in (:'org_blocked', :'org_solo', :'org_purge');
+delete from public.organisations where id in (:'org_blocked', :'org_solo', :'org_purge', :'org_audit');
 delete from auth.users where email like 'erase-%@test.local';
 \o
 

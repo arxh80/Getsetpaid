@@ -227,6 +227,10 @@ export function failureSentence(cause: unknown): string {
     // surviving in a narrower form (fix round 2, N5).
     case "reference_survived_the_purge":
     case "custom_field_values_orphaned":
+    // Phase 8 Task 7 fix round 1 (C1): step 10b's count of audit payloads that
+    // still contain the account's id after the scrub. The same promise as the
+    // two reference checks above, over jsonb instead of over foreign keys.
+    case "identifier_survived_in_audit_payload":
       return "Nothing was deleted: a check that every trace of the account had been anonymised did not pass, so the whole deletion was rolled back. This needs a person to look at it.";
     case "unknown_custom_field_entity_type":
       return "Nothing was deleted: the database has grown a kind of record this deletion does not know how to remove. This needs a person to look at it.";
