@@ -3099,6 +3099,19 @@ describe("table export_jobs (own rows only, Phase 8 Task 4)", () => {
     if (key === "readOnlyMember") return;
     const { error } = await client().rpc("audit_export_download", { p_job_id: ARGS.exportJobId });
     expect(error, `${key} passed the export download gate`).not.toBeNull();
+    // BY WHICH RULE (Phase 8 Task 8). The held job is QUEUED, with no archive,
+    // so "refused" alone is also what `export_has_no_archive` answers -- and
+    // measured: with the IDOR term (`requested_by = auth.uid()`) deleted from
+    // audit_export_download, every principal here was still refused, by row
+    // state, and this test stayed green. A signed-in stranger must be refused
+    // by the OWNERSHIP rule itself; anon by the missing session or grant.
+    if (key === "anonymous") {
+      expect(ANON_MECHANISMS.has(mechanismOf(error)), `${mechanismOf(error)} ${error?.message}`).toBe(true);
+    } else {
+      expect(error?.hint, `${key} was refused by ${error?.hint ?? error?.message}, not by the ownership rule`).toBe(
+        "not_your_export",
+      );
+    }
   });
 
   it("POSITIVE CONTROL: even the requester is refused while the job has no archive", async () => {

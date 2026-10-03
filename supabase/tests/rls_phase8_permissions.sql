@@ -184,5 +184,46 @@ select pm.val('DV14 CLOSED AGAIN: empty', $$select count(*)::text from public.do
 select pm.val('DV15 CLOSED AGAIN: the audit census is back to saying nothing about it',
   $$select count(*)::text from private.audit_coverage() where table_name = 'document_versions'$$, '0');
 
+-- ---------------------------------------------------------------------------
+-- § DR ASK EACH DATABASE RULE DIRECTLY (brief requirement 5).
+--
+-- Found by mutation in this task: removing the DSR insert trigger's
+-- no-session refusal (`data_subject_requests: a request can only be made from
+-- the requester's own session`, 42501) reddened NO behavioural assertion in
+-- any layer -- only the catalogue byte-equality binding noticed the changed
+-- body. The suite's one sessionless probe (DW1) is `anon`, which the missing
+-- INSERT grant refuses before the trigger runs; and a sessionless `postgres`
+-- write is still refused without the rule, by the NEXT check (no email for a
+-- null user, 22023) -- a second guard wearing the first one's outcome. So the
+-- rule is asked here as itself: by the one writer no grant or policy stops,
+-- and the answer must be the RULE's sqlstate and sentence, not merely "denied".
+-- ---------------------------------------------------------------------------
+create function pm.refusal(p_sql text) returns text
+language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+begin
+  execute p_sql;
+  return 'ok';
+exception when others then
+  return sqlstate || ':' || sqlerrm;
+end $$;
+
+\o /dev/null
+select count(*) as dr_before from public.data_subject_requests \gset
+\o
+select pm.val('DR1 a sessionless postgres INSERT naming a real user is refused BY THE SESSION RULE (42501), not by a later check',
+  format($q$select pm.refusal(format(%L, %L))$q$,
+    $f$insert into public.data_subject_requests (user_id, user_email, right_type, subject_scope, detail)
+       values (%L, 'forged@example.invalid', 'access', 'account', 'filed in somebody else''s name')$f$,
+    :'pstd1'),
+  '42501:data_subject_requests: a request can only be made from the requester''s own session');
+select pm.val('DR2 ...and nothing was filed',
+  format($$select (count(*) - %s)::text from public.data_subject_requests$$, :'dr_before'), '0');
+select pm.val('DR3 the consent ledger''s twin rule, asked the same way (sessionless postgres, a real user named)',
+  format($q$select split_part(pm.refusal(format(%L, %L)), ':', 1)$q$,
+    $f$insert into public.consents (user_id, purpose, action, policy_version, mechanism)
+       values (%L, 'marketing_email', 'granted', 1, 'account_settings')$f$,
+    :'pstd1'),
+  '42501');
+
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual
   from pm.results order by seq;

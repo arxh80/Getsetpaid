@@ -1129,7 +1129,7 @@ fi
 # the read policy, the audit-coverage census noticing the new write), then
 # closes it again and asserts it is exactly as it was found.
 # ============================================================================
-run_suite "PHASE 8 PERMISSIONS" rls_phase8_permissions.sql pm 19 "${P7VARS[@]}"
+run_suite "PHASE 8 PERMISSIONS" rls_phase8_permissions.sql pm 22 "${P7VARS[@]}"
 pm_fails=$SUITE_FAILS
 if [ "$pm_fails" != "0" ]; then
   echo "PHASE 8 PERMISSIONS SUITE FAILED: $pm_fails failing assertion(s)" >&2
@@ -2989,7 +2989,10 @@ p2_rows "a manager reads the whole timeline of one record" 4 \
 # total comes out of Content-Range, and `head=true` is how fetchListPage asks.
 tl_total() { # name want path token
   local name="$1" want="$2" path="$3" tok="$4" range
-  range=$(curl -s -o /dev/null -D - -X HEAD "$API/rest/v1/$3" \
+  # -I, not -X HEAD: with -X HEAD curl waits for the body Content-Length
+  # announces and a HEAD never sends. It hung this runner for 35 hours in
+  # Task 8's mutation batch. --max-time turns any future hang into a red check.
+  range=$(curl -s --max-time 30 -o /dev/null -D - -I "$API/rest/v1/$3" \
     -H "apikey: $ANON" -H "Authorization: Bearer $tok" \
     -H "Prefer: count=exact" | tr -d '\r' | awk 'tolower($1)=="content-range:"{print $2}')
   if [ "${range##*/}" = "$want" ]; then
