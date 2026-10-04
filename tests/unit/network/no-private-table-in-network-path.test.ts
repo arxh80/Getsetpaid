@@ -218,7 +218,11 @@ describe("the network path names no tenant-private relation (the CI-visible half
 
   it("DENOMINATOR: what the network-path filter DROPPED is pinned, not discarded", () => {
     // Every app-shipped file that names a network relation and is NOT swept.
-    const offPath = appSourceFiles()
+    // Walk the tree ONCE: re-walking it per roll entry below made this test run
+    // past vitest's 5 s ceiling under full parallel load (follow-up F-T8-1).
+    const appFiles = appSourceFiles();
+    const appPaths = appFiles.map((f) => relPath(f));
+    const offPath = appFiles
       .map((f) => ({ path: relPath(f), text: stripComments(readFileSync(f, "utf8").replace(/\r\n/g, "\n")) }))
       .filter((f) => !FILES.includes(f.path))
       .filter((f) => NETWORK_RELATIONS.some((r) => new RegExp(`\\b${r}\\b`).test(f.text)))
@@ -234,7 +238,7 @@ describe("the network path names no tenant-private relation (the CI-visible half
     // And each justification is a real sentence about a real file, so the roll
     // cannot become a place to park a name.
     for (const [file, why] of Object.entries(OFF_PATH_NETWORK_READERS)) {
-      expect(appSourceFiles().map((f) => relPath(f)), file).toContain(file);
+      expect(appPaths, file).toContain(file);
       expect(why.length, file).toBeGreaterThan(60);
     }
     expect(new Set(NETWORK_RELATIONS).size).toBe(5);
