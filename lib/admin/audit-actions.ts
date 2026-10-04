@@ -265,6 +265,8 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "organisation.suspended",
   "organisation.deleted",
   "organisation.reinstated",
+  // Phase 8 Task 9c -- public.close_my_workspace()
+  "organisation.closed_by_owner",
   // Phase 7 Task 4
   "organisation.billing_override_granted",
   "organisation.billing_override_revoked",

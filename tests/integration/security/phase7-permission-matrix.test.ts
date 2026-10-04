@@ -979,6 +979,12 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
  * expected value says so ... and the test asserts that boundary").
  */
 const MEMBER_REACHABLE_RPCS: Record<string, string> = {
+  close_my_workspace:
+    "Phase 8 Task 9c (founder 2026-09-30, reversing Q104) -- an ACTIVE OWNER " +
+    "of the workspace, at aal2, with the slug typed as confirmation and a " +
+    "reason, closes their OWN workspace. Membership row checked directly (an " +
+    "impersonator cannot); every other caller is refused with its own hint. " +
+    "Asserted in rls_phase8_workspace_closure.sql § CG.",
   accept_impersonation_request:
     "the TARGET workspace's own Owner/Admin consents -- the whole point of " +
     "break-glass. Guarded on manage_organisation of that organisation.",

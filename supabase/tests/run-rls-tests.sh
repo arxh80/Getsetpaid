@@ -1183,6 +1183,28 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 9c JOB 1 -- AN OWNER CLOSES THEIR OWN WORKSPACE
+# (20261021000000; founder 2026-09-30, Q176/Q178 changed, reversing Q104).
+# public.close_my_workspace(): the guards, the direct-UPDATE refusal, the
+# owner_closed state as read-only (one write per phase), the closure backup's
+# fences and retention, and the Q88 purge reaching it. Self-contained.
+# ============================================================================
+run_suite "PHASE 8 WORKSPACE CLOSURE" rls_phase8_workspace_closure.sql cw 64 "${P7VARS[@]}"
+cw_fails=$SUITE_FAILS
+if [ "$cw_fails" != "0" ]; then
+  echo "PHASE 8 WORKSPACE CLOSURE SUITE FAILED: $cw_fails failing assertion(s)" >&2
+  echo "  CF red: a positive control -- every refusal below proves nothing." >&2
+  echo "  CG red: SOMEONE OTHER THAN AN aal2 OWNER CAN CLOSE A WORKSPACE, or" >&2
+  echo "  without the typed slug or a reason. CD red: the lifecycle columns are" >&2
+  echo "  writable directly again. CW red: A CLOSED WORKSPACE STILL WRITES." >&2
+  echo "  CB red: a closure backup can be forged, flipped, or expires early." >&2
+  echo "  CP red: the 60-day purge no longer reaches a closed workspace." >&2
+  psql_status=1
+else
+  echo "Phase 8 workspace closure suite: all assertions passed."
+fi
+
+# ============================================================================
 # ONE RETENTION RUN AT A TIME, UNDER A REAL RACE (Task 6 fix round 1, I2).
 #
 # The suite above is single-session: RR17-RR19 prove a second start is refused

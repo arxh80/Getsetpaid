@@ -46,17 +46,20 @@ export const ORGANISATION_RETENTION_DAYS = 60;
  * and that it leaves the network directory at once rather than at the end of
  * its paid period (DECISIONS-QUEUE Q101).
  */
-export type OrganisationLifecycleState = "active" | "suspended" | "deleted";
+export type OrganisationLifecycleState = "active" | "suspended" | "deleted" | "owner_closed";
 
 /** The two states in which a workspace is read-only and winding down. */
 export const WOUND_DOWN_STATES: readonly OrganisationLifecycleState[] = [
   "suspended",
   "deleted",
+  // Phase 8 Task 9c: the workspace's own Owner closed it
+  // (public.close_my_workspace(); founder 2026-09-30, reversing Q104).
+  "owner_closed",
 ];
 
 export function isWoundDown(
   state: OrganisationLifecycleState,
-): state is "suspended" | "deleted" {
+): state is Exclude<OrganisationLifecycleState, "active"> {
   return state !== "active";
 }
 
@@ -76,6 +79,8 @@ export function lifecycleLabel(state: OrganisationLifecycleState): string {
       return "Suspended";
     case "deleted":
       return "Closed";
+    case "owner_closed":
+      return "Closed by its Owner";
   }
 }
 
