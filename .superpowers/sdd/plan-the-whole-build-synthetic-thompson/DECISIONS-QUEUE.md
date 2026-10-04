@@ -1232,3 +1232,41 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   event, so a first deploy (or a clock outage) does not mail people about
   month-old requests; older rows stay unstamped. **Default (proceeding):**
   seven days. Alternative: no window (every historical row is emailed once).
+
+## Q202-Q204 -- Task 9b job 3 (req 1 rest: connection requests, task reminders), 2026-10-04
+
+- **Q202 -- who receives the connection-request and task-reminder emails.**
+  The PRD names connection requests ("Network requirements"; "Later /
+  Expansion") and a task "reminder" (§ 6.6, "owner")
+  but no recipient for either. **Default (proceeding, `20261016000000`):**
+  RECEIVED -> the requested workspace's ACTIVE Owners and Admins, together
+  on one message (the people who can answer it; not every member, so a
+  workspace is not spammed); ACCEPTED / DECLINED -> the member who SENT it
+  while they are still an active member of the sending workspace, otherwise
+  that workspace's active Owners and Admins; a task REMINDER -> the task's
+  CURRENT assignee (`owner_user_id`) while an active member. No assignee ->
+  NOBODY (not the creator: `tasks` has no creator column, and a reminder to
+  someone who is not doing the task is noise). One reminder per task:
+  moving `reminder_at` after it was sent does not re-arm it. Completed,
+  cancelled, deleted or reassigned-away tasks are not reminded and not
+  stamped; a WITHDRAWN request is emailed to nobody. Seven-day window as
+  Q201. Alternatives: received -> every holder of
+  `manage_network_connections` (six roles); reminders re-armed when
+  `reminder_at` moves (needs a per-reminder_at stamp).
+- **Q203 -- the stamps are a private ledger, not columns.** The brief asked
+  for `*_notified_at` columns, but `tasks` and `network_connection_requests`
+  grant `authenticated` table-level INSERT and UPDATE (measured), so a new
+  column there is browser-writable the moment it exists (Q125) -- and
+  insertable pre-stamped, silencing a reminder before it was due. **Default
+  (built):** `private.notification_deliveries`, granted to no API role,
+  written only by the `service_role`-only `public.mark_notices_delivered()`
+  for a subject still in its email's state, once (PK), never updated
+  (guard), on the db clock; FK-cascades with its subject. Alternative:
+  narrow both tables' client grants to column level (Q125's remedy) and add
+  the columns -- a wider change to two hot tables and every census pinning
+  them.
+- **Q204 -- the delivery route's worst case is now ~440 s of 600 s.** Eight
+  deliveries on one tick; the two new loops are 30 notices / 60 s each like
+  the DSR and export ones. **Default (proceeding):** as built, 160 s of
+  headroom. If a ninth loop is added, tighten every per-loop budget to 45 s
+  (or split the tick) rather than add another 70 s.

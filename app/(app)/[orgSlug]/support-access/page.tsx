@@ -36,8 +36,8 @@ import { Alert } from "@/components/ui/alert";
 // ===========================================================================
 // THERE IS NO NOTIFICATION. THIS PAGE IS THE WHOLE DISCOVERY SURFACE.
 // ===========================================================================
-// Q45, the same answer `reminder_at` and connection requests got: there is no
-// notification subsystem at MVP. An impersonation request is discovered by
+// Q45. `reminder_at` and connection requests are emailed since Phase 8 Task 9b
+// job 3 (20261016000000); an impersonation request is not. It is discovered by
 // visiting this page (linked from the sidebar's Admin group for
 // manage_organisation holders) and by nothing else -- not email, not a toast.
 // The email fold-in later in Phase 7 is where that changes; until then a
