@@ -461,3 +461,46 @@ SECURITY.md carried none of these numbers (grep for 3847/3825/225/267 found noth
   - Tests 25 (the screenshot route) and 26 (the service-role key scan) died with `Target crashed` / worker exit `3221225794`. Claude Code reaped the run because the system was critically low on memory. Those are not assertion failures.
   - The exemption was added after that run; it only narrows the rewrite. Because of the memory reaper, the run was not relaunched.
   - **Owed:** one run of the three specs (fresh reset first), above all the screenshot-route test.
+
+## Fix round 2
+
+Commits on `worktree-legal-phase`, each pushed: `f1947f9` (N1), `5c1b5e7` (the gate red + N3), `904b8f1` (N2 + SECURITY.md), `95fd5f2` (CLAUDE.md:28 and :91 / N4).
+
+**The red (owner, `/super/legal?doc=terms` vs the ghost, raw HTML) was the test's normaliser, not the product: case (a).**
+- The stack trace in the HTML is React's dev-only `<template data-dgst="NEXT_HTTP_ERROR_FALLBACK;404" data-msg data-stck data-cstck>` ("Switched to client rendering because the server rendering errored"). It is emitted by the streamed `notFound()` under `loading.tsx`. Production emits `data-dgst` alone. It is byte-identical across refused URLs, because the rewrite sends them all to one route.
+- The diff only looked as if it were inside that stack, because the rest of the document follows on the same physical line. The real 71 differences were all in the flight data: `"$@113"` vs `"$f@108"` and the like, in the dev-only owner/debug-stack slots of React elements, with the same structure on both sides.
+- **Cause.** The old `\$[A-Za-z]?` read the first hex digit of a plain reference as a type prefix: `"$f3"` became `$f` + `3`, while `"$e9"` stayed whole. Dev debug rows shift every id between requests, so whether an id began with a-f decided the outcome.
+- **The first fix was not enough.** A first narrowing (row ids only after `\n`) reddened 2 of 23 tests. Rows after a length-prefixed `T` text row have no separator; the old `(?<=[A-Z])` term had been catching the `Z` that ends an SVG path.
+- **Final normaliser.** It renumbers only:
+  - ids at a real row start: after an unescaped `\n`, after `[1,"`, or at the exact end of a `T` row, located by decoding escapes and counting UTF-8 bytes;
+  - whole escaped `"$<id>"` references, whose optional prefix is `@` or a non-hex letter.
+- **N3 is closed by the same change:** `userId` is no longer rewritten.
+- **Offline evidence, from 83 dumped responses:**
+  - id-shift invariance (shift every flight id by k, which is what extra debug rows do) was broken in 140 of 140 (document, k) pairs under the old normaliser, and in 0 under the new one;
+  - every principal's 20 refused documents normalise to one;
+  - the superuser's legal page still differs from the ghost.
+
+**N1.** `super-page-census.test.ts` gains 3 tests:
+- the denominator (9 pages);
+- each default export's first await must be `if (!(await isSuperuser())) notFound();`;
+- each `generateMetadata()` must be gated on `isSuperuser()` with the catch-all's refused title, and no page may have a static `metadata`.
+
+Mutation proof: deleting the page guard from `/super/legal`, then its metadata gate, each gave 1 failed / 10 passed. Both were restored. The middleware comment now says the pages decide only for allowlisted callers.
+
+**N2.** SECURITY.md's refusal-parity entry now says three things:
+- it compares raw HTML across all nine pages;
+- signed-in non-superuser `/super` refusals are produced by the `lib/supabase/middleware.ts` rewrite, which is parity and not the control;
+- the screenshot-route shape residual is accepted.
+
+**Docs.**
+- CLAUDE.md:28 names the raw-HTML comparison and says the catch-all closed only the rendered half and the middleware rewrite closes the rest. It also names the census and the residual.
+- CLAUDE.md:91: 267 -> 275, re-checked against `run_suite ... rls_phase8_retention.sql rt 275`.
+
+**Gates.**
+- `pnpm lint` clean; `npx next typegen` + `pnpm typecheck` clean.
+- `vitest run tests/unit`: 101 files / 2288 tests.
+- e2e, each run after its own `db reset`:
+  - parity + super-permissions: **23/23**;
+  - parity alone: **9/9** and **9/9**;
+  - plus an earlier diagnostic run of parity alone, which dumped raw HTML: **9/9**.
+- Ended with `npx supabase db reset --local`; no node or chromium left running.
