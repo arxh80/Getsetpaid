@@ -122,9 +122,18 @@ describe("the retention declaration and its TypeScript copies", () => {
   });
 
   it("and the roll is exactly the catalogue -- same size, no duplicates", async () => {
+    // The catalogue is counted HERE from pg_class, not through
+    // private.retention_roll_relations(), so this stays a second opinion on
+    // that derivation. Its scope is the roll's own since 20261004005000
+    // (review finding m1): ordinary, partitioned AND materialized relations in
+    // `public` AND `private`. As first written this counted `public` r/p only,
+    // which agreed only while `private` held no table; 20261016000000's
+    // private.notification_deliveries (classified `cascades`) was the first,
+    // and made the roll one longer than this undercounted catalogue.
     const { rows } = await pool.query<{ tables: string; roll: string; distinct_roll: string }>(
       `select (select count(*)::text from pg_class
-                where relnamespace = 'public'::regnamespace and relkind in ('r','p')) as tables,
+                where relnamespace in ('public'::regnamespace, 'private'::regnamespace)
+                  and relkind in ('r','p','m')) as tables,
               (select count(*)::text from private.retention_subjects()) as roll,
               (select count(distinct table_name)::text from private.retention_subjects()) as distinct_roll`,
     );
