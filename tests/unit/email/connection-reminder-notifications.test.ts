@@ -28,6 +28,11 @@ vi.mock("@/lib/supabase/env", () => ({ siteUrl: () => "https://app.example.test"
 vi.mock("@/lib/supabase/service", () => ({
   createServiceClient: () => ({
     rpc(name: string, args: { p_notice: string; p_subject_ids: string[] }) {
+      if (name === "mark_notices_undeliverable") {
+        const r = args as unknown as { p_notice: string; p_subject_ids: string[]; p_reason: string };
+        events.log.push(`refuse:${r.p_notice}:${r.p_subject_ids.join(",")}:${r.p_reason}`);
+        return Promise.resolve({ data: 1, error: null });
+      }
       if (name === "mark_notices_delivered") {
         events.log.push(`stamp:${args.p_notice}:${args.p_subject_ids.join(",")}`);
         db.stamps.push(args);
@@ -104,12 +109,29 @@ describe("connection-request notices", () => {
     expect(db.stamps).toHaveLength(0);
   });
 
-  it("a notice with no recipient is not sent and not stamped", async () => {
+  it("a notice with no recipient is not sent and not stamped -- it is recorded undeliverable (I2)", async () => {
     db.rpcRows.pending_connection_request_notifications = [conn("r1", "connection_received", [])];
     const result = await deliverConnectionRequestNotifications();
     expect(send.fn).not.toHaveBeenCalled();
     expect(db.stamps).toHaveLength(0);
     expect(result).toMatchObject({ failed: 1 });
+    expect(events.log).toContain("refuse:connection_received:r1:no_recipient");
+  });
+
+  it("I2: a notice its builder REFUSES is recorded undeliverable once, never sent, and does not hold the queue", async () => {
+    db.rpcRows.pending_connection_request_notifications = [
+      { ...conn("r1", "connection_received", ["owner@b.test"]), organisation_slug: "../not-a-slug" },
+      conn("r2", "connection_received", ["owner@c.test"]),
+    ];
+    send.fn.mockResolvedValue({ ok: true, messageId: "m" });
+    const result = await deliverConnectionRequestNotifications();
+    expect(result).toEqual({ outcome: "delivered", sent: 1, failed: 1, deferred: 0 });
+    expect(events.log).toEqual([
+      "rpc:pending_connection_request_notifications",
+      "refuse:connection_received:r1:content_refused",
+      "send:owner@c.test",
+      "stamp:connection_received:r2",
+    ]);
   });
 
   it("extra row columns never reach the email (the builder takes three named fields)", async () => {
@@ -149,6 +171,25 @@ describe("task reminders", () => {
     expect(mail.text).toContain(`/world-promo/tasks/${TASK}`);
   });
 
+  it("I2: a hostile title is neutralised and SENT, not refused", async () => {
+    db.rpcRows.pending_task_reminder_notifications = [
+      { task_id: TASK, email: "assignee@a.test", organisation_slug: "world-promo", title: "https://", due_at: null },
+    ];
+    send.fn.mockResolvedValue({ ok: true, messageId: "m" });
+    const result = await deliverTaskReminderNotifications();
+    expect(result).toEqual({ outcome: "delivered", sent: 1, failed: 0, deferred: 0 });
+    expect(events.log.some((l) => l.startsWith("refuse:"))).toBe(false);
+  });
+
+  it("I2: a reminder its builder refuses is recorded undeliverable", async () => {
+    db.rpcRows.pending_task_reminder_notifications = [
+      { task_id: "not-a-uuid", email: "assignee@a.test", organisation_slug: "world-promo", title: "x", due_at: null },
+    ];
+    await deliverTaskReminderNotifications();
+    expect(send.fn).not.toHaveBeenCalled();
+    expect(events.log).toContain("refuse:task_reminder:not-a-uuid:content_refused");
+  });
+
   it("a failed send leaves the reminder owed", async () => {
     db.rpcRows.pending_task_reminder_notifications = [
       { task_id: TASK, email: "assignee@a.test", organisation_slug: "world-promo", title: "Send the rider", due_at: null },
@@ -156,5 +197,7 @@ describe("task reminders", () => {
     send.fn.mockResolvedValue({ ok: false, error: "Brevo 503" });
     await deliverTaskReminderNotifications();
     expect(db.stamps).toHaveLength(0);
+    // A transient send failure is retried, never made terminal.
+    expect(events.log.some((l) => l.startsWith("refuse:"))).toBe(false);
   });
 });

@@ -54,6 +54,7 @@ import "server-only";
 import {
   deliverEach,
   REQUESTER_NOTICE_LIMIT,
+  type NoticeRefusal,
   type Pending,
   type RequesterNoticeResult,
 } from "@/lib/email/requester-notifications";
@@ -97,6 +98,19 @@ function stampOne(notice: ConnectionNotice, id: string) {
   };
 }
 
+/** A deterministic refusal, recorded once so the notice leaves the queue (I2, 20261018000000). */
+function refuseOne(notice: ConnectionNotice, id: string) {
+  return async (reason: NoticeRefusal) => {
+    const service = createServiceClient();
+    const { error } = await service.rpc("mark_notices_undeliverable", {
+      p_notice: notice,
+      p_subject_ids: [id],
+      p_reason: reason,
+    });
+    return { error: error ? { message: error.message } : null };
+  };
+}
+
 export async function deliverConnectionRequestNotifications(
   limit: number = REQUESTER_NOTICE_LIMIT,
 ): Promise<RequesterNoticeResult> {
@@ -120,6 +134,7 @@ export async function deliverConnectionRequestNotifications(
         siteUrl: origin,
       }),
     stamp: stampOne(row.notice, row.request_id),
+    refuse: refuseOne(row.notice, row.request_id),
   }));
   return deliverEach("connection-request notice", rows);
 }

@@ -1214,6 +1214,8 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
   "fail_retention_run(p_run_id uuid, p_reason text)": "Task 6 -- records a refused sweep's reason on the run",
   "mark_notices_delivered(p_notice text, p_subject_ids uuid[])":
     "Task 9b job 3 -- the ONLY write path of private.notification_deliveries, ONLY after Brevo accepted the connection-request / task-reminder email, and only for a subject still in that email's state; refuses any session",
+  "mark_notices_undeliverable(p_notice text, p_subject_ids uuid[], p_reason text)":
+    "Task 9b fix round 1 (I2) -- the second write path of private.notification_deliveries: records a DETERMINISTIC refusal once, so one workspace's unrenderable rows leave the queue; same state rule as mark_notices_delivered; refuses any session",
   "mark_erasure_failures_notified(p_job_ids uuid[])":
     "Task 9b job 2 -- stamps erasure_jobs.failure_notified_at ONLY after the superuser's email was accepted (the table's CHECK makes a column grant unusable)",
   "pending_connection_request_notifications(p_limit integer)":

@@ -22,6 +22,7 @@ import "server-only";
 import {
   deliverEach,
   REQUESTER_NOTICE_LIMIT,
+  type NoticeRefusal,
   type Pending,
   type RequesterNoticeResult,
 } from "@/lib/email/requester-notifications";
@@ -42,6 +43,19 @@ function stampOne(id: string) {
     // offer it again, so it is not re-sent.
     if (data !== 1) return { error: { message: `stamped ${String(data)} of 1 (the subject's state changed)` } };
     return { error: null };
+  };
+}
+
+/** A deterministic refusal, recorded once so the reminder leaves the queue (I2, 20261018000000). */
+function refuseOne(id: string) {
+  return async (reason: NoticeRefusal) => {
+    const service = createServiceClient();
+    const { error } = await service.rpc("mark_notices_undeliverable", {
+      p_notice: "task_reminder",
+      p_subject_ids: [id],
+      p_reason: reason,
+    });
+    return { error: error ? { message: error.message } : null };
   };
 }
 
@@ -77,6 +91,7 @@ export async function deliverTaskReminderNotifications(
         siteUrl: origin,
       }),
     stamp: stampOne(row.task_id),
+    refuse: refuseOne(row.task_id),
   }));
   return deliverEach("task reminder", rows);
 }

@@ -552,6 +552,55 @@ select ns.val('NL20 the tenant tables are NOT altered: no *notified* column on t
      where table_schema = 'public' and table_name in ('tasks','network_connection_requests')
        and column_name like '%notified%'$$, '0');
 
+-- ---------------------------------------------------------------------------
+-- NU  A DETERMINISTIC REFUSAL IS TERMINAL (Task 9b review I2, 20261018000000)
+--     The second write path records `undeliverable` once, so a notice its
+--     sender cannot render leaves the queue instead of holding its head.
+-- ---------------------------------------------------------------------------
+select ns.val('NU1 the refusal RPC is executable by service_role and by no client role',
+  $$select has_function_privilege('anon','public.mark_notices_undeliverable(text,uuid[],text)','EXECUTE')::text || '/' ||
+           has_function_privilege('authenticated','public.mark_notices_undeliverable(text,uuid[],text)','EXECUTE')::text || '/' ||
+           has_function_privilege('service_role','public.mark_notices_undeliverable(text,uuid[],text)','EXECUTE')::text$$,
+  'false/false/true');
+set role authenticated;
+set request.jwt.claims = :'uas_c';
+select ns.try('NU2 a member cannot silence a reminder by recording it undeliverable',
+  format($$select public.mark_notices_undeliverable('task_reminder', array[%L]::uuid[], 'content_refused')$$, :'t_due2'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+set role service_role;
+select ns.val('NU3 REACH: the reminder is owed before the refusal is recorded',
+  format($$select count(*)::text from public.pending_task_reminder_notifications(30) where task_id = %L$$, :'t_due2'), '1');
+select ns.val('NU4 RIGHT STATE: a refusal on a not-yet-due task lands on nothing (it cannot pre-empt a reminder)',
+  format($$select public.mark_notices_undeliverable('task_reminder', array[%L]::uuid[], 'content_refused')::text$$, :'t_future'), '0');
+select ns.val('NU5 the sender records a live, due reminder undeliverable: 1',
+  format($$select public.mark_notices_undeliverable('task_reminder', array[%L]::uuid[], 'content_refused')::text$$, :'t_due2'), '1');
+select ns.val('NU6 ...once: a second call is a no-op',
+  format($$select public.mark_notices_undeliverable('task_reminder', array[%L]::uuid[], 'content_refused')::text$$, :'t_due2'), '0');
+select ns.val('NU7 ...and the reminder is no longer owed: it has left the queue',
+  format($$select count(*)::text from public.pending_task_reminder_notifications(30) where task_id = %L$$, :'t_due2'), '0');
+select ns.try('NU8 an unknown reason is refused by name',
+  format($$select public.mark_notices_undeliverable('task_reminder', array[%L]::uuid[], 'because')$$, :'t_cancelled'),
+  'denied(22023:notification_reason_unknown)');
+select ns.try('NU8a ...and so is an unknown notice',
+  format($$select public.mark_notices_undeliverable('connection_ignored', array[%L]::uuid[], 'no_recipient')$$, :'r_pend'),
+  'denied(22023:notification_notice_unknown)');
+reset role;
+select ns.val('NU9 the ledger says WHAT happened: the refusal is undeliverable/content_refused, the delivery delivered/no reason',
+  format($$select string_agg(task_id::text || '=' || outcome || ':' || coalesce(reason, '-'), ',' order by outcome)
+             from private.notification_deliveries where task_id in (%L, %L)$$, :'t_due', :'t_due2'),
+  format('%s=delivered:-,%s=undeliverable:content_refused', :'t_due', :'t_due2'));
+select ns.try('NU10 the ledger''s CHECK refuses an undeliverable row with no reason',
+  format($$insert into private.notification_deliveries (notice, task_id, outcome) values ('task_reminder', %L, 'undeliverable')$$, :'t_cancelled'),
+  'denied(23514)');
+select ns.try('NU10a ...and a delivered row that carries one',
+  format($$insert into private.notification_deliveries (notice, task_id, reason) values ('task_reminder', %L, 'no_recipient')$$, :'t_cancelled'),
+  'denied(23514)');
+select ns.val('NU11 both resolvers order by the per-workspace rank first (fairness, read structurally)',
+  $$select (pg_get_functiondef('public.pending_task_reminder_notifications(integer)'::regprocedure) like '%order by q.org_rank,%'
+        and pg_get_functiondef('public.pending_connection_request_notifications(integer)'::regprocedure) like '%order by u.org_rank,%')::text$$,
+  'true');
+
 -- Job-3 housekeeping: the ledger rows go explicitly, because the fixture
 -- deletes run in replica mode, where the FK cascade does not fire.
 set session_replication_role = replica;

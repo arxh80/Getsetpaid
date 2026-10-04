@@ -87,6 +87,27 @@ export interface Pending {
   readonly to: readonly string[];
   readonly build: () => EmailBody;
   readonly stamp: () => Promise<{ error: { message: string } | null }>;
+  /**
+   * Records a DETERMINISTIC refusal (the builder refused, or there is nobody
+   * to send to) as terminal, so the row leaves its queue instead of being
+   * offered on every tick for seven days (Task 9b review I2). Present on the
+   * ledger-backed queues (connection requests, task reminders); a queue
+   * without it (the DSR and export notices, whose content is the database's
+   * own enums and dates) keeps the old retry behaviour for a refusal.
+   */
+  readonly refuse?: (reason: NoticeRefusal) => Promise<{ error: { message: string } | null }>;
+}
+
+export type NoticeRefusal = "content_refused" | "no_recipient";
+
+async function recordRefusal(label: string, row: Pending, reason: NoticeRefusal): Promise<void> {
+  if (!row.refuse) return;
+  const { error } = await row.refuse(reason);
+  if (error) {
+    console.error(`[email] ${label} ${row.id}: refusal (${reason}) not recorded; it will be offered again:`, error.message);
+  } else {
+    console.error(`[email] ${label} ${row.id}: recorded undeliverable (${reason}); it leaves the queue`);
+  }
 }
 
 /** The bounded, stamp-after-ok loop every per-row notice shares (job 3 reuses it). */
@@ -107,6 +128,7 @@ export async function deliverEach(label: string, rows: readonly Pending[]): Prom
     if (row.to.length === 0) {
       failed += 1;
       console.error(`[email] ${label} ${row.id}: no recipient, nothing sent, nothing stamped`);
+      await recordRefusal(label, row, "no_recipient");
       continue;
     }
 
@@ -116,6 +138,8 @@ export async function deliverEach(label: string, rows: readonly Pending[]): Prom
     } catch (err) {
       failed += 1;
       console.error(`[email] ${label} ${row.id}: content refused, nothing sent, nothing stamped:`, err instanceof Error ? err.message : String(err));
+      // Deterministic: the same row would refuse on every tick. Terminal.
+      await recordRefusal(label, row, "content_refused");
       continue;
     }
 
