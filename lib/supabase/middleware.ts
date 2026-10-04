@@ -208,7 +208,11 @@ export async function updateSession(request: NextRequest) {
   // database. The predicate is the one isSuperuser() asks
   // (public.is_platform_admin(), deliberately not aal-gated), so the
   // allowlisted account is routed normally at aal1 too and the pages decide,
-  // exactly as before. An RPC error fails CLOSED, into the rewrite.
+  // exactly as before -- but ONLY for allowlisted callers now: a refused
+  // principal never reaches a page's own guard, so no e2e test exercises it.
+  // tests/unit/security/super-page-census.test.ts holds every page's
+  // isSuperuser() gate and refused title by source instead (review N1).
+  // An RPC error fails CLOSED, into the rewrite.
   if (isSignedIn && isUnder(pathname, ["/super"]) && !isSuperRouteHandler(pathname)) {
     const { data: onAllowlist, error } = await supabase.rpc("is_platform_admin");
     if (error || onAllowlist !== true) {

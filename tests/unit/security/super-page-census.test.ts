@@ -112,3 +112,78 @@ describe("the /super refusal rewrite exempts every /super route handler", () => 
     for (const p of pages) expect(isSuperRouteHandler(p), p).toBe(false);
   });
 });
+
+// Fix round 2 (re-review N1). Since the proxy rewrite, NO e2e test reaches a
+// /super page's own guard as a refused principal: every non-allowlisted
+// request is routed to the catch-all before the page runs, so deleting a
+// page's isSuperuser() check -- or its generateMetadata() title gate -- would
+// leave every refusal test green. The pages' guards are the control and the
+// rewrite is parity, so the guards are held here, by source, in CI.
+describe("every /super page still carries its own superuser guard", () => {
+  const SUPER_DIR = join(process.cwd(), "app", "(app)", "super");
+  const CATCH_ALL = join(SUPER_DIR, "[...unknown]", "page.tsx");
+  const REFUSED_TITLE = /return\s*\{\s*title:\s*"([^"]+)"\s*\}/;
+
+  /** The text of one top-level function: from its signature to the first
+   *  line that is a bare `}` at column 0. */
+  function body(source: string, signature: RegExp): string | null {
+    const m = signature.exec(source);
+    if (!m) return null;
+    const rest = source.slice(m.index);
+    const end = rest.search(/\n\}\s*(\n|$)/);
+    return end === -1 ? rest : rest.slice(0, end);
+  }
+
+  async function guardedPages(): Promise<{ file: string; source: string }[]> {
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const out: { file: string; source: string }[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/^page\.(tsx|ts|jsx|js)$/.test(e.name) && p !== CATCH_ALL)
+          out.push({ file: p.slice(process.cwd().length + 1), source: readFileSync(p, "utf8") });
+      }
+    };
+    walk(SUPER_DIR);
+    return out;
+  }
+
+  it("DENOMINATOR: the walk finds every /super page the route census names, less the catch-all", async () => {
+    const pages = await guardedPages();
+    // SUPER_PAGE_URLS is the nine pages; the catch-all is a non-surface.
+    expect(pages.length).toBe(SUPER_PAGE_URLS.length);
+  });
+
+  it("each page's default export opens with `if (!(await isSuperuser())) notFound();`", async () => {
+    for (const { file, source } of await guardedPages()) {
+      const main = body(source, /export default async function \w+\s*\(/);
+      expect(main, `${file}: no async default export`).not.toBeNull();
+      expect(source, `${file}: isSuperuser is not imported from lib/admin/superuser`).toMatch(
+        /import \{[^}]*\bisSuperuser\b[^}]*\} from "@\/lib\/admin\/superuser"/,
+      );
+      // The FIRST await in the page is the guard: nothing is read before it.
+      const firstAwait = /await\s+[\w.]+\(/.exec(main!)?.[0];
+      expect(firstAwait, `${file}: the first await in the page is not isSuperuser()`).toMatch(/await\s+isSuperuser\(/);
+      expect(main, `${file}: the guard does not notFound()`).toMatch(
+        /if \(!\(await isSuperuser\(\)\)\) notFound\(\);/,
+      );
+    }
+  });
+
+  it("each page gates generateMetadata() on isSuperuser() with the catch-all's refused title, and has no static metadata", async () => {
+    const { readFileSync } = await import("node:fs");
+    const ghostTitle = REFUSED_TITLE.exec(readFileSync(CATCH_ALL, "utf8"))?.[1];
+    expect(ghostTitle, "the catch-all's own title").toBe("Not found · GetSetPaid");
+    for (const { file, source } of await guardedPages()) {
+      expect(source, `${file}: a static metadata export leaks its title into the refusal`).not.toMatch(
+        /^export const metadata\b/m,
+      );
+      const meta = body(source, /export async function generateMetadata\s*\(/);
+      expect(meta, `${file}: no generateMetadata()`).not.toBeNull();
+      const gate = /if \(!\(await isSuperuser\(\)\)\) return \{ title: "([^"]+)" \};/.exec(meta!);
+      expect(gate, `${file}: generateMetadata() is not gated on isSuperuser()`).not.toBeNull();
+      expect(gate![1], `${file}: the refused title differs from the catch-all's`).toBe(ghostTitle);
+    }
+  });
+});
