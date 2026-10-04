@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // secret are both 404 (no endpoint exists for a prober); only the exact secret
 // reaches the sender.
 
-const deliver = vi.hoisted(() => ({ fn: vi.fn(), lockouts: vi.fn() }));
+const deliver = vi.hoisted(() => ({ fn: vi.fn(), telegram: vi.fn(), lockouts: vi.fn() }));
 vi.mock("@/lib/email/incident-alerts", () => ({
   deliverPendingIncidentAlerts: () => deliver.fn(),
+  deliverPendingIncidentAlertsToTelegram: () => deliver.telegram(),
 }));
 vi.mock("@/lib/email/lockout-notification", () => ({
   deliverLockoutNotifications: () => deliver.lockouts(),
@@ -25,10 +26,12 @@ function post(auth?: string): Request {
 
 beforeEach(() => {
   deliver.fn.mockResolvedValue({ outcome: "nothing_pending" });
+  deliver.telegram.mockResolvedValue({ outcome: "disabled" });
   deliver.lockouts.mockResolvedValue({ outcome: "nothing_pending" });
 });
 afterEach(() => {
   deliver.fn.mockReset();
+  deliver.telegram.mockReset();
   deliver.lockouts.mockReset();
   delete process.env.INCIDENT_ALERT_DELIVERY_SECRET;
 });
@@ -67,6 +70,7 @@ describe("the delivery route's gate", () => {
       outcome: "sent",
       count: 3,
       messageId: "m",
+      telegram: { outcome: "disabled" },
       accountNotifications: { outcome: "delivered", sent: 2, failed: 0 },
     });
   });
@@ -99,5 +103,60 @@ describe("the delivery route's gate", () => {
     const res = await POST(post(`Bearer ${SECRET}`));
     expect(res.status).toBe(503);
     await expect(res.json()).resolves.toMatchObject({ outcome: "sent", count: 1 });
+  });
+
+  // Q111: Telegram is a THIRD independent delivery. Its failure -- returned
+  // or thrown -- must not stop the email digest or the lockout notices, and
+  // an email failure must not stop Telegram. (Each stamp is written inside
+  // its own sender, so "not un-stamped" is senders.test.ts's half; this is
+  // "not blocked".)
+  it("a FAILED Telegram send leaves the email digest and lockouts reported as they were", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    deliver.fn.mockResolvedValue({ outcome: "sent", count: 2, messageId: "m" });
+    deliver.telegram.mockResolvedValue({ outcome: "failed", count: 2, error: "Telegram 502" });
+    deliver.lockouts.mockResolvedValue({ outcome: "delivered", sent: 1, failed: 0 });
+    const res = await POST(post(`Bearer ${SECRET}`));
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      outcome: "sent",
+      count: 2,
+      messageId: "m",
+      telegram: { outcome: "failed", count: 2, error: "Telegram 502" },
+      accountNotifications: { outcome: "delivered", sent: 1, failed: 0 },
+    });
+  });
+
+  it("a THROWING Telegram delivery still lets the lockout notices run", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    deliver.fn.mockResolvedValue({ outcome: "sent", count: 1, messageId: "m" });
+    deliver.telegram.mockRejectedValue(new TypeError("boom"));
+    deliver.lockouts.mockResolvedValue({ outcome: "delivered", sent: 1, failed: 0 });
+    const res = await POST(post(`Bearer ${SECRET}`));
+    expect(deliver.lockouts).toHaveBeenCalledOnce();
+    await expect(res.json()).resolves.toMatchObject({
+      outcome: "sent",
+      telegram: { outcome: "unavailable" },
+      accountNotifications: { outcome: "delivered" },
+    });
+  });
+
+  it("a FAILED or THROWING email digest still lets Telegram run", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    deliver.telegram.mockResolvedValue({ outcome: "sent", count: 1 });
+    deliver.fn.mockResolvedValue({ outcome: "failed", count: 1, error: "Brevo 503" });
+    let res = await POST(post(`Bearer ${SECRET}`));
+    await expect(res.json()).resolves.toMatchObject({ outcome: "failed", telegram: { outcome: "sent" } });
+    deliver.fn.mockRejectedValue(new TypeError("boom"));
+    res = await POST(post(`Bearer ${SECRET}`));
+    expect(deliver.telegram).toHaveBeenCalledTimes(2);
+    await expect(res.json()).resolves.toMatchObject({ outcome: "unavailable", telegram: { outcome: "sent" } });
+  });
+
+  it("a disabled Telegram channel is not a 503", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    deliver.telegram.mockResolvedValue({ outcome: "disabled" });
+    expect((await POST(post(`Bearer ${SECRET}`))).status).toBe(200);
   });
 });

@@ -1,6 +1,9 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
-import { deliverPendingIncidentAlerts } from "@/lib/email/incident-alerts";
+import {
+  deliverPendingIncidentAlerts,
+  deliverPendingIncidentAlertsToTelegram,
+} from "@/lib/email/incident-alerts";
 import { deliverLockoutNotifications } from "@/lib/email/lockout-notification";
 
 // ===========================================================================
@@ -12,10 +15,14 @@ import { deliverLockoutNotifications } from "@/lib/email/lockout-notification";
 // pg_net-POSTs here with `Authorization: Bearer
 // <INCIDENT_ALERT_DELIVERY_SECRET>`, read from Supabase Vault.
 //
-// TWO DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
+// THREE DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
 //   * the OPERATOR's digest -- one email covering every alert nobody has been
 //     emailed about, stamping `notified_at` after ok:true
 //     (lib/email/incident-alerts.ts);
+//   * the OPERATOR's Telegram alert (founder 2026-09-30, Q111) -- one
+//     counts-only message, stamping its OWN column `telegram_notified_at`
+//     after ok:true, a no-op when TELEGRAM_BOT_TOKEN/TELEGRAM_ALERT_CHAT_ID
+//     are unset (same module, 20261014000000);
 //   * the ACCOUNT HOLDER's lockout notice -- one email per locked-out account,
 //     stamping `account_notified_at` after ok:true
 //     (lib/email/lockout-notification.ts, founder ruling Q114).
@@ -46,6 +53,18 @@ function bearerMatches(header: string | null, secret: string): boolean {
   return presented.length === expected.length && timingSafeEqual(presented, expected);
 }
 
+async function settle<T>(
+  run: () => Promise<T>,
+): Promise<T | { readonly outcome: "unavailable"; readonly error: string }> {
+  try {
+    return await run();
+  } catch (err) {
+    const error = err instanceof Error ? err.name : "unknown error";
+    console.error(`[delivery] a delivery threw (${error}); the others still ran`);
+    return { outcome: "unavailable", error };
+  }
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const secret = configuredSecret();
   if (!secret || !bearerMatches(request.headers.get("authorization"), secret)) {
@@ -58,13 +77,22 @@ export async function POST(request: Request): Promise<NextResponse> {
   // Sequential, not Promise.all: both run as service_role against the same
   // table and a tick has ten minutes; there is nothing to win by racing them
   // and a clearer log by not.
-  const digest = await deliverPendingIncidentAlerts();
-  const lockouts = await deliverLockoutNotifications();
+  //
+  // Each is caught on its own: a THROW from one channel (none is expected --
+  // each returns its failure -- but a thrown TypeError is not a returned one)
+  // must not skip the next. The email digest runs first and its stamp is
+  // written inside its own call, so nothing the Telegram half does afterwards
+  // can reach it, and vice versa.
+  const digest = await settle(deliverPendingIncidentAlerts);
+  const telegram = await settle(deliverPendingIncidentAlertsToTelegram);
+  const lockouts = await settle(deliverLockoutNotifications);
 
   const unavailable =
-    digest.outcome === "unavailable" || lockouts.outcome === "unavailable";
+    digest.outcome === "unavailable" ||
+    telegram.outcome === "unavailable" ||
+    lockouts.outcome === "unavailable";
   return NextResponse.json(
-    { ...digest, accountNotifications: lockouts },
+    { ...digest, telegram, accountNotifications: lockouts },
     {
       status: unavailable ? 503 : 200,
       headers: { "Cache-Control": "no-store" },
