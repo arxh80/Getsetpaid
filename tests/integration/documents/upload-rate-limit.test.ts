@@ -15,6 +15,15 @@
 // 20260909020000's header), which proves the eleventh reached the meter rather
 // than being refused by something earlier.
 //
+// SWITCHING WORKSPACE DOES NOT RESET THE BUDGET (Task 9a fix round 1, review
+// m5): the same Manager is also an active member of org B, and a twelfth
+// upload into org B -- after ten in org A and the refused eleventh -- is
+// refused just the same, with nothing stored under org B either. The meter
+// is keyed to auth.uid(), not to the workspace the upload names. The
+// denominator is the active org-B membership and an empty org B; the refusal
+// is matched on the limiter's own sentence, so a permission refusal (a
+// different sentence) cannot pass for it.
+//
 // MUTATIONS (task-9a-report.md, job 4): removing the consume, or moving it
 // after the storage write, turns this file red -- the second only on the
 // storage and row counts, which is why they are asserted separately from the
@@ -58,10 +67,10 @@ const ELEVENTH = "eleventh-upload.pdf";
 let fx: RlsFixtures;
 let pool: Pool;
 
-async function upload(name: string) {
+async function upload(name: string, slug: string = fx.orgA.slug) {
   const fd = new FormData();
   fd.append("file", new File([CLEAN_PDF as unknown as BlobPart], name, { type: "application/pdf" }));
-  return uploadDocumentAction(fx.orgA.slug, fd);
+  return uploadDocumentAction(slug, fd);
 }
 
 async function rowsForUser(): Promise<string[]> {
@@ -73,11 +82,11 @@ async function rowsForUser(): Promise<string[]> {
   return rows.map((r) => r.filename);
 }
 
-async function objectsUnderOrg(): Promise<number> {
+async function objectsUnderOrg(orgId: string = fx.orgA.id): Promise<number> {
   const { rows } = await pool.query<{ n: string }>(
     `select count(*)::text as n from storage.objects
       where bucket_id = 'documents' and name like $1 || '/%'`,
-    [fx.orgA.id],
+    [orgId],
   );
   return Number(rows[0]?.n ?? 0);
 }
@@ -108,6 +117,22 @@ beforeAll(async () => {
   });
   current.userId = fx.activeByRole.manager.userId;
   current.client = fx.activeByRole.manager.client;
+
+  // The same Manager, also an active member of org B (review m5). Removed
+  // with org B by destroyFixtures (the membership cascades).
+  await pool.query(
+    `insert into public.organisation_memberships
+       (organisation_id, user_id, role, status, joined_at)
+     values ($1, $2, 'manager', 'active', now())`,
+    [fx.orgB.id, current.userId],
+  );
+  current.orgs.set(fx.orgB.slug, {
+    id: fx.orgB.id,
+    name: fx.orgB.slug,
+    slug: fx.orgB.slug,
+    role: "manager",
+    isSuspended: false,
+  });
 }, 120_000);
 
 afterAll(async () => {
@@ -115,8 +140,9 @@ afterAll(async () => {
     // The stored objects are this run's own; remove them so the bucket is
     // not left with test bytes the retention sweep would have to find.
     const { rows } = await pool.query<{ name: string }>(
-      `select name from storage.objects where bucket_id = 'documents' and name like $1 || '/%'`,
-      [fx.orgA.id],
+      `select name from storage.objects where bucket_id = 'documents'
+          and (name like $1 || '/%' or name like $2 || '/%')`,
+      [fx.orgA.id, fx.orgB.id],
     );
     if (rows.length > 0) {
       const status = getLocalSupabaseStatus();
@@ -170,5 +196,31 @@ describe("document uploads are limited to 10 per hour per user (Q113)", () => {
     expect(names).toHaveLength(10);
     expect(names).not.toContain(ELEVENTH);
     expect(await objectsUnderOrg()).toBe(10);
+  });
+
+  it("a TWELFTH upload, into the user's OTHER workspace, is refused too -- switching org does not reset the budget", async () => {
+    // DENOMINATOR: the user really is an active member of org B, and org B
+    // holds nothing yet -- so a refusal below is the meter, not a missing
+    // membership or a pre-existing object.
+    const { rows } = await pool.query<{ v: string }>(
+      `select role || '/' || status as v from public.organisation_memberships
+        where organisation_id = $1 and user_id = $2`,
+      [fx.orgB.id, current.userId],
+    );
+    expect(rows[0]?.v).toBe("manager/active");
+    expect(await objectsUnderOrg(fx.orgB.id)).toBe(0);
+
+    const result = await upload("twelfth-in-org-b.pdf", fx.orgB.slug);
+    expect(result.message).toBeUndefined();
+    expect(result.error).toMatch(
+      /^You’ve reached the upload limit for now — nothing is wrong\. Try again in \d+ (minutes|seconds)\.$/,
+    );
+    expect(await uploadCounter()).toBe(12);
+    expect(await objectsUnderOrg(fx.orgB.id)).toBe(0);
+    const { rows: inB } = await pool.query<{ n: string }>(
+      `select count(*)::text as n from public.documents where organisation_id = $1`,
+      [fx.orgB.id],
+    );
+    expect(inB[0]?.n).toBe("0");
   });
 });
