@@ -4,13 +4,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // secret are both 404 (no endpoint exists for a prober); only the exact secret
 // reaches the sender.
 
-const deliver = vi.hoisted(() => ({ fn: vi.fn(), telegram: vi.fn(), lockouts: vi.fn() }));
+const deliver = vi.hoisted(() => ({
+  fn: vi.fn(),
+  telegram: vi.fn(),
+  lockouts: vi.fn(),
+  dsr: vi.fn(),
+  exports: vi.fn(),
+  erasures: vi.fn(),
+}));
 vi.mock("@/lib/email/incident-alerts", () => ({
   deliverPendingIncidentAlerts: () => deliver.fn(),
   deliverPendingIncidentAlertsToTelegram: () => deliver.telegram(),
 }));
 vi.mock("@/lib/email/lockout-notification", () => ({
   deliverLockoutNotifications: () => deliver.lockouts(),
+}));
+vi.mock("@/lib/email/requester-notifications", () => ({
+  deliverDsrNotifications: () => deliver.dsr(),
+  deliverExportReadyNotifications: () => deliver.exports(),
+  deliverErasureFailureNotifications: () => deliver.erasures(),
 }));
 
 import { POST } from "@/app/api/incident-alerts/deliver/route";
@@ -28,11 +40,17 @@ beforeEach(() => {
   deliver.fn.mockResolvedValue({ outcome: "nothing_pending" });
   deliver.telegram.mockResolvedValue({ outcome: "disabled" });
   deliver.lockouts.mockResolvedValue({ outcome: "nothing_pending" });
+  deliver.dsr.mockResolvedValue({ outcome: "nothing_pending" });
+  deliver.exports.mockResolvedValue({ outcome: "nothing_pending" });
+  deliver.erasures.mockResolvedValue({ outcome: "nothing_pending" });
 });
 afterEach(() => {
   deliver.fn.mockReset();
   deliver.telegram.mockReset();
   deliver.lockouts.mockReset();
+  deliver.dsr.mockReset();
+  deliver.exports.mockReset();
+  deliver.erasures.mockReset();
   delete process.env.INCIDENT_ALERT_DELIVERY_SECRET;
 });
 
@@ -72,6 +90,9 @@ describe("the delivery route's gate", () => {
       messageId: "m",
       telegram: { outcome: "disabled" },
       accountNotifications: { outcome: "delivered", sent: 2, failed: 0 },
+      dataRequestNotifications: { outcome: "nothing_pending" },
+      exportReadyNotifications: { outcome: "nothing_pending" },
+      erasureFailureNotifications: { outcome: "nothing_pending" },
     });
   });
 
@@ -123,6 +144,9 @@ describe("the delivery route's gate", () => {
       messageId: "m",
       telegram: { outcome: "failed", count: 2, error: "Telegram 502" },
       accountNotifications: { outcome: "delivered", sent: 1, failed: 0 },
+      dataRequestNotifications: { outcome: "nothing_pending" },
+      exportReadyNotifications: { outcome: "nothing_pending" },
+      erasureFailureNotifications: { outcome: "nothing_pending" },
     });
   });
 
@@ -152,6 +176,36 @@ describe("the delivery route's gate", () => {
     res = await POST(post(`Bearer ${SECRET}`));
     expect(deliver.telegram).toHaveBeenCalledTimes(2);
     await expect(res.json()).resolves.toMatchObject({ outcome: "unavailable", telegram: { outcome: "sent" } });
+  });
+
+  // Task 9b job 2 (Q157(3)/Q174/Q45): the requester and superuser notices are
+  // three more independent deliveries on the same tick. Each runs whatever
+  // the others did, and each is reported under its own key.
+  it("runs all three requester/superuser notices, each even when another throws, and reports each", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    deliver.lockouts.mockRejectedValue(new TypeError("boom"));
+    deliver.dsr.mockRejectedValue(new TypeError("boom"));
+    deliver.exports.mockResolvedValue({ outcome: "delivered", sent: 1, failed: 0, deferred: 0 });
+    deliver.erasures.mockResolvedValue({ outcome: "sent", count: 2 });
+    const res = await POST(post(`Bearer ${SECRET}`));
+    expect(deliver.dsr).toHaveBeenCalledOnce();
+    expect(deliver.exports).toHaveBeenCalledOnce();
+    expect(deliver.erasures).toHaveBeenCalledOnce();
+    expect(res.status).toBe(503);
+    await expect(res.json()).resolves.toMatchObject({
+      dataRequestNotifications: { outcome: "unavailable" },
+      exportReadyNotifications: { outcome: "delivered", sent: 1 },
+      erasureFailureNotifications: { outcome: "sent", count: 2 },
+    });
+  });
+
+  it("a FAILED requester notice is not a 503 (it retries next tick); an unreadable queue is", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    deliver.erasures.mockResolvedValue({ outcome: "failed", count: 1, error: "Brevo 503" });
+    expect((await POST(post(`Bearer ${SECRET}`))).status).toBe(200);
+    deliver.exports.mockResolvedValue({ outcome: "unavailable", error: "x" });
+    expect((await POST(post(`Bearer ${SECRET}`))).status).toBe(503);
   });
 
   it("a disabled Telegram channel is not a 503", async () => {

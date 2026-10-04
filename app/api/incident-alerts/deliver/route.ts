@@ -5,6 +5,11 @@ import {
   deliverPendingIncidentAlertsToTelegram,
 } from "@/lib/email/incident-alerts";
 import { deliverLockoutNotifications } from "@/lib/email/lockout-notification";
+import {
+  deliverDsrNotifications,
+  deliverErasureFailureNotifications,
+  deliverExportReadyNotifications,
+} from "@/lib/email/requester-notifications";
 
 // ===========================================================================
 // POST /api/incident-alerts/deliver
@@ -15,7 +20,7 @@ import { deliverLockoutNotifications } from "@/lib/email/lockout-notification";
 // pg_net-POSTs here with `Authorization: Bearer
 // <INCIDENT_ALERT_DELIVERY_SECRET>`, read from Supabase Vault.
 //
-// THREE DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
+// SIX DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
 //   * the OPERATOR's digest -- one email covering every alert nobody has been
 //     emailed about, stamping `notified_at` after ok:true
 //     (lib/email/incident-alerts.ts);
@@ -25,7 +30,12 @@ import { deliverLockoutNotifications } from "@/lib/email/lockout-notification";
 //     are unset (same module, 20261014000000);
 //   * the ACCOUNT HOLDER's lockout notice -- one email per locked-out account,
 //     stamping `account_notified_at` after ok:true
-//     (lib/email/lockout-notification.ts, founder ruling Q114).
+//     (lib/email/lockout-notification.ts, founder ruling Q114);
+//   * since 20261015000000 (founder 2026-09-30, Q157(3)/Q174/Q45), the
+//     REQUESTER's DSR received/closed notices and export-ready notice, and
+//     the SUPERUSER's erasure-failure notice (lib/email/requester-
+//     notifications.ts), each stamping its own column after ok:true.
+//     Worst case of the whole route ~300 s against the 600 s cadence.
 // They are deliberately not folded together: different recipients, different
 // content, different failure. Each runs even if the other fails, and each
 // reports its own outcome in the response body.
@@ -86,13 +96,22 @@ export async function POST(request: Request): Promise<NextResponse> {
   const digest = await settle(deliverPendingIncidentAlerts);
   const telegram = await settle(deliverPendingIncidentAlertsToTelegram);
   const lockouts = await settle(deliverLockoutNotifications);
+  const dataRequests = await settle(deliverDsrNotifications);
+  const exportsReady = await settle(deliverExportReadyNotifications);
+  const erasureFailures = await settle(deliverErasureFailureNotifications);
 
-  const unavailable =
-    digest.outcome === "unavailable" ||
-    telegram.outcome === "unavailable" ||
-    lockouts.outcome === "unavailable";
+  const unavailable = [digest, telegram, lockouts, dataRequests, exportsReady, erasureFailures].some(
+    (r) => r.outcome === "unavailable",
+  );
   return NextResponse.json(
-    { ...digest, telegram, accountNotifications: lockouts },
+    {
+      ...digest,
+      telegram,
+      accountNotifications: lockouts,
+      dataRequestNotifications: dataRequests,
+      exportReadyNotifications: exportsReady,
+      erasureFailureNotifications: erasureFailures,
+    },
     {
       status: unavailable ? 503 : 200,
       headers: { "Cache-Control": "no-store" },
