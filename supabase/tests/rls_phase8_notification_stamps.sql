@@ -16,6 +16,12 @@
 --   NT  the table guards still run for every update that is not a stamp
 --   NR  recipient resolution: service_role only, the CURRENT auth address
 --       (never the snapshot), the tombstone excluded, no archive key returned
+--   NL  (job 3, 20261016000000) the connection-request / task-reminder
+--       ledger, private.notification_deliveries: no grant to anybody, the
+--       sender's RPC only, written once, never updated, db clock, right state
+--   NX  (job 3) recipients: the requested org's active owners/admins, the
+--       sender or the fallback, a reminder only for a live, open, due task to
+--       its CURRENT active assignee, and no private column returned
 --   NZ  housekeeping
 --
 -- Self-contained: it creates its own requester and rows with triggers
@@ -307,6 +313,265 @@ select ns.val('NT5 every stamp has its own guard trigger, enabled',
      where tgname like '%\_stamp\_%' and tgrelid in
        ('public.data_subject_requests'::regclass,'public.export_jobs'::regclass,'public.erasure_jobs'::regclass)$$,
   'data_subject_requests_stamp_closed:O,data_subject_requests_stamp_received:O,erasure_jobs_stamp_failure:O,export_jobs_stamp_ready:O');
+
+-- ===========================================================================
+-- JOB 3 (20261016000000): THE CONNECTION-REQUEST AND TASK-REMINDER STAMPS.
+--
+--   NL  the ledger (private.notification_deliveries): nobody but the sender's
+--       RPC writes it, once, to the db clock, never updated, only for a
+--       subject in the state its email is about
+--   NX  recipient and content resolution: the right org's owners/admins, the
+--       sender (or the fallback), active members only; a reminder only for a
+--       live, open, due, assigned task -- its CURRENT assignee
+-- ===========================================================================
+\o /dev/null
+select gen_random_uuid()::text as oa \gset
+select gen_random_uuid()::text as ob \gset
+select gen_random_uuid()::text as ua_owner \gset
+select gen_random_uuid()::text as ua_sender \gset
+select gen_random_uuid()::text as ua_left \gset
+select gen_random_uuid()::text as ub_owner \gset
+select gen_random_uuid()::text as ub_admin \gset
+select gen_random_uuid()::text as ub_manager \gset
+select gen_random_uuid()::text as ub_revoked \gset
+select gen_random_uuid()::text as pa \gset
+select gen_random_uuid()::text as pb1 \gset
+select gen_random_uuid()::text as pb2 \gset
+select gen_random_uuid()::text as pb3 \gset
+select gen_random_uuid()::text as r_pend \gset
+select gen_random_uuid()::text as r_acc \gset
+select gen_random_uuid()::text as r_dec \gset
+select gen_random_uuid()::text as r_dec_left \gset
+select gen_random_uuid()::text as r_old \gset
+select gen_random_uuid()::text as t_due \gset
+select gen_random_uuid()::text as t_due2 \gset
+select gen_random_uuid()::text as t_done \gset
+select gen_random_uuid()::text as t_cancelled \gset
+select gen_random_uuid()::text as t_deleted \gset
+select gen_random_uuid()::text as t_future \gset
+select gen_random_uuid()::text as t_unassigned \gset
+select gen_random_uuid()::text as t_left \gset
+select gen_random_uuid()::text as t_old \gset
+\o
+
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+select v.id::uuid, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', v.email, now(), now(), now()
+  from (values (:'ua_owner', 'nl-a-owner@test.local'), (:'ua_sender', 'nl-a-sender@test.local'),
+               (:'ua_left', 'nl-a-left@test.local'), (:'ub_owner', 'nl-b-owner@test.local'),
+               (:'ub_admin', 'nl-b-admin@test.local'), (:'ub_manager', 'nl-b-manager@test.local'),
+               (:'ub_revoked', 'nl-b-revoked@test.local')) v(id, email);
+
+set session_replication_role = replica;
+insert into public.organisations (id, name, slug) values
+  (:'oa', 'NL Org A', 'nl-a-' || left(:'oa', 8)), (:'ob', 'NL Org B', 'nl-b-' || left(:'ob', 8));
+insert into public.organisation_memberships (organisation_id, user_id, role, status)
+values (:'oa', :'ua_owner', 'owner', 'active'), (:'oa', :'ua_sender', 'manager', 'active'),
+       (:'oa', :'ua_left', 'manager', 'revoked'),
+       (:'ob', :'ub_owner', 'owner', 'active'), (:'ob', :'ub_admin', 'admin', 'active'),
+       (:'ob', :'ub_manager', 'manager', 'active'), (:'ob', :'ub_revoked', 'admin', 'revoked');
+insert into public.network_profiles (id, organisation_id, entity_kind, entity_id, status, display_name, published_at)
+values (:'pa',  :'oa', 'venue', gen_random_uuid(), 'published', 'NL Sender Venue', now()),
+       (:'pb1', :'ob', 'venue', gen_random_uuid(), 'published', 'NL Receiver One', now()),
+       (:'pb2', :'ob', 'venue', gen_random_uuid(), 'published', 'NL Receiver Two', now()),
+       (:'pb3', :'ob', 'venue', gen_random_uuid(), 'published', 'NL Receiver Three', now());
+insert into public.network_connection_requests
+  (id, from_organisation_id, from_network_profile_id, to_organisation_id, to_network_profile_id,
+   status, requested_by, responded_by, requested_at, responded_at)
+values
+  (:'r_pend',     :'oa', :'pa', :'ob', :'pb1', 'pending',  :'ua_sender', null, now(), null),
+  (:'r_acc',      :'oa', :'pa', :'ob', :'pb2', 'accepted', :'ua_sender', :'ub_admin', now(), now()),
+  (:'r_dec',      :'oa', :'pa', :'ob', :'pb1', 'declined', :'ua_sender', :'ub_admin', now(), now()),
+  (:'r_dec_left', :'oa', :'pa', :'ob', :'pb1', 'declined', :'ua_left',   :'ub_admin', now(), now()),
+  (:'r_old',      :'oa', :'pa', :'ob', :'pb3', 'pending',  :'ua_sender', null, now() - interval '8 days', null);
+insert into public.tasks (id, organisation_id, owner_user_id, title, detail, status, reminder_at, completed_at, deleted_at)
+values
+  (:'t_due',        :'oa', :'ua_sender', 'NL due',        'NL PRIVATE DETAIL', 'open', now() - interval '1 hour', null, null),
+  (:'t_due2',       :'oa', :'ua_sender', 'NL due two',    null, 'in_progress', now() - interval '1 hour', null, null),
+  (:'t_done',       :'oa', :'ua_sender', 'NL done',       null, 'done',        now() - interval '1 hour', now(), null),
+  (:'t_cancelled',  :'oa', :'ua_sender', 'NL cancelled',  null, 'cancelled',   now() - interval '1 hour', null, null),
+  (:'t_deleted',    :'oa', :'ua_sender', 'NL deleted',    null, 'open',        now() - interval '1 hour', null, now()),
+  (:'t_future',     :'oa', :'ua_sender', 'NL future',     null, 'open',        now() + interval '1 day',  null, null),
+  (:'t_unassigned', :'oa', null,         'NL unassigned', null, 'open',        now() - interval '1 hour', null, null),
+  (:'t_left',       :'oa', :'ua_left',   'NL left',       null, 'open',        now() - interval '1 hour', null, null),
+  (:'t_old',        :'oa', :'ua_sender', 'NL old',        null, 'open',        now() - interval '8 days', null, null);
+set session_replication_role = origin;
+
+\set uas_c '{"sub":"':ua_sender'","role":"authenticated","aal":"aal1"}'
+
+-- ---------------------------------------------------------------------------
+-- NL  THE LEDGER'S GRANTS AND WRITE PATH
+-- ---------------------------------------------------------------------------
+select ns.val('NL1 no client role and not service_role holds ANY privilege on the ledger',
+  $$select coalesce(string_agg(r || ':' || p, ',' order by r, p), 'none') from
+      (values ('anon'),('authenticated'),('service_role')) g(r)
+      cross join (values ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE')) q(p)
+     where has_table_privilege(r, 'private.notification_deliveries', p)$$, 'none');
+select ns.val('NL2 the stamp RPC and both resolvers are executable by service_role and by no client role',
+  $$select string_agg(p.proname || ':' ||
+        has_function_privilege('anon', p.oid, 'EXECUTE')::text || '/' ||
+        has_function_privilege('authenticated', p.oid, 'EXECUTE')::text || '/' ||
+        has_function_privilege('service_role', p.oid, 'EXECUTE')::text, ';' order by p.proname)
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'public'
+       and p.proname in ('mark_notices_delivered','pending_connection_request_notifications',
+                         'pending_task_reminder_notifications')$$,
+  'mark_notices_delivered:false/false/true;pending_connection_request_notifications:false/false/true;'
+  'pending_task_reminder_notifications:false/false/true');
+select ns.val('NL3 the ledger guard is not callable by anybody',
+  $$select (has_function_privilege('service_role','private.notification_delivery_guard()','EXECUTE')
+         or has_function_privilege('authenticated','private.notification_delivery_guard()','EXECUTE'))::text$$,
+  'false');
+
+set role authenticated;
+set request.jwt.claims = :'uas_c';
+select ns.val('NL4 the sender can READ their task (so the refusals below are about the write)',
+  format($$select count(*)::text from public.tasks where id = %L$$, :'t_due'), '1');
+select ns.try('NL5 a member cannot stamp through the RPC',
+  format($$select public.mark_notices_delivered('task_reminder', array[%L]::uuid[])$$, :'t_due'),
+  'denied(42501)');
+select ns.try('NL6 ...nor write the ledger directly',
+  format($$insert into private.notification_deliveries (notice, task_id) values ('task_reminder', %L)$$, :'t_due'),
+  'denied(42501:missing_grant)');
+select ns.try('NL7 ...nor ask the reminder resolver for anybody''s address',
+  $$select * from public.pending_task_reminder_notifications(30)$$, 'denied(42501)');
+select ns.try('NL7a ...nor the connection resolver',
+  $$select * from public.pending_connection_request_notifications(30)$$, 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- NX  RECIPIENTS AND CONTENT -- before anything is stamped.
+-- ---------------------------------------------------------------------------
+set role service_role;
+select ns.val('NX1 RECEIVED goes to the requested org''s active owner and admin -- not its manager, not a revoked admin, nobody in the sending org',
+  format($$select array_to_string(emails, ',') || '|' || organisation_slug || '|' || counterparty_name
+             from public.pending_connection_request_notifications(30) where request_id = %L$$, :'r_pend'),
+  'nl-b-admin@test.local,nl-b-owner@test.local|nl-b-' || left(:'ob', 8) || '|NL Sender Venue');
+select ns.val('NX2 ACCEPTED goes to the sender alone, links the SENDING org, and names the requested profile',
+  format($$select notice || '|' || array_to_string(emails, ',') || '|' || organisation_slug || '|' || counterparty_name
+             from public.pending_connection_request_notifications(30) where request_id = %L$$, :'r_acc'),
+  'connection_accepted|nl-a-sender@test.local|nl-a-' || left(:'oa', 8) || '|NL Receiver Two');
+select ns.val('NX3 DECLINED goes to the sender alone',
+  format($$select notice || '|' || array_to_string(emails, ',')
+             from public.pending_connection_request_notifications(30) where request_id = %L$$, :'r_dec'),
+  'connection_declined|nl-a-sender@test.local');
+select ns.val('NX4 ...and to the sending org''s owners/admins when the sender has left it',
+  format($$select array_to_string(emails, ',')
+             from public.pending_connection_request_notifications(30) where request_id = %L$$, :'r_dec_left'),
+  'nl-a-owner@test.local');
+select ns.val('NX5 a request older than the seven-day window is owed nothing',
+  format($$select count(*)::text from public.pending_connection_request_notifications(30) where request_id = %L$$, :'r_old'),
+  '0');
+select ns.val('NX6 the connection resolver returns exactly five columns -- no organisation name, no member, no responder, no profile field',
+  $$select string_agg(a, ',' order by n) from unnest(
+      (select proargnames from pg_proc where proname = 'pending_connection_request_notifications'))
+      with ordinality u(a, n) where a <> 'p_limit'$$,
+  'request_id,notice,emails,organisation_slug,counterparty_name');
+select ns.val('NX7 a reminder is owed for each live, open, due, assigned task, to its assignee',
+  format($$select string_agg(email || '|' || title, ',' order by title)
+             from public.pending_task_reminder_notifications(30) where task_id in (%L, %L)$$, :'t_due', :'t_due2'),
+  'nl-a-sender@test.local|NL due,nl-a-sender@test.local|NL due two');
+select ns.val('NX8 NO reminder for a done, cancelled, deleted, future, unassigned, departed-assignee or stale task',
+  format($$select count(*)::text from public.pending_task_reminder_notifications(30)
+            where task_id in (%L,%L,%L,%L,%L,%L,%L)$$,
+         :'t_done', :'t_cancelled', :'t_deleted', :'t_future', :'t_unassigned', :'t_left', :'t_old'),
+  '0');
+select ns.val('NX9 the task resolver returns no detail column',
+  $$select string_agg(a, ',' order by n) from unnest(
+      (select proargnames from pg_proc where proname = 'pending_task_reminder_notifications'))
+      with ordinality u(a, n) where a <> 'p_limit'$$,
+  'task_id,email,organisation_slug,title,due_at');
+reset role;
+
+-- A REASSIGNMENT before the reminder fires: away to a departed member -> not
+-- owed; to the owner -> owed to the OWNER.
+set session_replication_role = replica;
+update public.tasks set owner_user_id = :'ua_left' where id = :'t_due2';
+set session_replication_role = origin;
+set role service_role;
+select ns.val('NX10 a task reassigned to somebody who is not an active member is not reminded',
+  format($$select count(*)::text from public.pending_task_reminder_notifications(30) where task_id = %L$$, :'t_due2'), '0');
+reset role;
+set session_replication_role = replica;
+update public.tasks set owner_user_id = :'ua_owner' where id = :'t_due2';
+update public.network_profiles set status = 'draft', published_at = null where id = :'pb2';
+set session_replication_role = origin;
+set role service_role;
+select ns.val('NX11 ...and reassigned to the owner, it is the OWNER who is reminded',
+  format($$select email from public.pending_task_reminder_notifications(30) where task_id = %L$$, :'t_due2'),
+  'nl-a-owner@test.local');
+select ns.val('NX12 an UNPUBLISHED counterparty is not named at all',
+  format($$select coalesce(counterparty_name, '<none>') from public.pending_connection_request_notifications(30)
+            where request_id = %L$$, :'r_acc'), '<none>');
+
+-- ---------------------------------------------------------------------------
+-- NL (cont.)  STAMPING, as the sender
+-- ---------------------------------------------------------------------------
+select ns.val('NL8 the sender stamps a pending request''s RECEIVED notice: 1',
+  format($$select public.mark_notices_delivered('connection_received', array[%L]::uuid[])::text$$, :'r_pend'), '1');
+select ns.val('NL9 ...and a second stamp is a no-op: 0 (written once)',
+  format($$select public.mark_notices_delivered('connection_received', array[%L]::uuid[])::text$$, :'r_pend'), '0');
+select ns.val('NL10 ...after which the RECEIVED notice is no longer owed',
+  format($$select count(*)::text from public.pending_connection_request_notifications(30) where request_id = %L$$, :'r_pend'), '0');
+select ns.val('NL11 RIGHT STATE: an ACCEPTED stamp on a still-PENDING request lands on nothing (it cannot silence a future email)',
+  format($$select public.mark_notices_delivered('connection_accepted', array[%L]::uuid[])::text$$, :'r_pend'), '0');
+select ns.val('NL12 RIGHT STATE: a reminder stamp on a done, a deleted or a not-yet-due task lands on nothing',
+  format($$select public.mark_notices_delivered('task_reminder', array[%L,%L,%L]::uuid[])::text$$,
+         :'t_done', :'t_deleted', :'t_future'), '0');
+select ns.val('NL13 a live, due task''s reminder stamps: 1',
+  format($$select public.mark_notices_delivered('task_reminder', array[%L]::uuid[])::text$$, :'t_due'), '1');
+select ns.val('NL13a ...and is then not owed (while its sibling still is)',
+  format($$select string_agg(task_id::text, ',') from public.pending_task_reminder_notifications(30)
+            where task_id in (%L, %L)$$, :'t_due', :'t_due2'), :'t_due2');
+select ns.try('NL14 an unknown notice is refused by name',
+  format($$select public.mark_notices_delivered('connection_ignored', array[%L]::uuid[])$$, :'r_pend'),
+  'denied(22023:notification_notice_unknown)');
+reset role;
+
+select ns.val('NL15 the ledger holds exactly the two stamps written, each on the database''s clock',
+  format($$select string_agg(notice || ':' || (notified_at > now() - interval '5 minutes')::text, ',' order by notice)
+             from private.notification_deliveries where request_id = %L or task_id = %L$$, :'r_pend', :'t_due'),
+  'connection_received:true,task_reminder:true');
+select ns.try('NL16 even the owner cannot UPDATE a stamp (never cleared or rewritten)',
+  format($$update private.notification_deliveries set notified_at = now() where task_id = %L$$, :'t_due'),
+  'denied(22023:notification_stamp_is_written_once)');
+select ns.try('NL17 a direct server insert with a chosen time is admitted...',
+  format($$insert into private.notification_deliveries (notice, request_id, notified_at)
+             values ('connection_declined', %L, '2000-01-01')$$, :'r_dec'), 'ok(1)');
+select ns.val('NL17a ...on the database''s clock, not the one it named',
+  format($$select (notified_at > '2001-01-01')::text from private.notification_deliveries where request_id = %L$$, :'r_dec'),
+  'true');
+select ns.try('NL18 the ledger''s one-subject CHECK refuses a reminder row naming a request',
+  format($$insert into private.notification_deliveries (notice, request_id) values ('task_reminder', %L)$$, :'r_acc'),
+  'denied(23514)');
+select ns.val('NL19 both ledger guards are present and enabled',
+  $$select string_agg(tgname || ':' || tgenabled::text, ',' order by tgname) from pg_trigger
+     where tgrelid = 'private.notification_deliveries'::regclass and not tgisinternal$$,
+  'notification_deliveries_guard_insert:O,notification_deliveries_guard_update:O');
+select ns.val('NL20 the tenant tables are NOT altered: no *notified* column on tasks or connection requests',
+  $$select count(*)::text from information_schema.columns
+     where table_schema = 'public' and table_name in ('tasks','network_connection_requests')
+       and column_name like '%notified%'$$, '0');
+
+-- Job-3 housekeeping: the ledger rows go explicitly, because the fixture
+-- deletes run in replica mode, where the FK cascade does not fire.
+set session_replication_role = replica;
+delete from private.notification_deliveries
+ where request_id in (:'r_pend', :'r_acc', :'r_dec', :'r_dec_left', :'r_old')
+    or task_id in (:'t_due', :'t_due2', :'t_done', :'t_cancelled', :'t_deleted', :'t_future',
+                   :'t_unassigned', :'t_left', :'t_old');
+delete from public.tasks where organisation_id in (:'oa', :'ob');
+delete from public.network_connection_requests where from_organisation_id in (:'oa', :'ob');
+delete from public.network_profiles where organisation_id in (:'oa', :'ob');
+delete from public.organisation_memberships where organisation_id in (:'oa', :'ob');
+delete from public.organisations where id in (:'oa', :'ob');
+delete from public.profiles where id in (:'ua_owner', :'ua_sender', :'ua_left', :'ub_owner', :'ub_admin', :'ub_manager', :'ub_revoked');
+delete from auth.users where id in (:'ua_owner', :'ua_sender', :'ua_left', :'ub_owner', :'ub_admin', :'ub_manager', :'ub_revoked');
+set session_replication_role = origin;
+select ns.val('NL21 the job-3 fixtures are gone',
+  format($$select ((select count(*) from public.organisations where id in (%L,%L))
+                 + (select count(*) from auth.users where id in (%L,%L))
+                 + (select count(*) from private.notification_deliveries where request_id = %L or task_id = %L))::text$$,
+         :'oa', :'ob', :'ua_sender', :'ub_admin', :'r_pend', :'t_due'), '0');
 
 -- ---------------------------------------------------------------------------
 -- NZ  HOUSEKEEPING

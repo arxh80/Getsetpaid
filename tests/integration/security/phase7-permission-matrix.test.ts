@@ -1212,14 +1212,20 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Task 4 -- the read engine; reads AS THE REQUESTER through export_reader, never as a definer",
   "fail_erasure_job(p_job_id uuid, p_reason text)": "Task 5 -- records a refused erasure's reason on the job",
   "fail_retention_run(p_run_id uuid, p_reason text)": "Task 6 -- records a refused sweep's reason on the run",
+  "mark_notices_delivered(p_notice text, p_subject_ids uuid[])":
+    "Task 9b job 3 -- the ONLY write path of private.notification_deliveries, ONLY after Brevo accepted the connection-request / task-reminder email, and only for a subject still in that email's state; refuses any session",
   "mark_erasure_failures_notified(p_job_ids uuid[])":
     "Task 9b job 2 -- stamps erasure_jobs.failure_notified_at ONLY after the superuser's email was accepted (the table's CHECK makes a column grant unusable)",
+  "pending_connection_request_notifications(p_limit integer)":
+    "Task 9b job 3 -- the connection-request notice queue; addresses through ACTIVE memberships only, content is the counterparty's published display name and a slug",
   "pending_dsr_notifications(p_limit integer)":
     "Task 9b job 2 -- the DSR received/closed notice queue; the address is auth.users through user_id, the tombstone excluded",
   "pending_export_ready_notifications(p_limit integer)":
     "Task 9b job 2 -- the export-ready notice queue; returns no archive key and no URL",
   "pending_lockout_notifications(p_limit integer)":
     "Phase 7 Task 6c -- the account-holder lockout notice queue, read by the sender",
+  "pending_task_reminder_notifications(p_limit integer)":
+    "Task 9b job 3 -- the task-reminder queue: a live, open, due task's CURRENT active assignee, its title and due date, never its detail",
   "retention_object_manifest(p_run_id uuid, p_limit integer)":
     "Task 6 -- names objects only for a run that would not refuse (fix round 1, C2)",
   "run_erasure_job(p_job_id uuid)":
@@ -2858,6 +2864,31 @@ describe("grants on Phase 7 tables are minimal", () => {
       { grantee: "service_role", column_name: "notified_at" },
       { grantee: "service_role", column_name: "telegram_notified_at" },
     ]);
+  });
+
+  it("the connection-request / task-reminder ledger is reachable by NO API role -- its one write path is a service_role RPC", async () => {
+    // Task 9b job 3 (founder 2026-09-30, Q157(3)/Q174/Q45; 20261016000000).
+    // A ledger in `private` rather than a column on tasks /
+    // network_connection_requests, because both of those grant
+    // `authenticated` table-level UPDATE -- the Q125 shape above -- so a stamp
+    // column there would be browser-writable the moment it existed. The
+    // denominator: the table must exist, or every `false` below is vacuous.
+    const { rows } = await pool.query<{ role: string; priv: string; held: boolean; exists: boolean }>(
+      `select r as role, p as priv,
+              has_table_privilege(r, 'private.notification_deliveries', p) as held,
+              to_regclass('private.notification_deliveries') is not null as exists
+         from unnest(array['anon','authenticated','service_role']) r
+         cross join unnest(array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE']) p`,
+    );
+    expect(rows.length).toBe(15);
+    expect(rows.every((r) => r.exists)).toBe(true);
+    expect(rows.filter((r) => r.held)).toEqual([]);
+    const fn = await pool.query<{ anon: boolean; authed: boolean; service: boolean }>(
+      `select has_function_privilege('anon', 'public.mark_notices_delivered(text, uuid[])', 'EXECUTE') as anon,
+              has_function_privilege('authenticated', 'public.mark_notices_delivered(text, uuid[])', 'EXECUTE') as authed,
+              has_function_privilege('service_role', 'public.mark_notices_delivered(text, uuid[])', 'EXECUTE') as service`,
+    );
+    expect(fn.rows[0]).toEqual({ anon: false, authed: false, service: true });
   });
 
   it("service_role's reach into `feedback` is the two-column delivery seam and nothing more", async () => {

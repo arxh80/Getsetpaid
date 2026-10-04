@@ -1157,9 +1157,11 @@ fi
 # stamps the browser cannot write and the sender can write once, alone, on a
 # row in the right state, to the database's clock; the table guards skipped
 # for that shape only; recipients resolved from auth.users in the database.
-# Self-contained fixtures, removed in its own NZ.
+# Since JOB 3 (20261016000000, 42 -> 78) also § NL/NX: the connection-request
+# and task-reminder ledger (private.notification_deliveries) and its two
+# resolvers. Self-contained fixtures, removed in its own NL21/NZ.
 # ============================================================================
-run_suite "PHASE 8 NOTIFICATION STAMPS" rls_phase8_notification_stamps.sql ns 42 "${P7VARS[@]}"
+run_suite "PHASE 8 NOTIFICATION STAMPS" rls_phase8_notification_stamps.sql ns 78 "${P7VARS[@]}"
 ns_fails=$SUITE_FAILS
 if [ "$ns_fails" != "0" ]; then
   echo "PHASE 8 NOTIFICATION STAMP SUITE FAILED: $ns_fails failing assertion(s)" >&2
@@ -1168,7 +1170,10 @@ if [ "$ns_fails" != "0" ]; then
   echo "  stamp, stamp the wrong state or ride a stamp past a finished row's" >&2
   echo "  guard. In NT, a table guard stopped running for ordinary updates." >&2
   echo "  In NR, a recipient is resolved from the wrong place (the snapshot," >&2
-  echo "  the tombstone) or the resolver returns an archive key." >&2
+  echo "  the tombstone) or the resolver returns an archive key. In NL, the" >&2
+  echo "  connection/reminder ledger is writable by somebody other than the" >&2
+  echo "  sender, twice, or ahead of its event; in NX, a connection notice or a" >&2
+  echo "  reminder resolves to the wrong org, a non-member, or a finished task." >&2
   psql_status=1
 else
   echo "Phase 8 notification stamp suite: all assertions passed."
