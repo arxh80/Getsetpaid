@@ -210,3 +210,93 @@ still holds during a release" is 17f's REL17, plus REL15 (inside-the-year and
 
 **New questions:** Q195 (no early revoke and no auto-end on drain; default:
 none, because the kill switch beside it stops deletion now).
+
+## Job 4 (req 6-7, Q185 + Q113)
+
+Founder 2026-09-30: "show 'File deleted under the retention policy on <date>'
+in place of Restore" (Q185) and "uploads are limited to 10/hour per user. The
+25 MiB cap stays, enforced at the write" (Q113). Commits `b27c8ce` (Q185),
+`cad6adc` (Q113), then the CLAUDE.md counts with this report.
+
+**Q185.** A purged document is marked by `documents.bytes_purged_at` (Task 6).
+The database ALREADY refused its restore for every writer
+(`documents_purged_implies_deleted`, a CHECK, not an RPC or policy), so no
+migration was needed. Changes:
+- `/[orgSlug]/documents/deleted` selects `bytes_purged_at` and renders
+  `DocumentPurgedNotice` ("File deleted under the retention policy on" +
+  `<time>` with `formatDate`, Europe/London) instead of Restore. The page's
+  intro and empty-state copy no longer say the file is always kept.
+- `restoreDocumentAction` reads the row through the caller's RLS client first
+  and refuses a purged one: "This file was deleted under the retention policy
+  on 15 Jun 2026, so it can't be restored." The `bytes_purged_at is null`
+  filter and the CHECK stay behind it.
+- psql RK13a-c: the aal2 Owner sees 6701 deleted+purged, their restore is
+  `denied(23514)`, and the row is unchanged (RK13 is the not-purged control).
+  Retention 306 -> 309.
+- Integration `tests/integration/documents/restore-purged.test.ts`: the
+  sentence (23:30 UTC 14 June = 15 Jun in London), the row unchanged, and a
+  deleted-not-purged control that restores.
+- e2e `documents.spec.ts`: the notice and `<time>` render, the purged row has
+  no button, an axe scan of the state (a new `new AxeBuilder` site), then the
+  KEPT row's hidden `documentId` is re-pointed at the purged id and its real
+  Restore pressed: the refusal is read in that form's alert, and both rows
+  are unchanged in Postgres.
+
+**Q113.**
+- `20261011000000` adds the `uploads` row (user, 10, 3600) to
+  `rate_limit_policies` (213 -> 214 migrations). `consume_rate_limit` already
+  binds a user category to `auth.uid()`, so no function was rebuilt.
+- `"uploads"` is added to `RateLimitCategory`. `uploadDocumentAction` consumes
+  it after the cheap refusals (permission, empty, 25 MiB, allowlist) and
+  immediately BEFORE the service-role storage write. The refusal is "You've
+  reached the upload limit for now — nothing is wrong. Try again in N
+  minutes." (`formatRetryAfter`).
+- Why not a BEFORE INSERT trigger like the other write budgets: the row lands
+  AFTER the bytes, so a trigger would refuse too late. The bucket is deny-all
+  for client roles, so this action is the only way bytes reach it.
+- A metadata-only row inserted over PostgREST is not metered: Q196, default
+  "meter the bytes".
+- **Feedback screenshots do NOT share this path.** They use
+  `submitFeedbackAction`, the `feedback-screenshots` bucket, and the `feedback`
+  budget enforced at that table's INSERT. They are not counted under
+  `uploads`, so nothing is double-counted.
+- Tests:
+  - unit: `rate-limit.test.ts` meters `uploads` with no organisation;
+  - psql: RV6d `10/3600/user`, and RV7/RV11/RZ5 at 12 rows (rate limits
+    182 -> 183);
+  - integration `upload-rate-limit.test.ts`: 10 land (10 rows, 10 objects);
+    the 11th is refused in words with counter 11, still 10 rows, still 10
+    objects, and no row named after it.
+- SECURITY.md § 5 has the new row and § 8 the Q185 paragraph.
+
+**Mutations** (each reverted; DB mutant via `run-mutation.sh`, 214/214):
+
+| guard / mutation | red |
+|---|---|
+| M1 upload consume ignored | integration: upload-rate-limit "the ELEVENTH" |
+| M2 consume moved after the storage write | integration: the same test, on the OBJECT count only (expected 10, got 11) -- the row count and message would have passed |
+| M3 restore action's purge read removed | integration: restore-purged message (the REFUSED sentence instead); row unchanged |
+| M4 purge read AND the update filter removed | integration: message (FAILED sentence, the CHECK refused); row unchanged |
+| 18a CHECK `documents_purged_implies_deleted` dropped | psql RK13b, RK13c, RK15, RK16; the integration documents files stay 11/11 green, because the action's read and filter still refuse -- that is the layering, not a hole |
+
+The e2e forged POST was not mutation-run. M3 would change its alert text, so
+it would go red the same way the integration test does.
+
+**Gates.**
+- `pnpm lint` and `next typegen` + `pnpm typecheck` are clean.
+- `vitest tests/unit tests/integration/documents tests/integration/security`:
+  110 files / 2944, green.
+- psql/HTTP after a fresh reset: all suites passed (rate limits 183,
+  retention 309), API surface passed, exit 0, 214 -> 214. Not run a second
+  time: the runner refuses a second run on the same database (job 2).
+- e2e `documents.spec.ts` after a fresh reset: 5 passed. The first two runs
+  were red on the TEST, not the product:
+  - `datetime` comes back as `+00:00`, not `Z`;
+  - the alert reads "Error. <sentence>".
+- The stack was reset at the end, at 214 migrations.
+
+**Docs drift found.** CLAUDE.md listed the exports suite as 137 while its pin
+is 138, so the stated total of 3892 at 213 migrations was really 3893. It is
+now 3897 at 214 migrations, summed from the pins. The e2e count is 174 -> 175.
+
+**New questions:** Q196.
