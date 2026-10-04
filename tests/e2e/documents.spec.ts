@@ -235,15 +235,49 @@ test("a document purged by retention shows when, offers no Restore, and a forced
 
   // THE FORCED POST. Re-point the kept row's hidden documentId at the purged
   // document and press its Restore.
-  const forged = await keptRow.locator("input[type=hidden][name=documentId]").evaluate(
-    (el, id) => {
-      (el as HTMLInputElement).value = id;
-      return (el as HTMLInputElement).value;
-    },
-    purgedId,
+  //
+  // NOT A PLAIN DOM WRITE BEFORE THE CLICK. That input is React-controlled
+  // (`value={documentId}`), so hydration or any later re-render of the form
+  // between the write and the press resets it to the KEPT id -- the press then
+  // restores the kept row, it leaves the list, and the only symptom was a 15 s
+  // "alert not found" (one red in a full run, 2026-10-04). The forgery is
+  // therefore applied INSIDE the submit event, in a window capture-phase
+  // listener: that runs synchronously before React's root listener reads the
+  // FormData (and before a pre-hydration native submit builds its entry list),
+  // so no render can land between the write and the read.
+  const armed = await keptRow.locator("form").evaluate((form, id) => {
+    const input = form.querySelector<HTMLInputElement>(
+      "input[type=hidden][name=documentId]",
+    );
+    if (!input) return "no documentId input";
+    window.addEventListener(
+      "submit",
+      (event) => {
+        if (event.target === form) input.value = id;
+      },
+      { capture: true, once: true },
+    );
+    return "armed";
+  }, purgedId);
+  expect(armed).toBe("armed");
+
+  // Capture the Server Action POST itself, so a wrong-id submit fails HERE,
+  // loudly and by name, not as a missing alert after the kept row vanished.
+  // Matched on the page URL, not the `next-action` header, so a pre-hydration
+  // native (progressive-enhancement) submit is caught too.
+  const actionPost = page.waitForRequest(
+    (req) => req.method() === "POST" && new URL(req.url()).pathname.endsWith("/documents/deleted"),
   );
-  expect(forged).toBe(purgedId);
   await keptRestore.click();
+  const body = (await actionPost).postData() ?? "";
+  expect(
+    body.includes(purgedId),
+    "the forged Restore POST must carry the PURGED document's id",
+  ).toBe(true);
+  expect(
+    body.includes(keptId),
+    "the forged Restore POST still carried the KEPT id -- the forgery was lost and the kept row would be restored",
+  ).toBe(false);
 
   // Read in the form's own alert (rendered "Error. <sentence>").
   await expect(keptRow.getByRole("alert")).toHaveText(

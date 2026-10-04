@@ -401,3 +401,9 @@ FOLLOW-UPS has a new section, "Opened by Phase 8 Task 9b fix round 2". It record
 - `vitest` tests/unit + network + email + rls + phase7-permission-matrix: 122 files, 3304 passed (an earlier tests/unit run under the parallel psql load had the known `no-private-table-in-network-path` DENOMINATOR 5 s timeout; green alone and in this run).
 - Fresh reset + `tests/e2e/network.spec.ts`: 1 passed (1.1 m).
 - Commits: 60f6b2e (N2), bb832e5 (N1), 5990f24 (N3).
+
+## Gate follow-up
+
+**documents.spec.ts:202 red (1 of 175 in the controller's full e2e, green in the two runs before).** Cause: a TEST race, not a product one. The forgery wrote the purged id into a React-controlled hidden input (`value={documentId}` in `RestoreRecordForm`, `components/crm/delete-restore.tsx`) before the click; hydration or any re-render between the write and the press resets it to the kept id, so the press restored the KEPT row, it left the list, and the symptom was a 15 s missing alert. `restoreDocumentAction` (`lib/crm/documents.ts`) refuses a purged id deterministically on its own read, so nothing there to fix.
+
+Fix (test only): the forgery now runs inside the submit event, in a window capture-phase listener that runs synchronously before React's root listener (or a pre-hydration native submit) reads the FormData, so no render can land between them. The Restore POST is captured and asserted to carry the purged id and NOT the kept id, with a named message, so a lost forgery fails loudly at the POST rather than as a missing alert. Expected sentence unchanged, no retries. `pnpm lint` and `pnpm typecheck` are clean. **The e2e re-run was not done:** free RAM was 3.01 GB, under the 4 GB bar, so verification is owed to the next full gate.
