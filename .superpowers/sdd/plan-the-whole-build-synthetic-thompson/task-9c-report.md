@@ -124,3 +124,108 @@ job's time.
 
 Questions: Q205, Q206 and Q207 (the confirmation and reason bounds) are in
 DECISIONS-QUEUE.md. CLAUDE.md's Q104 paragraph is corrected (requirement 5).
+
+## Job 2 (superuser decision item, reassign/delete, Q206) -- DATABASE HALF
+
+Founder 2026-09-30 (Q176/Q178 changed, reversing Q104). Migrations 225 -> 227.
+Commits: `03bb377` (Q206), `9b3440e` (decisions + registries + suite),
+`74c7033` (erasure hint sentences), `e510a3b` (CLAUDE.md totals, Q208-Q211).
+
+**Q206 (`20261022000000`).** Three functions are rebuilt from their latest
+`pg_get_functiondef`:
+- `erase_account` step 5b re-points a `closure_backup` job's `requested_by`
+  at the tombstone (the Q158 pattern). Its bytes check skips that job's
+  archive.
+- `erasure_purge_manifest` no longer names that archive.
+- `export_jobs_before_update` admits only that one rewrite: a closure_backup
+  row, moved to the tombstone, under erase_account's transaction-local marker,
+  with nothing else on the row changing.
+
+Tests: CQ1-3 close the workspace, erase the Owner, and find the backup row
+still present (latest closure_backup row of the org). CQ4: the Owner's
+ordinary export still cascades. CQ5/CQ6: every other re-point is still
+`export_request_is_immutable`.
+
+Side effect: the erasure hint roll is a textual walk, so it now reaches the
+export guard. Eleven hints got a sentence in `lib/erasure/runner.ts`.
+
+**Decisions (`20261022001000`).**
+- `reassign_closed_workspace(slug, new_owner, reason)` and
+  `delete_closed_workspace(slug, reason)`. Both are SECURITY DEFINER and share
+  one guard helper with separate hints, in this order: session, superuser
+  (`platform_admins`), aal2, reason (trimmed, at most 500),
+  slug, `owner_closed` (row locked).
+- Reassign requires an active, non-tombstone member. It promotes them to
+  Owner and clears `deleted_at`, so the sync trigger returns the workspace to
+  active and clears both clocks.
+- Delete does not add a second engine. It sets lifecycle to `deleted` and
+  dates `lifecycle_changed_at` one retention period back, so the existing
+  hourly sweep (bytes first, then `erase_organisation`) purges it (Q210).
+- Both write one audit row (`organisation.closure_reassigned` /
+  `.closure_deleted`). It records who, the previous role, the reason, the
+  backup job, and a snapshot of the remaining active Owner/Admin user ids.
+  The snapshot is taken because the purge cascades memberships.
+- Dashboard RPC `closed_workspaces_awaiting_decision`: aal2 superuser only,
+  keyset paginated, at most 50 per page. It returns aggregate metadata and the
+  backup's status. There is no download (Q209).
+- Email queues on the existing ledger. It gets an `audit_event_id` column,
+  three notices, a rebuilt one-subject CHECK and a written-once index (lesson
+  15: these pin the column). `mark_notices_delivered` and
+  `mark_notices_undeliverable` are rebuilt from live with a branch for the new
+  notices. Two service_role resolvers:
+  - `pending_workspace_closure_notifications`: slug, name and closed-at, for
+    the SUPPORT_CONTACT_EMAIL inbox;
+  - `pending_workspace_decision_notifications`: the snapshotted recipients,
+    tombstone excluded.
+- If the founder never acts, the 60-day purge still applies: CX6, plus job
+  1's CP1, which is unchanged.
+
+**Registries.**
+- Audit catalogue 164 -> 166: `audit-actions.ts`, the DB copy, PA6c, and the
+  integration size test.
+- Permission matrix: the two decisions and the list are SUPERUSER_ONLY. Each
+  has an invariant (org B stays active) and a positive control that reaches
+  the owner_closed check. The two resolvers are SERVER_ONLY.
+- Runner pin cw 64 -> 110. CLAUDE.md re-summed: 25 suites, **4150** at 227
+  migrations. The "twenty-four"/"4036" wording is fixed.
+
+**Mutations.** Each was applied live and run against the closure suite, with
+the control at 110/0 after every restore:
+
+| mutant | red |
+|---|---|
+| no superuser gate | CS4, CS4b |
+| no aal2 | CS5, CS5b |
+| no reason check | CS6, CS6b, CS8-9, CQ7, CR1, CR5-7 (11) |
+| no owner_closed check | CS7, CS7b, CR2, CX3 |
+| reassign target need not be active | CS8c, CS9, CQ7, CR1, CR5-7 |
+| recipients not limited to Owner/Admin | **first 0 red (FALSE GREEN)**: no non-admin member existed. A Manager was added to org B -> CX3, CX5 |
+| list gate removed | CS3, CS3b |
+
+The "stamp-after-ok" mutation was NOT run, because there is no sender yet
+(below).
+
+**NOT BUILT (owed, next job):**
+- the TS senders on the tick: the superuser closure email to
+  SUPPORT_CONTACT_EMAIL, and the decision email to the admins. Each needs an
+  allowlisted builder with one /super or /<slug> link, a `deliverEach`
+  loop, and stamps written only after ok through `mark_notices_delivered`;
+- the stamp-after-ok mutation;
+- the route's budget re-measured (+2 loops; Q204 says tighten to 45 s);
+- the /super "Closed workspaces awaiting decision" page with its two step-up
+  action forms, plus its e2e and axe scans.
+
+The database half is complete and tested without them.
+
+**Gates:** see "Job 2 gates" below.
+
+### Job 2 gates
+- `pnpm lint` and `next typegen` + `pnpm typecheck`: clean.
+- After a reset at 227 migrations, `run-rls-tests.sh` reported "All suites
+  passed": 25 suites at their pins (closure 110, erasure 212, PA6c 166) and
+  API surface all passed, exit 0. It ran once, because the runner refuses a
+  second run without a reset. The closure suite alone ran twice on one DB,
+  110/0 both times.
+- After a fresh reset, vitest over `tests/unit`, `tests/integration/{admin,email,rls}`
+  and the permission matrix: 119 files, **3302/3302** green.
+- No e2e, because no UI was added.
