@@ -2,8 +2,8 @@ import "server-only";
 
 // Transactional email, via Brevo's HTTP API (https://api.brevo.com/v3/smtp/email).
 //
-// WHY THE HTTP API AND NOT SMTP+NODEMAILER: no extra dependency, works on the
-// edge/serverless runtime this app deploys to, and the API key is the only
+// WHY THE HTTP API AND NOT SMTP+NODEMAILER: no extra dependency, works on any
+// runtime the app is deployed to (an IONOS VPS, founder 2026-09-30), and the API key is the only
 // secret to hold. SMTP would add a long-lived connection and a transport dep
 // for no gain at this volume.
 //

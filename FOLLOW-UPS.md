@@ -890,8 +890,8 @@ These become live the moment a real tenant table exists.
   because the script is not Task 3's — the shape the review proposes is a
   `--check-local-only` flag on the same script, wired to `prebuild` and
   `start`, refusing anything but loopback unless an explicit
-  `GETSETPAID_ALLOW_HOSTED=1` is set (so Vercel, where `.env.local` is absent,
-  is unaffected). `tests/integration/rls/support/env.ts` already contains the
+  `GETSETPAID_ALLOW_HOSTED=1` is set (so the production host, where `.env.local`
+  is absent, is unaffected -- an IONOS VPS, founder 2026-09-30, Q142). `tests/integration/rls/support/env.ts` already contains the
   loopback assertion to reuse.
 
 - **PARTLY DISCHARGED (Task 3a / Phase 2), one residual open — verified at HEAD
