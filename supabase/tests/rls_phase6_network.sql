@@ -956,6 +956,146 @@ select nw.val('NR10b CONTROL: that row is still `declined` (NR10 changed nothing
      where id='c0110000-0000-0000-0000-000000000001'$$, 'declined');
 
 -- ===========================================================================
+-- NP. A REQUEST IS BORN PENDING (Phase 8 Task 9b fix round 1, C1 + m3;
+-- 20261017000000).
+--
+-- THE HOLE, PRE-EXISTING SINCE PHASE 6: the INSERT policy had no status term
+-- and the only status guard was BEFORE UPDATE, so a SENDER could INSERT a row
+-- already `accepted` and read the target's `connections`-level fields through
+-- public.network_connected_profiles without the target ever accepting.
+-- Measured before the fix: the forged INSERT landed and the connected view
+-- returned the target's connections-level contact_email to the forger.
+--
+-- TWO LAYERS, EACH ASKED ON ITS OWN:
+--   * the trigger (private.connection_request_born_pending) refuses 23514 and
+--     is asked DIRECTLY -- a raw INSERT, no RPC between the caller and it; NP1
+--     expects 23514, which only the trigger raises on this statement (the
+--     policy's refusal would be 42501). NP4 asks it as service_role, which
+--     BYPASSES RLS, so there the trigger is the only layer at all.
+--   * the policy's new `status = 'pending' ...` term is read structurally
+--     (NP9), because behind the trigger it can never be the refusal a caller
+--     sees -- a BEFORE ROW trigger runs before WITH CHECK.
+-- MUTATION-TESTED: drop the trigger -> NP0-NP4, NP7, NP8 red (NP1-NP3b become
+-- 42501, the policy holding; NP4 lands). Revert the policy term only -> NP9
+-- red, every behavioural assertion green (the trigger holds).
+--
+-- RUNS BEFORE § NU ON PURPOSE: no request between ALPHA and BETA is accepted
+-- yet, so NP5's "the forger sees nothing" is not masked by a real connection
+-- (Q80 makes an accepted connection organisation-wide). NP5b is its positive
+-- control after NU12, and NP10 accepts this section's born-pending row.
+-- ===========================================================================
+insert into public.network_profiles
+  (id, organisation_id, entity_kind, entity_id, status, field_visibility,
+   display_name, published_at)
+select 'e0110000-0000-0000-0000-000000000010', :'beta_org'::uuid,
+       'agency', '3333000b-0000-0000-0000-0000000000a1', 'published',
+       '{}'::jsonb, 'Beta Forgery Target', now();
+
+select nw.val('NP0 STRUCTURE: born_pending is an enabled BEFORE INSERT row trigger on the table',
+  $$select p.proname::text || '/' || t.tgenabled::text
+      from pg_catalog.pg_trigger t join pg_catalog.pg_proc p on p.oid = t.tgfoid
+     where t.tgrelid = 'public.network_connection_requests'::pg_catalog.regclass
+       and t.tgname = 'born_pending' and not t.tgisinternal
+       and (t.tgtype & 1) = 1 and (t.tgtype & 2) = 2 and (t.tgtype & 4) = 4$$,
+  'connection_request_born_pending/O');
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select nw.try('NP1 C1: the SENDER cannot INSERT a request already `accepted` -- 23514, the trigger',
+  format($$insert into public.network_connection_requests
+             (from_organisation_id, from_network_profile_id,
+              to_network_profile_id, status, responded_at)
+           values (%L,'e0110000-0000-0000-0000-00000000000a',
+                   'e0110000-0000-0000-0000-000000000010','accepted', now())$$,
+         :'alpha_org'), 'denied(23514)');
+select nw.try('NP2 ...nor born `withdrawn` (any non-pending status)',
+  format($$insert into public.network_connection_requests
+             (from_organisation_id, from_network_profile_id,
+              to_network_profile_id, status, responded_at)
+           values (%L,'e0110000-0000-0000-0000-00000000000a',
+                   'e0110000-0000-0000-0000-000000000010','withdrawn', now())$$,
+         :'alpha_org'), 'denied(23514)');
+select nw.try('NP3 ...nor pending with a responded_by already set (the CHECK does not cover it)',
+  format($$insert into public.network_connection_requests
+             (from_organisation_id, from_network_profile_id,
+              to_network_profile_id, responded_by)
+           values (%L,'e0110000-0000-0000-0000-00000000000a',
+                   'e0110000-0000-0000-0000-000000000010', %L)$$,
+         :'alpha_org', (:'pbowner_c'::jsonb->>'sub')), 'denied(23514)');
+select nw.try('NP3b m3: requested_by may not name anyone but the signed-in user',
+  format($$insert into public.network_connection_requests
+             (from_organisation_id, from_network_profile_id,
+              to_network_profile_id, requested_by)
+           values (%L,'e0110000-0000-0000-0000-00000000000a',
+                   'e0110000-0000-0000-0000-000000000010', %L)$$,
+         :'alpha_org', (:'pbowner_c'::jsonb->>'sub')), 'denied(23514)');
+-- THE LEAK ITSELF, asked of the view the forgery would have unlocked: BETA's
+-- profiles stay out of ALPHA's connected view. NP5b (after NU12) is the
+-- positive control that the same query does return rows once a REAL
+-- acceptance stands.
+select nw.val('NP5 C1: after the forgery attempts the connected view returns NOTHING of BETA''s for the forger',
+  $$select count(*)::text from public.network_connected_profiles
+     where id in ('e0110000-0000-0000-0000-000000000010',
+                  'e0110000-0000-0000-0000-00000000000b')$$, '0');
+reset role; reset request.jwt.claims;
+
+-- service_role BYPASSES RLS, so the policy cannot refuse it: the trigger is
+-- the only layer here, which is the case for putting the rule in a trigger.
+--
+-- service_role HOLDS NO INSERT GRANT on this table today (measured: 42501),
+-- so to ask the trigger about a role that bypasses RLS the grant is lent for
+-- the one statement and taken back, and NP4c proves it was taken back.
+grant insert on public.network_connection_requests to service_role;
+set role service_role;
+select nw.try('NP4 the trigger binds service_role too (RLS cannot: it bypasses row security)',
+  format($$insert into public.network_connection_requests
+             (from_organisation_id, from_network_profile_id,
+              to_organisation_id, to_network_profile_id, status, responded_at)
+           values (%L,'e0110000-0000-0000-0000-00000000000a',
+                   %L,'e0110000-0000-0000-0000-000000000010','accepted', now())$$,
+         :'alpha_org', :'beta_org'), 'denied(23514)');
+reset role;
+revoke insert on public.network_connection_requests from service_role;
+select nw.val('NP4c ...and the lent grant is gone again (service_role holds no INSERT, as shipped)',
+  $$select has_table_privilege('service_role','public.network_connection_requests','INSERT')::text$$,
+  'false');
+select nw.val('NP4b DENOMINATOR: no row against the forgery target exists after NP1-NP4',
+  $$select count(*)::text from public.network_connection_requests
+     where to_network_profile_id='e0110000-0000-0000-0000-000000000010'$$, '0');
+
+-- THE POSITIVE CONTROL AND m3: an honest pending send still lands, and a
+-- back-dated requested_at is replaced by the clock and requested_by by the
+-- session -- so the client cannot slip a pending row past the notification
+-- window either.
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select nw.try('NP6 POSITIVE: an ordinary pending INSERT still succeeds through the trigger and policy',
+  format($$insert into public.network_connection_requests
+             (id, from_organisation_id, from_network_profile_id,
+              to_network_profile_id, requested_at)
+           values ('c0110000-0000-0000-0000-000000000010', %L,
+                   'e0110000-0000-0000-0000-00000000000a',
+                   'e0110000-0000-0000-0000-000000000010',
+                   now() - interval '30 days')$$,
+         :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select nw.val('NP7 m3: requested_at was stamped from the clock (a 30-day back-date did not stick)',
+  $$select (requested_at > now() - interval '1 hour')::text
+      from public.network_connection_requests
+     where id='c0110000-0000-0000-0000-000000000010'$$, 'true');
+select nw.val('NP8 m3: requested_by was stamped from the session',
+  format($$select (requested_by = %L::uuid)::text || '/' || status
+             from public.network_connection_requests
+            where id='c0110000-0000-0000-0000-000000000010'$$,
+         (:'pmanager_c'::jsonb->>'sub')), 'true/pending');
+select nw.val('NP9 THE POLICY LAYER: the INSERT WITH CHECK carries the pending/no-response terms',
+  $$select (pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) like '%status = ''pending''%'
+        and pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) like '%responded_at IS NULL%'
+        and pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid) like '%responded_by IS NULL%')::text
+      from pg_catalog.pg_policy p
+     where p.polname = 'network_connection_requests_insert_manage_connections'$$, 'true');
+
+-- ===========================================================================
 -- NU. THE TWO UPDATE POLICIES, AND THE TRANSITION TRIGGER BEHIND THEM.
 --
 -- The subtle one. A single policy with an `or` across the two organisation
@@ -1169,6 +1309,37 @@ select nw.val('NU12 Q80 SYMMETRY: the connection resolves the other way round to
      where id='e0110000-0000-0000-0000-00000000000b'$$, 'Beta Bookings');
 reset role; reset request.jwt.claims;
 
+-- NP, CONTINUED: the born-pending row from NP6 is answered the ordinary way
+-- (the recipient accepts), and NP5's leak query is shown to return rows once
+-- a REAL acceptance stands -- so its 0 was the guard, not a dead query.
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select nw.try('NP10 POSITIVE: the RECIPIENT accepts NP6''s born-pending request',
+  $$update public.network_connection_requests
+       set status='accepted', responded_at=now()
+     where id='c0110000-0000-0000-0000-000000000010'$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select nw.val('NP5b CONTROL FOR NP5: with a real acceptance standing, the same query returns BETA''s profiles',
+  $$select count(*)::text from public.network_connected_profiles
+     where id in ('e0110000-0000-0000-0000-000000000010',
+                  'e0110000-0000-0000-0000-00000000000b')$$, '2');
+reset role; reset request.jwt.claims;
+
+-- HOUSEKEEPING: the forgery target leaves, so the schema is back to the four
+-- published live profiles network_leakage_phase6.sql LZ1b and the HTTP block's
+-- "all four published profiles" counts are written against. The request row
+-- cascades with it; its audit rows stay (NX2 counts them).
+\o /dev/null
+delete from public.network_profiles where id='e0110000-0000-0000-0000-000000000010';
+\o
+select nw.val('NP12 HOUSEKEEPING: the forgery target and its request are gone',
+  $$select (select count(*) from public.network_profiles where id='e0110000-0000-0000-0000-000000000010')::text
+        || '/' ||
+           (select count(*) from public.network_connection_requests where id='c0110000-0000-0000-0000-000000000010')::text$$,
+  '0/0');
+
 -- ===========================================================================
 -- NL. network_links HAS NO COUNTERPARTY PATH (Q82).
 -- ===========================================================================
@@ -1377,13 +1548,15 @@ select nw.val('NX1 the visibility flip in § NM emitted a visibility_changed aud
 -- re-request-after-decline is a real INSERT now, so it audits like any other
 -- send -- which is itself worth having on the books, since the re-request is
 -- the write the Phase 7 rate limiter (Q86/Q87) will meter.
+-- 7/2/1 SINCE PHASE 8 TASK 9b FIX ROUND 1 (20261017000000): § NP's NP6 is a
+-- real born-pending send and NP10 its real acceptance.
 select nw.val('NX2 the § NR/§ NU requests emitted requested / accepted / declined rows',
   $$select (select count(*) from public.audit_events where action='network_connection.requested')::text
         || '/' ||
            (select count(*) from public.audit_events where action='network_connection.accepted')::text
         || '/' ||
            (select count(*) from public.audit_events where action='network_connection.declined')::text$$,
-  '6/1/1');
+  '7/2/1');
 
 -- THE PAYLOAD DISCIPLINE. audit_events is superuser-readable, and CLAUDE.md
 -- § Superuser dashboard keeps tenant record content off that surface. The

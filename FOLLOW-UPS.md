@@ -3537,6 +3537,27 @@ recorded for the history and the residual each leaves; the rest are open.
 
 ### Opened by Task 4 (request-to-connect, the accept unlock, the link picker)
 
+- **FIXED in Phase 8 Task 9b fix round 1 (`20261017000000`, review C1 +
+  m3): a sender could INSERT a connection request already `accepted`** and
+  read the target's `connections`-level fields through
+  `network_connected_profiles` without the target accepting — pre-existing
+  since this task (the INSERT policy had no status term; the only status
+  guard was BEFORE UPDATE), made silent by Task 9b job 3 (the target is
+  emailed only about a `pending` row). Probed and measured leaking before
+  the fix. Now a BEFORE INSERT trigger refuses any non-pending birth, a
+  pre-filled response or a foreign `requested_by` (23514, every role but
+  `postgres`/`supabase_admin`, so `service_role` too), stamps
+  `requested_by`/`requested_at`, and the INSERT WITH CHECK repeats the
+  status terms (`rls_phase6_network.sql` § NP, plus an HTTP block).
+  **Still open (the responder half of m3):** `responded_at` and
+  `responded_by` on the recipient's UPDATE are still client-supplied, so a
+  responder can back-date `responded_at` past the notification window and
+  suppress the sender's accepted/declined email (tenant-internal to the
+  responder's own action, no data unlocks). Same fix shape: stamp both in a
+  BEFORE UPDATE when status leaves `pending`; it must keep
+  `rls_phase8_crm_audit_p3_6.sql` PN5c (a same-status `responded_at` edit)
+  in mind.
+
 - **DISCHARGED in Phase 8 Task 9b job 3 (founder 2026-09-30,
   Q157(3)/Q174/Q45; `20261016000000`, `lib/email/network-notifications.ts`):
   a connection request is now EMAILED when it is received (to the requested

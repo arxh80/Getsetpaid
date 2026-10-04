@@ -414,7 +414,7 @@ fi
 # This is that suite.
 # ============================================================================
 
-run_suite "PHASE 6 NETWORK" rls_phase6_network.sql nw 127 "${P2VARS[@]}"
+run_suite "PHASE 6 NETWORK" rls_phase6_network.sql nw 143 "${P2VARS[@]}"
 p6_fails=$SUITE_FAILS
 if [ "$p6_fails" != "0" ]; then
   echo "PHASE 6 NETWORK SUITE FAILED: $p6_fails failing assertion(s)" >&2
@@ -3925,6 +3925,49 @@ MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -c   "set 
    delete from public.data_subject_requests;
    set session_replication_role = default;
    delete from public.rate_limit_counters where category='data_subject_request';"
+
+# ============================================================================
+# C1 AT THE API SURFACE (Phase 8 Task 9b fix round 1, 20261017000000).
+#
+# The request the hole was reachable by: a raw PostgREST POST, anon key plus a
+# real access token, creating a connection request whose status is already
+# `accepted`. Before the fix it landed (201) and the connected view then
+# resolved the target's connections-level fields for the sender. The forger is
+# $UNCON -- GAMMA's manager, connected to nobody -- given a published profile
+# of its own here so the INSERT policy's other terms all pass and the status
+# rule is the only thing left to refuse. 400 is PostgREST's mapping of the
+# trigger's 23514; the policy's refusal would be 403.
+# ============================================================================
+echo
+echo "=== C1 at the API surface: a request cannot be born accepted ==="
+
+GAMMA_ORG=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select id from public.organisations where slug='org-gamma-leak'" | tr -d '[:space:]')
+GAMMA_C1_PROFILE=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "insert into public.network_profiles
+     (organisation_id, entity_kind, entity_id, status, display_name, field_visibility, published_at)
+   values ('$GAMMA_ORG','company',gen_random_uuid(),'published','C1 HTTP Gamma Co','{}'::jsonb, now())
+   returning id" | head -n1 | tr -d '[:space:]')
+
+p2_rows "FIXTURE: the forger's connected view is empty before the attempt" 0 \
+        "network_connected_profiles?select=id" "$UNCON"
+p2_code "C1: a POST creating a request already ACCEPTED is refused -> 400 (trigger)" 400 POST \
+        "network_connection_requests" \
+        '{"from_organisation_id":"'"$GAMMA_ORG"'","from_network_profile_id":"'"$GAMMA_C1_PROFILE"'","to_network_profile_id":"'"$ALPHA_PROFILE"'","status":"accepted","responded_at":"2026-10-04T00:00:00Z"}' \
+        "$UNCON"
+p2_rows "C1: ...and the connected view still returns the forger nothing" 0 \
+        "network_connected_profiles?select=id" "$UNCON"
+p2_code "POSITIVE CONTROL: the same POST as an ordinary pending request -> 201" 201 POST \
+        "network_connection_requests" \
+        '{"from_organisation_id":"'"$GAMMA_ORG"'","from_network_profile_id":"'"$GAMMA_C1_PROFILE"'","to_network_profile_id":"'"$ALPHA_PROFILE"'","requested_at":"2026-01-01T00:00:00Z"}' \
+        "$UNCON"
+c1_row=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select status || ':' || (requested_by = '${P6ID[pgmgr]}')::text || ':' || (requested_at > now() - interval '1 hour')::text
+     from public.network_connection_requests where from_network_profile_id='$GAMMA_C1_PROFILE'" | tr -d '[:space:]')
+if [ "$c1_row" = "pending:true:true" ]; then printf '  PASS  %-58s %s\n' "...born pending, requested_by/at stamped by the server" "$c1_row"
+else printf '  FAIL  %-58s got %s want pending:true:true\n' "...born pending, requested_by/at stamped by the server" "$c1_row"; api_fails=$((api_fails+1)); fi
+p2_rows "...and a PENDING request unlocks nothing either" 0 \
+        "network_connected_profiles?select=id" "$UNCON"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2
