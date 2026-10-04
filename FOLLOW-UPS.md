@@ -3549,14 +3549,16 @@ recorded for the history and the residual each leaves; the rest are open.
   `postgres`/`supabase_admin`, so `service_role` too), stamps
   `requested_by`/`requested_at`, and the INSERT WITH CHECK repeats the
   status terms (`rls_phase6_network.sql` § NP, plus an HTTP block).
-  **Still open (the responder half of m3):** `responded_at` and
-  `responded_by` on the recipient's UPDATE are still client-supplied, so a
-  responder can back-date `responded_at` past the notification window and
-  suppress the sender's accepted/declined email (tenant-internal to the
-  responder's own action, no data unlocks). Same fix shape: stamp both in a
-  BEFORE UPDATE when status leaves `pending`; it must keep
-  `rls_phase8_crm_audit_p3_6.sql` PN5c (a same-status `responded_at` edit)
-  in mind.
+  **The responder half of m3 — CLOSED in fix round 2 (`20261020000000`,
+  re-review N1):** it was not only cosmetic. Combined with unpinned party
+  columns it let a SENDER rewrite its own pending request into an `accepted`
+  connection FROM the target and back-date `responded_at` so the target was
+  never emailed — measured leaking. Now `private.connection_request_bound_update`
+  pins the parties, binds each answer to its side and stamps both
+  `responded_*` columns; `authenticated` holds UPDATE on the three answer
+  columns only. `rls_phase8_crm_audit_p3_6.sql` PN5c (a same-status
+  `responded_at` edit) now runs as the exempt owner role, because no client
+  can make that edit any more.
 
 - **DISCHARGED in Phase 8 Task 9b job 3 (founder 2026-09-30,
   Q157(3)/Q174/Q45; `20261016000000`, `lib/email/network-notifications.ts`):

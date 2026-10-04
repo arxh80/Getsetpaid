@@ -414,7 +414,7 @@ fi
 # This is that suite.
 # ============================================================================
 
-run_suite "PHASE 6 NETWORK" rls_phase6_network.sql nw 143 "${P2VARS[@]}"
+run_suite "PHASE 6 NETWORK" rls_phase6_network.sql nw 161 "${P2VARS[@]}"
 p6_fails=$SUITE_FAILS
 if [ "$p6_fails" != "0" ]; then
   echo "PHASE 6 NETWORK SUITE FAILED: $p6_fails failing assertion(s)" >&2
@@ -3543,12 +3543,13 @@ H4_REQUEST=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres 
 BETA_MGR=$(p2_token pstd2); [ -n "$BETA_MGR" ] || { echo "no token for pstd2 (BETA manager)" >&2; exit 1; }
 
 # THE FINDING: ALPHA (the SENDER, via its manager token) cannot accept its own
-# request. 403, not 204/0 -- the row IS visible to the sender through the
-# sender-withdraws policy's USING clause, so this is a WITH CHECK violation
-# (both matching policies' WITH CHECK fail: recipient-responds because
-# to_organisation_id is not ALPHA's, sender-withdraws because the landing
-# value is not 'withdrawn'), the same 42501 shape NU1 measures in psql.
-p2_code "SENDER (ALPHA) cannot PATCH its own request to accepted" 403 PATCH \
+# request. The row IS visible to the sender through the sender-withdraws
+# policy's USING clause, so it reaches the row triggers -- and since
+# 20261020000000 (Task 9b fix round 2, N1) private.connection_request_bound_update
+# refuses a sender's accept FIRST (23514 -> 400), before the WITH CHECK
+# violation (42501 -> 403) this used to measure is ever evaluated. Either is a
+# refusal; 400 is the trigger, the chokepoint, answering.
+p2_code "SENDER (ALPHA) cannot PATCH its own request to accepted (400, trigger)" 400 PATCH \
         "network_connection_requests?id=eq.$H4_REQUEST" \
         '{"status":"accepted","responded_at":"2026-09-05T00:00:00Z"}' "$MGR"
 
@@ -3971,6 +3972,35 @@ if [ "$c1_row" = "pending:true:true" ]; then printf '  PASS  %-58s %s\n' "...bor
 else printf '  FAIL  %-58s got %s want pending:true:true\n' "...born pending, requested_by/at stamped by the server" "$c1_row"; api_fails=$((api_fails+1)); fi
 p2_rows "...and a PENDING request unlocks nothing either" 0 \
         "network_connected_profiles?select=id" "$UNCON"
+
+echo "=== N1 at the API surface: a request's parties cannot be PATCHed ==="
+# The pending GAMMA->ALPHA request the positive control above just created.
+# THE FORGERY (fix round 2, N1): GAMMA, the SENDER, rewrites it into
+# ALPHA->GAMMA `accepted` with a back-dated responded_at. Before
+# 20261020000000 this PATCH passed USING via sender-withdraws and WITH CHECK
+# via recipient-responds and the connected view then resolved ALPHA's
+# connections-level fields. Now authenticated holds UPDATE on
+# (status, responded_at, responded_by) only, so naming a party column is a
+# 42501 -> 403 before any row is read.
+N1_REQUEST=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select id from public.network_connection_requests where from_network_profile_id='$GAMMA_C1_PROFILE'" | tr -d '[:space:]')
+p2_code "N1: the SENDER PATCHing its request into ALPHA->GAMMA accepted -> 403 (grant)" 403 PATCH \
+        "network_connection_requests?id=eq.$N1_REQUEST" \
+        '{"from_organisation_id":"'"$ALPHA_ORG"'","from_network_profile_id":"'"$ALPHA_PROFILE"'","to_organisation_id":"'"$GAMMA_ORG"'","to_network_profile_id":"'"$GAMMA_C1_PROFILE"'","status":"accepted","responded_at":"2026-01-01T00:00:00Z"}' \
+        "$UNCON"
+p2_code "N1: ...nor accept it in place (status only) -> 400 (trigger)" 400 PATCH \
+        "network_connection_requests?id=eq.$N1_REQUEST" \
+        '{"status":"accepted"}' "$UNCON"
+p2_rows "N1: ...and the connected view still returns the forger nothing" 0 \
+        "network_connected_profiles?select=id" "$UNCON"
+p2_code "POSITIVE CONTROL: the RECIPIENT (ALPHA) accepts it, sending a back-dated responded_at -> 204" 204 PATCH \
+        "network_connection_requests?id=eq.$N1_REQUEST" \
+        '{"status":"accepted","responded_at":"2026-01-01T00:00:00Z"}' "$MGR"
+n1_row=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+  "select status || ':' || (from_organisation_id = '$GAMMA_ORG')::text || ':' || (responded_by = (select id from auth.users where email='pmanager@test.local'))::text || ':' || (responded_at > now() - interval '1 hour')::text
+     from public.network_connection_requests where id='$N1_REQUEST'" | tr -d '[:space:]')
+if [ "$n1_row" = "accepted:true:true:true" ]; then printf '  PASS  %-58s %s\n' "...accepted, parties unchanged, responded_by/at stamped by the server" "$n1_row"
+else printf '  FAIL  %-58s got %s want accepted:true:true:true\n' "...accepted, parties unchanged, responded_by/at stamped by the server" "$n1_row"; api_fails=$((api_fails+1)); fi
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

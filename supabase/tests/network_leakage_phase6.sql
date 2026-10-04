@@ -728,12 +728,17 @@ select leak.val('LE1 N5: NOTHING on the network surface names a rating, in any f
 -- private.connection_request_born_pending, which refuses a request born
 -- anything but pending and stamps requested_by/requested_at. Inspected for the
 -- word "rating" by LE1 above the day it joins.
-select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 14 functions',
+-- 11/2/15/28 SINCE PHASE 8 TASK 9b FIX ROUND 2 (20261020000000, N1). One
+-- function entered by net (a) -- a TRIGGER on a network table:
+-- private.connection_request_bound_update, which pins a request's parties,
+-- binds an answer to its side and stamps responded_by/responded_at.
+-- Inspected for the word "rating" by LE1 above the day it joins.
+select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 15 functions',
   $$select count(*) filter (where objname like 'policy:%')::text || '/' ||
            count(*) filter (where objname like 'view:%')::text || '/' ||
            count(*) filter (where objname like 'function:%')::text || '/' ||
            count(*)::text
-      from leak.network_surface_wide$$, '11/2/14/27');
+      from leak.network_surface_wide$$, '11/2/15/28');
 -- M6, NAMED. The two functions rls_phase6_network.sql § NF1b could not see.
 select leak.val('LE1c M6: the two functions the NAME filter missed are INSIDE this census',
   $$select string_agg(objname, ',' order by objname) from leak.network_surface_wide
@@ -743,7 +748,7 @@ select leak.val('LE1c M6: the two functions the NAME filter missed are INSIDE th
 select leak.val('LE1d ...and the functions in the census, by name, so a dropped one is red',
   $$select string_agg(replace(objname,'function:',''), ',' order by objname)
       from leak.network_surface_wide where objname like 'function:%'$$,
-  'private.audit_crm_change,private.audit_network_row,private.connection_request_born_pending,private.entity_is_manageable,private.entity_org_unchanged,'
+  'private.audit_crm_change,private.audit_network_row,private.connection_request_born_pending,private.connection_request_bound_update,private.entity_is_manageable,private.entity_org_unchanged,'
   'private.fill_connection_request_recipient,private.is_active_member,'
   'private.meter_connection_request,'
   'private.network_publish_organisations,'

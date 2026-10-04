@@ -687,11 +687,15 @@ select nw.val('NG3 no DELETE grant on any of the three tables',
      where table_schema='public' and grantee='authenticated'
        and privilege_type='DELETE'
        and table_name in ('network_profiles','network_links','network_connection_requests')$$, '0');
-select nw.val('NG3b CONTROL: they hold 9 SELECT/INSERT/UPDATE grants between them',
+-- 8, NOT 9, SINCE 20261020000000 (Task 9b fix round 2, N1): authenticated's
+-- UPDATE on network_connection_requests is column-level now (status,
+-- responded_at, responded_by -- NQ0b reads it), and role_table_grants lists
+-- table-level privileges only.
+select nw.val('NG3b CONTROL: they hold 8 table-level SELECT/INSERT/UPDATE grants between them',
   $$select count(*)::text from information_schema.role_table_grants
      where table_schema='public' and grantee='authenticated'
        and privilege_type in ('SELECT','INSERT','UPDATE')
-       and table_name in ('network_profiles','network_links','network_connection_requests')$$, '9');
+       and table_name in ('network_profiles','network_links','network_connection_requests')$$, '8');
 
 -- ===========================================================================
 -- NT. THE FREE-TIER GATE (Q76) -- THE INERT-MACHINERY PROOF.
@@ -929,13 +933,14 @@ select nw.try('NR7 a request on a FRESH pair (BETA''s second profile) is accepte
 -- left responded_at null is a 23514. NR8b measures that half -- it is the exact
 -- statement lib/network/connections.ts must NOT write, and the reason
 -- withdrawConnectionRequestAction moves BOTH columns in one UPDATE.
-select nw.try('NR8 a withdraw that leaves responded_at null is refused by the CHECK',
+select nw.try('NR8 the SENDER withdraws sending status ALONE -- exactly what lib/network/connections.ts writes since 20261020000000',
   $$update public.network_connection_requests set status='withdrawn'
-     where id='c0110000-0000-0000-0000-000000000002'$$, 'denied(23514)');
-select nw.try('NR8b the SENDER withdraws it properly, through the real sender-withdraws policy',
-  $$update public.network_connection_requests
-       set status='withdrawn', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000002'$$, 'ok(1)');
+select nw.val('NR8b ...and the CHECK holds because the trigger stamped responded_at (and responded_by) itself',
+  format($$select status || '/' || (responded_at > now() - interval '1 hour')::text
+             || '/' || (responded_by = %L::uuid)::text
+             from public.network_connection_requests where id='c0110000-0000-0000-0000-000000000002'$$,
+         (:'pmanager_c'::jsonb->>'sub')), 'withdrawn/true/true');
 select nw.try('NR9 CONTROL: once WITHDRAWN, the pair is free for a fresh request (Q79)',
   format($$insert into public.network_connection_requests
              (id, from_organisation_id, from_network_profile_id,
@@ -1096,12 +1101,121 @@ select nw.val('NP9 THE POLICY LAYER: the INSERT WITH CHECK carries the pending/n
      where p.polname = 'network_connection_requests_insert_manage_connections'$$, 'true');
 
 -- ===========================================================================
+-- NQ. A REQUEST'S PARTIES ARE FIXED AND ITS ANSWER BELONGS TO ONE SIDE
+-- (Phase 8 Task 9b fix round 2, N1 + the m3 remainder; 20261020000000).
+--
+-- THE HOLE, PRE-EXISTING SINCE PHASE 6: no UPDATE term pinned the four
+-- organisation/profile columns, and the two permissive UPDATE policies are
+-- ORed clause by clause. So the SENDER passed USING through sender_withdraws
+-- (OLD from_org is its own), rewrote the row to X->T `accepted`, and passed
+-- WITH CHECK through recipient_responds (NEW to_org is its own). Measured
+-- before the fix: the connected view then returned X's connections-level
+-- contact_email to the forger, with responded_at back-dated 8 days past the
+-- notification window.
+--
+-- TWO LAYERS, EACH ASKED ON ITS OWN:
+--   * the GRANT: authenticated holds UPDATE on (status, responded_at,
+--     responded_by) only. NQ0b reads it; NQ8 is a raw party-column UPDATE
+--     refused 42501 by it.
+--   * the TRIGGER (private.connection_request_bound_update), asked DIRECTLY:
+--     the table-level UPDATE grant is LENT for NQ1-NQ6 and NQ10-NQ11 so the
+--     statement reaches the row, and each expects 23514 -- only the trigger
+--     raises that here (the policy's refusal is 42501). NQ0c proves the loan
+--     is returned.
+-- MUTATION-TESTED: see task-9b-report.md "Fix round 2".
+--
+-- RUNS BEFORE § NU ON PURPOSE, like § NP: no ALPHA/BETA request is accepted
+-- yet, so NQ7's "the forger sees nothing" is not masked by a real connection.
+-- ===========================================================================
+select nw.val('NQ0 STRUCTURE: bound_update is an enabled BEFORE UPDATE row trigger on the table',
+  $$select p.proname::text || '/' || t.tgenabled::text
+      from pg_catalog.pg_trigger t join pg_catalog.pg_proc p on p.oid = t.tgfoid
+     where t.tgrelid = 'public.network_connection_requests'::pg_catalog.regclass
+       and t.tgname = 'bound_update' and not t.tgisinternal
+       and (t.tgtype & 1) = 1 and (t.tgtype & 2) = 2 and (t.tgtype & 16) = 16$$,
+  'connection_request_bound_update/O');
+select nw.val('NQ0b THE GRANT LAYER: authenticated may UPDATE status/responded_* and no party column',
+  $$select string_agg(c || '=' || has_column_privilege('authenticated',
+                'public.network_connection_requests', c, 'UPDATE')::text, ',' order by c)
+      from unnest(array['from_network_profile_id','from_organisation_id','requested_at',
+                        'requested_by','responded_at','responded_by','status',
+                        'to_network_profile_id','to_organisation_id']) c$$,
+  'from_network_profile_id=false,from_organisation_id=false,requested_at=false,requested_by=false,responded_at=true,responded_by=true,status=true,to_network_profile_id=false,to_organisation_id=false');
+
+grant update on public.network_connection_requests to authenticated;
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select nw.try('NQ1 N1 THE FORGERY: the SENDER cannot rewrite its pending row into BETA->ALPHA accepted, back-dated -- 23514, the trigger',
+  format($$update public.network_connection_requests set
+             from_organisation_id=%L, from_network_profile_id='e0110000-0000-0000-0000-000000000010',
+             to_organisation_id=%L, to_network_profile_id='e0110000-0000-0000-0000-00000000000a',
+             status='accepted', responded_at=now() - interval '8 days'
+           where id='c0110000-0000-0000-0000-000000000010'$$,
+         :'beta_org', :'alpha_org'), 'denied(23514)');
+select nw.try('NQ2 ...nor repoint its parties without touching status (clause a alone)',
+  format($$update public.network_connection_requests set
+             from_organisation_id=%L, from_network_profile_id='e0110000-0000-0000-0000-000000000010',
+             to_organisation_id=%L, to_network_profile_id='e0110000-0000-0000-0000-00000000000a'
+           where id='c0110000-0000-0000-0000-000000000010'$$,
+         :'beta_org', :'alpha_org'), 'denied(23514)');
+select nw.try('NQ3 ...nor back-date requested_at (the asking is history)',
+  $$update public.network_connection_requests set requested_at = now() - interval '30 days'
+     where id='c0110000-0000-0000-0000-000000000010'$$, 'denied(23514)');
+select nw.try('NQ4 ...nor accept its OWN request in place (clause c: OLD to_org is not the caller''s)',
+  $$update public.network_connection_requests set status='accepted'
+     where id='c0110000-0000-0000-0000-000000000010'$$, 'denied(23514)');
+select nw.try('NQ5 ...nor decline it',
+  $$update public.network_connection_requests set status='declined'
+     where id='c0110000-0000-0000-0000-000000000010'$$, 'denied(23514)');
+-- THE LEAK ITSELF, asked of the view the forgery would have unlocked.
+select nw.val('NQ7 N1: after NQ1-NQ5 the connected view returns NOTHING of BETA''s for the forger',
+  $$select count(*)::text from public.network_connected_profiles
+     where id in ('e0110000-0000-0000-0000-000000000010',
+                  'e0110000-0000-0000-0000-00000000000b')$$, '0');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select nw.try('NQ5b ...and the RECIPIENT cannot withdraw (clause c: OLD from_org is not the caller''s)',
+  $$update public.network_connection_requests set status='withdrawn'
+     where id='c0110000-0000-0000-0000-000000000010'$$, 'denied(23514)');
+select nw.try('NQ6 m3: the recipient cannot answer in a COLLEAGUE''s name (responded_by is the session''s)',
+  -- responded_at is sent so the responded_iff_terminal CHECK is satisfied:
+  -- the 23514 can then only be the trigger's (clause b), not the CHECK's.
+  format($$update public.network_connection_requests set status='accepted', responded_at=now(), responded_by=%L
+           where id='c0110000-0000-0000-0000-000000000010'$$,
+         (:'pmanager_c'::jsonb->>'sub')), 'denied(23514)');
+reset role; reset request.jwt.claims;
+revoke update on public.network_connection_requests from authenticated;
+grant update (status, responded_at, responded_by) on public.network_connection_requests to authenticated;
+select nw.val('NQ0c ...and the lent table-level grant is gone again (column grant only, as shipped)',
+  $$select has_table_privilege('authenticated','public.network_connection_requests','UPDATE')::text
+        || '/' || has_column_privilege('authenticated','public.network_connection_requests','status','UPDATE')::text
+        || '/' || has_column_privilege('authenticated','public.network_connection_requests','to_organisation_id','UPDATE')::text$$,
+  'false/true/false');
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select nw.try('NQ8 THE GRANT LAYER: as shipped, naming a party column is refused before any row is read (42501)',
+  format($$update public.network_connection_requests set to_organisation_id=%L, status='accepted'
+           where id='c0110000-0000-0000-0000-000000000010'$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+select nw.val('NQ8b DENOMINATOR: the row NQ1-NQ8 aimed at is untouched -- still ALPHA->BETA pending, unanswered',
+  format($$select (from_organisation_id = %L::uuid)::text || '/' || (to_organisation_id = %L::uuid)::text
+             || '/' || status || '/' || (responded_at is null)::text
+             from public.network_connection_requests where id='c0110000-0000-0000-0000-000000000010'$$,
+         :'alpha_org', :'beta_org'), 'true/true/pending/true');
+
+-- ===========================================================================
 -- NU. THE TWO UPDATE POLICIES, AND THE TRANSITION TRIGGER BEHIND THEM.
 --
 -- The subtle one. A single policy with an `or` across the two organisation
 -- columns would let a SENDER mark its own request accepted, because neither
 -- clause ties the actor to the transition they may make.
 -- ===========================================================================
+-- NU1/NU2 ASK THE POLICY SPLIT ON ITS OWN. Since 20261020000000 the
+-- bound_update trigger refuses a sender's accept first (23514, NQ4), which
+-- would mask the policy -- so it is disabled for these two statements and
+-- re-enabled straight after (NU2b proves it). Each layer is asked alone.
+alter table public.network_connection_requests disable trigger bound_update;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 select nw.try('NU1 THE FINDING: the SENDER cannot set status=accepted (42501)',
@@ -1112,6 +1226,13 @@ select nw.try('NU2 ...nor `declined` -- answering is the recipient''s word alone
   $$update public.network_connection_requests
        set status='declined', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000003'$$, 'denied(42501)');
+reset role;
+alter table public.network_connection_requests enable trigger bound_update;
+select nw.val('NU2b ...and bound_update is enabled again after NU1/NU2',
+  $$select tgenabled::text from pg_catalog.pg_trigger
+     where tgrelid = 'public.network_connection_requests'::pg_catalog.regclass
+       and tgname = 'bound_update'$$, 'O');
+set role authenticated;
 select nw.val('NU3 CONTROL: the sender CAN see the row (NU1 is WITH CHECK, not invisibility)',
   $$select status from public.network_connection_requests
      where id='c0110000-0000-0000-0000-000000000003'$$, 'pending');
@@ -1175,11 +1296,21 @@ set request.jwt.claims = :'pbowner_c';
 select nw.val('NU5b CONTROL: the RECIPIENT can see the row and it really is pending',
   $$select status from public.network_connection_requests
      where id='c0110000-0000-0000-0000-000000000004'$$, 'pending');
+reset role;
+-- THE POLICY ASKED ALONE, as NU1/NU2: bound_update would refuse this first
+-- (23514, NQ5b), so it is off for this one statement.
+alter table public.network_connection_requests disable trigger bound_update;
+set role authenticated;
 select nw.try('NU5 THE FINDING: the RECIPIENT cannot set `withdrawn` -- 42501, the POLICY refusing',
   $$update public.network_connection_requests
        set status='withdrawn', responded_at=now()
      where id='c0110000-0000-0000-0000-000000000004'$$, 'denied(42501)');
 reset role; reset request.jwt.claims;
+alter table public.network_connection_requests enable trigger bound_update;
+select nw.val('NU5c ...and bound_update is enabled again after NU5',
+  $$select tgenabled::text from pg_catalog.pg_trigger
+     where tgrelid = 'public.network_connection_requests'::pg_catalog.regclass
+       and tgname = 'bound_update'$$, 'O');
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -1314,11 +1445,34 @@ reset role; reset request.jwt.claims;
 -- a REAL acceptance stands -- so its 0 was the guard, not a dead query.
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
-select nw.try('NP10 POSITIVE: the RECIPIENT accepts NP6''s born-pending request',
+select nw.try('NP10 POSITIVE: the RECIPIENT accepts NP6''s born-pending request (sending a back-dated responded_at, which NQ9 shows did not stick)',
   $$update public.network_connection_requests
-       set status='accepted', responded_at=now()
+       set status='accepted', responded_at=now() - interval '8 days'
      where id='c0110000-0000-0000-0000-000000000010'$$, 'ok(1)');
 reset role; reset request.jwt.claims;
+select nw.val('NQ9 m3: the answer was stamped -- responded_at from the clock, responded_by from the session',
+  format($$select (responded_at > now() - interval '1 hour')::text || '/' || (responded_by = %L::uuid)::text
+             || '/' || status
+             from public.network_connection_requests where id='c0110000-0000-0000-0000-000000000010'$$,
+         (:'pbowner_c'::jsonb->>'sub')), 'true/true/accepted');
+-- THE ACCEPTED-ROW VARIANT: an answered row cannot be swapped round or
+-- re-dated either. The table-level grant is lent again so the trigger is the
+-- layer asked, and returned straight after.
+grant update on public.network_connection_requests to authenticated;
+set role authenticated;
+set request.jwt.claims = :'pbowner_c';
+select nw.try('NQ10 m3: an ANSWERED row cannot be re-dated (same status, responded_at moved)',
+  $$update public.network_connection_requests set responded_at = now() - interval '8 days'
+     where id='c0110000-0000-0000-0000-000000000010'$$, 'denied(23514)');
+select nw.try('NQ11 N1 VARIANT: an ACCEPTED row cannot have its parties swapped (same status, so the transition guard never looks)',
+  format($$update public.network_connection_requests set
+             from_organisation_id=%L, from_network_profile_id='e0110000-0000-0000-0000-000000000010',
+             to_organisation_id=%L, to_network_profile_id='e0110000-0000-0000-0000-00000000000a'
+           where id='c0110000-0000-0000-0000-000000000010'$$,
+         :'beta_org', :'alpha_org'), 'denied(23514)');
+reset role; reset request.jwt.claims;
+revoke update on public.network_connection_requests from authenticated;
+grant update (status, responded_at, responded_by) on public.network_connection_requests to authenticated;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 select nw.val('NP5b CONTROL FOR NP5: with a real acceptance standing, the same query returns BETA''s profiles',

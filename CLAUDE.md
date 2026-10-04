@@ -101,10 +101,12 @@ helper was entered recorded no row and VANISHED rather than failed, with
 fails on any `^psql:.*ERROR:` line (a guard that previously existed twice,
 copy-pasted, for two of the nineteen), and asserts the pinned total, which is
 the only thing that catches a `record()` row rolled back with its own
-transaction. **The TWENTY-FOUR numbers, at 223 migrations, total 4018**: 88,
-183, 694, 187, 91, 11, 151, 143, 214, 121, 89, 56, 191, 151, 128, 204, 171,
-143, 228, 138, 208, 312, 22, 94, in run order (summed from the pins at 223
-migrations: Task 9b fix round 1 part A moved the Phase 6 network suite
+transaction. **The TWENTY-FOUR numbers, at 224 migrations, total 4036**: 88,
+183, 694, 187, 91, 11, 151, 161, 214, 121, 89, 56, 191, 151, 128, 204, 171,
+143, 228, 138, 208, 312, 22, 94, in run order (summed from the pins at 224
+migrations: Task 9b fix round 2 moved the Phase 6 network suite 143 -> 161,
+§ NQ, a request's parties pinned and its answer bound to its side, plus
+NU2b/NU5c; it was 4018 at 223 migrations. Task 9b fix round 1 part A moved the Phase 6 network suite
 127 -> 143, § NP, a request born pending; part B moved the notification-stamp
 suite 78 -> 94, § NU and NX13-NX13b, the terminal refusal, the fair order
 and the closed counterparty; it was 3986 at 220 migrations. Phase 8 Task 9b job 3 moved

@@ -941,7 +941,14 @@ set role authenticated;
 set request.jwt.claims = :'pbowner_c';
 select c7.try('PN5b BETA ACCEPTS',
   format($$update public.network_connection_requests set status='accepted', responded_at=now() where id=%L$$, :p_cr3), 'ok(1)');
-select c7.try('PN5c ...then re-sets responded_at on the accepted row (status unchanged: the recipient policy admits it, the terminal guard does not care)',
+-- PN5c RUNS AS THE OWNER ROLE (pbowner's claims kept, so the audit actor is
+-- still pbowner) SINCE 20261020000000 (Task 9b fix round 2, N1): a client can
+-- no longer re-date an answered request -- private.connection_request_bound_update
+-- refuses it (rls_phase6_network.sql NQ10) -- so the only writer left that can
+-- make a same-status edit is an exempt one. The audit trigger's name-only
+-- `updated` path it exists to measure is unchanged.
+reset role;
+select c7.try('PN5c ...then re-sets responded_at on the accepted row (status unchanged; an exempt writer, the client path is refused since 20261020000000)',
   format($$update public.network_connection_requests set responded_at=now() + interval '1 second' where id=%L$$, :p_cr3), 'ok(1)');
 reset role; reset request.jwt.claims;
 select c7.val('PN5d network_connection.accepted then network_connection.updated (name-only: changed [responded_at]), both against BETA',

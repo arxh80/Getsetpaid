@@ -213,7 +213,11 @@ export const DECLARED_PRIVILEGES: readonly string[] = [
   // network_connection_requests
   "network_connection_requests|authenticated|INSERT|*",
   "network_connection_requests|authenticated|SELECT|*",
-  "network_connection_requests|authenticated|UPDATE|*",
+  // 20261020000000 (Task 9b fix round 2, N1): the answer columns only -- a
+  // party column is no longer nameable in a PATCH.
+  "network_connection_requests|authenticated|UPDATE|responded_at",
+  "network_connection_requests|authenticated|UPDATE|responded_by",
+  "network_connection_requests|authenticated|UPDATE|status",
   // network_directory
   "network_directory|authenticated|SELECT|*",
   // network_links
