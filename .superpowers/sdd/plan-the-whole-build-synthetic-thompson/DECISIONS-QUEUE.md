@@ -1297,3 +1297,28 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   the reason is mandatory, trimmed, at most 500 characters. Impersonating
   superusers cannot close (the RPC reads the membership row, not
   `permitted_organisations`).
+
+## Q208-Q211 -- Task 9c job 2 (superuser decision on a closed workspace), 2026-10-05
+
+- **Q208 -- reassign leaves existing Owners as they are.** The named active
+  member becomes an Owner and the workspace reopens; a closing Owner who is
+  still a member stays an Owner. **Default (built):** leave them. Alternative:
+  demote every other Owner to Admin in the same transaction.
+- **Q209 -- no superuser-safe backup download exists.** The export download
+  path is the requester's/workspace's, and the superuser has no tenant read.
+  **Default (built):** the dashboard list shows the backup job's id, status
+  and expiry only. Alternative: an audited superuser download, same
+  discipline as a feedback screenshot view.
+- **Q210 -- "delete now" means "due for the existing purge now".**
+  `delete_closed_workspace` sets lifecycle `deleted` and dates
+  `lifecycle_changed_at` one retention period back, so `retention_expires_at`
+  is already past. The existing hourly retention run then purges the bytes
+  and calls `erase_organisation()`. Until it runs, `reinstate_organisation()`
+  still undoes it. The closure backup goes with the workspace (the
+  `export_jobs.organisation_id` cascade). **Default (built):** this. The
+  alternative is a synchronous purge inside the RPC, which would refuse
+  whenever any document bytes remain (a second, partial engine).
+- **Q211 -- a reopened workspace's closure backup keeps its long expiry.** A
+  backup that finished before the reopen keeps `expires_at` = the old 60-day
+  deadline, not 7 days. **Default:** keep it (the founder may want it while
+  the new Owner settles in).
