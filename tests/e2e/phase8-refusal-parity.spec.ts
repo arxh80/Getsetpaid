@@ -16,8 +16,9 @@
 //   /[orgSlug]/settings/export          -- workspace-slug refusal: a real
 //                                          foreign slug vs a slug nobody has,
 //                                          and the literal 404 on both
-//   /account/exports/[jobId]/download   -- route handler: a real job that is
-//                                          not yours vs an id nobody has, and
+//   /account/exports/[jobId]/download   -- route handler: a DOWNLOADABLE job
+//                                          that is not yours (its Owner gets
+//                                          the 302) vs an id nobody has, and
 //                                          the literal 404 on both
 //   /account/*                          -- a signed-out caller is bounced the
 //                                          same way for a real page and a
@@ -33,10 +34,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import {
-  deleteExportJob,
+  countExportDownloadAudit,
+  deleteExportJobAndArchive,
   localStack,
   PASSWORD,
-  plantQueuedAccountExport,
+  plantReadyAccountExport,
   setOrganisationSuspended,
   setUpWorld,
   tearDownWorld,
@@ -173,11 +175,26 @@ test("REFUSAL PARITY: /[orgSlug]/settings/export -- a real foreign workspace equ
   await expect(page.getByRole("heading", { level: 1, name: "Export this workspace" })).toBeVisible();
 });
 
-test("REFUSAL PARITY: the export download route -- somebody else's real job equals an id nobody has", async ({
+test("REFUSAL PARITY: the export download route -- somebody else's DOWNLOADABLE job equals an id nobody has", async ({
   page,
 }) => {
-  const jobId = await plantQueuedAccountExport(world.users.owner.id);
+  // A READY archive (a real object and a succeeded, unexpired row), not a
+  // queued one: the download path 404s a row with no storage_key for EVERY
+  // caller, its own requester included, so a parity proof against one would
+  // be row state, green with the IDOR guard deleted (review I1).
+  const jobId = await plantReadyAccountExport(world.users.owner.id);
   try {
+    // POSITIVE CONTROL: the job's own requester is served it. Without this,
+    // "real == ghost" cannot tell "refused" from "nothing to serve".
+    await signIn(page, world, "owner");
+    const own = await page.request.get(`/account/exports/${jobId}/download`, { maxRedirects: 0 });
+    expect([302, 303, 307], `the Owner's own ready archive: got ${own.status()}`).toContain(own.status());
+    expect(own.headers()["location"] ?? "", "the Owner was not sent to a signed URL").toMatch(
+      /\/storage\/v1\/object\/sign\/exports\//,
+    );
+    expect(await countExportDownloadAudit(jobId), "the positive control's download was not audited").toBe(1);
+    await signOut(page);
+
     const probe = async (who: string) => {
       const real = await page.request.get(`/account/exports/${jobId}/download`, { maxRedirects: 0 });
       const ghost = await page.request.get(`/account/exports/${GHOST_ID}/download`, { maxRedirects: 0 });
@@ -206,8 +223,10 @@ test("REFUSAL PARITY: the export download route -- somebody else's real job equa
     }
     await signInByEmail(page, noWorkspace.email);
     expect(await probe("no-workspace"), "no-workspace: the literal 404").toBe(404);
+    // The refusals wrote nothing: still exactly the positive control's row.
+    expect(await countExportDownloadAudit(jobId), "a refused download wrote an audit row").toBe(1);
   } finally {
-    await deleteExportJob(jobId);
+    await deleteExportJobAndArchive(jobId);
   }
 });
 

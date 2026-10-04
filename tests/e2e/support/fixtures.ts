@@ -2948,3 +2948,52 @@ export async function plantQueuedAccountExport(userId: string): Promise<string> 
 export async function deleteExportJob(id: string): Promise<void> {
   await sql(`delete from public.export_jobs where id = $1`, [id]);
 }
+
+/**
+ * PHASE 8 TASK 8 FIX ROUND 1 (review I1). A DOWNLOADABLE account export owned
+ * by `userId`: a real object in the private `exports` bucket and a
+ * `succeeded`, unexpired row pointing at it, so that the ONLY thing between a
+ * caller and a 302 is whether the row is theirs.
+ *
+ * The queued plant above cannot carry that claim: `issueExportDownloadUrl`
+ * 404s a row with no `storage_key` for EVERY caller, its own requester
+ * included, so a refusal of it is row state rather than authorisation.
+ *
+ * Driven through the register's own path, not around it: the INSERT trigger
+ * stamps the requester from the claims, then two updates from a session with
+ * no person on it (the runner's shape) walk queued -> running -> succeeded,
+ * and the UPDATE trigger stamps completed_at and expires_at itself. The bytes
+ * are an empty-but-valid zip (end-of-central-directory record only).
+ */
+export async function plantReadyAccountExport(userId: string): Promise<string> {
+  const id = await plantQueuedAccountExport(userId);
+  const key = `exports/${id}.zip`;
+  const emptyZip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x05, 0x06]), Buffer.alloc(18)]);
+  const { apiUrl, serviceRoleKey } = localStack();
+  const storage = createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  }).storage.from("exports");
+  const { error } = await storage.upload(key, emptyZip, { contentType: "application/zip", upsert: true });
+  if (error) throw new Error(`plantReadyAccountExport upload: ${error.message}`);
+  await db().query(`update public.export_jobs set status = 'running' where id = $1`, [id]);
+  await db().query(
+    `update public.export_jobs
+        set status = 'succeeded', storage_key = $2, byte_size = $3, row_count = 0,
+            table_count = 0, manifest = '{}'::jsonb
+      where id = $1`,
+    [id, key, emptyZip.length],
+  );
+  return id;
+}
+
+/** Remove a planted job AND its archive object. */
+export async function deleteExportJobAndArchive(id: string): Promise<void> {
+  const { apiUrl, serviceRoleKey } = localStack();
+  await createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  })
+    .storage.from("exports")
+    .remove([`exports/${id}.zip`]);
+  await sql(`delete from public.audit_events where action = 'export_job.downloaded' and target_id = $1`, [id]);
+  await deleteExportJob(id);
+}
