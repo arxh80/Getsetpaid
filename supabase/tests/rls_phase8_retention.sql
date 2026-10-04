@@ -2141,6 +2141,51 @@ select rt.val('RR7 with the job off, a run is RECORDED as refused rather than sk
 update public.retention_settings set enabled = true where id;
 
 -- ---------------------------------------------------------------------------
+-- RR7a-RR7h: THE SWITCH THROWN THE WAY THE OPERATOR THROWS IT (Task 8 finding).
+-- RR7 reaches "off" by a direct UPDATE as postgres. The operator's only path
+-- is public.set_retention_enabled() (lib/admin/retention-actions.ts), and
+-- until this block nothing called it with p_enabled = false and then watched
+-- a run refuse -- so an RPC that wrote the wrong column, or ignored
+-- p_enabled, would leave the founder pressing "off" while the job kept
+-- deleting, with every layer green (mutant 16). Off through the RPC as the
+-- aal2 superuser, read the ROW (not the RPC's return), watch a run refuse,
+-- read the audit trail, then back on through the RPC and watch a run admitted.
+-- ---------------------------------------------------------------------------
+select rt.val('RR7a DENOMINATOR: the switches are on before the operator touches them',
+  $$select enabled::text || '/' || audit_purge_enabled::text from public.retention_settings$$, 'true/true');
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a3","role":"authenticated","aal":"aal2"}';
+select rt.val('RR7b THE OPERATOR turns the job OFF through set_retention_enabled(false, ...) -- and the RPC returns the row it wrote',
+  $$select (r).enabled::text || '/' || (r).audit_purge_enabled::text
+      from (select public.set_retention_enabled(false, true, 'rt kill switch probe') as r) t$$, 'false/true');
+reset role;
+reset request.jwt.claims;
+select rt.val('RR7c ...the config ROW reads off, with the reason and the operator recorded',
+  $$select enabled::text || '/' || audit_purge_enabled::text || '/' || coalesce(reason, '-') || '/' ||
+           (updated_by = '00000000-0000-4000-9000-0000000067a3')::text
+      from public.retention_settings$$, 'false/true/rt kill switch probe/true');
+select rt.val('RR7d ...and the job REFUSES: a run is recorded refused, retention_disabled',
+  $$select (r).status || '/' || ((r).refused->>'*') from (select public.start_retention_run(false) as r) t$$,
+  'refused/retention_disabled');
+select rt.val('RR7e ...and the switch was audited, on -> off',
+  $$select (before->>'enabled') || '>' || (after->>'enabled') from public.audit_events
+     where action = 'retention_settings.changed' order by created_at desc, id desc limit 1$$, 'true>false');
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a3","role":"authenticated","aal":"aal2"}';
+select rt.val('RR7f THE OPERATOR turns it back ON through set_retention_enabled(true, ...)',
+  $$select (r).enabled::text || '/' || (r).audit_purge_enabled::text
+      from (select public.set_retention_enabled(true, true, 'rt kill switch probe back on') as r) t$$, 'true/true');
+reset role;
+reset request.jwt.claims;
+select rt.val('RR7g ...the config ROW reads on again',
+  $$select enabled::text || '/' || audit_purge_enabled::text from public.retention_settings$$, 'true/true');
+-- A DRY run, so nothing is swept ahead of RR9's fixtures and no alert is filed (RN5).
+select rt.val('RR7h ...and a run is ADMITTED again: it opens `running` and completes',
+  $$with r as (select public.start_retention_run(true) as run)
+    select (select (r.run).status from r) || '/' ||
+           ((select public.run_retention_sweep((r.run).id, 500) from r) ? 'run_id')::text$$, 'running/true');
+
+-- ---------------------------------------------------------------------------
 -- RR8: THE ROLL REFUSES A RUN -- IN THREE PLACES, EACH ASKED DIRECTLY (C2).
 --
 -- As shipped, RR8 was one assertion: start a run and sweep it with an

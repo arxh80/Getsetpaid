@@ -360,6 +360,51 @@ select dsr.try('DW3 pstd1 cannot INSERT into the register directly (no grant)',
 select dsr.try('DW4 ...nor name another user while doing it',
   format($$insert into public.data_subject_requests (user_id, user_email, right_type, subject_scope, detail)
            values (%L, 'x@y.z', 'access', 'account', 'forged')$$, :'pstd2'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- DW4a-DW4c: THE ATTRIBUTION RULE, ASKED AS ITSELF (Task 8 finding, mutant 05a).
+-- DW4 never reaches the trigger -- the missing INSERT grant refuses it first --
+-- and the RPC's honest path (DW2) only proves the trigger overwrites the RPC's
+-- placeholder, which is not a real account. So a trigger that trusted a
+-- caller's user_id whenever it named a REAL account would pass both. This is
+-- the consents suite's CW14/CW15 twin: the one writer no grant stops
+-- (postgres) carrying pstd1's session, naming pstd2 -- a real account, so the
+-- foreign key cannot be the thing that refuses -- with a forged email and
+-- status too. The stored row must be pstd1's. The insert is undone inside
+-- dsr.attributed_then_undone(), counter and all, so nothing below moves.
+-- ---------------------------------------------------------------------------
+create function dsr.attributed_then_undone(p_sql text) returns text
+language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v text;
+begin
+  begin
+    execute p_sql into v;
+    raise exception using errcode = 'P0001', message = 'dsr_undo:' || coalesce(v, '<null>');
+  exception when others then
+    if sqlerrm like 'dsr_undo:%' then return substr(sqlerrm, 10); end if;
+    return 'denied(' || sqlstate || ')';
+  end;
+end $$;
+\o /dev/null
+select count(*) as dw4_before from public.data_subject_requests \gset
+\o
+select dsr.val('DW4a DENOMINATOR: the forged id is a REAL account, so no foreign key can refuse the forgery for the rule',
+  format($$select count(*)::text from auth.users where id = %L$$, :'pstd2'), '1');
+set request.jwt.claims = :'pstd1_c';
+select dsr.val('DW4b a forged row WITH A SESSION (postgres as pstd1, naming pstd2, a forged email, `fulfilled`) is stored as pstd1''s, with pstd1''s email, open',
+  format($q$select dsr.attributed_then_undone(format(%L, %L))$q$,
+    $f$insert into public.data_subject_requests (user_id, user_email, right_type, subject_scope, detail, status)
+       values (%L, 'forged@example.invalid', 'access', 'account', 'dw4b forged attribution', 'fulfilled')
+       returning user_id::text || '|' || user_email || '|' || status$f$,
+    :'pstd2'),
+  :'pstd1' || '|pstd1@test.local|open');
+reset request.jwt.claims;
+select dsr.val('DW4c ...and the probe left nothing behind (the register is as DW4 found it)',
+  format($$select (count(*) - %s)::text from public.data_subject_requests$$, :'dw4_before'), '0');
+
+set role authenticated;
+set request.jwt.claims = :'pstd1_c';
 select dsr.try_hint('DW5 a right outside the six is refused',
   $$select * from public.submit_data_subject_request('compensation','account','nope')$$,
   'denied(22023:unknown_right)');
