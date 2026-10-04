@@ -56,6 +56,11 @@ const ALLOWED = new Set([
   // RPCs, one service_role-only stamp RPC, `select id` on erasure_jobs and
   // the column-narrow stamp grants in 20261015000000 -- nothing wider.
   "lib/email/requester-notifications.ts",
+  // Phase 8 Task 9b job 3 (same ruling). The connection-request and
+  // task-reminder notices: two service_role-only resolver RPCs and one
+  // service_role-only stamp RPC (20261016000000) -- no table at all.
+  "lib/email/network-notifications.ts",
+  "lib/email/task-reminder-notifications.ts",
   // Phase 8 Task 4. The export runner is the second kind of sessionless
   // caller this client exists for: it has no user, so no RLS policy can name
   // it, and its whole reach is the column-narrow grants in 20260927001000 § 7

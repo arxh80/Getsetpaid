@@ -10,6 +10,8 @@ import {
   deliverErasureFailureNotifications,
   deliverExportReadyNotifications,
 } from "@/lib/email/requester-notifications";
+import { deliverConnectionRequestNotifications } from "@/lib/email/network-notifications";
+import { deliverTaskReminderNotifications } from "@/lib/email/task-reminder-notifications";
 
 // ===========================================================================
 // POST /api/incident-alerts/deliver
@@ -20,7 +22,7 @@ import {
 // pg_net-POSTs here with `Authorization: Bearer
 // <INCIDENT_ALERT_DELIVERY_SECRET>`, read from Supabase Vault.
 //
-// SIX DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
+// EIGHT DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
 //   * the OPERATOR's digest -- one email covering every alert nobody has been
 //     emailed about, stamping `notified_at` after ok:true
 //     (lib/email/incident-alerts.ts);
@@ -34,8 +36,13 @@ import {
 //   * since 20261015000000 (founder 2026-09-30, Q157(3)/Q174/Q45), the
 //     REQUESTER's DSR received/closed notices and export-ready notice, and
 //     the SUPERUSER's erasure-failure notice (lib/email/requester-
-//     notifications.ts), each stamping its own column after ok:true.
-//     Worst case of the whole route ~300 s against the 600 s cadence.
+//     notifications.ts), each stamping its own column after ok:true;
+//   * since 20261016000000 (same ruling), the connection-request received /
+//     accepted / declined notices and the task reminder (lib/email/
+//     network-notifications.ts, lib/email/task-reminder-notifications.ts),
+//     each stamping a row in
+//     private.notification_deliveries after ok:true.
+//     Worst case of the whole route ~440 s against the 600 s cadence.
 // They are deliberately not folded together: different recipients, different
 // content, different failure. Each runs even if the other fails, and each
 // reports its own outcome in the response body.
@@ -99,8 +106,19 @@ export async function POST(request: Request): Promise<NextResponse> {
   const dataRequests = await settle(deliverDsrNotifications);
   const exportsReady = await settle(deliverExportReadyNotifications);
   const erasureFailures = await settle(deliverErasureFailureNotifications);
+  const connectionRequests = await settle(deliverConnectionRequestNotifications);
+  const taskReminders = await settle(deliverTaskReminderNotifications);
 
-  const unavailable = [digest, telegram, lockouts, dataRequests, exportsReady, erasureFailures].some(
+  const unavailable = [
+    digest,
+    telegram,
+    lockouts,
+    dataRequests,
+    exportsReady,
+    erasureFailures,
+    connectionRequests,
+    taskReminders,
+  ].some(
     (r) => r.outcome === "unavailable",
   );
   return NextResponse.json(
@@ -111,6 +129,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       dataRequestNotifications: dataRequests,
       exportReadyNotifications: exportsReady,
       erasureFailureNotifications: erasureFailures,
+      connectionRequestNotifications: connectionRequests,
+      taskReminderNotifications: taskReminders,
     },
     {
       status: unavailable ? 503 : 200,

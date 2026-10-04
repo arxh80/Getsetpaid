@@ -80,15 +80,17 @@ export type ErasureFailureNoticeResult =
   | { readonly outcome: "failed"; readonly count: number; readonly error: string }
   | { readonly outcome: "unavailable"; readonly error: string };
 
-interface Pending {
+export interface Pending {
   /** For the log line and the stamp -- never an address. */
   readonly id: string;
-  readonly email: string;
+  /** One or more recipients of ONE message (job 3's connection notices go to a workspace's owners and admins together). */
+  readonly to: readonly string[];
   readonly build: () => EmailBody;
   readonly stamp: () => Promise<{ error: { message: string } | null }>;
 }
 
-async function deliverEach(label: string, rows: readonly Pending[]): Promise<RequesterNoticeResult> {
+/** The bounded, stamp-after-ok loop every per-row notice shares (job 3 reuses it). */
+export async function deliverEach(label: string, rows: readonly Pending[]): Promise<RequesterNoticeResult> {
   if (rows.length === 0) return { outcome: "nothing_pending" };
   let sent = 0;
   let failed = 0;
@@ -102,6 +104,12 @@ async function deliverEach(label: string, rows: readonly Pending[]): Promise<Req
       break;
     }
 
+    if (row.to.length === 0) {
+      failed += 1;
+      console.error(`[email] ${label} ${row.id}: no recipient, nothing sent, nothing stamped`);
+      continue;
+    }
+
     let body: EmailBody;
     try {
       body = row.build();
@@ -113,7 +121,7 @@ async function deliverEach(label: string, rows: readonly Pending[]): Promise<Req
 
     let result: SendEmailResult;
     try {
-      result = await sendEmail({ to: [{ email: row.email }], subject: body.subject, html: body.html, text: body.text });
+      result = await sendEmail({ to: row.to.map((email) => ({ email })), subject: body.subject, html: body.html, text: body.text });
     } catch (err) {
       result = { ok: false, error: err instanceof Error ? err.name : "unknown error" };
     }
@@ -162,7 +170,7 @@ export async function deliverDsrNotifications(
     const column = row.notice === "received" ? "received_notified_at" : "closed_notified_at";
     return {
       id: `${row.notice}:${row.request_id}`,
-      email: row.email,
+      to: [row.email],
       build: () =>
         row.notice === "received"
           ? buildDsrReceivedNotice({ reference: row.reference, rightType: row.right_type, dueBy: row.due_by, siteUrl: origin })
@@ -200,7 +208,7 @@ export async function deliverExportReadyNotifications(
   const origin = siteUrl();
   const rows = ((data ?? []) as ExportPendingRow[]).map((row): Pending => ({
     id: row.job_id,
-    email: row.email,
+    to: [row.email],
     // FOUR FIELDS, by name. The archive key and any URL are not in the row
     // the resolver returns, and would be refused by the builder if they were.
     build: () =>

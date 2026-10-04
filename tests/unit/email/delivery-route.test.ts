@@ -11,6 +11,8 @@ const deliver = vi.hoisted(() => ({
   dsr: vi.fn(),
   exports: vi.fn(),
   erasures: vi.fn(),
+  connections: vi.fn(),
+  reminders: vi.fn(),
 }));
 vi.mock("@/lib/email/incident-alerts", () => ({
   deliverPendingIncidentAlerts: () => deliver.fn(),
@@ -23,6 +25,12 @@ vi.mock("@/lib/email/requester-notifications", () => ({
   deliverDsrNotifications: () => deliver.dsr(),
   deliverExportReadyNotifications: () => deliver.exports(),
   deliverErasureFailureNotifications: () => deliver.erasures(),
+}));
+vi.mock("@/lib/email/network-notifications", () => ({
+  deliverConnectionRequestNotifications: () => deliver.connections(),
+}));
+vi.mock("@/lib/email/task-reminder-notifications", () => ({
+  deliverTaskReminderNotifications: () => deliver.reminders(),
 }));
 
 import { POST } from "@/app/api/incident-alerts/deliver/route";
@@ -43,6 +51,8 @@ beforeEach(() => {
   deliver.dsr.mockResolvedValue({ outcome: "nothing_pending" });
   deliver.exports.mockResolvedValue({ outcome: "nothing_pending" });
   deliver.erasures.mockResolvedValue({ outcome: "nothing_pending" });
+  deliver.connections.mockResolvedValue({ outcome: "nothing_pending" });
+  deliver.reminders.mockResolvedValue({ outcome: "nothing_pending" });
 });
 afterEach(() => {
   deliver.fn.mockReset();
@@ -51,6 +61,8 @@ afterEach(() => {
   deliver.dsr.mockReset();
   deliver.exports.mockReset();
   deliver.erasures.mockReset();
+  deliver.connections.mockReset();
+  deliver.reminders.mockReset();
   delete process.env.INCIDENT_ALERT_DELIVERY_SECRET;
 });
 
@@ -93,6 +105,8 @@ describe("the delivery route's gate", () => {
       dataRequestNotifications: { outcome: "nothing_pending" },
       exportReadyNotifications: { outcome: "nothing_pending" },
       erasureFailureNotifications: { outcome: "nothing_pending" },
+      connectionRequestNotifications: { outcome: "nothing_pending" },
+      taskReminderNotifications: { outcome: "nothing_pending" },
     });
   });
 
@@ -147,6 +161,8 @@ describe("the delivery route's gate", () => {
       dataRequestNotifications: { outcome: "nothing_pending" },
       exportReadyNotifications: { outcome: "nothing_pending" },
       erasureFailureNotifications: { outcome: "nothing_pending" },
+      connectionRequestNotifications: { outcome: "nothing_pending" },
+      taskReminderNotifications: { outcome: "nothing_pending" },
     });
   });
 
@@ -211,6 +227,40 @@ describe("the delivery route's gate", () => {
   it("a disabled Telegram channel is not a 503", async () => {
     process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
     deliver.telegram.mockResolvedValue({ outcome: "disabled" });
+    expect((await POST(post(`Bearer ${SECRET}`))).status).toBe(200);
+  });
+
+  // Task 9b job 3 (same ruling): the connection-request notices and the task
+  // reminder are two more independent deliveries, LAST on the tick.
+  it("runs the connection and reminder notices even when every earlier delivery throws, and reports each", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    deliver.fn.mockRejectedValue(new TypeError("boom"));
+    deliver.telegram.mockRejectedValue(new TypeError("boom"));
+    deliver.lockouts.mockRejectedValue(new TypeError("boom"));
+    deliver.dsr.mockRejectedValue(new TypeError("boom"));
+    deliver.exports.mockRejectedValue(new TypeError("boom"));
+    deliver.erasures.mockRejectedValue(new TypeError("boom"));
+    deliver.connections.mockResolvedValue({ outcome: "delivered", sent: 2, failed: 0, deferred: 0 });
+    deliver.reminders.mockResolvedValue({ outcome: "delivered", sent: 1, failed: 0, deferred: 0 });
+    const res = await POST(post(`Bearer ${SECRET}`));
+    expect(deliver.connections).toHaveBeenCalledOnce();
+    expect(deliver.reminders).toHaveBeenCalledOnce();
+    await expect(res.json()).resolves.toMatchObject({
+      connectionRequestNotifications: { outcome: "delivered", sent: 2 },
+      taskReminderNotifications: { outcome: "delivered", sent: 1 },
+    });
+  });
+
+  it("a THROWING connection delivery still lets the reminders run, and an unreadable queue is a 503", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    deliver.connections.mockRejectedValue(new TypeError("boom"));
+    const res = await POST(post(`Bearer ${SECRET}`));
+    expect(deliver.reminders).toHaveBeenCalledOnce();
+    expect(res.status).toBe(503);
+    deliver.connections.mockResolvedValue({ outcome: "nothing_pending" });
+    deliver.reminders.mockResolvedValue({ outcome: "delivered", sent: 0, failed: 1, deferred: 0 });
     expect((await POST(post(`Bearer ${SECRET}`))).status).toBe(200);
   });
 });
