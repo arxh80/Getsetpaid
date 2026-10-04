@@ -218,12 +218,15 @@ select pm.val('DR1 a sessionless postgres INSERT naming a real user is refused B
   '42501:data_subject_requests: a request can only be made from the requester''s own session');
 select pm.val('DR2 ...and nothing was filed',
   format($$select (count(*) - %s)::text from public.data_subject_requests$$, :'dr_before'), '0');
-select pm.val('DR3 the consent ledger''s twin rule, asked the same way (sessionless postgres, a real user named)',
-  format($q$select split_part(pm.refusal(format(%L, %L)), ':', 1)$q$,
+-- Fix round 1 (review M1): DR3 pins the SENTENCE as DR1 does, not the
+-- SQLSTATE alone -- a later 42501 from another check would otherwise keep it
+-- green with the rule removed.
+select pm.val('DR3 the consent ledger''s twin rule, asked the same way (sessionless postgres, a real user named), by its sqlstate and sentence',
+  format($q$select pm.refusal(format(%L, %L))$q$,
     $f$insert into public.consents (user_id, purpose, action, policy_version, mechanism)
        values (%L, 'marketing_email', 'granted', 1, 'account_settings')$f$,
     :'pstd1'),
-  '42501');
+  '42501:consents: a consent can only be recorded from the data subject''s own session');
 
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual
   from pm.results order by seq;
