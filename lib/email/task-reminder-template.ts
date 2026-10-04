@@ -46,7 +46,12 @@ export function buildTaskReminderNotice(input: TaskReminderInput): EmailBody {
   const body = render(
     `Reminder: ${title}`,
     [
-      `A reminder was set on this task, which is assigned to you: ${title}.`,
+      // THE TITLE IS QUOTED (Task 9b fix round 2, N2): with a bare `${title}.`
+      // a title ending in `www` ("go to www") rendered `www.`, which the
+      // one-link check refuses -- and since I2 that refusal is terminal, so
+      // the reminder was silently never sent. The closing quote sits between
+      // the text and the full stop, so nothing the person typed can meet it.
+      `A reminder was set on this task, which is assigned to you: “${title}”.`,
       input.dueAt ? `It is due ${ukDateTime(input.dueAt)}.` : "It has no due date.",
     ],
     link,

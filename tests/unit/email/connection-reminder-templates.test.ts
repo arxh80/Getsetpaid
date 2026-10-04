@@ -200,6 +200,30 @@ describe("I3: nothing link-like survives a person's text, to a fixed point", () 
     }
   });
 
+  // TASK 9b FIX ROUND 2, N2: the template's own `.` after the title, and the
+  // truncation ellipsis (NFKC `...`), each turned a trailing `www` into
+  // `www.` -- refused, and since I2 refused for good. Both now deliver.
+  it.each(["go to www", "Visit WWW", "www"])(
+    "N2: a task title ending in %s renders, is delivered (no throw) and keeps its words",
+    (title) => {
+      const body = buildTaskReminderNotice({ ...reminder, title });
+      expect(new Set(linkLike(body))).toEqual(new Set([`${SITE}/world-promo/tasks/${TASK_ID}`]));
+      expect(body.subject).toBe(`Reminder: ${title}`);
+      expect(body.text).toContain(`“${title}”.`);
+    },
+  );
+
+  it("N2: a full-width title ending in www is delivered too", () => {
+    const body = buildTaskReminderNotice({ ...reminder, title: "go to ｗｗｗ" });
+    expect(new Set(linkLike(body))).toEqual(new Set([`${SITE}/world-promo/tasks/${TASK_ID}`]));
+  });
+
+  it("N2: a title truncated just after `www` does not become `www.` through the ellipsis", () => {
+    const title = `${"a ".repeat(98)}www and more`;
+    const body = buildTaskReminderNotice({ ...reminder, title });
+    expect(new Set(linkLike(body))).toEqual(new Set([`${SITE}/world-promo/tasks/${TASK_ID}`]));
+  });
+
   it("a display name that neutralises to nothing names nobody", () => {
     const body = buildConnectionReceivedNotice({ ...connection, counterpartyName: "https://" });
     expect(body.subject).toBe("A new connection request on GetSetPaid");

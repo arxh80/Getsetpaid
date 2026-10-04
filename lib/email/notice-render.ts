@@ -62,10 +62,16 @@ export function neutraliseLinks(value: string): string {
  * bounded, and cannot become a second link.
  */
 export function oneLine(value: string, max: number): string {
-  const flat = neutraliseLinks(value.replace(/[\r\n\t]+/g, " "))
-    .replace(/\s{2,}/g, " ")
-    .trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+  // NEUTRALISED AGAIN AFTER TRUNCATION (Task 9b fix round 2, N2): the
+  // ellipsis `…` NFKC-folds to `...`, so a title cut just after `www` used to
+  // render `www…`, which assertOnlyLink reads as `www.` and refused --
+  // terminally, since I2. The second pass folds and strips that. The other
+  // half of N2 -- a template putting `.` straight after the text -- is the
+  // template's to avoid (task-reminder-template.ts quotes the title), because
+  // no field-level pass can see punctuation a template adds afterwards.
+  const tidy = (text: string) => neutraliseLinks(text).replace(/\s{2,}/g, " ").trim();
+  const flat = tidy(value.replace(/[\r\n\t]+/g, " "));
+  return flat.length > max ? tidy(`${flat.slice(0, max - 1)}…`) : flat;
 }
 
 /** UK local date and time, explicit zone -- the database stores UTC. */
