@@ -1063,7 +1063,7 @@ fi
 # refused" and "a privilege was missing" would otherwise be indistinguishable.
 # ============================================================================
 
-run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 275 "${P7VARS[@]}"
+run_suite "PHASE 8 RETENTION" rls_phase8_retention.sql rt 306 "${P7VARS[@]}"
 ret_fails=$SUITE_FAILS
 if [ "$ret_fails" != "0" ]; then
   echo "PHASE 8 RETENTION SUITE FAILED: $ret_fails failing assertion(s)" >&2
@@ -1092,6 +1092,11 @@ if [ "$ret_fails" != "0" ]; then
   echo "  A red WRONG KIND assertion (RS8a, RS14a, RS21, RW5a) means a sweep" >&2
   echo "  took something it is documented never to take: a row whose file is" >&2
   echo "  still stored, a SUCCEEDED erasure job, a LIVE document or workspace." >&2
+  echo "  In REL, THE CEILING RELEASE (Q184): REL5/REL6 red = someone other" >&2
+  echo "  than the aal2 superuser can lift the ceiling; REL7* = no reason" >&2
+  echo "  needed; REL20/REL21/REL24 red = A RELEASE NO LONGER EXPIRES; REL14" >&2
+  echo "  red = the purge ignores a release; REL15/REL17 red = A RELEASE LETS" >&2
+  echo "  THE HARD FLOOR GO. Sev1." >&2
   echo "  In RW, the 60-day purge. RW6/RW7 red = REINSTATEMENT NO LONGER" >&2
   echo "  SAVES A WORKSPACE. RW9 red = closing an already-suspended workspace" >&2
   echo "  no longer restarts the clock, so a customer loses days they were" >&2

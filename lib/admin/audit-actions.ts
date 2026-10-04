@@ -353,6 +353,12 @@ export const PLATFORM_AUDIT_ACTIONS = [
   // because private.log_audit_event() requires auth.uid() and a scheduled
   // retention run has nobody on it.
   "retention.swept",
+  // Phase 8 Task 9a (20261010000000, Q184, founder 2026-09-30): the aal2
+  // superuser releasing the audit purge's sanity ceiling for 72 hours. The
+  // before/after are the release window; the after carries the operator's
+  // mandatory reason. One row per release -- the settings row holds only the
+  // latest, so this is the history of every release.
+  "retention.audit_ceiling_released",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

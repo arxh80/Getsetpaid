@@ -207,10 +207,10 @@ select rt.val('RC9 no client role may execute any private retention function',
          or has_function_privilege('service_role', p.oid, 'EXECUTE'))::text, ',' order by p.proname)
       from pg_proc p
      where p.pronamespace = 'private'::regnamespace
-       and p.proname in ('purge_audit_events', 'reap_stuck_jobs', 'retention_sweep_body',
+       and p.proname in ('audit_ceiling_release_active', 'purge_audit_events', 'reap_stuck_jobs', 'retention_sweep_body',
                          'sweep_document_bytes', 'sweep_erasure_jobs', 'sweep_expired_workspaces',
                          'sweep_feedback', 'sweep_incident_alerts', 'sweep_rate_limit_counters')$$,
-  'purge_audit_events:false,reap_stuck_jobs:false,retention_sweep_body:false,sweep_document_bytes:false,sweep_erasure_jobs:false,sweep_expired_workspaces:false,sweep_feedback:false,sweep_incident_alerts:false,sweep_rate_limit_counters:false');
+  'audit_ceiling_release_active:false,purge_audit_events:false,reap_stuck_jobs:false,retention_sweep_body:false,sweep_document_bytes:false,sweep_erasure_jobs:false,sweep_expired_workspaces:false,sweep_feedback:false,sweep_incident_alerts:false,sweep_rate_limit_counters:false');
 
 select rt.val('RC10 the three runner RPCs and the manifest are service_role ONLY',
   $$select string_agg(p.proname || ':' ||
@@ -224,9 +224,18 @@ select rt.val('RC10 the three runner RPCs and the manifest are service_role ONLY
                          'run_retention_sweep', 'start_retention_run')$$,
   'fail_retention_run:false/true,retention_object_manifest:false/true,run_retention_sweep:false/true,start_retention_run:false/true');
 
-select rt.val('RC11 the kill switch is the ONE retention RPC `authenticated` can reach',
+select rt.val('RC11 the kill switch is a retention RPC `authenticated` can reach',
   $$select has_function_privilege('authenticated', 'public.set_retention_enabled(boolean,boolean,text)', 'EXECUTE')::text$$,
   'true');
+-- Since 20261010000000 (Q184, founder 2026-09-30) there are exactly TWO: the
+-- kill switch and the ceiling release. Both refuse anyone but the aal2
+-- superuser inside the function; a third would be a new client surface.
+select rt.val('RC11a ...and the ceiling release is the only OTHER one: exactly two in `public` mention retention or the purge ceiling',
+  $$select string_agg(p.proname, ',' order by p.proname) from pg_proc p
+     where p.pronamespace = 'public'::regnamespace
+       and (p.proname like '%retention%' or p.proname like '%ceiling%')
+       and has_function_privilege('authenticated', p.oid, 'EXECUTE')$$,
+  'release_audit_purge_ceiling,set_retention_enabled');
 
 -- ---- THE CLOCK. FIVE HALVES NOW, AND STILL ONE JOB -------------------------
 select rt.val('RC12 exactly ONE cron job still exists',
@@ -1010,6 +1019,219 @@ select rt.try_hint('RA18 the purge refuses `replica` outright',
   $$set local session_replication_role = replica;
     select private.purge_audit_events(true, 1)$$, 'denied(55000:replication_role_must_be_origin)');
 
+-- ===========================================================================
+-- RL-REL  THE CEILING RELEASE (Phase 8 Task 9a, Q184, founder 2026-09-30:
+-- "build the audit-purge ceiling release. It is step-up gated and lasts 3
+-- days."). 20261010000000. A release lifts RAIL 3 ALONE for exactly 72
+-- hours, by read-time expiry; the floor, the kill switch and the per-run
+-- ceiling stay. Every guard below has a mutant in supabase/tests/mutations/
+-- (17a-17f) and task-9a-report.md "Job 3" records which assertion each one
+-- reddens.
+-- ===========================================================================
+-- THE PLATFORM SUPERUSER, used from here to the end of the suite (RK, RR7a).
+insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
+                        email_confirmed_at, created_at, updated_at)
+values ('00000000-0000-4000-9000-0000000067a3', '00000000-0000-0000-0000-000000000000',
+        'authenticated', 'authenticated', 'rt-super@rt.invalid', 'x', now(), now(), now());
+insert into public.platform_admins (user_id) values ('00000000-0000-4000-9000-0000000067a3');
+insert into public.audit_events (organisation_id, actor_user_id, action, target_type, correlation_id, created_at)
+select '00000000-0000-4000-9000-0000000067b1', '00000000-0000-4000-9000-0000000067a1',
+       'rt.relflood', 'platform', gen_random_uuid(), now() - interval '2 years'
+  from generate_series(1, 1700);
+-- INSIDE THE PERIOD: one day inside the year, and inside the 30-day hot window.
+insert into public.audit_events (organisation_id, actor_user_id, action, target_type, correlation_id, created_at)
+select '00000000-0000-4000-9000-0000000067b1', '00000000-0000-4000-9000-0000000067a1',
+       'rt.relinside', 'platform', gen_random_uuid(), now() - interval '1 year' + interval '1 day'
+  from generate_series(1, 5);
+insert into public.audit_events (organisation_id, actor_user_id, action, target_type, correlation_id, created_at)
+select '00000000-0000-4000-9000-0000000067b1', '00000000-0000-4000-9000-0000000067a1',
+       'rt.relhot', 'platform', gen_random_uuid(), now() - interval '10 days'
+  from generate_series(1, 5);
+
+select rt.val('REL1 DENOMINATOR: never released, not active, and the flood really is over the ceiling',
+  $$select (audit_ceiling_released_at is null)::text || '/' ||
+           private.audit_ceiling_release_active()::text || '/' ||
+           (select count(*) from public.audit_events where action = 'rt.relflood')::text
+      from public.retention_settings$$, 'true/false/1700');
+select rt.try_hint('REL2 ...so with NO release the ceiling refuses the backlog',
+  $$select private.purge_audit_events(false, 500)$$, 'denied(55000:audit_purge_over_ceiling)');
+select rt.val('REL3 the release is reachable by `authenticated` and by nobody else; its reader by no client role',
+  $$select has_function_privilege('authenticated', 'public.release_audit_purge_ceiling(text)', 'EXECUTE')::text || '/' ||
+           has_function_privilege('anon', 'public.release_audit_purge_ceiling(text)', 'EXECUTE')::text || '/' ||
+           (has_function_privilege('authenticated', 'private.audit_ceiling_release_active()', 'EXECUTE')
+            or has_function_privilege('anon', 'private.audit_ceiling_release_active()', 'EXECUTE'))::text$$,
+  'true/false/false');
+
+-- WHO. postgres with no session, an aal2 NON-superuser, the superuser at aal1.
+select rt.try_hint('REL4 the release is superuser-only, even for `postgres`',
+  $$select public.release_audit_purge_ceiling('rt probe')$$,
+  'denied(42501:audit_ceiling_release_is_superuser_only)');
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}';
+select rt.try_hint('REL5 an Owner AT aal2 who is not the platform superuser is refused (the superuser check)',
+  $$select public.release_audit_purge_ceiling('rt probe')$$,
+  'denied(42501:audit_ceiling_release_is_superuser_only)');
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a3","role":"authenticated","aal":"aal1"}';
+select rt.try_hint('REL6 THE SUPERUSER at aal1 -- one factor short -- is refused (the step-up check)',
+  $$select public.release_audit_purge_ceiling('rt probe')$$,
+  'denied(42501:audit_ceiling_release_is_superuser_only)');
+-- THE REASON. As the aal2 superuser, so the only thing wrong is the reason.
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a3","role":"authenticated","aal":"aal2"}';
+select rt.try_hint('REL7 a BLANK reason is refused',
+  $$select public.release_audit_purge_ceiling('   ')$$,
+  'denied(22023:audit_ceiling_release_needs_a_reason)');
+select rt.try_hint('REL7a ...and so is a NULL one',
+  $$select public.release_audit_purge_ceiling(null)$$,
+  'denied(22023:audit_ceiling_release_needs_a_reason)');
+select rt.try_hint('REL7b ...and one of 501 characters',
+  $$select public.release_audit_purge_ceiling(repeat('x', 501))$$,
+  'denied(22023:audit_ceiling_release_reason_too_long)');
+reset role;
+reset request.jwt.claims;
+select rt.val('REL8 ...and NOT ONE of those refusals released anything or wrote an audit row',
+  $$select (s.audit_ceiling_released_at is null)::text || '/' ||
+           (select count(*) from public.audit_events where action = 'retention.audit_ceiling_released')::text
+      from public.retention_settings s$$, 'true/0');
+
+-- THE RELEASE, AS THE OPERATOR PRESSES IT.
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a3","role":"authenticated","aal":"aal2"}';
+select rt.val('REL9 THE aal2 SUPERUSER releases it with a reason -- for EXACTLY 72 hours, starting now',
+  $$select (extract(epoch from (r).audit_ceiling_release_expires_at - (r).audit_ceiling_released_at) / 3600)::int::text || 'h/' ||
+           ((r).audit_ceiling_released_at > now() - interval '1 minute')::text || '/' ||
+           (r).audit_ceiling_release_reason
+      from (select public.release_audit_purge_ceiling('  rt backlog drain  ') as r) t$$,
+  '72h/true/rt backlog drain');
+select rt.try_hint('REL10 ONE AT A TIME: a second release while it is active is refused, not extended',
+  $$select public.release_audit_purge_ceiling('rt second press')$$,
+  'denied(55000:audit_ceiling_release_already_active)');
+reset role;
+reset request.jwt.claims;
+select rt.val('REL11 it was audited ONCE, as the operator, with the reason and the window',
+  $$select count(*)::text || '/' ||
+           bool_and(actor_user_id = '00000000-0000-4000-9000-0000000067a3')::text || '/' ||
+           max(after->>'reason') || '/' ||
+           bool_and((after->>'expires_at')::timestamptz - (after->>'released_at')::timestamptz = interval '72 hours')::text
+      from public.audit_events where action = 'retention.audit_ceiling_released'$$,
+  '1/true/rt backlog drain/true');
+select rt.val('REL12 ...and the row the purge reads says ACTIVE',
+  $$select private.audit_ceiling_release_active()::text$$, 'true');
+
+-- THE PURGE HONOURS IT -- AND ONLY RAIL 3. 1,700 past the period: one
+-- released run of 500 leaves 1,200, still over the ceiling's 1,000-row
+-- floor, so REL21 can see the ceiling come back.
+select rt.val('REL13 the DRY run under a release counts the per-run ceiling and SAYS it ran released',
+  $$select ((private.purge_audit_events(true, 500))->>'audit_events.rows') || '/' ||
+           ((private.purge_audit_events(true, 500))->>'audit_events.ceiling_released')$$, '500/true');
+select rt.val('REL14 the LIVE run under a release deletes -- at most p_limit (rail 4 still holds)',
+  $$select ((r)->>'audit_events.rows') || '/' || ((r)->>'audit_events.capped') || '/' ||
+           ((r)->>'audit_events.ceiling_released')
+      from (select private.purge_audit_events(false, 500) as r) t$$, '500/true/true');
+select rt.val('REL15 THE FLOOR HOLDS: every row inside the year, and every row in the 30-day hot window, survives',
+  $$select (select count(*) from public.audit_events where action = 'rt.relinside')::text || '/' ||
+           (select count(*) from public.audit_events where action = 'rt.relhot')::text$$, '5/5');
+-- RAIL 1 UNDER A RELEASE: declare 30 days and watch it REFUSE, as RA4 does
+-- without one. A release that let the floor go would delete a year of
+-- evidence on the next run.
+do $$
+declare v_def text;
+begin
+  v_def := (select def from rt.saved_defs where name = 'periods');
+  execute pg_catalog.replace(v_def, '(''audit_total'',' || chr(10) || '     interval ''1 year''',
+                                    '(''audit_total'',' || chr(10) || '     interval ''30 days''');
+end $$;
+-- THE PURGE HAS ALREADY RUN IN THIS SESSION, so its plan holds the
+-- const-folded one-year period (RA6's note): without this the 30 days is
+-- never seen and REL17 measures nothing.
+discard plans;
+select rt.val('REL16 DENOMINATOR: the declaration now says 30 days, and the release is still active',
+  $$select (private.retention_period('audit_total'))::text || '/' || private.audit_ceiling_release_active()::text$$,
+  '30 days/true');
+select rt.try_hint('REL17 ...and the purge STILL REFUSES it under the release (the hard floor is a separate rail)',
+  $$select private.purge_audit_events(false, 500)$$, 'denied(55000:audit_retention_below_floor)');
+do $$ begin execute (select def from rt.saved_defs where name = 'periods'); end $$;
+discard plans;
+select rt.val('REL18 ...nothing inside the year was deleted, and the declaration is restored',
+  $$select (select count(*) from public.audit_events where action in ('rt.relinside','rt.relhot'))::text || '/' ||
+           (pg_get_functiondef('private.retention_periods()'::regprocedure)
+            = (select def from rt.saved_defs where name = 'periods'))::text$$, '10/true');
+
+-- THE 72 HOURS, BY TIME TRAVEL. Both columns move together so the row's
+-- CHECK still holds: this is the release being OLD, not being malformed.
+update public.retention_settings
+   set audit_ceiling_released_at        = audit_ceiling_released_at - interval '71 hours',
+       audit_ceiling_release_expires_at = audit_ceiling_release_expires_at - interval '71 hours'
+ where id;
+select rt.val('REL19 at 71 hours old the release is STILL active, and the purge still runs released',
+  $$select private.audit_ceiling_release_active()::text || '/' ||
+           ((private.purge_audit_events(true, 500))->>'audit_events.ceiling_released')$$, 'true/true');
+update public.retention_settings
+   set audit_ceiling_released_at        = audit_ceiling_released_at - interval '1 hour 1 second',
+       audit_ceiling_release_expires_at = audit_ceiling_release_expires_at - interval '1 hour 1 second'
+ where id;
+select rt.val('REL20 one second past 72 hours it has EXPIRED BY ITSELF -- nothing reverted it',
+  $$select private.audit_ceiling_release_active()::text || '/' || (audit_ceiling_released_at is not null)::text
+      from public.retention_settings$$, 'false/true');
+select rt.try_hint('REL21 ...and the purge DOES NOT honour an expired release: the ceiling refuses again',
+  $$select private.purge_audit_events(false, 500)$$, 'denied(55000:audit_purge_over_ceiling)');
+select rt.val('REL22 ...deleting nothing more',
+  $$select (select count(*) from public.audit_events where action = 'rt.relflood')::text$$, '1200');
+-- THE LENGTH IS HELD IN THE ROW TOO: a direct write of a 30-day window is
+-- refused by the CHECK, whoever writes it.
+select rt.try('REL23 a 30-day window written directly is refused by the CHECK, even as `postgres`',
+  $$update public.retention_settings
+       set audit_ceiling_released_at = now(), audit_ceiling_release_expires_at = now() + interval '30 days'
+     where id$$, 'denied(23514)');
+-- ...and by the READER, independently: with the CHECK out of the way (a
+-- mutation of the CHECK alone), a too-long window still does not count.
+alter table public.retention_settings drop constraint retention_settings_audit_ceiling_release_shape;
+update public.retention_settings
+   set audit_ceiling_released_at = now() - interval '4 days', audit_ceiling_release_expires_at = now() + interval '26 days'
+ where id;
+select rt.val('REL24 a window longer than 72 hours does NOT count as active, even with the CHECK gone',
+  $$select private.audit_ceiling_release_active()::text$$, 'false');
+update public.retention_settings
+   set audit_ceiling_released_at = now() - interval '73 hours', audit_ceiling_release_expires_at = now() - interval '1 hour'
+ where id;
+alter table public.retention_settings
+  add constraint retention_settings_audit_ceiling_release_shape check (
+    (audit_ceiling_released_at is null
+       and audit_ceiling_release_expires_at is null
+       and audit_ceiling_release_reason is null)
+    or
+    (audit_ceiling_released_at is not null
+       and audit_ceiling_release_expires_at = audit_ceiling_released_at + interval '72 hours'
+       and audit_ceiling_release_reason is not null
+       and pg_catalog.btrim(audit_ceiling_release_reason) <> ''
+       and pg_catalog.char_length(audit_ceiling_release_reason) <= 500));
+select rt.val('REL25 ...and the CHECK is back, by name',
+  $$select count(*)::text from pg_constraint
+     where conrelid = 'public.retention_settings'::regclass
+       and conname = 'retention_settings_audit_ceiling_release_shape'$$, '1');
+
+-- RE-RELEASE AFTER EXPIRY: a NEW decision, with its own audit row.
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a3","role":"authenticated","aal":"aal2"}';
+select rt.val('REL26 after expiry a fresh release is accepted -- a new decision, not an extension',
+  $$select (r).audit_ceiling_release_reason from (select public.release_audit_purge_ceiling('rt second drain') as r) t$$,
+  'rt second drain');
+reset role;
+reset request.jwt.claims;
+select rt.val('REL27 ...and it is a SECOND audit row, the history the settings row does not keep',
+  $$select count(*)::text from public.audit_events where action = 'retention.audit_ceiling_released'$$, '2');
+
+-- TIDY: no release survives into RN (whose RN10 states the ceiling cannot
+-- drain itself WITHOUT one), and no fixture row survives.
+update public.retention_settings
+   set audit_ceiling_released_at = null, audit_ceiling_release_expires_at = null,
+       audit_ceiling_release_reason = null
+ where id;
+delete from public.audit_events where action in ('rt.relflood', 'rt.relinside', 'rt.relhot',
+                                                 'retention.audit_ceiling_released');
+select rt.val('REL28 the release is cleared and the purge reads it as inactive again',
+  $$select private.audit_ceiling_release_active()::text$$, 'false');
+
+
 
 -- ===========================================================================
 -- RW  THE 60-DAY WORKSPACE PURGE, AND ITS THREE RECORDED TRAPS
@@ -1184,11 +1406,8 @@ select rt.val('RX2 ...and every workspace this suite did not make is still there
 --              passing behavioural probe recorded by THIS RUN of this suite.
 -- ===========================================================================
 
-insert into auth.users (id, instance_id, aud, role, email, encrypted_password,
-                        email_confirmed_at, created_at, updated_at)
-values ('00000000-0000-4000-9000-0000000067a3', '00000000-0000-0000-0000-000000000000',
-        'authenticated', 'authenticated', 'rt-super@rt.invalid', 'x', now(), now(), now());
-insert into public.platform_admins (user_id) values ('00000000-0000-4000-9000-0000000067a3');
+-- The platform superuser (67a3) is created at the top of RL-REL, which is
+-- the first section to need one (moved there by Phase 8 Task 9a).
 
 -- A PAID PLAN, or documents_update_manage_documents' WITH CHECK refuses every
 -- write for an entitlement reason and every refusal below is a false one.
@@ -2528,7 +2747,9 @@ delete from public.rate_limit_counters
  where subject_id in ('00000000-0000-4000-9000-0000000067a1','00000000-0000-4000-9000-0000000067a2');
 delete from public.organisations where slug in ('rt-keep','rt-back','rt-purge');
 delete from auth.users where email like '%@rt.invalid';
-update public.retention_settings set enabled = true, audit_purge_enabled = true, reason = null where id;
+update public.retention_settings set enabled = true, audit_purge_enabled = true, reason = null,
+       audit_ceiling_released_at = null, audit_ceiling_release_expires_at = null,
+       audit_ceiling_release_reason = null where id;
 
 select rt.val('RZ1 every fixture workspace is gone',
   $$select count(*)::text from public.organisations where slug like 'rt-%'$$, '0');

@@ -902,6 +902,47 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
     },
   },
   {
+    // Phase 8 Task 9a (20261010000000, Q184, founder 2026-09-30). THE AUDIT
+    // PURGE CEILING RELEASE: lifts rail 3 for 72 hours. A principal who is
+    // not the aal2 superuser reaching it could let a refused backlog purge
+    // proceed, with a reason of their choosing in the operator's audit log.
+    fn: "release_audit_purge_ceiling",
+    args: () => ({ p_reason: "matrix probe" }),
+    sideEffectTable: "audit_events",
+    invariant: async () => {
+      // AN UPDATE, NOT AN INSERT: the release lives on the one settings row,
+      // so the row itself must still say "never released".
+      const { rows } = await pool.query<{ at: string | null }>(
+        `select audit_ceiling_released_at as at from public.retention_settings`,
+      );
+      expect(rows[0]?.at ?? null, "a refused principal released the audit purge ceiling").toBeNull();
+    },
+    positiveControl: async () => {
+      const { data, error } = await superuser.rpc("release_audit_purge_ceiling", {
+        p_reason: "matrix positive control",
+      });
+      try {
+        expect(
+          error,
+          `release_audit_purge_ceiling must be reachable by the aal2 superuser: ${error?.message}`,
+        ).toBeNull();
+        expect(
+          (data as { audit_ceiling_release_reason?: string } | null)?.audit_ceiling_release_reason,
+        ).toBe("matrix positive control");
+      } finally {
+        // TIDIES ITS OWN RELEASE. A release left active would (a) make the
+        // next principal's invariant above fail for a fixture reason and
+        // (b) lift the ceiling under every retention test that runs after
+        // this file for 72 hours.
+        await pool.query(
+          `update public.retention_settings
+              set audit_ceiling_released_at = null, audit_ceiling_release_expires_at = null,
+                  audit_ceiling_release_reason = null`,
+        );
+      }
+    },
+  },
+  {
     fn: "record_legal_document_counsel_review",
     args: () => ({ p_document_id: ARGS.legalDraftId, p_reviewer: "Matrix Counsel LLP" }),
     sideEffectTable: "audit_events",

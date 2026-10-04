@@ -185,7 +185,9 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
     const live = rows.map((r) => r.action).sort();
     // MOVED in Phase 8 Task 7: 40 + 4 + 52 = 96 before it, 100 + 5 + 57 = 162
     // after (sixteen targets, membership.deleted, five network_connection.*).
-    expect(live.length).toBe(162);
+    // 163 since Phase 8 Task 9a (20261010000000): retention.audit_ceiling_released
+    // (Q184, founder 2026-09-30) -- 100 + 5 + 58.
+    expect(live.length).toBe(163);
     expect(new Set(live).size, "the database catalogue lists a name twice").toBe(live.length);
     expect(live).toEqual([...knownAuditActions()].sort());
   });
