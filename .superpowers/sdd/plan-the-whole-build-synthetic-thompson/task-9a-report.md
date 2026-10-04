@@ -300,3 +300,55 @@ is 138, so the stated total of 3892 at 213 migrations was really 3893. It is
 now 3897 at 214 migrations, summed from the pins. The e2e count is 174 -> 175.
 
 **New questions:** Q196.
+
+## Fix round 1
+
+Range `4940809..` on worktree-legal-phase. One commit per finding, each pushed.
+Migrations 214 -> 216.
+
+- **I1** (`d992f6a`): `lib/email/send.ts` and `lib/feedback/actions.ts` comments
+  are host-neutral, and so are a test comment (`tests/unit/email/send.test.ts`)
+  and `docs/email-setup.md` ("server action / edge function" -> server-side
+  code). Whole-repo grep for serverless/vercel/lambda/edge function, excluding
+  node_modules/.next: what is left is tooling names (`vercel-*` skills,
+  `@vercel/analytics` in the storage-census deny list), `.gitignore`
+  boilerplate, Supabase Edge Functions (a Supabase feature, not a host), and
+  two immutable migration comments. SECURITY.md § 15 now names those, and the
+  sentence is true as written.
+- **m1** (`8d449c4`): `20261012000000` reissues `comment on function
+  private.export_catalogue()`, naming `20261003010000` as the base. **Correction
+  of record:** the header of the shipped migration `20261009000000` ("as left by
+  20260930007000") is wrong and stays as written. The real base was
+  `20261003010000`. The body was right.
+- **m2** (`e6b4b15`): `20261013000000` makes the `set_updated_at` trigger on
+  `retention_settings` column-scoped to `enabled, audit_purge_enabled, reason,
+  updated_by`. A release writes only `audit_ceiling_*`, so `updated_at` again
+  means "the switches last changed", and the panel's "Last changed" line is true
+  with no panel change. It keeps the same name, so the L5 census is unchanged. No
+  function was rebuilt, because the release never named `updated_at`.
+  **Correction of record:** the header sentence in `20261010000000` that says
+  updated_at is "the row last changed" is superseded. New tests:
+  - RL-REL REL9a: the denominator, a pinned past value.
+  - REL11a: unmoved by a release.
+  - REL11b: positive control, a switch write still stamps it.
+
+  Retention goes 309 -> 312. The CLAUDE.md total is now 3900 at 216 migrations.
+  **Mutant 19a** (the plain trigger restored) turned **REL9a and REL11a** red. It
+  was measured with run-mutation.sh prep+psql at 216/216, and only the psql
+  layer went red. The panel was not touched, so platform-health e2e was not run.
+- **m3** (`83d2175`): Q197 is queued, with the default left as built.
+- **m5** (`47569ad`): `upload-rate-limit.test.ts` adds the same Manager to org
+  B. After 10 uploads into A and the 11th refused, a 12th into B is refused with
+  the limiter's own sentence. The counter reads 12, and B has 0 objects and 0
+  rows. Denominator: the B membership is active and B starts empty. Not
+  mutation-tested.
+- **m4**: this round does nothing for it. The controller runs `pnpm test` twice.
+
+**Gates.**
+- `pnpm lint` is clean. `next typegen` + `pnpm typecheck` are clean.
+- `vitest tests/unit`: 101 files / 2310.
+- `tests/integration/documents` + `tests/integration/retention`: 4 files / 15.
+- After a fresh reset, the psql/HTTP run passed every suite (retention
+  312, pinned) and the API surface, exit 0, 216 -> 216.
+- The stack was reset at the end (216). No node, vitest or playwright
+  processes were left over, and none were running at the start.
