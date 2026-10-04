@@ -1084,3 +1084,21 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
 **Waiting for counsel:** Q130, Q132, Q133, Q139, Q140, Q146, Q148–Q150, Q158, Q173, Q177 and the retention-page gaps.
 
 **Opened after the answers, with defaults:** Q188–Q190 (Task 7), Q191 (`merge_candidate.restored` has no client path; keep the catalogue entry) and Q192 (the erasure payload scan; no change for MVP, and a GIN `person_ids` column at around 2M rows).
+
+## Q193 -- Task 9a job 1, 2026-10-04
+
+- **Q193 -- the public pages now state "Ireland (eu-west-1)" as a fact that
+  nothing in this repository checks.** (Phase 8 Task 9a, Q145.) Founder
+  2026-09-30 ruled the production Supabase region is Ireland, so Privacy v4,
+  DPA v5, Security v3 and the Subprocessors table dropped the "(deployment
+  setting)" marker and name it. The region is still chosen when the hosted
+  project is created and is not settable from `config.toml`; if the project
+  is created anywhere else, four published pages are wrong. **Default
+  (proceeding):** state it as the ruling says, and make `SECURITY.md` § 15
+  "Project region" the pre-launch check that the project reads `eu-west-1`
+  (done in this job). Alternative: an automated check against the hosted
+  project's settings at deploy time (Phase 10 CI), which would need a
+  management-API token in CI. Related, no decision needed: IONOS SE is on
+  the register before it processes anything (the register's own rule is
+  "in the change that first sends it personal data"), because the founder
+  named it; its row says "Not yet bought" so the two do not conflict.
