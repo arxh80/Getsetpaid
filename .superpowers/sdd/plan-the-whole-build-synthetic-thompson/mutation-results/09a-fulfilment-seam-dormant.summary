@@ -1,0 +1,24 @@
+mutant: 09a-fulfilment-seam-dormant
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 0
+--- psql: red assertions, read from each suite's results table ---
+  [dsr] DF8 BOTH lines are awake (Task 4, Task 5) and a right with no job is still false (I5a)
+  [dsr] DF20 the rollback put the real function back: both halves awake
+  [dsr] DD1a THE TASK 4 CONSTRAINT REACHES HERE: the operator cannot mark it ANSWERED, because no export ran
+  [dsr] DD1 SETUP: the operator closes the forty-day-old one, by REFUSING it with a reason
+  [xp] XS1 BOTH halves of the constraint are AWAKE (Task 4, Task 5)
+  [xp] XS8 THE CONSTRAINT BITES: the operator cannot mark it answered before the export ran
+  [xp] XS10 POSITIVE CONTROL: service_role reaches the seam through its real grant
+  [xp] XS12 the seam's timestamp was stamped by the DATABASE, not sent
+  [xp] XS13 NOW the operator can mark it answered
+  [xp] XS14 ...and the closing audit row carries the job the archive came from
+  [xp] XS16 ...and it can NO LONGER be closed by hand: the erasure must actually have run
+  [er] ES1 BOTH halves of the predicate are now awake
+  [er] ES6 a request whose erasure has NOT run cannot be marked fulfilled
+  [er] ES4c a sessionless write cannot close a request with no erasure in flight
+  [er] ES9 POSITIVE CONTROL: the operator CAN start one on an open erasure request
+  [er] ES10 and the job it made names the REQUESTER, not the operator
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+        Tests  690 passed (690)

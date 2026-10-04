@@ -1,0 +1,42 @@
+mutant: 05a-dsr-attribution-trusts-client
+migrations before/after: 210/210
+runner exit: 3   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [dsr] DW2 POSITIVE: pstd1 makes an access request about their account
+  [dsr] DW9 POSITIVE: pstd1 makes a SECOND request, about a workspace's records
+  [dsr] DW10 the DW2 row is pstd1's, with their real email, open, and due in 30 days
+  [dsr] DW14 not even postgres can rewrite the request itself
+  [dsr] DW15 not even postgres can delete a request
+  [dsr] DR1 POSITIVE: pstd1 reads both of their own requests
+  [dsr] DR6 POSITIVE: the aal2 superuser reads every request
+  [dsr] DF11 SETUP: an access, an erasure and a rectification request exist to test the live constraint against
+  [dsr] DF12 with the EXPORT job ready, an access request cannot be closed without it having run
+  [dsr] DF13 ...while a transition that is not `fulfilled` is untouched by the rule
+  [dsr] DF14 I5a: waking the EXPORT line leaves an ERASURE request closable by hand
+  [dsr] DF15 ...and a right no job fulfils (rectification) is never gated
+  [dsr] DF16 I5c POSITIVE: the sessionless job records the seam...
+  [dsr] DF17 I5c POSITIVE: ...and the operator's fulfilment IS then admitted
+  [dsr] DF18 with the ERASURE line awake too, an erasure request is refused without its job
+  [dsr] DF19 I5b: the erasure half IS satisfiable -- the row survives, the job records, the operator closes
+  [dsr] DI0 SETUP: an OPEN account-scope request to attack
+  [dsr] DO1 SETUP: two processor-scope requests
+  [dsr] DN8 a note cannot be edited, by any role including postgres
+  [dsr] DN9 a note cannot be deleted either
+  [dsr] DX0 DENOMINATOR: there are requests AND notes to delete, and the requester's account is alive
+  [dsr] DX1 a TRIGGER's delete of the register is refused -- the review's attack
+  [dsr] DX2 a TRIGGER's delete of the notes of LIVE requests is refused
+  [dsr] DM1 the counter stopped at the limit
+  [dsr] DM2 the eleventh is PT429 with the seconds left in the hint
+  [dsr] DM4 WITHDRAWAL IS NEVER METERED, even with the budget spent
+  [dsr] DM5 the crossing filed exactly one alert, naming no workspace
+  [dsr] DA1 every event wrote exactly one audit row, and the actions are the states
+  [dsr] DA2a DENOMINATOR: that search CAN see a submitted row (its `before` is NULL, and NULL || text is NULL)
+  [xp] XS6 pstd1 files an ACCESS request about their account
+--- psql: pinned-total mismatches and ERROR lines ---
+  PHASE 8 DATA SUBJECT REQUESTS: 118 psql ERROR line(s) -- an assertion that raised before it was recorded has VANISHED from the report above, which is worse than failing.
+  PHASE 8 DATA SUBJECT REQUESTS: RECORDED 142 ASSERTIONS, PINNED AT 225.
+--- HTTP: red checks ---
+--- integration: red tests ---
+|integration| tests/integration/legal/catalogue-bindings-match-db.test.ts > the migration walk picks the body the database runs > private.data_subject_requests_before_insert: one deployed definition, equal to the latest one in the migrations
+|integration| tests/integration/security/phase7-permission-matrix.test.ts [ tests/integration/security/phase7-permission-matrix.test.ts ]
+        Tests  1 failed | 141 passed | 548 skipped (690)

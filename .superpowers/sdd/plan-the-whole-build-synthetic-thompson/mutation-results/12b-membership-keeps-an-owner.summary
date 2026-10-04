@@ -1,0 +1,27 @@
+mutant: 12b-membership-keeps-an-owner
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 0
+--- psql: red assertions, read from each suite's results table ---
+  [harness] D1a and the owner guard refuses it too, first, because she is org A's only owner
+  [harness] D5a and the owner guard refuses the hop too -- org A would be left ownerless
+  [er] EM4 demoting the SOLE owner is refused -- as postgres, which no policy binds
+  [er] EM5 and refused for the aal2 ADMIN who holds manage_members -- the route that reached it
+  [er] EM6 REMOVING the sole owner is refused by the same rule
+  [er] EM7 and so is revoking their membership -- status, not only role
+  [er] EM8 the refusal NAMES the workspace
+  [er] EM9 and nothing moved -- the owner is still an active owner
+  [er] EM11 BLOCKED is back to two active owners for the erasure that follows
+  [er] EN1 DENOMINATOR: BLOCKED is live, holds a record, has two members and NO active owner
+  [er] EN2 the blocker's reason is the third one -- there is nobody to promote
+  [er] EN3 the erasure is still refused -- the guard is unchanged
+  [er] EN4 the refusal NAMES the workspace, as Q131 requires either way
+  [er] EN5 and names the one door that opens: support closing it
+  [er] EN7 BLOCKED is put back the way § EM left it: two active owners
+  [rt] RQ2 a direct `delete from auth.users` REFUSES -- the Studio Auth-page click
+  [rt] RQ3 ...and the workspace still has its owner
+  [rt] RQ4 declaring the WRONG account does not license this one
+  [rt] RQ5 the DECLARED deletion is admitted (or the chokepoint itself is broken)
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+        Tests  690 passed (690)

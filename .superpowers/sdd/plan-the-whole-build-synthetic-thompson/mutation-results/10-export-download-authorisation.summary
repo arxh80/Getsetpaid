@@ -1,0 +1,19 @@
+mutant: 10-export-download-authorisation
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [xp] XD2 IDOR: another Admin of the same workspace cannot audit-and-download it
+  [xp] XD3 IDOR: an unrelated user cannot either
+  [xp] XD5 the aal2 platform superuser cannot download somebody's export either
+  [xp] XD7 exactly one download was audited, and it names the job and the workspace
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'impersonatedOrgOwner' cannot audit-and-download a job that is not theirs
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'noOrganisation' cannot audit-and-download a job that is not theirs
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'orgOwner' cannot audit-and-download a job that is not theirs
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'overriddenOrgOwner' cannot audit-and-download a job that is not theirs
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'superuserAal1' cannot audit-and-download a job that is not theirs
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'superuserAal2' cannot audit-and-download a job that is not theirs
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'suspendedMember' cannot audit-and-download a job that is not theirs
+        Tests  7 failed | 683 passed (690)

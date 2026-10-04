@@ -1,0 +1,40 @@
+mutant: 15-10-crm-audit-network-profiles
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [nw] NX5d ...while the draft INSERT emitted exactly one network_profile.created and NO .published (the else-arm survives the fix)
+  [c7] PA2 CENSUS: exactly 54 audit_insert/audit_update triggers over the twenty-seven tables
+  [c7] PA2b ...the sixteen new tables each carry BOTH, under their own target argument
+  [c7] PA2d network_profiles keeps its audit_network trigger BESIDE the new pair (two writers, deliberately)
+  [c7] PA6c the whole derived catalogue is 162 names, none duplicated
+  [c7] PA6d ...and every <target>.<verb> the new triggers can produce is in it
+  [c7] PC1 the derived roll: 27 generic / 5 dedicated / 2 rpc_only / 1 unaudited
+  [c7] PC3 the generic set is exactly the twenty-seven
+  [c7] PC4 the dedicated set, by name
+  [c7] PI12b network_profiles: a DRAFT insert is 1 row, network_profile.created (NOT .published), keys, no published value
+  [c7] PI12c ...the visibility MAP is carried (names to levels), which is what tells the operator what was exposed without saying what it said
+  [c7] PU12b network_profile.updated: eight names, values EMPTY, no leak -- and NO network_profile.* transition row (still a draft)
+  [c7] PD20 every one of the thirteen names .soft_deleted, with before deleted_at null and after non-null
+  [c7] PD31 every restore names .restored, before deleted_at non-null and after null
+  [c7] PN1b TWO rows for one statement: network_profile.published (the dedicated writer) and network_profile.updated (the generic one)
+  [c7] PN1c ...the .updated row names bio, published_at and status; carries status draft->published; the bio value is in neither row
+  [c7] PS5 every generic-target row the walk wrote is filed under ALPHA -- none misfiled (count/misfiled)
+  [c7] PS4 VOLUME, measured: the rows this suite's walk produced, by target type
+  [er] EP1 the derived roll of person ids copied into audit payloads, by name
+  [er] EP4 DENOMINATOR: one planted payload per derived person column, each carrying the subject three times
+  [er] EP5 DENOMINATOR: every audit payload that contains the subject, in any case, anywhere
+  [er] EP9 every derived person column is the tombstone in before, after (upper-cased) and nested
+  [er] EP10 and the summary counts the rows the scrub rewrote
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+|integration| tests/integration/admin/audit-actions-match-db.test.ts > the CRM audit triggers agree with CRM_AUDIT_TARGETS > every table with an audit_insert/audit_update pair is in the catalogue, under the trigger's own target argument
+|integration| tests/integration/admin/audit-actions-match-db.test.ts > the CRM audit triggers agree with CRM_AUDIT_TARGETS > private.audit_action_catalogue() is exactly knownAuditActions()
+|integration| tests/integration/admin/crm-audit-coverage-census.test.ts > private.audit_coverage(): every tenant-owned client-writable table is audited or excused by name > every other table is in AUDIT_COVERAGE_EXCUSALS with the coverage it claims, and its named triggers exist and fire on the client's ops
+|integration| tests/integration/admin/crm-audit-coverage-census.test.ts > private.audit_coverage(): every tenant-owned client-writable table is audited or excused by name > the `generic` set IS CRM_AUDIT_TARGET_TABLE, in both directions, with the trigger's own target argument
+|integration| tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts > INSERT over PostgREST is audited on every Phase 3-6 table: actor, org, type, allowlisted keys only > network_profile: exactly one network_profile.created, attributed, keys === the database's allowlist, no sentinel
+|integration| tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts > soft-delete and restore are their own actions on every soft-deletable Phase 3-6 table > each soft-delete is <target>.soft_deleted and each restore <target>.restored
+|integration| tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts > THE SWEEP and THE VOLUME > no audit row written during this file carries the sentinel, in either case, or either amount -- over a non-empty window
+|integration| tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts > UPDATE over PostgREST: every free-text column NAMED, none VALUED > network_profiles: a PATCH of display_name/headline/bio/city/region/country/website_url/contact_email names each and carries none
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > GATE 0 (Phase 8): the censuses reach every Phase 8 surface > REACH: the Phase 3-6 audit triggers are in the coverage census, and only the declared excusal is uncovered
+        Tests  9 failed | 681 passed (690)
