@@ -11,6 +11,10 @@
 --   CB  the backup: not client-insertable, refused outside the RPC,
 --       immutable, retained to the workspace's own retention clock
 --   CP  the Q88 60-day purge still reaches a closed workspace
+--   CS  job 2: the superuser's decision item, queue and the decisions' gates
+--   CQ  job 2, Q206: the closing Owner erases their account; the backup stays
+--   CR  job 2: reassign to an active member reopens the workspace, notified
+--   CX  job 2: permanent delete reuses the Q88 purge, notified
 --   CZ  housekeeping
 --
 -- Self-contained: its own users, two workspaces and their rows, removed in CZ.
@@ -374,6 +378,224 @@ select cw.val('CP1 a closed workspace past its clock is one more workspace the p
   format($$select (%s - %s)::text$$, :'after_n', :'before_n'), '1');
 
 -- ---------------------------------------------------------------------------
+-- § CS THE SUPERUSER'S DECISION ITEM AND ITS GATES (Task 9c job 2,
+--      20261022001000). Org A is owner_closed here; org B is still active.
+-- ---------------------------------------------------------------------------
+\o /dev/null
+select gen_random_uuid()::text as su_u \gset
+select gen_random_uuid()::text as view_u \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'su_u') as su_c  \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'su_u') as su_c1 \gset
+select private.erased_user_id()::text as tomb_u \gset
+\o
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+values (:'su_u', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cw-su@test.local', now(), now(), now());
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+values (:'view_u', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cw-viewer@test.local', now(), now(), now());
+insert into public.platform_admins (user_id) values (:'su_u');
+-- A NON-admin member of org B: the decision notice must NOT address them.
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+values (:'org_b', :'view_u', 'manager', 'active', now());
+
+select cw.val('CS1 the closure is on the superuser''s email queue: slug, name, closed-at, nothing else',
+  format($$select organisation_slug || '/' || organisation_name || '/' || (closed_at is not null)::text
+             from public.pending_workspace_closure_notifications(30) q
+             join public.audit_events a on a.id = q.audit_event_id
+            where a.organisation_id = %L$$, :'org_a'), 'cw-closure-alpha/Closure Alpha/true');
+
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.val('CS2 the aal2 superuser''s dashboard list shows the closed workspace with its backup''s status',
+  format($$select slug || '/' || active_members::text || '/' || backup_status || '/' || (backup_export_job_id = %L)::text
+             from public.closed_workspaces_awaiting_decision(null, null, 25) where organisation_id = %L$$, :'job', :'org_a'),
+  'cw-closure-alpha/2/succeeded/true');
+select cw.val('CS2b ...and only owner_closed workspaces (the active org B is not on it)',
+  format($$select count(*)::text from public.closed_workspaces_awaiting_decision(null, null, 50) where organisation_id = %L$$, :'org_b'), '0');
+set request.jwt.claims = :'su_c1';
+select cw.try('CS3 the list refuses the superuser at aal1',
+  $$select * from public.closed_workspaces_awaiting_decision(null, null, 25)$$, 'denied(42501:decision_needs_superuser)');
+set request.jwt.claims = :'mgr_c';
+select cw.try('CS3b ...and a member of the closed workspace',
+  $$select * from public.closed_workspaces_awaiting_decision(null, null, 25)$$, 'denied(42501:decision_needs_superuser)');
+select cw.try('CS3c a member cannot read the superuser''s email queue (service_role only)',
+  $$select * from public.pending_workspace_closure_notifications(30)$$, 'denied(42501)');
+
+-- THE GATES, both RPCs, each refusal leaving org A owner_closed.
+set request.jwt.claims = :'mgr_c';
+select cw.try('CS4 an aal2 MEMBER of the closed workspace cannot reassign it (superuser gate)',
+  format($$select public.reassign_closed_workspace('cw-closure-alpha', %L, 'take it')$$, :'mgr_u'), 'denied(42501:decision_needs_superuser)');
+select cw.try('CS4b ...nor delete it',
+  $$select public.delete_closed_workspace('cw-closure-alpha', 'gone')$$, 'denied(42501:decision_needs_superuser)');
+set request.jwt.claims = :'su_c1';
+select cw.try('CS5 the superuser at aal1 cannot reassign (step-up)',
+  format($$select public.reassign_closed_workspace('cw-closure-alpha', %L, 'take it')$$, :'mgr_u'), 'denied(42501:decision_needs_step_up)');
+select cw.try('CS5b ...nor delete',
+  $$select public.delete_closed_workspace('cw-closure-alpha', 'gone')$$, 'denied(42501:decision_needs_step_up)');
+set request.jwt.claims = :'su_c';
+select cw.try('CS6 a blank reason is refused (reassign)',
+  format($$select public.reassign_closed_workspace('cw-closure-alpha', %L, '  ')$$, :'mgr_u'), 'denied(22023:decision_reason_required)');
+select cw.try('CS6b a null reason is refused (delete)',
+  $$select public.delete_closed_workspace('cw-closure-alpha', null)$$, 'denied(22023:decision_reason_required)');
+select cw.try('CS6c a 501-character reason is refused',
+  $$select public.delete_closed_workspace('cw-closure-alpha', repeat('r', 501))$$, 'denied(22023:decision_reason_too_long)');
+select cw.try('CS7 an ACTIVE workspace is not awaiting a decision (reassign)',
+  format($$select public.reassign_closed_workspace('cw-closure-beta', %L, 'x')$$, :'other_u'), 'denied(22023:decision_workspace_not_owner_closed)');
+select cw.try('CS7b ...nor (delete)',
+  $$select public.delete_closed_workspace('cw-closure-beta', 'x')$$, 'denied(22023:decision_workspace_not_owner_closed)');
+select cw.try('CS7c an unknown slug is refused',
+  $$select public.delete_closed_workspace('cw-no-such-workspace', 'x')$$, 'denied(22023:decision_no_such_workspace)');
+select cw.try('CS8 the new Owner must be an ACTIVE MEMBER: an outsider (org B''s Owner) is refused',
+  format($$select public.reassign_closed_workspace('cw-closure-alpha', %L, 'x')$$, :'other_u'), 'denied(22023:new_owner_must_be_active_member)');
+select cw.try('CS8b ...and so is the tombstone',
+  format($$select public.reassign_closed_workspace('cw-closure-alpha', %L, 'x')$$, :'tomb_u'), 'denied(22023:new_owner_must_be_active_member)');
+reset role; reset request.jwt.claims;
+update public.organisation_memberships set status = 'revoked' where organisation_id = :'org_a' and user_id = :'mgr_u';
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CS8c ...and so is a REVOKED member',
+  format($$select public.reassign_closed_workspace('cw-closure-alpha', %L, 'x')$$, :'mgr_u'), 'denied(22023:new_owner_must_be_active_member)');
+reset role; reset request.jwt.claims;
+update public.organisation_memberships set status = 'active' where organisation_id = :'org_a' and user_id = :'mgr_u';
+select cw.val('CS9 every refusal above left org A owner_closed and wrote no decision audit row',
+  format($$select (o.lifecycle_state = 'owner_closed' and o.deleted_at is not null
+                   and not exists (select 1 from public.audit_events a where a.organisation_id = o.id
+                                    and a.action in ('organisation.closure_reassigned', 'organisation.closure_deleted')))::text
+             from public.organisations o where o.id = %L$$, :'org_a'), 'true');
+
+-- ---------------------------------------------------------------------------
+-- § CQ Q206 -- THE CLOSING OWNER ERASES THEIR ACCOUNT; THE BACKUP SURVIVES.
+-- ---------------------------------------------------------------------------
+select cw.val('CQ0 FIXTURE: the erasure purge manifest would not name the closure backup''s archive',
+  format($$select count(*)::text from public.export_jobs e
+            where e.requested_by = %L and e.storage_key is not null and not e.closure_backup$$, :'owner_u'), '0');
+select cw.try('CQ1 the closing Owner''s account is erased (a closed workspace no longer blocks it)',
+  format($$select private.erase_account(%L, null)$$, :'owner_u'), 'ok(1)');
+select cw.val('CQ2 the closure backup row is still there, its requester re-pointed at the tombstone',
+  format($$select closure_backup::text || '/' || status || '/' || (requested_by = private.erased_user_id())::text
+             from public.export_jobs where id = %L$$, :'job'), 'true/succeeded/true');
+select cw.val('CQ3 ...and findable the way the decision item looks: the latest closure_backup row of the org',
+  format($$select id::text from public.export_jobs where organisation_id = %L and closure_backup
+            order by requested_at desc limit 1$$, :'org_a'), :'job');
+select cw.val('CQ4 the Owner''s ORDINARY export (CF9) still went with the account (only the backup is kept)',
+  format($$select count(*)::text from public.export_jobs where organisation_id = %L and not closure_backup$$, :'org_a'), '0');
+select cw.try('CQ5 requested_by is still immutable otherwise: no re-point to a person',
+  format($$update public.export_jobs set requested_by = %L where id = %L$$, :'mgr_u', :'job'),
+  'denied(42501:export_request_is_immutable)');
+\o /dev/null
+set request.jwt.claims = :'other_c';
+insert into public.export_jobs (kind, organisation_id) values ('workspace', :'org_b') returning id as job_b \gset
+reset request.jwt.claims;
+\o
+select set_config('app.erasing_account', :'other_u', false) \g /dev/null
+select cw.try('CQ6 ...nor, under the erasure marker, an ORDINARY job re-pointed at the tombstone',
+  format($$update public.export_jobs set requested_by = private.erased_user_id() where id = %L$$, :'job_b'),
+  'denied(42501:export_request_is_immutable)');
+select set_config('app.erasing_account', '', false) \g /dev/null
+delete from public.export_jobs where id = :'job_b';
+select cw.val('CQ7 the decision item still lists the workspace after the Owner is gone (1 active member left)',
+  format($$select count(*)::text from public.organisations o where o.id = %L and o.lifecycle_state = 'owner_closed'$$, :'org_a'), '1');
+
+-- ---------------------------------------------------------------------------
+-- § CR REASSIGN: the remaining Manager becomes Owner; the workspace reopens.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CR1 the aal2 superuser reassigns org A to its active Manager',
+  format($$insert into cw.ids select 'reassign', public.reassign_closed_workspace('CW-Closure-Alpha ', %L, '  owner left; manager takes over ')::text$$, :'mgr_u'),
+  'ok(1)');
+select cw.try('CR2 a second decision is refused: it is no longer owner_closed',
+  $$select public.delete_closed_workspace('cw-closure-alpha', 'too late')$$, 'denied(22023:decision_workspace_not_owner_closed)');
+reset role; reset request.jwt.claims;
+\o /dev/null
+select coalesce((select v from cw.ids where k = 'reassign'), '00000000-0000-0000-0000-000000000000') as reassign_audit \gset
+\o
+select cw.val('CR3 reopened: active, deleted_at, reason and BOTH clocks cleared (the purge no longer selects it)',
+  format($$select lifecycle_state || '/' || (deleted_at is null)::text || '/' || (lifecycle_reason is null)::text || '/' ||
+                  (retention_expires_at is null)::text || '/' || (lifecycle_changed_at is null)::text
+             from public.organisations where id = %L$$, :'org_a'), 'active/true/true/true/true');
+select cw.val('CR4 the Manager is now an active Owner',
+  format($$select role || '/' || status from public.organisation_memberships where organisation_id = %L and user_id = %L$$,
+    :'org_a', :'mgr_u'), 'owner/active');
+select cw.val('CR5 one organisation.closure_reassigned row: actor = superuser, who, previous role, trimmed reason, backup, recipients',
+  format($$select count(*)::text || '/' || bool_and(actor_user_id = %L)::text || '/' ||
+                  bool_and(after ->> 'new_owner_user_id' = %L)::text || '/' ||
+                  bool_and(before ->> 'new_owner_previous_role' = 'manager')::text || '/' ||
+                  bool_and(after ->> 'reason' = 'owner left; manager takes over')::text || '/' ||
+                  bool_and(after ->> 'backup_export_job_id' = %L)::text || '/' ||
+                  bool_and(after -> 'notify_user_ids' = jsonb_build_array(%L::uuid))::text || '/' ||
+                  bool_and(id = %L)::text
+             from public.audit_events where organisation_id = %L and action = 'organisation.closure_reassigned'$$,
+    :'su_u', :'mgr_u', :'job', :'mgr_u', :'reassign_audit', :'org_a'), '1/true/true/true/true/true/true/true');
+select cw.val('CR6 the remaining Admins are notified: the decision is on the queue, addressed to the new Owner',
+  format($$select notice || '/' || array_to_string(emails, ',') || '/' || organisation_slug
+             from public.pending_workspace_decision_notifications(30) where audit_event_id = %L$$, :'reassign_audit'),
+  'workspace_reassigned/cw-mgr@test.local/cw-closure-alpha');
+select cw.val('CR7 the stamp RPC stamps it once, only for its own action, and it leaves the queue',
+  format($$select public.mark_notices_delivered('workspace_reassigned', array[%1$L]::uuid[])::text || '/' ||
+                  public.mark_notices_delivered('workspace_reassigned', array[%1$L]::uuid[])::text || '/' ||
+                  public.mark_notices_delivered('workspace_deleted', array[%1$L]::uuid[])::text$$,
+    :'reassign_audit'), '1/0/0');
+select cw.val('CR7b ...and it has left the queue',
+  format($$select count(*)::text from public.pending_workspace_decision_notifications(30) where audit_event_id = %L$$,
+    :'reassign_audit'), '0');
+select cw.val('CR8 the superuser closure email stamps the same way (and only the closed_by_owner row)',
+  format($$select public.mark_notices_delivered('workspace_closed',
+             array(select id from public.audit_events where organisation_id = %L
+                    and action in ('organisation.closed_by_owner', 'organisation.closure_reassigned')))::text$$, :'org_a'), '1');
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CR9 a stamp from a session is refused, even the superuser''s',
+  format($$select public.mark_notices_delivered('workspace_reassigned', array[%L]::uuid[])$$, :'reassign_audit'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- § CX PERMANENT DELETE: org B is closed by its Owner, then deleted. The
+--      decision reuses the Q88 purge: due NOW, purged by the existing sweep.
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'other_c';
+select cw.try('CX0 FIXTURE: org B''s aal2 Owner closes it',
+  format($$select public.close_my_workspace(%L, 'cw-closure-beta', 'shutting down')$$, :'org_b'), 'ok(1)');
+set request.jwt.claims = :'su_c';
+select cw.try('CX1 the aal2 superuser deletes the closed workspace permanently',
+  format($$insert into cw.ids select 'delete', public.delete_closed_workspace('cw-closure-beta', ' no successor ')::text$$), 'ok(1)');
+reset role; reset request.jwt.claims;
+\o /dev/null
+select coalesce((select v from cw.ids where k = 'delete'), '00000000-0000-0000-0000-000000000000') as delete_audit \gset
+\o
+select cw.val('CX2 lifecycle deleted, still soft (deleted_at set) and DUE for the purge now',
+  format($$select lifecycle_state || '/' || (deleted_at is not null)::text || '/' || (retention_expires_at < now())::text
+             from public.organisations where id = %L$$, :'org_b'), 'deleted/true/true');
+select cw.val('CX3 one organisation.closure_deleted row with the reason and ONLY the remaining Owner/Admins (not the Manager) as recipients',
+  format($$select count(*)::text || '/' || bool_and(after ->> 'reason' = 'no successor')::text || '/' ||
+                  bool_and(after -> 'notify_user_ids' = jsonb_build_array(%L::uuid))::text
+             from public.audit_events where organisation_id = %L and action = 'organisation.closure_deleted'$$,
+    :'other_u', :'org_b'), '1/true/true');
+\o /dev/null
+select (private.sweep_expired_workspaces(true, 100000) ->> 'organisations.purged')::int as due_n \gset
+\o
+select cw.val('CX4 the EXISTING sweep selects it (no second engine): its dry run counts it',
+  format($$select (exists (select 1 from public.organisations o where o.id = %L and o.deleted_at is not null
+                    and o.retention_expires_at < now()) and %s >= 1)::text$$, :'org_b', :'due_n'), 'true');
+select cw.val('CX5 ...and the sweep''s own primitive purges it, the decision''s audit row and notice surviving',
+  format($$select (private.erase_organisation(%1$L, null, true) ->> 'organisations') || '/' ||
+                  (select notice || ':' || array_to_string(emails, ',') || ':' || organisation_slug
+                     from public.pending_workspace_decision_notifications(30) where audit_event_id = %2$L)$$,
+    :'org_b', :'delete_audit'), '1/workspace_deleted:cw-other@test.local:cw-closure-beta');
+select cw.val('CX5b ...the workspace row is gone',
+  format($$select count(*)::text from public.organisations where id = %L$$, :'org_b'), '0');
+\o /dev/null
+select public.mark_notices_delivered('workspace_deleted', array[:'delete_audit']::uuid[]);
+\o
+select cw.val('CX6 a never-decided closure still runs on the Q88 clock: nothing here changed close_my_workspace''s 60 days',
+  format($$select (count(*) = 0)::text from public.organisations o
+            where o.lifecycle_state = 'owner_closed' and o.retention_expires_at is distinct from
+                  o.lifecycle_changed_at + make_interval(days => private.organisation_retention_days())$$), 'true');
+
+delete from public.platform_admins where user_id = :'su_u';
+
+-- ---------------------------------------------------------------------------
 -- § CZ HOUSEKEEPING -- nothing of this suite survives it.
 -- ---------------------------------------------------------------------------
 \o /dev/null
@@ -386,7 +608,7 @@ delete from public.organisations where id in (:'org_a', :'org_b');
 -- actor FK without an action): removed in replica mode, the fixture shape
 -- every self-contained suite here uses for auth.users.
 set session_replication_role = replica;
-delete from auth.users where id in (:'owner_u', :'mgr_u', :'other_u');
+delete from auth.users where id in (:'owner_u', :'mgr_u', :'other_u', :'su_u', :'view_u');
 set session_replication_role = origin;
 \o
 select cw.val('CZ1 the fixture workspaces, their export jobs, users AND their child rows are gone',

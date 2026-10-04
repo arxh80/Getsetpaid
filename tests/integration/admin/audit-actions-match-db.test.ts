@@ -188,7 +188,9 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
     // 163 since Phase 8 Task 9a (20261010000000): retention.audit_ceiling_released
     // (Q184, founder 2026-09-30) -- 100 + 5 + 58.
     // 164 since Phase 8 Task 9c (20261021000000): organisation.closed_by_owner.
-    expect(live.length).toBe(164);
+    // 166 since Task 9c job 2 (20261022001000): organisation.closure_reassigned
+    // and organisation.closure_deleted.
+    expect(live.length).toBe(166);
     expect(new Set(live).size, "the database catalogue lists a name twice").toBe(live.length);
     expect(live).toEqual([...knownAuditActions()].sort());
   });

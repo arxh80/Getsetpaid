@@ -216,6 +216,10 @@ const GUARD_PREFIX: Record<string, string> = {
   suspend_organisation: "organisation lifecycle:",
   delete_organisation: "organisation lifecycle:",
   reinstate_organisation: "organisation lifecycle:",
+  // Phase 8 Task 9c job 2: the two closure decisions share one guard helper
+  // (private.closure_decision_target), whose message names the helper.
+  reassign_closed_workspace: "closure decision:",
+  delete_closed_workspace: "closure decision:",
 };
 
 // =============================================================================
@@ -454,6 +458,52 @@ interface RpcSurface {
 }
 
 const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
+  // Phase 8 Task 9c job 2 (20261022001000; founder 2026-09-30, Q176/Q178).
+  // THE SUPERUSER'S TWO DECISIONS ON A CLOSED WORKSPACE, and its dashboard
+  // list. Probed against org B, which is ACTIVE -- so a principal that got
+  // past the gates would still be refused, by the state check; the refusal
+  // must therefore be the GUARD's (42501, message prefixed by the helper),
+  // which is what the loop asserts. The positive control is the aal2
+  // superuser reaching that state check: the decision gate let it through.
+  // The decisions themselves are walked end to end in
+  // rls_phase8_workspace_closure.sql § CS/CR/CX.
+  ...(["reassign_closed_workspace", "delete_closed_workspace"] as const).map(
+    (fn): RpcSurface => ({
+      fn,
+      args: () =>
+        fn === "reassign_closed_workspace"
+          ? { p_organisation_slug: fx.orgB.slug, p_new_owner_user_id: fx.ownerB.userId, p_reason: "matrix probe" }
+          : { p_organisation_slug: fx.orgB.slug, p_reason: "matrix probe" },
+      sideEffectTable: "audit_events",
+      invariant: async () => {
+        const { rows } = await pool.query<{ state: string }>(
+          `select lifecycle_state as state from public.organisations where slug = $1`,
+          [fx.orgB.slug],
+        );
+        expect(rows[0]?.state, `a refused principal moved org B through ${fn}`).toBe("active");
+      },
+      positiveControl: async () => {
+        const args =
+          fn === "reassign_closed_workspace"
+            ? { p_organisation_slug: fx.orgB.slug, p_new_owner_user_id: fx.ownerB.userId, p_reason: "matrix positive control" }
+            : { p_organisation_slug: fx.orgB.slug, p_reason: "matrix positive control" };
+        const { error } = await superuser.rpc(fn, args);
+        expect(
+          error?.message ?? "",
+          `${fn} must let the aal2 superuser past its gate (to the owner_closed check): ${error?.message}`,
+        ).toMatch(/only a workspace its Owner closed awaits this decision/);
+      },
+    }),
+  ),
+  {
+    fn: "closed_workspaces_awaiting_decision",
+    args: () => ({ p_limit: 25 }),
+    sideEffectTable: null,
+    positiveControl: async () => {
+      const { error } = await superuser.rpc("closed_workspaces_awaiting_decision", { p_limit: 25 });
+      expect(error, `closed_workspaces_awaiting_decision: ${error?.message}`).toBeNull();
+    },
+  },
   {
     fn: "request_impersonation",
     args: () => ({
@@ -1232,6 +1282,10 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Task 9b job 2 -- the export-ready notice queue; returns no archive key and no URL",
   "pending_lockout_notifications(p_limit integer)":
     "Phase 7 Task 6c -- the account-holder lockout notice queue, read by the sender",
+  "pending_workspace_closure_notifications(p_limit integer)":
+    "Task 9c job 2 -- the superuser's closure email queue: slug, name and closed-at of an owner_closed workspace, nothing from inside it; addressed by the sender to SUPPORT_CONTACT_EMAIL",
+  "pending_workspace_decision_notifications(p_limit integer)":
+    "Task 9c job 2 -- the reassign/delete notice queue: the Owners/Admins snapshotted on the decision's audit row, the tombstone excluded; slug and name from that row, never the reason",
   "pending_task_reminder_notifications(p_limit integer)":
     "Task 9b job 3 -- the task-reminder queue: a live, open, due task's CURRENT active assignee, its title and due date, never its detail",
   "retention_object_manifest(p_run_id uuid, p_limit integer)":

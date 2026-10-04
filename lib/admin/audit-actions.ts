@@ -267,6 +267,10 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "organisation.reinstated",
   // Phase 8 Task 9c -- public.close_my_workspace()
   "organisation.closed_by_owner",
+  // Phase 8 Task 9c job 2 -- the superuser's decision on a closed workspace
+  // (public.reassign_closed_workspace() / public.delete_closed_workspace())
+  "organisation.closure_reassigned",
+  "organisation.closure_deleted",
   // Phase 7 Task 4
   "organisation.billing_override_granted",
   "organisation.billing_override_revoked",
