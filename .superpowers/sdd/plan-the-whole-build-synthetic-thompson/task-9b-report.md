@@ -129,3 +129,102 @@ Founder 2026-09-30, Q157(3)/Q174/Q45: the last four notification emails (connect
 
 ### Questions
 Q202 recipients; Q203 ledger instead of columns; Q204 the tick's headroom (DECISIONS-QUEUE.md).
+
+## Fix round 1 (part A: C1, I1)
+
+### C1. Probe first (fresh `db reset`, 220 migrations, before the fix)
+
+The probe ran in one rolled-back transaction. As `postgres` it planted two orgs, two users (sender = manager, target = owner), and two published profiles. The target's `contact_email` is at `connections`. Then, as `authenticated` with the sender's claims:
+
+```
+--- BEFORE: sender reads target via connected view
+ display_name | contact_email
+(0 rows)
+--- THE FORGERY: sender INSERTs status=accepted
+ status   | requested_by                         | requested_at                  | responded_at
+ accepted | a1000000-0000-0000-0000-00000000000a | 2026-09-04 18:08:36.588578+00 | 2026-10-04 18:08:36.588578+00
+INSERT 0 1
+--- AFTER: sender reads target via connected view
+ display_name    | contact_email
+ Probe Target Co | secret@target.test
+```
+
+**It leaked.** The forged row landed with a back-dated `requested_at` (m3) and resolved the target's connections-level field without consent.
+
+- This hole has existed since Phase 6.
+- Task 9b made it silent: the target is emailed only about a `pending` row.
+
+The same probe after the fix:
+
+```
+ERROR: network_connection_requests: a request is created pending (tried accepted); only the recipient can accept it
+```
+
+### C1. Fix: `20261017000000_connection_request_is_born_pending.sql`
+
+- **Trigger:** `private.connection_request_born_pending()` is a BEFORE INSERT trigger named `born_pending`. It is SECURITY INVOKER and sorts before the fill and meter triggers.
+  - It refuses with 23514: a status other than pending, a non-null `responded_at` or `responded_by`, or a `requested_by` other than `auth.uid()`.
+  - It then stamps `requested_by := auth.uid()` and `requested_at := now()`.
+  - It binds every role except `postgres` and `supabase_admin`, so `service_role` is included.
+- **Policy:** `ALTER POLICY` on the INSERT policy adds `status = 'pending' and responded_at is null and responded_by is null`. It was rebuilt from the live `pg_get_expr`, and the policy comment was reissued.
+- **Seeds:** the paths that plant accepted, declined or back-dated rows all run as `postgres`, so they are exempt and unchanged. They are `tests/e2e/support/fixtures.ts`, `discovery.test.ts`, `connection-reminder-notifications.test.ts`, `rls_phase8_notification_stamps.sql`, and the HTTP H4 fixture.
+  - I chose the exemption over routing them through accept because several need back-dated `requested_at`.
+  - No SECURITY DEFINER function inserts into this table.
+- **Residual, logged in FOLLOW-UPS:** the responder half of m3 is still open. `responded_at` and `responded_by` on UPDATE are still client-supplied.
+
+### C1. Assertions
+
+**psql: `rls_phase6_network.sql` § NP, 16 new assertions (pin 127 -> 143).**
+- NP0: the trigger exists.
+- NP1-NP3b: forged accepted, withdrawn, pre-responded and foreign-`requested_by` inserts are refused with 23514. Each is asked by a raw INSERT, so no RPC is involved.
+- NP5: the connected view returns 0 rows for the forger. NP5b is its control: after a real accept, the same query returns 2.
+- NP4: as `service_role`, with the INSERT grant lent and then revoked, the insert is refused with 23514. NP4c checks the grant is gone again. NP4b checks no row was written.
+- NP6-NP8: an honest pending insert succeeds, and its 30-day back-date is replaced by now() and `requested_by` by the session.
+- NP9: the policy term is present, read structurally.
+- NP10: the recipient accepts the born-pending row.
+- NP12: housekeeping. The fixture is deleted so that LZ1b and the HTTP "4 published profiles" counts still hold.
+
+**Pins updated:**
+- NX2: 6/1/1 -> 7/2/1.
+- `network_leakage_phase6.sql` LE1b: 11/2/13/26 -> 11/2/14/27.
+- LE1d: the new function was added to its list.
+
+**HTTP: a new "C1 at the API surface" block in `run-rls-tests.sh`.**
+- The forger is GAMMA's manager, with a fresh published profile.
+- The forged POST gets 400 (the trigger's 23514) and the connected view stays empty.
+- The honest POST gets 201. The row is stored as `pending:true:true`, meaning born pending, with `requested_by` and `requested_at` stamped by the server. The view is still empty.
+
+### C1. Mutation results
+
+| Mutation | Result |
+|---|---|
+| Trigger dropped (full `run-rls-tests.sh`, temp migration, 222 migrations) | **12 red** in the network suite: NP0, NP1, NP2, NP3 and NP3b; NP4, NP4b and NP6; NP7, NP8, NP10 and NX2. **2 red** in leakage: LE1b and LE1d. See layering note 1. |
+| Policy term reverted, trigger kept (rolled-back transaction) | The forged insert still gets 23514 from the trigger. Only the NP9 structural check reads false. See layering note 2. |
+| Both layers off (rolled-back transaction) | The forged row lands and the connected view returns `secret@target.test`. The hole is back. |
+
+Layering notes:
+1. With the trigger dropped, NP1-NP3 became 42501, which is the policy holding. NP5 stayed 0, so the policy alone closes the leak for `authenticated`. NP3b landed, so `requested_by` forgery is caught by the trigger only. NP4 hit 23505 behind NP3b's row, but the trigger is the only layer that covers `service_role`.
+2. With the policy term reverted, every behavioural assertion stayed green. The trigger holds.
+
+### I1. FOLLOW-UPS.md restored
+
+- The file was rebuilt from `656362b`, and only 348523a's two intended hunks (`@@ -2546` and `@@ -3536`) were re-applied.
+- No commit after 348523a touched the file.
+- `git diff 656362b --stat` shows 18 insertions and 4 deletions, exactly those two hunks. The file is 4463 lines.
+- The C1 commit later added its own FOLLOW-UPS entry.
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | Clean. |
+| `npx next typegen` + `pnpm typecheck` | Clean. |
+| Reset + `run-rls-tests.sh` | "All suites passed", EXIT=0, 221 migrations. |
+| `vitest`: network, rls, phase7-permission-matrix, connection-request-budget, connection-reminder-notifications | 14 files, 781 tests passed. |
+| e2e `network.spec.ts` after a fresh reset | 1 passed. |
+| `vitest run tests/unit` | One timeout under load, in `no-private-table-in-network-path.test.ts` (5.6 s against a 5 s limit). It passed when re-run on its own. |
+
+### Commits
+
+- `d29d46f`: I1.
+- `f843c61`: C1.
