@@ -11,8 +11,9 @@
 // document a page that DOES NOT EXIST produces. This file does, directly, for
 // every Phase 8 surface that can refuse:
 //
-//   /super/legal, /super/data-requests  -- vs a /super URL that matches no
-//                                          route, per principal
+//   every /super page (all nine)        -- vs a /super URL that matches no
+//                                          route, per principal, rendered
+//                                          AND as raw HTML
 //   /[orgSlug]/settings/export          -- workspace-slug refusal: a real
 //                                          foreign slug vs a slug nobody has,
 //                                          and the literal 404 on both
@@ -28,9 +29,17 @@
 // workspace, and a member of a SUSPENDED workspace, who must still reach the
 // four /account pages (their statutory rights) while being refused /super.
 //
-// Compared as rendered innerText plus the document title -- raw bytes differ
-// on every response (CSP nonce, React stream ids), the argument
-// tenant-breakout.spec.ts's REFUSAL PARITY header makes in full.
+// Compared as rendered innerText plus the document title AND, for /super,
+// as the RAW HTML. tenant-breakout.spec.ts's argument that raw bytes need not
+// be compared holds where a real record and a ghost go through the SAME
+// route; here the route is the secret. Fix round 1 (review I2) measured it:
+// with the [...unknown] catch-all alone, the text and title matched but the
+// raw document did not -- each page's own loading.tsx skeleton is flushed
+// before its notFound(), and the inline flight data names the matched
+// segment -- so `curl` with any signed-in cookie listed the console's pages.
+// lib/supabase/middleware.ts now rewrites every /super request from a caller
+// who is not on the allowlist to one fixed path, and normaliseDocument()
+// below strips only what differs between two requests for the SAME URL.
 import { expect, test, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -46,6 +55,7 @@ import {
 } from "./support/fixtures";
 import { signIn, signOut } from "./support/sign-in";
 import { totpCode } from "../support/totp";
+import { SUPER_PAGE_URLS } from "../support/super-route-census";
 
 let world: E2eWorld;
 let noWorkspace: { id: string; email: string };
@@ -75,6 +85,10 @@ test.afterAll(async () => {
 const SUPER_GHOST = "/super/zzz-phase8-no-such-page";
 /** The Phase 8 /super surfaces, including the editor's query-string view. */
 const PHASE8_SUPER = ["/super/legal", "/super/legal?doc=terms", "/super/data-requests"];
+/** EVERY /super page (review M4: the catch-all and the rewrite cover all nine,
+ *  so the parity proof does too), from the census super-permissions.spec.ts
+ *  and a CI unit test hold to the app tree, plus the editor's query view. */
+const ALL_SUPER = [...SUPER_PAGE_URLS, "/super/legal?doc=terms"];
 /** A slug nothing can own: reserved-grammar-valid, never created. */
 const GHOST_SLUG = "zzz-phase8-ghost-workspace";
 const GHOST_ID = "00000000-0000-4000-8000-0000000000f8";
@@ -111,6 +125,40 @@ async function documentOf(page: Page, url: string) {
   };
 }
 
+/**
+ * A raw HTML document reduced to what is the same between two requests for
+ * ONE URL, and nothing more. MEASURED (fix round 1): two fetches of the same
+ * ghost differ in exactly these, and in nothing else --
+ *   - the per-request CSP nonce, and Next's per-request `__next_r` id;
+ *   - the canonical-URL echo `"c":[...]` of the requested path, which is the
+ *     caller's own input and says nothing about what exists;
+ *   - the dev server's React debug-info rows (`<id>:D"$<id>"`), whose number
+ *     varies from one request to the next, and the flight row ids that shift
+ *     with them, renumbered here by first appearance.
+ * The superuser control in the POSITIVE CONTROL test proves this does not
+ * erase the difference between two real pages.
+ */
+function normaliseDocument(html: string): string {
+  let s = html;
+  const nonce = /nonce="([^"]+)"/.exec(s)?.[1];
+  if (nonce) s = s.split(nonce).join("<nonce>");
+  s = s.replace(/__next_r="[^"]*"/g, '__next_r=""');
+  s = s.replace(/\\"c\\":\[[^\]]*\]/g, '\\"c\\":<requested>');
+  s = s.replace(/\\n[0-9a-f]+:D\\"\$[0-9a-f]+\\"/g, "");
+  const ids = new Map<string, number>();
+  s = s.replace(/(\\n|\$[A-Za-z]?|(?<=[A-Z]))([0-9a-f]+)(?=[:\\])/g, (_m, pre: string, id: string) => {
+    if (!ids.has(id)) ids.set(id, ids.size);
+    return `${pre}@${ids.get(id)}`;
+  });
+  return s;
+}
+
+/** The raw document a `curl` with this session's cookies would receive. */
+async function rawDocumentOf(page: Page, url: string): Promise<{ status: number; html: string }> {
+  const response = await page.request.get(url, { maxRedirects: 0 });
+  return { status: response.status(), html: normaliseDocument(await response.text()) };
+}
+
 /** The oracle property, for a page refusal: the refused surface and the ghost
  *  are the same document, and neither is a 403 or a bounce to /login. */
 async function expectParity(page: Page, who: string, real: string, ghost: string) {
@@ -136,10 +184,22 @@ test("POSITIVE CONTROL: the aal2 superuser reaches each Phase 8 /super page, and
     await expect(page.locator("body"), url).not.toContainText("Page not found");
   }
   await documentOf(page, SUPER_GHOST);
+  // THE NORMALISER CAN TELL TWO PAGES APART. Without this, "every refused page
+  // equals the ghost, raw" could be a normaliser that erases everything.
+  const real = await rawDocumentOf(page, "/super/legal");
+  const ghost = await rawDocumentOf(page, SUPER_GHOST);
+  expect(real.html.length, "the raw superuser page is empty").toBeGreaterThan(1000);
+  expect(real.html, "normaliseDocument() erased the difference between a real page and a ghost").not.toBe(
+    ghost.html,
+  );
+  // ...and it is stable: the same ghost twice is the same document.
+  expect((await rawDocumentOf(page, SUPER_GHOST)).html, "two fetches of one URL normalise differently").toBe(
+    ghost.html,
+  );
 });
 
 for (const who of ["read_only", "owner", "no-workspace", "suspended manager"] as const) {
-  test(`REFUSAL PARITY: ${who} -- every Phase 8 /super page equals a /super page that does not exist`, async ({
+  test(`REFUSAL PARITY: ${who} -- every /super page equals a /super page that does not exist, rendered and raw`, async ({
     page,
   }) => {
     if (who === "no-workspace") await signInByEmail(page, noWorkspace.email);
@@ -148,7 +208,16 @@ for (const who of ["read_only", "owner", "no-workspace", "suspended manager"] as
       await signIn(page, world, "manager");
     } else await signIn(page, world, who);
     try {
-      for (const url of PHASE8_SUPER) await expectParity(page, who, url, SUPER_GHOST);
+      for (const url of ALL_SUPER) await expectParity(page, who, url, SUPER_GHOST);
+      // THE RAW DOCUMENT (review I2): what `curl` sees, not what a browser
+      // renders. The ghost is fetched beside each page, not once, so a dev
+      // server warming up between the two cannot be mistaken for the oracle.
+      for (const url of ALL_SUPER) {
+        const ghost = await rawDocumentOf(page, SUPER_GHOST);
+        const real = await rawDocumentOf(page, url);
+        expect.soft(real.status, `${who}: ${url} raw status`).toBe(ghost.status);
+        expect.soft(real.html, `${who}: ${url} and ${SUPER_GHOST} must be the same raw HTML`).toBe(ghost.html);
+      }
     } finally {
       if (who === "suspended manager") await setOrganisationSuspended(world.orgId, false);
     }

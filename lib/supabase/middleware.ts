@@ -109,6 +109,25 @@ const PATHNAME_HEADER = "x-pathname";
  * lib/security/headers.ts.
  */
 const CSP_HEADER = "Content-Security-Policy";
+
+/** Where every /super request from a non-allowlisted caller is rewritten to.
+ *  Matches no page, so app/(app)/super/[...unknown] serves it. Proved over
+ *  raw HTTP in tests/e2e/phase8-refusal-parity.spec.ts. */
+const SUPER_REFUSAL_PATH = "/super/not-found";
+
+/** /super ROUTE HANDLERS, which the rewrite must NOT touch. A route handler
+ *  never streams, so it refuses with a literal 404 of its own (DESIGN.md
+ *  § Error pages); rewriting it onto the catch-all PAGE would turn that into
+ *  a streamed 200 HTML document -- measured, super-permissions.spec.ts's
+ *  screenshot-route test. tests/unit/security/super-page-census.test.ts walks
+ *  every route.* under app/(app)/super and fails if one is not matched here. */
+export const SUPER_ROUTE_HANDLER_PATHS: readonly RegExp[] = [
+  /^\/super\/feedback\/[^/]+\/screenshot\/?$/,
+];
+
+export function isSuperRouteHandler(pathname: string): boolean {
+  return SUPER_ROUTE_HANDLER_PATHS.some((re) => re.test(pathname));
+}
 const NONCE_HEADER = "x-nonce";
 
 export async function updateSession(request: NextRequest) {
@@ -170,6 +189,37 @@ export async function updateSession(request: NextRequest) {
       url.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
     }
     return copyCookies(response, NextResponse.redirect(url));
+  }
+
+  // /super REFUSAL PARITY, BEFORE ROUTING (Phase 8 Task 8 fix round 1, I2).
+  // Every /super page refuses a non-superuser with the streamed not-found
+  // document, and a /super URL that matches no page reaches the same document
+  // through the [...unknown] catch-all. MEASURED, that equalised the rendered
+  // text but not the RAW HTML: each page's own loading.tsx skeleton is flushed
+  // before its notFound() (that flush is why the refusal is a 200), and the
+  // inline flight data names the matched segment (`legal`, or the catch-all's
+  // `unknown` param). So `curl` with any signed-in cookie listed the operator
+  // console's pages. Rewriting EVERY /super/* request from anyone who is not
+  // on the allowlist to one fixed path means they are all routed to the same
+  // segment, and render the same bytes modulo nonce.
+  //
+  // THIS IS PARITY, NOT THE CONTROL. Each page still calls isSuperuser() and
+  // notFound()s for itself, and every read under /super is aal2-gated in the
+  // database. The predicate is the one isSuperuser() asks
+  // (public.is_platform_admin(), deliberately not aal-gated), so the
+  // allowlisted account is routed normally at aal1 too and the pages decide,
+  // exactly as before. An RPC error fails CLOSED, into the rewrite.
+  if (isSignedIn && isUnder(pathname, ["/super"]) && !isSuperRouteHandler(pathname)) {
+    const { data: onAllowlist, error } = await supabase.rpc("is_platform_admin");
+    if (error || onAllowlist !== true) {
+      const url = request.nextUrl.clone();
+      url.pathname = SUPER_REFUSAL_PATH;
+      url.search = "";
+      return copyCookies(
+        response,
+        NextResponse.rewrite(url, { request: { headers: requestHeaders } }),
+      );
+    }
   }
 
   if (isSignedIn && isUnder(pathname, SIGNED_OUT_ONLY_PATHS)) {

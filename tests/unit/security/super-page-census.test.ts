@@ -85,3 +85,30 @@ describe("the /super page census", () => {
     expect(superPageUrls(r)).toEqual(["/super", "/super/health"]);
   });
 });
+
+// Fix round 1 (review I2). The proxy rewrites every /super request from a
+// caller who is not on the allowlist onto the catch-all PAGE, so a /super
+// ROUTE HANDLER it does not exempt would lose its literal 404 and answer a
+// streamed 200 instead. Every route handler under /super must be exempt.
+describe("the /super refusal rewrite exempts every /super route handler", () => {
+  it("each route.* under app/(app)/super is matched by SUPER_ROUTE_HANDLER_PATHS, and no page is", async () => {
+    const { readdirSync } = await import("node:fs");
+    const { isSuperRouteHandler } = await import("@/lib/supabase/middleware");
+    const handlers: string[] = [];
+    const pages: string[] = [];
+    const walk = (dir: string, url: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.isDirectory()) {
+          const seg = /^\[.*\]$/.test(e.name) ? "00000000-0000-4000-8000-000000000001" : e.name;
+          walk(join(dir, e.name), `${url}/${seg}`);
+        } else if (/^route\.(ts|js|tsx|jsx)$/.test(e.name)) handlers.push(url);
+        else if (/^page\.(tsx|ts|jsx|js|mdx|md)$/.test(e.name)) pages.push(url);
+      }
+    };
+    walk(join(process.cwd(), "app", "(app)", "super"), "/super");
+    // DENOMINATOR: the walk sees the one handler that exists today.
+    expect(handlers).toContain("/super/feedback/00000000-0000-4000-8000-000000000001/screenshot");
+    for (const h of handlers) expect(isSuperRouteHandler(h), h).toBe(true);
+    for (const p of pages) expect(isSuperRouteHandler(p), p).toBe(false);
+  });
+});
