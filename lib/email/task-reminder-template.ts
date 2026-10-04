@@ -40,8 +40,9 @@ export function buildTaskReminderNotice(input: TaskReminderInput): EmailBody {
   const slug = slugOrRefuse("taskReminder", input.organisationSlug);
   if (!UUID.test(input.taskId)) throw new NoticeContentError("taskReminder notice refused: not a task id");
   const link = `${origin(input.siteUrl)}/${slug}/tasks/${input.taskId}`;
-  const title = oneLine(input.title, 200);
-  if (!title) throw new NoticeContentError("taskReminder notice refused: empty title");
+  // A title that neutralises to nothing (`https://`, `www.`) renders as a
+  // placeholder rather than refusing: a refusal here was a poison row (I2).
+  const title = oneLine(input.title, 200) || "Untitled task";
   const body = render(
     `Reminder: ${title}`,
     [

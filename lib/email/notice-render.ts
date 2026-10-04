@@ -3,7 +3,7 @@
 // an input allowlist and "no URL but the one in-app link" -- live here once.
 
 import { escapeHtml, type EmailBody } from "@/lib/email/templates";
-import { NoticeContentError } from "@/lib/email/requester-templates";
+import { NoticeContentError, assertOnlyLink as assertOnlyLinkShared } from "@/lib/email/requester-templates";
 
 /** Every key of `input` must be in `allowed`, or nothing is rendered. */
 export function assertInputAllowlisted(kind: string, allowed: readonly string[], input: object): void {
@@ -14,15 +14,8 @@ export function assertInputAllowlisted(kind: string, allowed: readonly string[],
   }
 }
 
-export function assertOnlyLink(kind: string, body: EmailBody, link: string): void {
-  for (const part of [body.subject, body.text, body.html]) {
-    for (const match of part.matchAll(/https?:\/\/[^\s"'<>)]+/g)) {
-      if (match[0] !== link) {
-        throw new NoticeContentError(`${kind} notice refused: it carries a URL that is not its one in-app link`);
-      }
-    }
-  }
-}
+/** The one shared check (requester-templates.ts): case-insensitive, every scheme, bare `www.`, on the final render. */
+export const assertOnlyLink = assertOnlyLinkShared;
 
 export const SLUG = /^[a-z0-9-]+$/;
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -37,15 +30,39 @@ export function slugOrRefuse(kind: string, slug: string): string {
 }
 
 /**
+ * NEUTRALISE EVERYTHING LINK-LIKE IN A PERSON'S TEXT, TO A FIXED POINT (Task 9b
+ * fix round 1, I3). One case-insensitive pass of an http(s) strip was beatable by
+ * reassembly: `HThttps://TPS://evil` lost its inner `https://` and became
+ * `HTTPS://evil`. So: NFKC first (full-width `ｈｔｔｐｓ：／／` folds to
+ * `https://`), format characters (zero-width joiners and spaces) dropped, then
+ * EVERY `<scheme>://` (any scheme, any case) and every `www.` is removed, and
+ * the removal repeats until the text stops changing -- a removal that
+ * reassembles a new one is caught by the next pass (`https:www.//evil` is
+ * the measured case: removing `www.` is what assembles the scheme, and a
+ * single pass leaves `https://evil` behind). Every pass shortens the
+ * string, so it terminates. Total: it never throws, so hostile text renders
+ * neutralised instead of poisoning the queue (I2).
+ *
+ * RESIDUAL, stated: a bare domain (`evil.example/login`) is left as typed --
+ * some clients autolink it, and removing dots between words would mangle
+ * ordinary names (`St. Luke's`, `Acme.co`). assertOnlyLink() still runs on
+ * every final render.
+ */
+export function neutraliseLinks(value: string): string {
+  let current = value.normalize("NFKC").replace(/\p{Cf}/gu, "");
+  for (;;) {
+    const next = current.replace(/[a-z][a-z0-9+.-]*:\/\//gi, "").replace(/www\./gi, "");
+    if (next === current) return current;
+    current = next;
+  }
+}
+
+/**
  * Free text from a person (a display name, a task title) is one line and
  * bounded, and cannot become a second link.
  */
 export function oneLine(value: string, max: number): string {
-  // URL schemes are dropped, so a title naming a website renders as text and
-  // can never be a second link (assertOnlyLink still runs after rendering).
-  const flat = value
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/https?:\/\//gi, "")
+  const flat = neutraliseLinks(value.replace(/[\r\n\t]+/g, " "))
     .replace(/\s{2,}/g, " ")
     .trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;

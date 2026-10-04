@@ -65,10 +65,19 @@ export function assertNoticeInputAllowlisted(kind: NoticeKind, input: object): v
   }
 }
 
-/** Every http(s) URL in the body must be exactly `link`. */
-export function assertOnlyLink(kind: NoticeKind, body: EmailBody, link: string): void {
+/**
+ * ANYTHING A MAIL CLIENT WOULD AUTOLINK: any scheme followed by `//`, in ANY
+ * case (Task 9b fix round 1, I3: `HTTPS://evil` slipped past a lowercase-only
+ * check), or a bare `www.` host. Read case-insensitively over the FINAL
+ * rendered subject, text and HTML, NFKC-normalised so a full-width
+ * `ｈｔｔｐｓ：／／` is the same thing as `https://`.
+ */
+export const LINK_LIKE = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s"'<>)]*/gi;
+
+/** Every link-like run in the body must be exactly `link`. */
+export function assertOnlyLink(kind: string, body: EmailBody, link: string): void {
   for (const part of [body.subject, body.text, body.html]) {
-    for (const match of part.matchAll(/https?:\/\/[^\s"'<>)]+/g)) {
+    for (const match of part.normalize("NFKC").matchAll(LINK_LIKE)) {
       if (match[0] !== link) {
         throw new NoticeContentError(`${kind} notice refused: it carries a URL that is not its one in-app link`);
       }

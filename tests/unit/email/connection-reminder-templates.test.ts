@@ -117,13 +117,91 @@ describe("task reminder", () => {
     expect(() => buildTaskReminderNotice({ ...reminder, [key]: value } as typeof reminder)).toThrow(NoticeContentError);
   });
 
-  it("refuses a task id that is not a uuid, and an empty title", () => {
+  it("refuses a task id that is not a uuid; an empty title renders a placeholder", () => {
     expect(() => buildTaskReminderNotice({ ...reminder, taskId: "../../x" })).toThrow(NoticeContentError);
-    expect(() => buildTaskReminderNotice({ ...reminder, title: "   " })).toThrow(NoticeContentError);
+    // An empty title no longer refuses (I2: a refusal was a poison row); it renders a placeholder.
+    expect(buildTaskReminderNotice({ ...reminder, title: "   " }).subject).toBe("Reminder: Untitled task");
   });
 
   it("a title naming a website stays text, not a second link", () => {
     const body = buildTaskReminderNotice({ ...reminder, title: "Check https://evil.test/login" });
     expect(new Set(urls(body))).toEqual(new Set([`${SITE}/world-promo/tasks/${TASK_ID}`]));
+  });
+});
+
+// TASK 9b FIX ROUND 1, I3: the one-link rule, against the reviewer's exact
+// payloads. A single case-insensitive strip of `https?://` turned
+// `HThttps://TPS://evil` into `HTTPS://evil`, and a case-sensitive check let
+// it through; `www.` was never touched. The check below is deliberately wider
+// and case-insensitive -- anything a mail client would autolink -- and reads
+// the FINAL subject, text and HTML.
+const LINK_LIKE_ANY_CASE = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s"'<>)]*/gi;
+function linkLike(body: { subject: string; text: string; html: string }): string[] {
+  return [...all(body).normalize("NFKC").matchAll(LINK_LIKE_ANY_CASE)].map((m) => m[0]);
+}
+
+const HOSTILE: ReadonlyArray<[string, string]> = [
+  ["the reviewer's nested mixed-case scheme", "Acme. Verify at HThttps://TPS://evil.example/login"],
+  ["the reviewer's lowercase reassembly", "hthttps://tps://evil.example/x"],
+  ["an upper-case scheme", "HTTPS://evil.example/login"],
+  ["a mixed-case scheme", "hTtPs://evil.example/login"],
+  ["a bare www host", "Visit www.evil.example/login"],
+  ["an upper-case bare www host", "Visit WWW.EVIL.EXAMPLE"],
+  ["www reassembled from a scheme", "wwhttps://w.evil.example"],
+  ["a scheme reassembled from www", "httwww.ps://evil.example"],
+  ["three levels of nesting", "hthththttps://tps://tps://evil.example"],
+  // These two need a SECOND pass: removing `www.` is what assembles the
+  // scheme, so a single pass leaves `https://evil.example` behind.
+  ["a scheme assembled by removing www.", "https:www.//evil.example/login"],
+  ["a scheme assembled by removing www. (upper case)", "HTTPS:/WWW./evil.example/login"],
+  ["another scheme", "ftp://evil.example and javascript://x"],
+  ["a full-width scheme", "ｈｔｔｐｓ：／／evil.example"],
+  ["a zero-width break inside the scheme", "htt​ps://evil.example"],
+  ["a scheme split by a newline", "ht\ntps://evil.example"],
+];
+
+describe("I3: nothing link-like survives a person's text, to a fixed point", () => {
+  describe.each([
+    ["received", buildConnectionReceivedNotice],
+    ["accepted", buildConnectionAcceptedNotice],
+    ["declined", buildConnectionDeclinedNotice],
+  ] as const)("connection %s, through the display name", (_label, build) => {
+    it.each(HOSTILE)("%s renders with ONE link and does not throw", (_why, name) => {
+      const body = build({ ...connection, counterpartyName: name });
+      expect(linkLike(body)).toEqual(
+        Array(linkLike(body).length).fill(`${SITE}/world-promo/network/requests`),
+      );
+      expect(linkLike(body).length).toBeGreaterThan(0);
+    });
+  });
+
+  it.each(HOSTILE)("task reminder: %s renders with ONE link and does not throw", (_why, title) => {
+    const body = buildTaskReminderNotice({ ...reminder, title });
+    const found = linkLike(body);
+    expect(found.length).toBeGreaterThan(0);
+    expect(new Set(found)).toEqual(new Set([`${SITE}/world-promo/tasks/${TASK_ID}`]));
+  });
+
+  it("the check itself is case-insensitive on the final render (a planted upper-case URL is refused)", async () => {
+    const { assertOnlyLink } = await import("@/lib/email/notice-render");
+    const link = `${SITE}/x`;
+    for (const planted of ["HTTPS://evil.example", "Www.evil.example", "FTP://evil.example"]) {
+      expect(() => assertOnlyLink("t", { subject: "s", text: `${planted} ${link}`, html: "" }, link)).toThrow(
+        NoticeContentError,
+      );
+    }
+    expect(() => assertOnlyLink("t", { subject: "s", text: link, html: `<a href="${link}">x</a>` }, link)).not.toThrow();
+  });
+
+  it("I2: a title that neutralises to nothing renders a placeholder instead of refusing", () => {
+    for (const title of ["https://", "www.", "HTTPS://www."]) {
+      const body = buildTaskReminderNotice({ ...reminder, title });
+      expect(body.subject).toBe("Reminder: Untitled task");
+    }
+  });
+
+  it("a display name that neutralises to nothing names nobody", () => {
+    const body = buildConnectionReceivedNotice({ ...connection, counterpartyName: "https://" });
+    expect(body.subject).toBe("A new connection request on GetSetPaid");
   });
 });
