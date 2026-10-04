@@ -350,6 +350,11 @@ describe("m-N7: the current bodies are derived from every publishing migration, 
       { file: "20260930009000_legal_pages_describe_erasure.sql", slugs: ["data-subject-rights", "data-retention"] },
       { file: "20261003009000_legal_retention_job_runs.sql", slugs: ["data-retention"] },
       { file: "20261004006000_legal_retention_says_what_is_not_deleted.sql", slugs: ["data-retention"] },
+      // Task 9a (founder 2026-09-30, Q142/Q145, with Q187's clause).
+      {
+        file: "20261008000000_legal_pages_name_the_hosts.sql",
+        slugs: ["privacy", "data-processing-addendum", "security", "subprocessors", "data-retention"],
+      },
     ]);
     // Seven distinct slugs have a version past 1; the other eight are still
     // their seed. Fifteen bodies either way.
@@ -420,8 +425,17 @@ describe("m-N7: the current bodies are derived from every publishing migration, 
   });
 });
 
-/** A line that states where data is hosted. */
-const HOSTING = /\b(UK\/EU|UK\/EEA|EU\/UK)\b[^.]*\bregion\b|\bhosted (in|within) the (UK|EU|EEA)\b/i;
+/** A line that states where data is hosted. Since Task 9a it also catches a
+ *  line that names a region (Ireland, an AWS-style region code). */
+const HOSTING =
+  /\b(UK\/EU|UK\/EEA|EU\/UK)\b[^.]*\bregion\b|\bhosted (in|within) the (UK|EU|EEA)\b|\bIreland\b|\b[a-z]{2}-[a-z]+-\d\b/i;
+/** Q145, founder 2026-09-30: the production database region, by name. A line
+ *  that states where data is hosted must say THIS, and must not carry the
+ *  "(deployment setting)" marker it carried while the region was unconfirmed. */
+const DATABASE_REGION = "Ireland (eu-west-1)";
+/** Q142, founder 2026-09-30: the application host. Its server is not bought,
+ *  so any line naming it must say its location is pending -- never a country. */
+const APP_HOST = /\bIONOS\b/;
 /** A transfer position stated as settled, in either direction. */
 const SETTLED_TRANSFER =
   /do not transfer|does not transfer|no (international |restricted )?transfer|not transferred|never (leaves|transferred)|only subprocessor outside|stays? (in|within) the UK|is transferred (to|outside)/i;
@@ -433,7 +447,10 @@ function unqualified(body: string): string[] {
   const failures: string[] = [];
   for (const line of body.split("\n")) {
     const gap = /^(- )?\[Counsel to (confirm|draft)/.test(line.trim());
-    if (HOSTING.test(line) && !line.includes("(deployment setting)") && !gap) failures.push(`region: ${line}`);
+    if (HOSTING.test(line) && !gap && (!line.includes(DATABASE_REGION) || line.includes("(deployment setting)"))) {
+      failures.push(`region: ${line}`);
+    }
+    if (APP_HOST.test(line) && !gap && !/\bpending\b/i.test(line)) failures.push(`app host: ${line}`);
     if (SETTLED_TRANSFER.test(line) && !gap) failures.push(`transfer: ${line}`);
     if (COMPLETENESS.test(line)) failures.push(`completeness: ${line}`);
   }
@@ -473,6 +490,18 @@ describe("fix round 2: every published page says one thing about hosting and tra
     expect(unqualified(seedBodies().get("privacy")!).some((f) => f.startsWith("transfer:"))).toBe(true);
     // The old generated row fails it too.
     expect(unqualified("UK/EU region only. No international transfer: the data is hosted in the UK/EU region.")).toHaveLength(2);
+    // Task 9a: the marked region line Privacy v3 / DPA v4 / Security v2 carried
+    // is now a failure (the region is named, founder 2026-09-30), and so is a
+    // guessed location for the application host.
+    const beforeTask9a = walkLegalBodies(readMigrations(), "20261008000000_legal_pages_name_the_hosts.sql").bodies;
+    for (const slug of ["privacy", "data-processing-addendum", "security"]) {
+      expect(unqualified(beforeTask9a.get(slug)!).some((f) => f.startsWith("region:")), slug).toBe(true);
+    }
+    expect(unqualified("Our servers are hosted by IONOS SE in London.")).toEqual([
+      "app host: Our servers are hosted by IONOS SE in London.",
+    ]);
+    expect(unqualified("Data is hosted by Supabase in Ireland (eu-west-1) (deployment setting).")).toHaveLength(1);
+    expect(unqualified("Data is hosted by Supabase in eu-west-2.")).toHaveLength(1);
     // And the hosting sentences it must judge are really there today (the
     // Subprocessors page's own region statement is in its generated table,
     // judged in the next test).
@@ -724,5 +753,116 @@ describe("the schema migration mirrors the app's closed sets", () => {
     const check = /legal_documents_body_tokens_known\s+check \(body !~ '\\\{\\\{\(\?!\(([^)]*)\)/.exec(schema)?.[1];
     expect(check, "legal_documents_body_tokens_known not found").toBeTruthy();
     expect(check!.split("|").map((t) => `{{${t}}}`).sort()).toEqual([...KNOWN_TOKENS].sort());
+  });
+});
+
+// ===========================================================================
+// PHASE 8 TASK 9a: THE HOSTS, NAMED (founder 2026-09-30, Q142/Q145; Q187)
+// ===========================================================================
+const hosting = readMigration("20261008000000_legal_pages_name_the_hosts.sql");
+
+describe("Task 9a: the four hosting pages name Ireland and IONOS SE, and the retention page says when a period is judged", () => {
+  const before = walkLegalBodies(readMigrations(), "20261008000000_legal_pages_name_the_hosts.sql").bodies;
+  const corrected = applyCorrections(hosting, before, "20261008000000");
+  const titles = new Map(LEGAL_DOCUMENTS.map((d) => [d.slug as string, d.title as string]));
+
+  it("corrects exactly the five pages, each with a real change", () => {
+    expect([...corrected.keys()].sort()).toEqual([
+      "data-processing-addendum",
+      "data-retention",
+      "privacy",
+      "security",
+      "subprocessors",
+    ]);
+    for (const [slug, body] of corrected) expect(body, slug).not.toBe(before.get(slug));
+  });
+
+  it.each(["data-processing-addendum", "data-retention", "privacy", "security", "subprocessors"])(
+    "%s passes the editor's own save-time validation",
+    (slug) => {
+      const result = validateDraft(slug as LegalSlug, {
+        title: titles.get(slug) ?? "",
+        body: corrected.get(slug) ?? "",
+        effectiveDate: "2026-10-08",
+      });
+      expect(result.ok ? {} : result.fieldErrors).toEqual({});
+    },
+  );
+
+  it("DENOMINATOR: the versions it supersedes carried the region marker and the unlisted host", () => {
+    for (const slug of ["privacy", "data-processing-addendum", "subprocessors"]) {
+      expect(before.get(slug), slug).toContain("**(deployment setting)**");
+      expect(before.get(slug), slug).not.toContain("IONOS");
+    }
+    expect(before.get("security")).toContain("The region is chosen in our hosting account **(deployment setting)**.");
+  });
+
+  it("Q145: the database region is named on every hosting page, and its marker is gone", () => {
+    for (const slug of ["privacy", "data-processing-addendum", "security"]) {
+      const body = corrected.get(slug)!;
+      expect(body, slug).toContain("hosted by Supabase in Ireland (eu-west-1)");
+      expect(body, slug).not.toMatch(/UK\/EU region/);
+    }
+    for (const slug of ["privacy", "data-processing-addendum", "subprocessors"]) {
+      expect(corrected.get(slug), slug).not.toContain("(deployment setting)");
+    }
+  });
+
+  it("the Security page keeps every marker that is NOT about the region", () => {
+    const body = corrected.get("security")!;
+    const markers = body.split("(deployment setting)").length - 1;
+    expect(markers).toBe(before.get("security")!.split("(deployment setting)").length - 2);
+    expect(markers).toBeGreaterThanOrEqual(6);
+    for (const control of ["Google sign-in", "two-factor settings", "12 hours in total", "sign-in check", "email delivery"]) {
+      const line = body.split("\n").find((l) => l.includes(control));
+      expect(line, control).toContain("(deployment setting)");
+    }
+  });
+
+  it("Q142: the application host is IONOS SE on all four pages, with its location pending and no country guessed", () => {
+    for (const slug of ["privacy", "data-processing-addendum", "security", "subprocessors"]) {
+      const body = corrected.get(slug)!;
+      expect(body, slug).toContain("IONOS SE");
+      expect(body, slug).toMatch(/pending/);
+      expect(body, slug).not.toMatch(/not yet listed/);
+      // Sentence by sentence: Privacy and the DPA name Ireland for the
+      // DATABASE in the sentence before the one naming the host.
+      const sentences = body.split(/(?<=\.)\s+/).filter((l) => l.includes("IONOS"));
+      expect(sentences.length, slug).toBeGreaterThan(0);
+      // (Each LINE naming the host says "pending": unqualified() asserts that
+      // for every current page, in the test above.)
+      for (const sentence of sentences) {
+        expect(sentence, slug).not.toMatch(/United Kingdom|\bin the UK\b|London|Ireland|Frankfurt|Berlin/);
+      }
+    }
+  });
+
+  it("Q187: the retention page says the period is judged at deletion, and keeps the sentence the RL binding reads", () => {
+    const body = corrected.get("data-retention")!;
+    expect(body).toContain("Which of the two applies is judged when the document is deleted");
+    expect(body).toContain("restored and deleted again is judged again at that second deletion");
+    // rls_phase8_retention.sql § RL page_sentences, verbatim with the numbers in.
+    expect(body).toContain("**The file behind a deleted document:** 2 years after the document was deleted");
+    expect(body).toContain("-- or 7 years if the document is attached to an event that carries financial entries");
+  });
+
+  it("refuses to run against any published version but the one it was written for, and publishes by id", () => {
+    for (const [slug, version] of [
+      ["privacy", 3],
+      ["data-processing-addendum", 4],
+      ["security", 2],
+      ["subprocessors", 2],
+      ["data-retention", 6],
+    ] as const) {
+      expect(hosting, slug).toMatch(new RegExp(`where slug = '${slug}' and status = 'published';\\n  if v_version <> ${version} then`));
+    }
+    expect(hosting).toMatch(/set status = 'published', published_at = now\(\)\s+where d\.id = v_new;/);
+    expect(hosting).not.toMatch(/where d\.status = 'draft'/);
+  });
+
+  it("commits no email address and records no counsel review", () => {
+    expect(hosting).not.toMatch(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/);
+    expect(hosting).not.toMatch(/mailto:/i);
+    expect(hosting).not.toMatch(/set\s+counsel_review|counsel_reviewer\s*=|counsel_review_recorded_by\s*=/);
   });
 });

@@ -184,6 +184,12 @@ test("the generated parts render from code: the storage table, the subprocessor 
     await expect(vendors).toContainText(vendor.name);
   }
   await expect(vendors).toContainText("Not yet signed");
+  // Founder 2026-09-30: the database region is named (Q145) and the
+  // application host's region is PENDING, never guessed (Q142).
+  await expect(vendors).toContainText("data hosted in Ireland (eu-west-1)");
+  await expect(vendors).toContainText("IONOS SE");
+  await expect(vendors).toContainText("server region PENDING");
+  await expect(vendors).not.toContainText("(deployment setting)");
 
   // The contact is configuration, not stored text: EITHER a mailto link OR
   // the sentence saying none is configured -- exactly one, never the raw
