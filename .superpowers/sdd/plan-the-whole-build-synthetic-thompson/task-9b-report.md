@@ -228,3 +228,35 @@ Layering notes:
 
 - `d29d46f`: I1.
 - `f843c61`: C1.
+
+## Fix round 1 (part B: I2, I3, minors)
+
+**Commits** (pushed): `feb1f95` I3, `f111cda` I2, `7d79147` m1, `17ef401` m5, `88f30cb` m2 + m4/m6 accepted. Migrations 221 -> 223 (`20261018000000`, `20261019000000`).
+
+### I3. One-link bypass
+- `neutraliseLinks()` (`lib/email/notice-render.ts`): NFKC, `\p{Cf}` dropped, then every `<scheme>://` (any scheme, any case) and `www.` removed **until the text stops changing**. `oneLine()` uses it, so it never throws.
+- `LINK_LIKE` / `assertOnlyLink()` (`lib/email/requester-templates.ts`, now the one check every builder uses): case-insensitive, any scheme or bare `www.`, on the NFKC-folded final subject/text/HTML.
+- An empty-after-neutralisation title renders "Untitled task" (was a throw, an I2 poison source).
+- Tests: the reviewer's two payloads, upper/mixed case, `www.`/`WWW.`, three-level nesting, other schemes, full-width, zero-width, newline-split, and two payloads that need a SECOND pass (`https:www.//evil`), across all four builders; a planted upper-case URL refused by the check.
+- Mutants: one-pass `https?://` strip -> 45 red; case-sensitive check -> 1 red; both (the reviewed state) -> 46 red; fixed-point loop removed -> 8 red (the second-pass payloads; the first cut had none, and went green -- caught and fixed).
+- Residual: a bare domain (`evil.example/login`) is left as typed (FOLLOW-UPS).
+
+### I2. Queue poisoning
+- Content is total (I3). A deterministic refusal (builder refused / no recipient) is TERMINAL: `public.mark_notices_undeliverable(notice, ids, reason)`, service_role only, refuses any session, written once, only for a subject in its email's state; the ledger gains `outcome` (`delivered`/`undeliverable`) and `reason` (`content_refused`/`no_recipient`) with an iff CHECK. A transient send failure is still retried.
+- **Fairness: per-workspace rank.** Both resolvers order by `row_number() over (partition by recipient workspace order by age)` first, then age -- one slot per workspace per round. Residual: 30+ workspaces of one tenant could fill a batch (7-day bound).
+- Integration `tests/integration/email/notice-queue-fairness.test.ts`: 31 poison reminders in A (builder wrapped to refuse "POISON" titles -- since I3 no person's text can), all older than B's one: B is sent in the SAME tick; all 31 end `undeliverable:content_refused`, none sent, none owed. Unit: refusal wiring, a hostile title SENT, a transient failure not terminal. psql § NU (13). Matrix runner census +1.
+- Mutants: fair order removed (live, restored) -> 1 red (FAIRNESS); refusal not recorded -> 1 integration + 2 unit red.
+
+### Minors
+- **m1** fixed: the connection resolver calls `private.organisation_network_presence_active()` on the counterparty (the directory policy's own predicate). psql NX13-NX13b. Mutant (rolled-back probe, predicate removed): a closed workspace's profile named `M1 B venue` vs `<none>` live.
+- **m2** fixed: runner census is **21** (20 + `mark_notices_undeliverable`) at CLAUDE.md and SECURITY.md § 2; psql pins summed: 4018 at 223 migrations.
+- **m4** ACCEPTED: forcing `now()` means reissuing the shared incident-alert guard for every writer (fixtures back-date `notified_at`) plus a full re-run; ms-level drift on a server-only column. FOLLOW-UPS.
+- **m5** fixed: several recipients are Bcc'd, To = the sender; one message, one stamp. Mutants: deliverEach always To -> 1 red; send.ts To=bcc list -> 1 red.
+- **m6** ACCEPTED: the service client is shared with the long-running export/erasure/retention runners, so a blanket fetch timeout would break them; a per-caller one changes the 440 s arithmetic (~520 s). FOLLOW-UPS.
+
+### Gates
+- `pnpm lint`, `next typegen` + `pnpm typecheck`: clean.
+- `tests/unit`: 2515, 1 red = `no-private-table-in-network-path` DENOMINATOR at 5.86 s vs a 5 s timeout under load (part A saw the same); 14/14 alone.
+- Reset (223 migrations) + `run-rls-tests.sh`: "All suites passed", EXIT=0, notification stamps 94 as pinned, HTTP all passed; 223 -> 223.
+- `vitest` email + rls + network + phase7-permission-matrix: 15 files, 783 passed (matrix 559).
+- No e2e (no UI change).
