@@ -38,7 +38,7 @@ Deliverability depends on it — without SPF/DKIM/DMARC, mail lands in spam.
    BREVO_SENDER_EMAIL=no-reply@getsetpaid.co.uk
    BREVO_SENDER_NAME=GetSetPaid
    ```
-3. Call it from a server action / edge function only:
+3. Call it from server-side code only (a server action or route handler):
    ```ts
    import { sendEmail } from "@/lib/email/send";
 

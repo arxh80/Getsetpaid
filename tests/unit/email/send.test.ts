@@ -99,7 +99,7 @@ describe("sendEmail", () => {
   // Fix round 1, finding I2: a connection that is accepted and never answered
   // was the one failure the typed-result contract did not cover -- the fetch
   // had no signal, so a Brevo stall held the submission for undici's 300 s
-  // default (or until the serverless host killed the function). The fetch
+  // default (or until the runtime ended the request). The fetch
   // below never resolves on its own; it only rejects when the signal the
   // sender passed it fires. Against the old code this test hangs.
   it("abandons a fetch that never answers, within the timeout, as a network error", async () => {

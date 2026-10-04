@@ -22,9 +22,9 @@ import "server-only";
 //
 // TIMEOUT (Phase 7 Task 6 fix round 1, finding I2): the typed-result contract
 // covered a rejected fetch and a non-2xx response but not a connection that
-// is accepted and never answered -- undici's default is 300 s, and a
-// serverless host kills the function long before that, so a Brevo stall was a
-// hung submission and, on retry, a duplicate row. Every call now carries an
+// is accepted and never answered -- undici's default is 300 s, far longer
+// than any user waits (and longer than some runtimes let a request live), so
+// a Brevo stall was a hung submission and, on retry, a duplicate row. Every call now carries an
 // AbortSignal; the abort surfaces through the same `network error` branch.
 
 const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
