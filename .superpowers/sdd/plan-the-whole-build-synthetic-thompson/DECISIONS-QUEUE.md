@@ -1102,3 +1102,25 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   the register before it processes anything (the register's own rule is
   "in the change that first sends it personal data"), because the founder
   named it; its row says "Not yet bought" so the two do not conflict.
+
+## Q194 -- Task 9a job 2, 2026-10-04
+
+- **Q194 -- which "superuser identity" goes into the account export for a
+  break-glass session?** (Phase 8 Task 9a, Q167 CHANGED, founder
+  2026-09-30.) `20261009000000` adds `reason` and `superuser_user_id` to the
+  account export's `impersonation_sessions` projection. The session records
+  the operator only as an account id; resolving it to an email or display
+  name would mean joining `auth.users`/`profiles` into an elevated read (the
+  read engine reads one table by columns and cannot join) and exporting
+  more than the session itself records. **Default (proceeding):** the
+  account id, plus a manifest note (`SUPPORT_ACCESS_NOTE`, manifest
+  `schemaVersion` 2) saying it is the GetSetPaid platform operator's account
+  -- at MVP there is one operator, the founder, and the privacy notice
+  already names GetSetPaid as controller and gives the support address.
+  Alternative: export the operator's display name (or a role label such as
+  "GetSetPaid platform operator") as a resolved column, which needs a view
+  or a second elevated catalogue row. **Also confirmed, no change:** "a
+  session that touched the data subject" = one they accepted or declined
+  (`admin_accepted_by` / `declined_by`), as the catalogue already scoped it;
+  a session in their workspace decided by a colleague is NOT included (a
+  current admin reads it through RLS; the workspace export carries it).
