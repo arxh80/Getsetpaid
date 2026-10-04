@@ -1253,6 +1253,65 @@ export async function clearAuditCeilingRelease(): Promise<void> {
 }
 
 // ===========================================================================
+// PHASE 8 TASK 9a (Q185): A DOCUMENT THE RETENTION POLICY PURGED
+// ===========================================================================
+
+export const PURGED_DOCUMENT_NAMES = {
+  /** Deleted three years ago, bytes purged by the retention job. */
+  purged: "E2E Purged Settlement.pdf",
+  /** Deleted yesterday, file kept -- the Restore control's denominator. */
+  kept: "E2E Kept Rider.pdf",
+} as const;
+
+/** A fixed purge instant: 23:30 UTC on 14 June is 15 Jun in London (BST). */
+export const PURGED_AT = "2026-06-14T23:30:00Z";
+
+/**
+ * Plant two DELETED documents in the world's workspace, owned by the manager:
+ * one whose bytes the retention job has purged, one whose file is kept. As
+ * `postgres`, because no client role can write `bytes_purged_at` -- it is the
+ * sweep's column (rls_phase8_retention.sql RK7/RK18). No object is put in the
+ * bucket for either: the restore queue reads metadata only.
+ */
+export async function plantPurgedAndKeptDocuments(
+  world: E2eWorld,
+): Promise<{ purgedId: string; keptId: string }> {
+  const purgedId = randomUUID();
+  const keptId = randomUUID();
+  await sql(
+    `insert into public.documents
+       (id, organisation_id, owner_user_id, filename, storage_key, mime_type,
+        size_bytes, scan_status, scanned_at, deleted_at, bytes_purged_at)
+     values ($1::uuid, $3::uuid, $4::uuid, $5, $6, 'application/pdf', 10, 'clean', now(),
+             now() - interval '3 years', $9::timestamptz),
+            ($2::uuid, $3::uuid, $4::uuid, $7, $8, 'application/pdf', 10, 'clean', now(),
+             now() - interval '1 day', null)`,
+    [
+      purgedId,
+      keptId,
+      world.orgId,
+      world.users.manager.id,
+      PURGED_DOCUMENT_NAMES.purged,
+      `${world.orgId}/${purgedId}`,
+      PURGED_DOCUMENT_NAMES.kept,
+      `${world.orgId}/${keptId}`,
+      PURGED_AT,
+    ],
+  );
+  return { purgedId, keptId };
+}
+
+/** `deleted/purged` as two booleans, e.g. `true/true`; `missing` if absent. */
+export async function documentDeletionState(id: string): Promise<string> {
+  const { rows } = await db().query<{ s: string }>(
+    `select (deleted_at is not null)::text || '/' || (bytes_purged_at is not null)::text as s
+       from public.documents where id = $1`,
+    [id],
+  );
+  return rows[0]?.s ?? "missing";
+}
+
+// ===========================================================================
 // PHASE 7 TASK 6: IN-APP FEEDBACK
 // ===========================================================================
 

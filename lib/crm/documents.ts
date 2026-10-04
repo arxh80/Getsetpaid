@@ -69,6 +69,7 @@ import { DOCUMENT_MAX_SIZE_BYTES } from "@/lib/security/upload-limits";
 import { buildStorageKey } from "@/lib/crm/storage-keys";
 import { getScanner, type ScanResult } from "@/lib/security/malware-scan";
 import { LINK_ENTITY_TYPES, type LinkEntityType } from "@/lib/crm/links";
+import { formatDate } from "@/lib/format/date";
 
 const PERMISSION = "manage_documents";
 
@@ -545,6 +546,36 @@ export async function restoreDocumentAction(
   }
 
   const supabase = await createClient();
+
+  // A FILE THE RETENTION POLICY DESTROYED CANNOT BE RESTORED (Q185, founder
+  // 2026-09-30) -- said in words, not as the generic "nothing to restore".
+  // The page shows a notice instead of Restore for such a row, but hiding is
+  // not enforcement: a forged POST naming a purged document's id lands here.
+  // This read goes through the caller's own RLS-bound client, so it can only
+  // learn about a row the caller can already see (no oracle for a foreign
+  // id -- that falls through to the update's ordinary refusal). The update's
+  // `bytes_purged_at is null` filter below and the database's
+  // `documents_purged_implies_deleted` CHECK stay behind it, in that order.
+  const purged = await supabase
+    .from("documents")
+    .select("bytes_purged_at")
+    .eq("organisation_id", org.id)
+    .eq("id", documentId)
+    .not("bytes_purged_at", "is", null)
+    .maybeSingle();
+  if (purged.error) {
+    console.error("[crm] document restore purge check failed:", purged.error.message);
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
+  if (purged.data?.bytes_purged_at) {
+    return {
+      error: `This file was deleted under the retention policy on ${formatDate(
+        String(purged.data.bytes_purged_at),
+      )}, so it can’t be restored.`,
+      values: echoedValues(formData),
+    };
+  }
+
   const result = await commitWrite(`document ${documentId} restore`, () =>
     supabase
       .from("documents")

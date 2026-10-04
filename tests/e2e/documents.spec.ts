@@ -1,6 +1,10 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import {
   DOCUMENT_NAMES,
+  PURGED_DOCUMENT_NAMES,
+  documentDeletionState,
+  plantPurgedAndKeptDocuments,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
@@ -187,4 +191,66 @@ test("the download Route Handler returns 409 for a quarantined document", async 
   await expect(
     quarantinedRow.getByText("Quarantined — cannot be opened"),
   ).toBeVisible();
+});
+
+// Q185 (founder 2026-09-30): a deleted document whose file the retention job
+// purged shows "File deleted under the retention policy on <date>" IN PLACE OF
+// Restore -- and the SERVER refuses the restore anyway. Hiding is not the
+// control, so the forged press below is the assertion that matters: the KEPT
+// row's own Restore form is re-pointed at the purged document's id in the DOM
+// and submitted for real, through the real Server Action.
+test("a document purged by retention shows when, offers no Restore, and a forced restore is refused", async ({
+  page,
+}) => {
+  const { purgedId, keptId } = await plantPurgedAndKeptDocuments(world);
+  expect(await documentDeletionState(purgedId)).toBe("true/true");
+  expect(await documentDeletionState(keptId)).toBe("true/false");
+
+  await signIn(page, world, "manager");
+  await page.goto(`/${world.orgSlug}/documents/deleted`);
+  await expect(
+    page.getByRole("heading", { name: "Deleted documents", level: 1 }),
+  ).toBeVisible();
+
+  // DENOMINATOR: the kept row renders, with its Restore control.
+  const keptRow = page.getByRole("row").filter({ hasText: PURGED_DOCUMENT_NAMES.kept });
+  await expect(keptRow).toHaveCount(1);
+  const keptRestore = keptRow.getByRole("button", { name: /^Restore/ });
+  await expect(keptRestore).toHaveCount(1);
+
+  // The purged row: the notice with the UK date, and NO Restore control.
+  const purgedRow = page.getByRole("row").filter({ hasText: PURGED_DOCUMENT_NAMES.purged });
+  await expect(purgedRow).toHaveCount(1);
+  await expect(
+    purgedRow.getByText("File deleted under the retention policy on 15 Jun 2026", { exact: true }),
+  ).toBeVisible();
+  await expect(purgedRow.locator("time[datetime^='2026-06-14T23:30:00']")).toHaveCount(1);
+  await expect(purgedRow.getByRole("button")).toHaveCount(0);
+
+  // A11y of the new state, with both kinds of row proved present above.
+  const scan = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(scan.violations, JSON.stringify(scan.violations, null, 2)).toEqual([]);
+
+  // THE FORCED POST. Re-point the kept row's hidden documentId at the purged
+  // document and press its Restore.
+  const forged = await keptRow.locator("input[type=hidden][name=documentId]").evaluate(
+    (el, id) => {
+      (el as HTMLInputElement).value = id;
+      return (el as HTMLInputElement).value;
+    },
+    purgedId,
+  );
+  expect(forged).toBe(purgedId);
+  await keptRestore.click();
+
+  // Read in the form's own alert (rendered "Error. <sentence>").
+  await expect(keptRow.getByRole("alert")).toHaveText(
+    "Error. This file was deleted under the retention policy on 15 Jun 2026, so it can’t be restored.",
+  );
+  // Nothing moved: the purged row is still deleted and purged, and the kept
+  // row (whose form was used) was not restored either.
+  expect(await documentDeletionState(purgedId)).toBe("true/true");
+  expect(await documentDeletionState(keptId)).toBe("true/false");
 });

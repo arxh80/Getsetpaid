@@ -472,6 +472,18 @@ re-date, refuses any client write to `bytes_purged_at`, and makes
 **CHECK** that a purged document is a deleted document, which closes restoring
 a document whose file is gone and stamping a live one.
 
+**Since Phase 8 Task 9a the product says so, and the action refuses it in
+words** (Q185, founder 2026-09-30). `/[orgSlug]/documents/deleted` reads
+`bytes_purged_at` and shows "File deleted under the retention policy on
+<date>" (the UK local day) in place of Restore. Hiding the control is not the
+enforcement, so three layers stand behind it, each mutation-tested
+(`task-9a-report.md`, job 4): `restoreDocumentAction` reads the row through
+the caller's own RLS client and refuses a purged one with that date; its
+update still carries `bytes_purged_at is null`; and the CHECK above refuses
+the restore for every writer — asked as the aal2 Owner in
+`rls_phase8_retention.sql` RK13a-c, and walked as a forged browser POST in
+`tests/e2e/documents.spec.ts`.
+
 **And the question is now asked of every clock, and of the next one**
 (`20261004001000`). `private.retention_clock_candidates()` DERIVES every
 date/timestamp column a retention function's own source names — where "a

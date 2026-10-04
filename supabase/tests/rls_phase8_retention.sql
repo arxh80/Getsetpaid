@@ -1491,8 +1491,22 @@ select rt.try('RK12 CONTROL: the scan-verdict UPDATE',
 select rt.try('RK13 CONTROL: RESTORE (deleted_at back to null) still works',
   $$update public.documents set deleted_at = null
      where id = '00000000-0000-4000-9000-000000006703'$$, 'ok(1)');
+-- Q185 (founder 2026-09-30): a document the retention job purged cannot be
+-- RESTORED BY THE TENANT either -- the same press RK13 just made succeed on
+-- an unpurged one, aimed at 6701 (stamped by RS20). RK15 asks it of
+-- `postgres`; this asks it of the session a forged browser POST has. The
+-- denominator first, so a refusal below is not an RLS miss in disguise.
+select rt.val('RK13a DENOMINATOR (Q185): the Owner sees 6701, deleted AND purged',
+  $$select (deleted_at is not null)::text || '/' || (bytes_purged_at is not null)::text
+      from public.documents where id = '00000000-0000-4000-9000-000000006701'$$, 'true/true');
+select rt.try('RK13b (Q185) the Owner''s RESTORE of a PURGED document is refused by the database',
+  $$update public.documents set deleted_at = null
+     where id = '00000000-0000-4000-9000-000000006701'$$, 'denied(23514)');
 reset role;
 reset request.jwt.claims;
+select rt.val('RK13c (Q185) ...and 6701 is unchanged: still deleted, still purged',
+  $$select (deleted_at is not null)::text || '/' || (bytes_purged_at is not null)::text
+      from public.documents where id = '00000000-0000-4000-9000-000000006701'$$, 'true/true');
 select rt.val('RK14 ...and the restored document is live and unpurged',
   $$select (deleted_at is null)::text || '/' || (bytes_purged_at is null)::text
       from public.documents where id = '00000000-0000-4000-9000-000000006703'$$, 'true/true');
