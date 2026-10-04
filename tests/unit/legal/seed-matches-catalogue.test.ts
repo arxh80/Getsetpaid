@@ -497,9 +497,23 @@ describe("fix round 2: every published page says one thing about hosting and tra
     }
     const supabase = SUB_PROCESSORS.find((v) => v.name === "Supabase, Inc.");
     expect(supabase?.location).toContain("United States");
-    expect(supabase?.location).toContain("(deployment setting)");
+    // Q145, founder 2026-09-30: the region is Ireland (eu-west-1), stated by
+    // name -- the "(deployment setting)" marker it carried while unconfirmed
+    // is gone, and a vaguer "UK/EU region" may not come back in its place.
+    expect(supabase?.location).toContain("data hosted in Ireland (eu-west-1)");
+    expect(supabase?.location).not.toContain("(deployment setting)");
+    expect(supabase?.location).not.toMatch(/UK\/EU/);
     expect(supabase?.transferBasis).toMatch(/^Not yet confirmed/);
     expect(supabase?.dpaSigned).toBe(false);
+    // Q142, founder 2026-09-30: the application host is IONOS SE, a German
+    // company, and its server region is PENDING (not bought yet) -- never a
+    // guessed region, and no transfer position settled ahead of it.
+    const ionos = SUB_PROCESSORS.find((v) => v.name === "IONOS SE");
+    expect(ionos?.location).toContain("Germany");
+    expect(ionos?.location).toContain("server region PENDING");
+    expect(ionos?.location).not.toMatch(/United Kingdom|\bUK\b|London|Ireland/);
+    expect(ionos?.transferBasis).toMatch(/^Not yet confirmed/);
+    expect(ionos?.dpaSigned).toBe(false);
   });
 
   it("the three transfer-facing pages each name both open facts in a counsel gap", () => {

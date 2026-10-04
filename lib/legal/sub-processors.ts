@@ -25,7 +25,7 @@
 //
 // Why not have the page read the Markdown file at runtime: the register is an
 // engineering document written for counsel (file paths, Q numbers, the
-// internal delivery seam), not customer copy, and the serverless bundle would
+// internal delivery seam), not customer copy, and the deployed bundle would
 // have to carry a docs/ file to do it. The data here is the customer-facing
 // wording of the same facts.
 
@@ -59,11 +59,14 @@ export const SUB_PROCESSORS: readonly SubProcessor[] = [
     personalData:
       "Everything the service stores: account details, workspace records, uploaded documents and the audit trail.",
     // Fix round 2 (M1): this row said "UK/EU region only" and "No
-    // international transfer" as fact. The region is a hosted-account setting
-    // nothing in this repository enforces, and whether a US-incorporated
-    // provider with no signed DPA involves a transfer is for counsel -- the
-    // same two points the Privacy Notice and DPA leave open.
-    location: "Incorporated in the United States; data hosted in a UK/EU region (deployment setting)",
+    // international transfer" as fact. Whether a US-incorporated provider
+    // with no signed DPA involves a transfer is still for counsel -- the same
+    // point the Privacy Notice and DPA leave open.
+    //
+    // Q145, founder 2026-09-30: the production project's region is Ireland
+    // (eu-west-1). The "(deployment setting)" marker this cell carried while
+    // the region was unconfirmed is gone; the region is now stated by name.
+    location: "Incorporated in the United States; data hosted in Ireland (eu-west-1)",
     transferBasis:
       "Not yet confirmed: whether this provider's incorporation in the United States involves a transfer of personal data outside the UK, and the safeguards for it, is for counsel to confirm.",
     dpaSigned: false,
@@ -88,6 +91,28 @@ export const SUB_PROCESSORS: readonly SubProcessor[] = [
         "**Built:** transactional email — the in-app feedback receipt and the incident-alert digest to the support contact, and the account-lockout notice to the affected account holder (`lib/email/send.ts`, `lib/email/lockout-notification.ts`). **Not yet configured:** Supabase Auth SMTP relay for sign-up, magic-link and reset mail — a hosted-project setting (`docs/email-setup.md` § 3) that nothing in the repository configures today; this row's scope widens to auth mail only when that step is done",
       personalData:
         "**Today:** the support contact's address; for a feedback receipt, the submitter's email, workspace name, role, the page path and **the message text they typed**; for a lockout notice, the locked account's email address. **Once the Auth relay is configured:** every user's address, on every sign-up / magic link / reset",
+    },
+  },
+  {
+    // Q142, founder 2026-09-30: the application host is an IONOS VPS. IONOS
+    // SE is a German company; the server is not bought yet and its region is
+    // "most likely UK" -- so the region is stated as PENDING, never guessed.
+    // When the server is bought, this cell and the register's change together
+    // (the drift test binds them) and the four hosting pages are republished.
+    name: "IONOS SE",
+    purpose:
+      "Will host the application servers, which handle every request to the service. The server has not been set up yet.",
+    personalData:
+      "Everything that passes through a request: session cookies, IP addresses, and the pages, records and files each request reads or writes.",
+    location: "Incorporated in Germany (EU); server region PENDING — the server has not been set up yet",
+    transferBasis:
+      "Not yet confirmed: it depends on the server's region, which is pending. Counsel to confirm the basis once the region is chosen.",
+    dpaSigned: false,
+    register: {
+      purpose:
+        "Application host — the virtual private server the Next.js application will run on. **Not yet bought:** nothing is deployed to it today",
+      personalData:
+        "Every request and response: session cookies, IP addresses, page content, form submissions and uploads in transit",
     },
   },
 ];

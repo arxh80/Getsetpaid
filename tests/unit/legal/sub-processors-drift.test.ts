@@ -88,6 +88,17 @@ describe("the public Subprocessors list matches docs/sub-processors.md", () => {
     }
   });
 
+  it("Q142 (founder 2026-09-30): the application host is in BOTH lists, with its region PENDING rather than guessed", () => {
+    const register = readRegister().find((r) => r.name === "IONOS SE");
+    const vendor = SUB_PROCESSORS.find((v) => v.name === "IONOS SE");
+    expect(register, "docs/sub-processors.md has no IONOS SE row").toBeDefined();
+    expect(vendor, "lib/legal/sub-processors.ts has no IONOS SE entry").toBeDefined();
+    for (const location of [register!.location, vendor!.location]) {
+      expect(location).toContain("Germany");
+      expect(location).toContain("PENDING");
+    }
+  });
+
   it("gives each the same DPA status -- the page must not claim an agreement the register says is missing", () => {
     const register = new Map(readRegister().map((r) => [r.name, r.dpaSigned]));
     for (const vendor of SUB_PROCESSORS) {
