@@ -361,7 +361,7 @@ carried forward.
 | What | Was (where) | Is | How measured |
 |---|---|---|---|
 | psql suite files | "twenty-two" (CLAUDE.md, twice) | **23** | `ls supabase/tests/*.sql \| wc -l` = 23; `grep '^run_suite "' supabase/tests/run-rls-tests.sh` = 23 |
-| pinned psql total | "TWENTY-TWO numbers … total 3825" (CLAUDE.md) | **3847**: the 22 before + `rls_phase8_permissions.sql` **22** (19 DV + 3 DR) | sum of the 23 `run_suite` pins; in the 00-control run, every suite sat at its pin |
+| pinned psql total | "TWENTY-TWO numbers … total 3825" (CLAUDE.md) | **3858**: the 22 before + `rls_phase8_permissions.sql` **22** (19 DV + 3 DR) + DSR 225 -> **228** (DW4a-c) + retention 267 -> **275** (RR7a-h). *Fix round 1 (review I3): this row said 3847, measured before `8b439ef` moved the two pins.* | sum of the 23 `run_suite` pins; in the 00-control run, every suite sat at its pin |
 | HTTP checks | 409 (baseline above) | **409**, unchanged | 409 `PASS` lines in `00-control.psql.log`, 0 `FAIL` |
 | permission matrix tests | "447 since Phase 8 Task 6" (CLAUDE.md); "290 since Phase 8 Task 1" (SECURITY.md § 2); "224 assertions" given as the current figure (SECURITY.md § 11) | **548** | vitest: `phase7-permission-matrix.test.ts (548 tests)` in `00-control.vitest.log` |
 | matrix principals | "seven principals" (SECURITY.md § 2, § 11) | **9**: 8 in `PRINCIPALS` (`:361`) + `superuserAal2` | read from the file |
@@ -374,7 +374,7 @@ carried forward.
 
 **What this task adds:**
 
-- psql: +1 suite, +22 assertions (3825 → 3847).
+- psql: +1 suite, +33 assertions (3825 → 3858): 22 in the new suite, 3 (DW4a-c) in the DSR suite, 8 (RR7a-h) in the retention suite. *(Said +22 / 3847 until fix round 1, review I3.)*
 - Permission matrix: 447 → 548 (+101).
 - e2e: +1 file and +9 tests (refusal parity). `super-permissions.spec.ts` now has 14.
 - Unit: `super-page-census.test.ts`, which runs in CI.
@@ -404,3 +404,60 @@ the e2e server log are the refusals the permission specs exercise, not errors.
 against vitest's 5 s default under full parallel load on this machine (1.1 s
 alone); green in this gate run. Give that test an explicit timeout or make it
 cheaper; never add retries.
+
+## Fix round 1
+
+Commits `d9be7b2` (I3), `ea993f8` (M1), `6d3f8f1` (I1), `d7f0e3b` (I2 + M4), on `worktree-legal-phase`, pushed. 210 migrations before and after (`supabase_migrations.schema_migrations` = 210 after the pre-run reset).
+
+**I1 (`6d3f8f1`).** The download-route parity test now plants a downloadable account export: `plantReadyAccountExport()` in `tests/e2e/support/fixtures.ts`. It inserts through the register's INSERT trigger, uploads an empty-but-valid zip to `exports/<id>.zip`, and walks queued, then running, then succeeded through the UPDATE trigger, which stamps `completed_at` and `expires_at` itself. The new positive control: the job's Owner gets a 302 whose `Location` is `/storage/v1/object/sign/exports/...`, and exactly one `export_job.downloaded` audit row is written. After that, anonymous, read_only, admin and no-workspace each compare the real id with the ghost id (status, normalised body, `Location`). The audit count must still be 1 at the end. Cleanup removes the object and the audit row (`deleteExportJobAndArchive`). Nothing was weakened, and the literal-404 expectations stand.
+
+**I2 (`d7f0e3b`). Measured first, then fixed.**
+- **Before the fix**, signed in as read_only, raw `GET` of each page, all HTTP 200:
+  - Sizes: `/super/legal` 67,064 bytes, `/super/data-requests` 70,228, `/super` 59,211, the ghost 59,461.
+  - `h-8` skeleton classes: 20 in legal, 4 in data-requests, 2 in the ghost.
+  - The catch-all's `unknown` param appeared in the ghost only (2 hits, 0 in each real page).
+  - So the reviewer's inference holds: the raw HTML identified the route.
+- **The fix.** `lib/supabase/middleware.ts` rewrites every signed-in `/super` request to the fixed `/super/not-found` (served by the `[...unknown]` catch-all) when the caller is not on the allowlist.
+  - The allowlist check is `public.is_platform_admin()`, the predicate `isSuperuser()` uses. It is not aal-gated, so the superuser at aal1 is still routed normally and the pages decide.
+  - An RPC error fails closed, into the rewrite.
+  - The pages keep their own `isSuperuser()` checks. This is parity, not the control.
+  - The first e2e run caught a regression: the rewrite would have turned `/super/feedback/[id]/screenshot` (a route handler with a literal 404) into a streamed 200. `/super` route handlers are now exempt via `SUPER_ROUTE_HANDLER_PATHS`.
+  - A new unit test in `super-page-census.test.ts` walks every `route.*` and `page.*` under `app/(app)/super`. Each handler must be exempt and no page may be. With the exemption regex removed, that test goes red (1 failed / 7 passed).
+- **After the fix:**
+  - Seven fetches in interleaved order: ghost, legal, ghost, data-requests, `/super`, a second ghost name, legal. All are byte-identical after `normaliseDocument()`.
+  - `normaliseDocument()` strips only what differs between two fetches of the same URL:
+    - the nonce;
+    - `__next_r`;
+    - the `"c":[...]` echo of the requested path;
+    - dev-only `<id>:D"$<id>"` debug rows, whose count varied even between two fetches of one ghost;
+    - flight row ids, renumbered by first appearance.
+  - New assertions in `phase8-refusal-parity.spec.ts`:
+    - for each of the 4 principals, raw status and normalised HTML must equal the ghost's, fetched beside each page;
+    - a superuser control: the normaliser must still tell `/super/legal` from the ghost, and must give the same result for two fetches of one URL.
+
+**M4 (`d7f0e3b`).** Both the rendered and the raw parity loops now iterate all 9 pages in `SUPER_PAGE_URLS`, plus `/super/legal?doc=terms`.
+
+**I3 (`d9be7b2` and this file).** Re-summed from the 23 `run_suite` pins: **3858** (88 183 694 187 91 11 151 127 214 121 89 56 182 151 128 204 168 143 **228** 137 208 **275** 22). Corrected:
+- CLAUDE.md's total and list;
+- the retention history (now "275 since Phase 8 Task 8");
+- the DSR prose (**228**);
+- § 7's row, and the delta, which is **+33** (22 in the new suite + 3 DW4a-c + 8 RR7a-h).
+
+SECURITY.md carried none of these numbers (grep for 3847/3825/225/267 found nothing).
+
+**Minors.**
+- **M1, fixed (`ea993f8`).** DR3 now pins `42501:consents: a consent can only be recorded from the data subject's own session`. That is the latest definition (`20260923003000`), checked live: a sessionless postgres insert raises exactly that. The suite count is unchanged at 22. The psql runner was **not** re-run this round.
+- **Accepted, with reasons:**
+  - M2, pinning the guard sentence per RPC: about 23 RPCs, which is not a one-line change. The reviewer's own reading found no false green.
+  - M3, the destructive-primitive census: replacing the name regex with a full pinned set is a census redesign.
+  - M5, re-running mutant 05a: a mutation batch run. The row stays accurate as history.
+  - M6, `aclexplode` in DV1/DV12: defence in depth only, and the matrix's privilege census already reads `relacl`/`attacl`.
+
+**Gates this round:**
+- `pnpm lint`: clean. `npx next typegen` + `pnpm typecheck`: clean.
+- `pnpm exec vitest run tests/unit`: 101 files / 2285 tests, all pass. One earlier run, made while the e2e dev server was compiling, had a load timeout in `no-private-table-in-network-path.test.ts`; it passed alone and in the full rerun.
+- **e2e, partial and still owed.** `phase8-refusal-parity.spec.ts`, `super-permissions.spec.ts` and `exports.spec.ts` were run before the route-handler exemption existed. Results:
+  - **24 of 26 passed.** These include every refusal-parity test (the raw-HTML parity for all 4 principals, the downloadable-export parity, and the superuser normaliser control), all 3 exports tests, and super-permissions 13-24.
+  - Tests 25 (the screenshot route) and 26 (the service-role key scan) died with `Target crashed` / worker exit `3221225794`. Claude Code reaped the run because the system was critically low on memory. Those are not assertion failures.
+  - The exemption was added after that run; it only narrows the rewrite. Because of the memory reaper, the run was not relaunched.
+  - **Owed:** one run of the three specs (fresh reset first), above all the screenshot-route test.
