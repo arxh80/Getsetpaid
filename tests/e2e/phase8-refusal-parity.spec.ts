@@ -137,6 +137,15 @@ async function documentOf(page: Page, url: string) {
  *     with them, renumbered here by first appearance.
  * The superuser control in the POSITIVE CONTROL test proves this does not
  * erase the difference between two real pages.
+ *
+ * NOT normalised, and not a difference: the dev server's stack trace in the
+ * document. The streamed notFound() under loading.tsx makes React emit
+ * `<template data-dgst="NEXT_HTTP_ERROR_FALLBACK;404" data-msg data-stck
+ * data-cstck>` ("switched to client rendering"); the three message/stack
+ * attributes are development-only (a production build emits `data-dgst`
+ * alone) and are byte-identical across refused URLs, because every one is
+ * rewritten onto the same route. The fix round 2 red only LOOKED like it was
+ * in that stack: the rest of the document follows it on one physical line.
  */
 function normaliseDocument(html: string): string {
   let s = html;
@@ -144,13 +153,94 @@ function normaliseDocument(html: string): string {
   if (nonce) s = s.split(nonce).join("<nonce>");
   s = s.replace(/__next_r="[^"]*"/g, '__next_r=""');
   s = s.replace(/\\"c\\":\[[^\]]*\]/g, '\\"c\\":<requested>');
-  s = s.replace(/\\n[0-9a-f]+:D\\"\$[0-9a-f]+\\"/g, "");
+  // Flight row ids are lowercase hex, and only flight syntax is renumbered
+  // (review N3: the earlier pattern also rewrote ordinary text, e.g. the `d`
+  // of `userId":` after an upper-case letter). A row id is the hex run at a
+  // ROW START -- after an unescaped `\n` separator, after the `[1,"` that
+  // opens a push, or straight after a text row's last byte, because a
+  // `<id>:T<hexlen>,` row is length-prefixed and the next row follows it with
+  // no separator; flightRowStarts() walks that length exactly. A reference is
+  // a whole escaped string `\"$<id>\"` / `\"$<id>:path`, optionally typed
+  // `\"$<p><id>` where <p> is `@` or a NON-hex letter.
+  //
+  // FIX ROUND 2 (the red in the full gate, owner, /super/legal?doc=terms):
+  // the old `\$[A-Za-z]?` greedily took the first digit of a PLAIN reference
+  // as a type prefix, so `"$f3"` (id f3) normalised as `$f` + id `3` while
+  // `"$e9"` stayed whole. The dev server's debug rows shift every id from one
+  // request to the next, so whether an id happened to start with a-f decided
+  // whether two identical documents normalised alike. MEASURED: the two
+  // documents differed only at `"$@113"` vs `"$f@108"` and the like -- the
+  // dev-only owner/debug-stack slots of React elements -- with the same
+  // structure on both sides. React's type prefixes (`$L`, `$@`, `$h`, `$Q`,
+  // `$W`, ...) are never a-f, so a-f straight after `$` is always the id.
+  const edits: { at: number; end: number; id?: string }[] = [];
+  for (const at of flightRowStarts(s)) {
+    const debugRow = /^[0-9a-f]+:D\\"\$[0-9a-f]+\\"/.exec(s.slice(at, at + 64));
+    if (debugRow) {
+      // The dev server's `<id>:D"$<id>"` debug rows, with their separator.
+      edits.push({ at: s.startsWith("\\n", at - 2) ? at - 2 : at, end: at + debugRow[0].length });
+      continue;
+    }
+    const row = /^[0-9a-f]+(?=:)/.exec(s.slice(at, at + 16));
+    if (row) edits.push({ at, end: at + row[0].length, id: row[0] });
+  }
+  for (const m of s.matchAll(/(\\+"\$[@g-zA-Z]?)([0-9a-f]+)(?=\\+"|:)/g)) {
+    const at = m.index + m[1].length;
+    edits.push({ at, end: at + m[2].length, id: m[2] });
+  }
+  edits.sort((a, b) => a.at - b.at);
   const ids = new Map<string, number>();
-  s = s.replace(/(\\n|\$[A-Za-z]?|(?<=[A-Z]))([0-9a-f]+)(?=[:\\])/g, (_m, pre: string, id: string) => {
-    if (!ids.has(id)) ids.set(id, ids.size);
-    return `${pre}@${ids.get(id)}`;
-  });
-  return s;
+  let out = "";
+  let cursor = 0;
+  for (const e of edits) {
+    if (e.at < cursor) continue; // a reference inside a debug row already dropped
+    out += s.slice(cursor, e.at);
+    if (e.id !== undefined) {
+      if (!ids.has(e.id)) ids.set(e.id, ids.size);
+      out += `@${ids.get(e.id)}`;
+    }
+    cursor = e.end;
+  }
+  return out + s.slice(cursor);
+}
+
+/** Where a flight row may start in the raw HTML (the flight is JS-string
+ *  escaped inside `self.__next_f.push([1,"..."])`): after an unescaped `\n`,
+ *  after `[1,"`, and at the end of each `<id>:T<hexlen>,<bytes>` text row,
+ *  found by decoding the escapes and counting UTF-8 bytes. A text row that
+ *  runs into the end of its push is skipped -- its successor is then not
+ *  renumbered, which can only make two documents differ, never match. */
+function flightRowStarts(s: string): number[] {
+  const starts: number[] = [];
+  const textRows: [number, number][] = [];
+  for (const m of s.matchAll(/[0-9a-f]+:T([0-9a-f]+),/g)) {
+    const from = m.index + m[0].length;
+    let i = from;
+    let bytes = 0;
+    const want = parseInt(m[1], 16);
+    while (bytes < want && i < s.length && s[i] !== '"') {
+      let unit: number;
+      if (s[i] === "\\") {
+        unit = s[i + 1] === "u" ? parseInt(s.slice(i + 2, i + 6), 16) : 0x20; // \n, \" etc: one byte
+        i += s[i + 1] === "u" ? 6 : 2;
+      } else {
+        unit = s.charCodeAt(i);
+        i += 1;
+      }
+      // UTF-16 code unit -> UTF-8 bytes; a surrogate pair is 2 + 2 = 4.
+      bytes += unit < 0x80 ? 1 : unit < 0x800 || (unit >= 0xd800 && unit < 0xe000) ? 2 : 3;
+    }
+    if (bytes === want) {
+      starts.push(i);
+      textRows.push([from, i]);
+    }
+  }
+  // A separator inside a text row's own bytes is content, not a row start.
+  for (const m of s.matchAll(/(?<!\\)\\n|\[1,"/g)) {
+    const at = m.index + m[0].length;
+    if (!textRows.some(([a, b]) => at > a && at <= b)) starts.push(at);
+  }
+  return starts;
 }
 
 /** The raw document a `curl` with this session's cookies would receive. */
