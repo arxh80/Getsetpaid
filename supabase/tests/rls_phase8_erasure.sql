@@ -1664,6 +1664,63 @@ select er.val('ES10 and the job it made names the REQUESTER, not the operator',
 
 
 -- ===========================================================================
+-- § EN N4 (owed from Task 9b): A CONNECTION-REQUEST PARTY IS ERASABLE
+--
+-- 20261020000000 pinned every network_connection_requests UPDATE with the
+-- bound_update trigger; its OWNER exemption is what lets the erasure's
+-- null_on_match roll clear requested_by / responded_by. Without it the
+-- erasure of anyone who ever sent or answered a request would refuse.
+-- ===========================================================================
+\o /dev/null
+select gen_random_uuid()::text as n4_user \gset
+select gen_random_uuid()::text as n4_org_a \gset
+select gen_random_uuid()::text as n4_org_b \gset
+select gen_random_uuid()::text as n4_req \gset
+select gen_random_uuid()::text as n4_comp_a \gset
+select gen_random_uuid()::text as n4_comp_b \gset
+select gen_random_uuid()::text as n4_prof_a \gset
+select gen_random_uuid()::text as n4_prof_b \gset
+\o
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+values (:'n4_user', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+        'erase-n4@test.local', now(), now(), now());
+set session_replication_role = replica;
+insert into public.organisations (id, name, slug) values
+  (:'n4_org_a', 'N4 A', 'erase-n4-a'), (:'n4_org_b', 'N4 B', 'erase-n4-b');
+-- REAL profiles: the erasure's own UPDATE re-validates every foreign key
+-- on the row it rewrites, so invented profile ids fail it (23503) for a
+-- reason that has nothing to do with N4.
+insert into public.companies (id, organisation_id, name) values
+  (:'n4_comp_a', :'n4_org_a', 'N4 A Co'), (:'n4_comp_b', :'n4_org_b', 'N4 B Co');
+insert into public.network_profiles (id, organisation_id, entity_kind, entity_id, display_name, status, published_at) values
+  (:'n4_prof_a', :'n4_org_a', 'company', :'n4_comp_a', 'N4 A', 'published', now()),
+  (:'n4_prof_b', :'n4_org_b', 'company', :'n4_comp_b', 'N4 B', 'published', now());
+insert into public.network_connection_requests
+  (id, from_organisation_id, from_network_profile_id, to_organisation_id, to_network_profile_id,
+   status, requested_by, responded_by, responded_at)
+values (:'n4_req', :'n4_org_a', :'n4_prof_a', :'n4_org_b', :'n4_prof_b',
+        'accepted', :'n4_user', :'n4_user', now());
+set session_replication_role = origin;
+select er.val('EN1 FIXTURE: the subject is BOTH requested_by and responded_by on a live row',
+  format($$select ((requested_by = %1$L) and (responded_by = %1$L))::text
+             from public.network_connection_requests where id = %2$L$$, :'n4_user', :'n4_req'), 'true');
+select er.try('EN2 erasing that subject SUCCEEDS (bound_update''s owner exemption admits the roll)',
+  format($$select private.erase_account(%L, null)$$, :'n4_user'), 'ok(1)');
+select er.val('EN3 ...and nulls BOTH columns, leaving the request itself in place',
+  format($$select (requested_by is null)::text || '/' || (responded_by is null)::text || '/' || status
+             from public.network_connection_requests where id = %L$$, :'n4_req'), 'true/true/accepted');
+select er.val('EN4 ...and the account is gone',
+  format($$select count(*)::text from auth.users where id = %L$$, :'n4_user'), '0');
+\o /dev/null
+set session_replication_role = replica;
+delete from public.network_connection_requests where id = :'n4_req';
+delete from public.network_profiles where id in (:'n4_prof_a', :'n4_prof_b');
+delete from public.companies where id in (:'n4_comp_a', :'n4_comp_b');
+delete from public.organisations where id in (:'n4_org_a', :'n4_org_b');
+set session_replication_role = origin;
+\o
+
+-- ===========================================================================
 -- EZ  HOUSEKEEPING
 -- ===========================================================================
 -- `session_replication_role = replica` for the register, the export suite's
