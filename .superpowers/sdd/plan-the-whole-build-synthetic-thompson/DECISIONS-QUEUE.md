@@ -1166,3 +1166,20 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   path (they go to `feedback-screenshots` through `submitFeedbackAction`, with
   the `feedback` 10/hour budget enforced at that table's INSERT), so they are
   not counted under `uploads` and nothing is double-counted.
+
+## Q197 -- Task 9a fix round 1 (review m3), 2026-10-04
+
+- **Q197 -- Q167's "every impersonation session that touched the data
+  subject": built as the sessions the subject DECIDED.** (Phase 8 Task 9a,
+  Q167, founder 2026-09-30.) `20261009000000` adds the break-glass `reason`
+  and `superuser_user_id` to the ACCOUNT export's `impersonation_sessions`
+  projection, scoped to the rows where `admin_accepted_by` or `declined_by`
+  is the requester -- the scope that already existed. A non-admin member
+  whose own records were visible during a colleague-accepted session gets
+  nothing, and has no other way to learn of that session (only admins read
+  `impersonation_sessions`). **Default (as built):** the subject's own
+  accept/decline decisions only. Alternative: any session whose impersonated
+  organisation includes the subject's records (i.e. every session on any
+  workspace they were a member of during its window) -- wider disclosure of
+  the operator's reason to every member, and a new membership-in-window join
+  in the elevated read.
