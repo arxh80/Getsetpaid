@@ -42,6 +42,31 @@ const COMPANY_NOTE = "RUNNER-COMPANY: a note the whole workspace can read";
 const DELETED_NOTE = "RUNNER-DELETED: a note that was deleted";
 const OTHER_TENANT = "RUNNER-OTHER-TENANT: a note in the other workspace";
 
+// Q167 CHANGED (founder 2026-09-30): four break-glass sessions, two of which
+// the account-export requester (the Manager) DECIDED and two of which they did
+// not. The reason text is the needle: it is what the account archive now
+// carries for the first two, and must still not carry for the last two.
+const BG_ACCEPTED = "RUNNER-BREAKGLASS-ACCEPTED: the manager let support in";
+const BG_DECLINED = "RUNNER-BREAKGLASS-DECLINED: the manager refused support";
+const BG_COLLEAGUE = "RUNNER-BREAKGLASS-COLLEAGUE: the owner decided this one";
+const BG_OTHER_TENANT = "RUNNER-BREAKGLASS-OTHER-TENANT: a session in the other workspace";
+const IMPERSONATION_PROJECTION = [
+  "id",
+  "target_organisation_id",
+  "superuser_user_id",
+  "reason",
+  "status",
+  "requested_at",
+  "admin_accepted_by",
+  "accepted_at",
+  "declined_by",
+  "declined_at",
+  "started_at",
+  "expires_at",
+  "ended_at",
+];
+const sessionIds: Record<string, string> = {};
+
 const CLEAN_BYTES = Buffer.from("%PDF-1.4 runner fixture, clean\n", "utf8");
 const DIRTY_BYTES = Buffer.from("%PDF-1.4 runner fixture, quarantined\n", "utf8");
 
@@ -180,6 +205,34 @@ beforeAll(async () => {
     else dirtyDocId = id;
   }
 
+  // ---- the break-glass sessions (Q167 CHANGED) ----------------------------
+  // Planted as postgres: every client transition goes through a SECURITY
+  // DEFINER RPC that demands aal2 and an org admin, and this file is about
+  // what the EXPORT does with the rows, not about the lifecycle (proved in
+  // rls_phase7_impersonation.sql). The status CHECK makes a declined session
+  // one that was never accepted, hence one row per decision.
+  for (const [label, org, decider, reason, decision] of [
+    ["accepted", fx.orgA.id, fx.activeByRole.manager.userId, BG_ACCEPTED, "accepted"],
+    ["declined", fx.orgA.id, fx.activeByRole.manager.userId, BG_DECLINED, "declined"],
+    ["colleague", fx.orgA.id, fx.ownerA.userId, BG_COLLEAGUE, "accepted"],
+    ["other", fx.orgB.id, fx.ownerB.userId, BG_OTHER_TENANT, "declined"],
+  ] as const) {
+    const { rows } = await pool.query<{ id: string }>(
+      decision === "accepted"
+        ? `insert into public.impersonation_sessions
+             (superuser_user_id, target_organisation_id, reason, status,
+              admin_accepted_by, accepted_at, started_at, expires_at, ended_at)
+           values ($1, $2, $3, 'ended', $4, now(), now(), now() + interval '1 hour', now())
+           returning id`
+        : `insert into public.impersonation_sessions
+             (superuser_user_id, target_organisation_id, reason, status, declined_by, declined_at)
+           values ($1, $2, $3, 'declined', $4, now())
+           returning id`,
+      [fx.superuser.userId, org, reason, decider],
+    );
+    sessionIds[label] = rows[0].id;
+  }
+
   // ---- the two jobs, started through the real INSERT path ----------------
   {
     const { data, error } = await fx.ownerA.client
@@ -207,6 +260,13 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (fx) {
+    // Before the fixtures: superuser_user_id / admin_accepted_by / declined_by
+    // have no ON DELETE, so a leftover session would block deleting the users.
+    await pool
+      .query(`delete from public.impersonation_sessions where id = any($1::uuid[])`, [
+        Object.values(sessionIds),
+      ])
+      .catch(() => undefined);
     await pool
       .query(`delete from public.export_jobs where id = any($1::uuid[])`, [
         [workspaceJobId, accountJobId].filter(Boolean),
@@ -290,7 +350,7 @@ describe("the workspace export, opened", () => {
   it("the manifest's row counts agree with the files beside them", async () => {
     const entries = await fetchArchive(workspaceJobId);
     const manifest = manifestOf(entries);
-    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.schemaVersion).toBe(2);
     expect(manifest.kind).toBe("workspace");
     for (const [table, count] of Object.entries(manifest.rowCounts)) {
       expect(tableOf(entries, table).length, `${table}'s manifest count is wrong`).toBe(count);
@@ -351,6 +411,50 @@ describe("the account export, opened", () => {
     const manifest = manifestOf(entries);
     expect(manifest.withheld.map((w) => w.what)).toContain("public.notes");
     expect(manifest.notes.join(" ")).toContain("does not contain the records a workspace keeps");
+  });
+
+  // Q167 CHANGED (founder 2026-09-30, 20261009000000). POSITIVE FIRST: the
+  // two sessions the requester decided are present, WITH the operator's
+  // reason and identity -- and only then that the two they did not decide
+  // are absent, so an empty file cannot pass the second half.
+  it("POSITIVE: every support-access session the person decided is in it, with the operator's reason and identity", async () => {
+    const sessions = tableOf(await fetchArchive(accountJobId), "impersonation_sessions");
+    const byId = new Map(sessions.map((r) => [r.id as string, r]));
+    expect(byId.get(sessionIds.accepted)?.reason).toBe(BG_ACCEPTED);
+    expect(byId.get(sessionIds.accepted)?.superuser_user_id).toBe(fx.superuser.userId);
+    expect(byId.get(sessionIds.accepted)?.admin_accepted_by).toBe(fx.activeByRole.manager.userId);
+    expect(byId.get(sessionIds.declined)?.reason).toBe(BG_DECLINED);
+    expect(byId.get(sessionIds.declined)?.superuser_user_id).toBe(fx.superuser.userId);
+    expect(byId.get(sessionIds.declined)?.declined_by).toBe(fx.activeByRole.manager.userId);
+  });
+
+  it("...and NO session they did not decide: not a colleague's in their own workspace, not another tenant's", async () => {
+    const entries = await fetchArchive(accountJobId);
+    const sessions = tableOf(entries, "impersonation_sessions");
+    // The Manager is a fresh fixture user, so these two are the whole set.
+    expect(sessions.map((r) => r.id).sort()).toEqual(
+      [sessionIds.accepted, sessionIds.declined].sort(),
+    );
+    for (const [name, bytes] of entries) {
+      const text = bytes.toString("utf8");
+      expect(text, `${name} carries a colleague's break-glass reason`).not.toContain(BG_COLLEAGUE);
+      expect(text, `${name} carries another tenant's break-glass reason`).not.toContain(BG_OTHER_TENANT);
+    }
+  });
+
+  it("...and each row carries exactly the projection: the operator's reason and id, nothing else of theirs", async () => {
+    const sessions = tableOf(await fetchArchive(accountJobId), "impersonation_sessions");
+    expect(sessions.length).toBeGreaterThan(0);
+    for (const row of sessions) {
+      expect(Object.keys(row).sort()).toEqual([...IMPERSONATION_PROJECTION].sort());
+    }
+  });
+
+  it("...and the manifest says what the operator id denotes", async () => {
+    const manifest = manifestOf(await fetchArchive(accountJobId));
+    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.notes.join(" ")).toContain("superuser_user_id");
+    expect(manifest.notes.join(" ")).toContain("platform operator");
   });
 
   it("the person's own data subject requests are in it", async () => {

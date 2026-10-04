@@ -339,14 +339,25 @@ select xp.val('XC10 EVERY elevated read is projected -- an unprojected one is se
   $$select count(*)::text from private.export_catalogue()
      where authorisation='elevated'
        and (projection is null or array_length(projection,1) is null)$$, '0');
-select xp.val('XC11 the impersonation projection withholds the operator''s reason and identity, and keeps the requester''s own decision',
-  $$select (not ('reason' = any(projection))
-            and not ('superuser_user_id' = any(projection))
-            and 'admin_accepted_by' = any(projection)
-            and 'declined_at' = any(projection))::text
+-- XC11 FLIPPED by 20261009000000 (founder 2026-09-30, Q167 CHANGED): the
+-- account export now INCLUDES the operator's break-glass reason and identity.
+-- Written as the EXACT column list rather than "contains reason": a
+-- projection that also picked up some third operator column would pass a
+-- containment check, and "nothing else new" is half the ruling's contract.
+select xp.val('XC11 the impersonation projection is EXACTLY the requester''s decision plus the operator''s reason and identity (Q167 CHANGED)',
+  $$select array_to_string(projection, ',')
       from private.export_catalogue()
-     where export_kind='account' and table_name='impersonation_sessions'$$, 'true');
-select xp.val('XC12 DENOMINATOR: those two columns really are on the table, so XC11 is not a typo passing',
+     where export_kind='account' and table_name='impersonation_sessions'$$,
+  'id,target_organisation_id,superuser_user_id,reason,status,requested_at,admin_accepted_by,accepted_at,declined_by,declined_at,started_at,expires_at,ended_at');
+-- XC14: ...and the ROWS it applies to did not widen with the columns. The
+-- sessions the requester DECIDED, and no others -- a session in their own
+-- workspace decided by a colleague carries a reason too, and is not theirs.
+select xp.val('XC14 the impersonation rows are still scoped to the sessions the requester accepted or declined',
+  $$select array_to_string(scope_columns, ',') || '|' || authorisation
+      from private.export_catalogue()
+     where export_kind='account' and table_name='impersonation_sessions'$$,
+  'admin_accepted_by,declined_by|elevated');
+select xp.val('XC12 DENOMINATOR: those two columns really are on the table, so XC11 names real columns',
   $$select count(*)::text from pg_attribute a
       join pg_class c on c.oid=a.attrelid
       join pg_namespace n on n.oid=c.relnamespace

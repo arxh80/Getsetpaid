@@ -65,9 +65,13 @@ a stated reason.** `audit_events` and `feedback` are superuser-only by policy,
 reachable only through a permission in a workspace the person may have left —
 so a requester-RLS read of any of them would have returned zero rows and
 passed. They are read as the definer, each filtered to the catalogue's scope
-column and, for the two that hold more than the requester's own data,
-PROJECTED to named columns (`audit_events` without `before`/`after`, which
-carry other tenants' structural values; `feedback` without the storage key).
+column and PROJECTED to named columns (`audit_events` without
+`before`/`after`, which carry other tenants' structural values; `feedback`
+without the storage key; `impersonation_sessions` — the sessions the person
+accepted or declined, and no others — WITH the operator's break-glass
+`reason` and `superuser_user_id` since `20261009000000`, founder 2026-09-30,
+Q167 CHANGED: the person who let support in, or refused it, is told why it
+was asked for and who asked).
 `private.export_catalogue_is_sound()` refuses an elevated row with no reason,
 and refuses one in the WORKSPACE export outright.
 

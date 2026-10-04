@@ -41,6 +41,7 @@ import { sanitiseFilename } from "@/lib/security/file-allowlist";
 import {
   EXPORT_BUCKET,
   EXPORT_MANIFEST_VERSION,
+  SUPPORT_ACCESS_NOTE,
   exportStorageKey,
   type ExportKind,
   type ExportManifest,
@@ -278,6 +279,12 @@ async function buildAndStore(supabase: ServiceClient, job: ClaimedJob): Promise<
         : "This archive is about your ACCOUNT. It does not contain the records a workspace keeps: those belong to the business that keeps them, and its Owner or Admin can export them from the workspace's own settings.",
       "Deleted records are included and carry their deleted_at timestamp.",
       "Times are UTC.",
+      // Q167 CHANGED (founder 2026-09-30): say what the break-glass columns
+      // mean, and only when the plan really exported the table.
+      ...(job.kind === "account" &&
+      plan.some((p) => p.table_name === "impersonation_sessions" && p.disposition === "exported")
+        ? [SUPPORT_ACCESS_NOTE]
+        : []),
     ],
   };
   zip.addJson("manifest.json", manifest, generatedAt);

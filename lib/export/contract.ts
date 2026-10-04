@@ -47,8 +47,29 @@ export const EXPORT_LIMITS = {
   archiveDays: 7,
 } as const;
 
-/** The archive's schema version, written into every manifest. */
-export const EXPORT_MANIFEST_VERSION = 1;
+/**
+ * The archive's schema version, written into every manifest.
+ *
+ * 2 since 20261009000000 (founder 2026-09-30, Q167 CHANGED): an ACCOUNT
+ * archive's `tables/impersonation_sessions.json` gained two columns, the
+ * operator's break-glass `reason` and `superuser_user_id`. A reader keyed to
+ * version 1's column set would otherwise meet them unannounced.
+ */
+export const EXPORT_MANIFEST_VERSION = 2;
+
+/**
+ * What the support-access rows in an ACCOUNT archive mean, stated in the
+ * manifest so the data subject can use them (Q167 CHANGED, founder
+ * 2026-09-30). The operator is identified by the account id recorded on the
+ * session -- the narrowest identifier the row holds -- and this note is what
+ * makes that id meaningful without exporting anything the session does not
+ * record (no email, no profile). Written only when the plan exports the table.
+ */
+export const SUPPORT_ACCESS_NOTE =
+  "tables/impersonation_sessions.json lists every support-access request you accepted or declined. " +
+  "Each one includes the reason GetSetPaid's operator gave for asking (`reason`) and the operator who " +
+  "asked (`superuser_user_id`, the GetSetPaid platform operator's account id). Requests that a colleague " +
+  "decided are not included: they are not your decision, and your workspace's Owner or Admin can see them.";
 
 /** The private bucket the archives live in. */
 export const EXPORT_BUCKET = "exports";

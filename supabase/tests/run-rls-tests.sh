@@ -966,7 +966,7 @@ fi
 # the real catalogue.
 # ============================================================================
 
-run_suite "PHASE 8 EXPORTS" rls_phase8_exports.sql xp 137 "${P7VARS[@]}"
+run_suite "PHASE 8 EXPORTS" rls_phase8_exports.sql xp 138 "${P7VARS[@]}"
 exp_fails=$SUITE_FAILS
 if [ "$exp_fails" != "0" ]; then
   echo "PHASE 8 EXPORT SUITE FAILED: $exp_fails failing assertion(s)" >&2

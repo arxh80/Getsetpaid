@@ -380,8 +380,13 @@ describe("every user-scoped table is exported or excused", () => {
   });
 
   it("exactly four account tables are read with elevated rights, and each has a reason", async () => {
-    const { rows } = await pool.query<{ table_name: string; reason: string | null; projection: string[] | null }>(
-      "select table_name, reason, projection from private.export_catalogue() where authorisation = 'elevated' order by table_name",
+    const { rows } = await pool.query<{
+      table_name: string;
+      reason: string | null;
+      projection: string[] | null;
+      scope_columns: string[] | null;
+    }>(
+      "select table_name, reason, projection, scope_columns from private.export_catalogue() where authorisation = 'elevated' order by table_name",
     );
     expect(rows.map((r) => r.table_name)).toEqual(ACCOUNT_ELEVATED);
     for (const row of rows) {
@@ -403,12 +408,32 @@ describe("every user-scoped table is exported or excused", () => {
     expect(byName.get("audit_events")?.projection).not.toContain("before");
     expect(byName.get("audit_events")?.projection).not.toContain("after");
     expect(byName.get("feedback")?.projection).not.toContain("screenshot_key");
-    // Q167: the operator's own words and the operator's own identity are not
-    // the requester's data. The columns describing THEIR decision are.
-    expect(byName.get("impersonation_sessions")?.projection).not.toContain("reason");
-    expect(byName.get("impersonation_sessions")?.projection).not.toContain("superuser_user_id");
-    expect(byName.get("impersonation_sessions")?.projection).toContain("admin_accepted_by");
-    expect(byName.get("impersonation_sessions")?.projection).toContain("declined_at");
+    // Q167 CHANGED (founder 2026-09-30, 20261009000000): the account export
+    // INCLUDES the operator's break-glass reason and identity alongside the
+    // columns describing the requester's own decision. Pinned EXACTLY, so a
+    // projection that grew some third operator column would go red here too.
+    expect(byName.get("impersonation_sessions")?.projection).toEqual([
+      "id",
+      "target_organisation_id",
+      "superuser_user_id",
+      "reason",
+      "status",
+      "requested_at",
+      "admin_accepted_by",
+      "accepted_at",
+      "declined_by",
+      "declined_at",
+      "started_at",
+      "expires_at",
+      "ended_at",
+    ]);
+    // ...and the ROWS did not widen with the columns: still only the sessions
+    // the requester accepted or declined. A colleague's session in the same
+    // workspace carries a reason too, and is not this person's.
+    expect(byName.get("impersonation_sessions")?.scope_columns).toEqual([
+      "admin_accepted_by",
+      "declined_by",
+    ]);
   });
 
   it("no workspace export table is read with elevated rights", async () => {

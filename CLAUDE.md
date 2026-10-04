@@ -532,7 +532,10 @@ signed-in person, no permission and no step-up — it is their own data about
 themselves and the statutory route must not be the only route) holds profile,
 memberships and roles, the consents ledger, their data subject requests,
 feedback they sent and its screenshot, the support-access sessions they
-accepted or declined, and the audit rows where they are the ACTOR. **The
+accepted or declined — each WITH the operator's break-glass `reason` and
+`superuser_user_id` since `20261009000000` (founder 2026-09-30, Q167
+CHANGED; a session a colleague decided is still not in it) — and the audit
+rows where they are the ACTOR. **The
 workspace export** (`/[orgSlug]/settings/export`, `export_organisation_data`,
 Owner and Admin only, behind step-up) holds every tenant-owned table of one
 organisation, soft-deleted rows included and flagged, plus the documents'
