@@ -1183,3 +1183,24 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   workspace they were a member of during its window) -- wider disclosure of
   the operator's reason to every member, and a new membership-in-window join
   in the elevated read.
+
+## Q198 -- Task 9b job 1 (req 2-3), 2026-10-04
+
+- **Q198 -- does a no-personal-data Telegram alert channel still need a
+  sub-processor row?** (Phase 8 Task 9b, Q111, founder 2026-09-30.)
+  `20261014000000` + `lib/telegram/*` send the operator one counts-only
+  Telegram message per delivery tick: alert type labels, counts and this
+  site's `/super/health` link, nothing else -- built from an explicit field
+  allowlist checked on every send, from a read that selects only
+  `id, alert_type` (the id is used for the stamp and never leaves the
+  server). Telegram (Telegram FZ-LLC) is based in Dubai, outside the UK/EU,
+  so if the channel carried personal data it would need a transfer mechanism
+  (IDTA/SCCs) and a register row. Residual facts counsel should weigh: the
+  recipient chat and the bot are the founder's own Telegram account (whose
+  metadata Telegram holds as the founder's own provider, not as ours), and a
+  count of e.g. "Repeated failed sign-ins: 1" is not about an identifiable
+  person without the database. **Default (proceeding):** no row in
+  `docs/sub-processors.md` / `lib/legal/sub-processors.ts`; documented in
+  `SECURITY.md` § 12 as a no-personal-data channel, with the allowlist test
+  as the evidence. Alternative: list Telegram with "Personal data: none" for
+  transparency (one row in both lists and the drift test's fixture).
