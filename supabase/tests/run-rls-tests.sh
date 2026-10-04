@@ -1160,10 +1160,11 @@ fi
 # Since JOB 3 (20261016000000, 42 -> 78) also § NL/NX: the connection-request
 # and task-reminder ledger (private.notification_deliveries) and its two
 # resolvers. Self-contained fixtures, removed in its own NL21/NZ.
-# Since Task 9b fix round 1 part B (78 -> 91): § NU, a deterministic refusal
-# recorded once and the per-workspace fair order (20261018000000, review I2).
+# Since Task 9b fix round 1 part B (78 -> 94): § NU, a deterministic refusal
+# recorded once and the per-workspace fair order (20261018000000, review I2),
+# and NX13-NX13b, a closed counterparty is not named (20261019000000, m1).
 # ============================================================================
-run_suite "PHASE 8 NOTIFICATION STAMPS" rls_phase8_notification_stamps.sql ns 91 "${P7VARS[@]}"
+run_suite "PHASE 8 NOTIFICATION STAMPS" rls_phase8_notification_stamps.sql ns 94 "${P7VARS[@]}"
 ns_fails=$SUITE_FAILS
 if [ "$ns_fails" != "0" ]; then
   echo "PHASE 8 NOTIFICATION STAMP SUITE FAILED: $ns_fails failing assertion(s)" >&2

@@ -503,6 +503,28 @@ select ns.val('NX12 an UNPUBLISHED counterparty is not named at all',
   format($$select coalesce(counterparty_name, '<none>') from public.pending_connection_request_notifications(30)
             where request_id = %L$$, :'r_acc'), '<none>');
 
+select ns.val('NX13 REACH: a DECLINED notice names the published counterparty while its workspace is live',
+  format($$select coalesce(counterparty_name, '<none>') from public.pending_connection_request_notifications(30)
+            where request_id = %L$$, :'r_dec'), 'NL Receiver One');
+reset role;
+set session_replication_role = replica;
+update public.organisations set lifecycle_state = 'deleted', deleted_at = now(), lifecycle_changed_at = now(),
+       retention_expires_at = now() + interval '60 days' where id = :'ob';
+set session_replication_role = origin;
+set role service_role;
+select ns.val('NX13a (m1) ...and once that workspace is CLOSED -- "No longer available" on the requests page -- the email names nobody',
+  format($$select coalesce(counterparty_name, '<none>') from public.pending_connection_request_notifications(30)
+            where request_id = %L$$, :'r_dec'), '<none>');
+reset role;
+set session_replication_role = replica;
+update public.organisations set lifecycle_state = 'active', deleted_at = null, lifecycle_changed_at = null,
+       retention_expires_at = null where id = :'ob';
+set session_replication_role = origin;
+set role service_role;
+select ns.val('NX13b ...and names it again when the workspace is reopened (the predicate, not a stale copy)',
+  format($$select coalesce(counterparty_name, '<none>') from public.pending_connection_request_notifications(30)
+            where request_id = %L$$, :'r_dec'), 'NL Receiver One');
+
 -- ---------------------------------------------------------------------------
 -- NL (cont.)  STAMPING, as the sender
 -- ---------------------------------------------------------------------------
