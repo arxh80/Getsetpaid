@@ -260,3 +260,144 @@ Layering notes:
 - Reset (223 migrations) + `run-rls-tests.sh`: "All suites passed", EXIT=0, notification stamps 94 as pinned, HTTP all passed; 223 -> 223.
 - `vitest` email + rls + network + phase7-permission-matrix: 15 files, 783 passed (matrix 559).
 - No e2e (no UI change).
+
+## Fix round 2 (N1, N2, N3)
+
+### N1. Probe first (fresh `db reset`, 223 migrations, before the fix)
+
+The probe ran in one rolled-back transaction.
+
+**Set-up, as `postgres`:**
+- Three orgs: forger T, victim X and ally A.
+- A Manager in each.
+- Three published profiles. X's `contact_email` is at `connections`.
+- An honest accepted T->A row.
+
+**Forgery, as `authenticated` with T's claims:** T sent X an honest pending request (born pending, so C1's trigger accepted it), then raw-UPDATEd it.
+
+```
+--- BEFORE: forger T reads victim X through the connected view
+(0 rows)
+--- FORGERY 1: T repoints its own PENDING row to X->T accepted, back-dated responded_at
+ b1000000-...-00000000000b | b1000000-...-00000000000a | accepted | 2026-09-26 19:39:03.268336+00 | a1000000-...-00000000000a
+UPDATE 1
+--- AFTER FORGERY 1: T reads X via the connected view
+ Probe Victim X | secret@victim.test
+--- FORGERY 2: T repoints its existing ACCEPTED T->A row at X (to_org/to_profile)
+ERROR:  new row violates row-level security policy for table "network_connection_requests"
+--- FORGERY 2b: or swap it so X is the sender and T the recipient
+ b1000000-...-00000000000b | b1000000-...-00000000000a | accepted
+UPDATE 1
+--- AFTER FORGERY 2b: T reads X via the connected view
+ Probe Victim X | secret@victim.test
+--- FORGERY 3: sender self-accept of its own pending row (no repoint)
+ERROR:  new row violates row-level security policy for table "network_connection_requests"
+```
+
+**It leaked, both ways.**
+- Pending row: rewritten to "X->T accepted", with `responded_at` back-dated 8 days, which puts it outside the notification window, so nobody is emailed.
+- Accepted row: swapped into "X->T".
+
+Repointing only the `to_*` columns away from T is refused, because the new `to_org` is not T's. That makes the swap the working variant.
+
+**After the fix:**
+- Every UPDATE that names a party column gets `permission denied` from the grant.
+- The sender's in-place accept gets `only the receiving organisation can accept a request` from the trigger.
+
+### N1. Fix: `20261020000000_connection_request_update_is_pinned.sql`
+
+**The trigger.** `bound_update` calls `private.connection_request_bound_update()`, BEFORE UPDATE, SECURITY INVOKER.
+- **Who it binds:** every role except `postgres` and `supabase_admin`, the same exemption as `born_pending`.
+- **Order:** it sorts first among the BEFORE UPDATE triggers.
+- **(a) Party and request columns are pinned.** A change to `id`, `from_/to_organisation_id`, `from_/to_network_profile_id`, `requested_by`, `requested_at` or `created_at` gets 23514.
+- **(c) A status change is bound to its side, judged on the OLD row.**
+  - `accepted` or `declined`: OLD `to_org` must be in `permitted_organisations('manage_network_connections')` and in `network_publish_organisations()`. These are the recipient policy's terms and the accept action's.
+  - `withdrawn`: OLD `from_org` must be in `permitted_organisations('manage_network_connections')`. There is no tier term, as in `authoriseWithdraw`.
+- **(b) Response columns are server-stamped.**
+  - On a status change, `responded_at := now()` and `responded_by := auth.uid()`, and a foreign `responded_by` is refused.
+  - With no status change, any edit to `responded_*` is refused. This closes the m3 remainder.
+
+**The column grant: yes.** `authenticated` now has UPDATE on `(status, responded_at, responded_by)` only, in place of the table-level grant.
+- It does not break the actions. `terminal()` in `lib/network/connections.ts` now sends `{status}` alone.
+- `responded_*` stay granted. A client that sends them is stamped over, not refused.
+
+**The guard comment:** the transition guard's comment is reissued.
+
+**Still working:** accept, decline, withdraw and the Q79 re-request. Coverage:
+- NU4, NP10 and NQ9, NR8/NR8b, NR9;
+- PN2 to PN5f in the audit suite;
+- the HTTP positive controls;
+- `network.spec.ts`.
+
+### N1. Assertions
+
+**psql: `rls_phase6_network.sql` § NQ, before § NU, pin 143 -> 161.**
+- **Structure:** NQ0 checks the trigger. NQ0b checks the column grant.
+- **The trigger, asked directly.** The table-level grant is lent and each statement expects 23514:
+  - NQ1: the swap to accepted, back-dated.
+  - NQ2: a repoint with no status change.
+  - NQ3: a back-dated `requested_at`.
+  - NQ4 and NQ5: the sender accepting or declining its own request.
+  - NQ5b: the recipient withdrawing.
+  - NQ6: accepting in a colleague's name, sending `responded_at` so that the CHECK cannot be what refuses it.
+- **The grant, as shipped:**
+  - NQ0c: the lent grant is returned.
+  - NQ8: a party-column UPDATE gets 42501.
+  - NQ8b: the target row is untouched.
+- **The leak:** NQ7 checks the connected view is 0 for the forger.
+- **After the honest accept (NP10, sending a back-dated `responded_at`):**
+  - NQ9: the stamp.
+  - NQ10: re-dating an answered row is refused.
+  - NQ11: swapping an accepted row's parties is refused.
+
+**Existing assertions that changed:**
+- **NR8:** a withdraw sending status alone is now ok. NR8b checks it was stamped.
+- **NU1, NU2 and NU5:** these still ask the policy. The trigger is disabled for exactly those statements, and NU2b and NU5c check it is enabled again.
+- **NG3b:** 9 -> 8.
+- **Leakage census:** LE1b 11/2/14/27 -> 11/2/15/28, and LE1d gains the function.
+- **Audit suite PN5c:** the same-status `responded_at` edit now runs as the exempt owner, because no client can make it any more. PN5d is unchanged.
+- **Privilege census:** the `UPDATE|*` entry becomes the three column entries.
+- **Docs:** CLAUDE.md total 4018 -> 4036 at 224 migrations. SECURITY.md § 2 and the FOLLOW-UPS m3 entry are corrected.
+
+**HTTP twin, "N1 at the API surface" in `run-rls-tests.sh`:**
+- The sender's repoint-to-accepted PATCH gets **403** (the grant).
+- The sender's status-only accept gets **400** (the trigger).
+- The connected view returns 0.
+- ALPHA's accept with a back-dated `responded_at` gets 204, and the row is stored `accepted:true:true:true`: parties unchanged, response stamped by the server.
+
+H4's sender PATCH now expects 400 rather than 403: the trigger refuses before the WITH CHECK is reached.
+
+### N1. Mutation results
+
+**How these were run:** in rolled-back transactions on the probe fixture. The function was rebuilt from the migration with one clause cut, and each NQ statement was run as `authenticated` with the grant lent. I did not do a full-suite rerun for each mutation, because of the 60-minute bound.
+
+| Mutation | Red |
+|---|---|
+| Trigger dropped | NQ1 **ok(1), leak 1**; the accepted-row swap **ok(1), leak 1**; NQ2/3/4/5b 23514 -> 42501; NQ6 ok; NQ9 unstamped; NQ10 ok. With the grant as shipped, party columns still get 42501 (NQ8, HTTP 403). |
+| Clause (a) cut | NQ2 and NQ3 -> 42501; **the sender swapping accepted T->A into X->T: ok(1), leak 1**. Only (a) stops a same-status swap. |
+| Clause (b) cut | NQ6 ok; NQ9 `recent=false, responded_by=false`; NQ10 ok. |
+| Clause (c) cut | NQ4, NQ5 and NQ5b -> 42501 (the policy as fallback). |
+| As shipped | All 23514; NQ9 stamped; leak 0. |
+
+### N2
+
+- **Template:** `task-reminder-template.ts` now quotes the title (`“${title}”.`), so the template's full stop never follows the person's text.
+- **Truncation:** `oneLine` neutralises again after truncating, because `…` NFKC-folds to `...`.
+- **Tests:** five new unit cases: `go to www`, `Visit WWW`, `www`, full-width `ｗｗｗ`, and a cut just after `www`. Each delivers one link and keeps its words. **All 5 are red with the lib change reverted.**
+
+### N3
+
+FOLLOW-UPS has a new section, "Opened by Phase 8 Task 9b fix round 2". It records that any `build()` throw, including a bad deploy, now permanently drops the notice.
+
+- **Default, as built:** keep the terminal record.
+- **Proposed mitigation:**
+  - Mark a notice `content_refused` only for a `NoticeContentError` on person-authored fields.
+  - Give builder-invariant failures (slug, uuid, date, allowlist) a separate class that is left unstamped and retried.
+  - Send a Telegram alert when one tick has several builder throws.
+
+### Gates
+- `pnpm lint`, `next typegen` + `pnpm typecheck`: clean.
+- Reset (224 migrations) + `run-rls-tests.sh`: "All suites passed", EXIT=0, Phase 6 network 161 as pinned, HTTP all passed (N1 twin 4/4); 224 -> 224. (First run, before the NU/NG3b rework: 4 red = NG3b 9->8, NU1/NU2/NU5 now 23514 from the trigger -- fixed by disabling it for exactly those statements.)
+- `vitest` tests/unit + network + email + rls + phase7-permission-matrix: 122 files, 3304 passed (an earlier tests/unit run under the parallel psql load had the known `no-private-table-in-network-path` DENOMINATOR 5 s timeout; green alone and in this run).
+- Fresh reset + `tests/e2e/network.spec.ts`: 1 passed (1.1 m).
+- Commits: 60f6b2e (N2), bb832e5 (N1), 5990f24 (N3).
