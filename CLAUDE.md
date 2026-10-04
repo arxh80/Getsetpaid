@@ -101,9 +101,12 @@ helper was entered recorded no row and VANISHED rather than failed, with
 fails on any `^psql:.*ERROR:` line (a guard that previously existed twice,
 copy-pasted, for two of the nineteen), and asserts the pinned total, which is
 the only thing that catches a `record()` row rolled back with its own
-transaction. **The TWENTY-THREE numbers, at 214 migrations, total 3897**: 88,
+transaction. **The TWENTY-THREE numbers, at 216 migrations, total 3900**: 88,
 183, 694, 187, 91, 11, 151, 127, 214, 121, 89, 56, 183, 151, 128, 204, 171,
-143, 228, 138, 208, 309, 22, in run order (Phase 8 Task 9a job 4 moved the
+143, 228, 138, 208, 312, 22, in run order (Phase 8 Task 9a fix round 1 moved
+the retention suite 309 -> 312, REL9a/REL11a/REL11b -- the ceiling release no
+longer moves the kill switches' updated_at, review m2; it was 3897 at 214
+migrations. Phase 8 Task 9a job 4 moved the
 rate-limit suite 182 -> 183, RV6d, and the retention suite 306 -> 309,
 RK13a-c -- Q113 and Q185, founder 2026-09-30 -- and corrected the exports
 suite to its pin, 138, not the 137 this list carried, so the total at 213

@@ -1093,6 +1093,14 @@ select rt.val('REL8 ...and NOT ONE of those refusals released anything or wrote 
            (select count(*) from public.audit_events where action = 'retention.audit_ceiling_released')::text
       from public.retention_settings s$$, 'true/0');
 
+-- THE KILL SWITCHES' TIMESTAMP, PINNED to a known past value so REL11a can
+-- tell "the release left it alone" from "the release stamped it now()"
+-- (20261013000000, review m2). Writing updated_at alone names no switch
+-- column, so the column-scoped trigger does not overwrite it.
+update public.retention_settings set updated_at = '2001-01-01 00:00:00+00' where id;
+select rt.val('REL9a DENOMINATOR: the switches'' updated_at holds the pinned value before the release',
+  $$select (updated_at = '2001-01-01 00:00:00+00'::timestamptz)::text from public.retention_settings$$, 'true');
+
 -- THE RELEASE, AS THE OPERATOR PRESSES IT.
 set role authenticated;
 set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a3","role":"authenticated","aal":"aal2"}';
@@ -1114,6 +1122,13 @@ select rt.val('REL11 it was audited ONCE, as the operator, with the reason and t
            bool_and((after->>'expires_at')::timestamptz - (after->>'released_at')::timestamptz = interval '72 hours')::text
       from public.audit_events where action = 'retention.audit_ceiling_released'$$,
   '1/true/rt backlog drain/true');
+select rt.val('REL11a the release did NOT move the kill switches'' updated_at (the panel''s "Last changed" line)',
+  $$select (updated_at = '2001-01-01 00:00:00+00'::timestamptz)::text from public.retention_settings$$, 'true');
+-- POSITIVE CONTROL: a switch column written still stamps it (L5 holds).
+update public.retention_settings set reason = coalesce(reason, '') || ' rt rel probe' where id;
+select rt.val('REL11b ...while writing a switch column still stamps updated_at (the trigger is live, not dropped)',
+  $$select (updated_at > '2001-01-01 00:00:00+00')::text from public.retention_settings$$, 'true');
+update public.retention_settings set reason = nullif(pg_catalog.left(reason, length(reason) - length(' rt rel probe')), '') where id;
 select rt.val('REL12 ...and the row the purge reads says ACTIVE',
   $$select private.audit_ceiling_release_active()::text$$, 'true');
 
