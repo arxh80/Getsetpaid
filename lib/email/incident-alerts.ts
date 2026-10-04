@@ -56,8 +56,12 @@ import "server-only";
 //   * the Telegram alert (below, founder 2026-09-30, Q111) is ONE request with
 //     a 10-second timeout (lib/telegram/send.ts), so it adds at most ten.
 //
-// Worst case now ~150 s against a 600 s tick (20261014000000 reissues the
-// clock function's comment with that number). The pg_net timeout does not
+//   * since 20261015000000, the DSR and export-ready notices (30 rows and a
+//     60-second budget each, ~70 s each) and the erasure-failure notice (one
+//     10-second call) -- lib/email/requester-notifications.ts.
+//
+// Worst case now ~300 s against a 600 s tick (20261015000000 reissues the
+// clock function's comment with that number; it was ~150 s at 20261014000000). The pg_net timeout does not
 // help with any of this: it abandons the response, it does not cancel the
 // handler.
 

@@ -1204,3 +1204,31 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   `SECURITY.md` § 12 as a no-personal-data channel, with the allowlist test
   as the evidence. Alternative: list Telegram with "Personal data: none" for
   transparency (one row in both lists and the drift test's fixture).
+
+## Q199-Q201 -- Task 9b job 2 (req 1: DSR, erasure, export emails), 2026-10-04
+
+- **Q199 -- an erased requester gets no "request closed" email.** An
+  account-scope erasure request is closed BY the erasure job, in the same
+  transaction that re-points the row at the Q130 tombstone and deletes the
+  account -- so by the time the tick runs there is no address to send to
+  (and the tombstone's own `.invalid` address is excluded by name in
+  `public.pending_dsr_notifications()`). The "received" email has normally
+  gone already (the erasure is a later, step-up-gated act). **Default
+  (proceeding):** no closure email for an erased requester; the row's
+  `closed_notified_at` stays null, which is honest ("never emailed").
+  Alternative: send a closure notice synchronously from the erasure path
+  BEFORE the address is deleted -- a send inside an all-or-nothing database
+  transaction, which would email "deleted" for an erasure that then rolls
+  back.
+- **Q200 -- a failed erasure's reason has no dashboard view.** The superuser
+  notice carries a count and a `/super/data-requests` link only (founder
+  2026-09-30: no personal data beyond what the dashboard shows). But no
+  `/super` page lists failed `erasure_jobs` or their `failure_reason`; the
+  operator reads the row in the database. **Default (proceeding):** email as
+  built; no new UI in this job. Alternative: a small "failed erasures" list
+  on `/super/data-requests` (job seq, kind, completed_at, reason).
+- **Q201 -- the seven-day window on requester notices.** The resolvers send a
+  DSR received/closed or export-ready notice only within seven days of the
+  event, so a first deploy (or a clock outage) does not mail people about
+  month-old requests; older rows stay unstamped. **Default (proceeding):**
+  seven days. Alternative: no window (every historical row is emailed once).

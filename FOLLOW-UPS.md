@@ -4137,7 +4137,11 @@ three documents.
   consequence of "an archive is a snapshot taken under ONE person's rights";
   if it ever reads as a bug, the fix is a shared *workspace* export with a
   stated access basis, not a relaxed SELECT policy.
-- **Nothing tells the requester the export is ready.** Q45 for the seventh
+- **CLOSED in Phase 8 Task 9b job 2** (founder 2026-09-30, Q157(3)/Q174/Q45;
+  `20261015000000`): the requester is now emailed when the export is ready,
+  linking the in-app export page only, stamped `ready_notified_at` after
+  `ok:true`. The original entry, kept as history: **Nothing tells the
+  requester the export is ready.** Q45 for the seventh
   feature: the page is the whole notification, and a person who starts an
   export and closes the tab finds out by coming back. The sender exists
   (`lib/email/send.ts`) and the seam is obvious (a `notified_at` column would
@@ -4187,7 +4191,10 @@ three documents.
   one feature that is arguably correct — the address to send it to is one of
   the things being deleted — but it is a decision, not an oversight, and it
   means a FAILED erasure is discovered only by signing back in and looking at
-  `/account/erase`.
+  `/account/erase`. **Half-closed in Phase 8 Task 9b job 2** (`20261015000000`):
+  a failed erasure now emails the SUPERUSER a count and a `/super` link
+  (founder 2026-09-30); the person is still not emailed either way, and the
+  failure reason still has no dashboard view (Q200).
 - **A job left `running` blocks its subject for ever**, exactly as Q166 says
   of the export runner, and the consequence is worse here: the
   `erasure_jobs_one_live_account_job` index refuses the next ask, so a person
