@@ -83,7 +83,7 @@ export type ErasureFailureNoticeResult =
 export interface Pending {
   /** For the log line and the stamp -- never an address. */
   readonly id: string;
-  /** One or more recipients of ONE message (job 3's connection notices go to a workspace's owners and admins together). */
+  /** One or more recipients of ONE message (job 3's connection notices go to a workspace's owners and admins together, blind-copied -- m5). */
   readonly to: readonly string[];
   readonly build: () => EmailBody;
   readonly stamp: () => Promise<{ error: { message: string } | null }>;
@@ -145,7 +145,14 @@ export async function deliverEach(label: string, rows: readonly Pending[]): Prom
 
     let result: SendEmailResult;
     try {
-      result = await sendEmail({ to: row.to.map((email) => ({ email })), subject: body.subject, html: body.html, text: body.text });
+      // ONE recipient is addressed; SEVERAL are blind-copied, so colleagues
+      // never receive each other's addresses (Task 9b review m5).
+      const recipients = row.to.map((email) => ({ email }));
+      result = await sendEmail(
+        recipients.length === 1
+          ? { to: recipients, subject: body.subject, html: body.html, text: body.text }
+          : { to: [], bcc: recipients, subject: body.subject, html: body.html, text: body.text },
+      );
     } catch (err) {
       result = { ok: false, error: err instanceof Error ? err.name : "unknown error" };
     }

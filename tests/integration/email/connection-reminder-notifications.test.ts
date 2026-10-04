@@ -33,10 +33,11 @@ const transport = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/email/send", () => ({
-  sendEmail: async (input: { to: { email: string }[]; subject: string; text: string; html: string }) => {
+  sendEmail: async (input: { to: { email: string }[]; bcc?: { email: string }[]; subject: string; text: string; html: string }) => {
     const ledgerAtSend = transport.probe ? await transport.probe() : -1;
     transport.sent.push({
-      to: input.to.map((t) => t.email).sort(),
+      // Everybody the message reaches; m5's To-vs-Bcc split is unit-tested.
+      to: [...input.to, ...(input.bcc ?? [])].map((t) => t.email).sort(),
       subject: input.subject,
       text: input.text,
       html: input.html,

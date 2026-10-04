@@ -18,8 +18,10 @@ const db = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/email/send", () => ({
-  sendEmail: async (i: { to: { email: string }[] }) => {
-    events.log.push(`send:${i.to.map((t) => t.email).join("+")}`);
+  sendEmail: async (i: { to: { email: string }[]; bcc?: { email: string }[] }) => {
+    events.log.push(
+      `send:${i.to.map((t) => t.email).join("+")}${i.bcc ? `|bcc:${i.bcc.map((t) => t.email).join("+")}` : ""}`,
+    );
     return send.fn(i);
   },
 }));
@@ -83,7 +85,8 @@ describe("connection-request notices", () => {
     expect(result).toEqual({ outcome: "delivered", sent: 2, failed: 0, deferred: 0 });
     expect(events.log).toEqual([
       "rpc:pending_connection_request_notifications",
-      "send:admin@b.test+owner@b.test",
+      // m5: several recipients are blind-copied -- nobody in To.
+      "send:|bcc:admin@b.test+owner@b.test",
       "stamp:connection_received:r1",
       "send:sender@a.test",
       "stamp:connection_declined:r2",

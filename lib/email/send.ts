@@ -39,6 +39,13 @@ export interface EmailAddress {
 
 export interface SendEmailInput {
   to: EmailAddress[];
+  /**
+   * Blind recipients. A message to SEVERAL people who should not see each
+   * other's addresses (Task 9b review m5: a connection notice to a
+   * workspace's Owners and Admins) passes them here with `to: []`; Brevo
+   * requires a `to`, so the message is then addressed to the sender itself.
+   */
+  bcc?: EmailAddress[];
   subject: string;
   html: string;
   /** Plain-text fallback. Optional but recommended for deliverability. */
@@ -88,9 +95,12 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     return { ok: false, error: "no sender: set BREVO_SENDER_EMAIL or pass `from`" };
   }
 
-  if (input.to.length === 0) {
+  const bcc = input.bcc ?? [];
+  if (input.to.length === 0 && bcc.length === 0) {
     return { ok: false, error: "no recipients" };
   }
+  // Undisclosed recipients: nobody in To but the sender, everybody in Bcc.
+  const to = input.to.length > 0 ? input.to : [from];
 
   let response: Response;
   try {
@@ -103,7 +113,8 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       },
       body: JSON.stringify({
         sender: from,
-        to: input.to,
+        to,
+        ...(bcc.length > 0 ? { bcc } : {}),
         subject: input.subject,
         htmlContent: input.html,
         ...(input.text ? { textContent: input.text } : {}),
