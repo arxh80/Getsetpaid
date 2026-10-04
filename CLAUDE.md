@@ -101,12 +101,16 @@ helper was entered recorded no row and VANISHED rather than failed, with
 fails on any `^psql:.*ERROR:` line (a guard that previously existed twice,
 copy-pasted, for two of the nineteen), and asserts the pinned total, which is
 the only thing that catches a `record()` row rolled back with its own
-transaction. **The TWENTY-THREE numbers, at 210 migrations, total 3847**: 88,
+transaction. **The TWENTY-THREE numbers, at 210 migrations, total 3858**: 88,
 183, 694, 187, 91, 11, 151, 127, 214, 121, 89, 56, 182, 151, 128, 204, 168,
-143, 225, 137, 208, 267, 22, in run order. They were measured by Phase 8 Task 8's
-mutation control run (every suite at its pin, HTTP 409 PASS / 0 FAIL). The
-twenty-third, `rls_phase8_permissions.sql` (22), moved no other pinned number;
-it said twenty-two and 3825 before that. Task 7's
+143, 228, 137, 208, 275, 22, in run order -- summed from the `run_suite` pins
+in `supabase/tests/run-rls-tests.sh`, and every suite sat at its pin in Phase 8
+Task 8's control run (HTTP 409 PASS / 0 FAIL). Task 8 moved the total
+3825 -> 3858 (+33): the twenty-third suite, `rls_phase8_permissions.sql` (22),
+plus two suites it asked a rule of directly -- the data subject request suite
+225 -> 228 (DW4a-c) and the retention suite 267 -> 275 (RR7a-h). This sentence
+said 3847, with 225 and 267, when Task 8 first shipped: its counts commit came
+before the commit that moved those two pins (review finding I3). Task 7's
 fix round 1 moved two, both UP: the Phase 3-6 CRM audit suite 186 -> 204
 (the census's disabled/replica/RLS-off/view/organisation_id-column plants
 PC8e-PC8n, and § PQ, `merge_candidate.created` from the real screen and
@@ -124,7 +128,8 @@ said "at 194 migrations" when Task 6 shipped; it was 196 -- 194 was a number
 that task introduced and got wrong, review finding I5; it said 203 and 3562
 after fix round 1.) The
 twenty-first is Phase 8 Task 6's `rls_phase8_retention.sql`, **116 as shipped,
-221 since its fix round 1 and 267 since fix round 2** -- the second round moved
+221 since its fix round 1, 267 since fix round 2, and 275 since Phase 8 Task 8
+(RR7a-h, the kill switch thrown through its RPC)** -- the second round moved
 the total 3562 -> 3608 and, like the first, moved no other pinned number. The
 first round moved 3457 -> 3562 and moved no other pinned
 number: the two other suites that round edited moved measured FACTS and not their totals --
@@ -152,7 +157,8 @@ Three of the per-suite counts in the prose below had drifted at Task 8a
 and were corrected to the measurement then.
 
 **`rls_phase8_data_subject_requests.sql` (Phase 8 Task 3)** is the eighteenth
-psql file — **225 assertions** (113 as Task 3 shipped it; the fix round added
+psql file — **228 assertions** (225 until Phase 8 Task 8 added DW4a-c, the
+attribution trigger asked directly; 113 as Task 3 shipped it; the fix round added
 ~830 lines, § DG14a and § DD32–DD36 among them, and the number was first
 measured on 2026-09-20 when that round's gates were run): it proves that a request is attributed to the session for every
 writer and cannot be filed for anybody else; that `due_by` is `requested_at +
