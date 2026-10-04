@@ -1114,6 +1114,57 @@ select rl.try('RD13 the aal2 SUPERUSER cannot stamp account_notified_at either',
   format($$update public.incident_alerts set account_notified_at = now()
             where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$, :'pstd1'),
   'denied(42501)');
+-- ---- the Telegram seam (founder 2026-09-30, Q111; 20261014000000) ---------
+-- The THIRD delivery stamp, and the same two independent controls the other
+-- two have: outside `authenticated`'s column grant, and in the guard's
+-- immutable set. RD13t is the refusal from a real aal2 superuser session;
+-- RD12t/RD12u are the grant; RD12bt is the guard's own body, because with the
+-- grant closed the guard is unreachable and RD13t alone could not see it go.
+select rl.try('RD13t the aal2 SUPERUSER cannot stamp telegram_notified_at',
+  format($$update public.incident_alerts set telegram_notified_at = now()
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$, :'pstd1'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+select rl.val('RD11t telegram_notified_at exists and is null on the fresh lockout alert',
+  format($$select (telegram_notified_at is null)::text from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$,
+         :'pstd1'), 'true');
+select rl.val('RD11u service_role may stamp telegram_notified_at -- that ONE new column',
+  $$select (has_column_privilege('service_role','public.incident_alerts','telegram_notified_at','UPDATE')
+        and not has_column_privilege('service_role','public.incident_alerts','summary','UPDATE'))::text$$,
+  'true');
+select rl.val('RD12t authenticated holds no UPDATE on telegram_notified_at',
+  $$select has_column_privilege('authenticated','public.incident_alerts','telegram_notified_at','UPDATE')::text$$,
+  'false');
+select rl.val('RD12u ...nor does anon',
+  $$select has_column_privilege('anon','public.incident_alerts','telegram_notified_at','UPDATE')::text$$,
+  'false');
+select rl.val('RD12bt the guard names telegram_notified_at in its immutable set',
+  $$select (pg_catalog.pg_get_functiondef(p.oid) like '%new.telegram_notified_at is distinct from old.telegram_notified_at%')::text
+      from pg_catalog.pg_proc p
+      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'private' and p.proname = 'incident_alert_resolution_guard'$$,
+  'true');
+-- The positive control: the SENDER's path really writes it, and writing it
+-- leaves the email seam exactly where it was (channel independence, in the
+-- database). Put back afterwards so nothing below sees a changed row.
+select coalesce(notified_at::text, 'null') as rd_notified_before from public.incident_alerts
+ where alert_type='repeated_login_failures' and details->>'subject_id' = :'pstd1' \gset
+set role service_role;
+select rl.try('RD13u service_role stamps telegram_notified_at',
+  format($$update public.incident_alerts set telegram_notified_at = now()
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$, :'pstd1'),
+  'ok(1)');
+reset role;
+select rl.val('RD13v ...and the email seam is untouched by it',
+  format($$select (coalesce(notified_at::text, 'null') = %L and telegram_notified_at is not null)::text
+             from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$,
+         :'rd_notified_before', :'pstd1'), 'true');
+update public.incident_alerts set telegram_notified_at = null
+ where alert_type='repeated_login_failures' and details->>'subject_id' = :'pstd1';
+set role authenticated;
+set request.jwt.claims = :'super_c';
 select rl.val('RD14 pending_lockout_notifications() is not callable from a session',
   $$select has_function_privilege('authenticated',
       'public.pending_lockout_notifications(integer)','EXECUTE')::text$$, 'false');

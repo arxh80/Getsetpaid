@@ -2834,6 +2834,25 @@ describe("grants on Phase 7 tables are minimal", () => {
     expect(rows.map((r) => r.column_name)).toEqual(["resolved_at", "resolved_by"]);
   });
 
+  it("service_role writes exactly the three delivery stamps on `incident_alerts`", async () => {
+    // One column per channel, each stamped only by its own sender after
+    // ok:true: the email digest, the account-holder notice (Q114) and, since
+    // 20261014000000, the Telegram alert (founder 2026-09-30, Q111). A fourth
+    // column here -- or `telegram_notified_at` granted to a client role --
+    // is a channel whose stamp somebody else can move.
+    const { rows } = await pool.query<{ grantee: string; column_name: string }>(
+      `select grantee, column_name from information_schema.column_privileges
+        where table_schema='public' and table_name='incident_alerts'
+          and privilege_type='UPDATE' and column_name like '%notified_at'
+        order by grantee, column_name`,
+    );
+    expect(rows).toEqual([
+      { grantee: "service_role", column_name: "account_notified_at" },
+      { grantee: "service_role", column_name: "notified_at" },
+      { grantee: "service_role", column_name: "telegram_notified_at" },
+    ]);
+  });
+
   it("service_role's reach into `feedback` is the two-column delivery seam and nothing more", async () => {
     // BYPASSRLS makes the policy irrelevant for this role, so the grant is the
     // whole of the control. 20260911030000 narrowed it after the first cut

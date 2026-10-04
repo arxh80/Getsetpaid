@@ -172,6 +172,7 @@ export const DECLARED_PRIVILEGES: readonly string[] = [
   "incident_alerts|service_role|SELECT|*",
   "incident_alerts|service_role|UPDATE|account_notified_at",
   "incident_alerts|service_role|UPDATE|notified_at",
+  "incident_alerts|service_role|UPDATE|telegram_notified_at",
   // legal_documents
   "legal_documents|anon|SELECT|body",
   "legal_documents|anon|SELECT|counsel_reviewed_at",
