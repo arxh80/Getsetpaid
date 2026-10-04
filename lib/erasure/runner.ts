@@ -250,6 +250,23 @@ export function failureSentence(cause: unknown): string {
       // grown something this deletion cannot promise anything about, so it
       // refused rather than leaving an identifier behind (fix round 1, C1).
       return "Nothing was deleted: the database has grown a reference this deletion does not know how to anonymise. This needs a person to look at it.";
+    // Phase 8 Task 9c job 2 (Q206): erase_account() now re-points a closure
+    // backup's requester, so the export guard -- and, through its succeeded
+    // branch, the retention-period functions it reads -- are reachable from
+    // the chokepoint. Each is a refusal of a related record, never a partial
+    // deletion: the whole transaction rolled back.
+    case "export_request_is_immutable":
+    case "export_job_is_finished":
+    case "export_outcome_is_server_only":
+    case "illegal_export_transition":
+    case "unknown_retention_class":
+    case "audit_retention_below_floor":
+    case "audit_purge_over_ceiling":
+    case "audit_ceiling_release_already_active":
+    case "audit_ceiling_release_is_superuser_only":
+    case "audit_ceiling_release_needs_a_reason":
+    case "audit_ceiling_release_reason_too_long":
+      return "Nothing was deleted: a safeguard on a related record (a workspace backup kept for its closed workspace) refused the change, so the whole deletion was rolled back. This needs a person to look at it.";
     case "workspace_left_ownerless":
       // C2: the loser of a race between two co-owners' erasures. The retry is
       // real -- by then the workspace has one owner and the Q131 sentence

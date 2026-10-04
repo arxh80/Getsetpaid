@@ -262,7 +262,7 @@ begin
   v_counts := v_counts || pg_catalog.jsonb_build_object('data_subject_requests', v_n);
 
   -- (5b) Q206: A CLOSURE BACKUP SURVIVES ITS REQUESTER. The backup
-  -- public.close_my_workspace() queued belongs to the closed WORKSPACE (the
+  -- the Owner's closure RPC queued belongs to the closed WORKSPACE (the
   -- superuser's decision item reads it); its requested_by is re-pointed at
   -- the tombstone rather than cascaded away with auth.users. The marker is
   -- what private.export_jobs_before_update() admits this one rewrite on.
