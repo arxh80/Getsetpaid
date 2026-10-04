@@ -22,7 +22,7 @@ import {
 //   * every module that imports the one email sender -- by `@/lib/email/send`
 //     or by ANY relative path that resolves to it (`./send`, `../send`,
 //     `../../lib/email/send`), statically, dynamically or as a re-export -- is
-//     either one of the three TRANSACTIONAL senders below (each justified), or
+//     either one of the four TRANSACTIONAL senders below (each justified), or
 //     makes a REAL CALL to `assertMarketingConsent` / `hasMarketingConsent`
 //     imported from lib/consent/marketing.ts (a name in a comment or a string
 //     does not count; the file is parsed);
@@ -65,6 +65,8 @@ const TRANSACTIONAL: Record<string, string> = {
     "the incident-alert digest to the operator -- an operational message, not marketing",
   "lib/email/lockout-notification.ts":
     "the account-lockout security notice to the affected account holder (Q114) -- a service message",
+  "lib/email/requester-notifications.ts":
+    "DSR received/closed and export-ready notices to the person who asked, and the erasure-failure notice to the operator (Task 9b, Q157(3)/Q174/Q45) -- statutory-request and service messages, not marketing",
 };
 
 interface Analysis {
