@@ -1143,3 +1143,26 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   same gate, audited -- small; (b) end the release on the first run that
   finds no backlog -- changes the meaning of "3 days" and needs a writer
   inside the purge, which today writes nothing but the delete.
+
+## Q196 -- Task 9a job 4, 2026-10-04
+
+- **Q196 -- the upload budget meters the BYTES, so a metadata-only
+  `public.documents` row inserted straight over PostgREST is not counted.**
+  (Phase 8 Task 9a, Q113, founder 2026-09-30.) `20261011000000` adds the
+  `uploads` policy row (10/hour per user) and `uploadDocumentAction` spends it
+  after the cheap refusals and BEFORE the service-role write to the
+  `documents` bucket, which is the only path bytes take into it (the bucket is
+  deny-all fenced for every client role). Every other write budget here is a
+  `BEFORE INSERT` trigger; this one cannot be, because the row lands only
+  after the bytes are stored, so a trigger would refuse too late. `authenticated`
+  still holds a column-level INSERT on `public.documents`, so a scripted
+  client can create rows that point at no object (they download as nothing
+  and the retention job's orphan handling already covers the shape).
+  **Default (proceeding):** meter the bytes, not the row -- that is what the
+  ruling protects (storage and scanner cost). Alternative: narrow the INSERT
+  grant away from `authenticated` and write the row as a server role, then
+  meter at the row too -- a change to the documents write path, not small.
+  **Also decided, no question needed:** feedback screenshots do NOT share this
+  path (they go to `feedback-screenshots` through `submitFeedbackAction`, with
+  the `feedback` 10/hour budget enforced at that table's INSERT), so they are
+  not counted under `uploads` and nothing is double-counted.

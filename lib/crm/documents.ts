@@ -70,6 +70,8 @@ import { buildStorageKey } from "@/lib/crm/storage-keys";
 import { getScanner, type ScanResult } from "@/lib/security/malware-scan";
 import { LINK_ENTITY_TYPES, type LinkEntityType } from "@/lib/crm/links";
 import { formatDate } from "@/lib/format/date";
+import { formatRetryAfter } from "@/lib/format/duration";
+import { consumeRateLimit } from "@/lib/security/rate-limit";
 
 const PERMISSION = "manage_documents";
 
@@ -128,6 +130,22 @@ export async function uploadDocumentAction(
   const sniff = sniffAndAllow(bytes, file.name);
   if (!sniff.ok) {
     return { error: sniff.reason, values: echoedValues(formData) };
+  }
+
+  // THE UPLOAD BUDGET -- 10 an hour per user (Q113, founder 2026-09-30),
+  // enforced HERE because this is the write: the next statement sends the
+  // bytes to Storage, and the ruling is that a refused upload stores nothing.
+  // After the cheap refusals above (permission, empty, over 25 MiB, not on the
+  // allowlist), so a file that was never going to be stored spends nothing.
+  // The number lives in public.rate_limit_policies, not here; a limiter
+  // fault refuses (consumeRateLimit fails closed). Feedback screenshots are a
+  // separate path with their own budget and are not counted here.
+  const budget = await consumeRateLimit("uploads");
+  if (!budget.allowed) {
+    return {
+      error: `You’ve reached the upload limit for now — nothing is wrong. Try again in ${formatRetryAfter(budget.retryAfterSeconds)}.`,
+      values: echoedValues(formData),
+    };
   }
 
   const filename = sanitiseFilename(file.name);

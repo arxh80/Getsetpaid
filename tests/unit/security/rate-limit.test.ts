@@ -96,6 +96,23 @@ describe("consumeRateLimit — what it asks the database", () => {
     await consumeRateLimit("network_discovery");
     expect(rpc.calls[0].args).toEqual({ p_category: "network_discovery" });
   });
+
+  it("meters UPLOADS under their own name, user-scoped (no organisation) -- Q113", async () => {
+    // founder 2026-09-30: 10/hour PER USER. The value is the database's
+    // (rls_phase7_rate_limits.sql RV6d); what this module owns is the
+    // category name and that it sends no organisation, which the RPC would
+    // refuse (22023) for a user-scoped budget.
+    returns([{ allowed: false, retry_after_seconds: 1800, request_count: 11 }]);
+    await expect(consumeRateLimit("uploads")).resolves.toEqual({
+      allowed: false,
+      retryAfterSeconds: 1800,
+    });
+    expect(rpc.calls).toHaveLength(1);
+    expect(rpc.calls[0]).toEqual({
+      name: "consume_rate_limit",
+      args: { p_category: "uploads" },
+    });
+  });
 });
 
 describe("consumeRateLimit — reading a well-formed verdict", () => {

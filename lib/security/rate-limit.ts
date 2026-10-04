@@ -87,7 +87,13 @@ import { createClient } from "@/lib/supabase/server";
 export type RateLimitCategory =
   | "search"
   | "network_discovery"
-  | "exports";
+  | "exports"
+  // Q113 (founder 2026-09-30): document uploads, 10/hour per user, spent by
+  // uploadDocumentAction BEFORE the bytes reach Storage. App-side rather than
+  // a BEFORE INSERT trigger like the write budgets above, because the
+  // documents row lands only AFTER the bytes are stored -- a trigger there
+  // would refuse too late (20261011000000's header).
+  | "uploads";
 
 export type RateLimitVerdict =
   | { readonly allowed: true }
