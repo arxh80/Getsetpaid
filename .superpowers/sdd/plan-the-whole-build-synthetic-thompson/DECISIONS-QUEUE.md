@@ -1124,3 +1124,22 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   (`admin_accepted_by` / `declined_by`), as the catalogue already scoped it;
   a session in their workspace decided by a colleague is NOT included (a
   current admin reads it through RLS; the workspace export carries it).
+
+## Q195 -- Task 9a job 3, 2026-10-04
+
+- **Q195 -- can a ceiling release be ended early, and should one end itself
+  once the backlog is gone?** (Phase 8 Task 9a, Q184, founder 2026-09-30.)
+  `20261010000000` builds the release as asked: aal2 superuser, a reason,
+  exactly 72 hours, read-time expiry, one at a time (a second press while
+  active is refused, not extended). It has **no early revoke**, and it does
+  not lapse when the backlog is drained -- for the rest of the 72 hours a
+  run that finds a fresh flood (e.g. the clock going wrong mid-release) is
+  not refused by the ceiling. **Default (proceeding):** no revoke and no
+  auto-end. The release can only let through rows the hard floor already
+  permits (past the declared >= 1 year period, at most 500 a run, so at
+  most 36,000 in all), and the operator who wants deletion to stop NOW has
+  the audit purge's own kill switch on the same panel, which wins over a
+  release. Alternatives: (a) a `revoke_audit_purge_ceiling_release()` RPC,
+  same gate, audited -- small; (b) end the release on the first run that
+  finds no backlog -- changes the meaning of "3 days" and needs a writer
+  inside the purge, which today writes nothing but the delete.

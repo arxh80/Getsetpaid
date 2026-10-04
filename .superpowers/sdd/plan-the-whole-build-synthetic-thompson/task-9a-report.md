@@ -115,3 +115,98 @@ and the workspace export carries them).
 - The stack was reset at the end, at 212 migrations.
 
 **New questions:** Q194 (default: the account id plus the manifest note).
+
+## Job 3 (req 5, Q184)
+
+Founder 2026-09-30: "build the audit-purge ceiling release. It is step-up
+gated and lasts 3 days." Commits `85bbfca` (migration + psql/matrix/catalogue),
+the PA6c repin + SECURITY.md, the /super/health control + e2e, and the
+CLAUDE.md counts.
+
+**What "release" means (decided from the ceiling's implementation).** While a
+release is ACTIVE (`released_at <= now() < expires_at`), rail 3 (the sanity
+ceiling) is not applied. That is all it does. It does not raise the ceiling,
+and it does not move the cut. Rail 1 (the floor, >= 1 year, checked against
+the function AND the literal), rail 2 (the kill switch), rail 4 (p_limit, oldest
+first) and rail 5 (the totals) are untouched. So the worst case is 72 runs x
+500 = 36,000 rows, every one already past a year. The run summary carries
+`audit_events.ceiling_released` (a boolean, so the summary CHECK admits it and
+`sweptLines()` skips it).
+
+**Shape (`20261010000000`, 212 -> 213 migrations).**
+- Three columns on the one `retention_settings` row. A CHECK holds all three
+  null, or `expires = released + 72 hours` (hours, not '3 days', so a clock
+  change cannot make it 71 or 73) with a non-blank reason of <= 500 chars.
+- `private.audit_ceiling_release_active()`: read-time expiry, the override
+  pattern. It re-checks the 72 hours itself, so a mutation of the CHECK alone
+  does not lengthen a release (REL24). No client role can execute it.
+- `public.release_audit_purge_ceiling(p_reason)`:
+  - `has_platform_permission('manage_retention')` (superuser AND aal2),
+  - the reason is mandatory and <= 500 chars,
+  - `FOR UPDATE`, then it is REFUSED while a release is active (no extension),
+  - an audit row, `retention.audit_ceiling_released`, carries the reason and
+    the window, with the actor taken from `auth.uid()`.
+- No user-id column was added on purpose: a new uuid would be a new row -> user
+  path for the export and erasure rolls, and the audit row already holds the
+  actor non-forgeably.
+- `purge_audit_events()` and `platform_audit_actions()` were rebuilt from the
+  live `pg_get_functiondef`. `retention_clock_columns()` was rebuilt too: the
+  derived roll (RK26) refused every run until the two new timestamps were
+  classified.
+
+**UI.** It is on `/super/health`'s retention panel, consistent with the kill
+switch: step-up, a "Why release it" reason field, and the RPC as the
+enforcement. While a release is active, the form is replaced by when it lapses
+and why.
+
+**Registries.**
+- psql retention: 275 -> 306 (REL1-REL28 incl. 7a/7b, RC11a; RC9 lists the
+  reader). The superuser fixture (67a3) moved up to RL-REL.
+- CRM-audit PA6c: 162 -> 163.
+- `audit-actions-match-db`: 163.
+- The permission matrix probes the new RPC, with an invariant that the row is
+  still unreleased: 548 -> 557.
+- `lib/admin/audit-actions.ts` is updated.
+- The total is 3861 -> 3892 at 213 migrations.
+- CLAUDE.md and SECURITY.md (§ 7 rail 3, the § 8 refusal table, the Q190
+  paragraph) are corrected.
+
+**Mutations.** Each mutant is generated from the LIVE definitions by
+`supabase/tests/mutations/17*.sql`. Each run was reset -> mutant -> the whole
+psql/HTTP runner (-> the matrix for 17a/b), and every run stayed at 213
+migrations. No mutant turned zero assertions red.
+
+| # | guard / mutation | psql red (retention suite) | integration red |
+|---|---|---|---|
+| 17a | superuser check removed (aal2 only) | REL5, REL8, REL9, REL11 | matrix 5/557 (orgOwner, impersonated, overridden, suspended; superuserAal1 cascades: the first wrong release made it `already_active`) |
+| 17b | aal2 requirement removed (platform_admins only) | REL6, REL8, REL9, REL11 | matrix 1/557 (superuserAal1) |
+| 17c | RPC reason check removed | REL7, REL7a (the row CHECK still refuses, now as 23514; behaviour holds, the hint names the wrong layer) | not run |
+| 17d | expiry ignored by the reader | REL20, REL21, REL22, REL26, REL27 | -- |
+| 17e | purge ignores a release | REL13, REL14, REL19, REL22 | -- |
+| 17f | release also skips the hard floor | REL17, REL21, REL22 | -- |
+| 17g | 30 days (RPC) + CHECK dropped | REL9-REL14, REL16, REL19, REL22, REL23 | -- |
+| 17h | one-at-a-time removed (re-release extends) | REL10, REL11, REL27 | -- |
+
+(5) "the purge does NOT honour an expired one" is 17d's REL21. (6) "the floor
+still holds during a release" is 17f's REL17, plus REL15 (inside-the-year and
+30-day-hot rows survive a released live run).
+
+**Gates.**
+- `pnpm lint` and `pnpm typecheck` (after `next typegen`) are clean.
+- Unit: 101 files / 2305 tests.
+- `vitest tests/unit tests/integration/retention tests/integration/admin` plus
+  the matrix: 106 files / 2888 tests, green. The matrix alone runs 557.
+- psql/HTTP after a fresh reset:
+  - The first run had 1 red, PA6c (the catalogue pin). It was fixed, then
+    reset, then rerun: all suites passed, retention 306 as pinned, HTTP 0 FAIL,
+    exit 0.
+  - The second run on the same database is refused by the runner by design
+    ("public schema is not empty"), as job 2 recorded.
+- e2e `platform-health.spec.ts` + `super-permissions.spec.ts`: 20 passed
+  (2.4m). The new walk presses the real control, reads the 72h row, the reason
+  and 1 audit row from Postgres, and runs an axe scan of the active state. The
+  list now reports 174 tests.
+- The stack was reset at the end, at 213 migrations.
+
+**New questions:** Q195 (no early revoke and no auto-end on drain; default:
+none, because the kill switch beside it stops deletion now).
