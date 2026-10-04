@@ -636,3 +636,8 @@ Inventory report (2026-09-16) established, among other things:
     - **N2:** a concurrent writer can land an id after the 10b scan, the same gap 6a already has.
   - Q191 and Q192 queued. The founder answers of 2026-09-30 are folded into the DECISIONS-QUEUE.
   - **LESSON (12):** on this machine a full e2e run takes about 47 min under memory pressure, and background waiter shells get reaped. Launch detached and read the log; never trust a waiter.
+- **Task 8: IMPLEMENTED, gates green (tip `0ccd3a6`, 210 migrations) — review next.**
+  - The first implementer hung ~17.5 h after rate-limit/watchdog stalls; stopped, WIP saved as `24bfb95`. Its "14 red HTTP checks" did not reproduce on a clean reset (a mutant left applied, most likely).
+  - Mutation batch run by a detached, resumable driver (`mutation-results/run-all.sh`), not an agent: **36 mutants, 0 false greens**; control green in every layer. Two Important collateral-only kills found and closed with direct assertions (DSR DW4a-c, retention kill switch RR7a-h) plus mutants 05c and 16, each now red.
+  - **Gates:** psql 23 suites **3858 / 0**, API all passed; vitest **152 / 3414**; e2e **173 / 0** (21.0 m). Follow-up F-T8-1 (5 s unit-test timeout under load).
+  - **LESSON (13):** never hand an agent a multi-hour batch. Long measurement runs go to a detached resumable script that saves each result as it lands; agents get ≤ 60 min jobs; check the tree is moving, not the agent's status.

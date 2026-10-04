@@ -382,3 +382,25 @@ carried forward.
 The matrix now covers 9 principals over 35 RPCs (23 superuser-only + 12
 member-reachable) and 15 relations, plus census rows for the 14 server-only
 runners and the 11 destructive primitives.
+
+## 8. Gates (run by the controller, tip `0ccd3a6`, 2026-10-04)
+
+All five, each long gate on its own fresh `db reset --local`, 210 migrations
+before and after:
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | clean |
+| `npx next typegen` + `pnpm typecheck` | clean |
+| reset + `run-rls-tests.sh` | 23 suites at their pins, **3858** recorded (DSR 225 -> 228, retention 267 -> 275 this task), API surface all checks passed, "All suites passed" (6.1 min) |
+| reset + `pnpm test` | **152 files / 3414 tests passed** (238 s) |
+| reset + `pnpm test:e2e` | **173 passed, 0 failed, 0 flaky** (21.0 m, detached) |
+
+The `[admin] ... failed: caller is not the platform superuser at aal2` lines in
+the e2e server log are the refusals the permission specs exercise, not errors.
+
+**Follow-up F-T8-1:** `tests/unit/network/no-private-table-in-network-path.test.ts`
+"DENOMINATOR: what the network-path filter DROPPED is pinned" ran ~5.05 s
+against vitest's 5 s default under full parallel load on this machine (1.1 s
+alone); green in this gate run. Give that test an explicit timeout or make it
+cheaper; never add retries.
