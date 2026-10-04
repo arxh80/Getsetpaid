@@ -13,9 +13,11 @@ import "server-only";
 // reminded: public.pending_task_reminder_notifications() reads the task's
 // current state and current assignee at send time, and the stamp RPC refuses
 // a task that is no longer open, live and due. Nothing is stamped for a
-// reminder that was not sent -- "never emailed" is the honest record -- and a
+// reminder that was not sent -- "never emailed" is the honest record -- so a
 // task reopened while its reminder_at is still inside the seven-day window is
-// owed it again. A task with NO assignee is reminded to nobody (Q202).
+// reminded then. One reminder per task: once sent, a later change to
+// reminder_at does not re-arm it (Q202). A task with NO assignee is reminded
+// to nobody (Q202).
 
 import {
   deliverEach,
