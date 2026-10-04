@@ -2,6 +2,8 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
   PASSWORD,
+  auditCeilingRelease,
+  clearAuditCeilingRelease,
   clearRetentionRuns,
   deleteIncidentAlert,
   plantIncidentAlert,
@@ -398,6 +400,44 @@ test("the superuser previews a retention run, and the preview deletes nothing", 
     // no-ON-DELETE reference: left behind, it blocks that user's teardown.
     await expired.remove();
     await clearRetentionRuns();
+  }
+});
+
+// ===========================================================================
+// PHASE 8 TASK 9a: THE AUDIT PURGE CEILING RELEASE (Q184, founder 2026-09-30:
+// "step-up gated and lasts 3 days"). The psql suite (REL1-REL28) proves the
+// RPC, the expiry and the purge honouring it; only a browser proves the
+// operator can reach the control, that the press lands as a 72-hour release
+// with the reason typed, and that the page then says it is active rather
+// than offering a second release. Scanned in that ACTIVE state, which the
+// general scan below never reaches (it renders the inactive form).
+// ===========================================================================
+test("the superuser releases the audit purge ceiling for 3 days, with a reason", async ({
+  page,
+}) => {
+  await clearAuditCeilingRelease();
+  try {
+    expect((await auditCeilingRelease()).hours, "DENOMINATOR: a release already existed").toBeNull();
+    await signInAsSuperuser(page);
+    await page.goto("/super/health");
+    await expect(page.getByTestId("ceiling-release-inactive")).toBeVisible();
+
+    await page.getByLabel("Why release it").fill("e2e backlog drain");
+    await page.getByRole("button", { name: "Release the ceiling for 3 days" }).click();
+
+    await expect(page.getByTestId("retention-outcome")).toContainText("Released.");
+    await expect(page.getByTestId("ceiling-release-active")).toContainText("e2e backlog drain");
+    await expect(page.getByRole("button", { name: "Release the ceiling for 3 days" })).toHaveCount(0);
+
+    // IN THE DATABASE, not just on the page: 72 hours, the reason, one audit row.
+    expect(await auditCeilingRelease()).toEqual({ hours: 72, reason: "e2e backlog drain", audited: 1 });
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+  } finally {
+    await clearAuditCeilingRelease();
   }
 });
 

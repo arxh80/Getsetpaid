@@ -41,13 +41,40 @@ export type RetentionView =
  *  the question it answers is "is the job running and is it refusing". */
 const RUNS_SHOWN = 5;
 
+/** READ-TIME, like the purge: active while released_at <= now < expires_at.
+ *  The page is a dynamic render, so `now` is the request's. */
+function ceilingReleaseOf(row: {
+  audit_ceiling_released_at: string | null;
+  audit_ceiling_release_expires_at: string | null;
+  audit_ceiling_release_reason: string | null;
+}): RetentionSettings["ceilingRelease"] {
+  if (
+    row.audit_ceiling_released_at === null ||
+    row.audit_ceiling_release_expires_at === null ||
+    row.audit_ceiling_release_reason === null
+  ) {
+    return null;
+  }
+  const now = Date.now();
+  return {
+    releasedAt: row.audit_ceiling_released_at,
+    expiresAt: row.audit_ceiling_release_expires_at,
+    reason: row.audit_ceiling_release_reason,
+    active:
+      Date.parse(row.audit_ceiling_released_at) <= now &&
+      now < Date.parse(row.audit_ceiling_release_expires_at),
+  };
+}
+
 export async function loadRetentionView(): Promise<RetentionView> {
   const supabase = await createClient();
 
   const [settings, runs] = await Promise.all([
     supabase
       .from("retention_settings")
-      .select("enabled, audit_purge_enabled, reason, updated_at")
+      .select(
+        "enabled, audit_purge_enabled, reason, updated_at, audit_ceiling_released_at, audit_ceiling_release_expires_at, audit_ceiling_release_reason",
+      )
       .maybeSingle(),
     supabase
       .from("retention_runs")
@@ -72,6 +99,7 @@ export async function loadRetentionView(): Promise<RetentionView> {
           auditPurgeEnabled: settings.data.audit_purge_enabled,
           reason: settings.data.reason,
           updatedAt: settings.data.updated_at,
+          ceilingRelease: ceilingReleaseOf(settings.data),
         }
       : null,
     runs: (runs.data ?? []).map((row) => ({

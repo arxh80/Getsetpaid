@@ -3,6 +3,7 @@
 import { useActionState, useId, useState } from "react";
 import {
   previewRetentionRunAction,
+  releaseAuditCeilingAction,
   setRetentionEnabledAction,
 } from "@/lib/admin/retention-actions";
 // THE CONTRACT, NOT THE READ. lib/admin/retention.ts is `server-only`;
@@ -189,6 +190,66 @@ function SwitchForm({ settings }: { settings: RetentionSettings }) {
   );
 }
 
+// THE CEILING RELEASE (Phase 8 Task 9a, Q184, founder 2026-09-30). The audit
+// purge refuses a backlog bigger than a fifth of the log, and since each run
+// deletes at most 500 rows that backlog can never shrink on its own. This
+// lifts that one check for exactly 3 days -- the floor and the per-run limit
+// stay -- and then lapses by itself. While one is active the form is replaced
+// by the release it would duplicate: a release cannot be extended.
+function CeilingReleaseForm({ release }: { release: RetentionSettings["ceilingRelease"] }) {
+  const reported = useReportedAction(releaseAuditCeilingAction);
+  const [state, formAction, pending] = useActionState(reported, EMPTY_FORM_STATE);
+  const reasonId = useId();
+
+  if (release?.active) {
+    return (
+      <p className="max-w-prose text-base text-ink" data-testid="ceiling-release-active">
+        The audit purge’s sanity ceiling is released until{" "}
+        <span className="font-semibold">{formatDateTime(release.expiresAt)}</span> — “
+        {release.reason}”. It lapses by itself; the one-year floor and the
+        500-row limit per run still apply.
+      </p>
+    );
+  }
+
+  return (
+    <form action={formAction} className="flex max-w-prose flex-col gap-3">
+      <p className="text-sm text-ink-muted" data-testid="ceiling-release-inactive">
+        The sanity ceiling is in force: a run refuses when more than a fifth of
+        the audit log is due at once. A backlog that size never clears on its
+        own. Releasing the ceiling lets runs drain it for 3 days, at most 500
+        rows a run, and only rows already past their year.
+        {release ? ` The last release ended ${formatDateTime(release.expiresAt)}.` : ""}
+      </p>
+      <div className="flex flex-col gap-1">
+        <label htmlFor={reasonId} className="text-base text-ink">
+          Why release it
+        </label>
+        <input
+          id={reasonId}
+          name="reason"
+          required
+          maxLength={500}
+          defaultValue=""
+          aria-describedby={`${reasonId}-hint`}
+          className="border border-rule bg-surface px-3 py-2 text-base text-ink"
+        />
+        <p id={`${reasonId}-hint`} className="text-sm text-ink-muted">
+          Goes into the audit record.
+        </p>
+        {state.fieldErrors?.reason ? (
+          <p className="text-sm text-danger">{state.fieldErrors.reason}</p>
+        ) : null}
+      </div>
+      <div>
+        <Button type="submit" variant="secondary" pending={pending}>
+          {pending ? "Releasing…" : "Release the ceiling for 3 days"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function PreviewForm() {
   const reported = useReportedAction(previewRetentionRunAction);
   const [, formAction, pending] = useActionState(reported, EMPTY_FORM_STATE);
@@ -217,6 +278,10 @@ export function RetentionPanel({
             {settings.reason ? ` — “${settings.reason}”` : " (never changed)"}.
           </p>
           <SwitchForm settings={settings} />
+          <div className="flex flex-col gap-2">
+            <h3 className="text-base font-semibold text-ink">Audit purge ceiling</h3>
+            <CeilingReleaseForm release={settings.ceilingRelease} />
+          </div>
         </>
       ) : null}
 

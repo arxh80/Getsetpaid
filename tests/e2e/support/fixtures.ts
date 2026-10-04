@@ -1220,6 +1220,38 @@ export async function clearRetentionRuns(): Promise<void> {
   await sql(`delete from public.retention_runs`);
 }
 
+/** The audit purge ceiling release as the database holds it (Q184): the
+ *  window length in hours, the reason, and how many release audit rows exist. */
+export async function auditCeilingRelease(): Promise<{
+  hours: number | null;
+  reason: string | null;
+  audited: number;
+}> {
+  const { rows } = await db().query<{ hours: string | null; reason: string | null; audited: string }>(
+    `select extract(epoch from s.audit_ceiling_release_expires_at - s.audit_ceiling_released_at) / 3600 as hours,
+            s.audit_ceiling_release_reason as reason,
+            (select count(*) from public.audit_events a
+              where a.action = 'retention.audit_ceiling_released') as audited
+       from public.retention_settings s`,
+  );
+  return {
+    hours: rows[0]?.hours === null || rows[0]?.hours === undefined ? null : Number(rows[0].hours),
+    reason: rows[0]?.reason ?? null,
+    audited: Number(rows[0]?.audited ?? 0),
+  };
+}
+
+/** Clear any ceiling release and its audit rows, so no spec leaves the
+ *  audit purge's sanity ceiling lifted for 72 hours. */
+export async function clearAuditCeilingRelease(): Promise<void> {
+  await sql(
+    `update public.retention_settings
+        set audit_ceiling_released_at = null, audit_ceiling_release_expires_at = null,
+            audit_ceiling_release_reason = null`,
+  );
+  await sql(`delete from public.audit_events where action = 'retention.audit_ceiling_released'`);
+}
+
 // ===========================================================================
 // PHASE 7 TASK 6: IN-APP FEEDBACK
 // ===========================================================================

@@ -50,6 +50,19 @@ export interface RetentionSettings {
   readonly auditPurgeEnabled: boolean;
   readonly reason: string | null;
   readonly updatedAt: string;
+  /**
+   * The most recent release of the audit purge's sanity ceiling (Q184,
+   * founder 2026-09-30), or null if it was never released. `active` is
+   * computed at READ time, as the purge itself asks
+   * (private.audit_ceiling_release_active()): an expired release is still
+   * the last one recorded, and counts for nothing.
+   */
+  readonly ceilingRelease: {
+    readonly releasedAt: string;
+    readonly expiresAt: string;
+    readonly reason: string;
+    readonly active: boolean;
+  } | null;
 }
 
 export interface SweptLine {

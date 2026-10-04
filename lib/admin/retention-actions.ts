@@ -162,3 +162,53 @@ export async function previewRetentionRunAction(
     values: {},
   };
 }
+
+// THE AUDIT PURGE CEILING RELEASE (Phase 8 Task 9a, Q184, founder
+// 2026-09-30: "step-up gated and lasts 3 days"). The third write on the
+// panel, behind the same step-up and the same mandatory reason as the kill
+// switch. public.release_audit_purge_ceiling() is the enforcement -- the
+// aal2 superuser, the reason, one release at a time, exactly 72 hours, read-
+// time expiry -- and this action only picks the sentence.
+export async function releaseAuditCeilingAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const gate = await authorise(formData);
+  if (!gate.ok) return gate.state;
+
+  const reason = String(formData.get("reason") ?? "").trim();
+  if (reason === "") {
+    return {
+      fieldErrors: { reason: "Say why — it goes into the audit record." },
+      values: echoedValues(formData),
+    };
+  }
+  if (reason.length > MAX_REASON) {
+    return {
+      fieldErrors: { reason: `Keep it under ${MAX_REASON} characters.` },
+      values: echoedValues(formData),
+    };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("release_audit_purge_ceiling", { p_reason: reason });
+  if (error) {
+    if (error.hint === "audit_ceiling_release_already_active") {
+      revalidatePath("/super/health");
+      return {
+        error:
+          "The ceiling is already released. A release can’t be extended; record a new one after it expires.",
+        values: {},
+      };
+    }
+    console.error("[admin] the audit purge ceiling could not be released:", error.message);
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
+
+  revalidatePath("/super/health");
+  return {
+    message:
+      "Released. For the next 3 days the audit purge skips its sanity ceiling; the one-year floor and the 500-row limit per run still apply.",
+    values: {},
+  };
+}
