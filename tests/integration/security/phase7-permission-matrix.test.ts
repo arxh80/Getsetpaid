@@ -2844,6 +2844,7 @@ describe("grants on Phase 7 tables are minimal", () => {
       `select grantee, column_name from information_schema.column_privileges
         where table_schema='public' and table_name='incident_alerts'
           and privilege_type='UPDATE' and column_name like '%notified_at'
+          and grantee <> 'postgres' -- the table owner, not a grantee
         order by grantee, column_name`,
     );
     expect(rows).toEqual([
