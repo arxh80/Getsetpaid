@@ -268,13 +268,14 @@ select dsr.val('DG6 NO CLIENT ROLE holds a write privilege, at table or column l
 -- (20260927003000 § 1), which is what finally gives § DF9h a positive control
 -- rather than a refusal by a missing privilege. Asserted as the EXACT set, so
 -- a third column arriving is red.
-select dsr.val('DG6a service_role''s write is EXACTLY the two seam columns, on the register alone',
+select dsr.val('DG6a service_role''s write is EXACTLY the two seam columns plus the two notice stamps (20261015000000), on the register alone',
   $$select coalesce(string_agg(table_name || '.' || column_name || ':' || privilege_type,
                                ',' order by table_name, column_name), '<none>')
       from information_schema.column_privileges
      where table_schema='public' and table_name in ('data_subject_requests','data_subject_request_notes')
        and grantee='service_role' and privilege_type <> 'SELECT'$$,
-  'data_subject_requests.fulfilment_kind:UPDATE,data_subject_requests.fulfilment_reference:UPDATE');
+  'data_subject_requests.closed_notified_at:UPDATE,data_subject_requests.fulfilment_kind:UPDATE,'
+  'data_subject_requests.fulfilment_reference:UPDATE,data_subject_requests.received_notified_at:UPDATE');
 select dsr.val('DG6b ...and fulfilment_recorded_at is NOT in it -- the clock stays the database''s',
   $$select (not has_column_privilege('service_role','public.data_subject_requests',
                                      'fulfilment_recorded_at','update'))::text$$, 'true');
@@ -285,6 +286,7 @@ select dsr.val('DG7 every trigger on the register is present, the two fix-round 
   'data_subject_requests_audit_submitted,data_subject_requests_audit_transition,'
   'data_subject_requests_before_insert,data_subject_requests_before_update,'
   'data_subject_requests_delete_guard,data_subject_requests_routing_handover_note,'
+  'data_subject_requests_stamp_closed,data_subject_requests_stamp_received,'
   'data_subject_requests_truncate_guard');
 select dsr.val('DG8 the RPCs are executable by authenticated and by nobody else',
   $$select string_agg(p.proname || ':' ||

@@ -1152,6 +1152,29 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 9b JOB 2 -- THE DSR, EXPORT AND ERASURE NOTIFICATION SEAMS
+# (20261015000000; founder 2026-09-30, Q157(3)/Q174/Q45). Four delivery
+# stamps the browser cannot write and the sender can write once, alone, on a
+# row in the right state, to the database's clock; the table guards skipped
+# for that shape only; recipients resolved from auth.users in the database.
+# Self-contained fixtures, removed in its own NZ.
+# ============================================================================
+run_suite "PHASE 8 NOTIFICATION STAMPS" rls_phase8_notification_stamps.sql ns 42 "${P7VARS[@]}"
+ns_fails=$SUITE_FAILS
+if [ "$ns_fails" != "0" ]; then
+  echo "PHASE 8 NOTIFICATION STAMP SUITE FAILED: $ns_fails failing assertion(s)" >&2
+  echo "  In NG/NC, A CLIENT CAN MOVE A DELIVERY STAMP -- it could silence an" >&2
+  echo "  email that never went. In NS, the sender can stamp twice, clear a" >&2
+  echo "  stamp, stamp the wrong state or ride a stamp past a finished row's" >&2
+  echo "  guard. In NT, a table guard stopped running for ordinary updates." >&2
+  echo "  In NR, a recipient is resolved from the wrong place (the snapshot," >&2
+  echo "  the tombstone) or the resolver returns an archive key." >&2
+  psql_status=1
+else
+  echo "Phase 8 notification stamp suite: all assertions passed."
+fi
+
+# ============================================================================
 # ONE RETENTION RUN AT A TIME, UNDER A REAL RACE (Task 6 fix round 1, I2).
 #
 # The suite above is single-session: RR17-RR19 prove a second start is refused

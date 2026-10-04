@@ -1212,6 +1212,12 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Task 4 -- the read engine; reads AS THE REQUESTER through export_reader, never as a definer",
   "fail_erasure_job(p_job_id uuid, p_reason text)": "Task 5 -- records a refused erasure's reason on the job",
   "fail_retention_run(p_run_id uuid, p_reason text)": "Task 6 -- records a refused sweep's reason on the run",
+  "mark_erasure_failures_notified(p_job_ids uuid[])":
+    "Task 9b job 2 -- stamps erasure_jobs.failure_notified_at ONLY after the superuser's email was accepted (the table's CHECK makes a column grant unusable)",
+  "pending_dsr_notifications(p_limit integer)":
+    "Task 9b job 2 -- the DSR received/closed notice queue; the address is auth.users through user_id, the tombstone excluded",
+  "pending_export_ready_notifications(p_limit integer)":
+    "Task 9b job 2 -- the export-ready notice queue; returns no archive key and no URL",
   "pending_lockout_notifications(p_limit integer)":
     "Phase 7 Task 6c -- the account-holder lockout notice queue, read by the sender",
   "retention_object_manifest(p_run_id uuid, p_limit integer)":

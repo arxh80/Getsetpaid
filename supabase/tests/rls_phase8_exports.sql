@@ -200,11 +200,11 @@ select xp.val('XG5 NO client role holds UPDATE or DELETE, at table or column lev
 select xp.val('XG6 anon holds nothing at all',
   $$select count(*)::text from information_schema.column_privileges
      where table_schema='public' and table_name='export_jobs' and grantee='anon'$$, '0');
-select xp.val('XG7 service_role''s UPDATE is the ten outcome columns, and no others',
+select xp.val('XG7 service_role''s UPDATE is the ten outcome columns plus the ready-email stamp (20261015000000), and no others',
   $$select string_agg(column_name, ',' order by column_name) from information_schema.column_privileges
      where table_schema='public' and table_name='export_jobs'
        and grantee='service_role' and privilege_type='UPDATE'$$,
-  'byte_size,completed_at,expires_at,failure_reason,manifest,row_count,started_at,status,storage_key,table_count');
+  'byte_size,completed_at,expires_at,failure_reason,manifest,ready_notified_at,row_count,started_at,status,storage_key,table_count');
 select xp.val('XG8 service_role holds no INSERT or DELETE on the register',
   $$select count(*)::text from information_schema.column_privileges
      where table_schema='public' and table_name='export_jobs'
@@ -212,7 +212,7 @@ select xp.val('XG8 service_role holds no INSERT or DELETE on the register',
 select xp.val('XG9 the three user triggers are present and enabled',
   $$select string_agg(tgname || ':' || tgenabled::text, ',' order by tgname) from pg_trigger
      where tgrelid = 'public.export_jobs'::regclass and not tgisinternal$$,
-  'export_jobs_after_insert_audit:O,export_jobs_before_insert:O,export_jobs_before_update:O');
+  'export_jobs_after_insert_audit:O,export_jobs_before_insert:O,export_jobs_before_update:O,export_jobs_stamp_ready:O');
 select xp.val('XG10 one live ACCOUNT job per requester, one live WORKSPACE job per workspace',
   $$select string_agg(indexname, ',' order by indexname) from pg_indexes
      where schemaname='public' and tablename='export_jobs' and indexdef like '%queued%'
@@ -886,12 +886,12 @@ select xp.val('XD9 nothing audits a job SUCCEEDING or FAILING -- there is no act
 select xp.val('XS1 BOTH halves of the constraint are AWAKE (Task 4, Task 5)',
   $$select private.dsr_fulfilment_job_ready('export')::text || '/' ||
            private.dsr_fulfilment_job_ready('erasure')::text$$, 'true/true');
-select xp.val('XS2 service_role''s UPDATE on the register is EXACTLY the two seam columns the job writes',
+select xp.val('XS2 service_role''s UPDATE on the register is EXACTLY the two seam columns the job writes, plus the two notice stamps (20261015000000)',
   $$select coalesce(string_agg(column_name, ',' order by column_name), '<none>')
       from information_schema.column_privileges
      where table_schema='public' and table_name='data_subject_requests'
        and grantee='service_role' and privilege_type='UPDATE'$$,
-  'fulfilment_kind,fulfilment_reference');
+  'closed_notified_at,fulfilment_kind,fulfilment_reference,received_notified_at');
 select xp.val('XS3 ...and fulfilment_recorded_at is NOT among them -- the clock stays the database''s',
   $$select (not exists (select 1 from information_schema.column_privileges
      where table_schema='public' and table_name='data_subject_requests'

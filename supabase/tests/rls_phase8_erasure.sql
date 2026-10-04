@@ -702,7 +702,7 @@ select er.val('EG5 service_role may UPDATE exactly the four outcome columns, and
 select er.val('EG6 the two triggers are on the table',
   $$select string_agg(tgname, ',' order by tgname) from pg_catalog.pg_trigger
      where tgrelid = 'public.erasure_jobs'::pg_catalog.regclass and not tgisinternal$$,
-  'erasure_jobs_after_insert_audit,erasure_jobs_before_insert,erasure_jobs_before_update');
+  'erasure_jobs_after_insert_audit,erasure_jobs_before_insert,erasure_jobs_before_update,erasure_jobs_stamp_failure');
 select er.val('EG7 the four runner RPCs are service_role-only',
   $$select string_agg(p.proname || ':' ||
         (has_function_privilege('authenticated', p.oid, 'EXECUTE'))::text || '/' ||
