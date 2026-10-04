@@ -1270,3 +1270,30 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   the DSR and export ones. **Default (proceeding):** as built, 160 s of
   headroom. If a ninth loop is added, tighten every per-loop budget to 45 s
   (or split the tick) rather than add another 70 s.
+
+## Q205-Q207 -- Task 9c job 1 (close RPC, closed state, backup), 2026-10-04
+
+- **Q205 -- a closed workspace's members cannot read its finance lines.**
+  Measured (`rls_phase8_workspace_closure.sql` CW11): contacts, events,
+  tasks and notes stay readable once `owner_closed`, finance entries do not,
+  because `private.finance_module_organisations()` gates the finance READ on
+  `deleted_at is null`. That is the PRE-EXISTING suspension rule, inherited,
+  not something this job added. **Default (proceeding):** keep it -- the
+  closure backup carries the finance lines, and changing it would also
+  change suspension. Alternative: let finance reads survive suspension for
+  holders of the finance key (one function; also changes suspended
+  workspaces).
+- **Q206 -- the closing Owner erasing their account deletes the backup row.**
+  `export_jobs.requested_by` is `ON DELETE CASCADE`, and a closed workspace
+  no longer blocks its last Owner's erasure (`account_last_owner_workspaces`
+  reads only live workspaces) -- which is the point of the ruling. So "close,
+  then delete my account" loses the closure backup's row before the founder
+  decides. **Default for job 2:** have `private.erase_account()` re-point a
+  `closure_backup` job's `requested_by` at the Q130 tombstone instead of
+  cascading it (the Q158 pattern), and make the superuser decision item --
+  not the requester -- the backup's reader. Not built in job 1.
+- **Q207 -- the confirmation and reason bounds.** **Default (built):** the
+  typed confirmation is the workspace SLUG, exactly (no trim, no case-fold);
+  the reason is mandatory, trimmed, at most 500 characters. Impersonating
+  superusers cannot close (the RPC reads the membership row, not
+  `permitted_organisations`).
