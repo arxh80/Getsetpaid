@@ -3347,7 +3347,9 @@ describe("table data_subject_requests (own rows only) and its operator notes", (
   // arriving is red -- and `fulfilment_recorded_at` is deliberately absent,
   // because the trigger stamps it and a BEFORE trigger may assign a column
   // the updating role holds no privilege on.
-  it("service_role's write is EXACTLY the two seam columns, and nothing on the notes", async () => {
+  it("service_role's write is EXACTLY the two seam columns plus the two notice stamps, and nothing on the notes", async () => {
+    // The stamps since 20261015000000 (Task 9b job 2, Q157(3)/Q174/Q45):
+    // written only after the requester's email was accepted, once, alone.
     const { rows } = await pool.query<{ table_name: string; column_name: string; privilege_type: string }>(
       `select distinct table_name, column_name, privilege_type from information_schema.column_privileges
         where table_schema = 'public'
@@ -3356,8 +3358,10 @@ describe("table data_subject_requests (own rows only) and its operator notes", (
         order by table_name, column_name, privilege_type`,
     );
     expect(rows).toEqual([
+      { table_name: "data_subject_requests", column_name: "closed_notified_at", privilege_type: "UPDATE" },
       { table_name: "data_subject_requests", column_name: "fulfilment_kind", privilege_type: "UPDATE" },
       { table_name: "data_subject_requests", column_name: "fulfilment_reference", privilege_type: "UPDATE" },
+      { table_name: "data_subject_requests", column_name: "received_notified_at", privilege_type: "UPDATE" },
     ]);
   });
 });
