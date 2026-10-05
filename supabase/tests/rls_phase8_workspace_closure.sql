@@ -672,6 +672,38 @@ select cw.val('CL12 lifecycle_lock: EXECUTE for authenticated only (not anon, no
      where p.oid = 'private.lifecycle_lock(uuid)'::regprocedure and a.privilege_type = 'EXECUTE'
        and pg_get_userbyid(a.grantee) <> 'postgres'$$,
   'authenticated');
+-- § CN fix round 2 (N2, 20261028001000): reinstate never yields a live
+-- workspace with no active Owner. Org C has a Manager and no Owner (the shape
+-- a closed workspace has once its closing Owner erased). The tombstone
+-- cannot hold a membership row at all (a trigger refuses it), so only a real
+-- active Owner counts; adding one restores the positive path.
+\o /dev/null
+select gen_random_uuid()::text as org_c \gset
+\o
+insert into public.organisations (id, name, slug) values (:'org_c', 'Closure Gamma', 'cw-closure-gamma');
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+values (:'org_c', :'mgr_u', 'manager', 'active', now());
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CN0 FIXTURE: the superuser deletes the ownerless org C (Phase 7 delete)',
+  $$select public.delete_organisation('cw-closure-gamma', 'cn fixture')$$, 'ok(1)');
+select cw.try('CN1 reinstate refuses a workspace with no active Owner',
+  $$select public.reinstate_organisation('cw-closure-gamma', 'bring it back')$$, 'denied(22023:reinstate_needs_an_active_owner)');
+select cw.val('CN3 every refusal left org C deleted and wrote no reinstated row',
+  format($$select lifecycle_state || '/' || (select count(*) from public.audit_events a
+             where a.organisation_id = o.id and a.action = 'organisation.reinstated')::text
+             from public.organisations o where o.id = %L$$, :'org_c'), 'deleted/0');
+reset role; reset request.jwt.claims;
+update public.organisation_memberships set role = 'owner' where organisation_id = :'org_c' and user_id = :'mgr_u';
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CN4 POSITIVE: with a real active Owner the same reinstate succeeds',
+  $$select public.reinstate_organisation('cw-closure-gamma', 'bring it back')$$, 'ok(1)');
+set request.jwt.claims = :'mgr_c';
+select cw.try('CN5 the owner probe is the superuser''s alone (no membership oracle)',
+  format($$select private.lifecycle_has_active_owner(%L)$$, :'org_c'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+delete from public.organisations where id = :'org_c';
 select cw.val('CS9 every refusal above left org A owner_closed and wrote no decision audit row',
   format($$select (o.lifecycle_state = 'owner_closed' and o.deleted_at is not null
                    and not exists (select 1 from public.audit_events a where a.organisation_id = o.id
