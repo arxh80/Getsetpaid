@@ -1441,3 +1441,27 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   can take their own workspace export the moment the workspace reopens. The
   close section's copy and `SECURITY.md` § 7 should say the backup is for
   the closing Owner to download before they erase (owed copy change).
+
+## Q227 + Q222-Q226 status -- Task 9c fix round 1b, 2026-10-05
+
+- **Q227 -- the closure-backup marker on the network path. Controller
+  2026-10-05, pending founder: default (a) taken.** Keep
+  `private.closure_backup_read_admits()` in `permitted_organisations()` /
+  `has_permission()`; the three censuses acknowledge it explicitly
+  (`20261027000000`). Measured: the LF red was a COMMENT --
+  permitted_organisations' new comment named the export engine
+  schema-qualified, so the text closure followed it into the export catalogue
+  (6 -> 14 bodies); reworded, the closure is 7. LF5 allowlists exactly
+  `private.closure_backup_reads` and pins its columns. **Deviation for the
+  controller to confirm:** the brief said "txid + org id only"; the table
+  also carries `export_job_id` (a uuid FK to the job, no tenant content).
+  LF5b pins all three. Retention: classified `ephemeral`. M1c/M1d2 re-pinned.
+- **Q222 BUILT** (`20261027001000`): refuse/exclude a platform admin.
+- **Q223 BUILT** (`20261027002000`): `organisation.closure_candidates_viewed`,
+  counts only; catalogue 166 -> 167.
+- **Q224 BUILT** (`20261027003000`): keyset on (role rank, user id), 200 per
+  page, bad cursor refused; `?members=<org>.<last id>` on /super/closures.
+  The display-name sort is gone (not a keyset).
+- **Q225 BUILT**: closure suite CF12-15 / CW15a-h; mutation found the two
+  gates redundant (0 red with one removed), so each is pinned separately.
+- **Q226 BUILT** (copy + SECURITY.md § 7).
