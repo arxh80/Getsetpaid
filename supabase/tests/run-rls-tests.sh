@@ -3238,6 +3238,53 @@ p2_rows "CONTROL: the note's AUTHOR sees their own private note" 1 \
 p2_rows "pbowner (BETA) GETs an ALPHA document (expect 0)" 0 \
         "documents?select=id&id=eq.$P4_DOC_ALPHA" "$BOWN"
 
+# I1 HTTP TWIN (Phase 8 final review A, I1; 20261029000000). The psql § SV
+# proves the verdict columns are the scanner's through set-by-hand claims; this
+# asks the same question the way the review's probe did -- a REAL aal1 Manager
+# session over PostgREST, which is the path the app's anon key opens. Before
+# 20261029000000 the PATCH below answered 204 and the download gate read the
+# file as clean mid-scan. Each refusal is read twice: the status code, and the
+# row in Postgres (a 403 that left the row changed would be no refusal).
+db_val() { # name want sql
+  local name="$1" want="$2" v
+  v=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "$3" | tr -d '[:space:]')
+  if [ "$v" = "$want" ]; then printf '  PASS  %-58s %s\n' "$name" "$v"
+  else printf '  FAIL  %-58s got %s want %s\n' "$name" "$v" "$want"; api_fails=$((api_fails+1)); fi
+}
+I1_DOC=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select gen_random_uuid()" | tr -d '[:space:]')
+I1_NEW=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select gen_random_uuid()" | tr -d '[:space:]')
+I1_CTL=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select gen_random_uuid()" | tr -d '[:space:]')
+I1_MGR=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select id from auth.users where email = 'pmanager@test.local'" | tr -d '[:space:]')
+# A PENDING upload of pmanager's own, planted sessionless (the row the upload
+# path writes before the scan answers).
+p2_sub "insert into public.documents (id, organisation_id, owner_user_id, filename, storage_key, mime_type, size_bytes)
+        values ('$I1_DOC', '$ALPHA_ORG', '$I1_MGR', 'i1-twin.pdf', '$ALPHA_ORG/i1-twin-$I1_DOC', 'application/pdf', 10);"
+db_val "I1 FIXTURE: the planted upload is pending and unscanned" "pending/true" \
+       "select scan_status || '/' || (scanned_at is null) from public.documents where id = '$I1_DOC'"
+p2_code "I1 manager PATCHes their pending upload to scan_status=clean" 403 PATCH \
+        "documents?id=eq.$I1_DOC" '{"scan_status":"clean","scanned_at":"2026-10-05T00:00:00Z"}' "$MGR"
+p2_code "I1 manager PATCHes scanned_at alone" 403 PATCH \
+        "documents?id=eq.$I1_DOC" '{"scanned_at":"2026-10-05T00:00:00Z"}' "$MGR"
+db_val "I1 ...the row is unchanged: still pending, never scanned" "pending/true" \
+       "select scan_status || '/' || (scanned_at is null) from public.documents where id = '$I1_DOC'"
+p2_code "I1 manager POSTs an upload BORN clean" 403 POST "documents" \
+        "{\"id\":\"$I1_NEW\",\"organisation_id\":\"$ALPHA_ORG\",\"filename\":\"born-clean.pdf\",\"storage_key\":\"$ALPHA_ORG/born-clean-$I1_NEW\",\"mime_type\":\"application/pdf\",\"size_bytes\":10,\"scan_status\":\"clean\",\"scanned_at\":\"2026-10-05T00:00:00Z\"}" "$MGR"
+db_val "I1 ...and no such row exists" "0" \
+       "select count(*) from public.documents where id = '$I1_NEW'"
+# POSITIVE CONTROLS: the same token, the same table, the columns it IS granted --
+# so the 403s above are the verdict's own refusal and not a dead endpoint.
+p2_code "I1 CONTROL: the same POST without the verdict columns" 201 POST "documents" \
+        "{\"id\":\"$I1_CTL\",\"organisation_id\":\"$ALPHA_ORG\",\"filename\":\"control.pdf\",\"storage_key\":\"$ALPHA_ORG/control-$I1_CTL\",\"mime_type\":\"application/pdf\",\"size_bytes\":10}" "$MGR"
+db_val "I1 CONTROL: ...is born pending, owned by the session" "pending/true" \
+       "select scan_status || '/' || (owner_user_id = '$I1_MGR') from public.documents where id = '$I1_CTL'"
+p2_code "I1 CONTROL: the manager soft-deletes the planted upload (deleted_at is granted)" 204 PATCH \
+        "documents?id=eq.$I1_DOC" '{"deleted_at":"2026-10-05T00:00:00Z"}' "$MGR"
+db_val "I1 CONTROL: ...it is deleted, and its verdict still pending" "true/pending" \
+       "select (deleted_at is not null) || '/' || scan_status from public.documents where id = '$I1_DOC'"
+p2_sub "set session_replication_role = replica;
+        delete from public.documents where id in ('$I1_DOC', '$I1_CTL');
+        set session_replication_role = origin;"
+
 # CROSS-TENANT LINK INSERT: a manager POSTing a task_link into BETA is refused
 # (403, an INSERT policy has only WITH CHECK so PostgREST raises).
 p2_code "manager POSTs a task_link into org BETA" 403 POST "task_links" \
