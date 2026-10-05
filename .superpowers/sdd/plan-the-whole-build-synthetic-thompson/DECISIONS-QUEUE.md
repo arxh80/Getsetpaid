@@ -1346,3 +1346,28 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   root page, so the deleted-decision email links `/` -- the post-sign-in hub
   that routes a person to a workspace they still belong to, an invitation or
   onboarding. **Default (built):** these two.
+
+## Q215-Q217 -- Task 9c job 3a (/super/closures), 2026-10-05
+
+- **Q215 -- the superuser now reads a closed workspace's member NAMES.**
+  `public.closed_workspace_reassign_candidates()` (20261023000000) returns the
+  active, non-tombstone members' user id, `profiles.full_name` and role, for
+  an `owner_closed` workspace only, to the aal2 superuser only, at most 200.
+  That is more than "aggregate metadata", and it is not audited as a read.
+  **Default (built):** allow it unaudited -- the reassign decision cannot be
+  made without naming a member, it is only ever reachable for a workspace
+  whose Owner asked the platform to decide, and the decision itself is
+  audited with the chosen user id. Alternatives: audit each read
+  (`closure.candidates_viewed`), or take a typed email instead of a picker.
+- **Q216 -- no index behind the list's order.** `CLOSURES_SPEC`'s one sort is
+  the RPC's `(lifecycle_changed_at, id)` over the `owner_closed` set; its
+  `backedBy` names the RPC, not an index, because that set is small by nature
+  (a workspace leaves it on decision or purge). **Default:** no index. A
+  partial index `on organisations (lifecycle_changed_at, id) where
+  lifecycle_state = 'owner_closed'` is one line if the set ever grows.
+- **Q217 -- deletion asks for the slug retyped, the RPC does not.**
+  `deleteClosedWorkspaceAction` refuses unless `confirmSlug` equals the slug
+  exactly (server-side), on top of step-up and the reason; the RPC
+  `delete_closed_workspace` has no confirmation parameter, so a raw RPC call
+  by the aal2 superuser skips it. **Default:** keep it app-side -- it guards a
+  mis-click, not a principal, and the superuser is the only caller.

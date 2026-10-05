@@ -310,3 +310,62 @@ deliveries and ~440 s. The next migration in this area must reissue it
 **Still owed (job 3):**
 - the `/super/closures` page with its two step-up forms, e2e and axe;
 - the clock comment reissue (Q213).
+
+## Job 3a (/super/closures)
+
+Founder 2026-09-30 (Q176/Q178). Migrations 227 -> 228. Commits: `d8de240`
+(candidates RPC + matrix), `f691edb` (page, actions, censuses), the e2e
+commit after it, and this report + Q215-Q217.
+
+**Built.**
+- `app/(app)/super/closures/page.tsx` + `loading.tsx` at `SUPER_CLOSURES_PATH`
+  (the job-2b email link now lands on a real page). `isSuperuser()` first
+  await + gated `generateMetadata()` (census holds it). Lists
+  `closed_workspaces_awaiting_decision` through a `CLOSURES_SPEC`
+  (`lib/list` owns the cursor and page-size ceiling -- the one-cursor census
+  refused my first hand-rolled `?after=`). Per row: name, slug, closed-at and
+  purge-due (UK local, `formatDateTime`), days left, active member count,
+  backup STATUS label only (Q209). A read failure is an Alert, not the empty
+  state. The empty state teaches the closure -> decision -> purge flow.
+- Two forms per row, inside `<StepUpGate>`; action state hoisted above the
+  rows (a decided row unmounts on revalidate). `lib/admin/closures.ts`
+  re-checks session, `isSuperuser()` and step-up, validates slug length,
+  uuid grammar, reason <= 500 and (delete only) the retyped slug, then calls
+  `reassign_closed_workspace` / `delete_closed_workspace`; refusals are mapped
+  by the RPC's HINT. The org is re-derived by the RPC from the slug; the new
+  Owner's membership is re-checked there.
+- New RPC `public.closed_workspace_reassign_candidates(uuid)`
+  (`20261023000000`): aal2 superuser only, `owner_closed` only (anything else,
+  unknown ids included, `closure_candidates_not_owner_closed`), active
+  non-tombstone members (exactly what reassign accepts): id, full_name, role;
+  <= 200. SUPERUSER_ONLY in the permission matrix with a positive control.
+- Registered: /super hub link, `SUPER_PAGE_URLS`, super-permissions
+  `SUPER_SURFACES`, refusal-parity `PHASE8_SUPER`, use-server census.
+- e2e `tests/e2e/super-closures.spec.ts` (2 tests, 2 axe scans): empty state
+  reached through the hub link + scan; two workspaces closed via the REAL
+  `close_my_workspace` as their Owner at aal2; populated scan; reassign to the
+  Manager -> state `active`, membership `owner`, audit reason read back;
+  delete with a mistyped slug refused (state unchanged), then retyped -> state
+  `deleted`, audit reason read back.
+
+**Gates.**
+- `pnpm lint`, `next typegen` + `pnpm typecheck`: clean.
+- `vitest run tests/unit`: 109 files, **2566/2566** (first run red on the
+  route census x2, the one-cursor census -- all fixed -- and the known
+  load-timed network DENOMINATOR, green on rerun).
+- After a reset at 228: `run-rls-tests.sh` -> "All suites passed", API surface
+  all passed, EXIT 0 (no pin moved; no psql assertion added -- the new RPC is
+  proved in the matrix and the e2e).
+- After a fresh reset: permission matrix **596/596**.
+- **e2e NOT RUN.** Free RAM stayed at 2.2 GB (< the 3 GB floor; vmmemWSL
+  3.2 GB) at every check, so neither `super-closures.spec.ts` nor
+  super-permissions / refusal-parity was run. Owed: reset + `pnpm exec
+  playwright test tests/e2e/super-closures.spec.ts
+  tests/e2e/super-permissions.spec.ts tests/e2e/phase8-refusal-parity.spec.ts`.
+- Closing `npx supabase db reset --local` done.
+
+**Not done / owed.** The e2e run above; CLAUDE.md's e2e and matrix totals
+(175 -> 177 tests in 29 files, +2 axe scans, matrix 596) are not re-summed
+until that run measures them; Q213's comment reissue (not touched).
+Questions: Q215 (member names to the superuser), Q216 (no index), Q217
+(slug retype is app-side only).
