@@ -159,6 +159,42 @@ delete from public.network_connection_requests where from_organisation_id = :'or
 select cw.val('CF11 FIXTURE: no live request left between the two workspaces',
   format($$select count(*)::text from public.network_connection_requests where from_organisation_id = %L$$, :'org_a'), '0');
 
+-- Q225 (fix round 1b, review m4): MEMBERSHIP AND INVITE WRITES, ACTIVE. Three
+-- invitees: new_u is invited, re-roled and removed by the Owner here (each
+-- refused again in § CW15 once closed); inv_u holds a PENDING invite into
+-- org A that § CW15 tries to re-role, remove and accept; invb_u accepts an
+-- invite into the still-ACTIVE org B, the positive control for CW15d.
+\o /dev/null
+select gen_random_uuid()::text as new_u  \gset
+select gen_random_uuid()::text as inv_u  \gset
+select gen_random_uuid()::text as invb_u \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'inv_u')  as inv_c  \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'invb_u') as invb_c \gset
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+values (:'new_u',  '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cw-new@test.local',  now(), now(), now()),
+       (:'inv_u',  '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cw-inv@test.local',  now(), now(), now()),
+       (:'invb_u', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cw-invb@test.local', now(), now(), now());
+insert into public.organisation_memberships (organisation_id, user_id, role, status, invited_by)
+values (:'org_a', :'inv_u',  'standard_user', 'invited', :'owner_u'),
+       (:'org_b', :'invb_u', 'standard_user', 'invited', :'other_u');
+select id as inv_m  from public.organisation_memberships where organisation_id = :'org_a' and user_id = :'inv_u'  \gset
+select id as invb_m from public.organisation_memberships where organisation_id = :'org_b' and user_id = :'invb_u' \gset
+\o
+set role authenticated;
+set request.jwt.claims = :'owner_c';
+select cw.try('CF12 ACTIVE: the Owner invites a new member',
+  format($$insert into public.organisation_memberships (organisation_id, user_id, role, status, invited_by)
+           values (%L, %L, 'standard_user', 'invited', %L)$$, :'org_a', :'new_u', :'owner_u'), 'ok(1)');
+select cw.try('CF13 ACTIVE: ...changes that invite''s role',
+  format($$update public.organisation_memberships set role = 'read_only' where organisation_id = %L and user_id = %L$$,
+    :'org_a', :'new_u'), 'ok(1)');
+select cw.try('CF14 ACTIVE: ...and removes it',
+  format($$delete from public.organisation_memberships where organisation_id = %L and user_id = %L$$, :'org_a', :'new_u'), 'ok(1)');
+set request.jwt.claims = :'invb_c';
+select cw.try('CF15 ACTIVE: an invitee accepts an invite into a LIVE workspace (org B)',
+  format($$select public.accept_invite(%L)$$, :'invb_m'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
 -- ---------------------------------------------------------------------------
 -- § CG THE GUARDS
 -- ---------------------------------------------------------------------------
@@ -326,6 +362,48 @@ select cw.val('CW13 nothing a refused write tried landed (the closed workspace s
                   (select status from public.network_profiles where id = %2$L) || '/' ||
                   (select lifecycle_state from public.organisations where id = %1$L)$$, :'org_a', :'prof_a2'),
   '1/0/draft/owner_closed');
+-- Q225: MEMBERSHIP AND INVITE WRITES, CLOSED. Each succeeded in § CF12-15.
+-- Refused twice over: the manage_members policies carry organisation_is_live()
+-- and accept_invite() refuses a deleted_at workspace -- so an Owner cannot add
+-- a new Owner to dodge the superuser's decision.
+set role authenticated;
+set request.jwt.claims = :'owner_c';
+select cw.try('CW15a CLOSED: the Owner cannot invite a new member',
+  format($$insert into public.organisation_memberships (organisation_id, user_id, role, status, invited_by)
+           values (%L, %L, 'standard_user', 'invited', %L)$$, :'org_a', :'new_u', :'owner_u'), 'denied(42501)');
+select cw.try('CW15b CLOSED: ...nor change a pending invite''s role (the row is out of the policy''s reach)',
+  format($$update public.organisation_memberships set role = 'owner' where id = %L$$, :'inv_m'), 'ok(0)');
+select cw.try('CW15c CLOSED: ...nor change a MEMBER''s role (the Manager to Owner)',
+  format($$update public.organisation_memberships set role = 'owner' where organisation_id = %L and user_id = %L$$,
+    :'org_a', :'mgr_u'), 'ok(0)');
+select cw.try('CW15d CLOSED: ...nor remove a membership',
+  format($$delete from public.organisation_memberships where id = %L$$, :'inv_m'), 'ok(0)');
+set request.jwt.claims = :'inv_c';
+select cw.try('CW15e CLOSED: the invitee cannot accept the pending invite',
+  format($$select public.accept_invite(%L)$$, :'inv_m'), 'denied(22023)');
+reset role; reset request.jwt.claims;
+select cw.val('CW15f nothing landed: no new invite, the pending one untouched, the Manager still a Manager',
+  format($$select (select count(*) from public.organisation_memberships where organisation_id = %1$L and user_id = %2$L)::text || '/' ||
+                  (select role || ':' || status from public.organisation_memberships where id = %3$L) || '/' ||
+                  (select role from public.organisation_memberships where organisation_id = %1$L and user_id = %4$L)$$,
+    :'org_a', :'new_u', :'inv_m', :'mgr_u'), '0/standard_user:invited/manager');
+-- EACH GATE ON ITS OWN, as § CW14 does for the CRM writes: CW15a-d are
+-- refused by BOTH gates at once, so a mutant that opens one of them leaves
+-- them green (measured: the policies without organisation_is_live() went
+-- 0/138 red). Each gate is therefore pinned separately.
+set role authenticated;
+set request.jwt.claims = :'owner_c';
+select cw.val('CW15g GATE: the closed workspace''s Owner does not hold manage_members (the catalogue join)',
+  format($$select public.has_permission(%L, 'manage_members')::text$$, :'org_a'), 'false');
+reset role; reset request.jwt.claims;
+select cw.val('CW15h GATE: ...and all three manage_members write policies ALSO carry organisation_is_live()',
+  $$select count(*)::text from pg_policies
+     where schemaname = 'public' and tablename = 'organisation_memberships'
+       and policyname in ('organisation_memberships_insert_manage_members',
+                          'organisation_memberships_update_manage_members',
+                          'organisation_memberships_delete_manage_members')
+       and coalesce(qual, with_check) like '%organisation_is_live(organisation_id)%'
+       and (with_check is null or with_check like '%organisation_is_live(organisation_id)%')$$, '3');
 
 -- ---------------------------------------------------------------------------
 -- § CB THE BACKUP'S FENCES
@@ -704,7 +782,7 @@ delete from public.organisations where id in (:'org_a', :'org_b');
 -- actor FK without an action): removed in replica mode, the fixture shape
 -- every self-contained suite here uses for auth.users.
 set session_replication_role = replica;
-delete from auth.users where id in (:'owner_u', :'mgr_u', :'other_u', :'su_u', :'view_u');
+delete from auth.users where id in (:'owner_u', :'mgr_u', :'other_u', :'su_u', :'view_u', :'new_u', :'inv_u', :'invb_u');
 set session_replication_role = origin;
 \o
 select cw.val('CZ1 the fixture workspaces, their export jobs, users AND their child rows are gone',
