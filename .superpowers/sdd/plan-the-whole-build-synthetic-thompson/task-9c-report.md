@@ -565,3 +565,63 @@ fact (its premise was false).
   client, and the alternative designs either keep the same reachability or
   reopen the write window. Needs the reviewer's / founder's yes before the
   censuses are re-pinned.
+
+## Fix round 1b
+
+Migrations 231 -> 235. Commits: `e750ead` (Q227 censuses), `3c1a1a0` (Q222),
+`9d214a7` (Q223), `2db43cc` (Q224), `d58bbbe` (Q225), `ec8fece` (Q226 copy +
+SECURITY.md § 7), then the queue commit.
+
+**Q227 (controller 2026-10-05, pending founder: default (a)).** Measured: the
+LF red was a COMMENT. permitted_organisations' new comment named the export
+engine's entry point schema-qualified, and the text closure followed it into
+the export catalogue (6 -> 14 bodies, which name every tenant table).
+`20261027000000` rewords that comment; the closure is now 7 (+
+`closure_backup_read_admits`). New LF5: the only private relation any closure
+body names is `private.closure_backup_reads`; LF5b pins its columns
+(`export_job_id uuid, organisation_id uuid, xact xid8`); LF5c says it is empty.
+**Deviation:** the brief said "txid + org id only"; the table also holds
+`export_job_id` (an FK, no tenant content). It is pinned, not removed; the
+controller should confirm. M1c/M1d2 re-pinned with the third disjunct in both
+bodies. Retention: `private.closure_backup_reads` is `ephemeral` (rebuilt from
+LIVE). Closure backup § KM: 12/12 API-role privileges absent, no column
+grants, a marker admits its own transaction and organisation only (X commits a
+row; in Y, with an xid assigned, it admits nothing and the Owner's
+view_finance stays dark), and KE3b shows no marker survives a build. Mutants:
+admits without the xact predicate -> KM2c/KM2d; a service_role grant ->
+KM1/KM1b; an extra column -> LF5b; a closure body reading
+notification_deliveries -> LF5 (both checked by direct query in a rolled-back
+transaction).
+
+**Q222** `reassign_closed_workspace` refuses a platform admin
+(`new_owner_is_platform_superuser`); the candidates RPC excludes one. CS8d-f.
+Mutants: reassign at its pre-fix def -> CS8d (+ downstream); candidates at
+its pre-fix def -> CS8e.
+**Q223** The candidates read writes `organisation.closure_candidates_viewed`
+(counts only; VOLATILE); catalogue 166 -> 167 (SQL PA6c, TS
+audit-actions-match-db). CS8g-i. Mutant: no audit -> CS8h.
+**Q224** Keyset on (role rank, user id), 200/page, `p_after` must be a
+candidate (`closure_candidates_bad_cursor`); the name sort is dropped (it is
+not a keyset). `/super/closures` has a per-workspace "More members" / "First
+members" link (`?members=<org>.<last id>`). CS8j-m use 201 planted members.
+Mutants: no cap -> CS8j/k; cursor ignored -> CS8k; no cursor check -> CS8l.
+**Q225** CF12-15 positive controls (while active) and CW15a-f refusals (once
+closed): invite, change an invite's role, promote the Manager, remove, accept.
+**A mutant exposed a false green:** removing `organisation_is_live()` from the
+three manage_members policies left 0/138 red, because `has_permission()` also
+refuses. CW15g now pins the catalogue gate (red under manage_members
+survives_suspension) and CW15h pins the policy gate (red under the policy
+mutant). accept_invite without its deleted_at check -> CW15e/f.
+**Q226** The close section says the backup is the workspace as the Owner
+could see it (m6), and that it is theirs to download before they erase:
+nobody else can. SECURITY.md § 7 now carries C1/I2 (the marker and its
+fences), Q221, I1 and Q222-Q225.
+
+### Gates (measured, 235 migrations after reset)
+- lint clean; `next typegen` + typecheck clean.
+- psql runner: **All suites passed** (EXIT 0). Pins: crm 694, leak 217,
+  rt 312, cw 140, ck 26.
+- vitest, the brief's set: 124 files / 3419 tests green on two of three runs.
+  The one red, on the second run, matches the known load timeout of
+  `no-private-table-in-network-path` DENOMINATOR, which passes alone (14/14).
+- e2e not run (per brief).
