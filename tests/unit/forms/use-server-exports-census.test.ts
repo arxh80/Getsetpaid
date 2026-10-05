@@ -139,6 +139,7 @@ const SERVER_ACTION_MODULES = [
   "lib/network/links.ts",
   "lib/network/profiles.ts",
   "lib/org/actions.ts",
+  "lib/org/closure-actions.ts",
   "lib/org/workspace-actions.ts",
   "lib/palette/search.ts",
 ];

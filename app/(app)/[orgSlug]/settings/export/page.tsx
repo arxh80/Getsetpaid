@@ -15,6 +15,9 @@ import { ActionOutcome } from "@/components/ui/action-outcome";
 import { StepUpGate } from "@/components/auth/step-up-gate";
 import { ExportJobList } from "@/components/account/export-job-list";
 import { ExportStartForm } from "@/components/account/export-start-form";
+import { CloseWorkspaceForm } from "@/components/org/close-workspace-form";
+import { CLOSE_SECTION_ID } from "@/lib/org/closure-contract";
+import { ORGANISATION_RETENTION_DAYS } from "@/lib/admin/lifecycle-contract";
 
 // Settings › Export this workspace (Phase 8 Task 4).
 //
@@ -68,6 +71,21 @@ export default async function WorkspaceExportSettingsPage({
   const mayExport = await hasPermission(org.id, "export_organisation_data");
   const state = await getOwnExportJobs("workspace", org.id);
   const live = state.jobs.some((j) => j.status === "queued" || j.status === "running");
+
+  // PHASE 8 TASK 9c JOB 3b: "Close this workspace" (founder 2026-09-30,
+  // Q176/Q178). OWNER ONLY, and not rendered at all for anyone else -- not a
+  // disabled control: closing is not a thing a non-Owner can be granted, so
+  // there is nothing to explain. Hiding it is not the enforcement either:
+  // lib/org/closure-actions.ts re-checks the Owner, step-up and aal2, and
+  // public.close_my_workspace() checks the active `owner` membership row and
+  // aal2 in the database. An impersonating superuser's role is the read_only
+  // envelope, so they never see it. A workspace the PLATFORM suspended or
+  // closed shows nothing (the Owner cannot close what is already read-only);
+  // one its Owner closed keeps the section with a statement in place of the
+  // form (the confirmation itself is in the ActionOutcome region above).
+  const isOwner = org.role === "owner" && !org.isImpersonated;
+  const ownerClosed = org.lifecycle?.state === "owner_closed";
+  const showClose = isOwner && (!org.isSuspended || ownerClosed);
 
   return (
     <div className="flex flex-col gap-10">
@@ -150,6 +168,56 @@ export default async function WorkspaceExportSettingsPage({
             emptyText="You have not exported this workspace. When you do, it appears here with its progress and, when it is ready, a download link. Exports other people started are not listed: an archive is built with the access rights of whoever asked for it."
           />
         </section>
+
+        {showClose ? (
+          <section
+            id={CLOSE_SECTION_ID}
+            aria-labelledby="close-workspace-heading"
+            className="flex flex-col gap-4 border-t border-rule pt-8"
+          >
+            <h2 id="close-workspace-heading" className="text-xl font-bold text-ink">
+              Close this workspace
+            </h2>
+            <p className="max-w-prose text-base text-ink-muted">
+              Only an Owner can do this. It is how you leave GetSetPaid with {org.name}, or delete
+              your own account while you are its only Owner. What happens:
+            </p>
+            <ul className="flex max-w-prose list-disc flex-col gap-2 pl-5 text-base text-ink-muted">
+              <li>
+                The workspace becomes <span className="font-semibold text-ink">read-only</span>{" "}
+                at once for everyone in it. They can still see everything, and a banner tells
+                them you closed it and why. It leaves the network directory.
+              </li>
+              <li>
+                A <span className="font-semibold text-ink">full backup</span> of the workspace
+                is taken automatically, and kept for as long as the workspace is.
+              </li>
+              <li>
+                GetSetPaid is told, and decides: either the workspace is handed to one of its
+                active members as the new Owner, which reopens it, or it is deleted permanently.
+                Its remaining Owners and Admins are emailed the decision.
+              </li>
+              <li>
+                If nobody decides, it is deleted{" "}
+                <span className="tabular-nums">{ORGANISATION_RETENTION_DAYS}</span> days after
+                you close it.
+              </li>
+              <li>You cannot reopen it yourself from inside the workspace.</li>
+            </ul>
+            {ownerClosed ? (
+              <p className="max-w-prose text-base text-ink" data-testid="close-workspace-done">
+                {org.name} is closed. It is read-only for everyone in it while GetSetPaid decides
+                whether to hand it to a new Owner or delete it.
+              </p>
+            ) : (
+              // CLAUDE.md § Session security: "deleting organisation data" is
+              // a step-up trigger. The action re-checks it server-side either way.
+              <StepUpGate next={`/${orgSlug}/settings/export#${CLOSE_SECTION_ID}`}>
+                <CloseWorkspaceForm orgSlug={org.slug} />
+              </StepUpGate>
+            )}
+          </section>
+        ) : null}
       </ActionOutcome>
     </div>
   );
