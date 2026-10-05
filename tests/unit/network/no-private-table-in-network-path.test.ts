@@ -242,7 +242,10 @@ describe("the network path names no tenant-private relation (the CI-visible half
       expect(why.length, file).toBeGreaterThan(60);
     }
     expect(new Set(NETWORK_RELATIONS).size).toBe(5);
-  });
+    // It reads every app source file: ~1.5 s alone, past vitest's 5 s default
+    // under full parallel load on a memory-constrained machine (F-T8-1). An
+    // explicit ceiling, not a retry -- the assertions are unchanged.
+  }, 20_000);
 
   // Phase 8 Task 7 fix round 1, M4. The audit catalogue's exemption says "it
   // issues no query", and that was a sentence rather than an assertion: the
