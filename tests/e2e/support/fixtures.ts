@@ -3183,3 +3183,36 @@ export async function removeOrganisations(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   await sql(`delete from public.organisations where id = any($1::uuid[])`, [ids]);
 }
+
+// =============================================================================
+// PHASE 8 TASK 9c JOB 3b: THE OWNER CLOSES THEIR OWN WORKSPACE
+// =============================================================================
+/** How many closure-backup export jobs this organisation has, read as `postgres`. */
+export async function closureBackupCount(organisationId: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.export_jobs
+      where organisation_id = $1 and closure_backup`,
+    [organisationId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** The reason on the organisation.closed_by_owner audit rows, oldest first. */
+export async function closedByOwnerAuditReasons(organisationId: string): Promise<string[]> {
+  const { rows } = await db().query<{ reason: string }>(
+    `select after->>'reason' as reason from public.audit_events
+      where organisation_id = $1 and action = 'organisation.closed_by_owner'
+      order by created_at`,
+    [organisationId],
+  );
+  return rows.map((r) => r.reason);
+}
+
+/** How many contacts of this name the organisation holds, deleted or not. */
+export async function countContactsNamed(organisationId: string, name: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.contacts where organisation_id = $1 and name = $2`,
+    [organisationId, name],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
