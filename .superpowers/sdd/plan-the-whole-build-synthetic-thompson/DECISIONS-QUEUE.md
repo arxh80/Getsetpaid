@@ -1371,3 +1371,28 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   `delete_closed_workspace` has no confirmation parameter, so a raw RPC call
   by the aal2 superuser skips it. **Default:** keep it app-side -- it guards a
   mis-click, not a principal, and the superuser is the only caller.
+
+## Q218-Q220 -- Task 9c job 3b (Owner close flow), 2026-10-05
+
+- **Q218 -- six network pages still say "suspended" in a closed workspace.**
+  The banner and the four shared write-refusal sentences (CRM, finance,
+  network publish, connections) now use `readOnlyExplanation()`, which names
+  the Owner's closure. The inline paragraphs on the six `/[orgSlug]/network/*`
+  pages, `linked-identity-section.tsx` and `support-access/page.tsx` are
+  hardcoded "This workspace is suspended" copy and were not touched (no
+  shared helper reaches them). **Default:** route them through
+  `readOnlyExplanation()` in a copy pass; the behaviour is already right.
+- **Q219 -- the close section lives on Settings > Export, not its own route.**
+  No new route means no new census entries and the export (take a copy first)
+  sits directly above it; but the sidebar's "Settings" still goes to custom
+  fields only, so the section is found from the erasure page's links, the
+  last-owner sentence, or the export page itself. **Default:** keep it.
+  Alternative: a `/[orgSlug]/settings/close` page plus a settings sub-nav.
+- **Q220 -- the erase page links blockers by NAME.** `my_erasure_blockers()`
+  returns organisation names only, so `/account/erase` matches them against
+  the caller's own active Owner memberships to build "Close <name>" links;
+  two owned workspaces with the same name would both be linked. The database's
+  own `last_owner_of_workspace` message (shown verbatim at the job insert)
+  still says only "close the workspace". **Default:** keep both (the link is
+  only ever to a workspace the caller owns, and the action re-checks).
+  Alternative: add the slug to the RPC's result in a migration.

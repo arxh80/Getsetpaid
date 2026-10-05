@@ -369,3 +369,86 @@ commit after it, and this report + Q215-Q217.
 until that run measures them; Q213's comment reissue (not touched).
 Questions: Q215 (member names to the superuser), Q216 (no index), Q217
 (slug retype is app-side only).
+
+## Job 3b (Owner close flow)
+
+Founder 2026-09-30 (Q176/Q178). Migrations 228 -> 229. Commits: `Reissue the
+incident-alert clock comment` (Q213), `e91f493` (closed-state copy), the close
+flow, the erasure copy, the integration test, the e2e spec, the docs, and this
+report + Q218-Q220.
+
+**Built.**
+- `20261024000000`: `comment on function private.deliver_incident_alerts()`
+  reissued -- TEN deliveries, six notice loops at the 45 s budget, ~490 s of
+  600 s (Q213). Comment only; body not rebuilt.
+- Owner-only "Close this workspace" section on `/[orgSlug]/settings/export`
+  (`#close-workspace`): consequences (read-only, full backup, superuser
+  reassigns or deletes, purged after 60 days), typed slug, mandatory reason,
+  inside `StepUpGate`. Rendered only for a non-impersonated Owner of a
+  workspace that is active or owner_closed (then a statement replaces the
+  form; the confirmation goes to the page's `ActionOutcome` region, which the
+  revalidation cannot unmount).
+- `lib/org/closure-actions.ts` (`closeMyWorkspaceAction`, on the use-server
+  roll) + pure `lib/org/closure-contract.ts`: session -> workspace from the
+  caller's own membership -> Owner and not impersonated -> `checkStepUp()` ->
+  new `sessionIsAal2()` (`lib/auth/step-up-gate.ts`, verified claims) -> slug
+  compared RAW (the RPC does not trim) and reason trimmed <= 500 -> RPC, every
+  hint mapped to a sentence, raw DB text never echoed.
+- Closed-state copy: `SuspendedBanner` says "was closed by its Owner", labels
+  the Owner's reason, says GetSetPaid is deciding (reassign or delete) and
+  that it is deleted at the retention date otherwise. `readOnlyExplanation()`
+  (lifecycle-contract) now feeds the CRM, finance, network-publish and
+  connections refusal sentences, so no disabled control in a closed workspace
+  says "suspended -- contact support". Write gating unchanged (already the
+  `deleted_at` flag).
+- Erasure copy: the Q131 sentence (contract + runner) names where an Owner
+  closes; `/account/erase` links each blocking workspace the reader owns to
+  its close section.
+- Docs: CLAUDE.md's Q104 paragraph now describes the whole shipped flow;
+  SECURITY.md § 7 gains "An Owner closes their own workspace"; psql total
+  re-stated at 229 migrations (still 4150 -- no pin moved); e2e "178 tests in
+  30 files" from `--list` (collected, not run).
+
+**Tests.**
+- Unit `tests/unit/org/close-workspace-action.test.ts` (21): positive control
+  reaches the stubbed RPC with the trimmed reason and the membership's org id
+  (a posted organisationId is ignored); each non-Owner role, impersonation,
+  a foreign slug, no session, an over-long slug, a read-only workspace, stale
+  step-up and aal1 refuse with no RPC call; padded / cased / wrong slugs and
+  blank / 501-char reasons are field errors (500 after trim accepted); every
+  hint's sentence; `readOnlyExplanation()`.
+- Integration `tests/integration/security/close-workspace-action.test.ts`
+  (4, real DB): with `getCurrentOrg()`, step-up AND aal2 all mocked to say
+  yes, a real aal2 Admin (`close_needs_an_owner`), an aal1 Manager
+  (`close_needs_step_up`) and org B's aal2 Owner are refused BY THE RPC, with
+  org A's state, closure-backup count and closure audit rows unchanged
+  (denominator asserted first). 4/4 green.
+- e2e `tests/e2e/workspace-closure.spec.ts` (1 test, 2 axe scans) -- WRITTEN,
+  NOT RUN (memory constraint). Owner at aal2 reads the section (scan); a
+  Manager sees no section, and the Owner's own server-action form, copied into
+  the Manager's page and submitted natively, leaves the row active with 0
+  backups and 0 closure audit rows; wrong slug refused; right slug ->
+  `owner_closed`, 1 backup, reason on the audit row, confirmation in
+  `export-outcome`; Manager reads the banner (closed by Owner, reason,
+  awaiting decision, not "suspended"), disabled "New contact" with the closure
+  sentence (scan); a forged create from the form captured while live lands 0
+  contacts. Denominator: "New contact" asserted enabled and its form captured
+  before the closure. Three new `fixtures.ts` helpers. Risk for the
+  controller's run: the forge relies on React's progressive-enhancement
+  `$ACTION` hidden fields (the helper asserts they are present), and
+  `tearDownWorld` now runs over an owner_closed org with a closure backup row.
+
+**Gates.**
+- `pnpm lint`, `npx next typegen` + `pnpm typecheck`: clean.
+- `vitest run tests/unit`: 110 files, **2587/2587**.
+- Integration: the new file 4/4 (no other integration dir touched).
+- psql: after `db reset` at **229** migrations, `run-rls-tests.sh` -> "All
+  suites passed", API surface all passed, EXIT=0 (no pin moved).
+- e2e: NOT RUN (brief); `playwright test --list` -> 178 tests in 30 files.
+- Closing `npx supabase db reset --local` done.
+
+**Not done / owed.** The e2e run (this spec plus job 3a's
+`super-closures.spec.ts`, super-permissions and phase8-refusal-parity); no
+mutation run of the new action (its guards are app-side duplicates; the
+integration test is the "app lied to" layer). Questions: Q218 (network pages'
+inline "suspended" copy), Q219 (section placement), Q220 (erase links by name).
