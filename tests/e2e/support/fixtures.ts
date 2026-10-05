@@ -3088,3 +3088,98 @@ export async function deleteExportJobAndArchive(id: string): Promise<void> {
   await sql(`delete from public.audit_events where action = 'export_job.downloaded' and target_id = $1`, [id]);
   await deleteExportJob(id);
 }
+
+// =============================================================================
+// PHASE 8 TASK 9c JOB 3a: A WORKSPACE ITS OWNER CLOSED (/super/closures)
+// =============================================================================
+/**
+ * Plant a workspace with an Owner and a Manager, then close it THROUGH THE
+ * REAL RPC as that Owner at aal2 -- not by writing `lifecycle_state`, which the
+ * lifecycle guard refuses for every writer outside an audited transition. So
+ * the row /super/closures reads carries the real audit row and the real
+ * closure backup job, exactly as an Owner's click would leave them.
+ *
+ * The session is a claims-only `authenticated` role inside one transaction
+ * (the psql suite's shape): the RPC derives the actor from `auth.uid()` and
+ * checks aal2 from the same claims, so this is the RPC's own gate, satisfied.
+ */
+export async function plantOwnerClosedWorkspace(
+  label: string,
+  owner: { id: string },
+  member: { id: string; name: string },
+): Promise<{ id: string; slug: string; name: string }> {
+  const id = randomUUID();
+  const slug = `e2e-closed-${label}-${id.slice(0, 8)}`;
+  const name = `E2E Closed ${label} ${id.slice(0, 4)}`;
+  await sql(`insert into public.organisations (id, name, slug) values ($1,$2,$3)`, [id, name, slug]);
+  await sql(
+    `insert into public.organisation_subscriptions
+       (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+     values ($1,'starter','monthly',2,'active', now() + interval '30 days')`,
+    [id],
+  );
+  await sql(
+    `insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+     values ($1,$2,'owner','active',now()), ($1,$3,'manager','active',now())`,
+    [id, owner.id, member.id],
+  );
+  await sql(`update public.profiles set full_name = $2 where id = $1`, [member.id, member.name]);
+
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local role authenticated");
+    await client.query(`select set_config('request.jwt.claims', $1, true)`, [
+      JSON.stringify({ sub: owner.id, role: "authenticated", aal: "aal2" }),
+    ]);
+    await client.query(`select public.close_my_workspace($1, $2, $3)`, [
+      id,
+      slug,
+      "E2E: the Owner is closing this workspace",
+    ]);
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  return { id, slug, name };
+}
+
+/** The organisation's lifecycle state, read as `postgres`. */
+export async function organisationLifecycleState(id: string): Promise<string | null> {
+  const { rows } = await db().query<{ state: string }>(
+    `select lifecycle_state as state from public.organisations where id = $1`,
+    [id],
+  );
+  return rows[0]?.state ?? null;
+}
+
+/** The member's role in that organisation, read as `postgres`. */
+export async function membershipRole(organisationId: string, userId: string): Promise<string | null> {
+  const { rows } = await db().query<{ role: string }>(
+    `select role from public.organisation_memberships where organisation_id = $1 and user_id = $2`,
+    [organisationId, userId],
+  );
+  return rows[0]?.role ?? null;
+}
+
+/** The closure decision audit rows for one organisation, with their reasons. */
+export async function closureDecisionAudit(
+  organisationId: string,
+): Promise<{ action: string; reason: string | null }[]> {
+  const { rows } = await db().query<{ action: string; reason: string | null }>(
+    `select action, after ->> 'reason' as reason from public.audit_events
+      where organisation_id = $1 and action in ('organisation.closure_reassigned', 'organisation.closure_deleted')
+      order by created_at`,
+    [organisationId],
+  );
+  return rows;
+}
+
+/** Delete planted organisations (cascading their tenant rows) at teardown. */
+export async function removeOrganisations(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql(`delete from public.organisations where id = any($1::uuid[])`, [ids]);
+}
