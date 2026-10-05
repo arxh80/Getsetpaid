@@ -625,3 +625,63 @@ fences), Q221, I1 and Q222-Q225.
   The one red, on the second run, matches the known load timeout of
   `no-private-table-in-network-path` DENOMINATOR, which passes alone (14/14).
 - e2e not run (per brief).
+
+## Fix round 2
+
+Migrations 235 -> 238. Commits: `7d00482` (N1 lock + re-check), `6bf5224`
+(N1 UI sentence), `e8c9718` (N2), `a3c637f` (N3a), `ec95e52` (docs + Q228).
+
+**N1 (race).** `20261028000000`. A `FOR UPDATE` inside `lifecycle_target`
+(SECURITY INVOKER) matched NOTHING: a locking read applies the UPDATE policy,
+and `organisations_update_platform_lifecycle` admits a row only inside
+`begin_lifecycle_transition()` -- measured, every call became "no
+organisation with that slug". So the lock is `private.lifecycle_lock(uuid)`,
+SECURITY DEFINER, guarded by the same aal2 superuser check (no tenant-stalling
+lever, CL11/CL11b), and `lifecycle_target` (now VOLATILE, or the post-lock
+read would use the statement snapshot) returns its post-lock state. All six
+lifecycle-moving UPDATEs (suspend, delete, reinstate, close_my_workspace,
+reassign, delete_closed) re-check the decided state in the WHERE and raise
+`40001 lifecycle_changed_concurrently` on zero rows; the three forms map it.
+New `supabase/tests/lifecycle_concurrency_probe.sh` (copied from the
+erasure/retention probes, run by the runner): the Owner holds a close open 2 s
+while the superuser suspends (round 1) / deletes (round 2). Measured: live ->
+both PASS, refused by the lock's hint; **both gates reverted -> race lands**
+(`suspended` / `deleted`, one audit row each); lock only reverted -> the
+re-check refuses (40001), so the probe insists on the lock's hint and is red.
+CL9 (lock structural) red under the unlocked lifecycle_target; CL10 (6 re-checks)
+5/6 under each of three re-check mutants (suspend, close, delete_closed).
+
+**N2.** `20261028001000`. Rule chosen: reinstate refuses
+`reinstate_needs_an_active_owner` unless an active, non-tombstone Owner exists
+(`private.lifecycle_has_active_owner`, definer, superuser-guarded, CN5).
+Narrower than "never reinstate a closure delete", which would also kill Q210's
+undo while the Owner is still there and leave suspended-then-ownerless open.
+The tombstone cannot hold a membership at all (trigger), so the exclusion is a
+belt. CN0-CN5; mutant (no check) -> CN1/CN3/CN4 red.
+
+**N3.** (a) `20261028002000`: `delete_closed_workspace(slug, reason,
+p_acknowledge_no_backup boolean default false)` (2-arg dropped, no overload);
+refuses `decision_backup_not_succeeded` unless the latest closure backup
+succeeded or acknowledged; audit `after` gains `backup_status`,
+`acknowledged_no_backup`. UI: required checkbox on /super/closures when not
+succeeded, hint -> field error; `super-closures.spec.ts` strips `required`
+to drive the server refusal, then ticks. CX0a-f (org D: a succeeded backup
+deletes with no acknowledgement recorded); mutant -> 5 red.
+(b) ALREADY BUILT (`20261022000000`, CB6): a succeeded closure backup's
+`expires_at = greatest(now + archive_days, retention_expires_at)`. The
+re-review's "7 days" was the ordinary path. Nothing changed.
+(c) NOT BUILT, reasoned in **Q228** (a re-queue must be as the closing Owner
+through the closure-only insert fence, and is useless once they erased).
+
+Registered: closure pin cw 140 -> 157; probe in the runner; matrix untouched
+(the new helpers are `private`; the censuses are `public`/name-keyed and
+`delete_closed_workspace` keeps its name); no new audit action, table or
+retention class. CLAUDE.md / SECURITY.md § 7 corrected (4226 at 238).
+
+### Fix round 2 gates (measured, 238 migrations after reset)
+- lint clean; `next typegen` + typecheck clean.
+- psql runner: **All suites passed** (EXIT 0); closure 157 as pinned; the
+  lifecycle probe PASS on both rounds.
+- vitest (unit + export + admin + permission matrix): 118 files / 3267 green.
+- e2e: reset, then `super-closures.spec.ts` **2 passed** (50 s), with the
+  N3a refusal (`required` stripped) and the acknowledged delete.
