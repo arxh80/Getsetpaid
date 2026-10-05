@@ -78,7 +78,12 @@ export function SuspendedBanner({
    *  carried before Phase 7 Task 3, which is still true. */
   lifecycle: CurrentOrg["lifecycle"];
 }) {
-  const closed = lifecycle?.state === "deleted";
+  // Phase 8 Task 9c job 3b: `owner_closed` is closed too (out of the
+  // directory at once, like `deleted`), but by its OWN Owner, and what happens
+  // next is the superuser's decision rather than a reinstatement -- so the
+  // first sentence, the reason's attribution and the last sentence differ.
+  const ownerClosed = lifecycle?.state === "owner_closed";
+  const closed = lifecycle?.state === "deleted" || ownerClosed;
   const retentionDays = daysUntil(lifecycle?.retentionExpiresAt ?? null);
 
   return (
@@ -90,8 +95,8 @@ export function SuspendedBanner({
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-1 px-4 py-3">
         <p className="text-base text-ink">
           <span className="font-semibold text-warning">Read-only.</span>{" "}
-          <span className="font-semibold break-words">{orgName}</span> is{" "}
-          {closed ? "closed" : "suspended"}
+          <span className="font-semibold break-words">{orgName}</span>{" "}
+          {ownerClosed ? "was closed by its Owner" : closed ? "is closed" : "is suspended"}
           {lifecycle?.changedAt ? (
             <>
               {" "}
@@ -117,7 +122,14 @@ export function SuspendedBanner({
             is what turns "why has this stopped working" into an action. The
             operator's form now warns them before they type. */}
         {lifecycle?.reason ? (
-          <p className="text-sm text-ink">{lifecycle.reason}</p>
+          <p className="text-sm text-ink">
+            {ownerClosed ? (
+              <>
+                <span className="font-semibold">The Owner’s reason:</span>{" "}
+              </>
+            ) : null}
+            <span className="break-words">{lifecycle.reason}</span>
+          </p>
         ) : null}
 
         {/* WHAT THE NETWORK SEES. Only for a suspension, and only when we know
@@ -159,7 +171,9 @@ export function SuspendedBanner({
                 {retentionDays === 1 ? "day" : "days"})
               </>
             ) : null}
-            , and the workspace can be reopened in full up to then.
+            {ownerClosed
+              ? ". If GetSetPaid has not handed it to a new Owner by then, it is deleted."
+              : ", and the workspace can be reopened in full up to then."}
           </p>
         ) : (
           <p className="text-sm text-ink-muted">
@@ -169,10 +183,19 @@ export function SuspendedBanner({
           </p>
         )}
 
-        <p className="text-sm text-ink-muted">
-          Contact GetSetPaid support to have the workspace reinstated. It can’t
-          be reversed from inside the workspace, whatever your role.
-        </p>
+        {ownerClosed ? (
+          <p className="text-sm text-ink-muted" data-testid="owner-closed-next">
+            It is awaiting a decision by GetSetPaid: either the workspace is
+            handed to one of its members as the new Owner, or it is deleted
+            permanently. A full backup was taken when it was closed. It can’t be
+            reopened from inside the workspace, whatever your role.
+          </p>
+        ) : (
+          <p className="text-sm text-ink-muted">
+            Contact GetSetPaid support to have the workspace reinstated. It can’t
+            be reversed from inside the workspace, whatever your role.
+          </p>
+        )}
       </div>
     </div>
   );

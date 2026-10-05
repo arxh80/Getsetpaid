@@ -68,11 +68,14 @@ import "server-only";
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import { hasPermission, type CurrentOrg } from "@/lib/auth";
+import {
+  SUSPENDED_READ_ONLY_EXPLANATION,
+  readOnlyExplanation,
+} from "@/lib/admin/lifecycle-contract";
 import type { CrmWriteAccess } from "@/lib/crm/write-access";
 
 const EXPLANATION = {
-  suspended:
-    "This workspace is suspended, so it’s read-only. You can still see everything in it. Contact GetSetPaid support to have it reinstated — an Owner can’t do it from here.",
+  suspended: SUSPENDED_READ_ONLY_EXPLANATION,
   tier: "Finance is a Pro feature. An Owner can upgrade the workspace to add budget and actuals.",
   permission:
     "Your role in this workspace can’t change finance. Ask an Owner, Admin or someone with the Finance role.",
@@ -113,7 +116,7 @@ export async function getFinanceWriteAccess(
   org: CurrentOrg,
 ): Promise<CrmWriteAccess> {
   if (org.isSuspended) {
-    return { canWrite: false, reason: "suspended", explanation: EXPLANATION.suspended };
+    return { canWrite: false, reason: "suspended", explanation: readOnlyExplanation(org.lifecycle) };
   }
 
   const [entitlements, permitted] = await Promise.all([

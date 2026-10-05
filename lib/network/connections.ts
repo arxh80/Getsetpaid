@@ -66,6 +66,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentOrg, getCurrentUser, hasPermission, type CurrentOrg } from "@/lib/auth";
+import { readOnlyExplanation } from "@/lib/admin/lifecycle-contract";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { stateFor } from "@/lib/crm/actions";
@@ -151,8 +152,7 @@ async function authoriseWithdraw(
     return {
       ok: false,
       state: {
-        error:
-          "This workspace is suspended, so it’s read-only. You can still see everything in it. Contact GetSetPaid support to have it reinstated — an Owner can’t do it from here.",
+        error: readOnlyExplanation(org.lifecycle),
         values: echoed,
       },
     };
