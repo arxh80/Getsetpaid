@@ -61,6 +61,10 @@ const ALLOWED = new Set([
   // service_role-only stamp RPC (20261016000000) -- no table at all.
   "lib/email/network-notifications.ts",
   "lib/email/task-reminder-notifications.ts",
+  // Phase 8 Task 9c job 2b (founder 2026-09-30, Q176/Q178). The workspace-
+  // closure and decision notices: two service_role-only resolver RPCs and the
+  // same two ledger RPCs (20261022001000) -- no table at all.
+  "lib/email/workspace-closure-notifications.ts",
   // Phase 8 Task 4. The export runner is the second kind of sessionless
   // caller this client exists for: it has no user, so no RLS policy can name
   // it, and its whole reach is the column-narrow grants in 20260927001000 § 7

@@ -46,10 +46,12 @@ import "server-only";
 // ===========================================================================
 // BOUNDED, BECAUSE THE TICK IS SHARED
 // ===========================================================================
-// Each loop: 30 notices and a 60-second wall-clock budget checked BEFORE each
-// send (~70 s worst case each, REQUESTER_NOTICE_BUDGET_MS and _LIMIT). The
-// route's worst case becomes ~440 s against the 600 s cadence (20261016000000
-// reissues the clock function's comment with that number).
+// Each loop: 30 notices and a wall-clock budget checked BEFORE each send
+// (REQUESTER_NOTICE_BUDGET_MS and _LIMIT). At 60 s (~70 s worst case each)
+// the route's worst case was ~440 s against the 600 s cadence
+// (20261016000000). Since Task 9c job 2b the budget is 45 s (~55 s each,
+// Q204's tightening) and the route's worst case is ~490 s with ten
+// deliveries -- see lib/email/requester-notifications.ts.
 
 import {
   deliverEach,

@@ -13,6 +13,8 @@ const deliver = vi.hoisted(() => ({
   erasures: vi.fn(),
   connections: vi.fn(),
   reminders: vi.fn(),
+  closures: vi.fn(),
+  decisions: vi.fn(),
 }));
 vi.mock("@/lib/email/incident-alerts", () => ({
   deliverPendingIncidentAlerts: () => deliver.fn(),
@@ -31,6 +33,10 @@ vi.mock("@/lib/email/network-notifications", () => ({
 }));
 vi.mock("@/lib/email/task-reminder-notifications", () => ({
   deliverTaskReminderNotifications: () => deliver.reminders(),
+}));
+vi.mock("@/lib/email/workspace-closure-notifications", () => ({
+  deliverWorkspaceClosureNotifications: () => deliver.closures(),
+  deliverWorkspaceDecisionNotifications: () => deliver.decisions(),
 }));
 
 import { POST } from "@/app/api/incident-alerts/deliver/route";
@@ -53,6 +59,8 @@ beforeEach(() => {
   deliver.erasures.mockResolvedValue({ outcome: "nothing_pending" });
   deliver.connections.mockResolvedValue({ outcome: "nothing_pending" });
   deliver.reminders.mockResolvedValue({ outcome: "nothing_pending" });
+  deliver.closures.mockResolvedValue({ outcome: "nothing_pending" });
+  deliver.decisions.mockResolvedValue({ outcome: "nothing_pending" });
 });
 afterEach(() => {
   deliver.fn.mockReset();
@@ -63,6 +71,8 @@ afterEach(() => {
   deliver.erasures.mockReset();
   deliver.connections.mockReset();
   deliver.reminders.mockReset();
+  deliver.closures.mockReset();
+  deliver.decisions.mockReset();
   delete process.env.INCIDENT_ALERT_DELIVERY_SECRET;
 });
 
@@ -107,6 +117,26 @@ describe("the delivery route's gate", () => {
       erasureFailureNotifications: { outcome: "nothing_pending" },
       connectionRequestNotifications: { outcome: "nothing_pending" },
       taskReminderNotifications: { outcome: "nothing_pending" },
+      workspaceClosureNotifications: { outcome: "nothing_pending" },
+      workspaceDecisionNotifications: { outcome: "nothing_pending" },
+    });
+  });
+
+  // Task 9c job 2b: the two workspace-closure loops run on the same tick,
+  // and each still runs when the other throws.
+  it("runs the closure and decision notices, each independent of the other", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    deliver.closures.mockRejectedValue(new TypeError("boom"));
+    deliver.decisions.mockResolvedValue({ outcome: "delivered", sent: 1, failed: 0, deferred: 0 });
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await POST(post(`Bearer ${SECRET}`));
+    spy.mockRestore();
+    expect(deliver.closures).toHaveBeenCalledOnce();
+    expect(deliver.decisions).toHaveBeenCalledOnce();
+    expect(res.status).toBe(503);
+    await expect(res.json()).resolves.toMatchObject({
+      workspaceClosureNotifications: { outcome: "unavailable", error: "TypeError" },
+      workspaceDecisionNotifications: { outcome: "delivered", sent: 1 },
     });
   });
 
@@ -163,6 +193,8 @@ describe("the delivery route's gate", () => {
       erasureFailureNotifications: { outcome: "nothing_pending" },
       connectionRequestNotifications: { outcome: "nothing_pending" },
       taskReminderNotifications: { outcome: "nothing_pending" },
+      workspaceClosureNotifications: { outcome: "nothing_pending" },
+      workspaceDecisionNotifications: { outcome: "nothing_pending" },
     });
   });
 

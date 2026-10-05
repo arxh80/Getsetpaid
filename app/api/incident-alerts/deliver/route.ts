@@ -12,6 +12,10 @@ import {
 } from "@/lib/email/requester-notifications";
 import { deliverConnectionRequestNotifications } from "@/lib/email/network-notifications";
 import { deliverTaskReminderNotifications } from "@/lib/email/task-reminder-notifications";
+import {
+  deliverWorkspaceClosureNotifications,
+  deliverWorkspaceDecisionNotifications,
+} from "@/lib/email/workspace-closure-notifications";
 
 // ===========================================================================
 // POST /api/incident-alerts/deliver
@@ -22,7 +26,7 @@ import { deliverTaskReminderNotifications } from "@/lib/email/task-reminder-noti
 // pg_net-POSTs here with `Authorization: Bearer
 // <INCIDENT_ALERT_DELIVERY_SECRET>`, read from Supabase Vault.
 //
-// EIGHT DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
+// TEN DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
 //   * the OPERATOR's digest -- one email covering every alert nobody has been
 //     emailed about, stamping `notified_at` after ok:true
 //     (lib/email/incident-alerts.ts);
@@ -41,8 +45,14 @@ import { deliverTaskReminderNotifications } from "@/lib/email/task-reminder-noti
 //     accepted / declined notices and the task reminder (lib/email/
 //     network-notifications.ts, lib/email/task-reminder-notifications.ts),
 //     each stamping a row in
-//     private.notification_deliveries after ok:true.
-//     Worst case of the whole route ~440 s against the 600 s cadence.
+//     private.notification_deliveries after ok:true;
+//   * since Task 9c job 2b (founder 2026-09-30, Q176/Q178), the SUPERUSER's
+//     workspace-closed notice and the remaining Owners'/Admins' reassigned /
+//     deleted notice (lib/email/workspace-closure-notifications.ts), each
+//     stamping a ledger row keyed on its audit row after ok:true.
+//     Worst case of the whole route ~490 s against the 600 s cadence (the
+//     shared per-loop budget tightened 60 s -> 45 s, Q204; the arithmetic is
+//     in lib/email/requester-notifications.ts).
 // They are deliberately not folded together: different recipients, different
 // content, different failure. Each runs even if the other fails, and each
 // reports its own outcome in the response body.
@@ -108,6 +118,8 @@ export async function POST(request: Request): Promise<NextResponse> {
   const erasureFailures = await settle(deliverErasureFailureNotifications);
   const connectionRequests = await settle(deliverConnectionRequestNotifications);
   const taskReminders = await settle(deliverTaskReminderNotifications);
+  const workspaceClosures = await settle(deliverWorkspaceClosureNotifications);
+  const workspaceDecisions = await settle(deliverWorkspaceDecisionNotifications);
 
   const unavailable = [
     digest,
@@ -118,6 +130,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     erasureFailures,
     connectionRequests,
     taskReminders,
+    workspaceClosures,
+    workspaceDecisions,
   ].some(
     (r) => r.outcome === "unavailable",
   );
@@ -131,6 +145,8 @@ export async function POST(request: Request): Promise<NextResponse> {
       erasureFailureNotifications: erasureFailures,
       connectionRequestNotifications: connectionRequests,
       taskReminderNotifications: taskReminders,
+      workspaceClosureNotifications: workspaceClosures,
+      workspaceDecisionNotifications: workspaceDecisions,
     },
     {
       status: unavailable ? 503 : 200,

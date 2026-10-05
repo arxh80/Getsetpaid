@@ -41,12 +41,19 @@ import "server-only";
 // BOUNDED, BECAUSE THE TICK IS SHARED (the lockout notice's M1 lesson)
 // ===========================================================================
 // The DSR and export loops are sequential, each send carrying Brevo's 10 s
-// timeout, so each is capped at 30 rows AND a 60-second wall-clock budget
-// checked BEFORE each send (~70 s worst case each). With the digest (10 s),
-// Telegram (10 s), the lockout loop (~130 s) and the erasure-failure notice
-// (one 10 s call), the route's worst case is ~300 s against the 600 s cadence
-// (20261015000000 reissues the clock function's comment with that number).
-// Deferred rows are not lost: nothing is stamped for them.
+// timeout, so each is capped at 30 rows AND a wall-clock budget checked
+// BEFORE each send. At 60 s (~70 s worst case each) the route's worst case
+// was ~300 s (20261015000000), then ~440 s with job 3's two loops
+// (20261016000000). TASK 9c JOB 2b added two more deliverEach loops (the
+// workspace-closure and decision notices), so -- Q204's default -- the shared
+// budget is now 45 s: ~55 s worst case per loop (the budget plus one
+// in-flight 10 s send). Re-measured, the route's worst case is:
+//   digest 10 + Telegram 10 + lockouts ~130 + erasure-failure 10
+//   + six deliverEach loops x ~55 (DSR, export, connection, reminder,
+//     closure, decision) = ~490 s against the 600 s cadence.
+// (The live comment on private.deliver_incident_alerts() still says ~440 s
+// and eight deliveries -- Q213.) Deferred rows are not lost: nothing is
+// stamped for them.
 
 import { sendEmail, type SendEmailResult } from "@/lib/email/send";
 import { supportContactEmail } from "@/lib/email/feedback-notification";
@@ -61,7 +68,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 import { siteUrl } from "@/lib/supabase/env";
 
 export const REQUESTER_NOTICE_LIMIT = 30;
-export const REQUESTER_NOTICE_BUDGET_MS = 60_000;
+export const REQUESTER_NOTICE_BUDGET_MS = 45_000;
 export const ERASURE_FAILURE_NOTICE_LIMIT = 200;
 
 export type RequesterNoticeResult =
