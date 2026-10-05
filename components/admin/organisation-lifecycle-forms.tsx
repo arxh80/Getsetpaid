@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
+import Link from "next/link";
 import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
 import { useRevealFocus } from "@/components/ui/use-reveal-focus";
 import {
@@ -168,6 +169,7 @@ export function WoundDownOrganisationsList({
     reason: string | null;
     retentionExpiresAt: string | null;
     retentionDays: number | null;
+    ownerClosed: boolean;
   }[];
   limit: number;
 }) {
@@ -235,6 +237,7 @@ function WoundDownRow({
     reason: string | null;
     retentionExpiresAt: string | null;
     retentionDays: number | null;
+    ownerClosed: boolean;
   };
   asking: boolean;
   pending: boolean;
@@ -280,7 +283,20 @@ function WoundDownRow({
         </p>
       ) : null}
 
-      {!asking ? (
+      {row.ownerClosed ? (
+        // Task 9c fix round 1 (I1): an Owner-closed workspace is decided on
+        // /super/closures (reassign or delete, each emailed to its remaining
+        // Owners/Admins). Reopening it here skipped all of that, and the RPCs
+        // now refuse it (owner_closed_is_decided_at_super_closures), so no
+        // control is offered -- only the way to the real one.
+        <p className="max-w-prose text-base text-ink">
+          Closed by its Owner. Decide it on{" "}
+          <Link href="/super/closures" className="underline underline-offset-4">
+            Closed workspaces
+          </Link>{" "}
+          — reassign it to a member or delete it.
+        </p>
+      ) : !asking ? (
         <div>
           <Button ref={triggerRef} type="button" variant="primary" onClick={onAsk}>
             Reopen

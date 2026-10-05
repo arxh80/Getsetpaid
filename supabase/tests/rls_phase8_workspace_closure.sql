@@ -456,6 +456,29 @@ select cw.try('CS8c ...and so is a REVOKED member',
   format($$select public.reassign_closed_workspace('cw-closure-alpha', %L, 'x')$$, :'mgr_u'), 'denied(22023:new_owner_must_be_active_member)');
 reset role; reset request.jwt.claims;
 update public.organisation_memberships set status = 'active' where organisation_id = :'org_a' and user_id = :'mgr_u';
+-- § CL (fix round 1, I1): the Phase 7 lifecycle RPCs refuse owner_closed --
+-- the decision is reassign/delete above, never a one-click reinstate/suspend/
+-- delete from /super/organisations. Positive controls on org B (ACTIVE here),
+-- put back to active before § CX closes it.
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CL1 reinstate_organisation refuses an owner_closed workspace',
+  $$select public.reinstate_organisation('cw-closure-alpha', 'bypass')$$, 'denied(22023:owner_closed_is_decided_at_super_closures)');
+select cw.try('CL2 suspend_organisation refuses it',
+  $$select public.suspend_organisation('cw-closure-alpha', 'bypass')$$, 'denied(22023:owner_closed_is_decided_at_super_closures)');
+select cw.try('CL3 delete_organisation refuses it',
+  $$select public.delete_organisation('cw-closure-alpha', 'bypass')$$, 'denied(22023:owner_closed_is_decided_at_super_closures)');
+select cw.try('CL4 POSITIVE: the same superuser suspends an ACTIVE workspace',
+  $$select public.suspend_organisation('cw-closure-beta', 'cl control')$$, 'ok(1)');
+select cw.try('CL5 POSITIVE: ...reinstates it',
+  $$select public.reinstate_organisation('cw-closure-beta', 'cl control')$$, 'ok(1)');
+select cw.try('CL6 POSITIVE: ...deletes (closes) it',
+  $$select public.delete_organisation('cw-closure-beta', 'cl control')$$, 'ok(1)');
+select cw.try('CL7 POSITIVE: ...and reinstates it again',
+  $$select public.reinstate_organisation('cw-closure-beta', 'cl control')$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+select cw.val('CL8 org B is active again for § CX',
+  format($$select lifecycle_state from public.organisations where id = %L$$, :'org_b'), 'active');
 select cw.val('CS9 every refusal above left org A owner_closed and wrote no decision audit row',
   format($$select (o.lifecycle_state = 'owner_closed' and o.deleted_at is not null
                    and not exists (select 1 from public.audit_events a where a.organisation_id = o.id
