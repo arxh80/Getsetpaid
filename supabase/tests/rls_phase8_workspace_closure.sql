@@ -630,6 +630,48 @@ select cw.try('CL7 POSITIVE: ...and reinstates it again',
 reset role; reset request.jwt.claims;
 select cw.val('CL8 org B is active again for § CX',
   format($$select lifecycle_state from public.organisations where id = %L$$, :'org_b'), 'active');
+-- § CL fix round 2 (N1, 20261028000000): the two race gates, each pinned on
+-- its own -- either alone closes the close-vs-suspend race, so the two-session
+-- lifecycle_concurrency_probe.sh (run by the runner) goes red only when BOTH
+-- are gone and cannot tell a single removal. Under a mutant restoring the
+-- unlocked lifecycle_target the probe stays green (via the re-check) and CL9
+-- is red; under a mutant dropping a WHERE re-check CL10 is red.
+select cw.val('CL9 LOCK: lifecycle_target is VOLATILE and returns its state through lifecycle_lock(), which reads FOR UPDATE',
+  $$select (select provolatile from pg_proc where oid = 'private.lifecycle_target(text,text)'::regprocedure)::text || '/' ||
+           (pg_get_functiondef('private.lifecycle_target(text,text)'::regprocedure) like '%private.lifecycle_lock(o.id)%')::text || '/' ||
+           (pg_get_functiondef('private.lifecycle_lock(uuid)'::regprocedure) ~* 'for\s+update')::text || '/' ||
+           (select prosecdef from pg_proc where oid = 'private.lifecycle_lock(uuid)'::regprocedure)::text$$,
+  'v/true/true/true');
+select cw.val('CL10 RE-CHECK: all six lifecycle-moving UPDATEs carry the state they decided on and refuse lifecycle_changed_concurrently',
+  $$select count(*)::text from pg_proc p
+     where p.oid in ('public.suspend_organisation(text,text)'::regprocedure,
+                     'public.delete_organisation(text,text)'::regprocedure,
+                     'public.reinstate_organisation(text,text)'::regprocedure,
+                     'public.close_my_workspace(uuid,text,text)'::regprocedure,
+                     'public.reassign_closed_workspace(text,uuid,text)'::regprocedure,
+                     'public.delete_closed_workspace(text,text)'::regprocedure)
+       and pg_get_functiondef(p.oid) like '%lifecycle_changed_concurrently%'
+       and (pg_get_functiondef(p.oid) like '%and lifecycle_state = v_target.lifecycle_state;%'
+            or pg_get_functiondef(p.oid) like '%and lifecycle_state = ''active'';%'
+            or pg_get_functiondef(p.oid) like '%and lifecycle_state = ''owner_closed'';%')$$,
+  '6');
+set role authenticated;
+set request.jwt.claims = :'mgr_c';
+select cw.try('CL11 lifecycle_lock refuses anyone but the aal2 superuser (no tenant-stalling lever)',
+  format($$select * from private.lifecycle_lock(%L)$$, :'org_b'), 'denied(42501)');
+set request.jwt.claims = :'su_c1';
+select cw.try('CL11b ...including the superuser at aal1',
+  format($$select * from private.lifecycle_lock(%L)$$, :'org_b'), 'denied(42501)');
+set request.jwt.claims = :'su_c';
+select cw.val('CL11c POSITIVE: the aal2 superuser locks and reads the current state',
+  format($$select lifecycle_state from private.lifecycle_lock(%L)$$, :'org_b'), 'active');
+reset role; reset request.jwt.claims;
+select cw.val('CL12 lifecycle_lock: EXECUTE for authenticated only (not anon, not public, not service_role)',
+  $$select string_agg(pg_get_userbyid(a.grantee), ',' order by 1)
+      from pg_proc p cross join lateral aclexplode(p.proacl) a
+     where p.oid = 'private.lifecycle_lock(uuid)'::regprocedure and a.privilege_type = 'EXECUTE'
+       and pg_get_userbyid(a.grantee) <> 'postgres'$$,
+  'authenticated');
 select cw.val('CS9 every refusal above left org A owner_closed and wrote no decision audit row',
   format($$select (o.lifecycle_state = 'owner_closed' and o.deleted_at is not null
                    and not exists (select 1 from public.audit_events a where a.organisation_id = o.id

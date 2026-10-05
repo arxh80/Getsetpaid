@@ -1189,7 +1189,7 @@ fi
 # owner_closed state as read-only (one write per phase), the closure backup's
 # fences and retention, and the Q88 purge reaching it. Self-contained.
 # ============================================================================
-run_suite "PHASE 8 WORKSPACE CLOSURE" rls_phase8_workspace_closure.sql cw 140 "${P7VARS[@]}"
+run_suite "PHASE 8 WORKSPACE CLOSURE" rls_phase8_workspace_closure.sql cw 146 "${P7VARS[@]}"
 cw_fails=$SUITE_FAILS
 if [ "$cw_fails" != "0" ]; then
   echo "PHASE 8 WORKSPACE CLOSURE SUITE FAILED: $cw_fails failing assertion(s)" >&2
@@ -1226,6 +1226,22 @@ if [ "$ck_fails" != "0" ]; then
   psql_status=1
 else
   echo "Phase 8 closure backup completeness suite: all assertions passed."
+fi
+
+# ============================================================================
+# AN OWNER'S CLOSE AND A SUPERUSER'S SUSPEND/DELETE, UNDER A REAL RACE (Task 9c
+# fix round 2, re-review N1; 20261028000000). Two sessions: the Owner holds
+# close_my_workspace() open for two seconds while the superuser calls
+# suspend_organisation / delete_organisation. owner_closed must survive and
+# the superuser's call must be refused by the lock.
+# ============================================================================
+if bash "$HERE/lifecycle_concurrency_probe.sh"; then
+  :
+else
+  echo "LIFECYCLE CONCURRENCY PROBE FAILED: a superuser transition overwrote an" >&2
+  echo "  Owner's closure committed between its read and its UPDATE, or was" >&2
+  echo "  refused by something other than the row lock (private.lifecycle_lock)." >&2
+  psql_status=1
 fi
 
 # ============================================================================
