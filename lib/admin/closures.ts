@@ -69,6 +69,8 @@ function rpcRefusal(
       return { fieldErrors: { reason: REASON_TOO_LONG }, values: echoedValues(formData) };
     case "decision_no_such_workspace":
     case "decision_workspace_not_owner_closed":
+    // 20261028000000 (N1): it moved under the decision.
+    case "lifecycle_changed_concurrently":
       return refuse(NOT_OWNER_CLOSED, formData);
     case "new_owner_must_be_active_member":
       return { fieldErrors: { newOwnerUserId: OWNER_NOT_MEMBER }, values: echoedValues(formData) };

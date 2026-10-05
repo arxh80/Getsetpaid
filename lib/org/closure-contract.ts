@@ -77,6 +77,9 @@ export function closeRefusalFor(error: { code?: string; hint?: string | null }):
     case "close_needs_an_owner":
       return { error: CLOSE_MESSAGES.notOwner };
     case "workspace_not_active":
+    // 20261028000000 (N1): the workspace changed between the locked read and
+    // the UPDATE -- it is no longer active, which is the same sentence.
+    case "lifecycle_changed_concurrently":
       return { error: CLOSE_MESSAGES.notActive };
     case "close_confirmation_mismatch":
       return { fieldErrors: { confirmSlug: CLOSE_MESSAGES.confirmMismatch } };

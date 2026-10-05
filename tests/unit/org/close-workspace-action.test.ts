@@ -216,6 +216,10 @@ describe("checkCloseForm / closeRefusalFor", () => {
     });
   });
 
+  it("a concurrent lifecycle change reads as not-active (20261028000000, N1)", () => {
+    expect(closeRefusalFor({ code: "40001", hint: "lifecycle_changed_concurrently" })).toEqual({ error: CLOSE_MESSAGES.notActive });
+  });
+
   it("an unknown hint never echoes the database", () => {
     expect(closeRefusalFor({ code: "P0001", hint: "something_new" })).toEqual({ error: CLOSE_MESSAGES.failed });
   });
