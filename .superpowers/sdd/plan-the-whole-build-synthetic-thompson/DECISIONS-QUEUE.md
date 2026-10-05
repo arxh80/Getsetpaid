@@ -1465,3 +1465,41 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
 - **Q225 BUILT**: closure suite CF12-15 / CW15a-h; mutation found the two
   gates redundant (0 red with one removed), so each is pinned separately.
 - **Q226 BUILT** (copy + SECURITY.md § 7).
+
+## Q228 -- Task 9c fix round 2 (re-review N3), 2026-10-05
+
+- **Q228 -- a closure backup that fails is never rebuilt, so what may the
+  superuser do about it?** A closure backup is `failed` when it is reaped
+  (stuck `running` an hour) or over the export ceilings (50k rows per table,
+  500k in total, 40 MiB), and the retention kill switch being off suspends
+  the reaper. **Defaults (built, `20261028002000`):**
+  (a) `delete_closed_workspace()` refuses (`decision_backup_not_succeeded`)
+  unless the latest closure backup `succeeded` or the superuser passes
+  `p_acknowledge_no_backup = true`; a queued or running backup is refused the
+  same way (wait, or acknowledge). The audit row's `after` records
+  `backup_status` and `acknowledged_no_backup`. `/super/closures` shows a
+  required "Delete without a backup" checkbox only when the backup has not
+  succeeded.
+  (b) The archive is kept until the closed workspace's own
+  `retention_expires_at`, not the 7-day `archive_days` -- ALREADY BUILT by
+  `20261022000000` (`greatest(now + archive_days, retention_expires_at)` on
+  a succeeded closure backup), pinned by the closure suite's CB6; nothing
+  changed.
+  (c) **NOT BUILT: no superuser re-queue.** A closure backup is a snapshot
+  under the CLOSING OWNER's rights (Q165/Q226): it must be requested as them,
+  needs them to be an active member (else `closure_backup_requester_erased`),
+  and the insert fence (2b) admits it only in the transaction that closes the
+  workspace. A superuser re-queue would need a second insert path through
+  that fence -- the fence's whole point -- and does nothing once the Owner
+  has erased, which is when it matters most; a build under the superuser's
+  rights would breach "no direct tenant-data access outside impersonation".
+  A deterministic ceiling failure would also just fail again. **Alternatives
+  for the founder:** (i) a reasoned, audited, aal2 `requeue_closure_backup`
+  that re-inserts the job under the original requester while they are still
+  an active member (refusing otherwise), with the fence widened to admit it;
+  (ii) raise the closure backup's ceilings separately from ordinary exports;
+  (iii) keep (a)'s acknowledgement as the only answer (current).
+- **Related, recorded:** N2's rule is "reinstate needs an active Owner", not
+  "a closure-deleted workspace is never reinstated" -- the latter would also
+  remove Q210's one-hour undo of a mistaken delete while the Owner is still a
+  member, and would leave a suspended workspace whose last Owner erased open.
