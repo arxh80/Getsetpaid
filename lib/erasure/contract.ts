@@ -36,8 +36,9 @@ export type ErasureBlockerReason =
   /**
    * The subject is NOT an Owner of this workspace -- it has no active Owner
    * at all and they are its last active member. Neither Q131 remedy is
-   * theirs: there is nobody to promote, and no member-facing route to close
-   * a workspace exists anywhere in this product (fix round 2, N2/Q178).
+   * theirs: there is nobody to promote, and closing a workspace is an
+   * OWNER's act (public.close_my_workspace(), Phase 8 Task 9c), so only
+   * support can close it for them (fix round 2, N2/Q178).
    */
   | "no_owner_to_transfer";
 
@@ -67,14 +68,15 @@ export function describeBlockers(blockers: readonly ErasureBlocker[]): string | 
     sentences.push(
       `You are the only owner of ${list}. Deleting your account would leave ${plural} ` +
         `with nobody able to manage it, so we cannot do it yet. Make somebody else an owner ` +
-        `there, or close the workspace, and then come back.`,
+        `there, or close the workspace — an Owner can do that under “Close this workspace” ` +
+        `on its Settings › Export page — and then come back.`,
     );
   }
 
   if (unowned.length > 0) {
     // N2/Q178: the other branch used to be told to do two things it cannot
-    // do. There is nobody to promote and no member-facing route to close a
-    // workspace, so the only door that opens is support's.
+    // do. There is nobody to promote, and closing is an Owner's act (Task 9c),
+    // so the only door that opens is support's.
     const list = nameList(unowned);
     const plural = unowned.length === 1 ? "it" : "them";
     sentences.push(

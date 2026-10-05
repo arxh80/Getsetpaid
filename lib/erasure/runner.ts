@@ -205,12 +205,12 @@ export function failureSentence(cause: unknown): string {
 
   switch (hint) {
     case "last_owner_of_workspace":
-      return "Nothing was deleted: this account is the last owner of a workspace that still has other members or records in it. Transfer ownership, or close the workspace, and ask again.";
+      return "Nothing was deleted: this account is the last owner of a workspace that still has other members or records in it. Transfer ownership, or close the workspace (an Owner can, under “Close this workspace” on its Settings › Export page), and ask again.";
     case "workspace_has_no_owner":
       // N2/Q178: the same guard, for somebody who is NOT an owner of the
       // workspace it names. The sentence above would send them to two doors
-      // that are both locked -- there is nobody for them to promote, and no
-      // member-facing route to close a workspace exists at all.
+      // that are both locked -- there is nobody for them to promote, and
+      // closing a workspace is an Owner's act (close_my_workspace, Task 9c).
       return "Nothing was deleted: this account is the last member of a workspace that has no owner, and only support can close it. Contact support, ask them to close the workspace, and ask again.";
     case "bytes_not_purged":
       return "Nothing was deleted: some stored files could not be removed first, and deleting the records while the files remain would leave them unreachable rather than gone. This will be retried.";

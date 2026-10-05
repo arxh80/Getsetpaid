@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/auth";
+import { getActiveMemberships, getCurrentUser } from "@/lib/auth";
+import { closeWorkspacePath } from "@/lib/org/closure-contract";
 import { getOwnErasureBlockers, getOwnErasureJobs } from "@/lib/erasure/jobs";
 import {
   ACCOUNT_ERASE_PATH,
@@ -41,8 +42,23 @@ export default async function AccountErasePage() {
   // BOTH READS FAIL LOUDLY. An empty blocker list means "nothing is in the
   // way", and answering that because a query failed would offer somebody a
   // button that is going to refuse.
-  const [blockers, jobs] = await Promise.all([getOwnErasureBlockers(), getOwnErasureJobs()]);
+  const [blockers, jobs, memberships] = await Promise.all([
+    getOwnErasureBlockers(),
+    getOwnErasureJobs(),
+    getActiveMemberships(),
+  ]);
   const blocked = describeBlockers(blockers);
+  // Phase 8 Task 9c job 3b: the Q131 refusal tells an Owner they may close
+  // the workspace, so link each blocking workspace they OWN straight to the
+  // close section. my_erasure_blockers() returns names only, so the match is
+  // by name against the caller's own active Owner memberships -- a link the
+  // caller could not use is never rendered (the close action re-checks).
+  const ownedBlockerNames = new Set(
+    blockers.filter((b) => b.reason !== "no_owner_to_transfer").map((b) => b.organisationName),
+  );
+  const closable = memberships.filter(
+    (m) => m.role === "owner" && ownedBlockerNames.has(m.organisation.name),
+  );
   const live = jobs.some((j) => j.status === "queued" || j.status === "running");
 
   return (
@@ -111,6 +127,21 @@ export default async function AccountErasePage() {
             <Alert tone="info" live={false}>
               {blocked}
             </Alert>
+          ) : null}
+          {closable.length > 0 ? (
+            <ul className="flex max-w-prose flex-col gap-1 text-base" data-testid="erasure-close-links">
+              {closable.map((m) => (
+                <li key={m.organisation.id}>
+                  <Link
+                    href={closeWorkspacePath(m.organisation.slug)}
+                    prefetch={false}
+                    className="underline underline-offset-4 hover:text-ink"
+                  >
+                    Close {m.organisation.name}
+                  </Link>
+                </li>
+              ))}
+            </ul>
           ) : null}
           {live ? (
             <Alert tone="info" live={false}>
