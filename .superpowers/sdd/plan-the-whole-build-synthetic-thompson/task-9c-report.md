@@ -229,3 +229,84 @@ The database half is complete and tested without them.
 - After a fresh reset, vitest over `tests/unit`, `tests/integration/{admin,email,rls}`
   and the permission matrix: 119 files, **3302/3302** green.
 - No e2e, because no UI was added.
+
+## Job 2b (closure senders)
+
+Founder 2026-09-30, Q176/Q178. TypeScript only; no SQL, so migrations stay
+at 227 (227 -> 227 before and after every run). Commits: `83431ca` senders +
+templates + route + budget + tests, `8b702d0` SECURITY.md § 12 + Q212-Q214.
+
+**Design.**
+- `lib/email/workspace-closure-templates.ts`: two pure builders, each with an
+  allowlist checked on every render and the shared one-link check on the
+  final subject/text/HTML.
+  - Closed -> superuser: slug, name (neutralised by `oneLine`), closed-at as
+    a UK-local date (`formatDate`, `lib/format/date.ts`), one link to
+    **`/super/closures`** (`SUPER_CLOSURES_PATH`; job 3 builds the page
+    there, Q214).
+  - Decision -> admins: what was decided and when. Reassigned links
+    `/<slug>`. Deleted links **`/`**, the post-sign-in hub, because no
+    workspace page exists and there is no `/account` root (Q214). There is
+    no reason (Q212), no actor and no new Owner.
+- `lib/email/workspace-closure-notifications.ts`: two loops over job 2's
+  resolvers using the shared `deliverEach`. The stamp goes through
+  `mark_notices_delivered(notice, [audit_event_id])` only after ok:true. A
+  deterministic refusal goes through `mark_notices_undeliverable`. Decision
+  recipients are the resolver's snapshot only, Bcc'd when there are several.
+  An empty snapshot is a terminal `no_recipient`. An unset
+  `SUPPORT_CONTACT_EMAIL` sends nothing and records nothing, because it is a
+  deployment setting and not a property of the row.
+- Route: ten deliveries, each wrapped in `settle()`. The census of
+  service-client importers grows by one.
+
+**Budget, re-measured.** Two more 70 s loops would have put the route at
+~580 s, so I took Q204's default:
+- `REQUESTER_NOTICE_BUDGET_MS` is now 45 s (was 60 s), so each loop takes
+  ~55 s (the budget plus one in-flight 10 s send).
+- Worst case: digest 10 + Telegram 10 + lockouts ~130 + erasure-failure 10
+  + six loops x ~55 = **~490 s of 600 s**.
+
+The live comment on `private.deliver_incident_alerts()` still says eight
+deliveries and ~440 s. The next migration in this area must reissue it
+(Q213).
+
+**Tests.**
+- Unit: templates 28 and sender 10. Plants (reason, superuser reason, actor,
+  new Owner, `notify_user_ids`, backup job, contacts, `after`) are refused
+  by both builders. A smuggled second URL is refused. The send-then-stamp
+  order, failed and thrown sends, the unset inbox, and the empty snapshot
+  are each covered.
+- Delivery-route test: +1, the two loops run independently.
+- Integration (real DB, stubbed transport, planted audit rows), 6 tests:
+  - a failed send stamps nothing;
+  - the retry stamps after the send (the ledger is read at send time);
+  - a third tick sends nothing;
+  - the closure goes to SUPPORT alone;
+  - the reassigned decision reaches only the snapshotted Admin, **not
+    org A's live Owner** (the denominator: a live-membership read would
+    include them);
+  - the deleted decision reaches exactly its two snapshotted ids;
+  - no email carries the planted reason.
+
+**Mutations (each went red, each restored, control 44/44 green after):**
+
+| mutant | red |
+|---|---|
+| deliverEach stamps before the send | unit 5 + integration 4 |
+| deliverEach stamps a failed send | unit 3 + integration 4 |
+| decision recipients + the support inbox | unit 2 + integration 1 |
+| resolver reads LIVE active Owners/Admins instead of the snapshot (live SQL, restored from `pg_get_functiondef`) | integration 1 |
+| allowlist check removed | unit 20 |
+| one-link check removed | unit 1 |
+
+**Gates.**
+- `pnpm lint` and `next typegen` + `pnpm typecheck`: clean.
+- `vitest run tests/unit tests/integration/email`: 113 files,
+  **2583/2583**.
+- No SQL changed, so the psql runner was not run.
+- Closing `npx supabase db reset --local` done (227 migrations).
+- No e2e, because no UI changed.
+
+**Still owed (job 3):**
+- the `/super/closures` page with its two step-up forms, e2e and axe;
+- the clock comment reissue (Q213).
