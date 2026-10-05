@@ -271,6 +271,9 @@ export const PLATFORM_AUDIT_ACTIONS = [
   // (public.reassign_closed_workspace() / public.delete_closed_workspace())
   "organisation.closure_reassigned",
   "organisation.closure_deleted",
+  // Phase 8 Task 9c fix round 1b (Q223) -- the superuser's read of a closed
+  // workspace's reassign candidates (closed_workspace_reassign_candidates())
+  "organisation.closure_candidates_viewed",
   // Phase 7 Task 4
   "organisation.billing_override_granted",
   "organisation.billing_override_revoked",

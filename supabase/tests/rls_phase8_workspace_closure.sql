@@ -474,6 +474,22 @@ set request.jwt.claims = :'su_c';
 select cw.val('CS8f POSITIVE CONTROL: demoted again, the same member is offered',
   format($$select count(*)::text from public.closed_workspace_reassign_candidates(%L) c where c.user_id = %L$$, :'org_a', :'mgr_u'), '1');
 reset role; reset request.jwt.claims;
+-- Q223 (fix round 1b, review m1): the candidates read audits itself. CS8e and
+-- CS8f were the two reads; a refused read (org B is ACTIVE) writes nothing.
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CS8g a refused candidates read (an ACTIVE workspace)',
+  format($$select * from public.closed_workspace_reassign_candidates(%L)$$, :'org_b'), 'denied(22023:closure_candidates_not_owner_closed)');
+reset role; reset request.jwt.claims;
+select cw.val('CS8h AUDITED: one organisation.closure_candidates_viewed row per read, actor = superuser, counts only (no member named)',
+  format($$select count(*)::text || '/' || bool_and(actor_user_id = %L)::text || '/' ||
+                  string_agg(after ->> 'rows_returned', ',' order by created_at, id) || '/' ||
+                  bool_and((select array_agg(k order by k) from jsonb_object_keys(after) k) = array['rows_returned'])::text || '/' ||
+                  bool_and(after::text not like '%%' || %L || '%%')::text
+             from public.audit_events where organisation_id = %L and action = 'organisation.closure_candidates_viewed'$$,
+    :'su_u', :'mgr_u', :'org_a'), '2/true/1,2/true/true');
+select cw.val('CS8i ...and the refused read wrote none',
+  format($$select count(*)::text from public.audit_events where organisation_id = %L and action = 'organisation.closure_candidates_viewed'$$, :'org_b'), '0');
 -- § CL (fix round 1, I1): the Phase 7 lifecycle RPCs refuse owner_closed --
 -- the decision is reassign/delete above, never a one-click reinstate/suspend/
 -- delete from /super/organisations. Positive controls on org B (ACTIVE here),
