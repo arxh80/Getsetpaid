@@ -593,6 +593,53 @@ select c7.try('PI11a financial_entries: padmin (finance) books a sentinel descri
          :p_fe, :'alpha_org', :p_ev, :p_ct), 'ok(1)');
 reset role; reset request.jwt.claims;
 
+-- ===========================================================================
+-- AT  ATTRIBUTION IS THE SESSION'S (Phase 8 final review A, m1;
+--     private.stamp_row_attribution(), 20261029001000)
+-- ===========================================================================
+-- Before the trigger, each forged write below landed (created_by is only a
+-- column default under a table-level grant). The denominator is PI11a/PI12a/
+-- PI13a above: the same session's honest INSERT on the same table landed.
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select c7.try('AT1 financial_entries: padmin files a line "created by" pmanager -- refused',
+  format($$insert into public.financial_entries (organisation_id, event_id, category, status, amount_minor, currency, occurred_on, created_by)
+           values (%L, %L, 'cost', 'budgeted', 1, 'GBP', date '2026-10-10', %L)$$,
+         :'alpha_org', :p_ev, :'pmanager'), 'denied(23514)');
+select c7.try('AT2 financial_entries: ...or back-dates created_at a year -- refused',
+  format($$insert into public.financial_entries (organisation_id, event_id, category, status, amount_minor, currency, occurred_on, created_at)
+           values (%L, %L, 'cost', 'budgeted', 1, 'GBP', date '2026-10-10', now() - interval '1 year')$$,
+         :'alpha_org', :p_ev), 'denied(23514)');
+select c7.try('AT3 financial_entries: re-attributing an existing line to pmanager -- refused',
+  format($$update public.financial_entries set created_by = %L where id = %L$$, :'pmanager', :p_fe), 'denied(23514)');
+select c7.try('AT4 financial_entries: re-dating an existing line -- refused',
+  format($$update public.financial_entries set created_at = now() - interval '1 year' where id = %L$$, :p_fe), 'denied(23514)');
+select c7.try('AT4a CONTROL financial_entries: an ordinary edit naming its own created_by (as lib/crm/finance.ts does) still lands',
+  format($$update public.financial_entries set description = 'ZQ7-DESCRIPTION', created_by = %L where id = %L$$, :'padmin', :p_fe), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select c7.try('AT5 network_profiles: pmanager creates a profile "created by" padmin -- refused',
+  format($$insert into public.network_profiles (organisation_id, entity_kind, entity_id, status, field_visibility, display_name, created_by)
+           values (%L, 'company', %L, 'draft', '{}'::jsonb, 'AT5', %L)$$, :'alpha_org', :p_co2, :'padmin'), 'denied(23514)');
+select c7.try('AT6 network_profiles: re-attributing the existing profile -- refused',
+  format($$update public.network_profiles set created_by = %L where id = %L$$, :'padmin', :p_np), 'denied(23514)');
+select c7.try('AT7 network_links: pmanager links a profile "created by" padmin -- refused',
+  format($$insert into public.network_links (organisation_id, network_profile_id, private_entity_type, private_entity_id, created_by)
+           values (%L, %L, 'company', %L, %L)$$, :'alpha_org', :p_bpr, :p_co, :'padmin'), 'denied(23514)');
+select c7.try('AT8 network_links: ...or back-dates it',
+  format($$insert into public.network_links (organisation_id, network_profile_id, private_entity_type, private_entity_id, created_at)
+           values (%L, %L, 'company', %L, now() - interval '1 year')$$, :'alpha_org', :p_bpr, :p_co), 'denied(23514)');
+reset role; reset request.jwt.claims;
+
+select c7.val('AT9 the honest rows carry their own session''s attribution and a database clock',
+  format($$select ((select created_by from public.financial_entries where id = %L) = %L::uuid)::text || '/' ||
+                  ((select created_by from public.network_profiles  where id = %L) = %L::uuid)::text || '/' ||
+                  ((select created_by from public.network_links     where id = %L) = %L::uuid)::text || '/' ||
+                  ((select created_at from public.financial_entries where id = %L) >= %L::timestamptz)::text$$,
+         :p_fe, :'padmin', :p_np, :'pmanager', :p_nk, :'pmanager', :p_fe, :'c7_t0'), 'true/true/true/true');
+
 -- CONTROL: a member's own session cannot read the trail at all (the definer
 -- helpers are how this suite reads it).
 set role authenticated;

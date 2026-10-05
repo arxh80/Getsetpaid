@@ -733,12 +733,17 @@ select leak.val('LE1 N5: NOTHING on the network surface names a rating, in any f
 -- private.connection_request_bound_update, which pins a request's parties,
 -- binds an answer to its side and stamps responded_by/responded_at.
 -- Inspected for the word "rating" by LE1 above the day it joins.
-select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 15 functions',
+-- 11/2/16/29 SINCE PHASE 8 FINAL REVIEW A, m1 (20261029001000). One
+-- function entered by net (a) -- a TRIGGER on network_profiles and
+-- network_links: private.stamp_row_attribution, which refuses a forged
+-- created_by/created_at and stamps them from the session. Inspected for the
+-- word "rating" by LE1 above the day it joins.
+select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 16 functions',
   $$select count(*) filter (where objname like 'policy:%')::text || '/' ||
            count(*) filter (where objname like 'view:%')::text || '/' ||
            count(*) filter (where objname like 'function:%')::text || '/' ||
            count(*)::text
-      from leak.network_surface_wide$$, '11/2/15/28');
+      from leak.network_surface_wide$$, '11/2/16/29');
 -- M6, NAMED. The two functions rls_phase6_network.sql § NF1b could not see.
 select leak.val('LE1c M6: the two functions the NAME filter missed are INSIDE this census',
   $$select string_agg(objname, ',' order by objname) from leak.network_surface_wide
@@ -754,7 +759,7 @@ select leak.val('LE1d ...and the functions in the census, by name, so a dropped 
   'private.network_publish_organisations,'
   'private.network_request_status_transition_guard,private.network_visibility_is_valid,'
   'private.organisation_network_presence_active,'
-  'private.permitted_organisations,private.set_updated_at');
+  'private.permitted_organisations,private.set_updated_at,private.stamp_row_attribution');
 
 -- THE PLANTED POSITIVE CONTROL. Without it, "0 bodies mention rating" is a
 -- claim about a regex nobody has watched fire.
