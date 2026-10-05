@@ -102,6 +102,8 @@ function topLevelExports(source: string): { name: string; kind: string }[] {
  * tested and the suite stays green one test shorter.
  */
 const SERVER_ACTION_MODULES = [
+  // Phase 8 Task 9c job 3a: the closed-workspace decisions.
+  "lib/admin/closures.ts",
   "lib/admin/health-actions.ts",
   "lib/admin/impersonation.ts",
   "lib/admin/lifecycle.ts",

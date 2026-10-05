@@ -84,7 +84,7 @@ test.afterAll(async () => {
 /** A /super URL that matches no route at all -- the baseline a refusal must equal. */
 const SUPER_GHOST = "/super/zzz-phase8-no-such-page";
 /** The Phase 8 /super surfaces, including the editor's query-string view. */
-const PHASE8_SUPER = ["/super/legal", "/super/legal?doc=terms", "/super/data-requests"];
+const PHASE8_SUPER = ["/super/legal", "/super/legal?doc=terms", "/super/data-requests", "/super/closures"];
 /** EVERY /super page (review M4: the catch-all and the rewrite cover all nine,
  *  so the parity proof does too), from the census super-permissions.spec.ts
  *  and a CI unit test hold to the app tree, plus the editor's query view. */

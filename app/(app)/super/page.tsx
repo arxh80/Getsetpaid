@@ -42,6 +42,12 @@ const SURFACES: readonly { href: string; label: string; blurb: string }[] = [
       "Suspend, close and reopen a workspace. Soft-delete only, every transition reasoned and audited, and every one of them reversible.",
   },
   {
+    href: "/super/closures",
+    label: "Closed workspaces",
+    blurb:
+      "Workspaces their own Owner has closed, awaiting your decision: hand one to an active member as its new Owner, or delete it permanently. Step-up, a reason and an audit record for each.",
+  },
+  {
     href: "/super/billing",
     label: "Billing overrides",
     blurb:

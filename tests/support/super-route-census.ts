@@ -87,6 +87,7 @@ export const SUPER_PAGE_URLS = [
   "/super",
   "/super/audit-log",
   "/super/billing",
+  "/super/closures",
   "/super/data-requests",
   "/super/feedback",
   "/super/health",
