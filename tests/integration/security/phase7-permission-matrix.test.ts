@@ -504,6 +504,24 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
       expect(error, `closed_workspaces_awaiting_decision: ${error?.message}`).toBeNull();
     },
   },
+  // Phase 8 Task 9c job 3a (20261023000000): the reassign picker's read. Probed
+  // against org B, which is ACTIVE, so the positive control is the aal2
+  // superuser reaching the owner_closed check (the gate let it through); the
+  // roster itself is walked end to end by tests/e2e/super-closures.spec.ts.
+  {
+    fn: "closed_workspace_reassign_candidates",
+    args: () => ({ p_organisation_id: fx.orgB.id }),
+    sideEffectTable: null,
+    positiveControl: async () => {
+      const { error } = await superuser.rpc("closed_workspace_reassign_candidates", {
+        p_organisation_id: fx.orgB.id,
+      });
+      expect(
+        error?.message ?? "",
+        `closed_workspace_reassign_candidates must let the aal2 superuser past its gate: ${error?.message}`,
+      ).toMatch(/only a workspace its Owner closed awaits this decision/);
+    },
+  },
   {
     fn: "request_impersonation",
     args: () => ({
