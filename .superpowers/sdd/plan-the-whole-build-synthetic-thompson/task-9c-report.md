@@ -452,3 +452,26 @@ report + Q218-Q220.
 mutation run of the new action (its guards are app-side duplicates; the
 integration test is the "app lied to" layer). Questions: Q218 (network pages'
 inline "suspended" copy), Q219 (section placement), Q220 (erase links by name).
+
+## Gate follow-up
+
+The controller's full e2e was 177/1: `workspace-closure.spec.ts` failed in its
+own `forgeSubmit` precondition. The close form is a client component whose
+action is a function prop, so its HTML carries no `$ACTION` hidden fields and
+copying it into another page forged nothing. Reworked:
+
+- **Forged close:** the Owner's real wrong-slug submit (step 3, moved before
+  the forgery) is captured with `page.waitForRequest` (path + `next-action`
+  header), and its Next-Action id, content-type, router-state header and body
+  are REPLAYED via `fetch` from the Manager's signed-in page with the slug
+  corrected. Asserted: the capture carried the action id and the typo; the
+  forged body no longer does; the response is 200 and contains the action's
+  own `CLOSE_MESSAGES.notOwner` sentence (an unknown action id cannot produce
+  it); lifecycle `active`, backups 0, no `closed_by_owner` audit reasons.
+- **Forged create:** a contact form opened in a second Manager tab while the
+  workspace was live is submitted after the closure (a real hydrated form,
+  the real action); the POST is captured and asserted to carry the name, the
+  form's alert reads "closed by its Owner", contact count 0.
+
+`pnpm lint` and `pnpm typecheck` clean. **The spec has not been RUN**: free RAM
+was 1.9-2.4 GB, under the 2.5 GB floor, so the targeted e2e is owed.
