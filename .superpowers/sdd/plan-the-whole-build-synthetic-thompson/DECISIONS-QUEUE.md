@@ -1503,3 +1503,34 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   "a closure-deleted workspace is never reinstated" -- the latter would also
   remove Q210's one-hour undo of a mistaken delete while the Owner is still a
   member, and would leave a suspended workspace whose last Owner erased open.
+
+## Q229 -- Phase 8 final review A, I2 (closure backup outlived by the purge), 2026-10-05
+
+- **Q229 -- a superuser "delete" of a closed workspace destroys its closure
+  backup within about an hour. NOT BUILT in the final-fix round (60-minute
+  bound spent on I1 + m1, both shipped with tests); the default below is the
+  recommended build, owed before launch.** Mechanism (read, not yet probed):
+  `delete_closed_workspace()` (`20261028002000`) dates `lifecycle_changed_at`
+  one retention period back, so the next hourly run's
+  `private.sweep_expired_workspaces()` (latest def `20261003002000`) calls
+  `erase_organisation()`; `export_jobs.organisation_id ... on delete cascade`
+  (`20260927001000:82`) takes the `closure_backup` row with it, the archive
+  becomes an orphan, and the orphan sweep deletes it after its grace period.
+  The Owner's download (`export_jobs_select_own`) has no row from step 2.
+  **Recommended default (narrowest found):** a hold predicate
+  `private.closure_backup_owed(org)` = lifecycle_state `deleted` AND the
+  latest `closure_backup` job `succeeded` AND no `export_job.downloaded`
+  audit row for it by its requester AND `retention_expires_at > now() - 30
+  days` (the decision time, since the delete dates the clock to exactly
+  now); `sweep_expired_workspaces()` (dry and live loops) skips a held org
+  and reports `organisations.held_for_backup`. So the purge waits until the
+  backup is downloaded or 30 days after the decision, whichever first. Also
+  owed with it: the backup's `expires_at` must be raised to at least
+  decision + 30 days (it is `greatest(success + archive_days, the closure's
+  60-day retention_expires_at)`, which a late decision can undercut), and the
+  decision notice must say "your backup stays downloadable for 30 days".
+  The 60-day undecided purge (state `owner_closed`) and the DSR/erasure paths
+  are untouched by the predicate (it keys on state `deleted` + a succeeded
+  closure backup). **Alternative (c) from the review** -- `on delete set
+  null` for closure-backup rows plus an `expires_at` sweep -- changes erasure
+  semantics (a backup row outliving its workspace), so it is the founder's.
