@@ -1205,6 +1205,30 @@ else
 fi
 
 # ============================================================================
+# PHASE 8 TASK 9c FIX ROUND 1 -- A CLOSURE BACKUP IS COMPLETE (C1, I2;
+# 20261025000000). The same read engine, the same Owner, the same workspace:
+# a workspace export taken while live and the closure backup taken after
+# close_my_workspace() must carry the same row count in every one of the 35
+# exported tables, finance and network included -- and the same again when the
+# Owner tries to erase their account before the backup is built (refused until
+# it is). Self-contained.
+# ============================================================================
+run_suite "PHASE 8 CLOSURE BACKUP COMPLETENESS" rls_phase8_closure_backup.sql ck 19
+ck_fails=$SUITE_FAILS
+if [ "$ck_fails" != "0" ]; then
+  echo "PHASE 8 CLOSURE BACKUP COMPLETENESS SUITE FAILED: $ck_fails failing assertion(s)" >&2
+  echo "  KS red: the denominator -- a table is empty before the closure, so" >&2
+  echo "  equality proves nothing for it. KA red: A CLOSURE BACKUP IS MISSING ROWS" >&2
+  echo "  THE OWNER COULD READ BEFORE THE CLOSURE (finance, network...), or is" >&2
+  echo "  wider than the export contract. KE red: the Owner can erase before the" >&2
+  echo "  backup is built, and it is built as the tombstone. KT red: a tombstone" >&2
+  echo "  backup is built empty instead of refused." >&2
+  psql_status=1
+else
+  echo "Phase 8 closure backup completeness suite: all assertions passed."
+fi
+
+# ============================================================================
 # ONE RETENTION RUN AT A TIME, UNDER A REAL RACE (Task 6 fix round 1, I2).
 #
 # The suite above is single-session: RR17-RR19 prove a second start is refused

@@ -212,6 +212,12 @@ export function failureSentence(cause: unknown): string {
       // that are both locked -- there is nobody for them to promote, and
       // closing a workspace is an Owner's act (close_my_workspace, Task 9c).
       return "Nothing was deleted: this account is the last member of a workspace that has no owner, and only support can close it. Contact support, ask them to close the workspace, and ask again.";
+    case "closure_backup_not_built":
+      // Task 9c fix round 1 (I2, 20261025000000): the backup a closing Owner's
+      // closure queued is built under that Owner's own rights, so erasing them
+      // first would build it as the tombstone, empty. The wait is short (one
+      // export tick) and nothing has changed in the meantime.
+      return "Nothing was deleted: the backup of a workspace this account closed has not finished being built, and deleting the account first would leave that backup empty. Ask again in a few minutes, once it is ready.";
     case "bytes_not_purged":
       return "Nothing was deleted: some stored files could not be removed first, and deleting the records while the files remain would leave them unreachable rather than gone. This will be retried.";
     case "replication_role_must_be_origin":
@@ -255,6 +261,14 @@ export function failureSentence(cause: unknown): string {
     // branch, the retention-period functions it reads -- are reachable from
     // the chokepoint. Each is a refusal of a related record, never a partial
     // deletion: the whole transaction rolled back.
+    // 20261025000000's belt in export_read_page(): the textual walk reaches
+    // it through the migration that also rebuilds erase_account().
+    case "closure_backup_requester_erased":
+    case "export_reads_are_server_only":
+    case "unknown_export_job":
+    case "export_job_not_running":
+    case "not_an_exported_table":
+    case "workspace_export_is_requester_rls":
     case "export_request_is_immutable":
     case "export_job_is_finished":
     case "export_outcome_is_server_only":
