@@ -1278,11 +1278,20 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   tasks and notes stay readable once `owner_closed`, finance entries do not,
   because `private.finance_module_organisations()` gates the finance READ on
   `deleted_at is null`. That is the PRE-EXISTING suspension rule, inherited,
-  not something this job added. **Default (proceeding):** keep it -- the
-  closure backup carries the finance lines, and changing it would also
-  change suspension. Alternative: let finance reads survive suspension for
-  holders of the finance key (one function; also changes suspended
-  workspaces).
+  not something this job added. ~~**Default (proceeding):** keep it -- the
+  closure backup carries the finance lines~~ **RE-DECIDED in Task 9c fix
+  round 1 (2026-10-05): that premise was FALSE.** Measured
+  (`rls_phase8_closure_backup.sql`, 229 migrations): the closure backup,
+  built after the closure under the Owner's rights, carried **0 of 3**
+  finance lines (and 0 network links, connection requests and support
+  sessions); with the Owner erased first, **0 rows in all 35 files**.
+  `20261025000000` makes a closure_backup job's read see the workspace as
+  live (35/35 tables equal to a pre-closure export, KA1/KE3) and makes
+  erasure wait for that backup. **New default (built):** keep the in-app
+  rule -- members of a closed workspace still cannot read its finance lines
+  (KA5) -- because the closure backup now TRULY carries them, and changing
+  the read rule would also change suspension. Alternative unchanged: let
+  finance reads survive suspension for holders of the finance key.
 - **Q206 -- the closing Owner erasing their account deletes the backup row.**
   `export_jobs.requested_by` is `ON DELETE CASCADE`, and a closed workspace
   no longer blocks its last Owner's erasure (`account_last_owner_workspaces`
@@ -1396,3 +1405,39 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   still says only "close the workspace". **Default:** keep both (the link is
   only ever to a workspace the caller owns, and the action re-checks).
   Alternative: add the slug to the RPC's result in a migration.
+
+## Q221-Q226 -- Task 9c fix round 1, 2026-10-05
+
+- **Q221 -- an Owner's erasure WAITS for their closure backup, as a refusal.**
+  `erase_account()` refuses (`closure_backup_not_built`) while the account
+  has a queued or running closure backup; the job is recorded `failed` with
+  "Ask again in a few minutes" and the person re-asks. The job-insert path
+  (`my_erasure_blockers()`) does not pre-check it, so the refusal arrives
+  after the request rather than on the page. **Default (built):** keep it
+  (the wait is one export tick). Alternative: add it to the blocker list so
+  the page says so before the request.
+- **Q222 -- the superuser as reassign target (review m2). NOT BUILT this
+  round (time).** `reassign_closed_workspace()` and
+  `closed_workspace_reassign_candidates()` accept/list a `platform_admins`
+  user who happens to be an active member. **Default (owed):** refuse and
+  exclude a `platform_admins` user in both, mutation-tested.
+- **Q223 -- the candidates read is unaudited (review m1 / Q215). NOT BUILT.**
+  **Default (owed):** write `organisation.closure_candidates_viewed` inside
+  the RPC, like `platform_health.viewed`, and register it in the audit
+  catalogue and its pins.
+- **Q224 -- candidates capped at 200 with no next page (review m3). NOT
+  BUILT.** **Default (owed):** keyset paging on (role rank, user id), or a
+  "more members exist" flag from a 201-row probe.
+- **Q225 -- no psql probe that membership/invite writes are refused while
+  closed (review m4). NOT BUILT.** Structurally refused twice
+  (`organisation_is_live()` in the manage_members policies, `accept_invite`
+  on `deleted_at`). **Default (owed):** CW rows for invite, role change,
+  remove and accept.
+- **Q226 -- after a reassign, nobody can retrieve the closure backup (review
+  m5).** `export_jobs_select_own` is requester-only; the requester is the
+  closing Owner (or the tombstone) and Q209 gives the superuser no download.
+  **Default (decided, not built):** NOT retrievable by the new Owner -- an
+  archive is a snapshot under one person's rights (Q165), and the new Owner
+  can take their own workspace export the moment the workspace reopens. The
+  close section's copy and `SECURITY.md` § 7 should say the backup is for
+  the closing Owner to download before they erase (owed copy change).

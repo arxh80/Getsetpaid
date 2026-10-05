@@ -475,3 +475,58 @@ copying it into another page forged nothing. Reworked:
 
 `pnpm lint` and `pnpm typecheck` clean. **The spec has not been RUN**: free RAM
 was 1.9-2.4 GB, under the 2.5 GB floor, so the targeted e2e is owed.
+
+## Fix round 1
+
+Migrations 229 -> 231. Commits: `aa25698` (C1+I2, one migration fixes both),
+`a1d34ca` (I1), then the queue/report commit.
+
+**C1 + I2 -- measured first** (`supabase/tests/rls_phase8_closure_backup.sql`,
+new, 35 exported tables each seeded and asserted non-empty pre-closure, KS2):
+per-table row counts through the real engine (`export_read_page`, paged like
+the runner), a live workspace export vs the closure backup, same Owner.
+
+| scenario | before (229 migrations) | after (`20261025000000`) |
+|---|---|---|
+| close, then build | 31/35 equal; `financial_entries` 3 -> 0, `network_links` 1 -> 0, `network_connection_requests` 1 -> 0, `impersonation_sessions` 1 -> 0 | 35/35 equal (KA1), finance 3 (KA2) |
+| close, erase Owner, build | erasure succeeded; all 35 tables -> 0 (41 rows -> 0) | erasure refused `closure_backup_not_built` while queued/running (KE1/KE2); backup 35/35 equal (KE3); erasure then proceeds (KE4) |
+
+The four lost tables' SELECT policies key on view_finance / view_network /
+manage_organisation, none `survives_suspension`. Fix: a marker ROW in
+`private.closure_backup_reads` keyed on `pg_current_xact_id()` (no client
+grant, real FKs so the FK-less erasure roll stays at 22), written by
+`export_read_page` around the requester read of a `closure_backup` job only
+and deleted on both paths; `permitted_organisations()` and its § M mirror
+`has_permission()` admit the marked org as live. Still the Owner's own role,
+record scope and aal: a colleague's private note is still excluded (KS5,
+KA4); members still cannot read a closed workspace's finance in-app (KA5); a
+forged marker is `missing_grant` (KA6); none left behind (KA7). Belt:
+`export_read_page` refuses a closure backup whose requester is the tombstone
+(`closure_backup_requester_erased`, KT1). `erase_account()` step 2b is the
+wait; `lib/erasure/runner.ts` gains its sentence (and the export engine's
+hints, which the textual hint roll now reaches). Pinned at 19.
+
+Mutations (live, suite re-run, control 0/19 after each restore):
+export_read_page at its pre-fix def -> KA1, KA2, KA3, KE3, KT1;
+permitted_organisations without the term -> KA1, KA2, KA3, KE3;
+erase_account without the wait -> KE1, KE2 (+ pin red: 15/19 recorded);
+belt `if false` -> KT1.
+
+**I1** (`20261026000000`): reinstate/suspend/delete_organisation refuse
+`owner_closed` (22023, `owner_closed_is_decided_at_super_closures`), each
+rebuilt from its live def; `lifecycle_target` unchanged. `/super/organisations`
+renders an owner_closed row with a link to `/super/closures` and no Reopen;
+the action layer echoes the RPC's sentence. Closure suite § CL: CL1-3 refuse,
+CL4-7 positive controls on an ACTIVE workspace, CL8 back to active; pin
+110 -> 118. Mutants (each RPC at its pre-fix def): reinstate -> CL1 (+ CS9,
+CQ7, CR1-7 downstream), suspend -> CL2, delete -> CL3; control 0/118.
+
+**Minors: NOT BUILT this round (time-boxed)** -- queued with defaults as
+Q222 (superuser as reassign target), Q223 (audit the candidates read), Q224
+(candidates paging), Q225 (membership/invite probes while closed); Q226
+decides m5 (backup not retrievable after a reassign; copy change owed).
+Q221 records the erasure wait's shape. **Q205 re-decided** with the measured
+fact (its premise was false).
+
+**Not done / owed:** SECURITY.md § 7's closure paragraph is not yet corrected
+(CLAUDE.md is); m6 copy; e2e not run (memory-constrained, per brief).
