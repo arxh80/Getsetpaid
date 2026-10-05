@@ -139,7 +139,6 @@ beforeAll(async () => {
   ids.document = await insert(manager, "documents", {
     organisation_id: org, owner_user_id: me, filename: `${SENTINEL} Contract - J Smith.pdf`,
     storage_key: `${org}/${SENTINEL}-${fx.runId}`, mime_type: "application/pdf", size_bytes: 4242,
-    scan_status: "pending",
   });
   ids.task_link = await insert(manager, "task_links", {
     organisation_id: org, parent_id: ids.task, entity_type: "event", entity_id: ids.event,

@@ -1306,6 +1306,8 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Task 9c job 2 -- the reassign/delete notice queue: the Owners/Admins snapshotted on the decision's audit row, the tombstone excluded; slug and name from that row, never the reason",
   "pending_task_reminder_notifications(p_limit integer)":
     "Task 9b job 3 -- the task-reminder queue: a live, open, due task's CURRENT active assignee, its title and due date, never its detail",
+  "record_document_scan_verdict(p_organisation_id uuid, p_document_id uuid, p_status text)":
+    "Final review A (I1) -- THE ONLY writer of a document's malware verdict, pending -> terminal on one live row; refuses any session",
   "retention_object_manifest(p_run_id uuid, p_limit integer)":
     "Task 6 -- names objects only for a run that would not refuse (fix round 1, C2)",
   "run_erasure_job(p_job_id uuid)":

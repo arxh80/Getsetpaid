@@ -1495,14 +1495,25 @@ select rt.try('RK10 ...or born purged',
 -- would satisfy every refusal above.
 select rt.try('RK11 CONTROL: the upload INSERT, with exactly the columns lib/crm/documents.ts sends',
   $$insert into public.documents (id, organisation_id, owner_user_id, filename, storage_key,
-                                  mime_type, size_bytes, scan_status)
+                                  mime_type, size_bytes)
     values ('00000000-0000-4000-9000-000000006705', '00000000-0000-4000-9000-0000000067b1',
             '00000000-0000-4000-9000-0000000067a1', 'control.pdf',
             '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-000000006705',
-            'application/pdf', 10, 'pending')$$, 'ok(1)');
-select rt.try('RK12 CONTROL: the scan-verdict UPDATE',
+            'application/pdf', 10)$$, 'ok(1)');
+-- Since 20261029000000 (final review A, I1) the verdict is the SCANNER'S: the
+-- session's UPDATE is refused, and the RPC (service_role alone) is the control.
+select rt.try('RK12 the session''s scan-verdict UPDATE is refused (final review A I1)',
   $$update public.documents set scan_status = 'clean', scanned_at = now()
-     where id = '00000000-0000-4000-9000-000000006704'$$, 'ok(1)');
+     where id = '00000000-0000-4000-9000-000000006704'$$, 'denied(42501)');
+reset role;
+reset request.jwt.claims;
+set role service_role;
+select rt.try('RK12a CONTROL: the scanner''s verdict lands through record_document_scan_verdict()',
+  $$select public.record_document_scan_verdict('00000000-0000-4000-9000-0000000067b1',
+                                               '00000000-0000-4000-9000-000000006704', 'clean')$$, 'ok(1)');
+reset role;
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a1","role":"authenticated","aal":"aal2"}';
 select rt.try('RK13 CONTROL: RESTORE (deleted_at back to null) still works',
   $$update public.documents set deleted_at = null
      where id = '00000000-0000-4000-9000-000000006703'$$, 'ok(1)');
@@ -1585,6 +1596,132 @@ begin
 end $$;
 select rt.val('RK19a the probe''s grant was rolled back with its subtransaction',
   $$select has_column_privilege('authenticated', 'public.documents', 'bytes_purged_at', 'UPDATE')::text$$, 'false');
+
+-- ===========================================================================
+-- SV  THE MALWARE VERDICT IS THE SCANNER'S (Phase 8 final review A, I1)
+-- ===========================================================================
+-- The probe at bae744f: an aal1 Manager inserted a pending row, PATCHed it
+-- `clean` mid-scan (UPDATE 1), the server's quarantine write then failed
+-- 23514 "terminal and immutable", and the download gate's predicate
+-- (scan_status = 'clean') was true. A born-clean INSERT also landed. Each
+-- layer is asked on its own: the GRANT (SV2-SV4a), the TRIGGER with the grant
+-- switched back on (SV5-SV7a), the RPC's own rails (SV8-SV10), and the
+-- server path still landing (SV11-SV14).
+insert into public.documents (id, organisation_id, owner_user_id, filename, storage_key, mime_type,
+                              size_bytes, scan_status, scanned_at) values
+  ('00000000-0000-4000-9000-0000000067f6', '00000000-0000-4000-9000-0000000067b1',
+   '00000000-0000-4000-9000-0000000067a2', 'eicar.pdf',
+   '00000000-0000-4000-9000-0000000067b1/00000000-0000-4000-9000-0000000067f6',
+   'application/pdf', 68, 'pending', null);
+
+set role authenticated;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a2","role":"authenticated","aal":"aal1"}';
+select rt.val('SV1 DENOMINATOR: the Manager (aal1, manage_documents) sees the pending row and holds the deleted_at UPDATE grant',
+  $$select count(*)::text || '/' || has_column_privilege('authenticated','public.documents','deleted_at','UPDATE')::text
+      from public.documents where id = '00000000-0000-4000-9000-0000000067f6' and scan_status = 'pending'$$, '1/true');
+select rt.try('SV2 THE PROBE''S PATCH: the Manager marks the pending file clean mid-scan -- refused by the grant',
+  $$update public.documents set scan_status = 'clean', scanned_at = now()
+     where id = '00000000-0000-4000-9000-0000000067f6'$$, 'denied(42501)');
+select rt.try('SV3 ...or names scanned_at alone',
+  $$update public.documents set scanned_at = now()
+     where id = '00000000-0000-4000-9000-0000000067f6'$$, 'denied(42501)');
+select rt.try('SV4 a document cannot be BORN clean (the INSERT grant has no verdict column)',
+  $$insert into public.documents (organisation_id, filename, storage_key, mime_type, size_bytes, scan_status, scanned_at)
+    values ('00000000-0000-4000-9000-0000000067b1', 'born-clean.pdf',
+            '00000000-0000-4000-9000-0000000067b1/sv4', 'application/pdf', 1, 'clean', now())$$, 'denied(42501)');
+select rt.try('SV4a ...and the RPC is not the browser''s either (no EXECUTE for authenticated)',
+  $$select public.record_document_scan_verdict('00000000-0000-4000-9000-0000000067b1',
+                                               '00000000-0000-4000-9000-0000000067f6', 'clean')$$, 'denied(42501)');
+reset role;
+reset request.jwt.claims;
+
+-- THE TRIGGER, ASKED DIRECTLY (the RK18 shape): grants switched back on in a
+-- subtransaction, the Manager's own session, the trigger must refuse.
+do $$
+declare v_out text; v_a text; v_b text; v_c text; v_h text;
+begin
+  begin
+    execute 'grant insert (scan_status, scanned_at), update (scan_status, scanned_at) on public.documents to authenticated';
+    perform pg_catalog.set_config('request.jwt.claims',
+      '{"sub":"00000000-0000-4000-9000-0000000067a2","role":"authenticated","aal":"aal1"}', true);
+    execute 'set local role authenticated';
+    begin
+      update public.documents set scan_status = 'clean', scanned_at = now()
+       where id = '00000000-0000-4000-9000-0000000067f6';
+      v_a := 'ok';
+    exception when others then
+      get stacked diagnostics v_h = pg_exception_hint;
+      v_a := 'denied(' || sqlstate || ':' || coalesce(v_h, '') || ')';
+    end;
+    begin
+      insert into public.documents (organisation_id, filename, storage_key, mime_type, size_bytes, scan_status, scanned_at)
+      values ('00000000-0000-4000-9000-0000000067b1', 'born-clean.pdf',
+              '00000000-0000-4000-9000-0000000067b1/sv6', 'application/pdf', 1, 'clean', now());
+      v_b := 'ok';
+    exception when others then
+      get stacked diagnostics v_h = pg_exception_hint;
+      v_b := 'denied(' || sqlstate || ':' || coalesce(v_h, '') || ')';
+    end;
+    begin
+      update public.documents set scanned_at = now()
+       where id = '00000000-0000-4000-9000-0000000067f6';
+      v_c := 'ok';
+    exception when others then
+      get stacked diagnostics v_h = pg_exception_hint;
+      v_c := 'denied(' || sqlstate || ':' || coalesce(v_h, '') || ')';
+    end;
+    raise exception 'SV_RESULT %|%|%', v_a, v_b, v_c;
+  exception when others then
+    v_out := sqlerrm;
+  end;
+  perform rt.record('SV5 THE TRIGGER ITSELF refuses the forged pending->clean, with the grant switched back on',
+                    'denied(42501:document_scan_verdict_is_the_scanners)',
+                    pg_catalog.split_part(pg_catalog.replace(v_out, 'SV_RESULT ', ''), '|', 1));
+  perform rt.record('SV6 ...and a born-clean INSERT',
+                    'denied(42501:document_scan_verdict_is_the_scanners)',
+                    pg_catalog.split_part(pg_catalog.replace(v_out, 'SV_RESULT ', ''), '|', 2));
+  perform rt.record('SV7 ...and a scanned_at-only write',
+                    'denied(42501:document_scan_verdict_is_the_scanners)',
+                    pg_catalog.split_part(pg_catalog.replace(v_out, 'SV_RESULT ', ''), '|', 3));
+end $$;
+select rt.val('SV7a the probe''s grant was rolled back, and the row is still pending',
+  $$select has_column_privilege('authenticated', 'public.documents', 'scan_status', 'UPDATE')::text || '/' ||
+           (select scan_status from public.documents where id = '00000000-0000-4000-9000-0000000067f6')$$, 'false/pending');
+
+-- THE RPC'S OWN RAILS. service_role with a PERSON's claims on the session is
+-- refused: the definer answers only a sessionless server caller.
+set role service_role;
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a2","role":"authenticated","aal":"aal1"}';
+select rt.try_hint('SV8 the RPC refuses a session with a person on it',
+  $$select public.record_document_scan_verdict('00000000-0000-4000-9000-0000000067b1',
+                                               '00000000-0000-4000-9000-0000000067f6', 'clean')$$,
+  'denied(42501:document_scan_verdict_is_the_scanners)');
+reset request.jwt.claims;
+select rt.try('SV9 the RPC refuses a non-terminal verdict',
+  $$select public.record_document_scan_verdict('00000000-0000-4000-9000-0000000067b1',
+                                               '00000000-0000-4000-9000-0000000067f6', 'pending')$$, 'denied(22023)');
+select rt.try_hint('SV10 the RPC refuses the right document under the wrong organisation',
+  $$select public.record_document_scan_verdict('00000000-0000-4000-9000-0000000067b2',
+                                               '00000000-0000-4000-9000-0000000067f6', 'clean')$$,
+  'denied(P0002:document_not_pending)');
+-- THE SERVER PATH: the scanner's verdict lands, once.
+select rt.try('SV11 CONTROL: the scanner''s quarantine verdict lands',
+  $$select public.record_document_scan_verdict('00000000-0000-4000-9000-0000000067b1',
+                                               '00000000-0000-4000-9000-0000000067f6', 'quarantined')$$, 'ok(1)');
+select rt.try_hint('SV12 ...and a second verdict is refused (pending -> terminal only)',
+  $$select public.record_document_scan_verdict('00000000-0000-4000-9000-0000000067b1',
+                                               '00000000-0000-4000-9000-0000000067f6', 'clean')$$,
+  'denied(P0002:document_not_pending)');
+reset role;
+-- THE DOWNLOAD GATE'S PREDICATE (lib/crm/documents.ts: scan_status !== 'clean'
+-- answers 409). The probe's file read `true` here; now it reads false, with a
+-- database-stamped scanned_at.
+select rt.val('SV13 the download gate''s predicate is FALSE for the probe''s file (quarantined, stamped by the database)',
+  $$select (scan_status = 'clean')::text || '/' || scan_status || '/' || (scanned_at > now() - interval '1 minute')::text
+      from public.documents where id = '00000000-0000-4000-9000-0000000067f6'$$, 'false/quarantined/true');
+select rt.val('SV14 ...and is FALSE for a pending file (RK11''s control upload, never scanned)',
+  $$select (scan_status = 'clean')::text || '/' || scan_status
+      from public.documents where id = '00000000-0000-4000-9000-000000006705'$$, 'false/pending');
 
 
 -- ---------------------------------------------------------------------------

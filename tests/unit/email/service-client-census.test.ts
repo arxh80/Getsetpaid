@@ -82,6 +82,10 @@ const ALLOWED = new Set([
   // fail_retention_run) plus the object manifest. It writes no table
   // directly.
   "lib/retention/runner.ts",
+  // Phase 8 final review A, I1. The malware verdict's one writer: it calls
+  // public.record_document_scan_verdict() (service_role alone, refuses a
+  // person's session, pending -> terminal on one live row) and nothing else.
+  "lib/crm/scan-verdict.ts",
 ]);
 
 interface Scanned {

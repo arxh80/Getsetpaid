@@ -558,8 +558,8 @@ select c7.try('PI5a notes: a PRIVATE note whose body is the sentinel',
            values (%L, %L, %L, 'ZQ7-PRIVATE-NOTE-BODY the thing nobody else may read', 'private')$$,
          :p_nt, :'alpha_org', :'pmanager'), 'ok(1)');
 select c7.try('PI6a documents: sentinel filename and a storage_key carrying it (the column-level INSERT grant)',
-  format($$insert into public.documents (id, organisation_id, owner_user_id, filename, storage_key, mime_type, size_bytes, scan_status)
-           values (%L, %L, %L, 'ZQ7-Contract - J Smith.pdf', %L || '/ZQ7-KEY', 'application/pdf', 12345, 'pending')$$,
+  format($$insert into public.documents (id, organisation_id, owner_user_id, filename, storage_key, mime_type, size_bytes)
+           values (%L, %L, %L, 'ZQ7-Contract - J Smith.pdf', %L || '/ZQ7-KEY', 'application/pdf', 12345)$$,
          :p_dc, :'alpha_org', :'pmanager', trim(both '''' from :'alpha_org')), 'ok(1)');
 select c7.try('PI7a task_links: the task linked to the event',
   format($$insert into public.task_links (id, organisation_id, parent_id, entity_type, entity_id)
@@ -745,12 +745,19 @@ select c7.val('PU5b note.updated: changed [body, visibility]; visibility private
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select c7.try('PU6a documents: the scan verdict lands (the column-level UPDATE grant: scan_status, scanned_at)',
-  format($$update public.documents set scan_status='clean', scanned_at=now() where id=%L$$, :p_dc), 'ok(1)');
+select c7.try('PU6a documents: pmanager cannot write the scan verdict (outside the UPDATE grant since 20261029000000, final review A I1)',
+  format($$update public.documents set scan_status='clean', scanned_at=now() where id=%L$$, :p_dc), 'denied(42501)');
 reset role; reset request.jwt.claims;
-select c7.val('PU6b document.updated: changed [scan_status, scanned_at], pending->clean carried, no filename',
-  format($$select (r.after->'changed')::text || ' ' || (r.before->'values'->>'scan_status') || '->' || (r.after->'values'->>'scan_status') || ' ' || c7.leaks(%L,'ZQ7')::text from c7.last_row(%L) r$$, :p_dc, :p_dc),
-  '["scan_status", "scanned_at"] pending->clean false');
+-- The verdict lands through the scanner's RPC (service_role alone). It is a
+-- SESSIONLESS write, so private.audit_crm_change() files no document.updated
+-- row; the upload action's document_uploaded/_quarantined row is the record.
+set role service_role;
+select public.record_document_scan_verdict(:'alpha_org'::uuid, :p_dc::uuid, 'clean');
+reset role;
+select c7.val('PU6b the scanner''s verdict landed and filed no document.updated row (sessionless), and the refused PATCH filed none either',
+  format($$select d.scan_status || ' ' || (select count(*) from public.audit_events e where e.target_id=d.id and e.action='document.updated')::text
+             from public.documents d where d.id=%L$$, :p_dc),
+  'clean 0');
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 select c7.try('PU6c documents: pmanager cannot rename the file (filename is outside the UPDATE grant) -- so a filename can never enter an UPDATE row either',
@@ -1110,18 +1117,21 @@ select c7.val('PS3 every row this suite''s actors wrote carries an organisation 
 -- is filed under ALPHA (subscription rows are BETA's, connection requests are
 -- filed per side by § PN). The count is the denominator -- PS4's sum less
 -- subscription and network_connection_request.
+-- 56 -> 55 and document=4 -> 3 SINCE 20261029000000 (final review A, I1):
+-- the scan verdict is the scanner's sessionless RPC now, so PU6 files no
+-- document.updated row (PU6b asserts exactly that).
 select c7.val('PS5 every generic-target row the walk wrote is filed under ALPHA -- none misfiled (count/misfiled)',
   format($$select count(*)::text || '/' || count(*) filter (where organisation_id is distinct from %L)::text
             from public.audit_events
            where created_at >= %L and actor_user_id in (%L, %L, %L, %L)
              and target_type not in ('subscription', 'network_connection_request')$$,
-         :'alpha_org', :'c7_t0', :'pmanager', :'padmin', :'pbowner', :'super'), '56/0');
+         :'alpha_org', :'c7_t0', :'pmanager', :'padmin', :'pbowner', :'super'), '55/0');
 select c7.val('PS4 VOLUME, measured: the rows this suite''s walk produced, by target type',
   format($$select string_agg(target_type || '=' || n, ' ' order by target_type) from
             (select target_type, count(*) n from public.audit_events
               where created_at >= %L and actor_user_id in (%L, %L, %L, %L) group by target_type) s$$,
          :'c7_t0', :'pmanager', :'padmin', :'pbowner', :'super'),
-  'document=4 document_link=3 event=5 event_lineup=4 financial_entry=4 meeting=4 meeting_link=3 membership=3 merge_candidate=1 network_connection_request=7 network_link=4 network_profile=6 note=4 note_link=3 subscription=2 task=4 task_link=4');
+  'document=3 document_link=3 event=5 event_lineup=4 financial_entry=4 meeting=4 meeting_link=3 membership=3 merge_candidate=1 network_connection_request=7 network_link=4 network_profile=6 note=4 note_link=3 subscription=2 task=4 task_link=4');
 
 -- ===========================================================================
 -- § PQ  merge_candidate.created AND .restored, BEHAVIOURALLY (fix round 1, M3)

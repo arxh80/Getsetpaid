@@ -61,6 +61,7 @@ import { createStorageClient } from "@/lib/supabase/storage";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { authoriseOrg, failureState, stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
+import { recordScanVerdict } from "@/lib/crm/scan-verdict";
 import { sanitiseFilename, sniffAndAllow } from "@/lib/security/file-allowlist";
 // THE SIZE CEILING IS SHARED WITH next.config.ts, because the framework cap
 // must sit above it -- see lib/security/upload-limits.ts. This file is
@@ -183,7 +184,8 @@ export async function uploadDocumentAction(
         storage_key: storageKey,
         mime_type: sniff.mime,
         size_bytes: bytes.length,
-        scan_status: "pending",
+        // No scan_status: the column defaults to 'pending' and is outside the
+        // client grant since 20261029000000 (the verdict is the scanner's).
       },
       { count: "exact" },
     )
@@ -219,22 +221,13 @@ export async function uploadDocumentAction(
   }
   const scanStatus = statusForVerdict(verdict);
 
-  // THE TERMINAL STATUS. scanned_at is set with it, satisfying
-  // documents_scanned_at_iff_terminal. { count: "exact" } -- a 204 is not a save.
-  const result = await commitWrite(`document ${documentId} scan-status`, () =>
-    supabase
-      .from("documents")
-      .update(
-        { scan_status: scanStatus, scanned_at: new Date().toISOString() },
-        { count: "exact" },
-      )
-      .eq("organisation_id", org.id)
-      .eq("id", documentId)
-      .is("deleted_at", null),
-  );
-  if (result.outcome !== "applied") {
+  // THE TERMINAL STATUS -- through the service-role-only RPC, never the
+  // uploader's client (Phase 8 final review A, I1: a session that can write the
+  // verdict is a browser that can write it, mid-scan). The database stamps
+  // scanned_at and accepts only pending -> terminal on this live row.
+  if (!(await recordScanVerdict(org.id, documentId, scanStatus))) {
     // The bytes and the pending row both exist; the verdict just did not land.
-    // A fault, logged by commitWrite. Do not claim success.
+    // A pending row is never downloadable (the gate 409s it). Do not claim success.
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
 

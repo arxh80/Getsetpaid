@@ -59,7 +59,9 @@ import "server-only";
 //      BUILD failure, not a review note.
 //   2. The key is SUPABASE_SERVICE_ROLE_KEY, never NEXT_PUBLIC_.
 //   3. Constructed per call, no session, never writes auth cookies.
-//   4. ONE IMPORTER: lib/email/*. tests/unit/email/service-client-census.test.ts
+//   4. NAMED IMPORTERS ONLY: lib/email/*, the three sessionless runners, and
+//      (since 20261029000000, final review A I1) lib/crm/scan-verdict.ts,
+//      whose whole reach is public.record_document_scan_verdict(). tests/unit/email/service-client-census.test.ts
 //      is the source-only census that keeps it that way -- a second importer
 //      fails the suite, so growing this into a general-purpose RLS bypass is
 //      a visible decision rather than a drift.
