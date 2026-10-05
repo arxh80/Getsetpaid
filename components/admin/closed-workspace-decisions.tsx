@@ -32,6 +32,9 @@ export interface ClosureRowView {
   readonly purgeDays: number | null;
   readonly activeMembers: number;
   readonly backupLabel: string;
+  /** The latest closure backup SUCCEEDED. When not, deletion needs an explicit
+   *  acknowledgement (20261028002000, N3a). */
+  readonly backupSucceeded: boolean;
   readonly candidates: readonly { userId: string; label: string }[];
   /** The picker's next page of members, when this page was full (Q224). */
   readonly membersNextHref: string | null;
@@ -245,6 +248,35 @@ function ClosureRow({
             error={removeState.fieldErrors?.reason}
             hint="Goes on the permanent audit record. Not shown to the workspace."
           />
+          {row.backupSucceeded ? null : (
+            <div className="flex flex-col gap-1">
+              <label className="flex items-start gap-2 text-base text-ink">
+                <input
+                  type="checkbox"
+                  name="acknowledgeNoBackup"
+                  value="yes"
+                  required
+                  defaultChecked={removeState.values?.acknowledgeNoBackup === "yes"}
+                  aria-invalid={removeState.fieldErrors?.acknowledgeNoBackup ? true : undefined}
+                  aria-describedby={`${headingId}-ack-hint`}
+                  className="mt-1"
+                />
+                <span>
+                  Delete without a backup
+                  <span id={`${headingId}-ack-hint`} className="block text-sm text-ink-muted">
+                    This workspace’s closure backup has not succeeded ({row.backupLabel.toLowerCase()}),
+                    so nothing of it — finance records included — will exist anywhere once the
+                    sweep runs. Your acknowledgement is recorded on the audit log.
+                  </span>
+                </span>
+              </label>
+              {removeState.fieldErrors?.acknowledgeNoBackup ? (
+                <p role="alert" className="text-sm font-semibold text-danger">
+                  {removeState.fieldErrors.acknowledgeNoBackup}
+                </p>
+              ) : null}
+            </div>
+          )}
           <div>
             <Button type="submit" variant="danger" pending={removing} pendingLabel="Deleting…">
               Delete permanently

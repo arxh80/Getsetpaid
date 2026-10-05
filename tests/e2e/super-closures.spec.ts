@@ -113,13 +113,31 @@ test("reassign reopens one workspace under its Manager; delete marks the other f
 
   // ---- delete: the retyped slug is checked server-side first ------------
   const deleteReason = `E2E delete ${drop.id.slice(0, 8)}: the Owner asked for removal`;
+  // The N3a acknowledgement box (below) is `required`; strip it so this
+  // submission reaches the server's retyped-slug check at all.
+  const ack = dropRow.getByRole("checkbox", { name: /Delete without a backup/ });
+  await expect(ack).toBeVisible();
+  await ack.evaluate((el) => el.removeAttribute("required"));
   await dropRow.getByLabel(/Type the URL name to confirm/).fill(`${drop.slug}-typo`);
   await dropRow.getByRole("textbox", { name: /Reason/ }).last().fill(deleteReason);
   await dropRow.getByRole("button", { name: /Delete permanently/ }).click();
   await expect(dropRow.getByText(/Type the workspace’s URL name exactly/)).toBeVisible();
   expect(await organisationLifecycleState(drop.id)).toBe("owner_closed");
 
+  // ---- delete: a backup that has not succeeded needs an acknowledgement ---
+  // (20261028002000, N3a). The fixture's closure backup is never built here
+  // -- nothing nudges the runner for an RPC-made closure and the local cron
+  // tick is a no-op -- so the checkbox is in the tree. The database is the
+  // enforcement: with `required` stripped and the box unticked, the RPC
+  // refuses and the workspace stays owner_closed.
   await dropRow.getByLabel(/Type the URL name to confirm/).fill(drop.slug);
+  await ack.evaluate((el) => el.removeAttribute("required"));
+  await expect(ack).not.toBeChecked();
+  await dropRow.getByRole("button", { name: /Delete permanently/ }).click();
+  await expect(dropRow.getByText(/backup has not succeeded\. Tick/)).toBeVisible();
+  expect(await organisationLifecycleState(drop.id)).toBe("owner_closed");
+
+  await ack.check();
   await dropRow.getByRole("button", { name: /Delete permanently/ }).click();
   await expect(page.getByText(`${drop.slug} is marked for permanent deletion.`, { exact: false })).toBeVisible();
   await expect(page.getByText("No workspace is waiting for a decision.")).toBeVisible();

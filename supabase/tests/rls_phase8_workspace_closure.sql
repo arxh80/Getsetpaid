@@ -649,7 +649,7 @@ select cw.val('CL10 RE-CHECK: all six lifecycle-moving UPDATEs carry the state t
                      'public.reinstate_organisation(text,text)'::regprocedure,
                      'public.close_my_workspace(uuid,text,text)'::regprocedure,
                      'public.reassign_closed_workspace(text,uuid,text)'::regprocedure,
-                     'public.delete_closed_workspace(text,text)'::regprocedure)
+                     'public.delete_closed_workspace(text,text,boolean)'::regprocedure)
        and pg_get_functiondef(p.oid) like '%lifecycle_changed_concurrently%'
        and (pg_get_functiondef(p.oid) like '%and lifecycle_state = v_target.lifecycle_state;%'
             or pg_get_functiondef(p.oid) like '%and lifecycle_state = ''active'';%'
@@ -806,8 +806,54 @@ set request.jwt.claims = :'other_c';
 select cw.try('CX0 FIXTURE: org B''s aal2 Owner closes it',
   format($$select public.close_my_workspace(%L, 'cw-closure-beta', 'shutting down')$$, :'org_b'), 'ok(1)');
 set request.jwt.claims = :'su_c';
-select cw.try('CX1 the aal2 superuser deletes the closed workspace permanently',
-  format($$insert into cw.ids select 'delete', public.delete_closed_workspace('cw-closure-beta', ' no successor ')::text$$), 'ok(1)');
+-- § CX N3a (fix round 2, 20261028002000): no permanent delete over a backup
+-- that has not succeeded, unless acknowledged. Org B's backup is QUEUED here.
+select cw.try('CX0a N3a: with the closure backup still queued, delete is REFUSED without an acknowledgement',
+  $$select public.delete_closed_workspace('cw-closure-beta', 'no successor')$$, 'denied(22023:decision_backup_not_succeeded)');
+select cw.try('CX0b ...and an explicit false is the same refusal',
+  $$select public.delete_closed_workspace('cw-closure-beta', 'no successor', false)$$, 'denied(22023:decision_backup_not_succeeded)');
+reset role; reset request.jwt.claims;
+select cw.val('CX0c ...which left org B owner_closed with no closure_deleted row',
+  format($$select o.lifecycle_state || '/' || (select count(*) from public.audit_events a where a.organisation_id = o.id
+             and a.action = 'organisation.closure_deleted')::text from public.organisations o where o.id = %L$$, :'org_b'),
+  'owner_closed/0');
+-- Org D: a second closed workspace whose backup SUCCEEDS -- the delete then
+-- needs no acknowledgement, and records none.
+\o /dev/null
+select gen_random_uuid()::text as org_d \gset
+\o
+insert into public.organisations (id, name, slug) values (:'org_d', 'Closure Delta', 'cw-closure-delta');
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+values (:'org_d', :'other_u', 'owner', 'active', now());
+set role authenticated;
+set request.jwt.claims = :'other_c';
+select cw.try('CX0d FIXTURE: org D''s aal2 Owner closes it',
+  format($$select public.close_my_workspace(%L, 'cw-closure-delta', 'shutting down')$$, :'org_d'), 'ok(1)');
+reset role; reset request.jwt.claims;
+\o /dev/null
+update public.export_jobs set status = 'running' where organisation_id = :'org_d' and closure_backup;
+update public.export_jobs set status = 'succeeded', storage_key = 'exports/' || id || '.zip',
+       byte_size = 1, row_count = 1, table_count = 1, manifest = '{}'::jsonb
+ where organisation_id = :'org_d' and closure_backup;
+\o
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CX0e POSITIVE: with a SUCCEEDED backup the delete needs no acknowledgement',
+  $$select public.delete_closed_workspace('cw-closure-delta', 'backed up')$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+select cw.val('CX0f ...and its audit row records the succeeded backup and NO acknowledgement',
+  format($$select count(*)::text || '/' || bool_and(after ->> 'backup_status' = 'succeeded')::text || '/' ||
+                  bool_and((after ->> 'acknowledged_no_backup')::boolean = false)::text
+             from public.audit_events where organisation_id = %L and action = 'organisation.closure_deleted'$$, :'org_d'),
+  '1/true/true');
+\o /dev/null
+delete from public.export_jobs where organisation_id = :'org_d';
+delete from public.organisations where id = :'org_d';
+\o
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CX1 the aal2 superuser deletes the closed workspace permanently, ACKNOWLEDGING there is no backup',
+  format($$insert into cw.ids select 'delete', public.delete_closed_workspace('cw-closure-beta', ' no successor ', true)::text$$), 'ok(1)');
 reset role; reset request.jwt.claims;
 \o /dev/null
 select coalesce((select v from cw.ids where k = 'delete'), '00000000-0000-0000-0000-000000000000') as delete_audit \gset
@@ -815,11 +861,13 @@ select coalesce((select v from cw.ids where k = 'delete'), '00000000-0000-0000-0
 select cw.val('CX2 lifecycle deleted, still soft (deleted_at set) and DUE for the purge now',
   format($$select lifecycle_state || '/' || (deleted_at is not null)::text || '/' || (retention_expires_at < now())::text
              from public.organisations where id = %L$$, :'org_b'), 'deleted/true/true');
-select cw.val('CX3 one organisation.closure_deleted row with the reason and ONLY the remaining Owner/Admins (not the Manager) as recipients',
+select cw.val('CX3 one organisation.closure_deleted row with the reason, the acknowledged queued backup, and ONLY the remaining Owner/Admins (not the Manager) as recipients',
   format($$select count(*)::text || '/' || bool_and(after ->> 'reason' = 'no successor')::text || '/' ||
+                  bool_and(after ->> 'backup_status' = 'queued')::text || '/' ||
+                  bool_and((after ->> 'acknowledged_no_backup')::boolean)::text || '/' ||
                   bool_and(after -> 'notify_user_ids' = jsonb_build_array(%L::uuid))::text
              from public.audit_events where organisation_id = %L and action = 'organisation.closure_deleted'$$,
-    :'other_u', :'org_b'), '1/true/true');
+    :'other_u', :'org_b'), '1/true/true/true/true');
 \o /dev/null
 select (private.sweep_expired_workspaces(true, 100000) ->> 'organisations.purged')::int as due_n \gset
 \o

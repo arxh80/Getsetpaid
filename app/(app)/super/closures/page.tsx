@@ -95,6 +95,7 @@ export default async function ClosedWorkspacesPage({
             backupLabel: row.backupStatus
               ? EXPORT_STATUS_LABELS[row.backupStatus]
               : "No backup recorded",
+            backupSucceeded: row.backupStatus === "succeeded",
             candidates: candidates.map((c) => ({
               userId: c.userId,
               label: `${c.displayName ?? "Unnamed member"} — ${roleLabel(c.role)}`,

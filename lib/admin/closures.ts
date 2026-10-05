@@ -45,6 +45,8 @@ const NOT_OWNER_CLOSED =
 const OWNER_REQUIRED = "Pick the member who becomes the new Owner.";
 const OWNER_NOT_MEMBER =
   "That person is no longer an active member of this workspace. Reload the page and pick again.";
+const BACKUP_NOT_SUCCEEDED =
+  "This workspace’s backup has not succeeded. Tick “Delete without a backup” to delete it anyway — that is recorded on the audit log.";
 const CONFIRM_MISMATCH =
   "Type the workspace’s URL name exactly to confirm. Permanent deletion cannot be undone.";
 
@@ -72,6 +74,8 @@ function rpcRefusal(
     // 20261028000000 (N1): it moved under the decision.
     case "lifecycle_changed_concurrently":
       return refuse(NOT_OWNER_CLOSED, formData);
+    case "decision_backup_not_succeeded":
+      return { fieldErrors: { acknowledgeNoBackup: BACKUP_NOT_SUCCEEDED }, values: echoedValues(formData) };
     case "new_owner_must_be_active_member":
       return { fieldErrors: { newOwnerUserId: OWNER_NOT_MEMBER }, values: echoedValues(formData) };
   }
@@ -152,9 +156,12 @@ export async function deleteClosedWorkspaceAction(
   }
 
   const supabase = await createClient();
+  // N3a (20261028002000): the RPC refuses unless the backup succeeded or this
+  // is true; the database decides, this only carries the operator's tick.
   const { error } = await supabase.rpc("delete_closed_workspace", {
     p_organisation_slug: base.slug,
     p_reason: base.reason,
+    p_acknowledge_no_backup: field(formData, "acknowledgeNoBackup") === "yes",
   });
   if (error) return rpcRefusal("delete_closed_workspace", error, formData);
 

@@ -1189,7 +1189,7 @@ fi
 # owner_closed state as read-only (one write per phase), the closure backup's
 # fences and retention, and the Q88 purge reaching it. Self-contained.
 # ============================================================================
-run_suite "PHASE 8 WORKSPACE CLOSURE" rls_phase8_workspace_closure.sql cw 151 "${P7VARS[@]}"
+run_suite "PHASE 8 WORKSPACE CLOSURE" rls_phase8_workspace_closure.sql cw 157 "${P7VARS[@]}"
 cw_fails=$SUITE_FAILS
 if [ "$cw_fails" != "0" ]; then
   echo "PHASE 8 WORKSPACE CLOSURE SUITE FAILED: $cw_fails failing assertion(s)" >&2
