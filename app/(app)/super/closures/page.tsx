@@ -4,7 +4,10 @@ import { notFound } from "next/navigation";
 import { isSuperuser } from "@/lib/admin/superuser";
 import {
   buildClosuresNextHref,
+  CANDIDATES_PAGE_PARAM,
+  encodeCandidatesPage,
   listClosedWorkspaces,
+  parseCandidatesPage,
   listReassignCandidates,
   parseClosuresParams,
 } from "@/lib/admin/closures-list";
@@ -40,6 +43,21 @@ export async function generateMetadata(): Promise<Metadata> {
   return { title: "Closed workspaces · Superuser · GetSetPaid" };
 }
 
+/** This page's URL with the picker-page key set (or removed), every other key kept. */
+function membersHref(
+  raw: Record<string, string | string[] | undefined>,
+  value: string | null,
+): string {
+  const qs = new URLSearchParams();
+  for (const [key, v] of Object.entries(raw)) {
+    if (key === CANDIDATES_PAGE_PARAM || v === undefined) continue;
+    for (const one of Array.isArray(v) ? v : [v]) qs.append(key, one);
+  }
+  if (value) qs.set(CANDIDATES_PAGE_PARAM, value);
+  const s = qs.toString();
+  return s ? `/super/closures?${s}` : "/super/closures";
+}
+
 function roleLabel(role: string): string {
   if (role === "owner") return "Owner";
   return INVITABLE_ROLES.find((r) => r.key === role)?.label ?? role;
@@ -51,7 +69,10 @@ export default async function ClosedWorkspacesPage({
   // STREAMED, NOT LITERAL -- see app/(app)/super/layout.tsx's header.
   if (!(await isSuperuser())) notFound();
 
-  const params = parseClosuresParams(await searchParams);
+  const raw = await searchParams;
+  const params = parseClosuresParams(raw);
+  // Q224: one workspace's reassign picker may be on a later page.
+  const membersPage = parseCandidatesPage(raw);
   const cursor = params.cursor;
   const result = await listClosedWorkspaces(params);
   const now = new Date();
@@ -59,7 +80,10 @@ export default async function ClosedWorkspacesPage({
   const rows: ClosureRowView[] = result.ok
     ? await Promise.all(
         result.rows.map(async (row) => {
-          const candidates = await listReassignCandidates(row.organisationId);
+          const after =
+            membersPage?.organisationId === row.organisationId ? membersPage.afterUserId : null;
+          const { candidates, hasMore } = await listReassignCandidates(row.organisationId, after);
+          const lastCandidate = candidates.at(-1);
           return {
             organisationId: row.organisationId,
             name: row.name,
@@ -75,6 +99,17 @@ export default async function ClosedWorkspacesPage({
               userId: c.userId,
               label: `${c.displayName ?? "Unnamed member"} — ${roleLabel(c.role)}`,
             })),
+            membersNextHref:
+              hasMore && lastCandidate
+                ? membersHref(
+                    raw,
+                    encodeCandidatesPage({
+                      organisationId: row.organisationId,
+                      afterUserId: lastCandidate.userId,
+                    }),
+                  )
+                : null,
+            membersFirstHref: after ? membersHref(raw, null) : null,
           };
         }),
       )

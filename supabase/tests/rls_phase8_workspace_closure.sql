@@ -484,12 +484,51 @@ reset role; reset request.jwt.claims;
 select cw.val('CS8h AUDITED: one organisation.closure_candidates_viewed row per read, actor = superuser, counts only (no member named)',
   format($$select count(*)::text || '/' || bool_and(actor_user_id = %L)::text || '/' ||
                   string_agg(after ->> 'rows_returned', ',' order by created_at, id) || '/' ||
-                  bool_and((select array_agg(k order by k) from jsonb_object_keys(after) k) = array['rows_returned'])::text || '/' ||
+                  bool_and((select array_agg(k order by k) from jsonb_object_keys(after) k) = array['later_page','rows_returned'])::text || '/' ||
                   bool_and(after::text not like '%%' || %L || '%%')::text
              from public.audit_events where organisation_id = %L and action = 'organisation.closure_candidates_viewed'$$,
     :'su_u', :'mgr_u', :'org_a'), '2/true/1,2/true/true');
 select cw.val('CS8i ...and the refused read wrote none',
   format($$select count(*)::text from public.audit_events where organisation_id = %L and action = 'organisation.closure_candidates_viewed'$$, :'org_b'), '0');
+-- Q224 (fix round 1b, review m3): KEYSET PAGING PAST 200. 201 extra active
+-- members are planted (so the roster is 203: Owner, Manager, 201 others) and
+-- removed again straight after, so nothing below sees them.
+\o /dev/null
+create table cw.bulk as select gen_random_uuid() as id from generate_series(1, 201);
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+select id, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cw-bulk-' || id || '@test.local', now(), now(), now()
+  from cw.bulk;
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+select :'org_a', id, 'standard_user', 'active', now() from cw.bulk;
+\o
+set role authenticated;
+set request.jwt.claims = :'su_c';
+\o /dev/null
+select user_id as page1_last from public.closed_workspace_reassign_candidates(:'org_a') offset 199 limit 1 \gset
+\o
+select cw.val('CS8j page 1 is capped at 200 and starts with the Owner (rank order)',
+  format($$select count(*)::text || '/' || (array_agg(role))[1]
+             from public.closed_workspace_reassign_candidates(%L)$$, :'org_a'), '200/owner');
+select cw.val('CS8k page 2 (after page 1''s last id) holds the remaining 3, none repeated, 203 distinct in all',
+  format($$with p1 as (select user_id from public.closed_workspace_reassign_candidates(%1$L)),
+              p2 as (select user_id from public.closed_workspace_reassign_candidates(%1$L, %2$L))
+           select (select count(*) from p2)::text || '/' ||
+                  (select count(*) from p1 join p2 using (user_id))::text || '/' ||
+                  (select count(distinct user_id) from (select user_id from p1 union all select user_id from p2) u)::text$$,
+    :'org_a', :'page1_last'), '3/0/203');
+select cw.try('CS8l a cursor that is not a candidate (an outsider) is refused, not answered empty',
+  format($$select * from public.closed_workspace_reassign_candidates(%L, %L)$$, :'org_a', :'other_u'),
+  'denied(22023:closure_candidates_bad_cursor)');
+reset role; reset request.jwt.claims;
+\o /dev/null
+delete from public.organisation_memberships where organisation_id = :'org_a' and user_id in (select id from cw.bulk);
+set session_replication_role = replica;
+delete from public.audit_events where actor_user_id in (select id from cw.bulk);
+delete from auth.users where id in (select id from cw.bulk);
+set session_replication_role = origin;
+\o
+select cw.val('CS8m housekeeping: the 201 planted members are gone',
+  format($$select count(*)::text from public.organisation_memberships where organisation_id = %L and user_id in (select id from cw.bulk)$$, :'org_a'), '0');
 -- § CL (fix round 1, I1): the Phase 7 lifecycle RPCs refuse owner_closed --
 -- the decision is reassign/delete above, never a one-click reinstate/suspend/
 -- delete from /super/organisations. Positive controls on org B (ACTIVE here),

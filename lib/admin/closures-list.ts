@@ -144,21 +144,67 @@ export async function listClosedWorkspaces(
   };
 }
 
-/** The active members a closed workspace could be reassigned to. */
+/** The RPC's page size (closed_workspace_reassign_candidates, Q224). */
+export const CANDIDATES_PAGE_SIZE = 200;
+
+/**
+ * The query key that pages ONE workspace's reassign picker: `<org id>.<last
+ * user id of the previous page>`. Not a list cursor in the lib/list sense --
+ * the picker is a <select>, not a list page -- and NOT the enforcement: the
+ * RPC refuses a cursor that is not itself a candidate of that workspace
+ * (closure_candidates_bad_cursor), so a hand-edited value is a refusal, never
+ * another workspace's roster.
+ */
+export const CANDIDATES_PAGE_PARAM = "members";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export interface CandidatesPage {
+  readonly organisationId: string;
+  readonly afterUserId: string;
+}
+
+export function parseCandidatesPage(raw: RawSearchParams): CandidatesPage | null {
+  const value = raw[CANDIDATES_PAGE_PARAM];
+  if (typeof value !== "string") return null;
+  const [organisationId, afterUserId, ...rest] = value.split(".");
+  if (rest.length > 0 || !organisationId || !afterUserId) return null;
+  if (!UUID_RE.test(organisationId) || !UUID_RE.test(afterUserId)) return null;
+  return { organisationId, afterUserId };
+}
+
+export function encodeCandidatesPage(page: CandidatesPage): string {
+  return `${page.organisationId}.${page.afterUserId}`;
+}
+
+export interface ReassignCandidatesResult {
+  readonly candidates: readonly ReassignCandidate[];
+  /** A full page came back, so there may be more (Q224). */
+  readonly hasMore: boolean;
+}
+
+/**
+ * One page of the active members a closed workspace could be reassigned to,
+ * keyset-paged on (role rank, user id) by the RPC (Q224). Each successful read
+ * is audited by the RPC itself (organisation.closure_candidates_viewed, Q223).
+ */
 export async function listReassignCandidates(
   organisationId: string,
-): Promise<readonly ReassignCandidate[]> {
+  afterUserId: string | null = null,
+): Promise<ReassignCandidatesResult> {
   const supabase = await createClient();
   const { data, error } = await supabase.rpc("closed_workspace_reassign_candidates", {
     p_organisation_id: organisationId,
+    p_after: afterUserId,
   });
   if (error) {
     console.error("[admin] reassign candidate list failed:", error.message);
-    return [];
+    return { candidates: [], hasMore: false };
   }
-  return ((data ?? []) as Record<string, unknown>[]).map((row) => ({
+  const candidates = ((data ?? []) as Record<string, unknown>[]).map((row) => ({
     userId: row.user_id as string,
     displayName: (row.display_name as string | null) ?? null,
     role: row.role as string,
   }));
+  return { candidates, hasMore: candidates.length === CANDIDATES_PAGE_SIZE };
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import Link from "next/link";
 import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
 import {
   deleteClosedWorkspaceAction,
@@ -32,6 +33,10 @@ export interface ClosureRowView {
   readonly activeMembers: number;
   readonly backupLabel: string;
   readonly candidates: readonly { userId: string; label: string }[];
+  /** The picker's next page of members, when this page was full (Q224). */
+  readonly membersNextHref: string | null;
+  /** Back to the picker's first page, when this is a later one. */
+  readonly membersFirstHref: string | null;
 }
 
 export function ClosedWorkspaceDecisions({ rows }: { rows: readonly ClosureRowView[] }) {
@@ -171,6 +176,26 @@ function ClosureRow({
                   </option>
                 ))}
               </SelectField>
+              {row.membersNextHref || row.membersFirstHref ? (
+                <nav aria-label={`More members of ${row.name}`} className="flex flex-wrap gap-6 text-sm">
+                  {row.membersFirstHref ? (
+                    <Link
+                      href={row.membersFirstHref}
+                      className="text-primary underline underline-offset-4 hover:text-ink"
+                    >
+                      First members
+                    </Link>
+                  ) : null}
+                  {row.membersNextHref ? (
+                    <Link
+                      href={row.membersNextHref}
+                      className="text-primary underline underline-offset-4 hover:text-ink"
+                    >
+                      More members
+                    </Link>
+                  ) : null}
+                </nav>
+              ) : null}
               <TextAreaField
                 label="Reason"
                 name="reason"
