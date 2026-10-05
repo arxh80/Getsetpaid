@@ -190,7 +190,15 @@ export default async function WorkspaceExportSettingsPage({
               </li>
               <li>
                 A <span className="font-semibold text-ink">full backup</span> of the workspace
-                is taken automatically, and kept for as long as the workspace is.
+                is taken automatically, as you could see it the moment before you closed it (a
+                colleague&apos;s private notes are not in it), and kept for as long as the
+                workspace is.
+              </li>
+              <li>
+                The backup is <span className="font-semibold text-ink">yours to download</span>,
+                from this page, before you delete your account. Nobody else can download it —
+                not a new Owner if the workspace is reopened (they can take their own export),
+                and not GetSetPaid.
               </li>
               <li>
                 GetSetPaid is told, and decides: either the workspace is handed to one of its
