@@ -1322,3 +1322,27 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   backup that finished before the reopen keeps `expires_at` = the old 60-day
   deadline, not 7 days. **Default:** keep it (the founder may want it while
   the new Owner settles in).
+
+## Q212-Q214 -- Task 9c job 2b (closure senders), 2026-10-05
+
+- **Q212 -- the decision email carries no reason.** The brief says the
+  remaining Owners/Admins are notified; it does not say they read the
+  superuser's reason (which sits in the audit row's `after`). **Default
+  (built):** the reason stays out -- the builder's allowlist has no field for
+  it and a planted `reason` is refused. Alternative: add it, the way the
+  suspended banner carries the operator's reason (Q103).
+- **Q213 -- the clock function's live comment is stale.** The route now runs
+  TEN deliveries with a ~490 s worst case (shared per-loop budget tightened
+  60 s -> 45 s, Q204's default), but the comment on
+  `private.deliver_incident_alerts()` (20261016000000) still says eight and
+  ~440 s. Job 2b changed no SQL, so the comment is not reissued here.
+  **Default:** the next migration that touches this area (job 3 or later)
+  reissues it, from the arithmetic in `lib/email/requester-notifications.ts`.
+- **Q214 -- the two links.** The closure email links `/super/closures`
+  (`SUPER_CLOSURES_PATH` in `lib/email/workspace-closure-templates.ts`):
+  **job 3 must build the "Closed workspaces awaiting decision" page AT that
+  path** (until then the link reaches /super's not-found page behind the
+  superuser gate). A deleted workspace has no page, and there is no `/account`
+  root page, so the deleted-decision email links `/` -- the post-sign-in hub
+  that routes a person to a workspace they still belong to, an invitation or
+  onboarding. **Default (built):** these two.
