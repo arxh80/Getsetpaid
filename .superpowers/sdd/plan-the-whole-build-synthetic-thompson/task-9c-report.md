@@ -530,3 +530,38 @@ fact (its premise was false).
 
 **Not done / owed:** SECURITY.md § 7's closure paragraph is not yet corrected
 (CLAUDE.md is); m6 copy; e2e not run (memory-constrained, per brief).
+
+### Fix round 1 gates (measured, 231 migrations after reset)
+
+- lint clean; `next typegen` + typecheck clean; `vitest tests/unit` 2589/2590,
+  the one red the known load timeout of `no-private-table-in-network-path`
+  DENOMINATOR (6.0 s), green alone (14/14).
+- **psql runner: RED, `SUITE FAILED (psql=1 http=0)`.** Every suite at its pin
+  (closure 118, closure backup 19); HTTP 0 failures. The reds are three
+  STRUCTURAL censuses the C1 marker trips, not behaviour:
+  1. `rls_phase2_crm.sql` M1c/M1d2: the pinned suspension clause and
+     dependency set of permitted_organisations/has_permission now include
+     `private.closure_backup_read_admits` (M1/M1b, the behavioural mirror,
+     still 0 mismatches over 1296 triples, live and suspended).
+  2. `network_leakage_phase6.sql` LF1/LF2/LF3/LF3c: permitted_organisations is
+     reachable from the masking views, and its closure now names a private
+     relation (`private.closure_backup_reads`). This is the highest-risk
+     boundary census and is NOT to be waved through by an allowlist without a
+     decision -- **Q227**.
+  3. `rls_phase8_retention.sql` (41) + the retention concurrency probe:
+     `private.closure_backup_reads` is an unclassified retention subject
+     (`unclassified_retention_subject`), so every retention run refuses.
+     Owed: a `private.retention_subjects()` entry (empty at rest, no clock).
+- integration vitest NOT run this round (time).
+
+- **Q227 -- the closure-backup marker sits on the network path.** Options:
+  (a) allowlist `private.closure_backup_reads` in the LF closure census as a
+  per-transaction marker that carries no tenant data, plus classify it in the
+  retention roll and re-pin § M1c/M1d2; (b) move the admission out of
+  permitted_organisations/has_permission and into only the four affected
+  SELECT policies' read paths (still on the network path for view_network);
+  (c) snapshot at close time instead (a pre-closure build phase). **Default:**
+  (a), because the marker is empty at rest, unreadable and unwritable by any
+  client, and the alternative designs either keep the same reachability or
+  reopen the write window. Needs the reviewer's / founder's yes before the
+  censuses are re-pinned.
