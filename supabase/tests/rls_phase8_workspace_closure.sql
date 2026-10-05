@@ -15,6 +15,8 @@
 --   CQ  job 2, Q206: the closing Owner erases their account; the backup stays
 --   CR  job 2: reassign to an active member reopens the workspace, notified
 --   CX  job 2: permanent delete reuses the Q88 purge, notified
+--   CH  Q229: the delete's purge is HELD for the closure backup (download or
+--       30 days), the backup's expiry raised; undecided/erased/Phase 7 paths
 --   CZ  housekeeping
 --
 -- Self-contained: its own users, two workspaces and their rows, removed in CZ.
@@ -888,6 +890,229 @@ select cw.val('CX6 a never-decided closure still runs on the Q88 clock: nothing 
   format($$select (count(*) = 0)::text from public.organisations o
             where o.lifecycle_state = 'owner_closed' and o.retention_expires_at is distinct from
                   o.lifecycle_changed_at + make_interval(days => private.organisation_retention_days())$$), 'true');
+
+-- ---------------------------------------------------------------------------
+-- § CH Q229 (final review A, I2; 20261029002000): THE DELETE'S PURGE IS HELD
+--      FOR THE CLOSURE BACKUP -- until the closing Owner downloads it, or 30
+--      days after the decision, whichever first; and the backup stays
+--      downloadable for that whole hold. Before 20261029002000 the next
+--      hourly run cascaded the backup row away (export_jobs.organisation_id
+--      on delete cascade) and the orphan sweep took the archive.
+--   E  decided, never downloaded   -> HELD; purged once 30 days have passed
+--   F  decided, then downloaded    -> purged at once
+--   G  decided, Owner erased (Q206 tombstone) -> nobody can download: HELD,
+--      purged at 30 days
+--   H  never decided, 60 days on   -> purged (the Q88 clock, unchanged)
+--   I  a Phase 7-shaped delete with an old, expired closure backup -> purged
+-- The live sweep is run inside cw.live_sweep_probe(), which reads what
+-- survived and then rolls the whole sweep back, so no other suite's rows are
+-- touched.
+-- ---------------------------------------------------------------------------
+create function cw.live_sweep_probe(p_org uuid, p_job uuid)
+returns text language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v text;
+begin
+  begin
+    perform private.sweep_expired_workspaces(false, 100000);
+    v := (select count(*) from public.organisations where id = p_org)::text || '/' ||
+         (select count(*) from public.export_jobs where id = p_job)::text;
+    raise exception 'cw_rollback' using detail = v;
+  exception when others then
+    if sqlerrm = 'cw_rollback' then
+      get stacked diagnostics v = pg_exception_detail;
+      return v;
+    end if;
+    return 'error(' || sqlstate || ':' || sqlerrm || ')';
+  end;
+end $$;
+
+\o /dev/null
+select gen_random_uuid()::text as org_e \gset
+select gen_random_uuid()::text as org_f \gset
+select gen_random_uuid()::text as org_g \gset
+select gen_random_uuid()::text as org_h \gset
+select gen_random_uuid()::text as org_i \gset
+\o
+insert into public.organisations (id, name, slug) values
+  (:'org_e', 'Hold Echo',    'cw-hold-echo'),
+  (:'org_f', 'Hold Foxtrot', 'cw-hold-foxtrot'),
+  (:'org_g', 'Hold Golf',    'cw-hold-golf'),
+  (:'org_h', 'Hold Hotel',   'cw-hold-hotel'),
+  (:'org_i', 'Hold India',   'cw-hold-india');
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+select o, :'other_u'::uuid, 'owner', 'active', now()
+  from unnest(array[:'org_e', :'org_f', :'org_g', :'org_h', :'org_i']::uuid[]) o;
+set role authenticated;
+set request.jwt.claims = :'other_c';
+select cw.try('CH0 FIXTURE: the aal2 Owner closes E, F, G, H and I (five closure backups queued)',
+  format($$select count(public.close_my_workspace(id, slug, 'winding down'))
+             from public.organisations where id in (%L, %L, %L, %L, %L)$$,
+    :'org_e', :'org_f', :'org_g', :'org_h', :'org_i'), 'ok(1)');
+reset role; reset request.jwt.claims;
+\o /dev/null
+update public.export_jobs set status = 'running'
+ where organisation_id in (:'org_e', :'org_f', :'org_g', :'org_h', :'org_i') and closure_backup;
+update public.export_jobs set status = 'succeeded', storage_key = 'exports/' || id || '.zip',
+       byte_size = 1, row_count = 1, table_count = 1, manifest = '{}'::jsonb
+ where organisation_id in (:'org_e', :'org_f', :'org_g', :'org_h', :'org_i') and closure_backup;
+select id::text as job_e from public.export_jobs where organisation_id = :'org_e' and closure_backup \gset
+select id::text as job_f from public.export_jobs where organisation_id = :'org_f' and closure_backup \gset
+select id::text as job_g from public.export_jobs where organisation_id = :'org_g' and closure_backup \gset
+select id::text as job_h from public.export_jobs where organisation_id = :'org_h' and closure_backup \gset
+select id::text as job_i from public.export_jobs where organisation_id = :'org_i' and closure_backup \gset
+-- A LATE DECISION: E's backup is left two days from expiry, as it would be
+-- 58 days into the closure, so the raise is observable (fixture write, the
+-- finished-job trigger skipped).
+set session_replication_role = replica;
+update public.export_jobs set expires_at = now() + interval '2 days' where id = :'job_e';
+set session_replication_role = origin;
+\o
+select cw.val('CH0a FIXTURE: five succeeded closure backups, E''s two days from expiry',
+  format($$select count(*)::text || '/' || bool_and(status = 'succeeded')::text || '/' ||
+                  (select (expires_at < now() + interval '3 days')::text from public.export_jobs where id = %L)
+             from public.export_jobs where id in (%L, %L, %L, %L, %L)$$,
+    :'job_e', :'job_e', :'job_f', :'job_g', :'job_h', :'job_i'), '5/true/true');
+
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CH1 the aal2 superuser deletes E, F and G (each backup succeeded: no acknowledgement)',
+  $$select public.delete_closed_workspace('cw-hold-echo', 'no successor'),
+           public.delete_closed_workspace('cw-hold-foxtrot', 'no successor'),
+           public.delete_closed_workspace('cw-hold-golf', 'no successor')$$, 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select cw.val('CH2 E''s backup expiry was RAISED to at least the decision + 30 days (it was 2 days off)',
+  format($$select (expires_at >= now() + interval '30 days' - interval '5 minutes')::text
+             from public.export_jobs where id = %L$$, :'job_e'), 'true');
+select cw.val('CH2b ...and nothing else on the finished job moved (status, key, requester)',
+  format($$select status || '/' || (storage_key = 'exports/' || id || '.zip')::text || '/' || (requested_by = %L)::text
+             from public.export_jobs where id = %L$$, :'other_u', :'job_e'), 'succeeded/true/true');
+select cw.val('CH2c the decision''s audit row records backup_downloadable_until = that expiry',
+  format($$select ((a.after ->> 'backup_downloadable_until')::timestamptz = j.expires_at)::text
+             from public.audit_events a, public.export_jobs j
+            where a.organisation_id = %L and a.action = 'organisation.closure_deleted' and j.id = %L$$,
+    :'org_e', :'job_e'), 'true');
+select cw.try('CH2d the raise is the RPC''s alone: a server write of a finished job''s expiry is still refused',
+  format($$update public.export_jobs set expires_at = expires_at + interval '1 day' where id = %L$$, :'job_e'),
+  'denied(22023:export_job_is_finished)');
+select cw.try('CH2e ...and so is the marker naming the job without the RPC, if anything else moves',
+  format($$select set_config('app.closure_backup_hold', %1$L, false);
+           update public.export_jobs set expires_at = expires_at + interval '1 day', byte_size = 2 where id = %1$L$$,
+    :'job_e'), 'denied(22023:export_job_is_finished)');
+\o /dev/null
+select set_config('app.closure_backup_hold', '', false);
+\o
+
+select cw.val('CH3 E, F and G are deleted and DUE for the Q88 purge now (the decision is unchanged)',
+  format($$select count(*)::text from public.organisations
+            where id in (%L, %L, %L) and lifecycle_state = 'deleted' and retention_expires_at < now()$$,
+    :'org_e', :'org_f', :'org_g'), '3');
+select cw.val('CH4 E: never downloaded -> the backup is OWED',
+  format($$select private.closure_backup_owed(%L)::text$$, :'org_e'), 'true');
+select cw.val('CH4b ...the dry run does not count it as purged and reports it held',
+  format($$select (s ->> 'organisations.held_for_backup')::int >= 3
+             and not exists (select 1 from public.organisations o where o.id = %L
+                              and o.retention_expires_at < now() and not private.closure_backup_owed(o.id))
+             from private.sweep_expired_workspaces(true, 100000) s$$, :'org_e'), 'true');
+select cw.val('CH5 E: a LIVE sweep leaves the workspace AND its backup row (rolled back after reading)',
+  format($$select cw.live_sweep_probe(%L, %L)$$, :'org_e', :'job_e'), '1/1');
+
+set role authenticated;
+set request.jwt.claims = :'other_c';
+select cw.try('CH6 F: the closing Owner downloads the backup (audit_export_download, the download path''s RPC)',
+  format($$select public.audit_export_download(%L)$$, :'job_f'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select cw.val('CH6b F: downloaded by its requester -> no longer owed',
+  format($$select private.closure_backup_owed(%L)::text$$, :'org_f'), 'false');
+select cw.val('CH6c F: a live sweep now purges it, the backup row going with it',
+  format($$select cw.live_sweep_probe(%L, %L)$$, :'org_f', :'job_f'), '0/0');
+
+-- G: the closing Owner erases. Q206's own re-point (erase_account()'s marker
+-- path, the only writer of requested_by) moves the backup to the tombstone.
+\o /dev/null
+select set_config('app.erasing_account', :'other_u', false);
+update public.export_jobs set requested_by = private.erased_user_id() where id = :'job_g';
+select set_config('app.erasing_account', '', false);
+\o
+select cw.val('CH7 G: the backup is the tombstone''s now (Q206)',
+  format($$select (requested_by = private.erased_user_id())::text from public.export_jobs where id = %L$$, :'job_g'), 'true');
+set role authenticated;
+set request.jwt.claims = :'other_c';
+select cw.try('CH7b G: so nobody can download it -- the former requester is refused',
+  format($$select public.audit_export_download(%L)$$, :'job_g'), 'denied(42501:not_your_export)');
+reset role; reset request.jwt.claims;
+select cw.val('CH7c G: still owed, and a live sweep holds it',
+  format($$select private.closure_backup_owed(%L)::text || '/' || cw.live_sweep_probe(%L, %L)$$,
+    :'org_g', :'org_g', :'job_g'), 'true/1/1');
+
+-- 30 days pass for E and G (both clocks moved together, as time would).
+\o /dev/null
+set session_replication_role = replica;
+update public.organisations
+   set lifecycle_changed_at = lifecycle_changed_at - interval '30 days',
+       retention_expires_at = retention_expires_at - interval '30 days'
+ where id in (:'org_e', :'org_g');
+set session_replication_role = origin;
+\o
+select cw.val('CH8 E, 30 days after the decision, never downloaded: no longer owed, and purged with its backup',
+  format($$select private.closure_backup_owed(%L)::text || '/' || cw.live_sweep_probe(%L, %L)$$,
+    :'org_e', :'org_e', :'job_e'), 'false/0/0');
+select cw.val('CH8b G (the erased Owner''s), 30 days on: purged -- never un-purgeable',
+  format($$select private.closure_backup_owed(%L)::text || '/' || cw.live_sweep_probe(%L, %L)$$,
+    :'org_g', :'org_g', :'job_g'), 'false/0/0');
+
+-- H: never decided. Its Q88 60-day clock runs out.
+\o /dev/null
+set session_replication_role = replica;
+update public.organisations
+   set lifecycle_changed_at = now() - make_interval(days => private.organisation_retention_days()) - interval '1 hour',
+       retention_expires_at = now() - interval '1 hour'
+ where id = :'org_h';
+set session_replication_role = origin;
+\o
+select cw.val('CH9 H: an UNDECIDED closure at 60 days is not held (owner_closed), and a live sweep purges it',
+  format($$select o.lifecycle_state || '/' || private.closure_backup_owed(o.id)::text || '/' || cw.live_sweep_probe(o.id, %L)
+             from public.organisations o where o.id = %L$$, :'job_h', :'org_h'), 'owner_closed/false/0/0');
+
+-- I: deleted the Phase 7 way after an earlier closure (the backup is the old
+-- closure's, long expired, Q211) -- the hold must not reach it.
+\o /dev/null
+set session_replication_role = replica;
+update public.export_jobs set expires_at = now() - interval '1 day' where id = :'job_i';
+update public.organisations
+   set lifecycle_state = 'deleted', lifecycle_reason = 'phase 7 delete',
+       lifecycle_changed_at = now() - make_interval(days => private.organisation_retention_days()) - interval '1 hour',
+       retention_expires_at = now() - interval '1 hour'
+ where id = :'org_i';
+set session_replication_role = origin;
+\o
+select cw.val('CH10 I: a deleted workspace whose only closure backup has EXPIRED is not held, and is purged',
+  format($$select private.closure_backup_owed(%L)::text || '/' || cw.live_sweep_probe(%L, %L)$$,
+    :'org_i', :'org_i', :'job_i'), 'false/0/0');
+select cw.val('CH11 the two Q229 functions are callable by no API role',
+  $$select (count(*) filter (where has_function_privilege(r, f, 'execute')))::text
+      from unnest(array['anon', 'authenticated', 'service_role']) r,
+           unnest(array['private.closure_backup_owed(uuid)'::regprocedure,
+                        'private.closure_backup_hold()'::regprocedure]) f$$, '0');
+
+\o /dev/null
+-- Stamp this section's closure and decision notices delivered, so no queue
+-- a later suite (or a re-run's CR6/CX5) reads is left fuller than it was.
+select public.mark_notices_delivered('workspace_closed',
+         array(select id from public.audit_events where action = 'organisation.closed_by_owner'
+                  and organisation_id in (:'org_e', :'org_f', :'org_g', :'org_h', :'org_i'))),
+       public.mark_notices_delivered('workspace_deleted',
+         array(select id from public.audit_events where action = 'organisation.closure_deleted'
+                  and organisation_id in (:'org_e', :'org_f', :'org_g')));
+delete from public.export_jobs where organisation_id in (:'org_e', :'org_f', :'org_g', :'org_h', :'org_i');
+delete from public.organisations where id in (:'org_e', :'org_f', :'org_g', :'org_h', :'org_i');
+\o
+select cw.val('CH12 housekeeping: none of E-I, their backups or their decision notices remain',
+  format($$select ((select count(*) from public.organisations where id in (%1$L, %2$L, %3$L, %4$L, %5$L)) +
+                   (select count(*) from public.export_jobs where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) +
+                   (select count(*) from public.pending_workspace_decision_notifications(1000)
+                     where organisation_slug like 'cw-hold-%%'))::text$$,
+    :'org_e', :'org_f', :'org_g', :'org_h', :'org_i'), '0');
 
 delete from public.platform_admins where user_id = :'su_u';
 

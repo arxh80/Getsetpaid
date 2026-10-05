@@ -118,7 +118,9 @@ export function buildWorkspaceDecisionNotice(input: WorkspaceDecisionInput): Ema
       `Your closed GetSetPaid workspace ${slug} is being deleted`,
       [
         `GetSetPaid decided on ${when} to delete the closed workspace ${label}.`,
-        "Its records are now being permanently removed, and it can no longer be opened. Your own account is not affected.",
+        "It can no longer be opened, and its records will be permanently removed. Your own account is not affected.",
+        // Q229 (final review A, I2): the purge waits for the closure backup.
+        "If you closed it, the backup taken when it closed stays available to download from your account's exports for up to 30 days. The records are removed once it has been downloaded or those 30 days have passed.",
       ],
       link,
       "Open GetSetPaid",

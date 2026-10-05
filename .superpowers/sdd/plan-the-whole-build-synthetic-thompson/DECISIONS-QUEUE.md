@@ -1534,3 +1534,23 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   closure backup). **Alternative (c) from the review** -- `on delete set
   null` for closure-backup rows plus an `expires_at` sweep -- changes erasure
   semantics (a backup row outliving its workspace), so it is the founder's.
+- **Q229 STATUS (2026-10-05, final-fix round 2): BUILT AS THE DEFAULT,
+  PENDING FOUNDER** (`20261029002000`). `private.closure_backup_owed(org)`
+  is exactly the predicate above (lifecycle `deleted`, latest closure backup
+  `succeeded` and unexpired, no `export_job.downloaded` audit row for it whose
+  actor is its `requested_by`, decision < `private.closure_backup_hold()` =
+  30 days ago); both sweep loops exclude it IN THE WHERE (a held workspace
+  never takes a slot of the run's limit) and report
+  `organisations.held_for_backup`. `delete_closed_workspace()` raises the
+  succeeded backup's `expires_at` to at least now() + 30 days through a
+  marker-gated (`app.closure_backup_hold` = that job id) exception in
+  `export_jobs_before_update()` that admits an upward `expires_at` move and
+  nothing else, and records `backup_downloadable_until` in the audit row.
+  The decision email and the close section now say the backup stays
+  downloadable from the account's exports for up to 30 days. Measured in the
+  closure suite § CH (24 assertions, 157 -> 181): undownloaded -> held, then
+  purged at 30 days; downloaded -> purged at once; Owner erased (tombstone,
+  Q206) -> nobody can download, purged at 30 days; undecided at 60 days ->
+  purged; Phase 7-shaped delete with an expired old backup -> purged.
+  Alternative (c) (`on delete set null` + an `expires_at` sweep) remains the
+  founder's.

@@ -203,7 +203,10 @@ export default async function WorkspaceExportSettingsPage({
               <li>
                 GetSetPaid is told, and decides: either the workspace is handed to one of its
                 active members as the new Owner, which reopens it, or it is deleted permanently.
-                Its remaining Owners and Admins are emailed the decision.
+                Its remaining Owners and Admins are emailed the decision. If it is deleted, your
+                backup stays downloadable from your account&apos;s exports for up to{" "}
+                <span className="tabular-nums">30</span> days, and the records are removed once
+                you have downloaded it or that time has passed.
               </li>
               <li>
                 If nobody decides, it is deleted{" "}
