@@ -456,6 +456,24 @@ select cw.try('CS8c ...and so is a REVOKED member',
   format($$select public.reassign_closed_workspace('cw-closure-alpha', %L, 'x')$$, :'mgr_u'), 'denied(22023:new_owner_must_be_active_member)');
 reset role; reset request.jwt.claims;
 update public.organisation_memberships set status = 'active' where organisation_id = :'org_a' and user_id = :'mgr_u';
+-- Q222 (fix round 1b, review m2): the platform superuser is never the new
+-- Owner. The active Manager is made a platform admin for these three lines
+-- only (as postgres), then demoted again; CS8f is the positive control that
+-- the exclusion, not something else, removed them from the picker.
+insert into public.platform_admins (user_id) values (:'mgr_u');
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.try('CS8d ...and so is an active member who is a PLATFORM SUPERUSER (Q222)',
+  format($$select public.reassign_closed_workspace('cw-closure-alpha', %L, 'x')$$, :'mgr_u'), 'denied(22023:new_owner_is_platform_superuser)');
+select cw.val('CS8e ...and the picker does not offer them',
+  format($$select count(*)::text from public.closed_workspace_reassign_candidates(%L) c where c.user_id = %L$$, :'org_a', :'mgr_u'), '0');
+reset role; reset request.jwt.claims;
+delete from public.platform_admins where user_id = :'mgr_u';
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select cw.val('CS8f POSITIVE CONTROL: demoted again, the same member is offered',
+  format($$select count(*)::text from public.closed_workspace_reassign_candidates(%L) c where c.user_id = %L$$, :'org_a', :'mgr_u'), '1');
+reset role; reset request.jwt.claims;
 -- § CL (fix round 1, I1): the Phase 7 lifecycle RPCs refuse owner_closed --
 -- the decision is reassign/delete above, never a one-click reinstate/suspend/
 -- delete from /super/organisations. Positive controls on org B (ACTIVE here),
