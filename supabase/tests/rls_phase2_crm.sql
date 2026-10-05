@@ -1514,11 +1514,21 @@ end $fn$;
 -- the round-1 hole -- leaving the clause intact and wrapping a second disjunct
 -- around it -- now removes the substring instead of nesting it, and this
 -- assertion goes red on its own.
-select crm.val('M1c the suspension clause is EXACTLY the catalogue form, in both PARSED bodies',
+--
+-- RE-PINNED 2026-10-05 (PHASE 8 TASK 9c FIX ROUND 1b, Q227 -- controller
+-- decision (a), pending founder). The clause gained a THIRD disjunct in both
+-- bodies, private.closure_backup_read_admits(o.id) (20261025000000, C1): a
+-- closure backup reads the workspace as it was before the closure. It is TRUE
+-- only inside public.export_read_page()'s read of a closure_backup job, in
+-- that transaction, for that organisation, off a marker row no client role can
+-- write (rls_phase8_closure_backup.sql § KA/KM). The expected string is the
+-- whole flattened clause, so a fourth disjunct, or the term in one body and
+-- not the other, is still red here.
+select crm.val('M1c the suspension clause is EXACTLY the catalogue form plus the closure-backup marker, in both PARSED bodies',
   $$select ( (crm.canon('public','has_permission')
-                like '%(o.deleted_at IS NULL OR perm.survives_suspension)%')::int
+                like '%(o.deleted_at IS NULL OR perm.survives_suspension OR private.closure_backup_read_admits(o.id))%')::int
            + (crm.canon('private','permitted_organisations')
-                like '%(o.deleted_at IS NULL OR perm.survives_suspension)%')::int )::text$$,
+                like '%(o.deleted_at IS NULL OR perm.survives_suspension OR private.closure_backup_read_admits(o.id))%')::int )::text$$,
   '2');
 
 -- M1d: the whole shape of each PARSED body -- `deleted_at` once,
@@ -1570,10 +1580,15 @@ select crm.val('M1d the ONLY suspension term and the ONLY literal, per PARSED bo
 -- aal2, key held by `read_only`), rather than inlined here where it would be
 -- evaluated under the caller's RLS and could form a cycle with the policy on
 -- that same table.
-select crm.val('M1d2 the two PARSED bodies read exactly the four tables and four functions the rule is made of',
+--
+-- RE-RECORDED 2026-10-05 (Q227): FOUR -> FIVE functions, in BOTH halves --
+-- private.closure_backup_read_admits, the C1 marker term pinned in M1c. The
+-- table half is still unchanged: the marker table is read inside that
+-- SECURITY DEFINER helper, never inlined here.
+select crm.val('M1d2 the two PARSED bodies read exactly the four tables and five functions the rule is made of',
   $$select crm.canon_deps('has_permission') || '  ||  '
         || crm.canon_deps('permitted_organisations')$$,
-  'organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2  ||  organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2');
+  'organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.closure_backup_read_admits,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2  ||  organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.closure_backup_read_admits,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2');
 -- The catalogue is only trustworthy if nothing can grant a key that is not in
 -- it -- otherwise an uncatalogued key silently inherits "no row, no join, no
 -- permission" for reads AND the wrong suspension answer.

@@ -513,7 +513,7 @@ P6VARS+=( -v "super=${ID[super]}" )
 P6VARS+=( -v "super_c={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal2\"}" )
 
 
-run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 214 "${P6VARS[@]}"
+run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 217 "${P6VARS[@]}"
 lk_fails=$SUITE_FAILS
 if [ "$lk_fails" != "0" ]; then
   echo "PHASE 6 NETWORK-LEAKAGE SUITE FAILED: $lk_fails failing assertion(s)" >&2
@@ -1213,7 +1213,7 @@ fi
 # Owner tries to erase their account before the backup is built (refused until
 # it is). Self-contained.
 # ============================================================================
-run_suite "PHASE 8 CLOSURE BACKUP COMPLETENESS" rls_phase8_closure_backup.sql ck 19
+run_suite "PHASE 8 CLOSURE BACKUP COMPLETENESS" rls_phase8_closure_backup.sql ck 26
 ck_fails=$SUITE_FAILS
 if [ "$ck_fails" != "0" ]; then
   echo "PHASE 8 CLOSURE BACKUP COMPLETENESS SUITE FAILED: $ck_fails failing assertion(s)" >&2

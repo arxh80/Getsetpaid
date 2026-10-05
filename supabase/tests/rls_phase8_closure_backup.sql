@@ -285,6 +285,47 @@ select ck.val('KA7 the engine leaves no marker row behind',
   $$select count(*)::text from private.closure_backup_reads$$, '0');
 
 -- ===========================================================================
+-- § KM THE MARKER ITSELF (Q227, controller 2026-10-05, pending founder). The
+-- marker sits inside permitted_organisations()/has_permission(), which the
+-- masking views call, so network_leakage_phase6.sql § LF5 allowlists it by
+-- name. These are the two facts that allowlist rests on: no API role can
+-- touch the table at all, and a marker row admits its own transaction only.
+-- ===========================================================================
+select ck.val('KM1 no API role holds SELECT/INSERT/UPDATE/DELETE on the marker table (12 checks, 0 held)',
+  $$select count(*)::text || ' checks, ' || count(*) filter (where pg_catalog.has_table_privilege(r, 'private.closure_backup_reads', p))::text || ' held'
+      from unnest(array['anon','authenticated','service_role']) r,
+           unnest(array['SELECT','INSERT','UPDATE','DELETE']) p$$,
+  '12 checks, 0 held');
+select ck.val('KM1b ...nor on any column of it (a column grant would slip past the table check)',
+  $$select count(*)::text from information_schema.column_privileges
+     where table_schema = 'private' and table_name = 'closure_backup_reads'
+       and grantee in ('anon','authenticated','service_role','PUBLIC')$$, '0');
+-- ISOLATION. Transaction X plants a marker for org A and commits it (the
+-- engine never commits one; this is the worst case: a row left behind).
+begin;
+insert into private.closure_backup_reads (xact, organisation_id, export_job_id)
+values (pg_catalog.pg_current_xact_id(), :'org_a', :'bk_a');
+select ck.val('KM2a POSITIVE CONTROL: in transaction X the marker admits org A',
+  format($$select private.closure_backup_read_admits(%L)::text$$, :'org_a'), 'true');
+select ck.val('KM2b ...and only org A, even in X',
+  format($$select private.closure_backup_read_admits(%L)::text$$, :'org_x'), 'false');
+commit;
+begin;
+-- Y has its own transaction id assigned BEFORE the probe, so the probe is
+-- not false merely because pg_current_xact_id_if_assigned() is null.
+select pg_catalog.pg_current_xact_id() is not null as y_assigned \gset
+select ck.val('KM2c ISOLATION: in transaction Y, X''s committed marker admits nothing',
+  format($$select (%L::boolean and pg_catalog.pg_current_xact_id_if_assigned() is not null
+                   and not private.closure_backup_read_admits(%L))::text$$, :'y_assigned', :'org_a'), 'true');
+set local role authenticated;
+select pg_catalog.set_config('request.jwt.claims', :'owner_a_c', true) \gset
+select ck.val('KM2d ...so the closed workspace is NOT live for the Owner''s finance read in Y',
+  format($$select (%L::uuid in (select private.permitted_organisations('view_finance')))::text || '/' ||
+                  public.has_permission(%L, 'view_finance')::text$$, :'org_a', :'org_a'), 'false/false');
+commit;
+delete from private.closure_backup_reads;
+
+-- ===========================================================================
 -- § KE SCENARIO B -- CLOSE, THEN ERASE THE OWNER BEFORE THE BACKUP RUNS.
 -- ===========================================================================
 set role authenticated;
@@ -310,6 +351,8 @@ update public.export_jobs
    set status = 'succeeded', storage_key = 'exports/' || id::text || '.zip', byte_size = 1, row_count = 1,
        manifest = '{}'::jsonb, expires_at = now() + interval '60 days'
  where id = :'bk_b';
+select ck.val('KE3b RETENTION (ephemeral): no marker row survives a completed backup build',
+  $$select count(*)::text from private.closure_backup_reads$$, '0');
 select ck.val('KE4 once the backup is built, the erasure proceeds (positive control for KE1/KE2)',
   format($$select (private.erase_account(%L, null) ? 'export_jobs.closure_backups_kept')::text$$, :'owner_b'), 'true');
 select ck.val('KE5 ...and the built backup row survives, re-pointed at the tombstone (Q206 unchanged)',

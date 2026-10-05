@@ -903,9 +903,22 @@ select leak.val('LF1b DENOMINATOR: 28 private relation names were the needle set
 -- a support engagement (who asked, which organisation, why, when it expires).
 -- If a later change made either masking view resolve something through the
 -- impersonation grant, LF1 -- not this line -- is what would go red.
+--
+-- RE-READ AND RE-RECORDED 2026-10-05 (PHASE 8 TASK 9c FIX ROUND 1b, Q227 --
+-- controller decision (a), pending founder). SIX -> SEVEN: 20261025000000 (C1)
+-- added private.closure_backup_read_admits() to both bodies, so a closure
+-- backup reads the workspace as it was before the closure. Its body names ONE
+-- relation, private.closure_backup_reads, which LF1's public.* needle set
+-- does not see -- so § LF5 below allowlists it EXPLICITLY, by name, and pins
+-- what it can hold. (At 231 migrations this line read FOURTEEN and LF1/LF3/
+-- LF3c were red: permitted_organisations' new comment named the export
+-- engine's entry point schema-qualified, and the text closure followed it into
+-- the export catalogue. 20261027000000 rewords that comment; no masking view
+-- ever reached the export engine.)
 select leak.val('LF2 DENOMINATOR: the closure, by name -- these are the bodies that were read',
   $$select count(*)::text || ':' || string_agg(fqn, ',' order by fqn) from leak.fn_closure$$,
-  '6:private.has_platform_permission,private.impersonated_organisations,'
+  '7:private.closure_backup_read_admits,private.has_platform_permission,'
+  'private.impersonated_organisations,'
   'private.permitted_organisations,private.role_requires_mfa,'
   'private.session_is_aal2,public.has_permission');
 -- THE DEPTH ASSERTION. private.role_requires_mfa is NOT a pg_depend child of
@@ -945,6 +958,35 @@ drop function private.leak_probe_private_reader();
 select leak.val('LF3c ...and the probe is gone, so LF1''s 0 stands for the shipped schema',
   $$select count(*)::text from leak.fn_closure f
      join leak.private_rel r on f.body ~ ('\mpublic\.' || r.rel || '\M')$$, '0');
+
+-- ===========================================================================
+-- LF5. THE ONE PRIVATE RELATION THE DISCOVERY CLOSURE MAY NAME (Q227).
+--
+-- LF1 looks for TENANT relations under `public.`. The closure-backup marker
+-- (20261025000000) is a `private.` table, so LF1 is blind to it by
+-- construction -- and so it would be to ANY private table a later change
+-- made a masking view's helper read. LF5 closes that: the set of `private`
+-- relations named anywhere in the closure is EXACTLY the marker, nothing
+-- else, and the marker can hold nothing but a transaction id and two foreign
+-- keys (LF5b: a column added to it reddens this). It holds no tenant data:
+-- xact is pg_current_xact_id(), organisation_id and export_job_id are FKs.
+-- Who can touch it, and transaction isolation, are measured in
+-- rls_phase8_closure_backup.sql § KM.
+-- ===========================================================================
+select leak.val('LF5 ALLOWLIST: the only private relation any closure body names is private.closure_backup_reads',
+  $$select coalesce(string_agg(distinct n.nspname || '.' || c.relname, ',' order by n.nspname || '.' || c.relname), '<none>')
+      from leak.fn_closure f
+      join pg_catalog.pg_class c on c.relkind in ('r','p','v','m','f')
+      join pg_catalog.pg_namespace n on n.oid = c.relnamespace and n.nspname = 'private'
+     where f.body ~ ('\mprivate\.' || c.relname || '\M')$$,
+  'private.closure_backup_reads');
+select leak.val('LF5b ...and its column set is exactly a transaction id and two FKs (no room for tenant data)',
+  $$select string_agg(a.attname || ':' || pg_catalog.format_type(a.atttypid, a.atttypmod), ',' order by a.attname)
+      from pg_catalog.pg_attribute a
+     where a.attrelid = 'private.closure_backup_reads'::regclass and a.attnum > 0 and not a.attisdropped$$,
+  'export_job_id:uuid,organisation_id:uuid,xact:xid8');
+select leak.val('LF5c ...and it is empty at rest',
+  $$select count(*)::text from private.closure_backup_reads$$, '0');
 
 -- THE STATED BOUND. The write policies' helper DOES read private tables, by
 -- design, and is outside this closure -- recorded as a measurement so the
