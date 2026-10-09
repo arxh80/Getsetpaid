@@ -4,8 +4,8 @@ This phase adds GetSetPaid's legal pages, consent, data-subject rights (requests
 erasure), automatic retention, audit coverage for the Phase 3-6 tables, permission tests, and
 the founder rulings of 2026-09-30.
 
-Branch `worktree-legal-phase` at `605620e`: 325 commits over `main` (`68f96cf`), and migrations
-126 → **238**. The merge is clean, because both parents of #25 are ancestors.
+Branch `worktree-legal-phase`: 340 commits over `main` (`68f96cf`), and migrations
+126 → **241**. The merge is clean, because both parents of #25 are ancestors.
 
 ## What shipped, task by task
 
@@ -96,6 +96,21 @@ Branch `worktree-legal-phase` at `605620e`: 325 commits over `main` (`68f96cf`),
   they either reassign the workspace to a new Owner or delete it.
 - The 60-day purge is the backstop if nobody decides.
 
+**Phase final review (two independent reviews, both MINOR) and its fix rounds.**
+- **I1. A tenant could mark its own upload as malware-clean.** This was pre-existing since
+  Task 6. A Manager could PATCH `scan_status='clean'` on a pending document, or INSERT one born
+  clean, and the download gate would then serve it. The fix:
+  - the verdict columns are gone from the client grants;
+  - a trigger refuses any session write to them;
+  - the only writer is `record_document_scan_verdict()`, which is `service_role` only.
+  - It is proven over real PostgREST: 403 on each forgery, with positive controls. Each layer
+    holds on its own under mutation.
+- **I2. Deleting a closed workspace purged its closure backup with it.** Built as Q229's
+  default, pending founder: the purge is held until the requester downloads the backup, or 30
+  days after the decision, and the backup stays downloadable for that whole hold.
+- **m1. `created_by`/`created_at` were forgeable** on finance entries, network profiles and
+  network links. A trigger now stamps both from the session and makes them immutable.
+
 ## Security fixes found along the way
 
 - **Two pre-existing Phase 6 Criticals (Task 9b).** Both were found by probing, and both
@@ -131,13 +146,19 @@ Branch `worktree-legal-phase` at `605620e`: 325 commits over `main` (`68f96cf`),
 
 ## Gates at the tip
 
-- **psql/HTTP:** all passed. 26 suites at their pinned totals, **4226** assertions, plus the
-  lifecycle and retention concurrency probes.
-- **vitest:** **3810**.
-- **Playwright:** **178 passed / 0 failed** in 30 files, run at `b0eac34` with the same 238
-  migrations.
-- **Migrations:** **238**, unchanged around every long run.
-- lint and typecheck are clean.
+Measured on 2026-10-09, at the final code tip `a67f98f` (241 migrations). The docs-only commits from review B came after.
+- **psql/HTTP:** "All suites passed". 26 suites at their pinned totals (**4277**), plus the API
+  surface checks. Closure is at 181, retention at 329 and CRM audit P3-6 at 214.
+- **vitest (`pnpm test`):** **168 files / 3813 passed**. The unit tests passed again after the docs
+  round: 110 files / 2601.
+- **Playwright (full):** **177 passed / 1 failed** in 54.7 min, with free RAM at 0.5 GB.
+  - The one red was a 60 s **timeout** in `phase8-refusal-parity.spec.ts:292` (`/super` ×
+    suspended manager), not an assertion failure. This is F-T7-1.
+  - Re-run in isolation with `--repeat-each=3`: **27/27 passed**.
+- The targeted e2e owed by the final fix rounds is green: `documents`, `finance` and `network`,
+  8/8.
+- **Migrations:** **241**, unchanged around every run.
+- lint, `next typegen` and typecheck are clean.
 
 ## CI is a subset
 
@@ -154,6 +175,9 @@ machine. Q169's heavy CI jobs are ruled but not built; they come in Phase 9 with
 - **Q227.** The closure-backup read marker sits on the network-leakage path, in
   `permitted_organisations()`. Default (a) is built and the censuses acknowledge it. Please
   confirm it, along with the extra `export_job_id` column.
+- **Q229.** A deleted closed workspace's purge waits for its backup to be downloaded, or 30
+  days. This is built as the default; the alternative is to keep the backup row and set its
+  workspace link to null.
 - **Q228.** A failed closure backup is never rebuilt. The options are (i) an audited re-queue,
   (ii) higher ceilings for closure backups, or (iii) keep the "Delete without a backup"
   acknowledgement, which is what ships now.
@@ -177,11 +201,11 @@ machine. Q169's heavy CI jobs are ruled but not built; they come in Phase 9 with
 
 ## Known follow-ups
 
-- **Docs drift from final review B.** See `phase-8-final-review-B.md`.
-  - The Brevo row in the sub-processor register does not list the Phase 8 notification emails.
-  - Several CLAUDE.md and SECURITY.md counts are stale: 25 → 26 suites, 21 → 23 runners, the
-    matrix headline, and nine → ten `/super` pages.
-  - A "no hard-purge path" sentence is now false.
+- **Final review B docs drift: fixed (16 of 18).** F13 and F14 are recorded as Q230 and Q231.
+  Still owed: a Subprocessors **v4** legal version for the widened Brevo row. It needs the LF2
+  and `lg_same` version checks moved, then a psql run. See
+  `phase-8-final-review-B-fix-report.md`.
+- **Permission matrix total at the tip:** not measured. The last measurement was 596, at 9c job 3a.
 - **Q218.** Six network pages still say "suspended" inside a closed workspace.
 - **F-T7-1.** The refusal-parity test runs close to its 60 s timeout.
 - **F-T8-1.** A unit-test timeout under load.
