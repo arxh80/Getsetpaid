@@ -368,6 +368,17 @@ export const PLATFORM_AUDIT_ACTIONS = [
   // mandatory reason. One row per release -- the settings row holds only the
   // latest, so this is the history of every release.
   "retention.audit_ceiling_released",
+
+  // Phase 9 Task 2 (20261030001000): integrations, schema only (no provider
+  // is live, so at MVP nothing writes the first one). connected / revoked are
+  // a member's acts (log_audit_event); token_stored / sync_failed are the
+  // sessionless server's, written directly with the Q130 tombstone as actor.
+  // Payloads are the provider, owner_scoped and the closed error_code --
+  // never a Vault secret id, never a token.
+  "integration.connected",
+  "integration.revoked",
+  "integration.token_stored",
+  "integration.sync_failed",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

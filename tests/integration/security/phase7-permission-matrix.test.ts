@@ -1102,6 +1102,18 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "Phase 8 Task 3 -- the requester withdraws their OWN open request. The " +
     "BEFORE UPDATE trigger refuses a withdrawal by anyone but the requester, " +
     "and withdrawing must never be harder than asking.",
+  connect_integration:
+    "Phase 9 Task 2 -- a workspace's manage_integrations holder (Owner/Admin, " +
+    "aal2) opens a PENDING connection, refused in order: forbidden, plan, " +
+    "workspace_not_writable, unknown provider, provider not live, owner not a " +
+    "member. No provider is live at MVP, so every real call ends at " +
+    "integration_provider_not_live. Asserted in rls_phase9_integrations.sql § IC.",
+  revoke_integration:
+    "Phase 9 Task 2 -- a manage_integrations holder, or the person who owns a " +
+    "person-scoped connection, revokes it: deletes the Vault secret and audits " +
+    "integration.revoked. Revoking only reduces access, so it works on a " +
+    "suspended or closed workspace; anyone else gets 42501 whether or not the " +
+    "id exists. Asserted in rls_phase9_integrations.sql § IC11/IC12/IV9.",
 };
 
 /**
@@ -1322,6 +1334,15 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
   "run_retention_sweep(p_run_id uuid, p_limit integer)":
     "Task 6 -- THE sweep entry point, and the only caller of the audit purge",
   "start_retention_run(p_dry boolean)": "Task 6 -- every refusal is asked here, before a run exists",
+  // Phase 9 Task 2 (20261030001000). No caller exists yet: no provider is
+  // live, so no OAuth callback or sync worker runs. Each refuses a session
+  // with a person on it (not_a_server_session, rls_phase9_integrations.sql IV5).
+  "store_integration_token(p_connection_id uuid, p_secret jsonb, p_expires_at timestamp with time zone)":
+    "Phase 9 Task 2 -- THE ONLY writer of an integration token: into Vault, never a column; audits the provider only",
+  "read_integration_token(p_connection_id uuid)":
+    "Phase 9 Task 2 -- an ACTIVE connection's token from vault.decrypted_secrets, for the server's provider call",
+  "record_integration_sync_run(p_connection_id uuid, p_run_id uuid, p_status text, p_items_read integer, p_items_written integer, p_error_code text)":
+    "Phase 9 Task 2 -- opens/closes a sync run; a failure moves the connection to error with a closed-vocabulary code",
 };
 
 /** Phase 8 Task 8. The three private buckets. */

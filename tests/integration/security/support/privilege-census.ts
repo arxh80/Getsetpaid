@@ -175,8 +175,20 @@ export const DECLARED_PRIVILEGES: readonly string[] = [
   "incident_alerts|service_role|UPDATE|notified_at",
   "incident_alerts|service_role|UPDATE|telegram_notified_at",
   // integration_connections -- Phase 9 Task 1 (20261030000000): SELECT only;
-  // every write is a SECURITY DEFINER RPC. Task 2 narrows this to columns.
-  "integration_connections|authenticated|SELECT|*",
+  // every write is a SECURITY DEFINER RPC. Task 2 (20261030001000) narrowed
+  // it to COLUMNS: every column but token_secret_id, which no client reads.
+  "integration_connections|authenticated|SELECT|created_at",
+  "integration_connections|authenticated|SELECT|created_by",
+  "integration_connections|authenticated|SELECT|id",
+  "integration_connections|authenticated|SELECT|last_synced_at",
+  "integration_connections|authenticated|SELECT|organisation_id",
+  "integration_connections|authenticated|SELECT|owner_user_id",
+  "integration_connections|authenticated|SELECT|provider",
+  "integration_connections|authenticated|SELECT|revoked_at",
+  "integration_connections|authenticated|SELECT|revoked_by",
+  "integration_connections|authenticated|SELECT|scopes",
+  "integration_connections|authenticated|SELECT|status",
+  "integration_connections|authenticated|SELECT|token_expires_at",
   // integration_sync_runs -- Phase 9 Task 1: SELECT only, same reason.
   "integration_sync_runs|authenticated|SELECT|*",
   // legal_documents
