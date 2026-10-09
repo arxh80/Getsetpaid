@@ -468,6 +468,17 @@ select ig.val('IT10c3 ...and re-pointing revoked_by at another person (only NULL
   'denied(23514:revoked_is_terminal)');
 select ig.val('IT10d POSITIVE CONTROL: deleting the account that revoked it still works (the FK''s SET NULL passes the guard)',
   format($$select ig.probe_delete_user(%L)$$, :'admin_a'), 'deleted_and_undone');
+-- IT10e (fix round 1, m4): THE FREEZE FAILS CLOSED. A column added after the
+-- guard was written is frozen too. The column is added inside a transaction
+-- that is rolled back; the result is carried across (the KT pattern).
+begin;
+alter table public.integration_connections add column ig_probe text;
+select ig.val('IT10e a column added LATER is frozen on a revoked row too (the freeze compares the whole row, not a list)',
+  format($$update public.integration_connections set ig_probe = 'x' where id = %L returning 'written'$$, :'conn_r'),
+  'denied(23514:revoked_is_terminal)');
+select label as it10e_label, expected as it10e_expected, actual as it10e_actual from ig.results where label like 'IT10e%' \gset
+rollback;
+select ig.record(:'it10e_label', :'it10e_expected', :'it10e_actual');
 delete from public.integration_connections where id = :'conn_r';
 
 -- ---------------------------------------------------------------------------
@@ -687,6 +698,79 @@ reset request.jwt.claims;
 select ig.val('IV3b ...the rotation kept the secret id',
   format($$select (token_secret_id = %L)::text from public.integration_connections where id = %L$$, :'sec_v', :'conn_v'), 'true');
 
+-- IV5d/e/f (fix round 1, C1): THE ROLE HALF of not_a_server_session. IV5-IV5c
+-- prove the `sub` half; with no sub at all, only the role check stands
+-- between `anon` and a token if a later rebuild drops the EXECUTE revoke. So
+-- EXECUTE is lent to anon inside a rolled-back transaction, and anon (no sub)
+-- calls each RPC. Results carried across the rollback (the IC9 pattern).
+begin;
+grant execute on function public.store_integration_token(uuid, jsonb, timestamptz) to anon;
+grant execute on function public.read_integration_token(uuid) to anon;
+grant execute on function public.record_integration_sync_run(uuid, uuid, text, integer, integer, text) to anon;
+grant usage on schema ig to anon;
+grant execute on function ig.val(text, text, text) to anon;
+grant execute on function ig.record(text, text, text) to anon;
+set local role anon;
+select pg_catalog.set_config('request.jwt.claims', '{"role":"anon"}', true) as iv5_claims \gset
+select ig.val('IV5d anon with NO sub (EXECUTE lent) cannot store: the role half of the rail',
+  format($$select 'ok' from public.store_integration_token(%L, '{"access_token":"tok_anon"}', null)$$, :'conn_v'),
+  'denied(42501:not_a_server_session)');
+select ig.val('IV5e ...nor read',
+  format($$select public.read_integration_token(%L)::text$$, :'conn_v'), 'denied(42501:not_a_server_session)');
+select ig.val('IV5f ...nor record a sync run',
+  format($$select public.record_integration_sync_run(%L, null, null, null, null, null)::text$$, :'conn_v'),
+  'denied(42501:not_a_server_session)');
+reset role;
+select coalesce(json_agg(json_build_object('label', label, 'expected', expected, 'actual', actual) order by seq)::text, '[]') as iv5_rows
+  from ig.results where label like 'IV5d%' or label like 'IV5e%' or label like 'IV5f%' \gset
+rollback;
+insert into ig.results (label, expected, actual, pass)
+select r.label, r.expected, r.actual, r.expected is not distinct from r.actual
+  from json_to_recordset(:'iv5_rows'::json) as r(label text, expected text, actual text);
+select ig.val('IV5g ...and the lent grants went with the rollback (anon executes none of the three)',
+  $$select count(*) filter (where has_function_privilege('anon', f, 'EXECUTE'))::text
+      from unnest(array['public.store_integration_token(uuid,jsonb,timestamptz)',
+                        'public.read_integration_token(uuid)',
+                        'public.record_integration_sync_run(uuid,uuid,text,integer,integer,text)']) f$$, '0');
+
+-- IV4e-i (fix round 1, m6): A DANGLING SECRET REFERENCE. The secret is deleted
+-- out of band (as postgres); the next store must leave a READABLE token, not
+-- an `active` row with nothing behind it.
+delete from vault.secrets where id = :'sec_v';
+set role service_role;
+set request.jwt.claims = :'svc_c';
+select ig.val('IV4e a store over a DANGLING token_secret_id (secret deleted out of band) succeeds',
+  format($$select 'ok' from public.store_integration_token(%L, '{"access_token":"tok_recreated_789"}', now() + interval '1 hour')$$, :'conn_v'),
+  'ok');
+select ig.val('IV4f ...and the token is READABLE afterwards (the secret was recreated, not silently left missing)',
+  format($$select public.read_integration_token(%L) ->> 'access_token'$$, :'conn_v'), 'tok_recreated_789');
+reset role;
+reset request.jwt.claims;
+select ig.val('IV4g ...the row names a NEW, existing secret',
+  format($$select (c.token_secret_id <> %L)::text || ':' ||
+                  (select count(*) from vault.secrets s where s.id = c.token_secret_id)::text
+             from public.integration_connections c where c.id = %L$$, :'sec_v', :'conn_v'),
+  'true:1');
+-- The other dangling shape: the id is lost while a secret under the
+-- connection's own name survives (its unique name would collide).
+update public.integration_connections set token_secret_id = gen_random_uuid() where id = :'conn_v';
+set role service_role;
+set request.jwt.claims = :'svc_c';
+select ig.val('IV4h a store whose secret id is lost while a secret under the connection''s NAME survives succeeds',
+  format($$select 'ok' from public.store_integration_token(%L, '{"access_token":"tok_renamed_321"}', now() + interval '1 hour')$$, :'conn_v'),
+  'ok');
+reset role;
+reset request.jwt.claims;
+select ig.val('IV4i ...leaving exactly one secret under that name, the one the row names, holding the new token',
+  format($$select count(*)::text || ':' || bool_and(s.id = c.token_secret_id)::text || ':' ||
+                  max(s.decrypted_secret::jsonb ->> 'access_token')
+             from vault.decrypted_secrets s, public.integration_connections c
+            where c.id = %L and s.name = 'integration:' || c.id::text$$, :'conn_v'),
+  '1:true:tok_renamed_321');
+\o /dev/null
+select coalesce(token_secret_id::text, '00000000-0000-0000-0000-000000000000') as sec_v from public.integration_connections where id = :'conn_v' \gset
+\o
+
 set role authenticated;
 set request.jwt.claims = :'owner_a_c';
 select ig.val('IV6 A''s Owner (aal2) cannot EXECUTE store_integration_token',
@@ -745,11 +829,11 @@ select ig.val('IV11b ...nor stored again',
   'denied(22023:integration_connection_revoked)');
 reset role;
 reset request.jwt.claims;
-select ig.val('IV12 two integration.token_stored rows, actor the tombstone, payload the provider ONLY',
+select ig.val('IV12 four integration.token_stored rows (IV1, IV4, IV4e, IV4h), actor the tombstone, payload the provider ONLY',
   format($$select count(*)::text || ':' || count(*) filter (where actor_user_id = private.erased_user_id())::text || ':' ||
                   string_agg(distinct after::text, ';')
              from public.audit_events where action = 'integration.token_stored' and target_id = %L$$, :'conn_v'),
-  '2:2:{"provider": "fatsoma"}');
+  '4:4:{"provider": "fatsoma"}');
 
 -- ---------------------------------------------------------------------------
 -- § IS SYNC RUNS (conn_a, xero, active).
@@ -828,12 +912,12 @@ select ig.val('IS9 ...the refused closes changed nothing: run3 is still running,
 -- were rolled back and are checked inside IC9b) holds neither the secret id
 -- nor a token.
 -- ---------------------------------------------------------------------------
-select ig.val('IA1 DENOMINATOR: the integration audit rows written (3 revokes, 2 stores, 1 failed sync)',
+select ig.val('IA1 DENOMINATOR: the integration audit rows written (3 revokes, 4 stores, 1 failed sync)',
   format($$select string_agg(action || '=' || n, ',' order by action) from (
              select action, count(*) n from public.audit_events
               where action like 'integration.%%' and organisation_id in (%L, %L, %L, %L)
               group by action) x$$, :'org_a', :'org_b', :'org_f', :'org_s'),
-  'integration.revoked=3,integration.sync_failed=1,integration.token_stored=2');
+  'integration.revoked=3,integration.sync_failed=1,integration.token_stored=4');
 select ig.val('IA2 NONE of them carries the secret uuid or a token string',
   format($$select count(*)::text from public.audit_events
             where action like 'integration.%%' and organisation_id in (%L, %L, %L, %L)
