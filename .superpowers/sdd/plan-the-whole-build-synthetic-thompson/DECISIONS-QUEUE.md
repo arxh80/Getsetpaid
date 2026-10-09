@@ -1587,3 +1587,11 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   which calendar the first customers use. Founder pre-work (consent screen,
   Entra app and publisher verification, DPAs, two emails) is the last section
   of the discovery document. No provider is made live by this phase.
+
+## Q233 -- Phase 9 Task 2: can a connection in `error` have its token read? 2026-10-09
+
+- **Q233 -- `read_integration_token()` refuses any status except `active`.** After a failed sync, `record_integration_sync_run()` moves the connection to `error`. From then on, the server cannot read the token to retry, even when the failure is transient (`rate_limited`, `provider_unavailable`). Options:
+  - (a) Keep it: a failed connection must be re-authorised through `store_integration_token()`, which moves it back to `active`.
+  - (b) Allow the read in `error` only when the last run's `error_code` is retryable (`rate_limited` or `provider_unavailable`).
+  - (c) Add a separate `degraded` status for transient failures.
+  **Default: (a)**, because no connector exists, so nothing retries today. Revisit together with Q232's first connector, before it ships. No code change in Phase 9.
