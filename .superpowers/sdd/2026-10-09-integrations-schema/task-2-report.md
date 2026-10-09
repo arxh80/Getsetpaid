@@ -179,3 +179,66 @@ The suite was green (136/0) after the restore.
 - **The token travels as an RPC argument.** If Postgres statement logging (`log_statement = all`) were ever enabled on the hosted project, `p_secret` would appear in the logs. The default is off. This is worth a line in SECURITY.md when the first connector lands.
 - **A workspace purge cascades the connection rows but not their Vault secrets.** Task 3 owns this (it is noted in the retention roll), so orphaned secrets are possible until then. There are none today, because no provider is live.
 - **A person who has left a workspace can still revoke their own person-scoped connection,** if they know its id. Revoking only reduces access, so this was left deliberately.
+
+## Fix round 1 (review: task-2-review.md)
+
+The fixes are in a new migration, `supabase/migrations/20261030002000_integration_rpcs_fix_round_1.sql`. It is rebuilt from the live `pg_get_functiondef`, and no shipped file was edited.
+
+### C1 (Critical): nothing tested the role half of `not_a_server_session`
+
+Each of the three server RPCs refuses a person's session in two halves: a `sub` check and a role check. IV5–IV5c only proved the `sub` half. No code changed; the role half now has assertions:
+
+- **IV5d / IV5e / IV5f.** Inside a rolled-back transaction, EXECUTE on store, read and sync is lent to `anon`. `anon` then calls each one with no `sub`, and each answers `denied(42501:not_a_server_session)`. The results are carried across the rollback, the same way IC9's are.
+- **IV5g.** After the rollback, `anon` executes none of the three, so the lent grants are gone.
+
+### m4: the revoked-row freeze now fails closed
+
+The guard used to compare ten columns by name. It now compares `to_jsonb(new)` and `to_jsonb(old)`, each minus `owner_user_id`, `created_by` and `revoked_by`. Those three may still only change to NULL.
+
+- **IT10e.** Inside a rolled-back transaction, a column `ig_probe` is added. An UPDATE of that column on a revoked row is refused with `revoked_is_terminal`. The result is carried across the rollback.
+
+### m6: a dangling `token_secret_id` now gets a new secret
+
+Before this fix, a store over a missing secret updated nothing and still set the row `active`.
+
+**I chose to recreate the secret, not to raise.** A store is the server handing over a fresh, legitimately obtained token, so recreating keeps "active means a readable secret exists" true. Raising would leave the connection stuck until someone revokes and reconnects. It would also protect nothing: only `service_role` or `postgres` can delete a secret out of band.
+
+The store also clears any leftover secret stored under the connection's own name, because the name is unique and the new secret needs it.
+
+- **IV4e / IV4f / IV4g.** The secret is deleted out of band. The next store succeeds, the new token reads back, and the row names a new secret that exists.
+- **IV4h / IV4i.** The row's secret id is lost while a secret under the connection's name survives. The store still succeeds, and exactly one secret is left under that name: the one the row names, holding the new token.
+- IV12 and IA1 now count 4 `token_stored` rows instead of 2.
+
+### m7: `private.integration_role_held` is now SECURITY INVOKER
+
+Its only callers are `connect_integration` and `revoke_integration` (checked by grep), and both are definers owned by postgres. EXECUTE stays revoked from every client role.
+
+As expected, making it a definer again reddens nothing: invoker is the narrower setting, but nothing depends on it. It is listed below for completeness.
+
+### Red before the fix
+
+Against the pre-fix migration, four assertions were red: IT10e, IV4f, IV4g and IV4i. IV5d/e/f passed, because the role half already existed in the code; it simply had no test.
+
+### Mutants
+
+Each mutant was applied to the live functions (both migrations applied in order, then the last definition mutated), the suite was run, and the original was restored.
+
+| Mutant | Assertions that went red |
+|---|---|
+| C1a store: role half dropped | IV5d |
+| C1b read: role half dropped | IV5e |
+| C1c sync: role half dropped | IV5f |
+| m4 guard back to the named-column list | IT10e |
+| m4b FK set-null exemption removed (new guard) | IT10d |
+| m6 existence check dropped | IV4f, IV4g, IV4i |
+| m6b leftover same-name secret not cleared | IV4h, IV4i, IV12, IA1 |
+| m7 back to SECURITY DEFINER | none (expected: see m7 above) |
+
+After the restore, every assertion was green.
+
+### Runs
+
+- **Suite alone, twice on one database** (with the migration applied): 146/0 both times. After full-runner run 4 below, twice more on that same database: 146/0 both times, with no ERROR lines.
+- **Full runner** after a fresh `npx supabase db reset --local`, in the foreground: exit 0, `All suites passed.`, 27 suites, **4423 assertions**, `PHASE 9 INTEGRATIONS: 146 assertions recorded, as pinned.`, and all API-surface checks passed. `run-rls-tests.sh` now pins the suite at 146 instead of 136.
+- **`pnpm exec vitest run tests/unit tests/integration/security`** after a fresh reset: 117 files, **3275/3275 passed**, exit 0.
+- No TypeScript changed in this round.
