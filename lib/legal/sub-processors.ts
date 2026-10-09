@@ -79,18 +79,18 @@ export const SUB_PROCESSORS: readonly SubProcessor[] = [
   {
     name: "Brevo (Sendinblue SAS)",
     purpose:
-      "Sends transactional email: feedback receipts and security alerts to our support contact, and account-lockout notices to the affected account holder.",
+      "Sends transactional email: feedback receipts and security alerts to our support contact, account-lockout notices to the affected account holder, notices about your data requests and exports, connection-request notices to workspace Owners and Admins, task reminders to the person a task is assigned to, and notices about a workspace being closed, reopened or deleted.",
     personalData:
-      "Email addresses of recipients; for a feedback receipt, the submitter’s email address, workspace name, role, the page they were on and the message they wrote.",
+      "Email addresses of recipients; for a feedback receipt, the submitter’s email address, workspace name, role, the page they were on and the message they wrote; for other notices, a request reference and its status, the published name of a network profile, a task’s title and due date, or a workspace’s name and web address. Never a note, a rating or a financial record.",
     location: "France (EU)",
     transferBasis:
       "The EEA is covered by the UK’s adequacy regulations, so no additional transfer safeguards are needed.",
     dpaSigned: false,
     register: {
       purpose:
-        "**Built:** transactional email — the in-app feedback receipt and the incident-alert digest to the support contact, and the account-lockout notice to the affected account holder (`lib/email/send.ts`, `lib/email/lockout-notification.ts`). **Not yet configured:** Supabase Auth SMTP relay for sign-up, magic-link and reset mail — a hosted-project setting (`docs/email-setup.md` § 3) that nothing in the repository configures today; this row's scope widens to auth mail only when that step is done",
+        "**Built:** transactional email — the in-app feedback receipt and the incident-alert digest to the support contact, and the account-lockout notice to the affected account holder (`lib/email/send.ts`, `lib/email/lockout-notification.ts`); since Phase 8 Task 9b/9c, the requester's data-subject-request received/closed and export-ready notices, the connection-request received/accepted/declined notices to the Owners and Admins (or the sender), task reminders to the assignee, and the workspace-closure and closure-decision notices (`lib/email/requester-notifications.ts`, `network-notifications.ts`, `task-reminder-notifications.ts`, `workspace-closure-notifications.ts`). **Not yet configured:** Supabase Auth SMTP relay for sign-up, magic-link and reset mail — a hosted-project setting (`docs/email-setup.md` § 3) that nothing in the repository configures today; this row's scope widens to auth mail only when that step is done",
       personalData:
-        "**Today:** the support contact's address; for a feedback receipt, the submitter's email, workspace name, role, the page path and **the message text they typed**; for a lockout notice, the locked account's email address. **Once the Auth relay is configured:** every user's address, on every sign-up / magic link / reset",
+        "**Today:** the support contact's address; for a feedback receipt, the submitter's email, workspace name, role, the page path and **the message text they typed**; for a lockout notice, the locked account's email address; for those notices, the recipient's email address plus a request reference, right and status, a counterparty's published display name, a task's title and due date, or a workspace's name and slug (never a note, rating, financial or the superuser's reason). **Once the Auth relay is configured:** every user's address, on every sign-up / magic link / reset",
     },
   },
   {
