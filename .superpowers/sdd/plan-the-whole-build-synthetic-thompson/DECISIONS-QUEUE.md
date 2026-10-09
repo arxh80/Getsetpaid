@@ -1595,3 +1595,25 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   - (b) Allow the read in `error` only when the last run's `error_code` is retryable (`rate_limited` or `provider_unavailable`).
   - (c) Add a separate `degraded` status for transient failures.
   **Default: (a)**, because no connector exists, so nothing retries today. Revisit together with Q232's first connector, before it ships. No code change in Phase 9.
+
+## Founder rulings, 2026-10-10 (asked in session)
+
+Each ruling below is confirmed as built:
+- **Q232:** Google Calendar is first after launch.
+- **Q229:** the purge waits until the backup is downloaded, or 30 days.
+- **Q205:** a closed workspace's members cannot read finance lines.
+- **Q233:** a failed connection must be re-authorised.
+- **Q212:** the decision email carries no reason.
+- **Q209:** no superuser download of a closure backup.
+- **Q215:** the superuser reads member names when reassigning, and the read is audited.
+- **Q218:** the "suspended" wording is fixed in Phase 10.
+- **Q227:** the backup-read marker on the network path is kept.
+
+**Q189: YES, audit it (NOT BUILT, owed).** An Owner's or Admin's edit of `organisations` (name, slug) writes an audit row with before and after. Remove the named excusal from `AUDIT_COVERAGE_EXCUSALS`. Scheduled as a follow-up branch off main after the Phase 9 PR.
+
+**Q228: CHANGED (NOT BUILT, owed).** The founder wants three things:
+1. **A "Contact us" button** on the Owner's closure screen when the closure backup has failed. It points to the single support contact (`SECURITY.md` § 13).
+2. **The Owner can download a backup of any size.** It must still respect CLAUDE.md's "exports are async and bounded" rule. The planned shape is a **multi-part** closure backup: every part stays within today's per-archive ceilings, the number of parts is not capped, and each part is downloadable and audited the same way. A size ceiling therefore never fails the backup; it is split instead.
+3. **Keep "Delete without a backup"**, the audited acknowledgement that is already built.
+
+Scheduled as a follow-up branch off main after the Phase 9 PR, built under the same review loop.
