@@ -197,6 +197,11 @@ const WORKSPACE_EXCUSED = [
   "export_jobs",
   "feedback",
   "incident_alerts",
+  // Phase 9 Task 1. INTERIM: the integration tables exist before Task 3 wires
+  // them into the export (it needs Task 2's column-level revoke of
+  // token_secret_id first). No provider is live, so no workspace holds a row.
+  "integration_connections",
+  "integration_sync_runs",
 ];
 
 const ACCOUNT_EXPORTED = [
@@ -241,6 +246,9 @@ const ACCOUNT_EXCUSED = [
   "export_jobs",
   "financial_entries",
   "incident_alerts",
+  // Phase 9 Task 1. INTERIM, as in WORKSPACE_EXCUSED: Task 3 exports the
+  // person's own person-scoped connections in the account export.
+  "integration_connections",
   "legal_documents",
   "meetings",
   "merge_candidates",
@@ -483,7 +491,9 @@ describe("the tables in NEITHER derivation are a disposition, not a residue", ()
         "in the catalogue or in NEITHER_DERIVATION (the rolls above will say which). If this is 0, " +
         "the relkind or the schema name in this query is wrong and every 'is in neither derivation' " +
         "assertion in this file has been answered by an empty set.",
-    ).toBe(54);
+      // 56 = 54 + Phase 9 Task 1's integration_connections and
+      // integration_sync_runs (20261030000000).
+    ).toBe(56);
     // Kept, and no longer pretending to be the load-bearing one: the two
     // derivations overlap (a table can have both paths), so the remainder is
     // the complement by construction. What makes it worth a line is that it

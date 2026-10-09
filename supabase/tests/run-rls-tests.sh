@@ -1229,6 +1229,26 @@ else
 fi
 
 # ============================================================================
+# PHASE 9 -- INTEGRATIONS, SCHEMA ONLY (20261030000000; founder 2026-10-09).
+# Two tenant tables no client role can write, a provider catalogue with no
+# live entry, and who reads a connection and its sync runs. Self-contained and
+# re-runnable on one database (it removes its own fixtures).
+# ============================================================================
+run_suite "PHASE 9 INTEGRATIONS" rls_phase9_integrations.sql ig 43
+ig_fails=$SUITE_FAILS
+if [ "$ig_fails" != "0" ]; then
+  echo "PHASE 9 INTEGRATIONS SUITE FAILED: $ig_fails failing assertion(s)" >&2
+  echo "  IT red: a table lost RLS, a client role gained a write grant, a provider" >&2
+  echo "  went LIVE, or a constraint/guard (catalogue, revoked-is-terminal, closed" >&2
+  echo "  error_code) stopped refusing. IR red: A CONNECTION IS READABLE OUTSIDE" >&2
+  echo "  ITS WORKSPACE, or by a role without manage_integrations. IB red: a client" >&2
+  echo "  role can write an integration row directly." >&2
+  psql_status=1
+else
+  echo "Phase 9 integrations suite: all assertions passed."
+fi
+
+# ============================================================================
 # AN OWNER'S CLOSE AND A SUPERUSER'S SUSPEND/DELETE, UNDER A REAL RACE (Task 9c
 # fix round 2, re-review N1; 20261028000000). Two sessions: the Owner holds
 # close_my_workspace() open for two seconds while the superuser calls

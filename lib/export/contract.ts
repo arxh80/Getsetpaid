@@ -225,6 +225,11 @@ export const WORKSPACE_EXCLUDED_TABLES: readonly {
     table: "erasure_jobs",
     plainEnglish: "the record of any request to delete this workspace or an account",
   },
+  // INTERIM (Phase 9 Task 1, 20261030000000): the integration tables exist but
+  // are not yet wired into the export, and no provider is live, so no
+  // workspace can hold a row. Phase 9 Task 3 exports both and removes these.
+  { table: "integration_connections", plainEnglish: "connections to other services, which cannot be made yet" },
+  { table: "integration_sync_runs", plainEnglish: "the history of those connections" },
   {
     table: "data_subject_requests",
     plainEnglish: "data protection requests routed to this workspace, which belong to the person who made them",

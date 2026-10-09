@@ -174,6 +174,11 @@ export const DECLARED_PRIVILEGES: readonly string[] = [
   "incident_alerts|service_role|UPDATE|account_notified_at",
   "incident_alerts|service_role|UPDATE|notified_at",
   "incident_alerts|service_role|UPDATE|telegram_notified_at",
+  // integration_connections -- Phase 9 Task 1 (20261030000000): SELECT only;
+  // every write is a SECURITY DEFINER RPC. Task 2 narrows this to columns.
+  "integration_connections|authenticated|SELECT|*",
+  // integration_sync_runs -- Phase 9 Task 1: SELECT only, same reason.
+  "integration_sync_runs|authenticated|SELECT|*",
   // legal_documents
   "legal_documents|anon|SELECT|body",
   "legal_documents|anon|SELECT|counsel_reviewed_at",

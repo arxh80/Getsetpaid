@@ -1156,6 +1156,13 @@ const PRE_PHASE7_RELATIONS = [
   "event_status_changes",
   "events",
   "financial_entries",
+  // Phase 9 Task 1 (20261030000000). Tenant tables, not platform ones: SELECT
+  // only, rows to the workspace's manage_integrations holders (Owner, Admin,
+  // aal2) and a person-scoped row to its owner; no INSERT/UPDATE/DELETE grant
+  // for any client role (every write is a SECURITY DEFINER RPC). Proved
+  // persona by persona in supabase/tests/rls_phase9_integrations.sql IR/IB.
+  "integration_connections",
+  "integration_sync_runs",
   "meeting_links",
   "meetings",
   "merge_candidates",
