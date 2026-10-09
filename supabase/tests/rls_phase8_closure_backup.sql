@@ -102,6 +102,7 @@ declare
   v_task uuid := gen_random_uuid(); v_note uuid := gen_random_uuid();
   v_meet uuid := gen_random_uuid(); v_doc uuid := gen_random_uuid();
   v_prof uuid := gen_random_uuid(); v_cfd uuid := gen_random_uuid();
+  v_conn uuid := gen_random_uuid();
 begin
   insert into public.companies (id, organisation_id, name) values
     (v_comp, p_org, 'CK Co'), (v_comp2, p_org, 'CK Co Two');
@@ -158,6 +159,11 @@ begin
   insert into public.impersonation_sessions
     (superuser_user_id, target_organisation_id, reason, status, declined_by, declined_at)
     values (p_su, p_org, 'CK support', 'declined', p_owner, now());
+  -- Phase 9 Task 3 (20261030003000): the two integration tables are exported.
+  insert into public.integration_connections (id, organisation_id, provider, status, created_by)
+    values (v_conn, p_org, 'xero', 'active', p_owner);
+  insert into public.integration_sync_runs (organisation_id, connection_id, status, finished_at)
+    values (p_org, v_conn, 'succeeded', now());
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -233,7 +239,8 @@ update public.export_jobs set status = 'failed', failure_reason = 'ck measuremen
 -- ===========================================================================
 select ck.val('KS1 the workspace export exports a pinned number of tables',
   $$select count(*)::text from private.export_catalogue() where export_kind = 'workspace' and disposition = 'exported'$$,
-  '35');
+  -- 37 = 35 + Phase 9 Task 3's integration_connections and integration_sync_runs.
+  '37');
 select ck.val('KS2 EVERY ONE of them is non-empty in the pre-closure export (none is vacuous)',
   $$select coalesce(string_agg(tbl, ',' order by tbl), '') from ck.counts where job = 'pre_a' and n = 0$$, '');
 select ck.val('KS3 ...for the second workspace too',

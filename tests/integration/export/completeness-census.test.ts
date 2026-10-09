@@ -167,6 +167,10 @@ const WORKSPACE_EXPORTED = [
   "events",
   "financial_entries",
   "impersonation_sessions",
+  // Phase 9 Task 3 (20261030003000): connection metadata, never
+  // token_secret_id (projected out by name), and the sync history.
+  "integration_connections",
+  "integration_sync_runs",
   "meeting_links",
   "meetings",
   "merge_candidates",
@@ -197,11 +201,6 @@ const WORKSPACE_EXCUSED = [
   "export_jobs",
   "feedback",
   "incident_alerts",
-  // Phase 9 Task 1. INTERIM: the integration tables exist before Task 3 wires
-  // them into the export (it needs Task 2's column-level revoke of
-  // token_secret_id first). No provider is live, so no workspace holds a row.
-  "integration_connections",
-  "integration_sync_runs",
 ];
 
 const ACCOUNT_EXPORTED = [
@@ -210,6 +209,9 @@ const ACCOUNT_EXPORTED = [
   "data_subject_requests",
   "feedback",
   "impersonation_sessions",
+  // Phase 9 Task 3 (20261030003000): the person's OWN person-scoped
+  // connections (owner_user_id), under their own RLS, token_secret_id out.
+  "integration_connections",
   "organisation_memberships",
   "platform_admins",
   "profiles",
@@ -246,9 +248,6 @@ const ACCOUNT_EXCUSED = [
   "export_jobs",
   "financial_entries",
   "incident_alerts",
-  // Phase 9 Task 1. INTERIM, as in WORKSPACE_EXCUSED: Task 3 exports the
-  // person's own person-scoped connections in the account export.
-  "integration_connections",
   "legal_documents",
   "meetings",
   "merge_candidates",

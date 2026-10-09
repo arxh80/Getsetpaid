@@ -182,7 +182,7 @@ export function workspaceExportPath(orgSlug: string): string {
  * page and the e2e assertion cannot drift.
  */
 export const ACCOUNT_EXPORT_INCLUDES =
-  "Your profile, the workspaces you belong to and your role in each, your marketing choices, your data protection requests, the feedback you have sent us, the support-access sessions you accepted or declined, and the record of what you did in the product.";
+  "Your profile, the workspaces you belong to and your role in each, your marketing choices, your data protection requests, the feedback you have sent us, the support-access sessions you accepted or declined, the connections to other services you made for yourself (never the keys that let us reach them), and the record of what you did in the product.";
 
 export const ACCOUNT_EXPORT_EXCLUDES =
   "It does not contain a workspace’s records — its contacts, artists, events, documents or finances. That data belongs to the business that keeps it, not to your account, and an Owner or Admin there can export it from the workspace’s own settings.";
@@ -225,11 +225,6 @@ export const WORKSPACE_EXCLUDED_TABLES: readonly {
     table: "erasure_jobs",
     plainEnglish: "the record of any request to delete this workspace or an account",
   },
-  // INTERIM (Phase 9 Task 1, 20261030000000): the integration tables exist but
-  // are not yet wired into the export, and no provider is live, so no
-  // workspace can hold a row. Phase 9 Task 3 exports both and removes these.
-  { table: "integration_connections", plainEnglish: "connections to other services (none can be made yet)" },
-  { table: "integration_sync_runs", plainEnglish: "the history of those connections" },
   {
     table: "data_subject_requests",
     plainEnglish: "data protection requests routed to this workspace, which belong to the person who made them",

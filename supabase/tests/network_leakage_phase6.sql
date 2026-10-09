@@ -993,6 +993,29 @@ select leak.val('LF5b ...and its column set is exactly a transaction id and two 
 select leak.val('LF5c ...and it is empty at rest',
   $$select count(*)::text from private.closure_backup_reads$$, '0');
 
+-- IN9 (Phase 9 Task 3). The integration tables are tenant-private: a
+-- connection's metadata and its sync history must never reach discovery.
+-- ND1/ND2 (rls_phase6_network.sql) pin each view's DIRECT relation set
+-- exactly, which already excludes them; LF1's needle set does not name them,
+-- so a closure body that started reading one would pass LF1. IN9 closes that
+-- for these two tables by name, at both depths. Third term: the denominator
+-- (both tables exist, so a 0 is not an absence of anything to find).
+select leak.val('IN9 neither masking view depends on an integration table, and no function in their closure names one',
+  $$select (select count(*) from pg_catalog.pg_class v
+              join pg_catalog.pg_rewrite rw on rw.ev_class = v.oid
+              join pg_catalog.pg_depend d on d.objid = rw.oid
+               and d.classid = 'pg_catalog.pg_rewrite'::regclass
+               and d.refclassid = 'pg_catalog.pg_class'::regclass
+              join pg_catalog.pg_class t on t.oid = d.refobjid
+             where v.relname in ('network_directory','network_connected_profiles')
+               and t.relname in ('integration_connections','integration_sync_runs'))::text || '/' ||
+           (select count(*) from leak.fn_closure f
+             where f.body ~ '\mpublic\.integration_(connections|sync_runs)\M')::text || '/' ||
+           (select count(*) from pg_catalog.pg_class
+             where relnamespace = 'public'::regnamespace
+               and relname in ('integration_connections','integration_sync_runs'))::text$$,
+  '0/0/2');
+
 -- THE STATED BOUND. The write policies' helper DOES read private tables, by
 -- design, and is outside this closure -- recorded as a measurement so the
 -- exclusion cannot be read as an omission.

@@ -912,12 +912,24 @@ select ig.val('IS9 ...the refused closes changed nothing: run3 is still running,
 -- were rolled back and are checked inside IC9b) holds neither the secret id
 -- nor a token.
 -- ---------------------------------------------------------------------------
-select ig.val('IA1 DENOMINATOR: the integration audit rows written (3 revokes, 4 stores, 1 failed sync)',
+-- Since Task 3 (20261030003000) the revokes are FOUR: IR8 moved the Manager's
+-- membership to `revoked` as postgres, and the membership trigger revoked
+-- their person-scoped connection (conn_am) then -- audited with the tombstone
+-- as actor, nobody being on that session. IM0 measures that row directly.
+select ig.val('IM0 IR8''s membership revoke already revoked the Manager''s person-scoped connection (trigger, no session: tombstone actor, reason membership_ended)',
+  format($$select c.status || ':' || (c.revoked_by is null)::text || ':' ||
+                  (select count(*) from public.audit_events a
+                    where a.action = 'integration.revoked' and a.target_id = c.id
+                      and a.actor_user_id = private.erased_user_id()
+                      and a.after = '{"provider":"google_calendar","owner_scoped":true,"reason":"membership_ended"}'::jsonb)::text
+             from public.integration_connections c where c.id = %L$$, :'conn_am'),
+  'revoked:true:1');
+select ig.val('IA1 DENOMINATOR: the integration audit rows written (4 revokes, 4 stores, 1 failed sync)',
   format($$select string_agg(action || '=' || n, ',' order by action) from (
              select action, count(*) n from public.audit_events
               where action like 'integration.%%' and organisation_id in (%L, %L, %L, %L)
               group by action) x$$, :'org_a', :'org_b', :'org_f', :'org_s'),
-  'integration.revoked=3,integration.sync_failed=1,integration.token_stored=4');
+  'integration.revoked=4,integration.sync_failed=1,integration.token_stored=4');
 select ig.val('IA2 NONE of them carries the secret uuid or a token string',
   format($$select count(*)::text from public.audit_events
             where action like 'integration.%%' and organisation_id in (%L, %L, %L, %L)
@@ -927,19 +939,459 @@ select ig.val('IA2 NONE of them carries the secret uuid or a token string',
   '0');
 
 -- ===========================================================================
+-- TASK 3 (20261030003000): THE PRIVACY LIFECYCLE.
+--   IM  a person who leaves a workspace loses their person-scoped connections
+--   IE  erasing an account: its own connections go BEFORE auth.users does
+--   IP  purging a workspace takes its Vault secrets with it
+--   IX  the exports carry the metadata and never token_secret_id
+--   IN  retention: the two classes, swept by the real live sweep
+-- ===========================================================================
+\o /dev/null
+select gen_random_uuid()::text as mgr3_a  \gset
+select gen_random_uuid()::text as mgr4_a  \gset
+select gen_random_uuid()::text as er_a    \gset
+select gen_random_uuid()::text as owner_p \gset
+select gen_random_uuid()::text as org_p   \gset
+select gen_random_uuid()::text as conn_m3  \gset
+select gen_random_uuid()::text as conn_m3b \gset
+select gen_random_uuid()::text as conn_w3  \gset
+select gen_random_uuid()::text as conn_m4  \gset
+select gen_random_uuid()::text as conn_e1  \gset
+select gen_random_uuid()::text as conn_e2  \gset
+select gen_random_uuid()::text as conn_e3  \gset
+select gen_random_uuid()::text as conn_p1  \gset
+select gen_random_uuid()::text as conn_p2  \gset
+select gen_random_uuid()::text as conn_old \gset
+select gen_random_uuid()::text as conn_new \gset
+select gen_random_uuid()::text as ie_job  \gset
+select gen_random_uuid()::text as ip_job  \gset
+\o
+
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+select u, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', e, now(), now(), now()
+  from (values (:'mgr3_a'::uuid,  'ig-mgr3-a-'  || :'mgr3_a'  || '@test.local'),
+               (:'mgr4_a'::uuid,  'ig-mgr4-a-'  || :'mgr4_a'  || '@test.local'),
+               (:'er_a'::uuid,    'ig-er-a-'    || :'er_a'    || '@test.local'),
+               (:'owner_p'::uuid, 'ig-owner-p-' || :'owner_p' || '@test.local')) v(u, e);
+insert into public.organisations (id, name, slug) values
+  (:'org_p', 'Integrations Purged', 'ig-purge-' || left(:'org_p', 8));
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'org_p', 'starter', 'monthly', 2, 'active', now() + interval '30 days')
+on conflict (organisation_id) do update set plan_id = excluded.plan_id, status = 'active';
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at) values
+  (:'org_a', :'mgr3_a',  'manager', 'active', now()),
+  (:'org_b', :'mgr3_a',  'manager', 'active', now()),
+  (:'org_a', :'mgr4_a',  'manager', 'active', now()),
+  (:'org_a', :'er_a',    'manager', 'active', now()),
+  (:'org_p', :'owner_p', 'owner',   'active', now());
+
+-- IM: mgr3_a owns a person-scoped Gmail in A AND in B, and created A's
+-- workspace-scoped QuickBooks. mgr4_a owns a person-scoped Outlook in A.
+insert into public.integration_connections (id, organisation_id, provider, owner_user_id, status, created_by) values
+  (:'conn_m3',  :'org_a', 'google_gmail',       :'mgr3_a', 'active', :'mgr3_a'),
+  (:'conn_m3b', :'org_b', 'google_gmail',       :'mgr3_a', 'active', :'mgr3_a'),
+  (:'conn_w3',  :'org_a', 'quickbooks',         null,      'active', :'mgr3_a'),
+  (:'conn_m4',  :'org_a', 'microsoft_365_mail', :'mgr4_a', 'active', :'mgr4_a');
+-- IE: er_a owns a person-scoped XERO in A -- A already holds a LIVE
+-- workspace-scoped xero (conn_a, in `error` since IS3), which is the 23505
+-- case -- with two sync runs; created A's workspace-scoped Fatsoma; and
+-- created AND revoked A's workspace-scoped Skiddle.
+insert into public.integration_connections (id, organisation_id, provider, owner_user_id, status, created_by) values
+  (:'conn_e1', :'org_a', 'xero',    :'er_a', 'active', :'er_a'),
+  (:'conn_e2', :'org_a', 'fatsoma', null,    'active', :'er_a');
+insert into public.integration_connections (id, organisation_id, provider, status, created_by, revoked_at, revoked_by)
+values (:'conn_e3', :'org_a', 'skiddle', 'revoked', :'er_a', now(), :'er_a');
+insert into public.integration_sync_runs (organisation_id, connection_id, status, finished_at) values
+  (:'org_a', :'conn_e1', 'succeeded', now()), (:'org_a', :'conn_e1', 'succeeded', now());
+-- IP: one workspace-scoped and one person-scoped connection in P.
+insert into public.integration_connections (id, organisation_id, provider, owner_user_id, status) values
+  (:'conn_p1', :'org_p', 'xero',            null,       'active'),
+  (:'conn_p2', :'org_p', 'google_calendar', :'owner_p', 'active');
+insert into public.integration_sync_runs (organisation_id, connection_id, status, finished_at) values
+  (:'org_p', :'conn_p1', 'succeeded', now());
+
+-- Every one of those person-scoped (and P's) connections holds a real token.
+set role service_role;
+set request.jwt.claims = :'svc_c';
+select count(public.store_integration_token(x::uuid, '{"access_token":"tok_lifecycle"}', now() + interval '1 hour'))
+  from unnest(array[:'conn_m3', :'conn_m3b', :'conn_m4', :'conn_e1', :'conn_p1', :'conn_p2']) x \gset ig_stored_
+reset role;
+reset request.jwt.claims;
+\o /dev/null
+select coalesce(string_agg(token_secret_id::text, ',' order by id), '') as sec_lifecycle
+  from public.integration_connections where id in (:'conn_m3', :'conn_e1', :'conn_p1', :'conn_p2') \gset
+select token_secret_id::text as sec_m3 from public.integration_connections where id = :'conn_m3' \gset
+select token_secret_id::text as sec_e1 from public.integration_connections where id = :'conn_e1' \gset
+\o
+select ig.val('IL0 FIXTURE: six tokens stored, each a vault secret named for its connection',
+  format($$select count(*)::text from vault.secrets s join public.integration_connections c
+            on c.token_secret_id = s.id and s.name = 'integration:' || c.id::text
+           where c.id in (%L, %L, %L, %L, %L, %L)$$,
+         :'conn_m3', :'conn_m3b', :'conn_m4', :'conn_e1', :'conn_p1', :'conn_p2'), '6');
+
+-- ---------------------------------------------------------------------------
+-- § IM MEMBERSHIP REMOVAL, through the product path (the Owner's own DELETE
+-- and UPDATE under RLS, as PostgREST would send them).
+-- ---------------------------------------------------------------------------
+set role authenticated;
+set request.jwt.claims = :'owner_a_c';
+select ig.val('IM1 A''s Owner removes mgr3_a from A (DELETE under the manage_members policy)',
+  format($$with d as (delete from public.organisation_memberships
+                       where organisation_id = %L and user_id = %L returning 1)
+           select count(*)::text from d$$, :'org_a', :'mgr3_a'), '1');
+reset role;
+reset request.jwt.claims;
+select ig.val('IM2 their person-scoped connection in A is REVOKED, with no secret reference, revoked_by = the Owner who removed them',
+  format($$select status || ':' || (token_secret_id is null)::text || ':' || (revoked_by = %L)::text
+             from public.integration_connections where id = %L$$, :'owner_a', :'conn_m3'),
+  'revoked:true:true');
+select ig.val('IM3 ...and its Vault secret is GONE (by id and by name)',
+  format($$select (select count(*) from vault.secrets where id = %L)::text || '/' ||
+                  (select count(*) from vault.secrets where name = 'integration:' || %L)::text$$, :'sec_m3', :'conn_m3'),
+  '0/0');
+select ig.val('IM4 the WORKSPACE-scoped connection they created stays active, still attributed to them',
+  format($$select status || ':' || (created_by = %L)::text from public.integration_connections where id = %L$$,
+         :'mgr3_a', :'conn_w3'),
+  'active:true');
+select ig.val('IM5 their person-scoped connection in ANOTHER workspace (B) is untouched, its token still readable',
+  format($$select c.status || ':' || (select count(*) from vault.secrets s where s.id = c.token_secret_id)::text
+             from public.integration_connections c where c.id = %L$$, :'conn_m3b'),
+  'active:1');
+select ig.val('IM6 ONE integration.revoked row: actor the Owner, payload {provider, owner_scoped, reason membership_ended}',
+  format($$select count(*)::text || ':' || max(after::text) from public.audit_events
+            where action = 'integration.revoked' and target_id = %L and actor_user_id = %L$$, :'conn_m3', :'owner_a'),
+  '1:{"reason": "membership_ended", "provider": "google_gmail", "owner_scoped": true}');
+set role authenticated;
+set request.jwt.claims = :'owner_a_c';
+select ig.val('IM7 A''s Owner REVOKES mgr4_a''s membership (status -> revoked, the UPDATE path)',
+  format($$update public.organisation_memberships set status = 'revoked'
+            where organisation_id = %L and user_id = %L returning status$$, :'org_a', :'mgr4_a'), 'revoked');
+reset role;
+reset request.jwt.claims;
+select ig.val('IM8 ...their person-scoped connection is revoked and its secret gone',
+  format($$select c.status || ':' || (c.token_secret_id is null)::text || ':' ||
+                  (select count(*) from vault.secrets s where s.name = 'integration:' || c.id::text)::text
+             from public.integration_connections c where c.id = %L$$, :'conn_m4'),
+  'revoked:true:0');
+-- IM9: the trigger FIRES on any UPDATE naming status, so its own filter is
+-- what keeps a non-departure from revoking. (Read in a SECOND statement: a
+-- data-modifying CTE's outer query cannot see the trigger's writes.)
+select ig.val('IM9 THE SAME TRIGGER, A NON-DEPARTURE: an UPDATE naming status (unchanged) and the ROLE lands...',
+  format($$update public.organisation_memberships set status = status, role = 'read_only'
+            where organisation_id = %L and user_id = %L returning status$$, :'org_b', :'mgr3_a'), 'active');
+select ig.val('IM9b ...and revokes nothing',
+  format($$select status from public.integration_connections where id = %L$$, :'conn_m3b'), 'active');
+-- IM10: a membership row MOVED to another person (identity is immutable
+-- through the client UPDATE policy, so this is postgres) is the old person
+-- departing, whatever its status says.
+update public.organisation_memberships set user_id = :'mgr4_a'
+ where organisation_id = :'org_b' and user_id = :'mgr3_a';
+select ig.val('IM10 a membership moved to ANOTHER person (status still active) revokes the old person''s person-scoped connection there',
+  format($$select c.status || ':' || (select count(*) from vault.secrets s where s.name = 'integration:' || c.id::text)::text
+             from public.integration_connections c where c.id = %L$$, :'conn_m3b'),
+  'revoked:0');
+
+-- ---------------------------------------------------------------------------
+-- § IE ERASURE. The Task 1 review case: a person-scoped xero beside A's live
+-- workspace-scoped xero. Without step 5c the erasure FAILS (23505); with it,
+-- the person's own connection goes before auth.users does.
+-- ---------------------------------------------------------------------------
+select ig.val('IE0 FIXTURE: A holds a LIVE workspace-scoped xero beside er_a''s person-scoped one (the 23505 shape)',
+  format($$select count(*)::text from public.integration_connections
+            where organisation_id = %L and provider = 'xero' and status <> 'revoked'$$, :'org_a'), '2');
+select ig.val('IE1 (c) THE ERASURE SUCCEEDS: auth.users row deleted, the person''s connection and its two runs counted on the summary',
+  format($$select (r ->> 'auth_users') || ':' || (r ->> 'integration_connections.deleted') || ':' ||
+                  (r ->> 'integration_sync_runs.deleted') || ':' || (r ->> 'integration_connections.created_by') || ':' ||
+                  (r ->> 'integration_connections.revoked_by')
+             from (select private.erase_account(%L, %L) r) x$$, :'er_a', :'ie_job'),
+  '1:1:2:2:1');
+select ig.val('IE2 (a) NO ROW with the person''s former connection id survives, and NONE became workspace-scoped (A has one live xero, conn_a)',
+  format($$select (select count(*) from public.integration_connections where id = %L)::text || '/' ||
+                  (select string_agg(id::text, ',') from public.integration_connections
+                    where organisation_id = %L and provider = 'xero' and owner_user_id is null) || '/' ||
+                  (select count(*) from public.integration_connections where owner_user_id = %L)::text$$,
+         :'conn_e1', :'org_a', :'er_a'),
+  format('0/%s/0', :'conn_a'));
+select ig.val('IE3 ...nor any of its sync runs',
+  format($$select count(*)::text from public.integration_sync_runs where connection_id = %L$$, :'conn_e1'), '0');
+select ig.val('IE4 (b) its Vault secret is GONE (by id and by name)',
+  format($$select (select count(*) from vault.secrets where id = %L)::text || '/' ||
+                  (select count(*) from vault.secrets where name = 'integration:' || %L)::text$$, :'sec_e1', :'conn_e1'),
+  '0/0');
+select ig.val('IE5 the WORKSPACE-scoped connection they created stays, active, created_by = the tombstone',
+  format($$select status || ':' || (created_by = private.erased_user_id())::text
+             from public.integration_connections where id = %L$$, :'conn_e2'),
+  'active:true');
+select ig.val('IE6 the REVOKED one they created and revoked: both columns moved to the tombstone (the guard admits that one move)',
+  format($$select status || ':' || (created_by = private.erased_user_id())::text || ':' ||
+                  (revoked_by = private.erased_user_id())::text
+             from public.integration_connections where id = %L$$, :'conn_e3'),
+  'revoked:true:true');
+select ig.val('IE7 NO audit payload anywhere still holds their id (step 10b''s scan, asked again from outside)',
+  format($$select count(*)::text from public.audit_events
+            where strpos(lower(coalesce(before::text, '') || coalesce(after::text, '')), %L) > 0$$, :'er_a'), '0');
+select ig.val('IE8 the revoke step audited as the tombstone, reason account_erased, and no id of theirs in it',
+  format($$select count(*)::text || ':' || max(after::text) from public.audit_events
+            where action = 'integration.revoked' and target_id = %L and actor_user_id = private.erased_user_id()$$, :'conn_e1'),
+  '1:{"reason": "account_erased", "provider": "xero", "owner_scoped": true}');
+select ig.val('IE9 a second erasure of the same account is the idempotent no-op',
+  format($$select private.erase_account(%L, null)::text$$, :'er_a'), '{"already_erased": true}');
+
+-- IE10: AN ACCOUNT DELETED OUTSIDE THE ERASURE (a raw `delete from
+-- auth.users`, the Auth admin API's shape; no product path does it). The FK's
+-- SET NULL reaches the person-scoped xero BEFORE any membership trigger, so
+-- the guard revokes it in that write. Measured inside a probe that undoes the
+-- delete.
+\o /dev/null
+select gen_random_uuid()::text as raw_a  \gset
+select gen_random_uuid()::text as conn_r2 \gset
+\o
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+values (:'raw_a', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+        'ig-raw-a-' || :'raw_a' || '@test.local', now(), now(), now());
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+values (:'org_a', :'raw_a', 'manager', 'active', now());
+insert into public.integration_connections (id, organisation_id, provider, owner_user_id, status)
+values (:'conn_r2', :'org_a', 'xero', :'raw_a', 'active');
+set role service_role;
+set request.jwt.claims = :'svc_c';
+select ig.val('IE10a FIXTURE: the raw-deleted person''s xero holds a token, beside A''s live workspace xero',
+  format($$select 'ok' from public.store_integration_token(%L, '{"access_token":"tok_raw"}', null)$$, :'conn_r2'), 'ok');
+reset role;
+reset request.jwt.claims;
+create function ig.raw_delete_probe(p_user uuid, p_conn uuid)
+returns text language plpgsql security definer set search_path = '' as $$
+declare v text;
+begin
+  begin
+    delete from auth.users where id = p_user;
+    v := (select c.status || ':' || coalesce(c.owner_user_id::text, 'null') || ':' ||
+                 (c.token_secret_id is null)::text || ':' ||
+                 (select count(*) from vault.secrets s where s.name = 'integration:' || c.id::text)::text || ':' ||
+                 (select count(*) from public.audit_events a where a.target_id = c.id and a.action = 'integration.revoked'
+                     and a.actor_user_id = private.erased_user_id()
+                     and a.after ->> 'reason' = 'account_deleted')::text
+            from public.integration_connections c where c.id = p_conn);
+    raise exception using errcode = 'P0001', message = 'ig_undo', detail = coalesce(v, 'row gone');
+  exception
+    when sqlstate 'P0001' then
+      if sqlerrm = 'ig_undo' then
+        get stacked diagnostics v = pg_exception_detail;
+        return v;
+      end if;
+      return 'denied(P0001)';
+    when others then
+      return 'denied(' || sqlstate || ')';
+  end;
+end $$;
+select ig.val('IE10 a RAW account delete succeeds (no 23505) and leaves the person''s xero REVOKED, ownerless, its secret gone, audited as account_deleted',
+  format($$select ig.raw_delete_probe(%L, %L)$$, :'raw_a', :'conn_r2'), 'revoked:null:true:0:1');
+select ig.val('IE10b ...and the probe undid it: the person and their live connection are back',
+  format($$select c.status || ':' || (c.owner_user_id = %L)::text from public.integration_connections c where c.id = %L$$,
+         :'raw_a', :'conn_r2'), 'active:true');
+
+-- ---------------------------------------------------------------------------
+-- § IP WORKSPACE PURGE (P closed as postgres, then purged by the primitive).
+-- ---------------------------------------------------------------------------
+update public.organisations set deleted_at = now() where id = :'org_p';
+select ig.val('IP1 the purge of P reports two secrets and two connections deleted before the cascade',
+  format($$select (r ->> 'integration_secrets') || ':' || (r ->> 'integration_connections')
+             from (select private.erase_organisation(%L, %L, true) r) x$$, :'org_p', :'ip_job'),
+  '2:2');
+select ig.val('IP2 0 rows left in either table for P',
+  format($$select (select count(*) from public.integration_connections where organisation_id = %L)::text || '/' ||
+                  (select count(*) from public.integration_sync_runs where organisation_id = %L)::text$$, :'org_p', :'org_p'),
+  '0/0');
+select ig.val('IP3 0 Vault secrets named integration:<P''s connection ids>, and 0 by their former ids',
+  format($$select (select count(*) from vault.secrets where name in ('integration:' || %L, 'integration:' || %L))::text || '/' ||
+                  (select count(*) from vault.secrets where id::text = any (string_to_array(%L, ',')))::text$$,
+         :'conn_p1', :'conn_p2', :'sec_lifecycle'),
+  '0/0');
+
+-- IP4: a workspace deleted RAW (no step 5c ahead of the cascade) while it
+-- holds a live person-scoped connection. The cascaded membership delete fires
+-- the trigger, and by then the cascade has ALREADY removed the connection
+-- (measured), so nothing is revoked and no audit row names a workspace that
+-- is gone (which would be a 23503 and fail the delete).
+\o /dev/null
+select gen_random_uuid()::text as org_q  \gset
+select gen_random_uuid()::text as conn_q \gset
+\o
+insert into public.organisations (id, name, slug) values (:'org_q', 'Integrations Raw', 'ig-raw-' || left(:'org_q', 8));
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+values (:'org_q', :'owner_p', 'owner', 'active', now());
+insert into public.integration_connections (id, organisation_id, provider, owner_user_id, status)
+values (:'conn_q', :'org_q', 'google_calendar', :'owner_p', 'active');
+select ig.val('IP4 a RAW delete of a workspace holding a live person-scoped connection succeeds: the cascade removes the connection before the membership trigger looks',
+  format($$with d as (delete from public.organisations where id = %L returning 1)
+           select count(*)::text from d$$, :'org_q'), '1');
+select ig.val('IP4b ...and the connection went with the workspace',
+  format($$select count(*)::text from public.integration_connections where id = %L$$, :'conn_q'), '0');
+
+-- ---------------------------------------------------------------------------
+-- § IX EXPORTS, read the way the runner reads them (public.export_read_page,
+-- as postgres with nobody on the session).
+-- ---------------------------------------------------------------------------
+set role service_role;
+set request.jwt.claims = :'svc_c';
+select ig.val('IX0 FIXTURE: A''s workspace-scoped QuickBooks holds a token, so the page has a secret to leak',
+  format($$select 'ok' from public.store_integration_token(%L, '{"access_token":"tok_export_probe"}', now() + interval '1 hour')$$, :'conn_w3'),
+  'ok');
+reset role;
+reset request.jwt.claims;
+\o /dev/null
+select token_secret_id::text as sec_w3 from public.integration_connections where id = :'conn_w3' \gset
+set role authenticated;
+set request.jwt.claims = :'owner_a_c';
+with j as (insert into public.export_jobs (kind, organisation_id) values ('workspace', :'org_a') returning id)
+select id::text as ix_ws_job from j \gset
+set request.jwt.claims = :'mgr2_a_c';
+with j as (insert into public.export_jobs (kind) values ('account') returning id)
+select id::text as ix_acc_job from j \gset
+reset role;
+reset request.jwt.claims;
+update public.export_jobs set status = 'running', started_at = now() where id in (:'ix_ws_job', :'ix_acc_job');
+\o
+select ig.val('IX1 POSITIVE CONTROL: A''s workspace export carries A''s connections (conn_a, the created conn_w3)',
+  format($$select (p::text like '%%' || %L || '%%' and p::text like '%%' || %L || '%%')::text
+             from (select public.export_read_page(%L, 'integration_connections', '', 500) p) x$$,
+         :'conn_a', :'conn_w3', :'ix_ws_job'),
+  'true');
+select ig.val('IX2 NO ROW of it has a key named token_secret_id; every row has exactly the twelve metadata keys',
+  format($$select count(*) filter (where e ? 'token_secret_id')::text || '/' ||
+                  count(*) filter (where (select count(*) from jsonb_object_keys(e)) <> 12)::text || '/' ||
+                  (count(*) > 0)::text
+             from jsonb_array_elements(public.export_read_page(%L, 'integration_connections', '', 500)) e$$, :'ix_ws_job'),
+  '0/0/true');
+select ig.val('IX3 ...and neither conn_w3''s secret id nor any token text is anywhere in the page (its row IS there)',
+  format($$select (p::text like '%%' || %L || '%%')::text || ':' ||
+                  (p::text like '%%tok\_%%' or p::text like '%%' || %L || '%%')::text
+             from (select public.export_read_page(%L, 'integration_connections', '', 500) p) x$$, :'conn_w3', :'sec_w3', :'ix_ws_job'),
+  'true:false');
+-- IX4: REQUESTER RLS, EXACTLY. Task 1's policy lets a manage_integrations
+-- holder read every connection in the workspace (a colleague's person-scoped
+-- row included -- its metadata, never its token: IR1a). The export is that
+-- read and no wider: the same ids, row for row.
+set role authenticated;
+set request.jwt.claims = :'owner_a_c';
+\o /dev/null
+select string_agg(id::text, ',' order by id::text) as ix_owner_reads
+  from public.integration_connections where organisation_id = :'org_a' \gset
+\o
+reset role;
+reset request.jwt.claims;
+select ig.val('IX4 the workspace export is EXACTLY the Owner''s own RLS read of A''s connections, row for row (a colleague''s person-scoped conn_p included, as IR1a reads it)',
+  format($$select string_agg(e ->> 'id', ',' order by e ->> 'id') = %L and %L like '%%' || %L || '%%'
+             from jsonb_array_elements(public.export_read_page(%L, 'integration_connections', '', 500)) e$$,
+         :'ix_owner_reads', :'ix_owner_reads', :'conn_p', :'ix_ws_job')::text,
+  'true');
+select ig.val('IX5 the workspace export carries A''s sync runs',
+  format($$select (jsonb_array_length(public.export_read_page(%L, 'integration_sync_runs', '', 500)) >= 3)::text$$, :'ix_ws_job'),
+  'true');
+select ig.val('IX6 the ACCOUNT export of mgr2_a carries ONLY their own person-scoped connection (conn_p), no workspace one',
+  format($$select string_agg(e ->> 'id', ',') from jsonb_array_elements(public.export_read_page(%L, 'integration_connections', '', 500)) e$$,
+         :'ix_acc_job'),
+  :'conn_p');
+select ig.val('IX7 ...with no token_secret_id key either',
+  format($$select count(*) filter (where e ? 'token_secret_id')::text
+             from jsonb_array_elements(public.export_read_page(%L, 'integration_connections', '', 500)) e$$, :'ix_acc_job'),
+  '0');
+select ig.val('IX8 the catalogue: both tables exported from the workspace, connections from the account, token_secret_id projected OUT',
+  $$select string_agg(export_kind || '.' || table_name || ':' || disposition || ':' || authorisation || ':' ||
+                      coalesce((not ('token_secret_id' = any (projection)))::text, 'all'), ',' order by export_kind, table_name)
+      from private.export_catalogue() where table_name like 'integration\_%'$$,
+  'account.integration_connections:exported:requester_rls:true,workspace.integration_connections:exported:requester_rls:true,workspace.integration_sync_runs:exported:requester_rls:all');
+update public.export_jobs set status = 'failed', failure_reason = 'ig measurement' where id in (:'ix_ws_job', :'ix_acc_job');
+
+-- ---------------------------------------------------------------------------
+-- § IN RETENTION, through the REAL sweep body inside a subtransaction that is
+-- rolled back (the cw.live_sweep_probe() shape), so nothing outside it moves.
+-- ---------------------------------------------------------------------------
+select ig.val('IN1 the two classes are declared: sync runs 90 days, revoked connections 2 years',
+  $$select string_agg(class || '=' || period::text, ',' order by class) from private.retention_periods()
+     where class like 'integration\_%'$$,
+  'integration_connection_revoked=2 years,integration_sync_run=90 days');
+select ig.val('IN2 both tables are SWEPT subjects under those classes (the Task 1 interim `cascades` rows are gone)',
+  $$select string_agg(table_name || ':' || treatment || ':' || class, ',' order by table_name) from private.retention_subjects()
+     where table_name like 'integration\_%'$$,
+  'integration_connections:swept:integration_connection_revoked,integration_sync_runs:swept:integration_sync_run');
+select ig.val('IN3 both clock columns are classified `clock` and every integration candidate the walk derives is classified',
+  $$select (select string_agg(table_name || '.' || column_name || ':' || role, ',' order by table_name)
+              from private.retention_clock_columns() where table_name like 'integration\_%') || '/' ||
+           (select count(*) from private.retention_clock_candidates() c
+             where c.table_name like 'integration\_%'
+               and not exists (select 1 from private.retention_clock_columns() d
+                                where d.schema_name = c.schema_name and d.table_name = c.table_name
+                                  and d.column_name = c.column_name))::text$$,
+  'integration_connections.revoked_at:clock,integration_sync_runs.finished_at:clock/0');
+
+insert into public.integration_sync_runs (id, organisation_id, connection_id, status, started_at, finished_at) values
+  (gen_random_uuid(), :'org_a', :'conn_a', 'succeeded', now() - interval '92 days', now() - interval '91 days'),
+  (gen_random_uuid(), :'org_a', :'conn_a', 'succeeded', now() - interval '90 days', now() - interval '89 days');
+insert into public.integration_connections (id, organisation_id, provider, status, revoked_at) values
+  (:'conn_old', :'org_a', 'google_calendar', 'revoked', now() - interval '2 years 1 day'),
+  (:'conn_new', :'org_a', 'google_calendar', 'revoked', now() - interval '2 years' + interval '1 day');
+
+create function ig.live_sweep_probe(p_org uuid, p_old uuid, p_new uuid)
+returns text language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v text; v_s jsonb; v_r jsonb;
+begin
+  begin
+    select swept, refused into v_s, v_r from private.retention_sweep_body(false, 100000);
+    v := (select count(*) from public.integration_sync_runs
+           where organisation_id = p_org and finished_at < now() - interval '90 days')::text || '/' ||
+         (select count(*) from public.integration_sync_runs
+           where organisation_id = p_org and finished_at between now() - interval '90 days' and now() - interval '88 days')::text || '/' ||
+         (select count(*) from public.integration_connections where id = p_old)::text || '/' ||
+         (select count(*) from public.integration_connections where id = p_new)::text || '/' ||
+         ((v_s ->> 'integration_sync_runs.rows')::int >= 1)::text || '/' ||
+         ((v_s ->> 'integration_connections.rows')::int >= 1)::text || '/' ||
+         (not (v_r ? 'integrations'))::text;
+    raise exception 'ig_rollback' using detail = v;
+  exception when others then
+    if sqlerrm = 'ig_rollback' then
+      get stacked diagnostics v = pg_exception_detail;
+      return v;
+    end if;
+    return 'error(' || sqlstate || ':' || sqlerrm || ')';
+  end;
+end $$;
+select ig.val('IN4 THE LIVE SWEEP: the run finished 91 days ago is swept, the one at 89 kept; the connection revoked 2y+1d ago is swept, the one at 2y-1d kept; the sweep reports both and refuses neither',
+  format($$select ig.live_sweep_probe(%L, %L, %L)$$, :'org_a', :'conn_old', :'conn_new'),
+  '0/1/0/1/true/true/true');
+select ig.val('IN5 ...and it was rolled back: both planted runs and both planted connections are still here',
+  format($$select (select count(*) from public.integration_sync_runs
+                    where organisation_id = %L and finished_at < now() - interval '88 days')::text || '/' ||
+                  (select count(*) from public.integration_connections where id in (%L, %L))::text$$,
+         :'org_a', :'conn_old', :'conn_new'),
+  '2/2');
+
+-- ===========================================================================
 -- § IZ HOUSEKEEPING
 -- ===========================================================================
+delete from public.audit_events where correlation_id in (:'ie_job', :'ip_job');
+set session_replication_role = replica;
+delete from public.export_jobs where id in (:'ix_ws_job', :'ix_acc_job');
+delete from public.organisation_memberships where organisation_id = :'org_p';
+delete from public.organisation_subscriptions where organisation_id = :'org_p';
+delete from public.organisations where id = :'org_p';
+set session_replication_role = origin;
+delete from vault.secrets where name in (select 'integration:' || x
+                                          from unnest(array[:'conn_m3', :'conn_m3b', :'conn_m4', :'conn_e1', :'conn_p1', :'conn_p2']) x);
 delete from vault.secrets where name in (select 'integration:' || id::text from public.integration_connections
                                           where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s'));
 delete from public.integration_connections where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s');
 set session_replication_role = replica;
 delete from public.audit_events where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s')
-   or actor_user_id in (:'owner_a', :'admin_a', :'mgr_a', :'ro_a', :'owner_b', :'owner_f', :'mgr2_a', :'owner_s');
+   or actor_user_id in (:'owner_a', :'admin_a', :'mgr_a', :'ro_a', :'owner_b', :'owner_f', :'mgr2_a', :'owner_s',
+                        :'mgr3_a', :'mgr4_a', :'er_a', :'owner_p', :'raw_a');
 delete from public.organisation_memberships where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s');
 delete from public.organisation_subscriptions where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s');
 delete from public.organisations where id in (:'org_a', :'org_b', :'org_f', :'org_s');
 set session_replication_role = origin;
-delete from auth.users where id in (:'owner_a', :'admin_a', :'mgr_a', :'ro_a', :'owner_b', :'owner_f', :'mgr2_a', :'owner_s');
+delete from auth.users where id in (:'owner_a', :'admin_a', :'mgr_a', :'ro_a', :'owner_b', :'owner_f', :'mgr2_a', :'owner_s',
+                                    :'mgr3_a', :'mgr4_a', :'er_a', :'owner_p', :'raw_a');
 select ig.val('IZ1 housekeeping left no integration row and no integration secret behind',
   format($$select (select count(*) from public.integration_connections where organisation_id in (%L, %L, %L, %L))
                 + (select count(*) from public.integration_sync_runs where organisation_id in (%L, %L, %L, %L))

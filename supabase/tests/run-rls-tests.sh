@@ -513,7 +513,7 @@ P6VARS+=( -v "super=${ID[super]}" )
 P6VARS+=( -v "super_c={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal2\"}" )
 
 
-run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 217 "${P6VARS[@]}"
+run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 218 "${P6VARS[@]}"
 lk_fails=$SUITE_FAILS
 if [ "$lk_fails" != "0" ]; then
   echo "PHASE 6 NETWORK-LEAKAGE SUITE FAILED: $lk_fails failing assertion(s)" >&2
@@ -1208,7 +1208,7 @@ fi
 # PHASE 8 TASK 9c FIX ROUND 1 -- A CLOSURE BACKUP IS COMPLETE (C1, I2;
 # 20261025000000). The same read engine, the same Owner, the same workspace:
 # a workspace export taken while live and the closure backup taken after
-# close_my_workspace() must carry the same row count in every one of the 35
+# close_my_workspace() must carry the same row count in every one of the 37
 # exported tables, finance and network included -- and the same again when the
 # Owner tries to erase their account before the backup is built (refused until
 # it is). Self-contained.
@@ -1233,10 +1233,12 @@ fi
 # Two tenant tables no client role can write, a provider catalogue with no
 # live entry, and who reads a connection and its sync runs; since Task 2
 # (20261030001000) the five RPCs, Vault-held tokens and the four audit
-# actions (IC/IV/IS/IA; HTTP twin in the API block). Self-contained and
+# actions (IC/IV/IS/IA; HTTP twin in the API block); since Task 3
+# (20261030003000) the privacy lifecycle: membership removal, account erasure,
+# workspace purge, exports and retention (IM/IE/IP/IX/IN). Self-contained and
 # re-runnable on one database (it removes its own fixtures).
 # ============================================================================
-run_suite "PHASE 9 INTEGRATIONS" rls_phase9_integrations.sql ig 146
+run_suite "PHASE 9 INTEGRATIONS" rls_phase9_integrations.sql ig 191
 ig_fails=$SUITE_FAILS
 if [ "$ig_fails" != "0" ]; then
   echo "PHASE 9 INTEGRATIONS SUITE FAILED: $ig_fails failing assertion(s)" >&2
@@ -1248,6 +1250,11 @@ if [ "$ig_fails" != "0" ]; then
   echo "  lost a refusal (or its order), or revoke lets the wrong person in. IV red:" >&2
   echo "  A TOKEN IS REACHABLE OUTSIDE THE SERVER, or revoke left its Vault secret." >&2
   echo "  IS red: a sync run's rails moved. IA red: AN AUDIT PAYLOAD HOLDS A SECRET." >&2
+  echo "  IM red: A PERSON WHO LEFT A WORKSPACE STILL HAS A LIVE TOKEN THERE. IE red:" >&2
+  echo "  AN ERASURE LEFT THE PERSON'S CONNECTION (or its secret) BEHIND, made it" >&2
+  echo "  workspace-scoped, or failed on the one-live index. IP red: a purge left" >&2
+  echo "  Vault secrets behind. IX red: an export carries token_secret_id, or is" >&2
+  echo "  wider than the requester's RLS. IN red: the retention classes or sweep moved." >&2
   psql_status=1
 else
   echo "Phase 9 integrations suite: all assertions passed."
@@ -3966,7 +3973,7 @@ p2_code "carol POST of a legal document -> 403"                     403 POST    
 p2_code "carol cannot create a draft through the RPC -> 403"        403 POST         "rpc/create_legal_document_draft" '{"p_slug":"terms"}' "$TOKEN"
 p2_code "anon cannot call the operator read -> 401"                 401 POST         "rpc/operator_legal_document_versions" '{}' "$ANON"
 p2_code "the immutability guard is not an RPC -> 404"               404 POST         "rpc/legal_documents_guard" '{}' "$TOKEN"
-lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where status = 'published' and title <> 'x' and version = case when slug = 'data-retention' then 7 when slug in ('data-subject-rights','data-processing-addendum') then 5 when slug = 'privacy' then 4 when slug in ('security','subprocessors') then 3 when slug = 'marketing-preferences' then 2 else 1 end" | tr -d '[:space:]')
+lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where status = 'published' and title <> 'x' and version = case when slug = 'data-retention' then 8 when slug in ('data-subject-rights','data-processing-addendum') then 5 when slug = 'privacy' then 4 when slug in ('security','subprocessors') then 3 when slug = 'marketing-preferences' then 2 else 1 end" | tr -d '[:space:]')
 if [ "$lg_same" = "15" ]; then printf '  PASS  %-58s %s
 ' "the refused writes changed nothing (15 current rows intact)" "$lg_same"
 else printf '  FAIL  %-58s got %s want 15
