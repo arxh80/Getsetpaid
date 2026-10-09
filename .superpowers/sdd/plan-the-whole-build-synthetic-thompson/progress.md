@@ -646,3 +646,12 @@ Inventory report (2026-09-16) established, among other things:
   - **LESSON (14):** a gate script's `echo "$(date) exit=$?"` records date's exit code, not the test's — capture `rc=$?` first. Always read the log, never trust the logged exit.
   - **LESSON (15):** the two Criticals were found by a reviewer reading policies for a column/status the WITH CHECK never pins. For every tenant-writable table, ask: which columns can the browser INSERT or UPDATE, and does anything pin each one?
 - **Task 9c: COMPLETE (tip `92f5280`, 238 migrations).** Owner may close their own workspace (founder 2026-09-30, Q176/Q178, reverses Q104). Jobs 1 (close_my_workspace, owner_closed read-only, closure backup, N4), 2/2b (superuser reassign/delete RPCs, closure + decision emails), 3a (/super/closures), 3b (Owner close UI, banner) → review **MAJOR** (C1 the closure backup had NO finance/network rows — read under post-closure rights; I1 Phase 7 suspend/reinstate/delete bypassed the decision; I2 close-then-erase backup empty) → fix rounds 1/1b (closure-backup read marker in permitted_organisations()/has_permission(), censuses acknowledge it exactly — Q227 controller call pending founder; Phase 7 actions refuse owner_closed; Q222-Q225 built) → re-review MINOR (N1 lifecycle race, N2 ownerless reinstate, N3 delete without a successful backup) → fix round 2 (row lock + state re-check, two-session probe; reinstate needs an active Owner; delete needs a succeeded backup or an audited acknowledgement) → re-review 2 **READY**. Full gates at b0eac34: psql all passed, vitest 3810, e2e **178/0**. Q205-Q228 queued (Q227 + Q228 need the founder).
+- **Phase 8: DONE, PR #26 OPEN (base main), 2026-10-09.**
+  - Final review: A and B both MINOR. Fix round 1 closed A-I1, the client-writable malware verdict, and A-m1, the forgeable attribution. Fix round 2 built A-I2, the closure backup held from the purge (Q229, the default, pending founder), and the I1 HTTP twin. The review B docs round closed 16 of 18 findings; Q230 and Q231 were queued.
+  - Gates at the code tip `a67f98f` (241 migrations):
+    - psql/HTTP: "All suites passed", 4277 assertions over 26 suites.
+    - `pnpm test`: 168 files / 3813.
+    - Full e2e: 177/1. The red was the refusal-parity `/super` × suspended manager test timing out at 0.5 GB free RAM (F-T7-1). The isolated re-run passed 27/27, three repeats.
+    - lint, typecheck: clean.
+  - Owed: a Subprocessors v4 legal version, and a measurement of the matrix total.
+  - NEXT: Phase 9.
