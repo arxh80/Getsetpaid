@@ -141,11 +141,11 @@ select ig.val('IT3 RLS is FORCED on both',
   $$select string_agg(relname || '=' || relforcerowsecurity, ',' order by relname) from pg_class
      where oid in ('public.integration_connections'::regclass, 'public.integration_sync_runs'::regclass)$$,
   'integration_connections=true,integration_sync_runs=true');
-select ig.val('IT4 authenticated holds NO INSERT/UPDATE/DELETE/TRUNCATE on either table (8 checks, 0 held)',
+select ig.val('IT4 authenticated holds NO INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER on either table (12 checks, 0 held)',
   $$select count(*)::text || ' checks, ' || count(*) filter (where has_table_privilege('authenticated', t, p))::text || ' held'
       from unnest(array['public.integration_connections','public.integration_sync_runs']) t,
-           unnest(array['INSERT','UPDATE','DELETE','TRUNCATE']) p$$,
-  '8 checks, 0 held');
+           unnest(array['INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p$$,
+  '12 checks, 0 held');
 select ig.val('IT5 anon and service_role hold NOTHING on either table, table- or column-level',
   $$select (count(*) filter (where has_table_privilege(r, t, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')))::text
          || '/' || (select count(*) from information_schema.column_privileges
@@ -191,6 +191,42 @@ select ig.val('IT9f a second live connection to the same provider for the same s
 select ig.val('IT9g a revoked connection must drop its secret reference',
   format($$insert into public.integration_connections (organisation_id, provider, status, revoked_at, token_secret_id)
            values (%L, 'fatsoma', 'revoked', now(), gen_random_uuid()) returning 'written'$$, :'org_a'),
+  'denied(23514)');
+
+-- Fix round 1, finding 2: every CHECK has a targeting assertion, and each
+-- biconditional is probed in both directions. Every row is otherwise valid,
+-- so the refusal measured is that one rule's.
+select ig.val('IT9h revoked WITHOUT revoked_at is refused (status=revoked <=> revoked_at set, one way)',
+  format($$insert into public.integration_connections (organisation_id, provider, status)
+           values (%L, 'fatsoma', 'revoked') returning 'written'$$, :'org_a'),
+  'denied(23514)');
+select ig.val('IT9i ...and a live status WITH revoked_at is refused (the other way)',
+  format($$insert into public.integration_connections (organisation_id, provider, status, revoked_at)
+           values (%L, 'fatsoma', 'active', now()) returning 'written'$$, :'org_a'),
+  'denied(23514)');
+select ig.val('IT9j a FAILED sync run without an error_code is refused (status=failed <=> error_code set, one way)',
+  format($$insert into public.integration_sync_runs (organisation_id, connection_id, status, finished_at)
+           values (%L, %L, 'failed', now()) returning 'written'$$, :'org_a', :'conn_a'),
+  'denied(23514)');
+select ig.val('IT9k ...and a SUCCEEDED one carrying an error_code is refused (the other way)',
+  format($$insert into public.integration_sync_runs (organisation_id, connection_id, status, finished_at, error_code)
+           values (%L, %L, 'succeeded', now(), 'internal') returning 'written'$$, :'org_a', :'conn_a'),
+  'denied(23514)');
+select ig.val('IT9l a RUNNING sync run with finished_at set is refused (status=running <=> finished_at null, one way)',
+  format($$insert into public.integration_sync_runs (organisation_id, connection_id, status, finished_at)
+           values (%L, %L, 'running', now()) returning 'written'$$, :'org_a', :'conn_a'),
+  'denied(23514)');
+select ig.val('IT9m ...and a SUCCEEDED one without finished_at is refused (the other way)',
+  format($$insert into public.integration_sync_runs (organisation_id, connection_id, status)
+           values (%L, %L, 'succeeded') returning 'written'$$, :'org_a', :'conn_a'),
+  'denied(23514)');
+select ig.val('IT9n a negative items_read is refused',
+  format($$insert into public.integration_sync_runs (organisation_id, connection_id, items_read)
+           values (%L, %L, -1) returning 'written'$$, :'org_a', :'conn_a'),
+  'denied(23514)');
+select ig.val('IT9o a negative items_written is refused',
+  format($$insert into public.integration_sync_runs (organisation_id, connection_id, items_written)
+           values (%L, %L, -1) returning 'written'$$, :'org_a', :'conn_a'),
   'denied(23514)');
 
 insert into public.integration_connections (id, organisation_id, provider, status, revoked_at)
@@ -280,6 +316,28 @@ set request.jwt.claims = :'owner_a_c1';
 select ig.val('IR7 MFA: A''s Owner at aal1 reads no workspace-scoped connection (manage_integrations is aal2-gated)', :'vis_c', 'A=0,B=0,F=0');
 reset role;
 reset request.jwt.claims;
+
+-- Fix round 1, finding 1: the person-scoped branch is owner_user_id = me AND
+-- view_crm in that workspace. Without the second conjunct a person who has
+-- been revoked from, or has left, the workspace keeps reading their old row.
+-- IR3 is the positive control (same person, active membership).
+update public.organisation_memberships set status = 'revoked'
+ where organisation_id = :'org_a' and user_id = :'mgr_a';
+set role authenticated;
+set request.jwt.claims = :'mgr_a_c';
+select ig.val('IR8a a REVOKED member no longer reads the person-scoped connection they own', :'vis_c', 'A=0,B=0,F=0');
+select ig.val('IR8b ...nor its sync run',                                          :'vis_r', 'A=0,B=0,F=0');
+reset role;
+reset request.jwt.claims;
+delete from public.organisation_memberships where organisation_id = :'org_a' and user_id = :'mgr_a';
+set role authenticated;
+set request.jwt.claims = :'mgr_a_c';
+select ig.val('IR9a a member who has LEFT (membership deleted) no longer reads the connection they own', :'vis_c', 'A=0,B=0,F=0');
+select ig.val('IR9b ...nor its sync run',                                          :'vis_r', 'A=0,B=0,F=0');
+reset role;
+reset request.jwt.claims;
+select ig.val('IR9c FIXTURE: the row itself still exists, owned by them (the zero is the policy, not a missing row)',
+  format($$select count(*)::text from public.integration_connections where id = %L and owner_user_id = %L$$, :'conn_am', :'mgr_a'), '1');
 
 -- ===========================================================================
 -- § IB BREAKOUT: A's Owner forges every write on both tables.

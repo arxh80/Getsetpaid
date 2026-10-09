@@ -1234,7 +1234,7 @@ fi
 # live entry, and who reads a connection and its sync runs. Self-contained and
 # re-runnable on one database (it removes its own fixtures).
 # ============================================================================
-run_suite "PHASE 9 INTEGRATIONS" rls_phase9_integrations.sql ig 43
+run_suite "PHASE 9 INTEGRATIONS" rls_phase9_integrations.sql ig 56
 ig_fails=$SUITE_FAILS
 if [ "$ig_fails" != "0" ]; then
   echo "PHASE 9 INTEGRATIONS SUITE FAILED: $ig_fails failing assertion(s)" >&2

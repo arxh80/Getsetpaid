@@ -117,3 +117,62 @@ M8 reddened nothing before IT13/IT14 existed. That gap is why they were added.
 
 - `pnpm lint`: clean.
 - `pnpm typecheck`: clean (exit 0), after `npx next typegen`. Without typegen it fails with `Cannot find name 'PageProps'` in `app/legal/[slug]/page.tsx`. That is the known missing-`.next/types` condition CLAUDE.md describes, not something this task introduced.
+
+## Fix round 1 (review: task-1-review.md)
+
+Before starting, `git status` was clean at 439cb71, which includes b55054d (`.gitattributes` LF).
+
+### Finding 1 (CRITICAL): the view_crm conjunct in the person-scoped read
+
+The product has a per-member deactivation state, `organisation_memberships.status = 'revoked'` (the CHECK allows `invited | active | revoked`). It has no separate suspended state. Both departure paths are now covered:
+
+| ID | Proves |
+|---|---|
+| IR8a/b | After the Manager's membership is set to `revoked`, they read 0 connections and 0 sync runs (previously A=1). |
+| IR9a/b | After the Manager's membership is deleted (left the workspace), they read 0 and 0. |
+| IR9c | Fixture: the person-scoped row still exists and is still owned by them, so the zero comes from the policy, not from a missing row. |
+
+IR3 is the positive control: the same person with an active membership reads the row.
+
+Mutation F1: `using (... manage_integrations ... or owner_user_id = auth.uid())`, with the view_crm conjunct dropped, reddens **IR8a, IR8b, IR9a and IR9b**. Restored afterwards.
+
+### Finding 2 (IMPORTANT): CHECK rules with no targeting assertion
+
+Each insert below is valid apart from the rule under test, and each expects `denied(23514)`:
+
+| ID | Rule (direction) |
+|---|---|
+| IT9h | `(status='revoked') = (revoked_at is not null)`: revoked without revoked_at |
+| IT9i | Same rule, other way: active with revoked_at |
+| IT9j | `(status='failed') = (error_code is not null)`: failed without error_code |
+| IT9k | Same rule, other way: succeeded with error_code |
+| IT9l | `(status='running') = (finished_at is null)`: running with finished_at |
+| IT9m | Same rule, other way: succeeded without finished_at |
+| IT9n | `items_read >= 0` |
+| IT9o | `items_written >= 0` |
+
+Mutations (each constraint dropped, the suite run, then the constraint restored):
+
+| Mutant | Reds |
+|---|---|
+| F2a: drop `integration_connections_check` | IT9h, IT9i (+ IR1a, IR2a, IB5 from the leaked rows) |
+| F2b: drop `integration_sync_runs_check` | IT9j, IT9k (+ IR1b, IR2b, IB5) |
+| F2c: drop `integration_sync_runs_check1` | IT9l, IT9m (+ IR1b, IR2b, IB5) |
+| F2d: drop `integration_sync_runs_items_read_check` | IT9n (+ IR1b, IR2b, IB5) |
+| F2e: drop `integration_sync_runs_items_written_check` | IT9o (+ IR1b, IR2b) |
+
+After restoring all of them, the suite was back to 56/0.
+
+### Minors
+
+- Minor 4 (fixed): the interim export phrase is now "connections to other services (none can be made yet)", with no embedded comma. The tests in tests/integration/export and tests/unit/export pass: 59/59.
+- Minor 6 (fixed): IT4 now also checks REFERENCES and TRIGGER (12 checks, 0 held).
+- Minor 5 (left): revoked is terminal for `status` only. Task 2 rebuilds the guard and is the place to freeze the other columns of a revoked row.
+- Minor 7 (left): the storage-census timeout belongs in a separate change.
+- The `owner_user_id` on-delete-set-null finding was not acted on; the controller routed it to Task 3.
+
+### Re-runs
+
+- The new suite twice on one database: `run 1: errors=0 56 | 0` and `run 2: errors=0 56 | 0`.
+- Pin moved from 43 to 56 in `run-rls-tests.sh`.
+- Full runner after a fresh `npx supabase db reset --local`, in the foreground: exit 0, `PHASE 9 INTEGRATIONS: 56 assertions recorded, as pinned.`, `All suites passed.`, 27 suites, 4,333 assertions.
