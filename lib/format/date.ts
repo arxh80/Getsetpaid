@@ -82,7 +82,7 @@ export function formatDateOnly(value: string): string {
 // instant that wall clock names.
 //
 // `new Date("2026-09-04T22:00")` decides it with the SERVER'S zone. That is
-// correct on a UK laptop, wrong on a Vercel box running UTC (an event at 22:00
+// correct on a UK laptop, wrong on a server running UTC (an event at 22:00
 // on a July evening is stored an hour late and reads back as 23:00), and wrong
 // AGAIN on both machines across the two days a year the offset changes.
 // CLAUDE.md § Non-negotiable rules asks for "UTC in the database, UK local

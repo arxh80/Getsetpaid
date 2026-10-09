@@ -119,6 +119,7 @@ export default async function OrganisationLifecyclePage() {
               ? formatDateTime(org.retentionExpiresAt)
               : null,
             retentionDays: daysUntil(org.retentionExpiresAt, now),
+            ownerClosed: org.lifecycleState === "owner_closed",
           }))}
         />
       </section>

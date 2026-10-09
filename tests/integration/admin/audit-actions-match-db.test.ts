@@ -61,7 +61,10 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
           and n.nspname = 'private' and p.proname = 'audit_crm_change'
         order by 1, 2`,
     );
-    expect(rows.length).toBe(22);
+    // MOVED in Phase 8 Task 7: 22 -> 54 (sixteen more tables, two triggers
+    // each: 20261006000000). Pinned rather than derived from the catalogue so
+    // a lost pair is a red NUMBER here and a red NAME in the loop below.
+    expect(rows.length).toBe(54);
 
     const byTable = new Map<string, { target: string; triggers: string[] }>();
     for (const r of rows) {
@@ -146,8 +149,15 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
         order by 1, 2`,
     );
     // contact_company.deleted, custom_field_value.deleted, records.merged
-    // (20260828141000) -- fewer than three means this stopped finding them.
-    expect(rows.length).toBeGreaterThanOrEqual(3);
+    // (20260828141000) and membership.deleted (20261006000000) -- fewer than
+    // four means this stopped finding them.
+    expect(rows.length).toBeGreaterThanOrEqual(4);
+    expect(rows.map((r) => r.args.split(/\\000|\0/)[0]).sort()).toEqual([
+      "contact_company.deleted",
+      "custom_field_value.deleted",
+      "membership.deleted",
+      "records.merged",
+    ]);
 
     const known = new Set(knownAuditActions());
     const missing = rows
@@ -159,13 +169,65 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
     expect(missing).toEqual([]);
   });
 
+  // FIX ROUND 2 OF PHASE 8 TASK 6 (re-review finding m-N4): the catalogue
+  // now exists in the database too -- private.audit_action_catalogue(),
+  // the hand-listed half in private.platform_audit_actions() plus the CRM
+  // half derived from the same triggers this file reads -- so that the
+  // retention suite can plant the WHOLE catalogue either side of the audit
+  // period. Two lists that must be the same list: asserted as sets in both
+  // directions, and non-empty.
+  it("private.audit_action_catalogue() is exactly knownAuditActions()", async () => {
+    const { rows } = await pool.query<{ action: string }>(
+      `select a as action from private.audit_action_catalogue() a`,
+    );
+    // Sorted on THIS side on both sides: Postgres orders by the database
+    // collation, JavaScript by code point, and "." against "_" differs.
+    const live = rows.map((r) => r.action).sort();
+    // MOVED in Phase 8 Task 7: 40 + 4 + 52 = 96 before it, 100 + 5 + 57 = 162
+    // after (sixteen targets, membership.deleted, five network_connection.*).
+    // 163 since Phase 8 Task 9a (20261010000000): retention.audit_ceiling_released
+    // (Q184, founder 2026-09-30) -- 100 + 5 + 58.
+    // 164 since Phase 8 Task 9c (20261021000000): organisation.closed_by_owner.
+    // 166 since Task 9c job 2 (20261022001000): organisation.closure_reassigned
+    // and organisation.closure_deleted.
+    // 167 since Task 9c fix round 1b (20261027002000):
+    // organisation.closure_candidates_viewed (Q223).
+    expect(live.length).toBe(167);
+    expect(new Set(live).size, "the database catalogue lists a name twice").toBe(live.length);
+    expect(live).toEqual([...knownAuditActions()].sort());
+  });
+
   it("the derived CRM action set is exactly what the trigger can emit", () => {
-    // 9 soft-deletable x 4 verbs + 2 x 2 verbs. The verbs themselves are
-    // pinned by rls_phase7_crm_audit.sql § CI/CU/CD against real writes; this
+    // 23 soft-deletable x 4 verbs + 4 x 2 verbs (MOVED 40 -> 100 in Phase 8
+    // Task 7). The verbs themselves are pinned by rls_phase7_crm_audit.sql
+    // § CI/CU/CD and rls_phase8_crm_audit_p3_6.sql against real writes; this
     // is the count that the two facts above imply.
-    expect(crmAuditActions()).toHaveLength(40);
+    expect(crmAuditActions()).toHaveLength(100);
   });
 });
+
+/** The argument list that follows an open paren, split at depth 0. */
+function splitArgs(tail: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of tail) {
+    if (ch === "(" || ch === "[") depth += 1;
+    else if (ch === "]") depth -= 1;
+    else if (ch === ")") {
+      if (depth === 0) break;
+      depth -= 1;
+    }
+    if (ch === "," && depth === 0) {
+      args.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  args.push(current);
+  return args;
+}
 
 describe("every literal action any database function writes is in the catalogue", () => {
   it("scans every public/private function body for log_audit_event(... p_action => '<name>' ...)", async () => {
@@ -173,31 +235,250 @@ describe("every literal action any database function writes is in the catalogue"
       `select n.nspname || '.' || p.proname as fqn, pg_get_functiondef(p.oid) as body
          from pg_proc p join pg_namespace n on n.oid = p.pronamespace
         where n.nspname in ('public', 'private') and p.prokind = 'f'
-          and pg_get_functiondef(p.oid) ~ 'log_audit_event'`,
+          and pg_get_functiondef(p.oid) ~ 'log_audit_event|log_organisation_lifecycle_event|log_override_event'`,
     );
     expect(rows.length).toBeGreaterThan(5);
 
     const known = new Set(knownAuditActions());
     const missing: string[] = [];
+    // EVERY CALL SITE IS ACCOUNTED FOR, NOT JUST THE ONES SPELLED ONE WAY
+    // (census audit, finding 12). This matched `p_action => '<name>'` and
+    // nothing else, so a PERFECTLY LEGAL positional call --
+    // `perform private.log_audit_event('org.suspended', 'organisation', ...)`
+    // -- was invisible, and the enclosing `rows.length > 5` denominator did
+    // not move, because the function still matches `log_audit_event` and still
+    // appears in `rows`. All 33 call sites use named notation today by house
+    // convention, asserted by nothing until now.
+    //
+    // The character class was also `[a-z_.]+`, which does not match a digit or
+    // a capital: `gdpr.art17_erasure` failed the pattern entirely (the closing
+    // quote does not follow `gdpr.art`) and was skipped in silence rather than
+    // reported as unknown.
+    //
+    // So: every `log_audit_event` call site is found, its action resolved
+    // named-or-positional, and any site whose action this cannot read is
+    // reported as UNRESOLVED and has to be named in DYNAMIC_ACTION_SITES with
+    // the reason. That is what makes this a census rather than a sample.
+    const unresolved: string[] = [];
     for (const { fqn, body } of rows) {
       // Strip `--` comments so a name mentioned in prose does not count.
       const code = body.replace(/--[^\n]*/g, "");
-      // A COMPLETE literal only: `p_action => 'x.y',` or `... 'x.y')`.
-      // public.end_impersonation_session builds its name as
-      // `'impersonation.' || case ... end`, and both of its outcomes
-      // (.ended/.expired) are listed by hand; the prefix alone is not a name.
-      for (const m of code.matchAll(/p_action\s*=>\s*'([a-z_.]+)'\s*[,)]/g)) {
-        if (!known.has(m[1])) missing.push(`${fqn}: ${m[1]}`);
+      if (fqn === "private.log_audit_event") continue; // its own definition
+      // THE TWO PARAMETERISED WRAPPERS ARE ENTRY POINTS TOO. A function that
+      // calls `private.log_override_event('billing_override.granted', ...)`
+      // does not name `log_audit_event` at all, so it was outside the row set
+      // ENTIRELY -- not merely unmatched. Resolving one level of wrapper is
+      // what makes the equality below a statement about every literal action
+      // the schema writes.
+      for (const call of code.matchAll(/(log_audit_event|log_organisation_lifecycle_event|log_override_event)\s*\(/g)) {
+        const entry = call[1]!;
+        // Skip the function's OWN `create function ...(` header.
+        if (fqn.endsWith(`.${entry}`)) continue;
+        const tail = code.slice(call.index! + call[0].length, call.index! + call[0].length + 400);
+        const named = /p_action\s*=>\s*'([A-Za-z0-9_.]+)'\s*[,)]/.exec(tail.split(")")[0] ?? "");
+        // Where p_action sits when the call is POSITIONAL, per entry point.
+        const at = entry === "log_organisation_lifecycle_event" ? 1 : 0;
+        const positional = /^'([A-Za-z0-9_.]+)'$/.exec((splitArgs(tail)[at] ?? "").trim());
+        const action = named?.[1] ?? positional?.[1];
+        if (action === undefined) {
+          unresolved.push(`${fqn}: ${tail.slice(0, 60).replace(/\s+/g, " ").trim()}`);
+        } else if (!known.has(action)) {
+          missing.push(`${fqn}: ${action}`);
+        }
       }
       // The document audit RPC validates p_action against a closed set
       // written as `p_action not in ('a', 'b', ...)`.
       const closed = code.match(/p_action\s+not\s+in\s*\(([^)]*)\)/);
       if (closed) {
-        for (const m of closed[1].matchAll(/'([a-z_.]+)'/g)) {
+        for (const m of closed[1].matchAll(/'([A-Za-z0-9_.]+)'/g)) {
           if (!known.has(m[1])) missing.push(`${fqn} (closed set): ${m[1]}`);
         }
       }
     }
+    expect(missing).toEqual([]);
+
+    // WHAT THE RESOLUTION DROPPED, PINNED. A call whose action is built at
+    // runtime cannot be read out of the body, and dropping it silently is the
+    // whole bug class: each one is named, with the reason its outcomes are
+    // listed by hand instead.
+    const DYNAMIC_ACTION_SITES: Record<string, string> = {
+      "private.audit_crm_row":
+        "the Phase 2 CRM audit trigger: p_action => tg_argv[0], so the name is the trigger's own " +
+        "argument. Every such trigger is censused BY NAME in the trigger block above (22 pinned), " +
+        "which is where those action names are actually checked.",
+      "private.audit_crm_change":
+        "the Phase 7 Task 6b CRM audit trigger: v_target || '.created' and v_action, both built from " +
+        "the table name. The hundred names they produce are pinned by crmAuditActions() and asserted " +
+        "against the catalogue in the block above.",
+      "private.audit_network_row":
+        "the network audit trigger: v_action is assigned from one of eight literals in a CASE chain. " +
+        "Its outcomes are network_profile.published / .unpublished / .visibility_changed and " +
+        "network_connection.requested / .accepted / .declined / .withdrawn / .updated, all listed by " +
+        "hand in PLATFORM_AUDIT_ACTIONS -- and asserted BELOW by reading the literals out of the " +
+        "body, because this entry used to claim they were listed under a name that never existed " +
+        "(network_connection_request.*) while three of them were on neither side of the catalogue.",
+      "private.audit_dsr_transition":
+        "'data_subject_request.' || new.status -- the status values are a CHECK constraint the state " +
+        "machine owns, and each resulting name is in the catalogue.",
+      "private.audit_incident_alert_resolution":
+        "a `case` over new.resolved_at, producing incident_alert.resolved / .reopened, both listed.",
+      "public.end_impersonation_session":
+        "builds 'impersonation.' || v_status; both outcomes (.ended, .expired) are listed by hand " +
+        "in the catalogue, and the prefix alone is not a name.",
+      "private.audit_document_action":
+        "p_action IS ITS OWN PARAMETER, reached from TypeScript rather than from SQL, and validated " +
+        "against a closed `p_action not in (...)` set -- which the branch above reads and checks " +
+        "name by name. That closed set is the census for this one.",
+      "private.log_organisation_lifecycle_event":
+        "a WRAPPER: it forwards its own p_action parameter. Its callers are resolved above, since " +
+        "the row set now includes functions that name the wrapper rather than log_audit_event.",
+      "private.log_override_event":
+        "a WRAPPER, exactly as above.",
+    };
+    const unresolvedFns = [...new Set(unresolved.map((u) => u.split(":")[0]!))].sort();
+    expect(
+      unresolvedFns,
+      "a function calls log_audit_event with an action this census cannot read out of the body. " +
+        "Either write the action as a literal, or name the function in DYNAMIC_ACTION_SITES with " +
+        "the reason its outcomes are pinned somewhere else. Sites: " + unresolved.join(" | "),
+    ).toEqual(Object.keys(DYNAMIC_ACTION_SITES).sort());
+  });
+
+  // PHASE 8 TASK 7: the dynamic site whose reason was wrong. Read every
+  // `v_action := '<literal>'` out of private.audit_network_row() and require
+  // each to be in the catalogue -- with a denominator, so an assignment
+  // shape this cannot read is a red test rather than a silent skip.
+  it("every literal private.audit_network_row() assigns to v_action is in the catalogue", async () => {
+    const { rows } = await pool.query<{ body: string }>(
+      `select pg_get_functiondef(p.oid) as body
+         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'private' and p.proname = 'audit_network_row'`,
+    );
+    expect(rows.length).toBe(1);
+    const code = rows[0].body.replace(/--[^\n]*/g, "");
+    const assignments = [...code.matchAll(/v_action\s*:=\s*([^;]+);/g)].map((m) => m[1].trim());
+    expect(assignments.length, "no v_action assignment was read out of the body").toBeGreaterThanOrEqual(8);
+    const literals = assignments.map((a) => /^'([A-Za-z0-9_.]+)'$/.exec(a)?.[1]);
+    expect(literals, "an assignment that is not a bare literal: " + assignments.join(" | ")).not.toContain(undefined);
+    const known = new Set(knownAuditActions());
+    expect(literals.filter((l) => !known.has(l!))).toEqual([]);
+    expect([...new Set(literals)].sort()).toEqual([
+      "network_connection.accepted",
+      "network_connection.declined",
+      "network_connection.requested",
+      "network_connection.updated",
+      "network_connection.withdrawn",
+      "network_profile.published",
+      "network_profile.unpublished",
+      "network_profile.visibility_changed",
+    ]);
+  });
+
+  it("POSITIVE CONTROL: the resolver reads a positional call and a name with a digit", () => {
+    // Measured against the two shapes the old pattern could not see. Without
+    // this the widening above is an untested claim.
+    const read = (tail: string): string | undefined =>
+      (/^\s*p_action\s*=>\s*'([A-Za-z0-9_.]+)'\s*[,)]/.exec(tail) ?? /^\s*'([A-Za-z0-9_.]+)'\s*[,)]/.exec(tail))?.[1];
+    expect(read(`'org.suspended', 'organisation', v_id)`)).toBe("org.suspended");
+    expect(read(`\n      p_action => 'gdpr.art17_erasure',`)).toBe("gdpr.art17_erasure");
+    expect(read(`\n      p_action => tg_argv[0],`)).toBeUndefined();
+    // ...and the OLD pattern misses both of the first two.
+    const OLD = /p_action\s*=>\s*'([a-z_.]+)'\s*[,)]/;
+    expect(OLD.test(`log_audit_event('org.suspended', 'organisation', v_id)`)).toBe(false);
+    expect(OLD.test(`log_audit_event(p_action => 'gdpr.art17_erasure',`)).toBe(false);
+  });
+});
+
+// ===========================================================================
+// THE THIRD WAY AN ACTION NAME REACHES THE TABLE, AND IT WAS INVISIBLE UNTIL
+// PHASE 8 TASK 5 NEEDED IT.
+// ===========================================================================
+// Everything above reads `private.log_audit_event(...)` and its two wrappers.
+// That function REQUIRES `auth.uid()` -- it raises 28000 without one -- so a
+// sessionless writer cannot use it at all, and Task 5 has two: the erasure
+// job's request trigger (a workspace purge is started by the platform) and
+// the erasure summary itself (by the time it is written, the person who asked
+// does not exist). Both INSERT into public.audit_events directly, with the
+// Q130 tombstone as the actor.
+//
+// A direct insert was outside every census in this file. Its action name
+// could be renamed, mistyped or added without the operator's filter ever
+// learning it existed -- the "a check that cannot see its own subject" class,
+// on the exact surface this file is about. So: find every function that
+// inserts into public.audit_events directly, read the literal it puts in the
+// `action` column, and require it to be in the catalogue.
+describe("every literal action a function INSERTS into audit_events directly is in the catalogue", () => {
+  it("finds the direct writers and reads their action names", async () => {
+    const { rows } = await pool.query<{ fqn: string; body: string }>(
+      `select n.nspname || '.' || p.proname as fqn, pg_get_functiondef(p.oid) as body
+         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname in ('public', 'private') and p.prokind = 'f'
+          -- POSIX CHARACTER CLASSES, NOT BACKSLASH ESCAPES, AND THAT IS NOT
+          -- A STYLE CHOICE. This query is a JS template literal, in which a
+          -- lone backslash-s is not a recognised escape and is silently
+          -- DROPPED to a bare s -- so the pattern that reached Postgres read
+          -- insertss+intoss+public... and matched nothing at all. Measured on
+          -- this census's first run against a real database: it returned an
+          -- EMPTY row set, and the DENOMINATOR assertion below is the only
+          -- reason that was a red test rather than a green census of nothing.
+          -- [[:space:]] carries no backslash and therefore cannot be eaten.
+          and pg_get_functiondef(p.oid) ~* 'insert[[:space:]]+into[[:space:]]+public[.]audit_events'`,
+    );
+
+    // DENOMINATOR. private.log_audit_event itself, plus the two Task 5
+    // writers. Fewer than three means this stopped finding them -- which is
+    // how a census of this shape goes quietly green.
+    expect(
+      rows.map((r) => r.fqn).sort(),
+      "the direct-insert census lost a writer it used to see",
+    ).toEqual(
+      [
+        // Fix round 1, M6: the erasure closes the register row it answered,
+        // from a sessionless server role, and audit_dsr_transition() writes
+        // that one row directly with the tombstone as the actor, because
+        // log_audit_event() refuses an unattributable row.
+        "private.audit_dsr_transition",
+        "private.audit_erasure_job_requested",
+        "private.erase_account",
+        // Fix round 1, M2: the workspace purge writes its own summary row now,
+        // so the roll of direct writers is four. Adding one is meant to be a
+        // deliberate edit here -- that is what this census is for.
+        "private.erase_organisation",
+        "private.log_audit_event",
+        // Phase 8 Task 6: the retention run's ONE summary row. Sixth writer,
+        // and here for the same reason as the erasure's two -- a scheduled
+        // sweep has nobody on it, and log_audit_event() raises 28000 without
+        // an auth.uid(). Actor = the Q130 tombstone.
+        "public.run_retention_sweep",
+      ],
+    );
+
+    const known = new Set(knownAuditActions());
+    const found: string[] = [];
+    const missing: string[] = [];
+    for (const { fqn, body } of rows) {
+      if (fqn === "private.log_audit_event") continue; // forwards its parameter
+      const code = body.replace(/--[^\n]*/g, "");
+      // SCOPED TO THE INSERT STATEMENT ITSELF, from the keyword to that
+      // statement's terminating semicolon -- not the whole function body.
+      // private.erase_account() is full of dotted literals that are jsonb
+      // COUNT KEYS ('notes.private_deleted', 'merges.owner_snapshots'), and a
+      // whole-body scan would report every one of them as an unknown audit
+      // action. Inside the statement, the action is the one dotted literal:
+      // 'erasure_job' (the target type) and 'account' (a kind) carry no dot.
+      for (const at of code.matchAll(/insert\s+into\s+public\.audit_events/gi)) {
+        const from = at.index ?? 0;
+        const end = code.indexOf(";", from);
+        const statement = code.slice(from, end === -1 ? code.length : end);
+        for (const m of statement.matchAll(/'([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)'/g)) {
+          found.push(`${fqn}: ${m[1]}`);
+          if (!known.has(m[1])) missing.push(`${fqn}: ${m[1]}`);
+        }
+      }
+    }
+    // POSITIVE CONTROL: the reader found something. Without this, a regex
+    // that matched nothing would satisfy `missing` perfectly.
+    expect(found.length, "no action name was read out of any direct writer").toBeGreaterThan(1);
     expect(missing).toEqual([]);
   });
 });

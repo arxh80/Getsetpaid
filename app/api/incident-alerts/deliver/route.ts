@@ -1,7 +1,21 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
-import { deliverPendingIncidentAlerts } from "@/lib/email/incident-alerts";
+import {
+  deliverPendingIncidentAlerts,
+  deliverPendingIncidentAlertsToTelegram,
+} from "@/lib/email/incident-alerts";
 import { deliverLockoutNotifications } from "@/lib/email/lockout-notification";
+import {
+  deliverDsrNotifications,
+  deliverErasureFailureNotifications,
+  deliverExportReadyNotifications,
+} from "@/lib/email/requester-notifications";
+import { deliverConnectionRequestNotifications } from "@/lib/email/network-notifications";
+import { deliverTaskReminderNotifications } from "@/lib/email/task-reminder-notifications";
+import {
+  deliverWorkspaceClosureNotifications,
+  deliverWorkspaceDecisionNotifications,
+} from "@/lib/email/workspace-closure-notifications";
 
 // ===========================================================================
 // POST /api/incident-alerts/deliver
@@ -12,13 +26,33 @@ import { deliverLockoutNotifications } from "@/lib/email/lockout-notification";
 // pg_net-POSTs here with `Authorization: Bearer
 // <INCIDENT_ALERT_DELIVERY_SECRET>`, read from Supabase Vault.
 //
-// TWO DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
+// TEN DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS:
 //   * the OPERATOR's digest -- one email covering every alert nobody has been
 //     emailed about, stamping `notified_at` after ok:true
 //     (lib/email/incident-alerts.ts);
+//   * the OPERATOR's Telegram alert (founder 2026-09-30, Q111) -- one
+//     counts-only message, stamping its OWN column `telegram_notified_at`
+//     after ok:true, a no-op when TELEGRAM_BOT_TOKEN/TELEGRAM_ALERT_CHAT_ID
+//     are unset (same module, 20261014000000);
 //   * the ACCOUNT HOLDER's lockout notice -- one email per locked-out account,
 //     stamping `account_notified_at` after ok:true
-//     (lib/email/lockout-notification.ts, founder ruling Q114).
+//     (lib/email/lockout-notification.ts, founder ruling Q114);
+//   * since 20261015000000 (founder 2026-09-30, Q157(3)/Q174/Q45), the
+//     REQUESTER's DSR received/closed notices and export-ready notice, and
+//     the SUPERUSER's erasure-failure notice (lib/email/requester-
+//     notifications.ts), each stamping its own column after ok:true;
+//   * since 20261016000000 (same ruling), the connection-request received /
+//     accepted / declined notices and the task reminder (lib/email/
+//     network-notifications.ts, lib/email/task-reminder-notifications.ts),
+//     each stamping a row in
+//     private.notification_deliveries after ok:true;
+//   * since Task 9c job 2b (founder 2026-09-30, Q176/Q178), the SUPERUSER's
+//     workspace-closed notice and the remaining Owners'/Admins' reassigned /
+//     deleted notice (lib/email/workspace-closure-notifications.ts), each
+//     stamping a ledger row keyed on its audit row after ok:true.
+//     Worst case of the whole route ~490 s against the 600 s cadence (the
+//     shared per-loop budget tightened 60 s -> 45 s, Q204; the arithmetic is
+//     in lib/email/requester-notifications.ts).
 // They are deliberately not folded together: different recipients, different
 // content, different failure. Each runs even if the other fails, and each
 // reports its own outcome in the response body.
@@ -46,6 +80,18 @@ function bearerMatches(header: string | null, secret: string): boolean {
   return presented.length === expected.length && timingSafeEqual(presented, expected);
 }
 
+async function settle<T>(
+  run: () => Promise<T>,
+): Promise<T | { readonly outcome: "unavailable"; readonly error: string }> {
+  try {
+    return await run();
+  } catch (err) {
+    const error = err instanceof Error ? err.name : "unknown error";
+    console.error(`[delivery] a delivery threw (${error}); the others still ran`);
+    return { outcome: "unavailable", error };
+  }
+}
+
 export async function POST(request: Request): Promise<NextResponse> {
   const secret = configuredSecret();
   if (!secret || !bearerMatches(request.headers.get("authorization"), secret)) {
@@ -58,13 +104,50 @@ export async function POST(request: Request): Promise<NextResponse> {
   // Sequential, not Promise.all: both run as service_role against the same
   // table and a tick has ten minutes; there is nothing to win by racing them
   // and a clearer log by not.
-  const digest = await deliverPendingIncidentAlerts();
-  const lockouts = await deliverLockoutNotifications();
+  //
+  // Each is caught on its own: a THROW from one channel (none is expected --
+  // each returns its failure -- but a thrown TypeError is not a returned one)
+  // must not skip the next. The email digest runs first and its stamp is
+  // written inside its own call, so nothing the Telegram half does afterwards
+  // can reach it, and vice versa.
+  const digest = await settle(deliverPendingIncidentAlerts);
+  const telegram = await settle(deliverPendingIncidentAlertsToTelegram);
+  const lockouts = await settle(deliverLockoutNotifications);
+  const dataRequests = await settle(deliverDsrNotifications);
+  const exportsReady = await settle(deliverExportReadyNotifications);
+  const erasureFailures = await settle(deliverErasureFailureNotifications);
+  const connectionRequests = await settle(deliverConnectionRequestNotifications);
+  const taskReminders = await settle(deliverTaskReminderNotifications);
+  const workspaceClosures = await settle(deliverWorkspaceClosureNotifications);
+  const workspaceDecisions = await settle(deliverWorkspaceDecisionNotifications);
 
-  const unavailable =
-    digest.outcome === "unavailable" || lockouts.outcome === "unavailable";
+  const unavailable = [
+    digest,
+    telegram,
+    lockouts,
+    dataRequests,
+    exportsReady,
+    erasureFailures,
+    connectionRequests,
+    taskReminders,
+    workspaceClosures,
+    workspaceDecisions,
+  ].some(
+    (r) => r.outcome === "unavailable",
+  );
   return NextResponse.json(
-    { ...digest, accountNotifications: lockouts },
+    {
+      ...digest,
+      telegram,
+      accountNotifications: lockouts,
+      dataRequestNotifications: dataRequests,
+      exportReadyNotifications: exportsReady,
+      erasureFailureNotifications: erasureFailures,
+      connectionRequestNotifications: connectionRequests,
+      taskReminderNotifications: taskReminders,
+      workspaceClosureNotifications: workspaceClosures,
+      workspaceDecisionNotifications: workspaceDecisions,
+    },
     {
       status: unavailable ? 503 : 200,
       headers: { "Cache-Control": "no-store" },

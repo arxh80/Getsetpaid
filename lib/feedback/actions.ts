@@ -106,10 +106,10 @@
 // through Next's after(): the one Brevo call now carries a 10-second timeout
 // (lib/email/send.ts), and with that in place it is no longer awaited on the
 // submit path at all -- a Brevo stall used to hold the dialog at "Sending…"
-// and invite a retry that inserted a second, identical row. after() keeps
-// the function alive on a serverless host until the callback settles, so the
-// send still happens; its failure is still logged and still left visible on
-// the row (notified_at null) -- never surfaced to the submitter, who did
+// and invite a retry that inserted a second, identical row. after() runs
+// the callback once the response has been sent, so the send still happens;
+// its failure is still logged and still left visible on the row
+// (notified_at null) -- never surfaced to the submitter, who did
 // nothing wrong and whose feedback IS recorded. lib/email/feedback-notification.ts.
 
 import { headers } from "next/headers";

@@ -1,0 +1,13 @@
+mutant: 09b-fulfilment-seam-server-only
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 0
+--- psql: red assertions, read from each suite's results table ---
+  [dsr] DF9a THE GUARD refuses the OPERATOR declaring that an export ran
+  [dsr] DF9b THE GUARD refuses the REQUESTER declaring that their own export ran
+  [dsr] DF9c THE GUARD, grant and policy OPEN: the requester's seam write is refused BY THE GUARD (the review's reproduction)
+  [dsr] DF9d ...and the session ROLE alone is enough -- authenticated with no person's claims
+  [dsr] DF9e ...and anon
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+        Tests  690 passed (690)

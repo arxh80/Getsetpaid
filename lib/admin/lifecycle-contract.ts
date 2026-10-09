@@ -46,17 +46,20 @@ export const ORGANISATION_RETENTION_DAYS = 60;
  * and that it leaves the network directory at once rather than at the end of
  * its paid period (DECISIONS-QUEUE Q101).
  */
-export type OrganisationLifecycleState = "active" | "suspended" | "deleted";
+export type OrganisationLifecycleState = "active" | "suspended" | "deleted" | "owner_closed";
 
 /** The two states in which a workspace is read-only and winding down. */
 export const WOUND_DOWN_STATES: readonly OrganisationLifecycleState[] = [
   "suspended",
   "deleted",
+  // Phase 8 Task 9c: the workspace's own Owner closed it
+  // (public.close_my_workspace(); founder 2026-09-30, reversing Q104).
+  "owner_closed",
 ];
 
 export function isWoundDown(
   state: OrganisationLifecycleState,
-): state is "suspended" | "deleted" {
+): state is Exclude<OrganisationLifecycleState, "active"> {
   return state !== "active";
 }
 
@@ -76,6 +79,8 @@ export function lifecycleLabel(state: OrganisationLifecycleState): string {
       return "Suspended";
     case "deleted":
       return "Closed";
+    case "owner_closed":
+      return "Closed by its Owner";
   }
 }
 
@@ -91,4 +96,34 @@ export function daysUntil(deadline: string | null, now: Date = new Date()): numb
   const ms = new Date(deadline).getTime() - now.getTime();
   if (Number.isNaN(ms)) return null;
   return Math.max(0, Math.ceil(ms / 86_400_000));
+}
+
+/**
+ * The sentence beside a disabled write control, and after a refused write, in
+ * a wound-down workspace (Phase 8 Task 9c job 3b).
+ *
+ * TWO SENTENCES, NOT ONE. Before the Owner-close flow every read-only
+ * workspace had been put there by the platform, so one "suspended -- contact
+ * support" sentence was true everywhere. An `owner_closed` workspace was
+ * closed by its own Owner and is waiting for the superuser's decision
+ * (reassign or delete, Q176/Q178); telling its members it is "suspended" is
+ * the copy lying about who did it and what happens next.
+ *
+ * Keyed on the state only, so the pure half can be unit-tested and the four
+ * server-side callers (CRM, finance, network publish, connections) cannot
+ * drift apart. `null` -- the caller could not be told the state -- degrades to
+ * the suspension sentence, which was the only sentence before.
+ */
+export const SUSPENDED_READ_ONLY_EXPLANATION =
+  "This workspace is suspended, so it’s read-only. You can still see everything in it. Contact GetSetPaid support to have it reinstated — an Owner can’t do it from here.";
+
+export const OWNER_CLOSED_READ_ONLY_EXPLANATION =
+  "This workspace was closed by its Owner, so it’s read-only. You can still see everything in it. GetSetPaid is deciding whether to hand it to a new Owner or delete it.";
+
+export function readOnlyExplanation(
+  lifecycle: { readonly state: OrganisationLifecycleState } | null | undefined,
+): string {
+  return lifecycle?.state === "owner_closed"
+    ? OWNER_CLOSED_READ_ONLY_EXPLANATION
+    : SUSPENDED_READ_ONLY_EXPLANATION;
 }

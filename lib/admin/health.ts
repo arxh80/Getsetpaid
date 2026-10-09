@@ -208,12 +208,59 @@ export async function loadPlatformHealthSnapshot(): Promise<PlatformHealthOutcom
 export type IncidentAlertType =
   | "rate_limit_tripped"
   | "repeated_login_failures"
-  | "upload_quarantined";
+  | "upload_quarantined"
+  // Phase 8 Task 3. Not abuse signals like the three above: these are the
+  // platform's own statutory obligation arriving at the operator without
+  // anyone opening /super/data-requests.
+  | "dsr_deadline_approaching"
+  | "dsr_overdue"
+  // Phase 8 Task 3 fix round 1 (M3): the alert the WATCHER files about
+  // itself. The deadline raiser now runs in its own subtransaction inside the
+  // cron tick so a failure cannot take the digest down with it -- and a
+  // failure that was merely survived would be a silent stop to the only
+  // proactive signal a statutory deadline has.
+  | "dsr_alert_writer_failed"
+  // Phase 8 Task 6 fix round 1 (Q182, review finding m5): a LIVE retention run
+  // that refused or failed for any reason but a switch somebody chose. Filed
+  // by a trigger on public.retention_runs, one open alert per distinct
+  // (sweep, reason), so "the audit purge has refused its ceiling every hour
+  // for a month" arrives in the digest instead of sitting in a column on this
+  // page that somebody has to look at.
+  | "retention_run_refused";
 
 export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {
   rate_limit_tripped: "Rate limit tripped",
   repeated_login_failures: "Repeated failed sign-ins",
   upload_quarantined: "Upload quarantined",
+  dsr_deadline_approaching: "Data request due soon",
+  dsr_overdue: "Data request OVERDUE",
+  dsr_alert_writer_failed: "Data request alerts FAILED to run",
+  retention_run_refused: "Retention job REFUSED to run",
+};
+
+/**
+ * WHY AN ALERT STOPPED BEING OPEN, WHEN NOBODY PRESSED ANYTHING.
+ *
+ * `incident_alerts.auto_resolved_reason` (20260925002000) is null on a
+ * person's resolution and carries one of these two values on the system's.
+ * FIX ROUND 2, RE-REVIEW FINDING M-R7: the column existed but was neither
+ * projected nor rendered, so a one-week SNOOZE (the operator pressed Resolve;
+ * the request is still open and still overdue) and a CLOSURE (the request
+ * reached a terminal state, there is nothing left to do) both read
+ * "resolved <time>" on /super/health. Q159 made "resolved" mean two opposite
+ * things, and the operator could not tell which one they were looking at.
+ *
+ * The keys are the database CHECK's values, bound to it by
+ * tests/integration/admin/incident-alert-vocabularies-match-db.test.ts --
+ * which is also the binding task-3-report.md claimed for
+ * INCIDENT_ALERT_TYPE_LABELS and did not have (M-R6).
+ */
+export const INCIDENT_ALERT_AUTO_RESOLUTION_LABELS: Record<string, string> = {
+  data_subject_request_closed:
+    "resolved automatically — the request was closed",
+  alert_writer_recovered: "cleared automatically — the writer recovered",
+  retention_run_recovered:
+    "cleared automatically — a later retention run completed without it",
 };
 
 /**
@@ -273,6 +320,15 @@ export interface IncidentAlertRow {
   readonly summary: string;
   readonly createdAt: string;
   readonly resolvedAt: string | null;
+  /**
+   * Null when a PERSON resolved it, one of
+   * INCIDENT_ALERT_AUTO_RESOLUTION_LABELS' keys when the SYSTEM did (fix round
+   * 2, M-R7). Projected because "resolved" means two opposite things since
+   * Q159 -- a snooze on a request that is still overdue, or a closure with
+   * nothing left to do -- and the row is the only place that distinction
+   * exists.
+   */
+  readonly autoResolvedReason: string | null;
 }
 
 /** Which alerts the operator is looking at. `any` is the default because a
@@ -485,7 +541,7 @@ export async function fetchIncidentAlertPage(
   let query = supabase
     .from("incident_alerts")
     .select(
-      "id, alert_type, organisation_id, details, summary, created_at, resolved_at",
+      "id, alert_type, organisation_id, details, summary, created_at, resolved_at, auto_resolved_reason",
     );
 
   // THE ALLOWLISTED FILTERS: two columns, two fixed operators, and both values
@@ -587,6 +643,7 @@ export async function fetchIncidentAlertPage(
     summary: row.summary as string,
     createdAt: row.created_at as string,
     resolvedAt: (row.resolved_at as string | null) ?? null,
+    autoResolvedReason: (row.auto_resolved_reason as string | null) ?? null,
   }));
 
   const lastRow = mapped[mapped.length - 1];

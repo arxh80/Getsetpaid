@@ -2,8 +2,16 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
   PASSWORD,
+  auditCeilingRelease,
+  clearAuditCeilingRelease,
+  clearRetentionRuns,
   deleteIncidentAlert,
   plantIncidentAlert,
+  plantRetentionRun,
+  retentionRuns,
+  latestRetentionRunSwept,
+  plantExpiredRetentionSubjects,
+  retentionSweepableRowKeys,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
@@ -246,9 +254,19 @@ test("the superuser reads live counts and a real alert row at /super/health", as
       page.getByText(alertSummary),
       "a resolved alert stays listed -- it is evidence, and resolving is a flag",
     ).toBeVisible();
-    await expect(row).toContainText(/resolved/i);
+    // AND IT SAYS WHO RESOLVED IT (fix round 2, M-R7). Since Q159 "resolved"
+    // means two opposite things -- a one-week SNOOZE the operator pressed on a
+    // request that is still overdue, or a SYSTEM closure with nothing left to
+    // do -- and both used to read the same four words. This is the operator's
+    // own press, so the row must say so.
+    await expect(row).toContainText(/resolved by you/i);
+    await expect(
+      row,
+      "the operator's own resolution must not read as the system's",
+    ).not.toContainText(/resolved automatically/i);
   } finally {
     await deleteIncidentAlert(alertId);
+    await clearRetentionRuns();
   }
 });
 
@@ -285,11 +303,156 @@ test("an aal1 superuser session reaches no health numbers", async ({ page }) => 
 });
 
 // ===========================================================================
+// PHASE 8 TASK 6: THE RETENTION JOB'S PANEL, AND ITS PREVIEW
+//
+// Requirement 4 is two claims and only a browser can check either:
+//
+//   * "Surface the last run and its outcome on /super/health" -- the psql
+//     suite proves the run writes a row; it cannot tell whether anything
+//     renders it, and a run log nobody can see is not a control.
+//   * "must be able to see what a run WOULD delete before it deletes it" --
+//     asserted here by pressing the real control and COUNTING THE ROWS EITHER
+//     SIDE OF IT, across the whole set of tables the job can touch. A preview
+//     that quietly deleted from any one of eight sweeps would be invisible to
+//     a check on one table.
+//
+// THE PRESS IS THE POINT. previewRetentionRunAction is behind step-up and
+// behind isSuperuser(); nothing short of a real signed-in, MFA-satisfied
+// superuser reaching the real form proves the control is usable at all.
+// ===========================================================================
+test("the superuser previews a retention run, and the preview deletes nothing", async ({
+  page,
+}) => {
+  await clearRetentionRuns();
+  await signInAsSuperuser(page);
+  await page.goto("/super/health");
+
+  // THE PANEL IS THERE, AND IT IS THERE EMPTY FIRST -- which is the state
+  // that says "no run has been recorded", and is itself a fact an operator
+  // needs (a deployment with no runner URL never records one).
+  await expect(
+    page.getByRole("heading", { name: "Retention", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("retention-no-runs")).toBeVisible();
+
+  // THE DENOMINATOR, AND IT IS NOT "THE TABLES ARE NOT EMPTY" (review finding
+  // m3). That was true of any fixture world and said nothing about whether
+  // there was anything to DELETE. Four rows are planted PAST THEIR PERIOD, one
+  // in each of four sweeps, so what follows is a claim about rows a live run
+  // would have taken -- and the preview is asserted to have COUNTED them,
+  // which is what proves it reached them at all.
+  const expired = await plantExpiredRetentionSubjects(world.users.manager.id);
+  try {
+    const before = await retentionSweepableRowKeys();
+    // The list of tables is DERIVED from private.retention_subjects() (m4a);
+    // these are the floor it must at least contain, so a derivation that
+    // resolved nothing cannot pass.
+    expect(Object.keys(before)).toEqual(
+      expect.arrayContaining(["audit_events", "documents", "feedback", "incident_alerts", "organisations"]),
+    );
+    for (const [table, key] of Object.entries(expired.keys)) {
+      expect(before[table].has(key), `the expired ${table} fixture was not planted`).toBe(true);
+    }
+
+    await page.getByRole("button", { name: "Preview the next run" }).click();
+
+    // The outcome lives in the region the action cannot unmount, and it says
+    // in words that nothing was deleted.
+    const outcome = page.getByTestId("retention-outcome");
+    await expect(outcome).toContainText("Preview complete");
+    await expect(outcome).toContainText("Nothing was deleted");
+
+    // THE RUN IS RENDERED, marked as a preview rather than as work done.
+    await expect(page.getByTestId("retention-runs")).toBeVisible();
+    await expect(page.getByTestId("retention-runs")).toContainText("preview");
+
+    // AND IT WAS A DRY RUN IN THE DATABASE, not merely a label on the page.
+    const runs = await retentionRuns();
+    expect(runs.map((r) => `${r.mode}/${r.status}`)).toEqual(["dry/completed"]);
+
+    // THE PREVIEW REACHED THE EXPIRED ROWS: it counted every one of them. A
+    // preview that never looked would also "delete nothing".
+    const swept = await latestRetentionRunSwept();
+    for (const key of ["rate_limit_counters.rows", "incident_alerts.rows", "feedback.rows", "audit_events.rows"]) {
+      expect(Number(swept[key] ?? 0), `the preview did not count the expired row behind ${key}`).toBeGreaterThanOrEqual(1);
+    }
+
+    // THE ASSERTION THE WHOLE TEST EXISTS FOR: NO ROW WAS LOST, BY KEY.
+    //
+    // Its third form. A SUM failed on a real run (31 where 29 was expected,
+    // having deleted nothing -- a run appends its own summary row). A COUNT per
+    // table with `>=` was stronger, and the review named its residual: it cannot
+    // see "deleted two and inserted two in the SAME table", and audit_events
+    // grows by exactly that during this test. So: every primary key present
+    // before the press is present after it. Inserts cannot hide a deletion.
+    const after = await retentionSweepableRowKeys();
+    for (const table of Object.keys(before)) {
+      const lost = [...before[table]].filter((key) => !after[table]?.has(key));
+      expect(
+        lost,
+        `A PREVIEW DELETED ROWS FROM public.${table}. It is the one control on ` +
+          "this page that reaches the machinery which deletes the audit log, and " +
+          "it is supposed to count and stop.",
+      ).toEqual([]);
+    }
+  } finally {
+    // The planted audit row names a real fixture user, and an audit row is a
+    // no-ON-DELETE reference: left behind, it blocks that user's teardown.
+    await expired.remove();
+    await clearRetentionRuns();
+  }
+});
+
+// ===========================================================================
+// PHASE 8 TASK 9a: THE AUDIT PURGE CEILING RELEASE (Q184, founder 2026-09-30:
+// "step-up gated and lasts 3 days"). The psql suite (REL1-REL28) proves the
+// RPC, the expiry and the purge honouring it; only a browser proves the
+// operator can reach the control, that the press lands as a 72-hour release
+// with the reason typed, and that the page then says it is active rather
+// than offering a second release. Scanned in that ACTIVE state, which the
+// general scan below never reaches (it renders the inactive form).
+// ===========================================================================
+test("the superuser releases the audit purge ceiling for 3 days, with a reason", async ({
+  page,
+}) => {
+  await clearAuditCeilingRelease();
+  try {
+    expect((await auditCeilingRelease()).hours, "DENOMINATOR: a release already existed").toBeNull();
+    await signInAsSuperuser(page);
+    await page.goto("/super/health");
+    await expect(page.getByTestId("ceiling-release-inactive")).toBeVisible();
+
+    await page.getByLabel("Why release it").fill("e2e backlog drain");
+    await page.getByRole("button", { name: "Release the ceiling for 3 days" }).click();
+
+    await expect(page.getByTestId("retention-outcome")).toContainText("Released.");
+    await expect(page.getByTestId("ceiling-release-active")).toContainText("e2e backlog drain");
+    await expect(page.getByRole("button", { name: "Release the ceiling for 3 days" })).toHaveCount(0);
+
+    // IN THE DATABASE, not just on the page: 72 hours, the reason, one audit row.
+    expect(await auditCeilingRelease()).toEqual({ hours: 72, reason: "e2e backlog drain", audited: 1 });
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+  } finally {
+    await clearAuditCeilingRelease();
+  }
+});
+
+// ===========================================================================
 // ACCESSIBILITY
 //
 // Scanned WITH an alert on the page, so the list, its labels and its Resolve
 // control are all in the tree. An empty-state scan would reach the counts and
 // miss every component the alerting half of this task added.
+//
+// AND, SINCE PHASE 8 TASK 6, WITH A RETENTION RUN ON IT TOO -- one carrying a
+// REFUSAL as well as counts, because the refusal line only exists when
+// something has gone wrong and is exactly the part an empty-state scan would
+// never reach. The two switches, their hint text and the reason field are in
+// the tree either way; the run card, its count list and its refusal are not.
 // ===========================================================================
 test("/super/health has no detectable accessibility violations", async ({
   page,
@@ -298,12 +461,17 @@ test("/super/health has no detectable accessibility violations", async ({
     world.orgId,
     "E2E accessibility scan fixture",
   );
+  await plantRetentionRun();
   try {
     await signInAsSuperuser(page);
     await page.goto("/super/health");
     await expect(
       page.getByText("E2E accessibility scan fixture"),
     ).toBeVisible();
+    // PROVED IN THE TREE BEFORE IT IS SCANNED, the rule this whole suite is
+    // written to: a scan of a component that did not render is a pass that
+    // means nothing.
+    await expect(page.getByTestId("retention-runs")).toContainText("bytes_not_purged");
 
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
@@ -314,5 +482,6 @@ test("/super/health has no detectable accessibility violations", async ({
     ).toEqual([]);
   } finally {
     await deleteIncidentAlert(alertId);
+    await clearRetentionRuns();
   }
 });

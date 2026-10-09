@@ -1,0 +1,10 @@
+mutant: 17f-release-lifts-the-floor
+migrations before/after: 213/213
+runner exit: 1   vitest exit: 
+--- psql: red assertions, read from each suite's results table ---
+  [rt] REL17 ...and the purge STILL REFUSES it under the release (the hard floor is a separate rail)
+  [rt] REL21 ...and the purge DOES NOT honour an expired release: the ceiling refuses again
+  [rt] REL22 ...deleting nothing more
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---

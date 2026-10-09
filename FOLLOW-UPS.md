@@ -890,8 +890,8 @@ These become live the moment a real tenant table exists.
   because the script is not Task 3's — the shape the review proposes is a
   `--check-local-only` flag on the same script, wired to `prebuild` and
   `start`, refusing anything but loopback unless an explicit
-  `GETSETPAID_ALLOW_HOSTED=1` is set (so Vercel, where `.env.local` is absent,
-  is unaffected). `tests/integration/rls/support/env.ts` already contains the
+  `GETSETPAID_ALLOW_HOSTED=1` is set (so the production host, where `.env.local`
+  is absent, is unaffected -- an IONOS VPS, founder 2026-09-30, Q142). `tests/integration/rls/support/env.ts` already contains the
   loopback assertion to reuse.
 
 - **PARTLY DISCHARGED (Task 3a / Phase 2), one residual open — verified at HEAD
@@ -2546,8 +2546,9 @@ next person does not have to re-derive it.
   the superuser actions already carry to
   `acceptImpersonationRequestAction`.
 - **Nothing notifies the customer that a request exists.** Q45 for the third
-  time (after `reminder_at` and connection requests): there is no notification
-  subsystem at MVP, so `/[orgSlug]/support-access` is the whole discovery
+  time (after `reminder_at` and connection requests, both of which ARE emailed
+  since Phase 8 Task 9b job 3, `20261016000000`): no email covers an
+  impersonation request, so `/[orgSlug]/support-access` is the whole discovery
   surface. **This is the entry the email fold-in later in Phase 7 should
   discharge** — an impersonation request is a better first transactional email
   than most, because the customer cannot act on it if they never see it.
@@ -2791,8 +2792,38 @@ next person does not have to re-derive it.
   row of trigger cost, no per-table opt-out). Everything is in
   `SECURITY.md` § 7, "Every CRM INSERT and UPDATE is audited too". **What
   this did not do:** the Phase 3–6 tables (events, lineup, tasks, meetings,
-  notes, documents, links, financial entries) carry no INSERT/UPDATE audit —
-  Q94 scoped this to "the twelve" and the extension is queued as Q122.
+  notes, documents, links, financial entries) carried no INSERT/UPDATE audit —
+  Q94 scoped this to "the twelve" and the extension was queued as Q122.
+- **Q122 — DONE 2026-09-30 (Phase 8 Task 7, `20261006000000`).** The same
+  trigger function and the same allowlist now cover **sixteen more tables**,
+  derived from the catalogue rather than copied from a list: `events`,
+  `event_lineup`, `tasks`, `meetings`, `notes`, `documents`, the four
+  `*_links`, `financial_entries`, `network_profiles`, `network_links`, and
+  three the derivation found that nobody had named —
+  `organisation_memberships` (an invite, a role escalation and a removal were
+  all unaudited; removal is `membership.deleted`), `organisation_subscriptions`
+  and `merge_candidates`. Structural columns only: never `notes.body`,
+  `meetings.attendees`, `documents.filename`, an amount or any free text.
+  `private.audit_coverage()` derives every tenant-owned table a client can
+  write and classifies its coverage, and
+  `tests/integration/admin/crm-audit-coverage-census.test.ts` is red by NAME
+  for a new one nobody decided about (proved with a planted table, and by
+  dropping a real trigger). The connection-request writer gained `.withdrawn`
+  and a name-only `.updated`; three `network_connection.*` names the database
+  had written since Phase 6 were on neither side of the catalogue and are now
+  registered. **Still open:** an Owner's rename of `organisations` is the one
+  excused table (Q189); whether a `network_link.*` row is compatible with Q82
+  is Q188 (shipped default: yes). `SECURITY.md` § 7 has the as-built text and
+  the measured volume. **Fix round 1 (`20261007000000`, `20261007001000`)**:
+  the allowlist's person ids (an invitee's `user_id`, a reassigned
+  `owner_user_id`) survived a completed account erasure on rows whose actor
+  and target were someone else -- the erasure now replaces the id inside
+  every audit payload and refuses if one survives (C1); the census now
+  requires an ENABLED trigger, RLS on for the RPC-only class, and sees an
+  FK-less `organisation_id` table and a writable view (M1/M2). **Still open
+  from it:** Q191 (`merge_candidate.restored` has no client path) and Q192
+  (the erasure's payload scan is a sequential scan; measured 0.45 s at 500k
+  rows).
 - **Restore-from-audit is not possible, by design.** The audit payload is an
   allowlist of identifiers — `private.audit_crm_payload()` drops
   `custom_field_values.value` and `merges.field_resolution` — because
@@ -3506,8 +3537,44 @@ recorded for the history and the residual each leaves; the rest are open.
 
 ### Opened by Task 4 (request-to-connect, the accept unlock, the link picker)
 
-- **There is no notification of any kind when a connection request is sent,
-  accepted, declined or withdrawn — this is the shipped design, not a gap.**
+- **FIXED in Phase 8 Task 9b fix round 1 (`20261017000000`, review C1 +
+  m3): a sender could INSERT a connection request already `accepted`** and
+  read the target's `connections`-level fields through
+  `network_connected_profiles` without the target accepting — pre-existing
+  since this task (the INSERT policy had no status term; the only status
+  guard was BEFORE UPDATE), made silent by Task 9b job 3 (the target is
+  emailed only about a `pending` row). Probed and measured leaking before
+  the fix. Now a BEFORE INSERT trigger refuses any non-pending birth, a
+  pre-filled response or a foreign `requested_by` (23514, every role but
+  `postgres`/`supabase_admin`, so `service_role` too), stamps
+  `requested_by`/`requested_at`, and the INSERT WITH CHECK repeats the
+  status terms (`rls_phase6_network.sql` § NP, plus an HTTP block).
+  **The responder half of m3 — CLOSED in fix round 2 (`20261020000000`,
+  re-review N1):** it was not only cosmetic. Combined with unpinned party
+  columns it let a SENDER rewrite its own pending request into an `accepted`
+  connection FROM the target and back-date `responded_at` so the target was
+  never emailed — measured leaking. Now `private.connection_request_bound_update`
+  pins the parties, binds each answer to its side and stamps both
+  `responded_*` columns; `authenticated` holds UPDATE on the three answer
+  columns only. `rls_phase8_crm_audit_p3_6.sql` PN5c (a same-status
+  `responded_at` edit) now runs as the exempt owner role, because no client
+  can make that edit any more.
+
+- **DISCHARGED in Phase 8 Task 9b job 3 (founder 2026-09-30,
+  Q157(3)/Q174/Q45; `20261016000000`, `lib/email/network-notifications.ts`):
+  a connection request is now EMAILED when it is received (to the requested
+  workspace's active Owners and Admins), accepted and declined (to the member
+  who sent it while still an active member of the sending workspace, else
+  that workspace's active Owners and Admins — Q202), on the existing `pg_cron`
+  tick and stamped in `private.notification_deliveries` only after
+  `ok:true`. Each carries the counterparty's published display name at most
+  and one link to `/[orgSlug]/network/requests`. `reminder_at` shipped in the
+  same piece of work, as this entry predicted. Still true: a WITHDRAWN
+  request is not emailed to anybody, and there is no in-app toast — the
+  requests page and the hub's pending-received count remain the in-app
+  surfaces.** The original entry, kept as history: **There is no
+  notification of any kind when a connection request is sent, accepted,
+  declined or withdrawn — this is the shipped design, not a gap.**
   CLAUDE.md's own `reminder_at` precedent (Q45: a task's reminder is stored
   and never delivered, because no notification subsystem exists at MVP) is
   the same answer here, by the same reasoning, for a second feature. A
@@ -4079,3 +4146,426 @@ three documents.
   `aclexplode`, and the page census globs `app/(app)/super/**` only, so a Phase
   8 route handler under `app/api/**` reading platform data would not be seen.
   Three one-line additions, all cheap, none of them made.
+
+## Phase 8 Task 4 (data exports)
+
+- **Task 6 owes the bytes, and read-time expiry is only half a retention
+  rule.** `public.export_jobs.expires_at` makes an archive unreachable after
+  seven days, by everybody including its own requester, with nothing
+  scheduled. The OBJECT in the `exports` bucket is still there. Three orphan
+  classes join the retention/GC job: an expired archive; the object of a job
+  whose requester's account was deleted (the row cascades, the bytes do not);
+  and the object of a job that uploaded and then failed to stamp (the runner
+  removes it on the spot, so only a crash between the two leaves one).
+  `/legal/data-retention` version 3 says all of this in words rather than
+  implying the file is gone.
+- **A job stuck in `running` blocks its subject, and nothing reaps it.** The
+  runner marks a failure itself, but if the stamp of that failure also fails
+  (a database blip at exactly the wrong moment) the row stays `running`, the
+  one-live-job partial unique index refuses the next request, and the person
+  sees "an export is already being prepared" for ever. It is loud rather than
+  silent — the page says so and the log says so — and the fix is one line in
+  Task 6's sweep (fail anything `running` for more than an hour). Q166.
+- **The account export is ONE live job per person and the workspace export is
+  one per WORKSPACE**, which means two Admins pressing at once queue rather
+  than double the work. The second Admin's refusal is a `23505` rendered as
+  "an export is already being prepared", and they cannot see whose it is —
+  there is no cross-member read of the register. That is the deliberate
+  consequence of "an archive is a snapshot taken under ONE person's rights";
+  if it ever reads as a bug, the fix is a shared *workspace* export with a
+  stated access basis, not a relaxed SELECT policy.
+- **CLOSED in Phase 8 Task 9b job 2** (founder 2026-09-30, Q157(3)/Q174/Q45;
+  `20261015000000`): the requester is now emailed when the export is ready,
+  linking the in-app export page only, stamped `ready_notified_at` after
+  `ok:true`. The original entry, kept as history: **Nothing tells the
+  requester the export is ready.** Q45 for the seventh
+  feature: the page is the whole notification, and a person who starts an
+  export and closes the tab finds out by coming back. The sender exists
+  (`lib/email/send.ts`) and the seam is obvious (a `notified_at` column would
+  do it); it is not built.
+- **`export_organisation_data` is the THIRD permission key with
+  `survives_suspension = true`**, after `view_crm` and `end_support_access`,
+  and the set is asserted BY NAME in two psql suites so a fourth cannot
+  arrive unnoticed. The justification is Q88/Q92's own: the 60-day window
+  after a suspension or closure is exactly when a customer needs their copy.
+  An export grants no write, and the archive is built under the requester's
+  own read rights, so a suspended workspace's export is read-only by
+  construction rather than by a rule somebody has to remember.
+- **`lib/supabase/storage.ts` still has no importer census** (Q126, above),
+  and this task added a fourth importer (`lib/export/runner.ts`). The
+  service-role TABLE client's census WAS extended, so the runner is declared
+  there; the storage one remains the gap Q126 names.
+- **The ZIP writer is a 150-line subset of the format** (local headers,
+  DEFLATE from `node:zlib`, a central directory, an end-of-central-directory
+  record) written rather than depended on, because a ninth runtime dependency
+  is a supply-chain decision and `tests/unit/legal/storage-census.test.ts`
+  makes adding one deliberate. No ZIP64: the limits it implies (4 GiB
+  archive, 65 535 entries, 4 GiB per entry) are all unreachable under a 40 MiB
+  ceiling and all three are refused explicitly anyway. If an archive ever
+  needs to be bigger, ZIP64 is the change, not a bigger ceiling.
+- **A second bearer secret and a second Vault pair are owed at deploy**
+  (`SECURITY.md` § 15). Unlike the digest's, a missing pair does not stop
+  exports — the in-process nudge still runs them — it removes the RETRY for a
+  job whose nudge died with its process. That failure is invisible from
+  inside the product and its cost is a person waiting.
+
+## Phase 8 Task 5 (erasure)
+
+- **THE STORAGE-CLIENT CENSUS (Q126) IS STILL OWED, AND THIS TASK ADDED A
+  FIFTH IMPORTER.** `lib/supabase/storage.ts` has no importer roll;
+  `lib/erasure/runner.ts` joins `lib/crm/documents.ts`,
+  `lib/feedback/screenshot.ts`, `lib/export/runner.ts` and the feedback
+  screenshot route. The service-role TABLE client's census was extended (the
+  runner is declared there), so what is missing is the same shape for the
+  STORAGE client — and the erasure runner is the first importer whose reach
+  includes `remove()`, which is the one Storage verb that destroys something.
+  Whoever builds it should start from
+  `tests/unit/email/service-client-census.test.ts`, which is the working
+  pattern.
+- **Nothing tells the person their account has been deleted.** Q45 for the
+  eighth feature. The page says "being deleted" and the session then stops
+  working; there is no email, no final confirmation and no receipt. For this
+  one feature that is arguably correct — the address to send it to is one of
+  the things being deleted — but it is a decision, not an oversight, and it
+  means a FAILED erasure is discovered only by signing back in and looking at
+  `/account/erase`. **Half-closed in Phase 8 Task 9b job 2** (`20261015000000`):
+  a failed erasure now emails the SUPERUSER a count and a `/super` link
+  (founder 2026-09-30); the person is still not emailed either way, and the
+  failure reason still has no dashboard view (Q200).
+- **A job left `running` blocks its subject for ever**, exactly as Q166 says
+  of the export runner, and the consequence is worse here: the
+  `erasure_jobs_one_live_account_job` index refuses the next ask, so a person
+  whose erasure died between the claim and the outcome-write cannot try again
+  and is told "your account is already being deleted". Task 6's sweep should
+  reap both registers with one rule.
+- **`data_subject_requests.fulfilment_reference` can dangle.** An `access`
+  request fulfilled by an export points at a `public.export_jobs` row, and
+  that row is `ON DELETE CASCADE` on `requested_by` — so erasing the account
+  deletes the export job and leaves the (kept, anonymised) register row
+  pointing at an id that no longer resolves. The column has no foreign key, so
+  nothing breaks; what is lost is the ability to say WHICH archive answered a
+  request, for an account that no longer exists. Either give the reference a
+  soft resolution ("an export, since deleted") or accept it in words on the
+  operator's page.
+- **The consent ledger goes with the account and the register does not**, and
+  the asymmetry is deliberate with a measured reason (the alternating-chain
+  invariant — see `SECURITY.md` § 8 and Q173). It is the one place where two
+  sibling questions, Q148 and Q158, were answered differently, and it is the
+  thing counsel is most likely to want changed.
+- **`erase_organisation()` has no caller in the product yet.** Task 6 is the
+  caller. Until then it is a tested primitive with one exception path reaching
+  it (Q131's empty-solo-workspace case), which is deliberately the narrowest
+  possible first consumer.
+- **The Q131 guard is now "would this leave no active OWNER", locked, and
+  asked at the membership table too (Task 5 fix round 1, Q176).** Two routes
+  to an ownerless, memberless, unmanageable workspace were reproduced: an
+  aal2 Admin demoting the sole Owner (nothing guarded
+  `public.organisation_memberships`), and two co-Owners erasing concurrently
+  past an unlocked read. Both are closed — advisory lock plus `FOR UPDATE`
+  before the guard reads, a post-delete re-assertion, and
+  `private.membership_keeps_an_owner()`. **What is still owed:** the guard now
+  also blocks a NON-owner member's own erasure when they are the last active
+  member of an ownerless workspace that still holds records, and the way out
+  it names (transfer ownership, or close the workspace) needs an Owner they do
+  not have — the operator closing the workspace at `/super/organisations` is
+  the escape hatch, and nothing in the product tells them so. Q176 carries it.
+  **Fix round 2 fixed the readable half of that (N2/Q178):**
+  `private.account_erasure_blockers()` carries a third reason,
+  `no_owner_to_transfer`, and both the database's refusal and the
+  `/account/erase` page now tell that person the workspace has no owner, that
+  they cannot fix it, and that support must close it, under its own hint
+  `workspace_has_no_owner`. The escape hatch is unchanged and is now named.
+  **What is still owed is the founder half of Q178:** whether step 8b should
+  widen from `other_members = 0 and is_empty` to `other_members = 0` for a
+  workspace with no active Owner at all, so the last member of an ownerless
+  workspace takes it with them. That destroys records rather than stranding
+  them, which is why a fix round did not take it.
+- **A direct `delete from auth.users` still strands a workspace (Task 5 fix
+  round 2, N3 -- risk accepted, not closed).**
+  `private.membership_keeps_an_owner()`'s account-cascade exemption is keyed
+  on "the `auth.users` row has already gone", which only an account deletion
+  can satisfy, so it cannot be borrowed by something that is not one -- but
+  it does not tell `private.erase_account()`'s deletion from an out-of-band
+  one. There is no `auth.admin.deleteUser` call site anywhere in the product;
+  the residual is an operator using Supabase Studio's Auth page, after which
+  `private.account_last_owner_workspaces()` names what was stranded and
+  `/super/organisations` closes it. Closing it properly, with a
+  transaction-local GUC the chokepoint sets so the cascade FAILS instead of
+  stranding, is **Q179**.
+- **The C2 lock's cost is now written down (Task 5 fix round 2, N4).**
+  `FOR UPDATE` on every membership row of every live workspace the subject is
+  an active member of, held for the whole erasure transaction, blocks every
+  concurrent role change, revoke and removal in those workspaces; inserts are
+  unaffected, so invitations still work. Measured: 1.22 ms to take the locks
+  over 5 workspaces and 250 membership rows, held for the 29 ms an erasure
+  takes end to end. `private.account_lock_workspaces()`'s own comment carries
+  it, which is where a future reader will look.
+- **The roll's catalogue query was widened in fix round 2 (N1), and three
+  shapes are deliberately left open.** A natural `user_id uuid primary key`, a
+  uuid inside a composite primary key, a `uuid[]`, a domain over uuid and a
+  materialized view's column now all make the erasure refuse. A uuid inside
+  `jsonb` or `text` does not (a content scan is the only thing that would
+  find one; `incident_alerts.details` is the single instance and is rewritten
+  by hand for exactly that reason), and nor does a column in any schema but
+  `public`/`private` (widening pulls in `auth`, `storage`, `realtime` and
+  `vault`, which this product does not own and cannot classify -- every
+  erasure would refuse on somebody else's catalogue).
+- **A third bearer secret and a third Vault pair are owed at deploy**
+  (`SECURITY.md` § 15), and this one runs DELETIONS. It cannot choose one —
+  the route takes no argument — but a missing pair removes the retry, and the
+  cost of that is higher than for exports: the person cannot even ask again.
+
+## Phase 8 Task 6 — the retention and garbage-collection job
+
+**Six long-open entries close here, and each one closes with what actually
+shipped rather than with "done".**
+
+- **Q52 — document bytes. CLOSED.** A soft-deleted document's file is purged
+  by `private.sweep_document_bytes()` plus the runner, once the parent
+  record's retention class has run out.
+  `private.document_retention_class()` derives that class rather than being
+  told it: `financial` (7 years) when the document is attached to an EVENT
+  that carries financial entries, `operational` (2 years) otherwise — which
+  is the only reachable meaning of "the parent record is financial", because
+  `document_links.entity_type` is allowlisted to six CRM entities and
+  `financial_entry` is not one of them. It counts SOFT-DELETED links and
+  soft-deleted financial entries too: misreading a class as financial costs
+  five years of storage, misreading it as operational destroys a record five
+  years early. `documents.bytes_purged_at` is the new column, and it is the
+  difference between "we deleted this file because we are no longer allowed
+  to keep it" and "this file is missing and we do not know why".
+  **One claim in the original Q52 wording was NOT re-confirmed and should
+  not be repeated:** "deleted documents still count toward storage". The
+  health snapshot's storage figures filter on `deleted_at is null`, so a
+  soft-deleted document was already outside the number the operator reads.
+  What was true, and is what this fixes, is that the BYTES were still stored.
+- **Q110 — stale rate-limit counters. CLOSED.** Swept seven days after the
+  window closes; the longest live window is 24 hours, so seven days is a
+  week of slack past the longest thing that could still be counting.
+  `FOR UPDATE SKIP LOCKED`, because a counter is written by every request in
+  the product and a sweep must never make one wait.
+- **Q117 — incident alerts. CLOSED, with the rule proposed here because
+  nothing had ever been written.** A RESOLVED alert and its `details` JSON
+  (which carries subject ids) go one year after resolution — the same period
+  as the audit rows they are evidence alongside. **An OPEN alert is never
+  purged at any age**, and that is the half that matters: an unresolved alert
+  is an outstanding operational problem, and deleting it because it is old
+  would delete the reason nobody has looked at it yet. The clock therefore
+  runs from `resolved_at` and not from `created_at`.
+- **Q120 — feedback and its screenshots. CLOSED.** The row goes at two years,
+  and the object goes FIRST: the row sweep refuses a row whose screenshot is
+  still in the bucket, because deleting it there would leave an untracked
+  image of somebody's screen that only the orphan sweep would find, a day
+  later.
+- **Q166 — a job stuck `running`. CLOSED, and it is not a deletion.**
+  Anything `running` for more than an hour is marked `failed` with a recorded
+  reason. The row survives and now says what happened; what is released is
+  the one-live-job partial unique index, which was permanently locking a
+  person out of a statutory right because of a transient fault at exactly the
+  wrong moment. The erasure sentence says NOTHING WAS DELETED and means it:
+  the whole erasure is one transaction, so an interrupted one rolled back.
+- **Q175 — failed erasure jobs. CLOSED at 90 days**, as Task 5 recommended.
+  A SUCCEEDED job is kept FOR EVER and is deliberately not on the schedule:
+  both its user columns are already null, so it is pseudonymous, and it is
+  the evidence that a statutory deletion was performed.
+- **Q88/Q92/Q102 — the 60-day workspace purge. CLOSED**, by calling
+  `private.erase_organisation()` — the first caller that primitive has ever
+  had. Reinstatement needs no special case at all:
+  `private.organisation_lifecycle_sync()` clears `retention_expires_at` the
+  moment `deleted_at` is cleared, so a reinstated workspace has no deadline
+  for the sweep to find. The rule is "while it is closed", not "59 days yes,
+  60 days no". Closing an already-suspended workspace restarts the clock, by
+  the same trigger.
+- **Q126 — the storage-client census. CLOSED AND BUILT**, in
+  `tests/unit/security/storage-client-census.test.ts`, because this task is
+  its SIXTH importer and the first whose reach is deletion across every
+  bucket. It found two things on its first two runs: the real importer list
+  is SEVEN files and not the five the inventory implied
+  (`lib/feedback/actions.ts` and `lib/feedback/screenshot.ts` are two, not
+  one), and its own table-access detector flagged `lib/crm/documents.ts` and
+  `lib/feedback/actions.ts` — the product's correct
+  `storage.storage.from(...)` shape — for want of a lookbehind.
+- **Q135 — what "archived" means. CLOSED as the recommended default.** The
+  audit-log viewer defaults to the last 30 days and SAYS SO on the page: a
+  silent default makes "the log does not go back that far" and "we are only
+  showing you a month" look identical, and only the second is fixed by typing
+  a date. The rows stay in Postgres; the delete happens at a year. There is
+  no cold store and `/legal/data-retention` v5 says so in those words.
+- **Q179 — the unsanctioned account deletion. CLOSED**, with the reach
+  measured rather than feared: the refusal fires ONLY where the old code
+  would have stranded something (the subject is the last active Owner of a
+  live, non-empty workspace), so every other `delete from auth.users` in the
+  repository is unaffected. The marker is a `PGC_USERSET` GUC, so a direct
+  database session can still set it — Q123's admitted limit, restated: this
+  turns an accident into a refusal, it does not stop somebody with a shell
+  who has decided to do it.
+
+**And what is owed after it.**
+
+- **Soft-deleted CRM rows are on NO clock of their own (Q180).** Every
+  contact, company, artist, agency, venue, event, task, meeting, note and
+  financial entry a workspace soft-deletes stays until the WORKSPACE is
+  purged. `CLAUDE.md`'s "soft-delete operational records ... subject to the
+  retention policy" arguably asks for more than that. This task deliberately
+  did not build it — a job that silently began hard-deleting customers' own
+  records two years on wants a founder's signature first — and every such
+  table is classified `retained_with_workspace` in
+  `private.retention_subjects()` so the question is visible in the roll
+  rather than absent from it.
+- **Nothing emails anybody about a retention run** (Q45, for the ninth
+  feature). A run that has been refusing its sanity ceiling every hour for a
+  month is visible on `/super/health` and nowhere else. **NO LONGER TRUE since
+  Task 6's fix round 1** (Q182, `20261004004000`): a refused or failed LIVE run
+  files a `retention_run_refused` incident alert, which the existing digest
+  emails to the operator. See the fix-round ledger below.
+- **A fourth bearer secret and Vault pair are owed at deploy**
+  (`SECURITY.md` § 15), and the consequence of forgetting this one is QUIET
+  rather than loud: the job simply never runs, `/super/health` shows no runs
+  at all, and data past its retention period is kept.
+- **The retention periods are still a working default pending counsel**
+  (Q133). What this task bought is that the answer is one migration.
+
+### Task 6 fix round 1 — what the review changed, and what is still owed
+
+The review graded the job MAJOR. `SECURITY.md` § 8 ("What the review of the
+retention job found") carries the as-built description; this is the ledger.
+
+- **"Nothing emails anybody about a retention run" (above) IS NO LONGER TRUE
+  — CLOSED as Q182's recommended default.** A LIVE run that refuses or fails
+  files one `retention_run_refused` incident alert per distinct
+  (sweep, reason), which the existing digest emails; a later clean run
+  resolves it as the system. Not for a switch somebody chose, not for an
+  overlap, not for a preview. The customer still hears nothing about
+  anything (Q45); this is the OPERATOR's signal.
+- **The audit purge's sanity ceiling still cannot drain itself, and that is
+  now a stated limit rather than a surprise (m5, Q184).** It judges EVERY row
+  past the period while each run deletes at most 500, so a genuine backlog
+  (the job switched off for months, or first enabled on an old database)
+  refuses every hour for ever. What changed is that it is never silent: the
+  alert carries both row counts. **Today the only release is a reviewed
+  migration reissuing `private.audit_purge_ceiling()`, restored afterwards.**
+  Q184 asks whether to build a no-deploy, time-boxed, audited release on
+  `/super/health`; recommended default yes, behind step-up, 24 hours, the
+  hard floor and the per-run ceiling untouched.
+- **A purged document cannot be restored, and the page does not say so yet.**
+  The database refuses it for every writer
+  (`documents_purged_implies_deleted`) and `restoreDocumentAction` matches
+  nothing, so the person reads the ordinary "nothing to restore" answer.
+  `/[orgSlug]/documents/deleted` still OFFERS Restore on a row whose file is
+  gone, and shows nothing that distinguishes "deleted under the retention
+  policy" from "deleted". Nothing reads `bytes_purged_at` in the application
+  at all. Two years away at the earliest; **Q185.**
+- **The clock derivation's three stated limits** (`20261004001000`): it
+  matches column NAMES in function source, so it over-approximates (two
+  false candidates today, each excused with a reason in the roll); it cannot
+  see a clock that a TRIGGER computes from another column (one exists,
+  `organisations.lifecycle_changed_at`, named by hand); and it asks about
+  client roles only — `service_role` holds UPDATE on the job tables' outcome
+  columns for the runners, and those guards are their own suites' subject.
+- **The retention roll's schema limit** (`20261004005000`, m1): `public` and
+  `private`, plus materialized views in both. A table in any OTHER schema is
+  not seen. Decided the way Task 5's roll decided it; a schema allowlist was
+  rejected because every psql suite creates a results schema and would trip
+  it on every developer database.
+- **`/legal/data-retention` is at version 6 and still unreviewed.** It now
+  says what is NOT deleted (Q183, recommended default, taken) and carries
+  three new counsel gaps that are real questions, not placeholders: whether
+  financial records must be DELETED at seven years and from what date;
+  whether inactive accounts should be deleted at all and with what notice
+  (Q180); and whether a customer-facing permanent delete of a single record
+  is required before launch — there is none today, short of closing the
+  workspace.
+- **`tests/unit/legal/seed-matches-catalogue.test.ts` stops at
+  `20260925004000`.** Its `currentBodies()` rebuilds "every page's current
+  body" from five migrations and has not been extended for the four
+  data-retention versions since (v3 Task 4, v4 Task 5, v5 and v6 Task 6) or
+  for data-subject-rights v4/v5. So its hosting-and-transfer consistency
+  check has not read the CURRENT retention or rights page for three tasks.
+  Pre-existing; found while binding v6. `data-retention-v6.test.ts` covers
+  v6 on its own. Owed: extend the chain, or replace it with a read of the
+  final body per slug.
+
+## Opened by Phase 8 Task 9b fix round 1 part B (I2, I3, minors)
+
+- **m4 ACCEPTED, not fixed: the digest, lockout and Telegram stamps are written on the APP clock.** `lib/email/incident-alerts.ts` and `lib/email/lockout-notification.ts` send `new Date().toISOString()`, and `private.incident_alert_resolution_guard()` returns before it reads a stamp for `service_role` (row security inactive). Forcing `now()` there means reissuing that shared guard (latest `20261014000000`) so it overwrites the three seams for EVERY writer, `postgres` fixtures that back-date `notified_at` included, plus a full 24-suite re-run to find them. The cost is a drift of milliseconds to seconds on a column that is server-only by grant and guard; nothing reads it as evidence of anything but "sent". Fold into the next migration that touches that guard.
+- **m6 ACCEPTED, not fixed: the route's PostgREST reads and stamp RPCs carry no timeout.** `createServiceClient()` is shared with the export, erasure and retention runners (`tests/unit/email/service-client-census.test.ts`), whose RPCs legitimately run long, so a blanket `global.fetch` abort would break them. The supported way is a per-caller timeout on a second factory, and it changes the overlap arithmetic (each of the eight deliveries gains a resolver read and a last in-flight stamp, ~+10 s each at a 5 s bound, ~520 s against 600 s) and the clock function's reissued comment. Owed with the next change to that route.
+- **I3 residual, stated:** a bare domain in a person's text (`evil.example/login`) is left as typed, and some mail clients autolink it. Removing dots between words would mangle ordinary names. Every `<scheme>://` and `www.` is removed to a fixed point and the final render is checked case-insensitively.
+- **I2 residual, stated:** the fair order gives each workspace one slot per round, so a tenant owning 30 or more workspaces could still fill a 30-row batch until the seven-day window closes. A Brevo PERMANENT rejection (a bad address) is still retried for seven days, because `sendEmail()` does not distinguish permanent from transient failures; the fair order stops it monopolising the batch. The DSR and export notice queues carry no `refuse` path: their content is the database's own enums and dates, and a refusal there would be a code defect, not hostile content.
+
+## Opened by Phase 8 Task 9b fix round 2 (N1, N2, N3)
+
+- **N3 ACCEPTED as built, mitigation proposed: any `build()` throw now drops a notice permanently.** `deliverEach` (`lib/email/requester-notifications.ts`) records `content_refused` through `mark_notices_undeliverable` for ANY exception a notice builder throws, not only for a person's hostile text. That includes `slugOrRefuse` on a malformed slug, a date the builder cannot parse, and any future code or configuration bug, a bad deploy included. Before I2 such a row was retried every tick until the code was fixed; now up to 30 rows a tick are marked undeliverable for good and only logged, so a broken release LOSES the connection and task-reminder emails it touches instead of delaying them. **Default as built:** keep the terminal record, because I2's poison-row guarantee depends on it and the loss is bounded by the seven-day notice window anyway. **Proposed mitigation (owed, not built):** record `content_refused` only for a `NoticeContentError` raised while reading a person-authored field (`oneLine` input, the one-link check), give the builders' own invariants (slug, uuid, date, allowlist) a distinct error class that is logged and left UNSTAMPED so the next tick retries it, and alert (the Task 5 Telegram channel) when a tick sees more than a handful of builder throws, since that is the signature of a deploy fault rather than of hostile content.
+
+## Phase 8 Tasks 7-9c — owed at the PR (final review B, F12)
+
+Final review B (`.superpowers/sdd/plan-the-whole-build-synthetic-thompson/phase-8-final-review-B.md`)
+found that items owed by Tasks 7, 8, 9a and 9c lived only in `progress.md`
+and the task reports. This is the deduplicated list, copied here so the
+ledger holds them. The 9b residuals (m4, m6, the bare-domain autolink, the
+30-workspace batch, N3) are already above, under "Opened by Phase 8 Task 9b".
+
+- **F-T7-1.** REFUSAL PARITY runs in 50+ s against a 60 s timeout. Split it
+  or give it its own timeout, never retries (progress.md, Task 7).
+- **Task 7 N1/N2.** Accounts erased before `20261007000000` are not
+  revisited, and a concurrent writer can land an id after the 10b scan.
+- **F-T8-1.** The 5 s unit-test timeout under load (progress.md, Task 8).
+- **Task 8 M2/M3, accepted and carried.** The "guard" mechanism is only "a
+  42501 raised by the function", and the destructive-primitive census is
+  derived from a name regex (`task-8-rereview.md:79`).
+- **Task 1 fix round 2 (`13141f0..7ab1922`) and Task 2 fix round 2
+  (`f239ed7..c545f7e`)** were never independently re-reviewed; handed to the
+  final review (Reviewer A's scope).
+- **Q218.** Six `/[orgSlug]/network/*` pages still say "This workspace is
+  suspended" in a closed workspace (`network/{page,links,profiles,profiles/[id],requests,[profileId]}`).
+  `linked-identity-section.tsx` and `support-access/page.tsx` were not checked.
+- **Q189.** An Owner's rename is not audited as `organisation.updated`
+  (default was YES, not built); `organisations` stays the one excused table
+  in the audit census.
+- **9c re-review 2 n1-n3.** The active-Owner check takes no membership lock,
+  the suspended-ownerless branch of N2 is untested, and
+  `acknowledged_no_backup` is derived rather than taken from the parameter
+  (`task-9c-rereview2.md`).
+- **9c m7.** The app guards in `closeMyWorkspaceAction` and the
+  `/super/closures` actions were not mutation-tested
+  (`task-9c-review.md:130`); the integration test covers the RPC.
+- **9a 17c.** The integration layer of the reason-check mutant was not run
+  (`task-9a-report.md:183`), and the m-test at `task-9a-rereview.md:90` was
+  not mutation-tested.
+- **9b gap.** `/super/health` shows no per-channel delivery status, and the
+  `/super` hub shows no open-alert count (`task-9b-report.md:20`).
+- **`private` is blind to the export and audit censuses** (9b residual).
+- **Deploy-time items.** Four runner bearer secrets and Vault pairs, the
+  Brevo env, the Telegram env, region `eu-west-1`, the IONOS host region
+  (PENDING) and the real malware scanner (Q42) — all in `SECURITY.md` § 15;
+  none is configured by the repo.
+- **The permission-matrix total at the tip** (F5). Last measured 596 at Task
+  9c job 3a; re-measure on the next reset with `vitest run
+  tests/integration/security/phase7-permission-matrix.test.ts` and append it
+  to `CLAUDE.md` § Testing gates and `SECURITY.md`.
+- **CI is still a subset.** Q169 (heavy jobs on PRs and main for a month) is
+  ruled but not built; Phase 9, together with merging `infra-parallel-stacks`.
+- **Final fix rounds.** A clean full psql/HTTP runner pass at 241 migrations
+  (round 2's run was red only on the HTTP twin's own `t`/`true` expectation
+  strings, corrected after the run), and `documents.spec.ts` after round 1's
+  scan-verdict change (not run: free RAM below the floor).
+- **F1 — a new Subprocessors version is owed.** The Brevo row now names the
+  Phase 8 notification emails in both `docs/sub-processors.md` and
+  `lib/legal/sub-processors.ts`, and `/legal/subprocessors` renders the
+  module, so the page's table changes as soon as the code ships. No dated
+  version was published: the body text itself does not change, and a v4
+  would move the version pins in `rls_phase8_legal.sql` (LF2) and
+  `run-rls-tests.sh` (the `lg_same` check), which needs a database to verify.
+  Publish v4 (through `/super/legal` or a migration in the
+  `20261008000000` pattern, with those two pins moved) and have counsel check
+  that the Privacy Notice covers these emails.
+- **F13 — a scope contradiction, flagged only.** `CLAUDE.md` § Scope
+  discipline lists "public profiles and connection requests" as Not MVP,
+  while the Decisions log ("Network discovery: request-to-connect") and
+  Phase 6 shipped connection requests. Suggested wording: "public
+  (logged-out) profiles". Left for the founder (DECISIONS-QUEUE Q230).
+- **F14 — `/super/closures` shows member names (founder awareness).**
+  `CLAUDE.md` § Superuser dashboard says the dashboard shows "only aggregate
+  metadata"; the reassign picker lists a closed workspace's member names and
+  roles (Q215, audited as `organisation.closure_candidates_viewed`, Q223).
+  That is a second deliberate exception beside feedback screenshots, and §
+  Superuser dashboard does not name it yet (DECISIONS-QUEUE Q231).

@@ -6,7 +6,10 @@ import { getCurrentOrg } from "@/lib/auth";
 import { isRecordScopedRole } from "@/lib/crm/record-scope";
 import { getCrmWriteAccess, type CrmWriteAccess } from "@/lib/crm/write-access";
 import { ScanStatusChip } from "@/components/crm/scan-status-chip";
-import { DocumentRestoreControl } from "@/components/crm/document-row";
+import {
+  DocumentPurgedNotice,
+  DocumentRestoreControl,
+} from "@/components/crm/document-row";
 import { WriteBlockedNote } from "@/components/crm/write-gate";
 import type { ScanStatus } from "@/lib/crm/task-status";
 import {
@@ -33,7 +36,12 @@ import { formatDateTime } from "@/lib/format/date";
 // The restore queue for documents. Unlike every other entity, a document has no
 // detail page, so restore is an INLINE control on this list rather than a
 // button on a record page. Soft-delete keeps the bytes (Task 5), so a restored
-// document comes back whole — its file was never removed from the bucket.
+// document comes back whole — UNTIL its retention period ends: then the
+// retention job purges the file (Phase 8 Task 6) and the row stays here,
+// stamped `bytes_purged_at`, with a notice in place of Restore (Q185, founder
+// 2026-09-30). The notice is the honest answer, not the control: the restore
+// action refuses a purged row on its own read and the database refuses it for
+// every writer (`documents_purged_implies_deleted`).
 
 const WRITE_NOTE_ID = "documents-deleted-write-note";
 
@@ -79,8 +87,10 @@ export default async function DeletedDocumentsPage({
           Deleted documents
         </h1>
         <p className="max-w-prose text-base text-ink-muted">
-          Nothing here has been destroyed — the file itself is kept. Restore one
+          A deleted file is kept until its retention period ends. Restore one
           to put it back in the documents list. Until then it can’t be opened.
+          Once the retention period has passed, the file itself is destroyed
+          and it can no longer be restored.
         </p>
       </div>
 
@@ -144,6 +154,7 @@ async function Results({
       scanStatus: row.scan_status as ScanStatus,
       ownerUserId: (row.owner_user_id as string | null) ?? null,
       deletedAt: String(row.deleted_at),
+      bytesPurgedAt: (row.bytes_purged_at as string | null) ?? null,
     }),
   });
 
@@ -170,7 +181,7 @@ async function Results({
             <h2 className="text-xl font-bold text-ink">Nothing deleted</h2>
             <p className="mt-2 max-w-prose text-base text-ink-muted">
               Deleted documents stay here so they can be restored. The file
-              itself is kept until then.
+              itself is kept until its retention period ends.
             </p>
           </div>
         }
@@ -228,7 +239,12 @@ function columnsFor(
     {
       key: "actions",
       header: "Actions",
-      render: (row) => (
+      // A purged file cannot come back, so the row says so and when, instead
+      // of offering a press the server would refuse (Q185).
+      render: (row) =>
+        row.bytesPurgedAt ? (
+          <DocumentPurgedNotice purgedAt={row.bytesPurgedAt} />
+        ) : (
         <DocumentRestoreControl
           orgSlug={orgSlug}
           documentId={row.id}
@@ -236,7 +252,7 @@ function columnsFor(
           blocked={!access.canWrite}
           describedBy={WRITE_NOTE_ID}
         />
-      ),
+        ),
     },
   ];
 }

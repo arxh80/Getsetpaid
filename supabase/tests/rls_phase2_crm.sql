@@ -1275,11 +1275,20 @@ select crm.val('L5  every table carrying updated_at has the trigger',
 -- attaches it. That is this guard doing the exact job it was written for, so
 -- the fix was to add the trigger rather than to carve out the table -- see that
 -- migration's header for why an exception list would have destroyed the guard.
-select crm.val('L6  ...and that is 32 tables (+1 rate_limit_counters in Phase 7)',
+-- 33 SINCE PHASE 8 TASK 1, up from 32: public.legal_documents carries an
+-- updated_at column, and § L5 above caught it arriving without the trigger --
+-- 20260922002000 attaches it, the 20260909030000 way.
+-- 34 SINCE PHASE 8 TASK 6: public.retention_settings, the retention job's two
+-- kill switches, and § L5 caught THAT one arriving without the trigger too --
+-- for the third time, which is the whole argument for a count here rather than
+-- a list. 20261003010000 attaches it. The RPC that writes the row sets
+-- updated_at itself, so the trigger changes nothing today; "the one writer
+-- remembers to" is exactly the guarantee it replaces.
+select crm.val('L6  ...and that is 34 tables (+1 legal_documents, +1 retention_settings in Phase 8)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '32');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '34');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together
@@ -1505,11 +1514,21 @@ end $fn$;
 -- the round-1 hole -- leaving the clause intact and wrapping a second disjunct
 -- around it -- now removes the substring instead of nesting it, and this
 -- assertion goes red on its own.
-select crm.val('M1c the suspension clause is EXACTLY the catalogue form, in both PARSED bodies',
+--
+-- RE-PINNED 2026-10-05 (PHASE 8 TASK 9c FIX ROUND 1b, Q227 -- controller
+-- decision (a), pending founder). The clause gained a THIRD disjunct in both
+-- bodies, private.closure_backup_read_admits(o.id) (20261025000000, C1): a
+-- closure backup reads the workspace as it was before the closure. It is TRUE
+-- only inside public.export_read_page()'s read of a closure_backup job, in
+-- that transaction, for that organisation, off a marker row no client role can
+-- write (rls_phase8_closure_backup.sql § KA/KM). The expected string is the
+-- whole flattened clause, so a fourth disjunct, or the term in one body and
+-- not the other, is still red here.
+select crm.val('M1c the suspension clause is EXACTLY the catalogue form plus the closure-backup marker, in both PARSED bodies',
   $$select ( (crm.canon('public','has_permission')
-                like '%(o.deleted_at IS NULL OR perm.survives_suspension)%')::int
+                like '%(o.deleted_at IS NULL OR perm.survives_suspension OR private.closure_backup_read_admits(o.id))%')::int
            + (crm.canon('private','permitted_organisations')
-                like '%(o.deleted_at IS NULL OR perm.survives_suspension)%')::int )::text$$,
+                like '%(o.deleted_at IS NULL OR perm.survives_suspension OR private.closure_backup_read_admits(o.id))%')::int )::text$$,
   '2');
 
 -- M1d: the whole shape of each PARSED body -- `deleted_at` once,
@@ -1561,10 +1580,15 @@ select crm.val('M1d the ONLY suspension term and the ONLY literal, per PARSED bo
 -- aal2, key held by `read_only`), rather than inlined here where it would be
 -- evaluated under the caller's RLS and could form a cycle with the policy on
 -- that same table.
-select crm.val('M1d2 the two PARSED bodies read exactly the four tables and four functions the rule is made of',
+--
+-- RE-RECORDED 2026-10-05 (Q227): FOUR -> FIVE functions, in BOTH halves --
+-- private.closure_backup_read_admits, the C1 marker term pinned in M1c. The
+-- table half is still unchanged: the marker table is read inside that
+-- SECURITY DEFINER helper, never inlined here.
+select crm.val('M1d2 the two PARSED bodies read exactly the four tables and five functions the rule is made of',
   $$select crm.canon_deps('has_permission') || '  ||  '
         || crm.canon_deps('permitted_organisations')$$,
-  'organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2  ||  organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2');
+  'organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.closure_backup_read_admits,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2  ||  organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.closure_backup_read_admits,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2');
 -- The catalogue is only trustworthy if nothing can grant a key that is not in
 -- it -- otherwise an uncatalogued key silently inherits "no row, no join, no
 -- permission" for reads AND the wrong suspension answer.
@@ -1587,9 +1611,20 @@ select crm.val('M1f every permission key in use has a catalogue row',
 -- grant is not a change to the workspace. It grants no read of any tenant
 -- table and no write anywhere; ACCEPTING a new request still needs
 -- manage_organisation and is still refused while suspended (Q98).
-select crm.val('M1g exactly two keys survive suspension today: view_crm and end_support_access',
+-- THREE SINCE PHASE 8 TASK 4. `export_organisation_data` (20260927000000)
+-- lets a suspended or CLOSED workspace's Owner/Admin take a copy of their own
+-- data during the 60-day retention window (Q88/Q92) -- which is the window in
+-- which they most need it, and locking them out of it would make the
+-- retention promise unkeepable. It is a READ, like view_crm, and it grants no
+-- write anywhere: starting an export inserts one row in public.export_jobs
+-- and the archive is built under the requester's own read rights, so a
+-- suspended workspace's export is read-only by construction rather than by a
+-- rule somebody has to remember. The assertion stays the EXACT SET rather
+-- than a count, so a fourth cannot arrive unnoticed.
+select crm.val('M1g exactly three keys survive suspension today: view_crm, end_support_access and export_organisation_data',
   $$select coalesce(string_agg(key, ',' order by key), '<none>')
-      from public.permissions where survives_suspension$$, 'end_support_access,view_crm');
+      from public.permissions where survives_suspension$$,
+  'end_support_access,export_organisation_data,view_crm');
 -- The default is the control that protects Phase 5's author from themselves.
 select crm.val('M1h survives_suspension DEFAULTS to false (a new key arrives closed)',
   $$select column_default from information_schema.columns

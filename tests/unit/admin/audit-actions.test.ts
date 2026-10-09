@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AUDIT_COVERAGE_EXCUSALS,
   CRM_AUDIT_TARGETS,
   CRM_AUDIT_TARGET_TABLE,
   CRM_AUDIT_VERBS,
@@ -31,17 +32,30 @@ describe("crmAuditActions: derived from the target list and the verb set", () =>
     expect(actions).not.toContain("custom_field_value.restored");
   });
 
-  it("covers exactly the eleven mutable Phase 2 tables -- merges is not one of them", () => {
+  // MOVED in Phase 8 Task 7: 11 -> 27 targets and 40 -> 100 names. The
+  // eleven Phase 2 tables (Task 6b), the thirteen Phase 3-6 tables Q122
+  // named, and three the derived coverage census found outside that list
+  // (membership, subscription, merge_candidate). `organisations` is
+  // deliberately NOT here -- see AUDIT_COVERAGE_EXCUSALS.
+  it("covers exactly the twenty-seven tables that carry the generic pair -- merges and organisations are not among them", () => {
     const targets = Object.keys(CRM_AUDIT_TARGETS);
-    expect(targets).toHaveLength(11);
+    expect(targets).toHaveLength(27);
     expect(targets).not.toContain("merge");
+    expect(targets).not.toContain("organisation");
     expect(Object.keys(CRM_AUDIT_TARGET_TABLE).sort()).toEqual(targets.sort());
+    expect(Object.keys(AUDIT_COVERAGE_EXCUSALS)).toContain("organisations");
+    for (const table of Object.keys(AUDIT_COVERAGE_EXCUSALS)) {
+      expect(Object.values(CRM_AUDIT_TARGET_TABLE), `${table} is excused AND a target`).not.toContain(table);
+    }
   });
 
-  it("is 9 soft-deletable x 4 + 2 non-soft-deletable x 2 = 40 names, no duplicates", () => {
+  it("is 23 soft-deletable x 4 + 4 non-soft-deletable x 2 = 100 names, no duplicates", () => {
     const actions = crmAuditActions();
-    expect(actions).toHaveLength(40);
-    expect(new Set(actions).size).toBe(40);
+    const soft = Object.values(CRM_AUDIT_TARGETS).filter((t) => t.softDeletable).length;
+    expect(soft).toBe(23);
+    expect(actions).toHaveLength(soft * 4 + (27 - soft) * 2);
+    expect(actions).toHaveLength(100);
+    expect(new Set(actions).size).toBe(100);
   });
 
   it("uses `soft_deleted`, never `deleted`, so it cannot collide with the two hard-DELETE actions", () => {
@@ -49,6 +63,7 @@ describe("crmAuditActions: derived from the target list and the verb set", () =>
     for (const a of crmAuditActions()) expect(a.endsWith(".deleted")).toBe(false);
     expect(CRM_IRREVERSIBLE_AUDIT_ACTIONS).toContain("contact_company.deleted");
     expect(CRM_IRREVERSIBLE_AUDIT_ACTIONS).toContain("custom_field_value.deleted");
+    expect(CRM_IRREVERSIBLE_AUDIT_ACTIONS).toContain("membership.deleted");
   });
 });
 
@@ -74,6 +89,6 @@ describe("knownAuditActions: the whole catalogue", () => {
 
   it("lists the CRM writes first, because they are the bulk of the table", () => {
     const all = knownAuditActions();
-    expect(all.slice(0, 40)).toEqual([...crmAuditActions()]);
+    expect(all.slice(0, 100)).toEqual([...crmAuditActions()]);
   });
 });

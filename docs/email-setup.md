@@ -38,7 +38,7 @@ Deliverability depends on it — without SPF/DKIM/DMARC, mail lands in spam.
    BREVO_SENDER_EMAIL=no-reply@getsetpaid.co.uk
    BREVO_SENDER_NAME=GetSetPaid
    ```
-3. Call it from a server action / edge function only:
+3. Call it from server-side code only (a server action or route handler):
    ```ts
    import { sendEmail } from "@/lib/email/send";
 
@@ -99,22 +99,25 @@ Auth at Brevo's SMTP relay so auth emails come from your domain.
 - **Now (auth is already live):** step 1 (domain auth) + step 3 (Supabase SMTP) +
   step 4 (DPA). No app code.
 - **Phase 7 Task 6 — DONE in code, needs config:** step 2 is wired. Two
-  consumers call `sendEmail()` and nothing else does:
+  consumers called `sendEmail()` when this task shipped (the lockout notice
+  and the Phase 8 notices below have joined them since):
   - `lib/email/feedback-notification.ts` — the founder's receipt for one
     feedback submission, sent after the row is stored, stamping
     `feedback.notified_at` only on `ok: true`. Recipient: `SUPPORT_CONTACT_EMAIL`.
   - `lib/email/incident-alerts.ts` — one digest of every `incident_alerts`
     row with `notified_at is null`, stamping only after `ok: true`. Invoked by
     `POST /api/incident-alerts/deliver` with
-    `Authorization: Bearer $INCIDENT_ALERT_DELIVERY_SECRET`. **Nothing in the
-    repo schedules that call** — point an external cron at it (every 5–15
-    minutes is plenty; DECISIONS-QUEUE Q118). Until then alerts are rows on
-    `/super/health` and not emails.
+    `Authorization: Bearer $INCIDENT_ALERT_DELIVERY_SECRET`. `pg_cron` schedules
+    it every 10 minutes (`private.deliver_incident_alerts()`, Q118). It needs
+    the two Vault entries in `SECURITY.md` § 15, and without them it is a
+    no-op: alerts stay rows on `/super/health` and not emails.
   Env: `BREVO_*` (above) plus `SUPPORT_CONTACT_EMAIL` and
   `INCIDENT_ALERT_DELIVERY_SECRET` (`.env.example`). Unset means "stored, not
   emailed" — logged loudly, never a crash, never a failed submission.
-- **Deferred:** connection-request / general notifications — there is no
-  notification subsystem at MVP (Q45), so nothing sends those yet.
+- **Built (Phase 8 Task 9b/9c):** DSR, export-ready, erasure-failure,
+  connection-request, task-reminder and workspace-closure notices, all through
+  `lib/email/send.ts` on the same tick. Telegram carries the counts-only
+  operator alert (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALERT_CHAT_ID`).
 
 ## Sub-processor register
 

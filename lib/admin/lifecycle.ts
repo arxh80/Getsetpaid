@@ -66,6 +66,9 @@ const STEP_UP_REQUIRED =
 const NOT_YOURS =
   "That can’t be actioned from here. Reload the page — the workspace may already be in that state.";
 
+const CHANGED_CONCURRENTLY =
+  "That workspace changed while this ran, so nothing was done. Reload the page and decide again.";
+
 const REASON_REQUIRED =
   "Give a reason. It goes on the permanent audit record and is what a later reader has instead of your memory.";
 
@@ -93,6 +96,9 @@ function rpcRefusal(
   formData: FormData,
 ): FormState {
   if (code === "42501") return refuse(NOT_YOURS, formData);
+  // 20261028000000 (N1): the workspace changed between the locked read and the
+  // UPDATE (40001 lifecycle_changed_concurrently). Nothing was written.
+  if (code === "40001") return refuse(CHANGED_CONCURRENTLY, formData);
   if (code === "22023") {
     if (message.includes("slug")) return refuse(UNKNOWN_ORG, formData);
     if (message.includes("reason is required")) return refuse(REASON_REQUIRED, formData);

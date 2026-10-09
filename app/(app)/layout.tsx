@@ -296,6 +296,59 @@ export default async function AppLayout({
           <div aria-hidden className="hidden w-16 shrink-0 md:block" />
         ) : null}
       </div>
+
+      {/* Phase 8 Task 1: the legal pages, reachable from inside the app
+          (PRD §12). One link to the index rather than all fifteen -- the
+          signed-in shell is a working surface, and /legal lists them. It
+          renders on the MFA gate screens too, deliberately: a user being
+          asked to enrol a factor is exactly who may want the privacy notice
+          first, and /legal needs no session and reaches no CRM table. */}
+      <footer className="border-t border-rule">
+        <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-4 text-sm text-ink-muted">
+          <Link
+            href="/legal"
+            prefetch={false}
+            className="underline underline-offset-4 hover:text-ink"
+          >
+            Legal and privacy
+          </Link>
+          {/* Phase 8 Task 2: the account-level privacy control (marketing
+              consent). In the footer beside the legal index rather than in
+              the header, which is a working surface with a tested tab order;
+              the page itself is signed-in and MFA-gated like every route
+              under this layout. */}
+          <Link
+            href="/account/privacy"
+            prefetch={false}
+            className="underline underline-offset-4 hover:text-ink"
+          >
+            Your privacy choices
+          </Link>
+          {/* Phase 8 Task 3: the data-subject-request form and tracker. Beside
+              the consent page for the same reason -- both are account-level
+              rights, neither belongs to a workspace, and the footer is where
+              somebody looks for them. */}
+          <Link
+            href="/account/data-requests"
+            prefetch={false}
+            className="underline underline-offset-4 hover:text-ink"
+          >
+            Your data requests
+          </Link>
+          {/* Phase 8 Task 5: account erasure. In the footer with the other
+              three account-level rights rather than hidden behind a settings
+              screen -- a statutory right that is hard to find is a right the
+              product is making harder to exercise, and the page itself
+              explains what happens before anything can be pressed. */}
+          <Link
+            href="/account/erase"
+            prefetch={false}
+            className="underline underline-offset-4 hover:text-ink"
+          >
+            Delete your account
+          </Link>
+        </div>
+      </footer>
     </div>
   );
 }

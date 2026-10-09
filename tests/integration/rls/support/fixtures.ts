@@ -170,7 +170,7 @@ const MFA_REQUIRED_ROLES = new Set<RoleKey>(["owner", "admin", "finance"]);
  * tests/integration/mfa/mfa-lifecycle.test.ts. So this does not mint a second
  * session or restart any clock the rest of the fixture depends on.
  */
-async function elevateToAal2(client: SupabaseClient, label: string): Promise<void> {
+export async function elevateToAal2(client: SupabaseClient, label: string): Promise<void> {
   const enrolled = await client.auth.mfa.enroll({ factorType: "totp" });
   if (enrolled.error || !enrolled.data) {
     throw new Error(`Fixture: could not enrol TOTP for ${label}: ${enrolled.error?.message}`);

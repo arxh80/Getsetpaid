@@ -64,6 +64,20 @@ afterAll(async () => {
 });
 
 describe("feedback over the raw PostgREST path", () => {
+  // THE SAME SHAPE AS M10, IN THE OTHER FILE vitest.config.ts NAMES AS A KNOWN
+  // FLAKE. `waitForFreshWindow(WINDOW, 60)` used to be called from the burst
+  // test's own body, where its sleep -- up to 60 s, because with a 3600-second
+  // window the head-room IS 60 s -- was charged to a 20 s `testTimeout`. It
+  // only bites in the last minute of a wall-clock hour, roughly 1.7% of runs,
+  // which is exactly why it has never been pinned down. A hook's wait is
+  // charged to `hookTimeout`, not to a test's budget; the precedent is
+  // connection-request-budget.test.ts:131. Hoisting it to the suite costs the
+  // two tests before the burst nothing -- they run in well under a second, so
+  // the bin this waits for is still fresh when the burst starts.
+  beforeAll(async () => {
+    await waitForFreshWindow(WINDOW, 60);
+  }, 120_000);
+
   it("is metered at § 5's numbers", () => {
     expect(MAX).toBe(10);
     expect(WINDOW).toBe(3600);
@@ -146,7 +160,6 @@ describe("feedback over the raw PostgREST path", () => {
   });
 
   it("allows exactly ten raw inserts in the hour, then refuses the eleventh with PT429 and stops counting", async () => {
-    await waitForFreshWindow(WINDOW, 60);
     const persona = fx.activeByRole.standard_user;
 
     for (let i = 1; i <= MAX; i += 1) {

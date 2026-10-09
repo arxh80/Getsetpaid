@@ -169,7 +169,75 @@ afterAll(async () => {
   await destroyFixtures(fx);
 });
 
+/** Measured in the hook below: what ONE directory read costs right now. */
+let warmUpSeconds = 0;
+
 describe("the 31st network-directory read in a minute is refused", () => {
+  // ==========================================================================
+  // WHY THE WINDOW WAIT IS IN A HOOK AND NOT IN THE TEST (M10, fix round 1)
+  // ==========================================================================
+  // `waitForFreshWindow()` used to be called from the burst test's own body,
+  // where its sleep -- up to a whole window minus the head-room, so ~25 s --
+  // was charged to that test's 20 s `testTimeout`. The bin position when this
+  // file starts is effectively random, so roughly 25/60 of runs entered the
+  // sleep at all: a file that passed alone and failed intermittently in the
+  // full suite, for arithmetic reasons rather than product ones.
+  //
+  // A hook's wait is charged to `hookTimeout`, not to a test's budget. That is
+  // not a new idea here -- connection-request-budget.test.ts:131 already calls
+  // the same helper from `beforeAll` with an explicit hook timeout, and this
+  // is that precedent applied to the file that has actually been flaking.
+  //
+  // THE HEAD-ROOM IS 25 SECONDS, AND THE MEASURED TERM IS A SAFETY VALVE
+  // RATHER THAN THE NUMBER (fix round 2, re-review finding M-R4). The first
+  // write-up of this said the head-room was "MEASURED rather than guessed",
+  // which overstated it: the re-reviewer instrumented the hook and measured
+  // one directory read at 0.032-0.046 s across three full runs, so
+  // (33 x warmUp x 3 + 3) comes to about 7.4 s and `Math.max` takes the
+  // literal 25 every time. In practice 25 IS the head-room.
+  //
+  // It is not a guess either, and this is its basis: the burst itself was
+  // measured at 0.86-1.11 s across four green runs, so 25 s is roughly
+  // twenty times the observed cost of the thing it has to fit, inside a
+  // 60 s window. The old hard-coded 25 failed not because 25 was wrong but
+  // because nothing NOTICED when it was -- the window turned over mid-burst
+  // and the run reported "counter 0, not 31", which reads as a product bug.
+  //
+  // So the measured term earns its place by doing the two jobs 25 cannot:
+  // it raises the head-room on a stack slow enough to need more, and -- the
+  // one that matters -- the `need >= DISCOVERY_WINDOW` branch below FIRES
+  // when one read costs more than (60 - 3) / 99 = 0.576 s, thirteen times
+  // the observed cost, and says in words that the stack is the problem.
+  // Without it that same stack silently produces the counter-0 cascade.
+  beforeAll(async () => {
+    const startedAt = Date.now();
+    await loadNetworkDirectory({});
+    warmUpSeconds = (Date.now() - startedAt) / 1000;
+
+    // 33 trips (the burst, its refusal and the two reads after it) at the
+    // measured cost, times three, plus a fixed three seconds -- and never
+    // below 25, which at every cost observed on this machine is the value
+    // this actually returns. See the paragraph above for why both halves are
+    // here.
+    const need = Math.max(25, (DISCOVERY_MAX + 3) * warmUpSeconds * 3 + 3);
+    if (need >= DISCOVERY_WINDOW) {
+      // At this point the burst cannot be run honestly inside one bin. Say so
+      // loudly rather than straddle a boundary and report a counter of 0.
+      throw new Error(
+        `one network-directory read measured ${warmUpSeconds.toFixed(3)}s, so ` +
+          `${DISCOVERY_MAX + 3} of them need ${need.toFixed(1)}s of head-room — ` +
+          `more than the ${DISCOVERY_WINDOW}s window itself. The burst cannot ` +
+          `complete inside one bin, so this file can measure nothing; fix the ` +
+          `local stack rather than widening the timeout.`,
+      );
+    }
+
+    // The warm-up spent a request: clear before waiting, so the burst starts
+    // from zero whether or not the wait sleeps across a boundary.
+    await clearCounters();
+    await waitForFreshWindow(DISCOVERY_WINDOW, need);
+  }, 120_000);
+
   it("is metered at SECURITY.md § 5's numbers, read from the seed", () => {
     // Not a restatement of the table -- a binding. If the seed ever drifts
     // from § 5 the psql suite's § RV catches it; if THIS test's arithmetic
@@ -180,9 +248,8 @@ describe("the 31st network-directory read in a minute is refused", () => {
   });
 
   it("allows exactly 30 and refuses the 31st, with a usable retry hint", async () => {
-    await clearCounters();
-    await waitForFreshWindow(DISCOVERY_WINDOW, 25);
-
+    // The counters were cleared and the window waited for in `beforeAll`
+    // above; nothing in this body sleeps.
     for (let i = 1; i <= DISCOVERY_MAX; i += 1) {
       const page = await loadNetworkDirectory({});
       expect(
@@ -201,7 +268,14 @@ describe("the 31st network-directory read in a minute is refused", () => {
     // "try again in N seconds" by components/list/rate-limit-notice.tsx.
     expect(refused.retryAfterSeconds).toBeGreaterThan(0);
     expect(refused.retryAfterSeconds).toBeLessThanOrEqual(DISCOVERY_WINDOW);
-  });
+    // ONE WINDOW, and deliberately not a round number pulled out of the air:
+    // with the sleep moved into the hook, 31 sequential round trips that have
+    // not finished inside a single 60-second bin have straddled a boundary and
+    // are measuring nothing, so the window IS the honest upper bound. (The
+    // literal tracks DISCOVERY_WINDOW, which the test above pins to the seed
+    // at 60; a test's timeout is fixed at collection time, before any hook has
+    // read the policy row.)
+  }, 60_000);
 
   it("kept counting past the limit — the refusal is counted too", async () => {
     // 20260909020000's header: request_count measures PRESSURE, not permitted

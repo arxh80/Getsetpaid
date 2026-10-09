@@ -72,6 +72,22 @@ describe("sendEmail", () => {
     });
   });
 
+  it("m5: blind recipients go in Bcc and the message is addressed to the sender, so no recipient sees another", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ messageId: "m" }), { status: 201 }));
+    const result = await sendEmail({ ...input, to: [], bcc: [{ email: "owner@b.test" }, { email: "admin@b.test" }] });
+    expect(result).toEqual({ ok: true, messageId: "m" });
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { to: { email: string }[]; bcc: { email: string }[] };
+    expect(body.to).toEqual([{ email: "no-reply@example.test", name: "GetSetPaid" }]);
+    expect(body.bcc).toEqual([{ email: "owner@b.test" }, { email: "admin@b.test" }]);
+  });
+
+  it("a single addressed recipient carries no bcc field", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ messageId: "m" }), { status: 201 }));
+    await sendEmail(input);
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as Record<string, unknown>;
+    expect(body.bcc).toBeUndefined();
+  });
+
   it("turns a Brevo error status into ok:false carrying the status and message", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ code: "unauthorized", message: "Key not found" }), {
@@ -99,7 +115,7 @@ describe("sendEmail", () => {
   // Fix round 1, finding I2: a connection that is accepted and never answered
   // was the one failure the typed-result contract did not cover -- the fetch
   // had no signal, so a Brevo stall held the submission for undici's 300 s
-  // default (or until the serverless host killed the function). The fetch
+  // default (or until the runtime ended the request). The fetch
   // below never resolves on its own; it only rejects when the signal the
   // sender passed it fires. Against the old code this test hangs.
   it("abandons a fetch that never answers, within the timeout, as a network error", async () => {

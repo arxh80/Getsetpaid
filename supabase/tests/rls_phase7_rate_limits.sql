@@ -184,10 +184,41 @@ select rl.val('RV6a Connection requests: 10 / hour, per ORGANISATION (Q79 spam, 
 select rl.val('RV6b ...and it is org-scoped, not user-scoped, deliberately',
   $$select subject_scope from public.rate_limit_policies
      where category='network_connection_request'$$, 'organisation');
--- SEVEN ROWS AND NO MORE. An eighth category appearing without a § 5 row is
--- the drift this assertion exists to catch, in the direction the others cannot.
-select rl.val('RV7 the policy table holds exactly the seven § 5 categories',
-  $$select count(*)::text from public.rate_limit_policies$$, '7');
+-- Phase 8 Task 2 (20260923000000): consent GRANTS, 10 / hour per user,
+-- enforced at the insert. Withdrawals are never metered (SECURITY.md § 5).
+select rl.val('RV6c Consent grants: 10 / hour, per user (Phase 8 Task 2)',
+  $$select max_requests || '/' || window_seconds || '/' || subject_scope
+      from public.rate_limit_policies where category='consent_grant'$$,
+  '10/3600/user');
+-- TEN ROWS AND NO MORE (seven until Phase 8 Task 2 added consent_grant, nine
+-- after Task 3's data_subject_request, ten since Task 4's account_export --
+-- each of which turned this assertion red until SECURITY.md § 5 was written,
+-- exactly as designed). An eleventh category appearing without a § 5 row is
+-- the drift this assertion exists to catch, in the direction the others
+-- cannot.
+-- ELEVEN SINCE PHASE 8 TASK 5 (`account_erasure`, 3 per 24 hours per user).
+-- The number is raised to what was MEASURED, not lowered to fit: a category
+-- appearing without a § 5 row is what this catches, and § 5 carries the new one.
+-- Phase 8 Task 9a (Q113, founder 2026-09-30, `20261011000000`): document
+-- uploads, 10 / hour per USER, spent before the bytes reach Storage.
+select rl.val('RV6d Document uploads: 10 / hour, per user (Q113)',
+  $$select max_requests || '/' || window_seconds || '/' || subject_scope
+      from public.rate_limit_policies where category='uploads'$$,
+  '10/3600/user');
+-- TWELVE SINCE PHASE 8 TASK 9a (`uploads`, Q113), with its § 5 row.
+select rl.val('RV7 the policy table holds exactly the twelve § 5 categories',
+  $$select count(*)::text from public.rate_limit_policies$$, '12');
+-- The ACCOUNT export's budget is its own category and not `exports`, because
+-- `exports` is organisation-scoped and an account export belongs to no
+-- workspace: metering it against one would be the caller-supplied attribution
+-- Phase 7 finding I1 closed.
+select rl.val('RV7a account_export is 5 per hour per USER, and exports is per ORGANISATION',
+  $$select (select max_requests || '/' || window_seconds || '/' || subject_scope
+              from public.rate_limit_policies where category='account_export')
+        || ' | ' ||
+           (select max_requests || '/' || window_seconds || '/' || subject_scope
+              from public.rate_limit_policies where category='exports')$$,
+  '5/3600/user | 5/3600/organisation');
 -- network_discovery must never be folded into search (FOLLOW-UPS:3408-3419):
 -- its unit cost is O(platform-wide published rows), not O(tenant).
 select rl.val('RV8 network_discovery is a DISTINCT category from search',
@@ -207,8 +238,8 @@ select rl.try('RV10 ...nor INSERT a new category',
       (category, subject_scope, max_requests, window_seconds, description)
     values ('smuggled','user',1,1,'x')$$,
   'denied(42501)');
-select rl.val('RV11 the superuser CAN read the configuration (the health view states it)',
-  $$select count(*)::text from public.rate_limit_policies$$, '7');
+select rl.val('RV11 the superuser CAN read the configuration, all twelve rows (the health view states it)',
+  $$select count(*)::text from public.rate_limit_policies$$, '12');
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -983,9 +1014,22 @@ select rl.val('RD3 exactly ONE cron job exists -- the product has one scheduler'
 select rl.val('RD4 ...named incident-alert-delivery, every 10 minutes',
   $$select jobname || ' @ ' || schedule from cron.job$$,
   'incident-alert-delivery @ */10 * * * *');
-select rl.val('RD5 ...running private.deliver_incident_alerts(), and nothing else',
+-- ONE JOB STILL, and since Phase 8 Task 3 it does two things in a fixed
+-- order: raise the data subject request deadline alerts, then deliver every
+-- unnotified alert -- so an alert raised on a tick is emailed on the SAME
+-- tick. cron.schedule() is upsert-by-name, which is how that happened without
+-- a second scheduler (20260924001000). Since that task's fix round 1
+-- (20260925002000, M3) the command is ONE function call: as two statements of
+-- one cron command they shared an implicit transaction, so a raiser that threw
+-- would have stopped THIS suite's digest and lockout notices too. The order,
+-- and that the digest is reached when the raiser throws, are asserted in
+-- rls_phase8_data_subject_requests.sql (DG14a, DD32-DD36).
+select rl.val('RD5 ...running the one tick function, and nothing else',
   $$select command from cron.job where jobname='incident-alert-delivery'$$,
-  'select private.deliver_incident_alerts()');
+  'select private.run_incident_alert_tick()');
+select rl.val('RD5a ...which still ends by calling the digest this suite is about',
+  $$select (position('perform private.deliver_incident_alerts()' in prosrc) > 0)::text
+      from pg_proc where oid = 'private.run_incident_alert_tick()'::regprocedure$$, 'true');
 select rl.val('RD6 ...and it is active',
   $$select active::text from cron.job where jobname='incident-alert-delivery'$$, 'true');
 select rl.val('RD7 no client role may run the job body',
@@ -1070,6 +1114,57 @@ select rl.try('RD13 the aal2 SUPERUSER cannot stamp account_notified_at either',
   format($$update public.incident_alerts set account_notified_at = now()
             where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$, :'pstd1'),
   'denied(42501)');
+-- ---- the Telegram seam (founder 2026-09-30, Q111; 20261014000000) ---------
+-- The THIRD delivery stamp, and the same two independent controls the other
+-- two have: outside `authenticated`'s column grant, and in the guard's
+-- immutable set. RD13t is the refusal from a real aal2 superuser session;
+-- RD12t/RD12u are the grant; RD12bt is the guard's own body, because with the
+-- grant closed the guard is unreachable and RD13t alone could not see it go.
+select rl.try('RD13t the aal2 SUPERUSER cannot stamp telegram_notified_at',
+  format($$update public.incident_alerts set telegram_notified_at = now()
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$, :'pstd1'),
+  'denied(42501)');
+reset role; reset request.jwt.claims;
+select rl.val('RD11t telegram_notified_at exists and is null on the fresh lockout alert',
+  format($$select (telegram_notified_at is null)::text from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$,
+         :'pstd1'), 'true');
+select rl.val('RD11u service_role may stamp telegram_notified_at -- that ONE new column',
+  $$select (has_column_privilege('service_role','public.incident_alerts','telegram_notified_at','UPDATE')
+        and not has_column_privilege('service_role','public.incident_alerts','summary','UPDATE'))::text$$,
+  'true');
+select rl.val('RD12t authenticated holds no UPDATE on telegram_notified_at',
+  $$select has_column_privilege('authenticated','public.incident_alerts','telegram_notified_at','UPDATE')::text$$,
+  'false');
+select rl.val('RD12u ...nor does anon',
+  $$select has_column_privilege('anon','public.incident_alerts','telegram_notified_at','UPDATE')::text$$,
+  'false');
+select rl.val('RD12bt the guard names telegram_notified_at in its immutable set',
+  $$select (pg_catalog.pg_get_functiondef(p.oid) like '%new.telegram_notified_at is distinct from old.telegram_notified_at%')::text
+      from pg_catalog.pg_proc p
+      join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+     where n.nspname = 'private' and p.proname = 'incident_alert_resolution_guard'$$,
+  'true');
+-- The positive control: the SENDER's path really writes it, and writing it
+-- leaves the email seam exactly where it was (channel independence, in the
+-- database). Put back afterwards so nothing below sees a changed row.
+select coalesce(notified_at::text, 'null') as rd_notified_before from public.incident_alerts
+ where alert_type='repeated_login_failures' and details->>'subject_id' = :'pstd1' \gset
+set role service_role;
+select rl.try('RD13u service_role stamps telegram_notified_at',
+  format($$update public.incident_alerts set telegram_notified_at = now()
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$, :'pstd1'),
+  'ok(1)');
+reset role;
+select rl.val('RD13v ...and the email seam is untouched by it',
+  format($$select (coalesce(notified_at::text, 'null') = %L and telegram_notified_at is not null)::text
+             from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$,
+         :'rd_notified_before', :'pstd1'), 'true');
+update public.incident_alerts set telegram_notified_at = null
+ where alert_type='repeated_login_failures' and details->>'subject_id' = :'pstd1';
+set role authenticated;
+set request.jwt.claims = :'super_c';
 select rl.val('RD14 pending_lockout_notifications() is not callable from a session',
   $$select has_function_privilege('authenticated',
       'public.pending_lockout_notifications(integer)','EXECUTE')::text$$, 'false');
@@ -1380,8 +1475,8 @@ select rl.val('RZ3 the two suite documents are gone (not soft-deleted -- never e
 select rl.val('RZ4 ALPHA is still active and untouched',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
          :'alpha_org'), 'true');
-select rl.val('RZ5 the seven seeded policy rows are exactly as they were',
-  $$select count(*)::text from public.rate_limit_policies$$, '7');
+select rl.val('RZ5 the twelve seeded policy rows (seven + consent_grant + data_subject_request + account_export + account_erasure + uploads) are exactly as they were',
+  $$select count(*)::text from public.rate_limit_policies$$, '12');
 
 \pset format aligned
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual

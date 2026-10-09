@@ -61,6 +61,7 @@ import { createStorageClient } from "@/lib/supabase/storage";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { authoriseOrg, failureState, stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
+import { recordScanVerdict } from "@/lib/crm/scan-verdict";
 import { sanitiseFilename, sniffAndAllow } from "@/lib/security/file-allowlist";
 // THE SIZE CEILING IS SHARED WITH next.config.ts, because the framework cap
 // must sit above it -- see lib/security/upload-limits.ts. This file is
@@ -69,6 +70,9 @@ import { DOCUMENT_MAX_SIZE_BYTES } from "@/lib/security/upload-limits";
 import { buildStorageKey } from "@/lib/crm/storage-keys";
 import { getScanner, type ScanResult } from "@/lib/security/malware-scan";
 import { LINK_ENTITY_TYPES, type LinkEntityType } from "@/lib/crm/links";
+import { formatDate } from "@/lib/format/date";
+import { formatRetryAfter } from "@/lib/format/duration";
+import { consumeRateLimit } from "@/lib/security/rate-limit";
 
 const PERMISSION = "manage_documents";
 
@@ -129,6 +133,22 @@ export async function uploadDocumentAction(
     return { error: sniff.reason, values: echoedValues(formData) };
   }
 
+  // THE UPLOAD BUDGET -- 10 an hour per user (Q113, founder 2026-09-30),
+  // enforced HERE because this is the write: the next statement sends the
+  // bytes to Storage, and the ruling is that a refused upload stores nothing.
+  // After the cheap refusals above (permission, empty, over 25 MiB, not on the
+  // allowlist), so a file that was never going to be stored spends nothing.
+  // The number lives in public.rate_limit_policies, not here; a limiter
+  // fault refuses (consumeRateLimit fails closed). Feedback screenshots are a
+  // separate path with their own budget and are not counted here.
+  const budget = await consumeRateLimit("uploads");
+  if (!budget.allowed) {
+    return {
+      error: `You’ve reached the upload limit for now — nothing is wrong. Try again in ${formatRetryAfter(budget.retryAfterSeconds)}.`,
+      values: echoedValues(formData),
+    };
+  }
+
   const filename = sanitiseFilename(file.name);
   const documentId = crypto.randomUUID();
   const storageKey = buildStorageKey(org.id, documentId);
@@ -164,7 +184,8 @@ export async function uploadDocumentAction(
         storage_key: storageKey,
         mime_type: sniff.mime,
         size_bytes: bytes.length,
-        scan_status: "pending",
+        // No scan_status: the column defaults to 'pending' and is outside the
+        // client grant since 20261029000000 (the verdict is the scanner's).
       },
       { count: "exact" },
     )
@@ -200,22 +221,13 @@ export async function uploadDocumentAction(
   }
   const scanStatus = statusForVerdict(verdict);
 
-  // THE TERMINAL STATUS. scanned_at is set with it, satisfying
-  // documents_scanned_at_iff_terminal. { count: "exact" } -- a 204 is not a save.
-  const result = await commitWrite(`document ${documentId} scan-status`, () =>
-    supabase
-      .from("documents")
-      .update(
-        { scan_status: scanStatus, scanned_at: new Date().toISOString() },
-        { count: "exact" },
-      )
-      .eq("organisation_id", org.id)
-      .eq("id", documentId)
-      .is("deleted_at", null),
-  );
-  if (result.outcome !== "applied") {
+  // THE TERMINAL STATUS -- through the service-role-only RPC, never the
+  // uploader's client (Phase 8 final review A, I1: a session that can write the
+  // verdict is a browser that can write it, mid-scan). The database stamps
+  // scanned_at and accepts only pending -> terminal on this live row.
+  if (!(await recordScanVerdict(org.id, documentId, scanStatus))) {
     // The bytes and the pending row both exist; the verdict just did not land.
-    // A fault, logged by commitWrite. Do not claim success.
+    // A pending row is never downloadable (the gate 409s it). Do not claim success.
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
 
@@ -439,11 +451,15 @@ export async function issueDownloadUrl(
 
 // ===========================================================================
 // SOFT-DELETE. The row's deleted_at is set; the BYTES are deliberately NOT
-// removed from the bucket -- soft-delete discipline (CLAUDE.md § Non-negotiable
-// rules). A retention/GC job that purges the bytes of rows past retention is a
-// documented Phase 8 follow-up (FOLLOW-UPS.md), not built here. { count:
-// "exact" } because a 204 is not a save (lib/crm/write.ts), and audit after the
-// row really moves.
+// removed from the bucket here -- soft-delete discipline (CLAUDE.md §
+// Non-negotiable rules). The Phase 8 Task 6 retention job purges them once the
+// document's retention class has run from deleted_at, which makes that column
+// A RETENTION CLOCK: the value sent below is a courtesy, and the database
+// OVERWRITES it with its own now() (private.guard_document_retention_columns(),
+// 20261004000000 -- review finding C1: a client-chosen deleted_at could have a
+// seven-year document's file destroyed within the hour). { count: "exact" }
+// because a 204 is not a save (lib/crm/write.ts), and audit after the row
+// really moves.
 // ===========================================================================
 export async function deleteDocumentAction(
   orgSlug: string | null,
@@ -541,13 +557,49 @@ export async function restoreDocumentAction(
   }
 
   const supabase = await createClient();
+
+  // A FILE THE RETENTION POLICY DESTROYED CANNOT BE RESTORED (Q185, founder
+  // 2026-09-30) -- said in words, not as the generic "nothing to restore".
+  // The page shows a notice instead of Restore for such a row, but hiding is
+  // not enforcement: a forged POST naming a purged document's id lands here.
+  // This read goes through the caller's own RLS-bound client, so it can only
+  // learn about a row the caller can already see (no oracle for a foreign
+  // id -- that falls through to the update's ordinary refusal). The update's
+  // `bytes_purged_at is null` filter below and the database's
+  // `documents_purged_implies_deleted` CHECK stay behind it, in that order.
+  const purged = await supabase
+    .from("documents")
+    .select("bytes_purged_at")
+    .eq("organisation_id", org.id)
+    .eq("id", documentId)
+    .not("bytes_purged_at", "is", null)
+    .maybeSingle();
+  if (purged.error) {
+    console.error("[crm] document restore purge check failed:", purged.error.message);
+    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  }
+  if (purged.data?.bytes_purged_at) {
+    return {
+      error: `This file was deleted under the retention policy on ${formatDate(
+        String(purged.data.bytes_purged_at),
+      )}, so it can’t be restored.`,
+      values: echoedValues(formData),
+    };
+  }
+
   const result = await commitWrite(`document ${documentId} restore`, () =>
     supabase
       .from("documents")
       .update({ deleted_at: null }, { count: "exact" })
       .eq("organisation_id", org.id)
       .eq("id", documentId)
-      .filter("deleted_at", "not.is", null),
+      .filter("deleted_at", "not.is", null)
+      // A document whose file the retention job has already purged cannot come
+      // back: there is nothing behind it. The database refuses that for every
+      // writer (documents_purged_implies_deleted, 20261004000000); matching
+      // nothing here turns a constraint violation logged as a fault into the
+      // ordinary "nothing to restore" answer.
+      .is("bytes_purged_at", null),
   );
 
   if (result.outcome === "applied") {

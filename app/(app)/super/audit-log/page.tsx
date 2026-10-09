@@ -5,6 +5,7 @@ import { isSuperuser } from "@/lib/admin/superuser";
 import {
   fetchAuditLogPage,
   parseAuditLogParams,
+  AUDIT_HOT_WINDOW_DAYS,
   recordAuditLogView,
   type AuditLogParams,
 } from "@/lib/admin/audit-log";
@@ -67,6 +68,22 @@ export default async function AuditLogPage({
           Every high-value action recorded across every organisation,
           append-only. Viewing this page is itself audited.
         </p>
+        {/* Q135, Phase 8 Task 6. The retention rule is "hot for 30 days,
+            archived for up to a year, then purged", and no cold store
+            exists — so "archived" means the rows stay in Postgres and fall
+            out of THIS default range. Saying so is the whole point: without
+            it, "the log does not go back that far" and "we are only showing
+            you a month" look exactly the same, and the second is recoverable
+            by typing a date. */}
+        {params.hotWindowOnly ? (
+          <p className="max-w-prose text-sm text-ink-muted">
+            Showing the last{" "}
+            <span className="tabular-nums">{AUDIT_HOT_WINDOW_DAYS}</span> days.
+            Older entries are kept for a year and are still here — set a{" "}
+            <strong className="font-semibold text-ink">From</strong> date to
+            search back into them. After a year they are deleted.
+          </p>
+        ) : null}
       </div>
 
       <AuditLogFilterForm filters={params.filters} basePath={BASE_PATH} />

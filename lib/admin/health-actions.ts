@@ -64,9 +64,16 @@ export async function resolveIncidentAlertAction(
   const update = supabase
     .from("incident_alerts")
     .update(
-      reopen
-        ? { resolved_at: null, resolved_by: null }
-        : { resolved_at: new Date().toISOString(), resolved_by: user.id },
+      // THE RESOLUTION TIME IS NOT SENT (fix round 2, R1 / Q162). This used to
+      // write `new Date().toISOString()` -- the OPERATOR'S BROWSER CLOCK --
+      // into the column Q159's 7-day re-raise arithmetic reads, so a machine
+      // whose clock was days fast silently bought a longer snooze than the
+      // ruling specifies. private.incident_alert_resolution_guard() now stamps
+      // resolved_at := now() for every client resolution, so naming a person
+      // is the whole of what this write says and the constraint's
+      // timestamp-and-exactly-one-of is satisfied by the trigger, before the
+      // CHECK runs.
+      reopen ? { resolved_at: null, resolved_by: null } : { resolved_by: user.id },
     )
     .eq("id", alertId);
   // Idempotence: resolving an already-resolved alert (a double submit, two

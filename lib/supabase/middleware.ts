@@ -33,19 +33,49 @@ import { supabasePublicKey, supabaseUrl } from "./env";
  *  endpoint: it has no user, authenticates by a server-held bearer secret
  *  inside the handler, and answers 404 to everything else. Listing it here
  *  only stops this bounce redirecting a cron to /login -- per this file's
- *  header, nothing here is an authorisation control. */
-const PUBLIC_PATHS = [
+ *  header, nothing here is an authorisation control.
+ *
+ *  `/legal` (Phase 8 Task 1) is the fifteen PRD §12 pages, which must be
+ *  readable before anyone has an account. What they read is fenced in the
+ *  database (legal_documents_select_current_published + a column grant), not
+ *  here. isUnder() matches the root and `root/...` only, so `/legal` does not
+ *  make `/legalese` or `/legal-anything` public -- asserted in
+ *  tests/unit/security/public-paths.test.ts and, over real HTTP, in
+ *  tests/e2e/legal.spec.ts.
+ *
+ *  `/api/exports/run` (Phase 8 Task 4) is the export runner's retry endpoint,
+ *  called by the SAME pg_cron tick through pg_net. Same shape as
+ *  `/api/incident-alerts`: no user, a server-held bearer compared in constant
+ *  time inside the handler, 404 to everything else including an unset secret.
+ *  Listed under `/api/exports` rather than the exact path so a future
+ *  sibling under it is a deliberate edit here.
+ *
+ *  `/api/erasure/run` (Phase 8 Task 5) is the erasure runner's retry
+ *  endpoint, on the same tick, with the same shape and its OWN bearer secret
+ *  -- a leak of the export one must not run deletions. Listed under
+ *  `/api/erasure` for the same reason as its sibling.
+ *
+ *  `/api/retention/run` (Phase 8 Task 6) is the retention sweep's ONLY entry
+ *  point -- not a retry behind a nudge, because nobody is waiting for a
+ *  garbage collection -- on the same tick, throttled in the database to about
+ *  hourly, with its OWN bearer secret: this is the one that runs the sweep
+ *  which deletes the audit log. Listed under `/api/retention`. */
+export const PUBLIC_PATHS = [
   "/login",
   "/signup",
   "/magic-link",
   "/auth",
   "/api/incident-alerts",
-];
+  "/api/exports",
+  "/api/erasure",
+  "/api/retention",
+  "/legal",
+] as const;
 
 /** Signed-in users have no business on these -- bounce them to the hub. */
-const SIGNED_OUT_ONLY_PATHS = ["/login", "/signup", "/magic-link"];
+const SIGNED_OUT_ONLY_PATHS = ["/login", "/signup", "/magic-link"] as const;
 
-function isUnder(pathname: string, roots: string[]): boolean {
+export function isUnder(pathname: string, roots: readonly string[]): boolean {
   return roots.some(
     (root) => pathname === root || pathname.startsWith(`${root}/`),
   );
@@ -79,6 +109,25 @@ const PATHNAME_HEADER = "x-pathname";
  * lib/security/headers.ts.
  */
 const CSP_HEADER = "Content-Security-Policy";
+
+/** Where every /super request from a non-allowlisted caller is rewritten to.
+ *  Matches no page, so app/(app)/super/[...unknown] serves it. Proved over
+ *  raw HTTP in tests/e2e/phase8-refusal-parity.spec.ts. */
+const SUPER_REFUSAL_PATH = "/super/not-found";
+
+/** /super ROUTE HANDLERS, which the rewrite must NOT touch. A route handler
+ *  never streams, so it refuses with a literal 404 of its own (DESIGN.md
+ *  § Error pages); rewriting it onto the catch-all PAGE would turn that into
+ *  a streamed 200 HTML document -- measured, super-permissions.spec.ts's
+ *  screenshot-route test. tests/unit/security/super-page-census.test.ts walks
+ *  every route.* under app/(app)/super and fails if one is not matched here. */
+export const SUPER_ROUTE_HANDLER_PATHS: readonly RegExp[] = [
+  /^\/super\/feedback\/[^/]+\/screenshot\/?$/,
+];
+
+export function isSuperRouteHandler(pathname: string): boolean {
+  return SUPER_ROUTE_HANDLER_PATHS.some((re) => re.test(pathname));
+}
 const NONCE_HEADER = "x-nonce";
 
 export async function updateSession(request: NextRequest) {
@@ -140,6 +189,41 @@ export async function updateSession(request: NextRequest) {
       url.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
     }
     return copyCookies(response, NextResponse.redirect(url));
+  }
+
+  // /super REFUSAL PARITY, BEFORE ROUTING (Phase 8 Task 8 fix round 1, I2).
+  // Every /super page refuses a non-superuser with the streamed not-found
+  // document, and a /super URL that matches no page reaches the same document
+  // through the [...unknown] catch-all. MEASURED, that equalised the rendered
+  // text but not the RAW HTML: each page's own loading.tsx skeleton is flushed
+  // before its notFound() (that flush is why the refusal is a 200), and the
+  // inline flight data names the matched segment (`legal`, or the catch-all's
+  // `unknown` param). So `curl` with any signed-in cookie listed the operator
+  // console's pages. Rewriting EVERY /super/* request from anyone who is not
+  // on the allowlist to one fixed path means they are all routed to the same
+  // segment, and render the same bytes modulo nonce.
+  //
+  // THIS IS PARITY, NOT THE CONTROL. Each page still calls isSuperuser() and
+  // notFound()s for itself, and every read under /super is aal2-gated in the
+  // database. The predicate is the one isSuperuser() asks
+  // (public.is_platform_admin(), deliberately not aal-gated), so the
+  // allowlisted account is routed normally at aal1 too and the pages decide,
+  // exactly as before -- but ONLY for allowlisted callers now: a refused
+  // principal never reaches a page's own guard, so no e2e test exercises it.
+  // tests/unit/security/super-page-census.test.ts holds every page's
+  // isSuperuser() gate and refused title by source instead (review N1).
+  // An RPC error fails CLOSED, into the rewrite.
+  if (isSignedIn && isUnder(pathname, ["/super"]) && !isSuperRouteHandler(pathname)) {
+    const { data: onAllowlist, error } = await supabase.rpc("is_platform_admin");
+    if (error || onAllowlist !== true) {
+      const url = request.nextUrl.clone();
+      url.pathname = SUPER_REFUSAL_PATH;
+      url.search = "";
+      return copyCookies(
+        response,
+        NextResponse.rewrite(url, { request: { headers: requestHeaders } }),
+      );
+    }
   }
 
   if (isSignedIn && isUnder(pathname, SIGNED_OUT_ONLY_PATHS)) {

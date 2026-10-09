@@ -134,8 +134,14 @@ export const DOCUMENT_DELETED_LIST = defineListSpec({
   filters: {},
 });
 
+// `bytes_purged_at` is read so the restore queue can say, in place of the
+// Restore control, that the retention job has destroyed the file (Q185,
+// founder 2026-09-30). The restore action refuses such a row on its own read,
+// and the database refuses it for every writer
+// (`documents_purged_implies_deleted`) -- this column only lets the page tell
+// the truth before anyone presses anything.
 export const DOCUMENT_DELETED_SELECT =
-  "id, filename, size_bytes, scan_status, owner_user_id, deleted_at";
+  "id, filename, size_bytes, scan_status, owner_user_id, deleted_at, bytes_purged_at";
 
 export interface DeletedDocumentRow {
   id: string;
@@ -144,6 +150,8 @@ export interface DeletedDocumentRow {
   scanStatus: ScanStatus;
   ownerUserId: string | null;
   deletedAt: string;
+  /** When the retention job purged the file's bytes, or null if it is kept. */
+  bytesPurgedAt: string | null;
 }
 
 export type DocumentDeletedSortKey = keyof (typeof DOCUMENT_DELETED_LIST)["sort"];

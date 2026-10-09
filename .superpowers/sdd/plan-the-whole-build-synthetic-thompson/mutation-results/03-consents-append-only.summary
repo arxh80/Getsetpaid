@@ -1,0 +1,25 @@
+mutant: 03-consents-append-only
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 0
+--- psql: red assertions, read from each suite's results table ---
+  [cs] CH9 postgres cannot UPDATE a consent (the guard, not a grant)
+  [cs] CH10 postgres cannot DELETE a consent directly
+  [cs] CH11 postgres cannot DELETE one from inside a function either (trigger depth 1 is a statement)
+  [cs] CH13 ...and the ledger is unchanged
+  [cs] CH15 DENOMINATOR: pstd2 has a withdrawal naming a grant
+  [cs] CH16 a second withdrawal row naming the same grant is refused by the index
+  [cs] CH17 ...and the ledger is unchanged
+  [cs] CV8 pstd2's grants still reference version 2 -- the text they were shown
+  [cs] CV9 ...and that version is still readable as the operator, unchanged
+  [cs] CV12 a withdrawal never fails for a version: pstd2 withdraws the version-2 grant
+  [cs] CV13 ...and the withdrawal records version 3, the notice in force, not the 2 it was sent
+  [cs] CA0 DENOMINATOR: the ledger holds events from four people
+  [cs] CA2 ...and there are no others: every refused attempt above wrote none
+  [cs] CD6 nobody else's did
+  [cs] CD8 a trigger-issued DELETE of a live account's rows is refused -- by the consents guard
+  [cs] CD9 ...and the ledger is unchanged
+  [cs] CD13 ...its two events went, nobody else's did
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+        Tests  690 passed (690)

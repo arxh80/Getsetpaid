@@ -132,7 +132,7 @@ export function TaskForm({
           name="reminderAt"
           type="datetime-local"
           defaultValue={reminderAt}
-          hint="Stored for later. It has to be on or before the due date. (No reminder is sent yet.)"
+          hint="The assignee is emailed when this time passes. It has to be on or before the due date."
           error={state.fieldErrors?.reminderAt}
           className="tabular-nums"
         />

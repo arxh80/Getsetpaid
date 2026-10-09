@@ -481,9 +481,28 @@ reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'alice_c';
 
+-- TWO GUARDS NOW ANSWER THIS WRITE, AND BOTH ARE ASSERTED (Phase 8 Task 5 fix
+-- round 1, I1). Alice is the sole Owner of org A, so the new BEFORE trigger
+-- private.membership_keeps_an_owner() refuses her role change first, with
+-- 22023 -- which would have quietly replaced this section's proof that the
+-- POLICY refuses a self-escalation. So D1 keeps its original assertion with
+-- the new trigger held off, and D1a records the new one beside it. Never one
+-- instead of the other: a policy that stopped refusing escalation would
+-- otherwise be invisible behind a trigger that refuses everything.
+reset role; reset request.jwt.claims;
+alter table public.organisation_memberships disable trigger membership_keeps_an_owner;
+set role authenticated;
+set request.jwt.claims = :'alice_c';
 select harness.try('D1  owner cannot UPDATE own row to platform_superuser',
   format($$update public.organisation_memberships set role='platform_superuser' where user_id=%L$$, :'alice'),
   'denied(42501)');
+reset role; reset request.jwt.claims;
+alter table public.organisation_memberships enable trigger membership_keeps_an_owner;
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+select harness.try('D1a and the owner guard refuses it too, first, because she is org A''s only owner',
+  format($$update public.organisation_memberships set role='platform_superuser' where user_id=%L$$, :'alice'),
+  'denied(22023)');
 
 -- status='invited' so the ONLY thing wrong with this row is the role -- this
 -- isolates the platform_superuser guard rather than passing on the status one.
@@ -506,9 +525,22 @@ select harness.try('D4b owner cannot DELETE from the platform_admins allowlist',
 select harness.try('D4c owner cannot REPOINT an allowlist row at herself',
   format($$update public.platform_admins set user_id=%L$$, :'alice'), 'denied(42501)');
 
+-- The same pair, for the same reason: moving her row out of org A leaves org A
+-- with no owner, so the trigger answers before the policy does.
+reset role; reset request.jwt.claims;
+alter table public.organisation_memberships disable trigger membership_keeps_an_owner;
+set role authenticated;
+set request.jwt.claims = :'alice_c';
 select harness.try('D5  owner cannot hop her membership into org B',
   format($$update public.organisation_memberships set organisation_id=%L where user_id=%L$$, :'org_b_id', :'alice'),
   'denied(42501)');
+reset role; reset request.jwt.claims;
+alter table public.organisation_memberships enable trigger membership_keeps_an_owner;
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+select harness.try('D5a and the owner guard refuses the hop too -- org A would be left ownerless',
+  format($$update public.organisation_memberships set organisation_id=%L where user_id=%L$$, :'org_b_id', :'alice'),
+  'denied(22023)');
 
 -- status='invited' so the forged invited_by is the ONLY defect in the row.
 select harness.try('D6  owner cannot forge invited_by attribution',
@@ -1060,6 +1092,213 @@ select harness.val('K20 ...and no other seeded role is caught by it',
      where private.role_requires_mfa(r.key)$$, '3');
 
 reset role; reset request.jwt.claims;
+
+-- ===========================================================================
+-- W. workspace slugs that would shadow a route  (Phase 8 Task 2 review M7,
+--    20260923005000, Q151/Q154)
+-- ===========================================================================
+-- A workspace lives at /<slug>; a static top-level route with the same name
+-- wins, so a workspace called `legal` could be created and never opened.
+-- Both paths that set a slug -- create_organisation() and an Owner's direct
+-- UPDATE of organisations.slug -- pass private.organisations_slug_not_reserved().
+-- The positive controls run inside a DO block that raises a marker at the
+-- end, so they prove the write WAS accepted and then roll it back (the later
+-- suites count organisations and read org-a by slug).
+create function harness.try_hint(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_actual text; v_hint text;
+begin
+  begin
+    execute p_sql;
+    v_actual := 'ok';
+  exception when others then
+    get stacked diagnostics v_hint = pg_exception_hint;
+    v_actual := 'denied(' || sqlstate || ':' || coalesce(v_hint, '') || ')';
+  end;
+  perform harness.record(p_label, p_expected, v_actual);
+end $$;
+grant execute on function harness.try_hint(text,text,text) to authenticated, anon, service_role;
+
+select count(*)::text as orgs_before_w from public.organisations \gset
+
+select harness.val('W1  the reserved list is the ten static top-level routes',
+  $$select string_agg(slug, ',' order by slug) from private.reserved_workspace_slugs()$$,
+  'account,api,auth,invites,legal,login,magic-link,onboarding,signup,super');
+select harness.val('W2  the guard is a BEFORE INSERT OR UPDATE OF slug trigger, enabled',
+  $$select tgenabled::text || ':' || (pg_get_triggerdef(oid) ~ 'BEFORE INSERT OR UPDATE OF slug')::text
+      from pg_trigger where tgrelid = 'public.organisations'::regclass
+       and tgname = 'organisations_slug_not_reserved'$$, 'O:true');
+
+set role authenticated;
+set request.jwt.claims = :'carol_c';
+select harness.try_hint('W3  create_organisation refuses `legal` (the Task 1 route)',
+  $$select public.create_organisation('Legal Eagles','legal')$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W4  ...and `account` (this task''s route)',
+  $$select public.create_organisation('Account','account')$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W5  ...however it is spelt (create_organisation lower-cases and trims)',
+  $$select public.create_organisation('Super',' SUPER ')$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W6  ...and `magic-link` (a route inside the (auth) group)',
+  $$select public.create_organisation('Magic','magic-link')$$, 'denied(22023:reserved_slug)');
+select harness.try('W7  POSITIVE: a slug that merely CONTAINS a reserved word is accepted',
+  $q$do $d$ begin
+      perform public.create_organisation('Legal Team','legal-team');
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, 'denied(P0098)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+select harness.val('W8  DENOMINATOR: alice (Owner, aal2) can read org-a, whose slug she may change',
+  $$select count(*)::text from public.organisations where slug = 'org-a'$$, '1');
+select harness.try_hint('W9  an Owner cannot MOVE her workspace onto a reserved slug',
+  $$update public.organisations set slug = 'legal' where slug = 'org-a'$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W10 ...nor onto one spelt differently',
+  $$update public.organisations set slug = 'Onboarding' where slug = 'org-a'$$, 'denied(22023:reserved_slug)');
+select harness.try('W11 POSITIVE: she CAN move it to an ordinary slug (rolled back)',
+  $q$do $d$ begin
+      update public.organisations set slug = 'org-a-moved' where slug = 'org-a';
+      if not found then raise exception 'no row' using errcode = 'P0097'; end if;
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, 'denied(P0098)');
+reset role; reset request.jwt.claims;
+
+-- A workspace that ALREADY holds a reserved slug (created before this
+-- migration) is not locked: an update that leaves the slug alone passes, and
+-- so does moving it AWAY from the reserved slug. Planted in replica mode (no
+-- triggers), exercised with the triggers on, rolled back.
+select harness.try('W12 a pre-existing reserved-slug workspace can still be renamed, and moved off it',
+  $q$do $d$
+    declare v_id uuid;
+    begin
+      execute 'set local session_replication_role = replica';
+      insert into public.organisations (name, slug) values ('Grandfathered', 'invites') returning id into v_id;
+      execute 'set local session_replication_role = origin';
+      update public.organisations set name = 'Grandfathered, renamed' where id = v_id;
+      update public.organisations set slug = 'invites-team' where id = v_id;
+      if (select slug from public.organisations where id = v_id) <> 'invites-team' then
+        raise exception 'not moved' using errcode = 'P0097';
+      end if;
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, 'denied(P0098)');
+select harness.try_hint('W13 ...but a workspace cannot be moved ONTO a reserved slug by postgres either',
+  $q$do $d$
+    declare v_id uuid;
+    begin
+      insert into public.organisations (name, slug) values ('Plain', 'plain-w13') returning id into v_id;
+      update public.organisations set slug = 'api' where id = v_id;
+    end $d$ $q$, 'denied(22023:reserved_slug)');
+select harness.val('W14 no organisation was added or changed by this section',
+  format($$select (count(*) = %s and count(*) filter (where slug = 'org-a') = 1)::text from public.organisations$$,
+         :orgs_before_w), 'true');
+select harness.val('W15 session_replication_role is back to origin',
+  $$select current_setting('session_replication_role')$$, 'origin');
+
+-- ---------------------------------------------------------------------------
+-- W16-W40. the slug GRAMMAR on every write, and the NORMALISED reserved key
+-- (scoped re-review N2, 20260923006000). Every input the re-review measured
+-- an Owner's direct UPDATE accepting is here, through the same path (alice,
+-- Owner at aal2, the column grant). A look-alike or variant of a reserved
+-- name must report reserved_slug; anything else outside the grammar
+-- invalid_slug.
+-- ---------------------------------------------------------------------------
+select harness.val('W16 the normalised key folds fullwidth, NBSP, tab, newline and case',
+  $$select string_agg(private.workspace_slug_key(s), ',' order by n)
+      from (values (1, 'ｌｅｇａｌ'), (2, E'legal\u00a0'), (3, E'legal\t'),
+                   (4, E'\nLEGAL'), (5, E'\u3000Ａｃｃｏｕｎｔ '), (6, 'lеgal')) v(n, s)$$,
+  -- the sixth is Cyrillic U+0435: NFKC does not fold it, the grammar refuses it (W31)
+  'legal,legal,legal,legal,account,lеgal');
+select harness.val('W17 the key and the guard are not callable by any client role',
+  $$select (not has_function_privilege('authenticated', 'private.workspace_slug_key(text)', 'execute')
+            and not has_function_privilege('anon', 'private.workspace_slug_key(text)', 'execute')
+            and not has_function_privilege('service_role', 'private.workspace_slug_key(text)', 'execute'))::text$$,
+  'true');
+
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+select harness.try_hint('W18 Owner PATCH: `..` is refused (grammar)',
+  $$update public.organisations set slug = '..' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W19 Owner PATCH: the empty slug is refused',
+  $$update public.organisations set slug = '' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W20 Owner PATCH: `legal/x` is refused (a path, not a segment)',
+  $$update public.organisations set slug = 'legal/x' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W21 Owner PATCH: `_next` is refused (Next.js''s own prefix)',
+  $$update public.organisations set slug = '_next' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W22 Owner PATCH: `legal<TAB>` is refused AS RESERVED (key trims the tab)',
+  $$update public.organisations set slug = E'legal\t' where slug = 'org-a'$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W23 Owner PATCH: `legal<NBSP>` is refused as reserved (NFKC maps NBSP to a space)',
+  $$update public.organisations set slug = E'legal\u00a0' where slug = 'org-a'$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W24 Owner PATCH: fullwidth `ｌｅｇａｌ` is refused as reserved (NFKC)',
+  $$update public.organisations set slug = 'ｌｅｇａｌ' where slug = 'org-a'$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W25 Owner PATCH: fullwidth upper-case `ＳＩＧＮＵＰ` is refused as reserved',
+  $$update public.organisations set slug = 'ＳＩＧＮＵＰ' where slug = 'org-a'$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W26 Owner PATCH: `LEGAL` is refused as reserved',
+  $$update public.organisations set slug = 'LEGAL' where slug = 'org-a'$$, 'denied(22023:reserved_slug)');
+select harness.try_hint('W27 Owner PATCH: an upper-case NON-reserved slug is refused (grammar, not folded)',
+  $$update public.organisations set slug = 'Org-A-Two' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W28 Owner PATCH: a trailing newline on an ordinary slug is refused',
+  $$update public.organisations set slug = E'org-a-two\n' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W29 Owner PATCH: a double hyphen is refused',
+  $$update public.organisations set slug = 'org--a' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W30 ...leading hyphen',
+  $$update public.organisations set slug = '-org-a' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W31 Owner PATCH: Cyrillic look-alike `lеgal` is refused (grammar: ASCII only)',
+  $$update public.organisations set slug = 'lеgal' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W32 Owner PATCH: one character is too short',
+  $$update public.organisations set slug = 'a' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W33 Owner PATCH: 64 characters is too long',
+  $$update public.organisations set slug = repeat('a', 64) where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try_hint('W34 Owner PATCH: a slug with an inner space is refused',
+  $$update public.organisations set slug = 'org a' where slug = 'org-a'$$, 'denied(22023:invalid_slug)');
+select harness.try('W35 POSITIVE: exactly 63 and exactly 2 characters are accepted (rolled back)',
+  $q$do $d$ begin
+      update public.organisations set slug = repeat('a', 63) where slug = 'org-a';
+      if not found then raise exception 'no row' using errcode = 'P0097'; end if;
+      update public.organisations set slug = 'a1' where slug = repeat('a', 63);
+      if not found then raise exception 'no row' using errcode = 'P0097'; end if;
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, 'denied(P0098)');
+reset role; reset request.jwt.claims;
+
+set role authenticated;
+set request.jwt.claims = :'carol_c';
+select harness.try_hint('W36 create_organisation: fullwidth `ｌｅｇａｌ` is refused (its own grammar runs first)',
+  $$select public.create_organisation('Wide','ｌｅｇａｌ')$$, 'denied(22023:)');
+reset role; reset request.jwt.claims;
+
+select harness.try_hint('W37 postgres cannot INSERT an ungrammatical slug either (the trigger, not a grant)',
+  $$insert into public.organisations (name, slug) values ('Raw', '_next')$$, 'denied(22023:invalid_slug)');
+-- A workspace that ALREADY holds an ungrammatical slug (from before
+-- 20260923006000) is not locked: a rename and a lifecycle-style update that
+-- leave the slug alone pass, and so does moving it to a grammatical slug;
+-- moving it to ANOTHER ungrammatical slug is refused. Planted in replica mode.
+select harness.try('W38 a pre-existing ungrammatical workspace can be renamed and moved to a valid slug',
+  $q$do $d$
+    declare v_id uuid;
+    begin
+      execute 'set local session_replication_role = replica';
+      insert into public.organisations (name, slug) values ('Old Style', 'Old_Style') returning id into v_id;
+      execute 'set local session_replication_role = origin';
+      update public.organisations set name = 'Old Style, renamed' where id = v_id;
+      update public.organisations set name = name, slug = slug where id = v_id;
+      update public.organisations set slug = 'old-style' where id = v_id;
+      if (select slug from public.organisations where id = v_id) <> 'old-style' then
+        raise exception 'not moved' using errcode = 'P0097';
+      end if;
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, 'denied(P0098)');
+select harness.try_hint('W39 ...but it cannot be moved to another ungrammatical slug',
+  $q$do $d$
+    declare v_id uuid;
+    begin
+      execute 'set local session_replication_role = replica';
+      insert into public.organisations (name, slug) values ('Old Style', 'Old_Style') returning id into v_id;
+      execute 'set local session_replication_role = origin';
+      update public.organisations set slug = 'Old_Style_2' where id = v_id;
+    end $d$ $q$, 'denied(22023:invalid_slug)');
+select harness.val('W40 no organisation was added or changed by W16-W39, and replication role is origin',
+  format($$select (count(*) = %s and count(*) filter (where slug = 'org-a') = 1
+                   and current_setting('session_replication_role') = 'origin')::text
+             from public.organisations$$, :orgs_before_w), 'true');
 
 -- ===========================================================================
 -- Results

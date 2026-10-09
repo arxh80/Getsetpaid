@@ -717,12 +717,33 @@ select leak.val('LE1 N5: NOTHING on the network surface names a rating, in any f
 -- direct PostgREST INSERT and not only the server action (review finding I2).
 -- It is now inspected for the word "rating" by LE1 above, which is the point:
 -- a function that joins the network surface is audited the day it joins.
-select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 12 functions',
+-- 11/2/13/26 SINCE PHASE 8 TASK 7 (20261006000000, Q122), the census working
+-- a third time. One function entered by net (a) -- a TRIGGER on a network
+-- table: private.audit_crm_change, the generic CRM audit writer, now attached
+-- to network_profiles and network_links. It writes identifiers and the
+-- visibility map only (never a published value), and it is inspected for the
+-- word "rating" by LE1 above the day it joins.
+-- 11/2/14/27 SINCE PHASE 8 TASK 9b FIX ROUND 1 (20261017000000, C1). One
+-- function entered by net (a) -- a TRIGGER on a network table:
+-- private.connection_request_born_pending, which refuses a request born
+-- anything but pending and stamps requested_by/requested_at. Inspected for the
+-- word "rating" by LE1 above the day it joins.
+-- 11/2/15/28 SINCE PHASE 8 TASK 9b FIX ROUND 2 (20261020000000, N1). One
+-- function entered by net (a) -- a TRIGGER on a network table:
+-- private.connection_request_bound_update, which pins a request's parties,
+-- binds an answer to its side and stamps responded_by/responded_at.
+-- Inspected for the word "rating" by LE1 above the day it joins.
+-- 11/2/16/29 SINCE PHASE 8 FINAL REVIEW A, m1 (20261029001000). One
+-- function entered by net (a) -- a TRIGGER on network_profiles and
+-- network_links: private.stamp_row_attribution, which refuses a forged
+-- created_by/created_at and stamps them from the session. Inspected for the
+-- word "rating" by LE1 above the day it joins.
+select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 16 functions',
   $$select count(*) filter (where objname like 'policy:%')::text || '/' ||
            count(*) filter (where objname like 'view:%')::text || '/' ||
            count(*) filter (where objname like 'function:%')::text || '/' ||
            count(*)::text
-      from leak.network_surface_wide$$, '11/2/12/25');
+      from leak.network_surface_wide$$, '11/2/16/29');
 -- M6, NAMED. The two functions rls_phase6_network.sql § NF1b could not see.
 select leak.val('LE1c M6: the two functions the NAME filter missed are INSIDE this census',
   $$select string_agg(objname, ',' order by objname) from leak.network_surface_wide
@@ -732,13 +753,13 @@ select leak.val('LE1c M6: the two functions the NAME filter missed are INSIDE th
 select leak.val('LE1d ...and the functions in the census, by name, so a dropped one is red',
   $$select string_agg(replace(objname,'function:',''), ',' order by objname)
       from leak.network_surface_wide where objname like 'function:%'$$,
-  'private.audit_network_row,private.entity_is_manageable,private.entity_org_unchanged,'
+  'private.audit_crm_change,private.audit_network_row,private.connection_request_born_pending,private.connection_request_bound_update,private.entity_is_manageable,private.entity_org_unchanged,'
   'private.fill_connection_request_recipient,private.is_active_member,'
   'private.meter_connection_request,'
   'private.network_publish_organisations,'
   'private.network_request_status_transition_guard,private.network_visibility_is_valid,'
   'private.organisation_network_presence_active,'
-  'private.permitted_organisations,private.set_updated_at');
+  'private.permitted_organisations,private.set_updated_at,private.stamp_row_attribution');
 
 -- THE PLANTED POSITIVE CONTROL. Without it, "0 bodies mention rating" is a
 -- claim about a regex nobody has watched fire.
@@ -887,9 +908,22 @@ select leak.val('LF1b DENOMINATOR: 28 private relation names were the needle set
 -- a support engagement (who asked, which organisation, why, when it expires).
 -- If a later change made either masking view resolve something through the
 -- impersonation grant, LF1 -- not this line -- is what would go red.
+--
+-- RE-READ AND RE-RECORDED 2026-10-05 (PHASE 8 TASK 9c FIX ROUND 1b, Q227 --
+-- controller decision (a), pending founder). SIX -> SEVEN: 20261025000000 (C1)
+-- added private.closure_backup_read_admits() to both bodies, so a closure
+-- backup reads the workspace as it was before the closure. Its body names ONE
+-- relation, private.closure_backup_reads, which LF1's public.* needle set
+-- does not see -- so § LF5 below allowlists it EXPLICITLY, by name, and pins
+-- what it can hold. (At 231 migrations this line read FOURTEEN and LF1/LF3/
+-- LF3c were red: permitted_organisations' new comment named the export
+-- engine's entry point schema-qualified, and the text closure followed it into
+-- the export catalogue. 20261027000000 rewords that comment; no masking view
+-- ever reached the export engine.)
 select leak.val('LF2 DENOMINATOR: the closure, by name -- these are the bodies that were read',
   $$select count(*)::text || ':' || string_agg(fqn, ',' order by fqn) from leak.fn_closure$$,
-  '6:private.has_platform_permission,private.impersonated_organisations,'
+  '7:private.closure_backup_read_admits,private.has_platform_permission,'
+  'private.impersonated_organisations,'
   'private.permitted_organisations,private.role_requires_mfa,'
   'private.session_is_aal2,public.has_permission');
 -- THE DEPTH ASSERTION. private.role_requires_mfa is NOT a pg_depend child of
@@ -929,6 +963,35 @@ drop function private.leak_probe_private_reader();
 select leak.val('LF3c ...and the probe is gone, so LF1''s 0 stands for the shipped schema',
   $$select count(*)::text from leak.fn_closure f
      join leak.private_rel r on f.body ~ ('\mpublic\.' || r.rel || '\M')$$, '0');
+
+-- ===========================================================================
+-- LF5. THE ONE PRIVATE RELATION THE DISCOVERY CLOSURE MAY NAME (Q227).
+--
+-- LF1 looks for TENANT relations under `public.`. The closure-backup marker
+-- (20261025000000) is a `private.` table, so LF1 is blind to it by
+-- construction -- and so it would be to ANY private table a later change
+-- made a masking view's helper read. LF5 closes that: the set of `private`
+-- relations named anywhere in the closure is EXACTLY the marker, nothing
+-- else, and the marker can hold nothing but a transaction id and two foreign
+-- keys (LF5b: a column added to it reddens this). It holds no tenant data:
+-- xact is pg_current_xact_id(), organisation_id and export_job_id are FKs.
+-- Who can touch it, and transaction isolation, are measured in
+-- rls_phase8_closure_backup.sql § KM.
+-- ===========================================================================
+select leak.val('LF5 ALLOWLIST: the only private relation any closure body names is private.closure_backup_reads',
+  $$select coalesce(string_agg(distinct n.nspname || '.' || c.relname, ',' order by n.nspname || '.' || c.relname), '<none>')
+      from leak.fn_closure f
+      join pg_catalog.pg_class c on c.relkind in ('r','p','v','m','f')
+      join pg_catalog.pg_namespace n on n.oid = c.relnamespace and n.nspname = 'private'
+     where f.body ~ ('\mprivate\.' || c.relname || '\M')$$,
+  'private.closure_backup_reads');
+select leak.val('LF5b ...and its column set is exactly a transaction id and two FKs (no room for tenant data)',
+  $$select string_agg(a.attname || ':' || pg_catalog.format_type(a.atttypid, a.atttypmod), ',' order by a.attname)
+      from pg_catalog.pg_attribute a
+     where a.attrelid = 'private.closure_backup_reads'::regclass and a.attnum > 0 and not a.attisdropped$$,
+  'export_job_id:uuid,organisation_id:uuid,xact:xid8');
+select leak.val('LF5c ...and it is empty at rest',
+  $$select count(*)::text from private.closure_backup_reads$$, '0');
 
 -- THE STATED BOUND. The write policies' helper DOES read private tables, by
 -- design, and is outside this closure -- recorded as a measurement so the

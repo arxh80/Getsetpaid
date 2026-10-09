@@ -97,9 +97,9 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
       // count) and RLS-safe for a suspended workspace regardless (view_network
       // is closed, so the query answers 0 rather than leaking anything); only
       // the RENDER below is gated on `canViewNetwork`. This is the ONE other
-      // discovery surface besides app/(app)/[orgSlug]/network/requests --
-      // there is no notification of any kind (Q45/Q75, CLAUDE.md's
-      // `reminder_at` precedent).
+      // in-app surface besides app/(app)/[orgSlug]/network/requests (requests
+      // are also emailed since Phase 8 Task 9b job 3, 20261016000000; there is
+      // no in-app toast).
       countPendingReceivedRequests(org.id),
       // PHASE 7 TASK 4: THE ONE CONSUMER THAT PROVES THE FEATURE-OVERRIDE
       // WIRING END TO END (the brief: "gate nothing existing"). Reads
@@ -571,8 +571,8 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
             </li>
             {/* TASK 4: the requests inbox/outbox, with the pending-received
                 count -- tabular-nums (DESIGN.md's numeral rule) and the ONE
-                other discovery surface besides the requests page itself,
-                since there is no notification of any kind (Q45/Q75). */}
+                other in-app surface besides the requests page itself (requests
+                are also emailed since Phase 8 Task 9b job 3). */}
             <li className="border-b border-rule py-3">
               <Link
                 href={`/${org.slug}/network/requests`}

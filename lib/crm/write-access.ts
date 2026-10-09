@@ -68,6 +68,10 @@ import "server-only";
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import { hasPermission, type CurrentOrg } from "@/lib/auth";
+import {
+  SUSPENDED_READ_ONLY_EXPLANATION,
+  readOnlyExplanation,
+} from "@/lib/admin/lifecycle-contract";
 // One direction only: lib/crm/write.ts imports nothing from here, so this is
 // not a cycle. REFUSED_MESSAGE is the sentence that declines to guess WHY, and
 // joinEndExplanation() below needs exactly that for the case where guessing
@@ -89,8 +93,7 @@ export type CrmWriteAccess =
     };
 
 const EXPLANATION: Record<WriteBlockedReason, string> = {
-  suspended:
-    "This workspace is suspended, so it’s read-only. You can still see everything in it. Contact GetSetPaid support to have it reinstated — an Owner can’t do it from here.",
+  suspended: SUSPENDED_READ_ONLY_EXPLANATION,
   tier: "Your plan doesn’t include adding or editing records. An Owner can upgrade the workspace to change that.",
   permission:
     "Your role in this workspace can view records but not change them. Ask an Owner or Admin if you need to.",
@@ -238,7 +241,7 @@ export async function getCrmWriteAccess(
   permissionKey: string,
 ): Promise<CrmWriteAccess> {
   if (org.isSuspended) {
-    return { canWrite: false, reason: "suspended", explanation: EXPLANATION.suspended };
+    return { canWrite: false, reason: "suspended", explanation: readOnlyExplanation(org.lifecycle) };
   }
 
   // Both round trips at once: neither answer depends on the other, and this is

@@ -46,12 +46,22 @@ import "server-only";
 // to this list gets the same three questions: who owns it, who may execute it,
 // and what can the caller ask it FOR.
 //
+// A SECOND RPC IS EXECUTABLE BY service_role SINCE PHASE 8 TASK 2, and no
+// sender calls it yet: `public.consent_is_granted(user_id, purpose)`
+// (20260923000000), the check a future marketing sender must make through
+// lib/consent/marketing.ts. The three answers: owned by `postgres`, executable
+// by `service_role` alone, and it returns ONE boolean about one person's
+// consent to one catalogued purpose -- no address, no row. It does take a
+// user argument, which is the point of it; a sender already holds the id.
+//
 // THE SAME FOUR PROPERTIES admin.ts and storage.ts keep:
 //   1. `import "server-only"` -- a Client Component reaching this file is a
 //      BUILD failure, not a review note.
 //   2. The key is SUPABASE_SERVICE_ROLE_KEY, never NEXT_PUBLIC_.
 //   3. Constructed per call, no session, never writes auth cookies.
-//   4. ONE IMPORTER: lib/email/*. tests/unit/email/service-client-census.test.ts
+//   4. NAMED IMPORTERS ONLY: lib/email/*, the three sessionless runners, and
+//      (since 20261029000000, final review A I1) lib/crm/scan-verdict.ts,
+//      whose whole reach is public.record_document_scan_verdict(). tests/unit/email/service-client-census.test.ts
 //      is the source-only census that keeps it that way -- a second importer
 //      fails the suite, so growing this into a general-purpose RLS bypass is
 //      a visible decision rather than a drift.

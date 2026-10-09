@@ -53,7 +53,15 @@ import "server-only";
 //     and the earlier claim here that a 10-second Brevo timeout ruled overlap
 //     out was false the moment that loop was added).
 //
-// Worst case now ~140 s against a 600 s tick. The pg_net timeout does not
+//   * the Telegram alert (below, founder 2026-09-30, Q111) is ONE request with
+//     a 10-second timeout (lib/telegram/send.ts), so it adds at most ten.
+//
+//   * since 20261015000000, the DSR and export-ready notices (30 rows and a
+//     60-second budget each, ~70 s each) and the erasure-failure notice (one
+//     10-second call) -- lib/email/requester-notifications.ts.
+//
+// Worst case now ~300 s against a 600 s tick (20261015000000 reissues the
+// clock function's comment with that number; it was ~150 s at 20261014000000). The pg_net timeout does not
 // help with any of this: it abandons the response, it does not cancel the
 // handler.
 
@@ -65,6 +73,11 @@ import {
 } from "@/lib/email/templates";
 import { createServiceClient } from "@/lib/supabase/service";
 import { siteUrl } from "@/lib/supabase/env";
+import { sendTelegramMessage, telegramConfig } from "@/lib/telegram/send";
+import {
+  buildTelegramAlertPayload,
+  renderTelegramAlertText,
+} from "@/lib/telegram/incident-alert-payload";
 
 /** Upper bound on alerts per digest. 200 rows is a long email already. */
 export const INCIDENT_ALERT_DELIVERY_LIMIT = 200;
@@ -146,4 +159,97 @@ export async function deliverPendingIncidentAlerts(
   }
 
   return { outcome: "sent", count: rows.length, messageId: result.messageId };
+}
+
+// ===========================================================================
+// THE SECOND CHANNEL: TELEGRAM (founder 2026-09-30, Q111)
+// ===========================================================================
+// Same tick, same route, its OWN stamp. This half reads and writes
+// `telegram_notified_at` and never `notified_at`; the email half above reads
+// and writes `notified_at` and never `telegram_notified_at`
+// (20261014000000). So a Telegram failure leaves the email stamp exactly as
+// the email half left it, and vice versa, and either channel re-sends alone on
+// the next tick.
+//
+// WHAT IT SELECTS IS WHAT IT MAY SAY. The read is `id, alert_type` -- not the
+// summary, not the details, not the organisation -- and only `alert_type`
+// reaches the payload builder; `id` is used for the stamp and nothing else.
+// The builder is the allowlist (lib/telegram/incident-alert-payload.ts).
+//
+// NO CONFIG, NO-OP: with TELEGRAM_BOT_TOKEN or TELEGRAM_ALERT_CHAT_ID unset
+// this returns `disabled` before it reads anything -- not `failed`, because an
+// environment that has not opted into the channel has nothing pending on it.
+
+export type TelegramAlertDeliveryResult =
+  | { readonly outcome: "disabled" }
+  | { readonly outcome: "nothing_pending" }
+  | { readonly outcome: "sent"; readonly count: number }
+  | { readonly outcome: "failed"; readonly count: number; readonly error: string }
+  | { readonly outcome: "unavailable"; readonly error: string };
+
+export async function deliverPendingIncidentAlertsToTelegram(
+  limit: number = INCIDENT_ALERT_DELIVERY_LIMIT,
+): Promise<TelegramAlertDeliveryResult> {
+  const config = telegramConfig();
+  if (!config) return { outcome: "disabled" };
+
+  const service = createServiceClient();
+  const { data, error } = await service
+    .from("incident_alerts")
+    .select("id, alert_type")
+    .is("telegram_notified_at", null)
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(Math.max(1, Math.min(limit, INCIDENT_ALERT_DELIVERY_LIMIT)));
+
+  if (error) {
+    console.error("[telegram] incident-alert delivery could not read pending alerts:", error.message);
+    return { outcome: "unavailable", error: error.message };
+  }
+
+  const rows = (data ?? []).map((row) => ({
+    id: row.id as string,
+    alertType: row.alert_type as string,
+  }));
+  if (rows.length === 0) return { outcome: "nothing_pending" };
+
+  let text: string;
+  try {
+    text = renderTelegramAlertText(
+      buildTelegramAlertPayload(rows.map((r) => ({ alertType: r.alertType })), siteUrl()),
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[telegram] alert payload refused; nothing sent, nothing stamped: ${message}`);
+    return { outcome: "failed", count: rows.length, error: message };
+  }
+
+  let result: Awaited<ReturnType<typeof sendTelegramMessage>>;
+  try {
+    result = await sendTelegramMessage(config, text);
+  } catch (err) {
+    result = { ok: false, error: err instanceof Error ? err.name : "unknown error" };
+  }
+  if (!result.ok) {
+    console.error(
+      `[telegram] incident-alert message (${rows.length} alert(s)) failed; nothing stamped, re-sendable:`,
+      result.error,
+    );
+    return { outcome: "failed", count: rows.length, error: result.error };
+  }
+
+  const { error: stampError } = await service
+    .from("incident_alerts")
+    .update({ telegram_notified_at: new Date().toISOString() })
+    .in("id", rows.map((r) => r.id))
+    .is("telegram_notified_at", null);
+  if (stampError) {
+    console.error(
+      "[telegram] incident-alert message sent but telegram_notified_at could not be stamped; the next run will re-send:",
+      stampError.message,
+    );
+    return { outcome: "failed", count: rows.length, error: stampError.message };
+  }
+
+  return { outcome: "sent", count: rows.length };
 }

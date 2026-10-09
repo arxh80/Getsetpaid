@@ -1,8 +1,11 @@
 import { expect, test } from "@playwright/test";
 import {
+  crmAuditAllowlist,
+  crmAuditRows,
   EVENT_NAMES,
   NOTE_BODIES,
   setUpWorld,
+  taskLinkIdsFor,
   tearDownWorld,
   type E2eWorld,
 } from "./support/fixtures";
@@ -98,6 +101,50 @@ test("a task links to an event, completes, and lands on the event timeline", asy
   await expect(completedRows).toHaveCount(1);
   // The one completion names this task.
   await expect(timeline).toContainText(`${TASK_TITLE} was completed`);
+
+  // ---- PHASE 8 TASK 7 (Q122): THE SERVER-ACTION HALF OF THE AUDIT ---------
+  // Every write above went through a real form and a real server action. The
+  // database trigger must have recorded each exactly as it records the same
+  // write sent straight at PostgREST
+  // (tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts):
+  // one row per write, attributed to the Manager in this workspace, value
+  // keys EXACTLY the database's allowlist for that target, and none of what
+  // was typed. Read straight out of Postgres; nothing on a page could hide a
+  // false negative here.
+  const taskId = taskUrl.split("/").pop()!;
+  const manager = world.users.manager.id;
+  const taskRows = await crmAuditRows(taskId);
+  expect(taskRows.map((r) => r.action)).toEqual(["task.created", "task.updated"]);
+  const taskKeys = await crmAuditAllowlist("task");
+  for (const r of taskRows) {
+    expect(r.actor_user_id).toBe(manager);
+    expect(r.organisation_id).toBe(world.orgId);
+    expect(r.target_type).toBe("task");
+    // A .created row carries every allowlisted column; an .updated row
+    // carries the allowlisted columns that CHANGED -- never anything else.
+    const keys = Object.keys((r.after as { values: object }).values).sort();
+    const expected =
+      r.action === "task.created"
+        ? taskKeys
+        : taskKeys.filter((k) => ((r.after as { changed: string[] }).changed ?? []).includes(k));
+    expect(keys).toEqual(expected);
+    expect(JSON.stringify(r)).not.toContain("advance the settlement");
+  }
+  const completion = taskRows[1];
+  expect((completion.before as { values: Record<string, unknown> }).values.status).toBe("open");
+  expect((completion.after as { values: Record<string, unknown> }).values.status).toBe("done");
+
+  const linkIds = await taskLinkIdsFor(taskId);
+  expect(linkIds, "DENOMINATOR: the Link button wrote one task_links row").toHaveLength(1);
+  const linkRows = await crmAuditRows(linkIds[0]);
+  expect(linkRows.map((r) => r.action)).toEqual(["task_link.created"]);
+  expect(linkRows[0].actor_user_id).toBe(manager);
+  expect(Object.keys((linkRows[0].after as { values: object }).values).sort()).toEqual(
+    await crmAuditAllowlist("task_link"),
+  );
+  expect((linkRows[0].after as { values: Record<string, unknown> }).values.entity_id).toBe(
+    world.managerOwnedEventId,
+  );
 });
 
 test("a private note hides from a second same-org user; a company note does not", async ({
@@ -114,6 +161,20 @@ test("a private note hides from a second same-org user; a company note does not"
   await expect(page).toHaveURL(new RegExp(`/${world.orgSlug}/notes/[0-9a-f-]+$`));
   const privateUrl = page.url();
   await expect(page.locator("main")).toContainText(PRIVATE_BODY);
+
+  // PHASE 8 TASK 7 (Q122): the private note's creation through the real form
+  // is ONE note.created row, attributed, with the allowlist's keys -- and its
+  // body, which the page above proves was stored, is nowhere in it (the Q54
+  // boundary on the superuser-readable surface).
+  const noteRows = await crmAuditRows(privateUrl.split("/").pop()!);
+  expect(noteRows.map((r) => r.action)).toEqual(["note.created"]);
+  expect(noteRows[0].actor_user_id).toBe(world.users.manager.id);
+  expect(noteRows[0].organisation_id).toBe(world.orgId);
+  expect(Object.keys((noteRows[0].after as { values: object }).values).sort()).toEqual(
+    await crmAuditAllowlist("note"),
+  );
+  expect((noteRows[0].after as { values: Record<string, unknown> }).values.visibility).toBe("private");
+  expect(JSON.stringify(noteRows[0])).not.toContain("only I should read this");
 
   await page.goto(`/${world.orgSlug}/notes/new`);
   const COMPANY_BODY = "Golden ops COMPANY note — the whole workspace reads this";

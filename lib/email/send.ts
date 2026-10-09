@@ -2,8 +2,8 @@ import "server-only";
 
 // Transactional email, via Brevo's HTTP API (https://api.brevo.com/v3/smtp/email).
 //
-// WHY THE HTTP API AND NOT SMTP+NODEMAILER: no extra dependency, works on the
-// edge/serverless runtime this app deploys to, and the API key is the only
+// WHY THE HTTP API AND NOT SMTP+NODEMAILER: no extra dependency, works on any
+// runtime the app is deployed to (an IONOS VPS, founder 2026-09-30), and the API key is the only
 // secret to hold. SMTP would add a long-lived connection and a transport dep
 // for no gain at this volume.
 //
@@ -22,9 +22,9 @@ import "server-only";
 //
 // TIMEOUT (Phase 7 Task 6 fix round 1, finding I2): the typed-result contract
 // covered a rejected fetch and a non-2xx response but not a connection that
-// is accepted and never answered -- undici's default is 300 s, and a
-// serverless host kills the function long before that, so a Brevo stall was a
-// hung submission and, on retry, a duplicate row. Every call now carries an
+// is accepted and never answered -- undici's default is 300 s, far longer
+// than any user waits (and longer than some runtimes let a request live), so
+// a Brevo stall was a hung submission and, on retry, a duplicate row. Every call now carries an
 // AbortSignal; the abort surfaces through the same `network error` branch.
 
 const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
@@ -39,6 +39,13 @@ export interface EmailAddress {
 
 export interface SendEmailInput {
   to: EmailAddress[];
+  /**
+   * Blind recipients. A message to SEVERAL people who should not see each
+   * other's addresses (Task 9b review m5: a connection notice to a
+   * workspace's Owners and Admins) passes them here with `to: []`; Brevo
+   * requires a `to`, so the message is then addressed to the sender itself.
+   */
+  bcc?: EmailAddress[];
   subject: string;
   html: string;
   /** Plain-text fallback. Optional but recommended for deliverability. */
@@ -88,9 +95,12 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     return { ok: false, error: "no sender: set BREVO_SENDER_EMAIL or pass `from`" };
   }
 
-  if (input.to.length === 0) {
+  const bcc = input.bcc ?? [];
+  if (input.to.length === 0 && bcc.length === 0) {
     return { ok: false, error: "no recipients" };
   }
+  // Undisclosed recipients: nobody in To but the sender, everybody in Bcc.
+  const to = input.to.length > 0 ? input.to : [from];
 
   let response: Response;
   try {
@@ -103,7 +113,8 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       },
       body: JSON.stringify({
         sender: from,
-        to: input.to,
+        to,
+        ...(bcc.length > 0 ? { bcc } : {}),
         subject: input.subject,
         htmlContent: input.html,
         ...(input.text ? { textContent: input.text } : {}),

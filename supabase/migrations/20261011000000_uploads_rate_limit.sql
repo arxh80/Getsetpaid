@@ -1,0 +1,41 @@
+-- Phase 8 Task 9a, requirement 7 (Q113, founder 2026-09-30): document uploads
+-- are limited to 10 per hour PER USER. The 25 MiB cap stays as it is.
+--
+-- ===========================================================================
+-- WHY A USER-SCOPED ROW AND NOTHING ELSE
+-- ===========================================================================
+-- A twelfth category in public.rate_limit_policies, the one place a limit's
+-- value lives (20260909020000). Being user-scoped is the whole of the
+-- plumbing: public.consume_rate_limit() already binds a 'user' category to
+-- auth.uid(), refuses an organisation argument for one (22023 -- the Phase 7
+-- I1 attribution rule), counts the refused request too, and files the
+-- exactly-once rate_limit_tripped alert at the crossing. So no function is
+-- rebuilt here.
+--
+-- ===========================================================================
+-- WHERE IT IS ENFORCED, AND WHY THAT IS NOT A BEFORE INSERT TRIGGER
+-- ===========================================================================
+-- Every other WRITE budget in this schema (connection requests, feedback,
+-- consents, DSRs, exports, erasures) is a BEFORE INSERT trigger, because each
+-- of those tables carries a client INSERT grant and the row IS the write. An
+-- upload is not like that. Its expensive half -- the bytes -- goes to the
+-- private `documents` bucket through the server's service-role client
+-- (storage.objects is deny-all fenced for every client role), and only AFTER
+-- that does the `public.documents` row land. A trigger on that row would
+-- meter the upload once the bytes were already stored, which is exactly what
+-- the ruling forbids ("enforced at the write": the refusal must happen before
+-- any byte reaches Storage). So the meter is lib/crm/documents.ts's
+-- uploadDocumentAction, which calls consume_rate_limit('uploads') after the
+-- cheap refusals (permission, empty file, size, the type allowlist) and
+-- BEFORE the storage write -- the one chokepoint every byte that reaches the
+-- bucket passes. A metadata row inserted straight over PostgREST stores no
+-- bytes and is not an upload (DECISIONS-QUEUE Q196). Feedback screenshots
+-- are a different path to a different bucket with their own 10/hour budget
+-- (`feedback`, enforced at its own INSERT); they are not counted here.
+--
+-- ADDITIVE. No previously applied migration is edited; the eleven existing
+-- policy rows are untouched.
+
+insert into public.rate_limit_policies (category, subject_scope, max_requests, window_seconds, description)
+values ('uploads', 'user', 10, 3600,
+        'Document uploads per user (Q113, founder 2026-09-30). Consumed by uploadDocumentAction BEFORE the bytes reach the documents bucket; feedback screenshots are metered separately under feedback.');

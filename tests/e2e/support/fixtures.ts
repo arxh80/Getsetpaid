@@ -362,6 +362,8 @@ export interface E2eUser {
 export interface E2eWorld {
   /** Slug of the workspace the golden path is walked in. */
   orgSlug: string;
+  /** Its display NAME -- what a confirmation step shows a person. */
+  orgName: string;
   orgId: string;
   /**
    * A SECOND tenant, for the breakout run.
@@ -1032,6 +1034,284 @@ export async function deleteIncidentAlert(id: string): Promise<void> {
 }
 
 // ===========================================================================
+// PHASE 8 TASK 6: THE RETENTION JOB
+// ===========================================================================
+
+export interface RetentionRunRead {
+  id: string;
+  mode: string;
+  status: string;
+}
+
+/** Every retention run, newest first. The e2e reads this to prove that the
+ *  PREVIEW the founder pressed produced a `dry` run and not a live one. */
+export async function retentionRuns(): Promise<RetentionRunRead[]> {
+  const { rows } = await db().query<{ id: string; mode: string; status: string }>(
+    `select id, mode, status from public.retention_runs order by started_at desc`,
+  );
+  return rows;
+}
+
+/**
+ * WHICH TABLES THE RETENTION JOB CAN DELETE FROM -- DERIVED, NOT LISTED
+ * (Phase 8 Task 6 fix round 1, review finding m4a).
+ *
+ * This was eight literal strings. `private.retention_subjects()` exists so
+ * that exactly this list is DERIVED and refuses to go stale: a ninth sweep
+ * added by a later phase would have been invisible to the
+ * preview-deletes-nothing test without anybody noticing -- the phase's
+ * recurring bug class, in the one file written to answer it.
+ *
+ * The names come from the database, so each is checked against `pg_class`
+ * before it is interpolated into a statement: a derived name is not a
+ * parameter, and it is not a literal either.
+ */
+export async function retentionSweepableTables(): Promise<string[]> {
+  const { rows } = await db().query<{ table_name: string }>(
+    `select s.table_name
+       from private.retention_subjects() s
+       join pg_class c on c.relname = s.table_name and c.relnamespace = 'public'::regnamespace
+      where s.treatment = 'swept' and s.table_name ~ '^[a-z_]+$'
+      order by 1`,
+  );
+  return rows.map((r) => r.table_name);
+}
+
+/**
+ * THE IDENTITY OF EVERY ROW the retention job could delete, per table -- its
+ * primary key, read out of `pg_index` rather than assumed to be `id`
+ * (`rate_limit_counters` has a four-column key).
+ *
+ * KEYS, NOT COUNTS, and that is the third form this assertion has taken:
+ *
+ *   1. A SUM over the tables, asserted equal. It FAILED on a real run with 31
+ *      where 29 was expected, having deleted nothing: a run appends its own
+ *      `retention.swept` row and the page appends `platform_health.viewed`. A
+ *      sum cannot tell an insert from a deletion somewhere else.
+ *   2. A COUNT per table, asserted `>=`. Stronger, and the review (m3)
+ *      confirmed it as a strengthening -- and named its residual: `>=` cannot
+ *      see "deleted two and inserted two IN THE SAME TABLE", and
+ *      `audit_events` grows by exactly that much during the test.
+ *   3. This: every key present BEFORE must be present AFTER. Inserts are
+ *      irrelevant to it and a deletion cannot hide behind one.
+ */
+export async function retentionSweepableRowKeys(): Promise<Record<string, Set<string>>> {
+  const keys: Record<string, Set<string>> = {};
+  for (const table of await retentionSweepableTables()) {
+    const pk = await db().query<{ attname: string }>(
+      `select a.attname
+         from pg_index i
+         join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any(i.indkey)
+        where i.indrelid = ('public.' || $1)::regclass and i.indisprimary
+        order by array_position(i.indkey::int2[], a.attnum)`,
+      [table],
+    );
+    const columns = pk.rows.map((r) => r.attname).filter((c) => /^[a-z_]+$/.test(c));
+    if (columns.length === 0) throw new Error(`public.${table} has no primary key to identify a row by`);
+    const expression = columns.map((c) => `"${c}"::text`).join(" || '|' || ");
+    const { rows } = await db().query<{ k: string }>(`select ${expression} as k from public."${table}"`);
+    keys[table] = new Set(rows.map((r) => r.k));
+  }
+  return keys;
+}
+
+/**
+ * ONE ROW PAST ITS PERIOD IN EACH OF FOUR SWEEPS, so "the preview deleted
+ * nothing" is a claim about rows a LIVE run WOULD HAVE TAKEN (review finding
+ * m3, second half).
+ *
+ * The denominator used to be "the tables are not all empty". That is true of
+ * any fixture world and says nothing about whether there was anything to
+ * delete: a preview that deleted every EXPIRED row in a world with no expired
+ * rows deletes nothing and passes. These four are expired by construction, the
+ * test asserts the preview COUNTED each of them, and then that each is still
+ * there.
+ */
+export async function plantExpiredRetentionSubjects(userId: string): Promise<{
+  keys: Record<string, string>;
+  remove: () => Promise<void>;
+}> {
+  const tag = randomUUID();
+  const counter = await db().query<{ k: string }>(
+    `insert into public.rate_limit_counters (category, subject_scope, subject_id, window_start, request_count)
+     values ('search', 'user', $1, now() - interval '30 days', 1)
+     returning category || '|' || subject_scope || '|' || subject_id::text || '|' || window_start::text as k`,
+    [tag],
+  );
+  const alert = await db().query<{ id: string }>(
+    `insert into public.incident_alerts
+       (alert_type, summary, details, created_at, resolved_at, auto_resolved_reason)
+     values ('rate_limit_tripped', 'E2E expired retention fixture', '{}'::jsonb,
+             now() - interval '3 years', now() - interval '2 years', 'alert_writer_recovered')
+     returning id`,
+  );
+  const feedback = await db().query<{ id: string }>(
+    `insert into public.feedback (user_id, category, message, route, created_at)
+     values ($1, 'other', 'E2E expired retention fixture', '/e2e', now() - interval '3 years')
+     returning id`,
+    [userId],
+  );
+  const audit = await db().query<{ id: string }>(
+    `insert into public.audit_events
+       (organisation_id, actor_user_id, action, target_type, correlation_id, created_at)
+     values (null, $1, 'e2e.expired_retention_fixture', 'platform', gen_random_uuid(),
+             now() - interval '3 years')
+     returning id`,
+    [userId],
+  );
+  return {
+    keys: {
+      rate_limit_counters: counter.rows[0].k,
+      incident_alerts: alert.rows[0].id,
+      feedback: feedback.rows[0].id,
+      audit_events: audit.rows[0].id,
+    },
+    remove: async () => {
+      await sql(`delete from public.rate_limit_counters where subject_id = '${tag}'`);
+      await sql(`delete from public.incident_alerts where summary = 'E2E expired retention fixture'`);
+      await sql(`delete from public.feedback where message = 'E2E expired retention fixture'`);
+      await sql(`delete from public.audit_events where action = 'e2e.expired_retention_fixture'`);
+    },
+  };
+}
+
+/** What the most recent run COUNTED, read out of the run log. */
+export async function latestRetentionRunSwept(): Promise<Record<string, number | boolean>> {
+  const { rows } = await db().query<{ swept: Record<string, number | boolean> }>(
+    `select swept from public.retention_runs order by started_at desc limit 1`,
+  );
+  return rows[0]?.swept ?? {};
+}
+
+/**
+ * Plant one completed retention run, so the panel can be scanned POPULATED.
+ *
+ * Planted rather than driven, for public.incident_alerts' reason: the table
+ * has no INSERT grant or policy for any client role, the only writer is a
+ * SECURITY DEFINER function the runner calls, and a real run inside an axe
+ * test would make the scan depend on a sweep's timing. What is being scanned
+ * is the RENDERING of a run -- its counts, its capped note and its refusal
+ * line -- and that is the same markup whichever way the row arrived.
+ *
+ * It carries a REFUSAL as well as counts, because the refusal line is the
+ * one piece of this panel that only exists when something has gone wrong,
+ * and an empty-state scan of it would miss the component entirely.
+ */
+export async function plantRetentionRun(): Promise<string> {
+  const { rows } = await db().query<{ id: string }>(
+    `insert into public.retention_runs
+       (correlation_id, mode, status, finished_at, duration_ms, swept, refused)
+     values (gen_random_uuid(), 'live', 'completed', now(), 12,
+             '{"audit_events.rows": 0, "audit_events.capped": false,
+               "feedback.rows": 2, "organisations.purged": 0}'::jsonb,
+             '{"documents": "bytes_not_purged"}'::jsonb)
+     returning id`,
+  );
+  return rows[0].id;
+}
+
+/** Remove the runs and the summary audit rows a spec's previews created. */
+export async function clearRetentionRuns(): Promise<void> {
+  await sql(`delete from public.audit_events where action = 'retention.swept'`);
+  // A LIVE run that carries a refusal files a `retention_run_refused` alert
+  // (20261004004000) -- plantRetentionRun() plants exactly such a run, so the
+  // alert it caused goes with it or it outlives the spec on /super/health.
+  await sql(`delete from public.incident_alerts where alert_type = 'retention_run_refused'`);
+  await sql(`delete from public.retention_runs`);
+}
+
+/** The audit purge ceiling release as the database holds it (Q184): the
+ *  window length in hours, the reason, and how many release audit rows exist. */
+export async function auditCeilingRelease(): Promise<{
+  hours: number | null;
+  reason: string | null;
+  audited: number;
+}> {
+  const { rows } = await db().query<{ hours: string | null; reason: string | null; audited: string }>(
+    `select extract(epoch from s.audit_ceiling_release_expires_at - s.audit_ceiling_released_at) / 3600 as hours,
+            s.audit_ceiling_release_reason as reason,
+            (select count(*) from public.audit_events a
+              where a.action = 'retention.audit_ceiling_released') as audited
+       from public.retention_settings s`,
+  );
+  return {
+    hours: rows[0]?.hours === null || rows[0]?.hours === undefined ? null : Number(rows[0].hours),
+    reason: rows[0]?.reason ?? null,
+    audited: Number(rows[0]?.audited ?? 0),
+  };
+}
+
+/** Clear any ceiling release and its audit rows, so no spec leaves the
+ *  audit purge's sanity ceiling lifted for 72 hours. */
+export async function clearAuditCeilingRelease(): Promise<void> {
+  await sql(
+    `update public.retention_settings
+        set audit_ceiling_released_at = null, audit_ceiling_release_expires_at = null,
+            audit_ceiling_release_reason = null`,
+  );
+  await sql(`delete from public.audit_events where action = 'retention.audit_ceiling_released'`);
+}
+
+// ===========================================================================
+// PHASE 8 TASK 9a (Q185): A DOCUMENT THE RETENTION POLICY PURGED
+// ===========================================================================
+
+export const PURGED_DOCUMENT_NAMES = {
+  /** Deleted three years ago, bytes purged by the retention job. */
+  purged: "E2E Purged Settlement.pdf",
+  /** Deleted yesterday, file kept -- the Restore control's denominator. */
+  kept: "E2E Kept Rider.pdf",
+} as const;
+
+/** A fixed purge instant: 23:30 UTC on 14 June is 15 Jun in London (BST). */
+export const PURGED_AT = "2026-06-14T23:30:00Z";
+
+/**
+ * Plant two DELETED documents in the world's workspace, owned by the manager:
+ * one whose bytes the retention job has purged, one whose file is kept. As
+ * `postgres`, because no client role can write `bytes_purged_at` -- it is the
+ * sweep's column (rls_phase8_retention.sql RK7/RK18). No object is put in the
+ * bucket for either: the restore queue reads metadata only.
+ */
+export async function plantPurgedAndKeptDocuments(
+  world: E2eWorld,
+): Promise<{ purgedId: string; keptId: string }> {
+  const purgedId = randomUUID();
+  const keptId = randomUUID();
+  await sql(
+    `insert into public.documents
+       (id, organisation_id, owner_user_id, filename, storage_key, mime_type,
+        size_bytes, scan_status, scanned_at, deleted_at, bytes_purged_at)
+     values ($1::uuid, $3::uuid, $4::uuid, $5, $6, 'application/pdf', 10, 'clean', now(),
+             now() - interval '3 years', $9::timestamptz),
+            ($2::uuid, $3::uuid, $4::uuid, $7, $8, 'application/pdf', 10, 'clean', now(),
+             now() - interval '1 day', null)`,
+    [
+      purgedId,
+      keptId,
+      world.orgId,
+      world.users.manager.id,
+      PURGED_DOCUMENT_NAMES.purged,
+      `${world.orgId}/${purgedId}`,
+      PURGED_DOCUMENT_NAMES.kept,
+      `${world.orgId}/${keptId}`,
+      PURGED_AT,
+    ],
+  );
+  return { purgedId, keptId };
+}
+
+/** `deleted/purged` as two booleans, e.g. `true/true`; `missing` if absent. */
+export async function documentDeletionState(id: string): Promise<string> {
+  const { rows } = await db().query<{ s: string }>(
+    `select (deleted_at is not null)::text || '/' || (bytes_purged_at is not null)::text as s
+       from public.documents where id = $1`,
+    [id],
+  );
+  return rows[0]?.s ?? "missing";
+}
+
+// ===========================================================================
 // PHASE 7 TASK 6: IN-APP FEEDBACK
 // ===========================================================================
 
@@ -1244,6 +1524,52 @@ export async function impersonationAuditActions(
   return result.rows.map((r) => r.action);
 }
 
+export interface CrmAuditRowRead {
+  action: string;
+  target_type: string;
+  organisation_id: string | null;
+  actor_user_id: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+}
+
+/**
+ * PHASE 8 TASK 7 (Q122). Every audit row for one CRM target, oldest first,
+ * straight out of Postgres as `postgres` -- the SERVER-ACTION half of "a
+ * direct PostgREST write is audited identically to a server action"
+ * (`tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts` is
+ * the other half). Both halves compare the payload's keys against
+ * `crmAuditAllowlist()` below, read from the database, so "identically"
+ * means "held to the same list", not "two tests that happen to agree".
+ */
+export async function crmAuditRows(targetId: string): Promise<CrmAuditRowRead[]> {
+  const result = await db().query<CrmAuditRowRead>(
+    `select action, target_type, organisation_id, actor_user_id, before, after
+       from public.audit_events where target_id = $1
+      order by created_at, id`,
+    [targetId],
+  );
+  return result.rows;
+}
+
+/** The ids of a task's link rows, so their audit rows can be read. */
+export async function taskLinkIdsFor(taskId: string): Promise<string[]> {
+  const result = await db().query<{ id: string }>(
+    `select id from public.task_links where parent_id = $1 order by created_at`,
+    [taskId],
+  );
+  return result.rows.map((r) => r.id);
+}
+
+/** `private.audit_crm_value_columns(target)`, sorted: the ONE allowlist. */
+export async function crmAuditAllowlist(target: string): Promise<string[]> {
+  const result = await db().query<{ c: string[] }>(
+    `select private.audit_crm_value_columns($1) as c`,
+    [target],
+  );
+  return [...result.rows[0].c].sort();
+}
+
 /**
  * PHASE 7 TASK 2. Every DISTINCT route recorded against this organisation's
  * impersonation page views, in order of first appearance.
@@ -1279,6 +1605,10 @@ export async function setUpWorld(): Promise<E2eWorld> {
   const orgId = randomUUID();
   const otherOrgId = randomUUID();
   const orgSlug = `e2e-${suffix}`;
+  // The workspace's NAME, not only its slug: since Phase 8 Task 3's fix round
+  // the DSR routing form makes the operator confirm a workspace by name
+  // before it writes, and the requester is told which business was asked.
+  const orgName = `E2E ${suffix}`;
   const otherOrgSlug = `e2e-other-${suffix}`;
 
   const users: Record<E2eRole, E2eUser> = {
@@ -1322,7 +1652,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
 
   await sql(
     `insert into public.organisations (id, name, slug) values ($1,$2,$3), ($4,$5,$6)`,
-    [orgId, `E2E ${suffix}`, orgSlug, otherOrgId, `E2E Other ${suffix}`, otherOrgSlug],
+    [orgId, orgName, orgSlug, otherOrgId, `E2E Other ${suffix}`, otherOrgSlug],
   );
 
   // A REAL Starter subscription row for both, WHERE THIS USED TO SAY "NO ROW
@@ -2089,6 +2419,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
 
   return {
     orgSlug,
+    orgName,
     orgId,
     otherOrgSlug,
     otherOrgId,
@@ -2256,4 +2587,632 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
     });
   }
   await closeDb();
+}
+
+// ===========================================================================
+// PHASE 8 TASK 1: THE LEGAL DOCUMENT STORE
+// ===========================================================================
+// The e2e walk drafts, publishes and reviews a real version of one legal
+// document. The immutability guard (20260922000000) refuses the undo for
+// every role, by design, so restoring the seed is done with triggers off --
+// `session_replication_role = replica`, set LOCAL inside one transaction on one
+// pooled connection so it cannot leak to another query.
+
+export interface LegalDocumentRow {
+  id: string;
+  version: number;
+  status: string;
+  body: string;
+  counsel_reviewed_at: string | null;
+  counsel_reviewer: string | null;
+}
+
+/** Every version of one document, oldest first, read as `postgres`. */
+export async function legalDocumentVersions(slug: string): Promise<LegalDocumentRow[]> {
+  const result = await db().query<LegalDocumentRow>(
+    `select id, version, status, body, counsel_reviewed_at, counsel_reviewer
+       from public.legal_documents where slug = $1 order by version`,
+    [slug],
+  );
+  return result.rows;
+}
+
+/** The legal audit actions one actor wrote, with their `after` payloads. */
+export async function legalAuditRows(
+  actorUserId: string,
+): Promise<{ action: string; after: string }[]> {
+  const result = await db().query<{ action: string; after: string }>(
+    `select action, coalesce(after::text, '') as after from public.audit_events
+      where target_type = 'legal_document' and actor_user_id = $1
+      order by created_at`,
+    [actorUserId],
+  );
+  return result.rows;
+}
+
+/**
+ * Put one document back to its seeded version 1: delete every later version
+ * and every legal audit row this actor wrote, and republish version 1 as it
+ * was (unreviewed). Idempotent, so an afterAll can call it unconditionally.
+ */
+export async function restoreLegalDocumentSeed(slug: string, actorUserId: string): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local session_replication_role = replica");
+    await client.query(
+      `delete from public.audit_events where target_type = 'legal_document' and actor_user_id = $1`,
+      [actorUserId],
+    );
+    await client.query(`delete from public.legal_documents where slug = $1 and version > 1`, [slug]);
+    await client.query(
+      `update public.legal_documents
+          set status = 'published', superseded_at = null,
+              counsel_reviewed_at = null, counsel_reviewer = null, counsel_review_recorded_by = null
+        where slug = $1 and version = 1`,
+      [slug],
+    );
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ===========================================================================
+// PHASE 8 TASK 2: THE CONSENT LEDGER
+// ===========================================================================
+// Read straight out of Postgres as `postgres`, so "the history shows both
+// events" is measured in the table rather than through the page that renders
+// it. The ledger is append-only for every role (20260923000000), so clearing
+// it runs with triggers off, set LOCAL on one pooled connection.
+
+export interface ConsentRowRead {
+  action: string;
+  policy_slug: string;
+  policy_version: number;
+  mechanism: string;
+  statement: string | null;
+  has_granted_at: boolean;
+  has_withdrawn_at: boolean;
+  withdraws_previous: boolean;
+}
+
+/** One person's consent events, oldest first. */
+export async function consentEvents(userId: string): Promise<ConsentRowRead[]> {
+  const result = await db().query<ConsentRowRead>(
+    `select c.action, c.policy_slug, c.policy_version, c.mechanism,
+            c.technical_context->>'statement' as statement,
+            c.granted_at is not null as has_granted_at,
+            c.withdrawn_at is not null as has_withdrawn_at,
+            (c.withdraws_id is not null and c.withdraws_id = lag(c.id) over (order by c.seq)) as withdraws_previous
+       from public.consents c where c.user_id = $1 order by c.seq`,
+    [userId],
+  );
+  return result.rows;
+}
+
+/** The audit actions one person's consent events wrote, oldest first. */
+export async function consentAuditActions(userId: string): Promise<string[]> {
+  const result = await db().query<{ action: string }>(
+    `select action from public.audit_events
+      where target_type = 'consent' and actor_user_id = $1 order by created_at, id`,
+    [userId],
+  );
+  return result.rows.map((r) => r.action);
+}
+
+/** The current published version of the marketing preferences page. */
+export async function marketingPolicyVersion(): Promise<number> {
+  const result = await db().query<{ version: number }>(
+    `select version from public.legal_documents where slug = 'marketing-preferences' and status = 'published'`,
+  );
+  return result.rows[0].version;
+}
+
+/** Remove these people's consent events, audit rows and grant counters. */
+// ---------------------------------------------------------------------------
+// Phase 8 Task 3: data subject requests.
+// ---------------------------------------------------------------------------
+
+export interface DsrRowRead {
+  id: string;
+  right_type: string;
+  subject_scope: string;
+  status: string;
+  detail: string;
+  rejection_reason: string | null;
+  routed_to_organisation_id: string | null;
+  routed_to_organisation_name: string | null;
+  days_to_due: number;
+}
+
+/** One person's requests, oldest first, read straight out of Postgres. */
+export async function dataSubjectRequests(userId: string): Promise<DsrRowRead[]> {
+  const result = await db().query<DsrRowRead>(
+    `select d.id, d.right_type, d.subject_scope, d.status, d.detail, d.rejection_reason,
+            d.routed_to_organisation_id, d.routed_to_organisation_name,
+            round(extract(epoch from (d.due_by - d.requested_at)) / 86400)::int as days_to_due
+       from public.data_subject_requests d where d.user_id = $1 order by d.seq`,
+    [userId],
+  );
+  return result.rows;
+}
+
+/** The audit actions one person's requests produced, oldest first. */
+export async function dsrAuditActions(userId: string): Promise<string[]> {
+  const result = await db().query<{ action: string }>(
+    `select a.action from public.audit_events a
+       join public.data_subject_requests d on d.id = a.target_id
+      where a.target_type = 'data_subject_request' and d.user_id = $1
+      order by a.created_at, a.id`,
+    [userId],
+  );
+  return result.rows.map((r) => r.action);
+}
+
+/** The operator notes on one request -- nothing in the app may show these to
+ *  the requester, so the spec reads them here to prove they EXIST. */
+export async function dsrNoteBodies(requestId: string): Promise<string[]> {
+  const result = await db().query<{ body: string }>(
+    `select body from public.data_subject_request_notes where request_id = $1 order by created_at`,
+    [requestId],
+  );
+  return result.rows.map((r) => r.body);
+}
+
+/**
+ * Backdate a request so it is overdue.
+ *
+ * The INSERT trigger forces `requested_at = now()` for every writer, which is
+ * exactly what makes the 30-day deadline unforgeable -- and therefore also
+ * what stops a fixture from making an old request the ordinary way. Disabling
+ * the trigger as the table's owner is the deliberate DBA escape hatch the
+ * migration's own header names; it is re-enabled in the same transaction, and
+ * the caller asserts the request is overdue afterwards rather than assuming.
+ */
+export async function backdateDataSubjectRequest(requestId: string, days: number): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query(
+      `alter table public.data_subject_requests disable trigger data_subject_requests_before_update`,
+    );
+    // The AFTER UPDATE audit trigger too: it would log a transition that is
+    // not one, from a sessionless connection that log_audit_event refuses.
+    await client.query(
+      `alter table public.data_subject_requests disable trigger data_subject_requests_audit_transition`,
+    );
+    await client.query(
+      `update public.data_subject_requests set requested_at = now() - make_interval(days => $2) where id = $1`,
+      [requestId, days],
+    );
+    await client.query(
+      `alter table public.data_subject_requests enable trigger data_subject_requests_before_update`,
+    );
+    await client.query(
+      `alter table public.data_subject_requests enable trigger data_subject_requests_audit_transition`,
+    );
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Run the deadline-alert writer the cron job runs, and say how many it wrote. */
+export async function raiseDsrDeadlineAlerts(): Promise<number> {
+  const result = await db().query<{ n: number }>(
+    `select private.raise_dsr_deadline_alerts() as n`,
+  );
+  return Number(result.rows[0].n);
+}
+
+export async function clearDataSubjectRequestState(userIds: string[]): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local session_replication_role = replica");
+    await client.query(
+      `delete from public.incident_alerts where details->>'request_id' in
+         (select id::text from public.data_subject_requests where user_id = any($1::uuid[]))`,
+      [userIds],
+    );
+    await client.query(
+      `delete from public.audit_events where target_type = 'data_subject_request'
+         and target_id in (select id from public.data_subject_requests where user_id = any($1::uuid[]))`,
+      [userIds],
+    );
+    await client.query(
+      `delete from public.data_subject_request_notes where request_id in
+         (select id from public.data_subject_requests where user_id = any($1::uuid[]))`,
+      [userIds],
+    );
+    await client.query(`delete from public.data_subject_requests where user_id = any($1::uuid[])`, [
+      userIds,
+    ]);
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+  await sql(
+    `delete from public.rate_limit_counters where category = 'data_subject_request' and subject_id = any($1::uuid[])`,
+    [userIds],
+  );
+}
+
+export async function clearConsentState(userIds: string[]): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local session_replication_role = replica");
+    await client.query(
+      `delete from public.audit_events where target_type = 'consent' and actor_user_id = any($1::uuid[])`,
+      [userIds],
+    );
+    await client.query(`delete from public.consents where user_id = any($1::uuid[])`, [userIds]);
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+  await sql(
+    `delete from public.rate_limit_counters where category = 'consent_grant' and subject_id = any($1::uuid[])`,
+    [userIds],
+  );
+}
+
+// ===========================================================================
+// PHASE 8 TASK 4 -- DATA EXPORTS
+// ===========================================================================
+
+export interface ExportJobRead {
+  id: string;
+  kind: string;
+  organisation_id: string | null;
+  status: string;
+  storage_key: string | null;
+  byte_size: string | null;
+  row_count: string | null;
+  failure_reason: string | null;
+}
+
+/** One person's export jobs, newest first, read straight out of Postgres. */
+export async function exportJobsFor(userId: string): Promise<ExportJobRead[]> {
+  const result = await db().query<ExportJobRead>(
+    `select id, kind, organisation_id, status, storage_key, byte_size, row_count, failure_reason
+       from public.export_jobs where requested_by = $1 order by seq desc`,
+    [userId],
+  );
+  return result.rows;
+}
+
+/** How many downloads have been audited, for the "no audit row, no URL" check. */
+export async function countExportDownloadAudit(jobId: string): Promise<number> {
+  const result = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.audit_events
+      where action = 'export_job.downloaded' and target_id = $1`,
+    [jobId],
+  );
+  return Number(result.rows[0]?.n ?? "0");
+}
+
+/**
+ * Age an archive past its read-time expiry.
+ *
+ * NEEDS THE UPDATE TRIGGER OUT OF THE WAY, and that is itself the evidence
+ * that a finished job is immutable for every writer, postgres included
+ * (private.export_jobs_before_update()). Disabling a trigger as the table's
+ * owner is the deliberate DBA escape hatch; it is re-enabled in the same
+ * statement batch.
+ */
+export async function expireExportArchive(jobId: string): Promise<void> {
+  // Three statements, not one: a PARAMETERISED query may carry only a single
+  // command, and the middle one has to be parameterised.
+  await db().query(`alter table public.export_jobs disable trigger export_jobs_before_update`);
+  try {
+    await db().query(
+      `update public.export_jobs set expires_at = now() - interval '1 day' where id = $1`,
+      [jobId],
+    );
+  } finally {
+    await db().query(`alter table public.export_jobs enable trigger export_jobs_before_update`);
+  }
+}
+
+/** Remove every export job these people made, between specs. */
+export async function clearExportState(userIds: string[]): Promise<void> {
+  if (userIds.length === 0) return;
+  await db().query(
+    `delete from public.audit_events
+      where action in ('export_job.requested','export_job.downloaded')
+        and target_id in (select id from public.export_jobs where requested_by = any($1::uuid[]))`,
+    [userIds],
+  );
+  await db().query(`delete from public.export_jobs where requested_by = any($1::uuid[])`, [userIds]);
+  await db().query(
+    `delete from public.rate_limit_counters where category in ('exports','account_export')`,
+  );
+}
+
+// ===========================================================================
+// PHASE 8 TASK 5 -- ERASURE.
+// ===========================================================================
+// A DISPOSABLE ACCOUNT, and the reason it is disposable rather than one of the
+// world's: the spec's second test DELETES it. Erasing `world.users.manager`
+// would leave every later assertion in that run reading a database the
+// fixtures no longer describe, and tearDownWorld would be deleting an account
+// that is already gone. So the account this suite destroys is one it made.
+
+export async function createDisposableUser(label: string): Promise<E2eUser> {
+  return createUser(`e2e-erase-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`);
+}
+
+/** Does this account still exist? The only fact the erasure e2e needs. */
+export async function accountStillExists(userId: string): Promise<boolean> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from auth.users where id = $1`,
+    [userId],
+  );
+  return rows[0].n !== "0";
+}
+
+export interface ErasureJobRead {
+  readonly id: string;
+  readonly status: string;
+  readonly failureReason: string | null;
+}
+
+/**
+ * The erasure jobs for a subject.
+ *
+ * `subject_user_id` goes NULL by the foreign key when the erasure succeeds,
+ * so this stops returning a completed job -- which is the register keeping
+ * what happened and losing whose it was. A test that wants "did it finish"
+ * asks accountStillExists() instead, and that asymmetry is the feature.
+ */
+export async function erasureJobsFor(userId: string): Promise<ErasureJobRead[]> {
+  const { rows } = await db().query<{ id: string; status: string; failure_reason: string | null }>(
+    `select id, status, failure_reason from public.erasure_jobs
+      where subject_user_id = $1 order by requested_at desc`,
+    [userId],
+  );
+  return rows.map((r) => ({ id: r.id, status: r.status, failureReason: r.failure_reason }));
+}
+
+/** How many erasure jobs exist at all -- the count a refusal must not move. */
+export async function countErasureJobs(): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.erasure_jobs`,
+  );
+  return Number(rows[0].n);
+}
+
+export async function clearErasureState(userIds: string[]): Promise<void> {
+  await db().query(
+    `delete from public.audit_events
+      where action in ('erasure_job.requested','account.erased')`,
+  );
+  await db().query(`delete from public.erasure_jobs`);
+  await db().query(`delete from public.rate_limit_counters where category = 'account_erasure'`);
+  if (userIds.length > 0) {
+    await db().query(`delete from auth.users where id = any($1::uuid[])`, [userIds]);
+  }
+}
+
+/**
+ * PHASE 8 TASK 8. A QUEUED account export owned by `userId`, planted through
+ * the register's own INSERT trigger (the requester is stamped from the claims,
+ * exactly as a real request is) so a refusal of it is a refusal of a REAL row.
+ * It has no archive and nothing runs it; the caller deletes it in a `finally`.
+ */
+export async function plantQueuedAccountExport(userId: string): Promise<string> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query(`select set_config('request.jwt.claims', $1, true)`, [
+      JSON.stringify({ sub: userId, role: "authenticated" }),
+    ]);
+    const { rows } = await client.query<{ id: string; requested_by: string }>(
+      `insert into public.export_jobs (kind) values ('account') returning id, requested_by`,
+    );
+    if (rows[0]?.requested_by !== userId) throw new Error("planted export is not the user's");
+    await client.query("commit");
+    return rows[0].id;
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteExportJob(id: string): Promise<void> {
+  await sql(`delete from public.export_jobs where id = $1`, [id]);
+}
+
+/**
+ * PHASE 8 TASK 8 FIX ROUND 1 (review I1). A DOWNLOADABLE account export owned
+ * by `userId`: a real object in the private `exports` bucket and a
+ * `succeeded`, unexpired row pointing at it, so that the ONLY thing between a
+ * caller and a 302 is whether the row is theirs.
+ *
+ * The queued plant above cannot carry that claim: `issueExportDownloadUrl`
+ * 404s a row with no `storage_key` for EVERY caller, its own requester
+ * included, so a refusal of it is row state rather than authorisation.
+ *
+ * Driven through the register's own path, not around it: the INSERT trigger
+ * stamps the requester from the claims, then two updates from a session with
+ * no person on it (the runner's shape) walk queued -> running -> succeeded,
+ * and the UPDATE trigger stamps completed_at and expires_at itself. The bytes
+ * are an empty-but-valid zip (end-of-central-directory record only).
+ */
+export async function plantReadyAccountExport(userId: string): Promise<string> {
+  const id = await plantQueuedAccountExport(userId);
+  const key = `exports/${id}.zip`;
+  const emptyZip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x05, 0x06]), Buffer.alloc(18)]);
+  const { apiUrl, serviceRoleKey } = localStack();
+  const storage = createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  }).storage.from("exports");
+  const { error } = await storage.upload(key, emptyZip, { contentType: "application/zip", upsert: true });
+  if (error) throw new Error(`plantReadyAccountExport upload: ${error.message}`);
+  await db().query(`update public.export_jobs set status = 'running' where id = $1`, [id]);
+  await db().query(
+    `update public.export_jobs
+        set status = 'succeeded', storage_key = $2, byte_size = $3, row_count = 0,
+            table_count = 0, manifest = '{}'::jsonb
+      where id = $1`,
+    [id, key, emptyZip.length],
+  );
+  return id;
+}
+
+/** Remove a planted job AND its archive object. */
+export async function deleteExportJobAndArchive(id: string): Promise<void> {
+  const { apiUrl, serviceRoleKey } = localStack();
+  await createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  })
+    .storage.from("exports")
+    .remove([`exports/${id}.zip`]);
+  await sql(`delete from public.audit_events where action = 'export_job.downloaded' and target_id = $1`, [id]);
+  await deleteExportJob(id);
+}
+
+// =============================================================================
+// PHASE 8 TASK 9c JOB 3a: A WORKSPACE ITS OWNER CLOSED (/super/closures)
+// =============================================================================
+/**
+ * Plant a workspace with an Owner and a Manager, then close it THROUGH THE
+ * REAL RPC as that Owner at aal2 -- not by writing `lifecycle_state`, which the
+ * lifecycle guard refuses for every writer outside an audited transition. So
+ * the row /super/closures reads carries the real audit row and the real
+ * closure backup job, exactly as an Owner's click would leave them.
+ *
+ * The session is a claims-only `authenticated` role inside one transaction
+ * (the psql suite's shape): the RPC derives the actor from `auth.uid()` and
+ * checks aal2 from the same claims, so this is the RPC's own gate, satisfied.
+ */
+export async function plantOwnerClosedWorkspace(
+  label: string,
+  owner: { id: string },
+  member: { id: string; name: string },
+): Promise<{ id: string; slug: string; name: string }> {
+  const id = randomUUID();
+  const slug = `e2e-closed-${label}-${id.slice(0, 8)}`;
+  const name = `E2E Closed ${label} ${id.slice(0, 4)}`;
+  await sql(`insert into public.organisations (id, name, slug) values ($1,$2,$3)`, [id, name, slug]);
+  await sql(
+    `insert into public.organisation_subscriptions
+       (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+     values ($1,'starter','monthly',2,'active', now() + interval '30 days')`,
+    [id],
+  );
+  await sql(
+    `insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+     values ($1,$2,'owner','active',now()), ($1,$3,'manager','active',now())`,
+    [id, owner.id, member.id],
+  );
+  await sql(`update public.profiles set full_name = $2 where id = $1`, [member.id, member.name]);
+
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local role authenticated");
+    await client.query(`select set_config('request.jwt.claims', $1, true)`, [
+      JSON.stringify({ sub: owner.id, role: "authenticated", aal: "aal2" }),
+    ]);
+    await client.query(`select public.close_my_workspace($1, $2, $3)`, [
+      id,
+      slug,
+      "E2E: the Owner is closing this workspace",
+    ]);
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  return { id, slug, name };
+}
+
+/** The organisation's lifecycle state, read as `postgres`. */
+export async function organisationLifecycleState(id: string): Promise<string | null> {
+  const { rows } = await db().query<{ state: string }>(
+    `select lifecycle_state as state from public.organisations where id = $1`,
+    [id],
+  );
+  return rows[0]?.state ?? null;
+}
+
+/** The member's role in that organisation, read as `postgres`. */
+export async function membershipRole(organisationId: string, userId: string): Promise<string | null> {
+  const { rows } = await db().query<{ role: string }>(
+    `select role from public.organisation_memberships where organisation_id = $1 and user_id = $2`,
+    [organisationId, userId],
+  );
+  return rows[0]?.role ?? null;
+}
+
+/** The closure decision audit rows for one organisation, with their reasons. */
+export async function closureDecisionAudit(
+  organisationId: string,
+): Promise<{ action: string; reason: string | null }[]> {
+  const { rows } = await db().query<{ action: string; reason: string | null }>(
+    `select action, after ->> 'reason' as reason from public.audit_events
+      where organisation_id = $1 and action in ('organisation.closure_reassigned', 'organisation.closure_deleted')
+      order by created_at`,
+    [organisationId],
+  );
+  return rows;
+}
+
+/** Delete planted organisations (cascading their tenant rows) at teardown. */
+export async function removeOrganisations(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql(`delete from public.organisations where id = any($1::uuid[])`, [ids]);
+}
+
+// =============================================================================
+// PHASE 8 TASK 9c JOB 3b: THE OWNER CLOSES THEIR OWN WORKSPACE
+// =============================================================================
+/** How many closure-backup export jobs this organisation has, read as `postgres`. */
+export async function closureBackupCount(organisationId: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.export_jobs
+      where organisation_id = $1 and closure_backup`,
+    [organisationId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** The reason on the organisation.closed_by_owner audit rows, oldest first. */
+export async function closedByOwnerAuditReasons(organisationId: string): Promise<string[]> {
+  const { rows } = await db().query<{ reason: string }>(
+    `select after->>'reason' as reason from public.audit_events
+      where organisation_id = $1 and action = 'organisation.closed_by_owner'
+      order by created_at`,
+    [organisationId],
+  );
+  return rows.map((r) => r.reason);
+}
+
+/** How many contacts of this name the organisation holds, deleted or not. */
+export async function countContactsNamed(organisationId: string, name: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.contacts where organisation_id = $1 and name = $2`,
+    [organisationId, name],
+  );
+  return Number(rows[0]?.n ?? 0);
 }

@@ -42,6 +42,12 @@ const SURFACES: readonly { href: string; label: string; blurb: string }[] = [
       "Suspend, close and reopen a workspace. Soft-delete only, every transition reasoned and audited, and every one of them reversible.",
   },
   {
+    href: "/super/closures",
+    label: "Closed workspaces",
+    blurb:
+      "Workspaces their own Owner has closed, awaiting your decision: hand one to an active member as its new Owner, or delete it permanently. Step-up, a reason and an audit record for each.",
+  },
+  {
     href: "/super/billing",
     label: "Billing overrides",
     blurb:
@@ -58,6 +64,18 @@ const SURFACES: readonly { href: string; label: string; blurb: string }[] = [
     label: "Feedback",
     blurb:
       "What people sent from the in-app Feedback control — identified, filterable by workspace, category and date, with a status you set by hand. Screenshots open through an audited link, never inline.",
+  },
+  {
+    href: "/super/data-requests",
+    label: "Data requests",
+    blurb:
+      "What people have asked us to do with their own data — access, correction, erasure, restriction, objection, portability — nearest statutory deadline first. An overdue one raises an alert without anyone opening this page.",
+  },
+  {
+    href: "/super/legal",
+    label: "Legal documents",
+    blurb:
+      "The fifteen public legal pages, versioned: draft, publish and record counsel’s review without a deploy. Every published version is frozen, and every unreviewed one says so on the public page.",
   },
 ];
 

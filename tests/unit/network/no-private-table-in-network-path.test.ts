@@ -1,6 +1,7 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { repoRoot as root, stripComments } from "../../support/source";
+import { appSourceFiles, relPath } from "../support/app-source";
 
 // PHASE 6 (NETWORK), TASK 5: THE CI-VISIBLE HALF OF THE LEAKAGE PROOF.
 //
@@ -45,23 +46,6 @@ import { repoRoot as root, stripComments } from "../../support/source";
 // size is asserted, and a planted hostile fixture containing `from("notes")`
 // is run through the SAME detector and must be flagged.
 
-/** Every file under `relative`, recursively, with a source extension. */
-function sourceFilesUnder(relative: string): string[] {
-  const out: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(root + dir)) {
-      const path = `${dir}/${entry}`;
-      if (statSync(root + path).isDirectory()) {
-        walk(path);
-      } else if (/\.(ts|tsx)$/.test(entry)) {
-        out.push(path);
-      }
-    }
-  };
-  walk(relative);
-  return out.sort();
-}
-
 /** Comments stripped, so a doc comment that NAMES a forbidden table -- as this
  *  file's own header does, and as several modules' headers do at length --
  *  cannot trip the search. */
@@ -89,7 +73,65 @@ const NETWORK_PATH_DIRS = [
   "app/(app)/[orgSlug]/network",
 ] as const;
 
-const FILES = NETWORK_PATH_DIRS.flatMap(sourceFilesUnder);
+// ===========================================================================
+// THE SWEEP IS DERIVED FROM THE WHOLE REPOSITORY (census audit A4, second half)
+// ===========================================================================
+// The three directories above were the whole subject set, so "a network read
+// path added elsewhere -- lib/crm/..., a route handler under app/api/... -- is
+// outside the sweep", and the `>= 36` floor does not move when that happens.
+//
+// The candidate set is now every app-shipped source file whose PATH names the
+// network (a `network` directory segment, or a `network-`/`network.` file
+// name), taken from `appSourceFiles()` -- so a `app/api/network/route.ts`, a
+// root `hooks/use-network.ts` or a `lib/crm/network-panel.ts` is swept the day
+// it exists, with no list to edit. The three directories are kept as declared
+// floors below: a derivation that grows by default still has to be shown to
+// contain what it is known to contain.
+const NETWORK_PATH = /(^|\/)network(\/|-|\.)/;
+const FILES = appSourceFiles()
+  .map((f) => relPath(f))
+  .filter((f) => NETWORK_PATH.test(f))
+  .sort();
+
+/**
+ * WHAT THE DERIVATION DROPS, PINNED (the rule this whole audit turns on:
+ * `tests/unit/org/reserved-slugs.test.ts:248-251`).
+ *
+ * A file can read a network relation without living on the network path, and
+ * such a file is dropped by the filter above in silence. So every app-shipped
+ * file that NAMES a network relation and is not swept is enumerated here with
+ * the reason it is not a network read path. A fourth one appearing is red, and
+ * the choice it forces -- sweep it, or justify it -- is the point.
+ */
+const NETWORK_RELATIONS = [
+  "network_profiles",
+  "network_directory",
+  "network_connected_profiles",
+  "network_connection_requests",
+  "network_links",
+] as const;
+
+const OFF_PATH_NETWORK_READERS: Record<string, string> = {
+  "lib/list/query.ts":
+    "the ONE list chokepoint. It names network_directory to meter the " +
+    "Q107 network-discovery budget on that spec, and reads whatever table " +
+    "the caller's spec names -- so it names every relation in the product " +
+    "and a private-relation needle here would be a false positive on the " +
+    "generic mechanism rather than a finding.",
+  // PHASE 8 TASK 7 (20261006000000, Q122): the audit catalogue maps each
+  // audited target to its physical table, and network_profiles /
+  // network_links are two of the sixteen tables that task audited.
+  "lib/admin/audit-actions.ts":
+    "the audit ACTION CATALOGUE, not a read path. CRM_AUDIT_TARGET_TABLE " +
+    "names network_profiles and network_links as the physical tables two " +
+    "audit targets live on (and AUDIT_COVERAGE_EXCUSALS names " +
+    "network_connection_requests' dedicated writer); it issues no query, " +
+    "and the integration census binds those strings to pg_trigger.",
+};
+// MEASURED at 163 migrations: exactly ONE; TWO since 208 (Phase 8 Task 7). Two other files name a network
+// relation in PROSE only -- `lib/admin/audit-log.ts` and the company detail
+// page -- and the comment stripper removes both, which is the first thing this
+// assertion happens to prove about the stripper rewritten in this same task.
 const SOURCES = new Map(
   FILES.map((f) => [f, stripComments(readFileSync(root + f, "utf8").replace(/\r\n/g, "\n"))]),
 );
@@ -172,6 +214,79 @@ describe("the network path names no tenant-private relation (the CI-visible half
     // so adding a file is not a test edit, while DELETING the directory (or
     // mistyping its name, which readdirSync would throw on) cannot pass.
     expect(FILES.length, `inspected: ${FILES.join(", ")}`).toBeGreaterThanOrEqual(36);
+  });
+
+  it("DENOMINATOR: what the network-path filter DROPPED is pinned, not discarded", () => {
+    // Every app-shipped file that names a network relation and is NOT swept.
+    // Walk the tree ONCE: re-walking it per roll entry below made this test run
+    // past vitest's 5 s ceiling under full parallel load (follow-up F-T8-1).
+    const appFiles = appSourceFiles();
+    const appPaths = appFiles.map((f) => relPath(f));
+    const offPath = appFiles
+      .map((f) => ({ path: relPath(f), text: stripComments(readFileSync(f, "utf8").replace(/\r\n/g, "\n")) }))
+      .filter((f) => !FILES.includes(f.path))
+      .filter((f) => NETWORK_RELATIONS.some((r) => new RegExp(`\\b${r}\\b`).test(f.text)))
+      .map((f) => f.path)
+      .sort();
+    expect(
+      offPath,
+      "a file outside the network path names a network relation. Either it is " +
+        "a network read path -- in which case it belongs in the sweep -- or it " +
+        "is not, in which case say why in OFF_PATH_NETWORK_READERS. The one " +
+        "thing it cannot be is unexamined.",
+    ).toEqual(Object.keys(OFF_PATH_NETWORK_READERS).sort());
+    // And each justification is a real sentence about a real file, so the roll
+    // cannot become a place to park a name.
+    for (const [file, why] of Object.entries(OFF_PATH_NETWORK_READERS)) {
+      expect(appPaths, file).toContain(file);
+      expect(why.length, file).toBeGreaterThan(60);
+    }
+    expect(new Set(NETWORK_RELATIONS).size).toBe(5);
+    // It reads every app source file: ~1.5 s alone, past vitest's 5 s default
+    // under full parallel load on a memory-constrained machine (F-T8-1). An
+    // explicit ceiling, not a retry -- the assertions are unchanged.
+  }, 20_000);
+
+  // Phase 8 Task 7 fix round 1, M4. The audit catalogue's exemption says "it
+  // issues no query", and that was a sentence rather than an assertion: the
+  // exemption covers the whole file for ever, so a query on network_profiles
+  // added here later would be exempt too. These are the off-path files whose
+  // justification is that they are CATALOGUES, and this makes the claim
+  // binding -- no module import of any kind (so no client), no dynamic
+  // import or require, no `.rpc(`, no `fetch(`, and no `.from(` other than
+  // the standard library's `Array.from(`.
+  const CATALOGUE_ONLY_OFF_PATH = ["lib/admin/audit-actions.ts"] as const;
+  function queryShapes(text: string): string[] {
+    const found: string[] = [];
+    if (/^\s*import\b/m.test(text)) found.push("an import");
+    if (/\bimport\s*\(/.test(text)) found.push("a dynamic import");
+    if (/\brequire\s*\(/.test(text)) found.push("a require");
+    if (/\.rpc\s*\(/.test(text)) found.push("an .rpc( call");
+    if (/\bfetch\s*\(/.test(text)) found.push("a fetch( call");
+    if (/(?<!\bArray)\.from\s*\(/.test(text)) found.push("a .from( call");
+    return found;
+  }
+
+  it("a CATALOGUE-ONLY off-path file stays query-free, so its exemption cannot shelter a read (M4)", () => {
+    for (const file of CATALOGUE_ONLY_OFF_PATH) {
+      expect(Object.keys(OFF_PATH_NETWORK_READERS), file).toContain(file);
+      const text = stripComments(readFileSync(root + file, "utf8").replace(/\r\n/g, "\n"));
+      // DENOMINATOR: the file really is the catalogue and really names a
+      // network relation -- otherwise "no query in it" would be vacuous.
+      expect(text, file).toContain("CRM_AUDIT_TARGET_TABLE");
+      expect(NETWORK_RELATIONS.some((r) => text.includes(r)), file).toBe(true);
+      expect(queryShapes(text), `${file} is declared a catalogue and now issues a query`).toEqual([]);
+    }
+  });
+
+  it("POSITIVE CONTROL: the query-shape detector flags each shape it claims to, and not Array.from", () => {
+    expect(queryShapes(`const a = Array.from(new Set(["x"]));`)).toEqual([]);
+    expect(queryShapes(`import { createClient } from "@/lib/supabase/server";`)).toEqual(["an import"]);
+    expect(queryShapes(`const m = await import("./x");`)).toEqual(["a dynamic import"]);
+    expect(queryShapes(`const m = require("./x");`)).toEqual(["a require"]);
+    expect(queryShapes(`await supabase.rpc("f");`)).toEqual(["an .rpc( call"]);
+    expect(queryShapes(`await fetch("/rest/v1/network_profiles");`)).toEqual(["a fetch( call"]);
+    expect(queryShapes(`await db.from("network_profiles").select("*");`)).toEqual(["a .from( call"]);
   });
 
   it("DENOMINATOR: all three directories contributed files", () => {
