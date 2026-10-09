@@ -1,1 +1,5 @@
 graphify-out/graph.json merge=graphify
+# The psql suites compare SQL source text byte-for-byte (e.g. retention RA3-RA11, REL16-REL22);
+# a CRLF checkout under core.autocrlf=true reds them. Keep SQL and shell LF on every machine.
+*.sql text eol=lf
+*.sh text eol=lf
