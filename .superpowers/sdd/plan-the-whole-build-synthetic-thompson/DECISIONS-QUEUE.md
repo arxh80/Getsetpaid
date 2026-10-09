@@ -1571,3 +1571,19 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   `organisation.closure_candidates_viewed`, Q223). **Default (not applied):**
   name it in § Superuser dashboard the way § In-app feedback names the
   screenshot exception. No product change proposed.
+
+## Q232 -- Phase 9 Task 4: which connector is first after launch? 2026-10-09
+
+- **Q232 -- Which connector is first after launch?** The research is in
+  `docs/integrations-discovery.md` (eight candidates, every fact sourced and
+  dated 2026-10-09). **Default (recommendation, nothing built):** Google
+  Calendar first, via event-level scopes (`calendar.events.owned`, or
+  `calendar.app.created`); then Microsoft Graph calendar; Skiddle ticket-URL
+  import after written commercial approval (its API is non-commercial only);
+  then Xero, QuickBooks, and mail last because Gmail needs a restricted scope
+  and an annual third-party security assessment. Fatsoma publishes no API.
+  Open facts that could reorder it: whether Google Calendar scopes trigger
+  that assessment (read the label in the Cloud Console consent screen), and
+  which calendar the first customers use. Founder pre-work (consent screen,
+  Entra app and publisher verification, DPAs, two emails) is the last section
+  of the discovery document. No provider is made live by this phase.
