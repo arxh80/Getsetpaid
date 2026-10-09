@@ -1554,3 +1554,20 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   purged; Phase 7-shaped delete with an expired old backup -> purged.
   Alternative (c) (`on delete set null` + an `expires_at` sweep) remains the
   founder's.
+
+## Q230-Q231 -- Phase 8 final review B (F13, F14), 2026-10-09
+
+- **Q230 -- CLAUDE.md's Not-MVP list names "public profiles and connection
+  requests" (F13).** The Decisions log ruled request-to-connect the MVP
+  discovery model and Phase 6 shipped it, so the list contradicts the log.
+  **Default (not applied, founder's text):** reword the Not-MVP item to
+  "public (logged-out) profiles". Phase 8's notification emails (reversing
+  Q45) and Owner-initiated closure (reversing Q104) are not on the Not-MVP
+  list and were both founder-ruled on 2026-09-30, so neither is scope creep.
+- **Q231 -- `/super/closures` shows a closed workspace's member names and
+  roles (F14, founder awareness).** § Superuser dashboard promises "only
+  aggregate metadata"; the reassign picker is a second deliberate exception
+  beside feedback screenshots (Q215; audited as
+  `organisation.closure_candidates_viewed`, Q223). **Default (not applied):**
+  name it in § Superuser dashboard the way § In-app feedback names the
+  screenshot exception. No product change proposed.

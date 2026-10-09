@@ -4495,3 +4495,77 @@ retention job found") carries the as-built description; this is the ledger.
 ## Opened by Phase 8 Task 9b fix round 2 (N1, N2, N3)
 
 - **N3 ACCEPTED as built, mitigation proposed: any `build()` throw now drops a notice permanently.** `deliverEach` (`lib/email/requester-notifications.ts`) records `content_refused` through `mark_notices_undeliverable` for ANY exception a notice builder throws, not only for a person's hostile text. That includes `slugOrRefuse` on a malformed slug, a date the builder cannot parse, and any future code or configuration bug, a bad deploy included. Before I2 such a row was retried every tick until the code was fixed; now up to 30 rows a tick are marked undeliverable for good and only logged, so a broken release LOSES the connection and task-reminder emails it touches instead of delaying them. **Default as built:** keep the terminal record, because I2's poison-row guarantee depends on it and the loss is bounded by the seven-day notice window anyway. **Proposed mitigation (owed, not built):** record `content_refused` only for a `NoticeContentError` raised while reading a person-authored field (`oneLine` input, the one-link check), give the builders' own invariants (slug, uuid, date, allowlist) a distinct error class that is logged and left UNSTAMPED so the next tick retries it, and alert (the Task 5 Telegram channel) when a tick sees more than a handful of builder throws, since that is the signature of a deploy fault rather than of hostile content.
+
+## Phase 8 Tasks 7-9c — owed at the PR (final review B, F12)
+
+Final review B (`.superpowers/sdd/plan-the-whole-build-synthetic-thompson/phase-8-final-review-B.md`)
+found that items owed by Tasks 7, 8, 9a and 9c lived only in `progress.md`
+and the task reports. This is the deduplicated list, copied here so the
+ledger holds them. The 9b residuals (m4, m6, the bare-domain autolink, the
+30-workspace batch, N3) are already above, under "Opened by Phase 8 Task 9b".
+
+- **F-T7-1.** REFUSAL PARITY runs in 50+ s against a 60 s timeout. Split it
+  or give it its own timeout, never retries (progress.md, Task 7).
+- **Task 7 N1/N2.** Accounts erased before `20261007000000` are not
+  revisited, and a concurrent writer can land an id after the 10b scan.
+- **F-T8-1.** The 5 s unit-test timeout under load (progress.md, Task 8).
+- **Task 8 M2/M3, accepted and carried.** The "guard" mechanism is only "a
+  42501 raised by the function", and the destructive-primitive census is
+  derived from a name regex (`task-8-rereview.md:79`).
+- **Task 1 fix round 2 (`13141f0..7ab1922`) and Task 2 fix round 2
+  (`f239ed7..c545f7e`)** were never independently re-reviewed; handed to the
+  final review (Reviewer A's scope).
+- **Q218.** Six `/[orgSlug]/network/*` pages still say "This workspace is
+  suspended" in a closed workspace (`network/{page,links,profiles,profiles/[id],requests,[profileId]}`).
+  `linked-identity-section.tsx` and `support-access/page.tsx` were not checked.
+- **Q189.** An Owner's rename is not audited as `organisation.updated`
+  (default was YES, not built); `organisations` stays the one excused table
+  in the audit census.
+- **9c re-review 2 n1-n3.** The active-Owner check takes no membership lock,
+  the suspended-ownerless branch of N2 is untested, and
+  `acknowledged_no_backup` is derived rather than taken from the parameter
+  (`task-9c-rereview2.md`).
+- **9c m7.** The app guards in `closeMyWorkspaceAction` and the
+  `/super/closures` actions were not mutation-tested
+  (`task-9c-review.md:130`); the integration test covers the RPC.
+- **9a 17c.** The integration layer of the reason-check mutant was not run
+  (`task-9a-report.md:183`), and the m-test at `task-9a-rereview.md:90` was
+  not mutation-tested.
+- **9b gap.** `/super/health` shows no per-channel delivery status, and the
+  `/super` hub shows no open-alert count (`task-9b-report.md:20`).
+- **`private` is blind to the export and audit censuses** (9b residual).
+- **Deploy-time items.** Four runner bearer secrets and Vault pairs, the
+  Brevo env, the Telegram env, region `eu-west-1`, the IONOS host region
+  (PENDING) and the real malware scanner (Q42) — all in `SECURITY.md` § 15;
+  none is configured by the repo.
+- **The permission-matrix total at the tip** (F5). Last measured 596 at Task
+  9c job 3a; re-measure on the next reset with `vitest run
+  tests/integration/security/phase7-permission-matrix.test.ts` and append it
+  to `CLAUDE.md` § Testing gates and `SECURITY.md`.
+- **CI is still a subset.** Q169 (heavy jobs on PRs and main for a month) is
+  ruled but not built; Phase 9, together with merging `infra-parallel-stacks`.
+- **Final fix rounds.** A clean full psql/HTTP runner pass at 241 migrations
+  (round 2's run was red only on the HTTP twin's own `t`/`true` expectation
+  strings, corrected after the run), and `documents.spec.ts` after round 1's
+  scan-verdict change (not run: free RAM below the floor).
+- **F1 — a new Subprocessors version is owed.** The Brevo row now names the
+  Phase 8 notification emails in both `docs/sub-processors.md` and
+  `lib/legal/sub-processors.ts`, and `/legal/subprocessors` renders the
+  module, so the page's table changes as soon as the code ships. No dated
+  version was published: the body text itself does not change, and a v4
+  would move the version pins in `rls_phase8_legal.sql` (LF2) and
+  `run-rls-tests.sh` (the `lg_same` check), which needs a database to verify.
+  Publish v4 (through `/super/legal` or a migration in the
+  `20261008000000` pattern, with those two pins moved) and have counsel check
+  that the Privacy Notice covers these emails.
+- **F13 — a scope contradiction, flagged only.** `CLAUDE.md` § Scope
+  discipline lists "public profiles and connection requests" as Not MVP,
+  while the Decisions log ("Network discovery: request-to-connect") and
+  Phase 6 shipped connection requests. Suggested wording: "public
+  (logged-out) profiles". Left for the founder (DECISIONS-QUEUE Q230).
+- **F14 — `/super/closures` shows member names (founder awareness).**
+  `CLAUDE.md` § Superuser dashboard says the dashboard shows "only aggregate
+  metadata"; the reassign picker lists a closed workspace's member names and
+  roles (Q215, audited as `organisation.closure_candidates_viewed`, Q223).
+  That is a second deliberate exception beside feedback screenshots, and §
+  Superuser dashboard does not name it yet (DECISIONS-QUEUE Q231).
