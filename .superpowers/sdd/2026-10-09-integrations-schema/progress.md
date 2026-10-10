@@ -51,3 +51,5 @@ Task 5: fix round 1/5 (8 addressed, 0 open; commits 96d2e85..f5cb6f9; controller
 Task 5: minor (deferred): run.sh/mutants.py headers say '12 mutants' (12 entries incl. control)
 Task 5: complete (commits 5e397d6..f5cb6f9, re-review clean after round 1)
 Phase 9: all 5 tasks complete; final whole-branch review dispatched (opus)
+Phase 9 final review: Needs fixes (C1: integration_role_held role/active/MFA conditions untested negatively, no mutant; I1: Q236 default (b) would bar non-Admins from person-scoped connect, add option (c); minors m1-m6; m7 optional mutants skipped)
+Phase 9: final fix wave dispatched (fresh sonnet)
