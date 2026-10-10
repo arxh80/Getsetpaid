@@ -1581,7 +1581,7 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   `calendar.app.created`); then Microsoft Graph calendar; Skiddle ticket-URL
   import after written commercial approval (its API is non-commercial only);
   then Xero, QuickBooks, and mail last because Gmail needs a restricted scope
-  and an annual third-party security assessment. Fatsoma publishes no API.
+  and an annual third-party security assessment. For Fatsoma no public API or developer docs were found (a private partner API is not excluded).
   Open facts that could reorder it: whether Google Calendar scopes trigger
   that assessment (read the label in the Cloud Console consent screen), and
   which calendar the first customers use. Founder pre-work (consent screen,

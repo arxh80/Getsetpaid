@@ -103,9 +103,17 @@ platform. Delegated `Calendars.Read`, `Calendars.ReadWrite` and
 `Calendars.ReadBasic` also exists (same page, checked 2026-10-09). For mail,
 `Mail.ReadBasic` (no body, preview or attachments) is the narrow read, and
 `Mail.Send` is separate (https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac,
-which lists the application-permission equivalents, checked 2026-10-09). I
-could not read the Mail rows of the permissions-reference page (truncated), so
-the delegated Mail admin-consent defaults are not confirmed here.
+which lists the application-permission equivalents, checked 2026-10-09). On the
+permissions-reference page, read in a later chunk, the delegated
+`AdminConsentRequired` value is "No" for `Mail.Read`, `Mail.ReadBasic`,
+`Mail.ReadWrite` and `Mail.Send` (https://learn.microsoft.com/en-us/graph/permissions-reference,
+checked 2026-10-10, via a page-reading tool's quotation of the table, not a
+visual read). That is the default only: a search summary of a Microsoft Q&A
+thread quoting Message Center notice MC1163922 says Microsoft-managed consent
+policy may require admin approval for third-party apps reading Exchange content,
+possibly including `Mail.ReadBasic`; Microsoft had not published a definitive
+list there (checked 2026-10-10, third-party/community, unconfirmed). A tenant's
+own consent settings can also force admin approval.
 For a customer that wants to restrict an app to named mailboxes, Exchange
 Online "RBAC for Applications" scopes Graph application permissions per
 mailbox (same Exchange page).
@@ -186,10 +194,20 @@ processors, not a statement of where Fatsoma stores data.
 reached: https://developer.xero.com/pricing, checked 2026-10-09).
 
 **Auth model and narrowest scopes.** OAuth 2.0 with granular scopes. The
-scopes page returned no scope names to my fetch
-(https://developer.xero.com/documentation/guides/oauth2/scopes/, checked
-2026-10-09), so the exact narrowest scopes for invoices, contacts and bank
-transactions: not confirmed here.
+scopes page returned only its title to my fetch on 2026-10-09 and again on
+2026-10-10 (https://developer.xero.com/documentation/guides/oauth2/scopes/), and
+Xero's developer blog post on the change
+(https://devblog.xero.com/upcoming-changes-to-xero-accounting-api-scopes-705c5a9621a0)
+returned HTTP 403 (2026-10-10). So the following comes from Apideck's write-up
+(https://www.apideck.com/blog/xero-scopes, third-party, checked 2026-10-10) and
+is unconfirmed against Xero: apps created on or after 2 March 2026 have no
+access to the broad `accounting.transactions` scope and must use granular
+scopes, each with a `.read` variant: `accounting.invoices.read` for invoices,
+`accounting.banktransactions.read` for bank transactions. Contacts stay on
+`accounting.contacts` with no `.read` variant listed. Older apps have until
+about September 2027 to migrate. Per the same source, the journals endpoint is
+gated behind the Advanced tier plus a security assessment and Xero approval.
+Confirm all of it on Xero's scopes page before relying on it.
 
 **Partner or licensing gates.** Since 2 March 2026 Xero prices API use by
 tier (third-party summaries, including
@@ -217,8 +235,8 @@ and bank detail on invoices are personal data). A Xero row, DPA first.
 
 **Documented public API.** Yes: Intuit's developer scopes page exists at
 https://developer.intuit.com/app/developer/qbo/docs/learn/scopes but renders
-without content to my fetch, so I relied on search summaries
-(checked 2026-10-09).
+without content to my fetch (retried 2026-10-10: page title only), so I relied
+on search summaries (checked 2026-10-09 and 2026-10-10).
 
 **Auth model and narrowest scopes.** OAuth 2.0. The accounting scope is
 `com.intuit.quickbooks.accounting`; there is a separate
@@ -226,7 +244,13 @@ without content to my fetch, so I relied on search summaries
 re-authorisation (third-party summaries, e.g.
 https://developers.apideck.com/connectors/quickbooks/docs/application_owner+oauth_credentials,
 checked 2026-10-09). A finer-grained scope than the single accounting scope:
-not found.
+not found. A search summary of an Intuit developer-support answer
+(https://help.developer.intuit.com/s/question/0D5TR00001FvXDB0A3/how-can-i-give-an-api-read-access-only,
+checked 2026-10-10, community, unconfirmed against Intuit's docs) says the
+accounting scope has no read-only variant; the suggested workaround is GET-only
+code or a view-only QuickBooks user role, neither enforced by the scope. Other
+scopes for specific features (e.g. `sales.sales-order.read`) are mentioned by
+community posts as limited to higher developer tiers (same caveat).
 
 **Partner or licensing gates.** Production keys require completing an app
 assessment questionnaire; apps on the app store and apps with over 500
@@ -274,9 +298,13 @@ a calendar we create), and it never reads mail bodies, so it avoids the one
 gate that is certain and heavy, Google's restricted-scope annual security
 assessment that mail sync triggers. It also fits the product's core workflow
 (holds and shows on a date) better than accounting does. Google first rather
-than Microsoft only because the documented gate is lighter to reason about and
-one Google registration later unlocks Gmail; Microsoft is a close second and
-carries no assessment I could find. Two uncertainties could reorder this and
+than Microsoft is a close call, not a finding: the only gate I could confirm
+for Google is on the Gmail (mail) scopes, which Calendar does not need, and I
+did not confirm how Google labels the Calendar scopes; Microsoft's calendar
+scopes need no admin consent by default and I found no assessment, though that
+is not proof none exists. Neither source shows one is easier. Google is ranked
+first on the basis of the founder pre-work below, not on a documented
+difference. Two uncertainties could reorder this and
 both are cheap to settle before building: whether Calendar scopes trigger the
 Google assessment, and what the audience actually uses (ask the first ten
 customers which calendar they live in). Xero is held back by tiered API fees
