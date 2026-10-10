@@ -301,19 +301,21 @@ assessment that mail sync triggers. It also fits the product's core workflow
 than Microsoft is a close call, not a finding: the only gate I could confirm
 for Google is on the Gmail (mail) scopes, which Calendar does not need, and I
 did not confirm how Google labels the Calendar scopes; Microsoft's calendar
-scopes need no admin consent by default and I found no assessment, though that
-is not proof none exists. Neither source shows one is easier. Google is ranked
-first on the basis of the founder pre-work below, not on a documented
-difference. Two uncertainties could reorder this and
+scopes need no admin consent by default (subject to the unconfirmed tenant
+consent-policy caveat in § 3) and I found no assessment, though that is not
+proof none exists. Neither source shows one is easier. Google is ranked
+first as a judgement call, not on a documented difference, and the founder
+chose it (Q232). Two uncertainties could reorder this and
 both are cheap to settle before building: whether Calendar scopes trigger the
 Google assessment, and what the audience actually uses (ask the first ten
 customers which calendar they live in). Xero is held back by tiered API fees
-and certification; Skiddle by its non-commercial clause; Fatsoma by publishing
-nothing at all.
+and certification; Skiddle by its non-commercial clause; Fatsoma because no
+public API or developer docs were found (a private partner API is not
+excluded).
 
 ## Founder pre-work list
 
-None of this needs code, and none of it should start until Q232 is answered.
+None of this needs code, and Q232 is answered: Google Calendar first.
 
 1. Ask ten prospective customers which calendar and mail they use (Google vs
    Microsoft); that decides rank 1 versus 2 more than any doc.
