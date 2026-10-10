@@ -49,6 +49,9 @@
 --   PX  the exemption: sessionless SET NULL shape, no-op, refused write
 --   PS  the sweep: no audit row since t0 carries the sentinel; the
 --       sentinel IS in every planted row
+--   PO  organisation.updated (Q189): a rename and a slug move are one row
+--       each; no-op, sessionless and lifecycle-only edits write none; the
+--       lifecycle reason never travels; other columns named, not valued
 --   PZ  housekeeping
 --
 -- EXPECTATION VOCABULARY (rls_phase2_crm.sql's, unchanged):
@@ -359,8 +362,8 @@ select c7.val('PA6 the five network_connection.* names are in the database catal
   'network_connection.accepted,network_connection.declined,network_connection.requested,network_connection.updated,network_connection.withdrawn');
 select c7.val('PA6b membership.deleted is in it too',
   $$select (exists (select 1 from private.platform_audit_actions() a where a = 'membership.deleted'))::text$$, 'true');
-select c7.val('PA6c the whole derived catalogue is 171 names (162 + retention.audit_ceiling_released, Q184, + organisation.closed_by_owner, Task 9c, + organisation.closure_reassigned/.closure_deleted, Task 9c job 2, + organisation.closure_candidates_viewed, Q223, + the four integration.* actions, Phase 9 Task 2), none duplicated',
-  $$select count(*)::text || '/' || count(distinct a)::text from private.audit_action_catalogue() a$$, '171/171');
+select c7.val('PA6c the whole derived catalogue is 171 names (162 + retention.audit_ceiling_released, Q184, + organisation.closed_by_owner, Task 9c, + organisation.closure_reassigned/.closure_deleted, Task 9c job 2, + organisation.closure_candidates_viewed, Q223, + the four integration.* actions, Phase 9 Task 2, + organisation.updated, Q189), none duplicated',
+  $$select count(*)::text || '/' || count(distinct a)::text from private.audit_action_catalogue() a$$, '172/172');
 select c7.val('PA6d ...and every <target>.<verb> the new triggers can produce is in it',
   $$select count(*)::text from (
       select t || '.' || v as a
@@ -380,18 +383,18 @@ select c7.val('PA10 the sessionless fixture INSERTs above emitted NO audit rows 
 -- ===========================================================================
 -- § PC  THE COVERAGE CENSUS -- derived, pinned, and its denominator planted
 -- ===========================================================================
-select c7.val('PC1 the derived roll: 27 generic / 5 dedicated / 2 rpc_only / 1 unaudited',
+select c7.val('PC1 the derived roll: 27 generic / 6 dedicated / 2 rpc_only / 0 unaudited (organisations moved to dedicated, Q189)',
   $$select string_agg(coverage || '=' || n, ' ' order by coverage) from
       (select coverage, count(*) n from private.audit_coverage() group by coverage) s$$,
-  'dedicated=5 generic=27 rpc_only=2 unaudited=1');
-select c7.val('PC2 the one unaudited table is organisations, on UPDATE only (Q189)',
+  'dedicated=6 generic=27 rpc_only=2');
+select c7.val('PC2 no table is unaudited -- organisations was the last, closed by Q189 (20261031000000)',
   $$select string_agg(table_name || ':' || array_to_string(uncovered_ops, '/'), ',')
-      from private.audit_coverage() where coverage = 'unaudited'$$, 'organisations:UPDATE');
+      from private.audit_coverage() where coverage = 'unaudited'$$, '<null>');
 select c7.val('PC3 the generic set is exactly the twenty-seven',
   $$select count(*)::text from private.audit_coverage() where coverage = 'generic' and target_type is not null$$, '27');
 select c7.val('PC4 the dedicated set, by name',
   $$select string_agg(table_name, ',' order by table_name) from private.audit_coverage() where coverage = 'dedicated'$$,
-  'erasure_jobs,export_jobs,feedback,incident_alerts,network_connection_requests');
+  'erasure_jobs,export_jobs,feedback,incident_alerts,network_connection_requests,organisations');
 select c7.val('PC5 the rpc_only set, by name',
   $$select string_agg(table_name, ',' order by table_name) from private.audit_coverage() where coverage = 'rpc_only'$$,
   'organisation_billing_overrides,organisation_feature_overrides');
@@ -1243,6 +1246,121 @@ select c7.val('PQ5 a session-attributed restore writes merge_candidate.restored,
 select c7.val('PQ6 the screened pair''s whole story: created, soft_deleted, restored -- and the refused write wrote nothing',
   format($$select c7.actions_for(%L)$$, :'p_sq'),
   'merge_candidate.created,merge_candidate.soft_deleted,merge_candidate.restored');
+
+-- ===========================================================================
+-- § PO  organisation.updated (Q189, 20261031000000)
+-- ===========================================================================
+-- padmin (aal2 admin of ALPHA, holds manage_organisation) renames ALPHA and
+-- moves its slug through PostgREST's path: each edit is ONE organisation.
+-- updated row carrying the old and new value of what changed and nothing
+-- else. Then the guards: a no-op, a sessionless edit, a lifecycle-only edit
+-- WITH a session, a mixed edit whose lifecycle_reason must not travel, and a
+-- non-identity column that is named but never valued. ALPHA goes back at
+-- the end.
+\o /dev/null
+select name as po_name0, slug as po_slug0 from public.organisations where id = :'alpha_org' \gset
+\o
+create function c7.org_updates(p_org uuid, p_since timestamptz)
+returns bigint language sql security definer set search_path = '' as $$
+  select count(*) from public.audit_events e
+   where e.target_id = p_org and e.action = 'organisation.updated' and e.created_at >= p_since;
+$$;
+grant execute on function c7.org_updates(uuid, timestamptz) to authenticated, anon, service_role;
+
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select c7.try('PO1 padmin renames ALPHA', format($$update public.organisations set name='C7 Alpha Renamed' where id=%L$$, :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select c7.val('PO1b ...ONE organisation.updated row, padmin, ALPHA, target_type organisation',
+  format($$select c7.org_updates(%L, %L)::text || ' ' || r.action || ' ' || (r.actor_user_id = %L)::text
+                  || ' ' || (r.organisation_id = %L)::text || ' ' || r.target_type
+             from c7.last_row(%L) r$$, :'alpha_org', :'c7_t0', :'padmin', :'alpha_org', :'alpha_org'),
+  '1 organisation.updated true true organisation');
+select c7.val('PO1c ...before carries the OLD name and nothing else',
+  format($$select (r.before = jsonb_build_object('values', jsonb_build_object('name', %L::text)))::text from c7.last_row(%L) r$$,
+         :'po_name0', :'alpha_org'), 'true');
+select c7.val('PO1d ...after carries changed=[name] and the NEW name, nothing else',
+  format($$select (r.after = '{"changed": ["name"], "values": {"name": "C7 Alpha Renamed"}}'::jsonb)::text from c7.last_row(%L) r$$,
+         :'alpha_org'), 'true');
+
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select c7.try('PO2 padmin moves ALPHA''s slug', format($$update public.organisations set slug='org-alpha-q189' where id=%L$$, :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select c7.val('PO2b ...a second row, carrying slug old -> new and changed=[slug]',
+  format($$select c7.org_updates(%L, %L)::text || ' ' || (r.before -> 'values' ->> 'slug') || ' ' || (r.after -> 'values' ->> 'slug')
+                  || ' ' || (r.after -> 'changed')::text
+             from c7.last_row(%L) r$$, :'alpha_org', :'c7_t0', :'alpha_org'),
+  format('2 %s org-alpha-q189 ["slug"]', :'po_slug0'));
+
+set role authenticated;
+set request.jwt.claims = :'padmin_c';
+select c7.try('PO3 padmin issues an organisations UPDATE that changes nothing', format($$update public.organisations set name=name where id=%L$$, :'alpha_org'), 'ok(1)');
+reset role; reset request.jwt.claims;
+select c7.val('PO3b ...and no row is written for it', format($$select c7.org_updates(%L, %L)::text$$, :'alpha_org', :'c7_t0'), '2');
+
+select c7.try('PO4 a SESSIONLESS rename is accepted (a writer that audited it would raise: log_audit_event refuses a null actor)',
+  format($$update public.organisations set name = 'C7 Alpha Sessionless' where id = %L$$, :'alpha_org'), 'ok(1)');
+select c7.val('PO4a CONTROL: the sessionless rename really landed',
+  format($$select name from public.organisations where id=%L$$, :'alpha_org'), 'C7 Alpha Sessionless');
+select c7.val('PO4b ...and wrote no row (auth.uid() is null: migrations, seeds, runners)',
+  format($$select c7.org_updates(%L, %L)::text$$, :'alpha_org', :'c7_t0'), '2');
+
+-- A lifecycle-only edit WITH a session: the shape of every lifecycle RPC
+-- (they run as the definer, which the guard exempts, with the caller's
+-- auth.uid() still set). As postgres with padmin's claims, so the guard
+-- exempts it the same way and the writer sees a real actor.
+set request.jwt.claims = :'padmin_c';
+update public.organisations set deleted_at = now(), lifecycle_reason = 'ZQ189-REASON' where id = :'alpha_org';
+reset request.jwt.claims;
+select c7.val('PO5 CONTROL: the lifecycle edit landed, reason and all',
+  format($$select lifecycle_state || ' ' || lifecycle_reason from public.organisations where id=%L$$, :'alpha_org'),
+  'suspended ZQ189-REASON');
+select c7.val('PO5b ...and a lifecycle-only edit with a session writes no organisation.updated (the RPCs audit themselves)',
+  format($$select c7.org_updates(%L, %L)::text$$, :'alpha_org', :'c7_t0'), '2');
+set request.jwt.claims = :'padmin_c';
+update public.organisations set name = 'C7 Alpha Mixed', lifecycle_reason = 'ZQ189-REASON-2' where id = :'alpha_org';
+reset request.jwt.claims;
+select c7.val('PO6 CONTROL: the mixed edit landed, the new reason IS in the row',
+  format($$select name || ' ' || lifecycle_reason from public.organisations where id=%L$$, :'alpha_org'),
+  'C7 Alpha Mixed ZQ189-REASON-2');
+select c7.val('PO6b ...one row, changed=[name] only: the lifecycle columns are outside the changed set',
+  format($$select c7.org_updates(%L, %L)::text || ' ' || (r.after -> 'changed')::text from c7.last_row(%L) r$$,
+         :'alpha_org', :'c7_t0', :'alpha_org'), '3 ["name"]');
+select c7.val('PO6c ...and lifecycle_reason (old or new) is in NO organisation.updated payload',
+  format($$select count(*)::text from public.audit_events e
+            where e.target_id=%L and e.action='organisation.updated' and e.created_at >= %L
+              and (coalesce(e.before::text,'') || coalesce(e.after::text,'')) like '%%ZQ189-REASON%%'$$,
+         :'alpha_org', :'c7_t0'), '0');
+
+-- A non-identity column is NAMED, never valued.
+set request.jwt.claims = :'padmin_c';
+update public.organisations set created_at = created_at - interval '1 second' where id = :'alpha_org';
+reset request.jwt.claims;
+select c7.val('PO7 a change to a column other than name/slug is named in changed and carries no value',
+  format($$select c7.org_updates(%L, %L)::text || ' ' || (r.after -> 'changed')::text || ' ' || (r.after -> 'values')::text
+                  || ' ' || (r.before -> 'values')::text from c7.last_row(%L) r$$,
+         :'alpha_org', :'c7_t0', :'alpha_org'), '4 ["created_at"] {} {}');
+
+-- Put ALPHA back: name, slug, created_at, lifecycle. As postgres WITH
+-- padmin's claims rather than sessionless, so the restore still lands when
+-- the sessionless exemption is mutated away (a sessionless write would then
+-- raise and leave ALPHA suspended for every later suite). Its own
+-- organisation.updated row is padmin's and § PZ deletes it.
+set request.jwt.claims = :'padmin_c';
+update public.organisations
+   set name = :'po_name0', slug = :'po_slug0', created_at = created_at + interval '1 second', deleted_at = null
+ where id = :'alpha_org';
+reset request.jwt.claims;
+select c7.val('PO8 ALPHA is back: original name and slug, active, no reason',
+  format($$select (name = %L and slug = %L and lifecycle_state = 'active' and lifecycle_reason is null)::text
+             from public.organisations where id=%L$$, :'po_name0', :'po_slug0', :'alpha_org'), 'true');
+select c7.val('PO9 organisations_audit_update is an enabled AFTER ROW UPDATE trigger, and fires on no INSERT',
+  $$select tgenabled::text || ' ' || ((tgtype & 1) <> 0)::text || ' ' || ((tgtype & 66) = 0)::text
+           || ' ' || ((tgtype & 16) <> 0)::text || ' ' || ((tgtype & 4) <> 0)::text
+      from pg_trigger where tgrelid='public.organisations'::regclass and tgname='organisations_audit_update'$$,
+  'O true true true false');
+drop function c7.org_updates(uuid, timestamptz);
 
 -- ===========================================================================
 -- § PZ  HOUSEKEEPING -- every row and audit event this suite created goes.
