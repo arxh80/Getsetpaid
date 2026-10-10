@@ -113,9 +113,9 @@ row), so `connect_integration()` refuses every real call with
 - Connecting needs a Starter-or-above workspace (the CRM-write gate); a
   downgrade hides nothing already connected.
 - Measured by `supabase/tests/rls_phase9_integrations.sql` (195 assertions)
-  and by twelve mutants
+  and by eleven mutants plus a control
   (`.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/`),
-  each of which turns at least one named assertion red.
+  each mutant turning at least one named assertion red and the control none.
 
 **Two gaps that are deliberate today and must be closed when the first
 connector lands** (`FOLLOW-UPS.md` § Phase 9 Task 5):
@@ -125,9 +125,11 @@ connector lands** (`FOLLOW-UPS.md` § Phase 9 Task 5):
    them refuse a suspended or closed workspace and a workspace that has
    fallen to Free, or document why a running sync should continue.
 2. `connect_integration` lets an Admin name any active member as
-   `owner_user_id`. The future OAuth callback must bind the stored token to
-   that `owner_user_id` (the person who consented), never to the session that
-   happened to finish the callback (Q236).
+   `owner_user_id`. Per Q236 (default: restrict `p_owner_user_id` to the
+   caller, so a person connects only their own mailbox; founder to confirm)
+   the RPC is tightened when the first connector ships. Binding the OAuth
+   callback's stored token to the consenting person is an additional
+   connector-time check, not the decided remedy.
 
 ## 3. Input handling
 
@@ -149,13 +151,7 @@ connector lands** (`FOLLOW-UPS.md` § Phase 9 Task 5):
 - **MFA recovery (lost authenticator) has no self-service path at MVP.** Because the challenge is enforced, a privileged user who loses their TOTP device cannot sign in at all. There are no backup codes and no admin reset UI. The only recovery today is a manual operator action: delete that user's row from `auth.mfa_factors` in the Supabase dashboard (SQL editor, filtered by `user_id`) after verifying the requester out-of-band, which drops them back to the enrollment gate on next sign-in. **This is a deliberate MVP gap, not an oversight** — self-service recovery (backup codes at enrollment, plus a superuser-initiated, audited reset) belongs to Phase 7 (Admin/Security) alongside the rest of the superuser dashboard. Until then: the manual deletion must be treated as a high-risk admin action — verify identity out-of-band before performing it, since it is a complete bypass of the second factor.
 - **MFA is enforced in the database, not only in the UI.** `public.has_permission()` and `private.has_platform_permission()` return false for an MFA-required role on a session that has not reached `aal2` (`supabase/migrations/20260827210000_mfa_aal_permission_gate.sql`), so every write policy in the schema inherits the requirement. The app-layer gate (`lib/auth/mfa-gate.ts`, plus `assertMfaSatisfied()` on the privileged Server Actions) gives a readable refusal and stops side effects outside the database; it is not the enforcement. The anon key ships in the browser bundle by design, so anyone holding a session token can call PostgREST directly and bypass the entire Next.js app — the database is the only chokepoint on that path.
 
-- **Server-side integration RPCs audit as the tombstone actor.** When the
-  caller is not a person (`store_integration_token`, `record_integration_sync_run`,
-  and the revokes performed by the membership trigger or the erasure), the
-  `integration.*` audit rows carry the Q130 tombstone as `actor_user_id`
-  (`reason` in the payload says why). They sit in the tenant's own audit trail
-  and appear in the tenant audit viewer; read "actor = erased user" on such a
-  row as "the system acted", not "an erased person did".
+- Integration audit attribution (the tombstone actor on server-side rows) is described in section 7.
 
 ### Known limitation: MFA gates privileged WRITES, and — since Phase 2 — CRM READS
 
@@ -299,6 +295,19 @@ The pipeline is built as of Phase 4 Task 5 (`lib/crm/documents.ts` + `lib/securi
 **Page access is audited APP-SIDE, at the resolver, and the placement is the decision.** `public.audit_impersonated_page_view(org, route)` is guarded by **the grant itself** (`private.impersonated_organisations`), so a caller with no live session mints no row; the app calls it from `lib/admin/impersonation-session.ts`'s `resolveImpersonationForOrg()`, which `getCurrentOrg()` reaches on **every** org-scoped page. A layout-level audit would have recorded the first page of a session and none of the rest, because an `[orgSlug]` layout does not re-run on a client-side navigation between two routes that share it. **It fails closed**: a refused audit write returns "not impersonating", and the route renders the ordinary tenant-isolation 404 — there is no path that serves an impersonated page without a matching audit row. **It over-records rather than under-records**, and that is the deliberate opposite of the audit-log viewer's own prefetch decision (Task 1): a Next.js prefetch of an org route renders the layout and therefore lands a `page_viewed` row for a page nobody read. A trail listing a route nobody opened is noise; one missing a route somebody did open is a hole in the product's only deep-access path.
 
 **ROUTE ONLY, NEVER CONTENT.** The RPC's signature has no parameter that could carry a record name, a search term or a result count, and the app strips the query string before calling (`auditableRoute()` in `lib/admin/impersonation-contract.ts`) — `?q=` is where a list page's search term lives, and a search term is a fragment of what the tenant's records say. A path **segment**'s record id is deliberately kept: knowing which record support opened is the entire point. `rls_phase7_impersonation.sql` § IA6 asserts the `after` payload's key set is exactly `{route}`.
+
+### Integrations: server-side audit rows and their actor (Phase 9)
+
+`integration.*` audit rows name the person when a person is on the session:
+`connect_integration` and `revoke_integration` audit the caller, and a
+membership-trigger revoke audits the Owner who removed the member when that
+Owner's session is present (IM6). When **no session exists** (the service_role
+RPCs `store_integration_token` and `record_integration_sync_run`, a membership
+change made outside a session, the erasure's revoke step), the row carries the
+Q130 tombstone as `actor_user_id` and the payload's `reason` says why. These
+rows sit in the tenant's own audit trail and appear in the tenant audit
+viewer; read "actor = erased user" on such a row as "the system acted", not
+"an erased person did".
 
 ### Organisation lifecycle: one summary row per transition, and a general threading mechanism (Phase 7 Task 3)
 
