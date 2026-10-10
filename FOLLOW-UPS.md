@@ -4543,7 +4543,8 @@ ledger holds them. The 9b residuals (m4, m6, the bare-domain autolink, the
   tests/integration/security/phase7-permission-matrix.test.ts` and append it
   to `CLAUDE.md` § Testing gates and `SECURITY.md`.
 - **CI is still a subset.** Q169 (heavy jobs on PRs and main for a month) is
-  ruled but not built; Phase 9, together with merging `infra-parallel-stacks`.
+  ruled but not built; unscheduled, a Phase 10 candidate (Phase 9 excluded it
+  and the `infra-parallel-stacks` merge by spec; no decision has been taken).
 - **Final fix rounds.** A clean full psql/HTTP runner pass at 241 migrations
   (round 2's run was red only on the HTTP twin's own `t`/`true` expectation
   strings, corrected after the run), and `documents.spec.ts` after round 1's
@@ -4578,6 +4579,8 @@ ledger holds them. The 9b residuals (m4, m6, the bare-domain autolink, the
 ## Phase 9 Task 5 (docs, mutations, gates) -- owed
 
 - **The `service_role` integration RPCs ignore the workspace lifecycle and the tier.** `store_integration_token`, `read_integration_token` and `record_integration_sync_run` check neither a suspended or closed workspace nor a downgrade to Free, because no caller exists. The first connector must enforce both (or decide, with the founder, that a sync may continue on a Free workspace, and say so). `SECURITY.md` section 2.
-- **An Admin can create a person-scoped connection for another member** (`connect_integration` with `p_owner_user_id`). Harmless while no provider is live. Per Q236 (default: restrict `p_owner_user_id` to the caller; founder to confirm) the RPC is tightened when the first connector ships; binding the OAuth callback's token to the consenting person stays as an additional connector-time check, not the decided remedy.
+- **An Admin can create a person-scoped connection for another member** (`connect_integration` with `p_owner_user_id`). Harmless while no provider is live. Per Q236 (default (c): a separate self-connect path for any active member that forces `owner_user_id = auth.uid()`, workspace-scoped connects staying with `manage_integrations`; option (b), restricting the one RPC to the caller, would leave only Owners and Admins able to hold a person-scoped connection; founder to confirm) the RPC is tightened when the first connector ships; binding the OAuth callback's token to the consenting person stays as an additional connector-time check, not the decided remedy.
+- **The Phase 9 spec (`docs/superpowers/specs/2026-10-09-integrations-schema-design.md`) overstates two things** (final review m1). It is a founder-approved process document and is left as written; `SECURITY.md` is the record of truth. (1) "`read_integration_token` is the one decrypting path": `service_role` can read Vault directly by Supabase default (`SECURITY.md` section 15). (2) "A suspended or owner-closed workspace refuses connects and token writes": connects are refused, but token writes are not (the `service_role` RPCs ignore lifecycle and tier, first bullet above).
+- **Closed (final review m5):** IX5's `>= 3` is now an exact comparison against a count of A's sync runs read as postgres (deterministic, so no reason to leave it loose).
 - **Server-side integration audit rows carry the tombstone actor and appear in the tenant audit viewer.** Documented in `SECURITY.md` section 7. A distinct "system" actor would be a schema change to `audit_events`; not done here.
 - **Closed:** `tests/unit/legal/storage-census.test.ts` "no scanned file imports code from a place the scan skips" now has its own 30 s timeout (F-T8-1). It is a CPU-bound walk; a retry was never the answer.
