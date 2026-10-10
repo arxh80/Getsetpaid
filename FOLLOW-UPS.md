@@ -2811,8 +2811,7 @@ next person does not have to re-derive it.
   dropping a real trigger). The connection-request writer gained `.withdrawn`
   and a name-only `.updated`; three `network_connection.*` names the database
   had written since Phase 6 were on neither side of the catalogue and are now
-  registered. **Still open:** an Owner's rename of `organisations` is the one
-  excused table (Q189); whether a `network_link.*` row is compatible with Q82
+  registered. **Still open:** whether a `network_link.*` row is compatible with Q82
   is Q188 (shipped default: yes). `SECURITY.md` § 7 has the as-built text and
   the measured volume. **Fix round 1 (`20261007000000`, `20261007001000`)**:
   the allowlist's person ids (an invitee's `user_id`, a reassigned
@@ -4518,9 +4517,9 @@ ledger holds them. The 9b residuals (m4, m6, the bare-domain autolink, the
 - **Q218.** Six `/[orgSlug]/network/*` pages still say "This workspace is
   suspended" in a closed workspace (`network/{page,links,profiles,profiles/[id],requests,[profileId]}`).
   `linked-identity-section.tsx` and `support-access/page.tsx` were not checked.
-- **Q189.** An Owner's rename is not audited as `organisation.updated`
-  (default was YES, not built); `organisations` stays the one excused table
-  in the audit census.
+- **Q189. CLOSED (`20261031000000`).** An Owner's or Admin's edit of
+  `organisations` is audited as `organisation.updated`; the census has no
+  `unaudited` table left.
 - **9c re-review 2 n1-n3.** The active-Owner check takes no membership lock,
   the suspended-ownerless branch of N2 is untested, and
   `acknowledged_no_backup` is derived rather than taken from the parameter
