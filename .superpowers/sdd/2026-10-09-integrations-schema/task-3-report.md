@@ -205,3 +205,59 @@ Driver: a scratch `mutants.py`. Each mutant was applied to the live function on 
 - **The leakage suite is not re-runnable on one database**, as described above. This is pre-existing, not from this task.
 - **The legal v8 is unreviewed.** Like every page, it carries no counsel-review marker.
 - No founder question was raised.
+
+## Fix round 1 (review: task-3-review.md)
+
+Every Critical guard is now **measured, not deleted**. Each clause guards a state that the current writers do not produce, but that out-of-band handling of the Vault could produce, so each got a fixture and a named assertion. All four changes are in the test suite, with no code change.
+
+`20261030003000` was **edited in place**, which is allowed because it has not reached main. Only two comments inside function bodies changed (I1 and m1 below). The function logic is byte-identical, and `git diff` shows 7 inserted and 4 deleted comment lines.
+
+### C1: the sweep's Vault delete
+
+Before IN4, a secret is planted under the name `integration:<conn_old>` and another under `integration:<conn_new>`. The IN4 probe (the real `retention_sweep_body` inside a rolled-back subtransaction) now also reports both counts. Expected `0/1/0/1/true/true/true/0/1`: the swept connection's secret is deleted, and the secret of the one not yet expired is kept.
+
+### C2: the by-name clause, at all three sites
+
+Each site gets a connection with `token_secret_id` NULL and a secret filed only under `integration:<id>`:
+- **`revoke_integration_row`:** IL1 (A's Owner revokes a pending `conn_n` through the RPC) and **IL1b** (the by-name secret is gone).
+- **The guard's out-of-band branch:** `conn_r3`, the raw-deleted person's second, pending row. **IE10** now also asserts its by-name secret is gone (expected `…:0`).
+- **`erase_organisation` 5c:** `conn_p3` in P. **IP1** now expects `3:3` (two secrets by id, one by name; three connections), and the new **IP3b** asserts the by-name secret is gone.
+
+### C3: the organisation half of the departure test
+
+**IM10b** moves mgr4_a's membership from B to F as postgres, and asserts that the person-scoped `conn_m5` in B is revoked.
+
+### I1: the false export comment, corrected
+
+`export_catalogue()`'s comment now says what IX4 measures: an Owner or Admin's workspace export includes colleagues' person-scoped connection metadata (never a token). It cites IR1a, IX4 and Q234.
+
+**Q234** is queued: "Should a workspace export list colleagues' person-scoped connection metadata?" Default: yes, as built.
+
+### Minors
+
+- **m1:** the `retention_clock_columns` note for `integration_connections.revoked_at` now names both writers: `revoke_integration_row()` and the guard's out-of-band branch.
+- **m2:** the stuck-`running` sync run is recorded in `FOLLOW-UPS.md`, under § Phase 9 Task 3.
+- **m3:** **Q235** is queued (a departed person's revoked rows are not in their account export). Default: as built.
+- **m5:** the non-re-runnable `network_leakage_phase6.sql` is recorded in `FOLLOW-UPS.md` as pre-existing.
+- **m4** (IX5 `>= 3` and IN4's `>= 1` terms) is left as it is. The reviewer marked it cosmetic, and IN4's first four fields carry the exact counts.
+
+### Mutants for the new assertions
+
+The same driver as before: apply to the live function, run the suite, restore. The control and the restored control were both 195/0.
+
+| Mutant | Reds |
+|---|---|
+| T17 sweep: Vault delete removed | IN4 |
+| T18 `revoke_integration_row`: by-name clause removed | IL1b |
+| T19 guard: by-name clause removed | IE10 |
+| T20 purge: by-name clause removed | IP1, IP3b |
+| T21 trigger: `new.organisation_id = old.organisation_id` removed | IM10b |
+
+The whole earlier set was re-run on this suite and all of it still reds. T1 now also reds IL1b; T4 and T6 also red IM10b; T10 also reds IP3b.
+
+### Runs
+
+- **ig suite:** 195/0 twice on one database (the pin moved 191 to 195).
+- **Lint and typecheck:** `pnpm lint` and `pnpm typecheck` are clean.
+- **Full runner (after reset):** "All suites passed", run 5 at 4473 and run 6 green, with the API surface checks passing.
+- **vitest (`pnpm test`):** 168 files / 3821 passed.
