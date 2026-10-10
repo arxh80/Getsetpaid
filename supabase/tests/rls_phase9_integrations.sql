@@ -90,9 +90,14 @@ select gen_random_uuid()::text as mgr2_a  \gset
 select gen_random_uuid()::text as owner_s \gset
 select gen_random_uuid()::text as org_s   \gset
 select gen_random_uuid()::text as conn_s  \gset
+select gen_random_uuid()::text as ro_s    \gset
+select gen_random_uuid()::text as ex_s    \gset
 select gen_random_uuid()::text as conn_v  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'mgr2_a')  as mgr2_a_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_s') as owner_s_c \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'owner_s') as owner_s_c1 \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'ro_s')    as ro_s_c    \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'ex_s')    as ex_s_c    \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_a') as owner_a_c \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'admin_a') as admin_a_c \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'mgr_a')   as mgr_a_c   \gset
@@ -110,7 +115,9 @@ select u, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticate
                (:'owner_b'::uuid, 'ig-owner-b-' || :'owner_b' || '@test.local'),
                (:'owner_f'::uuid, 'ig-owner-f-' || :'owner_f' || '@test.local'),
                (:'mgr2_a'::uuid,  'ig-mgr2-a-'  || :'mgr2_a'  || '@test.local'),
-               (:'owner_s'::uuid, 'ig-owner-s-' || :'owner_s' || '@test.local')) v(u, e);
+               (:'owner_s'::uuid, 'ig-owner-s-' || :'owner_s' || '@test.local'),
+               (:'ro_s'::uuid,    'ig-ro-s-'    || :'ro_s'    || '@test.local'),
+               (:'ex_s'::uuid,    'ig-ex-s-'    || :'ex_s'    || '@test.local')) v(u, e);
 
 insert into public.organisations (id, name, slug) values
   (:'org_a', 'Integrations Alpha', 'ig-alpha-' || left(:'org_a', 8)),
@@ -130,7 +137,9 @@ insert into public.organisation_memberships (organisation_id, user_id, role, sta
   (:'org_b', :'owner_b', 'owner',     'active', now()),
   (:'org_f', :'owner_f', 'owner',     'active', now()),
   (:'org_a', :'mgr2_a',  'manager',   'active', now()),
-  (:'org_s', :'owner_s', 'owner',     'active', now());
+  (:'org_s', :'owner_s', 'owner',     'active', now()),
+  (:'org_s', :'ro_s',    'read_only', 'active', now()),
+  (:'org_s', :'ex_s',    'owner',     'revoked', now());
 
 -- A: one workspace-scoped and one person-scoped (the Manager's) connection.
 -- B and F: one workspace-scoped each. Every connection has one sync run.
@@ -520,9 +529,17 @@ select ig.val('IC3 plan: F''s Owner (Free tier)',
 set request.jwt.claims = :'owner_s_c';
 select ig.val('IC4 not writable: S''s Owner, S suspended (Starter, so not the plan)',
   format($$select public.connect_integration(%L, 'google_gmail')::text$$, :'org_s'), 'denied(42501:workspace_not_writable)');
+-- IC4c: integration_role_held is lifecycle-blind, so its MFA term is what stops
+-- a password-only Owner session; the refusal must be `forbidden`, not the
+-- lifecycle's `workspace_not_writable` (which would name the workspace's state
+-- to a session that holds no role there).
+set request.jwt.claims = :'owner_s_c1';
+select ig.val('IC4c forbidden, not workspace_not_writable: S''s Owner at aal1 (the MFA term of integration_role_held)',
+  format($$select public.connect_integration(%L, 'google_gmail')::text$$, :'org_s'), 'denied(42501:forbidden)');
 reset role;
 update public.organisations set lifecycle_state = 'owner_closed' where id = :'org_s';
 set role authenticated;
+set request.jwt.claims = :'owner_s_c';
 select ig.val('IC4b not writable: S''s Owner, S closed by its Owner',
   format($$select public.connect_integration(%L, 'google_gmail')::text$$, :'org_s'), 'denied(42501:workspace_not_writable)');
 set request.jwt.claims = :'owner_a_c';
@@ -611,6 +628,19 @@ select ig.val('IC11a B''s Owner cannot revoke S''s connection',
   format($$select 'ok' from public.revoke_integration(%L, %L)$$, :'org_s', :'conn_s'), 'denied(42501:forbidden)');
 select ig.val('IC11a2 ...nor learn whether an id exists (a made-up id is the same refusal)',
   format($$select 'ok' from public.revoke_integration(%L, gen_random_uuid())$$, :'org_s'), 'denied(42501:forbidden)');
+-- IC11d-f: the three narrowing terms of private.integration_role_held(), each
+-- asked alone on a wound-down workspace where has_permission() is already
+-- false and this function is the only gate. conn_s must still be active
+-- afterwards (IC11 below revokes it as the one session that may).
+set request.jwt.claims = :'ro_s_c';
+select ig.val('IC11d S''s Read Only (an active member, no manage_integrations) cannot revoke while S is SUSPENDED',
+  format($$select 'ok' from public.revoke_integration(%L, %L)$$, :'org_s', :'conn_s'), 'denied(42501:forbidden)');
+set request.jwt.claims = :'owner_s_c1';
+select ig.val('IC11e S''s Owner at aal1 (role granted, MFA not met) cannot revoke while S is SUSPENDED',
+  format($$select 'ok' from public.revoke_integration(%L, %L)$$, :'org_s', :'conn_s'), 'denied(42501:forbidden)');
+set request.jwt.claims = :'ex_s_c';
+select ig.val('IC11f S''s former Owner (membership revoked, aal2) cannot revoke while S is SUSPENDED',
+  format($$select 'ok' from public.revoke_integration(%L, %L)$$, :'org_s', :'conn_s'), 'denied(42501:forbidden)');
 set request.jwt.claims = :'owner_s_c';
 select ig.val('IC11 S''s Owner revokes S''s connection while S is SUSPENDED',
   format($$select 'ok' from public.revoke_integration(%L, %L)$$, :'org_s', :'conn_s'), 'ok');
@@ -1332,8 +1362,11 @@ select ig.val('IX4 the workspace export is EXACTLY the Owner''s own RLS read of 
              from jsonb_array_elements(public.export_read_page(%L, 'integration_connections', '', 500)) e$$,
          :'ix_owner_reads', :'ix_owner_reads', :'conn_p', :'ix_ws_job')::text,
   'true');
-select ig.val('IX5 the workspace export carries A''s sync runs',
-  format($$select (jsonb_array_length(public.export_read_page(%L, 'integration_sync_runs', '', 500)) >= 3)::text$$, :'ix_ws_job'),
+select ig.val('IX5 the workspace export carries A''s sync runs, EXACTLY: the page length equals the count of A''s runs read as postgres (and is not zero)',
+  format($$select (jsonb_array_length(public.export_read_page(%L, 'integration_sync_runs', '', 500))
+                   = (select count(*) from public.integration_sync_runs where organisation_id = %L)
+                   and (select count(*) from public.integration_sync_runs where organisation_id = %L) > 0)::text$$,
+         :'ix_ws_job', :'org_a', :'org_a'),
   'true');
 select ig.val('IX6 the ACCOUNT export of mgr2_a carries ONLY their own person-scoped connection (conn_p), no workspace one',
   format($$select string_agg(e ->> 'id', ',') from jsonb_array_elements(public.export_read_page(%L, 'integration_connections', '', 500)) e$$,
@@ -1437,13 +1470,13 @@ delete from vault.secrets where name in (select 'integration:' || id::text from 
 delete from public.integration_connections where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s');
 set session_replication_role = replica;
 delete from public.audit_events where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s')
-   or actor_user_id in (:'owner_a', :'admin_a', :'mgr_a', :'ro_a', :'owner_b', :'owner_f', :'mgr2_a', :'owner_s',
+   or actor_user_id in (:'owner_a', :'admin_a', :'mgr_a', :'ro_a', :'owner_b', :'owner_f', :'mgr2_a', :'owner_s', :'ro_s', :'ex_s',
                         :'mgr3_a', :'mgr4_a', :'er_a', :'owner_p', :'raw_a');
 delete from public.organisation_memberships where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s');
 delete from public.organisation_subscriptions where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s');
 delete from public.organisations where id in (:'org_a', :'org_b', :'org_f', :'org_s');
 set session_replication_role = origin;
-delete from auth.users where id in (:'owner_a', :'admin_a', :'mgr_a', :'ro_a', :'owner_b', :'owner_f', :'mgr2_a', :'owner_s',
+delete from auth.users where id in (:'owner_a', :'admin_a', :'mgr_a', :'ro_a', :'owner_b', :'owner_f', :'mgr2_a', :'owner_s', :'ro_s', :'ex_s',
                                     :'mgr3_a', :'mgr4_a', :'er_a', :'owner_p', :'raw_a');
 select ig.val('IZ1 housekeeping left no integration row and no integration secret behind',
   format($$select (select count(*) from public.integration_connections where organisation_id in (%L, %L, %L, %L))

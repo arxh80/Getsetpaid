@@ -112,8 +112,8 @@ row), so `connect_integration()` refuses every real call with
   and a revoke deletes the Vault secret by id and by name.
 - Connecting needs a Starter-or-above workspace (the CRM-write gate); a
   downgrade hides nothing already connected.
-- Measured by `supabase/tests/rls_phase9_integrations.sql` (195 assertions)
-  and by eleven mutants plus a control
+- Measured by `supabase/tests/rls_phase9_integrations.sql` (199 assertions)
+  and by fourteen mutants plus a control
   (`.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/`),
   each mutant turning at least one named assertion red and the control none.
 

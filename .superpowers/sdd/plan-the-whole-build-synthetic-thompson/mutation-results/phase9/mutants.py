@@ -1,4 +1,4 @@
-"""Phase 9 Task 5: the 12-mutant run against supabase/tests/rls_phase9_integrations.sql.
+"""Phase 9 Task 5: the 15-entry run (14 mutants, M01-M11 and M13-M15, plus the M12 control; M13-M15 added by the final fix wave) against supabase/tests/rls_phase9_integrations.sql.
 
 Each mutant is applied to the LIVE database (latest pg_get_functiondef with one
 change, or one DDL statement), the ig suite is run, the named red assertions are
@@ -57,6 +57,7 @@ SIG = {
     "erase": "private.erase_account(uuid,uuid)",
     "cat": "private.export_catalogue()",
     "guard": "private.integration_connections_guard()",
+    "held": "private.integration_role_held(uuid)",
 }
 ORIG = {k: fdef(v) for k, v in SIG.items()}
 TRIG = psql("select pg_get_triggerdef(oid) from pg_trigger where tgname='integration_connections_follow_membership'").strip() + ";"
@@ -81,6 +82,9 @@ M = {
  "M09 erase_account: integration step removed": fn("erase", lambda d: cut(d, "  -- (5c) THE PERSON'S OWN INTEGRATIONS", "  -- (6) THE IDENTIFIERS NO FOREIGN KEY PROTECTS")),
  "M10 export: token_secret_id in the workspace projection": fn("cat", lambda d: d.replace("array['id','organisation_id','provider','owner_user_id','status','scopes','token_expires_at'", "array['id','organisation_id','provider','owner_user_id','status','scopes','token_secret_id','token_expires_at'", 1)),
  "M11 guard: revoked_is_terminal removed": fn("guard", lambda d: rep(d, "  if tg_op = 'UPDATE' and old.status = 'revoked' then", "  if false then")),
+ "M13 integration_role_held: manage_integrations term dropped": fn("held", lambda d: rep(d, "       and rp.permission_key = 'manage_integrations'\n", "")),
+ "M14 integration_role_held: MFA term dropped": fn("held", lambda d: rep(d, "       and (not private.role_requires_mfa(m.role) or private.session_is_aal2())\n", "")),
+ "M15 integration_role_held: active-membership term dropped": fn("held", lambda d: rep(d, "       and m.status = 'active'\n", "")),
  "M12 control: no mutation": (lambda: "select 1;", "select 1;"),
 }
 
@@ -96,7 +100,7 @@ for name, (apply, restore) in M.items():
     if only and name.split()[0] not in only:
         continue
     sql = apply()
-    if name.startswith(("M03", "M04", "M05", "M06", "M09", "M10", "M11")) and sql == restore:
+    if name.startswith(("M03", "M04", "M05", "M06", "M09", "M10", "M11", "M13", "M14", "M15")) and sql == restore:
         out.append(name + " -> MUTATION DID NOT APPLY"); print(out[-1]); continue
     try:
         psql(sql)
