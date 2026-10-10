@@ -92,6 +92,43 @@ download route mints nothing until `public.audit_export_download()` has
 written its row, and that function re-asks the ownership question inside a
 definer so the audit path cannot be the weaker of the two.
 
+### Integrations: schema only, no live provider (Phase 9)
+
+`public.integration_connections` and `public.integration_sync_runs` exist so
+a connector can be built later without a schema change; **no provider is
+live** (`private.integration_providers()` returns `live = false` for every
+row), so `connect_integration()` refuses every real call with
+`integration_provider_not_live`. Controls as built:
+
+- **No client role writes either table.** `authenticated` holds column-level
+  SELECT only (the token reference column is not in the grant); every write
+  is a `SECURITY DEFINER` RPC. Reading is `manage_integrations` (Owner and
+  Admin, MFA-gated) or, for a person-scoped connection, its own owner.
+- **Tokens live in Supabase Vault**, never in a table column or an audit
+  payload. `store_integration_token`, `read_integration_token` and
+  `record_integration_sync_run` execute for `service_role` alone; the
+  browser and every signed-in session are refused.
+- **Revoked is terminal** (guard trigger, fails closed over the whole row),
+  and a revoke deletes the Vault secret by id and by name.
+- Connecting needs a Starter-or-above workspace (the CRM-write gate); a
+  downgrade hides nothing already connected.
+- Measured by `supabase/tests/rls_phase9_integrations.sql` (195 assertions)
+  and by twelve mutants
+  (`.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/`),
+  each of which turns at least one named assertion red.
+
+**Two gaps that are deliberate today and must be closed when the first
+connector lands** (`FOLLOW-UPS.md` § Phase 9 Task 5):
+
+1. The three `service_role` RPCs ignore the workspace lifecycle and the tier:
+   no caller exists, so nothing can reach them. The first connector must make
+   them refuse a suspended or closed workspace and a workspace that has
+   fallen to Free, or document why a running sync should continue.
+2. `connect_integration` lets an Admin name any active member as
+   `owner_user_id`. The future OAuth callback must bind the stored token to
+   that `owner_user_id` (the person who consented), never to the session that
+   happened to finish the callback (Q236).
+
 ## 3. Input handling
 
 - All queries are parameterised or built with a trusted query builder — no string-concatenated SQL, anywhere.
@@ -111,6 +148,14 @@ definer so the audit path cannot be the weaker of the two.
 - MFA is **enforced at every sign-in, not just at enrollment**. A privileged user with a verified TOTP factor who signs in at `aal1` is challenged for a code before reaching the app — an enrolled-but-never-challenged factor satisfies the requirement in name only. Founder decision, 2026-08-27.
 - **MFA recovery (lost authenticator) has no self-service path at MVP.** Because the challenge is enforced, a privileged user who loses their TOTP device cannot sign in at all. There are no backup codes and no admin reset UI. The only recovery today is a manual operator action: delete that user's row from `auth.mfa_factors` in the Supabase dashboard (SQL editor, filtered by `user_id`) after verifying the requester out-of-band, which drops them back to the enrollment gate on next sign-in. **This is a deliberate MVP gap, not an oversight** — self-service recovery (backup codes at enrollment, plus a superuser-initiated, audited reset) belongs to Phase 7 (Admin/Security) alongside the rest of the superuser dashboard. Until then: the manual deletion must be treated as a high-risk admin action — verify identity out-of-band before performing it, since it is a complete bypass of the second factor.
 - **MFA is enforced in the database, not only in the UI.** `public.has_permission()` and `private.has_platform_permission()` return false for an MFA-required role on a session that has not reached `aal2` (`supabase/migrations/20260827210000_mfa_aal_permission_gate.sql`), so every write policy in the schema inherits the requirement. The app-layer gate (`lib/auth/mfa-gate.ts`, plus `assertMfaSatisfied()` on the privileged Server Actions) gives a readable refusal and stops side effects outside the database; it is not the enforcement. The anon key ships in the browser bundle by design, so anyone holding a session token can call PostgREST directly and bypass the entire Next.js app — the database is the only chokepoint on that path.
+
+- **Server-side integration RPCs audit as the tombstone actor.** When the
+  caller is not a person (`store_integration_token`, `record_integration_sync_run`,
+  and the revokes performed by the membership trigger or the erasure), the
+  `integration.*` audit rows carry the Q130 tombstone as `actor_user_id`
+  (`reason` in the payload says why). They sit in the tenant's own audit trail
+  and appear in the tenant audit viewer; read "actor = erased user" on such a
+  row as "the system acted", not "an erased person did".
 
 ### Known limitation: MFA gates privileged WRITES, and — since Phase 2 — CRM READS
 
@@ -842,6 +887,7 @@ Carried over from `CLAUDE.md` § Open decisions — these need founder/legal inp
 - `[auth.mfa.totp] enroll_enabled` / `verify_enabled = true` — without these the MFA gate has nothing to enroll or challenge against.
 - `minimum_password_length = 10` — must match `MIN_PASSWORD_LENGTH` in `lib/forms.ts`, or the app's validation is bypassable by calling GoTrue directly.
 - **Email delivery (Phase 7 Task 6) — four environment values and one cron, none of which ships itself:** `BREVO_API_KEY` / `BREVO_SENDER_EMAIL` / `BREVO_SENDER_NAME` (`docs/email-setup.md` — domain authentication first, or mail lands in spam), `SUPPORT_CONTACT_EMAIL` (§ 13), and `INCIDENT_ALERT_DELIVERY_SECRET` (≥ 32 chars) **plus the two Supabase Vault entries the database's own clock reads** (Q118): `select vault.create_secret('https://<host>/api/incident-alerts/deliver', 'incident_alert_delivery_url', '…');` and `select vault.create_secret('<the same value as INCIDENT_ALERT_DELIVERY_SECRET>', 'incident_alert_delivery_secret', '…');`. The `pg_cron` job ships with the schema (`20260916000000`, every 10 minutes) and is a silent no-op until both entries exist — so a deploy that sets the environment variables and forgets the Vault entries has a scheduler that runs and delivers nothing. Verify with `select * from cron.job_run_details order by start_time desc limit 5;` and `select status_code from net._http_response order by created desc limit 5;`. With any of these missing the product degrades honestly — feedback is stored and shown "email not sent", alerts stay rows — but silently as far as the inbox is concerned. Verify after deploy by submitting one feedback and confirming the receipt arrives and the row on `/super/feedback` no longer reads "email not sent"; then `curl -X POST -H "Authorization: Bearer …" https://<host>/api/incident-alerts/deliver` and confirm a JSON `outcome`, never a 404. Sign Brevo's DPA before real personal data flows (`docs/sub-processors.md`). Every Brevo call carries a 10-second timeout (`BREVO_TIMEOUT_MS`, fix round 1 I2) and the feedback receipt runs after the submission's response through `next/server`'s `after()`, so a Brevo stall can neither hang a submission nor, via the retry it invited, duplicate the row. **Supabase Auth's own mail (sign-up, magic link, reset) is NOT relayed through Brevo today** — that is a hosted-project SMTP setting nothing in this repository configures (`docs/email-setup.md` § 3); until it is done, auth mail is Supabase's built-in sender and Brevo processes only the support contact's address and feedback receipts.
+- **A real integration connector is a launch-gate-style item (Phase 9, Q232).** The schema ships with no live provider. Before any provider's `live` flag turns on: a signed per-vendor DPA and a `docs/sub-processors.md` row (none is needed until then, because nothing is sent to a vendor); the transfer basis checked (IDTA or SCCs where the vendor is outside the UK/EU); the vendor's OAuth app review completed and the minimum scopes confirmed (Google Calendar is first, Q232); the two Phase 9 gaps in section 2 closed; and the token paths exercised against the hosted Vault.
 - **The export runner's own secret and Vault pair (Phase 8 Task 4)** — `EXPORT_RUNNER_SECRET` (≥ 32 chars, and **a different value from `INCIDENT_ALERT_DELIVERY_SECRET`**: leaking one must not hand over the other, and this one can be made to run every queued export) plus `select vault.create_secret('https://<host>/api/exports/run', 'export_runner_url', '…');` and `select vault.create_secret('<the same value as EXPORT_RUNNER_SECRET>', 'export_runner_secret', '…');`. The same `pg_cron` job carries it — there is still exactly one — and it is a silent no-op until both entries exist. **Unlike the digest, a missing pair is not the whole failure:** the request that starts a job also nudges the runner in-process, so exports still run; what is lost is the RETRY for a job whose nudge died with its process, which is a person waiting for a statutory response while nothing happens. Verify with `curl -X POST -H "Authorization: Bearer …" https://<host>/api/exports/run` and confirm a JSON `outcome`, never a 404.
 - **The retention runner's own secret and Vault pair (Phase 8 Task 6)** — `RETENTION_RUNNER_SECRET` (≥ 32 chars, and **a different value from all three of the above**) plus `select vault.create_secret('https://<host>/api/retention/run', 'retention_runner_url', '…');` and `select vault.create_secret('<the same value as RETENTION_RUNNER_SECRET>', 'retention_runner_secret', '…');`. The same `pg_cron` job a fourth time — there is still exactly one — and a silent no-op until both entries exist. **This is the one whose blast radius includes the audit log**, which is why it is not allowed to be the erasure runner's secret under another name. It still cannot choose what to delete: every period is declared in `private.retention_periods()`, and the audit purge's hard floor, sanity ceiling and kill switch are all beyond this endpoint's reach. **A missing pair is a real consequence rather than a quiet one:** the job never runs, `/super/health` shows no runs at all and says in words that a deployment with no runner URL never records one, and data past its retention period is simply kept. Verify with `curl -X POST -H "Authorization: Bearer …" -d '{"dry":true}' https://<host>/api/retention/run` — a DRY run, which counts and deletes nothing — and confirm a JSON `outcome`, never a 404.
 - **The erasure runner's own secret and Vault pair (Phase 8 Task 5)** — `ERASURE_RUNNER_SECRET` (≥ 32 chars, and **a different value from both of the above**: this is the one that makes queued DELETIONS happen sooner) plus `select vault.create_secret('https://<host>/api/erasure/run', 'erasure_runner_url', '…');` and `select vault.create_secret('<the same value as ERASURE_RUNNER_SECRET>', 'erasure_runner_secret', '…');`. The same `pg_cron` job again — there is still exactly one — and a silent no-op until both entries exist. It cannot CHOOSE a deletion: the route takes no argument, and every job it can reach is one somebody already asked for through a gate the endpoint does not control. **A missing pair matters more here than it does for exports:** without the retry, a person whose account is "being deleted" and is not being deleted cannot even ask again, because the one-live-job index refuses. Verify with `curl -X POST -H "Authorization: Bearer …" https://<host>/api/erasure/run` and confirm a JSON `outcome`, never a 404. **`EXPORT_RUNNER_SECRET` was documented here by Task 4 and never added to `.env.example`; Task 5 added both.**
