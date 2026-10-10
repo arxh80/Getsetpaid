@@ -167,6 +167,10 @@ const WORKSPACE_EXPORTED = [
   "events",
   "financial_entries",
   "impersonation_sessions",
+  // Phase 9 Task 3 (20261030003000): connection metadata, never
+  // token_secret_id (projected out by name), and the sync history.
+  "integration_connections",
+  "integration_sync_runs",
   "meeting_links",
   "meetings",
   "merge_candidates",
@@ -205,6 +209,9 @@ const ACCOUNT_EXPORTED = [
   "data_subject_requests",
   "feedback",
   "impersonation_sessions",
+  // Phase 9 Task 3 (20261030003000): the person's OWN person-scoped
+  // connections (owner_user_id), under their own RLS, token_secret_id out.
+  "integration_connections",
   "organisation_memberships",
   "platform_admins",
   "profiles",
@@ -483,7 +490,9 @@ describe("the tables in NEITHER derivation are a disposition, not a residue", ()
         "in the catalogue or in NEITHER_DERIVATION (the rolls above will say which). If this is 0, " +
         "the relkind or the schema name in this query is wrong and every 'is in neither derivation' " +
         "assertion in this file has been answered by an empty set.",
-    ).toBe(54);
+      // 56 = 54 + Phase 9 Task 1's integration_connections and
+      // integration_sync_runs (20261030000000).
+    ).toBe(56);
     // Kept, and no longer pretending to be the load-bearing one: the two
     // derivations overlap (a table can have both paths), so the remainder is
     // the complement by construction. What makes it worth a line is that it

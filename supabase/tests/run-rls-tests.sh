@@ -513,7 +513,7 @@ P6VARS+=( -v "super=${ID[super]}" )
 P6VARS+=( -v "super_c={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal2\"}" )
 
 
-run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 217 "${P6VARS[@]}"
+run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 218 "${P6VARS[@]}"
 lk_fails=$SUITE_FAILS
 if [ "$lk_fails" != "0" ]; then
   echo "PHASE 6 NETWORK-LEAKAGE SUITE FAILED: $lk_fails failing assertion(s)" >&2
@@ -1208,7 +1208,7 @@ fi
 # PHASE 8 TASK 9c FIX ROUND 1 -- A CLOSURE BACKUP IS COMPLETE (C1, I2;
 # 20261025000000). The same read engine, the same Owner, the same workspace:
 # a workspace export taken while live and the closure backup taken after
-# close_my_workspace() must carry the same row count in every one of the 35
+# close_my_workspace() must carry the same row count in every one of the 37
 # exported tables, finance and network included -- and the same again when the
 # Owner tries to erase their account before the backup is built (refused until
 # it is). Self-contained.
@@ -1226,6 +1226,38 @@ if [ "$ck_fails" != "0" ]; then
   psql_status=1
 else
   echo "Phase 8 closure backup completeness suite: all assertions passed."
+fi
+
+# ============================================================================
+# PHASE 9 -- INTEGRATIONS, SCHEMA ONLY (20261030000000; founder 2026-10-09).
+# Two tenant tables no client role can write, a provider catalogue with no
+# live entry, and who reads a connection and its sync runs; since Task 2
+# (20261030001000) the five RPCs, Vault-held tokens and the four audit
+# actions (IC/IV/IS/IA; HTTP twin in the API block); since Task 3
+# (20261030003000) the privacy lifecycle: membership removal, account erasure,
+# workspace purge, exports and retention (IM/IE/IP/IX/IN). Self-contained and
+# re-runnable on one database (it removes its own fixtures).
+# ============================================================================
+run_suite "PHASE 9 INTEGRATIONS" rls_phase9_integrations.sql ig 199
+ig_fails=$SUITE_FAILS
+if [ "$ig_fails" != "0" ]; then
+  echo "PHASE 9 INTEGRATIONS SUITE FAILED: $ig_fails failing assertion(s)" >&2
+  echo "  IT red: a table lost RLS, a client role gained a write grant, a provider" >&2
+  echo "  went LIVE, or a constraint/guard (catalogue, revoked-is-terminal, closed" >&2
+  echo "  error_code) stopped refusing. IR red: A CONNECTION IS READABLE OUTSIDE" >&2
+  echo "  ITS WORKSPACE, or by a role without manage_integrations. IB red: a client" >&2
+  echo "  role can write an integration row directly. IC red: connect_integration" >&2
+  echo "  lost a refusal (or its order), or revoke lets the wrong person in. IV red:" >&2
+  echo "  A TOKEN IS REACHABLE OUTSIDE THE SERVER, or revoke left its Vault secret." >&2
+  echo "  IS red: a sync run's rails moved. IA red: AN AUDIT PAYLOAD HOLDS A SECRET." >&2
+  echo "  IM red: A PERSON WHO LEFT A WORKSPACE STILL HAS A LIVE TOKEN THERE. IE red:" >&2
+  echo "  AN ERASURE LEFT THE PERSON'S CONNECTION (or its secret) BEHIND, made it" >&2
+  echo "  workspace-scoped, or failed on the one-live index. IP red: a purge left" >&2
+  echo "  Vault secrets behind. IX red: an export carries token_secret_id, or is" >&2
+  echo "  wider than the requester's RLS. IN red: the retention classes or sweep moved." >&2
+  psql_status=1
+else
+  echo "Phase 9 integrations suite: all assertions passed."
 fi
 
 # ============================================================================
@@ -3941,7 +3973,7 @@ p2_code "carol POST of a legal document -> 403"                     403 POST    
 p2_code "carol cannot create a draft through the RPC -> 403"        403 POST         "rpc/create_legal_document_draft" '{"p_slug":"terms"}' "$TOKEN"
 p2_code "anon cannot call the operator read -> 401"                 401 POST         "rpc/operator_legal_document_versions" '{}' "$ANON"
 p2_code "the immutability guard is not an RPC -> 404"               404 POST         "rpc/legal_documents_guard" '{}' "$TOKEN"
-lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where status = 'published' and title <> 'x' and version = case when slug = 'data-retention' then 7 when slug in ('data-subject-rights','data-processing-addendum') then 5 when slug = 'privacy' then 4 when slug in ('security','subprocessors') then 3 when slug = 'marketing-preferences' then 2 else 1 end" | tr -d '[:space:]')
+lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where status = 'published' and title <> 'x' and version = case when slug = 'data-retention' then 8 when slug in ('data-subject-rights','data-processing-addendum') then 5 when slug = 'privacy' then 4 when slug in ('security','subprocessors') then 3 when slug = 'marketing-preferences' then 2 else 1 end" | tr -d '[:space:]')
 if [ "$lg_same" = "15" ]; then printf '  PASS  %-58s %s
 ' "the refused writes changed nothing (15 current rows intact)" "$lg_same"
 else printf '  FAIL  %-58s got %s want 15
@@ -4110,6 +4142,84 @@ n1_row=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc
      from public.network_connection_requests where id='$N1_REQUEST'" | tr -d '[:space:]')
 if [ "$n1_row" = "accepted:true:true:true" ]; then printf '  PASS  %-58s %s\n' "...accepted, parties unchanged, responded_by/at stamped by the server" "$n1_row"
 else printf '  FAIL  %-58s got %s want accepted:true:true:true\n' "...accepted, parties unchanged, responded_by/at stamped by the server" "$n1_row"; api_fails=$((api_fails+1)); fi
+
+echo "=== Phase 9 integrations at the API surface (20261030001000) ==="
+# The psql § IB/IC/IV prove the write paths through claims set by hand; this
+# asks the same questions over PostgREST with REAL sessions. $IGA1 is a fresh
+# password grant for ALPHA's Owner -- aal1, the stolen-password session ($OWN
+# was revoked when $OWN2 verified the first factor). $OWN2 is the same Owner
+# at aal2, the only session that holds manage_integrations (MFA-gated), and is
+# what reaches connect_integration's own refusal. Each refusal is read twice:
+# the status code, and the row in Postgres.
+IGA1=$(p2_token powner); [ -n "$IGA1" ] || { echo "no fresh aal1 token for powner" >&2; exit 1; }
+IG_CONN=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select gen_random_uuid()" | tr -d '[:space:]')
+IG_NEW=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select gen_random_uuid()" | tr -d '[:space:]')
+p2_sub "insert into public.organisation_subscriptions
+          (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+        values ('$ALPHA_ORG','pro','monthly',1,'active', now() + interval '30 days')
+        on conflict (organisation_id) do update set plan_id='pro', status='active';
+        insert into public.integration_connections (id, organisation_id, provider, status)
+        values ('$IG_CONN', '$ALPHA_ORG', 'xero', 'active');"
+db_val "IG FIXTURE: ALPHA is live, Pro, and holds the planted connection" "true:pro:active" \
+       "select (o.deleted_at is null)::text || ':' || s.plan_id || ':' || c.status
+          from public.organisations o join public.organisation_subscriptions s on s.organisation_id = o.id
+          join public.integration_connections c on c.organisation_id = o.id
+         where o.id = '$ALPHA_ORG' and c.id = '$IG_CONN'"
+[ "$(p2_aal "$IGA1")" = "aal1" ] && printf '  PASS  %-58s %s\n' "IG the fresh Owner token is aal1" "aal1" \
+  || { printf '  FAIL  %-58s got %s\n' "IG the fresh Owner token is aal1" "$(p2_aal "$IGA1")"; api_fails=$((api_fails+1)); }
+p2_code "IG aal1 Owner POSTs an integration_connections row" 403 POST "integration_connections" \
+        "{\"id\":\"$IG_NEW\",\"organisation_id\":\"$ALPHA_ORG\",\"provider\":\"quickbooks\",\"status\":\"active\"}" "$IGA1"
+p2_code "IG ...and the aal2 Owner too (no client write path at all)" 403 POST "integration_connections" \
+        "{\"id\":\"$IG_NEW\",\"organisation_id\":\"$ALPHA_ORG\",\"provider\":\"quickbooks\",\"status\":\"active\"}" "$OWN2"
+db_val "IG ...no such row exists" "0" \
+       "select count(*) from public.integration_connections where id = '$IG_NEW'"
+p2_code "IG aal1 Owner PATCHes the planted row (plant a secret id)" 403 PATCH \
+        "integration_connections?id=eq.$IG_CONN" '{"token_secret_id":"00000000-0000-0000-0000-0000000000aa","status":"error"}' "$IGA1"
+p2_code "IG ...and the aal2 Owner PATCHes status" 403 PATCH \
+        "integration_connections?id=eq.$IG_CONN" '{"status":"error"}' "$OWN2"
+db_val "IG ...the planted row is unchanged" "active:true" \
+       "select status || ':' || (token_secret_id is null)::text from public.integration_connections where id = '$IG_CONN'"
+for tok_name in IGA1 OWN2; do
+  ig_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$API/rest/v1/rpc/read_integration_token" \
+    -H "apikey: $ANON" -H "Authorization: Bearer ${!tok_name}" -H "Content-Type: application/json" \
+    -d "{\"p_connection_id\":\"$IG_CONN\"}")
+  if [ "$ig_code" = "403" ] || [ "$ig_code" = "404" ]; then
+    printf '  PASS  %-58s %s\n' "IG $tok_name calls rpc/read_integration_token (403 or 404)" "$ig_code"
+  else
+    printf '  FAIL  %-58s got %s want 403|404\n' "IG $tok_name calls rpc/read_integration_token" "$ig_code"; api_fails=$((api_fails+1))
+  fi
+done
+ig_body() { # name want_code want_hint token body
+  local name="$1" wcode="$2" whint="$3" tok="$4" body="$5" out code
+  out=$(curl -s -w "\n%{http_code}" -X POST "$API/rest/v1/rpc/connect_integration" \
+    -H "apikey: $ANON" -H "Authorization: Bearer $tok" -H "Content-Type: application/json" -d "$body")
+  code=$(printf '%s' "$out" | tail -n1)
+  if [ "$code" = "$wcode" ] && printf '%s' "$out" | grep -q "$whint"; then
+    printf '  PASS  %-58s %s %s\n' "$name" "$code" "$whint"
+  else
+    printf '  FAIL  %-58s got %s want %s with %s\n' "$name" "$(printf '%s' "$out" | tr '\n' ' ')" "$wcode" "$whint"; api_fails=$((api_fails+1))
+  fi
+}
+ig_body "IG aal2 Owner connects google_gmail -> not live" 400 integration_provider_not_live "$OWN2" \
+        "{\"p_org\":\"$ALPHA_ORG\",\"p_provider\":\"google_gmail\"}"
+ig_body "IG aal1 Owner connects google_gmail -> forbidden (MFA gate)" 403 '"hint":"forbidden"' "$IGA1" \
+        "{\"p_org\":\"$ALPHA_ORG\",\"p_provider\":\"google_gmail\"}"
+db_val "IG ...neither connect wrote a row or an audit row" "1:0" \
+       "select (select count(*) from public.integration_connections where organisation_id = '$ALPHA_ORG')::text || ':' ||
+               (select count(*) from public.audit_events where action = 'integration.connected' and organisation_id = '$ALPHA_ORG')::text"
+# POSITIVE CONTROLS: the same aal2 Owner reads the planted row by naming its
+# columns -- so the refusals above are the boundary and not a dead session.
+# select=* is refused now that token_secret_id is column-revoked (IT15), and
+# that is measured rather than left to surprise a future page.
+p2_json "IG CONTROL: aal2 Owner GETs id,provider,status of the planted row" "xero" \
+        "integration_connections?select=id,provider,status&id=eq.$IG_CONN" "$OWN2" provider
+p2_code "IG aal2 Owner GETs select=token_secret_id" 403 GET \
+        "integration_connections?select=token_secret_id&id=eq.$IG_CONN" "" "$OWN2"
+p2_code "IG aal2 Owner GETs select=* (refused: one column is withheld)" 403 GET \
+        "integration_connections?select=*&id=eq.$IG_CONN" "" "$OWN2"
+p2_sub "delete from public.integration_connections where id in ('$IG_CONN', '$IG_NEW');"
+db_val "IG CLEANUP: the planted rows are gone" "0" \
+       "select count(*) from public.integration_connections where id in ('$IG_CONN', '$IG_NEW')"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

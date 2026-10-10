@@ -355,6 +355,8 @@ describe("m-N7: the current bodies are derived from every publishing migration, 
         file: "20261008000000_legal_pages_name_the_hosts.sql",
         slugs: ["privacy", "data-processing-addendum", "security", "subprocessors", "data-retention"],
       },
+      // Phase 9 Task 3: the retention page states the two integration periods.
+      { file: "20261030004000_legal_retention_names_integrations.sql", slugs: ["data-retention"] },
     ]);
     // Seven distinct slugs have a version past 1; the other eight are still
     // their seed. Fifteen bodies either way.

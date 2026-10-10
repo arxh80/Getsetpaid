@@ -192,7 +192,9 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
     // and organisation.closure_deleted.
     // 167 since Task 9c fix round 1b (20261027002000):
     // organisation.closure_candidates_viewed (Q223).
-    expect(live.length).toBe(167);
+    // 171 since Phase 9 Task 2 (20261030001000): integration.connected,
+    // .revoked, .token_stored and .sync_failed.
+    expect(live.length).toBe(171);
     expect(new Set(live).size, "the database catalogue lists a name twice").toBe(live.length);
     expect(live).toEqual([...knownAuditActions()].sort());
   });
@@ -444,12 +446,29 @@ describe("every literal action a function INSERTS into audit_events directly is 
         // so the roll of direct writers is four. Adding one is meant to be a
         // deliberate edit here -- that is what this census is for.
         "private.erase_organisation",
+        // Phase 9 Task 3 (20261030003000): an account deleted OUTSIDE the
+        // erasure nulls a live person-scoped connection's owner through the
+        // FK; the guard revokes it in that write and audits it, sessionless,
+        // with the tombstone as the actor.
+        "private.integration_connections_guard",
         "private.log_audit_event",
+        // Phase 9 Task 3 (20261030003000): the one revoke primitive. The
+        // person's own revoke still goes through log_audit_event(); the
+        // membership trigger with nobody on the session (an account deleted
+        // through the Auth admin API) and the erasure cannot, so those write
+        // integration.revoked directly, with the tombstone as the actor.
+        "private.revoke_integration_row",
         // Phase 8 Task 6: the retention run's ONE summary row. Sixth writer,
         // and here for the same reason as the erasure's two -- a scheduled
         // sweep has nobody on it, and log_audit_event() raises 28000 without
         // an auth.uid(). Actor = the Q130 tombstone.
+        // Phase 9 Task 2 (20261030001000): the two sessionless integration
+        // writers -- the server storing a token and the server recording a
+        // failed sync. Nobody is on either session, so log_audit_event()
+        // would raise 28000; actor = the Q130 tombstone.
+        "public.record_integration_sync_run",
         "public.run_retention_sweep",
+        "public.store_integration_token",
       ],
     );
 

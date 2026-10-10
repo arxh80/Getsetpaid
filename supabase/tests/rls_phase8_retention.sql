@@ -438,15 +438,18 @@ insert into rt.page_sentences values
   ('erasure_job_failed', '**The record of an account deletion that failed:** {p} after it failed'),
   ('rate_limit_counter', 'in a recent window): {p} after that window closed'),
   ('storage_orphan',     'by an upload that did not complete): {p}.'),
-  ('stuck_job',          'stuck "in progress" for more than {p} is marked as failed');
+  ('stuck_job',          'stuck "in progress" for more than {p} is marked as failed'),
+  -- Phase 9 Task 3 (20261030003000 declares them, 20261030004000 states them).
+  ('integration_sync_run',           'and whether that worked): {p} after that exchange finished'),
+  ('integration_connection_revoked', '**A connection to another service that has been disconnected:** {p} after it was disconnected');
 
-select rt.val('RL1 DENOMINATOR: eleven classes are declared, every one has a sentence to be found in, and the page is the unreviewed current version',
+select rt.val('RL1 DENOMINATOR: thirteen classes are declared (eleven, plus Phase 9''s two integration classes), every one has a sentence to be found in, and the page is the unreviewed current version',
   $$select (select count(*)::text from private.retention_periods()) || '/' ||
            (select coalesce(string_agg(p.class, ','), 'none') from private.retention_periods() p
              where not exists (select 1 from rt.page_sentences s where s.class = p.class)) || '/' ||
            (select (version >= 6)::text || '/' || (counsel_reviewed_at is null)::text
               from public.legal_documents where slug = 'data-retention' and status = 'published')$$,
-  '11/none/true/true');
+  '13/none/true/true');
 select rt.val('RL2 EVERY declared period is on the published page, in the sentence that states it, with the DATABASE''S number',
   $$select coalesce(string_agg(p.class, ',' order by p.class), 'none')
       from private.retention_periods() p

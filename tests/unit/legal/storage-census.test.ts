@@ -306,7 +306,9 @@ describe("the scanned file set is derived, so a new root file or folder cannot b
     }
     expect(references, "DENOMINATOR: the import walk read imports").toBeGreaterThan(1000);
     expect(leaks, "an app module imports from a folder the storage census does not scan").toEqual([]);
-  });
+    // A CPU-bound walk that parses every app file: its own 30 s ceiling, because the 5 s
+    // default times out under load (F-T8-1). A longer limit, never a retry.
+  }, 30_000);
 });
 
 describe("the storage census (Phase 8 Task 2, Q129)", () => {

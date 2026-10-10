@@ -1571,3 +1571,61 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
   `organisation.closure_candidates_viewed`, Q223). **Default (not applied):**
   name it in § Superuser dashboard the way § In-app feedback names the
   screenshot exception. No product change proposed.
+
+## Q232 -- Phase 9 Task 4: which connector is first after launch? 2026-10-09
+
+- **Q232 -- Which connector is first after launch?** The research is in
+  `docs/integrations-discovery.md` (eight candidates, every fact sourced and
+  dated 2026-10-09). **Default (recommendation, nothing built):** Google
+  Calendar first, via event-level scopes (`calendar.events.owned`, or
+  `calendar.app.created`); then Microsoft Graph calendar; Skiddle ticket-URL
+  import after written commercial approval (its API is non-commercial only);
+  then Xero, QuickBooks, and mail last because Gmail needs a restricted scope
+  and an annual third-party security assessment. For Fatsoma no public API or developer docs were found (a private partner API is not excluded).
+  Open facts that could reorder it: whether Google Calendar scopes trigger
+  that assessment (read the label in the Cloud Console consent screen), and
+  which calendar the first customers use. Founder pre-work (consent screen,
+  Entra app and publisher verification, DPAs, two emails) is the last section
+  of the discovery document. No provider is made live by this phase.
+
+## Q233 -- Phase 9 Task 2: can a connection in `error` have its token read? 2026-10-09
+
+- **Q233 -- `read_integration_token()` refuses any status except `active`.** After a failed sync, `record_integration_sync_run()` moves the connection to `error`. From then on, the server cannot read the token to retry, even when the failure is transient (`rate_limited`, `provider_unavailable`). Options:
+  - (a) Keep it: a failed connection must be re-authorised through `store_integration_token()`, which moves it back to `active`.
+  - (b) Allow the read in `error` only when the last run's `error_code` is retryable (`rate_limited` or `provider_unavailable`).
+  - (c) Add a separate `degraded` status for transient failures.
+  **Default: (a)**, because no connector exists, so nothing retries today. Revisit together with Q232's first connector, before it ships. No code change in Phase 9.
+
+## Founder rulings, 2026-10-10 (asked in session)
+
+Each ruling below is confirmed as built:
+- **Q232:** Google Calendar is first after launch.
+- **Q229:** the purge waits until the backup is downloaded, or 30 days.
+- **Q205:** a closed workspace's members cannot read finance lines.
+- **Q233:** a failed connection must be re-authorised.
+- **Q212:** the decision email carries no reason.
+- **Q209:** no superuser download of a closure backup.
+- **Q215:** the superuser reads member names when reassigning, and the read is audited.
+- **Q218:** the "suspended" wording is fixed in Phase 10.
+- **Q227:** the backup-read marker on the network path is kept.
+
+**Q189: YES, audit it (NOT BUILT, owed).** An Owner's or Admin's edit of `organisations` (name, slug) writes an audit row with before and after. Remove the named excusal from `AUDIT_COVERAGE_EXCUSALS`. Scheduled as a follow-up branch off main after the Phase 9 PR.
+
+**Q228: CHANGED (NOT BUILT, owed).** The founder wants three things:
+1. **A "Contact us" button** on the Owner's closure screen when the closure backup has failed. It points to the single support contact (`SECURITY.md` § 13).
+2. **The Owner can download a backup of any size.** It must still respect CLAUDE.md's "exports are async and bounded" rule. The planned shape is a **multi-part** closure backup: every part stays within today's per-archive ceilings, the number of parts is not capped, and each part is downloadable and audited the same way. A size ceiling therefore never fails the backup; it is split instead.
+3. **Keep "Delete without a backup"**, the audited acknowledgement that is already built.
+
+Scheduled as a follow-up branch off main after the Phase 9 PR, built under the same review loop.
+
+## Q234-Q235 -- Phase 9 Task 3: what the exports carry, 2026-10-10
+
+- **Q234 -- Should a workspace export list colleagues' person-scoped (mailbox/calendar) connection metadata?** The workspace export is read under the requester's own RLS. An Owner or Admin holds `manage_integrations`, and Task 1's read policy lets that holder read EVERY connection in the workspace (IR1a). That includes a colleague's personal mailbox or calendar connection: provider, scopes, dates and owner id, never a token. So the workspace export carries that metadata too (`rls_phase9_integrations.sql` IX4). The alternative is to narrow the policy (or the export's scope) to workspace-scoped rows plus the requester's own. **Default: yes, as built**, consistent with IR1a: the workspace can see which integrations reach into it. Revisit before the first person-scoped connector (Google Calendar, Q232) ships.
+- **Q235 -- A person who has LEFT a workspace does not get their revoked connection rows there in their account export.** The account export reads `integration_connections` under the person's own RLS (scope `owner_user_id`). The person-scoped read needs `view_crm` in that workspace, so once the membership ends, the row is outside their read and their export. The row stays revoked, holds no token, and still carries their `owner_user_id` until they are erased. The alternative is an elevated, projected read filtered on `owner_user_id`, the shape `impersonation_sessions` uses for a departed person. **Default: as built (requester_rls)**: a revoked connection in a workspace they left is that workspace's record of an integration that has ended.
+
+## Q236 -- Phase 9 Task 5: may an Admin create a person-scoped connection for another member? 2026-10-10
+
+- **Q236 -- `connect_integration(org, provider, owner_user_id)` lets an Owner or Admin name any active member as the owner of a mailbox/calendar connection.** Harmless today: no provider is live, so the call always refuses. When the first connector lands (Google Calendar, Q232), OAuth consent is given by one person, and a token minted in an Admin's session but stored against someone else's `owner_user_id` would be a mailbox the owner never consented to. Options: (a) keep the RPC as is and make the OAuth callback bind the token to the consenting session's own user, refusing a callback whose session is not `owner_user_id`; (b) restrict `p_owner_user_id` to the caller (a person connects only their own mailbox; workspace-scoped connections stay Admin-made).
+  **Consequence of (b) as first written (final review I1, 2026-10-10):** `connect_integration` requires `manage_integrations`, which only Owner and Admin hold. Restricting `p_owner_user_id` to the caller therefore means *only an Owner or Admin could ever hold a person-scoped connection*: a Booker, Manager or any other member could never connect their own Google Calendar, which is the likely first use (Q232). (b) closes the Admin-names-someone-else hole by making person-scoped connections an Owner/Admin-only feature, which is probably not what is wanted.
+  **Option (c):** a separate self-connect path (a distinct RPC, or a branch of `connect_integration` taken only when `p_owner_user_id` is the caller) open to any *active* member of a Starter-or-above, writable workspace, with MFA applied per the member's own role, which **forces `owner_user_id = auth.uid()`** and cannot name anyone else. Workspace-scoped connects (no owner) stay with `manage_integrations`. Neither path lets an Admin name another member.
+  **Default: (c)**, enforced in the RPCs when the first connector ships: it closes the same hole as (b) without locking ordinary members out of their own calendar, and needs no callback trick to be safe. (b) is retained only if the founder decides person-scoped connections should be an Owner/Admin feature. Revisit with Q232's connector. No code change in Phase 9.

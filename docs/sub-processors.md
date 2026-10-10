@@ -37,3 +37,8 @@ Supabase row carried while the region was unconfirmed is gone.
 Not sub-processors (no personal data reaches them): the malware scanner at
 MVP is a local stub (`SECURITY.md` § 6, Q42) — a scanning SaaS, when chosen,
 is added here first.
+
+Integrations (Phase 9) add **no row**: the schema ships with no live provider,
+so no connection can be made and nothing is sent to a mail or calendar vendor.
+The first connector (Google Calendar, Q232) adds its vendor here, with its DPA
+and transfer basis, before its `live` flag turns on.

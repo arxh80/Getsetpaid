@@ -1,0 +1,12 @@
+delete from vault.secrets where name in (select 'integration:' || c.id::text from public.integration_connections c join public.organisations o on o.id = c.organisation_id where o.slug like 'ig-%');
+delete from public.integration_connections c using public.organisations o where o.id = c.organisation_id and o.slug like 'ig-%';
+set session_replication_role = replica;
+delete from public.audit_events where organisation_id in (select id from public.organisations where slug like 'ig-%');
+delete from public.export_jobs where organisation_id in (select id from public.organisations where slug like 'ig-%');
+delete from public.organisation_memberships where organisation_id in (select id from public.organisations where slug like 'ig-%');
+delete from public.organisation_subscriptions where organisation_id in (select id from public.organisations where slug like 'ig-%');
+delete from public.organisations where slug like 'ig-%';
+set session_replication_role = origin;
+delete from public.export_jobs where requested_by in (select id from auth.users where email like 'ig-%');
+delete from auth.users where email like 'ig-%';
+select count(*) from public.integration_connections;
