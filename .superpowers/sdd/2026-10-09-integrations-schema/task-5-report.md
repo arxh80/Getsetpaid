@@ -44,3 +44,11 @@ No mutant survived; no assertion had to be added.
 - e2e not green in a single cold run (RAM-starved, 4 timeouts); green in isolation. None are refusal-parity specs.
 - Q236 default (b) is my proposal for the founder; no code change.
 - SECURITY.md § 4 is "Authentication and session security"; the audit-actor note lives there per the brief, though § 7 is the audit section.
+
+## Fix round 1
+Commits: 96d2e85 (I2, M2, M3: docs follow Q236's default, mutant count, audit-actor note moved to SECURITY.md section 7 with conditional wording), 26a673c (M1, M4: grant wording, Phase 9 clause last in Current state), 008226b (I3, M5: run.sh logs the real rc, subset runs write their own file, README.txt notes DDL restores and explains the 4 s first run: it crashed on a wrong relative suite path, fixed by changing 4 to 5 levels), plus the ledger/report commit.
+
+Gates after the edits (no SQL or tests changed, so vitest and the psql runner were not re-run):
+- `pnpm lint`: exit 0. `pnpm typecheck`: exit 0.
+- Full cold `pnpm test:e2e` (fresh `npx supabase db reset --local`, no config change, no other playwright process): **178 passed, 0 failed, 0 did not run, 20.6 min**. Free RAM at start 2.69 GB (waited the 30 minutes; it never rose above 2.9 GB because of other load on the machine), 5.21 GB at the end. This supersedes the earlier 172/4/2 run, which ran at 0.34 GB. No isolation re-run was needed.
+- progress.md ledger line rewritten to state what actually happened.
