@@ -8,4 +8,5 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 echo "$(date '+%F %T') START" >> "$HERE/progress.log"
 python "$HERE/mutants.py" "$@"
-echo "$(date '+%F %T') END exit=$?" >> "$HERE/progress.log"
+rc=$?
+echo "$(date '+%F %T') END exit=$rc" >> "$HERE/progress.log"

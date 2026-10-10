@@ -104,4 +104,6 @@ for name, (apply, restore) in M.items():
     finally:
         psql(restore)
 report("CONTROL (restored)", run_suite())
-open(os.path.join(HERE, "results.txt"), "w", encoding="utf-8").write("\n".join(out) + "\n")
+# A full run writes results.txt; a subset (arguments) writes its own file, so it never clobbers the full record.
+name_out = "results.txt" if not only else "results-" + "-".join(only) + ".txt"
+open(os.path.join(HERE, name_out), "w", encoding="utf-8").write("\n".join(out) + "\n")
