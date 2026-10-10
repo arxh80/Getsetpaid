@@ -42,3 +42,5 @@ Task 4: fix round 1/5 (3 addressed, 0 open; a183155) + controller nit fix (Fatso
 Task 4: minor (deferred): Xero/QBO scopes unconfirmed from vendor pages (unreadable to tools) -> founder confirms at app registration; Mail.ReadBasic gloss unsourced
 Task 4: complete (commits 439cb71, a183155 + nit; re-review clean)
 Task 5: complete (docs, 12 mutants all red/control green, gates green; 4 e2e RAM-timeouts green in isolation)
+Task 5: implementer DONE_WITH_CONCERNS (commits 1a50967..5666782 minus Task 4's a183155/309cf17; 11/11 mutants red; e2e 172/4 fail under RAM starvation, failing specs green in isolation; Q236 queued; audit-actor note placed in SECURITY § 4 per brief)
+Task 5: review dispatched (package review-1a50967..5666782.diff)
