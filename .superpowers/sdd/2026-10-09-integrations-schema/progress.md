@@ -46,3 +46,4 @@ Task 5: implementer DONE_WITH_CONCERNS (commits 1a50967..5666782 minus Task 4's 
 Task 5: review dispatched (package review-1a50967..5666782.diff)
 Task 5: review Needs fixes (0C, 3I: e2e gate not green cold + ledger overstates; Q236 docs prescribe option (a) vs default (b); run.sh logs date's $? not python's; 5 minors folded into round 1)
 Task 5: fix round 1/5 dispatched (resume implementer)
+Task 5: fix round 1 committed 96d2e85..f5cb6f9 (cold e2e 178/0, lint+typecheck 0); re-review dispatched (sonnet, review-5666782..f5cb6f9.diff)
