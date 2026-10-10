@@ -1110,9 +1110,12 @@ values
   -- id of a Vault secret, not portable data, and authenticated cannot
   -- select it anyway (20261030001000), so a projection that named it would
   -- make the read refuse rather than leak. The token itself is never a
-  -- column. Both workspace reads are requester_rls like every other: the
-  -- Owner/Admin reads the workspace's connections and their own
-  -- person-scoped ones, never a colleague's.
+  -- column. Both workspace reads are requester_rls like every other, so
+  -- the export is exactly what the requester reads in the product: an
+  -- Owner/Admin (manage_integrations) reads EVERY connection in the
+  -- workspace, a colleague's person-scoped mailbox or calendar included --
+  -- its metadata, never its token (rls_phase9_integrations.sql IR1a, IX4;
+  -- whether that is right is founder question Q234, default as built).
   -- =====================================================================
   ('workspace', 'integration_connections', 'exported', null, 'requester_rls', array['organisation_id'], 'id',
    array['id','organisation_id','provider','owner_user_id','status','scopes','token_expires_at','last_synced_at','created_by','created_at','revoked_at','revoked_by']),
@@ -1592,7 +1595,7 @@ AS $function$
     -- grant (20261030000000: authenticated holds SELECT only; anon and
     -- service_role hold nothing), so no client can move either clock.
     ('public', 'integration_connections', 'revoked_at', 'clock', null,
-     'integration_connection_revoked. Written only by private.revoke_integration_row(), with now(); a revoked row is then frozen whole by private.integration_connections_guard(). No client INSERT or UPDATE grant on the table.'),
+     'integration_connection_revoked. Written by two server paths only, each with now(): private.revoke_integration_row(), and the out-of-band branch of private.integration_connections_guard() (an account deleted outside the erasure nulls a live person-scoped row''s owner, and the guard revokes it in that write). A revoked row is then frozen whole by the same guard. No client INSERT or UPDATE grant on the table.'),
     ('public', 'integration_sync_runs', 'finished_at', 'clock', null,
      'integration_sync_run. Written only by public.record_integration_sync_run() (service_role, no person on the session), with now(). No client INSERT or UPDATE grant on the table.'),
 

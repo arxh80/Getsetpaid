@@ -961,6 +961,7 @@ select gen_random_uuid()::text as conn_e2  \gset
 select gen_random_uuid()::text as conn_e3  \gset
 select gen_random_uuid()::text as conn_p1  \gset
 select gen_random_uuid()::text as conn_p2  \gset
+select gen_random_uuid()::text as conn_p3  \gset
 select gen_random_uuid()::text as conn_old \gset
 select gen_random_uuid()::text as conn_new \gset
 select gen_random_uuid()::text as ie_job  \gset
@@ -1007,7 +1008,10 @@ insert into public.integration_sync_runs (organisation_id, connection_id, status
 -- IP: one workspace-scoped and one person-scoped connection in P.
 insert into public.integration_connections (id, organisation_id, provider, owner_user_id, status) values
   (:'conn_p1', :'org_p', 'xero',            null,       'active'),
-  (:'conn_p2', :'org_p', 'google_calendar', :'owner_p', 'active');
+  (:'conn_p2', :'org_p', 'google_calendar', :'owner_p', 'active'),
+  -- Fix round 1 (C2): pending, no token_secret_id, a secret filed under its
+  -- NAME (planted before IP1) -- only the purge's by-name clause can find it.
+  (:'conn_p3', :'org_p', 'skiddle',         null,       'pending');
 insert into public.integration_sync_runs (organisation_id, connection_id, status, finished_at) values
   (:'org_p', :'conn_p1', 'succeeded', now());
 
@@ -1029,6 +1033,24 @@ select ig.val('IL0 FIXTURE: six tokens stored, each a vault secret named for its
             on c.token_secret_id = s.id and s.name = 'integration:' || c.id::text
            where c.id in (%L, %L, %L, %L, %L, %L)$$,
          :'conn_m3', :'conn_m3b', :'conn_m4', :'conn_e1', :'conn_p1', :'conn_p2'), '6');
+
+-- IL1 (fix round 1, C2): THE PRIMITIVE'S BY-NAME DELETE. A pending connection
+-- whose token_secret_id is NULL while a secret filed under its NAME exists:
+-- only the `or s.name = ...` clause can find it.
+\o /dev/null
+select gen_random_uuid()::text as conn_n \gset
+\o
+insert into public.integration_connections (id, organisation_id, provider, status)
+values (:'conn_n', :'org_a', 'microsoft_365_calendar', 'pending');
+select vault.create_secret('{"access_token":"tok_name_only"}', 'integration:' || :'conn_n') is not null as ig_planted_n \gset
+set role authenticated;
+set request.jwt.claims = :'owner_a_c';
+select ig.val('IL1 FIXTURE: A''s Owner revokes a connection with NO token_secret_id but a secret filed under its name',
+  format($$select 'ok' from public.revoke_integration(%L, %L)$$, :'org_a', :'conn_n'), 'ok');
+reset role;
+reset request.jwt.claims;
+select ig.val('IL1b ...and the secret found only BY NAME is gone (revoke_integration_row''s name clause)',
+  format($$select count(*)::text from vault.secrets where name = 'integration:' || %L$$, :'conn_n'), '0');
 
 -- ---------------------------------------------------------------------------
 -- § IM MEMBERSHIP REMOVAL, through the product path (the Owner's own DELETE
@@ -1091,6 +1113,17 @@ select ig.val('IM10 a membership moved to ANOTHER person (status still active) r
   format($$select c.status || ':' || (select count(*) from vault.secrets s where s.name = 'integration:' || c.id::text)::text
              from public.integration_connections c where c.id = %L$$, :'conn_m3b'),
   'revoked:0');
+-- IM10b (fix round 1, C3): the same row moved to ANOTHER WORKSPACE (B -> F)
+-- is the person departing B.
+\o /dev/null
+select gen_random_uuid()::text as conn_m5 \gset
+\o
+insert into public.integration_connections (id, organisation_id, provider, owner_user_id, status)
+values (:'conn_m5', :'org_b', 'google_calendar', :'mgr4_a', 'active');
+update public.organisation_memberships set organisation_id = :'org_f'
+ where organisation_id = :'org_b' and user_id = :'mgr4_a';
+select ig.val('IM10b a membership moved to ANOTHER WORKSPACE revokes the person''s person-scoped connection in the one they left',
+  format($$select status from public.integration_connections where id = %L$$, :'conn_m5'), 'revoked');
 
 -- ---------------------------------------------------------------------------
 -- § IE ERASURE. The Task 1 review case: a person-scoped xero beside A's live
@@ -1154,13 +1187,22 @@ insert into public.organisation_memberships (organisation_id, user_id, role, sta
 values (:'org_a', :'raw_a', 'manager', 'active', now());
 insert into public.integration_connections (id, organisation_id, provider, owner_user_id, status)
 values (:'conn_r2', :'org_a', 'xero', :'raw_a', 'active');
+-- Fix round 1 (C2): a second, PENDING person-scoped row with no
+-- token_secret_id and a secret filed under its name -- only the guard's
+-- by-name clause can find that one.
+\o /dev/null
+select gen_random_uuid()::text as conn_r3 \gset
+\o
+insert into public.integration_connections (id, organisation_id, provider, owner_user_id, status)
+values (:'conn_r3', :'org_a', 'google_gmail', :'raw_a', 'pending');
+select vault.create_secret('{"access_token":"tok_raw_name"}', 'integration:' || :'conn_r3') is not null as ig_planted_r3 \gset
 set role service_role;
 set request.jwt.claims = :'svc_c';
 select ig.val('IE10a FIXTURE: the raw-deleted person''s xero holds a token, beside A''s live workspace xero',
   format($$select 'ok' from public.store_integration_token(%L, '{"access_token":"tok_raw"}', null)$$, :'conn_r2'), 'ok');
 reset role;
 reset request.jwt.claims;
-create function ig.raw_delete_probe(p_user uuid, p_conn uuid)
+create function ig.raw_delete_probe(p_user uuid, p_conn uuid, p_conn2 uuid)
 returns text language plpgsql security definer set search_path = '' as $$
 declare v text;
 begin
@@ -1172,7 +1214,8 @@ begin
                  (select count(*) from public.audit_events a where a.target_id = c.id and a.action = 'integration.revoked'
                      and a.actor_user_id = private.erased_user_id()
                      and a.after ->> 'reason' = 'account_deleted')::text
-            from public.integration_connections c where c.id = p_conn);
+            from public.integration_connections c where c.id = p_conn)
+         || ':' || (select count(*) from vault.secrets s where s.name = 'integration:' || p_conn2::text)::text;
     raise exception using errcode = 'P0001', message = 'ig_undo', detail = coalesce(v, 'row gone');
   exception
     when sqlstate 'P0001' then
@@ -1185,8 +1228,8 @@ begin
       return 'denied(' || sqlstate || ')';
   end;
 end $$;
-select ig.val('IE10 a RAW account delete succeeds (no 23505) and leaves the person''s xero REVOKED, ownerless, its secret gone, audited as account_deleted',
-  format($$select ig.raw_delete_probe(%L, %L)$$, :'raw_a', :'conn_r2'), 'revoked:null:true:0:1');
+select ig.val('IE10 a RAW account delete succeeds (no 23505) and leaves the person''s xero REVOKED, ownerless, its secret gone, audited as account_deleted; and the pending row''s secret filed only BY NAME is gone too (the guard''s name clause)',
+  format($$select ig.raw_delete_probe(%L, %L, %L)$$, :'raw_a', :'conn_r2', :'conn_r3'), 'revoked:null:true:0:1:0');
 select ig.val('IE10b ...and the probe undid it: the person and their live connection are back',
   format($$select c.status || ':' || (c.owner_user_id = %L)::text from public.integration_connections c where c.id = %L$$,
          :'raw_a', :'conn_r2'), 'active:true');
@@ -1194,11 +1237,14 @@ select ig.val('IE10b ...and the probe undid it: the person and their live connec
 -- ---------------------------------------------------------------------------
 -- § IP WORKSPACE PURGE (P closed as postgres, then purged by the primitive).
 -- ---------------------------------------------------------------------------
+select vault.create_secret('{"access_token":"tok_purge_name"}', 'integration:' || :'conn_p3') is not null as ig_planted_p3 \gset
 update public.organisations set deleted_at = now() where id = :'org_p';
-select ig.val('IP1 the purge of P reports two secrets and two connections deleted before the cascade',
+select ig.val('IP1 the purge of P reports three secrets (two by id, one by name only) and three connections deleted before the cascade',
   format($$select (r ->> 'integration_secrets') || ':' || (r ->> 'integration_connections')
              from (select private.erase_organisation(%L, %L, true) r) x$$, :'org_p', :'ip_job'),
-  '2:2');
+  '3:3');
+select ig.val('IP3b the secret filed only BY NAME (conn_p3, no token_secret_id) is gone too (the purge''s name clause)',
+  format($$select count(*)::text from vault.secrets where name = 'integration:' || %L$$, :'conn_p3'), '0');
 select ig.val('IP2 0 rows left in either table for P',
   format($$select (select count(*) from public.integration_connections where organisation_id = %L)::text || '/' ||
                   (select count(*) from public.integration_sync_runs where organisation_id = %L)::text$$, :'org_p', :'org_p'),
@@ -1333,6 +1379,11 @@ insert into public.integration_connections (id, organisation_id, provider, statu
   (:'conn_old', :'org_a', 'google_calendar', 'revoked', now() - interval '2 years 1 day'),
   (:'conn_new', :'org_a', 'google_calendar', 'revoked', now() - interval '2 years' + interval '1 day');
 
+-- Fix round 1 (C1): each planted revoked connection has a secret filed under
+-- its name, so the sweep's Vault delete has something to delete (conn_old's)
+-- and something it must leave (conn_new's, not yet expired).
+select vault.create_secret('{"access_token":"tok_sweep_old"}', 'integration:' || :'conn_old') is not null as ig_planted_old \gset
+select vault.create_secret('{"access_token":"tok_sweep_new"}', 'integration:' || :'conn_new') is not null as ig_planted_new \gset
 create function ig.live_sweep_probe(p_org uuid, p_old uuid, p_new uuid)
 returns text language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
 declare v text; v_s jsonb; v_r jsonb;
@@ -1347,7 +1398,9 @@ begin
          (select count(*) from public.integration_connections where id = p_new)::text || '/' ||
          ((v_s ->> 'integration_sync_runs.rows')::int >= 1)::text || '/' ||
          ((v_s ->> 'integration_connections.rows')::int >= 1)::text || '/' ||
-         (not (v_r ? 'integrations'))::text;
+         (not (v_r ? 'integrations'))::text || '/' ||
+         (select count(*) from vault.secrets s where s.name = 'integration:' || p_old::text)::text || '/' ||
+         (select count(*) from vault.secrets s where s.name = 'integration:' || p_new::text)::text;
     raise exception 'ig_rollback' using detail = v;
   exception when others then
     if sqlerrm = 'ig_rollback' then
@@ -1357,9 +1410,9 @@ begin
     return 'error(' || sqlstate || ':' || sqlerrm || ')';
   end;
 end $$;
-select ig.val('IN4 THE LIVE SWEEP: the run finished 91 days ago is swept, the one at 89 kept; the connection revoked 2y+1d ago is swept, the one at 2y-1d kept; the sweep reports both and refuses neither',
+select ig.val('IN4 THE LIVE SWEEP: the run finished 91 days ago is swept, the one at 89 kept; the connection revoked 2y+1d ago is swept, the one at 2y-1d kept; the sweep reports both and refuses neither; the swept connection''s secret is deleted and the kept one''s is not',
   format($$select ig.live_sweep_probe(%L, %L, %L)$$, :'org_a', :'conn_old', :'conn_new'),
-  '0/1/0/1/true/true/true');
+  '0/1/0/1/true/true/true/0/1');
 select ig.val('IN5 ...and it was rolled back: both planted runs and both planted connections are still here',
   format($$select (select count(*) from public.integration_sync_runs
                     where organisation_id = %L and finished_at < now() - interval '88 days')::text || '/' ||
@@ -1378,7 +1431,7 @@ delete from public.organisation_subscriptions where organisation_id = :'org_p';
 delete from public.organisations where id = :'org_p';
 set session_replication_role = origin;
 delete from vault.secrets where name in (select 'integration:' || x
-                                          from unnest(array[:'conn_m3', :'conn_m3b', :'conn_m4', :'conn_e1', :'conn_p1', :'conn_p2']) x);
+                                          from unnest(array[:'conn_m3', :'conn_m3b', :'conn_m4', :'conn_e1', :'conn_p1', :'conn_p2', :'conn_p3']) x);
 delete from vault.secrets where name in (select 'integration:' || id::text from public.integration_connections
                                           where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s'));
 delete from public.integration_connections where organisation_id in (:'org_a', :'org_b', :'org_f', :'org_s');

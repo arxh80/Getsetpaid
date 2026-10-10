@@ -4569,3 +4569,8 @@ ledger holds them. The 9b residuals (m4, m6, the bare-domain autolink, the
   roles (Q215, audited as `organisation.closure_candidates_viewed`, Q223).
   That is a second deliberate exception beside feedback screenshots, and §
   Superuser dashboard does not name it yet (DECISIONS-QUEUE Q231).
+
+## Phase 9 Task 3 (integrations in the privacy lifecycle) -- owed
+
+- **A sync run stuck `running` is on no retention clock.** The `integration_sync_run` class (90 days) keys on `finished_at`, and the schema ties `status = 'running'` to `finished_at is null`. So a run a crashed connector never closed lives until its connection or workspace goes. This is harmless while no provider is live. Before the first connector (Q232), add a reaper in the `stuck_job` shape (mark it `failed` with a closed `error_code` after N hours) or a clock on `started_at`.
+- **`supabase/tests/network_leakage_phase6.sql` is not re-runnable on one database.** This breaks the "every psql suite passes twice on one DB" rule (Phase 8 lesson 11). A second run on the same database records 218 assertions with 8 state-dependent reds: LA4, LA5b, LB4, LB4b, LC0c, LW7d, LZ1 and LZ1b. They read fixture state that the runner's later HTTP sections change (GAMMA's connection requests, `network_links`, published profiles, `document_versions`). This predates Phase 9. Phase 9's only change to the suite is IN9, a stateless catalogue query that passes on both runs. Fix it by making the suite build and tear down its own GAMMA fixtures, or by pinning the counts relative to a snapshot taken at the start of the suite.
