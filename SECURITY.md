@@ -125,9 +125,13 @@ connector lands** (`FOLLOW-UPS.md` § Phase 9 Task 5):
    them refuse a suspended or closed workspace and a workspace that has
    fallen to Free, or document why a running sync should continue.
 2. `connect_integration` lets an Admin name any active member as
-   `owner_user_id`. Per Q236 (default: restrict `p_owner_user_id` to the
-   caller, so a person connects only their own mailbox; founder to confirm)
-   the RPC is tightened when the first connector ships. Binding the OAuth
+   `owner_user_id`. Per Q236 (default (c): a separate self-connect path,
+   open to any active member, that forces `owner_user_id = auth.uid()`;
+   workspace-scoped connects stay with `manage_integrations`. Restricting the
+   one RPC to the caller, option (b), would let only Owners and Admins ever
+   hold a person-scoped connection, since connect requires
+   `manage_integrations`. Founder to confirm) the RPC is tightened when the
+   first connector ships. Binding the OAuth
    callback's stored token to the consenting person is an additional
    connector-time check, not the decided remedy.
 
