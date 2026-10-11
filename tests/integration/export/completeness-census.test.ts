@@ -115,6 +115,11 @@ const NEITHER_DERIVATION: Readonly<Record<string, string>> = {
   // ---- foreign key for either walk to follow.
   retention_runs:
     "The retention job's run log: one row per run, with what it swept, how long it took and what it refused. It reaches no organisation and no person BY CONSTRUCTION -- every value in it is a count or a boolean (the CHECK on `swept` enforces exactly that), and `correlation_id` is a thread id rather than a reference to anything. It is in neither derivation because there is nothing for either walk to follow, and it belongs in no export for the same reason: it is the platform's record of its own housekeeping, about nobody. It is NOT catalogued, because a table with no foreign key cannot be catalogued without the both-directions assertions reporting it as `extra` -- rate_limit_counters' reason, for the opposite cause (that one is invisible DESPITE having both paths; this one has neither).",
+
+  // ---- Q228 (20261101000000). The first table whose ONLY foreign key is to
+  // ---- another export-side table rather than to an organisation or a user.
+  export_job_parts:
+    "One row per stored part of a closure backup: the job id, the part number, the derived storage key, and the part's byte and row counts. Its only foreign key is to public.export_jobs, so neither walk reaches it. It holds nothing about a person or a workspace beyond its parent job, which every archive already names as excused (the export register is never exported), and the key is derived from the job id and the part number, never user input. NOT catalogued for the same reason as the rest of this roll -- a catalogue row would be reported as `extra` -- and NOT in REMAINDER_WITHHELD, because there is no subject data in it to withhold.",
 };
 
 async function neitherDerivation(): Promise<string[]> {
@@ -491,8 +496,9 @@ describe("the tables in NEITHER derivation are a disposition, not a residue", ()
         "the relkind or the schema name in this query is wrong and every 'is in neither derivation' " +
         "assertion in this file has been answered by an empty set.",
       // 56 = 54 + Phase 9 Task 1's integration_connections and
-      // integration_sync_runs (20261030000000).
-    ).toBe(56);
+      // integration_sync_runs (20261030000000); 57 = 56 + Q228's
+      // export_job_parts (20261101000000).
+    ).toBe(57);
     // Kept, and no longer pretending to be the load-bearing one: the two
     // derivations overlap (a table can have both paths), so the remainder is
     // the complement by construction. What makes it worth a line is that it

@@ -1261,6 +1261,35 @@ else
 fi
 
 # ============================================================================
+# Q228 -- A CLOSURE BACKUP OF ANY SIZE, IN PARTS (20261101000000; founder
+# 2026-10-10). The parts table (export_job_parts: the requester reads, no
+# client writes), the two job columns (part_count, resume_cursor: service_role
+# only, closure backups only), the part guard, the one backward transition
+# (a closure-only running -> queued after a stored part), the part count on a
+# success, the queue's fairness and the reaper. Self-contained and re-runnable
+# on one database (it removes its own fixtures).
+# ============================================================================
+run_suite "Q228 CLOSURE BACKUP PARTS" rls_q228_closure_backup_parts.sql qp 82
+qp_fails=$SUITE_FAILS
+if [ "$qp_fails" != "0" ]; then
+  echo "Q228 CLOSURE BACKUP PARTS SUITE FAILED: $qp_fails failing assertion(s)" >&2
+  echo "  QT red: the parts table lost RLS, its key/count CHECKs, or a client role" >&2
+  echo "  gained a write grant; or part_count/resume_cursor became writable by a" >&2
+  echo "  client or legal on an ordinary export. QR red: A PART IS READABLE BY" >&2
+  echo "  SOMEONE OTHER THAN THE JOB'S REQUESTER, or a client wrote one. QG red: the" >&2
+  echo "  part guard admits a person's session, a non-closure job, a job not" >&2
+  echo "  running, a part out of order, or the delete of a KEPT backup's part. QJ" >&2
+  echo "  red: an ordinary export can be re-queued, a re-queue or a success can" >&2
+  echo "  miscount its parts, a failure is refused (the reaper would abort the" >&2
+  echo "  retention run), or a re-queued backup starves the queue. QK red: THE" >&2
+  echo "  REAPER FAILS A HEALTHY MULTI-PART BACKUP, or no longer fails a stuck one." >&2
+  echo "  QE red: the Owner can erase before a backup with parts is built." >&2
+  psql_status=1
+else
+  echo "Q228 closure backup parts suite: all assertions passed."
+fi
+
+# ============================================================================
 # AN OWNER'S CLOSE AND A SUPERUSER'S SUSPEND/DELETE, UNDER A REAL RACE (Task 9c
 # fix round 2, re-review N1; 20261028000000). Two sessions: the Owner holds
 # close_my_workspace() open for two seconds while the superuser calls

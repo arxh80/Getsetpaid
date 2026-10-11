@@ -1226,6 +1226,12 @@ const OWN_ROW_RELATIONS = [
   // second Admin of the same workspace -- an archive is a snapshot taken
   // under one person's access rights.
   "export_jobs",
+  // Q228 (20261101000000): a closure backup's parts. SELECT to authenticated
+  // through a policy that reads the parent export_jobs row under the
+  // caller's own RLS -- so exactly the requester's own jobs' parts, never a
+  // second Admin's -- and no INSERT, UPDATE or DELETE for any client role;
+  // the export runner (service_role) and the part guard are the only writers.
+  "export_job_parts",
   // Phase 8 Task 5: the erasure register. SELECT to authenticated, rows
   // filtered to the caller as SUBJECT or REQUESTER -- plus the aal2
   // operator's oversight read, which export_jobs deliberately does NOT have
@@ -2107,6 +2113,7 @@ describe("GATE 0 (Phase 8): the censuses reach every Phase 8 surface", () => {
       "data_subject_requests",
       "data_subject_request_notes",
       "export_jobs",
+      "export_job_parts",
       "erasure_jobs",
       "retention_runs",
       "retention_settings",
