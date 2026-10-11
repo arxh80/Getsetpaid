@@ -1360,6 +1360,27 @@ select c7.val('PO9 organisations_audit_update is an enabled AFTER ROW UPDATE tri
            || ' ' || ((tgtype & 16) <> 0)::text || ' ' || ((tgtype & 4) <> 0)::text
       from pg_trigger where tgrelid='public.organisations'::regclass and tgname='organisations_audit_update'$$,
   'O true true true false');
+-- A REAL lifecycle round trip (review minor 3): PO5-PO7 simulate the RPC
+-- shape; this calls the RPCs. The superuser suspends ALPHA and reinstates it
+-- (ALPHA has an active Owner, so reinstate is admitted). Their own rows are
+-- organisation.suspended / .reinstated by `super`, which § PZ deletes.
+\o /dev/null
+select c7.org_updates(:'alpha_org', :'c7_t0')::text as po_n_before \gset
+\o
+set role authenticated;
+set request.jwt.claims = :'super_c';
+select c7.val('PO10 the superuser suspends ALPHA through public.suspend_organisation()',
+  $$select (public.suspend_organisation('org-alpha', 'C7 Q189 lifecycle round trip') is not null)::text$$, 'true');
+select c7.val('PO10a ...and reinstates it through public.reinstate_organisation()',
+  $$select (public.reinstate_organisation('org-alpha', 'C7 Q189 lifecycle round trip back') is not null)::text$$, 'true');
+reset role; reset request.jwt.claims;
+select c7.val('PO10b ...the RPCs wrote their own suspended + reinstated rows',
+  format($$select count(*)::text from public.audit_events where target_id=%L and created_at >= %L
+            and action in ('organisation.suspended','organisation.reinstated')$$, :'alpha_org', :'c7_t0'), '2');
+select c7.val('PO10c ...and NO organisation.updated beside them',
+  format($$select c7.org_updates(%L, %L)::text$$, :'alpha_org', :'c7_t0'), :'po_n_before');
+select c7.val('PO10d ...ALPHA is active again',
+  format($$select lifecycle_state from public.organisations where id=%L$$, :'alpha_org'), 'active');
 drop function c7.org_updates(uuid, timestamptz);
 
 -- ===========================================================================

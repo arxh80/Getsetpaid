@@ -1,4 +1,4 @@
-"""Q189 mutation run: 5 mutants of private.audit_organisation_update() (20261031000000)
+"""Q189 mutation run: 6 mutants of private.audit_organisation_update() (20261031000000)
 plus the M00 control, against supabase/tests/rls_phase8_crm_audit_p3_6.sql.
 
 Each mutant is applied to the LIVE database (the latest pg_get_functiondef with one
@@ -61,6 +61,7 @@ M = {
  "M02 no-op exemption removed": fn(lambda d: rep(d, "if pg_catalog.cardinality(v_changed) = 0 then\n    return null;", "if false then\n    return null;")),
  "M03 lifecycle columns back in the changed set": fn(lambda d: rep(d, "'updated_at', 'deleted_at', 'lifecycle_state', 'lifecycle_changed_at',\n                       'lifecycle_reason', 'retention_expires_at'", "'updated_at'")),
  "M04 every changed column valued, not only name/slug": fn(lambda d: rep(d, "where c in ('name', 'slug');", "where true;")),
+ "M06 updated_at back in the changed set": fn(lambda d: rep(d, "where n.key not in ('updated_at', 'deleted_at',", "where n.key not in ('deleted_at',")),
  "M05 trigger dropped": (lambda: "drop trigger organisations_audit_update on public.organisations;",
                          "create trigger organisations_audit_update after update on public.organisations for each row execute function private.audit_organisation_update();"),
 }

@@ -19,10 +19,14 @@
 --     create_organisation() already audits the birth.
 --   * THE LIFECYCLE COLUMNS ARE NOT THIS WRITER'S. deleted_at,
 --     lifecycle_state, lifecycle_changed_at, lifecycle_reason and
---     retention_expires_at are written only by the audited lifecycle RPCs
---     (private.organisation_lifecycle_guard refuses a client write of the
---     first three, and private.organisation_lifecycle_sync derives the other
---     two). They are left out of the changed set, so an UPDATE that touches
+--     retention_expires_at are written only by the audited lifecycle RPCs.
+--     private.organisation_lifecycle_guard refuses a client write of
+--     deleted_at, lifecycle_state and lifecycle_reason;
+--     organisations_update_manage_organisation admits only a live row
+--     (deleted_at is null), on which private.organisation_lifecycle_sync
+--     forces lifecycle_state to 'active' and nulls lifecycle_changed_at,
+--     lifecycle_reason and retention_expires_at -- so a client can change
+--     none of the five. They are left out of the changed set, so an UPDATE that touches
 --     only them -- every lifecycle RPC, the Owner's close_my_workspace()
 --     included, which runs outside private.begin_lifecycle_transition() --
 --     writes nothing here. This is stronger than the queued default's "skip

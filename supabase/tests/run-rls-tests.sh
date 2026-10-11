@@ -828,7 +828,7 @@ fi
 # audit event it created.
 # ============================================================================
 
-run_suite "PHASE 8 CRM AUDIT P3-6" rls_phase8_crm_audit_p3_6.sql c7 233 "${P7VARS[@]}"
+run_suite "PHASE 8 CRM AUDIT P3-6" rls_phase8_crm_audit_p3_6.sql c7 238 "${P7VARS[@]}"
 c7_fails=$SUITE_FAILS
 if [ "$c7_fails" != "0" ]; then
   echo "PHASE 8 CRM AUDIT (PHASE 3-6 TABLES) SUITE FAILED: $c7_fails failing assertion(s)" >&2
