@@ -2120,7 +2120,7 @@ describe("GATE 0 (Phase 8): the censuses reach every Phase 8 surface", () => {
     expect(privs).toContain("data_subject_requests|service_role|UPDATE|fulfilment_kind");
   });
 
-  it("REACH: the Phase 3-6 audit triggers are in the coverage census, and only the declared excusal is uncovered", async () => {
+  it("REACH: the Phase 3-6 audit triggers are in the coverage census, and no table is uncovered (organisations closed by Q189)", async () => {
     const { rows } = await pool.query<{ table_name: string; uncovered_ops: string[]; coverage: string }>(
       `select table_name, uncovered_ops, coverage from private.audit_coverage() order by 1`,
     );
@@ -2137,7 +2137,10 @@ describe("GATE 0 (Phase 8): the censuses reach every Phase 8 surface", () => {
     ]) {
       expect(generic, `REACH: ${t}`).toContain(t);
     }
-    expect(rows.filter((r) => r.uncovered_ops.length > 0).map((r) => r.table_name)).toEqual(["organisations"]);
+    // Was ["organisations"] until Q189 (20261031000000) gave it a dedicated
+    // organisation.updated writer.
+    expect(rows.filter((r) => r.uncovered_ops.length > 0).map((r) => r.table_name)).toEqual([]);
+    expect(rows.find((r) => r.table_name === "organisations")?.coverage).toBe("dedicated");
   });
 
   // ---------------------------------------------------------------------------

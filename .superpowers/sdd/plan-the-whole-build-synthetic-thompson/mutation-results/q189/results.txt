@@ -1,0 +1,40 @@
+== M00 CONTROL (before): 238 assertions, 0 red
+== M01 sessionless exemption removed: 238 assertions, 2 red
+   RED  PO4 a SESSIONLESS rename is accepted (a writer that audited it would raise: log_audit_event refuses a null actor)
+   RED  PO4a CONTROL: the sessionless rename really landed
+== M02 no-op exemption removed: 238 assertions, 6 red
+   RED  PO3b ...and no row is written for it
+   RED  PO4b ...and wrote no row (auth.uid() is null: migrations, seeds, runners)
+   RED  PO5b ...and a lifecycle-only edit with a session writes no organisation.updated (the RPCs audit themselves)
+   RED  PO6b ...one row, changed=[name] only: the lifecycle columns are outside the changed set
+   RED  PO7 a change to a column other than name/slug is named in changed and carries no value
+   RED  PO10c ...and NO organisation.updated beside them
+== M03 lifecycle columns back in the changed set: 238 assertions, 4 red
+   RED  PO5b ...and a lifecycle-only edit with a session writes no organisation.updated (the RPCs audit themselves)
+   RED  PO6b ...one row, changed=[name] only: the lifecycle columns are outside the changed set
+   RED  PO7 a change to a column other than name/slug is named in changed and carries no value
+   RED  PO10c ...and NO organisation.updated beside them
+== M04 every changed column valued, not only name/slug: 238 assertions, 1 red
+   RED  PO7 a change to a column other than name/slug is named in changed and carries no value
+== M06 updated_at back in the changed set: 238 assertions, 6 red
+   RED  PO1d ...after carries changed=[name] and the NEW name, nothing else
+   RED  PO2b ...a second row, carrying slug old -> new and changed=[slug]
+   RED  PO5b ...and a lifecycle-only edit with a session writes no organisation.updated (the RPCs audit themselves)
+   RED  PO6b ...one row, changed=[name] only: the lifecycle columns are outside the changed set
+   RED  PO7 a change to a column other than name/slug is named in changed and carries no value
+   RED  PO10c ...and NO organisation.updated beside them
+== M05 trigger dropped: 238 assertions, 13 red
+   RED  PC1 the derived roll: 27 generic / 6 dedicated / 2 rpc_only / 0 unaudited (organisations moved to dedicated, Q189)
+   RED  PC2 no table is unaudited -- organisations was the last, closed by Q189 (20261031000000)
+   RED  PC4 the dedicated set, by name
+   RED  PO1b ...ONE organisation.updated row, padmin, ALPHA, target_type organisation
+   RED  PO1c ...before carries the OLD name and nothing else
+   RED  PO1d ...after carries changed=[name] and the NEW name, nothing else
+   RED  PO2b ...a second row, carrying slug old -> new and changed=[slug]
+   RED  PO3b ...and no row is written for it
+   RED  PO4b ...and wrote no row (auth.uid() is null: migrations, seeds, runners)
+   RED  PO5b ...and a lifecycle-only edit with a session writes no organisation.updated (the RPCs audit themselves)
+   RED  PO6b ...one row, changed=[name] only: the lifecycle columns are outside the changed set
+   RED  PO7 a change to a column other than name/slug is named in changed and carries no value
+   RED  PO9 organisations_audit_update is an enabled AFTER ROW UPDATE trigger, and fires on no INSERT
+== M00 CONTROL (restored): 238 assertions, 0 red

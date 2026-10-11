@@ -120,7 +120,7 @@ export const CRM_AUDIT_TARGET_TABLE: Record<CrmAuditTarget, string> = {
 
 /** The tenant-owned tables a client role can write that deliberately do NOT
  *  carry the generic audit_crm_change pair, each with how its writes ARE
- *  covered -- or, for the one `unaudited` entry, why not and where the
+ *  covered -- or, for an `unaudited` entry (none since Q189), why not and where the
  *  decision is queued. `private.audit_coverage()` (20261006000000) derives
  *  the denominator and the coverage from the live catalogue; the census test
  *  asserts that every table it reports is either a CRM_AUDIT_TARGET_TABLE
@@ -186,16 +186,14 @@ export const AUDIT_COVERAGE_EXCUSALS: Record<
     reason: "As organisation_billing_overrides.",
   },
   organisations: {
-    coverage: "unaudited",
-    triggers: [],
+    coverage: "dedicated",
+    triggers: ["organisations_audit_update"],
     reason:
-      "THE ONE OPEN HOLE, QUEUED NOT HIDDEN (DECISIONS-QUEUE Q189). An Owner's own edit of the " +
-      "workspace's name or slug (organisations_update_manage_organisation) writes no audit row. " +
-      "The lifecycle transitions ARE audited (organisation.suspended / .deleted / .reinstated " +
-      "through the marker-guarded policy) and create_organisation() writes organisation.created, " +
-      "so attaching the generic pair would write a second organisation.created per workspace and " +
-      "a .soft_deleted / .restored beside every lifecycle summary row, changing the shape of every " +
-      "lifecycle thread. Which shape is wanted is a decision, not a default.",
+      "Q189 (20261031000000): an edit by a member holding manage_organisation is audited as " +
+      "organisation.updated, AFTER UPDATE only (create_organisation() audits the birth). The five " +
+      "lifecycle columns are outside its changed set, so the lifecycle RPCs' own rows " +
+      "(organisation.suspended / .deleted / .reinstated / .closed_by_owner ...) are never doubled; " +
+      "name and slug are carried as values, any other column by name only.",
   },
 };
 
@@ -231,6 +229,8 @@ export const CRM_IRREVERSIBLE_AUDIT_ACTIONS = [
 export const PLATFORM_AUDIT_ACTIONS = [
   // Foundation / membership
   "organisation.created",
+  // Q189 (20261031000000): a member's edit of the workspace's name or slug.
+  "organisation.updated",
   "membership.accepted",
   // Phase 4 documents (public.audit_document_action's closed set)
   "document_uploaded",
