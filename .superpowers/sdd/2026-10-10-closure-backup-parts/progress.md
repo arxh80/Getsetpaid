@@ -15,3 +15,18 @@ Task 1: minor (deferred): matrix "no download was audited" test fails if run str
 Task 1: minor (deferred): matrix export_job_parts block plants the job row under replica, not via close_my_workspace; no mutation run against the new block
 Task 1: fix round 1/5 (2 addressed, 0 open; commits 91cfcd8..e837bfb)
 Task 1: complete (commits 03c4942..e837bfb, review clean)
+Task 2: dispatched (base 21a2ef4, opus)
+Task 2: implemented da2e99f (DONE_WITH_CONCERNS: fixture sizes, C7 ceiling, ZipWriter store option, buildAndStore takes limits from caller); review dispatched
+Task 2: review — spec FAIL (residual-bound refusals untested; removeClosureParts unbounded read), 8 deviations accepted; plan-mandated: filenames in resume cursor (controller default: constraint governs, ids only — to DECISIONS-QUEUE), verbatim buildAndStore copies (default: parity assertion). Fix round 1 dispatched (resumed implementer)
+Task 2: minor (deferred): test (f) asserts <=1 manifest naming quarantined doc, brief says exactly 1 (drop-push mutant survives)
+Task 2: minor (deferred): writeDocuments "too large for any part" keys on entryCount===0 not isEmpty
+Task 2: minor (deferred): page exactly filling row allowance not treated as table-finished (extra parts; weakens (d))
+Task 2: minor (deferred): ceiling-pin formula omits per-file manifest reserve (~2061 vs 2048) — plan-mandated
+Task 2: minor (deferred): cursor/index rewritten each claim, O(n^2) jsonb writes
+Task 2: minor (deferred): effectiveLimits accepts zero/negative overrides (test-only)
+Task 2: minor (deferred): ordinary jobs make one extra export_jobs SELECT before buildAndStore
+Task 2: fix round 1/5 — 5d8a6ac (base da2e99f): all 4 findings ADDRESSED per scoped re-review (C9 row-over-part refusal, placeIndex unit refusal, removeClosureParts order desc limit 1 + C10 1005 parts, cursor ids-only + check (i), parity check (j)); mutants F1a/F1b/F2/F3/F4 red
+Task 2: minor (deferred): test-only cursor-logging trigger on public.export_jobs logs other sessions' jobs on the shared DB while closure-parts.test.ts runs
+Task 2: minor (deferred): readDocumentNames runs on every index-phase claim, including a re-claim that only defers the index
+Task 2: minor (deferred): exports bucket holds 6 leftover objects from runner.test.ts (teardown deletes job rows, not archives) — pre-existing
+Task 2: complete — da2e99f..5d8a6ac
