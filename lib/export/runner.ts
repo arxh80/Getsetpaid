@@ -50,18 +50,50 @@ import {
   WITHHOLDING_COPY,
 } from "./contract";
 import { ExportTooLargeError, ZipWriter } from "./zip";
+import { buildNextClosurePart, removeClosureParts, type PartLimits } from "./parts";
 
 /** At most this many jobs per invocation, so neither entry point runs long. */
 const MAX_JOBS_PER_RUN = 3;
 /** And at most this long, whichever comes first. */
 const WALL_CLOCK_BUDGET_MS = 60_000;
+/** The most entries a zip without ZIP64 holds: the entry ceiling the database does not declare. */
+const MAX_ZIP_ENTRIES = 65_535;
 
-interface Limits {
+export interface Limits {
   page_size: number;
   max_rows_per_table: number;
   max_total_rows: number;
   max_archive_bytes: number;
   archive_days: number;
+}
+
+export type LimitsOverride = Partial<Limits & { max_entries: number }>;
+
+/**
+ * The limits a run works under: the database's, or TIGHTER.
+ *
+ * Every field is the MINIMUM of the database's value and the override's, so
+ * an override can only tighten a ceiling and never loosen one -- it exists so
+ * a test can make a small closure backup split, and a caller that passed
+ * `max_archive_bytes: 1e12` would get the database's 40 MiB regardless. The
+ * request routes (`app/api/exports/run/route.ts`, `nudgeExportRunner`) pass
+ * nothing.
+ */
+export function effectiveLimits(db: Limits, override?: LimitsOverride): PartLimits {
+  const out: PartLimits = {
+    page_size: db.page_size,
+    max_rows_per_table: db.max_rows_per_table,
+    max_total_rows: db.max_total_rows,
+    max_archive_bytes: db.max_archive_bytes,
+    archive_days: db.archive_days,
+    max_entries: MAX_ZIP_ENTRIES,
+  };
+  if (!override) return out;
+  for (const field of Object.keys(out) as (keyof PartLimits)[]) {
+    const value = override[field];
+    if (typeof value === "number" && Number.isFinite(value)) out[field] = Math.min(out[field], value);
+  }
+  return out;
 }
 
 interface ClaimedJob {
@@ -86,9 +118,11 @@ export interface RunnerOutcome {
   readonly claimed: number;
   readonly succeeded: number;
   readonly failed: number;
+  /** Q228: closure backups that stored a part and went back in the queue for the next. */
+  readonly requeued: number;
 }
 
-type ServiceClient = ReturnType<typeof createServiceClient>;
+export type ServiceClient = ReturnType<typeof createServiceClient>;
 
 /**
  * Nudge the runner after the current response has been sent.
@@ -109,33 +143,89 @@ export function nudgeExportRunner(): void {
   });
 }
 
-export async function runPendingExportJobs(): Promise<RunnerOutcome> {
+export async function runPendingExportJobs(options?: {
+  limitsOverride?: LimitsOverride;
+}): Promise<RunnerOutcome> {
   let supabase: ServiceClient;
   try {
     supabase = createServiceClient();
   } catch (cause) {
     console.error("[export] no service-role client:", cause);
-    return { outcome: "unavailable", claimed: 0, succeeded: 0, failed: 0 };
+    return { outcome: "unavailable", claimed: 0, succeeded: 0, failed: 0, requeued: 0 };
   }
 
   const startedAt = Date.now();
   let claimed = 0;
   let succeeded = 0;
   let failed = 0;
+  let requeued = 0;
 
   while (claimed < MAX_JOBS_PER_RUN && Date.now() - startedAt < WALL_CLOCK_BUDGET_MS) {
     const { data, error } = await supabase.rpc("claim_export_job");
     if (error) {
       console.error("[export] claim failed:", error.message);
-      return { outcome: "unavailable", claimed, succeeded, failed };
+      return { outcome: "unavailable", claimed, succeeded, failed, requeued };
     }
     const job = (Array.isArray(data) ? data[0] : data) as ClaimedJob | undefined;
     if (!job) break;
 
     claimed += 1;
+    let isClosureBackup = false;
     try {
-      await buildAndStore(supabase, job);
-      succeeded += 1;
+      const limits = effectiveLimits(await readLimits(supabase), options?.limitsOverride);
+      // Q228: a CLOSURE BACKUP is built in parts, one part per claim; every
+      // other export is one archive that fails at a ceiling, exactly as
+      // before. service_role holds SELECT on export_jobs.
+      const { data: closure, error: closureError } = await supabase
+        .from("export_jobs")
+        .select("closure_backup, part_count, resume_cursor")
+        .eq("id", job.id)
+        .single();
+      if (closureError || !closure) {
+        throw new Error(`export job: ${closureError?.message ?? "the claimed job could not be read"}`);
+      }
+      isClosureBackup = closure.closure_backup === true;
+      if (closure.closure_backup) {
+        const built = await buildNextClosurePart(
+          supabase,
+          { ...job, part_count: closure.part_count, resume_cursor: closure.resume_cursor },
+          limits,
+        );
+        if (!built.final) {
+          // THE ONE BACKWARD TRANSITION (20261101000000): exactly these three
+          // columns and nothing else, so the re-queue cannot also move the
+          // outcome columns the trigger does not forbid it to touch.
+          const { error: requeueError } = await supabase
+            .from("export_jobs")
+            .update({
+              status: "queued",
+              part_count: built.part,
+              resume_cursor: built.cursor as unknown as Record<string, unknown>,
+            })
+            .eq("id", job.id);
+          if (requeueError) throw new Error(`export re-queue: ${requeueError.message}`);
+          requeued += 1;
+        } else {
+          const { error: stampError } = await supabase
+            .from("export_jobs")
+            .update({
+              status: "succeeded",
+              storage_key: exportStorageKey(job.id),
+              byte_size: built.byteSize,
+              row_count: built.rowCount,
+              table_count: built.tableCount,
+              manifest: built.index as unknown as Record<string, unknown>,
+              part_count: built.part,
+              resume_cursor: null,
+            })
+            .eq("id", job.id);
+          if (stampError) throw new Error(`export stamp: ${stampError.message}`);
+          succeeded += 1;
+        }
+      } else {
+        await buildAndStore(supabase, job, limits);
+        succeeded += 1;
+      }
     } catch (cause) {
       failed += 1;
       const reason =
@@ -155,11 +245,24 @@ export async function runPendingExportJobs(): Promise<RunnerOutcome> {
         // stuck state a person can see on their own page. Loud rather than
         // silent, and Task 6's sweep is where a reaper belongs.
         console.error(`[export] job ${job.id} could not be marked failed:`, failError.message);
+      } else if (isClosureBackup) {
+        // Q228: A FAILED BACKUP LEAVES NO PARTS. No partial backup is
+        // presented as a backup: every part already stored -- and the one
+        // whose upload may have landed without its row -- is removed, now
+        // that the job is failed and the part guard admits the delete. Only
+        // after a successful fail-update: a job still `running` keeps its
+        // parts for the reaper. A cleanup error is logged, never thrown; what
+        // it leaves behind is an orphan the retention sweep takes.
+        try {
+          await removeClosureParts(supabase, job.id);
+        } catch (cleanupCause) {
+          console.error(`[export] job ${job.id}: its parts could not all be removed:`, cleanupCause);
+        }
       }
     }
   }
 
-  return { outcome: "ok", claimed, succeeded, failed };
+  return { outcome: "ok", claimed, succeeded, failed, requeued };
 }
 
 async function readLimits(supabase: ServiceClient): Promise<Limits> {
@@ -174,8 +277,7 @@ async function readLimits(supabase: ServiceClient): Promise<Limits> {
   return row;
 }
 
-async function buildAndStore(supabase: ServiceClient, job: ClaimedJob): Promise<void> {
-  const limits = await readLimits(supabase);
+async function buildAndStore(supabase: ServiceClient, job: ClaimedJob, limits: Limits): Promise<void> {
   const zip = new ZipWriter(limits.max_archive_bytes);
   const generatedAt = new Date();
 

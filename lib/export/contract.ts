@@ -81,18 +81,40 @@ export function isUuid(value: string): boolean {
 }
 
 /**
- * The storage key for an archive: `exports/{jobId}.zip`.
+ * The storage key for an archive: `exports/{jobId}.zip`, and for part n >= 2
+ * of a closure backup (Q228) `exports/{jobId}-part-{n padded to at least four
+ * digits}.zip`.
  *
  * THE KEY CARRIES NO USER INPUT, the documents pipeline's rule
  * (lib/crm/storage-keys.ts) — and here the database says so too, as the
- * `export_jobs_storage_key_shape` CHECK, so a raw writer cannot invent one
- * either.
+ * `export_jobs_storage_key_shape` CHECK and, for parts,
+ * `export_job_parts_storage_key_shape`, so a raw writer cannot invent one
+ * either. Part 1 is the key every archive has always had, so a single-part
+ * backup is where it always was. The pad never TRUNCATES (part 12345 is
+ * `-part-12345`), exactly as the CHECK's greatest(4, length) does; the two
+ * are bound by tests/integration/export/closure-parts.test.ts.
  */
-export function exportStorageKey(jobId: string): string {
+export function exportStorageKey(jobId: string, part: number = 1): string {
   if (!isUuid(jobId)) {
     throw new Error("exportStorageKey: jobId is not a uuid");
   }
-  return `exports/${jobId}.zip`;
+  if (!Number.isSafeInteger(part) || part < 1) {
+    throw new Error("exportStorageKey: part is not a positive whole number");
+  }
+  return part === 1
+    ? `exports/${jobId}.zip`
+    : `exports/${jobId}-part-${String(part).padStart(4, "0")}.zip`;
+}
+
+/**
+ * `?part=N` on the download route (Q228): no parameter is part 1; one to nine
+ * digits with no leading zero is that part; anything else -- `0`, `01`,
+ * `1.0`, `1e3`, a space, ten digits -- is `null`, which the route answers
+ * with the same indistinguishable 404 as every other refusal.
+ */
+export function parsePartParam(raw: string | null): number | null {
+  if (raw === null) return 1;
+  return /^[1-9][0-9]{0,8}$/.test(raw) ? Number(raw) : null;
 }
 
 /**
@@ -167,6 +189,165 @@ export interface ExportManifest {
   readonly files: readonly { readonly path: string; readonly bytes: number }[];
   readonly withheld: readonly ExportWithholding[];
   readonly notes: readonly string[];
+}
+
+// ===========================================================================
+// Q228: A CLOSURE BACKUP IN PARTS.
+// ===========================================================================
+
+/**
+ * A closure backup's parts carry manifest version 3: each part's manifest
+ * names its `part` and its table `slices`, and the last part's manifest is the
+ * INDEX (`parts`, `indexPart`). An ordinary archive stays version 2.
+ */
+export const CLOSURE_PARTS_MANIFEST_VERSION = 3;
+
+/** Which ceiling closed a part -- or `final`, the part that holds the index. */
+export type PartCloseReason = "rows_per_table" | "total_rows" | "bytes" | "entries" | "final";
+
+const PART_CLOSE_REASONS: readonly PartCloseReason[] = [
+  "rows_per_table",
+  "total_rows",
+  "bytes",
+  "entries",
+  "final",
+];
+
+/** One table's rows in one part: `tables/<table>.json`, from `firstKey` to `lastKey` in keyset order. */
+export interface PartSlice {
+  table: string;
+  file: string;
+  firstKey: string;
+  lastKey: string;
+  rows: number;
+}
+
+/** One stored part, as the index lists it. */
+export interface PartSummary {
+  part: number;
+  key: string;
+  bytes: number;
+  rows: number;
+  slices: PartSlice[];
+  files: number;
+  closedBy: PartCloseReason;
+}
+
+/** The manifest.json of every part but the last. */
+export interface ClosurePartManifest extends Omit<ExportManifest, "schemaVersion"> {
+  schemaVersion: 3;
+  part: number;
+  slices: PartSlice[];
+}
+
+/** The INDEX: the last part's manifest.json, and the job row's `manifest`. */
+export interface ClosureIndexManifest extends Omit<ExportManifest, "schemaVersion"> {
+  schemaVersion: 3;
+  parts: PartSummary[];
+  indexPart: number;
+}
+
+/**
+ * Where the next claim of a closure backup resumes, persisted between claims
+ * in `export_jobs.resume_cursor`. Opaque to everybody but the runner; never a
+ * person's data -- keys, counts, file paths and the withholding statements.
+ */
+export interface ResumeCursor {
+  v: 1;
+  phase: "tables" | "files" | "index";
+  /** The index into the plan's EXPORTED tables. */
+  planIndex: number;
+  /** The key last written; `""` at a table's (or the files phase's) start. */
+  after: string;
+  /** Rows of the current table already written in earlier parts. */
+  tableRowsSoFar: number;
+  rowCounts: Record<string, number>;
+  withheld: ExportWithholding[];
+  files: { path: string; bytes: number }[];
+  parts: PartSummary[];
+  generatedAt: string;
+}
+
+const WITHHOLDING_REASONS = Object.keys(WITHHOLDING_COPY) as WithholdingReason[];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isSlice(value: unknown): value is PartSlice {
+  return (
+    isRecord(value) &&
+    typeof value.table === "string" &&
+    typeof value.file === "string" &&
+    typeof value.firstKey === "string" &&
+    typeof value.lastKey === "string" &&
+    isCount(value.rows)
+  );
+}
+
+function isSummary(value: unknown): value is PartSummary {
+  return (
+    isRecord(value) &&
+    isCount(value.part) &&
+    value.part >= 1 &&
+    typeof value.key === "string" &&
+    isCount(value.bytes) &&
+    isCount(value.rows) &&
+    Array.isArray(value.slices) &&
+    value.slices.every(isSlice) &&
+    isCount(value.files) &&
+    PART_CLOSE_REASONS.includes(value.closedBy as PartCloseReason)
+  );
+}
+
+/**
+ * The cursor, or `null` for anything that is not exactly one. STRICT: a wrong
+ * version, an unknown phase, a negative or fractional count, or a malformed
+ * nested entry is `null`, and the runner fails the job on it rather than
+ * resuming from a guess.
+ */
+export function parseResumeCursor(value: unknown): ResumeCursor | null {
+  if (!isRecord(value)) return null;
+  if (value.v !== 1) return null;
+  if (value.phase !== "tables" && value.phase !== "files" && value.phase !== "index") return null;
+  if (!isCount(value.planIndex) || !isCount(value.tableRowsSoFar)) return null;
+  if (typeof value.after !== "string" || typeof value.generatedAt !== "string") return null;
+  if (!isRecord(value.rowCounts) || !Object.values(value.rowCounts).every(isCount)) return null;
+  if (
+    !Array.isArray(value.withheld) ||
+    !value.withheld.every(
+      (w) =>
+        isRecord(w) &&
+        typeof w.what === "string" &&
+        typeof w.detail === "string" &&
+        WITHHOLDING_REASONS.includes(w.reason as WithholdingReason),
+    )
+  ) {
+    return null;
+  }
+  if (
+    !Array.isArray(value.files) ||
+    !value.files.every((f) => isRecord(f) && typeof f.path === "string" && isCount(f.bytes))
+  ) {
+    return null;
+  }
+  if (!Array.isArray(value.parts) || !value.parts.every(isSummary)) return null;
+  return {
+    v: 1,
+    phase: value.phase,
+    planIndex: value.planIndex,
+    after: value.after,
+    tableRowsSoFar: value.tableRowsSoFar,
+    rowCounts: value.rowCounts as Record<string, number>,
+    withheld: value.withheld as ExportWithholding[],
+    files: value.files as { path: string; bytes: number }[],
+    parts: value.parts as PartSummary[],
+    generatedAt: value.generatedAt,
+  };
 }
 
 /** Where a person starts and tracks their own account export. */
