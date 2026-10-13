@@ -17,7 +17,8 @@ import {
   parseResumeCursor,
   type ResumeCursor,
 } from "@/lib/export/contract";
-import { PART_MANIFEST_BASE_RESERVE } from "@/lib/export/parts";
+import { PART_MANIFEST_BASE_RESERVE, placeIndex } from "@/lib/export/parts";
+import { ZipWriter } from "@/lib/export/zip";
 import { effectiveLimits } from "@/lib/export/runner";
 import { DOCUMENT_MAX_SIZE_BYTES } from "@/lib/security/upload-limits";
 import { FEEDBACK_SCREENSHOT_MAX_BYTES } from "@/lib/feedback/contract";
@@ -68,8 +69,8 @@ describe("parseResumeCursor", () => {
     after: "6d3c1f0e-0000-4000-8000-000000000001",
     tableRowsSoFar: 3,
     rowCounts: { contacts: 3, companies: 4 },
-    withheld: [{ what: "public.feedback", reason: "table_excused", detail: "Excused." }],
-    files: [{ path: "files/documents/x-a.pdf", bytes: 10 }],
+    documents: [{ id: "6d3c1f0e-0000-4000-8000-0000000000aa", bytes: 10 }],
+    withheldDocuments: [{ id: "6d3c1f0e-0000-4000-8000-0000000000bb", why: "not_clean" }],
     parts: [
       {
         part: 1,
@@ -106,8 +107,20 @@ describe("parseResumeCursor", () => {
       ["a negative tableRowsSoFar", { ...valid, tableRowsSoFar: -3 }],
       ["a negative row count", { ...valid, rowCounts: { contacts: -1 } }],
       ["a non-object rowCounts", { ...valid, rowCounts: [] }],
-      ["a withheld entry with an unknown reason", { ...valid, withheld: [{ what: "x", reason: "nope", detail: "d" }] }],
-      ["a file with negative bytes", { ...valid, files: [{ path: "p", bytes: -1 }] }],
+      ["a withheld document with an unknown why", { ...valid, withheldDocuments: [{ id: valid.documents[0].id, why: "nope" }] }],
+      ["a withheld document that is not a uuid", { ...valid, withheldDocuments: [{ id: "x", why: "not_clean" }] }],
+      ["a document with negative bytes", { ...valid, documents: [{ id: valid.documents[0].id, bytes: -1 }] }],
+      ["a document id that is not a uuid", { ...valid, documents: [{ id: "contract.pdf", bytes: 1 }] }],
+      // NO RECORD CONTENT: a filename riding along beside the id is refused.
+      [
+        "a document carrying its filename",
+        { ...valid, documents: [{ id: valid.documents[0].id, bytes: 1, filename: "J Smith contract.pdf" }] },
+      ],
+      [
+        "a withheld document carrying its filename",
+        { ...valid, withheldDocuments: [{ id: valid.documents[0].id, why: "unreadable", what: "J Smith.pdf" }] },
+      ],
+      ["the old path-carrying shape", { ...valid, documents: undefined, files: [{ path: "files/documents/x-a.pdf", bytes: 1 }] }],
       ["a part with an unknown closedBy", { ...valid, parts: [{ ...valid.parts[0], closedBy: "whim" }] }],
       ["a part numbered 0", { ...valid, parts: [{ ...valid.parts[0], part: 0 }] }],
       [
@@ -191,5 +204,38 @@ describe("one uploaded file always fits one part", () => {
       FEEDBACK_SCREENSHOT_MAX_BYTES + overhead,
       `FEEDBACK_SCREENSHOT_MAX_BYTES (${FEEDBACK_SCREENSHOT_MAX_BYTES}) plus a part's overhead no longer fits one part (${EXPORT_LIMITS.maxArchiveBytes} bytes)`,
     ).toBeLessThan(EXPORT_LIMITS.maxArchiveBytes);
+  });
+});
+
+// ===========================================================================
+// THE INDEX'S RESIDUAL BOUND (Q228 fix round 1). An index that does not fit
+// the current part closes it and goes alone into the next; an index that does
+// not fit an EMPTY part cannot be written at all, and is a named refusal.
+// ===========================================================================
+describe("placeIndex", () => {
+  const AT = new Date("2026-10-13T12:00:00Z");
+
+  it("an index larger than an EMPTY part is a named refusal", () => {
+    const zip = new ZipWriter(1000);
+    expect(() => placeIndex(zip, 2000, true)).toThrow(
+      "the index of this backup is larger than one part of the backup can hold",
+    );
+  });
+
+  it("DENOMINATOR: the same index in a part that already holds something closes that part instead", () => {
+    const zip = new ZipWriter(1000);
+    zip.addEntry("tables/a.json", Buffer.from("[]"), AT);
+    expect(placeIndex(zip, 2000, false)).toBe("bytes");
+  });
+
+  it("names the entry ceiling when that is what refused it", () => {
+    const zip = new ZipWriter(1_000_000, 2);
+    zip.addEntry("a", Buffer.from("1"), AT);
+    zip.addEntry("b", Buffer.from("2"), AT);
+    expect(placeIndex(zip, 10, false)).toBe("entries");
+  });
+
+  it("and an index that fits goes here, even in an empty part", () => {
+    expect(placeIndex(new ZipWriter(1000), 100, true)).toBe("here");
   });
 });

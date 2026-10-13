@@ -50,6 +50,9 @@ const DB_DEFAULTS = {
 const DOC_BYTES = 80 * 1024;
 const OVERSIZED_DOC_BYTES = 200 * 1024;
 
+/** The test-only schema that captures every resume cursor written (see beforeAll). */
+const CURSOR_LOG = "q228_test_cursor_log";
+
 /**
  * A company note of about 40 KB. Three of them are larger than the room a
  * 160 KiB part has beside its manifest reserve, so under the byte ceiling the
@@ -113,6 +116,10 @@ interface Workspace {
   managerId: string;
   cleanDocs: Map<string, Buffer>;
   dirtyDocId: string;
+  /** A "clean" document whose object was never uploaded: withheld as unreadable. */
+  missingDocId: string;
+  /** Record content the resume cursor must never carry (filenames, names). */
+  forbidden: string[];
 }
 
 async function asPerson<T>(userId: string, fn: (q: (sql: string, args?: unknown[]) => Promise<T[]>) => Promise<T>): Promise<T> {
@@ -186,8 +193,12 @@ async function seedClosableWorkspace(label: string): Promise<Workspace> {
   const bucket = createStorageClient().storage.from("documents");
   const cleanDocs = new Map<string, Buffer>();
   let dirtyDocId = "";
-  for (const [i, scan] of (["clean", "clean", "clean", "quarantined"] as const).entries()) {
-    const bytes = scan === "clean" ? randomBytes(DOC_BYTES) : Buffer.from(`%PDF-1.4 ${label} quarantined\n`);
+  let missingDocId = "";
+  const forbidden: string[] = [`${label} contact `, `${label} company `];
+  for (const [i, kind] of (["clean", "clean", "clean", "quarantined", "missing"] as const).entries()) {
+    const scan = kind === "quarantined" ? "quarantined" : "clean";
+    const bytes = kind === "clean" ? randomBytes(DOC_BYTES) : Buffer.from(`%PDF-1.4 ${label} ${kind}\n`);
+    forbidden.push(`${label}-${i}.pdf`);
     const { rows } = await pool.query<{ id: string; storage_key: string }>(
       `insert into public.documents
          (id, organisation_id, owner_user_id, filename, storage_key, mime_type, size_bytes, scan_status)
@@ -200,13 +211,20 @@ async function seedClosableWorkspace(label: string): Promise<Workspace> {
       rows[0].id,
       scan,
     ]);
+    if (kind === "missing") {
+      // Its object is never uploaded, so both an ordinary archive and a
+      // closure backup withhold it with the "could not be read" sentence --
+      // the second document-withholding sentence the parity check compares.
+      missingDocId = rows[0].id;
+      continue;
+    }
     const up = await bucket.upload(rows[0].storage_key, bytes, { contentType: "application/pdf", upsert: true });
     if (up.error) throw new Error(`fixture upload: ${up.error.message}`);
     created.docKeys.push(rows[0].storage_key);
-    if (scan === "clean") cleanDocs.set(rows[0].id, bytes);
+    if (kind === "clean") cleanDocs.set(rows[0].id, bytes);
     else dirtyDocId = rows[0].id;
   }
-  return { orgId, slug, ownerId, managerId, cleanDocs, dirtyDocId };
+  return { orgId, slug, ownerId, managerId, cleanDocs, dirtyDocId, missingDocId, forbidden };
 }
 
 async function startExport(userId: string, kind: "workspace" | "account", orgId: string | null): Promise<string> {
@@ -265,15 +283,15 @@ async function partRows(id: string): Promise<{ part_no: number; storage_key: str
   return rows;
 }
 
-async function buildUntilDone(jobId: string, override?: Override): Promise<JobRow> {
-  for (let i = 0; i < 500; i += 1) {
+async function buildUntilDone(jobId: string, override?: Override, maxCalls = 500): Promise<JobRow> {
+  for (let i = 0; i < maxCalls; i += 1) {
     const outcome = await runPendingExportJobs(override ? { limitsOverride: override } : undefined);
     expect(outcome.outcome).toBe("ok");
     const row = await jobRow(jobId);
     if (row.status === "succeeded" || row.status === "failed") return row;
     if (outcome.claimed === 0) throw new Error(`job ${jobId} is ${row.status} and nothing was claimed`);
   }
-  throw new Error(`job ${jobId} did not finish in 500 runner calls`);
+  throw new Error(`job ${jobId} did not finish in ${maxCalls} runner calls`);
 }
 
 async function keyColumns(jobId: string): Promise<Map<string, string>> {
@@ -370,10 +388,32 @@ beforeAll(async () => {
     `select count(*)::text as n from public.export_jobs where status in ('queued', 'running')`,
   );
   expect(rows[0].n, "another export is queued or running on this database; this file needs the queue to itself").toBe("0");
+
+  // EVERY RESUME CURSOR THE RUNNER WRITES, captured as it is written. Sampling
+  // the job between runner calls misses most of them (one call can claim a
+  // job three times), and a no-record-content check that sees a third of the
+  // cursors proves a third of the claim. Test-only: a schema of its own,
+  // dropped (with its function and so its trigger) first thing in afterAll.
+  await pool.query(`
+    drop schema if exists ${CURSOR_LOG} cascade;
+    create schema ${CURSOR_LOG};
+    create table ${CURSOR_LOG}.cursors (seq bigserial primary key, job_id uuid not null, cursor jsonb not null);
+    create function ${CURSOR_LOG}.capture() returns trigger language plpgsql security definer set search_path = '' as $$
+    begin
+      insert into ${CURSOR_LOG}.cursors (job_id, cursor) values (new.id, new.resume_cursor);
+      return new;
+    end $$;
+    create trigger q228_test_capture_resume_cursor
+      after update of resume_cursor on public.export_jobs
+      for each row when (new.resume_cursor is not null)
+      execute function ${CURSOR_LOG}.capture();`);
 }, 60_000);
 
 afterAll(async () => {
   if (!pool) return;
+  await pool
+    .query(`drop schema if exists ${CURSOR_LOG} cascade`)
+    .catch((e) => console.error("teardown cursor log:", e));
   const storage = createStorageClient().storage;
   for (const job of created.jobs) {
     const { data } = await storage.from("exports").list("exports", { search: job, limit: 1000 });
@@ -564,6 +604,48 @@ describe.each(CASES)("$name", ({ name, override, reasons, atLeast }) => {
     }
   });
 
+  it("(i) NO RECORD CONTENT in the resume cursor: ids and counts, never a filename or a name", async () => {
+    const { rows } = await pool.query<{ cursor: unknown }>(
+      `select cursor from ${CURSOR_LOG}.cursors where job_id = $1 order by seq`,
+      [b.closureJob],
+    );
+    const cursors = rows.map((r) => r.cursor);
+    // Every re-queue writes one: one per part but the last.
+    expect(cursors.length, "DENOMINATOR: not every re-queue's cursor was captured").toBe(b.row.part_count - 1);
+    // ...and when a document was written before the last part, a cursor
+    // after it carried that document -- the case the check is for.
+    if (b.parts.slice(0, -1).some((p) => [...p.entries.keys()].some((k) => k.startsWith("files/documents/")))) {
+      expect(
+        cursors.some((c) => ((c as { documents?: unknown[] }).documents ?? []).length > 0),
+        "DENOMINATOR: no captured cursor had reached a document",
+      ).toBe(true);
+    }
+    const files = (b.row.manifest as unknown as PartManifest).files;
+    expect(files.length, "DENOMINATOR: the backup wrote no document").toBeGreaterThan(0);
+    for (const cursor of cursors) {
+      const text = JSON.stringify(cursor);
+      for (const needle of b.ws.forbidden) expect(text, `the cursor carries "${needle}"`).not.toContain(needle);
+      expect(text).not.toContain("files/documents/");
+    }
+  });
+
+  it("(j) PARITY with buildAndStore: the index states the reference archive's notes, withholdings and files", () => {
+    // The closure builder holds COPIES of buildAndStore's text (which stays
+    // untouched): the notes, the remainder/excused/audit statements, and the
+    // two document-withholding sentences. A copy that drifts reds here.
+    const index = b.row.manifest as unknown as PartManifest;
+    const ref = JSON.parse(b.reference.get("manifest.json")!.toString("utf8")) as PartManifest;
+    expect(index.notes.slice(0, -1)).toEqual(ref.notes);
+    // Keys sorted: the job row's manifest is jsonb, which reorders them.
+    const canon = (x: unknown) => JSON.stringify(Object.fromEntries(Object.entries(x as object).sort()));
+    const sorted = (list: unknown[]) => list.map(canon).sort();
+    expect(sorted(index.withheld)).toEqual(sorted(ref.withheld));
+    expect(sorted(index.files)).toEqual(sorted(ref.files));
+    // DENOMINATOR: both document sentences are in play.
+    expect(ref.withheld.some((w) => w.what.includes(b.ws.dirtyDocId) && w.detail.includes("Scan status"))).toBe(true);
+    expect(ref.withheld.some((w) => w.what.includes(b.ws.missingDocId) && w.detail.includes("could not be read"))).toBe(true);
+  });
+
   it("(h) the job row: totals are the parts' sums, and the manifest is the index", async () => {
     const rows = await partRows(b.closureJob);
     const sumBytes = rows.reduce((s, r) => s + Number(r.byte_size), 0);
@@ -638,6 +720,65 @@ describe("C7: a backup that cannot be built in parts fails whole, and leaves not
     const { data, error } = await createStorageClient().storage.from("exports").list("exports", { search: job, limit: 1000 });
     expect(error?.message).toBeUndefined();
     expect((data ?? []).map((o) => o.name)).toEqual([]);
+  }, 600_000);
+});
+
+describe("C9: a row larger than an empty part is a named refusal", () => {
+  it("one ~40 KB note under a 100 KiB ceiling fails the job by name, and leaves nothing behind", async () => {
+    // 100 KiB less the 64 KiB manifest reserve leaves about 36 KiB: smaller
+    // than one of the fixture's ~40 KB company notes. No part can ever hold
+    // that row, so the backup cannot be built and must say why -- rather than
+    // storing empty parts for ever (the guard's mutant does exactly that).
+    const ws = await seedClosableWorkspace("c9");
+    const job = await closeWorkspace(ws);
+    const row = await buildUntilDone(job, { max_archive_bytes: 100 * 1024 }, 60);
+    expect(row.status).toBe("failed");
+    expect(row.failure_reason).toContain("a row of public.notes is larger than one part of the backup can hold");
+    expect(await partRows(job)).toEqual([]);
+    const { data } = await createStorageClient().storage.from("exports").list("exports", { search: job, limit: 1000 });
+    expect((data ?? []).map((o) => o.name)).toEqual([]);
+  }, 600_000);
+});
+
+describe("C10: removeClosureParts finds every part, past PostgREST's 1000-row page", () => {
+  it("1005 stored parts and the in-flight 1006th are all removed, with their rows", async () => {
+    const { removeClosureParts } = await import("@/lib/export/parts");
+    const { createServiceClient } = await import("@/lib/supabase/service");
+    const ws = await seedClosableWorkspace("c10");
+    const job = await closeWorkspace(ws);
+    // 1005 parts, stored the way the runner stores them: each while the job
+    // is running and in order, then the legal re-queue, then a re-claim. As
+    // postgres (a server session, which the guard admits).
+    await pool.query(`
+      do $$
+      declare k integer; j uuid := '${job}';
+      begin
+        update public.export_jobs set status = 'running' where id = j;
+        for k in 1..1005 loop
+          insert into public.export_job_parts (job_id, part_no, storage_key, byte_size, row_count)
+          values (j, k,
+                  case when k = 1 then 'exports/' || j::text || '.zip'
+                       else 'exports/' || j::text || '-part-' || lpad(k::text, greatest(4, length(k::text)), '0') || '.zip' end,
+                  1, 0);
+          update public.export_jobs set status = 'queued', part_count = k, resume_cursor = '{"v":1}' where id = j;
+          update public.export_jobs set status = 'running' where id = j;
+        end loop;
+        update public.export_jobs set status = 'failed', failure_reason = 'C10' where id = j;
+      end $$;`);
+    expect((await partRows(job)).length, "DENOMINATOR: more part rows than one PostgREST page").toBe(1005);
+
+    const bucket = createStorageClient().storage.from("exports");
+    const planted = [1, 1000, 1001, 1005, 1006].map((k) => exportStorageKey(job, k));
+    for (const key of planted) {
+      const up = await bucket.upload(key, Buffer.from("PK"), { contentType: "application/zip", upsert: true });
+      expect(up.error?.message).toBeUndefined();
+    }
+    await removeClosureParts(createServiceClient(), job);
+
+    expect(await partRows(job)).toEqual([]);
+    const { data, error } = await bucket.list("exports", { search: job, limit: 1000 });
+    expect(error?.message).toBeUndefined();
+    expect((data ?? []).map((o) => o.name), "objects past the first thousand parts were left behind").toEqual([]);
   }, 600_000);
 });
 

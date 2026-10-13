@@ -50,6 +50,7 @@ import {
   parseResumeCursor,
   type ClosureIndexManifest,
   type ClosurePartManifest,
+  type DocumentWithheldBecause,
   type ExportKind,
   type ExportWithholding,
   type PartCloseReason,
@@ -154,7 +155,7 @@ export async function buildNextClosurePart(
 
   let cursor: ResumeCursor;
   if (job.part_count === 0) {
-    cursor = freshCursor(plan);
+    cursor = freshCursor();
   } else {
     const parsed = parseResumeCursor(job.resume_cursor);
     if (parsed === null || parsed.parts.length !== job.part_count) {
@@ -207,6 +208,23 @@ export async function buildNextClosurePart(
 
   // ---- the index ---------------------------------------------------------
   if (cursor.phase === "index" && closedBy === null) {
+    // The paths and withholding sentences are RE-DERIVED here, from the
+    // database, never carried in the cursor (no record content in it).
+    const documentsEntry = exported.find((t) => t.table_name === "documents");
+    const names =
+      cursor.documents.length + cursor.withheldDocuments.length > 0 && documentsEntry
+        ? await readDocumentNames(supabase, job.id, documentsEntry.key_column!, limits.page_size)
+        : new Map<string, { filename: string; scan: unknown }>();
+    const nameOf = (id: string): { filename: string; scan: unknown } => {
+      const found = names.get(id);
+      if (!found) throw new Error(`documents/${id} is no longer readable, so the backup's index cannot name it`);
+      return found;
+    };
+    const files = cursor.documents.map((d) => ({ path: documentPath(d.id, nameOf(d.id).filename), bytes: d.bytes }));
+    const withheld = [
+      ...staticWithheld(plan),
+      ...cursor.withheldDocuments.map((w) => documentWithholding(w.id, nameOf(w.id).filename, w.why, nameOf(w.id).scan)),
+    ];
     const indexOf = (bytes: number): ClosureFinalManifest => ({
       schemaVersion: CLOSURE_PARTS_MANIFEST_VERSION,
       kind: job.kind,
@@ -214,8 +232,8 @@ export async function buildNextClosurePart(
       generatedAt: cursor.generatedAt,
       subject: { userId: job.requested_by, organisationId: job.organisation_id },
       rowCounts: cursor.rowCounts,
-      files: cursor.files,
-      withheld: cursor.withheld,
+      files,
+      withheld,
       notes: [
         ...archiveNotes(job.kind, plan),
         `This backup is ${n} parts. Together they are the whole backup; this part (${n}) holds the index.`,
@@ -237,8 +255,8 @@ export async function buildNextClosurePart(
       slices: part.slices,
     });
 
-    const largest = manifestBytes(indexOf(Number.MAX_SAFE_INTEGER));
-    if (zip.wouldFit("manifest.json", largest.length, 0, 0)) {
+    const placed = placeIndex(zip, manifestBytes(indexOf(Number.MAX_SAFE_INTEGER)).length, isEmpty(zip, part));
+    if (placed === "here") {
       // THE INDEX STATES ITS OWN PART'S LENGTH. Stored rather than deflated,
       // the archive's length is the bytes so far plus the manifest's own
       // length, which depends on the byte count only through its number of
@@ -270,13 +288,9 @@ export async function buildNextClosurePart(
       };
     }
 
-    if (isEmpty(zip, part)) {
-      // Spec correction 8: the index alone does not fit an empty part.
-      throw new Error("the index of this backup is larger than one part of the backup can hold");
-    }
     // Close this part with the ceiling the index met, and put the index alone
     // in the next one (the cursor stays at "index").
-    closedBy = zip.entryCount + 1 > zip.entryLimit ? "entries" : "bytes";
+    closedBy = placed;
   }
 
   // ---- close an ordinary part -------------------------------------------
@@ -334,9 +348,18 @@ export async function buildNextClosurePart(
  * a failed job's leftover objects are orphans the retention sweep takes.
  */
 export async function removeClosureParts(supabase: ServiceClient, jobId: string): Promise<void> {
-  const { data, error } = await supabase.from("export_job_parts").select("part_no").eq("job_id", jobId);
+  // ONE ROW, THE HIGHEST. An unordered read of every part row is capped by
+  // PostgREST's max_rows (1000, supabase/config.toml), so past a thousand
+  // parts it would pick the highest of an arbitrary page and leave objects
+  // behind -- and the rows are deleted below, so a retry could not find them.
+  const { data, error } = await supabase
+    .from("export_job_parts")
+    .select("part_no")
+    .eq("job_id", jobId)
+    .order("part_no", { ascending: false })
+    .limit(1);
   if (error) throw new Error(`the stored parts could not be read: ${error.message}`);
-  const highest = ((data ?? []) as { part_no: number }[]).reduce((m, r) => Math.max(m, r.part_no), 0);
+  const highest = ((data ?? []) as { part_no: number }[])[0]?.part_no ?? 0;
 
   const keys: string[] = [];
   for (let k = 1; k <= highest + 1; k += 1) keys.push(exportStorageKey(jobId, k));
@@ -362,12 +385,30 @@ async function readPlan(supabase: ServiceClient, jobId: string): Promise<PlanRow
   return (data ?? []) as PlanRow[];
 }
 
+/** A new backup's cursor: ids, keys and counts only, nothing a person typed. */
+function freshCursor(): ResumeCursor {
+  return {
+    v: 1,
+    phase: "tables",
+    planIndex: 0,
+    after: "",
+    tableRowsSoFar: 0,
+    rowCounts: {},
+    documents: [],
+    withheldDocuments: [],
+    parts: [],
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 /**
- * A new backup's cursor. `withheld` starts with exactly what buildAndStore
- * states for every archive: the FK-less remainder, every excused table, and
- * the audit-payload line.
+ * What buildAndStore states as withheld for every archive, from the plan: the
+ * FK-less remainder, every excused table, and the audit-payload line.
+ * Re-derived for the index rather than carried in the cursor. A COPY of
+ * buildAndStore's text (which stays untouched): the parity assertion in
+ * tests/integration/export/closure-parts.test.ts reds if the two drift.
  */
-function freshCursor(plan: PlanRow[]): ResumeCursor {
+function staticWithheld(plan: PlanRow[]): ExportWithholding[] {
   const withheld: ExportWithholding[] = REMAINDER_WITHHELD.map((entry) => ({
     what: `public.${entry.table}`,
     reason: "table_excused" as const,
@@ -388,21 +429,85 @@ function freshCursor(plan: PlanRow[]): ResumeCursor {
       });
     }
   }
+  return withheld;
+}
+
+/** A document's path in the archive -- buildAndStore's shape. */
+function documentPath(id: string, filename: string): string {
+  return `files/documents/${id}-${sanitiseFilename(filename)}`;
+}
+
+/**
+ * The statement for a withheld document -- buildAndStore's two sentences,
+ * copied (parity-tested against an ordinary archive in closure-parts.test.ts).
+ */
+function documentWithholding(
+  id: string,
+  filename: string,
+  why: DocumentWithheldBecause,
+  scanStatus: unknown,
+): ExportWithholding {
   return {
-    v: 1,
-    phase: "tables",
-    planIndex: 0,
-    after: "",
-    tableRowsSoFar: 0,
-    rowCounts: {},
-    withheld,
-    files: [],
-    parts: [],
-    generatedAt: new Date().toISOString(),
+    what: `documents/${id} (${sanitiseFilename(filename)})`,
+    reason: "document_not_clean",
+    detail:
+      why === "not_clean"
+        ? `${WITHHOLDING_COPY.document_not_clean} Scan status: ${String(scanStatus)}.`
+        : "This file's record is included but its bytes could not be read from storage when the archive was built.",
   };
 }
 
-/** The notes buildAndStore writes into an ordinary archive, for the index. */
+/**
+ * Re-read the documents' filenames and scan statuses for the index, keyset by
+ * page under the same RLS as every other read. The workspace is closed and
+ * read-only, so these are the rows the files phase saw; a document the cursor
+ * names that is no longer readable is a refusal, not a guess.
+ */
+async function readDocumentNames(
+  supabase: ServiceClient,
+  jobId: string,
+  keyColumn: string,
+  pageSize: number,
+): Promise<Map<string, { filename: string; scan: unknown }>> {
+  const out = new Map<string, { filename: string; scan: unknown }>();
+  let after = "";
+  for (;;) {
+    const page = await readPage(supabase, jobId, "documents", after, pageSize);
+    for (const row of page) {
+      if (typeof row.id === "string") {
+        out.set(row.id, {
+          filename: typeof row.filename === "string" ? row.filename : "document",
+          scan: row.scan_status,
+        });
+      }
+    }
+    if (page.length < pageSize) return out;
+    const last = keyOf(page[page.length - 1], keyColumn);
+    if (last === null || last === after) throw new Error("export read documents: the page cursor did not advance");
+    after = last;
+  }
+}
+
+/**
+ * WHERE THE INDEX GOES (Q228). `"here"` when an index of at most
+ * `indexUpperBound` bytes fits this part; otherwise the ceiling that refused
+ * it, so the part closes and the index goes alone into the next. An index
+ * that does not fit an EMPTY part cannot be written at all, and is a named
+ * refusal (Spec correction 8). Pure, so the refusal is unit-tested.
+ */
+export function placeIndex(
+  zip: ZipWriter,
+  indexUpperBound: number,
+  partIsEmpty: boolean,
+): "here" | "bytes" | "entries" {
+  if (zip.wouldFit("manifest.json", indexUpperBound, 0, 0)) return "here";
+  if (partIsEmpty) {
+    throw new Error("the index of this backup is larger than one part of the backup can hold");
+  }
+  return zip.entryCount + 1 > zip.entryLimit ? "entries" : "bytes";
+}
+
+/** The notes buildAndStore writes into an ordinary archive, for the index (a parity-tested copy). */
 function archiveNotes(kind: ExportKind, plan: PlanRow[]): string[] {
   return [
     kind === "workspace"
@@ -614,11 +719,14 @@ async function writeDocuments(
   at: Date,
 ): Promise<PartCloseReason | null> {
   const bucket = createStorageClient().storage.from("documents");
-  const withhold = (entry: ExportWithholding): boolean => {
+  // The part's own manifest (inside the zip) states the sentence; the CURSOR
+  // keeps only the document's id and why -- never its filename.
+  const withhold = (id: string, name: string, why: DocumentWithheldBecause, scan: unknown): boolean => {
+    const entry = documentWithholding(id, name, why, scan);
     const cost = entryReserve(entry);
     if (!zip.wouldFit("manifest.json", 0, part.reserve + cost, 0)) return false;
     part.withheld.push(entry);
-    cursor.withheld.push(entry);
+    cursor.withheldDocuments.push({ id, why });
     part.reserve += cost;
     return true;
   };
@@ -635,25 +743,14 @@ async function writeDocuments(
 
       if (id !== null && storageKey !== null) {
         if (row.scan_status !== "clean") {
-          const ok = withhold({
-            what: `documents/${id} (${sanitiseFilename(name)})`,
-            reason: "document_not_clean",
-            detail: `${WITHHOLDING_COPY.document_not_clean} Scan status: ${String(row.scan_status)}.`,
-          });
-          if (!ok) return "bytes";
+          if (!withhold(id, name, "not_clean", row.scan_status)) return "bytes";
         } else {
           const { data, error } = await bucket.download(storageKey);
           const bytes = error || !data ? null : new Uint8Array(await data.arrayBuffer());
           if (bytes === null) {
-            const ok = withhold({
-              what: `documents/${id} (${sanitiseFilename(name)})`,
-              reason: "document_not_clean",
-              detail:
-                "This file's record is included but its bytes could not be read from storage when the archive was built.",
-            });
-            if (!ok) return "bytes";
+            if (!withhold(id, name, "unreadable", row.scan_status)) return "bytes";
           } else {
-            const path = `files/documents/${id}-${sanitiseFilename(name)}`;
+            const path = documentPath(id, name);
             const cost = entryReserve({ path, bytes: bytes.length });
             if (!zip.wouldFit(path, bytes.length, part.reserve + cost, 1)) {
               if (zip.entryCount === 0) {
@@ -663,7 +760,7 @@ async function writeDocuments(
             }
             zip.addEntry(path, bytes, at);
             part.files.push({ path, bytes: bytes.length });
-            cursor.files.push({ path, bytes: bytes.length });
+            cursor.documents.push({ id, bytes: bytes.length });
             part.reserve += cost;
           }
         }

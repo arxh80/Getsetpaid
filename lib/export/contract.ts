@@ -249,8 +249,15 @@ export interface ClosureIndexManifest extends Omit<ExportManifest, "schemaVersio
 
 /**
  * Where the next claim of a closure backup resumes, persisted between claims
- * in `export_jobs.resume_cursor`. Opaque to everybody but the runner; never a
- * person's data -- keys, counts, file paths and the withholding statements.
+ * in `export_jobs.resume_cursor`. Opaque to everybody but the runner.
+ *
+ * NO RECORD CONTENT (Q228 fix round 1; the controller's ruling, queued for the
+ * founder): keys, ids, counts and closed vocabularies only. A document is
+ * carried by its ID -- never its filename, which is what a person typed -- and
+ * the paths and withholding sentences the index states are re-derived from
+ * the database when the final part is written. The statements that are the
+ * same for every archive (the FK-less remainder, the excused tables, the audit
+ * payload) are not carried at all: they are re-derived from the plan.
  */
 export interface ResumeCursor {
   v: 1;
@@ -262,13 +269,16 @@ export interface ResumeCursor {
   /** Rows of the current table already written in earlier parts. */
   tableRowsSoFar: number;
   rowCounts: Record<string, number>;
-  withheld: ExportWithholding[];
-  files: { path: string; bytes: number }[];
+  /** Documents whose bytes were written, in order: id and byte count. */
+  documents: { id: string; bytes: number }[];
+  /** Documents withheld, in order: id, and why (`not_clean`, or `unreadable` storage). */
+  withheldDocuments: { id: string; why: DocumentWithheldBecause }[];
   parts: PartSummary[];
   generatedAt: string;
 }
 
-const WITHHOLDING_REASONS = Object.keys(WITHHOLDING_COPY) as WithholdingReason[];
+/** Why a document's bytes are not in a closure backup: the scan, or storage. */
+export type DocumentWithheldBecause = "not_clean" | "unreadable";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -317,21 +327,30 @@ export function parseResumeCursor(value: unknown): ResumeCursor | null {
   if (!isCount(value.planIndex) || !isCount(value.tableRowsSoFar)) return null;
   if (typeof value.after !== "string" || typeof value.generatedAt !== "string") return null;
   if (!isRecord(value.rowCounts) || !Object.values(value.rowCounts).every(isCount)) return null;
+  // Exactly two keys each, so nothing else -- a filename, say -- can ride along.
   if (
-    !Array.isArray(value.withheld) ||
-    !value.withheld.every(
+    !Array.isArray(value.withheldDocuments) ||
+    !value.withheldDocuments.every(
       (w) =>
         isRecord(w) &&
-        typeof w.what === "string" &&
-        typeof w.detail === "string" &&
-        WITHHOLDING_REASONS.includes(w.reason as WithholdingReason),
+        Object.keys(w).length === 2 &&
+        typeof w.id === "string" &&
+        isUuid(w.id) &&
+        (w.why === "not_clean" || w.why === "unreadable"),
     )
   ) {
     return null;
   }
   if (
-    !Array.isArray(value.files) ||
-    !value.files.every((f) => isRecord(f) && typeof f.path === "string" && isCount(f.bytes))
+    !Array.isArray(value.documents) ||
+    !value.documents.every(
+      (f) =>
+        isRecord(f) &&
+        Object.keys(f).length === 2 &&
+        typeof f.id === "string" &&
+        isUuid(f.id) &&
+        isCount(f.bytes),
+    )
   ) {
     return null;
   }
@@ -343,8 +362,8 @@ export function parseResumeCursor(value: unknown): ResumeCursor | null {
     after: value.after,
     tableRowsSoFar: value.tableRowsSoFar,
     rowCounts: value.rowCounts as Record<string, number>,
-    withheld: value.withheld as ExportWithholding[],
-    files: value.files as { path: string; bytes: number }[],
+    documents: value.documents as { id: string; bytes: number }[],
+    withheldDocuments: value.withheldDocuments as { id: string; why: DocumentWithheldBecause }[],
     parts: value.parts as PartSummary[],
     generatedAt: value.generatedAt,
   };
