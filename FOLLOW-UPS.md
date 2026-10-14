@@ -2419,10 +2419,12 @@ debts it carried forward.
 - **MERGE CONDITION 1 — a real malware scanner (Q42). Owner: the founder. Gate:
   Phase 10.** The pipeline is proven end to end by the EICAR stub
   (`documents.spec.ts`, `tests/integration/documents/upload-scan-download.test.ts`,
-  file_access § A/B/C) — **but the stub proves the pipeline, not detection.** No
-  real engine runs anywhere in this codebase; `clamav`/SaaS names throw. A real
-  scanner must be chosen, wired and tested against EICAR in a real integration
-  before launch. Full finding: § "Opened by Task 4" (Q42). Also owed to that
+  file_access § A/B/C) — **but the stub proves the pipeline, not detection.**
+  **2026-10-13: chosen and wired** — self-hosted ClamAV (`ClamdScanner`,
+  `docs/clamav.md`). **Still owed before launch:** run the opt-in live test
+  (`CLAMAV_LIVE_HOST=… npx vitest run tests/integration/security/clamav-live.test.ts`)
+  against clamd on the first server, and set `MALWARE_SCANNER=clamav` +
+  `CLAMAV_HOST` there. Full finding: § "Opened by Task 4" (Q42). Also owed to that
   same scanner-wiring task: the **stuck `pending`/`error` re-scan sweep**
   (§ "Opened by Task 5") — no security hole (fail-closed, no URL ever issued),
   a reachability gap.
@@ -3143,6 +3145,12 @@ walkthrough as part of the definition of done, not as optional diligence.
   synchronous scan is an MVP stub property, noted in `lib/crm/documents.ts`), and
   setting `MALWARE_SCANNER` in production so the throwing default cannot ship.
   **Owner: founder decision (Q42), then the task that wires it.**
+  **ANSWERED 2026-10-13: self-hosted ClamAV** (free; in-region; no
+  sub-processor, no DPA, synchronous so no webhook). Wired as `ClamdScanner`
+  — fail-closed on every non-verdict reply; unset `MALWARE_SCANNER` under
+  `NODE_ENV=production` now throws rather than running the stub. Deployment:
+  `docker/clamav/`, runbook `docs/clamav.md`. Open: the live test on the first
+  server (MERGE CONDITION 1 above).
 
 - ~~**The upload is NOT audited yet — the audit call is a marked seam awaiting
   Task 5's helper.**~~ **DONE, Phase 4 Task 5.** `20260902031000` ships
