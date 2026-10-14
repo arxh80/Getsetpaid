@@ -30,3 +30,8 @@ Task 2: minor (deferred): test-only cursor-logging trigger on public.export_jobs
 Task 2: minor (deferred): readDocumentNames runs on every index-phase claim, including a re-claim that only defers the index
 Task 2: minor (deferred): exports bucket holds 6 leftover objects from runner.test.ts (teardown deletes job rows, not archives) — pre-existing
 Task 2: complete — da2e99f..5d8a6ac
+Task 3: implemented 0e822d8 (base c064173); review task-3-review.md — spec ✅, Needs fixes (Important #1 untested download.ts:125 guard)
+Task 3: minor (deferred): vitest gate tolerates 1 known red (XD1 export_job.downloaded order dependency, pre-existing since Task 1)
+Task 3: fix round 1/5 — 3638cda (base 0e822d8): all 4 findings ADDRESSED per scoped re-review (part-guard unit test + mutant, mutant 10 regenerated in place, M12-M17 committed as 21a-21f, census regex)
+Task 3: minor (deferred): mutants 21a-21f measured by a quick apply/run/restore driver, not the full run-mutation.sh path — final review to decide whether a full harness run is owed
+Task 3: complete — 0e822d8..3638cda
