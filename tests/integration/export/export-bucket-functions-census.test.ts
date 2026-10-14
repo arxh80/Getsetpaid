@@ -25,7 +25,7 @@ afterAll(async () => {
 });
 
 /** Each function, why it is right about parts, and the source text that proves it. */
-const ROLL: Record<string, { reason: string; mustContain: readonly string[] }> = {
+const ROLL: Record<string, { reason: string; mustContain: readonly (string | RegExp)[] }> = {
   "public.retention_object_manifest": {
     reason:
       "THE PURGE. It names export_job_parts twice: an expired job's parts 2+ are " +
@@ -52,7 +52,7 @@ const ROLL: Record<string, { reason: string; mustContain: readonly string[] }> =
     reason:
       "A FALSE CANDIDATE: `'exports'` is the rate-limit category it meters, and " +
       "`storage_key` appears only as the insert's forced null. It names no object.",
-    mustContain: ["v_category := 'exports'", "new.storage_key    := null"],
+    mustContain: [/v_category\s*:=\s*'exports'/, /new\.storage_key\s*:=\s*null/],
   },
 };
 
@@ -86,7 +86,11 @@ describe("functions that name `exports` objects by storage_key (Q228 Task 3)", (
     );
     expect(rows.length, `${fn} has exactly one definition`).toBe(1);
     for (const text of mustContain) {
-      expect(rows[0].src, `${fn} lost "${text}"`).toContain(text);
+      if (typeof text === "string") {
+        expect(rows[0].src, `${fn} lost "${text}"`).toContain(text);
+      } else {
+        expect(rows[0].src, `${fn} lost ${String(text)}`).toMatch(text);
+      }
     }
   });
 });
