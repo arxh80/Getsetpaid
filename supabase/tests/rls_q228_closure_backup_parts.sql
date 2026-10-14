@@ -10,6 +10,15 @@
 --       success (never on a failure), and the queue's fairness
 --   QK  the stuck-job reaper never fails a healthy multi-part backup
 --   QE  the Owner's erasure still waits for a backup with parts stored
+--
+-- Task 3 (20261101001000_closure_backup_parts_download_and_purge.sql):
+--   QD  the per-part download audit: the part check, the IDOR term, the
+--       payload, and that a refusal writes nothing
+--   QX  a delete without a succeeded backup (spec section 7)
+--   QO  Q229 holds the purge until EVERY part is downloaded by the requester
+--   QM  the retention manifest: every part of an expired backup is named, no
+--       part of a kept or re-queued one is, and a failed one's parts are
+--       orphans
 --   QZ  housekeeping
 --
 -- Every scenario that must leave nothing behind runs inside qp.undo() or
@@ -130,7 +139,8 @@ grant select, insert on qp.ids to authenticated;
 --   P (Starter): Owner P (aal2), Admin P2, Manager P3. Closed -> J.
 --   Q: Owner Q.
 --   R: Owner R. Closed -> J2, built to SUCCESS in two parts.
---   S: Owner S. Closed -> J3 (the transitions).
+--   S: Owner S, Admin S2. Closed -> J3 (the transitions; then, for Task 3,
+--      finished as a SUCCEEDED 3-part backup in the legal order).
 --   T: Owner T. Closed -> J4 (the legacy success; the failure with a part).
 --   K: Owner P's ordinary SUCCEEDED account export (plantReadyAccountExport).
 --   O: Admin P2's ordinary QUEUED account export.
@@ -143,6 +153,8 @@ select gen_random_uuid()::text as owner_q \gset
 select gen_random_uuid()::text as owner_r \gset
 select gen_random_uuid()::text as owner_s \gset
 select gen_random_uuid()::text as owner_t \gset
+select gen_random_uuid()::text as admin_s2 \gset
+select gen_random_uuid()::text as su_u    \gset
 select gen_random_uuid()::text as org_p   \gset
 select gen_random_uuid()::text as org_q   \gset
 select gen_random_uuid()::text as org_r   \gset
@@ -159,6 +171,8 @@ select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_q')  a
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_r')  as owner_r_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_s')  as owner_s_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_t')  as owner_t_c  \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'admin_s2') as admin_s2_c \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'su_u')     as su_c       \gset
 \o
 
 insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
@@ -169,7 +183,11 @@ select u, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticate
                (:'owner_q'::uuid,  'qp-owner-q-'  || :'owner_q'  || '@test.local'),
                (:'owner_r'::uuid,  'qp-owner-r-'  || :'owner_r'  || '@test.local'),
                (:'owner_s'::uuid,  'qp-owner-s-'  || :'owner_s'  || '@test.local'),
-               (:'owner_t'::uuid,  'qp-owner-t-'  || :'owner_t'  || '@test.local')) v(u, e);
+               (:'owner_t'::uuid,  'qp-owner-t-'  || :'owner_t'  || '@test.local'),
+               (:'admin_s2'::uuid, 'qp-admin-s2-' || :'admin_s2' || '@test.local'),
+               (:'su_u'::uuid,     'qp-su-'       || :'su_u'     || '@test.local')) v(u, e);
+-- The aal2 platform superuser of QX/QO (the workspace closure suite's CH1).
+insert into public.platform_admins (user_id) values (:'su_u');
 
 insert into public.organisations (id, name, slug) values
   (:'org_p', 'Parts P', :'slug_p'),
@@ -189,6 +207,7 @@ insert into public.organisation_memberships (organisation_id, user_id, role, sta
   (:'org_q', :'owner_q',  'owner',   'active', now()),
   (:'org_r', :'owner_r',  'owner',   'active', now()),
   (:'org_s', :'owner_s',  'owner',   'active', now()),
+  (:'org_s', :'admin_s2', 'admin',   'active', now()),
   (:'org_t', :'owner_t',  'owner',   'active', now());
 
 -- The closure backups, each made by its Owner closing the workspace under
@@ -643,20 +662,356 @@ select qp.sc('QJ7b ...and the reaper fails it when it was claimed 2 hours ago (n
   'ok|ok|ok|true|failed:true');
 
 -- ===========================================================================
+-- TASK 3 FIXTURES (20261101001000). Everything above left J3 RUNNING at
+-- part_count 1 with parts 1 and 2 stored (every later QJ step was undone),
+-- and J4 RUNNING at part_count 0 with part 1 stored.
+--   J3 is finished in the legal order: re-queue at 2, claim, part 3, succeed
+--      with part_count 3 -- a SUCCEEDED 3-part closure backup of closed S,
+--      requested by Owner S (the brief's J3).
+--   J4 is taken to QUEUED with 2 parts stored: re-queue at 1, claim, part 2,
+--      re-queue at 2 (the brief's "T's backup, re-queued with 2 parts").
+--   F  is Owner S's own FAILED account export (QD6's no-archive refusal).
+--   LJ is a uuid for QO4's planted legacy backup; RK a random part key no
+--      row names (QM5).
+-- ===========================================================================
+update public.export_jobs set status = 'queued', part_count = 2, resume_cursor = '{"v":2}' where id = :'j3';
+update public.export_jobs set status = 'running' where id = :'j3';
+insert into public.export_job_parts (job_id, part_no, storage_key, byte_size, row_count)
+values (:'j3', 3, 'exports/' || :'j3' || '-part-0003.zip', 100, 10);
+update public.export_jobs
+   set status = 'succeeded', part_count = 3, resume_cursor = null,
+       storage_key = 'exports/' || id::text || '.zip', byte_size = 300, row_count = 30,
+       table_count = 1, manifest = '{}'::jsonb
+ where id = :'j3';
+
+update public.export_jobs set status = 'queued', part_count = 1, resume_cursor = '{"v":1}' where id = :'j4';
+update public.export_jobs set status = 'running' where id = :'j4';
+insert into public.export_job_parts (job_id, part_no, storage_key, byte_size, row_count)
+values (:'j4', 2, 'exports/' || :'j4' || '-part-0002.zip', 100, 10);
+update public.export_jobs set status = 'queued', part_count = 2, resume_cursor = '{"v":2}' where id = :'j4';
+
+set role authenticated;
+set request.jwt.claims = :'owner_s_c';
+with x as (insert into public.export_jobs (kind) values ('account') returning id) insert into qp.ids select 'f', id::text from x;
+reset role;
+reset request.jwt.claims;
+select v as f from qp.ids where k = 'f' \gset
+update public.export_jobs set status = 'running' where id = :'f';
+update public.export_jobs set status = 'failed', failure_reason = 'qp: failed' where id = :'f';
+\o /dev/null
+select gen_random_uuid()::text as lj \gset
+select 'exports/' || gen_random_uuid()::text || '-part-0002.zip' as rk \gset
+\o
+
+select qp.val('Q3-fixture J3 is SUCCEEDED with part_count 3 and parts 1,2,3; J4 is QUEUED with part_count 2 and parts 1,2; F is failed',
+  format($$select (select status || ':' || part_count || ':' ||
+                          (select string_agg(part_no::text, ',' order by part_no) from public.export_job_parts where job_id = j.id)
+                     from public.export_jobs j where j.id = %L) || '/' ||
+                  (select status || ':' || part_count || ':' ||
+                          (select string_agg(part_no::text, ',' order by part_no) from public.export_job_parts where job_id = j.id)
+                     from public.export_jobs j where j.id = %L) || '/' ||
+                  (select status from public.export_jobs where id = %L)$$, :'j3', :'j4', :'f'),
+  'succeeded:3:1,2,3/queued:2:1,2/failed');
+
+-- Helpers for Task 3. Steps that change who is speaking, inside a scenario
+-- (the SET LOCALs die with the scenario's sentinel rollback).
+create function qp.as_person(p_claims text) returns text[]
+language sql immutable set search_path = '' as $$
+  select array[pg_catalog.format($f$select pg_catalog.set_config('request.jwt.claims', %L, true) is not null$f$, p_claims),
+               'set local role authenticated'];
+$$;
+create function qp.as_server() returns text[]
+language sql immutable set search_path = '' as $$
+  select array['reset role', $f$select pg_catalog.set_config('request.jwt.claims', '', true) is not null$f$];
+$$;
+-- One download: `called` when the audit RPC returned, else its refusal.
+create function qp.dl(p_job text, p_part integer) returns text
+language sql immutable set search_path = '' as $$
+  select case when p_part is null
+              then pg_catalog.format($f$select 'called' from (select public.audit_export_download(%L)) x$f$, p_job)
+              else pg_catalog.format($f$select 'called' from (select public.audit_export_download(%L, %s)) x$f$, p_job, p_part) end;
+$$;
+-- The newest download audit row for a job: its key set / kind / part.
+create function qp.last_dl(p_job uuid) returns text
+language sql stable security definer set search_path = '' as $$
+  select coalesce((
+    select coalesce((select pg_catalog.string_agg(k, ',' order by k) from pg_catalog.jsonb_object_keys(a.after) k), '')
+           || '/' || coalesce(a.after ->> 'kind', '') || '/' || coalesce(a.after ->> 'part', '<none>')
+      from public.audit_events a
+     where a.action = 'export_job.downloaded' and a.target_id = p_job
+     order by a.created_at desc, a.id desc limit 1), '<none>');
+$$;
+-- How many download audit rows name any of these jobs.
+create function qp.dl_count(p_jobs uuid[]) returns text
+language sql stable security definer set search_path = '' as $$
+  select pg_catalog.count(*)::text from public.audit_events a
+   where a.action = 'export_job.downloaded' and a.target_id = any(p_jobs);
+$$;
+-- The workspace closure suite's cw.live_sweep_probe(): a LIVE sweep, read,
+-- then rolled back. Returns `<org rows>/<job rows>` left.
+create function qp.live_sweep_probe(p_org uuid, p_job uuid) returns text
+language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v text;
+begin
+  begin
+    perform private.sweep_expired_workspaces(false, 100000);
+    v := (select count(*) from public.organisations where id = p_org)::text || '/' ||
+         (select count(*) from public.export_jobs where id = p_job)::text;
+    raise exception 'qp_rollback' using detail = v;
+  exception when others then
+    if sqlerrm = 'qp_rollback' then
+      get stacked diagnostics v = pg_exception_detail;
+      return v;
+    end if;
+    return 'error(' || sqlstate || ':' || sqlerrm || ')';
+  end;
+end $$;
+-- THE MANIFEST PROBE (rls_phase8_retention.sql RW5a's pattern): run the setup
+-- statements, plant an `exports` object two days old (past the 1-day orphan
+-- grace) for every key that has none, open a DRY run, read the manifest, and
+-- roll ALL of it back -- the objects, the run, the setup. Returns, per key in
+-- order, the reasons the manifest named it for (`-` when it did not name it;
+-- `a,a` when it named it twice).
+create function qp.mprobe(p_setup text[], p_keys text[]) returns text
+language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v text; v_s text; v_run public.retention_runs%rowtype; v_m jsonb;
+begin
+  begin
+    foreach v_s in array coalesce(p_setup, '{}'::text[]) loop
+      execute v_s;
+    end loop;
+    insert into storage.objects (bucket_id, name, created_at)
+    select 'exports', k, now() - interval '2 days' from unnest(p_keys) k
+     where not exists (select 1 from storage.objects s where s.bucket_id = 'exports' and s.name = k);
+    v_run := public.start_retention_run(true);
+    if v_run.status <> 'running' then
+      raise exception 'qp_probe' using detail = 'run_' || v_run.status || ':' || v_run.refused::text;
+    end if;
+    select coalesce(jsonb_agg(jsonb_build_array(m.object_key, m.reason)), '[]'::jsonb) into v_m
+      from public.retention_object_manifest(v_run.id, 500) m
+     where m.bucket = 'exports' and m.object_key = any(p_keys);
+    select string_agg(coalesce((select string_agg(e ->> 1, ',' order by e ->> 1)
+                                  from jsonb_array_elements(v_m) e where e ->> 0 = k.key), '-'),
+                      '|' order by k.ord) into v
+      from unnest(p_keys) with ordinality k(key, ord);
+    raise exception 'qp_probe' using detail = v;
+  exception when others then
+    if sqlerrm = 'qp_probe' then
+      get stacked diagnostics v = pg_exception_detail;
+      return v;
+    end if;
+    return 'error(' || sqlstate || ':' || sqlerrm || ')';
+  end;
+end $$;
+grant execute on function qp.as_person(text), qp.as_server(), qp.dl(text, integer),
+  qp.last_dl(uuid), qp.dl_count(uuid[]) to authenticated;
+
+-- ===========================================================================
+-- § QD THE DOWNLOAD AUDIT, PER PART (as Owner S unless stated). The
+--      successes are scenarios (undone), so no download row survives to
+--      release QO's hold or to reach another suite's count.
+-- ===========================================================================
+select qp.sc('QD1 Owner S downloads J3 with no part: it succeeds, and the newest audit row is {kind: workspace, part: 1}',
+  qp.as_person(:'owner_s_c') || array[qp.dl(:'j3', null), format($$select qp.last_dl(%L)$$, :'j3')],
+  'true|ok|called|kind,part/workspace/1');
+select qp.sc('QD2 ...part 2 succeeds, with after.part = 2',
+  qp.as_person(:'owner_s_c') || array[qp.dl(:'j3', 2), format($$select qp.last_dl(%L)$$, :'j3')],
+  'true|ok|called|kind,part/workspace/2');
+select qp.sc('QD3 Owner P''s ordinary account export K, no part: after.part = 1',
+  qp.as_person(:'owner_p_c') || array[qp.dl(:'k', null), format($$select qp.last_dl(%L)$$, :'k')],
+  'true|ok|called|kind,part/account/1');
+
+select qp.dl_count(array[:'j3', :'k', :'f']::uuid[]) as qd_before \gset
+set role authenticated;
+set request.jwt.claims = :'owner_s_c';
+select qp.try('QD4a J3 part 4 (it has 3) is export_part_not_found', qp.dl(:'j3', 4), 'denied(22023:export_part_not_found)');
+select qp.try('QD4b J3 part 0 is export_part_not_found', qp.dl(:'j3', 0), 'denied(22023:export_part_not_found)');
+select qp.try('QD4c J3 part -1 is export_part_not_found', qp.dl(:'j3', -1), 'denied(22023:export_part_not_found)');
+select qp.try('QD4d J3 with p_part => null is export_part_not_found',
+  format($$select 'called' from (select public.audit_export_download(%L, p_part => null)) x$$, :'j3'),
+  'denied(22023:export_part_not_found)');
+set request.jwt.claims = :'owner_p_c';
+select qp.try('QD4e Owner P''s ordinary K, part 2 (an ordinary export has no parts) is export_part_not_found',
+  qp.dl(:'k', 2), 'denied(22023:export_part_not_found)');
+set request.jwt.claims = :'admin_s2_c';
+select qp.try('QD5 Admin S2 of the SAME workspace, J3 part 2: not_your_export (the IDOR term, not the part check)',
+  qp.dl(:'j3', 2), 'denied(42501:not_your_export)');
+reset role;
+reset request.jwt.claims;
+select qp.sc('QD6a an EXPIRED J3 (undone): export_archive_expired',
+  array['set local session_replication_role = replica',
+        format($$update public.export_jobs set expires_at = now() - interval '1 day' where id = %L$$, :'j3'),
+        'set local session_replication_role = origin']
+  || qp.as_person(:'owner_s_c') || array[qp.dl(:'j3', 1)],
+  'ok|ok|ok|true|ok|denied(22023:export_archive_expired)');
+select qp.sc('QD6b Owner S''s own FAILED export F: export_has_no_archive',
+  qp.as_person(:'owner_s_c') || array[qp.dl(:'f', 1)],
+  'true|ok|denied(22023:export_has_no_archive)');
+select qp.val('QD7 no refusal in QD4-QD6 wrote a download audit row (the count is unchanged)',
+  format($$select (qp.dl_count(array[%L, %L, %L]::uuid[]) = %L)::text$$, :'j3', :'k', :'f', :'qd_before'), 'true');
+select qp.val('QD8 EXECUTE on audit_export_download(uuid, integer) is authenticated''s alone, and the (uuid) overload is gone',
+  $$select coalesce((select string_agg(r, ',' order by r) from unnest(array['anon','authenticated','service_role','public']) r
+                      where to_regprocedure('public.audit_export_download(uuid,integer)') is not null
+                        and has_function_privilege(r, 'public.audit_export_download(uuid,integer)', 'EXECUTE')), '<none>')
+           || '/' || (to_regprocedure('public.audit_export_download(uuid)') is null)::text$$,
+  'authenticated/true');
+
+-- ===========================================================================
+-- § QX DELETE WITHOUT A BACKUP (spec section 7): T is closed, its closure
+--      backup J4 QUEUED with 2 parts stored.
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select qp.try('QX1 the aal2 superuser''s delete of T, unacknowledged, is decision_backup_not_succeeded',
+  format($$select public.delete_closed_workspace(%L, 'r')::text$$, :'slug_t'),
+  'denied(22023:decision_backup_not_succeeded)');
+reset role;
+reset request.jwt.claims;
+select qp.sc('QX2 ...acknowledged (undone), it proceeds; the audit row says backup_status queued, acknowledged_no_backup true',
+  qp.as_person(:'su_c')
+  || array[format($$select (public.delete_closed_workspace(%L, 'r', true) is not null)::text$$, :'slug_t')]
+  || qp.as_server()
+  || array[format($$select (after ->> 'backup_status') || ':' || (after ->> 'acknowledged_no_backup')
+                      from public.audit_events where action = 'organisation.closure_deleted' and organisation_id = %L$$, :'org_t')],
+  'true|ok|true|ok|true|queued:true');
+select qp.sc('QX3 ...and J4''s expires_at was NOT raised (the raise is for a succeeded backup only)',
+  array[format($$select coalesce(expires_at::text, 'none') from public.export_jobs where id = %L$$, :'j4')]
+  || qp.as_person(:'su_c')
+  || array[format($$select (public.delete_closed_workspace(%L, 'r', true) is not null)::text$$, :'slug_t')]
+  || qp.as_server()
+  || array[format($$select coalesce(expires_at::text, 'none') || ':' || status from public.export_jobs where id = %L$$, :'j4')],
+  'none|true|ok|true|ok|true|none:queued');
+
+-- ===========================================================================
+-- § QO Q229 WAITS FOR EVERY PART. S is deleted through
+--      delete_closed_workspace() by the aal2 superuser (CH1's pattern); its
+--      latest closure backup J3 has 3 parts.
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'su_c';
+select qp.try('QO-fixture the aal2 superuser deletes S (J3 succeeded: no acknowledgement)',
+  format($$select (public.delete_closed_workspace(%L, 'no successor') is not null)::text$$, :'slug_s'), 'true');
+reset role;
+reset request.jwt.claims;
+select qp.val('QO1 no part downloaded: closure_backup_owed(S) is true',
+  format($$select private.closure_backup_owed(%L)::text$$, :'org_s'), 'true');
+select qp.sc('QO2 after Owner S downloads parts 1 and 2 (undone): STILL owed (M12)',
+  qp.as_person(:'owner_s_c') || array[qp.dl(:'j3', 1), qp.dl(:'j3', 2)] || qp.as_server()
+  || array[format($$select private.closure_backup_owed(%L)::text$$, :'org_s')],
+  'true|ok|called|called|ok|true|true');
+select qp.sc('QO3 ...after part 3 as well (undone): no longer owed',
+  qp.as_person(:'owner_s_c') || array[qp.dl(:'j3', 1), qp.dl(:'j3', 2), qp.dl(:'j3', 3)] || qp.as_server()
+  || array[format($$select private.closure_backup_owed(%L)::text$$, :'org_s')],
+  'true|ok|called|called|called|ok|true|false');
+select qp.sc('QO3b in any order: part 3 alone does not release it; then parts 2 and 1 do',
+  qp.as_person(:'owner_s_c') || array[qp.dl(:'j3', 3)] || qp.as_server()
+  || array[format($$select private.closure_backup_owed(%L)::text$$, :'org_s')]
+  || qp.as_person(:'owner_s_c') || array[qp.dl(:'j3', 2), qp.dl(:'j3', 1)] || qp.as_server()
+  || array[format($$select private.closure_backup_owed(%L)::text$$, :'org_s')],
+  'true|ok|called|ok|true|true|true|ok|called|called|ok|true|false');
+select qp.sc('QO4 a LEGACY closure backup (0 parts, planted succeeded, the latest) with one download row with NO part key: not owed',
+  array['set local session_replication_role = replica',
+        format($$insert into public.export_jobs (id, kind, organisation_id, requested_by, closure_backup, status,
+                                                 requested_at, started_at, completed_at, expires_at, storage_key,
+                                                 byte_size, row_count, table_count, manifest)
+                 values (%1$L, 'workspace', %2$L, %3$L, true, 'succeeded', now() + interval '1 minute', now(), now(),
+                         now() + interval '30 days', 'exports/' || %1$L || '.zip', 1, 1, 1, '{}'::jsonb)$$,
+               :'lj', :'org_s', :'owner_s'),
+        'set local session_replication_role = origin',
+        format($$select private.closure_backup_owed(%L)::text$$, :'org_s'),
+        format($$insert into public.audit_events (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, after)
+                 values (%L, %L, 'export_job.downloaded', 'export_job', %L, gen_random_uuid(), '{"kind":"workspace"}'::jsonb)$$,
+               :'org_s', :'owner_s', :'lj'),
+        format($$select private.closure_backup_owed(%L)::text$$, :'org_s')],
+  'ok|ok|ok|true|ok|false');
+select qp.sc('QO5 parts 1-3 "downloaded" by Admin S2 (planted rows, actor S2) do not release it: still owed (M13)',
+  array[format($$insert into public.audit_events (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, after)
+                 select %L, %L, 'export_job.downloaded', 'export_job', %L, gen_random_uuid(),
+                        jsonb_build_object('kind', 'workspace', 'part', n) from generate_series(1, 3) n$$,
+               :'org_s', :'admin_s2', :'j3'),
+        format($$select private.closure_backup_owed(%L)::text$$, :'org_s')],
+  'ok|true');
+select qp.sc('QO6 30 days after the decision (backdated the CH8 way), nothing downloaded: not owed',
+  array['set local session_replication_role = replica',
+        format($$update public.organisations set lifecycle_changed_at = lifecycle_changed_at - interval '30 days',
+                        retention_expires_at = retention_expires_at - interval '30 days' where id = %L$$, :'org_s'),
+        'set local session_replication_role = origin',
+        format($$select private.closure_backup_owed(%L)::text$$, :'org_s')],
+  'ok|ok|ok|false');
+select qp.sc('QO7 a LIVE sweep (rolled back) HOLDS S while it is owed, and purges it with its backup once every part is downloaded',
+  array[format($$select qp.live_sweep_probe(%L, %L)$$, :'org_s', :'j3')]
+  || qp.as_person(:'owner_s_c') || array[qp.dl(:'j3', 1), qp.dl(:'j3', 2), qp.dl(:'j3', 3)] || qp.as_server()
+  || array[format($$select qp.live_sweep_probe(%L, %L)$$, :'org_s', :'j3')],
+  '1/1|true|ok|called|called|called|ok|true|0/0');
+
+-- ===========================================================================
+-- § QM THE RETENTION MANIFEST (each probe plants its objects, opens a dry
+--      run, reads public.retention_object_manifest(run, 500) and is undone).
+-- ===========================================================================
+select qp.val('QM1 J3 EXPIRED: all three part keys are named, export_expired, once each (M15)',
+  format($$select qp.mprobe(array['set local session_replication_role = replica',
+                                  %L,
+                                  'set local session_replication_role = origin'],
+                            array[%L, %L, %L])$$,
+         format($$update public.export_jobs set expires_at = now() - interval '1 day' where id = %L$$, :'j3'),
+         'exports/' || :'j3' || '.zip', 'exports/' || :'j3' || '-part-0002.zip', 'exports/' || :'j3' || '-part-0003.zip'),
+  'export_expired|export_expired|export_expired');
+select qp.val('QM2 CRITICAL: J3 unexpired and succeeded: NONE of its three keys is named, neither expired nor orphan (M14)',
+  format($$select qp.mprobe(null, array[%L, %L, %L])$$,
+         'exports/' || :'j3' || '.zip', 'exports/' || :'j3' || '-part-0002.zip', 'exports/' || :'j3' || '-part-0003.zip'),
+  '-|-|-');
+select qp.val('QM3 a RE-QUEUED closure backup''s two part objects (J4) are not named (M14)',
+  format($$select qp.mprobe(null, array[%L, %L])$$,
+         'exports/' || :'j4' || '.zip', 'exports/' || :'j4' || '-part-0002.zip'),
+  '-|-');
+select qp.val('QM4 a FAILED closure backup with its 2 part rows left behind (J4 failed in the probe): both keys are orphans (M16)',
+  format($$select qp.mprobe(array[%L, %L], array[%L, %L])$$,
+         format($$update public.export_jobs set status = 'running' where id = %L$$, :'j4'),
+         format($$update public.export_jobs set status = 'failed', failure_reason = 'qp: probe' where id = %L$$, :'j4'),
+         'exports/' || :'j4' || '.zip', 'exports/' || :'j4' || '-part-0002.zip'),
+  'orphan|orphan');
+select qp.val('QM5 POSITIVE CONTROL: a part-shaped object no row names is an orphan (the orphan half still runs)',
+  format($$select qp.mprobe(null, array[%L])$$, :'rk'), 'orphan');
+do $$
+declare v_out text; v_job uuid := gen_random_uuid(); v_j3 text := (select v from qp.ids where k = 'j3');
+        v_owner uuid; v_named bigint; v_denominator bigint;
+begin
+  select requested_by into v_owner from public.export_jobs where id = v_j3::uuid;
+  begin
+    set local session_replication_role = replica;
+    insert into public.erasure_jobs (id, kind, subject_user_id, requested_by, status)
+    values (v_job, 'account', v_owner, v_owner, 'queued');
+    set local session_replication_role = origin;
+    select count(*) into v_denominator from public.export_jobs
+     where requested_by = v_owner and storage_key is not null and id = v_j3::uuid;
+    select count(*) into v_named from public.erasure_purge_manifest(v_job) m
+     where m.object_key in ('exports/' || v_j3 || '.zip', 'exports/' || v_j3 || '-part-0002.zip',
+                            'exports/' || v_j3 || '-part-0003.zip');
+    raise exception 'qp_probe' using detail = v_denominator || '/' || v_named;
+  exception when others then
+    if sqlerrm = 'qp_probe' then get stacked diagnostics v_out = pg_exception_detail;
+    else v_out := 'error(' || sqlstate || ':' || sqlerrm || ')'; end if;
+  end;
+  perform qp.record('QM6 Owner S''s ACCOUNT erasure manifest names none of J3''s keys (Q206 unchanged); J3 is theirs, with a key (denominator)',
+                    '1/0', v_out);
+end $$;
+
+-- ===========================================================================
 -- § QZ HOUSEKEEPING (part rows first: `replica` turns off the FK cascade)
 -- ===========================================================================
 set session_replication_role = replica;
-delete from public.export_job_parts where job_id in (:'j', :'j2', :'j3', :'j4', :'k', :'o');
-delete from public.export_jobs where id in (:'j', :'j2', :'j3', :'j4', :'k', :'o')
+delete from public.export_job_parts where job_id in (:'j', :'j2', :'j3', :'j4', :'k', :'o', :'f');
+delete from public.export_jobs where id in (:'j', :'j2', :'j3', :'j4', :'k', :'o', :'f')
    or organisation_id in (:'org_p', :'org_q', :'org_r', :'org_s', :'org_t')
-   or requested_by in (:'owner_p', :'admin_p2', :'mgr_p3', :'owner_q', :'owner_r', :'owner_s', :'owner_t');
+   or requested_by in (:'owner_p', :'admin_p2', :'mgr_p3', :'owner_q', :'owner_r', :'owner_s', :'owner_t', :'admin_s2', :'su_u');
 delete from public.audit_events where organisation_id in (:'org_p', :'org_q', :'org_r', :'org_s', :'org_t')
-   or actor_user_id in (:'owner_p', :'admin_p2', :'mgr_p3', :'owner_q', :'owner_r', :'owner_s', :'owner_t');
+   or actor_user_id in (:'owner_p', :'admin_p2', :'mgr_p3', :'owner_q', :'owner_r', :'owner_s', :'owner_t', :'admin_s2', :'su_u');
 delete from public.organisation_memberships where organisation_id in (:'org_p', :'org_q', :'org_r', :'org_s', :'org_t');
 delete from public.organisation_subscriptions where organisation_id in (:'org_p', :'org_q', :'org_r', :'org_s', :'org_t');
 delete from public.organisations where id in (:'org_p', :'org_q', :'org_r', :'org_s', :'org_t');
 set session_replication_role = origin;
-delete from auth.users where id in (:'owner_p', :'admin_p2', :'mgr_p3', :'owner_q', :'owner_r', :'owner_s', :'owner_t');
+delete from public.platform_admins where user_id = :'su_u';
+delete from auth.users where id in (:'owner_p', :'admin_p2', :'mgr_p3', :'owner_q', :'owner_r', :'owner_s', :'owner_t', :'admin_s2', :'su_u');
 select qp.val('QZ1 no qp fixture row is left in export_jobs, export_job_parts, organisations or storage.objects',
   format($$select (select count(*) from public.export_jobs
                     where id in (%L, %L, %L, %L, %L, %L)

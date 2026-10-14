@@ -244,8 +244,12 @@ select xp.val('XG14 the runner''s three entry points are executable by service_r
 select xp.val('XG15 the download audit RPC is executable by authenticated ALONE',
   $$select string_agg(r, ',' order by r) from (
       select r from unnest(array['anon','authenticated','service_role']) r
-       where has_function_privilege(r, 'public.audit_export_download(uuid)', 'EXECUTE')) x$$,
+       where has_function_privilege(r, 'public.audit_export_download(uuid,integer)', 'EXECUTE')) x$$,
   'authenticated');
+-- Q228 (20261101001000): the RPC takes the part; the (uuid) form was DROPPED,
+-- not overloaded, so there is one signature and one grant to keep right.
+select xp.val('XG15b the (uuid) form of the download audit RPC no longer exists',
+  $$select (to_regprocedure('public.audit_export_download(uuid)') is null)::text$$, 'true');
 select xp.val('XG16 no client role can reach the private catalogue or the limits',
   $$select count(*)::text from unnest(array['anon','authenticated','service_role']) r
      where has_function_privilege(r, 'private.export_catalogue()', 'EXECUTE')

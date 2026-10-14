@@ -966,7 +966,7 @@ fi
 # the real catalogue.
 # ============================================================================
 
-run_suite "PHASE 8 EXPORTS" rls_phase8_exports.sql xp 138 "${P7VARS[@]}"
+run_suite "PHASE 8 EXPORTS" rls_phase8_exports.sql xp 139 "${P7VARS[@]}"
 exp_fails=$SUITE_FAILS
 if [ "$exp_fails" != "0" ]; then
   echo "PHASE 8 EXPORT SUITE FAILED: $exp_fails failing assertion(s)" >&2
@@ -1266,10 +1266,13 @@ fi
 # client writes), the two job columns (part_count, resume_cursor: service_role
 # only, closure backups only), the part guard, the one backward transition
 # (a closure-only running -> queued after a stored part), the part count on a
-# success, the queue's fairness and the reaper. Self-contained and re-runnable
+# success, the queue's fairness and the reaper; and (Task 3, 20261101001000)
+# the per-part download audit, Q229's hold waiting for every part, and the
+# retention manifest purging every part of an expired backup and none of a
+# kept one. Self-contained and re-runnable
 # on one database (it removes its own fixtures).
 # ============================================================================
-run_suite "Q228 CLOSURE BACKUP PARTS" rls_q228_closure_backup_parts.sql qp 82
+run_suite "Q228 CLOSURE BACKUP PARTS" rls_q228_closure_backup_parts.sql qp 114
 qp_fails=$SUITE_FAILS
 if [ "$qp_fails" != "0" ]; then
   echo "Q228 CLOSURE BACKUP PARTS SUITE FAILED: $qp_fails failing assertion(s)" >&2
@@ -1284,6 +1287,14 @@ if [ "$qp_fails" != "0" ]; then
   echo "  retention run), or a re-queued backup starves the queue. QK red: THE" >&2
   echo "  REAPER FAILS A HEALTHY MULTI-PART BACKUP, or no longer fails a stuck one." >&2
   echo "  QE red: the Owner can erase before a backup with parts is built." >&2
+  echo "  QD red: the download audit lost its part check, its IDOR term (QD5)," >&2
+  echo "  or its part in the payload, or a refusal wrote a row, or the (uuid)" >&2
+  echo "  overload is back. QX red: a delete without a succeeded backup went" >&2
+  echo "  ahead unacknowledged, or raised a backup's expiry. QO red: THE PURGE" >&2
+  echo "  HOLD RELEASES BEFORE EVERY PART IS DOWNLOADED BY THE REQUESTER, or no" >&2
+  echo "  longer releases (QO3/QO4/QO6). QM red: QM2/QM3 -- THE ORPHAN SWEEP" >&2
+  echo "  WOULD DELETE PARTS OF A KEPT BACKUP (Sev1); QM1 an expired backup's" >&2
+  echo "  parts outlive it; QM4 a failed backup's parts are never swept." >&2
   psql_status=1
 else
   echo "Q228 closure backup parts suite: all assertions passed."

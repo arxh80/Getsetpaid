@@ -15,9 +15,18 @@ import "server-only";
 // path cannot be the weaker of the two if a future policy is relaxed.
 //
 // 404 COVERS EVERY REFUSAL that is not a live archive: not signed in, not a
-// uuid, not your job, no such job, still running, failed, expired. They are
-// indistinguishable on purpose, so the endpoint is not an existence oracle
-// for other people's exports.
+// uuid, not your job, no such job, still running, failed, expired, or no such
+// part. They are indistinguishable on purpose, so the endpoint is not an
+// existence oracle for other people's exports.
+//
+// PARTS (Q228). A closure backup can be several archives. Part 1 is always
+// the job's own `storage_key`; part n >= 2 is read from `export_job_parts`
+// through the SAME RLS client (`export_job_parts_select_own` reuses the job's
+// own-row policy), never the service client -- a service read would answer
+// an Admin of the same workspace with a real key and make this file the
+// authorisation, which it must not be. The audit RPC is told the part and
+// refuses one that does not exist; after the RLS read that refusal is
+// unreachable, and if it is ever raised it is a 500 like any audit fault.
 
 import { createClient } from "@/lib/supabase/server";
 import { createStorageClient } from "@/lib/supabase/storage";
@@ -32,8 +41,12 @@ export type ExportDownloadOutcome =
   | { readonly ok: false; readonly status: 404 }
   | { readonly ok: false; readonly status: 500 };
 
-export async function issueExportDownloadUrl(jobId: string): Promise<ExportDownloadOutcome> {
+export async function issueExportDownloadUrl(
+  jobId: string,
+  part: number = 1,
+): Promise<ExportDownloadOutcome> {
   if (!isUuid(jobId)) return { ok: false, status: 404 };
+  if (!Number.isSafeInteger(part) || part < 1) return { ok: false, status: 404 };
 
   const user = await getCurrentUser();
   if (!user) return { ok: false, status: 404 };
@@ -55,19 +68,38 @@ export async function issueExportDownloadUrl(jobId: string): Promise<ExportDownl
     return { ok: false, status: 404 };
   }
 
+  // WHICH OBJECT. Part 1 is the job's own key; a later part's key is read
+  // through the caller's own RLS client, so a part of somebody else's job is
+  // the same "no row" as a part that does not exist.
+  let storageKey: string = data.storage_key;
+  if (part >= 2) {
+    const { data: partRow, error: partError } = await supabase
+      .from("export_job_parts")
+      .select("storage_key")
+      .eq("job_id", jobId)
+      .eq("part_no", part)
+      .maybeSingle();
+    if (partError) {
+      console.error("[export] part lookup failed:", partError.message);
+      return { ok: false, status: 500 };
+    }
+    if (!partRow || typeof partRow.storage_key !== "string") return { ok: false, status: 404 };
+    storageKey = partRow.storage_key;
+  }
+
   const bucket = createStorageClient().storage.from(EXPORT_BUCKET);
 
   // THE BYTES, BEFORE THE AUDIT (the screenshot route's fix-round finding
   // M1): an audit row for an access that could not happen is a false record.
   let present: { data: boolean | null; error: { message: string } | null };
   try {
-    present = await bucket.exists(data.storage_key);
+    present = await bucket.exists(storageKey);
   } catch (cause) {
     console.error("[export] storage exists() threw:", cause);
     return { ok: false, status: 500 };
   }
   if (present.data === false) {
-    console.error(`[export] job ${jobId}: no archive object; no audit row written`);
+    console.error(`[export] job ${jobId} part ${part}: no archive object; no audit row written`);
     return { ok: false, status: 404 };
   }
   if (present.error || present.data !== true) {
@@ -75,14 +107,17 @@ export async function issueExportDownloadUrl(jobId: string): Promise<ExportDownl
     return { ok: false, status: 500 };
   }
 
-  const { error: auditError } = await supabase.rpc("audit_export_download", { p_job_id: jobId });
+  const { error: auditError } = await supabase.rpc("audit_export_download", {
+    p_job_id: jobId,
+    p_part: part,
+  });
   if (auditError) {
     console.error("[export] download audit failed:", auditError.message);
     return { ok: false, status: 500 };
   }
 
   const { data: signed, error: signError } = await bucket.createSignedUrl(
-    data.storage_key,
+    storageKey,
     SIGNED_URL_TTL_SECONDS,
   );
   if (signError || !signed?.signedUrl) {
