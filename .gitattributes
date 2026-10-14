@@ -3,3 +3,6 @@ graphify-out/graph.json merge=graphify
 # a CRLF checkout under core.autocrlf=true reds them. Keep SQL and shell LF on every machine.
 *.sql text eol=lf
 *.sh text eol=lf
+# Mounted into the Linux ClamAV container: a CRLF checkout would hand clamd
+# ""-suffixed values. Keep LF everywhere.
+docker/** text eol=lf
