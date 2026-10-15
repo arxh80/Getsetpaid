@@ -12,7 +12,12 @@ allowBuilds:
 # js-yaml via eslint -- so there is no direct version to raise.
 #
 #   sharp   <0.35.4 -- libheif GHSA-g89c-p67h-r497 / GHSA-2jg2-4ch7-h545
+#           <0.35.5 -- librsvg CVE-2026-96889 (2026-10-15)
 #   js-yaml <4.3.2  -- GHSA-2883-xcg3-v3hh, CPU use on empty merge sources
+#   source-map-js <1.2.2 -- event-loop DoS (via next>postcss, @tailwindcss/node)
+#   brace-expansion <1.1.20 / 4.x <5.0.11 -- recursion DoS (via eslint's and
+#           typescript-estree's minimatch); one entry per major so neither
+#           line is dragged across a major boundary
 #
 # Both are patch bumps inside the same minor, which is why an override is the
 # proportionate tool here rather than waiting on the parents to re-release.
@@ -25,5 +30,21 @@ allowBuilds:
 # Remove an entry once its parent ships a version that resolves past it on its
 # own -- an override that no longer changes anything is a lie about the tree.
 overrides:
-  sharp: "^0.35.4"
+  sharp: "^0.35.5"
   js-yaml: "^4.3.2"
+  source-map-js: "^1.2.2"
+  "brace-expansion@<2": "^1.1.20"
+  "brace-expansion@>=4 <6": "^5.0.11"
+
+# AUDIT EXCEPTIONS -- each one has NO published fix, is dev-only, and says why
+# it cannot be reached. Delete the entry the day a patched version ships (the
+# override list above is then the right tool).
+#
+#   GHSA-vfj7-8cjw-p6xm  braces <=3.0.3, stack-exhaustion DoS on deeply nested
+#     patterns; no patched release (2026-10-15). Only path:
+#     eslint-config-next > @next/eslint-plugin-next > fast-glob > micromatch.
+#     Dev-only lint tooling: the patterns it expands are this repo's own lint
+#     config globs, never user input, and nothing in the shipped app imports it.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-vfj7-8cjw-p6xm
