@@ -3107,7 +3107,8 @@ export async function plantOwnerClosedWorkspace(
   label: string,
   owner: { id: string },
   member: { id: string; name: string },
-): Promise<{ id: string; slug: string; name: string }> {
+  opts?: { backup?: "failed" | "two_parts" },
+): Promise<{ id: string; slug: string; name: string; backupJobId: string }> {
   const id = randomUUID();
   const slug = `e2e-closed-${label}-${id.slice(0, 8)}`;
   const name = `E2E Closed ${label} ${id.slice(0, 4)}`;
@@ -3125,6 +3126,7 @@ export async function plantOwnerClosedWorkspace(
   );
   await sql(`update public.profiles set full_name = $2 where id = $1`, [member.id, member.name]);
 
+  let backupJobId = "";
   const client = await db().connect();
   try {
     await client.query("begin");
@@ -3137,6 +3139,63 @@ export async function plantOwnerClosedWorkspace(
       slug,
       "E2E: the Owner is closing this workspace",
     ]);
+    // Q228: the planted backup outcome is written in the SAME transaction as
+    // the close, as the server (no role, no person on the session), so no
+    // runner nudge or cron tick can claim the queued job first. Each move is
+    // the legal one for a server session; the triggers check them all.
+    await client.query("reset role");
+    await client.query(`select set_config('request.jwt.claims', '', true)`);
+    const { rows } = await client.query<{ id: string }>(
+      `select id from public.export_jobs where organisation_id = $1 and closure_backup`,
+      [id],
+    );
+    backupJobId = rows[0]?.id ?? "";
+    if (backupJobId === "") throw new Error("plantOwnerClosedWorkspace: the close made no backup job");
+    if (opts?.backup === "failed") {
+      await client.query(
+        `update public.export_jobs
+            set status = 'failed', failure_reason = 'E2E: the backup could not be built'
+          where id = $1`,
+        [backupJobId],
+      );
+    } else if (opts?.backup === "two_parts") {
+      const key1 = `exports/${backupJobId}.zip`;
+      const key2 = `exports/${backupJobId}-part-0002.zip`;
+      await client.query(`update public.export_jobs set status = 'running' where id = $1`, [backupJobId]);
+      await client.query(
+        `insert into public.export_job_parts (job_id, part_no, storage_key, byte_size, row_count)
+         values ($1, 1, $2, $3, 0)`,
+        [backupJobId, key1, EMPTY_ZIP.length],
+      );
+      await client.query(
+        `update public.export_jobs
+            set status = 'queued', part_count = 1, resume_cursor = '{"v":1}'::jsonb where id = $1`,
+        [backupJobId],
+      );
+      await client.query(`update public.export_jobs set status = 'running' where id = $1`, [backupJobId]);
+      await client.query(
+        `insert into public.export_job_parts (job_id, part_no, storage_key, byte_size, row_count)
+         values ($1, 2, $2, $3, 0)`,
+        [backupJobId, key2, EMPTY_ZIP.length],
+      );
+      const manifest = {
+        schemaVersion: 3,
+        parts: [
+          { part: 1, storageKey: key1 },
+          { part: 2, storageKey: key2 },
+        ],
+        indexPart: 2,
+        withheld: [],
+        notes: [],
+      };
+      await client.query(
+        `update public.export_jobs
+            set status = 'succeeded', storage_key = $2, part_count = 2, resume_cursor = null,
+                byte_size = $3, row_count = 0, table_count = 0, manifest = $4::jsonb
+          where id = $1`,
+        [backupJobId, key1, EMPTY_ZIP.length * 2, JSON.stringify(manifest)],
+      );
+    }
     await client.query("commit");
   } catch (error) {
     await client.query("rollback").catch(() => undefined);
@@ -3144,7 +3203,46 @@ export async function plantOwnerClosedWorkspace(
   } finally {
     client.release();
   }
-  return { id, slug, name };
+  if (opts?.backup === "two_parts") {
+    const storage = serviceStorage().from("exports");
+    for (const key of [`exports/${backupJobId}.zip`, `exports/${backupJobId}-part-0002.zip`]) {
+      const { error } = await storage.upload(key, EMPTY_ZIP, {
+        contentType: "application/zip",
+        upsert: true,
+      });
+      if (error) throw new Error(`plantOwnerClosedWorkspace upload ${key}: ${error.message}`);
+    }
+  }
+  return { id, slug, name, backupJobId };
+}
+
+const EMPTY_ZIP = Buffer.concat([Buffer.from([0x50, 0x4b, 0x05, 0x06]), Buffer.alloc(18)]);
+
+function serviceStorage() {
+  const { apiUrl, serviceRoleKey } = localStack();
+  return createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  }).storage;
+}
+
+/** Q228: remove a planted backup's two objects and its download audit rows. */
+export async function removePlantedBackup(jobId: string): Promise<void> {
+  await serviceStorage()
+    .from("exports")
+    .remove([`exports/${jobId}.zip`, `exports/${jobId}-part-0002.zip`]);
+  await sql(`delete from public.audit_events where action = 'export_job.downloaded' and target_id = $1`, [
+    jobId,
+  ]);
+}
+
+/** Q228: the `after.part` of every audited download of a job, oldest first. */
+export async function exportDownloadParts(jobId: string): Promise<number[]> {
+  const { rows } = await db().query<{ part: string | null }>(
+    `select after ->> 'part' as part from public.audit_events
+      where action = 'export_job.downloaded' and target_id = $1 order by created_at, id`,
+    [jobId],
+  );
+  return rows.map((r) => Number(r.part));
 }
 
 /** The organisation's lifecycle state, read as `postgres`. */
