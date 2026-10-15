@@ -35,3 +35,5 @@ Task 3: minor (deferred): vitest gate tolerates 1 known red (XD1 export_job.down
 Task 3: fix round 1/5 — 3638cda (base 0e822d8): all 4 findings ADDRESSED per scoped re-review (part-guard unit test + mutant, mutant 10 regenerated in place, M12-M17 committed as 21a-21f, census regex)
 Task 3: minor (deferred): mutants 21a-21f measured by a quick apply/run/restore driver, not the full run-mutation.sh path — final review to decide whether a full harness run is owed
 Task 3: complete — 0e822d8..3638cda
+
+- Task 4 (parts list and Contact us): PARTIAL, e2e owed. Code in 960c76b; unit, lint, typecheck, tests/unit green; the new e2e spec has never completed a run (two memory kills). See task-4-report.md.
