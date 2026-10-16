@@ -130,12 +130,12 @@ select md5(body) as au_md5 from public.legal_documents where slug = 'acceptable-
 -- ===========================================================================
 -- § LF  FIXTURES
 -- ===========================================================================
-select lg.val('LF1 FIXTURE: the migrations hold exactly 38 rows (30, plus the one Phase 8 Task 6 rewrote because the retention job made the Data Retention page incomplete, plus the one its fix round 1 rewrote because THAT version overclaimed -- review finding I3 -- plus the five Task 9a published when the founder named the hosts on 2026-09-30, Q142/Q145, with Q187''s clause, plus the data-retention version 8 Phase 9 Task 3 published to state the two integration periods)',
-  $$select count(*)::text from public.legal_documents$$, '38');
-select lg.val('LF2 FIXTURE: 15 published -- 8 still at version 1, 1 at version 2, 2 at version 3, 1 at version 4, 2 at version 5, 1 at version 8 (Task 9a: privacy 4, DPA 5, security 3, subprocessors 3; Phase 9 Task 3: data-retention 8)',
+select lg.val('LF1 FIXTURE: the migrations hold exactly 38 rows (30, plus the one Phase 8 Task 6 rewrote because the retention job made the Data Retention page incomplete, plus the one its fix round 1 rewrote because THAT version overclaimed -- review finding I3 -- plus the five Task 9a published when the founder named the hosts on 2026-09-30, Q142/Q145, with Q187''s clause, plus the data-retention version 8 Phase 9 Task 3 published to state the two integration periods, plus the subprocessors version 4 that names the self-hosted scanner, Q42)',
+  $$select count(*)::text from public.legal_documents$$, '39');
+select lg.val('LF2 FIXTURE: 15 published -- 8 still at version 1, 1 at version 2, 1 at version 3, 2 at version 4, 2 at version 5, 1 at version 8 (Task 9a: privacy 4, DPA 5, security 3; Phase 9 Task 3: data-retention 8; Q42: subprocessors 4)',
   $$select string_agg(version || '=' || n, ',' order by version) from (
       select version, count(*) as n from public.legal_documents where status = 'published' group by version) v$$,
-  '1=8,2=1,3=2,4=1,5=2,8=1');
+  '1=8,2=1,3=1,4=2,5=2,8=1');
 -- WHICH THREE, AND WHAT EACH NOW SAYS. Shipping a feature makes prose about
 -- it out of date, and the published version is immutable -- so the DPA's "a
 -- self-service export is being built", the rights page's single route to a
@@ -188,7 +188,7 @@ select lg.val('LF2k DENOMINATOR for LF2j: the superseded DPA versions DO say it'
      where status = 'superseded' and body like '%A self-service export is being built%'$$, '3');
 select lg.val('LF2b FIXTURE: the superseded rows are exactly the versions fix rounds 1 and 2 (and Task 2, and Task 3 and its fix round) replaced',
   $$select string_agg(slug || ':' || version, ',' order by slug, version) from public.legal_documents where status = 'superseded'$$,
-  'data-processing-addendum:1,data-processing-addendum:2,data-processing-addendum:3,data-processing-addendum:4,data-retention:1,data-retention:2,data-retention:3,data-retention:4,data-retention:5,data-retention:6,data-retention:7,data-subject-rights:1,data-subject-rights:2,data-subject-rights:3,data-subject-rights:4,marketing-preferences:1,privacy:1,privacy:2,privacy:3,security:1,security:2,subprocessors:1,subprocessors:2');
+  'data-processing-addendum:1,data-processing-addendum:2,data-processing-addendum:3,data-processing-addendum:4,data-retention:1,data-retention:2,data-retention:3,data-retention:4,data-retention:5,data-retention:6,data-retention:7,data-subject-rights:1,data-subject-rights:2,data-subject-rights:3,data-subject-rights:4,marketing-preferences:1,privacy:1,privacy:2,privacy:3,security:1,security:2,subprocessors:1,subprocessors:2,subprocessors:3');
 -- ---------------------------------------------------------------------------
 -- PHASE 8 TASK 9a (founder 2026-09-30). Q145 named the database region and
 -- Q142 the application host, so no current page may still mark the region
@@ -205,16 +205,36 @@ select lg.val('LF2o FIXTURE: the four hosting pages name Ireland (eu-west-1) and
             and (body like '%region **(deployment setting)**%'
               or body like '%The region is chosen in our hosting account%'
               or body like '%not yet listed%'))$$,
-  'data-processing-addendum:5,privacy:4,security:3,subprocessors:3/0');
+  'data-processing-addendum:5,privacy:4,security:3,subprocessors:4/0');
 select lg.val('LF2p DENOMINATOR for LF2o: exactly the four versions Task 9a superseded DO carry one',
   $$select string_agg(slug || ':' || version, ',' order by slug, version) from public.legal_documents
      where status = 'superseded'
-       and version = (select max(s.version) from public.legal_documents s
-                       where s.slug = legal_documents.slug and s.status = 'superseded')
+       -- The four Task 9a superseded, BY NAME: the newest superseded version
+       -- stopped being Task 9a's for subprocessors when version 4 (Q42)
+       -- superseded version 3.
+       and (slug, version) in (('data-processing-addendum', 4), ('privacy', 3), ('security', 2), ('subprocessors', 2))
        and (body like '%region **(deployment setting)**%'
          or body like '%The region is chosen in our hosting account%'
          or body like '%not yet listed%')$$,
   'data-processing-addendum:4,privacy:3,security:2,subprocessors:2');
+-- Q42 (founder 2026-10-13) chose a self-hosted scanner, so no current page
+-- may still say the scanning service "has not been chosen" -- and the version
+-- it superseded DID, so the zero is a zero over a real population.
+select lg.val('LF2r Q42: the current subprocessors page names the self-hosted scanner as no subprocessor, and no current page says the scanner has not been chosen',
+  $$select (select string_agg(slug || ':' || version, ',') from public.legal_documents
+             where status = 'published' and counsel_reviewed_at is null
+               and body like '%scanned for malware by ClamAV, open-source software we run on our own application server%'
+               and body like '%the scanner is not a subprocessor%')
+        || '/' ||
+        (select count(*)::text from public.legal_documents
+          where status = 'published' and body like '%has not been chosen%')$$,
+  'subprocessors:4/0');
+select lg.val('LF2s DENOMINATOR for LF2r: the subprocessors version 4 superseded DOES say the scanning service has not been chosen',
+  $$select string_agg(slug || ':' || version, ',' order by version) from public.legal_documents
+     where status = 'superseded' and slug = 'subprocessors' and body like '%has not been chosen%'
+       and version = (select max(s.version) from public.legal_documents s
+                       where s.slug = 'subprocessors' and s.status = 'superseded')$$,
+  'subprocessors:3');
 select lg.val('LF2q Q187: the current retention page says a document''s period is judged when it is deleted; the version it superseded did not',
   $$select string_agg(version || ':' || status, ',' order by version) from public.legal_documents
      where slug = 'data-retention' and version in (6, 7, 8)
@@ -839,8 +859,8 @@ reset role; reset request.jwt.claims;
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'super_c';
-select lg.val('LO1 the aal2 superuser reads every version: 38 migrated (32 before Task 9a, 37 before Phase 9 Task 3) + the terms and cookies drafts',
-  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '40');
+select lg.val('LO1 the aal2 superuser reads every version: 39 migrated (32 before Task 9a, 37 before Phase 9 Task 3, 38 before subprocessors version 4) + the terms and cookies drafts',
+  $$select count(*)::text from public.operator_legal_document_versions(null)$$, '41');
 select lg.val('LO2 ...including the one open draft, which no table read can reach',
   $$select string_agg(slug || ':' || status, ',' order by slug)
       from public.operator_legal_document_versions(null) where status = 'draft'$$, 'cookies:draft');

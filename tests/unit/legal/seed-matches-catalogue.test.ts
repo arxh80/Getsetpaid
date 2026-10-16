@@ -357,6 +357,8 @@ describe("m-N7: the current bodies are derived from every publishing migration, 
       },
       // Phase 9 Task 3: the retention page states the two integration periods.
       { file: "20261030004000_legal_retention_names_integrations.sql", slugs: ["data-retention"] },
+      // Phase 8 owed (final review B, F1) with Q42: subprocessors 4 names the self-hosted scanner.
+      { file: "20261102000000_legal_subprocessors_names_the_scanner.sql", slugs: ["subprocessors"] },
     ]);
     // Seven distinct slugs have a version past 1; the other eight are still
     // their seed. Fifteen bodies either way.
