@@ -25,6 +25,10 @@ export interface OwnExportJob {
   readonly tableCount: number | null;
   readonly failureReason: string | null;
   readonly manifest: ExportManifest | null;
+  /** Q228: a workspace-closure backup (built in parts), not an ordinary export. */
+  readonly closureBackup: boolean;
+  /** Stored parts of a multi-part backup; 0 or 1 means one archive at storage_key. */
+  readonly partCount: number;
 }
 
 /**
@@ -47,6 +51,8 @@ interface Row {
   table_count: number | null;
   failure_reason: string | null;
   manifest: unknown;
+  closure_backup: boolean;
+  part_count: number;
 }
 
 export interface OwnExportState {
@@ -55,7 +61,26 @@ export interface OwnExportState {
 }
 
 const COLUMNS =
-  "id, kind, organisation_id, status, requested_at, completed_at, expires_at, byte_size, row_count, table_count, failure_reason, manifest";
+  "id, kind, organisation_id, status, requested_at, completed_at, expires_at, byte_size, row_count, table_count, failure_reason, manifest, closure_backup, part_count";
+
+function toJob(r: Row): OwnExportJob {
+  return {
+    id: r.id,
+    kind: r.kind,
+    organisationId: r.organisation_id,
+    status: r.status,
+    requestedAt: r.requested_at,
+    completedAt: r.completed_at,
+    expiresAt: r.expires_at,
+    byteSize: r.byte_size,
+    rowCount: r.row_count,
+    tableCount: r.table_count,
+    failureReason: r.failure_reason,
+    manifest: (r.manifest ?? null) as ExportManifest | null,
+    closureBackup: r.closure_backup,
+    partCount: r.part_count,
+  };
+}
 
 /**
  * FAILS LOUDLY on a query error. A page that rendered "you have no exports"
@@ -83,19 +108,101 @@ export async function getOwnExportJobs(
   const truncated = rows.length > OWN_EXPORT_LIMIT;
   return {
     truncated,
-    jobs: rows.slice(0, OWN_EXPORT_LIMIT).map((r) => ({
-      id: r.id,
-      kind: r.kind,
-      organisationId: r.organisation_id,
-      status: r.status,
-      requestedAt: r.requested_at,
-      completedAt: r.completed_at,
-      expiresAt: r.expires_at,
-      byteSize: r.byte_size,
-      rowCount: r.row_count,
-      tableCount: r.table_count,
-      failureReason: r.failure_reason,
-      manifest: (r.manifest ?? null) as ExportManifest | null,
-    })),
+    jobs: rows.slice(0, OWN_EXPORT_LIMIT).map(toJob),
+  };
+}
+
+/**
+ * Q228: the signed-in Owner's newest closure backup of this workspace, read
+ * under their own RLS (export_jobs_select_own), so it is only ever theirs.
+ * One row: `limit 1`. FAILS LOUDLY like getOwnExportJobs -- "your backup
+ * failed" must never render as "no backup" because of a database blip.
+ */
+export async function getLatestClosureBackup(
+  organisationId: string,
+): Promise<{ readonly id: string; readonly status: ExportStatus | string } | null> {
+  const supabase = await createClient();
+  // Only what the page asks of it: the index manifest of a large backup can
+  // be megabytes, and the job list has already read it once.
+  const { data, error } = await supabase
+    .from("export_jobs")
+    .select("id, status")
+    .eq("organisation_id", organisationId)
+    .eq("closure_backup", true)
+    .order("requested_at", { ascending: false })
+    .limit(1);
+  if (error) {
+    throw new Error(`closure backup could not be read: ${error.message}`);
+  }
+  const r = ((data ?? []) as { id: string; status: string }[])[0];
+  return r ? { id: r.id, status: r.status } : null;
+}
+
+/** Parts shown per page of a backup's parts list. */
+export const PARTS_PAGE_SIZE = 50;
+
+export interface ExportPartsPage {
+  readonly parts: { part: number; byteSize: number }[];
+  /** The first part of the next page, or null on the last. */
+  readonly nextFrom: number | null;
+}
+
+/**
+ * One page of a multi-part backup's parts, keyset on `part_no`: `part_no >=
+ * fromPart order by part_no limit limit + 1`, so the extra row is the next
+ * page's first and never an unbounded read. Own RLS
+ * (export_job_parts_select_own): another person's job id returns nothing.
+ */
+export async function getExportJobParts(
+  jobId: string,
+  fromPart: number,
+  limit = PARTS_PAGE_SIZE,
+): Promise<ExportPartsPage> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("export_job_parts")
+    .select("part_no, byte_size")
+    .eq("job_id", jobId)
+    .gte("part_no", fromPart)
+    .order("part_no", { ascending: true })
+    .limit(limit + 1);
+  if (error) {
+    throw new Error(`backup parts could not be read: ${error.message}`);
+  }
+  return pageOfParts((data ?? []) as PartRow[], limit);
+}
+
+/**
+ * The page of parts the workspace export page shows for ONE job (Q228 final
+ * review I2): the page the cursor names when the cursor is this job's, the
+ * first page otherwise -- so paging one backup leaves every other listed
+ * backup where it was -- and the first page again when the named page is
+ * empty (a stale or hand-edited cursor), so a downloadable backup is never
+ * left with no download link. `read` is injectable so this is unit-tested.
+ */
+export async function partsPageFor(
+  jobId: string,
+  cursor: { readonly jobId: string; readonly from: number } | null,
+  read: (jobId: string, from: number) => Promise<ExportPartsPage> = getExportJobParts,
+): Promise<ExportPartsPage> {
+  const from = cursor?.jobId === jobId ? cursor.from : 1;
+  const page = await read(jobId, from);
+  return page.parts.length === 0 && from > 1 ? read(jobId, 1) : page;
+}
+
+export interface PartRow {
+  part_no: number;
+  byte_size: number | string;
+}
+
+/**
+ * One page from up to `limit + 1` rows in part order: the extra row, when it
+ * is there, is the next page's first part. Pure, so the page boundary is
+ * unit-tested (tests/unit/export/parts-page.test.tsx).
+ */
+export function pageOfParts(rows: readonly PartRow[], limit: number): ExportPartsPage {
+  return {
+    parts: rows.slice(0, limit).map((r) => ({ part: r.part_no, byteSize: Number(r.byte_size) })),
+    nextFrom: rows.length > limit ? rows[limit].part_no : null,
   };
 }

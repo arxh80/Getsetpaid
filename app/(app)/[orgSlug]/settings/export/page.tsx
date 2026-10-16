@@ -2,21 +2,28 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentOrg, hasPermission } from "@/lib/auth";
-import { getOwnExportJobs } from "@/lib/export/jobs";
+import { getLatestClosureBackup, getOwnExportJobs, partsPageFor } from "@/lib/export/jobs";
 import {
   EXPORT_ALREADY_RUNNING,
   EXPORT_LIMITS,
   WORKSPACE_EXPORT_EXCLUDES,
   WORKSPACE_EXPORT_INCLUDES,
   describeArchiveLife,
+  parsePartsCursor,
+  partsCursorParam,
 } from "@/lib/export/contract";
 import { Alert } from "@/components/ui/alert";
 import { ActionOutcome } from "@/components/ui/action-outcome";
 import { StepUpGate } from "@/components/auth/step-up-gate";
-import { ExportJobList } from "@/components/account/export-job-list";
+import { ExportJobList, type JobParts } from "@/components/account/export-job-list";
 import { ExportStartForm } from "@/components/account/export-start-form";
 import { CloseWorkspaceForm } from "@/components/org/close-workspace-form";
-import { CLOSE_SECTION_ID } from "@/lib/org/closure-contract";
+import {
+  CLOSE_SECTION_ID,
+  CLOSURE_BACKUP_FAILED_LINE,
+  closureBackupHelpHref,
+} from "@/lib/org/closure-contract";
+import { supportContact } from "@/lib/legal/contact";
 import { ORGANISATION_RETENTION_DAYS } from "@/lib/admin/lifecycle-contract";
 
 // Settings › Export this workspace (Phase 8 Task 4).
@@ -63,14 +70,46 @@ export async function generateMetadata({
 
 export default async function WorkspaceExportSettingsPage({
   params,
+  searchParams,
 }: PageProps<"/[orgSlug]/settings/export">) {
   const { orgSlug } = await params;
+  const { parts: rawParts } = await searchParams;
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  const mayExport = await hasPermission(org.id, "export_organisation_data");
-  const state = await getOwnExportJobs("workspace", org.id);
+  // Q228: the parts list is paginated; `?parts=<jobId>:<n>` is the keyset
+  // cursor of ONE job's list, so every other backup stays on its first page.
+  // A malformed value is page one, not an error.
+  const partsCursor = parsePartsCursor(typeof rawParts === "string" ? rawParts : null);
+
+  // PHASE 8 TASK 9c JOB 3b (below) decides who may close; the same facts decide
+  // who is offered "Contact us" when the closure backup failed.
+  const isOwner = org.role === "owner" && !org.isImpersonated;
+  const ownerClosed = org.lifecycle?.state === "owner_closed";
+
+  // One round of reads, no waterfall: the permission, the Owner's own jobs,
+  // and (only for the Owner of a workspace they closed) the latest closure
+  // backup. Every read is under the caller's own RLS and bounded.
+  const [mayExport, state, latestClosure] = await Promise.all([
+    hasPermission(org.id, "export_organisation_data"),
+    getOwnExportJobs("workspace", org.id),
+    isOwner && ownerClosed ? getLatestClosureBackup(org.id) : Promise.resolve(null),
+  ]);
   const live = state.jobs.some((j) => j.status === "queued" || j.status === "running");
+
+  // One page of parts for every listed multi-part job (at most
+  // OWN_EXPORT_LIMIT jobs, PARTS_PAGE_SIZE parts each): the page the cursor
+  // names for its own job, the first for every other, and the first again
+  // when the named page is empty (partsPageFor).
+  const partsEntries = await Promise.all(
+    state.jobs
+      .filter((j) => j.partCount > 1)
+      .map(async (j): Promise<[string, JobParts]> => {
+        const page = await partsPageFor(j.id, partsCursor);
+        return [j.id, { ...page, total: j.partCount }];
+      }),
+  );
+  const parts: Record<string, JobParts> = Object.fromEntries(partsEntries);
 
   // PHASE 8 TASK 9c JOB 3b: "Close this workspace" (founder 2026-09-30,
   // Q176/Q178). OWNER ONLY, and not rendered at all for anyone else -- not a
@@ -83,8 +122,6 @@ export default async function WorkspaceExportSettingsPage({
   // closed shows nothing (the Owner cannot close what is already read-only);
   // one its Owner closed keeps the section with a statement in place of the
   // form (the confirmation itself is in the ActionOutcome region above).
-  const isOwner = org.role === "owner" && !org.isImpersonated;
-  const ownerClosed = org.lifecycle?.state === "owner_closed";
   const showClose = isOwner && (!org.isSuspended || ownerClosed);
 
   return (
@@ -165,6 +202,12 @@ export default async function WorkspaceExportSettingsPage({
             jobs={state.jobs}
             truncated={state.truncated}
             archiveDays={EXPORT_LIMITS.archiveDays}
+            parts={parts}
+            partsHref={(jobId, from) =>
+              from <= 1
+                ? `/${orgSlug}/settings/export`
+                : `/${orgSlug}/settings/export?parts=${encodeURIComponent(partsCursorParam(jobId, from))}`
+            }
             emptyText="You have not exported this workspace. When you do, it appears here with its progress and, when it is ready, a download link. Exports other people started are not listed: an archive is built with the access rights of whoever asked for it."
           />
         </section>
@@ -216,10 +259,35 @@ export default async function WorkspaceExportSettingsPage({
               <li>You cannot reopen it yourself from inside the workspace.</li>
             </ul>
             {ownerClosed ? (
-              <p className="max-w-prose text-base text-ink" data-testid="close-workspace-done">
-                {org.name} is closed. It is read-only for everyone in it while GetSetPaid decides
-                whether to hand it to a new Owner or delete it.
-              </p>
+              <>
+                <p className="max-w-prose text-base text-ink" data-testid="close-workspace-done">
+                  {org.name} is closed. It is read-only for everyone in it while GetSetPaid decides
+                  whether to hand it to a new Owner or delete it.
+                </p>
+                {latestClosure?.status === "failed" ? (
+                  <div
+                    className="flex max-w-prose flex-col items-start gap-3"
+                    data-testid="closure-backup-failed"
+                  >
+                    <p className="text-base text-ink">{CLOSURE_BACKUP_FAILED_LINE}</p>
+                    {/* The `secondary` button variant, copied class for class from
+                        components/ui/button.tsx: it is a link (a mailto or a
+                        page), so it cannot be a <Button>. Square, no shadow,
+                        tokens only. The subject carries the slug and the job
+                        id and nothing else. */}
+                    <a
+                      href={closureBackupHelpHref(
+                        supportContact().address,
+                        org.slug,
+                        latestClosure.id,
+                      )}
+                      className="inline-flex h-11 items-center justify-center border border-rule bg-surface px-4 text-base font-semibold text-ink hover:border-ink hover:bg-shell"
+                    >
+                      Contact us
+                    </a>
+                  </div>
+                ) : null}
+              </>
             ) : (
               // CLAUDE.md § Session security: "deleting organisation data" is
               // a step-up trigger. The action re-checks it server-side either way.

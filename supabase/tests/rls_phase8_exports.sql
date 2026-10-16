@@ -200,11 +200,13 @@ select xp.val('XG5 NO client role holds UPDATE or DELETE, at table or column lev
 select xp.val('XG6 anon holds nothing at all',
   $$select count(*)::text from information_schema.column_privileges
      where table_schema='public' and table_name='export_jobs' and grantee='anon'$$, '0');
-select xp.val('XG7 service_role''s UPDATE is the ten outcome columns plus the ready-email stamp (20261015000000), and no others',
+-- Q228 (20261101000000) adds part_count and resume_cursor: the closure-backup
+-- runner's part count and resume point, CHECK-bound to closure backups.
+select xp.val('XG7 service_role''s UPDATE is the ten outcome columns, the ready-email stamp (20261015000000) and Q228''s part_count/resume_cursor (20261101000000), and no others',
   $$select string_agg(column_name, ',' order by column_name) from information_schema.column_privileges
      where table_schema='public' and table_name='export_jobs'
        and grantee='service_role' and privilege_type='UPDATE'$$,
-  'byte_size,completed_at,expires_at,failure_reason,manifest,ready_notified_at,row_count,started_at,status,storage_key,table_count');
+  'byte_size,completed_at,expires_at,failure_reason,manifest,part_count,ready_notified_at,resume_cursor,row_count,started_at,status,storage_key,table_count');
 select xp.val('XG8 service_role holds no INSERT or DELETE on the register',
   $$select count(*)::text from information_schema.column_privileges
      where table_schema='public' and table_name='export_jobs'
@@ -242,8 +244,12 @@ select xp.val('XG14 the runner''s three entry points are executable by service_r
 select xp.val('XG15 the download audit RPC is executable by authenticated ALONE',
   $$select string_agg(r, ',' order by r) from (
       select r from unnest(array['anon','authenticated','service_role']) r
-       where has_function_privilege(r, 'public.audit_export_download(uuid)', 'EXECUTE')) x$$,
+       where has_function_privilege(r, 'public.audit_export_download(uuid,integer)', 'EXECUTE')) x$$,
   'authenticated');
+-- Q228 (20261101001000): the RPC takes the part; the (uuid) form was DROPPED,
+-- not overloaded, so there is one signature and one grant to keep right.
+select xp.val('XG15b the (uuid) form of the download audit RPC no longer exists',
+  $$select (to_regprocedure('public.audit_export_download(uuid)') is null)::text$$, 'true');
 select xp.val('XG16 no client role can reach the private catalogue or the limits',
   $$select count(*)::text from unnest(array['anon','authenticated','service_role']) r
      where has_function_privilege(r, 'private.export_catalogue()', 'EXECUTE')

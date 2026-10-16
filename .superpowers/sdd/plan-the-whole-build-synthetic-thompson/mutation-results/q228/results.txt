@@ -1,0 +1,238 @@
+== M00 CONTROL (before)
+   [qp] 114 assertions, 0 red
+   [cw] 181 assertions, 0 red
+   [xp] 139 assertions, 3 red
+   [xp] RED  XD7 exactly one download was audited, and it names the job and the workspace  [expected 1/341276b3-8d49-428f-9efa-72b45c9f27bb/07ae5f3a-6c3f-4c51-bfd6-24a3c3c0de80, got 3/b11bfa16-643b-4bbd-8953-a939a643a4ab/07ae5f3a-6c3f-4c51-bfd6-24a3c3c0de80]
+   [xp] RED  XD8 starting an export is audited too, once per job, with the KIND and no content  [expected 3/account,workspace/0, got 25/account,workspace/0]
+   [xp] RED  XZ4 the audit log is back where this suite found it  [expected 551, got 527]
+   [vitest] tests/integration/security/phase7-permission-matrix.test.ts -t "cannot audit-and-download a job that is not theirs": exit 0; Tests  9 passed | 611 skipped (620)
+== M01 parts policy using (true)
+   [qp] 114 assertions, 5 red
+   [qp] RED  QR1 Owner P (the requester) reads exactly J's two parts, and nothing else  [expected 2/2, got 2/4]
+   [qp] RED  QR2 Admin P2 of the SAME workspace reads none of them (an archive is one person's snapshot)  [expected 0, got 4]
+   [qp] RED  QR2b Manager P3 of the same workspace reads none either  [expected 0, got 4]
+   [qp] RED  QR3 Owner Q (another workspace) reads none  [expected 0, got 4]
+   [qp] RED  QR3b POSITIVE CONTROL: Owner R reads J2's two parts (the policy admits a requester)  [expected 2/2, got 2/4]
+   EXPECTED-RED all present: QR2, QR3
+== M02 insert+delete granted to authenticated
+   [qp] 114 assertions, 3 red
+   [qp] RED  QT3 authenticated holds SELECT and no INSERT/UPDATE/DELETE/TRUNCATE, at table or column level  [expected true/0/0, got true/2/1]
+   [qp] RED  QR5a a forged INSERT as Owner P is refused (no grant)  [expected denied(42501:missing_grant), got denied(42501:export_part_is_server_only)]
+   [qp] RED  QR5c a forged DELETE as Owner P is refused (no grant)  [expected denied(42501:missing_grant), got ok]
+   EXPECTED-RED all present: QT3, QR5a, QR5c
+== M03 guard: server-session check dropped
+   [qp] 114 assertions, 2 red
+   [qp] RED  QG1 an INSERT under Owner P's claims (INSERT lent) is refused by the guard: server only  [expected denied(42501:export_part_is_server_only), got denied(42501)]
+   [qp] RED  QG6e a DELETE from a person's session (as postgres with claims, i.e. a definer RPC) is refused: server only  [expected denied(42501:export_part_is_server_only), got denied(42501:export_part_of_a_kept_backup)]
+   EXPECTED-RED all present: QG1
+== M04 guard: part_count + 1 order check dropped
+   [qp] 114 assertions, 2 red
+   [qp] RED  QG4 with J running at part_count 2, part 4 is refused: out of order  [expected denied(22023:export_part_out_of_order), got ok]
+   [qp] RED  QG4c ...and part 2 again is refused: out of order (behind the count)  [expected denied(22023:export_part_out_of_order), got denied(23505:export_job_parts_pkey)]
+   EXPECTED-RED all present: QG4
+== M05 guard: running check dropped
+   [qp] 114 assertions, 1 red
+   [qp] RED  QG3 a part for J while J is QUEUED is refused: running only  [expected denied(22023:export_part_needs_a_running_job), got ok]
+   EXPECTED-RED all present: QG3
+== M06 guard: delete admits any status
+   [qp] 114 assertions, 3 red
+   [qp] RED  QG6 a part of a SUCCEEDED closure backup (J2) is not deleted  [expected denied(42501:export_part_of_a_kept_backup), got ok]
+   [qp] RED  QG6c ...nor a part of a RUNNING one (J)  [expected denied(42501:export_part_of_a_kept_backup), got ok]
+   [qp] RED  QG6d ...nor of a QUEUED one (J re-queued in the scenario)  [expected ok|ok|denied(42501:export_part_of_a_kept_backup), got ok|ok|ok]
+   EXPECTED-RED all present: QG6
+== M07 re-queue clause without old.closure_backup
+   [qp] 114 assertions, 1 red
+   [qp] RED  QJ2 running -> queued on a running ORDINARY job (O, claimed in the scenario) is an illegal transition  [expected ok|denied(22023:illegal_export_transition), got ok|denied(22023:export_part_count_mismatch)]
+   EXPECTED-RED all present: QJ2
+== M08 both part-count comparisons dropped
+   [qp] 114 assertions, 2 red
+   [qp] RED  QJ3 a re-queue claiming part_count 2 with only 1 part row is refused  [expected denied(22023:export_part_count_mismatch), got ok]
+   [qp] RED  QJ5 a success at part_count 1 with 2 part rows is refused: the count must match  [expected denied(22023:export_part_count_mismatch), got ok]
+   EXPECTED-RED all present: QJ3, QJ5
+== M08a re-queue part-count comparison dropped
+   [qp] 114 assertions, 1 red
+   [qp] RED  QJ3 a re-queue claiming part_count 2 with only 1 part row is refused  [expected denied(22023:export_part_count_mismatch), got ok]
+   EXPECTED-RED all present: QJ3
+== M08c success part-count comparison dropped
+   [qp] 114 assertions, 1 red
+   [qp] RED  QJ5 a success at part_count 1 with 2 part rows is refused: the count must match  [expected denied(22023:export_part_count_mismatch), got ok]
+   EXPECTED-RED all present: QJ5
+== M08b success comparison extended to failed
+   [qp] 114 assertions, 3 red
+   [qp] RED  QJ7c a running closure backup one part behind (2 rows, part_count 1) carrying a cursor CAN be failed; the cursor is cleared  [expected ok|failed:1:true, got denied(22023:export_part_count_mismatch)|running:1:false]
+   [qp] RED  QJ7 a running closure backup with 1 part row and part_count 0 can still be marked failed  [expected ok|failed:0, got denied(22023:export_part_count_mismatch)|running:0]
+   [qp] RED  QJ7b ...and the reaper fails it when it was claimed 2 hours ago (no raise aborts the run)  [expected ok|ok|ok|true|failed:true, got ok|ok|ok|denied(22023:export_part_count_mismatch)|<null>]
+   EXPECTED-RED all present: QJ7
+== M09 claim ordered by requested_at again
+   [qp] 114 assertions, 1 red
+   [qp] RED  QJ6 a re-queued closure backup claimed just now waits behind an ordinary job requested a minute ago  [expected ok|ok|ok|ok|ok|ordinary, got ok|ok|ok|ok|ok|closure]
+   EXPECTED-RED all present: QJ6
+== M10 export_job_parts_storage_key_shape dropped
+   [qp] 114 assertions, 4 red
+   [qp] RED  QT6b a part n >= 2 (part 3) carrying part 1's key is refused by export_job_parts_storage_key_shape  [expected ok|denied(23514:export_job_parts_storage_key_shape), got ok|ok]
+   [qp] RED  QT6c part 1 carrying a -part-0001 suffix is refused by export_job_parts_storage_key_shape  [expected ok|denied(23514:export_job_parts_storage_key_shape), got ok|ok]
+   [qp] RED  QT7b ...and NOT -part-1234 (lpad truncation is refused by the CHECK)  [expected ok|denied(23514:export_job_parts_storage_key_shape), got ok|ok]
+   [qp] RED  QT7c the CHECK's own expression: 12345 -> -part-12345, 7 -> -part-0007  [expected true/exports/x-part-0007.zip,exports/x-part-12345.zip, got <null>]
+   EXPECTED-RED all present: QT6*, QT7*
+== M11 export_jobs_part_count_shape dropped
+   [qp] 114 assertions, 5 red
+   [qp] RED  QT8a part_count < 0 is refused by export_jobs_part_count_shape  [expected ok|denied(23514:export_jobs_part_count_shape), got ok|ok]
+   [qp] RED  QT8b part_count > 0 on a non-closure job is refused  [expected ok|denied(23514:export_jobs_part_count_shape), got ok|ok]
+   [qp] RED  QT8c a resume_cursor on a non-closure (queued) job is refused  [expected ok|denied(23514:export_jobs_part_count_shape), got ok|ok]
+   [qp] RED  QT8d a resume_cursor on a SUCCEEDED closure job is refused  [expected ok|denied(23514:export_jobs_part_count_shape), got ok|ok]
+   [qp] RED  QJ5b a success still carrying a resume_cursor is refused by export_jobs_part_count_shape  [expected denied(23514:export_jobs_part_count_shape), got ok]
+   EXPECTED-RED all present: QT8*, QJ5b
+== M11b failure no longer clears resume_cursor
+   [qp] 114 assertions, 6 red
+   [qp] RED  QG-fixture J failed with part_count 3 and 3 parts  [expected ok, got denied(23514:export_jobs_part_count_shape)]
+   [qp] RED  QG6b once J has FAILED, its parts are deleted  [expected ok, got denied(42501:export_part_of_a_kept_backup)]
+   [qp] RED  QG6b2 ...all three of them  [expected 0, got 3]
+   [qp] RED  QK3 POSITIVE CONTROL: claimed 2 hours ago (and carrying a cursor), it IS failed with the reaper's reason, the cursor cleared  [expected ok|ok|ok|true|true|failed:true:true, got ok|ok|ok|true|denied(23514:export_jobs_part_count_shape)|<null>]
+   [qp] RED  QJ7c a running closure backup one part behind (2 rows, part_count 1) carrying a cursor CAN be failed; the cursor is cleared  [expected ok|failed:1:true, got denied(23514:export_jobs_part_count_shape)|running:1:false]
+   [qp] RED  QM4 a FAILED closure backup with its 2 part rows left behind (J4 failed in the probe): both keys are orphans (M16)  [expected orphan|orphan, got error(23514:new row for relation "export_jobs" violates check constraint "export_jobs_part_count_shape")]
+   EXPECTED-RED all present: QJ7c, QK3
+-- M12 file 21a-closure-hold-any-part-releases.sql vs live: 14 line(s) removed, 7 added
+--    -       -- Q228: OWED WHILE ANY PART 1..greatest(part_count, 1) HAS NO DOWNLOAD
+--    -       -- ROW BY THE REQUESTER. A row with no (or a non-numeric) `part` is
+--    -       -- part 1 -- every download audited before 20261101001000.
+--    -       and exists (
+--    -         select 1 from pg_catalog.generate_series(1, greatest(b.part_count, 1)) n
+--    -          where not exists (
+--    -            select 1 from public.audit_events a
+--    -             where a.organisation_id = o.id
+--    -               and a.action = 'export_job.downloaded'
+--    -               and a.target_type = 'export_job'
+--    -               and a.target_id = b.id
+--    -               and a.actor_user_id = b.requested_by
+--    -               and (case when (a.after ->> 'part') ~ '^[0-9]{1,9}$'
+--    -                         then (a.after ->> 'part')::integer else 1 end) = n)));
+--    +       and not exists (
+--    +         select 1 from public.audit_events a
+--    +          where a.organisation_id = o.id
+--    +            and a.action = 'export_job.downloaded'
+--    +            and a.target_type = 'export_job'
+--    +            and a.target_id = b.id
+--    +            and a.actor_user_id = b.requested_by));
+== M12 closure_backup_owed: the pre-Q228 predicate (any one download releases)
+   [qp] 114 assertions, 2 red
+   [qp] RED  QO2 after Owner S downloads parts 1 and 2 (undone): STILL owed (M12)  [expected true|ok|called|called|ok|true|true, got true|ok|called|called|ok|true|false]
+   [qp] RED  QO3b in any order: part 3 alone does not release it; then parts 2 and 1 do  [expected true|ok|called|ok|true|true|true|ok|called|called|ok|true|false, got true|ok|called|ok|true|false|true|ok|called|called|ok|true|false]
+   [cw] 181 assertions, 0 red
+   EXPECTED-RED all present: QO2
+-- M13 file 21b-closure-hold-any-actor.sql vs live: 1 line(s) removed, 0 added
+--    -               and a.actor_user_id = b.requested_by
+== M13 closure_backup_owed: actor_user_id = requested_by dropped
+   [qp] 114 assertions, 1 red
+   [qp] RED  QO5 parts 1-3 "downloaded" by Admin S2 (planted rows, actor S2) do not release it: still owed (M13)  [expected ok|true, got ok|false]
+   [cw] 181 assertions, 0 red
+   EXPECTED-RED all present: QO5
+-- M14 file 21c-manifest-orphans-ignore-parts.sql vs live: 4 line(s) removed, 0 added
+--    -         and not exists (select 1 from public.export_job_parts p
+--    -                           join public.export_jobs j on j.id = p.job_id
+--    -                          where p.storage_key = s.name and s.bucket_id = 'exports'
+--    -                            and j.status <> 'failed')
+== M14 manifest: parts term dropped from orphans
+   [qp] 114 assertions, 3 red
+   [qp] RED  QM1 J3 EXPIRED: all three part keys are named, export_expired, once each (M15)  [expected export_expired|export_expired|export_expired, got export_expired|export_expired,orphan|export_expired,orphan]
+   [qp] RED  QM2 CRITICAL: J3 unexpired and succeeded: NONE of its three keys is named, neither expired nor orphan (M14)  [expected -|-|-, got -|orphan|orphan]
+   [qp] RED  QM3 a RE-QUEUED closure backup's two part objects (J4) are not named (M14)  [expected -|-, got orphan|orphan]
+   EXPECTED-RED all present: QM2, QM3
+-- M15 file 21d-manifest-parts-never-expire.sql vs live: 7 line(s) removed, 0 added
+--    -      union all
+--    -      select 'exports'::text, p.storage_key, 'export_expired'::text, j.expires_at
+--    -        from public.export_job_parts p
+--    -        join public.export_jobs j on j.id = p.job_id
+--    -       where p.part_no >= 2
+--    -         and j.expires_at is not null
+--    -         and j.expires_at < pg_catalog.now()
+== M15 manifest: expired-parts union dropped
+   [qp] 114 assertions, 1 red
+   [qp] RED  QM1 J3 EXPIRED: all three part keys are named, export_expired, once each (M15)  [expected export_expired|export_expired|export_expired, got export_expired|-|-]
+   EXPECTED-RED all present: QM1
+-- M16 file 21e-manifest-keeps-failed-parts.sql vs live: 2 line(s) removed, 1 added
+--    -                          where p.storage_key = s.name and s.bucket_id = 'exports'
+--    -                            and j.status <> 'failed')
+--    +                          where p.storage_key = s.name and s.bucket_id = 'exports')
+== M16 manifest: the orphan exemption also keeps failed jobs' parts
+   [qp] 114 assertions, 1 red
+   [qp] RED  QM4 a FAILED closure backup with its 2 part rows left behind (J4 failed in the probe): both keys are orphans (M16)  [expected orphan|orphan, got -|-]
+   EXPECTED-RED all present: QM4
+-- M17 file 21f-download-audit-no-part-check.sql vs live: 3 line(s) removed, 1 added
+--    -  if p_part is null or p_part < 1
+--    -     or (p_part > 1 and not exists (select 1 from public.export_job_parts p
+--    -                                     where p.job_id = v_job.id and p.part_no = p_part)) then
+--    +  if p_part is null or p_part < 1 then
+== M17 audit_export_download: part-exists check dropped
+   [qp] 114 assertions, 3 red
+   [qp] RED  QD4a J3 part 4 (it has 3) is export_part_not_found  [expected denied(22023:export_part_not_found), got called]
+   [qp] RED  QD4e Owner P's ordinary K, part 2 (an ordinary export has no parts) is export_part_not_found  [expected denied(22023:export_part_not_found), got called]
+   [qp] RED  QD7 no refusal in QD4-QD6 wrote a download audit row (the count is unchanged)  [expected true, got false]
+   EXPECTED-RED all present: QD4*
+-- M18 file 10-export-download-authorisation.sql vs live: 1 line(s) removed, 1 added
+--    -   where j.id = p_job_id and j.requested_by = (select auth.uid());
+--    +   where j.id = p_job_id;
+== M18 audit_export_download: requested_by = auth.uid() dropped
+   [qp] 114 assertions, 2 red
+   [qp] RED  QD5 Admin S2 of the SAME workspace, J3 part 2: not_your_export (the IDOR term, not the part check)  [expected denied(42501:not_your_export), got called]
+   [qp] RED  QD7 no refusal in QD4-QD6 wrote a download audit row (the count is unchanged)  [expected true, got false]
+   [xp] 139 assertions, 6 red
+   [xp] RED  XD2 IDOR: another Admin of the same workspace cannot audit-and-download it  [expected denied(42501:not_your_export), got ok]
+   [xp] RED  XD3 IDOR: an unrelated user cannot either  [expected denied(42501:not_your_export), got ok]
+   [xp] RED  XD5 the aal2 platform superuser cannot download somebody's export either  [expected denied(42501:not_your_export), got ok]
+   [xp] RED  XD7 exactly one download was audited, and it names the job and the workspace  [expected 1/9cddd52e-b273-4107-ae91-3e7f03029a35/07ae5f3a-6c3f-4c51-bfd6-24a3c3c0de80, got 6/9cddd52e-b273-4107-ae91-3e7f03029a35/07ae5f3a-6c3f-4c51-bfd6-24a3c3c0de80]
+   [xp] RED  XD8 starting an export is audited too, once per job, with the KIND and no content  [expected 3/account,workspace/0, got 23/account,workspace/0]
+   [xp] RED  XZ4 the audit log is back where this suite found it  [expected 639, got 617]
+   [vitest] tests/integration/security/phase7-permission-matrix.test.ts -t "cannot audit-and-download a job that is not theirs": exit 1; Tests  7 failed | 2 passed | 611 skipped (620)
+   [vitest] RED  FAIL  |integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'impersonatedOrgOwner' cannot audit-and-download a job that is not theirs
+   [vitest] RED  FAIL  |integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'noOrganisation' cannot audit-and-download a job that is not theirs
+   [vitest] RED  FAIL  |integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'orgOwner' cannot audit-and-download a job that is not theirs
+   [vitest] RED  FAIL  |integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'overriddenOrgOwner' cannot audit-and-download a job that is not theirs
+   [vitest] RED  FAIL  |integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'superuserAal1' cannot audit-and-download a job that is not theirs
+   [vitest] RED  FAIL  |integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'superuserAal2' cannot audit-and-download a job that is not theirs
+   [vitest] RED  FAIL  |integration| tests/integration/security/phase7-permission-matrix.test.ts > table export_jobs (own rows only, Phase 8 Task 4) > 'suspendedMember' cannot audit-and-download a job that is not theirs
+   EXPECTED-RED all present: QD5, matrix
+== M00 CONTROL (restored)
+   [qp] 114 assertions, 0 red
+   [cw] 181 assertions, 0 red
+   [xp] 139 assertions, 3 red
+   [xp] RED  XD7 exactly one download was audited, and it names the job and the workspace  [expected 1/b3c04bf3-b083-4465-be5f-c84c63d1aea6/07ae5f3a-6c3f-4c51-bfd6-24a3c3c0de80, got 2/b3c04bf3-b083-4465-be5f-c84c63d1aea6/07ae5f3a-6c3f-4c51-bfd6-24a3c3c0de80]
+   [xp] RED  XD8 starting an export is audited too, once per job, with the KIND and no content  [expected 3/account,workspace/0, got 13/account,workspace/0]
+   [xp] RED  XZ4 the audit log is back where this suite found it  [expected 673, got 662]
+-- T1: lib/export/zip.ts, 1 edit(s); git diff --stat:  1 file changed, 1 deletion(-)
+== T1 wouldFit ignores directoryBytes
+   [vitest] tests/unit/export/zip.test.ts: exit 1; Tests  3 failed | 12 passed (15)
+   [vitest] RED  FAIL  |unit| tests/unit/export/zip.test.ts > wouldFit > counts reserved bytes as if already written
+   [vitest] RED  FAIL  |unit| tests/unit/export/zip.test.ts > wouldFit > counts the central directory of the entries already added (mutant T1)
+   [vitest] RED  FAIL  |unit| tests/unit/export/zip.test.ts > wouldFit > is true exactly up to the byte where addEntry + finish() lands on the ceiling
+   EXPECTED-RED all present: counts the central directory
+-- T2: lib/export/parts.ts, 1 edit(s); git diff --stat:  1 file changed, 1 insertion(+), 1 deletion(-)
+== T2 the builder ignores max_rows_per_table (page size and cut)
+   [vitest] tests/integration/export/closure-parts.test.ts -t "C1": exit 1; Tests  4 failed | 7 passed | 46 skipped (57)
+   [vitest] RED  FAIL  |integration| tests/integration/export/closure-parts.test.ts > 'C1 rows per table' > (a) the backup succeeded, in at least two parts, with part_count equal to the part rows
+   [vitest] RED  FAIL  |integration| tests/integration/export/closure-parts.test.ts > 'C1 rows per table' > (c) every part opens, says which part it is, and breaks no ceiling
+   [vitest] RED  FAIL  |integration| tests/integration/export/closure-parts.test.ts > 'C1 rows per table' > (d) DENOMINATOR: the ceiling actually bound -- a part was closed by it
+   [vitest] RED  FAIL  |integration| tests/integration/export/closure-parts.test.ts > 'C1 rows per table' > (e) THE UNION IS THE SOURCE: every table's slices hold exactly the reference's rows
+   EXPECTED-RED all present: C1
+-- T3: lib/export/runner.ts, 1 edit(s); git diff --stat:  1 file changed, 1 insertion(+), 1 deletion(-)
+== T3 the failure path skips removeClosureParts
+   [vitest] tests/integration/export/closure-parts.test.ts -t "C7": exit 1; Tests  1 failed | 56 skipped (57)
+   [vitest] RED  FAIL  |integration| tests/integration/export/closure-parts.test.ts > C7: a backup that cannot be built in parts fails whole, and leaves nothing behind > a document larger than any part fails the job, and every stored part is removed
+   EXPECTED-RED all present: C7
+-- T4: lib/export/runner.ts, 1 edit(s); git diff --stat:  1 file changed, 1 insertion(+), 1 deletion(-)
+== T4 effectiveLimits takes the max
+   [vitest] tests/unit/export/parts-contract.test.ts: exit 1; Tests  2 failed | 16 passed (18)
+   [vitest] RED  FAIL  |unit| tests/unit/export/parts-contract.test.ts > effectiveLimits > an override cannot loosen a ceiling (mutant T4)
+   [vitest] RED  FAIL  |unit| tests/unit/export/parts-contract.test.ts > effectiveLimits > but can tighten every one
+   EXPECTED-RED all present: an override cannot loosen
+-- T5: lib/export/parts.ts, 3 edit(s); git diff --stat:  1 file changed, 3 insertions(+), 1 deletion(-)
+== T5 on a cut, cursor.after = the page's last key
+   [vitest] tests/integration/export/closure-parts.test.ts -t "C3": exit 1; Tests  2 failed | 8 passed | 47 skipped (57)
+   [vitest] RED  FAIL  |integration| tests/integration/export/closure-parts.test.ts > 'C3 bytes' > (e) THE UNION IS THE SOURCE: every table's slices hold exactly the reference's rows
+   [vitest] RED  FAIL  |integration| tests/integration/export/closure-parts.test.ts > 'C3 bytes' > (h) the job row: totals are the parts' sums, and the manifest is the index
+   EXPECTED-RED all present: C3
+-- T6: lib/export/runner.ts, 1 edit(s); git diff --stat:  1 file changed, 1 deletion(-)
+== T6 the re-queue omits resume_cursor
+   [vitest] tests/integration/export/closure-parts.test.ts -t "C6": exit 1; Tests  1 failed | 56 skipped (57)
+   [vitest] RED  FAIL  |integration| tests/integration/export/closure-parts.test.ts > C6: one claim builds at most one part > after one runner call the job is queued with a cursor, or done, and part_count <= claimed
+   EXPECTED-RED all present: C6
+-- after the T mutants: git status --porcelain lib/ = (clean)

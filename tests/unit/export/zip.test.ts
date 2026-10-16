@@ -185,3 +185,93 @@ describe("ZipWriter", () => {
     expect(crc32(Buffer.from("123456789", "ascii"))).toBe(0xcbf43926);
   });
 });
+
+// ===========================================================================
+// Q228: wouldFit -- the question a parted builder asks BEFORE it writes, so a
+// part is closed before a ceiling would be passed instead of the job failing.
+// ===========================================================================
+function noiseOf(length: number, seed0: number): Buffer {
+  const out = Buffer.alloc(length);
+  let seed = seed0;
+  for (let i = 0; i < length; i += 1) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    out[i] = (seed >> 16) & 0xff;
+  }
+  return out;
+}
+
+describe("wouldFit", () => {
+  // The ceiling is chosen so that EXACTLY `fitting` raw bytes of an
+  // incompressible (stored) payload land the finished archive on the ceiling.
+  // Three entries are added first, so the central directory already owes
+  // 3 x (46 + name) bytes the check must count.
+  const FILLERS = ["tables/a.json", "tables/bb.json", "tables/ccc.json"];
+  const NAME = "files/documents/x.bin";
+  const fillerBytes = 200;
+
+  function filled(ceiling: number): ZipWriter {
+    const zip = new ZipWriter(ceiling);
+    FILLERS.forEach((n, i) => zip.addEntry(n, noiseOf(fillerBytes, 11 + i), AT));
+    return zip;
+  }
+  const local = FILLERS.reduce((s, n) => s + 30 + n.length + fillerBytes, 0);
+  const directory = FILLERS.reduce((s, n) => s + 46 + n.length, 0);
+  const fitting = 1000;
+  const ceiling = local + directory + 30 + NAME.length + fitting + 46 + NAME.length + 22;
+
+  it("is true exactly up to the byte where addEntry + finish() lands on the ceiling", () => {
+    const zip = filled(ceiling);
+    expect(zip.wouldFit(NAME, fitting)).toBe(true);
+    zip.addEntry(NAME, noiseOf(fitting, 99), AT);
+    const archive = zip.finish();
+    expect(archive.length).toBe(ceiling);
+    expect(readZip(archive).map((e) => e.name)).toEqual([...FILLERS, NAME]);
+
+    // One byte more, on a fresh copy, does not fit -- and really would not.
+    const fresh = filled(ceiling);
+    expect(fresh.wouldFit(NAME, fitting + 1)).toBe(false);
+    fresh.addEntry(NAME, noiseOf(fitting + 1, 99), AT);
+    expect(() => fresh.finish()).toThrow(ExportTooLargeError);
+  });
+
+  it("counts the central directory of the entries already added (mutant T1)", () => {
+    // Without the three fillers' directory records the check would see
+    // `directory` bytes of room that do not exist.
+    const zip = filled(ceiling - 1);
+    expect(zip.wouldFit(NAME, fitting)).toBe(false);
+    expect(zip.wouldFit(NAME, fitting - 1)).toBe(true);
+    const shortOfDirectory = filled(ceiling - directory);
+    expect(shortOfDirectory.wouldFit(NAME, fitting - directory + 1)).toBe(false);
+  });
+
+  it("counts reserved bytes as if already written", () => {
+    const zip = filled(ceiling);
+    expect(zip.wouldFit(NAME, fitting - 100, 100)).toBe(true);
+    expect(zip.wouldFit(NAME, fitting - 100, 101)).toBe(false);
+  });
+
+  it("refuses when entryCount + 1 + reserveEntries passes the entry ceiling", () => {
+    const zip = new ZipWriter(1e6, 5);
+    zip.addEntry("a", Buffer.from("1"), AT);
+    zip.addEntry("b", Buffer.from("2"), AT);
+    zip.addEntry("c", Buffer.from("3"), AT);
+    expect(zip.wouldFit("d", 1, 0, 1)).toBe(true); // 3 + 1 + 1 = 5
+    expect(zip.wouldFit("d", 1, 0, 2)).toBe(false); // 3 + 1 + 2 = 6
+  });
+
+  it("new ZipWriter(1e6, 3) lets three entries in and refuses the fourth", () => {
+    const zip = new ZipWriter(1e6, 3);
+    for (const n of ["a", "b", "c"]) {
+      expect(zip.wouldFit(n, 1)).toBe(true);
+      zip.addEntry(n, Buffer.from(n), AT);
+    }
+    expect(zip.wouldFit("d", 1)).toBe(false);
+    expect(() => zip.addEntry("d", Buffer.from("d"), AT)).toThrow(/entries/);
+  });
+
+  it("caps the entry ceiling at 65 535, the most a zip without ZIP64 can hold", () => {
+    expect(new ZipWriter(1e6, 70_000).entryLimit).toBe(65_535);
+    expect(new ZipWriter(1e6).entryLimit).toBe(65_535);
+    expect(new ZipWriter(1e6, 6).entryLimit).toBe(6);
+  });
+});

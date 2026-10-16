@@ -68,7 +68,7 @@ do_summary() {
     echo "--- psql: red assertions, read from each suite's results table ---"
     # From the DATABASE, not the log: not every suite prints its result rows,
     # and a suite that aborted still has the rows it recorded before it died.
-    for sch in invariants harness crm ev op fa fin nw leak imp lc ov rl fb ca c7 lg cs dsr xp er rt pm; do
+    for sch in invariants harness crm ev op fa fin nw leak imp lc ov rl fb ca c7 lg cs dsr xp er rt pm qp; do
       MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tA         -c "select '  [$sch] ' || label from $sch.results where not pass order by seq" 2>/dev/null
     done
     echo "--- psql: pinned-total mismatches and ERROR lines ---"
