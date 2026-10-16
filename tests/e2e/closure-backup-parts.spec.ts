@@ -107,12 +107,29 @@ test("a two-part backup lists both parts, downloads one audited, and refuses for
   await expect(page.getByText(PARTS_TOGETHER_LINE(2))).toBeVisible();
   await scan(page);
 
+  // Final review I2: a stale cursor past the last part (or a malformed one)
+  // is the first page, never a backup with no download link.
+  for (const cursor of [`${job}:999`, `${job}:0`, "nonsense"]) {
+    await page.goto(`/${twoPart.slug}/settings/export?parts=${encodeURIComponent(cursor)}`);
+    await expect(links, `?parts=${cursor}`).toHaveCount(2);
+    await expect(links.nth(0)).toHaveText(/^Part 1 of 2/);
+    await expect(page.getByTestId("export-parts-unlisted")).toHaveCount(0);
+  }
+
   const before = await countExportDownloadAudit(job);
   const ok = await page.request.get(`/account/exports/${job}/download?part=2`, { maxRedirects: 0 });
   expect(ok.status()).toBe(302);
   expect(ok.headers()["location"] ?? "").toMatch(/^https?:\/\/[^/]+\/storage\/v1\/object\/sign\//);
   expect(await countExportDownloadAudit(job)).toBe(before + 1);
   expect((await exportDownloadParts(job)).at(-1)).toBe(2);
+
+  // Part 1 of a multi-part backup is the job's own storage_key, a branch of
+  // its own in the download path (final review M9).
+  const first = await page.request.get(`/account/exports/${job}/download?part=1`, { maxRedirects: 0 });
+  expect(first.status()).toBe(302);
+  expect(first.headers()["location"] ?? "").toMatch(/^https?:\/\/[^/]+\/storage\/v1\/object\/sign\//);
+  expect(await countExportDownloadAudit(job)).toBe(before + 2);
+  expect((await exportDownloadParts(job)).at(-1)).toBe(1);
 
   // 404 parity.
   const ghost = await page.request.get(
