@@ -135,7 +135,7 @@ export function ExportJobList({
                 </p>
               ) : null}
 
-              {job.manifest && job.manifest.withheld.length > 0 ? (
+              {job.manifest?.withheld && job.manifest.withheld.length > 0 ? (
                 <details className="max-w-prose">
                   <summary className="cursor-pointer text-sm text-ink-muted underline underline-offset-4">
                     What is not in this archive ({job.manifest.withheld.length})

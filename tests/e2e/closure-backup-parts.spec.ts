@@ -101,6 +101,9 @@ test("a two-part backup lists both parts, downloads one audited, and refuses for
   await expect(links).toHaveCount(2);
   await expect(links.nth(0)).toHaveText(/^Part 1 of 2/);
   await expect(links.nth(1)).toHaveText(/^Part 2 of 2/);
+  // Each link is the authorised download route for ITS part.
+  await expect(links.nth(0)).toHaveAttribute("href", `/account/exports/${job}/download?part=1`);
+  await expect(links.nth(1)).toHaveAttribute("href", `/account/exports/${job}/download?part=2`);
   await expect(page.getByText(PARTS_TOGETHER_LINE(2))).toBeVisible();
   await scan(page);
 
