@@ -120,11 +120,13 @@ export async function getOwnExportJobs(
  */
 export async function getLatestClosureBackup(
   organisationId: string,
-): Promise<OwnExportJob | null> {
+): Promise<{ readonly id: string; readonly status: ExportStatus | string } | null> {
   const supabase = await createClient();
+  // Only what the page asks of it: the index manifest of a large backup can
+  // be megabytes, and the job list has already read it once.
   const { data, error } = await supabase
     .from("export_jobs")
-    .select(COLUMNS)
+    .select("id, status")
     .eq("organisation_id", organisationId)
     .eq("closure_backup", true)
     .order("requested_at", { ascending: false })
@@ -132,9 +134,8 @@ export async function getLatestClosureBackup(
   if (error) {
     throw new Error(`closure backup could not be read: ${error.message}`);
   }
-  const r = ((data ?? []) as Row[])[0];
-  if (!r) return null;
-  return toJob(r);
+  const r = ((data ?? []) as { id: string; status: string }[])[0];
+  return r ? { id: r.id, status: r.status } : null;
 }
 
 /** Parts shown per page of a backup's parts list. */
