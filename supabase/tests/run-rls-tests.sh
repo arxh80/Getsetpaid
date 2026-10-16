@@ -862,7 +862,7 @@ fi
 # so the HTTP block below reads exactly the seed.
 # ============================================================================
 
-run_suite "PHASE 8 LEGAL" rls_phase8_legal.sql lg 171 "${P7VARS[@]}"
+run_suite "PHASE 8 LEGAL" rls_phase8_legal.sql lg 173 "${P7VARS[@]}"
 lg_fails=$SUITE_FAILS
 if [ "$lg_fails" != "0" ]; then
   echo "PHASE 8 LEGAL DOCUMENTS SUITE FAILED: $lg_fails failing assertion(s)" >&2
@@ -3973,7 +3973,7 @@ p2_code "carol POST of a legal document -> 403"                     403 POST    
 p2_code "carol cannot create a draft through the RPC -> 403"        403 POST         "rpc/create_legal_document_draft" '{"p_slug":"terms"}' "$TOKEN"
 p2_code "anon cannot call the operator read -> 401"                 401 POST         "rpc/operator_legal_document_versions" '{}' "$ANON"
 p2_code "the immutability guard is not an RPC -> 404"               404 POST         "rpc/legal_documents_guard" '{}' "$TOKEN"
-lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where status = 'published' and title <> 'x' and version = case when slug = 'data-retention' then 8 when slug in ('data-subject-rights','data-processing-addendum') then 5 when slug = 'privacy' then 4 when slug in ('security','subprocessors') then 3 when slug = 'marketing-preferences' then 2 else 1 end" | tr -d '[:space:]')
+lg_same=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc   "select count(*) from public.legal_documents where status = 'published' and title <> 'x' and version = case when slug = 'data-retention' then 8 when slug in ('data-subject-rights','data-processing-addendum') then 5 when slug in ('privacy','subprocessors') then 4 when slug = 'security' then 3 when slug = 'marketing-preferences' then 2 else 1 end" | tr -d '[:space:]')
 if [ "$lg_same" = "15" ]; then printf '  PASS  %-58s %s
 ' "the refused writes changed nothing (15 current rows intact)" "$lg_same"
 else printf '  FAIL  %-58s got %s want 15

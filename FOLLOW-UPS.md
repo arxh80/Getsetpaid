@@ -4556,7 +4556,14 @@ ledger holds them. The 9b residuals (m4, m6, the bare-domain autolink, the
   (round 2's run was red only on the HTTP twin's own `t`/`true` expectation
   strings, corrected after the run), and `documents.spec.ts` after round 1's
   scan-verdict change (not run: free RAM below the floor).
-- **F1 — a new Subprocessors version is owed.** The Brevo row now names the
+- **F1 — DONE 2026-10-16:** `20261102000000` publishes Subprocessors version 4
+  (unreviewed, so the draft notice stays): it dates the widened Brevo row and
+  replaces version 3's two "a malware-scanning service has not been chosen"
+  sentences with the self-hosted ClamAV scanner, which is not a subprocessor
+  (Q42). Pins moved: LF1 39, LF2, LF2b, LF2o, LO1 41, `lg_same`; LF2r/LF2s
+  added (legal suite 173). Counsel checking that the Privacy Notice covers
+  the notification emails is still owed. The original entry follows.
+  **F1 — a new Subprocessors version is owed.** The Brevo row now names the
   Phase 8 notification emails in both `docs/sub-processors.md` and
   `lib/legal/sub-processors.ts`, and `/legal/subprocessors` renders the
   module, so the page's table changes as soon as the code ships. No dated
