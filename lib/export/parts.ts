@@ -20,7 +20,9 @@ import "server-only";
 // the job (the one backward transition 20261101000000 admits) or, when the
 // plan is exhausted, stamps it succeeded with the INDEX as its manifest. The
 // workspace is closed and read-only for everybody, so parts built across
-// claims describe one state.
+// claims describe one state -- and if the superuser reopens it part-way, or
+// the closer stops being an Owner, public.export_read_page() refuses the next
+// page (20261101002000, Q242) and the job fails with its parts removed.
 //
 // WHAT THIS FILE IS NOT ALLOWED TO DECIDE is what runner.ts is not: every row
 // comes back from public.export_read_page() under the closing Owner's own
@@ -41,6 +43,7 @@ import "server-only";
 import { createStorageClient } from "@/lib/supabase/storage";
 import { sanitiseFilename } from "@/lib/security/file-allowlist";
 import {
+  CLOSURE_BACKUP_STOPPED,
   CLOSURE_PARTS_MANIFEST_VERSION,
   EXPORT_BUCKET,
   REMAINDER_WITHHELD,
@@ -593,7 +596,13 @@ async function readPage(
     p_after: after,
     p_limit: limit,
   });
-  if (error) throw new Error(`export read ${table}: ${error.message}`);
+  if (error) {
+    // Q242: the workspace was reopened, or its closer is no longer an Owner.
+    // Said plainly, because the failed job shows this sentence to the Owner.
+    const stopped =
+      error.hint && Object.hasOwn(CLOSURE_BACKUP_STOPPED, error.hint) ? CLOSURE_BACKUP_STOPPED[error.hint] : null;
+    throw new Error(stopped ?? `export read ${table}: ${error.message}`);
+  }
   return (data ?? []) as Record<string, unknown>[];
 }
 

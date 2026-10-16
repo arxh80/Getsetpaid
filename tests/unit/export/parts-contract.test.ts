@@ -7,8 +7,10 @@
 // in tests/integration/export/closure-parts.test.ts ("THE KEY BINDING"), not
 // here: this project touches no socket.
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  CLOSURE_BACKUP_STOPPED,
   CLOSURE_PARTS_MANIFEST_VERSION,
   EXPORT_LIMITS,
   EXPORT_MANIFEST_VERSION,
@@ -237,5 +239,32 @@ describe("placeIndex", () => {
 
   it("and an index that fits goes here, even in an empty part", () => {
     expect(placeIndex(new ZipWriter(1000), 100, true)).toBe("here");
+  });
+});
+
+describe("CLOSURE_BACKUP_STOPPED: the two refusals that stop a closure backup part-way (Q242)", () => {
+  // Bound to the migration that raises them, so a renamed hint cannot leave
+  // the runner falling back to the raw SQL message on the Owner's page.
+  const migration = readFileSync("supabase/migrations/20261101002000_closure_backup_stops_when_reopened.sql", "utf8");
+
+  it("names exactly the hints export_read_page raises for them", () => {
+    expect(Object.keys(CLOSURE_BACKUP_STOPPED).sort()).toEqual([
+      "closure_backup_requester_not_owner",
+      "closure_backup_workspace_reopened",
+    ]);
+    for (const hint of Object.keys(CLOSURE_BACKUP_STOPPED)) {
+      expect(migration, hint).toContain(`hint = '${hint}'`);
+    }
+  });
+
+  it("each is a plain sentence with no SQL in it", () => {
+    for (const sentence of Object.values(CLOSURE_BACKUP_STOPPED)) {
+      expect(sentence).not.toMatch(/export_read_page|closure_backup_|[A-Z]{3,}/);
+      expect(sentence).toMatch(/so the backup was stopped$/);
+    }
+  });
+
+  it("is not fooled by an inherited key", () => {
+    expect(Object.hasOwn(CLOSURE_BACKUP_STOPPED, "toString")).toBe(false);
   });
 });

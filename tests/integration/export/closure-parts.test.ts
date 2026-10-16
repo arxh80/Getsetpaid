@@ -438,6 +438,9 @@ afterAll(async () => {
     .query(`delete from public.organisations where id = any($1::uuid[])`, [created.orgs])
     .catch((e) => console.error("teardown orgs:", e));
   await pool
+    .query(`delete from public.platform_admins where user_id = any($1::uuid[])`, [created.users])
+    .catch((e) => console.error("teardown platform admins:", e));
+  await pool
     .query(`delete from auth.users where id = any($1::uuid[])`, [created.users])
     .catch((e) => console.error("teardown users:", e));
   await pool.end();
@@ -779,6 +782,55 @@ describe("C10: removeClosureParts finds every part, past PostgREST's 1000-row pa
     const { data, error } = await bucket.list("exports", { search: job, limit: 1000 });
     expect(error?.message).toBeUndefined();
     expect((data ?? []).map((o) => o.name), "objects past the first thousand parts were left behind").toEqual([]);
+  }, 600_000);
+});
+
+describe("C11: a workspace reopened part-way stops its backup, and leaves nothing behind (Q242)", () => {
+  it("the superuser reassigns between claims: the next claim fails the job by name and removes every part", async () => {
+    const { CLOSURE_BACKUP_STOPPED } = await import("@/lib/export/contract");
+    const ws = await seedClosableWorkspace("c11");
+    const job = await closeWorkspace(ws);
+
+    // One runner call under a one-row-per-table ceiling stores at most three
+    // parts of a backup that needs dozens, and leaves it queued for the next.
+    const override = { max_rows_per_table: 1 };
+    const first = await runPendingExportJobs({ limitsOverride: override });
+    expect(first.outcome).toBe("ok");
+    const mid = await jobRow(job);
+    expect(mid.status, `${mid.failure_reason}`).toBe("queued");
+    expect(mid.part_count, "DENOMINATOR: no part was stored before the reopen, so the cleanup proves nothing").toBeGreaterThanOrEqual(1);
+    expect((await partRows(job)).length).toBe(mid.part_count);
+
+    // The aal2 platform superuser hands the closed workspace to its Manager,
+    // which reopens it: the members can edit it again.
+    const suId = randomUUID();
+    created.users.push(suId);
+    await pool.query(
+      `insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+       values ($1, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', $2, now(), now(), now())`,
+      [suId, `qp-int-su-${suId}@test.local`],
+    );
+    await pool.query(`insert into public.platform_admins (user_id) values ($1)`, [suId]);
+    await asPerson<null>(suId, async (q) => {
+      await q(`select public.reassign_closed_workspace($1, $2, $3)`, [ws.slug, ws.managerId, "C11: reopened part-way"]);
+      return null;
+    });
+    const { rows: org } = await pool.query<{ lifecycle_state: string }>(
+      `select lifecycle_state from public.organisations where id = $1`,
+      [ws.orgId],
+    );
+    expect(org[0].lifecycle_state).toBe("active");
+
+    const row = await buildUntilDone(job, override, 5);
+    expect(row.status).toBe("failed");
+    expect(row.failure_reason).toBe(
+      `The export could not be built: ${CLOSURE_BACKUP_STOPPED.closure_backup_workspace_reopened}`,
+    );
+    expect(row.part_count, "the parts stored before the reopen are the ones removed").toBe(mid.part_count);
+    expect(await partRows(job)).toEqual([]);
+    const { data, error } = await createStorageClient().storage.from("exports").list("exports", { search: job, limit: 1000 });
+    expect(error?.message).toBeUndefined();
+    expect((data ?? []).map((o) => o.name)).toEqual([]);
   }, 600_000);
 });
 

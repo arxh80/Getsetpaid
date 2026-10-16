@@ -139,6 +139,18 @@ export function partsCursorParam(jobId: string, from: number): string {
 }
 
 /**
+ * Q242 (Q228 final review I1): the two refusals that stop a closure backup
+ * part-way (public.export_read_page, 20261101002000), as the sentence its
+ * failed job states. Keyed by the database hint.
+ */
+export const CLOSURE_BACKUP_STOPPED: Readonly<Record<string, string>> = {
+  closure_backup_workspace_reopened:
+    "the workspace was reopened while its backup was being built, so the backup was stopped",
+  closure_backup_requester_not_owner:
+    "the person who closed the workspace is no longer one of its Owners, so the backup was stopped",
+};
+
+/**
  * Why something is not in an archive. Every one of these ends up in
  * `manifest.json` under `withheld`, because an export that quietly leaves
  * something out is the failure mode a statutory access response cannot have.

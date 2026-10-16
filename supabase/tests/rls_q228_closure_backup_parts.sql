@@ -19,6 +19,11 @@
 --   QM  the retention manifest: every part of an expired backup is named, no
 --       part of a kept or re-queued one is, and a failed one's parts are
 --       orphans
+--
+-- Final review I1 (20261101002000_closure_backup_stops_when_reopened.sql):
+--   QV  a closure backup's reads stop once the workspace is reopened or its
+--       closer is no longer an Owner; a 'deleted' workspace still reads
+--
 --   QZ  housekeeping
 --
 -- Every scenario that must leave nothing behind runs inside qp.undo() or
@@ -267,6 +272,43 @@ update public.export_jobs set status = 'queued', part_count = 1, resume_cursor =
 update public.export_jobs set status = 'running' where id = :'j';
 insert into public.export_job_parts (job_id, part_no, storage_key, byte_size, row_count)
 values (:'j', 2, 'exports/' || :'j' || '-part-0002.zip', 100, 10);
+
+-- ===========================================================================
+-- § QV A CLOSURE BACKUP STOPS WHEN ITS WORKSPACE IS REOPENED (final review
+--      I1, Q242). J is RUNNING here (part 2 stored), in P, which Owner P
+--      closed. Every probe is undone. (The claims steps are spelled out:
+--      qp.as_person()/qp.as_server() are defined further down, with QD.)
+-- ===========================================================================
+select qp.undo('QV1 DENOMINATOR: J reads while P is closed and Owner P is an active Owner',
+  format($$select coalesce(jsonb_typeof(public.export_read_page(%L, 'contacts', '', 5)), 'null')$$, :'j'),
+  'array');
+select qp.sc('QV2 the aal2 superuser reassigns P to Admin P2 (undone): J''s next read is closure_backup_workspace_reopened',
+  array[format($f$select pg_catalog.set_config('request.jwt.claims', %L, true) is not null$f$, :'su_c'),
+        'set local role authenticated',
+        format($$select (public.reassign_closed_workspace(%L, %L, 'qp reopening') is not null)::text$$, :'slug_p', :'admin_p2')]
+  || array['reset role', $f$select pg_catalog.set_config('request.jwt.claims', '', true) is not null$f$,
+           format($$select coalesce(jsonb_typeof(public.export_read_page(%L, 'contacts', '', 5)), 'null')$$, :'j')],
+  'true|ok|true|ok|true|denied(55000:closure_backup_workspace_reopened)');
+select qp.sc('QV3 Owner P is no longer an Owner (planted, undone): J''s next read is closure_backup_requester_not_owner',
+  array['set local session_replication_role = replica',
+        format($$update public.organisation_memberships set role = 'admin' where organisation_id = %L and user_id = %L$$, :'org_p', :'owner_p'),
+        'set local session_replication_role = origin',
+        format($$select coalesce(jsonb_typeof(public.export_read_page(%L, 'contacts', '', 5)), 'null')$$, :'j')],
+  'ok|ok|ok|denied(55000:closure_backup_requester_not_owner)');
+select qp.sc('QV4 Owner P''s membership is revoked (planted, undone): the same refusal',
+  array['set local session_replication_role = replica',
+        format($$update public.organisation_memberships set status = 'revoked' where organisation_id = %L and user_id = %L$$, :'org_p', :'owner_p'),
+        'set local session_replication_role = origin',
+        format($$select coalesce(jsonb_typeof(public.export_read_page(%L, 'contacts', '', 5)), 'null')$$, :'j')],
+  'ok|ok|ok|denied(55000:closure_backup_requester_not_owner)');
+select qp.sc('QV5 the superuser DELETES P, no backup acknowledged (undone): ''deleted'' is still closed, so J still reads',
+  array[format($f$select pg_catalog.set_config('request.jwt.claims', %L, true) is not null$f$, :'su_c'),
+        'set local role authenticated',
+        format($$select (public.delete_closed_workspace(%L, 'qp deleting', true) is not null)::text$$, :'slug_p')]
+  || array['reset role', $f$select pg_catalog.set_config('request.jwt.claims', '', true) is not null$f$,
+           format($$select lifecycle_state from public.organisations where id = %L$$, :'org_p'),
+           format($$select coalesce(jsonb_typeof(public.export_read_page(%L, 'contacts', '', 5)), 'null')$$, :'j')],
+  'true|ok|true|ok|true|deleted|array');
 
 -- ===========================================================================
 -- § QT THE SHAPE AND THE GRANTS
