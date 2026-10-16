@@ -4545,10 +4545,9 @@ ledger holds them. The 9b residuals (m4, m6, the bare-domain autolink, the
   Brevo env, the Telegram env, region `eu-west-1`, the IONOS host region
   (PENDING) and the real malware scanner (Q42) — all in `SECURITY.md` § 15;
   none is configured by the repo.
-- **The permission-matrix total at the tip** (F5). Last measured 596 at Task
-  9c job 3a; re-measure on the next reset with `vitest run
-  tests/integration/security/phase7-permission-matrix.test.ts` and append it
-  to `CLAUDE.md` § Testing gates and `SECURITY.md`.
+- ~~**The permission-matrix total at the tip** (F5).~~ **Measured, 2026-10-16:**
+  620 at the Q228 branch tip after a fresh reset (596 at Task 9c job 3a),
+  recorded in `CLAUDE.md` § Testing gates and `SECURITY.md`.
 - **CI is still a subset.** Q169 (heavy jobs on PRs and main for a month) is
   ruled but not built; unscheduled, a Phase 10 candidate (Phase 9 excluded it
   and the `infra-parallel-stacks` merge by spec; no decision has been taken).
