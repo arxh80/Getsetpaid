@@ -37,3 +37,6 @@ Task 3: minor (deferred): mutants 21a-21f measured by a quick apply/run/restore 
 Task 3: complete — 0e822d8..3638cda
 
 - Task 4 (parts list and Contact us): PARTIAL, e2e owed. Code in 960c76b; unit, lint, typecheck, tests/unit green; the new e2e spec has never completed a run (two memory kills). See task-4-report.md.
+Task 4: e2e completed by controller 2026-10-16 (implementer session ended): spec 3/3 x5, teardown 0->0 on reset DB, combined 18/18 across runs, T7 equivalent in e2e but killed by service-client census; fixes in the commit after 960c76b
+Task 4: minor (deferred): Contact us gate's !isImpersonated half untested; admin.ts has no importer census; cold-start 404 once (cbp9) unexplained
+Task 4: complete
