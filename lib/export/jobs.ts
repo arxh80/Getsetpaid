@@ -168,10 +168,40 @@ export async function getExportJobParts(
   if (error) {
     throw new Error(`backup parts could not be read: ${error.message}`);
   }
-  const rows = (data ?? []) as { part_no: number; byte_size: number | string }[];
-  const page = rows.slice(0, limit);
+  return pageOfParts((data ?? []) as PartRow[], limit);
+}
+
+/**
+ * The page of parts the workspace export page shows for ONE job (Q228 final
+ * review I2): the page the cursor names when the cursor is this job's, the
+ * first page otherwise -- so paging one backup leaves every other listed
+ * backup where it was -- and the first page again when the named page is
+ * empty (a stale or hand-edited cursor), so a downloadable backup is never
+ * left with no download link. `read` is injectable so this is unit-tested.
+ */
+export async function partsPageFor(
+  jobId: string,
+  cursor: { readonly jobId: string; readonly from: number } | null,
+  read: (jobId: string, from: number) => Promise<ExportPartsPage> = getExportJobParts,
+): Promise<ExportPartsPage> {
+  const from = cursor?.jobId === jobId ? cursor.from : 1;
+  const page = await read(jobId, from);
+  return page.parts.length === 0 && from > 1 ? read(jobId, 1) : page;
+}
+
+export interface PartRow {
+  part_no: number;
+  byte_size: number | string;
+}
+
+/**
+ * One page from up to `limit + 1` rows in part order: the extra row, when it
+ * is there, is the next page's first part. Pure, so the page boundary is
+ * unit-tested (tests/unit/export/parts-page.test.tsx).
+ */
+export function pageOfParts(rows: readonly PartRow[], limit: number): ExportPartsPage {
   return {
-    parts: page.map((r) => ({ part: r.part_no, byteSize: Number(r.byte_size) })),
+    parts: rows.slice(0, limit).map((r) => ({ part: r.part_no, byteSize: Number(r.byte_size) })),
     nextFrom: rows.length > limit ? rows[limit].part_no : null,
   };
 }

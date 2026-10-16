@@ -2,14 +2,15 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentOrg, hasPermission } from "@/lib/auth";
-import { getExportJobParts, getLatestClosureBackup, getOwnExportJobs } from "@/lib/export/jobs";
+import { getLatestClosureBackup, getOwnExportJobs, partsPageFor } from "@/lib/export/jobs";
 import {
   EXPORT_ALREADY_RUNNING,
   EXPORT_LIMITS,
   WORKSPACE_EXPORT_EXCLUDES,
   WORKSPACE_EXPORT_INCLUDES,
   describeArchiveLife,
-  parsePartParam,
+  parsePartsCursor,
+  partsCursorParam,
 } from "@/lib/export/contract";
 import { Alert } from "@/components/ui/alert";
 import { ActionOutcome } from "@/components/ui/action-outcome";
@@ -72,14 +73,14 @@ export default async function WorkspaceExportSettingsPage({
   searchParams,
 }: PageProps<"/[orgSlug]/settings/export">) {
   const { orgSlug } = await params;
-  const { partsFrom: rawPartsFrom } = await searchParams;
+  const { parts: rawParts } = await searchParams;
   const org = await getCurrentOrg(orgSlug);
   if (!org) notFound();
 
-  // Q228: the parts list is paginated; `?partsFrom=n` is the keyset cursor.
+  // Q228: the parts list is paginated; `?parts=<jobId>:<n>` is the keyset
+  // cursor of ONE job's list, so every other backup stays on its first page.
   // A malformed value is page one, not an error.
-  const partsFrom =
-    parsePartParam(typeof rawPartsFrom === "string" ? rawPartsFrom : null) ?? 1;
+  const partsCursor = parsePartsCursor(typeof rawParts === "string" ? rawParts : null);
 
   // PHASE 8 TASK 9c JOB 3b (below) decides who may close; the same facts decide
   // who is offered "Contact us" when the closure backup failed.
@@ -96,13 +97,15 @@ export default async function WorkspaceExportSettingsPage({
   ]);
   const live = state.jobs.some((j) => j.status === "queued" || j.status === "running");
 
-  // The first page of parts for every listed multi-part job (at most
-  // OWN_EXPORT_LIMIT jobs, PARTS_PAGE_SIZE parts each).
+  // One page of parts for every listed multi-part job (at most
+  // OWN_EXPORT_LIMIT jobs, PARTS_PAGE_SIZE parts each): the page the cursor
+  // names for its own job, the first for every other, and the first again
+  // when the named page is empty (partsPageFor).
   const partsEntries = await Promise.all(
     state.jobs
       .filter((j) => j.partCount > 1)
       .map(async (j): Promise<[string, JobParts]> => {
-        const page = await getExportJobParts(j.id, partsFrom);
+        const page = await partsPageFor(j.id, partsCursor);
         return [j.id, { ...page, total: j.partCount }];
       }),
   );
@@ -200,7 +203,11 @@ export default async function WorkspaceExportSettingsPage({
             truncated={state.truncated}
             archiveDays={EXPORT_LIMITS.archiveDays}
             parts={parts}
-            partsHref={(_jobId, from) => `/${orgSlug}/settings/export?partsFrom=${from}`}
+            partsHref={(jobId, from) =>
+              from <= 1
+                ? `/${orgSlug}/settings/export`
+                : `/${orgSlug}/settings/export?parts=${encodeURIComponent(partsCursorParam(jobId, from))}`
+            }
             emptyText="You have not exported this workspace. When you do, it appears here with its progress and, when it is ready, a download link. Exports other people started are not listed: an archive is built with the access rights of whoever asked for it."
           />
         </section>

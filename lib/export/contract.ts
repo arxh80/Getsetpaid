@@ -118,6 +118,27 @@ export function parsePartParam(raw: string | null): number | null {
 }
 
 /**
+ * The parts list's page cursor on the workspace export page (Q228 final
+ * review I2): `?parts=<jobId>:<firstPart>`. SCOPED TO ONE JOB, so paging one
+ * backup's parts leaves every other listed backup on its first page. Anything
+ * malformed is `null`, which is every job on page one -- never an error.
+ */
+export function parsePartsCursor(raw: string | null | undefined): { jobId: string; from: number } | null {
+  if (typeof raw !== "string") return null;
+  const at = raw.lastIndexOf(":");
+  if (at < 0) return null;
+  const jobId = raw.slice(0, at);
+  const from = parsePartParam(raw.slice(at + 1));
+  if (!isUuid(jobId) || from === null) return null;
+  return { jobId: jobId.toLowerCase(), from };
+}
+
+/** The `?parts=` value parsePartsCursor reads back. */
+export function partsCursorParam(jobId: string, from: number): string {
+  return `${jobId}:${from}`;
+}
+
+/**
  * Why something is not in an archive. Every one of these ends up in
  * `manifest.json` under `withheld`, because an export that quietly leaves
  * something out is the failure mode a statutory access response cannot have.
