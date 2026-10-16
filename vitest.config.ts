@@ -91,7 +91,11 @@ export default defineConfig({
           // with files overlapping (summed test time exceeded wall clock).
           // Forcing this project into ONE worker is the per-project spelling
           // of the same constraint.
-          poolOptions: { forks: { singleFork: true } },
+          //
+          // `maxWorkers: 1` since Vitest 4, which removed `poolOptions` (and
+          // `singleFork` with it) and accepts `maxWorkers` per project. Each
+          // file still gets a fresh fork; only one runs at a time.
+          maxWorkers: 1,
         },
       },
     ],
