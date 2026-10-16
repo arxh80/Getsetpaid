@@ -40,3 +40,9 @@ Task 3: complete — 0e822d8..3638cda
 Task 4: e2e completed by controller 2026-10-16 (implementer session ended): spec 3/3 x5, teardown 0->0 on reset DB, combined 18/18 across runs, T7 equivalent in e2e but killed by service-client census; fixes in the commit after 960c76b
 Task 4: minor (deferred): Contact us gate's !isImpersonated half untested; admin.ts has no importer census; cold-start 404 once (cbp9) unexplained
 Task 4: complete
+Task 5: dispatched 2026-10-16 (base c89826e)
+Task 5: docs ba2709c, queue Q237-Q239 e1e8358, mutation results 0962d6c, re-runnability FOLLOW-UP 33284a9
+Task 5: mutation run (mutation-results/q228/results.txt): M01-M18 + M08a/M08b/M08c/M11b + T1-T6 every one red at its named assertion, controls qp 114/0 and cw 181/0 before and after; T7 EQUIVALENT (Task 4, killed by service-client census); no assertion added, no pin changed; mutations/10 already regenerated (3638cda), verified one-line diff vs live at 249
+Task 5: gates: lint 0, typecheck 0, pnpm test 174 files / 3983 passed + 5 skipped (clamav-live opt-in), psql runner All suites passed (28 suites, 4616 by pins), e2e 114 passed + 10 beforeAll failures (DB container transiently unhealthy) + 57 not run, isolated re-run of those 10 files 67/67 => 181/181 across the two runs
+Task 5: minor (deferred): 10 pre-existing psql suites not re-runnable on one DB (phase3/4/5/6 fixed ids, leakage, lifecycle LA1, overrides, erasure, permissions, exports XD7/XD8/XZ4 from workspace-closure's leftover export audit rows); qp/cw/ck/rt re-run clean; recorded in FOLLOW-UPS § Q228
+Task 5: complete (report task-5-report.md, DONE_WITH_CONCERNS: e2e not green in one cold run; re-runnability of pre-existing suites)

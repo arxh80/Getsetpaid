@@ -1,0 +1,56 @@
+SKIP  SCHEMA INVARIANTS (schema_invariants.sql): builds the shared fixtures, not re-runnable by design
+SKIP  RLS FOUNDATION (rls_foundation.sql): builds the shared fixtures, not re-runnable by design
+SKIP  PHASE 2 CRM (rls_phase2_crm.sql): builds the shared fixtures, not re-runnable by design
+FAIL  PHASE 3 EVENTS: 0 recorded (pin 187), 0 red, 1 ERROR line(s)
+        ERR  psql:/tmp/rls_phase3_events.sql:209: ERROR:  duplicate key value violates unique constraint "events_pkey"
+FAIL  PHASE 4 OPERATIONS: 0 recorded (pin 91), 0 red, 1 ERROR line(s)
+        ERR  psql:/tmp/rls_phase4_operations.sql:118: ERROR:  duplicate key value violates unique constraint "tasks_pkey"
+PASS  PHASE 4 FILE ACCESS: 11 recorded (pin 11), 0 red, 0 ERROR line(s)
+FAIL  PHASE 5 FINANCE: 0 recorded (pin 151), 0 red, 1 ERROR line(s)
+        ERR  psql:/tmp/rls_phase5_finance.sql:154: ERROR:  duplicate key value violates unique constraint "events_pkey"
+FAIL  PHASE 6 NETWORK: 0 recorded (pin 161), 0 red, 1 ERROR line(s)
+        ERR  psql:/tmp/rls_phase6_network.sql:154: ERROR:  duplicate key value violates unique constraint "network_profiles_pkey"
+FAIL  PHASE 6 NETWORK LEAKAGE: 218 recorded (pin 218), 8 red, 0 ERROR line(s)
+        RED  LA4 GAMMA has ZERO accepted connections with ALPHA (the UNCONNECTED column)
+        RED  LA5b ...and GAMMA has never exchanged a request with ANYBODY, in any state
+        RED  LB4 UNCONNECTED: the CONNECTED view returns 0 rows for ALPHA's profile
+        RED  LB4b UNCONNECTED: ...and 0 rows in TOTAL, not merely for that one profile
+        RED  LC0c STATED EXCLUSION: public.document_versions is empty, so it is out of the sweep
+        RED  LW7d HOUSEKEEPING: LW7's control row is removed (network_links is back to 1)
+        RED  LZ1 GAMMA publishes NO network profile (the "4 published profiles" HTTP counts are unmoved)
+        RED  LZ1b CONTROL: the whole schema still holds exactly 4 published, live profiles
+PASS  PHASE 7 IMPERSONATION: 121 recorded (pin 121), 0 red, 0 ERROR line(s)
+FAIL  PHASE 7 LIFECYCLE: 89 recorded (pin 89), 1 red, 0 ERROR line(s)
+        RED  LA1 every transition above wrote exactly one audit row
+FAIL  PHASE 7 OVERRIDES: 56 recorded (pin 56), 4 red, 0 ERROR line(s)
+        RED  OB5 ALPHA's own MANAGER (non-admin) reads the active override
+        RED  OH1 every grant/revoke above wrote exactly one audit row each
+        RED  OI4 ALPHA's own MANAGER reads the active feature override
+        RED  OI11 the audit trail carries both the grant and the revoke
+PASS  PHASE 7 RATE LIMITS: 191 recorded (pin 191), 0 red, 0 ERROR line(s)
+PASS  PHASE 7 FEEDBACK: 151 recorded (pin 151), 0 red, 0 ERROR line(s)
+PASS  PHASE 7 CRM AUDIT: 128 recorded (pin 128), 0 red, 0 ERROR line(s)
+PASS  PHASE 8 CRM AUDIT P3-6: 238 recorded (pin 238), 0 red, 0 ERROR line(s)
+PASS  PHASE 8 LEGAL: 171 recorded (pin 171), 0 red, 0 ERROR line(s)
+PASS  PHASE 8 CONSENTS: 143 recorded (pin 143), 0 red, 0 ERROR line(s)
+PASS  PHASE 8 DATA SUBJECT REQUESTS: 228 recorded (pin 228), 0 red, 0 ERROR line(s)
+FAIL  PHASE 8 EXPORTS: 139 recorded (pin 139), 3 red, 0 ERROR line(s)
+        RED  XD7 exactly one download was audited, and it names the job and the workspace
+        RED  XD8 starting an export is audited too, once per job, with the KIND and no content
+        RED  XZ4 the audit log is back where this suite found it
+FAIL  PHASE 8 ERASURE: 212 recorded (pin 212), 3 red, 0 ERROR line(s)
+        RED  EE49 and the second run changed nothing
+        RED  ER5 and no summary audit row was written for it
+        RED  EZ5 the audit log is back where this suite found it
+PASS  PHASE 8 RETENTION: 329 recorded (pin 329), 0 red, 0 ERROR line(s)
+FAIL  PHASE 8 PERMISSIONS: 22 recorded (pin 22), 3 red, 0 ERROR line(s)
+        RED  DV0c FIXTURE: document_versions is empty before this file writes anything
+        RED  DV11 OPENED: exactly one row exists, and it is ALPHA's
+        RED  DV14 CLOSED AGAIN: empty
+PASS  PHASE 8 NOTIFICATION STAMPS: 94 recorded (pin 94), 0 red, 0 ERROR line(s)
+PASS  PHASE 8 WORKSPACE CLOSURE: 181 recorded (pin 181), 0 red, 0 ERROR line(s)
+PASS  PHASE 8 CLOSURE BACKUP COMPLETENESS: 26 recorded (pin 26), 0 red, 0 ERROR line(s)
+PASS  PHASE 9 INTEGRATIONS: 199 recorded (pin 199), 0 red, 0 ERROR line(s)
+PASS  Q228 CLOSURE BACKUP PARTS: 114 recorded (pin 114), 0 red, 0 ERROR line(s)
+
+28 run_suite calls; 3 skipped; 10 not clean on the second run
