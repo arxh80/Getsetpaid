@@ -1609,7 +1609,7 @@ Each ruling below is confirmed as built:
 - **Q218:** the "suspended" wording is fixed in Phase 10.
 - **Q227:** the backup-read marker on the network path is kept.
 
-**Q189: YES, audit it (NOT BUILT, owed).** An Owner's or Admin's edit of `organisations` (name, slug) writes an audit row with before and after. Remove the named excusal from `AUDIT_COVERAGE_EXCUSALS`. Scheduled as a follow-up branch off main after the Phase 9 PR.
+**Q189: YES, audit it (BUILT, `20261031000000`, branch `q189-org-rename-audit`: dedicated `organisation.updated` writer, lifecycle columns outside its changed set).** An Owner's or Admin's edit of `organisations` (name, slug) writes an audit row with before and after. Remove the named excusal from `AUDIT_COVERAGE_EXCUSALS`. Scheduled as a follow-up branch off main after the Phase 9 PR.
 
 **Q228: CHANGED (NOT BUILT, owed).** The founder wants three things:
 1. **A "Contact us" button** on the Owner's closure screen when the closure backup has failed. It points to the single support contact (`SECURITY.md` § 13).

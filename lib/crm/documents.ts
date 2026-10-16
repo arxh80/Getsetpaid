@@ -62,7 +62,11 @@ import { echoedValues, field, type FormState } from "@/lib/forms";
 import { authoriseOrg, failureState, stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { recordScanVerdict } from "@/lib/crm/scan-verdict";
-import { sanitiseFilename, sniffAndAllow } from "@/lib/security/file-allowlist";
+import {
+  downloadFilename,
+  sanitiseFilename,
+  sniffAndAllow,
+} from "@/lib/security/file-allowlist";
 // THE SIZE CEILING IS SHARED WITH next.config.ts, because the framework cap
 // must sit above it -- see lib/security/upload-limits.ts. This file is
 // `"use server"`, so it cannot export the constant itself.
@@ -402,7 +406,7 @@ export async function issueDownloadUrl(
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("documents")
-    .select("storage_key, scan_status")
+    .select("storage_key, scan_status, filename, mime_type")
     .eq("organisation_id", org.id)
     .eq("id", documentId)
     .is("deleted_at", null)
@@ -430,11 +434,16 @@ export async function issueDownloadUrl(
   }
 
   // SIGN. Service-role, because the bucket is client-fenced. The URL is minted
-  // only now, after authorisation (RLS) and audit.
+  // only now, after authorisation (RLS) and audit. `download` makes Storage
+  // answer with `Content-Disposition: attachment`, so an uploaded file is
+  // SAVED, never rendered inline in the browser, and saved under a name that
+  // ends in its sniffed type's extension (downloadFilename).
   const storage = createStorageClient();
   const signed = await storage.storage
     .from("documents")
-    .createSignedUrl(data.storage_key, SIGNED_URL_TTL_SECONDS);
+    .createSignedUrl(data.storage_key, SIGNED_URL_TTL_SECONDS, {
+      download: downloadFilename(data.filename, data.mime_type),
+    });
   if (signed.error || !signed.data?.signedUrl) {
     console.error(
       "[crm] createSignedUrl failed:",

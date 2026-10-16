@@ -182,6 +182,11 @@ describe("document upload / scan / download pipeline", () => {
     const body = new Uint8Array(await res.arrayBuffer());
     expect(Buffer.from(body).toString("latin1").startsWith("%PDF-")).toBe(true);
 
+    // SAVED, NEVER RENDERED: Storage answers with an attachment disposition
+    // named by downloadFilename. Drop the `download` option from the signing
+    // call and the header is absent -- the file would open inline instead.
+    expect(res.headers.get("content-disposition") ?? "").toMatch(/^attachment;.*clean\.pdf/);
+
     // Exactly one upload row and one download row -- the denominator is the two
     // deliberate actions; removing either audit call (or issuing the URL before
     // the audit and returning early) drops the count to 0 and reddens this.
