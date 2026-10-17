@@ -208,6 +208,14 @@ A candidate becomes a finding only with a concrete exploit sketch (the request, 
 
 For each: write the failing test, run it red, fix, run it green, revert the fix to prove the test reds (the mutant), restore, commit (`Fix F<n>: <one line>`), push.
 
+**Coordinator ruling for the fix phase (2026-10-17, after the audit phase stopped on F1):** F1 moves to Task 19 and F4 to Task 6, so neither is fixed here. This phase does four things:
+1. Finish `task-2-findings.md`: rows F7–F10 were cut off when the file was written.
+2. Finish the audit scope left after the early stop: the bodies of the CRM and admin Server Actions, and the export, erasure and retention runners. Add any new finding as a further row.
+3. Fix F2 (Admin self-promotes to Owner) and F3 (password or MFA change straight to GoTrue skips step-up) test first, plus F5 (the `safeNextPath` dot-segment open redirect) and F6 (auth cookies without `Secure`), which are cheap Mediums.
+4. Write `docs/threat-model.md` (G19) with its reference test.
+
+Queue F2's question, "may an Admin grant or remove the Owner role? (default per the PRD: no, only an Owner, implemented)", as the next free Q. If F3 has no GoTrue-side control in the pinned version, record it as a residual in `SECURITY.md` § 4 and § 10 with the evidence instead of building around GoTrue.
+
 - [ ] **Step 4: Run the gates that the fixes touch**
 
 At least `pnpm lint`, `pnpm typecheck`, `pnpm exec vitest run tests/unit`, plus the integration file, psql suite or e2e spec of each fix.
@@ -267,6 +275,8 @@ Each task below closes one or more gaps from `docs/launch-gates.md` § "Gaps, gr
 Every task inherits the Global Constraints, and in particular: a Critical or High gap is closed test first (run it red), then the fix (green), then a mutant that reverts the fix and turns the test red, recorded in the report. Each task ends by updating its gap rows in `docs/launch-gates.md` (status column of the gate row it moves, and a "Closed in <sha>" note on the gap row) and running the gates its changes touch: always `pnpm lint`, `pnpm typecheck` (after `npx next typegen` if a route changed) and `pnpm exec vitest run tests/unit`, plus the named heavy suites.
 
 **Execution order:** Task 4 runs immediately after Task 1, before Tasks 2 and 3, because it closes the only Critical gap. The rest run after Task 3 in the order written (severity first).
+
+**Amended 2026-10-17 after Task 2's audit phase:** Task 2 stopped early on F1, a Critical that is not a Task 1 gap. F1 is appended as **Task 19** and runs right after Task 4. The order is now Task 4 → Task 19 → Task 2 fix phase → Task 3 → Tasks 5–16 → Tasks 17–18. Task 2 F4 (erasure and `close_my_workspace` skip step-up over PostgREST) folds into Task 6.
 
 ---
 
@@ -331,6 +341,7 @@ Every task inherits the Global Constraints, and in particular: a Critical or Hig
 1. A token lives 5 minutes and is single-use. Purposes are one per gated RPC family; list them in the migration header with the RPC each guards.
 2. **Minting must itself require proof the server checked step-up.** A bare `mint_step_up_token` callable over PostgREST would let a scripted caller mint then call — defeating the point. Bind minting to Task 5's server request mark: `mint_step_up_token` refuses unless `private.request_is_from_server()` is true. **Task 6 therefore depends on Task 5** and runs after it.
 3. `export_jobs` is gated in its insert trigger (it is a table insert, not an RPC).
+4. **Task 2 F4 is in scope (amended 2026-10-17).** Two more paths skip step-up over PostgREST: the `erasure_jobs` insert (`lib/erasure/actions.ts:64-67`, `private.erasure_jobs_before_insert` in `20260930005000` has no freshness term) and `public.close_my_workspace` (`lib/org/closure-actions.ts:54-61`, `20261021000000:325` checks aal2 only). Gate both with a purpose each, in the same suite, with the same five refusals. Read row F4 in `task-2-findings.md`.
 
 - [ ] **Step 1: Failing suite** `rls_phase10_step_up.sql`: for each gated RPC and the `export_jobs` insert — no token → `42501`; a consumed token → `42501`; another user's token → `42501`; an expired token (backdated) → `42501`; a fresh token → succeeds once, and a second call with the same token → `42501`; minting without the server mark → `42501`. Non-vacuity control: the count of gated RPCs equals the purpose list's length. Wire it into the runner with its pin. Red.
 - [ ] **Step 2: The fix:** the migration, then each server action mints immediately after `checkStepUp()` passes and before its RPC. Green; the existing suites for those RPCs must stay green (their fixtures will need a token — add a shared psql helper rather than repeating the mint in each suite).
@@ -472,6 +483,41 @@ Every task inherits the Global Constraints, and in particular: a Critical or Hig
 - [ ] **Step 1:** Per G29's row: seed 50,000 rows per hot table in one tenant and 20,000 published profiles (after a fresh reset; never inside the RLS runner); assert per hot list query that the plan has no Seq Scan over the seeded table and stays under a recorded cost ceiling, run as the `authenticated` role with a real member's claims so RLS is in the plan. Red where indexes are missing.
 - [ ] **Step 2:** Additive `gin_trgm_ops` (or btree) indexes where the plans say so. Green. Mutant: drop `contacts_name_trgm_idx` → the contacts search plan red.
 - [ ] **Step 3:** Trigram census assertion per the row. Reset afterwards (the seeded volume must not leak into other runs). Fresh reset + full runner to prove the new migrations break nothing. Commit, push.
+
+### Task 19: Close the readable network base table (Task 2 F1, Critical)
+
+Numbered 19 because it was appended after Part C was numbered; it runs **immediately after Task 4**, before Task 2's fix phase (see the execution order above).
+
+**The finding (verbatim from `.superpowers/sdd/2026-10-16-launch-hardening/task-2-findings.md` row F1; read the whole row first):** `public.network_profiles` carries a table-wide `grant select ... to authenticated` (`supabase/migrations/20260904000000_network_tables.sql:633`) and the cross-tenant ROW policy `network_profiles_select_published_directory` (last altered in `supabase/migrations/20260908031000_network_presence_wind_down.sql:150-161`). Any account with an active membership anywhere (a free sign-up plus `create_organisation`) can send `GET /rest/v1/network_profiles?select=display_name,contact_email,bio,headline,city,field_visibility,organisation_id,entity_id&status=eq.published` with the anon key and its own JWT. It gets every published, live profile with every `connections`-level value unmasked, plus `organisation_id` and `entity_id`. No connection request is needed and no rate limit applies. `hidden` values are NULL in the base column (N3), so they are not exposed. The repository asserts this as "by design" in `supabase/tests/network_leakage_phase6.sql:319-321` (LB6c) and `supabase/tests/run-rls-tests.sh:3607-3610` (LEAKAGE #1a). `FOLLOW-UPS.md` § Phase 6, "The readable base table, and the column-level-grants alternative not taken", reason (2), argues the app never reads the base table for a foreign organisation. That premise is false, because PostgREST is a present path (`SECURITY.md` § 4). The founder rule in `CLAUDE.md` is that `connections`-level data resolves "for the other side" only after both sides accept.
+
+**Files:**
+- Create: `supabase/migrations/<next timestamp>_network_base_table_is_not_a_read_path.sql`
+- Modify: `supabase/tests/network_leakage_phase6.sql` (LB6c flipped to a refusal) and its `run_suite` pin, `supabase/tests/run-rls-tests.sh` (LEAKAGE #1a flipped to a refusal), `supabase/tests/rls_phase6_network.sql` § ND if the views' dependency assertions change, `SECURITY.md` § 2 (as-built) and § 10 ("Network privacy leakage" residual 1 closed), `FOLLOW-UPS.md` § Phase 6 (the entry above closed with this task's sha), the `CLAUDE.md` paragraph "The base table is readable and the VIEW is the mask, not the policy" (rewritten to the new as-built), `docs/launch-gates.md` (a new gap row **G32, Critical**, "Closed in <sha>", and the gate 3 row's evidence)
+- Test: the two suites above, and `tests/e2e/network.spec.ts` (must stay green unchanged)
+
+**Interfaces:**
+- Consumes: `public.network_directory` and `public.network_connected_profiles` as last defined (rebuild from the live `pg_get_viewdef` and diff against `20260904004000_network_discovery_views.sql` and `20260908031000` first); every policy, trigger or function that subqueries `public.network_profiles` under the caller's rights for a FOREIGN profile (the connection-request insert path in `20260904006000`, `20261017000000`, `20261019000000`; `network_links`; the notice queue in `20261016000000`/`20261018000000`). Find all of them with `grep -n "network_profiles" supabase/migrations/*.sql` plus a live `pg_policies`/`pg_proc` scan, not just this list.
+- Produces: the base table answers only its own organisation's members (`network_profiles_select_view_network` or its current equivalent). A foreign row reaches a caller only through the two views. Task 5 adds the server request mark to those same two views, so keep their WHERE clauses in one place each.
+
+**Coordinator decisions:**
+1. **Drop `network_profiles_select_published_directory`.** Move its four terms (published, live, the caller has an active membership, the presence clock disjoined with own-membership) into the two views' own WHERE clauses, unchanged. The views then read the base table with the view owner's rights (`security_invoker = false`). This is the default. It keeps both views' `pg_depend` dependency sets (N2) exactly as they are. Supabase's advisor flags definer views (lint `security_definer_view`). Record in each view's `comment on view` why this one is intentional and what its WHERE clause guarantees. Check whether `network_profiles` has `force row level security` and what the view owner's `rolbypassrls` is, and prove the view still returns rows to a foreign caller (the positive controls below). If a definer view cannot be made to work on this stack, the fallback is a `private` SECURITY DEFINER SQL function (`stable`, `set search_path = ''`) that returns the masked rows, with the views selecting from it. Record which one shipped and why.
+2. **Column-level grants are not the fix.** The owner's own reads need every column, and column grants are not row-conditional. Phase 6's reason (1) still holds.
+3. Every caller-rights read of a foreign profile found under Interfaces must keep working. Route each one through a `private` definer predicate (for example `private.network_profile_is_discoverable(p_profile_id uuid) returns boolean`), with the same four terms in exactly one place. The views and the predicate must not drift: assert in the suite that both give the same answer for a published, a draft, a soft-deleted and a wound-down profile.
+4. The founder question: queue "F1: the network base table was readable cross-tenant over PostgREST; the views are now the only foreign read path (default: implemented)" as the next free Q in `DECISIONS-QUEUE.md`.
+
+- [ ] **Step 1: Reproduce over HTTP before changing anything.** Fresh reset (check for other sessions first). As an unconnected counterparty with its own JWT, run the exact `GET` from the finding against the local PostgREST. Record in the report the row count and one `connections`-level value it returned. If it does not reproduce, stop and report DONE_WITH_CONCERNS with the evidence.
+- [ ] **Step 2: Flip the two "by design" assertions to failing refusals.** First, LB6c: as an unconnected counterparty, `select contact_email, organisation_id, entity_id from public.network_profiles where id = <foreign published profile>` returns zero rows. Second, LEAKAGE #1a: the HTTP `GET` returns `[]`. Add the positive controls alongside them, all in the suites' own assertion style:
+  - the same caller reads the profile's `network` field through `network_directory`
+  - after an accepted connection, it reads the `connections` field through `network_connected_profiles`
+  - the publisher's own member reads every column, `organisation_id` included, from the base table
+  - the drift check from decision 3
+
+  Move each suite's pin. Run the runner on a fresh reset: the flipped assertions are red.
+- [ ] **Step 3: The fix.** The migration per decisions 1 and 3. Green on a fresh reset with the full runner ("All suites passed").
+- [ ] **Step 4: Mutant.** Inside a transaction, re-create `network_profiles_select_published_directory` with its old USING clause. Both flipped assertions go red. Roll back. Record in the report.
+- [ ] **Step 5: Gates.** `pnpm lint`, `pnpm typecheck`, `pnpm test` (the network integration tests read the views), `tests/e2e/network.spec.ts` plus every spec that `grep -l "network" tests/e2e/*.spec.ts` names, in groups with `--workers=1`. Then update the docs listed under Files. Commit per logical change, push.
+
+---
 
 ## Part C — close the phase
 
