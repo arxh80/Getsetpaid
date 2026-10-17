@@ -1,4 +1,5 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
 import {
   PASSWORD,
   authUserByEmail,
@@ -55,6 +56,7 @@ const ADDRESSES = {
   holder: `holder-${run}@example.test`,
   pending: `pending-${run}@example.test`,
   resignup: `resignup-${run}@example.test`,
+  inviteFirst: `invitefirst-${run}@example.test`,
 };
 const P1 = "Squatter-chose-this-1";
 const P2 = "Owner-chose-this-2!";
@@ -379,4 +381,55 @@ test("RESIDUAL: an unconfirmed re-sign-up mails the same inbox again, and confir
   const firstAgain = await newPage(browser);
   await submitSignIn(firstAgain, address, P1);
   await expect(firstAgain).not.toHaveURL(/\/login/);
+});
+
+// ===========================================================================
+// THE OTHER ORDERING: THE INVITATION COMES FIRST
+// ===========================================================================
+// The invite step tells a squatter from a pending invitee by invited_at, and
+// that is safe only if a squatter cannot plant a password on an account an
+// invitation created. Measured here (Task 4 fix round 1): the invitation
+// creates a password-less account; the squatter then signs up as that address
+// STRAIGHT TO GoTrue with the anon key, as an attacker would; GoTrue answers
+// with the same account and stores no password on it. The squatter's sign-up
+// does re-send a confirmation, which voids the invitation link -- pinned here
+// as what it is, a nuisance rather than a takeover. The invitee proves the
+// inbox through the newer email, and the squatter's password still never
+// signs in.
+test("invitation first: a squatter signing up over a pending invitee's account plants no password", async ({
+  browser,
+}) => {
+  const address = ADDRESSES.inviteFirst;
+  const owner = await newPage(browser);
+  await signInOwner(owner);
+  expect(await invite(owner, world.orgs[0].slug, address)).toBe(
+    `Invitation sent to ${address}. They'll get an email with a link to join.`,
+  );
+  const [invitation] = await waitForMail(address, new RegExp(INVITE_SUBJECT));
+
+  // [auth.email] max_frequency = "1s" applies to the confirmation this
+  // sign-up sends; inside a second it would be a 429, which is not the case.
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  const { apiUrl, anonKey } = localStack();
+  const attacker = createClient(apiUrl, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { error } = await attacker.auth.signUp({ email: address, password: P1 });
+  expect(error).toBeNull();
+  expect(await authUserByEmail(address)).toMatchObject({ emailConfirmed: false, invited: true });
+
+  const squatter = await newPage(browser);
+  await expectSignInRefused(squatter, address, P1);
+
+  // The invitee follows the invitation: the squatter's sign-up voided it...
+  const invitee = await newPage(browser);
+  await invitee.goto(await linkIn(invitation, "type=invite"));
+  await expect(invitee).toHaveURL(/\/login\?error=link_failed/);
+  // ...so they prove the inbox through the newer email instead.
+  const [confirmation] = await waitForMail(address, /confirm/i);
+  await invitee.goto(await linkIn(confirmation, "/auth/v1/verify"));
+  await expect.poll(async () => (await authUserByEmail(address))?.emailConfirmed).toBe(true);
+
+  // THE INVARIANT: the squatter's password never signs in.
+  await expectSignInRefused(squatter, address, P1);
 });
