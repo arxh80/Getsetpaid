@@ -79,6 +79,9 @@ export interface LocalStack {
   anonKey: string;
   serviceRoleKey: string;
   dbUrl: string;
+  /** The local mail catcher (Mailpit, `[local_smtp]` in config.toml), when
+   *  the CLI reports one. Only the invite pre-hijack spec reads it. */
+  mailUrl?: string;
 }
 
 let cachedStack: LocalStack | undefined;
@@ -120,7 +123,14 @@ export function localStack(): LocalStack {
   if (!/^postgres(?:ql)?:\/\/[^@]*@(127\.0\.0\.1|localhost):/.test(dbUrl)) {
     throw new Error("Refusing to run: DB_URL is not a local Postgres instance.");
   }
-  cachedStack = { apiUrl, anonKey, serviceRoleKey, dbUrl };
+  // Same loopback refusal as the API: a mail catcher on another host would
+  // mean the stack is not local, and nothing here reads a real inbox.
+  const rawMailUrl = parsed.MAILPIT_URL ?? parsed.INBUCKET_URL;
+  const mailUrl =
+    rawMailUrl && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(rawMailUrl)
+      ? rawMailUrl
+      : undefined;
+  cachedStack = { apiUrl, anonKey, serviceRoleKey, dbUrl, mailUrl };
   return cachedStack;
 }
 
@@ -3313,4 +3323,110 @@ export async function countContactsNamed(organisationId: string, name: string): 
     [organisationId, name],
   );
   return Number(rows[0]?.n ?? 0);
+}
+
+// =============================================================================
+// PHASE 10 TASK 4: THE INVITE PRE-HIJACK (G11)
+// =============================================================================
+// A deliberately SMALL world, not setUpWorld(): the invite pre-hijack spec
+// needs one Owner who can actually send an invitation (an MFA-required role,
+// so a real enrolled TOTP factor, walked in the browser) and two workspaces
+// that Owner may invite into. Two, because "a person invited by one workspace
+// and then by another before accepting either" is the legitimate re-invite
+// the squatter refusal must not break (the positive control beside it).
+
+export interface InviteOrg {
+  id: string;
+  slug: string;
+  name: string;
+}
+
+export interface InviteWorld {
+  owner: E2eUser;
+  ownerTotpSecret: string;
+  orgs: [InviteOrg, InviteOrg];
+}
+
+export async function setUpInviteWorld(): Promise<InviteWorld> {
+  const suffix = randomUUID().slice(0, 8);
+  const owner = await createUser(`e2e-inviter-${suffix}@test.local`);
+  const ownerTotpSecret = await enrolTotp(owner.email);
+  const orgs: [InviteOrg, InviteOrg] = [
+    { id: randomUUID(), slug: `e2e-inv-a-${suffix}`, name: `E2E Invite A ${suffix}` },
+    { id: randomUUID(), slug: `e2e-inv-b-${suffix}`, name: `E2E Invite B ${suffix}` },
+  ];
+  await sql(
+    `insert into public.organisations (id, name, slug) values ($1,$2,$3), ($4,$5,$6)`,
+    [orgs[0].id, orgs[0].name, orgs[0].slug, orgs[1].id, orgs[1].name, orgs[1].slug],
+  );
+  // Starter rows for the same reason setUpWorld() plants them: every real
+  // workspace has one from birth, and these two are planted by SQL rather
+  // than through create_organisation().
+  await sql(
+    `insert into public.organisation_subscriptions
+       (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+     values ($1,'starter','monthly',3,'active', now() + interval '30 days'),
+            ($2,'starter','monthly',3,'active', now() + interval '30 days')`,
+    [orgs[0].id, orgs[1].id],
+  );
+  await sql(
+    `insert into public.organisation_memberships
+       (organisation_id, user_id, role, status, joined_at)
+     values ($1,$3,'owner','active',now()), ($2,$3,'owner','active',now())`,
+    [orgs[0].id, orgs[1].id, owner.id],
+  );
+  return { owner, ownerTotpSecret, orgs };
+}
+
+/** The auth.users row for an address (exact, case-insensitive), read as `postgres`. */
+export async function authUserByEmail(email: string): Promise<{
+  id: string;
+  emailConfirmed: boolean;
+  invited: boolean;
+} | null> {
+  const { rows } = await db().query<{ id: string; confirmed: boolean; invited: boolean }>(
+    `select id, email_confirmed_at is not null as confirmed, invited_at is not null as invited
+       from auth.users where lower(email) = lower($1)`,
+    [email],
+  );
+  const row = rows[0];
+  return row ? { id: row.id, emailConfirmed: row.confirmed, invited: row.invited } : null;
+}
+
+/** Every organisation_memberships row this user holds, read as `postgres`. */
+export async function membershipsOfUser(
+  userId: string,
+): Promise<{ organisationId: string; role: string; status: string }[]> {
+  const { rows } = await db().query<{ organisation_id: string; role: string; status: string }>(
+    `select organisation_id, role, status from public.organisation_memberships
+      where user_id = $1 order by created_at`,
+    [userId],
+  );
+  return rows.map((r) => ({ organisationId: r.organisation_id, role: r.role, status: r.status }));
+}
+
+/**
+ * Tear the invite world down, plus every auth user the spec created through
+ * the real forms (found by address, since /signup and inviteUserByEmail mint
+ * the ids, not this file). audit_events rows go first, for the reason
+ * tearDownWorld() gives: actor_user_id blocks a hard delete of the user.
+ */
+export async function tearDownInviteWorld(
+  world: InviteWorld,
+  createdAddresses: string[],
+): Promise<void> {
+  const { serviceRoleKey } = localStack();
+  await sql(`delete from public.organisations where id = any($1::uuid[])`, [
+    world.orgs.map((o) => o.id),
+  ]);
+  const ids = [world.owner.id];
+  for (const address of createdAddresses) {
+    const user = await authUserByEmail(address);
+    if (user) ids.push(user.id);
+  }
+  await sql(`delete from public.audit_events where actor_user_id = any($1::uuid[])`, [ids]);
+  for (const id of ids) {
+    await api(`/auth/v1/admin/users/${id}`, { key: serviceRoleKey, method: "DELETE" });
+  }
+  await closeDb();
 }
