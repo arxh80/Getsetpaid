@@ -250,11 +250,29 @@ interface ResolvedIdentity {
 
 /**
  * Shown to the inviter when the address belongs to an account that signed
- * itself up and has not confirmed its email. Plain on purpose: the inviter
- * can do nothing about it except ask, and the address's owner can.
+ * itself up and has not confirmed its email.
+ *
+ * NEUTRAL ON PURPOSE: IT TELLS NOBODY TO CONFIRM ANYTHING (Task 4 fix round
+ * 1). The first wording ("Ask them to confirm it, then invite again") sent
+ * the inviter to have the address's owner confirm an account a squatter may
+ * have created -- and confirming it is exactly what makes the squatter's
+ * password work (GoTrue keeps the first password; the RESIDUAL test in
+ * tests/e2e/invite-pre-hijack.spec.ts). Measured on the local stack before
+ * choosing this wording, on a squatter's unconfirmed account:
+ *   - the sign-in page's only "forgotten it?" route, the emailed sign-in
+ *     link, makes GoTrue send a sign-up confirmation instead; following it
+ *     confirms the account and the squatter's password still signs in;
+ *   - GoTrue's recovery flow does confirm the account, and the squatter's
+ *     password fails once a new one is set -- but this app has no "Forgot
+ *     password" page to send anyone to, and the password form it shows after
+ *     a recovery link is optional.
+ * So there is no safe path to point the owner at until Phase 10 Task 20
+ * (Q245) makes an address's first proof also choose a new password. Until
+ * then the message states the fact and offers the one thing that is safe:
+ * a different address.
  */
 const UNCONFIRMED_SIGN_UP_REFUSAL =
-  "That address has an account that has not confirmed its email yet. Ask them to confirm it, then invite again.";
+  "We can't invite that address yet: it has an unfinished GetSetPaid sign-up. Check the address with the person you're inviting, or invite them at a different address.";
 
 const INVITE_FAILED = "We couldn't send that invitation. Try again.";
 
@@ -314,10 +332,20 @@ const INVITE_FAILED = "We couldn't send that invitation. Try again.";
  *     inviteUserByEmail call would still be bound. They would have to know
  *     when the invitation is sent.
  *   - Confirming the squatter's sign-up (by following its confirmation
- *     email, or by signing up again and confirming) makes the account usable
- *     with the squatter's password: GoTrue keeps the FIRST password on an
- *     unconfirmed re-sign-up. After that the account is confirmed and binds
- *     like any other.
+ *     email, by signing up again and confirming, or by asking for an emailed
+ *     sign-in link) makes the account usable with the squatter's password:
+ *     GoTrue keeps the FIRST password on an unconfirmed re-sign-up. After
+ *     that the account is confirmed and binds like any other. Open until
+ *     Phase 10 Task 20 (Q245); UNCONFIRMED_SIGN_UP_REFUSAL is worded so as
+ *     not to steer anyone into it.
+ *
+ * THE OTHER ORDERING IS SAFE (measured, and pinned by the e2e spec): when the
+ * invitation comes FIRST, the account it creates has no password, and a
+ * squatter signing up over it afterwards stores none either -- GoTrue does
+ * not update an existing unconfirmed user on sign-up. The squatter's
+ * sign-up does re-send a confirmation, which voids the invitation link, so
+ * the invitee may need the newer email or a fresh invitation; that is a
+ * nuisance, not a takeover.
  */
 async function resolveOrInviteAuthUser(
   email: string,

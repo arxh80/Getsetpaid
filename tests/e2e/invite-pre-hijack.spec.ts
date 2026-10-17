@@ -41,8 +41,11 @@ import { totpCode } from "../support/totp";
 // outcomes (which memberships exist), never to make the attack work.
 // ===========================================================================
 
+// Neutral on purpose: it tells nobody to confirm anything (lib/org/actions.ts
+// says why -- confirming a squatter's sign-up is what the RESIDUAL test below
+// shows makes the squatter's password work).
 const REFUSAL =
-  "That address has an account that has not confirmed its email yet. Ask them to confirm it, then invite again.";
+  "We can't invite that address yet: it has an unfinished GetSetPaid sign-up. Check the address with the person you're inviting, or invite them at a different address.";
 const INVITE_SUBJECT = "You've been invited to a GetSetPaid workspace";
 const BAD_SIGN_IN = "That email and password don't match. Check both and try again.";
 
@@ -181,7 +184,9 @@ async function invite(owner: Page, orgSlug: string, address: string): Promise<st
   await form.locator('input[name="email"]').fill(address);
   await form.locator('select[name="role"]').selectOption("manager");
   await form.getByRole("button", { name: "Send invitation" }).click();
-  const outcome = form.getByText(/Invitation sent to|already has a GetSetPaid account|has not confirmed|couldn't|already a member/);
+  const outcome = form.getByText(
+    /Invitation sent to|already has a GetSetPaid account|can't invite that address|couldn't|already a member/,
+  );
   await expect(outcome).toBeVisible();
   // The alert leads with its tone's word ("Done." / "Error.", components/ui/
   // alert.tsx); the message is what follows it.
@@ -338,7 +343,10 @@ test("a pending invitee can be invited by a second workspace and accept both", a
 // registrant's password, and confirming does not change that. So if the
 // real owner signs up over a squatter's earlier sign-up and confirms, the
 // SQUATTER's password signs in to the now-confirmed account, and the owner's
-// own does not. SECURITY.md § 10 records it with what closes it.
+// own does not. This is G11's open residual (Q245): SECURITY.md § 10 records
+// it, and Phase 10 Task 20 closes it and turns this test into a refusal. It
+// is also G11's re-measure in docs/launch-gates.md -- while it passes as
+// written, G11 is PARTIAL, not closed.
 test("RESIDUAL: an unconfirmed re-sign-up mails the same inbox again, and confirming keeps the FIRST password", async ({
   browser,
 }) => {
