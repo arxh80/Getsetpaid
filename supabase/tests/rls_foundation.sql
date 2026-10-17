@@ -100,9 +100,28 @@ begin
   perform harness.record(p_label, p_expected, v_actual);
 end $$;
 
+-- harness.try, but a refusal records its HINT beside the sqlstate:
+-- denied(<sqlstate>:<hint>). Added by Phase 10 Task 4 for J11, whose refusal
+-- shares 42501 with J1/J2 and is told apart from them only by its hint.
+create function harness.try_h(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_rows bigint; v_actual text; v_hint text;
+begin
+  begin
+    execute p_sql;
+    get diagnostics v_rows = row_count;
+    v_actual := 'ok(' || v_rows || ')';
+  exception when others then
+    get stacked diagnostics v_hint = pg_exception_hint;
+    v_actual := 'denied(' || sqlstate || coalesce(':' || nullif(v_hint, ''), '') || ')';
+  end;
+  perform harness.record(p_label, p_expected, v_actual);
+end $$;
+
 grant usage on schema harness to authenticated, anon, service_role;
 grant execute on function harness.record(text,text,text) to authenticated, anon, service_role;
 grant execute on function harness.try(text,text,text)   to authenticated, anon, service_role;
+grant execute on function harness.try_h(text,text,text) to authenticated, anon, service_role;
 grant execute on function harness.val(text,text,text)   to authenticated, anon, service_role;
 
 -- ---------------------------------------------------------------------------
@@ -919,6 +938,65 @@ select harness.val('J10 the audit record names the actor and the org, not a gues
          :'dave', :'org_a_id', :'dave_mem_id'), 'true/true');
 
 reset role; reset request.jwt.claims;
+
+-- ---------------------------------------------------------------------------
+-- J11-J12. AN INVITE IS ACCEPTED ONLY BY AN ACCOUNT THAT HAS PROVED ITS EMAIL
+--          (Phase 10 Task 4, G11; 20261102010000_invites_require_a_proven_email)
+--
+-- The pre-hijack: a squatter signs up as bookings@victim.example before the
+-- victim ever does, a workspace later invites that address, and the invite
+-- binds to the squatter's account. accept_invite() used to check only
+-- user_id = auth.uid() and status = 'invited', so whoever held a session for
+-- that auth.users row joined -- nothing in the function asked whether the
+-- account had ever proved it owns the inbox. eve is that account: a real
+-- auth.users row with email_confirmed_at NULL holding a real pending invite.
+--
+-- Into org B, not org A: K10 counts org A's membership list. After J9/J10, so
+-- their 'membership.accepted' count is untouched. Everything eve brings is
+-- removed at the end of the block, because rls_phase2_crm.sql censuses the
+-- whole of public.profiles and handle_new_user gives eve a row there
+-- (run-rls-tests.sh § P6 states the same constraint).
+-- ---------------------------------------------------------------------------
+select gen_random_uuid()::text as eve \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'eve') as eve_c \gset
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+values (:'eve', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+        'eve-unconfirmed@test.local', null, now(), now());
+insert into public.organisation_memberships (organisation_id, user_id, role, status, invited_by)
+values (:'org_b_id', :'eve', 'standard_user', 'invited', :'bob');
+select id as eve_mem_id from public.organisation_memberships where user_id = :'eve' \gset
+
+set role authenticated;
+set request.jwt.claims = :'eve_c';
+select harness.try_h('J11 an invitee whose email is UNCONFIRMED cannot accept their own invite',
+  format($$select public.accept_invite(%L)$$, :'eve_mem_id'), 'denied(42501:invite_email_unconfirmed)');
+reset role; reset request.jwt.claims;
+
+-- The refusal is before any write, not a rolled-back one that left a trace.
+select harness.val('J11b OUTCOME: eve''s row is still invited, with no joined_at',
+  format($$select status||'/'||(joined_at is null)::text
+             from public.organisation_memberships where id=%L$$, :'eve_mem_id'),
+  'invited/true');
+
+-- Positive control: the same row and the same caller, and the ONE difference
+-- is the proof. Without it J11 passes against a function that always raises.
+update auth.users set email_confirmed_at = now() where id = :'eve';
+set role authenticated;
+set request.jwt.claims = :'eve_c';
+select harness.try('J12 POSITIVE CONTROL: the same invitee, email now confirmed, accepts',
+  format($$select public.accept_invite(%L)$$, :'eve_mem_id'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select harness.val('J12b OUTCOME: eve''s row is active WITH a joined_at stamp',
+  format($$select status||'/'||(joined_at is not null)::text
+             from public.organisation_memberships where id=%L$$, :'eve_mem_id'),
+  'active/true');
+
+-- Clean-up. The audit row goes first: audit_events.actor_user_id blocks a
+-- hard delete of the user it names. Deleting the user cascades eve's profile
+-- and membership.
+delete from public.audit_events where actor_user_id = :'eve';
+delete from auth.users where id = :'eve';
 
 -- ===========================================================================
 -- K. MFA / assurance level in the permission engine

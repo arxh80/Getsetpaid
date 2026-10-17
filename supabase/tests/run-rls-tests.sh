@@ -223,7 +223,7 @@ for u in alice bob carol dave super; do
   VARS+=( -v "${u}_c0={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\"}" )
 done
 
-run_suite "RLS FOUNDATION" rls_foundation.sql harness 183 "${VARS[@]}"
+run_suite "RLS FOUNDATION" rls_foundation.sql harness 187 "${VARS[@]}"
 fails=$SUITE_FAILS
 if [ "$fails" != "0" ]; then
   echo "RLS SUITE FAILED: $fails failing assertion(s)" >&2
