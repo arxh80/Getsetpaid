@@ -260,23 +260,226 @@ git push
 
 ---
 
-## Part B — remediation (written from Tasks 1–3 before dispatch)
+## Part B — remediation (written from Task 1's graded gaps, 2026-10-17)
 
-The coordinator writes one task per remediation cluster here, from `docs/launch-gates.md` § "Gaps, graded" and the two findings files, each in the Task structure above with its files, the failing test's code, and the commands. Expected clusters, to be confirmed or dropped by Task 1's evidence:
+Each task below closes one or more gaps from `docs/launch-gates.md` § "Gaps, graded". **The gap rows are part of each task's requirements:** read every row the task names, verbatim, before starting. A row's "Proposed remediation" and "Proposed test" are the spec; where this task text and a row disagree, this task text governs (it records a coordinator decision). Task 2 and Task 3 findings that need remediation are appended here as further tasks when those tasks report.
 
-- every unbounded list read bounded, with a census test that fails on a new one;
-- every rate limit in `SECURITY.md` § 5 exercised by a test at its boundary;
-- every app route covered by an axe scan, or listed in the census with the reason it is not;
-- every list read index-backed at realistic volume (`EXPLAIN` on seeded data, a psql assertion per hot query);
-- a local backup-restore drill: `docs/runbooks/backup-restore.md` plus a script that dumps the local DB, restores it into a fresh stack and re-runs the psql suite against the restore.
+Every task inherits the Global Constraints, and in particular: a Critical or High gap is closed test first (run it red), then the fix (green), then a mutant that reverts the fix and turns the test red, recorded in the report. Each task ends by updating its gap rows in `docs/launch-gates.md` (status column of the gate row it moves, and a "Closed in <sha>" note on the gap row) and running the gates its changes touch: always `pnpm lint`, `pnpm typecheck` (after `npx next typegen` if a route changed) and `pnpm exec vitest run tests/unit`, plus the named heavy suites.
+
+**Execution order:** Task 4 runs immediately after Task 1, before Tasks 2 and 3, because it closes the only Critical gap. The rest run after Task 3 in the order written (severity first).
+
+---
+
+### Task 4: Close the invite pre-hijack (G11, Critical)
+
+**Files:**
+- Create: `supabase/migrations/<next timestamp>_invites_require_a_proven_email.sql`
+- Modify: `supabase/config.toml` (`[auth.email] enable_confirmations = true`), `lib/org/actions.ts` (the invite step that reuses an existing account), `supabase/tests/rls_foundation.sql` + its `run_suite` pin, `SECURITY.md` § 15 (Confirm email ON, with its verification step), `docs/launch-gates.md`
+- Create: `tests/unit/security/auth-config.test.ts`, `tests/e2e/invite-pre-hijack.spec.ts`
+
+**Interfaces:**
+- Consumes: `public.accept_invite` as last defined (`supabase/migrations/20260828220000_second_gate_on_foundation_writes.sql`; rebuild from the live `pg_get_functiondef` and diff against that file first).
+- Produces: `accept_invite` refuses SQLSTATE `42501` with hint `invite_email_unconfirmed` when `auth.users.email_confirmed_at` is NULL for `auth.uid()`; `tests/unit/security/auth-config.test.ts` exporting nothing, reading `supabase/config.toml` (Task 8 extends this same file).
+
+- [ ] **Step 1: Reproduce the attack before changing anything.** Against the local stack (check for other sessions first), through the real forms: sign up at `/signup` as `squatter-<ts>@example.test` (confirmations are off locally, so the account is usable at once); as a second workspace's Owner, invite that address with role Manager through the real invite form; as the squatter, open `/invites` and accept. Record in the report whether the membership became `active` (the expected reproduction) and the exact steps. If it does NOT reproduce, stop and report DONE_WITH_CONCERNS with the evidence: the grade and the rest of this task change.
+- [ ] **Step 2: Write the failing psql assertions** in `rls_foundation.sql`, in the suite's own assertion style: an invited user whose `auth.users.email_confirmed_at` is NULL calls `accept_invite` → SQLSTATE `42501`, and the membership row stays `invited`; the positive control: the same fixture with `email_confirmed_at = now()` accepts and the row becomes `active`. Move the `RLS FOUNDATION` pin. Run the runner on a fresh reset: the new refusal assertion is red.
+- [ ] **Step 3: Write the failing config test** `tests/unit/security/auth-config.test.ts`: parse `supabase/config.toml` (a small TOML reader, or a section-aware line scan; no new dependency unless one is already in `package.json`) and assert `[auth.email] enable_confirmations = true`. Red.
+- [ ] **Step 4: The fix.** The additive migration rebuilds `accept_invite` with the email-proven check before any write. In `lib/org/actions.ts`, when the invite step finds an existing account, refuse to bind it if that account's email is unconfirmed (read `email_confirmed_at` from the Admin API user record) with a plain message to the inviter ("That address has an account that has not confirmed its email yet. Ask them to confirm it, then invite again."). Set `enable_confirmations = true` in `config.toml`. Re-run: green.
+- [ ] **Step 5: The e2e proof** `tests/e2e/invite-pre-hijack.spec.ts`: sign up through `/signup` (now lands on `/signup/check-email`); assert the squatter cannot sign in before confirming; have a second workspace's Owner invite the address and assert the inviter sees the refusal above; assert no `organisation_memberships` row for that user exists in Postgres. Then confirm through the local mail catcher (Inbucket/Mailpit, whichever `config.toml` runs) and assert a fresh invite can now be accepted (the positive control).
+- [ ] **Step 5b: The confirmations-ON takeover (task review, Task 1 fix round).** `lib/org/actions.ts:258-261` and `:280-282` record that `inviteUserByEmail` on an existing **unconfirmed** user returns 200 with the same id and re-sends the invite (only a confirmed user gets `email_exists`), so a squatter who signed up with confirmations ON is bound in the `created: true` branch — and when the real owner follows the invite link, the squatter's account becomes confirmed with the squatter's password intact. The `accept_invite` check alone does not close this. Write the failing case first (integration or e2e): with confirmations ON, the squatter signs up as the address (unconfirmed); the workspace invites it; the victim follows the invite link from the mail catcher and sets up access; then **the squatter's original password must fail to sign in**. Fix in the invite step itself (the refuse-to-bind-an-unconfirmed-existing-account check lives in the `created: true` branch as well as the 422 fallback; the inviter sees the refusal message from Step 4), or require the invitee to set a new password on invite verification (which invalidates the squatter's). Choose the one the test proves; record which and why. Mutant: remove the check → the squatter signs in → red.
+- [ ] **Step 6: Probe GoTrue's unconfirmed re-signup.** With confirmations on, sign up an address, do not confirm, sign up the same address again with a different password, and record what GoTrue does (a second confirmation mail to the same inbox is the safe outcome; a password overwrite usable without the inbox is a finding). Record the result in the report and in `SECURITY.md` § 10 if it is a residual risk.
+- [ ] **Step 7: Mutant.** Revert the `accept_invite` check in a scratch migration applied by psql inside a transaction (or temporarily), and show the Step 2 assertion red; restore.
+- [ ] **Step 8: Gates.** Fresh reset + full psql runner ("All suites passed"); `pnpm test` (the whole vitest, since invite flows have integration tests); the e2e specs that sign up or invite (`invite-pre-hijack.spec.ts`, and every spec that `grep -l "invite\|signup" tests/e2e/*.spec.ts` names) in groups with `--workers=1`. Founder question: queue "Confirm email ON in production (default: yes, implemented)" as the next free Q.
+- [ ] **Step 9: Commit per logical change, push.**
+
+---
+
+### Task 5: A server-only request mark: close the directory-limit bypass and the impersonator's direct reads (G2, G14, High)
+
+**Files:**
+- Create: `supabase/migrations/<ts>_server_request_mark.sql`, `tests/integration/security/server-request-mark.test.ts`
+- Modify: `lib/supabase/server.ts` (send the header), `.env.example`, the local seed (wherever local-only rows are seeded; find it — `supabase/seed.sql` or the runner's fixture block), `supabase/tests/run-rls-tests.sh` (HTTP block), `supabase/tests/rls_phase7_impersonation.sql` § IM + pin, `tests/integration/security/rate-limit-network-discovery.test.ts`, `SECURITY.md` §§ 5, 7, 15, `docs/launch-gates.md`
+
+**Interfaces:**
+- Produces: `private.api_pre_request()` registered as PostgREST's `db_pre_request`; a transaction-local flag that later checks read (recommended shape below); `private.request_is_from_server() returns boolean`; env `GETSETPAID_SERVER_REQUEST_SECRET` (server-only, never `NEXT_PUBLIC_`).
+
+**Coordinator decision (the recommended shape; the implementer may improve it with evidence, not drop a property):**
+1. The server's Supabase client (`lib/supabase/server.ts`, and only it — never a browser client) sends `x-getsetpaid-server: <GETSETPAID_SERVER_REQUEST_SECRET>` on every request.
+2. `private.api_pre_request()` reads `current_setting('request.headers', true)::json ->> 'x-getsetpaid-server'`, compares its SHA-256 with a digest held in the database (Vault or a `private` table readable by no API role), and sets a transaction-local flag (`set_config('getsetpaid.from_server', 'on', true)`) when it matches. It then refuses (raise with a PostgREST-mapped 403) any request whose `request.path` names `network_directory` or `network_connected_profiles` without the flag. It writes nothing.
+3. `private.request_is_from_server()` reads that flag. `private.impersonated_organisations()` (rebuild from live) returns its target only when it is true, so an impersonating superuser's direct PostgREST reads see nothing and every read goes through `getCurrentOrg()`'s audited path (G14's default).
+4. Locally the digest is seeded from a fixed, clearly-local value that `.env.example` also documents; production sets its own pair (§ 15). A missing digest fails closed (directory refused), and the server logs one clear line naming the missing setting.
+5. Confirm by experiment that the local PostgREST honours `pgrst.db_pre_request` via `alter role authenticator set ...` plus `notify pgrst, 'reload config'`, and that a migration can set it so a fresh `db reset` carries it. If it cannot be set from a migration, stop and report NEEDS_CONTEXT with the evidence.
+
+- [ ] **Step 1: Failing tests first.** (a) Runner HTTP block, as a real signed-in session with the anon key: direct `GET /rest/v1/network_directory?select=*` → 403 and no rows; positive control with the header → 200 with rows. (b) The same pair for `network_connected_profiles`. (c) `rls_phase7_impersonation.sql` § IM: a live impersonation session without the flag reads 0 of the target's contacts; with the flag set it reads them. (d) Runner HTTP: direct `GET /rest/v1/contacts?organisation_id=eq.<target>` with the impersonating superuser's JWT returns `[]`. (e) `rate-limit-network-discovery.test.ts`: a new case asserting the direct path is refused while the app path still meters (31st refused). Run red.
+- [ ] **Step 2: The fix** per the decision above. Green.
+- [ ] **Step 3: Mutants.** Drop the view check from the pre-request function → (a)/(b) red. Drop the flag term from `impersonated_organisations()` → (c)/(d) red. Record both.
+- [ ] **Step 4: Gates.** Fresh reset + full psql runner; `pnpm test`; e2e: `network.spec.ts`, `network-leakage.spec.ts`, `impersonation.spec.ts`, `tenant-breakout.spec.ts` in groups with `--workers=1` (the app path must keep working end to end).
+- [ ] **Step 5: Docs.** `SECURITY.md` § 5 (the directory limit is now enforced on every path), § 7 (impersonated direct reads closed), § 15 (generate and set the secret and its digest; verification: a direct GET of the directory with a real session returns 403). Commit per logical change, push.
+
+---
+
+### Task 6: Step-up enforced in the database (G13, High)
+
+**Files:**
+- Create: `supabase/migrations/<ts>_step_up_tokens.sql`, `supabase/tests/rls_phase10_step_up.sql` (+ its `run_suite` line in `run-rls-tests.sh`), `tests/unit/security/step-up-token-callers.test.ts`
+- Modify: every server action that calls `checkStepUp()` before a gated write (`lib/admin/closures.ts`, `impersonation.ts`, `lifecycle.ts`, `overrides.ts`, `retention-actions.ts`, the legal publish/counsel-review actions, the DSR reject action, the export request action — confirm the full list with `grep -rn checkStepUp lib app`), the permission matrix (its catalogue file and its pinned total), `SECURITY.md` § 4, `docs/launch-gates.md`
+
+**Interfaces:**
+- Produces: `public.mint_step_up_token(p_purpose text) returns void` (granted to `authenticated`; the server calls it only after `checkStepUp()` passes); `private.consume_step_up(p_purpose text) returns void` (raises `42501`, hint `step_up_required`, unless the caller holds a fresh, unconsumed, unexpired token for that purpose, which it then marks consumed); table `private.step_up_tokens(id, user_id, purpose, created_at, expires_at, consumed_at)`; a closed purpose list as a check constraint.
+
+**Coordinator decisions:**
+1. A token lives 5 minutes and is single-use. Purposes are one per gated RPC family; list them in the migration header with the RPC each guards.
+2. **Minting must itself require proof the server checked step-up.** A bare `mint_step_up_token` callable over PostgREST would let a scripted caller mint then call — defeating the point. Bind minting to Task 5's server request mark: `mint_step_up_token` refuses unless `private.request_is_from_server()` is true. **Task 6 therefore depends on Task 5** and runs after it.
+3. `export_jobs` is gated in its insert trigger (it is a table insert, not an RPC).
+
+- [ ] **Step 1: Failing suite** `rls_phase10_step_up.sql`: for each gated RPC and the `export_jobs` insert — no token → `42501`; a consumed token → `42501`; another user's token → `42501`; an expired token (backdated) → `42501`; a fresh token → succeeds once, and a second call with the same token → `42501`; minting without the server mark → `42501`. Non-vacuity control: the count of gated RPCs equals the purpose list's length. Wire it into the runner with its pin. Red.
+- [ ] **Step 2: The fix:** the migration, then each server action mints immediately after `checkStepUp()` passes and before its RPC. Green; the existing suites for those RPCs must stay green (their fixtures will need a token — add a shared psql helper rather than repeating the mint in each suite).
+- [ ] **Step 3: Census test** `tests/unit/security/step-up-token-callers.test.ts`: every file calling `checkStepUp(` also calls the mint with a purpose from the closed list (AST or a scoped text scan), so a new gated action cannot forget it.
+- [ ] **Step 4: Mutant.** Make `consume_step_up` return early → every refusal in the suite red. Record.
+- [ ] **Step 5: Gates.** Fresh reset + full psql runner; `pnpm test`; the permission matrix with its new total; e2e for the gated surfaces (`super-*.spec.ts`, `exports*.spec.ts`, `closure*.spec.ts`, `legal*.spec.ts`, `impersonation.spec.ts` — whatever exists) in groups. Commit per logical change, push.
+
+---
+
+### Task 7: Pin the framework protections: CSRF, session fixation and revocation, security headers (G12, G16 High; G17 Medium)
+
+**Files:**
+- Create: `tests/e2e/csrf.spec.ts`, `tests/unit/security/next-config.test.ts`, `tests/integration/session/fixation-and-revocation.test.ts`, `tests/unit/security/headers.test.ts`
+- Modify: `docs/launch-gates.md`; code only if a test finds a real hole (then it is a fix with a mutant)
+
+**Interfaces:** consumes `lib/security/headers.ts` (the CSP builder) and `next.config.ts`; produces tests only.
+
+- [ ] **Step 1: CSRF (G12's proposed test, exactly).** In a real signed-in browser, post a real Server Action (create contact) with `Origin: https://evil.example` (Playwright `page.request` with the session's cookies and the action's `Next-Action` id captured from a genuine submission). Assert refusal and the `contacts` row count unchanged in Postgres; positive control with the app's own origin creates the row. Assert every `sb-*-auth-token` cookie carries `SameSite=Lax` or stricter. `next-config.test.ts`: `serverActions.allowedOrigins` is absent or empty.
+- [ ] **Step 2: Session (G16's proposed test).** (1) Sign in, capture the refresh token, sign out through the app's action, and assert a refresh with the captured token returns `400` `refresh_token_not_found` (if `signOut({ scope: "local" })` leaves it valid, that is a finding: fix by revoking server-side, test first). (2) An e2e step: plant a bogus `sb-*-auth-token` cookie, sign in, and assert the cookie value changed and the bogus value is not accepted.
+- [ ] **Step 3: Headers (G17's proposed test).** With `NODE_ENV=production` and an https `NEXT_PUBLIC_SITE_URL`, assert `script-src` carries neither `'unsafe-inline'` nor `'unsafe-eval'`, and that `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`, `upgrade-insecure-requests`, `X-Frame-Options`, `X-Content-Type-Options: nosniff` and HSTS are present; with http, HSTS and `upgrade-insecure-requests` are absent. Mutant: add `'unsafe-inline'` to `script-src` → red.
+- [ ] **Step 4: Gates.** Unit + the integration file + `csrf.spec.ts` and the touched e2e spec with `--workers=1`. Commit, push.
+
+---
+
+### Task 8: Account-level auth limits and the hosted checklist (G3, G4, G10 High; G31 Low)
+
+**Files:**
+- Modify: `supabase/config.toml`, `tests/unit/security/auth-config.test.ts` (created by Task 4), `lib/auth/` sign-in action (find it: `grep -rn signInWithPassword lib app`), `lib/security/rate-limit.ts` only if the fallback needs a new category, `SECURITY.md` §§ 5, 15, `docs/launch-gates.md`
+- Create: `tests/integration/security/login-account-budget.test.ts`, `tests/integration/security/recovery-frequency.test.ts`, `tests/unit/security/security-md-checklist.test.ts`
+
+**Coordinator decisions:**
+1. **G3 (recovery 3/hour/account):** there is no app recovery page, so GoTrue's own per-user `[auth.email] max_frequency` is the only enforcement point. Default `"20m"` (≤ 3 per hour per account), set in `config.toml` and required in § 15. GoTrue applies the same timer to magic-link mail, so measure locally whether a second magic link within 20 minutes is refused and record the result; if it is, queue the trade-off as a founder question (default: keep `20m`, as `SECURITY.md` § 5 promises 3/hour).
+2. **G4 (per-account login lockout in production):** founder action F8 (a Supabase plan that permits the password-verification hook) stays the primary control. **Build the fallback anyway, as defence in depth**, because without F8 production has no per-account bound: an app-side check in the sign-in action, keyed on a SHA-256 of the normalised email, refusing the sixth failed attempt in 15 minutes before GoTrue is called. Use the existing `login_account` counter if the database permits an app-side consume for it without opening a stranger-burns-your-budget hole (`lib/security/rate-limit.ts:48` says the RPC refuses it from a session today — keep that refusal for direct PostgREST callers, e.g. by Task 5's server mark); otherwise add a narrowly scoped server-only path. Document in § 5 that direct GoTrue calls bypass the fallback, leaving the hosted hook (F8) or per-IP as the bound.
+
+- [ ] **Step 1: Failing tests.** `login-account-budget.test.ts` drives the real sign-in action six times for one email with a wrong password and asserts the sixth is refused before GoTrue is called (spy or count GoTrue requests); a correct password on the first try still signs in (positive control). `recovery-frequency.test.ts`: two `resetPasswordForEmail` calls for one account within the window; the second is `429 over_email_send_rate_limit`. `auth-config.test.ts` gains `max_frequency = "20m"` and the three `[auth.rate_limit]` values (G10). Red.
+- [ ] **Step 2: Fix** per the decisions. Green. Mutant: remove the app-side check → the login test red.
+- [ ] **Step 3: G31.** Add each setting G31 lists to `SECURITY.md` § 15 with its verification step, and update § 10's "tables created outside migrations" row. `security-md-checklist.test.ts` asserts § 15 names each setting key (a text census).
+- [ ] **Step 4: Gates.** Unit + the two integration files + `pnpm test:rls`; e2e `login*.spec.ts`/`keyboard.spec.ts` (the login journey) with `--workers=1`. Founder questions: G3's trade-off if measured, G4 (default: buy F8; fallback shipped). Commit, push.
+
+---
+
+### Task 9: The heavy suites in CI, plus licence and SAST scanning (G1 High; G23, G24 Medium)
+
+**Files:**
+- Merge: `origin/infra-parallel-stacks` (`59b66f6`, `0627f05`, `7c9bc0e`; 4 commits not on this branch)
+- Modify: `.github/workflows/ci.yml`, `package.json` (scripts only), `docs/launch-gates.md`, `CLAUDE.md` § Current state ("CI runs a subset" paragraph, now false)
+- Create: `tests/unit/ci/workflow-jobs.test.ts`, `scripts/check-licenses.mjs`, `tests/unit/ci/check-licenses.test.ts`
+
+**Coordinator decisions:**
+1. Founder ruling Q169 (2026-09-30, option a): the three heavy jobs run on PRs and on pushes to main. Merge the branch, resolving conflicts in favour of the current `ci.yml`'s existing jobs and pins; keep every `uses:` pinned to a 40-hex SHA with its `# vX.Y.Z` trailer.
+2. The branch also brings per-worktree stacks (`pnpm stack:claim`). Merge it whole; do not run `stack:claim` on this machine during this task (the shared stack is in use by the coordinator's flow). Record in the report what it changes for local development.
+3. G24 default (founder question, cost): Semgrep CE (free) as SAST in the `scan` job, rule packs `p/typescript` and `p/react`, SHA-pinned; OWASP ZAP baseline as DAST only if it fits the e2e job's runner budget — otherwise record it in `FOLLOW-UPS.md` with the reason. CodeQL is not added.
+4. G23: `scripts/check-licenses.mjs` per G23's row, allowlist exactly as the row states, run as a `scan` job step.
+
+- [ ] **Step 1: Failing tests.** `workflow-jobs.test.ts` per G1's and G24's proposed tests (five or more jobs; triggers `pull_request` and `push: main`; the heavy three run the psql runner, `pnpm exec vitest run tests/integration` and `npx playwright test`; every `uses:` is 40-hex; the licence and Semgrep steps exist). `check-licenses.test.ts` per G23's row (real distribution passes; an `AGPL-3.0` fixture fails naming the package; an unknown licence fails). Red.
+- [ ] **Step 2: Merge and wire.** Green locally.
+- [ ] **Step 3: Prove on GitHub.** Open the Phase 10 PR as a **draft** now (base `q228-closure-backup-parts` while #32 is open), so the workflow runs. Record the run ids and each job's result. Then the planted mutant per G1's row (a scratch commit dropping one policy's `WITH CHECK` in a new migration): see the RLS job go red, revert, record both run ids. Same for Semgrep with a planted `eval(` in a scratch file. If a heavy job fails for runner memory, split Playwright into the local spec groups.
+- [ ] **Step 4: Docs and gates.** Update `CLAUDE.md`'s CI paragraph to what now runs. Unit gates. Commit per logical change, push.
+
+---
+
+### Task 10: The local backup-restore drill (G28, High)
+
+**Files:**
+- Create: `docs/runbooks/backup-restore.md`, `scripts/backup-restore-drill.sh`
+- Modify: `supabase/tests/run-rls-tests.sh` only to accept a target database (env var, default unchanged), `docs/launch-gates.md`
+
+- [ ] **Step 1: Build the drill per G28's row.** Inside the local `supabase_db_getsetpaid` container only: `pg_dumpall --roles-only`, `pg_dump` of the database, restore both into a fresh database in the same container (`createdb getsetpaid_restore`), then the three checks: (1) catalogue diff of `pg_policies`, `relacl`, `proacl`, and `pg_auth_members` for `export_reader` is empty; (2) per-table row counts match for every table in `public`, `private`, `auth`, `storage`; (3) `run-rls-tests.sh` against the restored database prints "All suites passed". The script exits 0 only when all three hold, and prints its elapsed time. Also check that `cron.job` rows and Vault secret names survive, and record what does not (Storage objects do not — that is G30).
+- [ ] **Step 2: Mutant.** Omit the roles dump → the drill fails on `export_reader`. Record.
+- [ ] **Step 3: Runbook.** `docs/runbooks/backup-restore.md`: the local drill (command, what it proves, the run's date and duration as the local RTO measure), and the production drill (founder action F2: restore the newest Supabase backup into a scratch project, plus a Storage sample, inside 4h; backup age = RPO). The runner change must not alter its default behaviour (re-run the full runner on a fresh reset afterwards: "All suites passed"). Commit, push.
+
+---
+
+### Task 11: A Storage backup job (G30, High)
+
+**Files:**
+- Create: `scripts/storage-backup.mjs`, `tests/unit/backup/storage-backup.test.ts`
+- Modify: `docs/runbooks/backup-restore.md` (a Storage section), `SECURITY.md` §§ 8, 15, `docs/launch-gates.md`
+
+**Coordinator decision:** G30's proposed default, implemented as a script with mocked-client tests; deploying it (the nightly schedule on the IONOS host, the destination bucket and its DPA) is founder action, queued as the next free Q (default: nightly to UK/EU object storage under the host's DPA, 30-day retention, encrypted at rest). The script reads the bucket list from one constant (the three private buckets: documents, feedback screenshots, exports — confirm names in `lib/supabase/storage.ts`), uses the service-role Storage client (and so must join that client's importer census — update the census allowlist with the reason), and writes to an S3-compatible endpoint from env.
+
+- [ ] **Step 1: Failing tests** per G30's row: every object of every listed bucket is copied (paging through `list` beyond one page); a failed copy exits non-zero and names the object; no object is sent anywhere but the configured endpoint; the script refuses to start if the endpoint env is missing. Red.
+- [ ] **Step 2: Implement.** Green. Mutant: skip the second list page → red.
+- [ ] **Step 3: Docs.** Runbook section, § 8 (Storage is now backed up, once deployed), § 15 (the env values and the schedule). Unit gates. Commit, push.
+
+---
+
+### Task 12: Catalogue censuses for SECURITY DEFINER functions (G25, G26, Medium)
+
+**Files:**
+- Modify: `supabase/tests/schema_invariants.sql` + its pin
+- Create: `tests/integration/security/definer-register.test.ts`, and the declared register it reads (a TS module beside the test, `PRIVATE_POLICY_HELPERS` with a one-line reason each)
+- Modify: `docs/launch-gates.md`
+
+- [ ] **Step 1:** G25's assertion and non-vacuity control in `schema_invariants.sql`; mutant inside a rolled-back block per the row. Move the pin.
+- [ ] **Step 2:** G26's register test per the row: the classified union (matrix lists, triggers, no API grant, `PRIVATE_POLICY_HELPERS`) equals the live `pg_proc` set; a planted `private.zz_probe()` definer granted to `authenticated` goes red naming itself (create and drop it inside the test).
+- [ ] **Step 3: Gates.** Fresh reset + full runner; `pnpm test:rls` and the new integration file. Commit, push.
+
+---
+
+### Task 13: Source censuses (G7, G9, G18, G27, Medium/Low)
+
+**Files:**
+- Create: `tests/unit/list/unbounded-read-census.test.ts`, `tests/unit/list/postgrest-interpolation-census.test.ts`, `tests/unit/security/raw-html-sink-census.test.ts`, `tests/unit/security/admin-client-census.test.ts`, `tests/unit/security/service-key-readers.test.ts`
+- Modify: `docs/launch-gates.md`
+
+**Coordinator decision:** all five use the TypeScript compiler API already in the repo's dev dependencies (the existing AST helper `moduleReferences()` shows the house pattern; reuse it, do not add a parser). Each has a planted-positive self-test proving the detector bites. The unbounded-read census's allowlist starts from the hand-read dispositions in `task-1-report.md` and `docs/launch-gates.md`, one reason per entry; the six G5 reads and two G6 reads stay listed until Task 14 bounds them (Task 14 removes them).
+
+- [ ] **Step 1:** Each census per its gap row's proposed test, red-then-green on its planted positive.
+- [ ] **Step 2: Gates.** `pnpm exec vitest run tests/unit`. Commit per census, push.
+
+---
+
+### Task 14: Bound the remaining reads, and tell a storage blip from a missing export (G5, G6, G8, G20, Medium/Low)
+
+**Files:** per the four gap rows (`lib/crm/custom-field-queries.ts`, `lib/crm/dedup.ts`, `lib/network/entities.ts`, `app/(app)/[orgSlug]/members/page.tsx`, `lib/export/download.ts` / `issueExportDownloadUrl`), their proposed tests, and Task 13's allowlist (remove each bounded read).
+
+**Coordinator decisions:** G5's ceiling is 500 with fail-loud, no creation ceiling (founder question queued: what "unlimited custom fields" means; default as stated). G6 takes the anti-join view if it can be `security_invoker` and stays inside the tenant's RLS (prove with a psql assertion that a foreign tenant's records never appear); otherwise the bounded `not.in` page. G20 per its row; FOLLOW-UPS M2 is the history (local storage returns 400 for a missing object, so the fix must distinguish by reading the error's status or using `info()`, and must be proved against the local stack, not only a mock).
+
+- [ ] **Step 1:** Each gap's proposed test, red; the fix; green. G20 also gets an integration check against local storage: a genuinely missing object still renders not-found.
+- [ ] **Step 2: Gates.** Unit + the touched integration files + `exports*.spec.ts` and the network spec with `--workers=1`. Commit per gap, push.
+
+---
+
+### Task 15: Every UI route scanned by axe, or exempt with a reason (G21, Medium)
+
+**Files:** `tests/e2e/support/axe-routes.ts` (new), `tests/e2e/accessibility.spec.ts`, `tests/unit/design/axe-route-census.test.ts` (new), `CLAUDE.md` (the scan count in the gates table), `docs/launch-gates.md`
+
+- [ ] **Step 1:** G21's census test, red (it lists the 42 unscanned routes).
+- [ ] **Step 2:** Move the page list to `axe-routes.ts` per the row; add every unscanned route shape; `EXEMPT` entries carry a reason. Census green.
+- [ ] **Step 3:** `npx playwright test tests/e2e/accessibility.spec.ts --workers=1` (fresh dev server; split into two runs by label if memory runs short). Each new violation is fixed in the page (token-correct, per `DESIGN.md`), not suppressed. Update `CLAUDE.md`'s scan count. Commit, push.
+
+---
+
+### Task 16: List reads index-backed at volume (G29, Medium)
+
+**Files:** `supabase/tests/perf/seed-volume.sql`, `supabase/tests/perf/list-plans.sql`, `supabase/tests/perf/run.sh` (all new), additive index migrations as the plans require, `docs/launch-gates.md` (a budget per endpoint class)
+
+- [ ] **Step 1:** Per G29's row: seed 50,000 rows per hot table in one tenant and 20,000 published profiles (after a fresh reset; never inside the RLS runner); assert per hot list query that the plan has no Seq Scan over the seeded table and stays under a recorded cost ceiling, run as the `authenticated` role with a real member's claims so RLS is in the plan. Red where indexes are missing.
+- [ ] **Step 2:** Additive `gin_trgm_ops` (or btree) indexes where the plans say so. Green. Mutant: drop `contacts_name_trgm_idx` → the contacts search plan red.
+- [ ] **Step 3:** Trigram census assertion per the row. Reset afterwards (the seeded volume must not leak into other runs). Fresh reset + full runner to prove the new migrations break nothing. Commit, push.
 
 ## Part C — close the phase
 
-### Task C1: Founder actions and the final gate document
+### Task 17: Founder actions and the final gate document
 
 - [ ] Queue each founder action from `docs/launch-gates.md` § "Founder actions" as one numbered question from Q244 in `DECISIONS-QUEUE.md`, with its lead time and default ("founder to book/sign/register; launch blocked until done").
 - [ ] Re-run every gate's re-measure command, update each row's status and date, commit, push.
 
-### Task C2: Final whole-branch review, then the PR
+### Task 18: Final whole-branch review, then the PR
 
 - [ ] Dispatch an independent reviewer over the whole branch range with the five gates to reproduce; fix Critical/Important findings; then open the Phase 10 PR (base `q228-closure-backup-parts` while #32 is open, `main` once it merges).
