@@ -37,3 +37,4 @@ Note for Task 17: the app has no Forgot-password page (no resetPasswordForEmail 
 Task 4: re-review round 1 (sonnet) -- all findings addressed, no new Critical/Important
 Task 4: minor (deferred): Q245 text "A password reset replaces the squatter's password" is imprecise (only once a new password is set; no Forgot-password page)
 Task 4: complete 2026-10-17 -- df010b2, 07eb877, 90fc99f, eecd895, d342cf4, e75755c, a2034aa; G11 PARTIAL until Task 20 (Q245)
+Task 19: dispatched 2026-10-17 (base c06ff6b, opus) -- F1 readable network base table (Critical)
