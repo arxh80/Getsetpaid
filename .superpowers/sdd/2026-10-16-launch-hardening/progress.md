@@ -31,3 +31,5 @@ Task 4: minor (deferred): auth-config.test.ts scanner misses dotted keys and [[a
 Task 4: minor (deferred): path 1 hosted closure rests on a manual setting; fail-closed check of /auth/v1/settings mailer_autoconfirm
 Task 4: minor (deferred): narrow the lookup/invite race in the created:true branch (created_at predates the call -> refuse)
 Task 4: minor (deferred): invite form now reveals "unconfirmed self-sign-up" (enumeration oracle extended) -- one line in SECURITY.md 10
+Task 4: fix round 1 -- d342cf4 (neutral refusal; magic link confirms with P1 intact, recovery kills P1 but no Forgot-password page), e75755c (invitation-first measured: no second residual, test 5), a2034aa (G11 PARTIAL until Task 20); invite-pre-hijack 5/5, unit 2715; re-review dispatched (sonnet)
+Plan: Task 20 decision 5 added -- the fix round's measurements (magic-link route, no Forgot-password page, test 5, refusal wording revisit)
