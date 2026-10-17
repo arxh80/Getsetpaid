@@ -276,7 +276,7 @@ Every task inherits the Global Constraints, and in particular: a Critical or Hig
 
 **Execution order:** Task 4 runs immediately after Task 1, before Tasks 2 and 3, because it closes the only Critical gap. The rest run after Task 3 in the order written (severity first).
 
-**Amended 2026-10-17 after Task 2's audit phase:** Task 2 stopped early on F1, a Critical that is not a Task 1 gap. F1 is appended as **Task 19** and runs right after Task 4. The order is now Task 4 → Task 19 → Task 2 fix phase → Task 3 → Tasks 5–16 → Tasks 17–18. Task 2 F4 (erasure and `close_my_workspace` skip step-up over PostgREST) folds into Task 6.
+**Amended 2026-10-17 after Task 2's audit phase:** Task 2 stopped early on F1, a Critical that is not a Task 1 gap. F1 is appended as **Task 19** and runs right after Task 4. The order is now Task 4 → Task 19 → Task 20 → Task 2 fix phase → Task 3 → Tasks 5–16 → Tasks 17–18 (Task 20, G11's Q245 residual, added after Task 4 reported). Task 2 F4 (erasure and `close_my_workspace` skip step-up over PostgREST) folds into Task 6.
 
 ---
 
@@ -516,6 +516,46 @@ Numbered 19 because it was appended after Part C was numbered; it runs **immedia
 - [ ] **Step 3: The fix.** The migration per decisions 1 and 3. Green on a fresh reset with the full runner ("All suites passed").
 - [ ] **Step 4: Mutant.** Inside a transaction, re-create `network_profiles_select_published_directory` with its old USING clause. Both flipped assertions go red. Roll back. Record in the report.
 - [ ] **Step 5: Gates.** `pnpm lint`, `pnpm typecheck`, `pnpm test` (the network integration tests read the views), `tests/e2e/network.spec.ts` plus every spec that `grep -l "network" tests/e2e/*.spec.ts` names, in groups with `--workers=1`. Then update the docs listed under Files. Commit per logical change, push.
+
+---
+
+### Task 20: A password chosen after the proof: close G11's residual (Q245, Critical)
+
+Numbered 20 because it was appended after Part C was numbered. It runs **after Task 19**, before Task 2's fix phase. It implements Q245's queued default ("yes, as a follow-up remediation task"). Read G11's row in `docs/launch-gates.md`, residual (1) of the "Account pre-hijacking through invites (G11)" row in `SECURITY.md` § 10, Q245 in `DECISIONS-QUEUE.md`, and `.superpowers/sdd/2026-10-16-launch-hardening/task-4-report.md` before starting.
+
+**The residual (measured on GoTrue v2.196.0 by Task 4):** GoTrue keeps the FIRST password on an unconfirmed re-sign-up, and confirming does not replace it. Sign up as X with P1, sign up as X again with P2, confirm with the newest link: P1 signs in and P2 does not. So if a squatter signed up first, the real owner gets an account that opens with the squatter's password. That happens whether the owner clicks the squatter's original confirmation email or signs up themselves and confirms. The squatter signs in after the owner confirms and sees everything the owner's workspaces hold. `tests/e2e/invite-pre-hijack.spec.ts` pins this today as a RESIDUAL test. This is an auth bypass, so it is graded Critical under the Phase 10 rubric. G11 stays open until this task lands.
+
+**Files:**
+- Create: `supabase/migrations/<next timestamp>_first_proof_of_an_address.sql` (the marker below), the forced set-password page and its Server Action (under `app/auth/` or `app/(auth)/`, matching where the sign-up and reset pages live), `tests/e2e/first-proof-password.spec.ts`
+- Modify: `app/auth/callback/route.ts` (the `verifyOtp` branch and the PKCE `code` branch, if a sign-up confirmation can arrive through it), the sign-up Server Action in `lib/auth/actions.ts` (the same-browser binding below), `middleware.ts`/`proxy.ts` (the gate), `tests/e2e/invite-pre-hijack.spec.ts` (the RESIDUAL test flips to a refusal), `SECURITY.md` § 10 (residual 1 closed) and § 4, `docs/launch-gates.md` (G11's row: residual closed, "Closed in <sha>"), Q245's line in `DECISIONS-QUEUE.md` ("implemented in <sha>")
+
+**Interfaces:**
+- Consumes: Task 4's invite-step lookup and `accept_invite` refusal (unchanged); `verifyOtp` in `app/auth/callback/route.ts:131`; the e2e mail-catcher helpers Task 4 added to `tests/e2e/support/fixtures.ts`.
+- Produces: an account's first proof of address leaves no pre-proof password alive and no other session open. A user carrying the "must choose a password" mark reaches nothing but the set-password page and sign-out.
+
+**Coordinator decisions (defaults; record any change and why in the report):**
+1. **Do not force every new user to set their password twice.** The password typed at sign-up survives confirmation only when the app can prove that the browser confirming is the browser that created the account. When the sign-up Server Action creates a NEW user, it sets an httpOnly, `Secure` (in production), `SameSite=Lax` cookie. The cookie binds the new user id to a random nonce, and the nonce's SHA-256 is stored server-side. A sign-up that returns an EXISTING unconfirmed user (a re-sign-up: compare `created_at` with the request's start, or use whatever signal Task 4 measured) sets no binding.
+2. **At an address's first proof**, meaning a callback whose `verifyOtp` (or code exchange) yields a user with no first-proof marker yet: if the binding cookie matches that user, keep the password. Otherwise:
+   1. replace the password with a long random one through the Admin API, which kills the squatter's P1
+   2. sign out every other session (`signOut({ scope: 'others' })` from the fresh session, or the Admin API equivalent)
+   3. set the "must choose a password" mark
+   4. redirect to the set-password page
+
+   Write the first-proof marker in both outcomes. This covers the sign-up confirmation, a magic link that confirms an unconfirmed account as a side effect, and invite verification (an invite-created account has no password, so the mark costs it nothing). Probe and record what GoTrue does when Google sign-in meets an address that has an unconfirmed password account. If that path confirms the account with P1 intact, it gets the same treatment in the OAuth branch.
+3. **The marker** is a `private` table `private.address_first_proofs(user_id uuid primary key references auth.users on delete cascade, proved_at timestamptz not null default now(), password_kept boolean not null)`. It has no grants to `authenticated` or `anon`, and the callback writes it through the service-role client (add the call site to the service-role census). The migration backfills one row for every already-confirmed user (`password_kept = true`), so no existing account is gated. Keep "must choose a password" in `app_metadata` (Admin API), so the middleware reads it from the JWT without a database round trip, and clear it in the set-password action after `updateUser({ password })` succeeds, then refresh the session.
+4. The set-password page uses the existing password-strength rules (find them in `lib/auth/`). It needs no step-up, because its session is seconds old and was minted by the proof itself.
+
+- [ ] **Step 1: Failing e2e** `tests/e2e/first-proof-password.spec.ts` (confirmations ON, the local mail catcher):
+  - **(a)** The squatter signs up X with P1 (straight to GoTrue `/auth/v1/signup` with the anon key, as an attacker would). The owner signs up X with P2 through `/signup` in a fresh browser context and confirms from the mail catcher. Then: the owner lands on the set-password page; `/orgs` and one workspace route redirect back to it; a P1 sign-in fails (it opens the account today); the owner sets P3; P3 signs in; P1 and P2 do not.
+  - **(b)** The squatter signs up X with P1. The owner clicks the squatter's original confirmation email in a fresh context. Same assertions.
+  - **(c) Positive control.** A normal sign-up confirmed in the SAME browser context lands signed in, with no set-password page, and its own password works.
+  - **(d)** An already-confirmed account (the fixtures' normal users) never sees the page.
+
+  Flip the RESIDUAL test in `invite-pre-hijack.spec.ts` to assert P1 fails. Run it: (a), (b) and the flipped test are red.
+- [ ] **Step 2: The fix** per the decisions. Green: the spec and `invite-pre-hijack.spec.ts`.
+- [ ] **Step 3: Unit tests** for the binding-cookie check and the gate's path allowlist, wherever the codebase's unit tests for `lib/auth/` and the middleware live.
+- [ ] **Step 4: Mutant.** Skip the password replacement in the callback, and (a) and (b) go red because P1 signs in. Record it. A second mutant: drop the gate's redirect, and the `/orgs` assertion goes red.
+- [ ] **Step 5: Gates.** Fresh reset + full psql runner (the backfill must not disturb any suite); `pnpm lint`, `pnpm typecheck`, `pnpm test`; e2e in groups with `--workers=1`: the new spec, `invite-pre-hijack.spec.ts`, and every spec that `grep -l "signup\|sign-up\|magic\|callback\|login" tests/e2e/*.spec.ts` names. Update the docs listed under Files. Commit per logical change, push.
 
 ---
 
