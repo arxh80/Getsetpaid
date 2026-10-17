@@ -33,3 +33,7 @@ Task 4: minor (deferred): narrow the lookup/invite race in the created:true bran
 Task 4: minor (deferred): invite form now reveals "unconfirmed self-sign-up" (enumeration oracle extended) -- one line in SECURITY.md 10
 Task 4: fix round 1 -- d342cf4 (neutral refusal; magic link confirms with P1 intact, recovery kills P1 but no Forgot-password page), e75755c (invitation-first measured: no second residual, test 5), a2034aa (G11 PARTIAL until Task 20); invite-pre-hijack 5/5, unit 2715; re-review dispatched (sonnet)
 Plan: Task 20 decision 5 added -- the fix round's measurements (magic-link route, no Forgot-password page, test 5, refusal wording revisit)
+Note for Task 17: the app has no Forgot-password page (no resetPasswordForEmail anywhere in app/ or lib/); the emailed sign-in link is the only recovery path -- queue as a founder Q (default: magic link is the recovery path at MVP; Task 20's set-password page could back a reset later)
+Task 4: re-review round 1 (sonnet) -- all findings addressed, no new Critical/Important
+Task 4: minor (deferred): Q245 text "A password reset replaces the squatter's password" is imprecise (only once a new password is set; no Forgot-password page)
+Task 4: complete 2026-10-17 -- df010b2, 07eb877, 90fc99f, eecd895, d342cf4, e75755c, a2034aa; G11 PARTIAL until Task 20 (Q245)
