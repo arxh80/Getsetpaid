@@ -72,9 +72,9 @@ No gate is MET outright.
 | Severity | Count | Gaps |
 |---|---|---|
 | Critical | 1 | G11: account pre-hijacking into a tenant. Inferred, not reproduced. |
-| High | 10 | G1 heavy CI unmerged (Q169); G2 direct-REST directory unmetered (Q107); G3 password-recovery limit unenforced (Q109); G4 login-lockout hook refused on the hosted plan (402); G12 CSRF untested; G13 step-up is app-layer only (Q171); G14 impersonation direct reads unaudited; G15 real ClamAV unproven; G28 no backup-restore drill; G30 Storage outside database backups |
-| Medium | 15 | G5, G6 unbounded side reads; G7 no unbounded-read census; G16 fixation/revocation; G17 CSP/headers; G18 raw-HTML sinks; G19 no threat model; G21 42 unscanned routes; G22 screen-reader pass; G23 licences; G24 SAST/DAST; G25 definer `search_path` census; G26 definer register; G27 admin client and service-key readers; G29 performance evidence |
-| Low | 5 | G8 members truncation; G9 grammar-interpolation census; G10 GoTrue per-IP limits; G20 export false 404; G31 § 15 omissions |
+| High | 12 | G1 heavy CI unmerged (Q169); G2 direct-REST directory unmetered (Q107); G3 password-recovery limit unenforced (Q109); G4 login-lockout hook refused on the hosted plan (402); G10 GoTrue per-IP login limit untested (regraded in fix round 1); G12 CSRF untested; G13 step-up is app-layer only (Q171); G14 impersonation direct reads unaudited; G15 real ClamAV unproven; G16 session fixation/revocation untested (regraded in fix round 1); G28 no backup-restore drill; G30 Storage outside database backups |
+| Medium | 14 | G5, G6 unbounded side reads (silent truncation at `max_rows` 1000); G7 no unbounded-read census; G17 CSP/headers; G18 raw-HTML sinks; G19 no threat model; G21 42 unscanned routes; G22 screen-reader pass; G23 licences (compliance, not security); G24 SAST/DAST; G25 definer `search_path` census; G26 definer register; G27 admin client and service-key readers; G29 performance evidence |
+| Low | 4 | G8 members truncation; G9 grammar-interpolation census; G20 export false 404; G31 § 15 omissions |
 
 The likely Part B clusters, from the plan's expected list, are:
 
@@ -140,17 +140,18 @@ There are no product-code changes, and I did not touch the ledger
    Every one sets `search_path = ''`. None changes a disposition. A
    re-measure after a reset on this branch would make the figure exact (189
    live definers there versus 191 in the migration census).
-2. **G11 (Critical) is inferred, not demonstrated.** It rests on three facts,
-   each read from source:
+2. **G11 (Critical) is inferred, not demonstrated.** It rests on facts read
+   from source:
    - `config.toml`'s `enable_confirmations = false`;
    - the invite flow binding to an existing account by email;
-   - `accept_invite` never checking email ownership.
+   - `accept_invite` never checking email ownership;
+   - since fix round 1, `lib/org/actions.ts:258-261`'s own record that an
+     invite to an existing *unconfirmed* user answers 200 with the same id.
 
-   It holds in production only if "Confirm email" is off there, and § 15 does
-   not say to turn it on. Task 3 should reproduce it before Part B fixes it.
-   GoTrue's handling of a re-signup over an existing *unconfirmed* account
-   also needs probing: if it keeps the first password, confirmations alone do
-   not close it.
+   That last fact means turning confirmations ON does not close it. The real
+   owner's invite click confirms the squatter-created account with the
+   squatter's password intact. Task 3 should reproduce both paths before Part
+   B fixes them.
 3. **G4: production may have no per-account login lockout.** The 402 from PR
    #32's Preview check ("HOOK_PASSWORD_VERIFICATION_ATTEMPT cannot be
    configured for this organization") means § 5's ENFORCED login row is true
@@ -180,11 +181,17 @@ There are no product-code changes, and I did not touch the ledger
 
 ## Founder questions (for the controller to number from Q244)
 
-1. **G11: email confirmation.** Should "Confirm email" be ON in production,
-   and should `config.toml` move to `enable_confirmations = true` with
-   `accept_invite` refusing an unconfirmed account? *Default: yes to all
-   three.* No test uses `signUp`, and the e2e fixtures create confirmed users
-   through the Admin API.
+1. **G11: email confirmation and invite verification.** *Default: yes to all
+   of these:*
+   - "Confirm email" ON in production, and `config.toml` moved to
+     `enable_confirmations = true`;
+   - invite verification forces a new password and revokes every other
+     session for that user (this is what closes the confirmations-ON path);
+   - the `created: true` branch of `resolveOrInviteAuthUser` refuses to bind
+     a pre-existing, never-confirmed account.
+
+   No test uses `signUp`, and the e2e fixtures create confirmed users through
+   the Admin API.
 2. **G4: the login lockout on the hosted plan.** The hosted organisation
    refuses `HOOK_PASSWORD_VERIFICATION_ATTEMPT` (402). Should the plan be
    upgraded, or should the product launch with an app-side per-account meter,
@@ -410,3 +417,74 @@ None of them is a surface a client can reach, so all are false positives on that
 
 - `public.hook_password_verification_attempt(event jsonb)`: executable by `supabase_auth_admin` only (GoTrue's hook); tested by `rls_phase7_rate_limits.sql` § RH
 - `private.integration_role_held`: not a definer in the live catalogue; `20261030002000` ran `alter function ... security invoker`, and the census reads create statements only
+
+## Fix round 1 (2026-10-17, from the task review)
+
+### The three Important findings
+
+1. **G10 and G16 regraded to High,** to match G12's rule: a promised or
+   gate-named control with no test anywhere is High.
+   - **G16:** session fixation sits in the same § 11 gate-3 line as CSRF, and
+     `session-limits.test.ts` tests a different control (timeouts).
+   - **G10:** § 5 promises the per-IP login row as "ENFORCED, AT A DIFFERENT
+     NUMBER" and no test names `sign_in_sign_ups`. If G4 ends with no hook on
+     the hosted plan, this is production's only login brute-force bound.
+     G10's test now also drives the 31st sign-in to a 429, and carries a
+     mutant.
+
+   The tally is now 1 Critical, 12 High, 14 Medium and 4 Low (31). It is
+   updated in this report's summary table. `docs/launch-gates.md` carries no
+   separate tally.
+2. **G11 rewritten as two paths.**
+   - **Path 1:** confirmations OFF, the 422 `email_exists` fallback.
+   - **Path 2:** confirmations ON. `inviteUserByEmail` on an existing
+     unconfirmed user returns 200 with the same id (`lib/org/actions.ts:258-261`),
+     so the squatter is bound in the `created: true` branch (`:280-282`). The
+     victim's invite click confirms the squatter-created account with the
+     squatter's password intact.
+
+   The remediation now has four parts:
+   - confirmations ON;
+   - a forced new password at invite verification, with every other session
+     revoked (this is what closes path 2);
+   - a refuse-to-bind check placed in the `created: true` branch;
+   - the `accept_invite` NULL check, demoted to "path 1 only, not
+     sufficient".
+
+   The proposed test is the reviewer's case: the squatter signs up with P1
+   (confirmations ON), the workspace invites the address, the victim follows
+   the Inbucket link and sets P2, and a sign-in with P1 must fail. It comes
+   with a unit test of the `created: true` branch and a mutant (no forced
+   password, so P1 succeeds and the test goes red). Founder question 1's
+   default and concern 2 are updated to match.
+3. **Gate 4's row now says the census route verdict is not evidence** until
+   G21's declared-route census replaces it. It names the three defects: a
+   literal fills a dynamic segment, a route merely named in an axe spec counts
+   as scanned, and the root becomes `/page.tsx`. It says the 43/42 figures
+   come from reading every route by hand. The script stays verbatim.
+
+### The Minor items
+
+- **The rate-limit summary is corrected.** Of the 31 keys, 6 are real
+  categories, 1 is the GoTrue per-IP key and 24 are false positives. § 5 names
+  6 more categories in prose, and all 12 categories are tested.
+- **G26's count is corrected** to 30 with no client grant, plus the hook and
+  `integration_role_held`, which reconciles to 107.
+- **G5 and G6 now name the real failure mode:** `[api] max_rows = 1000` means
+  silent truncation (for G6, the picker re-offers published records).
+  `max_rows` is added to G31's § 15 list.
+- **G1 now quotes Q169's trial wording:** "for a month (option a)", recommended
+  "until the first month's actual minutes are known, then revisit with the
+  real number". The remediation now records the first month's minutes.
+- **The gate 9 citation is fixed** to `schema_invariants.sql` D3 (`:721`).
+- **G23 states its reasoning for Medium:** a licence check is a compliance
+  control, not a security one, and the other two gate 5 scans are green.
+- **Gates 3 and 4 now carry exact re-measure commands.** Gate 3 gives the
+  reset and runner, the vitest integration and unit files, and the Playwright
+  specs. Gate 4 gives the grep, the 16 axe specs in two Playwright groups, and
+  `contrast.py`. Gate 4 also states that route coverage has no command until
+  G21.
+
+The self-check passes after the round: `grep -c "^| G[0-9]"
+docs/launch-gates.md` returns 31, every OPEN or PARTIAL row names a `G<n>`,
+and every table row has a consistent cell count (4, 5 or 6).
