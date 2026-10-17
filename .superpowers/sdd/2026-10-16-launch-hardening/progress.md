@@ -16,3 +16,4 @@ Task 1: re-review round 1 (sonnet) -- all findings addressed
 Task 1: minor (deferred): G11 item (3) created_at discriminator would refuse a legitimate re-invite (forwarded to Task 4 as a constraint)
 Task 1: minor (deferred): G11 cites :258-261 for the signed-up-unconfirmed case; that is GoTrue behaviour to confirm by experiment (forwarded to Task 4)
 Task 1: complete 2026-10-17 -- 8ecbf31, 52cf539, 1f2e4fa; plan Tasks 8 and 14 amended from the re-review's out-of-scope notes (per-IP boundary not driven on the shared stack; entities.ts:85-92 fail-open)
+Task 2: audit phase dispatched 2026-10-17 (opus, read-only alongside Task 4; writes task-2-findings.md + docs/threat-model.md for G19; fix phase resumes after Task 4)
