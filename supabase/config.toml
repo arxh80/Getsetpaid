@@ -280,7 +280,20 @@ enable_signup = true
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
-enable_confirmations = false
+#
+# ON SINCE PHASE 10 TASK 4, AND IT IS A SECURITY CONTROL (G11 in
+# docs/launch-gates.md). With it off, anyone could sign up as an address they
+# do not own and hold a confirmed, usable account at once -- and a workspace
+# that later invited that address bound the invitation to the squatter's
+# account (reproduced through the real forms before this change). With it on,
+# an account's address means "the holder of this inbox": accept_invite()
+# refuses an unconfirmed account (20261102010000), and the invite step refuses
+# to bind an existing unconfirmed sign-up (lib/org/actions.ts). Asserted by
+# tests/unit/security/auth-config.test.ts, and on the SECURITY.md § 15
+# checklist for the hosted project ("Confirm email" ON). Changing it needs a
+# `supabase stop && supabase start`: a `db reset` restarts the auth container
+# with its old environment.
+enable_confirmations = true
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
 #
 # ON AS A BACKSTOP, NOT AS THE GATE. Read GoTrue's actual rule before relying
