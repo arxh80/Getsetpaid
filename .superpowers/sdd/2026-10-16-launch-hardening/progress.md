@@ -22,3 +22,12 @@ Plan: amended 2026-10-17 -- F1 appended as Task 19 (runs after Task 4); F4 folde
 Task 4: implementer DONE_WITH_CONCERNS 2026-10-17 -- df010b2 (accept_invite refuses unconfirmed, migration 20261102010000), 07eb877 (confirmations ON + auth-config test), 90fc99f (refuse to bind an unconfirmed sign-up, pre-call lookup on invited_at), eecd895 (docs, Q244-Q245); both paths reproduced first; 3 mutants red; pnpm test 4015 + 5 skipped, psql All suites passed (FOUNDATION 187), e2e invite-pre-hijack 4/4. Concerns: Q245 residual (GoTrue keeps the first password on unconfirmed re-sign-up), ms race between lookup and invite call (documented), shared stack auth container now runs confirmations ON
 Plan: Task 20 appended 2026-10-17 -- Q245 default (forced new password at an address's first proof unless the same browser created it); order now 4 -> 19 -> 20 -> Task 2 fix phase -> 3 -> 5..16 -> 17-18
 Task 4: review 1 dispatched (opus, package review-19c94bf..eecd895.diff; coordinator commits e0f58e2 34d6afd d1df1bd 0a13390 excluded by instruction)
+Task 4: review 1 (opus) Needs fixes -- Important: (1) G11 marked CLOSED while the Q245 residual is a demonstrated Critical (Task 20 now scheduled); (2) plan-mandated refusal wording "Ask them to confirm it" steers the owner into the residual -- COORDINATOR RULING: the finding governs (the wording was the coordinator's brief text, not a founder decision); plus measure the invitation-first ordering
+Task 4: fix round 1 dispatched (resume implementer; base 306fbcd)
+Task 4: minor (deferred): no unit test for the new invite-step branches (lookup failed / refuse) -- tests/unit/org/invite-binding.test.ts
+Task 4: minor (deferred): invite-pre-hijack test 1 no-invitation assertion lacks a Mailpit presence control; stray await on sync expect
+Task 4: minor (deferred): setUpInviteWorld throw -> afterAll derefs undefined world, leaks users, masks error
+Task 4: minor (deferred): auth-config.test.ts scanner misses dotted keys and [[array]] headers
+Task 4: minor (deferred): path 1 hosted closure rests on a manual setting; fail-closed check of /auth/v1/settings mailer_autoconfirm
+Task 4: minor (deferred): narrow the lookup/invite race in the created:true branch (created_at predates the call -> refuse)
+Task 4: minor (deferred): invite form now reveals "unconfirmed self-sign-up" (enumeration oracle extended) -- one line in SECURITY.md 10
