@@ -50,3 +50,4 @@ Task 19: minor (deferred): directory read evaluates presence pair per published 
 Task 19: complete 2026-10-18 -- 8a9a76a, 552279e, d72d80a, 029808c, 0319234, 76f5dd9
 Task 20: implementer dispatched 2026-10-18 (opus, base 2077105); next free Q247
 Task 20: implementer hit 429 session limit mid-Step; resumed 2026-10-18 with ponytail-review findings folded in (hosted templates founder action, AFTER INSERT trigger for born-confirmed accounts + honest test (d), invite type kept, record-before-clear, refresh after clearing mark)
+Task 20: implementer DONE_WITH_CONCERNS -- 9a03002, 8cbed6d, 12a75ec, 74e142d, 7fb1521, f377436 (Q247 hosted templates founder action; e2e groups 5-6 + network.spec re-run outstanding, reaped for memory); task review dispatched (opus, 5819ac2..f377436); next free Q248
