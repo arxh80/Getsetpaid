@@ -307,9 +307,10 @@ select leak.val('LB5b UNCONNECTED: ...and 0 rows in the BASE TABLE too (no exist
 -- the unconnected counterparty read ALPHA's organisation_id, entity_id and the
 -- connections-level contact_email straight off the base table, and so could
 -- anyone over PostgREST. 20261103000000 drops the cross-tenant policy. LB2 is
--- the same session's control (the same row through the directory). LB6d, the
--- finding's whole GET, is empty because GAMMA publishes nothing (LZ); the N3
--- check it used to make is NM9 in rls_phase6_network.sql.
+-- the same session's control (the same row through the directory). LB6d is
+-- the finding's whole GET minus GAMMA's own rows, so it counts every foreign
+-- published row whatever GAMMA has published; the N3 check it used to make is
+-- NM9 in rls_phase6_network.sql.
 select leak.val('LB6 F1: the UNCONNECTED counterparty gets no organisation_id off the BASE TABLE',
   $$select count(organisation_id)::text from public.network_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, '0');
@@ -320,8 +321,9 @@ select leak.val('LB6c F1: contact_email, organisation_id, entity_id of ALPHA''s 
   $$select count(*)::text from (
       select contact_email, organisation_id, entity_id from public.network_profiles
        where id='e0110000-0000-0000-0000-00000000000a') s$$, '0');
-select leak.val('LB6d F1: ...and every published profile off the base table (the finding''s GET): 0 rows',
-  $$select count(*)::text from public.network_profiles where status = 'published'$$, '0');
+select leak.val('LB6d F1: ...and every FOREIGN published profile off the base table (the finding''s GET): 0 rows',
+  format($$select count(*)::text from public.network_profiles
+             where status = 'published' and organisation_id <> %L$$, :'gamma_org'), '0');
 reset role; reset request.jwt.claims;
 
 -- ---- CONNECTED ------------------------------------------------------------
