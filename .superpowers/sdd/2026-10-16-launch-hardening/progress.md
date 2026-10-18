@@ -45,3 +45,6 @@ Task 19: review 1 Approved (no Critical/Important); fix round 1 sent for minors 
 Task 19: minor (deferred): published/deleted_at terms repeated in both views + predicate (partial-index reason; LB13b/c cover drift)
 Task 19: minor (deferred): vitest worker-start timeout on publish-editor-flow.test.ts (machine noise; re-run alone 57/57)
 Task 19: fix round 1 DONE -- d72d80a, 029808c, 0319234, 76f5dd9 (runner green fresh reset; EXPLAIN: reaches_caller per-row ~12% of row cost, no code change; pre-F1 seq scan ~0.38s @2000 profiles noted); re-review dispatched (sonnet, 43fd639..76f5dd9)
+Task 19: re-review 1 all findings ADDRESSED, no new breakage
+Task 19: minor (deferred): directory read evaluates presence pair per published row (seq scan + sort, ~0.38s/query @2000 profiles); predates F1 -- final review / perf follow-up
+Task 19: complete 2026-10-18 -- 8a9a76a, 552279e, d72d80a, 029808c, 0319234, 76f5dd9
