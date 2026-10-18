@@ -117,11 +117,54 @@ export async function bindSignUp(userId: string): Promise<void> {
 export type FirstProofOutcome = "already-proved" | "settled" | "must-choose-password";
 
 /**
+ * A replacement password nobody knows. base64url has no symbol about 13% of
+ * the time, and a hosted project may set password_requirements to demand
+ * every character class; the suffix guarantees one of each.
+ */
+export function unknowablePassword(): string {
+  return `${randomBytes(48).toString("base64url")}aA1!`;
+}
+
+/**
+ * May the pre-proof password stay? Only when this browser holds the sign-up
+ * binding, or the account demonstrably has no password: a NON-EMPTY identity
+ * list with no email identity (a Google-only account). An absent or empty
+ * list proves nothing, so it fails closed.
+ */
+export function passwordMayStay(
+  user: Pick<User, "id" | "identities" | "app_metadata">,
+  bindingCookie: string | undefined,
+): boolean {
+  const identities = user.identities ?? [];
+  if (identities.length > 0 && !identities.some((i) => i.provider === "email")) return true;
+  return bindingMatches(bindingCookie, user.id, user.app_metadata?.[BINDING_HASH_KEY]);
+}
+
+/**
+ * Did the proof that minted this session confirm the address just now? The
+ * callback runs within seconds of verifyOtp, which stamps email_confirmed_at;
+ * ten minutes absorbs any clock skew between GoTrue and this server. Absent
+ * fails closed. Used only on the failure path below: an account confirmed
+ * long ago that hits an outage must not lose its password to it.
+ */
+export function confirmedJustNow(user: Pick<User, "email_confirmed_at">, now = Date.now()): boolean {
+  if (!user.email_confirmed_at) return true;
+  const age = now - Date.parse(user.email_confirmed_at);
+  return !Number.isFinite(age) || age < 10 * 60_000;
+}
+
+/**
  * Settles an address's first proof for the session the callback just minted.
  * `otpType` is the verifyOtp type, or null for the code exchange (OAuth).
- * Throws on any failure; the caller signs the session out and fails the link,
- * and because the record is written before any cleanup, a failed write leaves
- * the binding in place for the retry.
+ *
+ * FAIL CLOSED (fix round 1). verifyOtp / the code exchange has ALREADY
+ * confirmed the account when this runs, so a failure part-way (the RPC, a
+ * missing service key, GoTrue refusing the password) would otherwise leave it
+ * confirmed with the pre-proof password alive, no mark and no row. So on any
+ * failure, unless the password was allowed to stay, the password is replaced
+ * through this session and EVERY session is signed out -- neither needs the
+ * service role. The error is rethrown; the callback fails the link, and the
+ * owner proves the inbox again (the next proof is still a first one).
  *
  * AN INVITATION is proved without the mark: inviteUserByEmail creates the
  * account with no password, and the invite landing (/invites?welcome=1)
@@ -136,16 +179,31 @@ export async function settleFirstProof(
   user: User,
   otpType: string | null,
 ): Promise<FirstProofOutcome> {
+  const store = await cookies();
+  const kept = passwordMayStay(user, store.get(SIGNUP_BINDING_COOKIE)?.value);
+  try {
+    return await settle(supabase, user, otpType, store, kept);
+  } catch (error) {
+    if (!kept && confirmedJustNow(user)) {
+      await supabase.auth.updateUser({ password: unknowablePassword() }).catch(() => undefined);
+      await supabase.auth.signOut({ scope: "global" }).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+async function settle(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  user: User,
+  otpType: string | null,
+  store: Awaited<ReturnType<typeof cookies>>,
+  kept: boolean,
+): Promise<FirstProofOutcome> {
   const service = createServiceClient();
   const proved = await service.rpc("address_is_proved", { p_user_id: user.id });
   if (proved.error) throw new Error(`address_is_proved: ${proved.error.message}`);
   if (proved.data === true) return "already-proved";
 
-  const store = await cookies();
-  const hasEmailIdentity = (user.identities ?? []).some((i) => i.provider === "email");
-  const kept =
-    !hasEmailIdentity ||
-    bindingMatches(store.get(SIGNUP_BINDING_COOKIE)?.value, user.id, user.app_metadata?.[BINDING_HASH_KEY]);
   const mark = !kept && otpType !== "invite";
 
   const admin = createAdminClient();
@@ -154,7 +212,7 @@ export async function settleFirstProof(
     //    session, not the Admin API: an Admin API password update revokes
     //    every session's refresh token, this one included (measured), which
     //    would leave the owner a session that dies within the JWT's 15 minutes.
-    const rotated = await supabase.auth.updateUser({ password: randomBytes(48).toString("base64url") });
+    const rotated = await supabase.auth.updateUser({ password: unknowablePassword() });
     if (rotated.error) throw new Error(`password replacement: ${rotated.error.message}`);
     // 2. So does every session but this one.
     const others = await supabase.auth.signOut({ scope: "others" });

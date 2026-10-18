@@ -393,7 +393,13 @@ export async function choosePasswordAction(
     return { error: "We couldn't finish saving that. Try again with a different password." };
   }
   // The proxy reads the mark from the JWT; this session's still carries it.
-  await supabase.auth.refreshSession();
+  // If the refresh fails, the stale JWT would bounce them back here for good:
+  // sign out and let them sign in with the password they just chose.
+  const { error: refreshError } = await supabase.auth.refreshSession();
+  if (refreshError) {
+    await supabase.auth.signOut({ scope: "local" });
+    redirect("/login?error=password_saved");
+  }
   redirect(next);
 }
 
