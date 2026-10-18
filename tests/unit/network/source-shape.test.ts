@@ -131,7 +131,8 @@ describe("N2: the masking views read the network tables and NOTHING ELSE", () =>
   // The division of labour that remains true: § ND reads the deployed catalog
   // and so sees a dependency however the SQL is spelled, including one added by
   // a later migration this file does not read; this file reads only the source
-  // of the six Task 1 migrations and so cannot see either.
+  // of the six Task 1 migrations and 20261103000000 (F1), which redefined both
+  // views, and so cannot see either.
   const ALLOWED = [
     "public.network_profiles",
     "public.network_connection_requests",
@@ -139,7 +140,7 @@ describe("N2: the masking views read the network tables and NOTHING ELSE", () =>
 
   for (const view of ["network_directory", "network_connected_profiles"]) {
     it(`${view} names no public table but the network ones`, () => {
-      const body = viewBody(VIEWS, view);
+      const body = viewBody(F1, view);
       const referenced = [
         ...new Set(Array.from(body.matchAll(/public\.\w+/g), (m) => m[0])),
       ].filter((name) => name !== `public.${view}`);
@@ -158,11 +159,11 @@ describe("N2: the masking views read the network tables and NOTHING ELSE", () =>
   }
 
   it("the directory view names only network_profiles; the connected one names both", () => {
-    const directory = viewBody(VIEWS, "network_directory");
+    const directory = viewBody(F1, "network_directory");
     expect(directory).toContain("public.network_profiles");
     expect(directory).not.toContain("public.network_connection_requests");
 
-    const connected = viewBody(VIEWS, "network_connected_profiles");
+    const connected = viewBody(F1, "network_connected_profiles");
     expect(connected).toContain("public.network_profiles");
     expect(connected).toContain("public.network_connection_requests");
   });
@@ -175,7 +176,7 @@ describe("the masking views mask, and do not project a tenant", () => {
     // connections-only. The psql suite proves it behaviourally (§ NM); this
     // catches the same edit from source, in CI.
     for (const view of ["network_directory", "network_connected_profiles"]) {
-      const body = viewBody(VIEWS, view);
+      const body = viewBody(F1, view);
       for (const name of PUBLISHABLE_FIELDS) {
         expect(
           body,
@@ -194,7 +195,7 @@ describe("the masking views mask, and do not project a tenant", () => {
 
   it("neither view projects organisation_id or entity_id", () => {
     for (const view of ["network_directory", "network_connected_profiles"]) {
-      const body = viewBody(VIEWS, view);
+      const body = viewBody(F1, view);
       expect(body, `${view} projects a tenant identifier`).not.toMatch(
         /\n\s+p\.organisation_id\s*(,|as\b)/,
       );
@@ -209,11 +210,11 @@ describe("the masking views mask, and do not project a tenant", () => {
     // connected view that tested `= 'network'` would make an accepted
     // connection unlock nothing; a directory that tested the `in (...)` form
     // would publish connections-only fields to everyone.
-    const directory = viewBody(VIEWS, "network_directory");
+    const directory = viewBody(F1, "network_directory");
     expect(directory).toContain("= 'network' then");
     expect(directory).not.toContain("in ('network','connections')");
 
-    const connected = viewBody(VIEWS, "network_connected_profiles");
+    const connected = viewBody(F1, "network_connected_profiles");
     expect(connected).toContain("in ('network','connections')");
   });
 
@@ -229,6 +230,7 @@ describe("the masking views mask, and do not project a tenant", () => {
     // Against the EXECUTABLE text: the header discusses `anon` at length,
     // because the absence of the grant IS the control (N6/Q70).
     expect(executable(VIEWS)).not.toMatch(/grant[^;]*\banon\b/);
+    expect(executable(F1)).not.toMatch(/grant[^;]*\banon\b/);
   });
 });
 
