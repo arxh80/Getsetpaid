@@ -513,7 +513,7 @@ P6VARS+=( -v "super=${ID[super]}" )
 P6VARS+=( -v "super_c={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal2\"}" )
 
 
-run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 218 "${P6VARS[@]}"
+run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 225 "${P6VARS[@]}"
 lk_fails=$SUITE_FAILS
 if [ "$lk_fails" != "0" ]; then
   echo "PHASE 6 NETWORK-LEAKAGE SUITE FAILED: $lk_fails failing assertion(s)" >&2
@@ -3537,93 +3537,37 @@ p2_code "CONTROL: selecting a real column of the same view works"          200 G
         "network_directory?select=display_name" "" "$MGR"
 
 # ===========================================================================
-# TASK 3 LEAKAGE ASSERTION #1 -- THE BASE TABLE IS READABLE BY DESIGN, AND
-# THAT IS EXPECTED AND CORRECT.
+# LEAKAGE ASSERTION #1 -- THE BASE TABLE IS NOT A READ PATH. FLIPPED by Phase
+# 10 Task 19 (Task 2 finding F1): this block asserted, "by design", that a
+# non-owner reads BETA's connections-level value, organisation_id and
+# entity_id straight off network_profiles -- which any member could do over
+# PostgREST. 20261103000000 drops the cross-tenant policy. ALPHA and BETA are
+# CONNECTED by this point (rls_phase6_network.sql NR9/NU4), so this is the
+# connected distance; the Task 5 block below sends the finding's exact GET as
+# the unconnected counterparty.
 #
-# Paired with the source-shape assertion in
-# tests/unit/network/discovery-source-shape.test.ts that no application code
-# path (lib/network/discovery.ts, the directory page, the profile page) ever
-# selects from network_profiles for a foreign organisation. This half proves
-# the OTHER fact the pairing depends on: that the base table itself would
-# happily hand over the unmasked row if something did.
-# `network_profiles_select_published_directory`'s own comment: "the base
-# table is deliberately readable and the VIEW is the masking control;
-# organisation_id, entity_id and every field the publisher marked hidden are
-# reachable HERE and are absent from the view."
-#
-# ---------------------------------------------------------------------------
-# FIX ROUND 1, I1: ALPHA AND BETA ARE CONNECTED BY THIS POINT, AND THAT IS
-# THE TRUE STATE -- STATED, NOT PAPERED OVER.
-# ---------------------------------------------------------------------------
-# The psql suites run BEFORE this HTTP section, on the SAME database, with no
-# reset between them (this script's own header, "the fixtures are
-# deliberately left standing for the HTTP sections to read"). rls_phase6_
-# network.sql's NR9/NU4 (:887-894, :930-933) accept a request FROM alpha_org
-# (profile '...000a') TO beta_org (profile '...000c', "Beta Second Room"),
-# and NU12 (:1115-1117) then asserts that $MGR -- ALPHA's own manager, the
-# EXACT token this block uses -- reads BETA's UNRELATED profile '...000b'
-# ("Beta Bookings") through public.network_connected_profiles. That works
-# ONLY because the connected view's `exists` clause is ORGANISATION TO
-# ORGANISATION, not profile to profile (20260904004000's own header): once
-# ANY accepted request stands between alpha_org and beta_org, every one of
-# BETA's published profiles becomes connections-visible to ALPHA, regardless
-# of which specific profile the request named. So ALPHA and BETA, as
-# organisations, ARE connected when this block runs -- an earlier version of
-# this comment said the opposite, which was false at HEAD (Constraint 13).
-#
-# THAT CONNECTION DOES NOT WEAKEN WHAT THIS PARTICULAR ASSERTION PROVES.
-# organisation_id and entity_id are structurally ABSENT from BOTH masking
-# views under every condition -- connected or not, `network` or
-# `connections` -- so reading them straight off network_profiles is a
-# leak regardless of the connection state; nothing about being connected
-# changes whether a column exists in a view's SELECT list. What connection
-# status DOES change is a `connections`-level VALUE's visibility through
-# `network_connected_profiles` specifically -- and this block never queries
-# that view, only the base table and, in the paired control below,
-# `network_directory`, whose `= 'network'` test does not vary with
-# connection status either (`network_directory` never resolves a
-# `connections`-level field for anyone, connected or not).
-#
-# ---------------------------------------------------------------------------
-# FIX ROUND 1, I2: A POPULATED MASKED VALUE, NOT JUST TWO ABSENT COLUMNS.
-# ---------------------------------------------------------------------------
-# The brief's own wording: "a hand-crafted GET ... returns rows WITH EVERY
-# MASKED COLUMN POPULATED". organisation_id/entity_id are masked by being
-# OMITTED FROM THE VIEW ENTIRELY -- they prove the view's column list is
-# narrower than the base table's, which is real but not what the brief asks
-# for. What it asks for is a `field_visibility`-masked VALUE: a `hidden`
-# field is NULL in the base column too (N3, `network_profiles_hidden_
-# fields_are_null`), so there is nothing to leak there by construction --
-# the only column that can be BOTH populated AND masked is one at
-# `connections`. BETA's `...000b` carries none (`field_visibility =
-# '{"city":"network"}'`, `rls_phase6_network.sql:149-155`), so it is given
-# one here, narrowly, for this block alone -- nothing later in this script
-# reads `...000b`'s `contact_email` or `field_visibility` (grepped).
+# BETA's ...000b is given a populated connections-level value here, for this
+# block alone, so a [] below is a withheld value and not an empty column.
 p2_sub "update public.network_profiles
           set contact_email = 'leak-check@beta.test',
               field_visibility = field_visibility || '{\"contact_email\":\"connections\"}'::jsonb
         where id = 'e0110000-0000-0000-0000-00000000000b';"
 
-p2_json "LEAKAGE #1a (documented, by design): a connections-level VALUE is readable straight off network_profiles" \
-        "leak-check@beta.test" \
-        "network_profiles?select=contact_email&id=eq.e0110000-0000-0000-0000-00000000000b" \
-        "$MGR" "contact_email"
+p2_rows "LEAKAGE #1a (F1): a non-owner's GET of BETA's published profile off network_profiles returns []" 0 \
+        "network_profiles?select=display_name,contact_email,bio,headline,city,field_visibility,organisation_id,entity_id&status=eq.published&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$MGR"
 p2_json "PAIRED CONTROL: the SAME field, through network_directory, is still masked to null (the view's \`= 'network'\` test does not vary with connection status)" \
         "<null>" \
         "network_directory?select=contact_email&id=eq.e0110000-0000-0000-0000-00000000000b" \
         "$MGR" "contact_email"
 
-p2_json "LEAKAGE #1b: the same non-owning manager reads BETA's organisation_id straight off network_profiles" \
-        "$BETA_ORG" \
-        "network_profiles?select=organisation_id&id=eq.e0110000-0000-0000-0000-00000000000b" \
-        "$MGR" "organisation_id"
-p2_json "...and BETA's entity_id, also unmasked (the view projects neither, ever, regardless of connection status)" \
-        "1111000b-0000-0000-0000-00000000000b" \
-        "network_profiles?select=entity_id&id=eq.e0110000-0000-0000-0000-00000000000b" \
-        "$MGR" "entity_id"
-p2_json "CONTROL: the same row's display_name, so this is a real row and not an empty result" \
+p2_rows "LEAKAGE #1b (F1): ...nor BETA's organisation_id ([])" 0 \
+        "network_profiles?select=organisation_id&id=eq.e0110000-0000-0000-0000-00000000000b" "$MGR"
+p2_rows "...nor its entity_id ([])" 0 \
+        "network_profiles?select=entity_id&id=eq.e0110000-0000-0000-0000-00000000000b" "$MGR"
+p2_json "CONTROL: the same row through network_directory, so the [] above is a real, published row" \
         "Beta Bookings" \
-        "network_profiles?select=display_name&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "network_directory?select=display_name&id=eq.e0110000-0000-0000-0000-00000000000b" \
         "$MGR" "display_name"
 
 # NO WRITE PATH THROUGH EITHER VIEW. Both project computed CASE expressions, so
@@ -3825,6 +3769,16 @@ p2_json "CONNECTED: the CONNECTED view resolves it -- the ONE thing accept chang
 p2_rows_min "CONNECTED: ...and that view returns rows at all (the 0 above is a boundary)" 1 \
         "network_connected_profiles?select=id" "$CONN"
 
+# F1 (Phase 10 Task 19): the finding's exact GET. GAMMA publishes nothing yet
+# (the leakage suite's LZ), so the whole unfiltered read must be [].
+p2_rows "LEAKAGE #1a (F1), UNCONNECTED: the finding's exact GET on network_profiles returns []" 0 \
+        "network_profiles?select=display_name,contact_email,bio,headline,city,field_visibility,organisation_id,entity_id&status=eq.published" \
+        "$UNCON"
+p2_json "F1 CONTROL: the publisher's own member reads its own row's organisation_id off the base table" \
+        "$BETA_ORG" \
+        "network_profiles?select=organisation_id&id=eq.e0110000-0000-0000-0000-00000000000b" \
+        "$CONN" "organisation_id"
+
 # ---- THE IDOR PROBE, AT THE TRANSPORT -------------------------------------
 # A draft profile id, guessed. It must come back as an EMPTY LIST -- the same
 # answer a nonexistent id gives -- from both distances, with the published id
@@ -3872,8 +3826,7 @@ p2_code "CONTROL: a real column of the same view selects fine"                  
 
 # ---- THE PRIVATE-RELATION SWEEP, OVER HTTP --------------------------------
 # Sixteen tenant-private relations, filtered by ALPHA's organisation id -- the
-# request an attacker sends, since the org id is in every URL and § LB proves a
-# counterparty can read it straight off network_profiles. Each is asserted 0
+# request an attacker sends, since the org id is in every URL. Each is asserted 0
 # from BOTH distances and >= 1 for the tenant that owns it.
 #
 # TWO OF THE SIXTEEN GET THEIR POSITIVE CONTROL IN psql AND NOT HERE, and the
@@ -4182,6 +4135,11 @@ n1_row=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc
      from public.network_connection_requests where id='$N1_REQUEST'" | tr -d '[:space:]')
 if [ "$n1_row" = "accepted:true:true:true" ]; then printf '  PASS  %-58s %s\n' "...accepted, parties unchanged, responded_by/at stamped by the server" "$n1_row"
 else printf '  FAIL  %-58s got %s want accepted:true:true:true\n' "...accepted, parties unchanged, responded_by/at stamped by the server" "$n1_row"; api_fails=$((api_fails+1)); fi
+# F1 (Phase 10 Task 19): $UNCON, refused the base table above, is now
+# connected to ALPHA and reads the connections-level field through the view.
+p2_json "F1: after ALPHA accepts, the same caller reads ALPHA's connections-level field through network_connected_profiles" \
+        "bookings@alpha.test" \
+        "network_connected_profiles?select=contact_email&id=eq.$ALPHA_PROFILE" "$UNCON" "contact_email"
 
 echo "=== Phase 9 integrations at the API surface (20261030001000) ==="
 # The psql § IB/IC/IV prove the write paths through claims set by hand; this

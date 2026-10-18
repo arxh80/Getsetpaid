@@ -57,6 +57,11 @@ const VIEWS = read(
 const AUDIT = read(
   "supabase/migrations/20260904005000_network_audit_triggers.sql",
 );
+// Phase 10 Task 19 (F1): the views became definer views and the cross-tenant
+// base-table policy was dropped.
+const F1 = read(
+  "supabase/migrations/20261103000000_network_base_table_is_not_a_read_path.sql",
+);
 
 /**
  * The migration with its `--` comments removed.
@@ -212,10 +217,12 @@ describe("the masking views mask, and do not project a tenant", () => {
     expect(connected).toContain("in ('network','connections')");
   });
 
-  it("BOTH views are security_invoker and neither is granted to anon", () => {
+  it("BOTH views are definer views with security_barrier (F1) and neither is granted to anon", () => {
     for (const view of ["network_directory", "network_connected_profiles"]) {
-      expect(viewBody(VIEWS, view)).toContain("security_invoker = true");
+      expect(viewBody(F1, view)).toContain("security_invoker = false, security_barrier = true");
+      expect(viewBody(F1, view)).toContain("private.network_profile_reaches_caller(p.organisation_id)");
     }
+    expect(F1).toContain('drop policy "network_profiles_select_published_directory"');
     expect(VIEWS).toContain(
       "grant select on public.network_directory, public.network_connected_profiles to authenticated;",
     );
