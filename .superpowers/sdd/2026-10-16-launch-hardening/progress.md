@@ -38,3 +38,5 @@ Task 4: re-review round 1 (sonnet) -- all findings addressed, no new Critical/Im
 Task 4: minor (deferred): Q245 text "A password reset replaces the squatter's password" is imprecise (only once a new password is set; no Forgot-password page)
 Task 4: complete 2026-10-17 -- df010b2, 07eb877, 90fc99f, eecd895, d342cf4, e75755c, a2034aa; G11 PARTIAL until Task 20 (Q245)
 Task 19: dispatched 2026-10-17 (base c06ff6b, opus) -- F1 readable network base table (Critical)
+Plan: Tasks 21-25 added 2026-10-18 from the founder's whole-repo audit ("fix all"): 21 member removal/role change (High, after F2), 22 sign out everywhere (High), 23 storage quota + custom-field race, 24 every export in parts, 25 runner-auth helper; Task 2 F3 ruling gains GoTrue security notification emails; order 19 -> 20 -> T2 fix -> 21 -> 22 -> 3 -> 5..16 -> 23..25 -> 17-18
+Task 19: implementer 1 stopped by founder mid-task (uncommitted draft edits kept, patch backed up); re-dispatched 2026-10-18 (fresh opus implementer, base dd5dc1e, draft as unreviewed starting point)

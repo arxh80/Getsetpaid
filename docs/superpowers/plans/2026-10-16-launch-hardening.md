@@ -214,7 +214,7 @@ For each: write the failing test, run it red, fix, run it green, revert the fix 
 3. Fix F2 (Admin self-promotes to Owner) and F3 (password or MFA change straight to GoTrue skips step-up) test first, plus F5 (the `safeNextPath` dot-segment open redirect) and F6 (auth cookies without `Secure`), which are cheap Mediums.
 4. Write `docs/threat-model.md` (G19) with its reference test.
 
-Queue F2's question, "may an Admin grant or remove the Owner role? (default per the PRD: no, only an Owner, implemented)", as the next free Q. If F3 has no GoTrue-side control in the pinned version, record it as a residual in `SECURITY.md` § 4 and § 10 with the evidence instead of building around GoTrue.
+Queue F2's question, "may an Admin grant or remove the Owner role? (default per the PRD: no, only an Owner, implemented)", as the next free Q. If F3 has no GoTrue-side control in the pinned version, record it as a residual in `SECURITY.md` § 4 and § 10 with the evidence instead of building around GoTrue. Either way, turn on the pinned GoTrue's password-changed and MFA-factor notification emails if it supports them (`supabase/config.toml` `[auth.email.notification.*]`, today "declared intent, not an active control"), prove one arrives in Mailpit, and add the hosted setting to `SECURITY.md` § 15 (amended 2026-10-18, audit finding 5).
 
 - [ ] **Step 4: Run the gates that the fixes touch**
 
@@ -276,7 +276,9 @@ Every task inherits the Global Constraints, and in particular: a Critical or Hig
 
 **Execution order:** Task 4 runs immediately after Task 1, before Tasks 2 and 3, because it closes the only Critical gap. The rest run after Task 3 in the order written (severity first).
 
-**Amended 2026-10-17 after Task 2's audit phase:** Task 2 stopped early on F1, a Critical that is not a Task 1 gap. F1 is appended as **Task 19** and runs right after Task 4. The order is now Task 4 → Task 19 → Task 20 → Task 2 fix phase → Task 3 → Tasks 5–16 → Tasks 17–18 (Task 20, G11's Q245 residual, added after Task 4 reported). Task 2 F4 (erasure and `close_my_workspace` skip step-up over PostgREST) folds into Task 6.
+**Amended 2026-10-17 after Task 2's audit phase:** Task 2 stopped early on F1, a Critical that is not a Task 1 gap. F1 is appended as **Task 19** and runs right after Task 4. The order is now Task 4 → Task 19 → Task 20 → Task 2 fix phase → Task 3 → Tasks 5–16 → Tasks 17–18 (Task 20, G11's Q245 residual, added after Task 4 reported).
+
+**Amended 2026-10-18 after the founder's whole-repo audit ("fix all"):** five new tasks close the audit findings no task held. Task 21 (remove a member, change a role; High) and Task 22 (sign out everywhere; High) run right after Task 2's fix phase, 21 first because it needs F2. Task 23 (storage quota, plus the custom-field limit race), Task 24 (every export in parts) and Task 25 (one runner credential check) run after Task 16. The order is now Task 19 → Task 20 → Task 2 fix phase → Task 21 → Task 22 → Task 3 → Tasks 5–16 → Tasks 23–25 → Tasks 17–18. The audit's other findings already map to tasks: 1 → 19, 2 → 20, 3/5/10/14 → Task 2 fix phase (F2, F3, F5, F6), 6 → 6, 8 → 8, 9 → 10 and 11, 13 → 5. Task 2 F4 (erasure and `close_my_workspace` skip step-up over PostgREST) folds into Task 6.
 
 ---
 
@@ -561,6 +563,128 @@ Numbered 20 because it was appended after Part C was numbered. It runs **after T
 - [ ] **Step 3: Unit tests** for the binding-cookie check and the gate's path allowlist, wherever the codebase's unit tests for `lib/auth/` and the middleware live.
 - [ ] **Step 4: Mutant.** Skip the password replacement in the callback, and (a) and (b) go red because P1 signs in. Record it. A second mutant: drop the gate's redirect, and the `/orgs` assertion goes red.
 - [ ] **Step 5: Gates.** Fresh reset + full psql runner (the backfill must not disturb any suite); `pnpm lint`, `pnpm typecheck`, `pnpm test`; e2e in groups with `--workers=1`: the new spec, `invite-pre-hijack.spec.ts`, and every spec that `grep -l "signup\|sign-up\|magic\|callback\|login" tests/e2e/*.spec.ts` names. Update the docs listed under Files. Commit per logical change, push.
+
+---
+
+### Task 21: Owners and Admins can remove a member and change a role (audit finding 4, High)
+
+Added 2026-10-18 from the whole-repo audit the founder ran ("fix all"). It runs **after Task 2's fix phase**, because that phase fixes F2 (an Admin can grant or remove the Owner role). Shipping this UI before F2 would hand the takeover to every Admin.
+
+**The gap:** `app/(app)/[orgSlug]/members/page.tsx` lists members and has an invite form, and nothing else. `lib/org/actions.ts` exports only `createOrganisationAction`, `inviteMemberAction` and `acceptInviteAction`. No screen removes a member, cancels an invitation or changes a role. A Booker who leaves the company keeps reading every contact and event until someone edits the database by hand. The PRD (§ roles) gives the Owner "user/role management", and `CLAUDE.md` gives the Owner/Admin "Manage users". The database half already exists: the UPDATE and DELETE policies on `organisation_memberships` (`20260828220000`, with Task 2's F2 terms), the keep-an-owner trigger (`20261001001000`, `20261003006000`) and the `membership.*` audit triggers (`20261006000000`).
+
+**Files:**
+- Modify: `lib/org/actions.ts` (two Server Actions), `app/(app)/[orgSlug]/members/page.tsx` (the controls, shown only to a caller holding `manage_members`), one small client component under `components/org/` for the row controls
+- Test: `tests/integration/org/member-management.test.ts`, `tests/e2e/members.spec.ts` (with an axe scan of the members page as an Owner)
+- Docs: `SECURITY.md` § 2 (member management as built), `docs/launch-gates.md` (new row **G33, High**, "Closed in <sha>")
+
+**Coordinator decisions:**
+1. Both actions write through the caller's RLS-bound client (`createClient()`), never service-role. The policies, the keep-an-owner trigger and the audit triggers are the control. The action only maps refusals to sentences: 42501 means "you can't change that member", and the keep-an-owner refusal means "a workspace needs at least one active Owner".
+2. **Remove** is the existing hard `DELETE` (audited as `membership.deleted`). The same action cancels a pending invitation, which is a `DELETE` of a `status = 'invited'` row.
+3. **Change role** offers `INVITABLE_ROLES` (`lib/org/roles.ts`), plus `owner` only when the caller is an Owner. The database refuses the rest whatever the form sends.
+4. No step-up at MVP. Both roles that hold `manage_members` are MFA-required, so these actions already run at aal2. Queue the founder question "does removing a member or changing a role need step-up? (default: no, aal2 already required)" as the next free Q.
+5. Removal takes effect on the removed person's next request, because every read re-checks membership in the database. Do not revoke their sessions: they may belong to other workspaces.
+6. Not built (name them in the report): self-service "leave workspace", ownership transfer as a separate flow, bulk actions.
+
+- [ ] **Step 1: Failing tests.** Integration, driving the actions directly with `orgSlug` (the house pattern, see `uploadDocumentAction`):
+  - an Owner removes a Booker: the row is gone, and the Booker's own client then reads 0 contacts in that workspace
+  - an Admin removes a Booker
+  - an Admin cannot remove or demote an Owner (refused; relies on F2)
+  - the last active Owner cannot demote or remove themselves (the keep-an-owner sentence)
+  - a Booker calling either action is refused, with the row unchanged
+  - a foreign workspace's slug is refused
+  - cancelling a pending invite deletes the row
+
+  e2e: an Owner removes a member through the UI, and that member's next page load in the workspace gets the streamed not-found contract (`DESIGN.md` § Error pages). Red first.
+- [ ] **Step 2: The actions and the controls.** Follow `DESIGN.md`. The remove button uses the existing delete-confirmation pattern (focus round-trip, as in `keyboard.spec.ts`).
+- [ ] **Step 3: Mutant.** Swap the action's client for the service-role client, and "a Booker calling either action is refused" goes red. Record it.
+- [ ] **Step 4: Gates.** `pnpm lint`, `npx next typegen`, `pnpm typecheck`, `pnpm test`, the new e2e spec plus `tenant-breakout.spec.ts` and `accessibility.spec.ts` with `--workers=1`. Update the docs. Commit per logical change, push.
+
+---
+
+### Task 22: Sign out everywhere (audit finding 7, High)
+
+Runs right after Task 21.
+
+**The gap:** `SECURITY.md:198` says "Active-session listing with remote revocation is available to every user." Nothing of the kind exists. `signOutAction` (`lib/auth/actions.ts:359`) ends only the current browser (`scope: "local"`), and its own comment calls "sign out everywhere" a separate action that was never built. PRD § 6.1 asks for "Session management screen showing active sessions/devices with remote revocation". Case: a laptop stolen while signed in stays signed in for up to 12 hours (the timebox), and the user has no way to end it.
+
+**Files:**
+- Modify: `lib/auth/actions.ts` (`signOutEverywhereAction`), one account page to host the button (the account area today is `/account/privacy`, `/account/data-requests`, `/account/erase` and `/account/exports`; put it where the account nav makes it findable, and add a nav entry only if no page fits), `SECURITY.md` § 4 (line 198 rewritten to the as-built), `docs/launch-gates.md` (new row **G34, High**)
+- Test: `tests/integration/session/sign-out-everywhere.test.ts`, and an e2e case in `tests/e2e/keyboard.spec.ts` or a new small spec
+
+**Coordinator decisions:**
+1. `signOutEverywhereAction` calls `supabase.auth.signOut({ scope: "global" })` and redirects to `/login`. It needs no step-up, because signing out cannot harm the account.
+2. The per-device LIST is not built at MVP. Reading `auth.sessions` needs a definer RPC and a page, while the button alone answers "a device was stolen". Queue the founder question "is Sign out everywhere enough for PRD § 6.1's session screen at MVP? (default: yes, the device list is deferred)". Rewrite `SECURITY.md:198` to say exactly that.
+3. State the residual in § 4: an access token already issued stays valid until it expires (`jwt_expiry` in `supabase/config.toml`; read the value). Only refresh is revoked.
+
+- [ ] **Step 1: Failing tests.** Integration: sign the same user in twice (two clients), call global sign-out from one, and the other's `refreshSession()` fails (`refresh_token_not_found` or the pinned GoTrue's equivalent). e2e: two browser contexts signed in as one user; context A clicks "Sign out everywhere"; context B's next navigation after its access token is refreshed lands on `/login`. Use the fixtures' existing way to force a refresh if there is one, otherwise assert at the integration layer only and say so.
+- [ ] **Step 2: The action and the button.**
+- [ ] **Step 3: Mutant.** Change `global` to `local`, and the integration test goes red.
+- [ ] **Step 4: Gates.** lint, typecheck, `pnpm test`, the touched e2e spec. Docs. Commit, push.
+
+---
+
+### Task 23: The storage quota is enforced (audit finding 11, Medium), plus the custom-field limit race
+
+**The gap:** `subscription_plans.storage_limit_gb` (5 for Starter, 20 for Pro, `20260826151656_foundation_schema.sql:130`) is read by nothing except the tier tests and the health page. `uploadDocumentAction` (`lib/crm/documents.ts:148-170`) stores bytes with no quota check. One Starter user can upload 10 files of 25 MiB per hour, about 6 GiB a day, and nothing refuses. `SECURITY.md:246` relies on this quota as the bound on upload abuse.
+
+**Files:**
+- Create: `supabase/migrations/<next timestamp>_storage_quota_is_enforced.sql`
+- Modify: `lib/crm/documents.ts` (map the new refusal to a sentence), a psql suite (the documents/file suite that already covers `public.documents`, with its pin), `SECURITY.md` § 5 (line 246) and § 6, `docs/launch-gates.md` (new row **G35, Medium**)
+- Test: the psql assertions, and `tests/integration/documents/upload-quota.test.ts`
+
+**Coordinator decisions:**
+1. **One `BEFORE INSERT` trigger on `public.documents` is the control.** It binds every writer, and `uploadDocumentAction` already removes the stored bytes when the row insert fails. The trigger:
+   - takes `pg_advisory_xact_lock` on the organisation, so two parallel uploads cannot both pass the last free bytes
+   - compares the workspace's existing `size_bytes` total plus `new.size_bytes` against the EFFECTIVE plan's limit (`private.effective_organisation_plan()`, so billing overrides count)
+   - raises 42501 with hint `storage_quota_exceeded` when the total would pass the limit
+   
+   Count soft-deleted documents too, because their bytes stay until the retention sweep (Q52). A NULL limit means unlimited.
+2. No app-side pre-check. An over-quota upload still sends its bytes to Storage once and then removes them, which is bounded by the 10-per-hour upload budget. Mark this in the action with `shortcut: an over-quota upload transfers its bytes once before the refusal, bounded by the 10/hour budget; add a pre-check RPC if storage egress cost shows up`.
+3. A downgrade never deletes. An organisation over its new limit keeps every file, and only new uploads are refused. Feedback screenshots and export archives are not counted (they are platform-scoped and short-lived).
+4. **The custom-field limit race, in the same task:** `private.enforce_custom_field_limit()` (`20260829010500`, whose header says "IT DOES NOT SERIALISE") gets the same per-organisation advisory lock before its count. Rebuild it from the live `pg_get_functiondef`.
+
+- [ ] **Step 1: Failing tests.** psql: a Starter workspace at (limit − 1 byte) inserting a 2-byte document is refused with the hint; at the limit exactly, a 0-byte insert is accepted; a Pro workspace (or a billing override to Pro) is accepted; a soft-deleted document still counts. Integration: the real `uploadDocumentAction` over quota returns the quota sentence, and neither a row nor an object remains. Red first.
+- [ ] **Step 2: The migration and the sentence.**
+- [ ] **Step 3: Mutants.** Drop the trigger, and the psql refusal goes red. For the lock: if a concurrent test in the house style (see the rate-limit concurrency test cited in `20260909090000`) can show the race without the lock, use it as the mutant. Otherwise assert the lock's presence from `pg_get_functiondef`, and say so in the report.
+- [ ] **Step 4: Gates.** Fresh reset + full psql runner, lint, typecheck, `pnpm test`, `documents.spec.ts` with `--workers=1`. Docs. Commit per logical change, push.
+
+---
+
+### Task 24: Any export, any size: build every export in parts (audit finding 12, Medium)
+
+**The gap:** an ordinary export is one zip under a 40 MiB ceiling (`private.export_limits()`), and passing it FAILS the job (`lib/export/runner.ts`, `lib/export/zip.ts:323`). A workspace export carries every clean document's bytes, so two 25 MiB riders make every export of that workspace fail. An account export carries the person's feedback screenshots (up to 5 MiB each, 10 an hour), so a heavy feedback submitter's statutory access export can fail for ever. Q228 already built a parts builder for closure backups (`lib/export/parts.ts`, `20261101000000`, spec `docs/superpowers/specs/2026-10-10-closure-backup-parts-design.md`).
+
+**Files:** `lib/export/runner.ts`, `lib/export/parts.ts`, a migration widening the closure-only checks in `20261101000000` (`export_jobs_part_count_shape`, the running→queued transition, `export_job_parts` inserts) to every kind, the download pages that today show one archive (`app/(app)/account/exports/[jobId]`, `app/(app)/[orgSlug]/settings/export`), and their tests: `tests/e2e/exports.spec.ts`, `closure-backup-parts.spec.ts`, and the export integration and unit tests.
+
+**Coordinator decisions:**
+1. Read the Q228 spec first. Prefer making parts the ONLY build path for every kind, if that gives the smaller diff (one path instead of two). Otherwise route the workspace and account kinds through the existing parts path. Record which, and why.
+2. The per-part ceilings stay exactly as declared (`private.export_limits()`). The number of parts is uncapped, as for closure backups. A single file larger than an empty part is still a refusal, as Q228 states.
+3. Fold in the mislabel: `addDocumentBytes` records a storage read failure under reason `document_not_clean`. Give it its own reason (for example `document_unreadable`), in the TypeScript contract and the manifest copy.
+4. The DSR fulfilment seam (`recordFulfilment`) records the job, not a part. Keep it that way.
+
+- [ ] **Step 1: Failing tests.** Integration: a workspace export whose clean documents total more than one part's ceiling (lower the ceiling through the test override `effectiveLimits` already honours, rather than uploading 40 MiB) SUCCEEDS with two or more parts. Every part is a valid zip, and the last part's manifest indexes them all. Same for an account export with screenshots. Unit: an unreadable object is withheld as `document_unreadable`. Red first.
+- [ ] **Step 2: The change.**
+- [ ] **Step 3: Mutant.** Restore the fail-at-ceiling branch for the workspace kind, and the workspace test goes red.
+- [ ] **Step 4: Gates.** Fresh reset + full psql runner (the export suites), lint, typecheck, `pnpm test`, `exports.spec.ts` and `closure-backup-parts.spec.ts` with `--workers=1`. Update `SECURITY.md` § 3's "Exports are async and bounded" paragraph and `docs/launch-gates.md` (new row **G36, Medium**). Commit per logical change, push.
+
+---
+
+### Task 25: One runner credential check, not four (audit finding 15, Low, lean)
+
+**The gap:** `app/api/exports/run`, `app/api/erasure/run`, `app/api/retention/run` and `app/api/incident-alerts/deliver` each copy `configuredSecret()`, `bearerMatches()` and the 404 refusal. That is security code that must change together.
+
+**Files:** create `lib/security/runner-auth.ts`, exporting `refuseUnlessRunner(request: Request, envName: string): NextResponse | null`; modify the four routes; test with `tests/unit/security/runner-auth.test.ts`. Keep `tests/unit/email/delivery-route.test.ts` and `tests/unit/security/public-paths.test.ts` green unchanged.
+
+- [ ] **Step 1: Failing unit test:**
+  - secret unset → 404
+  - secret shorter than 32 characters → 404
+  - no `Bearer ` prefix → 404
+  - wrong secret → 404, including one of a different length
+  - right secret → `null`
+  - every refusal carries `Cache-Control: no-store`
+- [ ] **Step 2:** Move the code into the helper verbatim, and replace each route's copy with one call. Each route keeps its own env name, and its header comment loses only the paragraph restating the shared credential rules, which moves to the helper once.
+- [ ] **Step 3: Mutant:** make the helper return `null` always, and the refusal cases go red.
+- [ ] **Step 4: Gates.** lint, typecheck, `pnpm exec vitest run tests/unit`. Commit, push.
 
 ---
 
