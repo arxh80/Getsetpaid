@@ -13,6 +13,7 @@ import { totpCode } from "../support/totp";
 import {
   CONFIRM_LINK,
   expectSignInRefused,
+  expectSignInWorks,
   linkIn,
   mailTo,
   newPage,
@@ -250,7 +251,12 @@ test("a pending invitee can be invited by a second workspace and accept both", a
   const [newest] = await waitForMail(address, new RegExp(INVITE_SUBJECT), 2);
   const invitee = await newPage(browser);
   await invitee.goto(await linkIn(newest, "type=invite"));
-  await expect(invitee).toHaveURL(/\/invites/);
+  await expect(invitee).toHaveURL(/\/invites\?welcome=1/);
+  // The invitation's first proof replaced whatever password the account
+  // carried (Phase 10 Task 20); the welcome form still sets the invitee's own.
+  await invitee.locator('input[name="password"]').fill(P2);
+  await invitee.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(invitee.getByText("Saved.")).toBeVisible();
   await expect(invitee.getByRole("button", { name: /Accept invitation to/ })).toHaveCount(2);
 
   await invitee.getByRole("button", { name: /Accept invitation to/ }).first().click();
@@ -262,6 +268,8 @@ test("a pending invitee can be invited by a second workspace and accept both", a
   const account = await authUserByEmail(address);
   const memberships = await membershipsOfUser(account!.id);
   expect(memberships.map((m) => m.status)).toEqual(["active", "active"]);
+  // The password chosen on the welcome form signs in from anywhere.
+  await expectSignInWorks(await newPage(browser), address, P2);
   expect(new Set(memberships.map((m) => m.organisationId))).toEqual(
     new Set(world.orgs.map((o) => o.id)),
   );
