@@ -16,6 +16,7 @@ import {
   expectSignInRefused,
   expectSignInWorks,
   linkIn,
+  mailTo,
   newPage,
   signUp,
   waitForMail,
@@ -47,6 +48,7 @@ const ADDRESSES = {
   magic: `fp-magic-${run}@example.test`,
   recovery: `fp-recovery-${run}@example.test`,
   control: `fp-control-${run}@example.test`,
+  emailChangeVictim: `fp-ecvictim-${run}@example.test`,
 };
 const P1 = "Squatter-chose-this-1";
 const P2 = "Owner-chose-this-2!";
@@ -54,14 +56,16 @@ const P3 = "Owner-chose-after-3!";
 
 let world: InviteWorld;
 let confirmed: E2eUser;
+let emailChanger: E2eUser;
 
 test.beforeAll(async () => {
   world = await setUpInviteWorld();
   confirmed = await createDisposableUser("first-proof");
+  emailChanger = await createDisposableUser("email-changer");
 });
 
 test.afterAll(async () => {
-  await tearDownInviteWorld(world, [...Object.values(ADDRESSES), confirmed.email]);
+  await tearDownInviteWorld(world, [...Object.values(ADDRESSES), confirmed.email, emailChanger.email]);
 });
 
 /** The squatter: signs `address` up with P1 straight to GoTrue, anon key, no app involved. */
@@ -102,7 +106,7 @@ async function expectForcedPasswordChoice(
   expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`)).toEqual([]);
 
   // The gate: nothing but this page (and signing out) is reachable.
-  for (const path of ["/orgs", "/account", "/invites", "/"]) {
+  for (const path of ["/orgs", "/account", "/invites", "/", `/${world.orgs[0].slug}/contacts`]) {
     await owner.goto(path);
     await expect(owner, `${path} must bounce to /set-password`).toHaveURL(/\/set-password/);
   }
@@ -247,4 +251,52 @@ test("(d) an account born confirmed signs in by emailed link without being sent 
   await expect(page).not.toHaveURL(/\/(set-password|login)/);
 
   await expectSignInWorks(await newPage(browser), confirmed.email, PASSWORD);
+});
+
+// ---------------------------------------------------------------------------
+// (f) THE EMAIL-CHANGE ROUTE (fix round 1, measured before the fix). A
+// squatter with a confirmed account of their own asks GoTrue, with the anon
+// key, to change its address to the victim's; confirms the leg mailed to
+// their own old inbox; and waits for the victim to click the unsolicited
+// "Confirm your new email address". GoTrue then gives the squatter's account
+// the victim's address, confirmed, with the squatter's password -- in either
+// order of the two clicks. The app has no change-email feature, so the
+// database refuses every self-service address change (20261105000000).
+// ---------------------------------------------------------------------------
+test("(f) a confirmed account cannot take a victim's address through GoTrue's email change", async ({
+  browser,
+}) => {
+  const victimAddress = ADDRESSES.emailChangeVictim;
+  const { apiUrl, anonKey } = localStack();
+  const attacker = createClient(apiUrl, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  expect((await attacker.auth.signInWithPassword({ email: emailChanger.email, password: PASSWORD })).error).toBeNull();
+  const change = await attacker.auth.updateUser({ email: victimAddress });
+
+  // Both legs are followed if they were mailed at all: the old-address leg by
+  // the attacker, the new-address leg by the victim.
+  const legs = async (address: string) => {
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const found = (await mailTo(address)).filter((m) => /email/i.test(m.subject));
+      if (found.length > 0 || Date.now() > deadline) return found;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  };
+  const attackerPage = await newPage(browser);
+  for (const mail of await legs(emailChanger.email)) await attackerPage.goto(await linkIn(mail, CONFIRM_LINK));
+  const victimPage = await newPage(browser);
+  for (const mail of await legs(victimAddress)) await victimPage.goto(await linkIn(mail, CONFIRM_LINK));
+
+  // THE INVARIANT: the attacker's password never opens the victim's address.
+  await expectSignInRefused(await newPage(browser), victimAddress, PASSWORD);
+  // ...because the change was refused outright and no account holds the
+  // victim's address. (GoTrue mails both legs BEFORE it records the change,
+  // so the victim may still get a "Confirm your new email address" -- its
+  // token was never stored, and following it fails: measured otp_expired.)
+  expect(change.error).not.toBeNull();
+  expect(await authUserByEmail(victimAddress)).toBeNull();
+  // The attacker's own account is untouched.
+  await expectSignInWorks(await newPage(browser), emailChanger.email, PASSWORD);
 });
