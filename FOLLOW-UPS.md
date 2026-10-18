@@ -3727,6 +3727,16 @@ recorded for the history and the residual each leaves; the rest are open.
 
 ### The readable base table, and the column-level-grants alternative not taken
 
+**CLOSED in 8a9a76a (Phase 10 Task 19; Task 2 finding F1, Critical;
+`docs/launch-gates.md` G32).** Reason (2) below was false: PostgREST is a
+present path that never meets the application, and any member could GET every
+published profile off the base table, `connections`-level values included,
+without a connection request. `20261103000000` drops
+`network_profiles_select_published_directory`; the base table answers only its
+own organisation's members, and the two views, now definer views, carry the
+row filter. Reason (1) still holds, which is why the fix is not column grants.
+The rest of this entry is the Phase 6 record, unchanged.
+
 `public.network_profiles` is reachable, whole-row, by any active member of any
 organisation once a row is `published` and live —
 `network_profiles_select_published_directory` (§ SECURITY.md § 2, as-built) is
