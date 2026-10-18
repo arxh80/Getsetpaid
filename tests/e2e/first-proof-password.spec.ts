@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import {
@@ -90,6 +91,15 @@ async function expectForcedPasswordChoice(
 ): Promise<void> {
   await expect(owner).toHaveURL(/\/set-password/);
   await expect.poll(async () => (await authUserByEmail(address))?.emailConfirmed).toBe(true);
+
+  // WCAG 2.2 AA on the new page, with the same tags and non-vacuity control
+  // as accessibility.spec.ts.
+  await expect(owner.getByRole("heading", { name: "Choose your password" })).toBeVisible();
+  const axe = await new AxeBuilder({ page: owner })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa", "best-practice"])
+    .analyze();
+  expect(axe.passes.length, "axe evaluated no rules on /set-password").toBeGreaterThan(0);
+  expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`)).toEqual([]);
 
   // The gate: nothing but this page (and signing out) is reachable.
   for (const path of ["/orgs", "/account", "/invites", "/"]) {
