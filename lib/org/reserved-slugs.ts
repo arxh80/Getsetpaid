@@ -26,6 +26,7 @@ export const RESERVED_WORKSPACE_SLUGS: readonly string[] = [
   "login",
   "magic-link",
   "onboarding",
+  "set-password",
   "signup",
   "super",
 ];

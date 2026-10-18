@@ -75,6 +75,25 @@ export const PUBLIC_PATHS = [
 /** Signed-in users have no business on these -- bounce them to the hub. */
 const SIGNED_OUT_ONLY_PATHS = ["/login", "/signup", "/magic-link"] as const;
 
+/**
+ * Phase 10 Task 20 (Q245): an account whose address was just proved by a
+ * browser that did not create it has had its password replaced
+ * (lib/auth/first-proof.ts) and carries this app_metadata mark until it
+ * chooses a new one. app_metadata is server-writable only and rides in the
+ * JWT, so the gate costs no database round trip.
+ */
+export const MUST_CHOOSE_PASSWORD_KEY = "must_choose_password";
+
+/** All a marked account may reach: the page itself (whose form also signs out),
+ *  the auth callback, and the public legal pages its footer links to. */
+export const CHOOSING_PASSWORD_PATHS = ["/set-password", "/auth", "/legal"] as const;
+
+export function mustChoosePassword(claims: { app_metadata?: unknown } | null | undefined): boolean {
+  const meta = claims?.app_metadata;
+  return typeof meta === "object" && meta !== null &&
+    (meta as Record<string, unknown>)[MUST_CHOOSE_PASSWORD_KEY] === true;
+}
+
 export function isUnder(pathname: string, roots: readonly string[]): boolean {
   return roots.some(
     (root) => pathname === root || pathname.startsWith(`${root}/`),
@@ -188,6 +207,18 @@ export async function updateSession(request: NextRequest) {
     if (pathname !== "/") {
       url.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
     }
+    return copyCookies(response, NextResponse.redirect(url));
+  }
+
+  // THE MUST-CHOOSE-A-PASSWORD GATE (Phase 10 Task 20). UX, like everything
+  // here: the control is the password replacement itself, which already shut
+  // out whoever held the old one. This only keeps the owner from wandering
+  // off with a random password they do not know and losing the account when
+  // the session ends. Before /super, so the operator console is gated too.
+  if (isSignedIn && mustChoosePassword(data?.claims) && !isUnder(pathname, CHOOSING_PASSWORD_PATHS)) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/set-password";
+    url.search = "";
     return copyCookies(response, NextResponse.redirect(url));
   }
 

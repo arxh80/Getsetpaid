@@ -1299,6 +1299,10 @@ function accountedRelations(): string[] {
  * and what stops anybody else?" about.
  */
 const SERVER_ONLY_RPCS: Record<string, string> = {
+  "address_is_proved(p_user_id uuid)":
+    "Phase 10 Task 20 -- the auth callback asks whether an account's address was already proved (private.address_first_proofs); one boolean about one account; refuses any session",
+  "record_address_first_proof(p_user_id uuid, p_password_kept boolean)":
+    "Phase 10 Task 20 -- the ONLY write path of private.address_first_proofs, called by the auth callback once a first proof is settled; refuses any session",
   "claim_erasure_job()": "Task 5 -- the erasure runner takes the next queued job; bearer-secret route only",
   "claim_export_job()": "Task 4 -- the export runner takes the next queued job; bearer-secret route only",
   "consent_is_granted(p_user_id uuid, p_purpose text)":

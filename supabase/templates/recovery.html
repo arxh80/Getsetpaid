@@ -1,0 +1,45 @@
+<!--
+  Password reset (recovery) email.
+
+  Sends the link to our own /auth/callback with {{ .TokenHash }}, for the
+  reason magic-link.html gives -- and one more (Phase 10 Task 20, Q245): GoTrue's
+  default link, {{ .ConfirmationURL }}, points at /auth/v1/verify, which
+  confirms the account and then redirects with the session in a URL FRAGMENT
+  (or a PKCE code only the requesting browser can use). The server never sees
+  that proof, so it could not replace a password set before it -- and whoever
+  signed the address up first, possibly not its owner, chose that password.
+  Through the callback, lib/auth/first-proof.ts settles every first proof.
+
+  The hosted project does NOT read this file: paste it into the dashboard's
+  email templates (SECURITY.md § 15).
+
+  Inline styles and longhand hex: email clients have no access to our design
+  tokens. See the note in invite.html.
+-->
+<div style="font-family: Georgia, 'Times New Roman', serif; color: #14141C; background: #FFF4F4; padding: 32px;">
+  <div style="max-width: 480px; margin: 0 auto; background: #FFFFFF; border: 1px solid #D6CBCB; padding: 32px;">
+    <p style="margin: 0 0 24px; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: #55555F;">
+      GetSetPaid
+    </p>
+
+    <h1 style="margin: 0 0 16px; font-size: 25px; line-height: 32px; font-weight: 800;">
+      Reset your password
+    </h1>
+
+    <p style="margin: 0 0 24px; font-size: 15px; line-height: 24px;">
+      Use the link below to sign in and choose a new password. It works once, and only for a short time.
+    </p>
+
+    <p style="margin: 0 0 24px;">
+      <a
+        href="{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=recovery"
+        style="display: inline-block; background: #0062FF; color: #FFFFFF; text-decoration: none; padding: 12px 24px; font-size: 15px; font-weight: 600;"
+      >Reset my password</a>
+    </p>
+
+    <p style="margin: 0; font-size: 13px; line-height: 20px; color: #55555F;">
+      If you didn't ask to reset your password, ignore this email — the link
+      does nothing until it's used.
+    </p>
+  </div>
+</div>

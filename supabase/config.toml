@@ -345,6 +345,18 @@ content_path = "./supabase/templates/invite.html"
 subject = "Your GetSetPaid sign-in link"
 content_path = "./supabase/templates/magic-link.html"
 
+# Phase 10 Task 20 (Q245): sign-up confirmations and recovery links go
+# through /auth/callback with a token hash, so the first proof of an address
+# always reaches lib/auth/first-proof.ts. The hosted dashboard needs the same
+# two templates pasted in (SECURITY.md § 15).
+[auth.email.template.confirmation]
+subject = "Confirm your GetSetPaid email address"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "Reset your GetSetPaid password"
+content_path = "./supabase/templates/recovery.html"
+
 # Password-change notification. ON DELIBERATELY, and intended as a security
 # control rather than a nicety.
 #

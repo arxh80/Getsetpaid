@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { BROWSER_STORAGE } from "@/lib/legal/storage-inventory";
 import { CURRENT_ORG_COOKIE } from "@/lib/org/current-org";
 import { activityStorageKey } from "@/lib/auth/idle-timeout";
+import { SIGNUP_BINDING_COOKIE } from "@/lib/auth/first-proof";
 import { contentSecurityPolicy } from "@/lib/security/headers";
 import {
   NON_SHIPPED_ROOT_DIRS,
@@ -111,6 +112,14 @@ const DECLARED: readonly DeclaredSite[] = [
     covers: CURRENT_ORG_COOKIE,
     keys: ["CURRENT_ORG_COOKIE"],
     why: "writeCurrentOrgIdCookie() -- the remembered workspace",
+  },
+  {
+    file: "lib/auth/first-proof.ts",
+    kind: "cookie-write",
+    count: 2,
+    covers: SIGNUP_BINDING_COOKIE,
+    keys: ["SIGNUP_BINDING_COOKIE", "SIGNUP_BINDING_COOKIE"],
+    why: "bindSignUp() sets the sign-up binding; settleFirstProof() clears it at the first proof (Q245)",
   },
   {
     file: "lib/supabase/server.ts",

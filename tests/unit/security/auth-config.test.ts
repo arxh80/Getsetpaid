@@ -78,4 +78,37 @@ describe("supabase/config.toml auth settings", () => {
   it("[auth.email] enable_confirmations is true (G11)", () => {
     expect(valuesOf(toml, "auth.email", "enable_confirmations")).toEqual(["true"]);
   });
+
+  // Phase 10 Task 20 (Q245). lib/auth/first-proof.ts's isNewSignUp() tells a
+  // NEW account from a re-sign-up by the gap between created_at and
+  // confirmation_sent_at, and that gap is at least max_frequency for a
+  // re-sign-up only because GoTrue refuses to re-send inside it. Below one
+  // second the discriminator would bind a re-sign-up to its browser and keep
+  // the FIRST registrant's password. The hosted value must hold too
+  // (SECURITY.md § 15).
+  it("[auth.email] max_frequency is at least one second (Q245's discriminator)", () => {
+    const values = valuesOf(toml, "auth.email", "max_frequency");
+    expect(values).toHaveLength(1);
+    const match = /^"(\d+)(ms|s|m|h)"$/.exec(values[0]);
+    expect(match, `unparsed max_frequency ${values[0]}`).not.toBeNull();
+    const unitMs = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[match![2] as "ms" | "s" | "m" | "h"];
+    expect(Number(match![1]) * unitMs).toBeGreaterThanOrEqual(1_000);
+  });
+
+  // The two templates that send every sign-up confirmation and recovery link
+  // through /auth/callback with a token hash (Q245): with GoTrue's defaults
+  // the proof happened at /auth/v1/verify, where the app never saw it.
+  it.each(["confirmation", "recovery", "invite", "magic_link"])(
+    "[auth.email.template.%s] is a template of ours that links to /auth/callback with a token hash",
+    (name) => {
+      const [path] = valuesOf(toml, `auth.email.template.${name}`, "content_path");
+      expect(path, `no content_path for ${name}`).toBeDefined();
+      const html = readFileSync(
+        fileURLToPath(new URL(`../../../${path.replace(/^"\.\/|"$/g, "")}`, import.meta.url)),
+        "utf8",
+      );
+      expect(html).toMatch(/href="\{\{ \.SiteURL \}\}\/auth\/callback\?token_hash=\{\{ \.TokenHash \}\}&type=/);
+      expect(html).not.toContain("{{ .ConfirmationURL }}\"");
+    },
+  );
 });

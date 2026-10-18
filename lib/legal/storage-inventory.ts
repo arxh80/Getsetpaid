@@ -5,7 +5,7 @@
 // `legal_documents_required_blocks`), so the page cannot describe a different
 // set from the one declared here.
 //
-// DECISIONS-QUEUE Q129: all four are strictly necessary, which PECR exempts
+// DECISIONS-QUEUE Q129: every item is strictly necessary, which PECR exempts
 // from consent, and no analytics vendor is chosen -- so no cookie banner ships.
 // Three checks hold this list to the truth:
 //   * tests/unit/legal/storage-inventory.test.ts pins each entry to the source
@@ -64,6 +64,17 @@ export const BROWSER_STORAGE: readonly StorageItem[] = [
     duration: "180 days, renewed when you switch workspace.",
     necessity: "Part of the multi-workspace service you asked for; carries no tracking.",
     matches: /^gsp_current_org$/,
+  },
+  {
+    // Phase 10 Task 20 (Q245): lib/auth/first-proof.ts.
+    name: "gsp_signup_binding",
+    kind: "cookie",
+    setBy: "GetSetPaid",
+    purpose:
+      "Set when you create an account, so that confirming your email in the same browser keeps the password you just chose. Not readable by page scripts.",
+    duration: "24 hours, or until you confirm your email address, whichever comes first.",
+    necessity: "A security control on account creation; carries no tracking.",
+    matches: /^gsp_signup_binding$/,
   },
   {
     name: "gsp:last-activity-at:<your account id>",

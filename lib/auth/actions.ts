@@ -22,6 +22,8 @@ import { createClient } from "@/lib/supabase/server";
 import { siteUrl } from "@/lib/supabase/env";
 import { safeNextPath } from "./redirects";
 import { mayChangePassword, readAuthFreshness } from "./step-up";
+import { bindSignUp, clearMustChoosePassword, isNewSignUp } from "./first-proof";
+import { MUST_CHOOSE_PASSWORD_KEY } from "@/lib/supabase/middleware";
 import {
   field,
   isValidEmail,
@@ -63,7 +65,7 @@ export async function signUpAction(
   if (Object.keys(fieldErrors).length > 0) return { fieldErrors };
 
   const supabase = await createClient();
-  const { error } = await supabase.auth.signUp({
+  const { data: signedUp, error } = await supabase.auth.signUp({
     email: email!,
     password: password!,
     options: {
@@ -84,6 +86,13 @@ export async function signUpAction(
     }
     return { error: authErrorMessage(error.message) };
   }
+
+  // Phase 10 Task 20 (Q245): tie a NEW account to this browser, so confirming
+  // here keeps the password just typed. A sign-up that returned an EXISTING,
+  // unconfirmed account gets no binding: GoTrue kept the FIRST registrant's
+  // password on it, so whoever proves the inbox must choose a new one
+  // (lib/auth/first-proof.ts).
+  if (signedUp.user && isNewSignUp(signedUp.user)) await bindSignUp(signedUp.user.id);
 
   // With email confirmations disabled (the local default), signUp returns a
   // live session and the user is already signed in. With them enabled there is
@@ -346,6 +355,46 @@ async function passwordChangeGate(
         "For your security, sign in again before setting a password — with your password, or a fresh emailed link.",
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Choose a password after the first proof (Phase 10 Task 20, Q245)
+// ---------------------------------------------------------------------------
+//
+// Reachable only by an account carrying the must-choose mark, which
+// lib/auth/first-proof.ts sets when it replaced the password at the first
+// proof of the address. No step-up: the session is seconds old and was minted
+// by that proof, and the password it replaces is one nobody knows. Without the
+// mark this action changes nothing -- it must not become a password-change
+// path that skips the step-up completeAccountSetupAction enforces.
+export async function choosePasswordAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const password = field(formData, "password");
+  const next = safeNextPath(field(formData, "next"));
+
+  if (!password) return { fieldErrors: { password: "Choose a password." } };
+  const problem = passwordProblem(password);
+  if (problem) return { fieldErrors: { password: problem } };
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Your session has expired. Sign in again." };
+  if (user.app_metadata?.[MUST_CHOOSE_PASSWORD_KEY] !== true) redirect(next);
+
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) return { fieldErrors: { password: authErrorMessage(error.message) } };
+
+  if (!(await clearMustChoosePassword(user.id))) {
+    // The mark stays, so a retry works; GoTrue refuses the same password twice.
+    return { error: "We couldn't finish saving that. Try again with a different password." };
+  }
+  // The proxy reads the mark from the JWT; this session's still carries it.
+  await supabase.auth.refreshSession();
+  redirect(next);
 }
 
 // ---------------------------------------------------------------------------
