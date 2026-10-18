@@ -1199,9 +1199,9 @@ grant execute on function harness.try_hint(text,text,text) to authenticated, ano
 
 select count(*)::text as orgs_before_w from public.organisations \gset
 
-select harness.val('W1  the reserved list is the ten static top-level routes',
+select harness.val('W1  the reserved list is the eleven static top-level routes (set-password: 20261104000000)',
   $$select string_agg(slug, ',' order by slug) from private.reserved_workspace_slugs()$$,
-  'account,api,auth,invites,legal,login,magic-link,onboarding,signup,super');
+  'account,api,auth,invites,legal,login,magic-link,onboarding,set-password,signup,super');
 select harness.val('W2  the guard is a BEFORE INSERT OR UPDATE OF slug trigger, enabled',
   $$select tgenabled::text || ':' || (pg_get_triggerdef(oid) ~ 'BEFORE INSERT OR UPDATE OF slug')::text
       from pg_trigger where tgrelid = 'public.organisations'::regclass
