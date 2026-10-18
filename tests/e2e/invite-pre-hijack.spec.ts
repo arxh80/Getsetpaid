@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import {
   PASSWORD,
@@ -10,6 +10,17 @@ import {
   type InviteWorld,
 } from "./support/fixtures";
 import { totpCode } from "../support/totp";
+import {
+  CONFIRM_LINK,
+  expectSignInRefused,
+  linkIn,
+  mailTo,
+  newPage,
+  signUp,
+  submitSignIn,
+  waitForMail,
+  type Mail,
+} from "./support/auth-mail";
 
 // ===========================================================================
 // G11: ACCOUNT PRE-HIJACKING THROUGH INVITES (Phase 10 Task 4)
@@ -43,12 +54,11 @@ import { totpCode } from "../support/totp";
 // ===========================================================================
 
 // Neutral on purpose: it tells nobody to confirm anything (lib/org/actions.ts
-// says why -- confirming a squatter's sign-up is what the RESIDUAL test below
-// shows makes the squatter's password work).
+// says why -- before Phase 10 Task 20, confirming a squatter's sign-up is what
+// made the squatter's password work).
 const REFUSAL =
   "We can't invite that address yet: it has an unfinished GetSetPaid sign-up. Check the address with the person you're inviting, or invite them at a different address.";
 const INVITE_SUBJECT = "You've been invited to a GetSetPaid workspace";
-const BAD_SIGN_IN = "That email and password don't match. Check both and try again.";
 
 const run = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 const ADDRESSES = {
@@ -72,43 +82,8 @@ test.afterAll(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// The mail catcher
+// The mail catcher (shared helpers in ./support/auth-mail)
 // ---------------------------------------------------------------------------
-interface Mail {
-  id: string;
-  subject: string;
-}
-
-function mailUrl(): string {
-  const url = localStack().mailUrl;
-  if (!url) throw new Error("`supabase status` reported no local mail catcher (MAILPIT_URL).");
-  return url;
-}
-
-/** Every message addressed to `address`, newest first. */
-async function mailTo(address: string): Promise<Mail[]> {
-  const res = await fetch(
-    `${mailUrl()}/api/v1/search?query=${encodeURIComponent(`to:"${address}"`)}`,
-  );
-  const body = (await res.json()) as { messages?: { ID: string; Subject: string }[] };
-  return (body.messages ?? []).map((m) => ({ id: m.ID, subject: m.Subject }));
-}
-
-/** Waits (bounded) until `address` has received `count` messages matching `subject`. */
-async function waitForMail(address: string, subject: RegExp, count = 1): Promise<Mail[]> {
-  let matching: Mail[] = [];
-  await expect
-    .poll(
-      async () => {
-        matching = (await mailTo(address)).filter((m) => subject.test(m.subject));
-        return matching.length;
-      },
-      { timeout: 10_000 },
-    )
-    .toBeGreaterThanOrEqual(count);
-  return matching;
-}
-
 /**
  * The invitation emails `address` holds once delivery has settled: polls for
  * up to five seconds for one to appear and returns what is there, possibly
@@ -126,48 +101,9 @@ async function invitationsSettled(address: string): Promise<Mail[]> {
   }
 }
 
-/** The first link in a message whose href contains `marker`, HTML entities decoded. */
-async function linkIn(mail: Mail, marker: string): Promise<string> {
-  const res = await fetch(`${mailUrl()}/api/v1/message/${mail.id}`);
-  const { HTML } = (await res.json()) as { HTML: string };
-  const href = [...HTML.matchAll(/href="([^"]+)"/g)]
-    .map((m) => m[1].replace(/&amp;/g, "&"))
-    .find((h) => h.includes(marker));
-  if (!href) throw new Error(`No link containing "${marker}" in "${mail.subject}".`);
-  return href;
-}
-
 // ---------------------------------------------------------------------------
 // The people
 // ---------------------------------------------------------------------------
-async function newPage(browser: Browser): Promise<Page> {
-  return (await browser.newContext()).newPage();
-}
-
-/** Sign up through the real form; with confirmations on it lands on check-email. */
-async function signUp(page: Page, address: string, password: string): Promise<void> {
-  await page.goto("/signup");
-  await page.locator('input[name="fullName"]').fill("Someone");
-  await page.locator('input[name="email"]').fill(address);
-  await page.locator('input[name="password"]').fill(password);
-  await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page).toHaveURL(/\/signup\/check-email/);
-}
-
-async function submitSignIn(page: Page, address: string, password: string): Promise<void> {
-  await page.goto("/login");
-  await page.locator('input[name="email"]').fill(address);
-  await page.locator('input[name="password"]').fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
-}
-
-/** The sign-in is refused, with the one enumeration-safe message. */
-async function expectSignInRefused(page: Page, address: string, password: string): Promise<void> {
-  await submitSignIn(page, address, password);
-  await expect(page.getByText(BAD_SIGN_IN)).toBeVisible();
-  await expect(page).toHaveURL(/\/login/);
-}
-
 /** The Owner signs in with a password AND the real per-sign-in TOTP challenge. */
 async function signInOwner(page: Page): Promise<void> {
   await submitSignIn(page, world.owner.email, PASSWORD);
@@ -270,7 +206,7 @@ test("an unconfirmed sign-up is refused an invite; once its owner confirms, a fr
   // Same browser that signed up, so the PKCE exchange at /auth/callback
   // completes and the link itself signs them in (with confirmations now on,
   // this is the sign-up journey every new user takes).
-  await holder.goto(await linkIn(confirmation, "/auth/v1/verify"));
+  await holder.goto(await linkIn(confirmation, CONFIRM_LINK));
   await expect.poll(async () => (await authUserByEmail(address))?.emailConfirmed).toBe(true);
   await expect(holder).not.toHaveURL(/\/(login|signup)/);
 
@@ -332,24 +268,23 @@ test("a pending invitee can be invited by a second workspace and accept both", a
 });
 
 // ===========================================================================
-// WHAT GoTrue DOES WITH AN UNCONFIRMED RE-SIGN-UP (a pinned residual)
+// AN UNCONFIRMED RE-SIGN-UP: THE FIRST PASSWORD DIES AT THE PROOF (Q245)
 // ===========================================================================
-// Measured on GoTrue v2.196.0 (Phase 10 Task 4, Step 6) and pinned so an
-// upgrade that changes it is noticed. Signing up AGAIN as an address that
-// has not confirmed, with a different password, sends a SECOND confirmation
-// email to the same inbox, voids the first link, and gives nobody without
-// the inbox anything: neither password signs in. That is the safe half, and
-// it is why a squatter cannot simply sign up over the real owner.
+// Measured on GoTrue v2.196.0 (Phase 10 Task 4, Step 6). Signing up AGAIN as
+// an address that has not confirmed, with a different password, sends a
+// SECOND confirmation email to the same inbox, voids the first link, and
+// gives nobody without the inbox anything: neither password signs in. GoTrue
+// keeps the FIRST registrant's password on the account, and confirming does
+// not change that -- so until Phase 10 Task 20 this test was G11's pinned
+// RESIDUAL: the squatter's P1 opened the owner's newly confirmed account.
 //
-// The residual half is the last two assertions: the account keeps the FIRST
-// registrant's password, and confirming does not change that. So if the
-// real owner signs up over a squatter's earlier sign-up and confirms, the
-// SQUATTER's password signs in to the now-confirmed account, and the owner's
-// own does not. This is G11's open residual (Q245): SECURITY.md § 10 records
-// it, and Phase 10 Task 20 closes it and turns this test into a refusal. It
-// is also G11's re-measure in docs/launch-gates.md -- while it passes as
-// written, G11 is PARTIAL, not closed.
-test("RESIDUAL: an unconfirmed re-sign-up mails the same inbox again, and confirming keeps the FIRST password", async ({
+// Task 20 makes an address's first proof the moment a password is chosen.
+// The second sign-up returned an EXISTING account, so the browser confirming
+// holds no sign-up binding: the callback replaces the password, signs out
+// every other session and sends the confirmer to /set-password. So now
+// neither earlier password signs in. first-proof-password.spec.ts covers the
+// other routes to the same proof.
+test("an unconfirmed re-sign-up mails the same inbox again, and confirming kills BOTH earlier passwords", async ({
   browser,
 }) => {
   const address = ADDRESSES.resignup;
@@ -369,18 +304,17 @@ test("RESIDUAL: an unconfirmed re-sign-up mails the same inbox again, and confir
   await expectSignInRefused(second, address, P2);
 
   // The holder of the inbox confirms with the newest link; the older is dead.
-  await second.goto(await linkIn(newest, "/auth/v1/verify"));
+  await second.goto(await linkIn(newest, CONFIRM_LINK));
   await expect.poll(async () => (await authUserByEmail(address))?.emailConfirmed).toBe(true);
+  await expect(second).toHaveURL(/\/set-password/);
   const stale = await newPage(browser);
-  await stale.goto(await linkIn(older, "/auth/v1/verify"));
+  await stale.goto(await linkIn(older, CONFIRM_LINK));
   await expect(stale).toHaveURL(/\/login\?error=link_failed/);
 
-  // THE RESIDUAL: the second registrant's password does not sign in...
+  // THE FORMER RESIDUAL, NOW A REFUSAL: the first registrant's password no
+  // longer signs in, and nor does the second's (GoTrue never stored it).
+  await expectSignInRefused(await newPage(browser), address, P1);
   await expectSignInRefused(await newPage(browser), address, P2);
-  // ...and the first registrant's does.
-  const firstAgain = await newPage(browser);
-  await submitSignIn(firstAgain, address, P1);
-  await expect(firstAgain).not.toHaveURL(/\/login/);
 });
 
 // ===========================================================================
@@ -427,7 +361,7 @@ test("invitation first: a squatter signing up over a pending invitee's account p
   await expect(invitee).toHaveURL(/\/login\?error=link_failed/);
   // ...so they prove the inbox through the newer email instead.
   const [confirmation] = await waitForMail(address, /confirm/i);
-  await invitee.goto(await linkIn(confirmation, "/auth/v1/verify"));
+  await invitee.goto(await linkIn(confirmation, CONFIRM_LINK));
   await expect.poll(async () => (await authUserByEmail(address))?.emailConfirmed).toBe(true);
 
   // THE INVARIANT: the squatter's password never signs in.
