@@ -48,3 +48,4 @@ Task 19: fix round 1 DONE -- d72d80a, 029808c, 0319234, 76f5dd9 (runner green fr
 Task 19: re-review 1 all findings ADDRESSED, no new breakage
 Task 19: minor (deferred): directory read evaluates presence pair per published row (seq scan + sort, ~0.38s/query @2000 profiles); predates F1 -- final review / perf follow-up
 Task 19: complete 2026-10-18 -- 8a9a76a, 552279e, d72d80a, 029808c, 0319234, 76f5dd9
+Task 20: implementer dispatched 2026-10-18 (opus, base 2077105); next free Q247
