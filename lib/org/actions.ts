@@ -266,10 +266,12 @@ interface ResolvedIdentity {
  *     password fails once a new one is set -- but this app has no "Forgot
  *     password" page to send anyone to, and the password form it shows after
  *     a recovery link is optional.
- * So there is no safe path to point the owner at until Phase 10 Task 20
- * (Q245) makes an address's first proof also choose a new password. Until
- * then the message states the fact and offers the one thing that is safe:
- * a different address.
+ * Phase 10 Task 20 (Q245) closed that: an address's first proof now
+ * replaces any password set before it unless the proving browser created
+ * the account (lib/auth/first-proof.ts). The wording stays neutral until the
+ * hosted project carries the email templates that proof depends on
+ * (SECURITY.md § 15, DECISIONS-QUEUE Q247); then it may say "ask them to
+ * finish signing up".
  */
 const UNCONFIRMED_SIGN_UP_REFUSAL =
   "We can't invite that address yet: it has an unfinished GetSetPaid sign-up. Check the address with the person you're inviting, or invite them at a different address.";
@@ -330,14 +332,12 @@ const INVITE_FAILED = "We couldn't send that invitation. Try again.";
  * RESIDUALS, stated rather than left for a reviewer (SECURITY.md § 10):
  *   - A squatter signing up in the milliseconds between the lookup and the
  *     inviteUserByEmail call would still be bound. They would have to know
- *     when the invitation is sent.
- *   - Confirming the squatter's sign-up (by following its confirmation
- *     email, by signing up again and confirming, or by asking for an emailed
- *     sign-in link) makes the account usable with the squatter's password:
- *     GoTrue keeps the FIRST password on an unconfirmed re-sign-up. After
- *     that the account is confirmed and binds like any other. Open until
- *     Phase 10 Task 20 (Q245); UNCONFIRMED_SIGN_UP_REFUSAL is worded so as
- *     not to steer anyone into it.
+ *     when the invitation is sent -- and since Phase 10 Task 20 the
+ *     invitee's first proof replaces whatever password the account carries.
+ *   - CLOSED by Phase 10 Task 20 (Q245): confirming a squatter's sign-up
+ *     used to leave the squatter's password working (GoTrue keeps the FIRST
+ *     password on an unconfirmed re-sign-up). The first proof now replaces
+ *     it unless the proving browser created the account.
  *
  * THE OTHER ORDERING IS SAFE (measured, and pinned by the e2e spec): when the
  * invitation comes FIRST, the account it creates has no password, and a
