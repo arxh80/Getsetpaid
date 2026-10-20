@@ -578,6 +578,100 @@ export async function acceptInviteAction(
   redirect("/");
 }
 
+// ---------------------------------------------------------------------------
+// Remove a member / cancel an invitation, and change a member's role
+// (Phase 10 Task 21, audit finding 4)
+// ---------------------------------------------------------------------------
+// Both write through the CALLER'S RLS-bound client, never service-role. The
+// control is the database: the manage_members UPDATE/DELETE policies (with
+// 20261106000000's Owner-rows-are-an-Owner's term), the membership_keeps_an_
+// owner trigger and the membership.* audit triggers. This code only maps a
+// refusal to a sentence. An Owner's row is FILTERED OUT of a non-Owner's USING
+// clause, so a refusal arrives as zero rows as often as 42501 -- hence
+// `count: "exact"` and treating 0 as refused (the lib/crm/write.ts rule).
+//
+// Removal is the hard DELETE the policy allows (audited membership.deleted);
+// the same call cancels a pending invitation. Sessions are NOT revoked: the
+// person may belong to other workspaces, and every read in this one re-checks
+// membership in the database, so removal bites on their next request.
+// No step-up (Q249 default): both roles holding manage_members are
+// MFA-required, so these already run at aal2.
+
+const MEMBER_REFUSED = "You can’t change that member.";
+
+function memberWriteState(
+  result: { error: { code?: string; hint?: string | null } | null; count: number | null },
+  success: string,
+): FormState {
+  if (result.error?.code === "22023" && result.error.hint === "last_owner_of_workspace") {
+    return { error: "A workspace needs at least one active Owner." };
+  }
+  if (result.error?.code === "42501" || (!result.error && result.count === 0)) {
+    return { error: MEMBER_REFUSED };
+  }
+  if (result.error || result.count === null) {
+    console.error("[org] member write failed:", result.error);
+    return { error: "We couldn’t save that change. Try again." };
+  }
+  return { message: success };
+}
+
+async function memberWriteContext(formData: FormData) {
+  const refusal = await assertMfaSatisfied();
+  if (refusal) return { state: refusal } as const;
+  const orgSlug = field(formData, "orgSlug");
+  const membershipId = field(formData, "membershipId");
+  if (!orgSlug || !membershipId) return { state: { error: "Missing member." } } as const;
+  // Resolved THROUGH RLS: a foreign or unknown slug is null, and the org id
+  // comes from the database, never from the form.
+  const org = await getCurrentOrg(orgSlug);
+  if (!org) return { state: { error: "That workspace isn’t available." } } as const;
+  return { org, membershipId, supabase: await createClient() } as const;
+}
+
+export async function removeMemberAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const ctx = await memberWriteContext(formData);
+  if ("state" in ctx) return ctx.state;
+
+  const result = await ctx.supabase
+    .from("organisation_memberships")
+    .delete({ count: "exact" })
+    .eq("id", ctx.membershipId)
+    .eq("organisation_id", ctx.org.id);
+
+  const state = memberWriteState(result, "Removed.");
+  if (state.message) revalidatePath(`/${ctx.org.slug}/members`);
+  return state;
+}
+
+export async function changeMemberRoleAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  // Allowlisted before the database: the invitable roles plus 'owner'. Whether
+  // THIS caller may write 'owner' is the policy's call (Q248), not this file's.
+  const role = field(formData, "role");
+  if (!isInvitableRole(role) && role !== "owner") {
+    return { fieldErrors: { role: "Choose a role." } };
+  }
+
+  const ctx = await memberWriteContext(formData);
+  if ("state" in ctx) return ctx.state;
+
+  const result = await ctx.supabase
+    .from("organisation_memberships")
+    .update({ role }, { count: "exact" })
+    .eq("id", ctx.membershipId)
+    .eq("organisation_id", ctx.org.id);
+
+  const state = memberWriteState(result, "Role changed.");
+  if (state.message) revalidatePath(`/${ctx.org.slug}/members`);
+  return state;
+}
+
 /**
  * Turns a workspace name into a URL-safe slug candidate.
  *
