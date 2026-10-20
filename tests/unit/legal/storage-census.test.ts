@@ -217,6 +217,7 @@ const DECLARED: readonly DeclaredSite[] = [
  * checks the declaration.
  */
 const RUNTIME_DEPENDENCIES: Record<string, string> = {
+  "@react-pdf/renderer": "nothing in a browser: imported only by server code (the invoice PDF route and the send action), which returns bytes",
   "@supabase/ssr": "the sb-* auth cookies (declared) -- nothing else",
   "@supabase/supabase-js": "nothing of its own: the browser client is created through @supabase/ssr, whose cookie storage replaces the localStorage default",
   "framer-motion": "nothing",

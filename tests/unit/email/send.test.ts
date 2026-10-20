@@ -88,6 +88,18 @@ describe("sendEmail", () => {
     expect(body.bcc).toBeUndefined();
   });
 
+  it("passes attachments to Brevo as name + base64 content, and omits the field when there are none", async () => {
+    // A fresh Response per call: a Response body can be read only once.
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ messageId: "m" }), { status: 201 }));
+    await sendEmail({ ...input, attachments: [{ name: "INV-0001.pdf", contentBase64: "JVBERi0=" }] });
+    const withAttachment = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as Record<string, unknown>;
+    expect(withAttachment.attachment).toEqual([{ name: "INV-0001.pdf", content: "JVBERi0=" }]);
+
+    await sendEmail(input);
+    const without = JSON.parse(String(fetchMock.mock.calls[1][1].body)) as Record<string, unknown>;
+    expect(without).not.toHaveProperty("attachment");
+  });
+
   it("turns a Brevo error status into ok:false carrying the status and message", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ code: "unauthorized", message: "Key not found" }), {
