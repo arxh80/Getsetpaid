@@ -17,13 +17,14 @@ import "server-only";
 // docs ("always create a new client for each server render").
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-import { supabasePublicKey, supabaseUrl } from "./env";
+import { authCookieOptions, supabasePublicKey, supabaseUrl } from "./env";
 
 export async function createClient() {
   // Async since Next 15 -- cookies() returns a Promise.
   const cookieStore = await cookies();
 
   return createServerClient(supabaseUrl(), supabasePublicKey(), {
+    cookieOptions: authCookieOptions(),
     cookies: {
       getAll() {
         return cookieStore.getAll();

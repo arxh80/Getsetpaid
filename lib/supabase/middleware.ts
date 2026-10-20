@@ -25,7 +25,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { contentSecurityPolicy } from "@/lib/security/headers";
-import { supabasePublicKey, supabaseUrl } from "./env";
+import { authCookieOptions, supabasePublicKey, supabaseUrl } from "./env";
 
 /** Routes reachable without a session. Everything else requires one.
  *
@@ -168,6 +168,7 @@ export async function updateSession(request: NextRequest) {
   response.headers.set(CSP_HEADER, csp);
 
   const supabase = createServerClient(supabaseUrl(), supabasePublicKey(), {
+    cookieOptions: authCookieOptions(),
     cookies: {
       getAll() {
         return request.cookies.getAll();
