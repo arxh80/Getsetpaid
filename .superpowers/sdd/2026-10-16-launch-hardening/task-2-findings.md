@@ -8,7 +8,7 @@ existing assertions, or from the installed library code. Where a finding was
 not reproduced, its row says so.
 
 **The audit stopped early on F1 (Critical),** as the brief requires. Scope
-covered before the stop, and what is left, are in `task-2-report.md`.
+covered before the stop is below; the remaining scope was finished in the fix phase (`task-2-fix-report.md`).
 
 Severity rubric (the brief's): Critical = demonstrated or plausible tenant
 breakout / private-network leak / auth bypass / data loss; High = a promised
