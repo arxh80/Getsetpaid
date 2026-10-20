@@ -166,3 +166,94 @@ Task 4's RESIDUAL test already showed that P1 signs in. Mutant M1 below re-prove
 3. **UX cost.** A genuine user who signs up in one browser and confirms in another is asked for a password again (Q247 (1)). On hosted, the user-session password replacement may trigger the "password changed" notification email, if hosted delivers it. Locally it is not delivered (`config.toml` note).
 4. **The shared local stack** was restarted (`supabase stop/start`) to load the templates. It now runs this branch's 253-migration set and the new templates. A stop/start from a worktree without `confirmation.html`/`recovery.html` would revert the templates and make this spec fail.
 5. **Not built:** a sign-out click test on `/set-password` (the button posts to the allowlisted path); a psql assertion for the two RPCs' session refusal (the matrix asserts their EXECUTE grants); a "Forgot password" page (out of scope, Task 17).
+
+---
+
+## Fix round 1 (review: Needs fixes)
+
+Commits, all pushed:
+
+| SHA | Subject |
+|---|---|
+| 2bb6725 | First proof fails closed: an error after verifyOtp still kills the old password |
+| ad83541 | Refuse self-service email changes: the email-change takeover (G11) |
+| 5fb0791 | Invite welcome form still sets a working password after the invite-time rotation |
+| 0b18f28 | settleFirstProof clears the binding cookie itself, after the record |
+| 4eb1157 | G11 docs match fix round 1 (SECURITY.md § 10/§ 15, launch gates, Q247 (4)-(5)) |
+
+### Important 1: fail-open on error, now fails closed (2bb6725)
+
+- **How it works now.** `settleFirstProof` decides whether the password may stay *before* anything can fail. It then runs the settlement inside a try block.
+  - On ANY failure, unless the password may stay, it makes a best-effort `updateUser({ password })` through the session, then `signOut({ scope: "global" })`, then rethrows. Neither call needs the service role.
+  - The callback's catch then fails the link, as before. No row has been recorded, so the owner's next proof is still a first proof.
+- **One guard I added beyond the brief.** The failure path rotates only an address confirmed within the last ten minutes (`confirmedJustNow`).
+  - Without the guard, an RPC outage would destroy the password of every long-standing user who signs in by magic link while the outage lasts. A first proof always has a fresh `email_confirmed_at`, because verifyOtp has just set it.
+  - A missing `email_confirmed_at` counts as fresh (fails closed).
+- **Replacement password.** `unknowablePassword()` = 48 random bytes as base64url, plus `aA1!`, so it meets every character class a hosted `password_requirements` could demand.
+- **RED.** `pnpm exec vitest run tests/unit/auth/first-proof-settle.test.ts -t "FAIL CLOSED|nothing fails"`, run against HEAD's `first-proof.ts` (the pre-fix version): **3 failed, 3 passed, 3 skipped**. The three fail-closed tests failed, since there was no updateUser and no global sign-out on: an RPC error, a thrown RPC, or GoTrue refusing the password.
+- **GREEN.** 9/9 passed.
+- **M4.** Changing the catch to `if (false && …)` turns those same **3 tests red**.
+
+### Minors
+
+- **Identities:** an absent or empty `identities` list counts as NOT kept (`passwordMayStay`). Unit tests cover undefined, `[]`, google-only (kept) and email (not kept). Commit 2bb6725.
+- **`choosePasswordAction`:** if `refreshSession()` errors, it signs out locally and redirects to `/login?error=password_saved`. That shows the allowlisted notice "Your new password is saved. Sign in with it to continue." Commit 2bb6725.
+- **Gate bounce list:** gains `/${world.orgs[0].slug}/contacts`. Commit ad83541.
+- **`signOut({ scope: "others" })`:** no route lets a squatter hold a session before the proof (an unconfirmed account cannot sign in). So a vitest asserts the full call order: `address_is_proved`, `updateUser(password)`, `signOut(others)`, `admin.updateUserById`, `refreshSession`, `record_address_first_proof`. **M5:** replacing that call with a stub turns the order test red, with `- "signOut(others)"` missing from the received list.
+- **Q247 (4):** notes the password-changed notification (default: accept it). **Q247 (5):** explains why no email-change template is needed.
+- **`SECURITY.md` § 10:** gains the JWT-window sentence (up to `jwt_expiry` = 900s; PostgREST does not check revocation). **§ 15:** gains the hosted same-browser positive control, with the hosted-SMTP timing caveat for `isNewSignUp`.
+- **Storage census:** passing the cookie store into `settle()` counted as a third cookie-write site. The cookie is now cleared in `settleFirstProof` after a successful settlement. Same order as before: after the record, and not for an already-proved account. Commit 0b18f28.
+
+### Important 2: the email-change route was real, and is refused in the database (ad83541)
+
+**Probe** (local stack, anon key, `double_confirm_changes = true`; script `scratchpad\t20-emailchange.mjs`):
+
+1. The attacker (a confirmed account) calls `updateUser({ email: victim })`. Result: ok, with `new_email` set.
+2. Both inboxes receive "Confirm your new email address", each linking to `/auth/v1/verify?type=email_change`.
+3. The attacker opens the old-inbox leg → `#message=Confirmation link accepted…`.
+4. The victim opens their leg → `#access_token=…`.
+5. The account's email is now the victim's address, and `signInWithPassword(victim, attacker's password)` succeeds: **TAKEOVER**.
+
+**Reverse order** (`t20-emailchange-rev.mjs`): the victim clicks first and gets the partial message. The attacker's old-inbox click then **completes the change in the attacker's browser**. TAKEOVER again.
+
+**Why I did not use the default fix** (template + forced password at the callback): it gives the forced password to whoever clicks last. In the reverse order that is the attacker, who could watch for the victim's click and then click their own leg, ending up holding the victim's confirmed address with a password of their choosing.
+
+**Built instead:** migration `20261105000000_no_self_service_email_change.sql`, a `BEFORE UPDATE OF email_change` trigger on `auth.users`. It refuses recording a pending change (42501, hint `email_change_disabled`).
+- The app has no change-email feature (grep finds none).
+- Nothing in the codebase writes the column.
+- The Admin API's direct email update does not use the column.
+- This does not depend on the hosted templates: it ships as a migration.
+
+**Re-probe after the fix, both orders:** updateUser fails with "Error sending email change email". GoTrue mails both legs BEFORE it records the change, so the mails still arrive, but both links are dead (`otp_expired`). The account keeps the attacker's own address, and signing in as the victim gives "Invalid login credentials".
+
+**e2e (f) in `first-proof-password.spec.ts`:**
+- RED before the migration: the attacker signed in as the victim (`auth-mail.ts:93`, refusal not found).
+- GREEN after: 1 passed.
+- **M6:** dropping the trigger makes (f) red at the same point. The trigger was then recreated.
+
+**Residual:** the victim may still receive a dead "Confirm your new email address" mail. That is a nuisance; GoTrue's `[auth.rate_limit] email_sent` bounds it.
+
+### The invite welcome form after the invite-time rotation
+
+No existing spec walked it. invite-pre-hijack test 3 now does:
+1. After the invite link, it asserts `/invites?welcome=1`.
+2. It fills the welcome form's password with P2 and clicks Save, expecting "Saved.".
+3. After both accepts, P2 signs in from a fresh browser.
+
+### Gates (fix round 1)
+
+| Gate | Result |
+|---|---|
+| `pnpm lint` | clean |
+| `pnpm typecheck` | clean |
+| psql runner, fresh reset (254 migrations) | **All suites passed** |
+| `pnpm test`, fresh reset | 4064 passed, 5 skipped, 1 failed (storage census; fixed in 0b18f28) |
+| `pnpm exec vitest run --project unit`, after the fix | **118 files, 2765 passed** |
+| e2e (f) alone | 1 passed (GREEN) |
+| e2e first-proof-password + invite-pre-hijack | see below |
+
+**e2e, changed specs.** `PLAYWRIGHT_REUSE_SERVER=1 npx playwright test tests/e2e/first-proof-password.spec.ts tests/e2e/invite-pre-hijack.spec.ts --workers=1` gave **12 passed (3.0m)**. That is (a), (b), (c2), (e), (c), (d) and (f), plus invite tests 1-5, including the welcome-form password. The run reused the coordinator's `pnpm dev` from this worktree, which I left running.
+
+**Database resets in this round.** I ran `supabase db reset --local` twice: once before the psql runner and once before `pnpm test`. Both ran BEFORE the coordinator's dev server started (14:37:44) and before the founder test logins were created. The second reset left the DB on all 254 migrations. I ran no reset after the coordinator's note, so the founder's `*@test.local` logins and the `test-promotions`/`second-venue` orgs should be intact.
+
+**Status after fix round 1:** both Important items and every Minor are fixed and tested, with mutants M4, M5 and M6 recorded. G11's CLOSED claim in `docs/launch-gates.md` and `SECURITY.md` now names the fail-closed settlement and the email-change refusal. It still depends on the hosted-templates founder action (Q247 (2)).
