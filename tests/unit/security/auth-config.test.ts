@@ -111,4 +111,24 @@ describe("supabase/config.toml auth settings", () => {
       expect(html).not.toContain("{{ .ConfirmationURL }}\"");
     },
   );
+
+  // Phase 10 Task 2 F3. A password change or MFA factor change made straight
+  // to GoTrue with a stolen token skips the app's step-up and no GoTrue
+  // setting in the pinned toolchain gates it; these notices make it visible.
+  // Delivery is proved by tests/integration/session/security-notifications.
+  it.each(["password_changed", "mfa_factor_enrolled", "mfa_factor_unenrolled"])(
+    "[auth.email.notification.%s] is enabled with a template of ours (F3)",
+    (name) => {
+      const section = `auth.email.notification.${name}`;
+      expect(valuesOf(toml, section, "enabled")).toEqual(["true"]);
+      const [path] = valuesOf(toml, section, "content_path");
+      expect(path, `no content_path for ${name}`).toBeDefined();
+      // Notification paths resolve relative to supabase/ (see config.toml).
+      const html = readFileSync(
+        fileURLToPath(new URL(`../../../supabase/${path.replace(/^"\.\/|"$/g, "")}`, import.meta.url)),
+        "utf8",
+      );
+      expect(html).toContain("{{ .Email }}");
+    },
+  );
 });

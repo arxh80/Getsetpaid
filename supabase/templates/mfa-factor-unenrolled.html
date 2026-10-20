@@ -1,0 +1,34 @@
+<!--
+  "An MFA factor was unenrolled" notification (Phase 10 Task 2, finding F3).
+
+  A security control, like password-changed.html. A stolen aal2 access token
+  can enrol an attacker's authenticator and remove the holder's straight
+  through GoTrue (/auth/v1/factors), skipping the app's step-up, and the pinned
+  toolchain has no setting that stops it (SECURITY.md § 4). This email is what
+  makes that change visible to the account holder.
+
+  No link and no call to action, for the reason in password-changed.html: a
+  notification with a "secure your account" button is a phishing template.
+  Inline styles and longhand hex: email clients have no design tokens.
+-->
+<div style="font-family: Georgia, 'Times New Roman', serif; color: #14141C; background: #FFF4F4; padding: 32px;">
+  <div style="max-width: 480px; margin: 0 auto; background: #FFFFFF; border: 1px solid #D6CBCB; padding: 32px;">
+    <p style="margin: 0 0 24px; font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: #55555F;">
+      GetSetPaid
+    </p>
+
+    <h1 style="margin: 0 0 16px; font-size: 25px; line-height: 32px; font-weight: 800;">
+      A sign-in factor was removed
+    </h1>
+
+    <p style="margin: 0 0 24px; font-size: 15px; line-height: 24px;">
+      A two-step sign-in factor was just removed from the GetSetPaid account for
+      <strong style="font-weight: 700;">{{ .Email }}</strong>.
+    </p>
+
+    <p style="margin: 0; font-size: 15px; line-height: 24px;">
+      If that was you, there's nothing to do. If it wasn't, sign in, change
+      your password immediately, then contact us.
+    </p>
+  </div>
+</div>

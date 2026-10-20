@@ -14,6 +14,8 @@ export interface LocalSupabaseStatus {
   anonKey: string;
   serviceRoleKey: string;
   dbUrl: string;
+  /** The local mail catcher (Mailpit), loopback only; absent if not reported. */
+  mailUrl?: string;
 }
 
 let cached: LocalSupabaseStatus | undefined;
@@ -74,6 +76,12 @@ export function getLocalSupabaseStatus(): LocalSupabaseStatus {
     );
   }
 
-  cached = { apiUrl, anonKey, serviceRoleKey, dbUrl };
+  const rawMailUrl = parsed.MAILPIT_URL ?? parsed.INBUCKET_URL;
+  const mailUrl =
+    rawMailUrl && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(rawMailUrl)
+      ? rawMailUrl
+      : undefined;
+
+  cached = { apiUrl, anonKey, serviceRoleKey, dbUrl, mailUrl };
   return cached;
 }

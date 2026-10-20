@@ -368,15 +368,19 @@ content_path = "./supabase/templates/recovery.html"
 # than the recovery flow, but it should not be SILENT. This notification is
 # what would make an unexpected change visible to the account holder.
 #
-# NOT VERIFIED WORKING LOCALLY, and the honest state is worth writing down
-# rather than assuming. Supabase CLI 2.108 ACCEPTS this block (it validates
-# content_path and fails the config load on a wrong one) but does not pass it
-# to the local GoTrue container: after two password writes, no notification
-# reached Mailpit, and `docker exec supabase_auth_… env | grep GOTRUE_MAILER`
-# shows subjects/templates for INVITE and MAGIC_LINK only -- no notification
-# variable of any kind. So this is currently declared intent, not an active
-# control. Re-check it on a newer CLI and on the hosted project before counting
-# it as the mitigation for the residual named in lib/auth/step-up.ts.
+# VERIFIED WORKING LOCALLY since Supabase CLI 2.116 (Phase 10 Task 2, F3): the
+# CLI passes these blocks to GoTrue (GOTRUE_MAILER_NOTIFICATIONS_*_ENABLED in
+# the auth container's environment), and
+# tests/integration/session/security-notifications.test.ts changes a password
+# and enrols and removes a TOTP factor straight through GoTrue, as a stolen
+# token would, and reads each notice out of Mailpit. CLI 2.108 accepted the
+# block but did not pass it on. The two MFA notifications below are the same
+# control for the other half of F3: GoTrue lets an aal2 session enrol a new
+# factor and remove the holder's with no step-up, and nothing configurable in
+# the pinned toolchain stops it (SECURITY.md § 4), so it must at least not be
+# silent. The hosted project needs all three switched on (SECURITY.md § 15).
+# Asserted by tests/unit/security/auth-config.test.ts. A change here needs
+# `supabase stop && supabase start`; a `db reset` keeps the old environment.
 [auth.email.notification.password_changed]
 enabled = true
 subject = "Your GetSetPaid password was changed"
@@ -385,6 +389,16 @@ subject = "Your GetSetPaid password was changed"
 # relative to supabase/ itself, and a path with the extra segment fails the
 # config load outright ("open supabase\supabase\templates\..."). Not a typo.
 content_path = "./templates/password-changed.html"
+
+[auth.email.notification.mfa_factor_enrolled]
+enabled = true
+subject = "A sign-in factor was added to your GetSetPaid account"
+content_path = "./templates/mfa-factor-enrolled.html"
+
+[auth.email.notification.mfa_factor_unenrolled]
+enabled = true
+subject = "A sign-in factor was removed from your GetSetPaid account"
+content_path = "./templates/mfa-factor-unenrolled.html"
 
 [auth.sms]
 # Allow/disallow new user signups via SMS to your project.
