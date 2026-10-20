@@ -1,5 +1,6 @@
-wrote /c/Users/archi/Documents/Work/Portfolio/Getsetpaid/.claude/worktrees/launch-hardening/.superpowers/sdd/2026-10-16-launch-hardening/task-21-brief.md: 35 lines
-. It runs **after Task 2's fix phase**, because that phase fixes F2 (an Admin can grant or remove the Owner role). Shipping this UI before F2 would hand the takeover to every Admin.
+### Task 21: Owners and Admins can remove a member and change a role (audit finding 4, High)
+
+Added 2026-10-18 from the whole-repo audit the founder ran ("fix all"). It runs **after Task 2's fix phase**, because that phase fixes F2 (an Admin can grant or remove the Owner role). Shipping this UI before F2 would hand the takeover to every Admin.
 
 **The gap:** `app/(app)/[orgSlug]/members/page.tsx` lists members and has an invite form, and nothing else. `lib/org/actions.ts` exports only `createOrganisationAction`, `inviteMemberAction` and `acceptInviteAction`. No screen removes a member, cancels an invitation or changes a role. A Booker who leaves the company keeps reading every contact and event until someone edits the database by hand. The PRD (§ roles) gives the Owner "user/role management", and `CLAUDE.md` gives the Owner/Admin "Manage users". The database half already exists: the UPDATE and DELETE policies on `organisation_memberships` (`20260828220000`, with Task 2's F2 terms), the keep-an-owner trigger (`20261001001000`, `20261003006000`) and the `membership.*` audit triggers (`20261006000000`).
 
