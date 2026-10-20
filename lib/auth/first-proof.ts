@@ -181,8 +181,9 @@ export async function settleFirstProof(
 ): Promise<FirstProofOutcome> {
   const store = await cookies();
   const kept = passwordMayStay(user, store.get(SIGNUP_BINDING_COOKIE)?.value);
+  let outcome: FirstProofOutcome;
   try {
-    return await settle(supabase, user, otpType, store, kept);
+    outcome = await settle(supabase, user, otpType, kept);
   } catch (error) {
     if (!kept && confirmedJustNow(user)) {
       await supabase.auth.updateUser({ password: unknowablePassword() }).catch(() => undefined);
@@ -190,13 +191,16 @@ export async function settleFirstProof(
     }
     throw error;
   }
+  // The binding has done its one job (cleared only after the record, so a
+  // failed write leaves it for the retry).
+  if (outcome !== "already-proved") store.set(SIGNUP_BINDING_COOKIE, "", { ...COOKIE_OPTIONS, maxAge: 0 });
+  return outcome;
 }
 
 async function settle(
   supabase: Awaited<ReturnType<typeof createClient>>,
   user: User,
   otpType: string | null,
-  store: Awaited<ReturnType<typeof cookies>>,
   kept: boolean,
 ): Promise<FirstProofOutcome> {
   const service = createServiceClient();
@@ -235,12 +239,11 @@ async function settle(
   });
   if (recorded.error) throw new Error(`record_address_first_proof: ${recorded.error.message}`);
 
-  // Cleanup, after the record: the binding has done its one job. A null
-  // app_metadata key is deleted by GoTrue, not stored (measured locally).
+  // Cleanup, after the record. A null app_metadata key is deleted by
+  // GoTrue, not stored (measured locally).
   if (user.app_metadata?.[BINDING_HASH_KEY]) {
     await admin.auth.admin.updateUserById(user.id, { app_metadata: { [BINDING_HASH_KEY]: null } });
   }
-  store.set(SIGNUP_BINDING_COOKIE, "", { ...COOKIE_OPTIONS, maxAge: 0 });
   return mark ? "must-choose-password" : "settled";
 }
 
