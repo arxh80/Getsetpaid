@@ -61,3 +61,5 @@ Task 20: minor (deferred) -- (1) failure-path rotation keyed on email_confirmed_
 Note: founder scope change 2026-10-20 -- invoicing (part 1 spec a2fe7c8 on branch invoicing, off launch-hardening; plan being written) + Stripe Connect + network delivery, built in parallel; shared stack, heavy runs queue
 Task 2: fix phase implementer dispatched 2026-10-20 (opus, base 4d5a633; F7-F10 rows, remaining audit scope, fix F2/F3/F5/F6, threat-model G19; F2 Q takes Q248; reuses founder dev server via PLAYWRIGHT_REUSE_SERVER=1, re-creates test logins after any reset)
 Task 2: fix phase implementer and invoices plan writer both hit 429 at start; resumed 2026-10-20 after account re-login (commit trailer now Co-Authored-By only)
+
+- 2026-10-20 Task 2 fix phase: implementer DONE_WITH_CONCERNS (001e015 F5, fedc632 F6, afff1e0 F3 residual + GoTrue notification emails, 9776459 G19, 51b5d53 F2 + Q248, 8a39cbe findings). No new Critical/High. F3 residual: stolen aal2 token can swap MFA factor; holder now emailed. Opus task review dispatched on d334c15..8a39cbe.
