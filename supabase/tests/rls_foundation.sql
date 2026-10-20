@@ -1379,6 +1379,98 @@ select harness.val('W40 no organisation was added or changed by W16-W39, and rep
              from public.organisations$$, :orgs_before_w), 'true');
 
 -- ===========================================================================
+-- O. OWNER ROWS ARE AN OWNER'S TO GIVE  (Phase 10 Task 2 F2, Q248,
+--    20261106000000)
+--
+-- Before that migration the manage_members write policies said nothing about
+-- the role being written, and Admin holds manage_members: an aal2 Admin could
+-- PATCH their own row to owner, then DELETE the founding Owner (the last-owner
+-- trigger passes, because the attacker is now another Owner), or invite an
+-- accomplice straight in as an Owner. Now only an active Owner may create,
+-- change or remove a row whose role is owner.
+--
+-- LAST SECTION ON PURPOSE: it recasts carol as an ADMIN and dave as an active
+-- member and then a second Owner, and puts the cast back at the end, because
+-- run-rls-tests.sh's HTTP block signs in as carol after this file and asserts
+-- her role is still standard_user (measured: it went red without the restore).
+-- ===========================================================================
+reset role; reset request.jwt.claims;
+update public.organisation_memberships set role = 'admin'
+ where organisation_id = :'org_a_id' and user_id = :'carol';
+update public.organisation_memberships set status = 'active', joined_at = now()
+ where organisation_id = :'org_a_id' and user_id = :'dave';
+-- Admin is MFA-required, so the Admin's writes are measured at aal2 (an aal1
+-- Admin holds no permission at all, which would make every refusal vacuous).
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'carol') as carol_c2 \gset
+
+set role authenticated;
+set request.jwt.claims = :'carol_c2';
+select harness.try('O1  POSITIVE CONTROL: an aal2 Admin CAN change a non-Owner''s role',
+  format($$update public.organisation_memberships set role='manager'
+            where organisation_id=%L and user_id=%L$$, :'org_a_id', :'dave'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+-- A second active Owner, so that removing or demoting alice would NOT trip the
+-- last-owner trigger: without it O4/O5 would be refused by that trigger and
+-- pass against the unfixed policies.
+update public.organisation_memberships set role = 'owner'
+ where organisation_id = :'org_a_id' and user_id = :'dave';
+
+set role authenticated;
+set request.jwt.claims = :'carol_c2';
+select harness.try('O2  EXPLOIT: an Admin cannot promote herself to Owner',
+  format($$update public.organisation_memberships set role='owner'
+            where organisation_id=%L and user_id=%L$$, :'org_a_id', :'carol'), 'denied(42501)');
+select harness.try('O3  an Admin cannot invite somebody in as an Owner',
+  format($$insert into public.organisation_memberships (organisation_id,user_id,role,status)
+           values (%L,%L,'owner','invited')$$, :'org_a_id', :'bob'), 'denied(42501)');
+select harness.try('O4  an Admin cannot demote an Owner (the row is filtered out)',
+  format($$update public.organisation_memberships set role='standard_user'
+            where organisation_id=%L and user_id=%L$$, :'org_a_id', :'alice'), 'ok(0)');
+select harness.try('O5  EXPLOIT: an Admin cannot remove an Owner',
+  format($$delete from public.organisation_memberships
+            where organisation_id=%L and user_id=%L$$, :'org_a_id', :'dave'), 'ok(0)');
+reset role; reset request.jwt.claims;
+
+select harness.val('O6  OUTCOME: org A still has exactly its two Owners, and carol is still an Admin',
+  format($$select (select count(*) from public.organisation_memberships
+                    where organisation_id=%1$L and role='owner' and status='active')
+                  || '/' || (select role from public.organisation_memberships
+                    where organisation_id=%1$L and user_id=%2$L)$$, :'org_a_id', :'carol'),
+  '2/admin');
+
+set role authenticated;
+set request.jwt.claims = :'alice_c';
+select harness.try('O7  POSITIVE CONTROL: an Owner CAN promote an Admin to Owner',
+  format($$update public.organisation_memberships set role='owner'
+            where organisation_id=%L and user_id=%L$$, :'org_a_id', :'carol'), 'ok(1)');
+select harness.try('O8  POSITIVE CONTROL: an Owner CAN remove another Owner',
+  format($$delete from public.organisation_memberships
+            where organisation_id=%L and user_id=%L$$, :'org_a_id', :'dave'), 'ok(1)');
+reset role; reset request.jwt.claims;
+
+select harness.val('O9  all three manage_members write policies carry the Owner term (every clause)',
+  $$select count(*)::text from pg_policies
+     where schemaname = 'public' and tablename = 'organisation_memberships'
+       and policyname in ('organisation_memberships_insert_manage_members',
+                          'organisation_memberships_update_manage_members',
+                          'organisation_memberships_delete_manage_members')
+       and (qual is null or qual like '%is_active_owner(organisation_id)%')
+       and (with_check is null or with_check like '%is_active_owner(organisation_id)%')$$, '3');
+
+-- Restore the cast (DBA): alice the Owner, carol an active standard_user, dave
+-- invited again. alice first, so the last-owner trigger never fires even when
+-- the policies are broken (a mutant run demotes alice in O4).
+update public.organisation_memberships set role = 'owner'
+ where organisation_id = :'org_a_id' and user_id = :'alice';
+update public.organisation_memberships set role = 'standard_user'
+ where organisation_id = :'org_a_id' and user_id = :'carol';
+delete from public.organisation_memberships
+ where organisation_id = :'org_a_id' and user_id = :'dave';
+insert into public.organisation_memberships (organisation_id, user_id, role, status)
+values (:'org_a_id', :'dave', 'standard_user', 'invited');
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o

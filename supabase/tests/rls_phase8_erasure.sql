@@ -840,10 +840,14 @@ select er.try_hint('EM4 demoting the SOLE owner is refused -- as postgres, which
 
 set role authenticated;
 set request.jwt.claims to :'emate_a2';
-select er.try_hint('EM5 and refused for the aal2 ADMIN who holds manage_members -- the route that reached it',
+-- Since 20261106000000 (Phase 10 Task 2 F2, Q248) an Admin's UPDATE never
+-- sees an Owner's row at all (only an Owner may change one), so the route
+-- that reached the trigger is now closed one step earlier: ok(0), and EM9
+-- below still proves nothing moved. EM4 keeps the trigger's own refusal.
+select er.try('EM5 and refused for the aal2 ADMIN who holds manage_members -- the route that reached it (now the F2 policy: the Owner row is filtered out)',
   $$update public.organisation_memberships set role = 'standard_user'
      where organisation_id = '$$ || :'org_blocked' || $$' and user_id = '$$ || :'esub' || $$'$$,
-  'denied(22023:last_owner_of_workspace)');
+  'ok(0)');
 reset role;
 reset request.jwt.claims;
 
