@@ -9,6 +9,7 @@ import {
 } from "@/lib/crm/write-access";
 import type { RecordResult } from "@/lib/crm/queries";
 import { WriteBlockedNote } from "@/components/crm/write-gate";
+import { DeletedRecordNotice } from "@/components/crm/deleted-record-notice";
 import { Alert } from "@/components/ui/alert";
 
 // THE EDIT FORM'S PAGE, ONCE -- FOR THE SIX ROUTES THAT EXPLAIN RATHER THAN
@@ -57,11 +58,6 @@ import { Alert } from "@/components/ui/alert";
 
 /** The pronouns the refusal sentence needs. Artists are they/them. */
 type Pronoun = "it" | "they";
-
-const PRONOUNS = {
-  it: { subject: "it", object: "it", possessive: "its" },
-  they: { subject: "they", object: "them", possessive: "their" },
-} as const;
 
 /** Everything one edit page needs that another one's would differ on. */
 export interface EditRecordPageConfig<TRecord> {
@@ -147,7 +143,6 @@ export function editRecordPage<TRecord>(
     const record = result.record;
     const label = config.label(record);
     const detailHref = `/${org.slug}/${config.segment}/${resolved[config.paramKey]}`;
-    const p = PRONOUNS[config.pronoun];
 
     const breadcrumb = (
       <p className="text-sm text-ink-muted">
@@ -174,22 +169,12 @@ export function editRecordPage<TRecord>(
       return (
         <div className="flex flex-col gap-6">
           {breadcrumb}
-          <h1 className="tracking-display text-3xl font-extrabold text-ink">
-            Edit {config.noun}
-          </h1>
-          <Alert tone="info">
-            {label} has been deleted, so {p.subject} can’t be edited. Restore{" "}
-            {p.object} from {p.possessive} own page first and the form will be
-            here.
-          </Alert>
-          <p>
-            <Link
-              href={detailHref}
-              className="text-base text-primary underline underline-offset-4 hover:text-ink"
-            >
-              Go to {label}
-            </Link>
-          </p>
+          <DeletedRecordNotice
+            label={label}
+            noun={config.noun}
+            detailHref={detailHref}
+            pronoun={config.pronoun}
+          />
         </div>
       );
     }
