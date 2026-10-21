@@ -117,6 +117,20 @@ export async function searchPaletteAction(
     ),
   );
 
+  // ONE keystroke's search is ONE metered unit, however many entities it fans
+  // out to: consumeRateLimit() is cache()-wrapped, so the first fetchListPage
+  // consumed the caller's 'search' budget and every sibling read the same
+  // verdict. A refusal therefore refuses ALL groups at once, and the palette
+  // owes the honest sentence rather than the "try again in a moment" the
+  // unavailable state renders (SECURITY.md § 5).
+  const limited = pages.find((page) => page.outcome === "rate_limited");
+  if (limited && limited.outcome === "rate_limited") {
+    return {
+      outcome: "rate_limited",
+      retryAfterSeconds: limited.retryAfterSeconds,
+    };
+  }
+
   const groups: PaletteRecordGroup[] = [];
   let anyLoaded = false;
   for (const [i, page] of pages.entries()) {

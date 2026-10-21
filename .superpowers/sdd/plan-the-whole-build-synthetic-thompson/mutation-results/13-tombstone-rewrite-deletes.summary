@@ -1,0 +1,21 @@
+mutant: 13-tombstone-rewrite-deletes
+migrations before/after: 210/210
+runner exit: 3   vitest exit: 0
+--- psql: red assertions, read from each suite's results table ---
+  [er] EE24 audit_events.actor_user_id is the tombstone, and the rows are still there
+  [er] EE24b and the payload of the row the subject ACTED on is dropped (M1)
+  [er] EE25 merges.merged_by is the tombstone and the merge row survives
+  [er] EE26 merge_candidates.resolved_by is the tombstone
+  [er] EE26d and the candidate row itself survives -- the workspace's, not the member's
+  [er] EE27 all three impersonation_sessions columns are the tombstone
+  [er] EE28 both overrides tables are the tombstone on both columns
+  [er] EE29 incident_alerts.resolved_by is the tombstone
+  [er] EE35 the merges owner-id SNAPSHOTS are gone -- no FK would have moved them
+  [er] ER2 the erasure fails when a step mid-sequence raises
+  [er] ER3 AND NOTHING WAS ERASED -- the private note is still there
+  [er] ER4 the account is still there
+  [er] ER5 and no summary audit row was written for it
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+        Tests  690 passed (690)

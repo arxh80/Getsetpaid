@@ -186,6 +186,18 @@ A custom theme must declare its three diversification-rule axis values explicitl
 
 Pick one based on the chosen display face:
 
+> ⚠️ **The two italic axes conflict with gate 38a.** `slop-test.md` gate 38a fails any
+> `font-style: italic` on `h1`–`h6`, `.hero__title`, **a wordmark**, a stat figure or a
+> footer statement, and states it "applies to every theme". Choosing `italic-serif` or
+> `display-condensed-italic` as the *display* axis therefore auto-fails self-critique the
+> moment that face lands on a heading. Use these axes only for a non-heading accent
+> (a tagline, a pull-quote, body emphasis) and keep headings roman — or pick a roman
+> axis. The worked example G.1 Coffeebox (`display: Fraunces italic`) is subject to the
+> same constraint.
+<!-- GSP-PATCH: warning added. Upstream ships both the italic display axes and gate 38a
+     with no cross-reference, so the theme protocol recommends exactly what the slop
+     test then auto-fails. Neither side was edited away; the tension is now stated. -->
+
 - **italic-serif** — Fraunces italic, Newsreader italic, EB Garamond italic, Cormorant italic
 - **roman-serif** — Source Serif 4, Newsreader, Crimson Pro, Bitter, Cardo
 - **geometric-sans** — Geist, Bricolage Grotesque, Inter Tight, Manrope, Sora

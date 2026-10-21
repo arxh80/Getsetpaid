@@ -1,0 +1,23 @@
+mutant: 04a-consent-attribution-trusts-client
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [cs] CW15 ...it is pstd1's, marketing, the marketing page at the in-force version, now, ending pstd1's own grant
+  [cs] CW16 ...and pstd2 still has nothing
+  [cs] CW17 an unknown mechanism is refused by CHECK (beside valid wording)
+  [cs] CW18 a technical context carrying an ip key is refused by CHECK (beside valid wording)
+  [cs] CR0 DENOMINATOR: pstd1 has exactly two events (CW2, CW14)
+  [cs] CR1 pstd1 reads their own two events
+  [cs] CR3 ...and nothing at all
+  [cs] CR10 the aal2 superuser reads pstd1's events (oversight)
+  [cs] CH5 pstd2 reads the whole story in order
+  [cs] CH6 the first grant is byte for byte what it was before the withdrawal
+  [cs] CH15 DENOMINATOR: pstd2 has a withdrawal naming a grant
+  [cs] CC3 pstd1 (granted then withdrawn by CW14) -> false
+  [cs] CA0 DENOMINATOR: the ledger holds events from four people
+  [cs] CA4 the actor is the person whose consent it is, and no workspace is named
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+|integration| tests/integration/legal/catalogue-bindings-match-db.test.ts > the migration walk picks the body the database runs > private.consents_before_insert: one deployed definition, equal to the latest one in the migrations
+        Tests  1 failed | 689 passed (690)

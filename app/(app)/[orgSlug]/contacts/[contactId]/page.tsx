@@ -34,6 +34,8 @@ import {
 } from "@/components/crm/write-gate";
 import { ContactCompanyPanel } from "@/components/crm/link-panel";
 import { formatDateTime } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
+import { Detail } from "@/components/ui/detail";
 
 // One contact.
 //
@@ -110,7 +112,35 @@ export default async function ContactDetailPage({
   if (result.outcome === "missing") notFound();
 
   const contact = result.record;
-  const links = await loadCompaniesForContact(org.id, contact.id);
+
+  // THE TIMELINE'S OWN PAGE OF ITS OWN LIST. `activityParams` reads only keys
+  // beginning `activity_`, and not even `activity_q` -- there is no search
+  // control on this surface (lib/crm/activity.ts). So it cannot be confused by
+  // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
+  // later phase adds to this route.
+  const activityListParams = activityParams(raw);
+
+  // ONE WAVE, NOT A WATERFALL. These three need `org.id` and `contact.id` and
+  // nothing produced by each other, so awaiting them one at a time was three
+  // sequential round trips for an ordering nobody asked for. See the agencies
+  // page's identical comment.
+  //
+  // THE LINK PICKER IS NOT IN THIS WAVE, and that is not an oversight: its
+  // exclusion list is `links.map(...)`, so it genuinely cannot start until
+  // `links` has resolved. It stays serial below. Everything that CAN start at
+  // once now does.
+  const [links, customFields, activity] = await Promise.all([
+    loadCompaniesForContact(org.id, contact.id),
+    // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
+    // the panel is a Client Component and this is the only place with an
+    // RLS-scoped server client. `includeRemoved` is implied: the loader
+    // returns the values of REMOVED fields too, which is what makes
+    // "removing a field keeps what was filled in" visible rather than merely
+    // true (20260829010000, decision 1).
+    loadCustomFieldPanel(org.id, "contact", contact.id),
+    fetchActivityPage(org.id, "contact", contact.id, activityListParams),
+  ]);
+
   const options = access.canWrite
     ? await loadLinkOptions(
         "companies",
@@ -130,13 +160,6 @@ export default async function ContactDetailPage({
   // not the control.
   const panelBlocked =
     contact.deletedAt !== null ? DELETED_RECORD_EXPLANATION : blocked;
-  // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
-  // the panel is a Client Component and this is the only place with an
-  // RLS-scoped server client. `includeRemoved` is implied: the loader
-  // returns the values of REMOVED fields too, which is what makes
-  // "removing a field keeps what was filled in" visible rather than merely
-  // true (20260829010000, decision 1).
-  const customFields = await loadCustomFieldPanel(org.id, "contact", contact.id);
   // A CUSTOM FIELD VALUE IS AN ORDINARY CRM WRITE ON THIS RECORD, so the
   // key that gates it is the contact's own key --
   // private.entity_is_manageable() maps this entity type to it in the
@@ -155,19 +178,6 @@ export default async function ContactDetailPage({
         ? null
         : access.explanation;
   const basePath = `/${org.slug}/contacts`;
-
-  // THE TIMELINE'S OWN PAGE OF ITS OWN LIST. `activityParams` reads only keys
-  // beginning `activity_`, and not even `activity_q` -- there is no search
-  // control on this surface (lib/crm/activity.ts). So it cannot be confused by
-  // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
-  // later phase adds to this route.
-  const activityListParams = activityParams(raw);
-  const activity = await fetchActivityPage(
-    org.id,
-    "contact",
-    contact.id,
-    activityListParams,
-  );
 
   return (
     <div className="flex flex-col gap-8">
@@ -430,24 +440,5 @@ export default async function ContactDetailPage({
 /** The id of the single explanation the Manage section's controls point at. */
 const MANAGE_NOTE = "contact-manage-blocked";
 
-function Detail({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase">
-        {label}
-      </dt>
-      <dd className="text-base break-words text-ink">{children}</dd>
-    </div>
-  );
-}
-
 /** See the contacts list's copy of this: a blank cell is indistinguishable
  *  from a rendering fault, and silent to a screen reader. */
-function Absent() {
-  return (
-    <span className="text-ink-muted">
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">Not recorded</span>
-    </span>
-  );
-}

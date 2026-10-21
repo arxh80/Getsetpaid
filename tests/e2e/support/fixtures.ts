@@ -322,7 +322,37 @@ export type E2eRole =
   // `booker` holds view_crm and seven manage_* keys and NOT view_finance
   // (20260903002000), which is exactly the shape the finance render gate has to
   // refuse: a fully-privileged CRM user who may not see the money.
-  | "booker";
+  | "booker"
+  // ---- PHASE 7 TASK 7 -----------------------------------------------------
+  // THE TWO ROLES NOTHING IN THIS SUITE HAD EVER SIGNED IN AS.
+  //
+  // Until this task `E2eRole` was `manager | standard_user | read_only |
+  // finance | booker`, and sign-in.ts said so outright: "owner and admin are
+  // the other two and nothing here is either". The consequence was not a gap
+  // in coverage, it was a class of GREEN TESTS THAT MEASURED NOTHING --
+  //
+  //   * every Owner/Admin-only surface (`manage_custom_fields`,
+  //     `manage_members`, `manage_organisation` are the only three
+  //     permissions in `role_permissions` held by exactly {owner, admin})
+  //     had never been rendered by a session that holds the key, so a scan
+  //     or a walk against one was measuring an EMPTY page; and
+  //   * the plan's own named case for Task 7 -- "unreachable by a
+  //     non-superuser, EVEN AN ORG OWNER" -- could not be written at all,
+  //     and the /super refusal probes that exist were all driven by a
+  //     manager with the standing note that "an Org Owner is MFA-required,
+  //     so an owner probe would be measuring the MFA challenge rather than
+  //     the superuser gate".
+  //
+  // Both are MFA-REQUIRED (`private.role_requires_mfa()`, CLAUDE.md
+  // § Session security), so both walk the real per-sign-in TOTP challenge
+  // against the live GoTrue verifier, from `ownerTotpSecret`/`adminTotpSecret`
+  // below. An owner or admin persona that did NOT walk it would sign in at
+  // aal1, hold NEITHER of its two exclusive keys, and refuse everywhere for
+  // the MFA reason rather than the reason under test -- which is the same
+  // denominator failure this task exists to close, reintroduced by the
+  // fixture meant to close it.
+  | "owner"
+  | "admin";
 
 export interface E2eUser {
   id: string;
@@ -332,6 +362,8 @@ export interface E2eUser {
 export interface E2eWorld {
   /** Slug of the workspace the golden path is walked in. */
   orgSlug: string;
+  /** Its display NAME -- what a confirmation step shows a person. */
+  orgName: string;
   orgId: string;
   /**
    * A SECOND tenant, for the breakout run.
@@ -443,11 +475,24 @@ export interface E2eWorld {
   // =========================================================================
   // TWO MORE TENANTS, AND THE TIER IS THE WHOLE REASON THEY EXIST.
   //
-  // The main organisation deliberately has NO `organisation_subscriptions` row
-  // (see the insert in `setUpWorld`), so `private.finance_module_organisations()`'s
-  // "not yet billed => not yet gated" escape applies to it and a finance write
-  // there would prove nothing about the Pro gate. These two carry REAL
-  // subscription rows:
+  // The main organisation carries a real STARTER row (see the insert in
+  // `setUpWorld`, added by Phase 7 Task A). Starter's finance_module is
+  // false -- so a finance write there is REFUSED, which is a real behavioural
+  // flip from before Task A: `private.finance_module_organisations()` itself
+  // is untouched by that task (its "no subscription row" escape is a
+  // deliberate, separate follow-up -- FOLLOW-UPS.md § "Phase 7 -- superuser
+  // dashboard" -- and Starter/Free's finance_module was always false), but
+  // the main org used to be the one place that escape was actually exercised:
+  // it had NO subscription row before Task A, and that escape ALLOWED finance
+  // writes ("not yet billed => not yet gated"). Task A's create_organisation()
+  // change gave it a real Starter row instead, which the tier itself refuses.
+  // Net effect on this org: finance writes went from ALLOWED (via the escape)
+  // to REFUSED (via the tier) -- unexercised by any spec (no `tests/e2e/`
+  // spec writes finance against `world.orgSlug`), but worth stating correctly
+  // here since this is the exact file a future finance e2e test would read.
+  // Either way, a finance write here still proves nothing about the Pro gate
+  // -- that is what these two carry their OWN, DIFFERENT subscription rows
+  // for:
   //
   //   proOrg      plan_id 'pro',     status 'active'  -> finance_module TRUE
   //   starterOrg  plan_id 'starter', status 'active'  -> finance_module FALSE
@@ -493,6 +538,96 @@ export interface E2eWorld {
    * whether the finance keys are held at all.
    */
   financeTotpSecret: string;
+
+  /**
+   * PHASE 7 TASK 7. The real, verified factors the `owner` and `admin`
+   * personas' browser sign-ins walk.
+   *
+   * Same shape and same non-secrecy as `financeTotpSecret` above: they belong
+   * to throwaway accounts this run created and `tearDownWorld` deletes.
+   * `signIn()` selects between these three by role -- see TOTP_SECRET_BY_ROLE
+   * in ./sign-in.ts, which replaced a single hardcoded `financeTotpSecret`
+   * read that would have silently presented the FINANCE user's code at an
+   * owner's challenge and failed as "wrong code" rather than as "the fixture
+   * does not carry this role's secret".
+   */
+  ownerTotpSecret: string;
+  /** @see ownerTotpSecret */
+  adminTotpSecret: string;
+
+  // =========================================================================
+  // PHASE 7 TASK 1: THE PLATFORM SUPERUSER
+  // =========================================================================
+  // Not one of the fixed `E2eRole` personas `signIn()` addresses by role --
+  // same reasoning as `otherOwner`/`otherMember`/`freeMember`: superuser
+  // status is `public.platform_admins` membership, not an organisation
+  // role, so it does not belong in the `users` record every organisation-
+  // scoped breakout assertion in this suite reasons about. Signed in by hand
+  // in the spec (tests/e2e/audit-log.spec.ts), the same "manual form walk"
+  // idiom tenant-breakout.spec.ts's signInAsOtherMember uses -- except this
+  // one ALSO walks the TOTP challenge, because the platform superuser is
+  // MFA-required (CLAUDE.md § Session security) and
+  // has_platform_permission('view_audit_log') is aal2-gated
+  // (20260827210000_mfa_aal_permission_gate.sql): a password-only session
+  // would find the audit log page render (isSuperuser() is NOT aal-gated,
+  // deliberately -- see lib/admin/superuser.ts) but every real query behind
+  // it would come back empty, which is exactly the wrong thing for a test
+  // that means to prove the CROSS-TENANT READ works.
+  superuser: E2eUser;
+  /** Same shape and same non-secrecy as `financeTotpSecret` above --
+   *  `enrolTotp` gives this account a real, verified TOTP factor so a
+   *  browser sign-in walks the genuine per-sign-in challenge rather than
+   *  stubbing it. */
+  superuserTotpSecret: string;
+
+  // =========================================================================
+  // PHASE 7 TASK 2: THE ORGANISATION ADMIN WHO GIVES CONSENT
+  // =========================================================================
+  // Break-glass impersonation cannot be walked without one. `users` -- the
+  // fixed `E2eRole` record -- deliberately contains no Owner or Admin of
+  // `orgId` (its three members are a manager, a standard user and a read-only
+  // user), and `manage_organisation` is the permission
+  // public.accept_impersonation_request() requires. Nobody in the world could
+  // accept a request before this account existed, which is the correct
+  // product behaviour and a dead end for a test.
+  //
+  // ADDED TO `orgId`, NOT TO A NEW ORGANISATION, ON PURPOSE: the impersonated
+  // workspace has to contain real CRM records for "tenant data is visible"
+  // to mean anything, and `orgId` is the one this suite fills with contacts,
+  // events, tasks and notes. Nothing else in this directory reads
+  // /[orgSlug]/members or counts memberships (grepped), so a fourth member
+  // perturbs no existing assertion.
+  //
+  // MFA-ENROLLED, like `finance` and `superuser` and for the same reason:
+  // `admin` is one of the roles private.role_requires_mfa() covers, so an
+  // aal1 session of this account holds manage_organisation NOT AT ALL --
+  // it could sign in, reach the page, and find the accept button refuse. A
+  // stubbed challenge would prove nothing about the gate the consent
+  // actually passes through.
+  orgAdmin: E2eUser;
+  /** @see orgAdmin -- the real, verified factor its browser sign-in walks. */
+  orgAdminTotpSecret: string;
+  /**
+   * TWO PLANTED `audit_events` ROWS, ONE PER TENANT, WITH DISTINCT ACTION
+   * STRINGS -- the audit log e2e spec's deterministic fixture data.
+   *
+   * WHY PLANTED RATHER THAN RELIED ON NATURALLY. `orgId`/`otherOrgId` are
+   * inserted directly by SQL below (not through `create_organisation()`),
+   * so they write no `organisation.created` row, and nothing else this file
+   * does is guaranteed to leave a KNOWN, FILTERABLE action string in a KNOWN
+   * organisation by the time the audit-log spec runs -- assertions built on
+   * "whatever happens to be in the table" would be non-deterministic and
+   * would break the moment an earlier step in this file changed shape.
+   * These two rows are `postgres`-inserted directly (the same route
+   * `sql()` uses for every other planted fixture row; audit_events has no
+   * INSERT grant for any client role at all, by design), each in a
+   * DIFFERENT organisation so the spec can prove the superuser's read
+   * spans both, and each with a distinct `action` so a filter by exact
+   * action string is provably narrowing rather than vacuously matching
+   * everything.
+   */
+  auditProbeAlphaId: string;
+  auditProbeBetaId: string;
 
   users: Record<E2eRole, E2eUser>;
   /** The OTHER tenant's owner. Nothing signs in as them; they exist so the
@@ -778,6 +913,687 @@ export async function countSentConnectionRequests(
 }
 
 /**
+ * PHASE 7 TASK 1, FIX ROUND 1 (⚠️ 5). Count `audit_log.viewed` self-audit
+ * rows for one actor -- the audit-log spec's ground truth for "did viewing
+ * the page actually write the row it claims to, and did anything ELSE
+ * (a Next.js Link prefetch, a re-render) write a SECOND one it should not
+ * have". Same shape as `countSentConnectionRequests` immediately above:
+ * straight out of Postgres as `postgres`, bypassing RLS on purpose, so the
+ * count is not reading through the very audit_events policy a bug in it
+ * could be hiding behind. Scoped to ONE actor (the spec's own throwaway
+ * superuser, unique per run) rather than a bare action-string count, so a
+ * concurrently-running spec file's own superuser writing the identical
+ * action name cannot perturb the number.
+ */
+export async function countAuditLogViewedRows(
+  actorUserId: string,
+): Promise<number> {
+  const result = await db().query<{ count: string }>(
+    "select count(*)::text as count from public.audit_events where actor_user_id = $1 and action = 'audit_log.viewed'",
+    [actorUserId],
+  );
+  return Number(result.rows[0]?.count ?? "0");
+}
+
+/**
+ * PHASE 7 TASK 2, FIX ROUND 1 (Important 2). Suspend or reinstate an
+ * organisation, as `postgres`.
+ *
+ * There is no client write path to `organisations.deleted_at` that a test
+ * could drive -- suspension is a platform action and an Owner deliberately
+ * cannot perform it (DECISIONS-QUEUE consequence P7), which is the whole
+ * reason Q98 exists. So the only way to put the browser in front of a
+ * suspended workspace is to set the column directly, the same route every
+ * other planted fixture in this file uses.
+ *
+ * THE CALLER MUST REINSTATE IN A `finally`. This suite's specs are serial and
+ * share one world; a workspace left suspended would silently turn every later
+ * assertion into a suspension assertion.
+ */
+export async function setOrganisationSuspended(
+  organisationId: string,
+  suspended: boolean,
+): Promise<void> {
+  await sql(
+    `update public.organisations set deleted_at = $2 where id = $1`,
+    [organisationId, suspended ? new Date().toISOString() : null],
+  );
+}
+
+/**
+ * PHASE 7 TASK 4. Simulates a billing/feature override's natural expiry
+ * without waiting for real wall-clock time to pass -- the brief's own
+ * "(simulated) expiry restores Starter denial". Backdates `expires_at` on
+ * whatever ACTIVE (unrevoked) row exists rather than deleting it: expiry is a
+ * READ-TIME filter (private.active_billing_override() /
+ * private.active_feature_override()), not a delete, and the row's continued
+ * existence -- just outside its window -- is exactly what those functions are
+ * proven against.
+ *
+ * Runs as `postgres` (bypasses RLS and the guard trigger), the same route
+ * every other direct fixture manipulation in this file uses -- there is no
+ * product path that ages a clock forward, by design.
+ */
+export async function expireBillingOverride(organisationId: string): Promise<void> {
+  // starts_at is pushed back FIRST, in the same statement -- see supabase/
+  // tests/rls_phase7_overrides.sql § OD's identical fix and comment: a grant
+  // made moments ago carries a starts_at close to "now", and backdating only
+  // expires_at can push it BEFORE starts_at, tripping
+  // organisation_billing_overrides_window (measured: it did, on the first cut
+  // of this helper). Widening the whole window first keeps expires_at's
+  // move -- across "now" -- the only thing this call is actually testing.
+  await sql(
+    `update public.organisation_billing_overrides
+        set starts_at  = now() - interval '2 hours',
+            expires_at = now() - interval '1 minute'
+      where organisation_id = $1 and revoked_at is null`,
+    [organisationId],
+  );
+}
+
+/**
+ * PHASE 7 TASK 5. Plants one open incident alert so /super/health can be read
+ * POPULATED rather than empty.
+ *
+ * INSERTED AS `postgres`, the same route `auditProbeAlphaId`/`auditProbeBetaId`
+ * take and for the identical reason: `public.incident_alerts` has NO INSERT
+ * policy and no INSERT grant for any client role at all (20260909020000) --
+ * every real writer is a SECURITY DEFINER function behind a trigger or the
+ * limiter, so there is no product path a browser could drive to create one.
+ *
+ * THIS DOES NOT REPLACE PROVING THE TRIGGERS. That the three conditions really
+ * do raise a row is measured where it can be: `rls_phase7_rate_limits.sql`
+ * § RA (the exactly-once rate-limit crossing), § RQ (the malware quarantine)
+ * and § RH (the login lockout), plus `tests/integration/security/
+ * rate-limit-network-discovery.test.ts` driving a real crossing through the
+ * real page function. What is only observable HERE is that a row, once it
+ * exists, renders and can be resolved by the operator -- and an empty-state
+ * scan would miss every component this task added.
+ *
+ * The caller deletes it in a `finally`: these specs are serial and share one
+ * world, and a stray open alert would change the "Open incident alerts" count
+ * any later assertion reads.
+ */
+export async function plantIncidentAlert(
+  organisationId: string | null,
+  summary: string,
+): Promise<string> {
+  const result = await db().query<{ id: string }>(
+    `insert into public.incident_alerts
+       (alert_type, organisation_id, summary, details)
+     values ('rate_limit_tripped', $1, $2, '{"category":"network_discovery"}'::jsonb)
+     returning id`,
+    [organisationId, summary],
+  );
+  return result.rows[0].id;
+}
+
+/** Remove a planted alert. See plantIncidentAlert() for why this must run. */
+export async function deleteIncidentAlert(id: string): Promise<void> {
+  await sql(`delete from public.incident_alerts where id = $1`, [id]);
+}
+
+// ===========================================================================
+// PHASE 8 TASK 6: THE RETENTION JOB
+// ===========================================================================
+
+export interface RetentionRunRead {
+  id: string;
+  mode: string;
+  status: string;
+}
+
+/** Every retention run, newest first. The e2e reads this to prove that the
+ *  PREVIEW the founder pressed produced a `dry` run and not a live one. */
+export async function retentionRuns(): Promise<RetentionRunRead[]> {
+  const { rows } = await db().query<{ id: string; mode: string; status: string }>(
+    `select id, mode, status from public.retention_runs order by started_at desc`,
+  );
+  return rows;
+}
+
+/**
+ * WHICH TABLES THE RETENTION JOB CAN DELETE FROM -- DERIVED, NOT LISTED
+ * (Phase 8 Task 6 fix round 1, review finding m4a).
+ *
+ * This was eight literal strings. `private.retention_subjects()` exists so
+ * that exactly this list is DERIVED and refuses to go stale: a ninth sweep
+ * added by a later phase would have been invisible to the
+ * preview-deletes-nothing test without anybody noticing -- the phase's
+ * recurring bug class, in the one file written to answer it.
+ *
+ * The names come from the database, so each is checked against `pg_class`
+ * before it is interpolated into a statement: a derived name is not a
+ * parameter, and it is not a literal either.
+ */
+export async function retentionSweepableTables(): Promise<string[]> {
+  const { rows } = await db().query<{ table_name: string }>(
+    `select s.table_name
+       from private.retention_subjects() s
+       join pg_class c on c.relname = s.table_name and c.relnamespace = 'public'::regnamespace
+      where s.treatment = 'swept' and s.table_name ~ '^[a-z_]+$'
+      order by 1`,
+  );
+  return rows.map((r) => r.table_name);
+}
+
+/**
+ * THE IDENTITY OF EVERY ROW the retention job could delete, per table -- its
+ * primary key, read out of `pg_index` rather than assumed to be `id`
+ * (`rate_limit_counters` has a four-column key).
+ *
+ * KEYS, NOT COUNTS, and that is the third form this assertion has taken:
+ *
+ *   1. A SUM over the tables, asserted equal. It FAILED on a real run with 31
+ *      where 29 was expected, having deleted nothing: a run appends its own
+ *      `retention.swept` row and the page appends `platform_health.viewed`. A
+ *      sum cannot tell an insert from a deletion somewhere else.
+ *   2. A COUNT per table, asserted `>=`. Stronger, and the review (m3)
+ *      confirmed it as a strengthening -- and named its residual: `>=` cannot
+ *      see "deleted two and inserted two IN THE SAME TABLE", and
+ *      `audit_events` grows by exactly that much during the test.
+ *   3. This: every key present BEFORE must be present AFTER. Inserts are
+ *      irrelevant to it and a deletion cannot hide behind one.
+ */
+export async function retentionSweepableRowKeys(): Promise<Record<string, Set<string>>> {
+  const keys: Record<string, Set<string>> = {};
+  for (const table of await retentionSweepableTables()) {
+    const pk = await db().query<{ attname: string }>(
+      `select a.attname
+         from pg_index i
+         join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any(i.indkey)
+        where i.indrelid = ('public.' || $1)::regclass and i.indisprimary
+        order by array_position(i.indkey::int2[], a.attnum)`,
+      [table],
+    );
+    const columns = pk.rows.map((r) => r.attname).filter((c) => /^[a-z_]+$/.test(c));
+    if (columns.length === 0) throw new Error(`public.${table} has no primary key to identify a row by`);
+    const expression = columns.map((c) => `"${c}"::text`).join(" || '|' || ");
+    const { rows } = await db().query<{ k: string }>(`select ${expression} as k from public."${table}"`);
+    keys[table] = new Set(rows.map((r) => r.k));
+  }
+  return keys;
+}
+
+/**
+ * ONE ROW PAST ITS PERIOD IN EACH OF FOUR SWEEPS, so "the preview deleted
+ * nothing" is a claim about rows a LIVE run WOULD HAVE TAKEN (review finding
+ * m3, second half).
+ *
+ * The denominator used to be "the tables are not all empty". That is true of
+ * any fixture world and says nothing about whether there was anything to
+ * delete: a preview that deleted every EXPIRED row in a world with no expired
+ * rows deletes nothing and passes. These four are expired by construction, the
+ * test asserts the preview COUNTED each of them, and then that each is still
+ * there.
+ */
+export async function plantExpiredRetentionSubjects(userId: string): Promise<{
+  keys: Record<string, string>;
+  remove: () => Promise<void>;
+}> {
+  const tag = randomUUID();
+  const counter = await db().query<{ k: string }>(
+    `insert into public.rate_limit_counters (category, subject_scope, subject_id, window_start, request_count)
+     values ('search', 'user', $1, now() - interval '30 days', 1)
+     returning category || '|' || subject_scope || '|' || subject_id::text || '|' || window_start::text as k`,
+    [tag],
+  );
+  const alert = await db().query<{ id: string }>(
+    `insert into public.incident_alerts
+       (alert_type, summary, details, created_at, resolved_at, auto_resolved_reason)
+     values ('rate_limit_tripped', 'E2E expired retention fixture', '{}'::jsonb,
+             now() - interval '3 years', now() - interval '2 years', 'alert_writer_recovered')
+     returning id`,
+  );
+  const feedback = await db().query<{ id: string }>(
+    `insert into public.feedback (user_id, category, message, route, created_at)
+     values ($1, 'other', 'E2E expired retention fixture', '/e2e', now() - interval '3 years')
+     returning id`,
+    [userId],
+  );
+  const audit = await db().query<{ id: string }>(
+    `insert into public.audit_events
+       (organisation_id, actor_user_id, action, target_type, correlation_id, created_at)
+     values (null, $1, 'e2e.expired_retention_fixture', 'platform', gen_random_uuid(),
+             now() - interval '3 years')
+     returning id`,
+    [userId],
+  );
+  return {
+    keys: {
+      rate_limit_counters: counter.rows[0].k,
+      incident_alerts: alert.rows[0].id,
+      feedback: feedback.rows[0].id,
+      audit_events: audit.rows[0].id,
+    },
+    remove: async () => {
+      await sql(`delete from public.rate_limit_counters where subject_id = '${tag}'`);
+      await sql(`delete from public.incident_alerts where summary = 'E2E expired retention fixture'`);
+      await sql(`delete from public.feedback where message = 'E2E expired retention fixture'`);
+      await sql(`delete from public.audit_events where action = 'e2e.expired_retention_fixture'`);
+    },
+  };
+}
+
+/** What the most recent run COUNTED, read out of the run log. */
+export async function latestRetentionRunSwept(): Promise<Record<string, number | boolean>> {
+  const { rows } = await db().query<{ swept: Record<string, number | boolean> }>(
+    `select swept from public.retention_runs order by started_at desc limit 1`,
+  );
+  return rows[0]?.swept ?? {};
+}
+
+/**
+ * Plant one completed retention run, so the panel can be scanned POPULATED.
+ *
+ * Planted rather than driven, for public.incident_alerts' reason: the table
+ * has no INSERT grant or policy for any client role, the only writer is a
+ * SECURITY DEFINER function the runner calls, and a real run inside an axe
+ * test would make the scan depend on a sweep's timing. What is being scanned
+ * is the RENDERING of a run -- its counts, its capped note and its refusal
+ * line -- and that is the same markup whichever way the row arrived.
+ *
+ * It carries a REFUSAL as well as counts, because the refusal line is the
+ * one piece of this panel that only exists when something has gone wrong,
+ * and an empty-state scan of it would miss the component entirely.
+ */
+export async function plantRetentionRun(): Promise<string> {
+  const { rows } = await db().query<{ id: string }>(
+    `insert into public.retention_runs
+       (correlation_id, mode, status, finished_at, duration_ms, swept, refused)
+     values (gen_random_uuid(), 'live', 'completed', now(), 12,
+             '{"audit_events.rows": 0, "audit_events.capped": false,
+               "feedback.rows": 2, "organisations.purged": 0}'::jsonb,
+             '{"documents": "bytes_not_purged"}'::jsonb)
+     returning id`,
+  );
+  return rows[0].id;
+}
+
+/** Remove the runs and the summary audit rows a spec's previews created. */
+export async function clearRetentionRuns(): Promise<void> {
+  await sql(`delete from public.audit_events where action = 'retention.swept'`);
+  // A LIVE run that carries a refusal files a `retention_run_refused` alert
+  // (20261004004000) -- plantRetentionRun() plants exactly such a run, so the
+  // alert it caused goes with it or it outlives the spec on /super/health.
+  await sql(`delete from public.incident_alerts where alert_type = 'retention_run_refused'`);
+  await sql(`delete from public.retention_runs`);
+}
+
+/** The audit purge ceiling release as the database holds it (Q184): the
+ *  window length in hours, the reason, and how many release audit rows exist. */
+export async function auditCeilingRelease(): Promise<{
+  hours: number | null;
+  reason: string | null;
+  audited: number;
+}> {
+  const { rows } = await db().query<{ hours: string | null; reason: string | null; audited: string }>(
+    `select extract(epoch from s.audit_ceiling_release_expires_at - s.audit_ceiling_released_at) / 3600 as hours,
+            s.audit_ceiling_release_reason as reason,
+            (select count(*) from public.audit_events a
+              where a.action = 'retention.audit_ceiling_released') as audited
+       from public.retention_settings s`,
+  );
+  return {
+    hours: rows[0]?.hours === null || rows[0]?.hours === undefined ? null : Number(rows[0].hours),
+    reason: rows[0]?.reason ?? null,
+    audited: Number(rows[0]?.audited ?? 0),
+  };
+}
+
+/** Clear any ceiling release and its audit rows, so no spec leaves the
+ *  audit purge's sanity ceiling lifted for 72 hours. */
+export async function clearAuditCeilingRelease(): Promise<void> {
+  await sql(
+    `update public.retention_settings
+        set audit_ceiling_released_at = null, audit_ceiling_release_expires_at = null,
+            audit_ceiling_release_reason = null`,
+  );
+  await sql(`delete from public.audit_events where action = 'retention.audit_ceiling_released'`);
+}
+
+// ===========================================================================
+// PHASE 8 TASK 9a (Q185): A DOCUMENT THE RETENTION POLICY PURGED
+// ===========================================================================
+
+export const PURGED_DOCUMENT_NAMES = {
+  /** Deleted three years ago, bytes purged by the retention job. */
+  purged: "E2E Purged Settlement.pdf",
+  /** Deleted yesterday, file kept -- the Restore control's denominator. */
+  kept: "E2E Kept Rider.pdf",
+} as const;
+
+/** A fixed purge instant: 23:30 UTC on 14 June is 15 Jun in London (BST). */
+export const PURGED_AT = "2026-06-14T23:30:00Z";
+
+/**
+ * Plant two DELETED documents in the world's workspace, owned by the manager:
+ * one whose bytes the retention job has purged, one whose file is kept. As
+ * `postgres`, because no client role can write `bytes_purged_at` -- it is the
+ * sweep's column (rls_phase8_retention.sql RK7/RK18). No object is put in the
+ * bucket for either: the restore queue reads metadata only.
+ */
+export async function plantPurgedAndKeptDocuments(
+  world: E2eWorld,
+): Promise<{ purgedId: string; keptId: string }> {
+  const purgedId = randomUUID();
+  const keptId = randomUUID();
+  await sql(
+    `insert into public.documents
+       (id, organisation_id, owner_user_id, filename, storage_key, mime_type,
+        size_bytes, scan_status, scanned_at, deleted_at, bytes_purged_at)
+     values ($1::uuid, $3::uuid, $4::uuid, $5, $6, 'application/pdf', 10, 'clean', now(),
+             now() - interval '3 years', $9::timestamptz),
+            ($2::uuid, $3::uuid, $4::uuid, $7, $8, 'application/pdf', 10, 'clean', now(),
+             now() - interval '1 day', null)`,
+    [
+      purgedId,
+      keptId,
+      world.orgId,
+      world.users.manager.id,
+      PURGED_DOCUMENT_NAMES.purged,
+      `${world.orgId}/${purgedId}`,
+      PURGED_DOCUMENT_NAMES.kept,
+      `${world.orgId}/${keptId}`,
+      PURGED_AT,
+    ],
+  );
+  return { purgedId, keptId };
+}
+
+/** `deleted/purged` as two booleans, e.g. `true/true`; `missing` if absent. */
+export async function documentDeletionState(id: string): Promise<string> {
+  const { rows } = await db().query<{ s: string }>(
+    `select (deleted_at is not null)::text || '/' || (bytes_purged_at is not null)::text as s
+       from public.documents where id = $1`,
+    [id],
+  );
+  return rows[0]?.s ?? "missing";
+}
+
+// ===========================================================================
+// PHASE 7 TASK 6: IN-APP FEEDBACK
+// ===========================================================================
+
+export interface FeedbackRowRead {
+  id: string;
+  userId: string;
+  userEmail: string | null;
+  organisationId: string | null;
+  organisationRole: string | null;
+  route: string;
+  category: string;
+  status: string;
+  screenshotScanStatus: string | null;
+  notifiedAt: string | null;
+  /** Q121's label, stamped by the trigger from the caller's own session --
+   *  read here so the impersonation walk can prove the app EARNED it rather
+   *  than a fixture planting it. */
+  duringSupportAccess: boolean;
+}
+
+/**
+ * The row the submit dialog wrote, read STRAIGHT OUT OF POSTGRES. No client
+ * role can read `feedback` except the aal2 superuser, and asserting what the
+ * trigger stamped (user, email, role, route) through the UI that displays it
+ * proves less than reading the table.
+ */
+export async function feedbackRowByMessage(message: string): Promise<FeedbackRowRead | null> {
+  const result = await db().query<{
+    id: string; user_id: string; user_email: string | null; organisation_id: string | null;
+    organisation_role: string | null; route: string; category: string; status: string;
+    screenshot_scan_status: string | null; notified_at: string | null;
+    during_support_access: boolean;
+  }>(
+    `select id, user_id, user_email, organisation_id, organisation_role, route, category, status,
+            screenshot_scan_status, notified_at, during_support_access
+       from public.feedback where message = $1 order by created_at desc limit 1`,
+    [message],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    userEmail: row.user_email,
+    organisationId: row.organisation_id,
+    organisationRole: row.organisation_role,
+    route: row.route,
+    category: row.category,
+    status: row.status,
+    screenshotScanStatus: row.screenshot_scan_status,
+    notifiedAt: row.notified_at,
+    duringSupportAccess: row.during_support_access,
+  };
+}
+
+/** Audit rows of one action naming one feedback row. `feedback.screenshot_viewed`
+ *  is the one the brief cares about: it must be exactly the number of times
+ *  the real link was followed. */
+export async function countFeedbackAudit(action: string, feedbackId: string): Promise<number> {
+  const result = await db().query<{ count: string }>(
+    `select count(*)::text as count from public.audit_events
+      where target_type = 'feedback' and action = $1 and target_id = $2`,
+    [action, feedbackId],
+  );
+  return Number(result.rows[0]?.count ?? "0");
+}
+
+/**
+ * Plant a feedback row as `postgres` (the trigger passes a sessionless writer
+ * through, so user/role are supplied here) -- for the scans that need the
+ * list POPULATED without walking the dialog again.
+ */
+export async function plantFeedback(
+  userId: string,
+  organisationId: string | null,
+  organisationRole: string | null,
+  message: string,
+  /** Q121: the "Sent during support access" label. Planted here rather than
+   *  earned through a real impersonation session, because what this fixture
+   *  feeds is a RENDER test -- that the operator's list shows the label
+   *  instead of "Not inside a workspace". That the label can only be EARNED by
+   *  a live impersonating superuser, and cannot be forged by a member, is
+   *  supabase/tests/rls_phase7_feedback.sql § FX's job and is proved there
+   *  from a real session's claims. */
+  duringSupportAccess = false,
+  /** The route the submitter was on. Defaults to the planted marker. */
+  route = "/planted",
+): Promise<string> {
+  const result = await db().query<{ id: string }>(
+    `insert into public.feedback (user_id, user_email, organisation_id, organisation_role, category, message, route, during_support_access)
+     select $1, u.email, $2, $3, 'other', $4, $5, $6 from auth.users u where u.id = $1
+     returning id`,
+    [userId, organisationId, organisationRole, message, route, duringSupportAccess],
+  );
+  return result.rows[0].id;
+}
+
+/**
+ * Spend a user's whole hourly feedback budget in one write, so the NEXT real
+ * submission through the dialog is the refused one. The window arithmetic is
+ * the database's own (private.rate_limit_window_start), so the row lands in
+ * the bin the trigger will read.
+ */
+export async function fillFeedbackBudget(userId: string): Promise<void> {
+  await sql(
+    `insert into public.rate_limit_counters (category, subject_scope, subject_id, window_start, request_count)
+     select 'feedback', 'user', $1,
+            private.rate_limit_window_start(now(), p.window_seconds), p.max_requests
+       from public.rate_limit_policies p where p.category = 'feedback'
+     on conflict (category, subject_scope, subject_id, window_start)
+       do update set request_count = excluded.request_count`,
+    [userId],
+  );
+}
+
+/** How many objects the feedback bucket holds -- read straight out of
+ *  storage.objects, so the e2e can assert that a REFUSED submission with a
+ *  screenshot attached wrote nothing (Task 6 fix round 1, I1: the upload used
+ *  to run before the metered insert). */
+export async function countFeedbackScreenshotObjects(): Promise<number> {
+  const result = await db().query<{ count: string }>(
+    `select count(*)::text as count from storage.objects where bucket_id = 'feedback-screenshots'`,
+  );
+  return Number(result.rows[0]?.count ?? "0");
+}
+
+/** Everything this feature writes for a set of users: rows, counters, the
+ *  crossing alerts, and their audit rows (which would otherwise block the
+ *  users' hard delete, the Task 1 teardown rule). */
+export async function clearFeedbackState(userIds: string[]): Promise<void> {
+  await sql(
+    `delete from public.incident_alerts
+      where details->>'category' = 'feedback' and details->>'subject_id' = any($1::text[])`,
+    [userIds],
+  );
+  await sql(`delete from public.audit_events where target_type = 'feedback'`);
+  await sql(`delete from public.feedback where user_id = any($1::uuid[])`, [userIds]);
+  await sql(
+    `delete from public.rate_limit_counters where category = 'feedback' and subject_id = any($1::uuid[])`,
+    [userIds],
+  );
+}
+
+/** See expireBillingOverride() -- the feature-override twin, same fix. */
+export async function expireFeatureOverride(
+  organisationId: string,
+  flagKey: string,
+): Promise<void> {
+  await sql(
+    `update public.organisation_feature_overrides
+        set starts_at  = now() - interval '2 hours',
+            expires_at = now() - interval '1 minute'
+      where organisation_id = $1 and flag_key = $2 and revoked_at is null`,
+    [organisationId, flagKey],
+  );
+}
+
+/**
+ * PHASE 7 TASK 3. The organisation-lifecycle audit trail, read STRAIGHT OUT OF
+ * POSTGRES as `postgres` -- same reasoning as the impersonation reader below:
+ * nobody can read audit_events through the app except the platform superuser,
+ * and asserting a trail through the very policy a bug in it could be hiding
+ * behind proves less than reading the table.
+ *
+ * Returns `action` and the operator's reason, in order. The reason is the half
+ * that cannot be checked anywhere else: CLAUDE.md § Superuser dashboard makes
+ * it mandatory, and "mandatory" is only true if what the operator typed in the
+ * browser is what landed on the record.
+ */
+export async function organisationLifecycleAudit(
+  organisationId: string,
+): Promise<{ action: string; reason: string | null }[]> {
+  const result = await db().query<{ action: string; reason: string | null }>(
+    `select action, after->>'reason' as reason
+       from public.audit_events
+      where organisation_id = $1
+        and action in ('organisation.suspended','organisation.deleted','organisation.reinstated')
+      order by created_at, id`,
+    [organisationId],
+  );
+  return result.rows.map((r) => ({ action: r.action, reason: r.reason }));
+}
+
+/**
+ * PHASE 7 TASK 2. The impersonation audit trail for one organisation, read
+ * STRAIGHT OUT OF POSTGRES as `postgres`.
+ *
+ * Same shape and same reasoning as `countAuditLogViewedRows` above: bypassing
+ * RLS on purpose, so what the spec asserts about the trail is not read back
+ * through the very audit_events policy a bug in it could be hiding behind --
+ * and, more to the point here, because NOBODY can read this through the app.
+ * audit_events is superuser-only, and the impersonating superuser is in the
+ * middle of the session being audited.
+ *
+ * Returns the action strings in order. The e2e assertion that matters is
+ * COMPLETENESS -- request, accept, start, at least one page_viewed, end --
+ * because the browser walk is the only place a MISSED page access can be
+ * observed at all: the psql suite calls the audit RPC directly and therefore
+ * proves the RPC works, not that the app reaches it on every page.
+ */
+export async function impersonationAuditActions(
+  organisationId: string,
+): Promise<string[]> {
+  const result = await db().query<{ action: string }>(
+    `select action from public.audit_events
+      where organisation_id = $1 and target_type = 'impersonation_session'
+      order by created_at, id`,
+    [organisationId],
+  );
+  return result.rows.map((r) => r.action);
+}
+
+export interface CrmAuditRowRead {
+  action: string;
+  target_type: string;
+  organisation_id: string | null;
+  actor_user_id: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+}
+
+/**
+ * PHASE 8 TASK 7 (Q122). Every audit row for one CRM target, oldest first,
+ * straight out of Postgres as `postgres` -- the SERVER-ACTION half of "a
+ * direct PostgREST write is audited identically to a server action"
+ * (`tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts` is
+ * the other half). Both halves compare the payload's keys against
+ * `crmAuditAllowlist()` below, read from the database, so "identically"
+ * means "held to the same list", not "two tests that happen to agree".
+ */
+export async function crmAuditRows(targetId: string): Promise<CrmAuditRowRead[]> {
+  const result = await db().query<CrmAuditRowRead>(
+    `select action, target_type, organisation_id, actor_user_id, before, after
+       from public.audit_events where target_id = $1
+      order by created_at, id`,
+    [targetId],
+  );
+  return result.rows;
+}
+
+/** The ids of a task's link rows, so their audit rows can be read. */
+export async function taskLinkIdsFor(taskId: string): Promise<string[]> {
+  const result = await db().query<{ id: string }>(
+    `select id from public.task_links where parent_id = $1 order by created_at`,
+    [taskId],
+  );
+  return result.rows.map((r) => r.id);
+}
+
+/** `private.audit_crm_value_columns(target)`, sorted: the ONE allowlist. */
+export async function crmAuditAllowlist(target: string): Promise<string[]> {
+  const result = await db().query<{ c: string[] }>(
+    `select private.audit_crm_value_columns($1) as c`,
+    [target],
+  );
+  return [...result.rows[0].c].sort();
+}
+
+/**
+ * PHASE 7 TASK 2. Every DISTINCT route recorded against this organisation's
+ * impersonation page views, in order of first appearance.
+ *
+ * The spec uses it to prove two things at once: that the routes the browser
+ * actually visited are all there, and that nothing beyond a route string
+ * reached the audit -- `after` is asserted to have the single key `route` by
+ * the psql suite (§ IA6); this reads the values so the browser walk can say
+ * WHICH pages it recorded.
+ */
+export async function impersonationAuditedRoutes(
+  organisationId: string,
+): Promise<string[]> {
+  const result = await db().query<{ route: string }>(
+    `select distinct on (after->>'route') after->>'route' as route
+       from public.audit_events
+      where organisation_id = $1 and action = 'impersonation.page_viewed'
+      order by after->>'route'`,
+    [organisationId],
+  );
+  return result.rows.map((r) => r.route);
+}
+
+/**
  * Build the world. Returns everything a test needs to address it by id.
  *
  * The suffix is per-run rather than fixed, so a crashed run leaves rows that
@@ -789,6 +1605,10 @@ export async function setUpWorld(): Promise<E2eWorld> {
   const orgId = randomUUID();
   const otherOrgId = randomUUID();
   const orgSlug = `e2e-${suffix}`;
+  // The workspace's NAME, not only its slug: since Phase 8 Task 3's fix round
+  // the DSR routing form makes the operator confirm a workspace by name
+  // before it writes, and the requester is told which business was asked.
+  const orgName = `E2E ${suffix}`;
   const otherOrgSlug = `e2e-other-${suffix}`;
 
   const users: Record<E2eRole, E2eUser> = {
@@ -803,6 +1623,23 @@ export async function setUpWorld(): Promise<E2eWorld> {
     // tier -- not the role -- is what refuses the Starter write.
     finance: await createUser(`e2e-finance-${suffix}@test.local`),
     booker: await createUser(`e2e-booker-${suffix}@test.local`),
+    // ---- PHASE 7 TASK 7 ---------------------------------------------------
+    // Members of `orgId`, like manager/standard_user/read_only, so an
+    // Owner/Admin-only surface is rendered in the workspace this suite
+    // actually fills with records. Their TOTP factors are enrolled below,
+    // beside `financeTotpSecret`, and must exist before any browser signs in
+    // as them or the app renders the ENROL gate instead of the CHALLENGE gate.
+    //
+    // DELIBERATELY SEPARATE FROM `orgAdmin`, which is also an admin of
+    // `orgId`. `orgAdmin` is the impersonation consent-giver, driven in its
+    // own browser context alongside a superuser context in
+    // impersonation.spec.ts; pointing the role-addressed `admin` persona at
+    // the same account would put two concurrently-driven contexts on one
+    // auth user and make an unrelated spec's failure look like this one's.
+    // Two admins of one workspace perturbs nothing else -- no spec in this
+    // directory reads /[orgSlug]/members or counts memberships (grepped).
+    owner: await createUser(`e2e-owner-${suffix}@test.local`),
+    admin: await createUser(`e2e-admin-${suffix}@test.local`),
   };
   // The other tenant's owner. Never signed in as -- they exist so the second
   // organisation has a member, which is what makes its rows real rather than
@@ -815,14 +1652,30 @@ export async function setUpWorld(): Promise<E2eWorld> {
 
   await sql(
     `insert into public.organisations (id, name, slug) values ($1,$2,$3), ($4,$5,$6)`,
-    [orgId, `E2E ${suffix}`, orgSlug, otherOrgId, `E2E Other ${suffix}`, otherOrgSlug],
+    [orgId, orgName, orgSlug, otherOrgId, `E2E Other ${suffix}`, otherOrgSlug],
   );
 
-  // NO organisation_subscriptions ROW ON PURPOSE.
-  // `private.crm_write_organisations()` treats "no subscription" as "not yet
-  // billed, not yet gated" (20260828140000). A Starter row would work too; no
-  // row is the state a freshly created workspace is actually in today, so it is
-  // the state the golden path should be walked in.
+  // A REAL Starter subscription row for both, WHERE THIS USED TO SAY "NO ROW
+  // ON PURPOSE". PHASE 7 TASK A (20260908000000) removed private.crm_write_
+  // organisations()'s "no subscription row = not yet billed, not yet gated"
+  // escape: public.create_organisation() now writes a Starter row for every
+  // new organisation at birth, and every real workspace has one from the
+  // moment it exists. These two organisations are planted by a direct SQL
+  // insert rather than through create_organisation() (see this file's header
+  // for why), so they need the same row created explicitly, or the golden
+  // path's own CRM writes -- create contact, create event, add artist, add
+  // venue, add task -- would now be refused before a single browser action
+  // ran. Starter, not Pro: nothing walked against these two organisations
+  // needs the finance module (that lives in proOrg/starterOrg below) or an
+  // unlimited custom-field count.
+  await sql(
+    `insert into public.organisation_subscriptions
+       (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+     values ($1,'starter','monthly',3,'active', now() + interval '30 days'),
+            ($2,'starter','monthly',3,'active', now() + interval '30 days')`,
+    [orgId, otherOrgId],
+  );
+
   await sql(
     `insert into public.organisation_memberships
        (organisation_id, user_id, role, status, joined_at)
@@ -830,7 +1683,9 @@ export async function setUpWorld(): Promise<E2eWorld> {
             ($1,$3,'standard_user','active',now()),
             ($1,$4,'read_only','active',now()),
             ($5,$6,'owner','active',now()),
-            ($5,$7,'manager','active',now())`,
+            ($5,$7,'manager','active',now()),
+            ($1,$8,'owner','active',now()),
+            ($1,$9,'admin','active',now())`,
     [
       orgId,
       users.manager.id,
@@ -839,6 +1694,11 @@ export async function setUpWorld(): Promise<E2eWorld> {
       otherOrgId,
       otherOwner.id,
       otherMember.id,
+      // PHASE 7 TASK 7. The first Owner and the first role-addressed Admin of
+      // `orgId` this suite has ever had -- see the `owner`/`admin` arms of
+      // E2eRole for what could not be measured without them.
+      users.owner.id,
+      users.admin.id,
     ],
   );
 
@@ -1185,10 +2045,15 @@ export async function setUpWorld(): Promise<E2eWorld> {
   // =========================================================================
   // TWO ORGANISATIONS THAT EXIST FOR THEIR SUBSCRIPTION ROWS.
   //
-  // The main organisation above has none on purpose, so
-  // `private.finance_module_organisations()` exempts it ("not yet billed => not
-  // yet gated") and a finance write there would be permitted by the ESCAPE
-  // rather than by the tier. These two carry real rows -- 'pro' and 'starter',
+  // The main organisation above now carries a real STARTER row (Phase 7 Task
+  // A), whose finance_module is false -- so a finance write there is refused
+  // by the TIER. That is a REAL FLIP from before Task A, not the same outcome:
+  // the main org previously had NO subscription row, and private.finance_
+  // module_organisations()'s "not yet billed => not yet gated" escape (still
+  // untouched by Task A -- see this file's earlier finance-organisations
+  // comment for why) ALLOWED finance writes there, not refused them. Either
+  // way it is still not what this section is testing. These two carry real
+  // rows -- 'pro' and 'starter',
   // both `active` with a period end in the future, so neither is inside the
   // past_due grace branch -- which makes the Pro gate's OPEN and CLOSED states
   // both reachable from a browser for the first time.
@@ -1235,6 +2100,71 @@ export async function setUpWorld(): Promise<E2eWorld> {
   // as this user, or the app renders the ENROL gate instead of the CHALLENGE
   // gate `signIn` walks.
   const financeTotpSecret = await enrolTotp(users.finance.email);
+
+  // PHASE 7 TASK 7. Same reason, same shape, for the two MFA-required roles
+  // this suite gained. A stubbed challenge would leave both at aal1, and
+  // `has_permission()` refuses an owner/admin membership at aal1
+  // (20260827210000) -- so their exclusive keys would be held NOT AT ALL and
+  // every Owner/Admin assertion would pass or fail for the MFA reason.
+  const ownerTotpSecret = await enrolTotp(users.owner.email);
+  const adminTotpSecret = await enrolTotp(users.admin.email);
+
+  // =========================================================================
+  // PHASE 7 TASK 1: THE PLATFORM SUPERUSER
+  // =========================================================================
+  // A throwaway auth user, granted `platform_admins` DIRECTLY BY SQL --
+  // exactly the shape `supabase/migrations/20260827210500_seed_platform_
+  // superuser.sql`'s own header says granting one requires ("no client path
+  // exists at all... done the same way [as a DBA action]"), and the same
+  // route `tests/integration/rls/support/fixtures.ts`'s `superuser` persona
+  // uses. Enrolled with a real, verified TOTP factor for the same reason
+  // `financeTotpSecret` is: the platform superuser is MFA-required
+  // (CLAUDE.md § Session security), and a stubbed challenge would prove
+  // nothing about the aal2 gate `has_platform_permission()` actually
+  // enforces on every cross-tenant read this account makes.
+  const superuser = await createUser(`e2e-superuser-${suffix}@test.local`);
+  await sql(`insert into public.platform_admins (user_id) values ($1)`, [
+    superuser.id,
+  ]);
+  const superuserTotpSecret = await enrolTotp(superuser.email);
+
+  // PHASE 7 TASK 2. The Admin of `orgId` who accepts (or declines) an
+  // impersonation request -- see the `orgAdmin` field's own header for why
+  // `users` could not supply one and why this account has to hold a real
+  // TOTP factor.
+  const orgAdmin = await createUser(`e2e-orgadmin-${suffix}@test.local`);
+  await sql(
+    `insert into public.organisation_memberships
+       (organisation_id, user_id, role, status, joined_at)
+     values ($1,$2,'admin','active',now())`,
+    [orgId, orgAdmin.id],
+  );
+  const orgAdminTotpSecret = await enrolTotp(orgAdmin.email);
+
+  // TWO DETERMINISTIC audit_events ROWS, ONE PER TENANT -- see the
+  // `auditProbeAlphaId`/`auditProbeBetaId` fields' own header on E2eWorld
+  // for why these are planted rather than relied on to occur naturally.
+  // `postgres`-inserted directly, the same route every other planted
+  // fixture row in this file uses; audit_events has no INSERT grant for any
+  // client role (private.log_audit_event is the sole write path and is
+  // granted to nobody).
+  const auditProbeAlphaId = randomUUID();
+  const auditProbeBetaId = randomUUID();
+  await sql(
+    `insert into public.audit_events
+       (id, organisation_id, actor_user_id, action, target_type, target_id, correlation_id, created_at)
+     values
+       ($1, $2, $3, 'e2e.audit_probe_alpha', 'probe', gen_random_uuid(), gen_random_uuid(), now()),
+       ($4, $5, $6, 'e2e.audit_probe_beta',  'probe', gen_random_uuid(), gen_random_uuid(), now())`,
+    [
+      auditProbeAlphaId,
+      orgId,
+      users.manager.id,
+      auditProbeBetaId,
+      otherOrgId,
+      otherOwner.id,
+    ],
+  );
 
   const proEventId = randomUUID();
   const proLedgerEventId = randomUUID();
@@ -1489,6 +2419,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
 
   return {
     orgSlug,
+    orgName,
     orgId,
     otherOrgSlug,
     otherOrgId,
@@ -1529,6 +2460,14 @@ export async function setUpWorld(): Promise<E2eWorld> {
     starterEntryId,
     otherOrgFinanceEntryId,
     financeTotpSecret,
+    ownerTotpSecret,
+    adminTotpSecret,
+    superuser,
+    superuserTotpSecret,
+    orgAdmin,
+    orgAdminTotpSecret,
+    auditProbeAlphaId,
+    auditProbeBetaId,
     users,
     otherOwner,
     otherMember,
@@ -1572,6 +2511,43 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
   await sql(`delete from public.organisations where id = any($1::uuid[])`, [
     [world.orgId, world.otherOrgId, world.proOrgId, world.starterOrgId, world.freeOrgId],
   ]);
+
+  // =========================================================================
+  // PHASE 7 TASK 1: audit_events ROWS MUST GO BEFORE THE USERS THEY NAME
+  // =========================================================================
+  // `audit_events.actor_user_id` deliberately carries NO `ON DELETE
+  // CASCADE`/`SET NULL` (20260826151656_foundation_schema.sql's own
+  // comment: "audit records must survive an actor account being removed...
+  // a hard delete of auth.users is blocked while audit history references
+  // it"). Organisation deletion above only SETS NULL on `organisation_id`
+  // -- the actor reference survives it -- so by this point every row this
+  // run's users ever wrote into audit_events (the two planted probes,
+  // AND anything a real action incidentally audited: a document
+  // upload/download/delete, a network profile publish, a merge) still
+  // names a `users`/`otherOwner`/`otherMember`/`freeMember`/`superuser` id
+  // this function is about to hard-delete via the Admin API. Left in
+  // place, that DELETE would fail at the database with a foreign-key
+  // violation -- silently, because the loop below never checks the Admin
+  // API's response -- and the auth user would leak forever. `postgres`
+  // (this file's `sql()`) can delete rows from a table with zero client
+  // GRANTs the same way it can insert into one; this is the teardown half
+  // of the same bypass `setUpWorld` uses to plant them.
+  const thisRunsUserIds = [
+    ...Object.values(world.users).map((u) => u.id),
+    world.otherOwner.id,
+    world.freeMember.id,
+    world.otherMember.id,
+    world.superuser.id,
+    // PHASE 7 TASK 2. This account ACCEPTS an impersonation request, and
+    // public.accept_impersonation_request() audits that acceptance with the
+    // accepting admin as actor_user_id -- so it acquires audit rows that
+    // block its own hard delete exactly like every id above it.
+    world.orgAdmin.id,
+  ];
+  await sql(`delete from public.audit_events where actor_user_id = any($1::uuid[])`, [
+    thisRunsUserIds,
+  ]);
+
   // THE OTHER TENANT'S OWNER IS DELETED BY ID, LIKE EVERY OTHER USER
   // (Task 8; the deferred minor this closes).
   //
@@ -1587,8 +2563,12 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
   //
   // THE COUNTS IN THIS PARAGRAPH ARE RE-COUNTED, NOT COPIED. It used to say
   // "this suite creates four per run and the psql suite creates twelve", and
-  // both numbers had gone stale: `setUpWorld` creates EIGHT (five `E2eRole`
-  // personas, `otherOwner`, `freeMember`, `otherMember`) and
+  // both numbers had gone stale: `setUpWorld` creates TWELVE (SEVEN `E2eRole`
+  // personas since Phase 7 Task 7 added `owner` and `admin`, `otherOwner`,
+  // `freeMember`, `otherMember`, the platform `superuser` from Phase 7 Task 1,
+  // and `orgAdmin` from Phase 7 Task 2 -- and the two new personas need no
+  // line of their own here or in the loop below, because both are inside
+  // `Object.values(world.users)`) and
   // `supabase/tests/run-rls-tests.sh` creates NINETEEN (five in its opening
   // loop, twelve for the Phase 2 suite, and two counterparties for the Phase 6
   // network-leakage suite). The thousand-row argument is unchanged and is why
@@ -1598,6 +2578,8 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
     world.otherOwner,
     world.freeMember,
     world.otherMember,
+    world.superuser,
+    world.orgAdmin,
   ]) {
     await api(`/auth/v1/admin/users/${user.id}`, {
       key: serviceRoleKey,
@@ -1605,4 +2587,632 @@ export async function tearDownWorld(world: E2eWorld): Promise<void> {
     });
   }
   await closeDb();
+}
+
+// ===========================================================================
+// PHASE 8 TASK 1: THE LEGAL DOCUMENT STORE
+// ===========================================================================
+// The e2e walk drafts, publishes and reviews a real version of one legal
+// document. The immutability guard (20260922000000) refuses the undo for
+// every role, by design, so restoring the seed is done with triggers off --
+// `session_replication_role = replica`, set LOCAL inside one transaction on one
+// pooled connection so it cannot leak to another query.
+
+export interface LegalDocumentRow {
+  id: string;
+  version: number;
+  status: string;
+  body: string;
+  counsel_reviewed_at: string | null;
+  counsel_reviewer: string | null;
+}
+
+/** Every version of one document, oldest first, read as `postgres`. */
+export async function legalDocumentVersions(slug: string): Promise<LegalDocumentRow[]> {
+  const result = await db().query<LegalDocumentRow>(
+    `select id, version, status, body, counsel_reviewed_at, counsel_reviewer
+       from public.legal_documents where slug = $1 order by version`,
+    [slug],
+  );
+  return result.rows;
+}
+
+/** The legal audit actions one actor wrote, with their `after` payloads. */
+export async function legalAuditRows(
+  actorUserId: string,
+): Promise<{ action: string; after: string }[]> {
+  const result = await db().query<{ action: string; after: string }>(
+    `select action, coalesce(after::text, '') as after from public.audit_events
+      where target_type = 'legal_document' and actor_user_id = $1
+      order by created_at`,
+    [actorUserId],
+  );
+  return result.rows;
+}
+
+/**
+ * Put one document back to its seeded version 1: delete every later version
+ * and every legal audit row this actor wrote, and republish version 1 as it
+ * was (unreviewed). Idempotent, so an afterAll can call it unconditionally.
+ */
+export async function restoreLegalDocumentSeed(slug: string, actorUserId: string): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local session_replication_role = replica");
+    await client.query(
+      `delete from public.audit_events where target_type = 'legal_document' and actor_user_id = $1`,
+      [actorUserId],
+    );
+    await client.query(`delete from public.legal_documents where slug = $1 and version > 1`, [slug]);
+    await client.query(
+      `update public.legal_documents
+          set status = 'published', superseded_at = null,
+              counsel_reviewed_at = null, counsel_reviewer = null, counsel_review_recorded_by = null
+        where slug = $1 and version = 1`,
+      [slug],
+    );
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ===========================================================================
+// PHASE 8 TASK 2: THE CONSENT LEDGER
+// ===========================================================================
+// Read straight out of Postgres as `postgres`, so "the history shows both
+// events" is measured in the table rather than through the page that renders
+// it. The ledger is append-only for every role (20260923000000), so clearing
+// it runs with triggers off, set LOCAL on one pooled connection.
+
+export interface ConsentRowRead {
+  action: string;
+  policy_slug: string;
+  policy_version: number;
+  mechanism: string;
+  statement: string | null;
+  has_granted_at: boolean;
+  has_withdrawn_at: boolean;
+  withdraws_previous: boolean;
+}
+
+/** One person's consent events, oldest first. */
+export async function consentEvents(userId: string): Promise<ConsentRowRead[]> {
+  const result = await db().query<ConsentRowRead>(
+    `select c.action, c.policy_slug, c.policy_version, c.mechanism,
+            c.technical_context->>'statement' as statement,
+            c.granted_at is not null as has_granted_at,
+            c.withdrawn_at is not null as has_withdrawn_at,
+            (c.withdraws_id is not null and c.withdraws_id = lag(c.id) over (order by c.seq)) as withdraws_previous
+       from public.consents c where c.user_id = $1 order by c.seq`,
+    [userId],
+  );
+  return result.rows;
+}
+
+/** The audit actions one person's consent events wrote, oldest first. */
+export async function consentAuditActions(userId: string): Promise<string[]> {
+  const result = await db().query<{ action: string }>(
+    `select action from public.audit_events
+      where target_type = 'consent' and actor_user_id = $1 order by created_at, id`,
+    [userId],
+  );
+  return result.rows.map((r) => r.action);
+}
+
+/** The current published version of the marketing preferences page. */
+export async function marketingPolicyVersion(): Promise<number> {
+  const result = await db().query<{ version: number }>(
+    `select version from public.legal_documents where slug = 'marketing-preferences' and status = 'published'`,
+  );
+  return result.rows[0].version;
+}
+
+/** Remove these people's consent events, audit rows and grant counters. */
+// ---------------------------------------------------------------------------
+// Phase 8 Task 3: data subject requests.
+// ---------------------------------------------------------------------------
+
+export interface DsrRowRead {
+  id: string;
+  right_type: string;
+  subject_scope: string;
+  status: string;
+  detail: string;
+  rejection_reason: string | null;
+  routed_to_organisation_id: string | null;
+  routed_to_organisation_name: string | null;
+  days_to_due: number;
+}
+
+/** One person's requests, oldest first, read straight out of Postgres. */
+export async function dataSubjectRequests(userId: string): Promise<DsrRowRead[]> {
+  const result = await db().query<DsrRowRead>(
+    `select d.id, d.right_type, d.subject_scope, d.status, d.detail, d.rejection_reason,
+            d.routed_to_organisation_id, d.routed_to_organisation_name,
+            round(extract(epoch from (d.due_by - d.requested_at)) / 86400)::int as days_to_due
+       from public.data_subject_requests d where d.user_id = $1 order by d.seq`,
+    [userId],
+  );
+  return result.rows;
+}
+
+/** The audit actions one person's requests produced, oldest first. */
+export async function dsrAuditActions(userId: string): Promise<string[]> {
+  const result = await db().query<{ action: string }>(
+    `select a.action from public.audit_events a
+       join public.data_subject_requests d on d.id = a.target_id
+      where a.target_type = 'data_subject_request' and d.user_id = $1
+      order by a.created_at, a.id`,
+    [userId],
+  );
+  return result.rows.map((r) => r.action);
+}
+
+/** The operator notes on one request -- nothing in the app may show these to
+ *  the requester, so the spec reads them here to prove they EXIST. */
+export async function dsrNoteBodies(requestId: string): Promise<string[]> {
+  const result = await db().query<{ body: string }>(
+    `select body from public.data_subject_request_notes where request_id = $1 order by created_at`,
+    [requestId],
+  );
+  return result.rows.map((r) => r.body);
+}
+
+/**
+ * Backdate a request so it is overdue.
+ *
+ * The INSERT trigger forces `requested_at = now()` for every writer, which is
+ * exactly what makes the 30-day deadline unforgeable -- and therefore also
+ * what stops a fixture from making an old request the ordinary way. Disabling
+ * the trigger as the table's owner is the deliberate DBA escape hatch the
+ * migration's own header names; it is re-enabled in the same transaction, and
+ * the caller asserts the request is overdue afterwards rather than assuming.
+ */
+export async function backdateDataSubjectRequest(requestId: string, days: number): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query(
+      `alter table public.data_subject_requests disable trigger data_subject_requests_before_update`,
+    );
+    // The AFTER UPDATE audit trigger too: it would log a transition that is
+    // not one, from a sessionless connection that log_audit_event refuses.
+    await client.query(
+      `alter table public.data_subject_requests disable trigger data_subject_requests_audit_transition`,
+    );
+    await client.query(
+      `update public.data_subject_requests set requested_at = now() - make_interval(days => $2) where id = $1`,
+      [requestId, days],
+    );
+    await client.query(
+      `alter table public.data_subject_requests enable trigger data_subject_requests_before_update`,
+    );
+    await client.query(
+      `alter table public.data_subject_requests enable trigger data_subject_requests_audit_transition`,
+    );
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Run the deadline-alert writer the cron job runs, and say how many it wrote. */
+export async function raiseDsrDeadlineAlerts(): Promise<number> {
+  const result = await db().query<{ n: number }>(
+    `select private.raise_dsr_deadline_alerts() as n`,
+  );
+  return Number(result.rows[0].n);
+}
+
+export async function clearDataSubjectRequestState(userIds: string[]): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local session_replication_role = replica");
+    await client.query(
+      `delete from public.incident_alerts where details->>'request_id' in
+         (select id::text from public.data_subject_requests where user_id = any($1::uuid[]))`,
+      [userIds],
+    );
+    await client.query(
+      `delete from public.audit_events where target_type = 'data_subject_request'
+         and target_id in (select id from public.data_subject_requests where user_id = any($1::uuid[]))`,
+      [userIds],
+    );
+    await client.query(
+      `delete from public.data_subject_request_notes where request_id in
+         (select id from public.data_subject_requests where user_id = any($1::uuid[]))`,
+      [userIds],
+    );
+    await client.query(`delete from public.data_subject_requests where user_id = any($1::uuid[])`, [
+      userIds,
+    ]);
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+  await sql(
+    `delete from public.rate_limit_counters where category = 'data_subject_request' and subject_id = any($1::uuid[])`,
+    [userIds],
+  );
+}
+
+export async function clearConsentState(userIds: string[]): Promise<void> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local session_replication_role = replica");
+    await client.query(
+      `delete from public.audit_events where target_type = 'consent' and actor_user_id = any($1::uuid[])`,
+      [userIds],
+    );
+    await client.query(`delete from public.consents where user_id = any($1::uuid[])`, [userIds]);
+    await client.query("commit");
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+  await sql(
+    `delete from public.rate_limit_counters where category = 'consent_grant' and subject_id = any($1::uuid[])`,
+    [userIds],
+  );
+}
+
+// ===========================================================================
+// PHASE 8 TASK 4 -- DATA EXPORTS
+// ===========================================================================
+
+export interface ExportJobRead {
+  id: string;
+  kind: string;
+  organisation_id: string | null;
+  status: string;
+  storage_key: string | null;
+  byte_size: string | null;
+  row_count: string | null;
+  failure_reason: string | null;
+}
+
+/** One person's export jobs, newest first, read straight out of Postgres. */
+export async function exportJobsFor(userId: string): Promise<ExportJobRead[]> {
+  const result = await db().query<ExportJobRead>(
+    `select id, kind, organisation_id, status, storage_key, byte_size, row_count, failure_reason
+       from public.export_jobs where requested_by = $1 order by seq desc`,
+    [userId],
+  );
+  return result.rows;
+}
+
+/** How many downloads have been audited, for the "no audit row, no URL" check. */
+export async function countExportDownloadAudit(jobId: string): Promise<number> {
+  const result = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.audit_events
+      where action = 'export_job.downloaded' and target_id = $1`,
+    [jobId],
+  );
+  return Number(result.rows[0]?.n ?? "0");
+}
+
+/**
+ * Age an archive past its read-time expiry.
+ *
+ * NEEDS THE UPDATE TRIGGER OUT OF THE WAY, and that is itself the evidence
+ * that a finished job is immutable for every writer, postgres included
+ * (private.export_jobs_before_update()). Disabling a trigger as the table's
+ * owner is the deliberate DBA escape hatch; it is re-enabled in the same
+ * statement batch.
+ */
+export async function expireExportArchive(jobId: string): Promise<void> {
+  // Three statements, not one: a PARAMETERISED query may carry only a single
+  // command, and the middle one has to be parameterised.
+  await db().query(`alter table public.export_jobs disable trigger export_jobs_before_update`);
+  try {
+    await db().query(
+      `update public.export_jobs set expires_at = now() - interval '1 day' where id = $1`,
+      [jobId],
+    );
+  } finally {
+    await db().query(`alter table public.export_jobs enable trigger export_jobs_before_update`);
+  }
+}
+
+/** Remove every export job these people made, between specs. */
+export async function clearExportState(userIds: string[]): Promise<void> {
+  if (userIds.length === 0) return;
+  await db().query(
+    `delete from public.audit_events
+      where action in ('export_job.requested','export_job.downloaded')
+        and target_id in (select id from public.export_jobs where requested_by = any($1::uuid[]))`,
+    [userIds],
+  );
+  await db().query(`delete from public.export_jobs where requested_by = any($1::uuid[])`, [userIds]);
+  await db().query(
+    `delete from public.rate_limit_counters where category in ('exports','account_export')`,
+  );
+}
+
+// ===========================================================================
+// PHASE 8 TASK 5 -- ERASURE.
+// ===========================================================================
+// A DISPOSABLE ACCOUNT, and the reason it is disposable rather than one of the
+// world's: the spec's second test DELETES it. Erasing `world.users.manager`
+// would leave every later assertion in that run reading a database the
+// fixtures no longer describe, and tearDownWorld would be deleting an account
+// that is already gone. So the account this suite destroys is one it made.
+
+export async function createDisposableUser(label: string): Promise<E2eUser> {
+  return createUser(`e2e-erase-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`);
+}
+
+/** Does this account still exist? The only fact the erasure e2e needs. */
+export async function accountStillExists(userId: string): Promise<boolean> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from auth.users where id = $1`,
+    [userId],
+  );
+  return rows[0].n !== "0";
+}
+
+export interface ErasureJobRead {
+  readonly id: string;
+  readonly status: string;
+  readonly failureReason: string | null;
+}
+
+/**
+ * The erasure jobs for a subject.
+ *
+ * `subject_user_id` goes NULL by the foreign key when the erasure succeeds,
+ * so this stops returning a completed job -- which is the register keeping
+ * what happened and losing whose it was. A test that wants "did it finish"
+ * asks accountStillExists() instead, and that asymmetry is the feature.
+ */
+export async function erasureJobsFor(userId: string): Promise<ErasureJobRead[]> {
+  const { rows } = await db().query<{ id: string; status: string; failure_reason: string | null }>(
+    `select id, status, failure_reason from public.erasure_jobs
+      where subject_user_id = $1 order by requested_at desc`,
+    [userId],
+  );
+  return rows.map((r) => ({ id: r.id, status: r.status, failureReason: r.failure_reason }));
+}
+
+/** How many erasure jobs exist at all -- the count a refusal must not move. */
+export async function countErasureJobs(): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.erasure_jobs`,
+  );
+  return Number(rows[0].n);
+}
+
+export async function clearErasureState(userIds: string[]): Promise<void> {
+  await db().query(
+    `delete from public.audit_events
+      where action in ('erasure_job.requested','account.erased')`,
+  );
+  await db().query(`delete from public.erasure_jobs`);
+  await db().query(`delete from public.rate_limit_counters where category = 'account_erasure'`);
+  if (userIds.length > 0) {
+    await db().query(`delete from auth.users where id = any($1::uuid[])`, [userIds]);
+  }
+}
+
+/**
+ * PHASE 8 TASK 8. A QUEUED account export owned by `userId`, planted through
+ * the register's own INSERT trigger (the requester is stamped from the claims,
+ * exactly as a real request is) so a refusal of it is a refusal of a REAL row.
+ * It has no archive and nothing runs it; the caller deletes it in a `finally`.
+ */
+export async function plantQueuedAccountExport(userId: string): Promise<string> {
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query(`select set_config('request.jwt.claims', $1, true)`, [
+      JSON.stringify({ sub: userId, role: "authenticated" }),
+    ]);
+    const { rows } = await client.query<{ id: string; requested_by: string }>(
+      `insert into public.export_jobs (kind) values ('account') returning id, requested_by`,
+    );
+    if (rows[0]?.requested_by !== userId) throw new Error("planted export is not the user's");
+    await client.query("commit");
+    return rows[0].id;
+  } catch (err) {
+    await client.query("rollback");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteExportJob(id: string): Promise<void> {
+  await sql(`delete from public.export_jobs where id = $1`, [id]);
+}
+
+/**
+ * PHASE 8 TASK 8 FIX ROUND 1 (review I1). A DOWNLOADABLE account export owned
+ * by `userId`: a real object in the private `exports` bucket and a
+ * `succeeded`, unexpired row pointing at it, so that the ONLY thing between a
+ * caller and a 302 is whether the row is theirs.
+ *
+ * The queued plant above cannot carry that claim: `issueExportDownloadUrl`
+ * 404s a row with no `storage_key` for EVERY caller, its own requester
+ * included, so a refusal of it is row state rather than authorisation.
+ *
+ * Driven through the register's own path, not around it: the INSERT trigger
+ * stamps the requester from the claims, then two updates from a session with
+ * no person on it (the runner's shape) walk queued -> running -> succeeded,
+ * and the UPDATE trigger stamps completed_at and expires_at itself. The bytes
+ * are an empty-but-valid zip (end-of-central-directory record only).
+ */
+export async function plantReadyAccountExport(userId: string): Promise<string> {
+  const id = await plantQueuedAccountExport(userId);
+  const key = `exports/${id}.zip`;
+  const emptyZip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x05, 0x06]), Buffer.alloc(18)]);
+  const { apiUrl, serviceRoleKey } = localStack();
+  const storage = createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  }).storage.from("exports");
+  const { error } = await storage.upload(key, emptyZip, { contentType: "application/zip", upsert: true });
+  if (error) throw new Error(`plantReadyAccountExport upload: ${error.message}`);
+  await db().query(`update public.export_jobs set status = 'running' where id = $1`, [id]);
+  await db().query(
+    `update public.export_jobs
+        set status = 'succeeded', storage_key = $2, byte_size = $3, row_count = 0,
+            table_count = 0, manifest = '{}'::jsonb
+      where id = $1`,
+    [id, key, emptyZip.length],
+  );
+  return id;
+}
+
+/** Remove a planted job AND its archive object. */
+export async function deleteExportJobAndArchive(id: string): Promise<void> {
+  const { apiUrl, serviceRoleKey } = localStack();
+  await createClient(apiUrl, serviceRoleKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  })
+    .storage.from("exports")
+    .remove([`exports/${id}.zip`]);
+  await sql(`delete from public.audit_events where action = 'export_job.downloaded' and target_id = $1`, [id]);
+  await deleteExportJob(id);
+}
+
+// =============================================================================
+// PHASE 8 TASK 9c JOB 3a: A WORKSPACE ITS OWNER CLOSED (/super/closures)
+// =============================================================================
+/**
+ * Plant a workspace with an Owner and a Manager, then close it THROUGH THE
+ * REAL RPC as that Owner at aal2 -- not by writing `lifecycle_state`, which the
+ * lifecycle guard refuses for every writer outside an audited transition. So
+ * the row /super/closures reads carries the real audit row and the real
+ * closure backup job, exactly as an Owner's click would leave them.
+ *
+ * The session is a claims-only `authenticated` role inside one transaction
+ * (the psql suite's shape): the RPC derives the actor from `auth.uid()` and
+ * checks aal2 from the same claims, so this is the RPC's own gate, satisfied.
+ */
+export async function plantOwnerClosedWorkspace(
+  label: string,
+  owner: { id: string },
+  member: { id: string; name: string },
+): Promise<{ id: string; slug: string; name: string }> {
+  const id = randomUUID();
+  const slug = `e2e-closed-${label}-${id.slice(0, 8)}`;
+  const name = `E2E Closed ${label} ${id.slice(0, 4)}`;
+  await sql(`insert into public.organisations (id, name, slug) values ($1,$2,$3)`, [id, name, slug]);
+  await sql(
+    `insert into public.organisation_subscriptions
+       (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+     values ($1,'starter','monthly',2,'active', now() + interval '30 days')`,
+    [id],
+  );
+  await sql(
+    `insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+     values ($1,$2,'owner','active',now()), ($1,$3,'manager','active',now())`,
+    [id, owner.id, member.id],
+  );
+  await sql(`update public.profiles set full_name = $2 where id = $1`, [member.id, member.name]);
+
+  const client = await db().connect();
+  try {
+    await client.query("begin");
+    await client.query("set local role authenticated");
+    await client.query(`select set_config('request.jwt.claims', $1, true)`, [
+      JSON.stringify({ sub: owner.id, role: "authenticated", aal: "aal2" }),
+    ]);
+    await client.query(`select public.close_my_workspace($1, $2, $3)`, [
+      id,
+      slug,
+      "E2E: the Owner is closing this workspace",
+    ]);
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  return { id, slug, name };
+}
+
+/** The organisation's lifecycle state, read as `postgres`. */
+export async function organisationLifecycleState(id: string): Promise<string | null> {
+  const { rows } = await db().query<{ state: string }>(
+    `select lifecycle_state as state from public.organisations where id = $1`,
+    [id],
+  );
+  return rows[0]?.state ?? null;
+}
+
+/** The member's role in that organisation, read as `postgres`. */
+export async function membershipRole(organisationId: string, userId: string): Promise<string | null> {
+  const { rows } = await db().query<{ role: string }>(
+    `select role from public.organisation_memberships where organisation_id = $1 and user_id = $2`,
+    [organisationId, userId],
+  );
+  return rows[0]?.role ?? null;
+}
+
+/** The closure decision audit rows for one organisation, with their reasons. */
+export async function closureDecisionAudit(
+  organisationId: string,
+): Promise<{ action: string; reason: string | null }[]> {
+  const { rows } = await db().query<{ action: string; reason: string | null }>(
+    `select action, after ->> 'reason' as reason from public.audit_events
+      where organisation_id = $1 and action in ('organisation.closure_reassigned', 'organisation.closure_deleted')
+      order by created_at`,
+    [organisationId],
+  );
+  return rows;
+}
+
+/** Delete planted organisations (cascading their tenant rows) at teardown. */
+export async function removeOrganisations(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  await sql(`delete from public.organisations where id = any($1::uuid[])`, [ids]);
+}
+
+// =============================================================================
+// PHASE 8 TASK 9c JOB 3b: THE OWNER CLOSES THEIR OWN WORKSPACE
+// =============================================================================
+/** How many closure-backup export jobs this organisation has, read as `postgres`. */
+export async function closureBackupCount(organisationId: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.export_jobs
+      where organisation_id = $1 and closure_backup`,
+    [organisationId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** The reason on the organisation.closed_by_owner audit rows, oldest first. */
+export async function closedByOwnerAuditReasons(organisationId: string): Promise<string[]> {
+  const { rows } = await db().query<{ reason: string }>(
+    `select after->>'reason' as reason from public.audit_events
+      where organisation_id = $1 and action = 'organisation.closed_by_owner'
+      order by created_at`,
+    [organisationId],
+  );
+  return rows.map((r) => r.reason);
+}
+
+/** How many contacts of this name the organisation holds, deleted or not. */
+export async function countContactsNamed(organisationId: string, name: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.contacts where organisation_id = $1 and name = $2`,
+    [organisationId, name],
+  );
+  return Number(rows[0]?.n ?? 0);
 }

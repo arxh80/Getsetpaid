@@ -28,6 +28,7 @@ import { ListSkeleton } from "@/components/list/list-skeleton";
 import { ListToolbar } from "@/components/list/list-toolbar";
 import { NewRecordAction } from "@/components/crm/write-gate";
 import { formatDateTime } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
 
 // Tasks. `manage_tasks` (20260902010000) -- owner, admin, manager, booker,
 // venue_manager, standard_user hold it; finance, marketing, read_only do not.
@@ -222,10 +223,7 @@ function taskColumns(orgSlug: string): readonly ListColumn<TaskRow, TaskSortKey>
       numeric: true,
       render: (row) =>
         row.dueAt === null ? (
-          <span className="text-ink-muted">
-            <span aria-hidden="true">—</span>
-            <span className="sr-only">No due date</span>
-          </span>
+          <Absent label="No due date" />
         ) : (
           <time dateTime={row.dueAt}>{formatDateTime(row.dueAt)}</time>
         ),

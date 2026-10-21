@@ -67,6 +67,8 @@ import { loadNetworkProfileForEntity } from "@/lib/network/entities";
 import { loadNetworkLinkForEntity } from "@/lib/network/links-list";
 import { loadNetworkProfileForViewer } from "@/lib/network/discovery";
 import { profileHasDrifted } from "@/lib/network/drift";
+import { Absent } from "@/components/ui/absent";
+import { Detail } from "@/components/ui/detail";
 
 // One artist: the record, who represents them, and what they have been paid.
 //
@@ -163,17 +165,6 @@ export default async function ArtistDetailPage({
   if (result.outcome === "missing") notFound();
 
   const artist = result.record;
-  const rows = await loadRepresentationsForArtist(org.id, artist.id);
-  // NO EXCLUSION LIST. The schema is explicit that the same agency
-  // representing the same artist twice is legitimate -- two territories, or
-  // two separate periods -- so there is no uniqueness to protect and filtering
-  // an agency out would refuse a real relationship.
-  const [agencyOptions, contactOptions] = access.canWrite
-    ? await Promise.all([
-        loadLinkOptions("agencies", org.id, []),
-        loadLinkOptions("contacts", org.id, []),
-      ])
-    : [[], []];
 
   // WHY THE PANEL NEEDS THE ROLE AND NOT ONLY THE ACCESS. An empty picker
   // means "this workspace has none" for a full-scope viewer and "none are
@@ -184,13 +175,6 @@ export default async function ArtistDetailPage({
   const blocked = access.canWrite ? null : access.explanation;
   const panelBlocked =
     artist.deletedAt !== null ? DELETED_RECORD_EXPLANATION : blocked;
-  // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
-  // the panel is a Client Component and this is the only place with an
-  // RLS-scoped server client. `includeRemoved` is implied: the loader
-  // returns the values of REMOVED fields too, which is what makes
-  // "removing a field keeps what was filled in" visible rather than merely
-  // true (20260829010000, decision 1).
-  const customFields = await loadCustomFieldPanel(org.id, "artist", artist.id);
   // A CUSTOM FIELD VALUE IS AN ORDINARY CRM WRITE ON THIS RECORD, so the
   // key that gates it is the artist's own key --
   // private.entity_is_manageable() maps this entity type to it in the
@@ -222,28 +206,57 @@ export default async function ArtistDetailPage({
   // is wrong. `raw` is passed to ALL THREE as `preserve` below, so paging any
   // one of them leaves the other two where they were.
   const activityListParams = activityParams(raw);
-  const activity = await fetchActivityPage(
-    org.id,
-    "artist",
-    artist.id,
-    activityListParams,
-  );
 
-  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). An artist carries
-  // country/city/website (20260827232510), so all three are comparable
-  // against the published copy, unlike a company or an agency.
-  //
-  // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
-  // identical comment.
-  // TASK 4 / GAP B (Q73/Q82), one wave, not a waterfall. See the companies
-  // page's identical comment.
-  const [networkProfile, networkLink, connectAccess] = canReadNetwork
-    ? await Promise.all([
-        loadNetworkProfileForEntity(org.id, "artist", artist.id),
-        loadNetworkLinkForEntity(org.id, "artist", artist.id),
-        getNetworkConnectionAccess(org),
-      ])
-    : [null, null, null];
+  // ONE WAVE, NOT A WATERFALL -- the same argument the network trio below
+  // already made, applied to everything that shares its precondition. All five
+  // need `org.id` and `artist.id`, plus `access` and `canReadNetwork` from the
+  // opening Promise.all, and nothing produced by each other. See the agencies
+  // page's identical comment; `linkedProfile` stays serial because it needs
+  // `networkLink.networkProfileId`.
+  const [
+    rows,
+    [agencyOptions, contactOptions],
+    customFields,
+    activity,
+    [networkProfile, networkLink, connectAccess],
+  ] = await Promise.all([
+    loadRepresentationsForArtist(org.id, artist.id),
+    // NO EXCLUSION LIST. The schema is explicit that the same agency
+    // representing the same artist twice is legitimate -- two territories, or
+    // two separate periods -- so there is no uniqueness to protect and
+    // filtering an agency out would refuse a real relationship.
+    access.canWrite
+      ? Promise.all([
+          loadLinkOptions("agencies", org.id, []),
+          loadLinkOptions("contacts", org.id, []),
+        ])
+      : Promise.resolve([[], []] as [
+          { id: string; name: string }[],
+          { id: string; name: string }[],
+        ]),
+    // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
+    // the panel is a Client Component and this is the only place with an
+    // RLS-scoped server client. `includeRemoved` is implied: the loader
+    // returns the values of REMOVED fields too, which is what makes
+    // "removing a field keeps what was filled in" visible rather than merely
+    // true (20260829010000, decision 1).
+    loadCustomFieldPanel(org.id, "artist", artist.id),
+    fetchActivityPage(org.id, "artist", artist.id, activityListParams),
+    // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). An artist carries
+    // country/city/website (20260827232510), so all three are comparable
+    // against the published copy, unlike a company or an agency.
+    //
+    // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
+    // identical comment.
+    // TASK 4 / GAP B (Q73/Q82). See the companies page's identical comment.
+    canReadNetwork
+      ? Promise.all([
+          loadNetworkProfileForEntity(org.id, "artist", artist.id),
+          loadNetworkLinkForEntity(org.id, "artist", artist.id),
+          getNetworkConnectionAccess(org),
+        ])
+      : Promise.resolve([null, null, null] as const),
+  ]);
   const networkDrifted =
     networkProfile !== null &&
     profileHasDrifted(
@@ -810,10 +823,7 @@ function feeColumns(): readonly ListColumn<ArtistFeeRow, ArtistFeeSortKey>[] {
         row.note ? (
           <span className="break-words">{row.note}</span>
         ) : (
-          <span className="text-ink-muted">
-            <span aria-hidden="true">—</span>
-            <span className="sr-only">No note</span>
-          </span>
+          <Absent label="No note" />
         ),
       // NO EVENT COLUMN, and it is not an oversight. `artist_fee_history` has
       // an `event_id`, and 20260828001134 holds it NULL with
@@ -825,24 +835,3 @@ function feeColumns(): readonly ListColumn<ArtistFeeRow, ArtistFeeSortKey>[] {
   ];
 }
 
-function Detail({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-xs font-semibold tracking-[0.04em] text-ink-muted uppercase">
-        {label}
-      </dt>
-      <dd className="text-base break-words text-ink">{children}</dd>
-    </div>
-  );
-}
-
-/** A blank cell is indistinguishable from a rendering fault, and silent to a
- *  screen reader. */
-function Absent() {
-  return (
-    <span className="text-ink-muted">
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">Not recorded</span>
-    </span>
-  );
-}

@@ -23,6 +23,9 @@ import { countPendingReceivedRequests } from "@/lib/network/requests-list";
 import { Alert } from "@/components/ui/alert";
 import { RuledList, RuledRow } from "@/components/ui/ruled-row";
 import { CRM_AREAS, OPERATIONS_AREAS } from "@/lib/nav/areas";
+import { hasActiveFeatureOverride } from "@/lib/entitlements/feature-overrides";
+import { getActiveBillingOverrideSummary } from "@/lib/entitlements/billing-override-summary";
+import { TIER_CHOICE_LABELS } from "@/lib/admin/overrides-contract";
 
 export async function generateMetadata({
   params,
@@ -54,14 +57,24 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
   const [
     canManageMembers,
     canManageCustomFields,
+    canManageOrganisation,
     canViewNetwork,
     memberships,
     upcoming,
     openTasks,
     pendingReceivedRequests,
+    earlyAccessPreview,
+    billingOverride,
   ] = await Promise.all([
       hasPermission(org.id, "manage_members"),
       hasPermission(org.id, "manage_custom_fields"),
+      // PHASE 7 TASK 4: gates the billing-override summary below, and ONLY
+      // the display -- organisation_billing_overrides_select_member (the RLS
+      // policy) already permits every active member to read the row, because
+      // the entitlement resolution every role's own writes depend on needs
+      // it. This is the UI-level narrowing to Owner/Admin, the same split
+      // Q103 established for organisations.lifecycle_reason.
+      hasPermission(org.id, "manage_organisation"),
       // THE NETWORK CARD'S OWN GATE (Phase 6 Task 2). Unlike CRM_AREAS and
       // OPERATIONS_AREAS below -- which are never gated because every role
       // that reaches this page holds view_crm and it never closes for
@@ -84,10 +97,27 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
       // count) and RLS-safe for a suspended workspace regardless (view_network
       // is closed, so the query answers 0 rather than leaking anything); only
       // the RENDER below is gated on `canViewNetwork`. This is the ONE other
-      // discovery surface besides app/(app)/[orgSlug]/network/requests --
-      // there is no notification of any kind (Q45/Q75, CLAUDE.md's
-      // `reminder_at` precedent).
+      // in-app surface besides app/(app)/[orgSlug]/network/requests (requests
+      // are also emailed since Phase 8 Task 9b job 3, 20261016000000; there is
+      // no in-app toast).
       countPendingReceivedRequests(org.id),
+      // PHASE 7 TASK 4: THE ONE CONSUMER THAT PROVES THE FEATURE-OVERRIDE
+      // WIRING END TO END (the brief: "gate nothing existing"). Reads
+      // organisation_feature_overrides under this member's own RLS (any
+      // active member, not just Owner/Admin -- see that policy's comment)
+      // and renders a badge next to the workspace name when the superuser
+      // has granted 'early_access_preview' and it has not yet expired or
+      // been revoked. Nothing else on this page, or anywhere else in the
+      // product, changes when this is true.
+      hasActiveFeatureOverride(org.id, "early_access_preview"),
+      // THE "WHAT/UNTIL-WHEN" CLOCK CLAUDE.md § Superuser dashboard asks the
+      // org's admins to be able to see. Read unconditionally (cheap: one row
+      // at most, same shape as pendingReceivedRequests above) and rendered
+      // only when canManageOrganisation is true below -- display-only, it
+      // changes no gate; lib/entitlements/policy.ts's
+      // getOrganisationEntitlements() (called on every write-access check
+      // across the app) is what actually applies the override.
+      getActiveBillingOverrideSummary(org.id),
     ]);
 
   const others = memberships.filter((m) => m.organisationId !== org.id);
@@ -113,9 +143,21 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
               this survived earlier review. Verified after: wraps to 3 lines,
               0px overflow, and ordinary names still render on one line
               unchanged at every width. */}
-          <h1 className="tracking-display text-3xl font-extrabold break-words text-ink">
-            {org.name}
-          </h1>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="tracking-display text-3xl font-extrabold break-words text-ink">
+              {org.name}
+            </h1>
+            {earlyAccessPreview ? (
+              // border-accent + text-ink, NOT text-accent -- DESIGN.md's
+              // two-blue rule: --accent is a border/focus-rail/active-state
+              // colour and is never permitted on text (the source hex fails
+              // AA at 4.5:1). Same shape as components/crm/priority-chip.tsx's
+              // "active" tone.
+              <span className="inline-flex items-center border border-accent px-2 py-1 text-xs font-semibold tracking-[0.04em] text-ink uppercase">
+                Early access preview
+              </span>
+            ) : null}
+          </div>
           <p className="text-base text-ink-muted">
             You’re signed in as {roleLabel(org.role)}.
           </p>
@@ -153,6 +195,40 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
           ) : null}
         </div>
       </div>
+
+      {/* PHASE 7 TASK 4: THE BILLING-OVERRIDE CLOCK, OWNER/ADMIN ONLY.
+          CLAUDE.md § Superuser dashboard: overrides are "visible to the
+          org's admins in-app". Display-only -- see the query's own header
+          for why the RLS policy behind it is broader than this render. */}
+      {canManageOrganisation && billingOverride ? (
+        <p
+          data-testid="billing-override-summary"
+          role="status"
+          className="border border-accent bg-surface px-3 py-3 text-base text-ink"
+        >
+          <span className="font-semibold">Billing override.</span>{" "}
+          {billingOverride.overrideTier ? (
+            <>
+              This workspace has a billing override to{" "}
+              <strong>{TIER_CHOICE_LABELS[billingOverride.overrideTier]}</strong> until{" "}
+              <span className="tabular-nums">{formatDateTime(billingOverride.expiresAt)}</span>.
+            </>
+          ) : (
+            <>
+              This workspace has a seat-count billing override until{" "}
+              <span className="tabular-nums">{formatDateTime(billingOverride.expiresAt)}</span>.
+            </>
+          )}
+          {billingOverride.overrideSeats !== null ? (
+            <>
+              {" "}
+              Overridden seat count:{" "}
+              <span className="tabular-nums">{billingOverride.overrideSeats}</span>.
+            </>
+          ) : null}{" "}
+          It reverts automatically to your regular plan when it expires.
+        </p>
+      ) : null}
 
       {/* ===================================================================
           UPCOMING EVENTS -- THE ONE PIECE OF REAL DATA ON THE WORKSPACE HOME
@@ -495,8 +571,8 @@ export default async function OrgHomePage({ params }: PageProps<"/[orgSlug]">) {
             </li>
             {/* TASK 4: the requests inbox/outbox, with the pending-received
                 count -- tabular-nums (DESIGN.md's numeral rule) and the ONE
-                other discovery surface besides the requests page itself,
-                since there is no notification of any kind (Q45/Q75). */}
+                other in-app surface besides the requests page itself (requests
+                are also emailed since Phase 8 Task 9b job 3). */}
             <li className="border-b border-rule py-3">
               <Link
                 href={`/${org.slug}/network/requests`}

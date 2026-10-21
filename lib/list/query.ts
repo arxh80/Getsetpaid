@@ -119,6 +119,7 @@ import "server-only";
 // deliberately NOT built here.
 // ===========================================================================
 
+import { consumeRateLimit } from "@/lib/security/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 import type { Cursor, CursorDirection } from "./cursor";
 import type { ListParams } from "./params";
@@ -208,7 +209,18 @@ export type ListPage<TRow> =
        */
       readonly recovered: RecoveryReason;
     }
-  | { readonly outcome: "unavailable" };
+  | { readonly outcome: "unavailable" }
+  /**
+   * REFUSED BY THE RATE LIMITER (SECURITY.md § 5), before any query ran.
+   *
+   * A THIRD OUTCOME, NOT A DRESSED-UP "unavailable", because the two demand
+   * opposite copy: "unavailable" says refresh and try again -- exactly the
+   * wrong advice for a caller who is being asked to SLOW DOWN -- and the
+   * brief's own contract is that a refused request is 429-shaped, never a
+   * silent empty result. `retryAfterSeconds` is the window's remainder, from
+   * the database's clock, for the "try again in …" sentence.
+   */
+  | { readonly outcome: "rate_limited"; readonly retryAfterSeconds: number };
 
 /** @see ListPage.recovered */
 export type RecoveryReason = "past-end" | "before-start" | "stale-sort" | null;
@@ -503,6 +515,67 @@ export async function fetchListPage<
 >(options: FetchListPageOptions<TRow, TSort, TFilter>): Promise<ListPage<TRow>> {
   const { spec, params, table, select, mapRow } = options;
   const sortOption = spec.sort[params.sort];
+
+  // =========================================================================
+  // THE RATE-LIMIT GATE (SECURITY.md § 5) -- THIS is the one chokepoint all
+  // twenty searchColumn paths flow through (FOLLOW-UPS § "Opened by Task 8"),
+  // which is why the meter lives here and not in twenty page files.
+  //
+  //   network_directory  -> 'network_discovery', 30/min/user, EVERY read of
+  //     the directory list (browse and search alike) -- the NAMED endpoint
+  //     (FOLLOW-UPS:3408-3419), deliberately its own budget and never folded
+  //     into 'search': its unit cost is O(platform-wide published rows), not
+  //     O(tenant), so a budget sized for index-backed tenant lists would be
+  //     many times too generous. Keyed on the TABLE, not on a spec flag, for
+  //     the same reason TABLES_WITHOUT_SOFT_DELETE is -- a copied spec cannot
+  //     accidentally opt out.
+  //   any other list WITH a search term -> 'search', 60/min/user. A plain
+  //     browse/page of a tenant list is O(page) by this file's own
+  //     measurements and stays unmetered; the search term is what makes the
+  //     request O(tenant) (the header's leakproofness note), so the term is
+  //     what is metered.
+  //
+  // consumeRateLimit() is cache()-wrapped, so one user request that fans out
+  // into several metered reads (the command palette's per-entity fan-out)
+  // costs ONE unit per category. A refusal returns before any query is
+  // built: the refused request must not cost the database the very work the
+  // limit exists to bound.
+  //
+  // WHAT THIS DOES NOT METER, stated so nobody reads more into it. Two things,
+  // and only the first is a residual:
+  //
+  //   1. `GET /rest/v1/network_directory` issued directly with the anon key +
+  //      a session JWT never enters this function. That residual is measured,
+  //      named in SECURITY.md § 5/§ 10 and queued (Q107) -- PostgREST runs
+  //      GETs in read-only transactions, so no DB-side hook on that path can
+  //      write a counter (20260909020000's header carries the probe).
+  //   2. lib/network/discovery.ts's `loadNetworkProfileForViewer` and
+  //      `loadNetworkProfileSummaries` read `network_directory` and
+  //      `network_connected_profiles` WITHOUT going through this function, and
+  //      are deliberately unmetered (fix round 1, minor M4). Both are
+  //      `id`-equality lookups -- one row, or a bounded `.in()` over ids the
+  //      caller already holds -- so neither carries the O(platform-wide
+  //      published rows) cost this budget exists to bound, and charging a
+  //      browse unit for opening one profile would meter the cheap path to
+  //      protect the expensive one. What holds without qualification is that
+  //      no LIST of the directory reaches the database without passing here.
+  // =========================================================================
+  const meteredCategory =
+    table === "network_directory"
+      ? ("network_discovery" as const)
+      : params.q !== ""
+        ? ("search" as const)
+        : null;
+  if (meteredCategory !== null) {
+    const verdict = await consumeRateLimit(meteredCategory);
+    if (!verdict.allowed) {
+      return {
+        outcome: "rate_limited",
+        retryAfterSeconds: verdict.retryAfterSeconds,
+      };
+    }
+  }
+
   const supabase = await createClient();
 
   // Paging BACKWARDS is the forwards query with the ordering reversed, then

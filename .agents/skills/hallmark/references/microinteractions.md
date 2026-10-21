@@ -193,7 +193,11 @@ Trigger: ⌘K or `/`. Open: instant, no animation. Arrow-keys move selection —
 
 ### Page-load reveals
 
-One orchestrated entrance. Stagger by DOM index, capped at ~500ms total. Use `IntersectionObserver`, never scroll listeners. After first reveal, no more on-scroll animations — let the page just *be there*. Theme-specific themes (Atelier, Newsprint) skip reveals entirely; that is correct, not a bug.
+One orchestrated entrance. Stagger by DOM index, capped at ~500ms total. Use `IntersectionObserver`, never scroll listeners — *for reveals*.
+<!-- GSP-PATCH: "for reveals" scope added. Read unqualified, this banned the
+     floating-nav pattern in floating-nav.md, which legitimately uses a passive,
+     rAF-throttled scroll listener for nav state (not for animation). The ban is
+     about reveal triggers; nav state morph is out of its scope. --> After first reveal, no more on-scroll animations — let the page just *be there*. Theme-specific themes (Atelier, Newsprint) skip reveals entirely; that is correct, not a bug.
 
 ## The named tells (what AI defaults produce)
 

@@ -39,14 +39,18 @@
 // so the omission is a decision a reader can see rather than a missing line.
 //
 // ===========================================================================
-// 3. `responded_at` MOVES WITH `status`, ALWAYS
+// 3. `responded_at` MOVES WITH `status`, AND THE DATABASE SETS IT
 // ===========================================================================
 // `network_connection_requests_responded_iff_terminal` asserts
-// (status = 'pending') = (responded_at is null). So EVERY action that leaves
-// `pending` must set responded_at in the SAME statement or the write is a
-// 23514 -- measured, not assumed: supabase/tests/rls_phase6_network.sql NR8
-// drives exactly the statement this module must not write and asserts the
-// refusal. `terminal()` below is the one place that pairing is written down.
+// (status = 'pending') = (responded_at is null). Since 20261020000000 (Task
+// 9b fix round 2, N1) the BEFORE UPDATE trigger
+// private.connection_request_bound_update stamps responded_at := now() and
+// responded_by := auth.uid() on every pending -> terminal move, and the
+// browser role holds UPDATE on (status, responded_at, responded_by) only. So
+// these actions send `status` ALONE: a client clock or a client-chosen
+// responder would be overwritten or refused anyway, and sending neither is
+// the honest shape. `terminal()` below is the one place the payload is
+// written down. rls_phase6_network.sql NR8 asserts the stamp.
 //
 // ===========================================================================
 // 4. THE TRANSITION GUARD MAKES A RETRY MEANINGLESS, SO THE COPY MUST NOT
@@ -62,11 +66,13 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentOrg, getCurrentUser, hasPermission, type CurrentOrg } from "@/lib/auth";
+import { readOnlyExplanation } from "@/lib/admin/lifecycle-contract";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { getNetworkConnectionAccess } from "@/lib/network/access";
+import { formatRetryAfter } from "@/lib/format/duration";
 
 /**
  * Shown when a terminal request is acted on again.
@@ -146,8 +152,7 @@ async function authoriseWithdraw(
     return {
       ok: false,
       state: {
-        error:
-          "This workspace is suspended, so it’s read-only. You can still see everything in it. Contact GetSetPaid support to have it reinstated — an Owner can’t do it from here.",
+        error: readOnlyExplanation(org.lifecycle),
         values: echoed,
       },
     };
@@ -166,21 +171,15 @@ async function authoriseWithdraw(
 }
 
 /**
- * The two columns that must move together when a request leaves `pending`.
+ * The payload of every answer to a request: the new status, and nothing else.
  *
- * ONE PLACE, BECAUSE THE CONSTRAINT IS ONE FACT. Three actions call this, and a
- * fourth that forgot `responded_at` would be a 23514 the user cannot act on --
- * which is exactly what rls_phase6_network.sql NR8 measures. `responded_by` is
- * set from the session rather than left to its column default for the same
- * reason `created_by` is written explicitly everywhere else: a write and a
- * policy that agree only because a default happens to match are a latent break.
+ * The database stamps responded_at and responded_by from its own clock and the
+ * session (20261020000000, `private.connection_request_bound_update`), and
+ * the browser role cannot name any other column (UPDATE is granted on
+ * status/responded_at/responded_by only). So there is nothing else to send.
  */
-function terminal(status: "accepted" | "declined" | "withdrawn", userId: string) {
-  return {
-    status,
-    responded_at: new Date().toISOString(),
-    responded_by: userId,
-  };
+function terminal(status: "accepted" | "declined" | "withdrawn") {
+  return { status };
 }
 
 /** Both routes a connection write changes. */
@@ -201,7 +200,9 @@ function connectionErrorState(
 ): FormState | null {
   const values = echoedValues(formData);
   // 23514: either the transition guard (a terminal request acted on again) or
-  // the responded_iff_terminal CHECK. The first is what a user can actually
+  // private.connection_request_bound_update (a party column named, or the
+  // wrong side answering -- unreachable here, because each action pins its own
+  // side's organisation column). The first is what a user can actually
   // reach; the second is a bug in this file, and would show as the same
   // sentence -- which is acceptable because the sentence tells them to reload
   // and the log line carries the real cause.
@@ -274,6 +275,30 @@ export async function sendConnectionRequestAction(
     return { error: FAILED_MESSAGE, values: echoedValues(formData) };
   }
 
+  // ==========================================================================
+  // Q79'S SPAM MITIGATION (SECURITY.md § 5, 10/hour/organisation, Q112) IS
+  // ENFORCED IN THE DATABASE, AT THE INSERT -- NOT HERE.
+  // ==========================================================================
+  // FIX ROUND 1, REVIEW FINDING I2. This action used to call
+  // consumeRateLimit("network_connection_request", org.id) before the insert
+  // below, and that was the ONLY meter -- while `network_connection_requests`
+  // carries a client INSERT grant and a permissive INSERT policy. So a user who
+  // legitimately holds manage_network_connections in a publishing workspace --
+  // exactly the actor Q79's mitigation targets -- could POST straight to
+  // /rest/v1/network_connection_requests with the anon key and a session JWT,
+  // unlimited, and never load this application. The casual clicker was
+  // metered; the scripted one was not.
+  //
+  // The meter therefore MOVED into private.meter_connection_request()
+  // (20260909060000), a BEFORE INSERT trigger, and this call site is gone
+  // rather than kept beside it: two meters on one click would spend two units
+  // and silently halve the shipped limit. PostgREST's read-only-GET constraint
+  // (the reason the DIRECTORY budget must be app-side, SECURITY.md § 5's named
+  // residual) does not apply to a write -- a POST runs read-write, which is why
+  // the same argument reaches the opposite answer here.
+  //
+  // The refusal arrives as SQLSTATE PT429 from the insert below, with the
+  // seconds remaining in `hint`.
   const user = await getCurrentUser();
   if (!user) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
 
@@ -290,6 +315,23 @@ export async function sendConnectionRequestAction(
   });
 
   if (error) {
+    // THE BUDGET REFUSAL (fix round 1, I2). private.meter_connection_request()
+    // raises PT429 -- PostgREST's "return this HTTP status" escape, so a direct
+    // REST caller gets a real 429 and this action gets a code it can tell apart
+    // from the two below. `hint` carries the seconds left in the window; the
+    // copy renders a human duration, because the window here is an HOUR and
+    // "try again in 3,541 seconds" is not a sentence (M2).
+    if (error.code === "PT429") {
+      const retrySeconds = Number.parseInt(error.hint ?? "", 10);
+      return {
+        error:
+          "This workspace has sent a lot of connection requests in the last hour. " +
+          (Number.isFinite(retrySeconds)
+            ? `Try again in ${formatRetryAfter(retrySeconds)}.`
+            : "Try again later."),
+        values: echoedValues(formData),
+      };
+    }
     // 42501 here has one likely cause a user can act on -- an end that is no
     // longer published -- and two they cannot (tier, role). The sentence names
     // the actionable one without claiming to know which happened. A forged
@@ -326,7 +368,7 @@ export async function acceptConnectionRequestAction(
   const result = await commitWrite(`accept connection request ${requestId}`, () =>
     supabase
       .from("network_connection_requests")
-      .update(terminal("accepted", user.id), { count: "exact" })
+      .update(terminal("accepted"), { count: "exact" })
       .eq("id", requestId)
       // THE RECIPIENT'S SIDE. Pinning `to_organisation_id` is what makes this
       // the accept path; the recipient-responds policy refuses it independently
@@ -362,7 +404,7 @@ export async function declineConnectionRequestAction(
   const result = await commitWrite(`decline connection request ${requestId}`, () =>
     supabase
       .from("network_connection_requests")
-      .update(terminal("declined", user.id), { count: "exact" })
+      .update(terminal("declined"), { count: "exact" })
       .eq("id", requestId)
       .eq("to_organisation_id", org.id)
       .eq("status", "pending"),
@@ -409,11 +451,11 @@ export async function withdrawConnectionRequestAction(
   const result = await commitWrite(`withdraw connection request ${requestId}`, () =>
     supabase
       .from("network_connection_requests")
-      // `terminal()` -- so `responded_at` moves with the status here too. A
+      // `terminal()` -- the database stamps `responded_at` here too. A
       // withdraw is the SENDER responding to their own request, which reads
       // oddly and is what the constraint says: anything that is not `pending`
       // has a responded_at.
-      .update(terminal("withdrawn", user.id), { count: "exact" })
+      .update(terminal("withdrawn"), { count: "exact" })
       .eq("id", requestId)
       // THE SENDER'S SIDE.
       .eq("from_organisation_id", org.id)

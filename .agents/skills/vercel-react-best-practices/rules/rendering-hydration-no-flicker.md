@@ -77,6 +77,23 @@ function ThemeWrapper({ children }: { children: ReactNode }) {
 }
 ```
 
+> ⚠️ **Do not adopt this pattern in GetSetPaid as written.** Three project rules block it:
+>
+> 1. `CLAUDE.md` § Non-negotiable rules and `SECURITY.md` § 3 both say to avoid
+>    `dangerouslySetInnerHTML`; where unavoidable it requires security review.
+> 2. The CSP is nonce-based for `script-src`, so this inline `<script>` is blocked at
+>    runtime unless it carries the request nonce.
+> 3. `lib/security/headers.ts` uses "the app ships zero `dangerouslySetInnerHTML`
+>    (grepped, still true)" as the *stated justification* for the one broad allowance
+>    in the policy, `style-src 'unsafe-inline'`. Introducing this sink invalidates that
+>    argument and the comment becomes false.
+>
+> If a no-flicker theme boot is ever needed, route it through a nonced `next/script`
+> with `strategy="beforeInteractive"` and update the `headers.ts` rationale in the same
+> change — never silently.
+<!-- GSP-PATCH: project-policy warning added. Upstream rule is sound for a project
+     without a strict CSP; it is not sound here. -->
+
 The inline script executes synchronously before showing the element, ensuring the DOM already has the correct value. No flickering, no hydration mismatch.
 
 This pattern is especially useful for theme toggles, user preferences, authentication states, and any client-only data that should render immediately without flashing default values.

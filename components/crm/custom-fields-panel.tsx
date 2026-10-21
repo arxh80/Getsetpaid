@@ -17,6 +17,7 @@ import {
 import { Field } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { Absent } from "@/components/ui/absent";
 
 // The custom field VALUES on one entity row, on that row's own detail page.
 //
@@ -476,10 +477,7 @@ function ReadOnlyValue({ cell }: { cell: CustomFieldCell }) {
 function ValueText({ cell }: { cell: CustomFieldCell }) {
   if (cell.state === "empty") {
     return (
-      <span className="text-ink-muted">
-        <span aria-hidden="true">—</span>
-        <span className="sr-only">Not recorded</span>
-      </span>
+      <Absent />
     );
   }
   if (cell.state === "invalid") {

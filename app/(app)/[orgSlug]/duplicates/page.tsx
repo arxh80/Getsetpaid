@@ -29,6 +29,7 @@ import { EntityList } from "@/components/list/entity-list";
 import { ListSkeleton } from "@/components/list/list-skeleton";
 import { ListToolbar } from "@/components/list/list-toolbar";
 import { formatDate } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
 
 // The duplicate review queue.
 //
@@ -268,10 +269,7 @@ function candidateColumns(
       secondary: true,
       render: (row) =>
         row.similarity === null ? (
-          <span className="text-ink-muted">
-            <span aria-hidden="true">—</span>
-            <span className="sr-only">Not applicable</span>
-          </span>
+          <Absent label="Not applicable" />
         ) : (
           <span className="text-ink-muted">
             {Math.round(row.similarity * 100)}%

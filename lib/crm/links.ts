@@ -85,15 +85,11 @@ export const PERMISSION_FOR_LINK_PARENT = {
 
 export type LinkParent = keyof typeof PERMISSION_FOR_LINK_PARENT;
 
-export const LINK_PARENTS = Object.keys(
-  PERMISSION_FOR_LINK_PARENT,
-) as readonly LinkParent[];
-
 export function isLinkParent(value: string | null): value is LinkParent {
   return value !== null && value in PERMISSION_FOR_LINK_PARENT;
 }
 
-export function isLinkEntityType(value: string | null): value is LinkEntityType {
+function isLinkEntityType(value: string | null): value is LinkEntityType {
   return value !== null && (LINK_ENTITY_TYPES as readonly string[]).includes(value);
 }
 

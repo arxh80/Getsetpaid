@@ -195,11 +195,37 @@ describe("the past_due grace window is the same rule in TypeScript and in SQL", 
   // function, so an inlined constant would still be caught by the offsets --
   // but this states the intent directly and fails with a readable message
   // rather than eight timestamp mismatches.
-  it("crm_write_organisations() really is built on that constant and that status", async () => {
+  //
+  // SINCE PHASE 7 TASK 4 (20260909000000): crm_write_organisations() no
+  // longer computes the past_due grace window inline -- it delegates to the
+  // shared private.effective_organisation_plan(), which is what makes an
+  // active billing override apply to CRM writes too (see that migration's
+  // header). So this asserts the DELEGATION here and the grace machinery
+  // itself on effective_organisation_plan(), rather than looking for both in
+  // the same function body -- the same split
+  // tests/integration/crm/custom-field-limit-matches-db.test.ts makes for its
+  // own caller.
+  it("crm_write_organisations() delegates to the shared effective-plan function", async () => {
     const { rows } = await pool.query<{ src: string }>(
       "select prosrc as src from pg_proc p" +
         " join pg_namespace n on n.oid = p.pronamespace" +
         " where n.nspname = 'private' and p.proname = 'crm_write_organisations'",
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].src, "must call the shared effective-tier function").toContain(
+      "private.effective_organisation_plan(",
+    );
+    expect(rows[0].src, "must read crm_writes off the shared plan").toContain(
+      "e.crm_writes",
+    );
+  });
+
+  it("private.effective_organisation_plan() really is built on that constant and that status", async () => {
+    const { rows } = await pool.query<{ src: string }>(
+      "select prosrc as src from pg_proc p" +
+        " join pg_namespace n on n.oid = p.pronamespace" +
+        " where n.nspname = 'private' and p.proname = 'effective_organisation_plan'",
     );
 
     expect(rows).toHaveLength(1);

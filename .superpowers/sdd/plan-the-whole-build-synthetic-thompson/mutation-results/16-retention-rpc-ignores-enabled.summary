@@ -1,0 +1,34 @@
+mutant: 16-retention-rpc-ignores-enabled
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 
+--- psql: red assertions, read from each suite's results table ---
+  [rt] RR7b THE OPERATOR turns the job OFF through set_retention_enabled(false, ...) -- and the RPC returns the row it wrote
+  [rt] RR7c ...the config ROW reads off, with the reason and the operator recorded
+  [rt] RR7d ...and the job REFUSES: a run is recorded refused, retention_disabled
+  [rt] RR7e ...and the switch was audited, on -> off
+  [rt] RR7h ...and a run is ADMITTED again: it opens `running` and completes
+  [rt] RR8-0 DENOMINATOR: the run opened before the table appeared is `running`
+  [rt] RR8 GATE 3: an unclassified table stops the SWEEP at step 0, before a row moves
+  [rt] RR8a GATE 2: ...and the MANIFEST names no object for that run -- the gate that protects the BYTES
+  [rt] RR8f ...and a run whose KILL SWITCH was thrown after it started: stop means before the next object
+  [rt] RR8i CONTROL: for a healthy running run the manifest ANSWERS (or every refusal above is a broken function)
+  [rt] RR9 a LIVE run now completes and every sweep is represented in its counts
+  [rt] RR10 running it twice more changes nothing (idempotent, and safe to run late)
+  [rt] RR18 ...and there is still exactly ONE `running` row, the first
+  [rt] RR20 a run abandoned two hours ago is REAPED by the next start, which then opens normally
+  [rt] RR13 no run this section opened was left `running`
+  [rt] RN4 ...and the completed live runs after it RESOLVED it, as the SYSTEM, with nobody named
+  [rt] RN4a the two faults still open are the reaped run and a reason that was not a code
+  [rt] RN4b a clean live run completes with nothing refused
+  [rt] RN4c ...and resolved both
+  [rt] RN7 a LIVE run COMPLETES with the audit purge refused -- the other sweeps are not held hostage
+  [rt] RN8 ...and that files ONE alert, carrying the two COUNTS an operator needs and no content
+  [rt] RN9 the NEXT run refuses the same way
+  [rt] RN9a ...and files NOTHING NEW: one open alert per fault, not one per hour (two alerts in all would be 2/2)
+  [rt] RN10 THE STATED LIMIT: the ceiling cannot drain itself -- not one flood row went in two runs
+  [rt] RN11 with the cause gone, the next completed live run RESOLVES the alert as the system
+  [rt] RN12 ...leaving no open retention alert at all, and the ceiling one marked recovered
+  [rt] RN13 a `refused` value that is not a code is recorded as `unknown`, and its text appears NOWHERE in the alert
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---

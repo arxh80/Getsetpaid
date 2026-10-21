@@ -1,0 +1,17 @@
+mutant: 17g-ceiling-release-thirty-days
+migrations before/after: 213/213
+runner exit: 3   vitest exit: 
+--- psql: red assertions, read from each suite's results table ---
+  [rt] REL9 THE aal2 SUPERUSER releases it with a reason -- for EXACTLY 72 hours, starting now
+  [rt] REL10 ONE AT A TIME: a second release while it is active is refused, not extended
+  [rt] REL11 it was audited ONCE, as the operator, with the reason and the window
+  [rt] REL12 ...and the row the purge reads says ACTIVE
+  [rt] REL13 the DRY run under a release counts the per-run ceiling and SAYS it ran released
+  [rt] REL14 the LIVE run under a release deletes -- at most p_limit (rail 4 still holds)
+  [rt] REL16 DENOMINATOR: the declaration now says 30 days, and the release is still active
+  [rt] REL19 at 71 hours old the release is STILL active, and the purge still runs released
+  [rt] REL22 ...deleting nothing more
+  [rt] REL23 a 30-day window written directly is refused by the CHECK, even as `postgres`
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---

@@ -44,7 +44,7 @@ import {
   type NetworkEntityKind,
 } from "@/lib/network/fields";
 
-export const NETWORK_LINK_SELECT =
+const NETWORK_LINK_SELECT =
   "id, network_profile_id, private_entity_type, private_entity_id, created_at";
 
 export interface NetworkLinkRow {
@@ -55,7 +55,7 @@ export interface NetworkLinkRow {
   createdAt: string;
 }
 
-export function mapNetworkLinkRow(row: Record<string, unknown>): NetworkLinkRow {
+function mapNetworkLinkRow(row: Record<string, unknown>): NetworkLinkRow {
   return {
     id: String(row.id),
     networkProfileId: String(row.network_profile_id),

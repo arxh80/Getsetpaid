@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { repoRoot as root, stripComments } from "../../support/source";
+import { appSourceFiles, relPath } from "../support/app-source";
 
 // ONE CURSOR, AND A CENSUS THAT SAYS SO.
 //
@@ -32,9 +33,11 @@ import { describe, expect, it } from "vitest";
 //     version of this file named without implementing (Task 8 review,
 //     Important #3), and it matters more than the other two: a list that
 //     hand-rolls a keyset query and never calls `fetchListPage` is invisible
-//     to the >= 17 floor, to the pairing check and to the `.range(`/`offset:`
+//     to a CALL-SITE COUNT, to the pairing check and to the `.range(`/`offset:`
 //     ban, so without this assertion the census's blind spot is exactly the
 //     defect the brief names ("a second, weaker cursor in the codebase").
+//   * a route that renders a list and reaches `lib/list` by no path at all --
+//     ASSERTED BELOW, and it is the assertion that replaced a floor.
 //   * a page that calls `.range(` or builds an `offset` -- a second pagination
 //     MODEL, not just a second implementation
 //   * a module outside `lib/list` importing `decodeCursor`, which is how a
@@ -42,57 +45,70 @@ import { describe, expect, it } from "vitest";
 //
 // It is deliberately allowed to be noisy. A new list that this cannot see
 // should fail here and be looked at.
+//
+// ===========================================================================
+// THE OBLIGATION IS AN ENUMERATION NOW, NOT A NUMBER
+// ===========================================================================
+// For five phases the first assertion here was
+// `callSites("fetchListPage<").length >= N`, and every edit RAISED N; the
+// prose said in as many words that raising it was the obligation. If you have
+// come here to restore that, read this first.
+//
+// The count was a PROXY for "every list goes through the one cursor", and it
+// worked while every list wrote `fetchListPage<` itself. Once fourteen routes
+// began delegating to the two list-page factories, fourteen occurrences became
+// two: the proxy started measuring INDIRECTION rather than surface area. A
+// lowered floor would have been the wrong repair, because the bypass that
+// matters is invisible to a number in both directions -- a route that
+// hand-rolls its own query calls nothing, so it neither raises the count nor
+// trips it.
+//
+// So the obligation moved. Every route that renders a list is enumerated and
+// must reach `lib/list` one of three ways: call `fetchListPage` itself,
+// delegate to a factory, or call a loader that does. Anything else has to be
+// named in an EXEMPT list with a reason. Add a list and do nothing, and it
+// goes red naming your file -- which is what a number never did.
 
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const name of readdirSync(root + dir)) {
-    const rel = `${dir}/${name}`;
-    if (statSync(root + rel).isDirectory()) walk(rel, out);
-    else if (rel.endsWith(".ts") || rel.endsWith(".tsx")) out.push(rel);
-  }
-  return out;
-}
+// ===========================================================================
+// THE SUBJECT SET IS THE WHOLE REPOSITORY (census audit finding 13)
+// ===========================================================================
+// It used to be `[...walk("app"), ...walk("lib"), ...walk("components")]` with
+// no floor at all, so every assertion in this file -- the `decodeCursor`/
+// `encodeCursor` ban, the `.range(`/`offset:` ban, the hand-rolled-cursor
+// backstop -- was scoped to three hardcoded directories. A cursor in a new
+// root `hooks/`, `server/`, in `middleware.ts` or in `proxy.ts` was invisible
+// to all of them and nothing said the walk had shrunk. Third instance of the
+// root cause shared with findings 5 and 6, and the fix is the same helper.
+//
+// `appSourceFiles()` is the whole repository minus a NAMED exclusion list, so
+// the set grows by default. `lib/list/` itself is removed -- it is the subject
+// these assertions are about, not a suspect -- and what the filter DROPPED is
+// pinned below rather than being thrown away silently.
+const ALL_SOURCES = appSourceFiles().map((full) => ({ path: relPath(full), text: readFileSync(full, "utf8") }));
 
-/** Every source file outside `lib/list` and outside `tests`. */
-const SOURCES = [...walk("app"), ...walk("lib"), ...walk("components")]
-  .filter((f) => !f.startsWith("lib/list/"))
-  .map((path) => ({ path, text: readFileSync(root + path, "utf8") }));
+/** Every source file outside `lib/list` (and outside `tests`, which the walk never enters). */
+const SOURCES = ALL_SOURCES.filter((f) => !f.path.startsWith("lib/list/"));
 
-/** Comment lines stripped, for the same reason source-shape.test.ts strips
- *  them: prose about `.range(` is not a call to `.range(`, and this file's
- *  neighbours are heavily commented. */
+/** The files the `lib/list/` filter removed. Assert what a derivation drops. */
+const EXCLUDED = ALL_SOURCES.filter((f) => f.path.startsWith("lib/list/")).map((f) => f.path);
+
+/** Comments stripped, for the same reason source-shape.test.ts strips them:
+ *  prose about `.range(` is not a call to `.range(`, and this file's
+ *  neighbours are heavily commented. The stripper is the parser's (census
+ *  audit A4) -- the line-based one this used to carry also kept a TRAILING
+ *  comment, so `foo(); // .range(` read as a call. */
+const CODE_CACHE = new Map<string, string>();
 function code(text: string): string {
-  return text
-    .split("\n")
-    .map((line) => (line.trimStart().startsWith("//") ? "" : line))
-    .join("\n");
+  const hit = CODE_CACHE.get(text);
+  if (hit !== undefined) return hit;
+  const stripped = stripComments(text);
+  CODE_CACHE.set(text, stripped);
+  return stripped;
 }
 
 const callers = (needle: string) =>
   SOURCES.filter((f) => code(f.text).includes(needle)).map((f) => f.path);
-
-/**
- * Every OCCURRENCE of `needle`, as `path#n` -- not every file containing one.
- *
- * Deferred-minor L1143. The floor below used `callers("fetchListPage<").length`
- * and the prose around it called the result "call sites". Fifteen files each
- * holding exactly one call made the two numbers identical, which is why nobody
- * noticed -- and a sixteenth list added to an EXISTING file (a detail page
- * already carrying one, which is how the artist page got its fee list) would
- * not move a file count at all. Counting occurrences makes the assertion say
- * what its comment says.
- */
-function callSites(needle: string): string[] {
-  return SOURCES.flatMap((f) => {
-    const body = code(f.text);
-    const out: string[] = [];
-    for (let at = body.indexOf(needle); at !== -1; at = body.indexOf(needle, at + 1)) {
-      out.push(`${f.path}#${out.length + 1}`);
-    }
-    return out;
-  });
-}
 
 /** One file's source, by the path `callers()` reports. */
 function byPath(path: string): string {
@@ -147,43 +163,182 @@ const SPEC_PARAM_WRAPPERS = [
   { call: "financeParams", module: "lib/crm/finance-list.ts" },
 ] as const;
 
+// ===========================================================================
+// THE HAND-ROLLED-CURSOR DETECTOR, AND THE CONTROLS IT NEVER HAD
+// ===========================================================================
+// Census audit finding 7: this was two inline regexes and
+// `expect(readers).toEqual([])`, with NO fixture anywhere in the file proving
+// either regex ever matches anything -- so a tidy-up that broke them would be
+// green for ever -- and a receiver allowlist of four literals, which
+// `const sp = await searchParams; sp.after` walks straight through. The file's
+// own header names this assertion as THE backstop for its largest blind spot.
+//
+// It is a function now, so the fixtures at the bottom of this file can drive
+// it, and the receiver set is resolved rather than listed.
+
+/** Identifiers bound to a params-shaped expression in this file. */
+function paramsAliases(text: string): Set<string> {
+  const names = new Set(["searchParams", "params", "query", "raw"]);
+  // `const sp = await searchParams`, `const sp = props.searchParams`,
+  // `let q = searchParams`, and the same through one more hop.
+  for (let pass = 0; pass < 3; pass += 1) {
+    for (const m of text.matchAll(
+      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:await\s+)?([A-Za-z_$][\w$.]*)/g,
+    )) {
+      const head = m[2]!.split(".")[0]!;
+      const tail = m[2]!.split(".").pop()!;
+      if (names.has(head) || names.has(tail)) names.add(m[1]!);
+    }
+  }
+  return names;
+}
+
+/** Every site in `text` that reads `after`/`before` off a params-shaped receiver. */
+export function cursorReads(text: string): string[] {
+  // Every name here is a JavaScript identifier, so there is nothing to escape.
+  const receiver = `(?:${[...paramsAliases(text)].join("|")})`;
+  const out: string[] = [];
+  const patterns = [
+    // sp.after / sp["before"] / sp?.after
+    new RegExp(String.raw`\b${receiver}\s*\??\s*(?:\.\s*|\[\s*["'` + "`" + String.raw`]\s*)(?:after|before)\b`, "g"),
+    // const { after } = await searchParams  /  const { before: b } = sp
+    new RegExp(String.raw`\{[^}]*\b(?:after|before)\b[^}]*\}\s*=\s*(?:await\s+)?${receiver}\b`, "g"),
+  ];
+  for (const re of patterns) for (const m of text.matchAll(re)) out.push(m[0]);
+  return out;
+}
+
 describe("every paginated list shares one implementation", () => {
   const fetchers = callers("fetchListPage<");
   const parsers = callers("parseListParams(");
 
-  it("finds the CALL SITES at all, so this suite cannot pass vacuously", () => {
-    // TWENTY as of Phase 3 Task 7, raised from seventeen: contacts,
-    // companies, artists, agencies, venues and their five `deleted` twins
-    // (10), the duplicates queue and its `resolved` twin (12), merge history
-    // (13), the artist fee list (14), the activity timeline in
-    // `lib/crm/activity.ts` (15), the events list (16), the deleted events
-    // list (17), the lineup panel in `lib/crm/queries.ts` (18), and now the
-    // venue page's "Events here" (19) and the artist page's "Event history"
-    // (20) -- BOTH ADDED TO `lib/crm/queries.ts`, WHICH ALREADY HELD ONE. A
-    // file count would have moved by zero for this task; L1143 changed this to
-    // occurrences for exactly that case, and this is the first task to
-    // collect on it.
+  it("DENOMINATOR: the walk is the whole repository, and what it dropped is pinned", () => {
+    // No floor existed at all before this (census audit finding 13): every ban
+    // in this file was scoped to three hardcoded directories and a shrinking
+    // walk was indistinguishable from a clean repository.
+    expect(ALL_SOURCES.length, "the app-source walk stopped seeing the repository").toBeGreaterThan(400);
+    // The walk reaches outside the three old roots...
+    expect(ALL_SOURCES.map((f) => f.path)).toContain("proxy.ts");
+    expect(ALL_SOURCES.some((f) => !/^(app|lib|components)\//.test(f.path))).toBe(true);
+    // ...and the ONE thing the filter removes is lib/list itself, named, so a
+    // filter that started swallowing the subject would be red here.
+    expect(EXCLUDED.length).toBeGreaterThanOrEqual(5);
+    expect(EXCLUDED.every((p) => p.startsWith("lib/list/"))).toBe(true);
+    expect(EXCLUDED).toContain("lib/list/query.ts");
+    expect(EXCLUDED).toContain("lib/list/params.ts");
+    expect(SOURCES.length).toBe(ALL_SOURCES.length - EXCLUDED.length);
+  });
+
+  it("every route that renders a list reaches the one cursor", () => {
+    // ======================================================================
+    // THIS REPLACED A FLOOR, AND THE INVARIANT CHANGED WITH IT. READ THIS
+    // BEFORE RESTORING A NUMBER
+    // ======================================================================
+    // For five phases this was `callSites("fetchListPage<").length >= N`, and
+    // every edit RAISED N -- the file said in as many words that raising it
+    // was the obligation. That assertion is gone, and its replacement is not
+    // a smaller number: it is a different claim.
     //
-    // RAISING IT IS THE OBLIGATION, not paperwork. It is a FLOOR, so Task 3
-    // could have added two lists and left it at fifteen and nothing would have
-    // gone red -- and the census would then have been satisfied by a codebase
-    // that had deleted two of the lists it is meant to be counting. The floor
-    // only has teeth at the number the tree actually holds.
+    // The count was only ever a PROXY for "every list goes through the one
+    // cursor". It worked while each list wrote `fetchListPage<` itself. Once
+    // fourteen routes began delegating to components/list/entity-list-page.tsx
+    // and components/list/deleted-records-page.tsx, fourteen occurrences
+    // became two, and the proxy started measuring indirection rather than
+    // surface area. A lowered floor would have been the wrong repair: it
+    // still counts call sites, and a sixth entity that HAND-ROLLS its own
+    // query calls nothing, so it neither raises the count nor trips it. The
+    // bypass is invisible to a number in both directions.
     //
-    // COUNTED AS OCCURRENCES, NOT AS FILES (L1143). Today the two still happen
-    // to be the same number -- seventeen files, one call each -- which is
-    // exactly why the mismatch between this assertion and the sentence above
-    // it went unnoticed. A second list added to a file that already has one
-    // would not move a file count.
-    // THIRTY as of Phase 4 Task 3, raised from twenty: the tasks, meetings and
-    // notes list pages and their three `deleted` twins (6), and the three
-    // related-panel reverse loaders in `lib/crm/queries.ts` --
-    // loadTasksForEntity, loadNotesForEntity, loadDocumentsForEntity (3). Nine
-    // more, counted rather than guessed. The floor has teeth only at the number
-    // the tree holds; raising it is the obligation.
-    // THIRTY as of Phase 5 Task 2: the finance list on the event detail page,
-    // loaded by loadFinancialEntriesForEvent in lib/crm/finance-queries.ts.
-    expect(callSites("fetchListPage<").length).toBeGreaterThanOrEqual(30);
+    // So the obligation is now an ENUMERATION rather than a number. Every
+    // route that renders a list must reach lib/list one of exactly two ways,
+    // and anything that does neither has to be named here with a reason. Add
+    // a list and do nothing, and this goes red naming your file.
+    const LIST_MARKERS = ["<EntityList", "entityListPage(", "deletedRecordsPage("];
+
+    // ONE INDIRECTION IS ALLOWED, AND IT IS TRANSITIVE RATHER THAN AN
+    // ALLOWLIST -- the same policy this file already applies to the
+    // `parseListParams` wrappers below, for the same reason.
+    //
+    // A detail page renders <EntityList> for a panel whose page was fetched by
+    // a loader in lib/ (the venue page's "Events here" via loadEventsForVenue,
+    // the network links list via loadNetworkLinksList). Those routes reach the
+    // one cursor through exactly one hop, and an allowlist naming them would
+    // have to be edited every time a panel moves -- which is the kind of
+    // maintenance that turns a guard into a rubber stamp.
+    //
+    // So resolve it: any symbol EXPORTED by a module that itself calls
+    // `fetchListPage<` counts as reaching it. A loader that stops calling
+    // fetchListPage drops out of this set, and every route that relied on it
+    // goes red -- which is the behaviour an allowlist would have suppressed.
+    const loaderExports = SOURCES.filter((f) =>
+      code(f.text).includes("fetchListPage<"),
+    ).flatMap((f) => [
+      ...code(f.text).matchAll(
+        /^export (?:async )?(?:function|const) ([A-Za-z_$][\w$]*)/gm,
+      ),
+    ].map((m) => `${m[1]}(`));
+
+    const REACHES = [
+      "fetchListPage<",
+      "entityListPage(",
+      "deletedRecordsPage(",
+      ...loaderExports,
+    ];
+
+    // Routes that render something list-shaped but legitimately do not reach
+    // the shared cursor by any of those routes. EMPTY, AND THAT IS THE POINT
+    // -- an entry here is a declaration that a surface paginates by some other
+    // means, which is the thing this suite exists to make impossible to do
+    // quietly.
+    const EXEMPT: readonly string[] = [];
+
+    const listRoutes = SOURCES.filter(
+      (f) =>
+        f.path.startsWith("app/") &&
+        f.path.endsWith("page.tsx") &&
+        LIST_MARKERS.some((m) => code(f.text).includes(m)),
+    );
+
+    // The denominator, so a broken walk cannot pass this vacuously.
+    expect(
+      listRoutes.length,
+      "routes rendering a list. If this fell, a list route was deleted or the " +
+        "walk stopped seeing app/.",
+    ).toBeGreaterThanOrEqual(19);
+
+    // And the loader resolution found something, so a regex that stopped
+    // matching cannot silently turn the hop above into a blanket pass.
+    expect(
+      loaderExports.length,
+      "exported loaders in modules that call fetchListPage. If this is zero " +
+        "the transitive hop is matching nothing and every panel route below " +
+        "would be reported as stranded.",
+    ).toBeGreaterThanOrEqual(5);
+
+    const stranded = listRoutes
+      .filter((f) => !REACHES.some((m) => code(f.text).includes(m)))
+      .map((f) => f.path)
+      .filter((path) => !EXEMPT.includes(path));
+    expect(
+      stranded,
+      "a route renders a list without calling fetchListPage, without " +
+        "delegating to a list-page factory, and without calling a loader that " +
+        "reaches fetchListPage. That is a second cursor, or a hand-rolled " +
+        "query, which is what this whole file exists to prevent.",
+    ).toEqual([]);
+
+    // And the two factories must themselves reach it, or the delegation above
+    // is delegation to nothing.
+    for (const factory of [
+      "components/list/deleted-records-page.tsx",
+      "components/list/entity-list-page.tsx",
+    ]) {
+      expect(
+        byPath(factory),
+        `${factory} must call fetchListPage -- it is the shared cursor for ` +
+          "every route that delegates to it",
+      ).toContain("fetchListPage<");
+    }
   });
 
   it("every fetchListPage caller also parses its params through lib/list", () => {
@@ -266,14 +421,23 @@ describe("every paginated list shares one implementation", () => {
     // `code()` first, which matters here -- a dozen files discuss `after` in
     // prose (the artist detail page, the activity timeline, the artists list)
     // and none of them reads it.
-    const reads = [
-      /\b(?:searchParams|params|query|raw)\s*(?:\.\s*|\[\s*["'`]\s*)(?:after|before)\b/,
-      /\{[^}]*\b(?:after|before)\b[^}]*\}\s*=\s*(?:await\s+)?(?:searchParams|params|query|raw)\b/,
-    ];
-    const readers = SOURCES.filter((f) =>
-      reads.some((re) => re.test(code(f.text))),
-    );
-    expect(readers.map((f) => f.path)).toEqual([]);
+    //
+    // THE RECEIVER IS NO LONGER A FOUR-NAME ALLOWLIST (census audit finding 7).
+    // `searchParams|params|query|raw` missed the commonest spelling there is:
+    //   const sp = await searchParams;  const cur = sp.after;
+    // -- the receiver is whatever the page happened to call it. So the aliases
+    // are RESOLVED out of the file first, and the four literals are kept as
+    // the seed. The `(record as Record<string, unknown>).before` false
+    // positive that shaped the original scope is still excluded, because
+    // `record` is bound to no params expression.
+    const readers = SOURCES.filter((f) => cursorReads(code(f.text)).length > 0);
+    expect(
+      readers.map((f) => f.path),
+      "a module outside lib/list reads `after`/`before` off a params object. " +
+        "That is a hand-rolled keyset: it passes every other assertion in this " +
+        "file, because it calls neither fetchListPage nor parseListParams and " +
+        "uses neither .range( nor offset:.",
+    ).toEqual([]);
   });
 
   it("no module outside lib/list encodes or decodes a cursor itself", () => {
@@ -296,8 +460,55 @@ describe("every paginated list shares one implementation", () => {
     // every list endpoint, and a bare `.limit()` IS a ceiling. What it is not
     // is a page-2, which is why nothing offers one.
     expect(callers(".range(")).toEqual([]);
-    const offsets = SOURCES.filter((f) => /\boffset:\s/.test(code(f.text)));
+    // THE BAN IS TOTAL AGAIN, AND ONE FILE IS EXCLUDED BY PATH.
+    //
+    // 53507a5 narrowed the pattern instead -- `offset:` with a negative
+    // lookahead for the primitive type keywords -- to accommodate Phase 8
+    // Task 4's `lib/export/zip.ts`, which declares `offset: number` on a ZIP
+    // central-directory record (a byte position in a binary container, in a
+    // module that imports `node:zlib` and could not reach PostgREST if it
+    // tried). That narrowing was GLOBAL, so it also blinded the census to the
+    // shape offset pagination actually takes in a typed codebase:
+    // `interface ListParams { readonly offset: number }`. Measured, and the
+    // fixtures below now pin it (Task 4 review, finding M5).
+    //
+    // A path exclusion costs nothing -- this file already owns its own
+    // SOURCES list -- and keeps the pattern total everywhere else. An entry
+    // here is a declaration that a module's `offset` is not a page, so it is
+    // deliberately one line and deliberately visible.
+    const OFFSET_EXEMPT: readonly string[] = [
+      // A ZIP local-header byte position, written into a 46-byte central
+      // directory record. Not a query parameter and not reachable from one.
+      "lib/export/zip.ts",
+    ];
+    const OFFSET_PAGINATION = /\boffset:\s/;
+    const offsets = SOURCES.filter(
+      (f) => !OFFSET_EXEMPT.includes(f.path) && OFFSET_PAGINATION.test(code(f.text)),
+    );
     expect(offsets.map((f) => f.path)).toEqual([]);
+
+    // The exemption names a file that EXISTS and that really does carry the
+    // shape, so a stale entry cannot sit here granting a pass to nothing.
+    for (const path of OFFSET_EXEMPT) {
+      expect(OFFSET_PAGINATION.test(code(byPath(path))), path).toBe(true);
+    }
+
+    // The restored pattern sees every shape a real offset page takes...
+    for (const shape of [
+      "const q = { offset: 20, limit: 10 };",
+      "supabase.from('x').select('*', { offset: page * size })",
+      "  offset: cursor,",
+      "{ offset: 0 }",
+      // ...INCLUDING THE TYPED ONE, which is the whole of M5.
+      "interface ListParams { readonly offset: number }",
+      "  offset: bigint;",
+    ]) {
+      expect(OFFSET_PAGINATION.test(shape), shape).toBe(true);
+    }
+    // And `{ offset: 0 }` written without the space is still not a page in
+    // any formatter this repo uses, so the one-space requirement is the
+    // pattern's only looseness and it is stated rather than accidental.
+    expect(OFFSET_PAGINATION.test("{offset:0}")).toBe(false);
   });
 });
 
@@ -357,5 +568,53 @@ describe("the list specs that differ from the others say how", () => {
     // `after`, and the two cursors belong to different specs. `paramPrefix` is
     // off by default, so no existing spec changed.
     expect(activity).toContain("paramPrefix");
+  });
+});
+
+// ===========================================================================
+// THE BACKSTOP'S OWN POSITIVE CONTROLS (census audit finding 7)
+// ===========================================================================
+// The hand-rolled-cursor assertion above was `expect(readers).toEqual([])` over
+// two inline regexes, and NOTHING in this file proved either regex had ever
+// matched anything -- contrast the `offset:` ban, which carries six positive
+// shapes and one negative. A pattern with no fixture is a pattern one tidy-up
+// away from matching nothing, permanently and silently. These are those
+// fixtures, plus the receiver evasion the four-name allowlist let through.
+describe("the hand-rolled-cursor detector", () => {
+  const FIRES: [string, string][] = [
+    ["the direct read", `const cur = searchParams.after;`],
+    ["the bracketed read", `const cur = params["before"];`],
+    ["the destructured read", `const { after } = await searchParams;`],
+    ["a renamed destructured read", `const { before: b } = await searchParams;`],
+    ["an optional chain", `const cur = searchParams?.after;`],
+    // THE EVASION. Green under the four-literal receiver allowlist.
+    ["an aliased receiver", `const sp = await searchParams;\nconst cur = sp.after;`],
+    ["an aliased receiver, bracketed", `const sp = await props.searchParams;\nconst cur = sp["before"];`],
+    ["an aliased receiver, destructured", `const sp = await searchParams;\nconst { after } = sp;`],
+    ["two hops", `const sp = await searchParams;\nconst q = sp;\nconst cur = q.after;`],
+  ];
+
+  it.each(FIRES)("fires on %s", (_label, source) => {
+    expect(cursorReads(source).length).toBeGreaterThan(0);
+  });
+
+  it("MEASURED: the aliased receiver defeated the four-name allowlist it replaced", () => {
+    const OLD = [
+      /\b(?:searchParams|params|query|raw)\s*(?:\.\s*|\[\s*["'`]\s*)(?:after|before)\b/,
+      /\{[^}]*\b(?:after|before)\b[^}]*\}\s*=\s*(?:await\s+)?(?:searchParams|params|query|raw)\b/,
+    ];
+    const evasion = `const sp = await searchParams;\nconst cur = sp.after;`;
+    expect(OLD.some((re) => re.test(evasion)), "the old pattern is supposed to MISS this").toBe(false);
+    expect(cursorReads(evasion).length).toBeGreaterThan(0);
+  });
+
+  it("does not fire on the false positive that shaped its scope", () => {
+    // lib/crm/dedup.ts:345 -- a merge `field_resolution` snapshot, nothing to
+    // do with pagination.
+    expect(cursorReads(`const prev = (record as Record<string, unknown>).before;`)).toEqual([]);
+    expect(cursorReads(`const after = event.after;`)).toEqual([]);
+    // ...and in prose, once `code()` has been through it, as every caller
+    // above does.
+    expect(cursorReads(code(`// searchParams.after is read by lib/list only\nconst x = 1;`))).toEqual([]);
   });
 });

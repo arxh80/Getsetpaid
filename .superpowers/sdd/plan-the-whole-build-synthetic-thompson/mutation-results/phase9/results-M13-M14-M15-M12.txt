@@ -1,0 +1,6 @@
+CONTROL (before) -> 199 assertions, 0 red
+M13 integration_role_held: manage_integrations term dropped -> 199 assertions, 4 red (IC11d S's Read Only (an active member, no manage_integrations) cannot revoke while S is SUSPENDED; IC11b ...it is revoked, revoked_at set, revoked_by = the caller (stamped by the RPC itself); IC12a A's Read Only cannot revoke the Manager's person-scoped connection; IC12b ...revoked_by = the Manager)
+M14 integration_role_held: MFA term dropped -> 199 assertions, 2 red (IC4c forbidden, not workspace_not_writable: S's Owner at aal1 (the MFA term of integration_role_held); IC11e S's Owner at aal1 (role granted, MFA not met) cannot revoke while S is SUSPENDED)
+M15 integration_role_held: active-membership term dropped -> 199 assertions, 2 red (IC11f S's former Owner (membership revoked, aal2) cannot revoke while S is SUSPENDED; IC11b ...it is revoked, revoked_at set, revoked_by = the caller (stamped by the RPC itself))
+M12 control: no mutation -> 199 assertions, 0 red
+CONTROL (restored) -> 199 assertions, 0 red

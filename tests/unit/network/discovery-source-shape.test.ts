@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { readSource as read, stripComments } from "../../support/source";
 
 // TASK 3's OWN LEAKAGE ASSERTION #2 -- THE SOURCE-SHAPE HALF.
 //
@@ -37,22 +36,11 @@ import { describe, expect, it } from "vitest";
 // cannot see a leak introduced anywhere ELSE (a helper this file does not
 // read, a change to a file that already passed); what it can see, it sees on
 // every commit.
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 
-function read(relative: string): string {
-  return readFileSync(root + relative, "utf8").replace(/\r\n/g, "\n");
-}
 
 /** Comments stripped, so a doc comment that NAMES the forbidden call (as this
  *  very test file's own header does, and as lib/network/discovery.ts's header
  *  does at length) cannot trip a naive substring search. */
-function stripComments(code: string): string {
-  return code
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .map((line) => line.replace(/\/\/.*$/, ""))
-    .join("\n");
-}
 
 /** Every `.from("<table>")` / `.from('<table>')` call site in `code`. */
 function fromCalls(code: string): string[] {

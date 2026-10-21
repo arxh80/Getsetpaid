@@ -22,6 +22,7 @@ import { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { repoRoot as root, readSource as read } from "../../support/source";
 
 const pool = new Pool({ connectionString: getLocalSupabaseStatus().dbUrl });
 
@@ -88,11 +89,7 @@ function relationsWithoutOrganisationId(): string[] {
 }
 
 /** Repository root, for the source scan below. */
-const root = fileURLToPath(new URL("../../../", import.meta.url));
 
-function read(relative: string): string {
-  return readFileSync(root + relative, "utf8");
-}
 
 /**
  * Every relation named by a `table:` option in lib/, deduplicated.

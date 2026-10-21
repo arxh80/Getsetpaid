@@ -1,0 +1,9 @@
+mutant: 17c-ceiling-release-no-reason-check
+migrations before/after: 213/213
+runner exit: 1   vitest exit: 
+--- psql: red assertions, read from each suite's results table ---
+  [rt] REL7 a BLANK reason is refused
+  [rt] REL7a ...and so is a NULL one
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---

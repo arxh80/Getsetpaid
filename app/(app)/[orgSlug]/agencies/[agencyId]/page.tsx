@@ -129,19 +129,6 @@ export default async function AgencyDetailPage({
   if (result.outcome === "missing") notFound();
 
   const agency = result.record;
-  const rows = await loadRepresentationsForAgency(org.id, agency.id);
-  // NO EXCLUSION LIST, unlike the contact/company picker. The schema is
-  // explicit that the same agency representing the same artist twice is
-  // legitimate -- 20260827232510: "the same agency representing the same
-  // artist in two territories, or over two separate periods, is exactly the
-  // case the PRD asks for" -- so there is no uniqueness to protect and
-  // filtering the artist out would refuse a real relationship.
-  const [artistOptions, contactOptions] = artistAccess.canWrite
-    ? await Promise.all([
-        loadLinkOptions("artists", org.id, []),
-        loadLinkOptions("contacts", org.id, []),
-      ])
-    : [[], []];
 
   // WHY THE PANEL NEEDS THE ROLE AND NOT ONLY THE ACCESS. An empty picker
   // means "this workspace has none" for a full-scope viewer and "none are
@@ -160,13 +147,6 @@ export default async function AgencyDetailPage({
       : artistAccess.canWrite
         ? null
         : artistAccess.explanation;
-  // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
-  // the panel is a Client Component and this is the only place with an
-  // RLS-scoped server client. `includeRemoved` is implied: the loader
-  // returns the values of REMOVED fields too, which is what makes
-  // "removing a field keeps what was filled in" visible rather than merely
-  // true (20260829010000, decision 1).
-  const customFields = await loadCustomFieldPanel(org.id, "agency", agency.id);
   // A CUSTOM FIELD VALUE IS AN ORDINARY CRM WRITE ON THIS RECORD, so the
   // key that gates it is manage_contacts, NOT the manage_artists this page also holds for its representation panel --
   // private.entity_is_manageable() maps this entity type to it in the
@@ -192,27 +172,65 @@ export default async function AgencyDetailPage({
   // `?merged=1`, or narrowed by a hand-edited URL, or disturbed by anything a
   // later phase adds to this route.
   const activityListParams = activityParams(raw);
-  const activity = await fetchActivityPage(
-    org.id,
-    "agency",
-    agency.id,
-    activityListParams,
-  );
 
-  // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). Agencies are name-only
-  // (20260827232510: "Name-only at MVP"), so `name` is the only comparable
-  // field.
-  // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
-  // identical comment.
-  // TASK 4 / GAP B (Q73/Q82), one wave, not a waterfall. See the companies
-  // page's identical comment.
-  const [networkProfile, networkLink, connectAccess] = canReadNetwork
-    ? await Promise.all([
-        loadNetworkProfileForEntity(org.id, "agency", agency.id),
-        loadNetworkLinkForEntity(org.id, "agency", agency.id),
-        getNetworkConnectionAccess(org),
-      ])
-    : [null, null, null];
+  // ONE WAVE, NOT A WATERFALL -- the same argument the network trio below
+  // already made, applied to everything that shares its precondition.
+  //
+  // All five of these need `org.id` and `agency.id`, plus `artistAccess` and
+  // `canReadNetwork` from the opening Promise.all, and NOTHING produced by
+  // each other. Awaited one at a time they were five sequential round trips
+  // on the critical render path, for no ordering anyone had asked for. The
+  // events detail page has fetched its eight loaders in a single wave since
+  // Phase 3; this route simply drifted from it.
+  //
+  // The one fetch that is genuinely serial stays serial: `linkedProfile`
+  // below needs `networkLink.networkProfileId`, which does not exist until
+  // this wave resolves.
+  const [
+    rows,
+    [artistOptions, contactOptions],
+    customFields,
+    activity,
+    [networkProfile, networkLink, connectAccess],
+  ] = await Promise.all([
+    loadRepresentationsForAgency(org.id, agency.id),
+    // NO EXCLUSION LIST, unlike the contact/company picker. The schema is
+    // explicit that the same agency representing the same artist twice is
+    // legitimate -- 20260827232510: "the same agency representing the same
+    // artist in two territories, or over two separate periods, is exactly the
+    // case the PRD asks for" -- so there is no uniqueness to protect and
+    // filtering the artist out would refuse a real relationship.
+    artistAccess.canWrite
+      ? Promise.all([
+          loadLinkOptions("artists", org.id, []),
+          loadLinkOptions("contacts", org.id, []),
+        ])
+      : Promise.resolve([[], []] as [
+          { id: string; name: string }[],
+          { id: string; name: string }[],
+        ]),
+    // CUSTOM FIELD VALUES. Loaded here rather than inside the panel because
+    // the panel is a Client Component and this is the only place with an
+    // RLS-scoped server client. `includeRemoved` is implied: the loader
+    // returns the values of REMOVED fields too, which is what makes
+    // "removing a field keeps what was filled in" visible rather than merely
+    // true (20260829010000, decision 1).
+    loadCustomFieldPanel(org.id, "agency", agency.id),
+    fetchActivityPage(org.id, "agency", agency.id, activityListParams),
+    // THE NETWORK IDENTITY ROW (Phase 6 Task 2, Q75). Agencies are name-only
+    // (20260827232510: "Name-only at MVP"), so `name` is the only comparable
+    // field.
+    // GATED ON `canReadNetwork` (FIX ROUND 1, I2) -- see the companies page's
+    // identical comment.
+    // TASK 4 / GAP B (Q73/Q82). See the companies page's identical comment.
+    canReadNetwork
+      ? Promise.all([
+          loadNetworkProfileForEntity(org.id, "agency", agency.id),
+          loadNetworkLinkForEntity(org.id, "agency", agency.id),
+          getNetworkConnectionAccess(org),
+        ])
+      : Promise.resolve([null, null, null] as const),
+  ]);
   const networkDrifted =
     networkProfile !== null &&
     profileHasDrifted(

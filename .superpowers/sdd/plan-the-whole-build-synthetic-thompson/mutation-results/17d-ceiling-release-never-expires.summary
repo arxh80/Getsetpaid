@@ -1,0 +1,12 @@
+mutant: 17d-ceiling-release-never-expires
+migrations before/after: 213/213
+runner exit: 1   vitest exit: 
+--- psql: red assertions, read from each suite's results table ---
+  [rt] REL20 one second past 72 hours it has EXPIRED BY ITSELF -- nothing reverted it
+  [rt] REL21 ...and the purge DOES NOT honour an expired release: the ceiling refuses again
+  [rt] REL22 ...deleting nothing more
+  [rt] REL26 after expiry a fresh release is accepted -- a new decision, not an extension
+  [rt] REL27 ...and it is a SECOND audit row, the history the settings row does not keep
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---

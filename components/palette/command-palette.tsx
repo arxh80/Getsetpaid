@@ -11,6 +11,7 @@ import {
 import { useRouter } from "next/navigation";
 import type { SidebarNavGroup } from "@/components/nav/types";
 import { searchPaletteAction } from "@/lib/palette/search";
+import { formatRetryAfter } from "@/lib/format/duration";
 import {
   PALETTE_MIN_QUERY_LENGTH,
   PALETTE_OPEN_EVENT,
@@ -108,7 +109,15 @@ const INPUT_ID = "command-palette-input";
 interface SearchState {
   readonly forQuery: string;
   readonly groups: readonly PaletteRecordGroup[];
-  readonly failed: boolean;
+  /**
+   * false = fine; "error" = the read failed (try again in a moment);
+   * "rate_limited" = the caller's search budget is spent (SECURITY.md § 5)
+   * and the right advice is the OPPOSITE of "try again in a moment", which
+   * is why the two refusals are not one flag.
+   */
+  readonly failed: false | "error" | "rate_limited";
+  /** The window's remainder, for the rate-limited sentence. */
+  readonly retryAfterSeconds: number | null;
 }
 
 export function CommandPalette({
@@ -171,9 +180,26 @@ export function CommandPalette({
         const result = await searchPaletteAction(orgSlug, q);
         if (seqRef.current !== seq) return;
         if (result.outcome === "results") {
-          setSearch({ forQuery: q, groups: result.groups, failed: false });
+          setSearch({
+            forQuery: q,
+            groups: result.groups,
+            failed: false,
+            retryAfterSeconds: null,
+          });
+        } else if (result.outcome === "rate_limited") {
+          setSearch({
+            forQuery: q,
+            groups: [],
+            failed: "rate_limited",
+            retryAfterSeconds: result.retryAfterSeconds,
+          });
         } else {
-          setSearch({ forQuery: q, groups: [], failed: true });
+          setSearch({
+            forQuery: q,
+            groups: [],
+            failed: "error",
+            retryAfterSeconds: null,
+          });
         }
       });
     }, 250);
@@ -357,9 +383,16 @@ export function CommandPalette({
   const showingRecords =
     recordSearchArmed && search !== null && search.forQuery === trimmed;
   const searchPending = recordSearchArmed && (searching || !showingRecords);
-  const searchFailed = showingRecords && search !== null && search.failed;
+  const searchFailed =
+    showingRecords && search !== null && search.failed === "error";
+  const searchRateLimited =
+    showingRecords && search !== null && search.failed === "rate_limited";
   const nothingMatches =
-    trimmed !== "" && flatOptions.length === 0 && !searchPending && !searchFailed;
+    trimmed !== "" &&
+    flatOptions.length === 0 &&
+    !searchPending &&
+    !searchFailed &&
+    !searchRateLimited;
 
   return (
     <>
@@ -502,6 +535,31 @@ export function CommandPalette({
                 <p className="px-4 pt-4 pb-2 text-sm text-ink-muted">
                   We couldn’t search records just now. Sections and actions
                   still work; try the search again in a moment.
+                </p>
+              ) : null}
+              {searchRateLimited ? (
+                // NOT the failure copy: "try again in a moment" invites the
+                // very retry the limiter is refusing (SECURITY.md § 5).
+                //
+                // THE REMAINDER IS A HUMAN DURATION, like the other three
+                // refusal surfaces (cleanup round, nit N4). This one predates
+                // `formatRetryAfter` and was missed when fix round 1's M2
+                // introduced it, so the claim "the next surface to render a
+                // refusal inherits it" was true of three of four. It is
+                // harmless at today's numbers -- the palette only ever serves
+                // the 60-second `search` budget -- and would stop being
+                // harmless the moment that budget's window changed, which is
+                // one UPDATE to `rate_limit_policies` with no code diff to
+                // notice it (SECURITY.md § 5, "the values live in the
+                // database").
+                <p className="px-4 pt-4 pb-2 text-sm text-ink-muted">
+                  You’ve reached the search limit for now — nothing is wrong.
+                  Sections and actions still work; records can be searched
+                  again in{" "}
+                  <span className="tabular-nums">
+                    {formatRetryAfter(search?.retryAfterSeconds ?? 60)}
+                  </span>
+                  .
                 </p>
               ) : null}
               {nothingMatches ? (

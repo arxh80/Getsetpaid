@@ -66,7 +66,7 @@ import {
  * a request read both -- but see this file's header: neither is ever rendered
  * as a tenant name.
  */
-export const NETWORK_REQUEST_SELECT =
+const NETWORK_REQUEST_SELECT =
   "id, status, requested_at, responded_at, from_organisation_id, from_network_profile_id, to_organisation_id, to_network_profile_id";
 
 export interface NetworkRequestRow {
@@ -80,7 +80,7 @@ export interface NetworkRequestRow {
   toNetworkProfileId: string;
 }
 
-export function mapNetworkRequestRow(
+function mapNetworkRequestRow(
   row: Record<string, unknown>,
 ): NetworkRequestRow {
   return {

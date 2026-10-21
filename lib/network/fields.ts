@@ -223,12 +223,6 @@ export const PUBLISHABLE_FIELD_LABELS: Record<PublishableField, string> = {
   contact_email: "Contact email",
 };
 
-/** The two always-visible fields as a human reads them. */
-export const ALWAYS_NETWORK_FIELD_LABELS: Record<AlwaysNetworkField, string> = {
-  display_name: "Name",
-  entity_kind: "Type",
-};
-
 /** The four entity kinds as a human reads them. */
 export const NETWORK_ENTITY_KIND_LABELS: Record<NetworkEntityKind, string> = {
   company: "Company",
@@ -340,23 +334,6 @@ export function isNetworkEntityKind(
   return (
     value !== null &&
     (NETWORK_ENTITY_KINDS as readonly string[]).includes(value)
-  );
-}
-
-/** True iff `value` is a profile status the database will accept. Q81. */
-export function isProfileStatus(value: string | null): value is ProfileStatus {
-  return (
-    value !== null && (PROFILE_STATUSES as readonly string[]).includes(value)
-  );
-}
-
-/** True iff `value` is a connection status the database will accept. Q79. */
-export function isConnectionStatus(
-  value: string | null,
-): value is ConnectionStatus {
-  return (
-    value !== null &&
-    (CONNECTION_STATUSES as readonly string[]).includes(value)
   );
 }
 

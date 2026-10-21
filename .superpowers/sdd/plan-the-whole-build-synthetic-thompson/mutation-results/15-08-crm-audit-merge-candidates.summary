@@ -1,0 +1,32 @@
+mutant: 15-08-crm-audit-merge-candidates
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [c7] PA2 CENSUS: exactly 54 audit_insert/audit_update triggers over the twenty-seven tables
+  [c7] PA2b ...the sixteen new tables each carry BOTH, under their own target argument
+  [c7] PA6c the whole derived catalogue is 162 names, none duplicated
+  [c7] PA6d ...and every <target>.<verb> the new triggers can produce is in it
+  [c7] PC1 the derived roll: 27 generic / 5 dedicated / 2 rpc_only / 1 unaudited
+  [c7] PC2 the one unaudited table is organisations, on UPDATE only (Q189)
+  [c7] PC3 the generic set is exactly the twenty-seven
+  [c7] PM6b merge_candidate.soft_deleted (the transition wins the name), resolution dismissed and resolved_by carried, the LABEL not
+  [c7] PS5 every generic-target row the walk wrote is filed under ALPHA -- none misfiled (count/misfiled)
+  [c7] PS4 VOLUME, measured: the rows this suite's walk produced, by target type
+  [c7] PQ2c merge_candidate.created from the SCREEN: actor pmanager, org ALPHA, allowlisted keys, owners carried, label not
+  [c7] PQ5 a session-attributed restore writes merge_candidate.restored, attributed, the dismissal's values carried
+  [c7] PQ6 the screened pair's whole story: created, soft_deleted, restored -- and the refused write wrote nothing
+  [er] EP1 the derived roll of person ids copied into audit payloads, by name
+  [er] EP4 DENOMINATOR: one planted payload per derived person column, each carrying the subject three times
+  [er] EP5 DENOMINATOR: every audit payload that contains the subject, in any case, anywhere
+  [er] EP9 every derived person column is the tombstone in before, after (upper-cased) and nested
+  [er] EP10 and the summary counts the rows the scrub rewrote
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+|integration| tests/integration/admin/audit-actions-match-db.test.ts > the CRM audit triggers agree with CRM_AUDIT_TARGETS > every table with an audit_insert/audit_update pair is in the catalogue, under the trigger's own target argument
+|integration| tests/integration/admin/audit-actions-match-db.test.ts > the CRM audit triggers agree with CRM_AUDIT_TARGETS > private.audit_action_catalogue() is exactly knownAuditActions()
+|integration| tests/integration/admin/crm-audit-coverage-census.test.ts > private.audit_coverage(): every tenant-owned client-writable table is audited or excused by name > every other table is in AUDIT_COVERAGE_EXCUSALS with the coverage it claims, and its named triggers exist and fire on the client's ops
+|integration| tests/integration/admin/crm-audit-coverage-census.test.ts > private.audit_coverage(): every tenant-owned client-writable table is audited or excused by name > no table is `unaudited` except the ones AUDIT_COVERAGE_EXCUSALS declares so, with a reason
+|integration| tests/integration/admin/crm-audit-coverage-census.test.ts > private.audit_coverage(): every tenant-owned client-writable table is audited or excused by name > the `generic` set IS CRM_AUDIT_TARGET_TABLE, in both directions, with the trigger's own target argument
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > GATE 0 (Phase 8): the censuses reach every Phase 8 surface > REACH: the Phase 3-6 audit triggers are in the coverage census, and only the declared excusal is uncovered
+        Tests  6 failed | 684 passed (690)

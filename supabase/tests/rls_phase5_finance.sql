@@ -355,25 +355,45 @@ select fin.val('FB15 ...and NEITHER of them asks for view_crm',
        and coalesce(qual,'') || coalesce(with_check,'') like '%view_crm%'$$, '0');
 
 -- THE TIER HELPER'S BODY, read out of the DEPLOYED function. 20260903001000 was
--- written by copying private.crm_write_organisations() and substituting
--- p.crm_writes -> p.finance_module. A missed substitution is invisible to every
--- behavioural assertion in this file EXCEPT section FE's Starter case (Starter
--- carries crm_writes = true and finance_module = false), and invisible to a
--- source review entirely. These two name both halves of the substitution.
-select fin.val('FB16 finance_module_organisations() reads p.finance_module...',
+-- originally written by copying private.crm_write_organisations() and
+-- substituting p.crm_writes -> p.finance_module -- a missed substitution
+-- would have been invisible to every behavioural assertion in this file
+-- EXCEPT section FE's Starter case (Starter carries crm_writes = true and
+-- finance_module = false), and invisible to a source review entirely.
+--
+-- SINCE PHASE 7 TASK 4 (20260909000000): the function no longer joins
+-- organisation_subscriptions/subscription_plans inline -- it calls the
+-- shared private.effective_organisation_plan(), which is what makes an
+-- active billing override apply here too (see that migration's header).
+-- `p.finance_module` became `e.finance_module` and the escape's literal
+-- became `not e.has_subscription`; both assertions below were updated in the
+-- SAME migration that changed the source, per this file's own convention of
+-- re-reading rather than re-running a structural assertion whenever the
+-- function it names is deliberately rewritten.
+select fin.val('FB16 finance_module_organisations() reads e.finance_module (the shared plan)',
   $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
-            like '%p.finance_module%')::text$$, 'true');
+            like '%e.finance_module%')::text$$, 'true');
 select fin.val('FB17 ...and does NOT read crm_writes (the copy-paste this file guards)',
   $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
             like '%crm_writes%')::text$$, 'false');
--- THE ESCAPE, AS A DELIBERATE TRIPWIRE. `s.organisation_id is null` is what
--- makes the gate inert today, and Phase 7 removes it in the migration that
--- backfills subscription rows. This assertion IS EXPECTED TO GO RED THEN, at
--- which point section FE's FE1/FE12 change with it -- exactly as
--- rls_phase2_crm.sql N1/N16 do for the CRM gate.
+-- THE ESCAPE, AS A DELIBERATE TRIPWIRE. `not e.has_subscription` (formerly
+-- `s.organisation_id is null`) is what makes the gate inert for an
+-- organisation with no subscription row -- and Phase 7 Task A (20260908000000)
+-- did NOT remove it: the ledger scopes Task A to
+-- private.crm_write_organisations() and private.custom_field_limit() alone,
+-- and finance_module_organisations()'s own escape is a deliberate separate
+-- follow-up, UNTOUCHED BY TASK 4's routing through effective_organisation_plan()
+-- (that migration's header: "preserved VERBATIM as its own disjunct,
+-- unrelated to overrides"). This assertion therefore stays green through
+-- both Task A and Task 4. What DID change at Task A is the fixture state
+-- around it: create_organisation() now writes a real subscription row at
+-- birth, so ALPHA no longer arrives here row-less on its own -- FE1/FE12
+-- below strip the row explicitly to reach the state this escape actually
+-- needs, which Task A's own N1/N16 in rls_phase2_crm.sql do too, for the
+-- same reason.
 select fin.val('FB18 ...and still carries the "not yet billed => not yet gated" escape',
   $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
-            like '%s.organisation_id is null%')::text$$, 'true');
+            like '%not e.has_subscription%')::text$$, 'true');
 
 -- THE SUMMARY VIEW. Its whole security story is `security_invoker=true`: it
 -- reads public.financial_entries as the CALLER, so financial_entries_select_
@@ -656,6 +676,14 @@ reset role; reset request.jwt.claims;
 -- and raises 42501 rather than quietly matching nothing. That distinction is
 -- the whole reason the tier conjunct is in WITH CHECK and not in USING
 -- (20260903003000), and FB9 asserts the shape that produces it.
+--
+-- ALPHA arrives here carrying a REAL Pro-tier row -- rls_phase2_crm.sql § N17
+-- left it that way (Phase 7 Task A: create_organisation() writes a Starter
+-- row at birth, and every downstream section from Phase 3 onward needs a
+-- working row to keep its own CRM writes working, so § N's cleanup upgrades
+-- rather than deletes). FE1 strips it explicitly, which is now the only way
+-- to reach the "no subscription row" state this section is FOR.
+delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
 set role authenticated;
 set request.jwt.claims = :'pfinance_c';
 select fin.try('FE1 BASELINE: no subscription row, a finance write is allowed',
@@ -864,6 +892,18 @@ reset role; reset request.jwt.claims;
 -- pbowner is the BETA OWNER, so they hold view_finance and manage_finance in
 -- BETA at aal2 -- a finance key-holder of the other tenant, which is the
 -- attacker this section is about.
+--
+-- BETA needs a REAL Pro-tier row for FG6's positive control to mean anything.
+-- Phase 7 Task A made create_organisation() write a Starter row for every
+-- organisation at birth, BETA included (rls_phase2_crm.sql line 168), and
+-- Starter's finance_module is false -- so without this, FG6's "writes one in
+-- their own tenant" would be refused by the tier gate rather than proving the
+-- cross-tenant boundary is one-directional the way this section's name says.
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'beta_org'::uuid, 'pro', 'monthly', 1, 'active', now() + interval '30 days')
+on conflict (organisation_id) do update set plan_id='pro', status='active';
+
 set role authenticated;
 set request.jwt.claims = :'pbowner_c';
 select fin.val('FG1 a BETA finance key-holder reads ZERO of ALPHA''s lines',
@@ -993,6 +1033,22 @@ insert into public.custom_field_definitions
 select 'aaaaf000-0000-0000-0000-00000000000f', o.id, 'financial_entry',
        'cost_centre', 'Cost centre', 'text'
 from public.organisations o where o.slug='org-alpha';
+
+-- ALPHA is row-less here (§ FE left it that way, proving finance_module_
+-- organisations()'s OWN escape -- untouched by Phase 7 Task A). But
+-- custom_field_values write policies ALSO carry private.crm_write_
+-- organisations() (20260829011000), which Task A DID remove the escape
+-- from, so FI1 and FI5/FI6 below -- ordinary custom-field-value writes, not
+-- an escape probe -- now need a real row to succeed at all. Pro rather than
+-- Starter because FI1 specifically needs finance_module too (the
+-- entity_is_manageable('financial_entry', ...) arm, 20260903030000). FI7
+-- below upserts the SAME row again once its own downgrade walk begins; this
+-- one exists so FI1-FI6, which run before that, are not silently relying on
+-- an escape that no longer exists.
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'alpha_org'::uuid, 'pro', 'monthly', 1, 'active', now() + interval '30 days')
+on conflict (organisation_id) do update set plan_id='pro', status='active';
 
 set role authenticated;
 set request.jwt.claims = :'pfinance_c';
@@ -1151,16 +1207,25 @@ select fin.val('FI16 ...so the value is still there, still unchanged',
        and entity_id='fa110000-0000-0000-0000-000000000003'$$, 'CC-PRO-2');
 reset role; reset request.jwt.claims;
 
--- Restore the shipped state: NO subscription row, exactly as section FE does.
+-- STRIP the row entirely -- PHASE 7 TASK A CHANGED WHAT THIS PROVES.
+-- custom_field_values write policies carry BOTH private.crm_write_
+-- organisations() AND (for 'financial_entry') the finance-module arm of
+-- entity_is_manageable. Before Task A, a row-less organisation escaped BOTH
+-- gates and this INSERT succeeded ("the gate inert again"). Task A removed
+-- only the crm_write_organisations() escape -- finance_module_organisations()
+-- still has its own -- but that no longer matters: the OUTER gate now denies
+-- a row-less organisation before the inner one is ever consulted, so this is
+-- the SAME finding as § N's N1/N16, reached through the custom-field-value
+-- path instead of a direct CRM write.
 delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
 set role authenticated;
 set request.jwt.claims = :'powner_c';
-select fin.try('FI17 RESTORED: with the gate inert again, the refused INSERT succeeds',
+select fin.try('FI17 STRIPPED: no subscription row, the INSERT is now DENIED (crm_write_organisations, not the finance escape)',
   format($$insert into public.custom_field_values
              (organisation_id, field_id, entity_type, entity_id, value)
            values (%L,'aaaaf000-0000-0000-0000-00000000000f','financial_entry',
                    'fa110000-0000-0000-0000-000000000002','"CC-INERT"'::jsonb)$$,
-         :'alpha_org'), 'ok(1)');
+         :'alpha_org'), 'denied(42501)');
 reset role; reset request.jwt.claims;
 select fin.val('FI18 CONTROL: and no subscription row survives this section either',
   format($$select count(*)::text from public.organisation_subscriptions

@@ -16,6 +16,7 @@ import {
 } from "@/lib/crm/dedup";
 import { MergeForm, type MergeFieldRow } from "@/components/crm/merge-form";
 import { formatDate } from "@/lib/format/date";
+import { Absent } from "@/components/ui/absent";
 
 // One flagged pair, side by side.
 //
@@ -267,11 +268,3 @@ function ReadOnlyComparison({
  * A blank cell in a dense table is indistinguishable from a rendering fault,
  * and a screen reader passes over it in silence.
  */
-function Absent() {
-  return (
-    <span>
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">Not recorded</span>
-    </span>
-  );
-}
