@@ -21,7 +21,7 @@ Next.js 16 · React 19 · TypeScript · Tailwind CSS 4 · Supabase (Postgres, Au
 
 ## Security and tenancy
 
-Tenant isolation is enforced in the database with Row Level Security, not only in application code. Migrations live in `supabase/migrations/`. Security controls and threat notes are in [`SECURITY.md`](SECURITY.md).
+Tenant isolation is enforced in the database with Row Level Security, not only in application code. Migrations live in `supabase/migrations/`.
 
 ## Testing
 
@@ -56,7 +56,6 @@ For the end-to-end tests, run `npx playwright install chromium` once first.
 ## Project docs
 
 - [`DESIGN.md`](DESIGN.md): design system and UX decisions
-- [`SECURITY.md`](SECURITY.md): security model
 - `CLAUDE.md`: project guidance and the test gates
 
 ## About this project

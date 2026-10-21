@@ -214,3 +214,7 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Kept locally, not published
+SECURITY.md
+FOLLOW-UPS.md
