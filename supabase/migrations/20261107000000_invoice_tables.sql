@@ -10,9 +10,14 @@
 -- client-writable tables only).
 --
 -- THE FREEZE: private.invoices_freeze() and private.invoice_lines_freeze()
--- refuse any change to an issued invoice's content from every role, the
--- table owner included. A hard delete is admitted only from a cascade
--- (pg_trigger_depth() > 1): the workspace purge.
+-- refuse any row-level UPDATE or DELETE of an issued invoice's content from
+-- every role, the table owner included. A hard delete is admitted only once
+-- the parent public.organisations row is already gone: the workspace purge's
+-- cascade (private.invoice_workspace_is_gone()). Being nested in some other
+-- trigger admits nothing. All three are SECURITY DEFINER, so their lookups of
+-- the invoice and the workspace read as the owner and RLS cannot blind them
+-- into admitting a row. TRUNCATE fires no row trigger and is not frozen: no
+-- role but the owner holds it (IT3, IT4).
 --
 -- Person references (created_by, paid_by, voided_by, sent_by) are NO ACTION
 -- foreign keys to auth.users, so private.erase_account()'s derived re-point
@@ -205,9 +210,25 @@ create trigger set_updated_at before update on public.invoices
 -- ---------------------------------------------------------------------------
 -- 7. THE FREEZE.
 -- ---------------------------------------------------------------------------
+-- The purge test, alone in its own function: the retention clock walk
+-- (private.retention_clock_candidates) follows every private function a
+-- retention function names, and a freeze body naming public.organisations
+-- beside the word updated_at halts the sweep as undeclared_retention_clock.
+create or replace function private.invoice_workspace_is_gone(p_organisation_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select not exists (select 1 from public.organisations o where o.id = p_organisation_id)
+$$;
+revoke all on function private.invoice_workspace_is_gone(uuid) from public, anon, authenticated, service_role;
+
 create or replace function private.invoices_freeze()
 returns trigger
 language plpgsql
+security definer
 set search_path = ''
 as $$
 declare
@@ -220,8 +241,8 @@ declare
 begin
   if tg_op = 'DELETE' then
     -- A draft is soft-deleted and an issued invoice voided; a hard delete is
-    -- only ever the workspace purge's cascade (depth > 1).
-    if old.status <> 'draft' and pg_catalog.pg_trigger_depth() <= 1 then
+    -- only ever the workspace purge's cascade, after the workspace row went.
+    if old.status <> 'draft' and not private.invoice_workspace_is_gone(old.organisation_id) then
       raise exception 'invoices: an issued invoice is never deleted'
         using errcode = '42501', hint = 'invoice_is_frozen';
     end if;
@@ -288,6 +309,7 @@ create trigger invoices_freeze before update or delete on public.invoices
 create or replace function private.invoice_lines_freeze()
 returns trigger
 language plpgsql
+security definer
 set search_path = ''
 as $$
 declare
@@ -304,12 +326,15 @@ begin
     select i.status into v_status from public.invoices i where i.id = old.invoice_id;
   end if;
 
+  -- Null: the invoice is gone (read as definer, so never merely invisible):
+  -- a delete cascading from a draft or the purge, or an INSERT the composite
+  -- FK refuses next.
   if v_status is null or v_status = 'draft' then
     if tg_op = 'DELETE' then return old; end if;
     return new;
   end if;
-  -- The workspace purge's cascade.
-  if tg_op = 'DELETE' and pg_catalog.pg_trigger_depth() > 1 then
+  -- The workspace purge's cascade: the workspace row is already gone.
+  if tg_op = 'DELETE' and private.invoice_workspace_is_gone(old.organisation_id) then
     return old;
   end if;
   -- public.mark_invoice_paid() records which entries it flipped, and nothing else.

@@ -84,6 +84,7 @@ select gen_random_uuid()::text as inv_ai \gset
 select gen_random_uuid()::text as inv_bd \gset
 select gen_random_uuid()::text as inv_sd \gset
 select gen_random_uuid()::text as inv_pi \gset
+select gen_random_uuid()::text as inv_x  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'own_a') as own_a_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'adm_a') as adm_a_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_a') as fin_a_c  \gset
@@ -298,6 +299,87 @@ select inv.val('IF14 POSITIVE CONTROL: the erasure re-point (creator -> tombston
 select inv.val('IF15 both freeze triggers are enabled', $$select string_agg(tgname || '=' || tgenabled::text, ',' order by tgname) from pg_trigger where tgname in ('invoices_freeze','invoice_lines_freeze') and not tgisinternal$$, 'invoice_lines_freeze=O,invoices_freeze=O');
 select inv.val('IF16 THE PURGE STILL WORKS: erasing a workspace holding an issued, sent invoice cascades through the freeze', format($$select 'ok' from (select private.erase_organisation(%L, null, false)) s$$, :'org_p'), 'ok');
 select inv.val('IF17 ...and leaves none of its invoice rows', format($$select (select count(*) from public.invoices where organisation_id = %1$L) || '/' || (select count(*) from public.invoice_lines where organisation_id = %1$L) || '/' || (select count(*) from public.invoice_sends where organisation_id = %1$L) || '/' || (select count(*) from public.invoice_settings where organisation_id = %1$L)$$, :'org_p'), '0/0/0/0');
+
+-- IF18-IF20. A hard delete of an issued invoice or its lines is admitted only
+-- once the parent workspace row is GONE (the purge's cascade, IF16/IF17) --
+-- not for being nested in a trigger. This trigger, at depth 1, deletes at
+-- depth 2 with the workspace still there, and reports how many rows went.
+create table inv.nest (invoice_id uuid, target text, deleted integer);
+create function inv.nest_delete() returns trigger
+language plpgsql set search_path = '' as $$
+declare n integer;
+begin
+  if new.target = 'invoice' then
+    delete from public.invoices where id = new.invoice_id;
+  else
+    delete from public.invoice_lines where invoice_id = new.invoice_id;
+  end if;
+  get diagnostics n = row_count;
+  new.deleted := n;
+  return new;
+end $$;
+create trigger nest_delete before insert on inv.nest
+  for each row execute function inv.nest_delete();
+select inv.val('IF18 a delete NESTED in another trigger, workspace present, cannot remove an issued invoice', format($$insert into inv.nest (invoice_id, target) values (%L, 'invoice') returning 'deleted ' || deleted$$, :'inv_ai'), 'denied(42501:invoice_is_frozen)');
+select inv.val('IF19 ...nor its lines', format($$insert into inv.nest (invoice_id, target) values (%L, 'lines') returning 'deleted ' || deleted$$, :'inv_ai'), 'denied(42501:invoice_is_frozen)');
+select inv.val('IF20 POSITIVE CONTROL: the same nested path deletes a DRAFT''s line', format($$insert into inv.nest (invoice_id, target) values (%L, 'lines') returning 'deleted ' || deleted$$, :'inv_bd'), 'deleted 1');
+
+-- IF21-IF28. The freeze's lookups cannot be blinded by RLS. A role with every
+-- write grant and a FOR ALL policy on the lines, but NO policy on invoices or
+-- organisations (every shipped policy is `to authenticated`), reads both as
+-- empty. An invoker-rights lookup would read null and admit it; the freeze
+-- functions are SECURITY DEFINER, so they read as the owner.
+select inv.val('IF21 both freeze functions and their workspace lookup are SECURITY DEFINER, search_path pinned, executable by no client role', $$select count(*)::text from pg_proc p where p.oid in ('private.invoices_freeze()'::regprocedure, 'private.invoice_lines_freeze()'::regprocedure, 'private.invoice_workspace_is_gone(uuid)'::regprocedure) and p.prosecdef and p.proconfig @> array['search_path=""'] and not has_function_privilege('anon', p.oid, 'EXECUTE') and not has_function_privilege('authenticated', p.oid, 'EXECUTE') and not has_function_privilege('service_role', p.oid, 'EXECUTE')$$, '3');
+insert into public.invoices (id, organisation_id, created_by) values (:'inv_x', :'org_a', :'fin_a');
+\o /dev/null
+do $ibw$ begin
+  if not exists (select 1 from pg_roles where rolname = 'inv_blind_writer') then
+    create role inv_blind_writer;
+  end if;
+end $ibw$;
+-- postgres is not a superuser on Supabase: it may only `set role` into a role
+-- it is a member of (rls_phase8_exports.sql XJ1e, measured).
+grant inv_blind_writer to postgres;
+grant usage on schema public, inv to inv_blind_writer;
+grant execute on function inv.val(text,text,text), inv.record(text,text,text) to inv_blind_writer;
+grant select on public.invoices, public.organisations to inv_blind_writer;
+grant select, update on public.invoice_lines to inv_blind_writer;
+drop policy if exists inv_blind_writer_probe on public.invoice_lines;
+create policy inv_blind_writer_probe on public.invoice_lines
+  for all to inv_blind_writer using (true) with check (true);
+\o
+set role inv_blind_writer;
+select inv.val('IF22 DENOMINATOR: the probe role sees the issued invoice''s line but NOT the invoice', format($$select (select count(*) from public.invoice_lines where invoice_id = %1$L) || '/' || (select count(*) from public.invoices where id = %1$L)$$, :'inv_ai'), '1/0');
+select inv.val('IF23 a writer that cannot SEE the issued invoice still cannot change its line', format($$update public.invoice_lines set unit_price_minor = 1 where invoice_id = %L returning 'written'$$, :'inv_ai'), 'denied(42501:invoice_is_frozen)');
+select inv.val('IF24 POSITIVE CONTROL: the same writer CAN change a draft''s line', format($$update public.invoice_lines set description = 'Probe edit' where invoice_id = %L returning 'written'$$, :'inv_ad'), 'written');
+reset role;
+\o /dev/null
+grant delete on public.invoices to inv_blind_writer;
+-- ...and the two private helpers invoices_freeze() calls, or an invoker-rights
+-- freeze would refuse on the missing grant and IF26 would pass without ever
+-- reaching the workspace lookup (measured on the mutant).
+grant usage on schema private to inv_blind_writer;
+grant execute on function private.erased_user_id(), private.invoice_workspace_is_gone(uuid) to inv_blind_writer;
+drop policy if exists inv_blind_writer_probe on public.invoices;
+create policy inv_blind_writer_probe on public.invoices
+  for all to inv_blind_writer using (true) with check (true);
+\o
+set role inv_blind_writer;
+select inv.val('IF25 DENOMINATOR: the probe role now sees the issued invoice but NOT its workspace', format($$select (select count(*) from public.invoices where id = %L) || '/' || (select count(*) from public.organisations where id = %L)$$, :'inv_ai', :'org_a'), '1/0');
+select inv.val('IF26 a deleter that cannot SEE the workspace cannot pass it off as purged', format($$delete from public.invoices where id = %L returning 'written'$$, :'inv_ai'), 'denied(42501:invoice_is_frozen)');
+select inv.val('IF27 POSITIVE CONTROL: the same deleter CAN hard-delete a draft', format($$delete from public.invoices where id = %L returning 'written'$$, :'inv_x'), 'written');
+reset role;
+\o /dev/null
+drop policy inv_blind_writer_probe on public.invoices;
+drop policy inv_blind_writer_probe on public.invoice_lines;
+revoke all on public.invoices, public.invoice_lines, public.organisations from inv_blind_writer;
+revoke execute on function inv.val(text,text,text), inv.record(text,text,text) from inv_blind_writer;
+revoke execute on function private.erased_user_id(), private.invoice_workspace_is_gone(uuid) from inv_blind_writer;
+revoke usage on schema public, inv, private from inv_blind_writer;
+revoke inv_blind_writer from postgres;
+drop role if exists inv_blind_writer;
+\o
+select inv.val('IF28 ...and the probe role and its two policies are gone', $$select (select count(*) from pg_roles where rolname = 'inv_blind_writer') || '|' || (select count(*) from pg_policies where schemaname = 'public' and policyname = 'inv_blind_writer_probe')$$, '0|0');
 
 -- ===========================================================================
 -- § IN THE NETWORK VIEWS NEVER READ AN INVOICE TABLE (the function closure
