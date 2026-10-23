@@ -3430,3 +3430,31 @@ export async function tearDownInviteWorld(
   }
   await closeDb();
 }
+
+/**
+ * PHASE 10 TASK 21. A throwaway ACTIVE member of `organisationId`, with a
+ * named profile so their row on the members page can be found by name, for a
+ * spec that removes them. Planted as `postgres` like every fixture here; the
+ * removal under test is what goes through the product. The caller deletes it
+ * with deletePlantedMember() (the org's teardown cascades the membership).
+ */
+export async function plantActiveMember(
+  organisationId: string,
+  role: string,
+  name: string,
+): Promise<E2eUser> {
+  const user = await createUser(`e2e-planted-${randomUUID().slice(0, 8)}@test.local`);
+  await sql(`update public.profiles set full_name = $2 where id = $1`, [user.id, name]);
+  await sql(
+    `insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+     values ($1, $2, $3, 'active', now())`,
+    [organisationId, user.id, role],
+  );
+  return user;
+}
+
+export async function deletePlantedMember(userId: string): Promise<void> {
+  const { serviceRoleKey } = localStack();
+  await sql(`delete from public.audit_events where actor_user_id = $1`, [userId]);
+  await api(`/auth/v1/admin/users/${userId}`, { key: serviceRoleKey, method: "DELETE" });
+}
