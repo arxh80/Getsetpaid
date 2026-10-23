@@ -62,6 +62,12 @@ test("the remove confirmation takes focus, and Escape returns it to the trigger"
   await expect(question).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(removeButton(page, LEAVER_NAME)).toBeFocused();
+
+  // The other way out, the "Keep them" button, returns focus the same way.
+  await page.keyboard.press("Enter");
+  await expect(question).toBeFocused();
+  await page.getByRole("button", { name: "Keep them" }).click();
+  await expect(removeButton(page, LEAVER_NAME)).toBeFocused();
 });
 
 test("axe: the members page as an Owner, with the row controls rendered", async ({ page }) => {
@@ -95,6 +101,9 @@ test("an Owner removes a member, and that member's next page load is refused", a
     // The outcome survives the row it came from (components/ui/action-outcome.tsx).
     await expect(page.getByTestId("members-outcome")).toContainText("Removed.");
     await expect(page.getByText(LEAVER_NAME)).toHaveCount(0);
+    // The removed row took the focused button with it; focus lands on the
+    // section heading, not <body> (WCAG 2.4.3).
+    await expect(page.getByRole("heading", { name: /^In this workspace/, level: 2 })).toBeFocused();
 
     // Their next request, same session: refused at the workspace boundary
     // ([orgSlug]/layout.tsx, above every loading boundary), so a real 404 --

@@ -1,9 +1,9 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useCallback, useState } from "react";
 import { changeMemberRoleAction, removeMemberAction } from "@/lib/org/actions";
 import { INVITABLE_ROLES } from "@/lib/org/roles";
-import { EMPTY_FORM_STATE } from "@/lib/forms";
+import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
 import { Button } from "@/components/ui/button";
 import { useReportedAction } from "@/components/ui/action-outcome";
 import { useRevealFocus } from "@/components/ui/use-reveal-focus";
@@ -30,6 +30,7 @@ export function MemberControls({
   role,
   invited,
   canGrantOwner,
+  focusAfterRemoveId,
 }: {
   orgSlug: string;
   orgName: string;
@@ -40,9 +41,22 @@ export function MemberControls({
   invited: boolean;
   /** Only an Owner may hand out Owner (Q248); the database refuses it anyway. */
   canGrantOwner: boolean;
+  /** A heading outside every row (tabIndex -1), focused after a removal. */
+  focusAfterRemoveId: string;
 }) {
-  const reportedRemove = useReportedAction(removeMemberAction);
   const reportedChange = useReportedAction(changeMemberRoleAction);
+  // A successful removal revalidates this row away with focus inside it, which
+  // would drop a keyboard user to <body> (WCAG 2.4.3): land on the page's
+  // section heading instead.
+  const removeThenRefocus = useCallback(
+    async (prev: FormState, formData: FormData) => {
+      const next = await removeMemberAction(prev, formData);
+      if (!next.error) document.getElementById(focusAfterRemoveId)?.focus();
+      return next;
+    },
+    [focusAfterRemoveId],
+  );
+  const reportedRemove = useReportedAction(removeThenRefocus);
   const [, removeAction, removing] = useActionState(reportedRemove, EMPTY_FORM_STATE);
   const [, changeAction, changing] = useActionState(reportedChange, EMPTY_FORM_STATE);
   const [asking, setAsking] = useState(false);

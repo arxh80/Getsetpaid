@@ -98,6 +98,7 @@ export default async function MembersPage({
         role={m.role}
         invited={m.status === "invited"}
         canGrantOwner={isOwner}
+        focusAfterRemoveId="members-in-workspace"
       />
     ) : undefined;
 
@@ -131,7 +132,7 @@ export default async function MembersPage({
             it -- it replaces content the user asked for. */}
         {loaded ? (
           <section className="flex flex-col gap-4">
-            <h2 className="text-xl font-bold text-ink">
+            <h2 id="members-in-workspace" tabIndex={-1} className="text-xl font-bold text-ink">
               In this workspace{" "}
               <span className="tabular-nums font-normal text-ink-muted">
                 ({active.length})
@@ -144,7 +145,11 @@ export default async function MembersPage({
                   title={m.name ?? "Member"}
                   meta={roleLabel(m.role)}
                   status={<StatusChip tone="active">Active</StatusChip>}
-                  action={controlsFor(m, m.name ?? "this member")}
+                  action={controlsFor(
+                    m,
+                    // A null name must not give every such row the same accessible name.
+                    m.name ?? `${roleLabel(m.role)}, joined ${formatDate(m.joinedAt ?? m.invitedAt)}`,
+                  )}
                 />
               ))}
             </RuledList>
