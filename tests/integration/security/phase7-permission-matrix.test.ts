@@ -2080,6 +2080,26 @@ describe("GATE 0 (Phase 8): the censuses reach every Phase 8 surface", () => {
     }
   });
 
+  it("api_hooks holds ONLY the PostgREST pre-request hook: definer, search_path '', the three request roles, never exposed", async () => {
+    // Phase 10 Task 5. A schema every request role has USAGE on, outside the
+    // exposed-schema censuses above, so it is pinned here: a second function
+    // in it, a widened grant or a lost search_path is a red, and so is the
+    // schema ever being exposed (which would publish the hook as an RPC).
+    const { rows } = await pool.query<{ entry: string }>(
+      `select p.proname || '|' || p.prosecdef || '|' || coalesce(pg_catalog.array_to_string(p.proconfig, ','), '') || '|' ||
+              (select pg_catalog.string_agg(g, ',' order by g)
+                 from (select case when ax.grantee = 0 then 'PUBLIC' else pg_catalog.pg_get_userbyid(ax.grantee)::text end as g
+                         from pg_catalog.aclexplode(p.proacl) ax where ax.privilege_type = 'EXECUTE') x) as entry
+         from pg_catalog.pg_proc p
+         join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'api_hooks'`,
+    );
+    expect(rows.map((r) => r.entry)).toEqual([
+      'pre_request|true|search_path=""|anon,authenticated,postgres,service_role',
+    ]);
+    expect(exposedSchemas()).not.toContain("api_hooks");
+  });
+
   it("the destructive primitives are executable by postgres ALONE", async () => {
     const acl = await destructivePrimitiveAcl(pool);
     // REACH: the census must contain the erasure primitive and the retention
