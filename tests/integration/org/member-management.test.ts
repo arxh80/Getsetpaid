@@ -138,6 +138,13 @@ describe("member management (Task 21)", () => {
     const self = (await membership(fx.orgA.id, admin.userId))!;
     expect((await changeRole(admin, fx.orgA.slug, self.id, "owner")).error).toBe(REFUSED);
     expect(await membership(fx.orgA.id, admin.userId)).toEqual(self);
+
+    // Another member, not the Admin's own row: the refusal is the Owner term,
+    // not a self-update guard. "An Owner may promote another member to Owner"
+    // below is the positive control on the same kind of target.
+    const other = (await membership(fx.orgA.id, fx.activeByRole.marketing.userId))!;
+    expect((await changeRole(admin, fx.orgA.slug, other.id, "owner")).error).toBe(REFUSED);
+    expect(await membership(fx.orgA.id, fx.activeByRole.marketing.userId)).toEqual(other);
   });
 
   it("the last active Owner cannot demote or remove themselves", async () => {
@@ -178,9 +185,21 @@ describe("member management (Task 21)", () => {
     const admin = fx.activeByRole.admin;
     const target = (await membership(fx.orgA.id, fx.activeByRole.standard_user.userId))!;
 
+    // A delta, not a total: the fixture's own setup already wrote one.
+    const updates = async () =>
+      (
+        await pool.query<{ n: string }>(
+          `select count(*)::text as n from public.audit_events
+            where organisation_id = $1 and action = 'membership.updated' and target_id = $2`,
+          [fx.orgA.id, target.id],
+        )
+      ).rows[0]?.n;
+    const before = Number(await updates());
+
     const changed = await changeRole(admin, fx.orgA.slug, target.id, "booker");
     expect(changed.error).toBeUndefined();
     expect((await membership(fx.orgA.id, fx.activeByRole.standard_user.userId))?.role).toBe("booker");
+    expect(Number(await updates())).toBe(before + 1);
 
     const removed = await remove(admin, fx.orgA.slug, target.id);
     expect(removed.error).toBeUndefined();
