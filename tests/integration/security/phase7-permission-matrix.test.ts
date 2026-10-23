@@ -1114,6 +1114,15 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "integration.revoked. Revoking only reduces access, so it works on a " +
     "suspended or closed workspace; anyone else gets 42501 whether or not the " +
     "id exists. Asserted in rls_phase9_integrations.sql § IC11/IC12/IV9.",
+  save_invoice_draft:
+    "Invoices part 1 Task 4 -- a manage_finance holder (Owner/Admin/Finance, aal2) " +
+    "in a Pro workspace creates or replaces a DRAFT and its lines; amounts are " +
+    "computed in the database. Refused in order: forbidden, plan, then the " +
+    "line/recipient/event/entry checks. Asserted in rls_invoices.sql § ID.",
+  delete_invoice_draft:
+    "Invoices part 1 Task 4 -- the same holder soft-deletes a live draft in the " +
+    "invoice's own workspace; an issued invoice is refused (voided, never " +
+    "deleted). Asserted in rls_invoices.sql § ID.",
 };
 
 /**
