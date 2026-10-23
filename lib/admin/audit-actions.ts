@@ -379,6 +379,15 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "integration.revoked",
   "integration.token_stored",
   "integration.sync_failed",
+
+  // Invoices part 1 (20261107000000).
+  "invoice.issued",
+  "invoice.sent",
+  "invoice.marked_paid",
+  "invoice.voided",
+  "invoice.pdf_downloaded",
+  "invoice_settings.changed",
+  "invoice_settings.bank_details_changed",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

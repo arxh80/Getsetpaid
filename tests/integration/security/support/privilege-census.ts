@@ -202,6 +202,12 @@ export const DECLARED_PRIVILEGES: readonly string[] = [
   "integration_connections|authenticated|SELECT|token_expires_at",
   // integration_sync_runs -- Phase 9 Task 1: SELECT only, same reason.
   "integration_sync_runs|authenticated|SELECT|*",
+  // Invoices part 1 (20261107000000): SELECT only on all four; every write
+  // is a SECURITY DEFINER RPC (rls_invoices.sql IT3-IT5, IB).
+  "invoice_lines|authenticated|SELECT|*",
+  "invoice_sends|authenticated|SELECT|*",
+  "invoice_settings|authenticated|SELECT|*",
+  "invoices|authenticated|SELECT|*",
   // legal_documents
   "legal_documents|anon|SELECT|body",
   "legal_documents|anon|SELECT|counsel_reviewed_at",

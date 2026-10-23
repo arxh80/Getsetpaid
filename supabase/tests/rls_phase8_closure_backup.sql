@@ -102,7 +102,7 @@ declare
   v_task uuid := gen_random_uuid(); v_note uuid := gen_random_uuid();
   v_meet uuid := gen_random_uuid(); v_doc uuid := gen_random_uuid();
   v_prof uuid := gen_random_uuid(); v_cfd uuid := gen_random_uuid();
-  v_conn uuid := gen_random_uuid();
+  v_conn uuid := gen_random_uuid(); v_inv uuid := gen_random_uuid();
 begin
   insert into public.companies (id, organisation_id, name) values
     (v_comp, p_org, 'CK Co'), (v_comp2, p_org, 'CK Co Two');
@@ -164,6 +164,22 @@ begin
     values (v_conn, p_org, 'xero', 'active', p_owner);
   insert into public.integration_sync_runs (organisation_id, connection_id, status, finished_at)
     values (p_org, v_conn, 'succeeded', now());
+  -- Invoices part 1 (20261107000000): the four invoice tables are exported.
+  -- The invoice is issued AFTER its line exists (the line freeze).
+  insert into public.invoice_settings (organisation_id, business_name, business_address)
+    values (p_org, 'CK Ltd', '1 CK Street');
+  insert into public.invoices (id, organisation_id, recipient_contact_id, recipient_address, created_by)
+    values (v_inv, p_org, v_con, '2 CK Road', p_owner);
+  insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity,
+                                    unit_price_minor, vat_rate, net_minor, vat_minor)
+    values (p_org, v_inv, 1, 'CK line', 1, 10000, 'none', 10000, 0);
+  update public.invoices
+     set status = 'issued', number = 'CK-0001', issue_date = current_date, supply_date = current_date,
+         due_date = current_date + 30, net_minor = 10000, gross_minor = 10000,
+         snapshot = '{"version":1}'::jsonb
+   where id = v_inv;
+  insert into public.invoice_sends (organisation_id, invoice_id, to_email, sent_by)
+    values (p_org, v_inv, 'ck@example.test', p_owner);
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -240,7 +256,8 @@ update public.export_jobs set status = 'failed', failure_reason = 'ck measuremen
 select ck.val('KS1 the workspace export exports a pinned number of tables',
   $$select count(*)::text from private.export_catalogue() where export_kind = 'workspace' and disposition = 'exported'$$,
   -- 37 = 35 + Phase 9 Task 3's integration_connections and integration_sync_runs.
-  '37');
+  -- 41 = 37 + Invoices part 1's four tables.
+  '41');
 select ck.val('KS2 EVERY ONE of them is non-empty in the pre-closure export (none is vacuous)',
   $$select coalesce(string_agg(tbl, ',' order by tbl), '') from ck.counts where job = 'pre_a' and n = 0$$, '');
 select ck.val('KS3 ...for the second workspace too',
@@ -394,6 +411,12 @@ delete from public.organisation_feature_overrides where organisation_id in (:'or
 delete from public.organisation_billing_overrides where organisation_id in (:'org_a', :'org_b');
 delete from public.merges where organisation_id in (:'org_a', :'org_b');
 delete from public.network_connection_requests where from_organisation_id in (:'org_a', :'org_b');
+-- Replica mode runs no cascade, and the invoices' NO ACTION created_by/sent_by
+-- would otherwise block the auth.users delete below.
+delete from public.invoice_sends    where organisation_id in (:'org_a', :'org_b');
+delete from public.invoice_lines    where organisation_id in (:'org_a', :'org_b');
+delete from public.invoices         where organisation_id in (:'org_a', :'org_b');
+delete from public.invoice_settings where organisation_id in (:'org_a', :'org_b');
 delete from public.organisations where id in (:'org_a', :'org_b', :'org_x');
 set session_replication_role = origin;
 delete from auth.users where id in (:'owner_a', :'mgr_a', :'mgr_b', :'su_u', :'x_u');

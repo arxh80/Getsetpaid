@@ -195,7 +195,10 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
     // 171 since Phase 9 Task 2 (20261030001000): integration.connected,
     // .revoked, .token_stored and .sync_failed.
     // 172 since Q189 (20261031000000): organisation.updated.
-    expect(live.length).toBe(172);
+    // 179 since Invoices part 1 (20261107000000): invoice.issued, .sent,
+    // .marked_paid, .voided, .pdf_downloaded, invoice_settings.changed and
+    // invoice_settings.bank_details_changed.
+    expect(live.length).toBe(179);
     expect(new Set(live).size, "the database catalogue lists a name twice").toBe(live.length);
     expect(live).toEqual([...knownAuditActions()].sort());
   });

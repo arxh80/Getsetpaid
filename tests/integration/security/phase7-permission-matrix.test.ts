@@ -1175,6 +1175,14 @@ const PRE_PHASE7_RELATIONS = [
   // persona by persona in supabase/tests/rls_phase9_integrations.sql IR/IB.
   "integration_connections",
   "integration_sync_runs",
+  // Invoices part 1 (20261107000000). Tenant tables: SELECT only, rows to
+  // view_finance holders (Owner, Admin, Finance; aal2); no INSERT, UPDATE or
+  // DELETE grant for any client role (every write is a SECURITY DEFINER RPC).
+  // Proved persona by persona in supabase/tests/rls_invoices.sql IR/IB.
+  "invoice_lines",
+  "invoice_sends",
+  "invoice_settings",
+  "invoices",
   "meeting_links",
   "meetings",
   "merge_candidates",

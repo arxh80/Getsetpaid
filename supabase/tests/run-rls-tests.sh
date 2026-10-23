@@ -513,7 +513,7 @@ P6VARS+=( -v "super=${ID[super]}" )
 P6VARS+=( -v "super_c={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal2\"}" )
 
 
-run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 225 "${P6VARS[@]}"
+run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 226 "${P6VARS[@]}"
 lk_fails=$SUITE_FAILS
 if [ "$lk_fails" != "0" ]; then
   echo "PHASE 6 NETWORK-LEAKAGE SUITE FAILED: $lk_fails failing assertion(s)" >&2
@@ -1298,6 +1298,31 @@ if [ "$qp_fails" != "0" ]; then
   psql_status=1
 else
   echo "Q228 closure backup parts suite: all assertions passed."
+fi
+
+# ============================================================================
+# INVOICES, PART 1 OF 3 (20261107000000 onwards; founder 2026-10-20). Four
+# tenant tables no client role writes, the freeze triggers, the arithmetic
+# and numbering, and (Tasks 4-11) the draft/issue/paid/void/send RPCs, the
+# settings RPC and the bank-change notice queue. Self-contained and
+# re-runnable (it removes its own fixtures). Pin:
+# grep -c '^select inv.val(' supabase/tests/rls_invoices.sql
+# ============================================================================
+run_suite "INVOICES" rls_invoices.sql inv 70
+inv_fails=$SUITE_FAILS
+if [ "$inv_fails" != "0" ]; then
+  echo "INVOICES SUITE FAILED: $inv_fails failing assertion(s)" >&2
+  echo "  IT/IB red: an invoice table lost RLS, a constraint, or a client role" >&2
+  echo "  gained a write grant. IR red: AN INVOICE IS READABLE OUTSIDE ITS" >&2
+  echo "  WORKSPACE, or without view_finance. IF red: AN ISSUED INVOICE CAN BE" >&2
+  echo "  CHANGED, or the purge no longer passes the freeze. IA red: the" >&2
+  echo "  arithmetic or the numbering moved. IN red: a network view reads an" >&2
+  echo "  invoice table. IC red: a catalogue lost an invoice table or action." >&2
+  echo "  ID/IS/IP/IV/IE/IX/IQ/ID2/IY red: an RPC lost a refusal, its order, or" >&2
+  echo "  its finance link (each section's header says which)." >&2
+  psql_status=1
+else
+  echo "Invoices suite: all assertions passed."
 fi
 
 # ============================================================================

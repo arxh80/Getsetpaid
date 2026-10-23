@@ -485,12 +485,16 @@ select er.try('ET14 POSITIVE CONTROL: another account CAN have its ban set',
 -- a later phase arrives here as a red assertion naming itself, rather than as
 -- an account that silently cannot be deleted.
 
-select er.val('EB1 exactly thirteen foreign keys to auth.users have NO ON DELETE action',
+-- 17 SINCE INVOICES PART 1 (20261107000000): invoices.created_by/paid_by/
+-- voided_by and invoice_sends.sent_by. erase_account()'s walk re-points them
+-- to the tombstone; private.invoices_freeze() admits exactly that re-point on
+-- an issued invoice (rls_invoices.sql IF14).
+select er.val('EB1 exactly seventeen foreign keys to auth.users have NO ON DELETE action',
   $$select count(*)::text from pg_catalog.pg_constraint con
      where con.contype = 'f' and con.confrelid = 'auth.users'::pg_catalog.regclass
-       and con.confdeltype = 'a'$$, '13');
+       and con.confdeltype = 'a'$$, '17');
 
-select er.val('EB2 and they are these thirteen, by name',
+select er.val('EB2 and they are these seventeen, by name',
   $$select string_agg(t, ',' order by t) from (
       select con.conrelid::pg_catalog.regclass::text || '.' || a.attname as t
         from pg_catalog.pg_constraint con
@@ -505,6 +509,10 @@ select er.val('EB2 and they are these thirteen, by name',
   'public.impersonation_sessions.declined_by,'
   'public.impersonation_sessions.superuser_user_id,'
   'public.incident_alerts.resolved_by,'
+  'public.invoice_sends.sent_by,'
+  'public.invoices.created_by,'
+  'public.invoices.paid_by,'
+  'public.invoices.voided_by,'
   'public.merge_candidates.resolved_by,'
   'public.merges.merged_by,'
   'public.organisation_billing_overrides.granted_by,'
