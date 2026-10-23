@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getCurrentOrg, hasPermission } from "@/lib/auth";
+import { getCurrentOrg, getCurrentUser, hasPermission } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { InviteForm } from "@/components/org/invite-form";
+import { MemberControls } from "@/components/org/member-controls";
+import { ActionOutcome } from "@/components/ui/action-outcome";
 import { RuledList, RuledRow, StatusChip } from "@/components/ui/ruled-row";
 import { formatDate } from "@/lib/format/date";
 
@@ -11,6 +13,7 @@ export const metadata: Metadata = { title: "Members · GetSetPaid" };
 
 interface MemberRow {
   id: string;
+  userId: string;
   role: string;
   status: "invited" | "active" | "revoked";
   invitedAt: string;
@@ -69,15 +72,34 @@ export default async function MembersPage({
   // as the signed-in user. The permission result gates only what is RENDERED
   // (the invite form) -- the INSERT behind it is refused by the policy
   // regardless, per CLAUDE.md's "hiding UI is not enforcement".
-  const [canManageMembers, memberList] = await Promise.all([
+  const [canManageMembers, memberList, me] = await Promise.all([
     hasPermission(org.id, "manage_members"),
     listMembers(org.id),
+    getCurrentUser(),
   ]);
 
   const loaded = memberList.outcome === "loaded";
   const members = loaded ? memberList.members : [];
   const active = members.filter((m) => m.status === "active");
   const pending = members.filter((m) => m.status === "invited");
+
+  // Row controls (Phase 10 Task 21). Rendering only: the policies decide. Not
+  // on the caller's own row (leaving a workspace is not built), and not on an
+  // Owner's row unless the caller is an Owner (Q248: only an Owner manages
+  // Owners -- the database refuses it anyway).
+  const isOwner = org.role === "owner";
+  const controlsFor = (m: MemberRow, subject: string) =>
+    canManageMembers && m.userId !== me?.id && (isOwner || m.role !== "owner") ? (
+      <MemberControls
+        orgSlug={org.slug}
+        orgName={org.name}
+        membershipId={m.id}
+        name={subject}
+        role={m.role}
+        invited={m.status === "invited"}
+        canGrantOwner={isOwner}
+      />
+    ) : undefined;
 
   return (
     <div className="flex flex-col gap-8">
@@ -99,72 +121,81 @@ export default async function MembersPage({
         </h1>
       </div>
 
-      {/* An unreadable member list must not render as an EMPTY one. A count of
-          (0) on a workspace that certainly has an owner is a claim about the
-          data; "we couldn't load this" is a claim about the request, and only
-          the second one is true here. role="status" so a screen reader hears
-          it -- it replaces content the user asked for. */}
-      {loaded ? (
-        <section className="flex flex-col gap-4">
-          <h2 className="text-xl font-bold text-ink">
-            In this workspace{" "}
-            <span className="tabular-nums font-normal text-ink-muted">
-              ({active.length})
-            </span>
-          </h2>
-          <RuledList>
-            {active.map((m) => (
-              <RuledRow
-                key={m.id}
-                title={m.name ?? "Member"}
-                meta={roleLabel(m.role)}
-                status={<StatusChip tone="active">Active</StatusChip>}
-              />
-            ))}
-          </RuledList>
-        </section>
-      ) : (
-        <section className="flex flex-col gap-4">
-          <h2 className="text-xl font-bold text-ink">In this workspace</h2>
-          <p role="status" className="border-t border-rule pt-4 text-base text-ink-muted">
-            We couldn’t load the member list just now. Refresh the page to try
-            again — nobody has been removed.
-          </p>
-        </section>
-      )}
+      {/* Outcomes of the row controls land here: a removed row takes its
+          own controls with it (components/ui/action-outcome.tsx). */}
+      <ActionOutcome testId="members-outcome">
+        {/* An unreadable member list must not render as an EMPTY one. A count of
+            (0) on a workspace that certainly has an owner is a claim about the
+            data; "we couldn't load this" is a claim about the request, and only
+            the second one is true here. role="status" so a screen reader hears
+            it -- it replaces content the user asked for. */}
+        {loaded ? (
+          <section className="flex flex-col gap-4">
+            <h2 className="text-xl font-bold text-ink">
+              In this workspace{" "}
+              <span className="tabular-nums font-normal text-ink-muted">
+                ({active.length})
+              </span>
+            </h2>
+            <RuledList>
+              {active.map((m) => (
+                <RuledRow
+                  key={m.id}
+                  title={m.name ?? "Member"}
+                  meta={roleLabel(m.role)}
+                  status={<StatusChip tone="active">Active</StatusChip>}
+                  action={controlsFor(m, m.name ?? "this member")}
+                />
+              ))}
+            </RuledList>
+          </section>
+        ) : (
+          <section className="flex flex-col gap-4">
+            <h2 className="text-xl font-bold text-ink">In this workspace</h2>
+            <p role="status" className="border-t border-rule pt-4 text-base text-ink-muted">
+              We couldn’t load the member list just now. Refresh the page to try
+              again — nobody has been removed.
+            </p>
+          </section>
+        )}
 
-      {pending.length > 0 ? (
-        <section className="flex flex-col gap-4">
-          <h2 className="text-xl font-bold text-ink">
-            Invited{" "}
-            <span className="tabular-nums font-normal text-ink-muted">
-              ({pending.length})
-            </span>
-          </h2>
-          {/* Names are usually null here: an invited user has no profile row
-              the current user can read, because profiles_select_shared_
-              organisation requires BOTH memberships to be active. Saying
-              "invitation sent" is the honest rendering of that, and it is a
-              correct expression of the tenancy boundary rather than a gap. */}
-          <RuledList>
-            {pending.map((m) => (
-              <RuledRow
-                key={m.id}
-                title={m.name ?? "Invitation sent"}
-                meta={
-                  <>
-                    {roleLabel(m.role)} ·{" "}
-                    <time dateTime={m.invitedAt} className="tabular-nums">
-                      {formatDate(m.invitedAt)}
-                    </time>
-                  </>
-                }
-                status={<StatusChip tone="pending">Pending</StatusChip>}
-              />
-            ))}
-          </RuledList>
-        </section>
-      ) : null}
+        {pending.length > 0 ? (
+          <section className="flex flex-col gap-4">
+            <h2 className="text-xl font-bold text-ink">
+              Invited{" "}
+              <span className="tabular-nums font-normal text-ink-muted">
+                ({pending.length})
+              </span>
+            </h2>
+            {/* Names are usually null here: an invited user has no profile row
+                the current user can read, because profiles_select_shared_
+                organisation requires BOTH memberships to be active. Saying
+                "invitation sent" is the honest rendering of that, and it is a
+                correct expression of the tenancy boundary rather than a gap. */}
+            <RuledList>
+              {pending.map((m) => (
+                <RuledRow
+                  key={m.id}
+                  title={m.name ?? "Invitation sent"}
+                  meta={
+                    <>
+                      {roleLabel(m.role)} ·{" "}
+                      <time dateTime={m.invitedAt} className="tabular-nums">
+                        {formatDate(m.invitedAt)}
+                      </time>
+                    </>
+                  }
+                  status={<StatusChip tone="pending">Pending</StatusChip>}
+                  action={controlsFor(
+                    m,
+                    `${m.name ?? roleLabel(m.role)}, sent ${formatDate(m.invitedAt)}`,
+                  )}
+                />
+              ))}
+            </RuledList>
+          </section>
+        ) : null}
+      </ActionOutcome>
 
       {canManageMembers ? (
         <section className="flex max-w-md flex-col gap-4 border-t border-rule pt-8">
@@ -195,8 +226,8 @@ async function listMembers(organisationId: string): Promise<MemberList> {
     .neq("status", "revoked")
     // Bounded, per CLAUDE.md § Non-negotiable rules ("no unbounded list
     // endpoint"). A workspace with more members than this needs real
-    // pagination, which arrives with the members-management task; the limit is
-    // here so the ceiling is explicit rather than accidental.
+    // pagination, which the members-management task (Phase 10 Task 21) did not
+    // add; the limit is here so the ceiling is explicit rather than accidental.
     .order("invited_at", { ascending: true })
     .limit(200);
 
@@ -247,6 +278,7 @@ async function listMembers(organisationId: string): Promise<MemberList> {
     outcome: "loaded",
     members: data.map((row) => ({
       id: row.id as string,
+      userId: row.user_id as string,
       role: row.role as string,
       status: row.status as MemberRow["status"],
       invitedAt: row.invited_at as string,
