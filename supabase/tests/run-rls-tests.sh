@@ -1423,7 +1423,7 @@ ANON=$(cd "$ROOT" && supabase status -o json 2>/dev/null \
 # from here on carries the LOCAL value (read from .env.example; seed.sql seeds
 # its digest). The direct, unmarked path -- the browser's -- is measured in
 # its own block at the end, through `command curl`.
-SERVER_MARK=$(sed -n 's/^GETSETPAID_SERVER_REQUEST_SECRET=//p' "$ROOT/.env.example" | tr -d '')
+SERVER_MARK=$(sed -n 's/^GETSETPAID_SERVER_REQUEST_SECRET=//p' "$ROOT/.env.example" | tr -d '\r')
 [ -n "$SERVER_MARK" ] || { echo "no GETSETPAID_SERVER_REQUEST_SECRET in .env.example" >&2; exit 1; }
 curl() { command curl -H "x-getsetpaid-server: $SERVER_MARK" "$@"; }
 

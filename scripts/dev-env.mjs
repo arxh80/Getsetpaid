@@ -75,6 +75,15 @@ if (process.argv.includes("--hosted")) {
   process.exit(0);
 }
 
+// The local server-only request mark (Phase 10 Task 5): the one value
+// .env.example documents and supabase/seed.sql hashes.
+function readLocalServerMark() {
+  const raw = readFileSync(join(process.cwd(), ".env.example"), "utf8");
+  const value = raw.match(/^GETSETPAID_SERVER_REQUEST_SECRET=(\S+)/m)?.[1];
+  if (!value) throw new Error("dev-env: .env.example has no GETSETPAID_SERVER_REQUEST_SECRET value");
+  return value;
+}
+
 const stack = readLocalStack();
 
 if (!stack) {
@@ -113,6 +122,10 @@ writeFileSync(
     `NEXT_PUBLIC_SUPABASE_URL=${stack.apiUrl}`,
     `NEXT_PUBLIC_SUPABASE_ANON_KEY=${stack.anonKey}`,
     `SUPABASE_SERVICE_ROLE_KEY=${stack.serviceKey}`,
+    "",
+    "# The LOCAL server-only request mark, copied from .env.example (whose digest",
+    "# supabase/seed.sql seeds). Not a secret. SECURITY.md § 15.",
+    `GETSETPAID_SERVER_REQUEST_SECRET=${readLocalServerMark()}`,
     "",
     "# Mirrors supabase/config.toml site_url. GoTrue's redirect allowlist treats",
     "# localhost and 127.0.0.1 as different origins.",

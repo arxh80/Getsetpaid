@@ -19,11 +19,32 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { authCookieOptions, supabasePublicKey, supabaseUrl } from "./env";
 
+let warnedNoServerMark = false;
+
+// THE SERVER-ONLY REQUEST MARK (Phase 10 Task 5, G2/G14). Sent on every
+// request from this client and no other; the database (api_hooks.pre_request)
+// hashes it against private.server_request_digest. Without it the network
+// directory views are refused and an impersonation session reads nothing, so
+// a missing value fails closed -- and says so once, by name.
+function serverMarkHeaders(): Record<string, string> | undefined {
+  const mark = process.env.GETSETPAID_SERVER_REQUEST_SECRET;
+  if (mark) return { "x-getsetpaid-server": mark };
+  if (!warnedNoServerMark) {
+    warnedNoServerMark = true;
+    console.error(
+      "GETSETPAID_SERVER_REQUEST_SECRET is not set: the network directory and " +
+        "impersonation will be refused (SECURITY.md § 15).",
+    );
+  }
+  return undefined;
+}
+
 export async function createClient() {
   // Async since Next 15 -- cookies() returns a Promise.
   const cookieStore = await cookies();
 
   return createServerClient(supabaseUrl(), supabasePublicKey(), {
+    global: { headers: serverMarkHeaders() },
     cookieOptions: authCookieOptions(),
     cookies: {
       getAll() {
