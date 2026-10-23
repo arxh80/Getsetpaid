@@ -240,6 +240,10 @@ const SIGNED_IN_PAGES: [string, (w: E2eWorld) => string][] = [
   // tree. Scanned as an Owner it would be a page of prose with a disabled
   // button and no field -- the state that proves least.
   ["delete your account", () => "/account/erase"],
+  // ---- PHASE 10 TASK 22 ----------------------------------------------------
+  // Scanned, never pressed: a global sign-out would end the manager's other
+  // sessions mid-run.
+  ["sign out everywhere", () => "/account/sessions"],
 ];
 
 for (const [label, url] of SIGNED_IN_PAGES) {

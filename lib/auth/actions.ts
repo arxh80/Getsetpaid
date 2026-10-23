@@ -421,7 +421,7 @@ export async function signOutAction(): Promise<void> {
 // (jwt_expiry, SECURITY.md § 4). No step-up: signing out cannot harm the
 // account. A failure is reported, never redirected, so nobody is told every
 // device is signed out when none is.
-export async function signOutEverywhereAction(_prev: FormState): Promise<FormState> {
+export async function signOutEverywhereAction(): Promise<FormState> {
   const supabase = await createClient();
   const { error } = await supabase.auth.signOut({ scope: "global" });
   if (error) {

@@ -2967,6 +2967,11 @@ export async function createDisposableUser(label: string): Promise<E2eUser> {
   return createUser(`e2e-erase-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`);
 }
 
+/** Deletes a disposable account a spec made and did not destroy itself. */
+export async function deleteDisposableUser(userId: string): Promise<void> {
+  await db().query(`delete from auth.users where id = $1`, [userId]);
+}
+
 /** Does this account still exist? The only fact the erasure e2e needs. */
 export async function accountStillExists(userId: string): Promise<boolean> {
   const { rows } = await db().query<{ n: string }>(

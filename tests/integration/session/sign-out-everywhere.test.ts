@@ -45,7 +45,7 @@ async function browser(): Promise<SupabaseClient> {
 async function signOutEverywhereFrom(c: SupabaseClient) {
   current.client = c;
   current.redirectedTo = null;
-  await expect(signOutEverywhereAction({})).rejects.toThrow("NEXT_REDIRECT");
+  await expect(signOutEverywhereAction()).rejects.toThrow("NEXT_REDIRECT");
   expect(current.redirectedTo).toBe("/login");
 }
 
