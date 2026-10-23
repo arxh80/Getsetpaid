@@ -15,7 +15,7 @@
 -- `x-getsetpaid-server: <GETSETPAID_SERVER_REQUEST_SECRET>` on every request.
 -- PostgREST runs api_hooks.pre_request() before every request (its
 -- `db_pre_request`, registered below). It compares the header's SHA-256 with
--- the one digest in private.server_request_digest and sets the
+-- the hex digest held in Vault as `server_request_mark_digest` and sets the
 -- transaction-local `getsetpaid.from_server` to 'on' or 'off' -- always one
 -- of the two, so nothing a session set earlier survives into a request. Then:
 --
@@ -27,11 +27,18 @@
 --        direct reads see nothing and every read goes through getCurrentOrg's
 --        audited path.
 --
--- FAILS CLOSED. No digest row, no header, or a wrong one: the directory is
+-- FAILS CLOSED. No Vault entry, no header, or a wrong one: the directory is
 -- refused and impersonation reads nothing. Locally the digest is seeded by
 -- supabase/seed.sql from the value .env.example documents; every other
--- environment inserts its own (SECURITY.md § 15). A digest, not the secret,
--- is stored: reading the table does not let anyone mint the header.
+-- environment creates its own (SECURITY.md § 15), the way the runner
+-- secrets' Vault pairs are made. A digest, not the secret, is stored: reading
+-- it does not let anyone mint the header.
+--
+-- WHY VAULT AND NOT A `private` TABLE: a new private table must join the
+-- retention roll (private.retention_subjects(), rebuilt wholesale by every
+-- migration that adds one), and the invoicing branch rebuilds that roll too;
+-- whichever migration ran last would silently drop the other's entries. Vault
+-- is outside the roll, and the read is one index lookup (0.03 ms measured).
 --
 -- WHY A NEW SCHEMA FOR THE HOOK, AND NOT `private` (measured 2026-10-23):
 -- PostgREST calls the hook as the request's role -- anon, authenticated or
@@ -51,18 +58,6 @@
 -- requested. SECURITY.md § 5 names it.
 -- ===========================================================================
 
-create table private.server_request_digest (
-  singleton boolean primary key default true check (singleton),
-  digest    bytea not null check (octet_length(digest) = 32),
-  set_at    timestamptz not null default now()
-);
-
-revoke all on table private.server_request_digest from public, anon, authenticated, service_role;
-
-comment on table private.server_request_digest is
-  'THE SERVER-ONLY REQUEST MARK''S DIGEST (20261108000000; Phase 10 Task 5, G2/G14). One row: the SHA-256 of GETSETPAID_SERVER_REQUEST_SECRET, the value lib/supabase/server.ts sends as x-getsetpaid-server. Read only by api_hooks.pre_request(); granted to nobody. Seeded locally by supabase/seed.sql; set by hand in every other environment (SECURITY.md § 15). No row = every request is unmarked (fails closed).';
-
-
 create function private.request_is_from_server()
 returns boolean
 language sql
@@ -75,7 +70,7 @@ $$;
 revoke all on function private.request_is_from_server() from public, anon, authenticated, service_role;
 
 comment on function private.request_is_from_server() is
-  'True when this request carried the server-only mark: api_hooks.pre_request() matched x-getsetpaid-server against private.server_request_digest and set getsetpaid.from_server = on for the transaction (20261108000000; Phase 10 Task 5). False for a browser''s direct PostgREST request, and outside PostgREST unless the session set the flag itself (the psql runner does, to stand in for the server). Read by private.impersonated_organisations() (G14). Not executable by any client role: callers are SECURITY DEFINER functions.';
+  'True when this request carried the server-only mark: api_hooks.pre_request() matched x-getsetpaid-server against the Vault digest server_request_mark_digest and set getsetpaid.from_server = on for the transaction (20261108000000; Phase 10 Task 5). False for a browser''s direct PostgREST request, and outside PostgREST unless the session set the flag itself (the psql runner does, to stand in for the server). Read by private.impersonated_organisations() (G14). Not executable by any client role: callers are SECURITY DEFINER functions.';
 
 
 create schema api_hooks;
@@ -98,8 +93,10 @@ declare
   v_marked boolean;
 begin
   v_marked := v_presented is not null and exists (
-    select 1 from private.server_request_digest d
-     where d.digest = pg_catalog.sha256(pg_catalog.convert_to(v_presented, 'UTF8')));
+    select 1 from vault.decrypted_secrets s
+     where s.name = 'server_request_mark_digest'
+       and pg_catalog.lower(pg_catalog.btrim(s.decrypted_secret))
+             = pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(v_presented, 'UTF8')), 'hex'));
 
   perform pg_catalog.set_config('getsetpaid.from_server',
                                 case when v_marked then 'on' else 'off' end, true);
@@ -118,7 +115,7 @@ revoke all on function api_hooks.pre_request() from public;
 grant execute on function api_hooks.pre_request() to anon, authenticated, service_role;
 
 comment on function api_hooks.pre_request() is
-  'PostgREST db_pre_request (20261108000000; Phase 10 Task 5). Sets getsetpaid.from_server on/off for the transaction from x-getsetpaid-server vs private.server_request_digest, then refuses (PT403, hint server_request_mark_required) an unmarked request for /network_directory or /network_connected_profiles (G2). Writes nothing. Executable by the three request roles because PostgREST calls it as the request''s role; called directly it can only mark the caller''s own transaction, and only with the secret.';
+  'PostgREST db_pre_request (20261108000000; Phase 10 Task 5). Sets getsetpaid.from_server on/off for the transaction from x-getsetpaid-server vs the hex SHA-256 in Vault secret server_request_mark_digest, then refuses (PT403, hint server_request_mark_required) an unmarked request for /network_directory or /network_connected_profiles (G2). Writes nothing. Executable by the three request roles because PostgREST calls it as the request''s role; called directly it can only mark the caller''s own transaction, and only with the secret.';
 
 alter role authenticator set pgrst.db_pre_request = 'api_hooks.pre_request';
 notify pgrst, 'reload config';

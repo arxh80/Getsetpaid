@@ -23,5 +23,7 @@
 -- so `pnpm dev`, the psql runner and the vitest fixtures can read the network
 -- directory and use impersonation. Not a secret, and never a hosted value:
 -- every other environment inserts its own digest (SECURITY.md § 15).
-insert into private.server_request_digest (digest)
-values (sha256(convert_to('local-only-server-request-mark-not-a-secret', 'UTF8')));
+select vault.create_secret(
+  encode(sha256(convert_to('local-only-server-request-mark-not-a-secret', 'UTF8')), 'hex'),
+  'server_request_mark_digest',
+  'LOCAL ONLY: SHA-256 (hex) of the .env.example GETSETPAID_SERVER_REQUEST_SECRET');

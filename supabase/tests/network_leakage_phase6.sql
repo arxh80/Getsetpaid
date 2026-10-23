@@ -1012,12 +1012,17 @@ select leak.val('LF1b DENOMINATOR: 28 private relation names were the needle set
 -- organisation_subscriptions -- tenant metadata, no record content, none in
 -- the needle set -- and return a boolean that decides a row, never a value
 -- that is projected. LF1 and LF5 stay green over all ten.
+--
+-- RE-READ AND RE-RECORDED 2026-10-23 (PHASE 10 TASK 5, G14). TEN -> ELEVEN:
+-- private.impersonated_organisations() now also calls
+-- private.request_is_from_server(), whose body reads one GUC
+-- (getsetpaid.from_server) and no relation at all.
 select leak.val('LF2 DENOMINATOR: the closure, by name -- these are the bodies that were read',
   $$select count(*)::text || ':' || string_agg(fqn, ',' order by fqn) from leak.fn_closure$$,
-  '10:private.closure_backup_read_admits,private.has_platform_permission,'
+  '11:private.closure_backup_read_admits,private.has_platform_permission,'
   'private.impersonated_organisations,private.is_active_member,'
   'private.network_profile_reaches_caller,private.organisation_network_presence_active,'
-  'private.permitted_organisations,private.role_requires_mfa,'
+  'private.permitted_organisations,private.request_is_from_server,private.role_requires_mfa,'
   'private.session_is_aal2,public.has_permission');
 -- THE DEPTH ASSERTION. private.role_requires_mfa is NOT a pg_depend child of
 -- either view -- it is reached only by reading permitted_organisations' body.

@@ -23,7 +23,7 @@ let warnedNoServerMark = false;
 
 // THE SERVER-ONLY REQUEST MARK (Phase 10 Task 5, G2/G14). Sent on every
 // request from this client and no other; the database (api_hooks.pre_request)
-// hashes it against private.server_request_digest. Without it the network
+// hashes it against a digest held in Vault. Without it the network
 // directory views are refused and an impersonation session reads nothing, so
 // a missing value fails closed -- and says so once, by name.
 function serverMarkHeaders(): Record<string, string> | undefined {
