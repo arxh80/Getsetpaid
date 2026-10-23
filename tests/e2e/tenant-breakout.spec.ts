@@ -169,41 +169,53 @@ test("record scope holds inside one tenant, on the list and on the record", asyn
  */
 const GHOST_ID = "00000000-0000-4000-8000-000000000000";
 
-test("REFUSAL PARITY: a foreign record and a nonexistent record are indistinguishable, per entity family", async ({
-  page,
-}) => {
-  // ==========================================================================
-  // THE LOAD-BEARING ENUMERATION-ORACLE ASSERTION.
-  // ==========================================================================
-  // Before the loading-skeletons pass, the oracle property -- "exists, not
-  // yours" must not be tellable from "does not exist" -- was IMPLIED by every
-  // refusal carrying the same literal 404. Streaming took that implication
-  // away for record-level refusals (see expectRefused's header), so this test
-  // asserts the property DIRECTLY: for each entity family, probe a real,
-  // live row belonging to another tenant and a well-formed id that matches
-  // nothing, and require the same HTTP status and the same rendered document.
-  //
-  // The bodies are compared as rendered innerText, not raw bytes: every
-  // response carries a fresh CSP nonce and React stream ids, so two raw
-  // bodies differ even for the SAME url requested twice -- rendered text is
-  // the practical level at which "the identical 404 page" is decidable.
-  // innerText does not see the head, comments, data attributes or the flight
-  // payload; a leak through those channels is prevented by construction (the
-  // record read happens only below the loading boundary, generateMetadata
-  // falls back identically for both cases) rather than by this comparison,
-  // so the document TITLE is compared as well as a cheap head-channel probe,
-  // and the raw-byte channel is covered by the status equality plus the copy
-  // assertions in expectRefused.
-  await signIn(page, world, "manager");
+// One test per family, as accessibility.spec.ts's "ONE TEST PER PAGE" header
+// explains: five families (ten navigations, each first hit a route compile)
+// under one 60s budget timed out on 2026-10-23 with every assertion green, an
+// empty failure that reads like an oracle and is not one.
+const PARITY_FAMILIES: ReadonlyArray<
+  readonly [string, (w: E2eWorld) => string, string]
+> = [
+  ["contact", (w) => `contacts/${w.otherOrgContactId}`, `contacts/${GHOST_ID}`],
+  ["event", (w) => `events/${w.otherOrgEventId}`, `events/${GHOST_ID}`],
+  ["task", (w) => `tasks/${w.otherOrgTaskId}`, `tasks/${GHOST_ID}`],
+  ["note", (w) => `notes/${w.otherOrgNoteId}`, `notes/${GHOST_ID}`],
+  ["artist", (w) => `artists/${w.otherOrgArtistId}`, `artists/${GHOST_ID}`],
+];
 
-  await expectRefusalParity(page, world.orgSlug, [
-    ["contact", `contacts/${world.otherOrgContactId}`, `contacts/${GHOST_ID}`],
-    ["event", `events/${world.otherOrgEventId}`, `events/${GHOST_ID}`],
-    ["task", `tasks/${world.otherOrgTaskId}`, `tasks/${GHOST_ID}`],
-    ["note", `notes/${world.otherOrgNoteId}`, `notes/${GHOST_ID}`],
-    ["artist", `artists/${world.otherOrgArtistId}`, `artists/${GHOST_ID}`],
-  ] as const);
-});
+for (const [family, foreignPath, ghostPath] of PARITY_FAMILIES) {
+  test(`REFUSAL PARITY: a foreign ${family} and a nonexistent one are indistinguishable`, async ({
+    page,
+  }) => {
+    // ==========================================================================
+    // THE LOAD-BEARING ENUMERATION-ORACLE ASSERTION.
+    // ==========================================================================
+    // Before the loading-skeletons pass, the oracle property -- "exists, not
+    // yours" must not be tellable from "does not exist" -- was IMPLIED by every
+    // refusal carrying the same literal 404. Streaming took that implication
+    // away for record-level refusals (see expectRefused's header), so this test
+    // asserts the property DIRECTLY: for each entity family, probe a real,
+    // live row belonging to another tenant and a well-formed id that matches
+    // nothing, and require the same HTTP status and the same rendered document.
+    //
+    // The bodies are compared as rendered innerText, not raw bytes: every
+    // response carries a fresh CSP nonce and React stream ids, so two raw
+    // bodies differ even for the SAME url requested twice -- rendered text is
+    // the practical level at which "the identical 404 page" is decidable.
+    // innerText does not see the head, comments, data attributes or the flight
+    // payload; a leak through those channels is prevented by construction (the
+    // record read happens only below the loading boundary, generateMetadata
+    // falls back identically for both cases) rather than by this comparison,
+    // so the document TITLE is compared as well as a cheap head-channel probe,
+    // and the raw-byte channel is covered by the status equality plus the copy
+    // assertions in expectRefused.
+    await signIn(page, world, "manager");
+
+    await expectRefusalParity(page, world.orgSlug, [
+      [family, foreignPath(world), ghostPath],
+    ] as const);
+  });
+}
 
 test("REFUSAL PARITY from the counterparty: meeting, venue and company note refuse identically to ghosts", async ({
   page,
