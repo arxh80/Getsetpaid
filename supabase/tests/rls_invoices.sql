@@ -49,6 +49,25 @@ begin
   perform inv.record(p_label, p_expected, v_actual);
 end $$;
 
+-- Runs p_sql in a subtransaction that is ALWAYS rolled back, and answers which
+-- CHECK refused it (`violates <constraint>`), or `written` when none did. The
+-- constraint NAME is the point: inv.val's denied(23514) cannot tell the three
+-- shape CHECKs apart. Any other error reaches inv.val as denied(...).
+create function inv.violated(p_sql text)
+returns text language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare v_name text;
+begin
+  begin
+    execute p_sql;
+    raise exception 'undo the probe row' using errcode = 'IVOK0';
+  exception
+    when sqlstate 'IVOK0' then return 'written';
+    when check_violation then
+      get stacked diagnostics v_name = constraint_name;
+      return 'violates ' || v_name;
+  end;
+end $$;
+
 grant usage on schema inv to authenticated, service_role;
 grant execute on function inv.record(text,text,text) to authenticated, service_role;
 grant execute on function inv.val(text,text,text)    to authenticated, service_role;
@@ -208,7 +227,15 @@ select inv.val('IT19 a number prefix outside A-Z, 0-9 and hyphen is refused', fo
 select inv.val('IT20 bank details are all three or none', format($$update public.invoice_settings set bank_sort_code = null where organisation_id = %L returning 'written'$$, :'org_a'), 'denied(23514)');
 select inv.val('IT21 a VAT number outside the UK formats is refused', format($$update public.invoice_settings set vat_number = 'FR12345678901' where organisation_id = %L returning 'written'$$, :'org_a'), 'denied(23514)');
 select inv.val('IT22 a send to something that is not an email address is refused', format($$insert into public.invoice_sends (organisation_id, invoice_id, to_email, sent_by) values (%L, %L, 'not-an-email', %L) returning 'written'$$, :'org_a', :'inv_ai', :'fin_a'), 'denied(23514)');
-select inv.val('IT23 an issued row without a recipient address is refused by the issued shape', format($$update public.invoices set recipient_address = null where id = %L returning 'written'$$, :'inv_ai'), 'denied(42501:invoice_is_frozen)');
+select inv.val('IT23 clearing an issued row''s recipient address by UPDATE is refused, and the freeze answers before the issued shape', format($$update public.invoices set recipient_address = null where id = %L returning 'written'$$, :'inv_ai'), 'denied(42501:invoice_is_frozen)');
+-- The three shape CHECKs, reached by INSERT (the freeze is UPDATE/DELETE
+-- only), each beside a control that differs from it in ONE column.
+select inv.val('IT24 an issued row with no recipient address is refused by invoices_issued_shape', format($$select inv.violated(%L)$$, format($$insert into public.invoices (organisation_id, created_by, recipient_contact_id, recipient_address, status, number, snapshot, issue_date, due_date, supply_date) values (%L, %L, %L, null, 'issued', 'TST-0001', '{}', current_date, current_date, current_date)$$, :'org_a', :'fin_a', :'con_a')), 'violates invoices_issued_shape');
+select inv.val('IT25 POSITIVE CONTROL: the same issued row WITH an address is written (and rolled back)', format($$select inv.violated(%L)$$, format($$insert into public.invoices (organisation_id, created_by, recipient_contact_id, recipient_address, status, number, snapshot, issue_date, due_date, supply_date) values (%L, %L, %L, '1 Probe Road', 'issued', 'TST-0001', '{}', current_date, current_date, current_date)$$, :'org_a', :'fin_a', :'con_a')), 'written');
+select inv.val('IT26 a paid row with no paid_on/paid_by is refused by invoices_paid_shape', format($$select inv.violated(%L)$$, format($$insert into public.invoices (organisation_id, created_by, recipient_contact_id, recipient_address, status, number, snapshot, issue_date, due_date, supply_date, paid_on, paid_by) values (%L, %L, %L, '1 Probe Road', 'paid', 'TST-0001', '{}', current_date, current_date, current_date, null, null)$$, :'org_a', :'fin_a', :'con_a')), 'violates invoices_paid_shape');
+select inv.val('IT27 POSITIVE CONTROL: the same paid row WITH paid_on/paid_by is written (and rolled back)', format($$select inv.violated(%L)$$, format($$insert into public.invoices (organisation_id, created_by, recipient_contact_id, recipient_address, status, number, snapshot, issue_date, due_date, supply_date, paid_on, paid_by) values (%L, %L, %L, '1 Probe Road', 'paid', 'TST-0001', '{}', current_date, current_date, current_date, current_date, %L)$$, :'org_a', :'fin_a', :'con_a', :'fin_a')), 'written');
+select inv.val('IT28 a void row with no reason is refused by invoices_void_shape', format($$select inv.violated(%L)$$, format($$insert into public.invoices (organisation_id, created_by, recipient_contact_id, recipient_address, status, number, snapshot, issue_date, due_date, supply_date, voided_at, voided_by, void_reason) values (%L, %L, %L, '1 Probe Road', 'void', 'TST-0001', '{}', current_date, current_date, current_date, now(), %L, null)$$, :'org_a', :'fin_a', :'con_a', :'fin_a')), 'violates invoices_void_shape');
+select inv.val('IT29 POSITIVE CONTROL: the same void row WITH a reason is written (and rolled back)', format($$select inv.violated(%L)$$, format($$insert into public.invoices (organisation_id, created_by, recipient_contact_id, recipient_address, status, number, snapshot, issue_date, due_date, supply_date, voided_at, voided_by, void_reason) values (%L, %L, %L, '1 Probe Road', 'void', 'TST-0001', '{}', current_date, current_date, current_date, now(), %L, 'Raised in error')$$, :'org_a', :'fin_a', :'con_a', :'fin_a')), 'written');
 
 -- ===========================================================================
 -- § IA THE ARITHMETIC AND THE NUMBERING (as postgres)
