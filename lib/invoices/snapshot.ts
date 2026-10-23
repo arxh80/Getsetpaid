@@ -1,5 +1,5 @@
 // The frozen copy private.build_invoice_snapshot() takes at issue
-// (20261106000000). The PDF and the issued view render ONLY from this, and
+// (20261107000000). The PDF and the issued view render ONLY from this, and
 // it is read back from jsonb, so it is parsed -- never cast. A malformed
 // snapshot is null, and the caller renders an error rather than half an
 // invoice. Number shape matches invoices.number's CHECK, which is what lets

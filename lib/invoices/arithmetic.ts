@@ -1,5 +1,5 @@
 // Line and VAT arithmetic for invoices -- the TypeScript port of
-// private.invoice_line_amounts() (20261106000000). The DATABASE is the source
+// private.invoice_line_amounts() (20261107000000). The DATABASE is the source
 // of the numbers on an invoice; this port exists for the editor's live
 // preview, and tests/unit/invoices/arithmetic-cases.ts holds both to one case
 // table. Exact integer arithmetic throughout (BigInt), never floats.
