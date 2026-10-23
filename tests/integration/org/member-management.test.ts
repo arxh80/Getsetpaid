@@ -14,12 +14,13 @@
 // Admin's USING clause, 20261106000000), and every refusal below also reads
 // the row back as the Postgres superuser to prove nothing changed.
 //
-// MUTANTS (task-21-report.md). (1) Swapping the actions' client for the
-// service-role client turns the five success cases red, NOT the Booker case:
-// service_role holds zero table grants on this schema (Task 4 design note
-// (e)), so it is refused for everyone. (2) Reading zero rows as success turns
-// the Booker, foreign-id and Admin-vs-Owner cases red: the zero-row refusal is
-// the one piece of logic this file's actions own.
+// MUTANTS (run 2026-10-23, recorded in the Task 21 ledger line). (1) Swapping
+// the actions' client for the service-role client turns the five success
+// cases red (5 failed / 4 passed), NOT the Booker case: service_role holds
+// zero table grants on this schema (Task 4 design note (e)), so it fails
+// closed for everyone. (2) Reading zero rows as success turns the Booker,
+// foreign-id and Admin-vs-Owner cases red (3 failed / 6 passed): the zero-row
+// refusal is the one piece of logic this file's actions own.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -186,7 +187,7 @@ describe("member management (Task 21)", () => {
     expect(await membership(fx.orgA.id, fx.activeByRole.standard_user.userId)).toBeNull();
   });
 
-  it("an Owner may promote to Owner, after which the first Owner may step down", async () => {
+  it("an Owner may promote another member to Owner", async () => {
     const venueManager = (await membership(fx.orgA.id, fx.activeByRole.venue_manager.userId))!;
     expect((await changeRole(fx.ownerA, fx.orgA.slug, venueManager.id, "owner")).error).toBeUndefined();
     expect((await membership(fx.orgA.id, fx.activeByRole.venue_manager.userId))?.role).toBe("owner");

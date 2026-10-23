@@ -634,7 +634,7 @@ export async function removeMemberAction(
   formData: FormData,
 ): Promise<FormState> {
   const ctx = await memberWriteContext(formData);
-  if ("state" in ctx) return ctx.state;
+  if (ctx.state) return ctx.state;
 
   const result = await ctx.supabase
     .from("organisation_memberships")
@@ -659,7 +659,7 @@ export async function changeMemberRoleAction(
   }
 
   const ctx = await memberWriteContext(formData);
-  if ("state" in ctx) return ctx.state;
+  if (ctx.state) return ctx.state;
 
   const result = await ctx.supabase
     .from("organisation_memberships")
