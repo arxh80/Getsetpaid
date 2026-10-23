@@ -590,6 +590,24 @@ begin
     'true', v_full::text);
 end $$;
 
+-- IM3/IM4: THE SERVER-ONLY REQUEST MARK (Phase 10 Task 5, G14). An
+-- impersonation session grants its target only to a request the app's own
+-- server made: api_hooks.pre_request() sets `getsetpaid.from_server` when the
+-- request carries the server's secret, and impersonated_organisations() reads
+-- it through private.request_is_from_server(). The runner starts every psql
+-- session with the mark ON (it stands in for the server, as every assertion
+-- above was written to), so IM3 turns it OFF -- the impersonator's browser
+-- aimed straight at PostgREST -- and IM4 is the same session with it back.
+set role authenticated;
+set request.jwt.claims = :'super_c';
+set getsetpaid.from_server = 'off';
+select imp.val('IM3 a LIVE session WITHOUT the server mark reads 0 ALPHA contacts (G14: direct reads see nothing)',
+  format($$select count(*)::text from public.contacts where organisation_id=%L$$, :'alpha_org'), '0');
+reset getsetpaid.from_server;
+select imp.val('IM4 CONTROL: the same session WITH the mark reads ALPHA''s contacts',
+  format($$select (count(*) > 0)::text from public.contacts where organisation_id=%L$$, :'alpha_org'), 'true');
+reset role; reset request.jwt.claims;
+
 -- ===========================================================================
 -- § ID  A DECLINED REQUEST GRANTS NOTHING, EVER
 --
