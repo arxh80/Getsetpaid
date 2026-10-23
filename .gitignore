@@ -45,6 +45,7 @@ blob-report/
 # Pentest skill artefacts (supabase-audit-rls) — findings and keys, never commit
 .sb-pentest-context.json
 .sb-pentest-audit.log
+.sb-pentest-evidence/
 
 # Python (tooling scripts)
 __pycache__/
