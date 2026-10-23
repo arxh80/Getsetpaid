@@ -8,7 +8,8 @@ import { describe, expect, it } from "vitest";
 // and every flow PRD § 10.8 names must keep its section.
 
 const ROOT = new URL("../../../", import.meta.url);
-const doc = readFileSync(fileURLToPath(new URL("docs/threat-model.md", ROOT)), "utf8");
+// A Windows checkout under core.autocrlf=true has CRLF; the heading match needs LF.
+const doc = readFileSync(fileURLToPath(new URL("docs/threat-model.md", ROOT)), "utf8").replace(/\r\n/g, "\n");
 
 const FLOWS = [
   "Authentication",
