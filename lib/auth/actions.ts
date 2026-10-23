@@ -409,9 +409,24 @@ export async function choosePasswordAction(
 export async function signOutAction(): Promise<void> {
   const supabase = await createClient();
   // 'local' clears this browser's session only. Signing every device out is a
-  // deliberate, separate security action ("sign out everywhere"), not what a
+  // deliberate, separate security action (signOutEverywhereAction), not what a
   // user expects from a header menu.
   await supabase.auth.signOut({ scope: "local" });
+  redirect("/login");
+}
+
+// Phase 10 Task 22: "sign out everywhere", for a lost or stolen device.
+// 'global' revokes every refresh token this user holds, this browser's
+// included. An access token already issued keeps working until it expires
+// (jwt_expiry, SECURITY.md § 4). No step-up: signing out cannot harm the
+// account. A failure is reported, never redirected, so nobody is told every
+// device is signed out when none is.
+export async function signOutEverywhereAction(_prev: FormState): Promise<FormState> {
+  const supabase = await createClient();
+  const { error } = await supabase.auth.signOut({ scope: "global" });
+  if (error) {
+    return { error: "We couldn't sign you out everywhere. Try again in a moment." };
+  }
   redirect("/login");
 }
 
