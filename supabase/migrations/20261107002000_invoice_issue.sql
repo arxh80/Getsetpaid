@@ -9,7 +9,8 @@
 -- next_number, write number / dates / totals / snapshot, flip to issued,
 -- audit {status, number} (name-only: no amount, CLAUDE.md § Non-negotiable
 -- rules). Two concurrent issues in one workspace serialise on the settings
--- row and get consecutive numbers (invoice_issue_concurrency_probe.sh); a
+-- row and get consecutive numbers, and of two drafts pulling one entry
+-- issued at once exactly one issues (invoice_issue_concurrency_probe.sh); a
 -- rolled-back issue consumes no number (rls_invoices.sql IS10-IS12).
 -- ===========================================================================
 
