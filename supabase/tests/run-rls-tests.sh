@@ -1308,7 +1308,7 @@ fi
 # re-runnable (it removes its own fixtures). Pin:
 # grep -c '^select inv.val(' supabase/tests/rls_invoices.sql
 # ============================================================================
-run_suite "INVOICES" rls_invoices.sql inv 132
+run_suite "INVOICES" rls_invoices.sql inv 159
 inv_fails=$SUITE_FAILS
 if [ "$inv_fails" != "0" ]; then
   echo "INVOICES SUITE FAILED: $inv_fails failing assertion(s)" >&2
@@ -1358,6 +1358,19 @@ else
   echo "  The per-run ceiling, the sanity ceiling and the before/after totals are" >&2
   echo "  all arithmetic over ONE run; retention_runs_one_running_idx is what" >&2
   echo "  serialises them (20261004003000)." >&2
+  psql_status=1
+fi
+
+# ============================================================================
+# TWO INVOICE ISSUES IN ONE WORKSPACE, UNDER A REAL RACE (Invoices part 1,
+# Task 5). public.issue_invoice() locks invoice_settings FOR UPDATE; without
+# it two sessions read the same next_number.
+# ============================================================================
+if bash "$HERE/invoice_issue_concurrency_probe.sh"; then
+  :
+else
+  echo "INVOICE ISSUE CONCURRENCY PROBE FAILED: two concurrent issues did not get" >&2
+  echo "  two consecutive numbers (issue_invoice's settings row lock)." >&2
   psql_status=1
 fi
 

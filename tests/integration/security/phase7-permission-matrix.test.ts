@@ -1123,6 +1123,13 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "Invoices part 1 Task 4 -- the same holder soft-deletes a live draft in the " +
     "invoice's own workspace; an issued invoice is refused (voided, never " +
     "deleted). Asserted in rls_invoices.sql § ID.",
+  issue_invoice:
+    "Invoices part 1 Task 5 -- a manage_finance holder in a Pro workspace issues a " +
+    "live, complete draft: number from invoice_settings under a row lock, UK-local " +
+    "dates, snapshot, audit invoice.issued; a pulled entry already on a live " +
+    "invoice is refused (Q255). Anyone else gets 42501 forbidden whether or not " +
+    "the id exists. Asserted in rls_invoices.sql § IS and " +
+    "invoice_issue_concurrency_probe.sh.",
 };
 
 /**

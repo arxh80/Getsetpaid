@@ -11,6 +11,8 @@
 --   IC  the catalogues the tables joined (audit, retention, export)
 -- Task 4 (20261107001000_invoice_draft_rpcs.sql):
 --   ID  drafts: save_invoice_draft / delete_invoice_draft
+-- Task 5 (20261107002000_invoice_issue.sql):
+--   IS  issue: numbering, snapshot, refusals, one entry billed once (Q255)
 -- Later tasks add their sections ABOVE § IZ.
 --
 -- EVERY ASSERTION IS ONE LINE BEGINNING `select inv.val(`: run-rls-tests.sh's
@@ -515,18 +517,143 @@ reset role;
 select inv.val('ID44 ...B''s draft is untouched by ID43 (read as postgres; the control is ID26/ID27)', format($$select (deleted_at is null)::text from public.invoices where id = %L$$, :'inv_bd'), 'true');
 
 -- ===========================================================================
+-- § IS ISSUE (Task 5, 20261107002000): numbering, snapshot, refusals, and
+-- one finance entry billed once (Q255 default (a)). The race is
+-- invoice_issue_concurrency_probe.sh.
+-- ===========================================================================
+\o /dev/null
+select gen_random_uuid()::text as org_n \gset
+select gen_random_uuid()::text as fin_n \gset
+select gen_random_uuid()::text as con_n \gset
+select gen_random_uuid()::text as inv_n1 \gset
+select gen_random_uuid()::text as inv_n2 \gset
+select gen_random_uuid()::text as inv_n3 \gset
+select gen_random_uuid()::text as ev_n \gset
+select gen_random_uuid()::text as fe_n \gset
+select gen_random_uuid()::text as inv_q1 \gset
+select gen_random_uuid()::text as inv_q2 \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_n') as fin_n_c \gset
+\o
+-- org_n: a Pro workspace with NO invoice_settings row yet.
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+  values (:'fin_n', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'inv-fin-n-' || :'fin_n' || '@test.local', now(), now(), now());
+insert into public.organisations (id, name, slug) values (:'org_n', 'Invoices Numbering', 'inv-num-' || left(:'org_n', 8));
+insert into public.organisation_subscriptions (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+  values (:'org_n', 'pro', 'monthly', 1, 'active', now() + interval '30 days')
+  on conflict (organisation_id) do update set plan_id = 'pro', status = 'active';
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+  values (:'org_n', :'fin_n', 'finance', 'active', now());
+insert into public.contacts (id, organisation_id, name, email) values (:'con_n', :'org_n', 'Nina Number', 'nina@example.test');
+insert into public.invoices (id, organisation_id, recipient_contact_id, recipient_address, created_by) values
+  (:'inv_n1', :'org_n', :'con_n', '1 Nina Way', :'fin_n'),
+  (:'inv_n2', :'org_n', :'con_n', '1 Nina Way', :'fin_n'),
+  (:'inv_n3', :'org_n', null,     null,         :'fin_n');
+insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity, unit_price_minor, vat_rate, net_minor, vat_minor) values
+  (:'org_n', :'inv_n1', 1, 'Fee', 1, 10000, 'standard_20', 0, 0),
+  (:'org_n', :'inv_n2', 1, 'Fee', 1, 20000, 'standard_20', 0, 0),
+  (:'org_n', :'inv_n3', 1, 'Fee', 1, 30000, 'none', 0, 0);
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS1 no settings row: issuing is refused', format($$select public.issue_invoice(%L)$$, :'inv_n1'), 'denied(22023:invoice_settings_incomplete)');
+reset role;
+reset request.jwt.claims;
+insert into public.invoice_settings (organisation_id, business_name, business_address, number_prefix, payment_terms_days)
+  values (:'org_n', 'Numbering Ltd', '1 Number Street', 'NUM-', 14);
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS2 a draft with no recipient is refused', format($$select public.issue_invoice(%L)$$, :'inv_n3'), 'denied(22023:invoice_needs_a_recipient)');
+select inv.val('IS3 THE FIRST ISSUE TAKES NUMBER 1, padded', format($$select public.issue_invoice(%L)$$, :'inv_n1'), 'NUM-0001');
+select inv.val('IS4 ...the counter moved to 2', format($$select next_number::text from public.invoice_settings where organisation_id = %L$$, :'org_n'), '2');
+select inv.val('IS5 ...the row is issued with UK dates, terms applied, VAT recomputed (not VAT registered: none)', format($$select concat_ws('|', status, number, (issue_date = (now() at time zone 'Europe/London')::date)::text, (supply_date = issue_date)::text, (due_date - issue_date)::text, net_minor, vat_minor, gross_minor) from public.invoices where id = %L$$, :'inv_n1'), 'issued|NUM-0001|true|true|14|10000|0|10000');
+select inv.val('IS6 ...the line was recomputed to no VAT under an unregistered seller', format($$select vat_rate || '|' || net_minor || '|' || vat_minor from public.invoice_lines where invoice_id = %L$$, :'inv_n1'), 'none|10000|0');
+select inv.val('IS7 ...the snapshot carries the number, no VAT number, the recipient and the totals', format($$select concat_ws('|', snapshot ->> 'number', coalesce(snapshot -> 'seller' ->> 'vat_number', 'null'), snapshot -> 'recipient' ->> 'name', snapshot -> 'recipient' ->> 'email', snapshot -> 'totals' ->> 'gross_minor', (snapshot ->> 'due_date' = due_date::text)::text) from public.invoices where id = %L$$, :'inv_n1'), 'NUM-0001|null|Nina Number|nina@example.test|10000|true');
+select inv.val('IS9 issuing it again is refused', format($$select public.issue_invoice(%L)$$, :'inv_n1'), 'denied(22023:invoice_not_a_draft)');
+reset role;
+reset request.jwt.claims;
+select inv.val('IS8 ...and one invoice.issued audit row, actor the caller (read as postgres: audit_events is superuser-read)', format($$select count(*) || '|' || bool_and(actor_user_id = %L)::text || '|' || max(after ->> 'number') from public.audit_events where action = 'invoice.issued' and target_id = %L$$, :'fin_n', :'inv_n1'), '1|true|NUM-0001');
+-- A ROLLED-BACK ISSUE CONSUMES NO NUMBER: issue inside a transaction, roll it back.
+begin;
+set local role authenticated;
+select pg_catalog.set_config('request.jwt.claims', :'fin_n_c', true) \gset
+select public.issue_invoice(:'inv_n2') as rolled_back_number \gset
+rollback;
+select inv.val('IS10 a rolled-back issue took a number inside its transaction', format($$select %L$$, :'rolled_back_number'), 'NUM-0002');
+select inv.val('IS11 ...and after the rollback the counter is still 2 and the draft still a draft', format($$select (select next_number from public.invoice_settings where organisation_id = %L) || '|' || (select status from public.invoices where id = %L)$$, :'org_n', :'inv_n2'), '2|draft');
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS12 the next real issue takes 2 -- no gap', format($$select public.issue_invoice(%L)$$, :'inv_n2'), 'NUM-0002');
+set request.jwt.claims = :'fin_a_c';
+select inv.val('IS13 A''s Finance user cannot issue org_n''s draft (no existence oracle)', format($$select public.issue_invoice(%L)$$, :'inv_n3'), 'denied(42501:forbidden)');
+select inv.val('IS14 ...nor an id that does not exist, with the same refusal', $$select public.issue_invoice(gen_random_uuid())$$, 'denied(42501:forbidden)');
+select inv.val('IS15 VAT REGISTERED: A''s draft issues at A''s counter with its 20% intact', format($$select public.issue_invoice(%L)$$, :'inv_ad'), 'INV-0001');
+select inv.val('IS16 ...its totals and its snapshot''s seller VAT number', format($$select concat_ws('|', net_minor, vat_minor, gross_minor, snapshot -> 'seller' ->> 'vat_number', snapshot -> 'lines' -> 0 ->> 'vat_rate') from public.invoices where id = %L$$, :'inv_ad'), '50000|10000|60000|GB123456789|standard_20');
+set request.jwt.claims = :'mgr_a_c';
+select inv.val('IS17 a Manager cannot issue', format($$select public.issue_invoice(%L)$$, :'inv_ad'), 'denied(42501:forbidden)');
+set request.jwt.claims = :'fin_s_c';
+select inv.val('IS18 a STARTER workspace cannot issue', format($$select public.issue_invoice(%L)$$, :'inv_sd'), 'denied(42501:plan_does_not_include_invoicing)');
+reset role;
+reset request.jwt.claims;
+-- The recipient soft-deleted after drafting (plan decision 7, Q251).
+update public.invoices set recipient_contact_id = :'con_n', recipient_address = '1 Nina Way' where id = :'inv_n3';
+update public.contacts set deleted_at = now() where id = :'con_n';
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS19 a draft whose recipient was deleted is refused, not issued', format($$select public.issue_invoice(%L)$$, :'inv_n3'), 'denied(22023:invoice_recipient_deleted)');
+select inv.val('IS20 ...and is still a live draft (not soft-deleted with its recipient, Q251)', format($$select status || '|' || (deleted_at is null)::text from public.invoices where id = %L$$, :'inv_n3'), 'draft|true');
+reset role;
+reset request.jwt.claims;
+update public.contacts set deleted_at = null where id = :'con_n';
+delete from public.invoice_lines where invoice_id = :'inv_n3';
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS21 a draft with no lines is refused', format($$select public.issue_invoice(%L)$$, :'inv_n3'), 'denied(22023:invoice_has_no_lines)');
+select inv.val('IS22 only authenticated may execute issue_invoice', $$select has_function_privilege('authenticated', 'public.issue_invoice(uuid)', 'EXECUTE')::text || '/' || (has_function_privilege('anon', 'public.issue_invoice(uuid)', 'EXECUTE') or has_function_privilege('service_role', 'public.issue_invoice(uuid)', 'EXECUTE'))::text$$, 'true/false');
+reset role;
+reset request.jwt.claims;
+-- Q255 default (a): two drafts may pull the same income entry; only one is issued.
+insert into public.events (id, organisation_id, name, starts_at)
+  values (:'ev_n', :'org_n', 'Numbering Night', now() + interval '10 days');
+insert into public.financial_entries (id, organisation_id, event_id, category, status, amount_minor, description)
+  values (:'fe_n', :'org_n', :'ev_n', 'income', 'budgeted', 7000, 'Door split');
+insert into public.invoices (id, organisation_id, recipient_contact_id, recipient_address, event_id, created_by) values
+  (:'inv_q1', :'org_n', :'con_n', '1 Nina Way', :'ev_n', :'fin_n'),
+  (:'inv_q2', :'org_n', :'con_n', '1 Nina Way', :'ev_n', :'fin_n');
+insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity, unit_price_minor, vat_rate, net_minor, vat_minor, financial_entry_id) values
+  (:'org_n', :'inv_q1', 1, 'Door split', 1, 7000, 'none', 7000, 0, :'fe_n'),
+  (:'org_n', :'inv_q2', 1, 'Door split', 1, 7000, 'none', 7000, 0, :'fe_n');
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS23 POSITIVE CONTROL (Q255): a draft whose entry is also on another DRAFT issues', format($$select public.issue_invoice(%L)$$, :'inv_q1'), 'NUM-0003');
+select inv.val('IS24 Q255: the other draft, its entry now on a live ISSUED invoice, is refused', format($$select public.issue_invoice(%L)$$, :'inv_q2'), 'denied(22023:invoice_entry_already_invoiced)');
+select inv.val('IS25 ...and the refusal consumed no number and left a draft', format($$select (select next_number from public.invoice_settings where organisation_id = %L) || '|' || (select status from public.invoices where id = %L)$$, :'org_n', :'inv_q2'), '4|draft');
+reset role;
+reset request.jwt.claims;
+update public.invoices set status = 'paid', paid_on = current_date, paid_by = :'fin_n' where id = :'inv_q1';
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS26 Q255: ...and still refused once that invoice is PAID', format($$select public.issue_invoice(%L)$$, :'inv_q2'), 'denied(22023:invoice_entry_already_invoiced)');
+reset role;
+reset request.jwt.claims;
+update public.invoices set status = 'void', voided_at = now(), voided_by = :'fin_n', void_reason = 'Probe void' where id = :'inv_q1';
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS27 POSITIVE CONTROL (Q255): once that invoice is VOID, the draft issues', format($$select public.issue_invoice(%L)$$, :'inv_q2'), 'NUM-0004');
+reset role;
+reset request.jwt.claims;
+
+-- ===========================================================================
 -- § IZ HOUSEKEEPING (later tasks insert their sections ABOVE this line)
 -- ===========================================================================
 reset role;
 reset request.jwt.claims;
 -- ORIGIN mode, so the cascades run (and the freeze triggers admit them).
-delete from public.organisations where id in (:'org_a', :'org_b', :'org_s', :'org_f', :'org_p');
+delete from public.organisations where id in (:'org_a', :'org_b', :'org_s', :'org_f', :'org_p', :'org_n');
 set session_replication_role = replica;
 delete from public.audit_events
- where organisation_id in (:'org_a', :'org_b', :'org_s', :'org_f', :'org_p')
-    or actor_user_id in (:'own_a', :'adm_a', :'fin_a', :'mgr_a', :'ro_a', :'fin_b', :'fin_s', :'fin_f', :'fin_p');
+ where organisation_id in (:'org_a', :'org_b', :'org_s', :'org_f', :'org_p', :'org_n')
+    or actor_user_id in (:'own_a', :'adm_a', :'fin_a', :'mgr_a', :'ro_a', :'fin_b', :'fin_s', :'fin_f', :'fin_p', :'fin_n');
 set session_replication_role = origin;
-delete from auth.users where id in (:'own_a', :'adm_a', :'fin_a', :'mgr_a', :'ro_a', :'fin_b', :'fin_s', :'fin_f', :'fin_p');
+delete from auth.users where id in (:'own_a', :'adm_a', :'fin_a', :'mgr_a', :'ro_a', :'fin_b', :'fin_s', :'fin_f', :'fin_p', :'fin_n');
 select inv.val('IZ1 housekeeping left no invoice row behind', format($$select ((select count(*) from public.invoices where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.invoice_settings where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)))::text$$, :'org_a', :'org_b', :'org_s', :'org_f', :'org_p'), '0');
 
 \echo
