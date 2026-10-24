@@ -6,6 +6,9 @@
 -- An invoice whose event is soft-deleted is marked paid without touching
 -- finance (plan decision 6). Void keeps the number and reverses exactly what
 -- mark-paid recorded (invoice_lines.entry_flipped, invoices.paid_entry_id).
+-- Mark-paid flips only an entry that is still live budgeted income on the
+-- invoice's event (Q257).
+-- All three RPCs that lock pulled entries do it in id order (no deadlock).
 -- Audit payloads are name-only (CLAUDE.md § Non-negotiable rules): status,
 -- number and measured counts, never paid_on, an amount or the void reason.
 -- The erasure re-point of paid_by / voided_by is private.erase_account()'s
@@ -59,12 +62,25 @@ begin
   end if;
 
   if coalesce(v_live, false) then
+    -- Row locks in id order, the order issue_invoice's FOR SHARE takes, so
+    -- the two can never deadlock over a pair of entries.
+    perform 1 from public.financial_entries fe
+     where fe.id in (select l.financial_entry_id from public.invoice_lines l
+                      where l.invoice_id = p_invoice_id)
+     order by fe.id
+       for update;
+    -- Only an entry that is still live budgeted income on the invoice's event
+    -- is flipped (issue's live-income rule). One deleted, re-categorised or
+    -- moved since the issue goes unbooked (Q257), and one already actual is
+    -- left alone, so void never reverts what mark-paid did not do.
     with flipped as (
       update public.financial_entries fe
          set status = 'actual'
        where fe.organisation_id = v_inv.organisation_id
          and fe.status = 'budgeted'
          and fe.deleted_at is null
+         and fe.category = 'income'
+         and fe.event_id = v_inv.event_id
          and fe.id in (select l.financial_entry_id from public.invoice_lines l
                         where l.invoice_id = p_invoice_id and l.financial_entry_id is not null)
       returning fe.id)
@@ -147,6 +163,13 @@ begin
   end if;
 
   if v_inv.status = 'paid' then
+    -- Row locks in id order, as mark_invoice_paid and issue_invoice take them.
+    perform 1 from public.financial_entries fe
+     where fe.id = v_inv.paid_entry_id
+        or fe.id in (select l.financial_entry_id from public.invoice_lines l
+                      where l.invoice_id = p_invoice_id and l.entry_flipped)
+     order by fe.id
+       for update;
     update public.financial_entries fe
        set status = 'budgeted'
      where fe.organisation_id = v_inv.organisation_id

@@ -796,6 +796,45 @@ select inv.val('IP22 POSITIVE CONTROL (Q255): once that invoice is VOID (and its
 reset role;
 reset request.jwt.claims;
 
+-- Task 6 review I1/m1: mark-paid flips only an entry that is still live
+-- budgeted income on the invoice's event (Q257). Three pulled lines: one
+-- re-categorised to a cost after the issue, one moved to another event, one
+-- already actual. Each goes unflipped, and void leaves all three as they were.
+\o /dev/null
+select gen_random_uuid()::text as ev_m \gset
+select gen_random_uuid()::text as fe_c \gset
+select gen_random_uuid()::text as fe_m \gset
+select gen_random_uuid()::text as fe_x \gset
+\o
+insert into public.events (id, organisation_id, name, starts_at)
+  values (:'ev_m', :'org_a', 'Alpha Matinee', now() + interval '21 days');
+insert into public.financial_entries (id, organisation_id, event_id, category, status, amount_minor, description) values
+  (:'fe_c', :'org_a', :'ev_a', 'income', 'budgeted', 1000, 'Merch split'),
+  (:'fe_m', :'org_a', :'ev_a', 'income', 'budgeted', 2000, 'Bar split'),
+  (:'fe_x', :'org_a', :'ev_a', 'income', 'actual',   3000, 'Deposit received');
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
+select public.save_invoice_draft(:'org_a', null, null, :'con_a', :'ev_a', '9 Customer Road, London', null, null,
+  jsonb_build_array(
+    jsonb_build_object('description', 'Merch split', 'quantity', '1.00', 'unit_price_minor', 1000, 'vat_rate', 'standard_20', 'financial_entry_id', :'fe_c'),
+    jsonb_build_object('description', 'Bar split', 'quantity', '1.00', 'unit_price_minor', 2000, 'vat_rate', 'standard_20', 'financial_entry_id', :'fe_m'),
+    jsonb_build_object('description', 'Deposit', 'quantity', '1.00', 'unit_price_minor', 3000, 'vat_rate', 'standard_20', 'financial_entry_id', :'fe_x'))) as id_pm \gset
+select public.issue_invoice(:'id_pm') as num_pm \gset
+reset role;
+reset request.jwt.claims;
+update public.financial_entries set category = 'cost' where id = :'fe_c';
+update public.financial_entries set event_id = :'ev_m' where id = :'fe_m';
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
+select inv.val('IP23 an invoice whose pulled entries are no longer flippable is still marked paid', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'id_pm'), 'ok');
+select inv.val('IP24 Q257: the entry re-categorised as a cost and the one moved to another event stay budgeted, their lines unflipped', format($$select (select status from public.financial_entries where id = %L) || '|' || (select status from public.financial_entries where id = %L) || '|' || (select string_agg(position || ':' || entry_flipped::text, ',' order by position) from public.invoice_lines where invoice_id = %L and position in (1, 2))$$, :'fe_c', :'fe_m', :'id_pm'), 'budgeted|budgeted|1:false,2:false');
+select inv.val('IP25 the entry already actual is not flipped, and nothing is booked (every line was pulled)', format($$select (select entry_flipped::text from public.invoice_lines where invoice_id = %1$L and position = 3) || '|' || (select coalesce(paid_entry_id::text, 'none') from public.invoices where id = %1$L)$$, :'id_pm'), 'false|none');
+select inv.val('IV16 that paid invoice voids', format($$select 'ok' from (select public.void_invoice(%L, 'Reissue')) s$$, :'id_pm'), 'ok');
+select inv.val('IV17 ...and the void reverts nothing mark-paid did not do: the already-actual entry is still actual, the other two still budgeted', format($$select (select status from public.financial_entries where id = %L) || '|' || (select status from public.financial_entries where id = %L) || '|' || (select status from public.financial_entries where id = %L)$$, :'fe_x', :'fe_c', :'fe_m'), 'actual|budgeted|budgeted');
+select inv.val('IP26 STATIC PIN (m2): every RPC that locks pulled entries locks them in id order, so none deadlocks another', $$select count(*)::text from unnest(array['public.mark_invoice_paid(uuid,date)', 'public.void_invoice(uuid,text)', 'public.issue_invoice(uuid)']) f where pg_get_functiondef(f::regprocedure) ~ 'order by fe\.id\s+for (update|share)'$$, '3');
+reset role;
+reset request.jwt.claims;
+
 -- ===========================================================================
 -- § IE AN ERASED ACCOUNT'S INVOICES (Task 6): private.erase_account()'s
 -- derived re-point moves created_by / paid_by / voided_by / sent_by to the

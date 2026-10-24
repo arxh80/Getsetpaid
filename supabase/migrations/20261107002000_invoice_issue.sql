@@ -89,9 +89,12 @@ begin
   -- pulled entries are locked FOR SHARE first (Task 5 re-review), so such a
   -- change in flight either waits for this issue to commit or is waited for
   -- and then read here (READ COMMITTED: a fresh snapshot per statement).
+  -- In id order, the order mark_invoice_paid and void_invoice lock in, so
+  -- none of the three can deadlock another over a pair of entries.
   perform 1 from public.financial_entries fe
    where fe.id in (select l.financial_entry_id from public.invoice_lines l
                     where l.invoice_id = p_invoice_id)
+     order by fe.id
      for share;
   if exists (select 1 from public.invoice_lines l
               where l.invoice_id = p_invoice_id and l.financial_entry_id is not null
