@@ -432,6 +432,10 @@ select inv.val('IC6 no uuid column of an invoice table is an unclassified identi
 \o /dev/null
 select gen_random_uuid()::text as fe_ac \gset
 select gen_random_uuid()::text as ev_b \gset
+select gen_random_uuid()::text as fe_b \gset
+select gen_random_uuid()::text as fe_ad \gset
+select gen_random_uuid()::text as con_ad \gset
+select gen_random_uuid()::text as com_ad \gset
 \o
 insert into public.financial_entries (id, organisation_id, event_id, category, status, amount_minor, description)
   values (:'fe_ac', :'org_a', :'ev_a', 'cost', 'budgeted', 1000, 'A cost, not invoiceable');
@@ -439,6 +443,14 @@ insert into public.financial_entries (id, organisation_id, event_id, category, s
 -- under RLS and save a draft with no event (measured).
 insert into public.events (id, organisation_id, name, starts_at)
   values (:'ev_b', :'org_b', 'Beta Night', now() + interval '10 days');
+-- B's live income entry, and A's soft-deleted income entry, contact and company.
+insert into public.financial_entries (id, organisation_id, event_id, category, status, amount_minor, description, deleted_at)
+  values (:'fe_b',  :'org_b', :'ev_b', 'income', 'budgeted', 5000, 'B income', null),
+         (:'fe_ad', :'org_a', :'ev_a', 'income', 'budgeted', 5000, 'A income, deleted', now());
+insert into public.contacts (id, organisation_id, name, email, deleted_at)
+  values (:'con_ad', :'org_a', 'Del Eted', null, now());
+insert into public.companies (id, organisation_id, name, deleted_at)
+  values (:'com_ad', :'org_a', 'Deleted Customer Ltd', now());
 set role authenticated;
 set request.jwt.claims = :'fin_a_c';
 select public.save_invoice_draft(:'org_a', null, null, :'con_a', :'ev_a', '9 Customer Road, London', null, 'Thank you',
@@ -464,6 +476,17 @@ select inv.val('ID15 the ISSUED invoice cannot be saved over', format($$select p
 select inv.val('ID16 B''s draft cannot be saved over by naming A', format($$select public.save_invoice_draft(%L, %L, null, null, null, 'x', null, null, '[]'::jsonb)::text$$, :'org_a', :'inv_bd'), 'denied(22023:invoice_not_an_editable_draft)');
 select inv.val('ID17 nor by naming B, where the caller holds nothing', format($$select public.save_invoice_draft(%L, %L, null, null, null, 'x', null, null, '[]'::jsonb)::text$$, :'org_b', :'inv_bd'), 'denied(42501:forbidden)');
 select inv.val('ID18 B''s event is refused', format($$select public.save_invoice_draft(%L, null, null, null, %L, null, null, null, '[]'::jsonb)::text$$, :'org_a', :'ev_b'), 'denied(22023:invoice_event_not_live)');
+select inv.val('ID33 a SOFT-DELETED contact of this workspace as recipient is refused', format($$select public.save_invoice_draft(%L, null, null, %L, null, null, null, null, '[]'::jsonb)::text$$, :'org_a', :'con_ad'), 'denied(22023:invoice_recipient_not_live)');
+select inv.val('ID34 a SOFT-DELETED company of this workspace as recipient is refused', format($$select public.save_invoice_draft(%L, null, %L, null, null, null, null, null, '[]'::jsonb)::text$$, :'org_a', :'com_ad'), 'denied(22023:invoice_recipient_not_live)');
+select inv.val('ID35 a SOFT-DELETED income entry on this event is refused (the control is ID1: fe_a, live)', format($$select public.save_invoice_draft(%L, null, null, null, %L, null, null, null, jsonb_build_array(jsonb_build_object('description','x','quantity','1.00','unit_price_minor',1000,'vat_rate','none','financial_entry_id',%L)))::text$$, :'org_a', :'ev_a', :'fe_ad'), 'denied(22023:invoice_entry_not_invoiceable)');
+select inv.val('ID36 B''s income entry as a pulled line in A''s draft is refused', format($$select public.save_invoice_draft(%L, null, null, null, %L, null, null, null, jsonb_build_array(jsonb_build_object('description','x','quantity','1.00','unit_price_minor',1000,'vat_rate','none','financial_entry_id',%L)))::text$$, :'org_a', :'ev_a', :'fe_b'), 'denied(22023:invoice_entry_not_invoiceable)');
+select inv.val('ID37 the same income entry pulled twice into one draft is refused (the control is ID1: once)', format($$select public.save_invoice_draft(%L, null, null, null, %L, null, null, null, jsonb_build_array(jsonb_build_object('description','x','quantity','1.00','unit_price_minor',1000,'vat_rate','none','financial_entry_id',%3$L), jsonb_build_object('description','y','quantity','1.00','unit_price_minor',1000,'vat_rate','none','financial_entry_id',%3$L)))::text$$, :'org_a', :'ev_a', :'fe_a'), 'denied(22023:invoice_entry_pulled_twice)');
+select inv.val('ID38 a financial_entry_id that is not a uuid is refused with a hint, not a raw 22P02', format($$select public.save_invoice_draft(%L, null, null, null, %L, null, null, null, '[{"description":"x","quantity":"1.00","unit_price_minor":1,"vat_rate":"none","financial_entry_id":"not-a-uuid"}]'::jsonb)::text$$, :'org_a', :'ev_a'), 'denied(22023:invoice_line_invalid)');
+select inv.val('ID39 a total past bigint is refused with a hint, not a raw 22003', format($$select public.save_invoice_draft(%L, null, null, null, null, null, null, null, '[{"description":"x","quantity":"1.00","unit_price_minor":9000000000000000000,"vat_rate":"none","financial_entry_id":null},{"description":"y","quantity":"1.00","unit_price_minor":9000000000000000000,"vat_rate":"none","financial_entry_id":null}]'::jsonb)::text$$, :'org_a'), 'denied(22023:invoice_line_invalid)');
+select inv.val('ID40 an empty recipient address is refused with a hint, not a raw 23514 (the control is ID1)', format($$select public.save_invoice_draft(%L, null, null, null, null, '', null, null, '[]'::jsonb)::text$$, :'org_a'), 'denied(22023:invoice_address_invalid)');
+select inv.val('ID41 notes over 2000 characters are refused with a hint, not a raw 23514 (the control is ID1)', format($$select public.save_invoice_draft(%L, null, null, null, null, null, null, repeat('n', 2001), '[]'::jsonb)::text$$, :'org_a'), 'denied(22023:invoice_notes_invalid)');
+select inv.val('ID43 TENANT BREAKOUT: A''s Finance user cannot delete B''s draft', format($$select 'ok' from (select public.delete_invoice_draft(%L)) s$$, :'inv_bd'), 'denied(42501:forbidden)');
+select inv.val('ID45 ...and a uuid that names nothing gets the identical refusal (no existence oracle)', $$select 'ok' from (select public.delete_invoice_draft(gen_random_uuid())) s$$, 'denied(42501:forbidden)');
 set request.jwt.claims = :'fin_a_c1';
 select inv.val('ID19 MFA: the same Finance user at aal1 is refused', format($$select public.save_invoice_draft(%L, null, null, null, null, null, null, null, '[]'::jsonb)::text$$, :'org_a'), 'denied(42501:forbidden)');
 set request.jwt.claims = :'mgr_a_c';
@@ -478,6 +501,7 @@ set request.jwt.claims = :'fin_b_c';
 select public.save_invoice_draft(:'org_b', null, null, :'con_b', null, '7 Buyer Street', null, null,
   '[{"description":"Hire","quantity":"1.00","unit_price_minor":10000,"vat_rate":"standard_20","financial_entry_id":null}]'::jsonb) as id_b \gset
 select inv.val('ID25 NOT VAT REGISTERED: B''s 20% line is stored as no VAT, with no VAT charged', format($$select vat_rate || '|' || vat_minor from public.invoice_lines where invoice_id = %L$$, :'id_b'), 'none|0');
+select inv.val('ID42 NOT VAT REGISTERED: an unknown VAT rate is still refused, not stored as no VAT (the control is ID25)', format($$select public.save_invoice_draft(%L, null, null, null, null, null, null, null, '[{"description":"x","quantity":"1.00","unit_price_minor":1,"vat_rate":"standard","financial_entry_id":null}]'::jsonb)::text$$, :'org_b'), 'denied(22023:invoice_line_invalid)');
 set request.jwt.claims = :'fin_a_c';
 select inv.val('ID26 the Finance user soft-deletes the draft', format($$select 'ok' from (select public.delete_invoice_draft(%L)) s$$, :'id_new'), 'ok');
 select inv.val('ID27 ...it is soft-deleted, not gone', format($$select (deleted_at is not null)::text from public.invoices where id = %L$$, :'id_new'), 'true');
@@ -488,6 +512,7 @@ reset request.jwt.claims;
 select inv.val('ID30 with no session, save is refused as unauthenticated', format($$select public.save_invoice_draft(%L, null, null, null, null, null, null, null, '[]'::jsonb)::text$$, :'org_a'), 'denied(28000:not_authenticated)');
 select inv.val('ID31 ...and so is delete', format($$select 'ok' from (select public.delete_invoice_draft(%L)) s$$, :'inv_ad'), 'denied(28000:not_authenticated)');
 reset role;
+select inv.val('ID44 ...B''s draft is untouched by ID43 (read as postgres; the control is ID26/ID27)', format($$select (deleted_at is null)::text from public.invoices where id = %L$$, :'inv_bd'), 'true');
 
 -- ===========================================================================
 -- § IZ HOUSEKEEPING (later tasks insert their sections ABOVE this line)

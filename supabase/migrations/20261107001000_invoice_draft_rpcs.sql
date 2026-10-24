@@ -52,13 +52,28 @@ begin
       using errcode = '22023', hint = 'invoice_lines_invalid';
   end if;
   -- Quantity text is checked by shape, never silently rounded by the cast.
+  -- The VAT rate is checked BEFORE an unregistered seller's is normalised to
+  -- 'none', and an entry id by shape, so neither cast below can raise raw.
   select pg_catalog.count(*) into v_bad
     from pg_catalog.jsonb_array_elements(p_lines) e
    where pg_catalog.jsonb_typeof(e) <> 'object'
-      or coalesce(e ->> 'quantity', '') !~ '^[0-9]{1,10}(\.[0-9]{1,2})?$';
+      or coalesce(e ->> 'quantity', '') !~ '^[0-9]{1,10}(\.[0-9]{1,2})?$'
+      or coalesce(e ->> 'vat_rate', '') not in ('standard_20', 'reduced_5', 'zero', 'exempt', 'none')
+      or coalesce(e ->> 'financial_entry_id', '00000000-0000-0000-0000-000000000000')
+         !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
   if v_bad > 0 then
     raise exception 'save_invoice_draft: a line is invalid'
       using errcode = '22023', hint = 'invoice_line_invalid';
+  end if;
+
+  -- The two header CHECKs, refused here with a hint rather than a raw 23514.
+  if p_recipient_address is not null and pg_catalog.char_length(p_recipient_address) not between 1 and 500 then
+    raise exception 'save_invoice_draft: the recipient address must be 1 to 500 characters'
+      using errcode = '22023', hint = 'invoice_address_invalid';
+  end if;
+  if pg_catalog.char_length(p_notes) > 2000 then
+    raise exception 'save_invoice_draft: the notes must be at most 2000 characters'
+      using errcode = '22023', hint = 'invoice_notes_invalid';
   end if;
 
   if p_recipient_company_id is not null and p_recipient_contact_id is not null then
@@ -98,6 +113,14 @@ begin
     raise exception 'save_invoice_draft: a pulled line no longer names an invoiceable income entry'
       using errcode = '22023', hint = 'invoice_entry_not_invoiceable';
   end if;
+  -- One entry is one line of a draft. The same entry on two drafts is
+  -- refused at issue instead (Q255, Task 5's issue_invoice).
+  if (select pg_catalog.count(*) <> pg_catalog.count(distinct (e ->> 'financial_entry_id')::uuid)
+        from pg_catalog.jsonb_array_elements(p_lines) e
+       where e ->> 'financial_entry_id' is not null) then
+    raise exception 'save_invoice_draft: a finance entry is pulled into this draft twice'
+      using errcode = '22023', hint = 'invoice_entry_pulled_twice';
+  end if;
 
   select s.vat_number into v_vat from public.invoice_settings s where s.organisation_id = p_org;
 
@@ -135,25 +158,26 @@ begin
        (e.line ->> 'quantity')::numeric(12,2),
        (e.line ->> 'unit_price_minor')::bigint,
        case when v_vat is null then 'none' else e.line ->> 'vat_rate' end) a;
+
+    -- Inside the block: totals past bigint (22003) are a line refusal too.
+    update public.invoices i
+       set (net_minor, vat_minor, gross_minor) =
+           (select coalesce(sum(l.net_minor), 0), coalesce(sum(l.vat_minor), 0),
+                   coalesce(sum(l.net_minor + l.vat_minor), 0)
+              from public.invoice_lines l where l.invoice_id = v_id)
+     where i.id = v_id;
   exception when check_violation or not_null_violation or invalid_text_representation
                  or numeric_value_out_of_range then
     raise exception 'save_invoice_draft: a line is invalid'
       using errcode = '22023', hint = 'invoice_line_invalid';
   end;
 
-  update public.invoices i
-     set (net_minor, vat_minor, gross_minor) =
-         (select coalesce(sum(l.net_minor), 0), coalesce(sum(l.vat_minor), 0),
-                 coalesce(sum(l.net_minor + l.vat_minor), 0)
-            from public.invoice_lines l where l.invoice_id = v_id)
-   where i.id = v_id;
-
   return v_id;
 end;
 $$;
 
 comment on function public.save_invoice_draft(uuid, uuid, uuid, uuid, uuid, text, date, text, jsonb) is
-  'Creates (p_invoice_id null) or replaces a DRAFT invoice and all its lines in one transaction, computing every amount with private.invoice_line_amounts(). Requires a session, manage_finance (aal2, not suspended) and the Pro entitlement. A recipient, event and pulled finance entry must be live records of p_org; a pulled entry must be income on the invoice''s event. An unregistered seller''s lines are stored as vat_rate none. Refuses with the hints listed in 20261107001000.';
+  'Creates (p_invoice_id null) or replaces a DRAFT invoice and all its lines in one transaction, computing every amount with private.invoice_line_amounts(). Requires a session, manage_finance (aal2, not suspended) and the Pro entitlement. A recipient, event and pulled finance entry must be live records of p_org; a pulled entry must be income on the invoice''s event, at most once per draft. An unregistered seller''s lines are stored as vat_rate none. Refuses with the hints listed in 20261107001000.';
 
 revoke all on function public.save_invoice_draft(uuid, uuid, uuid, uuid, uuid, text, date, text, jsonb)
   from public, anon, authenticated, service_role;
