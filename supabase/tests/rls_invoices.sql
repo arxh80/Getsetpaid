@@ -673,6 +673,33 @@ select inv.val('IS31 POSITIVE CONTROL: live income on the event again, the draft
 reset role;
 reset request.jwt.claims;
 
+-- ...and its event clause: the pulled entry MOVED to another event after the save.
+\o /dev/null
+select gen_random_uuid()::text as ev_n2 \gset
+select gen_random_uuid()::text as fe_n3 \gset
+select gen_random_uuid()::text as inv_q4 \gset
+\o
+insert into public.events (id, organisation_id, name, starts_at)
+  values (:'ev_n2', :'org_n', 'Numbering Matinee', now() + interval '11 days');
+insert into public.financial_entries (id, organisation_id, event_id, category, status, amount_minor, description)
+  values (:'fe_n3', :'org_n', :'ev_n', 'income', 'budgeted', 4000, 'Cloakroom split');
+insert into public.invoices (id, organisation_id, recipient_contact_id, recipient_address, event_id, created_by)
+  values (:'inv_q4', :'org_n', :'con_n', '1 Nina Way', :'ev_n', :'fin_n');
+insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity, unit_price_minor, vat_rate, net_minor, vat_minor, financial_entry_id)
+  values (:'org_n', :'inv_q4', 1, 'Cloakroom split', 1, 4000, 'none', 4000, 0, :'fe_n3');
+update public.financial_entries set event_id = :'ev_n2' where id = :'fe_n3';
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS32 a draft whose pulled entry MOVED to another event after the save is refused', format($$select public.issue_invoice(%L)$$, :'inv_q4'), 'denied(22023:invoice_entry_not_invoiceable)');
+reset role;
+reset request.jwt.claims;
+update public.financial_entries set event_id = :'ev_n' where id = :'fe_n3';
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS33 POSITIVE CONTROL: moved back onto the invoice''s event, the draft issues', format($$select public.issue_invoice(%L)$$, :'inv_q4'), 'NUM-0006');
+reset role;
+reset request.jwt.claims;
+
 -- ===========================================================================
 -- § IP MARK PAID (Task 6, 20261107003000)
 -- ===========================================================================

@@ -15,6 +15,11 @@
 #   and its draft stays a draft. This holds only because the Q255 check runs
 #   AFTER the settings row lock (a fresh READ COMMITTED snapshot); above the
 #   lock, session two reads session one's draft uncommitted and issues too.
+#   PHASE 3, a pulled entry soft-deleted while the issue runs (Task 5
+#   re-review): session one deletes the entry and holds; session two issues a
+#   draft pulling it, waits on the FOR SHARE lock issue_invoice takes on its
+#   pulled entries, then is refused invoice_entry_not_invoiceable. Without the
+#   lock it reads the entry still live and bills a deleted entry.
 #
 # Run by run-rls-tests.sh, and by hand after a reset:
 #   bash supabase/tests/invoice_issue_concurrency_probe.sh
@@ -37,6 +42,8 @@ D3=$(psql_q "select gen_random_uuid()")
 D4=$(psql_q "select gen_random_uuid()")
 EV=$(psql_q "select gen_random_uuid()")
 FE=$(psql_q "select gen_random_uuid()")
+D5=$(psql_q "select gen_random_uuid()")
+FE2=$(psql_q "select gen_random_uuid()")
 FIN_C="{\"sub\":\"$FIN\",\"role\":\"authenticated\",\"aal\":\"aal2\"}"
 
 psql_q "
@@ -62,18 +69,25 @@ insert into public.invoices (id, organisation_id, recipient_contact_id, recipien
   values ('$D3', '$ORG', '$CON', '2 Race Road', '$EV', '$FIN'), ('$D4', '$ORG', '$CON', '2 Race Road', '$EV', '$FIN');
 insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity, unit_price_minor, vat_rate, net_minor, vat_minor, financial_entry_id)
   values ('$ORG', '$D3', 1, 'Door', 1, 300, 'none', 300, 0, '$FE'), ('$ORG', '$D4', 1, 'Door', 1, 300, 'none', 300, 0, '$FE');
+insert into public.financial_entries (id, organisation_id, event_id, category, status, amount_minor, description)
+  values ('$FE2', '$ORG', '$EV', 'income', 'budgeted', 400, 'Race bar');
+insert into public.invoices (id, organisation_id, recipient_contact_id, recipient_address, event_id, created_by)
+  values ('$D5', '$ORG', '$CON', '2 Race Road', '$EV', '$FIN');
+insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity, unit_price_minor, vat_rate, net_minor, vat_minor, financial_entry_id)
+  values ('$ORG', '$D5', 1, 'Bar', 1, 400, 'none', 400, 0, '$FE2');
 " >/dev/null
 
 DIR=$(mktemp -d)
-# race FIRST SECOND: session one issues FIRST and holds for 2s; session two
-# issues SECOND 0.5s later. ON_ERROR_ROLLBACK keeps session two's transaction
+# race FIRST SECOND [ONE_SQL]: session one issues FIRST (or runs ONE_SQL) and
+# holds for 2s; session two issues SECOND 0.5s later. ON_ERROR_ROLLBACK keeps session two's transaction
 # alive past a refusal so it can still report whether it waited.
 race() {
+  local one="${3:-select 'issued:' || public.issue_invoice('$1');}"
   MSYS_NO_PATHCONV=1 docker exec -i "$CTR" psql -U postgres -d postgres -Atq > "$DIR/one" 2>&1 <<SQL &
 begin;
 set local role authenticated;
 set local request.jwt.claims = '$FIN_C';
-select 'issued:' || public.issue_invoice('$1');
+$one
 select pg_sleep(2);
 commit;
 SQL
@@ -122,6 +136,18 @@ if [ "$NUMBERS" != "PRB-0001,PRB-0002,PRB-0003" ] || [ "$NEXT" != "4" ] || [ "$D
   STATUS=1
 else
   echo "PASS: of two drafts pulling one entry, one issued (PRB-0003) and the other, having waited, was refused invoice_entry_already_invoiced."
+fi
+
+echo "phase 3: a pulled entry soft-deleted while its draft is issued"
+race "" "$D5" "update public.financial_entries set deleted_at = now() where id = '$FE2' returning 'deleted';"
+NUMBERS=$(psql_q "select string_agg(number, ',' order by number) from public.invoices where organisation_id = '$ORG'")
+D5_STATUS=$(psql_q "select status from public.invoices where id = '$D5'")
+echo "  after: numbers=$NUMBERS third_draft=$D5_STATUS"
+if [ "$NUMBERS" != "PRB-0001,PRB-0002,PRB-0003" ] || [ "$D5_STATUS" != "draft" ]    || ! grep -q 'deleted' "$DIR/one" || ! grep -q 'HINT: *invoice_entry_not_invoiceable' "$DIR/two"    || ! grep -q 'waited:true' "$DIR/two"; then
+  echo "FAIL: an invoice issued for an entry deleted under it, or session two never waited -- issue_invoice no longer locks its pulled entries FOR SHARE before the live-income check."
+  STATUS=1
+else
+  echo "PASS: the draft whose entry was deleted mid-issue waited on the entry lock and was refused invoice_entry_not_invoiceable."
 fi
 
 psql_q "delete from public.organisations where id = '$ORG';" >/dev/null

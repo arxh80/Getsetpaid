@@ -2,12 +2,13 @@
 -- INVOICES PART 1 -- TASK 5: ISSUE.
 -- public.issue_invoice(): in ONE transaction, lock the draft, re-check
 -- membership, manage_finance and the Pro entitlement, refuse an incomplete
--- draft (a pulled line that no longer names live income on the invoice's
--- event included) or incomplete settings, lock the settings row FOR UPDATE,
--- refuse a pulled finance entry already on a live invoice, or booked as a
--- paid invoice's payment (Q255 default (a), extended in Task 6),
--- recompute every line under the seller's current VAT status, take
--- next_number, write number / dates / totals / snapshot, flip to issued,
+-- draft or incomplete settings, lock the settings row FOR UPDATE, lock the
+-- pulled finance entries FOR SHARE and refuse a pulled line that no longer
+-- names live income on the invoice's event (probe phase 3), refuse a pulled
+-- finance entry already on a live invoice or booked as a paid invoice's
+-- payment (Q255 default (a), extended in Task 6), recompute every line under
+-- the seller's current VAT status, take next_number, write number / dates /
+-- totals / snapshot, flip to issued,
 -- audit {status, number} (name-only: no amount, CLAUDE.md § Non-negotiable
 -- rules). Two concurrent issues in one workspace serialise on the settings
 -- row and get consecutive numbers, and of two drafts pulling one entry
@@ -75,8 +76,23 @@ begin
     raise exception 'issue_invoice: an invoice needs at least one line'
       using errcode = '22023', hint = 'invoice_has_no_lines';
   end if;
+
+  select * into v_set from public.invoice_settings s
+   where s.organisation_id = v_inv.organisation_id for update;
+  if not found or v_set.business_name is null or v_set.business_address is null then
+    raise exception 'issue_invoice: the workspace''s invoice settings are incomplete'
+      using errcode = '22023', hint = 'invoice_settings_incomplete';
+  end if;
+
   -- save_invoice_draft's rule, re-applied: since the save, a pulled entry may
-  -- have been deleted, re-categorised or moved off the invoice's event.
+  -- have been deleted, re-categorised or moved off the invoice's event. The
+  -- pulled entries are locked FOR SHARE first (Task 5 re-review), so such a
+  -- change in flight either waits for this issue to commit or is waited for
+  -- and then read here (READ COMMITTED: a fresh snapshot per statement).
+  perform 1 from public.financial_entries fe
+   where fe.id in (select l.financial_entry_id from public.invoice_lines l
+                    where l.invoice_id = p_invoice_id)
+     for share;
   if exists (select 1 from public.invoice_lines l
               where l.invoice_id = p_invoice_id and l.financial_entry_id is not null
                 and not exists (select 1 from public.financial_entries fe
@@ -87,13 +103,6 @@ begin
                                    and fe.event_id is not distinct from v_inv.event_id)) then
     raise exception 'issue_invoice: a pulled line no longer names an invoiceable income entry'
       using errcode = '22023', hint = 'invoice_entry_not_invoiceable';
-  end if;
-
-  select * into v_set from public.invoice_settings s
-   where s.organisation_id = v_inv.organisation_id for update;
-  if not found or v_set.business_name is null or v_set.business_address is null then
-    raise exception 'issue_invoice: the workspace''s invoice settings are incomplete'
-      using errcode = '22023', hint = 'invoice_settings_incomplete';
   end if;
 
   -- Q255 default (a): an entry billed on a live (issued or paid) invoice is not

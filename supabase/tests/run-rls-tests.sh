@@ -1308,7 +1308,7 @@ fi
 # re-runnable (it removes its own fixtures). Pin:
 # grep -c '^select inv.val(' supabase/tests/rls_invoices.sql
 # ============================================================================
-run_suite "INVOICES" rls_invoices.sql inv 208
+run_suite "INVOICES" rls_invoices.sql inv 210
 inv_fails=$SUITE_FAILS
 if [ "$inv_fails" != "0" ]; then
   echo "INVOICES SUITE FAILED: $inv_fails failing assertion(s)" >&2
@@ -1371,8 +1371,9 @@ if bash "$HERE/invoice_issue_concurrency_probe.sh"; then
   :
 else
   echo "INVOICE ISSUE CONCURRENCY PROBE FAILED: two concurrent issues did not get" >&2
-  echo "  two consecutive numbers, or one entry was billed twice under a race" >&2
-  echo "  (issue_invoice's settings row lock and the Q255 check after it)." >&2
+  echo "  two consecutive numbers, one entry was billed twice under a race, or a" >&2
+  echo "  draft issued for an entry deleted under it (issue_invoice's settings row" >&2
+  echo "  lock, the Q255 check after it, and the FOR SHARE on the pulled entries)." >&2
   psql_status=1
 fi
 
