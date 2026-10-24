@@ -2100,6 +2100,28 @@ describe("GATE 0 (Phase 8): the censuses reach every Phase 8 surface", () => {
     expect(exposedSchemas()).not.toContain("api_hooks");
   });
 
+  it("api_hooks' schema ACL: USAGE to the three request roles, CREATE to its owner alone", async () => {
+    // Phase 10 Task 5 review m6. The function ACL above does not cover the
+    // schema's own: a CREATE granted to a request role would let it plant a
+    // function beside the hook, and a USAGE lost by one role fails every one
+    // of its requests (PostgREST calls the hook as the request's role).
+    const { rows } = await pool.query<{ acl: string; owner: string }>(
+      `select (select pg_catalog.string_agg(g || ':' || ax.privilege_type, ',' order by g, ax.privilege_type)
+                 from pg_catalog.aclexplode(n.nspacl) ax,
+                      lateral (select case when ax.grantee = 0 then 'PUBLIC'
+                                           else pg_catalog.pg_get_userbyid(ax.grantee)::text end as g) x) as acl,
+              pg_catalog.pg_get_userbyid(n.nspowner)::text as owner
+         from pg_catalog.pg_namespace n
+        where n.nspname = 'api_hooks'`,
+    );
+    expect(rows).toEqual([
+      {
+        acl: "anon:USAGE,authenticated:USAGE,postgres:CREATE,postgres:USAGE,service_role:USAGE",
+        owner: "postgres",
+      },
+    ]);
+  });
+
   it("the destructive primitives are executable by postgres ALONE", async () => {
     const acl = await destructivePrimitiveAcl(pool);
     // REACH: the census must contain the erasure primitive and the retention
