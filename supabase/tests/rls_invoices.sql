@@ -831,7 +831,7 @@ select inv.val('IP24 Q257: the entry re-categorised as a cost and the one moved 
 select inv.val('IP25 the entry already actual is not flipped, and nothing is booked (every line was pulled)', format($$select (select entry_flipped::text from public.invoice_lines where invoice_id = %1$L and position = 3) || '|' || (select coalesce(paid_entry_id::text, 'none') from public.invoices where id = %1$L)$$, :'id_pm'), 'false|none');
 select inv.val('IV16 that paid invoice voids', format($$select 'ok' from (select public.void_invoice(%L, 'Reissue')) s$$, :'id_pm'), 'ok');
 select inv.val('IV17 ...and the void reverts nothing mark-paid did not do: the already-actual entry is still actual, the other two still budgeted', format($$select (select status from public.financial_entries where id = %L) || '|' || (select status from public.financial_entries where id = %L) || '|' || (select status from public.financial_entries where id = %L)$$, :'fe_x', :'fe_c', :'fe_m'), 'actual|budgeted|budgeted');
-select inv.val('IP26 STATIC PIN (m2): every RPC that locks pulled entries locks them in id order, so none deadlocks another', $$select count(*)::text from unnest(array['public.mark_invoice_paid(uuid,date)', 'public.void_invoice(uuid,text)', 'public.issue_invoice(uuid)']) f where pg_get_functiondef(f::regprocedure) ~ 'order by fe\.id\s+for (update|share)'$$, '3');
+select inv.val('IP26 STATIC PIN (m2): every RPC that locks pulled entries locks them in id order, so none deadlocks another', $$select count(*)::text from unnest(array['public.mark_invoice_paid(uuid,date)', 'public.void_invoice(uuid,text)', 'public.issue_invoice(uuid)']) f where pg_get_functiondef(f::regprocedure) ~ 'order by fe\.id\s+for (no key update|share)'$$, '3');
 reset role;
 reset request.jwt.claims;
 

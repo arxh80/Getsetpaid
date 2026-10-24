@@ -63,12 +63,14 @@ begin
 
   if coalesce(v_live, false) then
     -- Row locks in id order, the order issue_invoice's FOR SHARE takes, so
-    -- the two can never deadlock over a pair of entries.
+    -- the two can never deadlock over a pair of entries. NO KEY UPDATE, the
+    -- mode the UPDATE below takes anyway: FOR UPDATE would also block the FK
+    -- check's KEY SHARE from a concurrent draft save, in that save's order.
     perform 1 from public.financial_entries fe
      where fe.id in (select l.financial_entry_id from public.invoice_lines l
                       where l.invoice_id = p_invoice_id)
      order by fe.id
-       for update;
+       for no key update;
     -- Only an entry that is still live budgeted income on the invoice's event
     -- is flipped (issue's live-income rule). One deleted, re-categorised or
     -- moved since the issue goes unbooked (Q257), and one already actual is
@@ -169,7 +171,7 @@ begin
         or fe.id in (select l.financial_entry_id from public.invoice_lines l
                       where l.invoice_id = p_invoice_id and l.entry_flipped)
      order by fe.id
-       for update;
+       for no key update;
     update public.financial_entries fe
        set status = 'budgeted'
      where fe.organisation_id = v_inv.organisation_id
