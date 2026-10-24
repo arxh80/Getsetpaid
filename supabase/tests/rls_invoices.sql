@@ -835,6 +835,31 @@ select inv.val('IP26 STATIC PIN (m2): every RPC that locks pulled entries locks 
 reset role;
 reset request.jwt.claims;
 
+-- Task 6 review m3: a SUSPENDED workspace is read-only (organisations.deleted_at,
+-- the flag every gate reads): neither RPC changes an invoice there, and both
+-- work again once it is reinstated.
+set role authenticated;
+set request.jwt.claims = :'fin_b_c';
+select public.save_invoice_draft(:'org_b', null, null, :'con_b', null, '7 Buyer Street', null, null,
+  '[{"description":"Hire","quantity":"1.00","unit_price_minor":5000,"vat_rate":"none","financial_entry_id":null}]'::jsonb) as id_sb \gset
+select public.issue_invoice(:'id_sb') as num_sb \gset
+reset role;
+reset request.jwt.claims;
+update public.organisations set deleted_at = now() where id = :'org_b';
+set role authenticated;
+set request.jwt.claims = :'fin_b_c';
+select inv.val('IP27 a SUSPENDED workspace cannot mark an invoice paid', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'id_sb'), 'denied(42501:forbidden)');
+select inv.val('IV18 ...nor void one', format($$select 'ok' from (select public.void_invoice(%L, 'x')) s$$, :'id_sb'), 'denied(42501:forbidden)');
+reset role;
+reset request.jwt.claims;
+update public.organisations set deleted_at = null where id = :'org_b';
+set role authenticated;
+set request.jwt.claims = :'fin_b_c';
+select inv.val('IP28 POSITIVE CONTROL: reinstated, the same invoice is marked paid', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'id_sb'), 'ok');
+select inv.val('IV19 POSITIVE CONTROL: ...and voided', format($$select 'ok' from (select public.void_invoice(%L, 'x')) s$$, :'id_sb'), 'ok');
+reset role;
+reset request.jwt.claims;
+
 -- ===========================================================================
 -- § IE AN ERASED ACCOUNT'S INVOICES (Task 6): private.erase_account()'s
 -- derived re-point moves created_by / paid_by / voided_by / sent_by to the
