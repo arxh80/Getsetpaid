@@ -159,6 +159,15 @@ if [ "${dirty:-0}" != "0" ]; then
 fi
 
 # ----------------------------------------------------------------------------
+# THE STEP-UP FIXTURE HELPER (Phase 10 Task 6, G13). Every gated RPC and the
+# export_jobs / erasure_jobs inserts consume a single-use token now; a suite's
+# fixture mints one through step_up_fixture.mint() (see its header). Installed
+# once, here, for every suite and probe below.
+# ----------------------------------------------------------------------------
+docker cp "$HERE/step_up_fixture.sql" "$CTR:/tmp/step_up_fixture.sql" >/dev/null
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1   -f /tmp/step_up_fixture.sql 2>&1 | grep -v 'NOTICE' || true
+
+# ----------------------------------------------------------------------------
 # ASSURANCE LEVEL PER FIXTURE USER.
 #
 # A real Supabase access token always carries a top-level `aal` claim --
@@ -1310,6 +1319,28 @@ if [ "$qp_fails" != "0" ]; then
   psql_status=1
 else
   echo "Q228 closure backup parts suite: all assertions passed."
+fi
+
+# ============================================================================
+# PHASE 10 TASK 6 -- STEP-UP, ENFORCED IN THE DATABASE (G13; Task 2 F4;
+# 20261108001000). The server-marked mint, the single-use five-minute token per
+# purpose, and every gated RPC plus the export_jobs / erasure_jobs inserts
+# refusing without one. Self-contained (it removes its own fixtures).
+# ============================================================================
+run_suite "PHASE 10 STEP-UP" rls_phase10_step_up.sql st 211
+st_fails=$SUITE_FAILS
+if [ "$st_fails" != "0" ]; then
+  echo "PHASE 10 STEP-UP SUITE FAILED: $st_fails failing assertion(s)" >&2
+  echo "  SM red: A BROWSER CAN MINT (no server mark), a sessionless or off-list" >&2
+  echo "  mint lands, or a client role can touch the token table. SP red: a token" >&2
+  echo "  is reusable, outlives five minutes, or counts for another purpose or" >&2
+  echo "  another user. SG red: A GATED WRITE RUNS WITHOUT A FRESH TOKEN (or a" >&2
+  echo "  refusal came from another guard), or the positive control broke. SC red:" >&2
+  echo "  something that is not gated now asks for a token. SN red: the purpose" >&2
+  echo "  list, the consuming functions and SG's targets have drifted apart." >&2
+  psql_status=1
+else
+  echo "Phase 10 step-up suite: all assertions passed."
 fi
 
 # ============================================================================
