@@ -113,6 +113,16 @@ begin
     raise exception 'save_invoice_draft: a pulled line no longer names an invoiceable income entry'
       using errcode = '22023', hint = 'invoice_entry_not_invoiceable';
   end if;
+  -- Q255 extended (Task 5 review I3): the actual income entry
+  -- mark_invoice_paid booked for a PAID invoice is that invoice's payment,
+  -- never another invoice's line. issue_invoice re-checks it.
+  if exists (select 1
+               from pg_catalog.jsonb_array_elements(p_lines) e
+               join public.invoices pi on pi.paid_entry_id = (e ->> 'financial_entry_id')::uuid
+              where pi.status = 'paid') then
+    raise exception 'save_invoice_draft: a finance entry on this draft is a paid invoice''s booked payment'
+      using errcode = '22023', hint = 'invoice_entry_already_invoiced';
+  end if;
   -- One entry is one line of a draft. The same entry on two drafts is
   -- refused at issue instead (Q255, Task 5's issue_invoice).
   if (select pg_catalog.count(*) <> pg_catalog.count(distinct (e ->> 'financial_entry_id')::uuid)

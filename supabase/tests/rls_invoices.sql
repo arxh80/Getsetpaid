@@ -705,14 +705,27 @@ select inv.val('IP6 ...it is paid, dated, by the caller', format($$select status
 select inv.val('IP7 ...the pulled entry flipped budgeted -> actual, its amount left as it was', format($$select status || '|' || amount_minor from public.financial_entries where id = %L$$, :'fe_a'), 'actual|300000');
 select inv.val('IP8 ...and its line records the flip', format($$select string_agg(position || ':' || entry_flipped::text, ',' order by position) from public.invoice_lines where invoice_id = %L$$, :'id_p'), '1:true,2:false');
 select inv.val('IP9 ...the free line''s NET (not gross) became one actual income entry on the event, named for the invoice', format($$select concat_ws('|', fe.category, fe.status, fe.amount_minor, fe.description, (fe.occurred_on = i.paid_on)::text, (fe.event_id = %L)::text) from public.invoices i join public.financial_entries fe on fe.id = i.paid_entry_id where i.id = %L$$, :'ev_a', :'id_p'), 'income|actual|30000|Invoice INV-0002|true|true');
+select paid_entry_id::text as pe_p from public.invoices where id = :'id_p' \gset
+-- Q255 extended (Task 5 review I3): the income entry mark-paid booked belongs
+-- to that paid invoice, so no other invoice may pull it and bill it again.
+select inv.val('IP19 Q255: a draft cannot pull the income entry a PAID invoice booked', format($$select 'ok' from (select public.save_invoice_draft(%L, null, null, %L, %L, '9 Customer Road, London', null, null, jsonb_build_array(jsonb_build_object('description', 'Rebill', 'quantity', '1.00', 'unit_price_minor', 30000, 'vat_rate', 'standard_20', 'financial_entry_id', %L)))) s$$, :'org_a', :'con_a', :'ev_a', :'pe_p'), 'denied(22023:invoice_entry_already_invoiced)');
+select inv.val('IP20 POSITIVE CONTROL: the same save pulling a live income entry that is no invoice''s booked payment is accepted', format($$select 'ok' from (select public.save_invoice_draft(%L, null, null, %L, %L, '9 Customer Road, London', null, null, jsonb_build_array(jsonb_build_object('description', 'Rebill', 'quantity', '1.00', 'unit_price_minor', 30000, 'vat_rate', 'standard_20', 'financial_entry_id', %L)))) s$$, :'org_a', :'con_a', :'ev_a', :'fe_a'), 'ok');
 select inv.val('IP11 marking it paid twice is refused', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'id_p'), 'denied(22023:invoice_not_issued)');
 reset role;
 reset request.jwt.claims;
 select inv.val('IP10 ...and one invoice.marked_paid audit row, actor the caller, saying one entry flipped and one created; payload keys exactly {entries_flipped, income_entry_created, number, status}: NO paid_on and no amount (read as postgres: audit_events is superuser-read)', format($$select count(distinct a.id) || '|' || bool_and(a.actor_user_id = %L)::text || '|' || max(a.after ->> 'entries_flipped') || '|' || max(a.after ->> 'income_entry_created') || '|' || string_agg(k, ',' order by k) from public.audit_events a cross join lateral jsonb_object_keys(a.after) k where a.action = 'invoice.marked_paid' and a.target_id = %L$$, :'fin_a', :'id_p'), '1|true|1|true|entries_flipped,income_entry_created,number,status');
+\o /dev/null
+select gen_random_uuid()::text as inv_pq \gset
+\o
+insert into public.invoices (id, organisation_id, recipient_contact_id, recipient_address, event_id, created_by)
+  values (:'inv_pq', :'org_a', :'con_a', '9 Customer Road, London', :'ev_a', :'fin_a');
+insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity, unit_price_minor, vat_rate, net_minor, vat_minor, financial_entry_id)
+  values (:'org_a', :'inv_pq', 1, 'Rebill', 1, 30000, 'standard_20', 30000, 6000, :'pe_p');
 update public.events set deleted_at = now() where id = :'ev_d';
 set role authenticated;
 set request.jwt.claims = :'fin_a_c';
 select inv.val('IP12 an invoice whose event was deleted can still be marked paid', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'id_pd'), 'ok');
+select inv.val('IP21 Q255: a draft written past the save that pulls a PAID invoice''s booked entry is refused at issue', format($$select public.issue_invoice(%L)$$, :'inv_pq'), 'denied(22023:invoice_entry_already_invoiced)');
 reset role;
 reset request.jwt.claims;
 select inv.val('IP13 ...and touches no finance (plan decision 6): the entry stays budgeted, its line unflipped, nothing created (read as postgres)', format($$select (select status from public.financial_entries where id = %L) || '|' || coalesce((select paid_entry_id::text from public.invoices where id = %L), 'none') || '|' || (select string_agg(entry_flipped::text, ',') from public.invoice_lines where invoice_id = %L)$$, :'fe_d', :'id_pd', :'id_pd'), 'budgeted|none|false');
@@ -747,6 +760,14 @@ select inv.val('IV13 only authenticated may execute the two RPCs', $$select coun
 reset role;
 reset request.jwt.claims;
 select inv.val('IV7 ...one invoice.voided audit row with the reversal counts, payload keys exactly {entries_reverted, income_entry_removed, number, previous_status, status}, the reason NOT in it (read as postgres)', format($$select count(distinct a.id) || '|' || max(a.after ->> 'previous_status') || '|' || max(a.after ->> 'entries_reverted') || '|' || max(a.after ->> 'income_entry_removed') || '|' || bool_and(coalesce(a.after::text, '') not like '%%Wrong recipient%%')::text || '|' || string_agg(k, ',' order by k) from public.audit_events a cross join lateral jsonb_object_keys(a.after) k where a.action = 'invoice.voided' and a.target_id = %L$$, :'id_p'), '1|paid|1|true|true|entries_reverted,income_entry_removed,number,previous_status,status');
+
+-- A void invoice frees its booked entry; restored by hand, it can be billed.
+update public.financial_entries set deleted_at = null where id = :'pe_p';
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
+select inv.val('IP22 POSITIVE CONTROL (Q255): once that invoice is VOID (and its entry live), the same draft issues', format($$select public.issue_invoice(%L)$$, :'inv_pq'), 'INV-0004');
+reset role;
+reset request.jwt.claims;
 
 -- ===========================================================================
 -- § IE AN ERASED ACCOUNT'S INVOICES (Task 6): private.erase_account()'s

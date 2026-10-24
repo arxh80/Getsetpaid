@@ -4,7 +4,8 @@
 -- membership, manage_finance and the Pro entitlement, refuse an incomplete
 -- draft (a pulled line that no longer names live income on the invoice's
 -- event included) or incomplete settings, lock the settings row FOR UPDATE,
--- refuse a pulled finance entry already on a live invoice (Q255 default (a)),
+-- refuse a pulled finance entry already on a live invoice, or booked as a
+-- paid invoice's payment (Q255 default (a), extended in Task 6),
 -- recompute every line under the seller's current VAT status, take
 -- next_number, write number / dates / totals / snapshot, flip to issued,
 -- audit {status, number} (name-only: no amount, CLAUDE.md § Non-negotiable
@@ -105,7 +106,13 @@ begin
                  on o.financial_entry_id = l.financial_entry_id and o.invoice_id <> l.invoice_id
                join public.invoices oi on oi.id = o.invoice_id
               where l.invoice_id = p_invoice_id
-                and oi.status in ('issued', 'paid') and oi.deleted_at is null) then
+                and oi.status in ('issued', 'paid') and oi.deleted_at is null)
+     -- ...nor the income entry mark_invoice_paid booked for a PAID invoice
+     -- (Task 5 review I3; save_invoice_draft refuses it first).
+     or exists (select 1
+                  from public.invoice_lines l
+                  join public.invoices pi on pi.paid_entry_id = l.financial_entry_id
+                 where l.invoice_id = p_invoice_id and pi.status = 'paid') then
     raise exception 'issue_invoice: a finance entry on this draft is already on a live invoice'
       using errcode = '22023', hint = 'invoice_entry_already_invoiced';
   end if;
