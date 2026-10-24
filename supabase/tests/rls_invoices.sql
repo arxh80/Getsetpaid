@@ -532,6 +532,8 @@ select gen_random_uuid()::text as ev_n \gset
 select gen_random_uuid()::text as fe_n \gset
 select gen_random_uuid()::text as inv_q1 \gset
 select gen_random_uuid()::text as inv_q2 \gset
+select gen_random_uuid()::text as fe_n2 \gset
+select gen_random_uuid()::text as inv_q3 \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_n') as fin_n_c \gset
 \o
 -- org_n: a Pro workspace with NO invoice_settings row yet.
@@ -638,6 +640,32 @@ update public.invoices set status = 'void', voided_at = now(), voided_by = :'fin
 set role authenticated;
 set request.jwt.claims = :'fin_n_c';
 select inv.val('IS27 POSITIVE CONTROL (Q255): once that invoice is VOID, the draft issues', format($$select public.issue_invoice(%L)$$, :'inv_q2'), 'NUM-0004');
+reset role;
+reset request.jwt.claims;
+-- Issue re-applies save's live-income rule: the pulled entry changed after the save.
+insert into public.financial_entries (id, organisation_id, event_id, category, status, amount_minor, description)
+  values (:'fe_n2', :'org_n', :'ev_n', 'income', 'budgeted', 5000, 'Bar split');
+insert into public.invoices (id, organisation_id, recipient_contact_id, recipient_address, event_id, created_by)
+  values (:'inv_q3', :'org_n', :'con_n', '1 Nina Way', :'ev_n', :'fin_n');
+insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity, unit_price_minor, vat_rate, net_minor, vat_minor, financial_entry_id)
+  values (:'org_n', :'inv_q3', 1, 'Bar split', 1, 5000, 'none', 5000, 0, :'fe_n2');
+update public.financial_entries set deleted_at = now() where id = :'fe_n2';
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS28 a draft whose pulled entry was DELETED after the save is refused', format($$select public.issue_invoice(%L)$$, :'inv_q3'), 'denied(22023:invoice_entry_not_invoiceable)');
+select inv.val('IS29 ...and the refusal consumed no number and left a draft', format($$select (select next_number from public.invoice_settings where organisation_id = %L) || '|' || (select status from public.invoices where id = %L)$$, :'org_n', :'inv_q3'), '5|draft');
+reset role;
+reset request.jwt.claims;
+update public.financial_entries set deleted_at = null, category = 'cost' where id = :'fe_n2';
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS30 ...nor once it is live again but RE-CATEGORISED as a cost', format($$select public.issue_invoice(%L)$$, :'inv_q3'), 'denied(22023:invoice_entry_not_invoiceable)');
+reset role;
+reset request.jwt.claims;
+update public.financial_entries set category = 'income' where id = :'fe_n2';
+set role authenticated;
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IS31 POSITIVE CONTROL: live income on the event again, the draft issues', format($$select public.issue_invoice(%L)$$, :'inv_q3'), 'NUM-0005');
 reset role;
 reset request.jwt.claims;
 

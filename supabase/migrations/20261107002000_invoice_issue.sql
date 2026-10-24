@@ -2,8 +2,9 @@
 -- INVOICES PART 1 -- TASK 5: ISSUE.
 -- public.issue_invoice(): in ONE transaction, lock the draft, re-check
 -- membership, manage_finance and the Pro entitlement, refuse an incomplete
--- draft or incomplete settings, lock the settings row FOR UPDATE, refuse a
--- pulled finance entry already on a live invoice (Q255 default (a)),
+-- draft (a pulled line that no longer names live income on the invoice's
+-- event included) or incomplete settings, lock the settings row FOR UPDATE,
+-- refuse a pulled finance entry already on a live invoice (Q255 default (a)),
 -- recompute every line under the seller's current VAT status, take
 -- next_number, write number / dates / totals / snapshot, flip to issued,
 -- audit {status, number} (name-only: no amount, CLAUDE.md § Non-negotiable
@@ -71,6 +72,19 @@ begin
   if not exists (select 1 from public.invoice_lines l where l.invoice_id = p_invoice_id) then
     raise exception 'issue_invoice: an invoice needs at least one line'
       using errcode = '22023', hint = 'invoice_has_no_lines';
+  end if;
+  -- save_invoice_draft's rule, re-applied: since the save, a pulled entry may
+  -- have been deleted, re-categorised or moved off the invoice's event.
+  if exists (select 1 from public.invoice_lines l
+              where l.invoice_id = p_invoice_id and l.financial_entry_id is not null
+                and not exists (select 1 from public.financial_entries fe
+                                 where fe.id = l.financial_entry_id
+                                   and fe.organisation_id = v_inv.organisation_id
+                                   and fe.deleted_at is null
+                                   and fe.category = 'income'
+                                   and fe.event_id is not distinct from v_inv.event_id)) then
+    raise exception 'issue_invoice: a pulled line no longer names an invoiceable income entry'
+      using errcode = '22023', hint = 'invoice_entry_not_invoiceable';
   end if;
 
   select * into v_set from public.invoice_settings s
@@ -144,7 +158,7 @@ end;
 $$;
 
 comment on function public.issue_invoice(uuid) is
-  'Issues a live draft: re-checks manage_finance and the Pro entitlement, refuses an incomplete draft or incomplete settings, locks invoice_settings FOR UPDATE, refuses a pulled finance entry already on a live issued/paid invoice (Q255), recomputes the lines under the seller''s current VAT status, takes next_number (consecutive under concurrency; a rollback consumes none), sets the UK-local issue date, supply date and due date, writes the snapshot, flips to issued and audits invoice.issued as {status, number}. Returns the number.';
+  'Issues a live draft: re-checks manage_finance and the Pro entitlement, refuses an incomplete draft (a pulled line that no longer names live income on the invoice''s event included) or incomplete settings, locks invoice_settings FOR UPDATE, refuses a pulled finance entry already on a live issued/paid invoice (Q255), recomputes the lines under the seller''s current VAT status, takes next_number (consecutive under concurrency; a rollback consumes none), sets the UK-local issue date, supply date and due date, writes the snapshot, flips to issued and audits invoice.issued as {status, number}. Returns the number.';
 
 revoke all on function public.issue_invoice(uuid) from public, anon, authenticated, service_role;
 grant execute on function public.issue_invoice(uuid) to authenticated;
