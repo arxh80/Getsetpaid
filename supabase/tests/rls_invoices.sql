@@ -570,7 +570,7 @@ select inv.val('IS7 ...the snapshot carries the number, no VAT number, the recip
 select inv.val('IS9 issuing it again is refused', format($$select public.issue_invoice(%L)$$, :'inv_n1'), 'denied(22023:invoice_not_a_draft)');
 reset role;
 reset request.jwt.claims;
-select inv.val('IS8 ...and one invoice.issued audit row, actor the caller (read as postgres: audit_events is superuser-read)', format($$select count(*) || '|' || bool_and(actor_user_id = %L)::text || '|' || max(after ->> 'number') from public.audit_events where action = 'invoice.issued' and target_id = %L$$, :'fin_n', :'inv_n1'), '1|true|NUM-0001');
+select inv.val('IS8 ...and one invoice.issued audit row, actor the caller, payload {number, status} and no amount (read as postgres: audit_events is superuser-read)', format($$select count(distinct a.id) || '|' || bool_and(a.actor_user_id = %L)::text || '|' || max(a.after ->> 'number') || '|' || string_agg(k, ',' order by k) from public.audit_events a cross join lateral jsonb_object_keys(a.after) k where a.action = 'invoice.issued' and a.target_id = %L$$, :'fin_n', :'inv_n1'), '1|true|NUM-0001|number,status');
 -- A ROLLED-BACK ISSUE CONSUMES NO NUMBER: issue inside a transaction, roll it back.
 begin;
 set local role authenticated;

@@ -6,8 +6,9 @@
 -- pulled finance entry already on a live invoice (Q255 default (a)),
 -- recompute every line under the seller's current VAT status, take
 -- next_number, write number / dates / totals / snapshot, flip to issued,
--- audit. Two concurrent issues in one workspace serialise on the settings row
--- and get consecutive numbers (invoice_issue_concurrency_probe.sh); a
+-- audit {status, number} (name-only: no amount, CLAUDE.md § Non-negotiable
+-- rules). Two concurrent issues in one workspace serialise on the settings
+-- row and get consecutive numbers (invoice_issue_concurrency_probe.sh); a
 -- rolled-back issue consumes no number (rls_invoices.sql IS10-IS12).
 -- ===========================================================================
 
@@ -26,7 +27,6 @@ declare
   v_issue  date;
   v_supply date;
   v_due    date;
-  v_gross  bigint;
 begin
   if v_uid is null then
     raise exception 'issue_invoice: no authenticated user'
@@ -126,8 +126,7 @@ begin
                     coalesce(sum(l.net_minor + l.vat_minor), 0)
                from public.invoice_lines l where l.invoice_id = i.id),
            snapshot = private.build_invoice_snapshot(i.id, v_number, v_issue, v_supply, v_due)
-     where i.id = p_invoice_id
-     returning i.gross_minor into v_gross;
+     where i.id = p_invoice_id;
   exception when unique_violation then
     raise exception 'issue_invoice: % is already used in this workspace', v_number
       using errcode = '23505', hint = 'invoice_number_taken';
@@ -139,14 +138,13 @@ begin
     p_organisation_id => v_inv.organisation_id,
     p_target_id       => p_invoice_id,
     p_before          => pg_catalog.jsonb_build_object('status', 'draft'),
-    p_after           => pg_catalog.jsonb_build_object('status', 'issued', 'number', v_number,
-                                                       'gross_minor', v_gross));
+    p_after           => pg_catalog.jsonb_build_object('status', 'issued', 'number', v_number));
   return v_number;
 end;
 $$;
 
 comment on function public.issue_invoice(uuid) is
-  'Issues a live draft: re-checks manage_finance and the Pro entitlement, refuses an incomplete draft or incomplete settings, locks invoice_settings FOR UPDATE, refuses a pulled finance entry already on a live issued/paid invoice (Q255), recomputes the lines under the seller''s current VAT status, takes next_number (consecutive under concurrency; a rollback consumes none), sets the UK-local issue date, supply date and due date, writes the snapshot, flips to issued and audits invoice.issued. Returns the number.';
+  'Issues a live draft: re-checks manage_finance and the Pro entitlement, refuses an incomplete draft or incomplete settings, locks invoice_settings FOR UPDATE, refuses a pulled finance entry already on a live issued/paid invoice (Q255), recomputes the lines under the seller''s current VAT status, takes next_number (consecutive under concurrency; a rollback consumes none), sets the UK-local issue date, supply date and due date, writes the snapshot, flips to issued and audits invoice.issued as {status, number}. Returns the number.';
 
 revoke all on function public.issue_invoice(uuid) from public, anon, authenticated, service_role;
 grant execute on function public.issue_invoice(uuid) to authenticated;
