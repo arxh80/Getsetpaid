@@ -21,6 +21,12 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 CTR="supabase_db_$(grep -E '^project_id' "$ROOT/supabase/config.toml" | cut -d'"' -f2)"
 API="http://127.0.0.1:54321"
 
+# The LOCAL server-only request mark (Phase 10 Task 5): read from .env.example,
+# whose digest seed.sql seeds. The HTTP section sends it on every curl; the
+# impersonation suite's IM5/IM6 hand it to api_hooks.pre_request() directly.
+SERVER_MARK=$(sed -n 's/^GETSETPAID_SERVER_REQUEST_SECRET=//p' "$ROOT/.env.example" | tr -d '\r')
+[ -n "$SERVER_MARK" ] || { echo "no GETSETPAID_SERVER_REQUEST_SECRET in .env.example" >&2; exit 1; }
+
 SRK=$(cd "$ROOT" && supabase status -o json 2>/dev/null \
       | python -c "import sys,json;print(json.load(sys.stdin)['SERVICE_ROLE_KEY'])")
 if [ -z "${SRK:-}" ]; then
@@ -579,9 +585,10 @@ fi
 # ============================================================================
 P7VARS=( "${P6VARS[@]}" )
 P7VARS+=( -v "super_c1={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
+P7VARS+=( -v "server_mark=$SERVER_MARK" )
 
 
-run_suite "PHASE 7 IMPERSONATION" rls_phase7_impersonation.sql imp 123 "${P7VARS[@]}"
+run_suite "PHASE 7 IMPERSONATION" rls_phase7_impersonation.sql imp 126 "${P7VARS[@]}"
 p7_fails=$SUITE_FAILS
 if [ "$p7_fails" != "0" ]; then
   echo "PHASE 7 IMPERSONATION SUITE FAILED: $p7_fails failing assertion(s)" >&2
@@ -1422,9 +1429,8 @@ ANON=$(cd "$ROOT" && supabase status -o json 2>/dev/null \
 # directory views and an impersonation session grants nothing. So every curl
 # from here on carries the LOCAL value (read from .env.example; seed.sql seeds
 # its digest). The direct, unmarked path -- the browser's -- is measured in
-# its own block at the end, through `command curl`.
-SERVER_MARK=$(sed -n 's/^GETSETPAID_SERVER_REQUEST_SECRET=//p' "$ROOT/.env.example" | tr -d '\r')
-[ -n "$SERVER_MARK" ] || { echo "no GETSETPAID_SERVER_REQUEST_SECRET in .env.example" >&2; exit 1; }
+# its own block at the end, through `command curl`. SERVER_MARK is read at
+# the top of this script.
 curl() { command curl -H "x-getsetpaid-server: $SERVER_MARK" "$@"; }
 
 TOKEN=$(curl -s -X POST "$API/auth/v1/token?grant_type=password" \
@@ -4247,16 +4253,17 @@ db_val "IG CLEANUP: the planted rows are gone" "0" \
 echo
 echo "=== Phase 10 Task 5: the direct path, without the server-only mark ==="
 
-direct_get() { # path token -> "<http code> <row count, or -1 for a non-list body>"
-  local out
+direct_get() { # path token [mark] -> "<http code> <row count, or -1 for a non-list body>"
+  local out mark=()
+  [ -n "${3:-}" ] && mark=(-H "x-getsetpaid-server: $3")
   out=$(command curl -s -w "\n%{http_code}" "$API/rest/v1/$1" \
-        -H "apikey: $ANON" -H "Authorization: Bearer $2")
+        -H "apikey: $ANON" -H "Authorization: Bearer $2" "${mark[@]}")
   printf '%s %s' "$(printf '%s' "$out" | tail -n1)" \
     "$(printf '%s' "$out" | sed '$d' | python -c \
        "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")"
 }
-mark_check() { # name want path token
-  local got; got=$(direct_get "$3" "$4")
+mark_check() { # name want path token [mark]
+  local got; got=$(direct_get "$3" "$4" "${5:-}")
   if [ "$got" = "$2" ]; then printf '  PASS  %-58s %s\n' "$1" "$got"
   else printf '  FAIL  %-58s got %s want %s\n' "$1" "$got" "$2"; api_fails=$((api_fails+1)); fi
 }
@@ -4271,6 +4278,12 @@ mark_check "G2 (b) UNMARKED GET network_connected_profiles -> 403" "403 -1" \
            "network_connected_profiles?select=id" "$CONN"
 p2_rows_min "G2 (b) CONTROL: the same session WITH the mark reads it" 1 \
            "network_connected_profiles?select=id" "$CONN"
+# G2 (c): a WRONG mark is no mark. The hook compares the header's SHA-256 with
+# the Vault digest; a check that only asked "is the header present?" passes
+# every refusal above and fails here (review I1, 2026-10-24). The control is
+# G2 (a)'s: the same session with the right value reads the view.
+mark_check "G2 (c) WRONG mark GET network_directory -> 403, no rows" "403 -1" \
+           "network_directory?select=id" "$UNCON" "wrong"
 
 # G14: an impersonating superuser's direct reads see nothing; the app's
 # audited path (getCurrentOrg's page_viewed) is the only way in. A live,
@@ -4292,6 +4305,7 @@ p2_rows_min "G14 (d) CONTROL: the same session WITH the mark reads them" 1 \
 p2_sub "delete from public.impersonation_sessions where id = '$IMP_S';"
 db_val "G14 CLEANUP: the planted session is gone" "0" \
        "select count(*) from public.impersonation_sessions where id = '$IMP_S'"
+
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

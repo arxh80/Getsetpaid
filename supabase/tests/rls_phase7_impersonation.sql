@@ -608,6 +608,36 @@ select imp.val('IM4 CONTROL: the same session WITH the mark reads ALPHA''s conta
   format($$select (count(*) > 0)::text from public.contacts where organisation_id=%L$$, :'alpha_org'), 'true');
 reset role; reset request.jwt.claims;
 
+-- IM5/IM6: THE DIGEST COMPARISON ITSELF (Phase 10 Task 5 review I1). IM3/IM4
+-- set the flag by hand; these call the hook the way PostgREST does, with the
+-- RIGHT header (the runner's :server_mark, read from .env.example), so the
+-- comparison against Vault is what decides. IM6 deletes the digest inside a
+-- rolled-back transaction: no Vault entry must mean no mark, even for the right
+-- secret. A hook that only asked "is the header present?" passes IM5 and fails
+-- IM6. Each answer is read into a psql variable before its rollback, which
+-- would otherwise take the record() row with it.
+\o /dev/null
+begin;
+select pg_catalog.set_config('request.headers',
+         pg_catalog.json_build_object('x-getsetpaid-server', :'server_mark')::text, true);
+select api_hooks.pre_request();
+select private.request_is_from_server()::text as im5_marked \gset
+rollback;
+begin;
+delete from vault.secrets where name = 'server_request_mark_digest';
+select pg_catalog.set_config('request.headers',
+         pg_catalog.json_build_object('x-getsetpaid-server', :'server_mark')::text, true);
+select api_hooks.pre_request();
+select private.request_is_from_server()::text as im6_marked \gset
+rollback;
+\o
+select imp.record('IM5 CONTROL: the hook, given the right header with the digest in Vault, marks the request',
+  'true', :'im5_marked');
+select imp.record('IM6 the same header with NO digest in Vault does not mark it (fails closed on the comparison)',
+  'false', :'im6_marked');
+select imp.val('IM6b ...and the rollback restored the digest',
+  $$select count(*)::text from vault.secrets where name = 'server_request_mark_digest'$$, '1');
+
 -- ===========================================================================
 -- § ID  A DECLINED REQUEST GRANTS NOTHING, EVER
 --
