@@ -4306,6 +4306,31 @@ p2_sub "delete from public.impersonation_sessions where id = '$IMP_S';"
 db_val "G14 CLEANUP: the planted session is gone" "0" \
        "select count(*) from public.impersonation_sessions where id = '$IMP_S'"
 
+# G35: AN EMBED OF A DIRECTORY VIEW. The hook sees the path, not the query
+# string, so `network_links?select=...,network_directory(...)` is not refused
+# by it. The views' own WHERE carries private.request_is_from_server(), so the
+# unmarked embed resolves to null while the link row itself still comes back
+# (the "1:" half: the caller's own row, so a 0 is the mark and not RLS). A
+# link from GAMMA (the unconnected session's organisation) to ALPHA's
+# published profile is planted as postgres and removed below.
+G35_LINK=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select gen_random_uuid()" | tr -d '[:space:]')
+p2_sub "insert into public.network_links (id, organisation_id, network_profile_id, private_entity_type, private_entity_id)
+        values ('$G35_LINK', (select id from public.organisations where slug = 'org-gamma-leak'),
+                '$ALPHA_PROFILE', 'company', gen_random_uuid());"
+embed_check() { # name want token [mark] -> "<link rows>:<rows whose directory embed resolved>"
+  local mark=() got
+  [ -n "${4:-}" ] && mark=(-H "x-getsetpaid-server: $4")
+  got=$(command curl -s "$API/rest/v1/network_links?select=id,network_directory(id)&id=eq.$G35_LINK" \
+          -H "apikey: $ANON" -H "Authorization: Bearer $3" "${mark[@]}" \
+        | python -c "import sys,json;d=json.load(sys.stdin);print(f'{len(d)}:{sum(1 for r in d if r.get(\"network_directory\"))}' if isinstance(d,list) else -1)")
+  if [ "$got" = "$2" ]; then printf '  PASS  %-58s %s\n' "$1" "$got"
+  else printf '  FAIL  %-58s got %s want %s\n' "$1" "$got" "$2"; api_fails=$((api_fails+1)); fi
+}
+embed_check "G35 UNMARKED embed network_links -> network_directory: none" "1:0" "$UNCON"
+embed_check "G35 CONTROL: the same embed WITH the mark resolves" "1:1" "$UNCON" "$SERVER_MARK"
+p2_sub "delete from public.network_links where id = '$G35_LINK';"
+db_val "G35 CLEANUP: the planted link is gone" "0" \
+       "select count(*) from public.network_links where id = '$G35_LINK'"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

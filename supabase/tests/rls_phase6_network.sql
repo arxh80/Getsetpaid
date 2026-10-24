@@ -484,14 +484,17 @@ select nw.val('ND3b2 ...and the probe is gone, so nothing downstream reads it',
 -- what makes "calls nothing" and "was not inspected" the same visible answer
 -- here; ND3d is the paired control that the query finds a function when there
 -- is one to find.
-select nw.val('ND3c network_directory calls EXACTLY private.network_profile_reaches_caller',
+-- Phase 10 Task 5 (G35) added private.request_is_from_server() to both views'
+-- WHERE: it reads one GUC (getsetpaid.from_server) and no relation, so both
+-- function sets grow by it and the relation sets (ND1/ND2) do not change.
+select nw.val('ND3c network_directory calls EXACTLY private.network_profile_reaches_caller and private.request_is_from_server',
   $$select coalesce((select fns || ' (' || n || ')' from nw.view_fn_deps
                       where viewname='network_directory'), '<none> (0)')$$,
-  'private.network_profile_reaches_caller (1)');
-select nw.val('ND3d network_connected_profiles calls EXACTLY that and private.permitted_organisations',
+  'private.network_profile_reaches_caller,private.request_is_from_server (2)');
+select nw.val('ND3d network_connected_profiles calls EXACTLY those and private.permitted_organisations',
   $$select fns || ' (' || n || ')' from nw.view_fn_deps
      where viewname='network_connected_profiles'$$,
-  'private.network_profile_reaches_caller,private.permitted_organisations (2)');
+  'private.network_profile_reaches_caller,private.permitted_organisations,private.request_is_from_server (3)');
 
 -- FLIPPED by Phase 10 Task 19 (F1). The views used to be security_invoker so
 -- that the base table's cross-tenant policy was their row gate; that policy

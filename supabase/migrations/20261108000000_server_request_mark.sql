@@ -48,14 +48,16 @@
 -- /rpc/pre_request. So `api_hooks` holds this one function, USAGE to the
 -- three request roles, and is not in PGRST_DB_SCHEMAS.
 --
--- KNOWN LIMIT: the hook sees the request path, not the query string, so an
--- EMBED of a view from a relation with a foreign key into network_profiles
--- (`network_links?select=*,network_directory(*)`,
+-- EMBEDS (G35, closed here too): the hook sees the request path, not the
+-- query string, so an EMBED of a view from a relation with a foreign key into
+-- network_profiles (`network_links?select=*,network_directory(*)`,
 -- `network_connection_requests?select=*,network_directory!...(*)`) is not
--- refused. That read is bounded by the caller's own organisation's links and
--- requests -- O(tenant), not the O(platform) search G2 is about -- and returns
--- only the published fields of profiles that organisation already linked or
--- requested. SECURITY.md § 5 names it.
+-- refused by it. So both views' own WHERE clauses also require
+-- private.request_is_from_server() (rebuilt at the end of this file): an
+-- unmarked embed resolves to null. The path check stays, because it answers
+-- a direct read with a loud 403 rather than an empty 200. The views also
+-- fail closed on their own if a hosted project never registers the hook:
+-- the flag is then never 'on' outside the runner.
 -- ===========================================================================
 
 create function private.request_is_from_server()
@@ -68,9 +70,14 @@ as $$
 $$;
 
 revoke all on function private.request_is_from_server() from public, anon, authenticated, service_role;
+-- authenticated only: the two network views call it, and a function in a view
+-- is checked against the view's CALLER (measured: permission denied without
+-- this). It returns the caller's own transaction flag and is not an RPC
+-- (private is not exposed).
+grant execute on function private.request_is_from_server() to authenticated;
 
 comment on function private.request_is_from_server() is
-  'True when this request carried the server-only mark: api_hooks.pre_request() matched x-getsetpaid-server against the Vault digest server_request_mark_digest and set getsetpaid.from_server = on for the transaction (20261108000000; Phase 10 Task 5). False for a browser''s direct PostgREST request, and outside PostgREST unless the session set the flag itself (the psql runner does, to stand in for the server). Read by private.impersonated_organisations() (G14). Not executable by any client role: callers are SECURITY DEFINER functions.';
+  'True when this request carried the server-only mark: api_hooks.pre_request() matched x-getsetpaid-server against the Vault digest server_request_mark_digest and set getsetpaid.from_server = on for the transaction (20261108000000; Phase 10 Task 5). False for a browser''s direct PostgREST request, and outside PostgREST unless the session set the flag itself (the psql runner does, to stand in for the server). Read by private.impersonated_organisations() (G14) and by the WHERE clauses of public.network_directory and public.network_connected_profiles (G35). EXECUTE to authenticated only, because a function in a view is checked against the view''s caller; it reveals only the caller''s own flag, and private is not an exposed schema.';
 
 
 create schema api_hooks;
@@ -147,3 +154,64 @@ as $function$
     -- Phase 10 Task 5 (G14): only the app's server, never a direct read.
     and private.request_is_from_server();
 $function$;
+
+
+-- G35: both directory views also require the mark in their own WHERE, so an
+-- EMBED (which the hook's path check cannot see) resolves to null when the
+-- request is unmarked. Rebuilt from the live definitions (20261103000000) with
+-- one added term each; columns, options and grants are unchanged. Their
+-- pg_depend RELATION sets are unchanged (N2: rls_phase6_network.sql ND1/ND2);
+-- their FUNCTION sets each gain private.request_is_from_server, which reads one
+-- GUC and no relation (ND3c/ND3d and network_leakage_phase6.sql LF2c are
+-- re-pinned for it, deliberately).
+create or replace view public.network_directory
+  with (security_invoker = false, security_barrier = true) as
+select
+  p.id, p.entity_kind, p.display_name,                                   -- always visible (Q71)
+  case when p.field_visibility->>'headline'      = 'network' then p.headline      end as headline,
+  case when p.field_visibility->>'bio'           = 'network' then p.bio           end as bio,
+  case when p.field_visibility->>'city'          = 'network' then p.city          end as city,
+  case when p.field_visibility->>'region'        = 'network' then p.region        end as region,
+  case when p.field_visibility->>'country'       = 'network' then p.country       end as country,
+  case when p.field_visibility->>'website_url'   = 'network' then p.website_url   end as website_url,
+  case when p.field_visibility->>'contact_email' = 'network' then p.contact_email end as contact_email,
+  p.published_at
+from public.network_profiles p
+where p.status = 'published' and p.deleted_at is null
+  and private.network_profile_reaches_caller(p.organisation_id)
+  and private.request_is_from_server();
+
+create or replace view public.network_connected_profiles
+  with (security_invoker = false, security_barrier = true) as
+select
+  p.id, p.entity_kind, p.display_name,
+  case when p.field_visibility->>'headline'      in ('network','connections') then p.headline      end as headline,
+  case when p.field_visibility->>'bio'           in ('network','connections') then p.bio           end as bio,
+  case when p.field_visibility->>'city'          in ('network','connections') then p.city          end as city,
+  case when p.field_visibility->>'region'        in ('network','connections') then p.region        end as region,
+  case when p.field_visibility->>'country'       in ('network','connections') then p.country       end as country,
+  case when p.field_visibility->>'website_url'   in ('network','connections') then p.website_url   end as website_url,
+  case when p.field_visibility->>'contact_email' in ('network','connections') then p.contact_email end as contact_email,
+  p.published_at
+from public.network_profiles p
+where p.status = 'published' and p.deleted_at is null
+  and private.network_profile_reaches_caller(p.organisation_id)
+  and private.request_is_from_server()
+  and exists (
+    select 1 from public.network_connection_requests r
+     where r.status = 'accepted'
+       and (   (r.to_organisation_id   = p.organisation_id
+                and r.from_organisation_id in (select private.permitted_organisations('view_network')))
+            or (r.from_organisation_id = p.organisation_id
+                and r.to_organisation_id   in (select private.permitted_organisations('view_network')))));
+
+-- The views' comments describe their row gate; say what this adds.
+do $$
+declare v text;
+begin
+  foreach v in array array['public.network_directory', 'public.network_connected_profiles'] loop
+    execute pg_catalog.format('comment on view %s is %L', v,
+      pg_catalog.obj_description(v::regclass, 'pg_class')
+      || ' Since 20261108000000 (Phase 10 Task 5, G35) the WHERE clause also requires private.request_is_from_server(): only a request the app''s server marked sees rows, so an embed from network_links or network_connection_requests, which api_hooks.pre_request()''s path check cannot see, resolves to null.');
+  end loop;
+end $$;
