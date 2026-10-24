@@ -7,7 +7,7 @@
 -- finance (plan decision 6). Void keeps the number and reverses exactly what
 -- mark-paid recorded (invoice_lines.entry_flipped, invoices.paid_entry_id).
 -- Mark-paid flips only an entry that is still live budgeted income on the
--- invoice's event (Q257).
+-- invoice's event (Q257); its amount is kept, not reset to the line's (Q258).
 -- All three RPCs that lock pulled entries do it in id order (no deadlock).
 -- Audit payloads are name-only (CLAUDE.md § Non-negotiable rules): status,
 -- number and measured counts, never paid_on, an amount or the void reason.

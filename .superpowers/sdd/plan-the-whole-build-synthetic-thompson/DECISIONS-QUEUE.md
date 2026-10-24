@@ -1680,6 +1680,10 @@ Scheduled as a follow-up branch off main after the Phase 9 PR, built under the s
 
 - **Q257 -- What happens to an invoice line pulled from event finance when, by the time the invoice is marked paid, that finance entry is no longer income on the invoice's event?** Marking an invoice paid turns each pulled income entry from "budgeted" to "actual". Between issuing and payment someone may re-categorise the entry as a cost, move it to another event, or delete it. Options: (a) **leave it unbooked**: the entry is not touched, the same as a deleted entry today, and the invoice is still marked paid; (b) refuse to mark the invoice paid until the entry is put back; (c) book the line's amount as a new actual income entry instead. **Default: (a), implemented** in `public.mark_invoice_paid()` (20261107003000; `rls_invoices.sql` IP23-IP25, IV16/IV17). Under (a) the event's actuals show less income than the invoice was paid for until someone fixes the entry by hand.
 
+## Q258 -- Invoices Task 6 review: a flipped entry keeps its own amount, default: keep it, 2026-10-24
+
+- **Q258 -- When an invoice is marked paid and a pulled entry turns "actual", should the entry's amount become the amount on the invoice line?** The line copies the entry's amount when it is pulled, but someone can edit the line's price in the draft, and the entry can be edited later. Marking paid changes only the entry's status, so the event's actual income can differ from what the invoice billed. Options: (a) **keep the entry's own amount** (the plan's behaviour); (b) set the entry to the line's net amount at mark-paid, and restore the old amount on void; (c) refuse to issue when a pulled line's price differs from its entry. **Default: (a), implemented** (20261107003000; `rls_invoices.sql` IP7 pins the amount unchanged). No code change unless you choose (b) or (c).
+
 ## Q42 -- answered 2026-10-13: self-hosted ClamAV
 
 Founder: "go ClamAV". Wired on branch `clamav-scanner` (PR #30): fail-closed clamd client, container + config, runbook `docs/clamav.md`. Owed: the opt-in live test on the first server.
