@@ -21,18 +21,31 @@ import { authCookieOptions, supabasePublicKey, supabaseUrl } from "./env";
 
 let warnedNoServerMark = false;
 
+/** The LOCAL value `.env.example` publishes (its digest is seeded by
+ *  supabase/seed.sql). Public, so in production it would let anyone mint the
+ *  mark; tests/unit/security/server-mark-headers.test.ts pins it to that line. */
+export const LOCAL_SERVER_REQUEST_SECRET = "local-only-server-request-mark-not-a-secret";
+
 // THE SERVER-ONLY REQUEST MARK (Phase 10 Task 5, G2/G14). Sent on every
 // request from this client and no other; the database (api_hooks.pre_request)
 // hashes it against a digest held in Vault. Without it the network
 // directory views are refused and an impersonation session reads nothing, so
-// a missing value fails closed -- and says so once, by name.
-function serverMarkHeaders(): Record<string, string> | undefined {
+// a missing value fails closed -- and says so once, by name. The public local
+// value in production is treated the same way (review m5): sending no header
+// fails closed for the two features the mark gates, where throwing here would
+// take every page down over one misconfigured variable.
+export function serverMarkHeaders(): Record<string, string> | undefined {
   const mark = process.env.GETSETPAID_SERVER_REQUEST_SECRET;
-  if (mark) return { "x-getsetpaid-server": mark };
+  const problem = !mark
+    ? "is not set"
+    : process.env.NODE_ENV === "production" && mark === LOCAL_SERVER_REQUEST_SECRET
+      ? "is the public .env.example value, which production refuses to send"
+      : null;
+  if (mark && !problem) return { "x-getsetpaid-server": mark };
   if (!warnedNoServerMark) {
     warnedNoServerMark = true;
     console.error(
-      "GETSETPAID_SERVER_REQUEST_SECRET is not set: the network directory and " +
+      `GETSETPAID_SERVER_REQUEST_SECRET ${problem}: the network directory and ` +
         "impersonation will be refused (SECURITY.md § 15).",
     );
   }
