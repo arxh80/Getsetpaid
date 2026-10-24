@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import nextConfig from "@/next.config";
+import { staticSecurityHeaders } from "@/lib/security/headers";
 
 // Phase 10 Task 7 (G12): Next refuses a Server Action whose Origin does not
 // match the Host, unless the origin is in serverActions.allowedOrigins. That
@@ -13,6 +14,12 @@ describe("next.config.ts (G12)", () => {
   it("declares no serverActions.allowedOrigins", () => {
     const origins = nextConfig.experimental?.serverActions?.allowedOrigins;
     expect(origins ?? []).toEqual([]);
+  });
+
+  it("sends the static security headers on every path (G17: X-Frame-Options, nosniff, HSTS)", async () => {
+    expect(await nextConfig.headers!()).toEqual([
+      { source: "/:path*", headers: staticSecurityHeaders() },
+    ]);
   });
 
   it("still configures serverActions (the read above is looking at the real block)", () => {

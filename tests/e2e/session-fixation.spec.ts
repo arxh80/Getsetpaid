@@ -66,6 +66,8 @@ test("a planted auth cookie is not accepted, and sign-in replaces it", async ({ 
     .filter((c) => /^sb-.+-auth-token(\.\d+)?$/.test(c.name))
     .sort((a, b) => a.name.localeCompare(b.name, "en", { numeric: true }));
   expect(chunks.length, "sign-in left no auth cookie").toBeGreaterThan(0);
+  // The planted name is the app's own cookie name, so the refusal above was a real one.
+  expect(chunks[0].name.startsWith(cookieName)).toBe(true);
   const joined = chunks.map((c) => c.value).join("");
   expect(joined).not.toBe(planted);
   const session = JSON.parse(Buffer.from(joined.replace(/^base64-/, ""), "base64url").toString("utf8"));
