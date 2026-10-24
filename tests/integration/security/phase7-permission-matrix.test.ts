@@ -1130,6 +1130,15 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "invoice is refused (Q255). Anyone else gets 42501 forbidden whether or not " +
     "the id exists. Asserted in rls_invoices.sql § IS and " +
     "invoice_issue_concurrency_probe.sh.",
+  mark_invoice_paid:
+    "Invoices part 1 Task 6 -- a manage_finance holder in a Pro workspace marks an " +
+    "issued invoice paid; with a live event it flips the pulled budgeted entries and " +
+    "books the net of the free lines as actual income. Anyone else gets 42501 " +
+    "forbidden whether or not the id exists. Asserted in rls_invoices.sql § IP.",
+  void_invoice:
+    "Invoices part 1 Task 6 -- the same holder voids an issued or paid invoice with a " +
+    "reason, keeping its number and reversing exactly what mark-paid did. Asserted in " +
+    "rls_invoices.sql § IV.",
 };
 
 /**

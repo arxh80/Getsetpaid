@@ -13,6 +13,10 @@
 --   ID  drafts: save_invoice_draft / delete_invoice_draft
 -- Task 5 (20261107002000_invoice_issue.sql):
 --   IS  issue: numbering, snapshot, refusals, one entry billed once (Q255)
+-- Task 6 (20261107003000_invoice_paid_and_void.sql):
+--   IP  mark paid, and the finance link (net income booked on a live event)
+--   IV  void, reversing exactly what mark-paid booked
+--   IE  an erased account's invoices: the re-point to the tombstone
 -- Later tasks add their sections ABOVE § IZ.
 --
 -- EVERY ASSERTION IS ONE LINE BEGINNING `select inv.val(`: run-rls-tests.sh's
@@ -670,6 +674,119 @@ reset role;
 reset request.jwt.claims;
 
 -- ===========================================================================
+-- § IP MARK PAID (Task 6, 20261107003000)
+-- ===========================================================================
+\o /dev/null
+select gen_random_uuid()::text as ev_d \gset
+select gen_random_uuid()::text as fe_d \gset
+\o
+insert into public.events (id, organisation_id, name, starts_at)
+  values (:'ev_d', :'org_a', 'Alpha Cancelled Night', now() + interval '20 days');
+insert into public.financial_entries (id, organisation_id, event_id, category, status, amount_minor, description)
+  values (:'fe_d', :'org_a', :'ev_d', 'income', 'budgeted', 5000, 'Deposit');
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
+select public.save_invoice_draft(:'org_a', null, null, :'con_a', :'ev_a', '9 Customer Road, London', null, null,
+  jsonb_build_array(
+    jsonb_build_object('description', 'Box office guarantee', 'quantity', '1.00', 'unit_price_minor', 300000, 'vat_rate', 'standard_20', 'financial_entry_id', :'fe_a'),
+    jsonb_build_object('description', 'Production fee', 'quantity', '2.00', 'unit_price_minor', 15000, 'vat_rate', 'standard_20', 'financial_entry_id', null))) as id_p \gset
+select public.issue_invoice(:'id_p') as num_p \gset
+select public.save_invoice_draft(:'org_a', null, null, :'con_a', :'ev_d', '9 Customer Road, London', null, null,
+  jsonb_build_array(jsonb_build_object('description', 'Deposit', 'quantity', '1.00', 'unit_price_minor', 5000, 'vat_rate', 'standard_20', 'financial_entry_id', :'fe_d'))) as id_pd \gset
+select public.issue_invoice(:'id_pd') as num_pd \gset
+select inv.val('IP1 FIXTURE: the pulled-line invoice issued at A''s next number', format($$select %L || '|' || gross_minor from public.invoices where id = %L$$, :'num_p', :'id_p'), 'INV-0002|396000');
+select inv.val('IP2 a payment date in the future is refused', format($$select 'ok' from (select public.mark_invoice_paid(%L, ((now() at time zone 'Europe/London')::date + 1))) s$$, :'id_p'), 'denied(22023:invoice_paid_on_out_of_range)');
+select inv.val('IP3 a payment date before the issue date is refused', format($$select 'ok' from (select public.mark_invoice_paid(%L, ((now() at time zone 'Europe/London')::date - 1))) s$$, :'id_p'), 'denied(22023:invoice_paid_on_out_of_range)');
+select inv.val('IP4 a null payment date is refused', format($$select 'ok' from (select public.mark_invoice_paid(%L, null)) s$$, :'id_p'), 'denied(22023:invoice_paid_on_out_of_range)');
+select inv.val('IP17 A''s Finance user cannot mark B''s invoice paid (no existence oracle)', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'inv_bd'), 'denied(42501:forbidden)');
+select inv.val('IP18 ...nor an id that names nothing, with the same refusal', $$select 'ok' from (select public.mark_invoice_paid(gen_random_uuid(), (now() at time zone 'Europe/London')::date)) s$$, 'denied(42501:forbidden)');
+select inv.val('IP5 THE PAYMENT: the Finance user marks it paid today', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'id_p'), 'ok');
+select inv.val('IP6 ...it is paid, dated, by the caller', format($$select status || '|' || (paid_on = (now() at time zone 'Europe/London')::date)::text || '|' || (paid_by = %L)::text from public.invoices where id = %L$$, :'fin_a', :'id_p'), 'paid|true|true');
+select inv.val('IP7 ...the pulled entry flipped budgeted -> actual, its amount left as it was', format($$select status || '|' || amount_minor from public.financial_entries where id = %L$$, :'fe_a'), 'actual|300000');
+select inv.val('IP8 ...and its line records the flip', format($$select string_agg(position || ':' || entry_flipped::text, ',' order by position) from public.invoice_lines where invoice_id = %L$$, :'id_p'), '1:true,2:false');
+select inv.val('IP9 ...the free line''s NET (not gross) became one actual income entry on the event, named for the invoice', format($$select concat_ws('|', fe.category, fe.status, fe.amount_minor, fe.description, (fe.occurred_on = i.paid_on)::text, (fe.event_id = %L)::text) from public.invoices i join public.financial_entries fe on fe.id = i.paid_entry_id where i.id = %L$$, :'ev_a', :'id_p'), 'income|actual|30000|Invoice INV-0002|true|true');
+select inv.val('IP11 marking it paid twice is refused', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'id_p'), 'denied(22023:invoice_not_issued)');
+reset role;
+reset request.jwt.claims;
+select inv.val('IP10 ...and one invoice.marked_paid audit row, actor the caller, saying one entry flipped and one created; payload keys exactly {entries_flipped, income_entry_created, number, status}: NO paid_on and no amount (read as postgres: audit_events is superuser-read)', format($$select count(distinct a.id) || '|' || bool_and(a.actor_user_id = %L)::text || '|' || max(a.after ->> 'entries_flipped') || '|' || max(a.after ->> 'income_entry_created') || '|' || string_agg(k, ',' order by k) from public.audit_events a cross join lateral jsonb_object_keys(a.after) k where a.action = 'invoice.marked_paid' and a.target_id = %L$$, :'fin_a', :'id_p'), '1|true|1|true|entries_flipped,income_entry_created,number,status');
+update public.events set deleted_at = now() where id = :'ev_d';
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
+select inv.val('IP12 an invoice whose event was deleted can still be marked paid', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'id_pd'), 'ok');
+reset role;
+reset request.jwt.claims;
+select inv.val('IP13 ...and touches no finance (plan decision 6): the entry stays budgeted, its line unflipped, nothing created (read as postgres)', format($$select (select status from public.financial_entries where id = %L) || '|' || coalesce((select paid_entry_id::text from public.invoices where id = %L), 'none') || '|' || (select string_agg(entry_flipped::text, ',') from public.invoice_lines where invoice_id = %L)$$, :'fe_d', :'id_pd', :'id_pd'), 'budgeted|none|false');
+set role authenticated;
+set request.jwt.claims = :'mgr_a_c';
+select inv.val('IP14 a Manager cannot mark an invoice paid', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'inv_ad'), 'denied(42501:forbidden)');
+set request.jwt.claims = :'fin_s_c';
+select inv.val('IP15 a STARTER workspace cannot mark an invoice paid', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'inv_sd'), 'denied(42501:plan_does_not_include_invoicing)');
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IP16 a DRAFT cannot be marked paid', format($$select 'ok' from (select public.mark_invoice_paid(%L, (now() at time zone 'Europe/London')::date)) s$$, :'inv_n3'), 'denied(22023:invoice_not_issued)');
+
+-- ===========================================================================
+-- § IV VOID (Task 6, 20261107003000)
+-- ===========================================================================
+set request.jwt.claims = :'fin_a_c';
+select inv.val('IV1 a blank reason is refused', format($$select 'ok' from (select public.void_invoice(%L, '   ')) s$$, :'id_p'), 'denied(22023:invoice_void_reason_required)');
+select inv.val('IV2 a 501-character reason is refused', format($$select 'ok' from (select public.void_invoice(%L, repeat('x', 501))) s$$, :'id_p'), 'denied(22023:invoice_void_reason_required)');
+select inv.val('IV14 A''s Finance user cannot void B''s invoice (no existence oracle)', format($$select 'ok' from (select public.void_invoice(%L, 'x')) s$$, :'inv_bd'), 'denied(42501:forbidden)');
+select inv.val('IV15 ...nor an id that names nothing, with the same refusal', $$select 'ok' from (select public.void_invoice(gen_random_uuid(), 'x')) s$$, 'denied(42501:forbidden)');
+select inv.val('IV3 THE VOID OF A PAID INVOICE', format($$select 'ok' from (select public.void_invoice(%L, 'Wrong recipient')) s$$, :'id_p'), 'ok');
+select inv.val('IV4 ...the flipped entry is budgeted again', format($$select status from public.financial_entries where id = %L$$, :'fe_a'), 'budgeted');
+select inv.val('IV5 ...the income entry mark-paid created is soft-deleted', format($$select (fe.deleted_at is not null)::text from public.invoices i join public.financial_entries fe on fe.id = i.paid_entry_id where i.id = %L$$, :'id_p'), 'true');
+select inv.val('IV6 ...the invoice is void, KEEPS its number and its payment record, with the reason', format($$select concat_ws('|', status, number, (paid_on is not null)::text, void_reason, (voided_by = %L)::text) from public.invoices where id = %L$$, :'fin_a', :'id_p'), 'void|INV-0002|true|Wrong recipient|true');
+select inv.val('IV8 voiding it again is refused', format($$select 'ok' from (select public.void_invoice(%L, 'again')) s$$, :'id_p'), 'denied(22023:invoice_not_voidable)');
+select inv.val('IV9 an ISSUED (unpaid) invoice voids too, touching no finance', format($$select 'ok' from (select public.void_invoice(%L, 'Duplicate')) s$$, :'inv_ai'), 'ok');
+select inv.val('IV10 ...it is void with its number', format($$select status || '|' || number from public.invoices where id = %L$$, :'inv_ai'), 'void|FIX-0001');
+set request.jwt.claims = :'mgr_a_c';
+select inv.val('IV11 a Manager cannot void', format($$select 'ok' from (select public.void_invoice(%L, 'x')) s$$, :'inv_ad'), 'denied(42501:forbidden)');
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IV12 a DRAFT cannot be voided (it is deleted instead)', format($$select 'ok' from (select public.void_invoice(%L, 'x')) s$$, :'inv_n3'), 'denied(22023:invoice_not_voidable)');
+select inv.val('IV13 only authenticated may execute the two RPCs', $$select count(*) filter (where has_function_privilege('authenticated', f, 'EXECUTE')) || '/' || count(*) filter (where has_function_privilege('anon', f, 'EXECUTE') or has_function_privilege('service_role', f, 'EXECUTE')) from unnest(array['public.mark_invoice_paid(uuid,date)','public.void_invoice(uuid,text)']) f$$, '2/0');
+reset role;
+reset request.jwt.claims;
+select inv.val('IV7 ...one invoice.voided audit row with the reversal counts, payload keys exactly {entries_reverted, income_entry_removed, number, previous_status, status}, the reason NOT in it (read as postgres)', format($$select count(distinct a.id) || '|' || max(a.after ->> 'previous_status') || '|' || max(a.after ->> 'entries_reverted') || '|' || max(a.after ->> 'income_entry_removed') || '|' || bool_and(coalesce(a.after::text, '') not like '%%Wrong recipient%%')::text || '|' || string_agg(k, ',' order by k) from public.audit_events a cross join lateral jsonb_object_keys(a.after) k where a.action = 'invoice.voided' and a.target_id = %L$$, :'id_p'), '1|paid|1|true|true|entries_reverted,income_entry_removed,number,previous_status,status');
+
+-- ===========================================================================
+-- § IE AN ERASED ACCOUNT'S INVOICES (Task 6): private.erase_account()'s
+-- derived re-point moves created_by / paid_by / voided_by / sent_by to the
+-- tombstone, the freeze admits no other re-point of a payer or a voider, and
+-- the issued snapshot is untouched (legal-obligation basis).
+-- ===========================================================================
+\o /dev/null
+select gen_random_uuid()::text as fin_e \gset
+select gen_random_uuid()::text as own_e \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_e') as fin_e_c \gset
+\o
+-- org_b gains an Owner: erase_account refuses to leave a workspace with
+-- members and data but no Owner (workspace_has_no_owner, Q131).
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
+  values (:'fin_e', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'inv-fin-e-' || :'fin_e' || '@test.local', now(), now(), now()),
+         (:'own_e', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'inv-own-e-' || :'own_e' || '@test.local', now(), now(), now());
+insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+  values (:'org_b', :'fin_e', 'finance', 'active', now()), (:'org_b', :'own_e', 'owner', 'active', now());
+set role authenticated;
+set request.jwt.claims = :'fin_e_c';
+select public.save_invoice_draft(:'org_b', null, null, :'con_b', null, '7 Buyer Street', null, null,
+  '[{"description":"Hire","quantity":"1.00","unit_price_minor":7000,"vat_rate":"none","financial_entry_id":null}]'::jsonb) as id_e \gset
+select public.issue_invoice(:'id_e') as num_e \gset
+select 'ok' as paid_e from (select public.mark_invoice_paid(:'id_e', (now() at time zone 'Europe/London')::date)) s \gset
+select 'ok' as void_e from (select public.void_invoice(:'id_e', 'Erasure probe')) s \gset
+reset role;
+reset request.jwt.claims;
+insert into public.invoice_sends (organisation_id, invoice_id, to_email, sent_by) values (:'org_b', :'id_e', 'bea@example.test', :'fin_e');
+select md5(snapshot::text) as snap_e from public.invoices where id = :'id_e' \gset
+select inv.val('IE1 a void invoice''s PAYER cannot be re-pointed at another person (as postgres)', format($$update public.invoices set paid_by = %L where id = %L returning 'written'$$, :'fin_b', :'id_e'), 'denied(42501:invoice_is_frozen)');
+select inv.val('IE2 ...nor its VOIDER', format($$update public.invoices set voided_by = %L where id = %L returning 'written'$$, :'fin_b', :'id_e'), 'denied(42501:invoice_is_frozen)');
+select inv.val('IE3 POSITIVE CONTROL: the payer -> tombstone re-point alone is admitted (rolled back)', format($$select inv.violated(%L)$$, format('update public.invoices set paid_by = private.erased_user_id() where id = %L', :'id_e')), 'written');
+select inv.val('IE4 POSITIVE CONTROL: the voider -> tombstone re-point alone is admitted (rolled back)', format($$select inv.violated(%L)$$, format('update public.invoices set voided_by = private.erased_user_id() where id = %L', :'id_e')), 'written');
+select inv.val('IE5 the account erasure runs over a person who created, paid, voided and sent an invoice', format($$select 'ok' from (select private.erase_account(%L, null)) s$$, :'fin_e'), 'ok');
+select inv.val('IE6 ...creator, payer, voider and sender are all the tombstone now', format($$select concat_ws('|', (i.created_by = private.erased_user_id())::text, (i.paid_by = private.erased_user_id())::text, (i.voided_by = private.erased_user_id())::text, (select bool_and(s.sent_by = private.erased_user_id()) from public.invoice_sends s where s.invoice_id = i.id)::text) from public.invoices i where i.id = %L$$, :'id_e'), 'true|true|true|true');
+select inv.val('IE7 ...and the issued snapshot is byte-identical', format($$select (md5(snapshot::text) = %L)::text || '|' || status from public.invoices where id = %L$$, :'snap_e', :'id_e'), 'true|void');
+select inv.val('IE8 no invoice audit payload names the erased person', format($$select count(*)::text from public.audit_events where (action like 'invoice.%%' or action like 'invoice_settings.%%') and (coalesce(before::text, '') || coalesce(after::text, '')) like '%%' || %L || '%%'$$, :'fin_e'), '0');
+
+-- ===========================================================================
 -- § IZ HOUSEKEEPING (later tasks insert their sections ABOVE this line)
 -- ===========================================================================
 reset role;
@@ -679,9 +796,9 @@ delete from public.organisations where id in (:'org_a', :'org_b', :'org_s', :'or
 set session_replication_role = replica;
 delete from public.audit_events
  where organisation_id in (:'org_a', :'org_b', :'org_s', :'org_f', :'org_p', :'org_n')
-    or actor_user_id in (:'own_a', :'adm_a', :'fin_a', :'mgr_a', :'ro_a', :'fin_b', :'fin_s', :'fin_f', :'fin_p', :'fin_n');
+    or actor_user_id in (:'own_a', :'adm_a', :'fin_a', :'mgr_a', :'ro_a', :'fin_b', :'fin_s', :'fin_f', :'fin_p', :'fin_n', :'own_e');
 set session_replication_role = origin;
-delete from auth.users where id in (:'own_a', :'adm_a', :'fin_a', :'mgr_a', :'ro_a', :'fin_b', :'fin_s', :'fin_f', :'fin_p', :'fin_n');
+delete from auth.users where id in (:'own_a', :'adm_a', :'fin_a', :'mgr_a', :'ro_a', :'fin_b', :'fin_s', :'fin_f', :'fin_p', :'fin_n', :'own_e');
 select inv.val('IZ1 housekeeping left no invoice row behind', format($$select ((select count(*) from public.invoices where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.invoice_settings where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)))::text$$, :'org_a', :'org_b', :'org_s', :'org_f', :'org_p'), '0');
 
 \echo
