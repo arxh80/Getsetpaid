@@ -37,7 +37,7 @@ const UNMINTED: Record<string, { readonly count: number; readonly why: string }>
 };
 
 const PAIRED =
-  /checkStepUp\(\)\)\s*(?:\|\|\s*!|&&\s*)\(await mintStepUpToken\("([a-z_]+)"\)\)/g;
+  /checkStepUp\([^)]*\)\)\s*(?:\|\|\s*!|&&\s*)\(await mintStepUpToken\("([a-z_]+)"\)\)/g;
 
 function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
@@ -46,8 +46,9 @@ function stripComments(src: string): string {
 /** The census of one file's source. */
 function census(src: string) {
   const code = stripComments(src);
-  const calls = (code.match(/\bcheckStepUp\(\)/g) ?? []).length;
-  const mints = (code.match(/\bmintStepUpToken\(/g) ?? []).length;
+  const calls = (code.match(/\bcheckStepUp\([^)]*\)/g) ?? []).length;
+  // A raw .rpc("mint_step_up_token") outside the helper is a mint too, and never pairs.
+  const mints = (code.match(/\bmintStepUpToken\(|\bmint_step_up_token\b/g) ?? []).length;
   const purposes = [...code.matchAll(PAIRED)].map((m) => m[1]);
   return { calls, mints, purposes };
 }
@@ -117,5 +118,18 @@ describe("step-up token callers", () => {
     expect(
       census(`if (!(await checkStepUp()) || !(await mintStepUpToken("override"))) {}`),
     ).toEqual({ calls: 1, mints: 1, purposes: ["override"] });
+    expect(census(`await supabase.rpc("mint_step_up_token", { p_purpose: "override" });`)).toEqual({
+      calls: 0,
+      mints: 1,
+      purposes: [],
+    });
+    expect(
+      census(`if (!(await checkStepUp(claims)) || !(await mintStepUpToken("override"))) {}`),
+    ).toEqual({ calls: 1, mints: 1, purposes: ["override"] });
+    expect(census(`if (!(await checkStepUp(claims))) return refuse();`)).toEqual({
+      calls: 1,
+      mints: 0,
+      purposes: [],
+    });
   });
 });
