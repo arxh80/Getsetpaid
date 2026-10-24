@@ -556,7 +556,8 @@ delete from auth.users where id in (:'su', :'owner_a', :'owner_c', :'owner_d', :
 select st.val('SZ1 no fixture organisation, user or token is left',
   format($$select (select count(*) from public.organisations where id in (%L, %L, %L))::text || '/' ||
                   (select count(*) from auth.users where email like 'st-%%@test.local')::text || '/' ||
-                  (select count(*) from private.step_up_tokens)::text$$, :'org_a', :'org_c', :'org_d'),
+                  (select count(*) from private.step_up_tokens where user_id in (%L, %L, %L, %L, %L, %L, %L))::text$$,
+         :'org_a', :'org_c', :'org_d', :'su', :'owner_a', :'owner_c', :'owner_d', :'eraser', :'subj', :'other'),
   '0/0/0');
 
 select label, expected, actual from st.results where not pass order by seq;

@@ -28,6 +28,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
 import { createFixtures, destroyFixtures, type RlsFixtures } from "../rls/support/fixtures";
+import { mintStepUp } from "../rls/support/step-up";
 
 let fx: RlsFixtures;
 let pool: Pool;
@@ -126,6 +127,7 @@ describe("the erasure runner removes the account's bytes from their buckets", ()
     expect(await objectExists("exports", exportKey)).toBe(true);
 
     // ---- the erasure, asked for the way a person asks for it -------------
+    await mintStepUp(persona.client, "account_erasure");
     const asked = await persona.client
       .from("erasure_jobs")
       .insert({ kind: "account" } as never)
@@ -187,6 +189,7 @@ describe("the erasure runner removes the account's bytes from their buckets", ()
     // chokepoint exists for: the insert's guard and the erasure's guard are
     // the same question asked at two different moments.
     const persona = fx.activeByRole.booker;
+    await mintStepUp(persona.client, "account_erasure");
     const asked = await persona.client
       .from("erasure_jobs")
       .insert({ kind: "account" } as never)

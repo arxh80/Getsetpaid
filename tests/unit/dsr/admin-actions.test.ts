@@ -171,7 +171,8 @@ describe("refusing a statutory request needs a fresh credential and a reason", (
     );
     expect(result.error).toBe("A refusal must say why.");
     expect(result.fieldErrors?.rejectionReason).toBeTruthy();
-    expect(stubs.rpc).not.toHaveBeenCalled();
+    // The step-up token was minted (step-up passed); the transition was not called.
+    expect(stubs.rpc).not.toHaveBeenCalledWith("transition_data_subject_request", expect.anything());
   });
 
   it("POSITIVE CONTROL: fresh and reasoned, the refusal is recorded with its reason", async () => {
@@ -183,6 +184,8 @@ describe("refusing a statutory request needs a fresh credential and a reason", (
       p_status: "rejected",
       p_rejection_reason: "Not our data to erase.",
     });
+    // G13: the database's step-up token, minted before the gated call.
+    expect(stubs.rpc).toHaveBeenNthCalledWith(1, "mint_step_up_token", { p_purpose: "dsr_rejection" });
   });
 });
 

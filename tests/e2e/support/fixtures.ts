@@ -3149,6 +3149,10 @@ export async function plantOwnerClosedWorkspace(
     await client.query(`select set_config('request.jwt.claims', $1, true)`, [
       JSON.stringify({ sub: owner.id, role: "authenticated", aal: "aal2" }),
     ]);
+    // The step-up token the server mints after checkStepUp() (Phase 10 Task 6).
+    await client.query(
+      `select set_config('getsetpaid.from_server', 'on', true), public.mint_step_up_token('workspace_close')`,
+    );
     await client.query(`select public.close_my_workspace($1, $2, $3)`, [
       id,
       slug,

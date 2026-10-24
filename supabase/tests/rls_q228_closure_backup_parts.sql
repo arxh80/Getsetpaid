@@ -215,6 +215,15 @@ insert into public.organisation_memberships (organisation_id, user_id, role, sta
   (:'org_s', :'admin_s2', 'admin',   'active', now()),
   (:'org_t', :'owner_t',  'owner',   'active', now());
 
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'owner_p_c') \g /dev/null
+select step_up_fixture.arm(:'owner_r_c') \g /dev/null
+select step_up_fixture.arm(:'owner_s_c') \g /dev/null
+select step_up_fixture.arm(:'owner_t_c') \g /dev/null
+select step_up_fixture.arm(:'admin_p2_c') \g /dev/null
+select step_up_fixture.arm(:'su_c') \g /dev/null
 -- The closure backups, each made by its Owner closing the workspace under
 -- aal2 claims (tests/e2e/support/fixtures.ts plantOwnerClosedWorkspace).
 set role authenticated;

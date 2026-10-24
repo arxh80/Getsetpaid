@@ -197,6 +197,10 @@ select imp.val('IP4 the time-box is 60 minutes (bound to IMPERSONATION_TIME_BOX_
 set role authenticated;
 set request.jwt.claims = :'super_c';
 
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'super_c') \g /dev/null
 select public.request_impersonation('org-alpha', 'ticket 9001: customer reports a missing event') as s1 \gset
 
 select imp.val('IR0 CONTROL: the request created exactly one row, visible to its superuser',

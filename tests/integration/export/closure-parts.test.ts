@@ -26,6 +26,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
+import { MINT_STEP_UP_SQL } from "../rls/support/step-up";
 
 type Override = {
   max_rows_per_table?: number;
@@ -229,6 +230,7 @@ async function seedClosableWorkspace(label: string): Promise<Workspace> {
 
 async function startExport(userId: string, kind: "workspace" | "account", orgId: string | null): Promise<string> {
   const id = await asPerson<{ id: string }>(userId, async (q) => {
+    if (kind === "workspace") await q(MINT_STEP_UP_SQL, ["workspace_export"]);
     const rows = await q(
       `insert into public.export_jobs (kind, organisation_id) values ($1, $2) returning id`,
       [kind, orgId],
@@ -241,6 +243,7 @@ async function startExport(userId: string, kind: "workspace" | "account", orgId:
 
 async function closeWorkspace(ws: Workspace): Promise<string> {
   const row = await asPerson<{ id: string }>(ws.ownerId, async (q) => {
+    await q(MINT_STEP_UP_SQL, ["workspace_close"]);
     const rows = await q(`select public.close_my_workspace($1, $2, $3)::text as id`, [
       ws.orgId,
       ws.slug,
@@ -812,6 +815,7 @@ describe("C11: a workspace reopened part-way stops its backup, and leaves nothin
     );
     await pool.query(`insert into public.platform_admins (user_id) values ($1)`, [suId]);
     await asPerson<null>(suId, async (q) => {
+      await q(MINT_STEP_UP_SQL, ["closure_decision"]);
       await q(`select public.reassign_closed_workspace($1, $2, $3)`, [ws.slug, ws.managerId, "C11: reopened part-way"]);
       return null;
     });

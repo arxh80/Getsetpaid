@@ -20,7 +20,7 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
 import { isSuperuser } from "@/lib/admin/superuser";
@@ -99,7 +99,7 @@ async function authorise(
   if (!(await isSuperuser())) return { ok: false, state: refuse(NOT_ALLOWED, formData) };
   const slug = field(formData, "slug");
   if (!isLegalSlug(slug)) return { ok: false, state: refuse(NOT_ALLOWED, formData) };
-  if (stepUp && !(await checkStepUp())) {
+  if (stepUp && (!(await checkStepUp()) || !(await mintStepUpToken("legal_document")))) {
     return { ok: false, state: refuse(STEP_UP_REQUIRED, formData) };
   }
   return { ok: true, slug };
