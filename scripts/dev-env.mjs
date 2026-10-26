@@ -63,6 +63,7 @@ function readLocalStack() {
   } catch {
     return null;
   }
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- key is one of three literals below
   const pick = (key) => raw.match(new RegExp(`^${key}="?([^"\\r\\n]+)"?`, "m"))?.[1];
   const apiUrl = pick("API_URL");
   const anonKey = pick("ANON_KEY");
