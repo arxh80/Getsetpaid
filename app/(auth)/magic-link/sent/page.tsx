@@ -47,7 +47,9 @@ export default async function MagicLinkSentPage({
 
       <div className="border-t border-rule pt-5">
         <p className="text-base text-ink-muted">
-          Nothing after a minute? Check the spam folder, or{" "}
+          Nothing after a minute? Check the spam folder. We send at most one
+          link every 20 minutes, so if you asked recently, use the newest link
+          in your inbox. Otherwise,{" "}
           <Link
             href="/magic-link"
             className="text-primary underline underline-offset-4 hover:text-ink"

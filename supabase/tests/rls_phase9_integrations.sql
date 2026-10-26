@@ -1320,6 +1320,10 @@ reset request.jwt.claims;
 select token_secret_id::text as sec_w3 from public.integration_connections where id = :'conn_w3' \gset
 set role authenticated;
 set request.jwt.claims = :'owner_a_c';
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'owner_a_c') \g /dev/null
 with j as (insert into public.export_jobs (kind, organisation_id) values ('workspace', :'org_a') returning id)
 select id::text as ix_ws_job from j \gset
 set request.jwt.claims = :'mgr2_a_c';

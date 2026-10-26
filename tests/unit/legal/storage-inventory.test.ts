@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { BROWSER_STORAGE } from "@/lib/legal/storage-inventory";
 import { CURRENT_ORG_COOKIE } from "@/lib/org/current-org";
 import { activityStorageKey } from "@/lib/auth/idle-timeout";
+import { SIGNUP_BINDING_COOKIE } from "@/lib/auth/first-proof";
 
 // THE COOKIE POLICY NAMES WHAT THE CODE SETS -- each declared item is pinned
 // to the source constant it describes, so renaming a key without updating the
@@ -18,8 +19,8 @@ const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const names = BROWSER_STORAGE.map((item) => item.name);
 
 describe("the Cookie Policy's storage list matches the code", () => {
-  it("declares exactly four items, all strictly necessary and all first-party (Q129)", () => {
-    expect(BROWSER_STORAGE).toHaveLength(4);
+  it("declares exactly five items, all strictly necessary and all first-party (Q129)", () => {
+    expect(BROWSER_STORAGE).toHaveLength(5);
     for (const item of BROWSER_STORAGE) {
       expect(item.setBy).toMatch(/^GetSetPaid/);
       expect(item.necessity.length).toBeGreaterThan(10);
@@ -37,6 +38,15 @@ describe("the Cookie Policy's storage list matches the code", () => {
     const src = readFileSync(`${ROOT}lib/org/current-org.ts`, "utf8");
     expect(src).toMatch(/MAX_AGE_SECONDS = 60 \* 60 \* 24 \* 180;/);
     expect(BROWSER_STORAGE.find((i) => i.name === CURRENT_ORG_COOKIE)?.duration).toMatch(/^180 days/);
+  });
+
+  // Phase 10 Task 20 (Q245).
+  it("names the sign-up binding cookie by its real name, with its real lifetime", () => {
+    expect(names).toContain(SIGNUP_BINDING_COOKIE);
+    expect(BROWSER_STORAGE.find((i) => i.name === SIGNUP_BINDING_COOKIE)?.kind).toBe("cookie");
+    const src = readFileSync(`${ROOT}lib/auth/first-proof.ts`, "utf8");
+    expect(src).toMatch(/BINDING_MAX_AGE_SECONDS = 60 \* 60 \* 24;/);
+    expect(BROWSER_STORAGE.find((i) => i.name === SIGNUP_BINDING_COOKIE)?.duration).toMatch(/^24 hours/);
   });
 
   it("names the idle-timeout key by the scheme activityStorageKey() uses", () => {

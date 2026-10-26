@@ -17,11 +17,10 @@ import { cache } from "react";
 // `.eq("organisation_id", organisationId)` for the CALLER'S OWN organisation.
 // This file is the opposite case -- a profile that may belong to ANY
 // organisation -- and for that case the base table is the wrong source
-// regardless of how the query is filtered: `network_profiles_select_
-// published_directory` (20260904003000) permits any active member to read a
-// published row's EVERY column, unmasked, including ones the publisher marked
-// `hidden` or `connections`. The masking is the VIEW's job, not a WHERE clause
-// this file could add. tests/unit/network/discovery-source-shape.test.ts is
+// regardless of how the query is filtered: since Phase 10 Task 19 (F1,
+// 20261103000000) it returns no foreign row at all, and before that it
+// returned every column unmasked. The masking is the VIEW's job, not a WHERE
+// clause this file could add. tests/unit/network/discovery-source-shape.test.ts is
 // the source-only guard that a future edit does not reintroduce
 // `.from("network_profiles")` here.
 import { createClient } from "@/lib/supabase/server";

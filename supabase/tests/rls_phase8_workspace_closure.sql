@@ -151,6 +151,11 @@ select cw.try('CF8 ACTIVE: the Owner sends a connection request',
   format($$insert into public.network_connection_requests
              (from_organisation_id, from_network_profile_id, to_organisation_id, to_network_profile_id)
            values (%L, %L, %L, %L)$$, :'org_a', :'prof_a', :'org_b', :'prof_b'), 'ok(1)');
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'owner_c') \g /dev/null
+select step_up_fixture.arm(:'other_c') \g /dev/null
 select cw.try('CF9 ACTIVE: an ordinary workspace export is queued (the closure must not collide with it)',
   format($$insert into public.export_jobs (kind, organisation_id) values ('workspace', %L)$$, :'org_a'), 'ok(1)');
 select cw.try('CF10 ACTIVE: the Owner flips the draft back (re-arm CW7)',
@@ -473,6 +478,8 @@ values (:'su_u', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authe
 insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
 values (:'view_u', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cw-viewer@test.local', now(), now(), now());
 insert into public.platform_admins (user_id) values (:'su_u');
+-- Phase 10 Task 6: armed as above (step_up_fixture.sql).
+select step_up_fixture.arm(:'su_c') \g /dev/null
 -- A NON-admin member of org B: the decision notice must NOT address them.
 insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
 values (:'org_b', :'view_u', 'manager', 'active', now());

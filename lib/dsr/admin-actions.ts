@@ -42,7 +42,7 @@ import { revalidatePath } from "next/cache";
 import { isSuperuser } from "@/lib/admin/superuser";
 import { createClient } from "@/lib/supabase/server";
 import { nudgeErasureRunner } from "@/lib/erasure/runner";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
 import {
@@ -154,7 +154,9 @@ export async function transitionDataSubjectRequestAction(
   const reason = (field(formData, "rejectionReason") ?? "").trim();
   if (status === "rejected") {
     // STEP-UP: the one high-risk action on this page.
-    if (!(await checkStepUp())) return refuse(STEP_UP_REQUIRED, formData);
+    if (!(await checkStepUp()) || !(await mintStepUpToken("dsr_rejection"))) {
+      return refuse(STEP_UP_REQUIRED, formData);
+    }
     if (reason === "") {
       return refuse("A refusal must say why.", formData, {
         rejectionReason: "The requester reads this. Say why, and under which law.",
@@ -356,7 +358,7 @@ export async function runErasureForRequestAction(
   const requestId = field(formData, "requestId");
   if (requestId === "") return { error: "That request could not be changed." };
 
-  if (!(await checkStepUp())) {
+  if (!(await checkStepUp()) || !(await mintStepUpToken("account_erasure"))) {
     return {
       error:
         "Confirm it is you before deleting somebody's account. Use the prompt at the top of this page, then press this again.",

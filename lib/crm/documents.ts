@@ -70,7 +70,7 @@ import {
 // THE SIZE CEILING IS SHARED WITH next.config.ts, because the framework cap
 // must sit above it -- see lib/security/upload-limits.ts. This file is
 // `"use server"`, so it cannot export the constant itself.
-import { DOCUMENT_MAX_SIZE_BYTES } from "@/lib/security/upload-limits";
+import { DOCUMENT_MAX_SIZE_BYTES, STORAGE_QUOTA_MESSAGE } from "@/lib/security/upload-limits";
 import { buildStorageKey } from "@/lib/crm/storage-keys";
 import { getScanner, type ScanResult } from "@/lib/security/malware-scan";
 import { LINK_ENTITY_TYPES, type LinkEntityType } from "@/lib/crm/links";
@@ -200,6 +200,12 @@ export async function uploadDocumentAction(
     // The row did not land, so the stored bytes are now an orphan -- remove
     // them rather than leave an unreferenced object in the bucket.
     await storage.storage.from("documents").remove([storageKey]);
+    // shortcut: an over-quota upload transfers its bytes once before the
+    // refusal, bounded by the 10/hour budget; add a pre-check RPC if storage
+    // egress cost shows up.
+    if (inserted.error?.hint === "storage_quota_exceeded") {
+      return { error: STORAGE_QUOTA_MESSAGE, values: echoedValues(formData) };
+    }
     if (inserted.error?.code === "42501") {
       return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
     }

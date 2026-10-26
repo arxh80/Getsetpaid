@@ -36,6 +36,7 @@
 // below refuses to start a burst without enough of the current bin left.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import { createClient } from "@supabase/supabase-js";
 import {
   createFixtures,
   destroyFixtures,
@@ -396,5 +397,38 @@ describe("the budget recovers when the window turns over", () => {
       );
       await clearCounters();
     }
+  });
+});
+
+describe("the direct path is refused, so the limit above is the only way in (G2)", () => {
+  // Phase 10 Task 5. Everything above meters the APP path. The same session
+  // aimed straight at PostgREST -- the anon key that ships in every browser
+  // bundle plus the user's own access token, and no server-only mark -- used
+  // to read both views unmetered (Q107). The database now refuses it.
+  it("refuses either view to the same session without the mark; the marked client still reads", async () => {
+    const { data: auth } = await fx.activeByRole.manager.client.auth.getSession();
+    const token = auth.session?.access_token;
+    expect(token, "the manager persona has no session").toBeTruthy();
+    const direct = createClient(fx.apiUrl, fx.anonKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+      global: { headers: { Authorization: `Bearer ${token}` } },
+    });
+
+    for (const view of ["network_directory", "network_connected_profiles"]) {
+      const { data, error, status } = await direct.from(view).select("id");
+      expect(status, `${view}: a direct read was not refused`).toBe(403);
+      expect(error?.code).toBe("PT403");
+      expect(data).toBeNull();
+    }
+
+    // POSITIVE CONTROL: the same session WITH the mark (the persona client is
+    // lib/supabase/server.ts's stand-in) reads the published fixture row, so
+    // the refusals above are the mark and not a dead session or an empty view.
+    const { data: rows, error } = await fx.activeByRole.manager.client
+      .from("network_directory")
+      .select("id")
+      .eq("id", PROFILE);
+    expect(error).toBeNull();
+    expect(rows).toHaveLength(1);
   });
 });

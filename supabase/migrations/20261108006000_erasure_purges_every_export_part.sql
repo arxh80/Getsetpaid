@@ -1,0 +1,492 @@
+-- ===========================================================================
+-- Phase 10 Task 18 (final review finding 1): an account erasure purges every
+-- part of its exports.
+--
+-- Since 20261108005000 (G37, Q263) an ordinary account or workspace export
+-- past a ceiling is stored in parts, and parts 2..n live at their own keys in
+-- public.export_job_parts. public.erasure_purge_manifest() named only
+-- export_jobs.storage_key (part 1), and private.erase_account()'s "no bytes
+-- left" check looked only there too, so an erasure after a multi-part export
+-- left parts 2..n in the exports bucket and still recorded bytes_purged:
+-- true. Both are rebuilt from their live definitions with one added term
+-- each; closure backups stay excluded (Q206), as before.
+-- ===========================================================================
+
+CREATE OR REPLACE FUNCTION public.erasure_purge_manifest(p_job_id uuid)
+ RETURNS TABLE(bucket text, object_key text)
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+declare v_job public.erasure_jobs%rowtype;
+begin
+  if (select auth.uid()) is not null
+     or coalesce(pg_catalog.current_setting('role', true), 'none')
+          not in ('postgres', 'service_role', 'none') then
+    raise exception 'erasure_purge_manifest: the purge manifest is read by the erasure runner, never from a person''s session'
+      using errcode = '42501', hint = 'erasure_runner_is_server_only';
+  end if;
+
+  select * into v_job from public.erasure_jobs j where j.id = p_job_id;
+  if not found then
+    raise exception 'erasure_purge_manifest: no such job' using errcode = '22023', hint = 'unknown_job';
+  end if;
+
+  if v_job.kind = 'account' then
+    return query
+      select 'feedback-screenshots'::text, 'feedback/' || f.id::text
+        from public.feedback f
+       where f.user_id = v_job.subject_user_id
+         and f.screenshot_key is not null
+      union all
+      select 'exports'::text, e.storage_key
+        from public.export_jobs e
+       where e.requested_by = v_job.subject_user_id
+         and e.storage_key is not null
+         -- Q206: a closure backup is the WORKSPACE's archive, not the
+         -- requester's; it is re-pointed at the tombstone, never purged here.
+         and not e.closure_backup
+      -- G37 (20261108005000): an ordinary export's parts 2..n (part 1 is the
+      -- job's storage_key, above).
+      union all
+      select 'exports'::text, p.storage_key
+        from public.export_job_parts p
+        join public.export_jobs e on e.id = p.job_id
+       where e.requested_by = v_job.subject_user_id
+         and p.part_no >= 2
+         and not e.closure_backup;
+  else
+    return query
+      select 'documents'::text, d.storage_key
+        from public.documents d
+       where d.organisation_id = v_job.organisation_id;
+  end if;
+end;
+$function$;
+
+CREATE OR REPLACE FUNCTION private.erase_account(p_user_id uuid, p_job_id uuid DEFAULT NULL::uuid)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO ''
+AS $function$
+declare
+  v_tomb    uuid := private.erased_user_id();
+  v_counts  jsonb := '{}'::jsonb;
+  v_n       bigint;
+  v_total   bigint := 0;
+  v_rec     record;
+  v_org     record;
+  v_multi   text;
+  v_orgs    uuid[];
+  v_left    text;
+begin
+  -- (0) ---------------------------------------------------------------------
+  if p_user_id is null then
+    raise exception 'erase_account: a subject is required' using errcode = '22023';
+  end if;
+  if p_user_id = v_tomb then
+    raise exception 'erase_account: the tombstone is not a person and cannot be erased'
+      using errcode = '42501', hint = 'tombstone_is_nobody';
+  end if;
+  if pg_catalog.current_setting('session_replication_role', true) is distinct from 'origin' then
+    raise exception 'erase_account: refuses to run with session_replication_role = %, because the cascades and the ON DELETE SET NULLs it depends on would not fire',
+      pg_catalog.current_setting('session_replication_role', true)
+      using errcode = '55000', hint = 'replication_role_must_be_origin';
+  end if;
+  -- (0b) THE ROLL AND THE CATALOGUE MUST AGREE (fix round 1, C1). A uuid
+  -- column no foreign key protects is invisible to steps 7, 8 and 10, so an
+  -- unclassified one is a promise this function cannot keep. It refuses here,
+  -- before a single row moves, rather than reporting a success that left a
+  -- stable identifier behind.
+  perform private.assert_fkless_identifier_roll();
+
+  -- (1) IDEMPOTENCE ---------------------------------------------------------
+  if not exists (select 1 from auth.users u where u.id = p_user_id) then
+    return pg_catalog.jsonb_build_object('already_erased', true);
+  end if;
+
+  -- (2) Q131, UNDER A LOCK (C2) ---------------------------------------------
+  -- The lock comes FIRST and covers every live workspace this person is an
+  -- active member of. Without it two erasures of two co-Owners both read a
+  -- workspace that still had an Owner in it and both deleted one.
+  perform private.account_lock_workspaces(p_user_id);
+  perform private.assert_account_is_erasable(p_user_id);
+
+  -- The workspaces to re-assert at 9b, captured while the guard's answer is
+  -- still true and before any of them can be purged by 8b.
+  select pg_catalog.array_agg(distinct m.organisation_id)
+    into v_orgs
+    from public.organisation_memberships m
+    join public.organisations o on o.id = m.organisation_id
+   where m.user_id = p_user_id and m.status = 'active' and o.deleted_at is null;
+
+  -- (2b) 20261025000000 (Task 9c fix round 1, I2): A CLOSURE BACKUP IS BUILT
+  -- AS ITS CLOSING OWNER, SO THE OWNER WAITS FOR IT. The export runner reads a
+  -- closure backup under the requester's own rights; erased first, step 5b
+  -- re-points it at the tombstone, which is a member of nothing, and the
+  -- backup was measured built with all 35 of its files empty. Refused, not
+  -- deferred: the whole erasure rolls back and the person asks again.
+  if exists (select 1 from public.export_jobs j
+              where j.requested_by = p_user_id and j.closure_backup
+                and j.status in ('queued', 'running')) then
+    raise exception 'erase_account: the backup of a workspace this account closed has not been built yet'
+      using errcode = '55000', hint = 'closure_backup_not_built';
+  end if;
+
+  -- (3) THE BYTES -----------------------------------------------------------
+  select count(*) into v_n
+    from storage.objects o
+   where (o.bucket_id = 'feedback-screenshots'
+          and o.name in (select 'feedback/' || f.id::text
+                           from public.feedback f where f.user_id = p_user_id))
+      or (o.bucket_id = 'exports'
+          and o.name in (select j.storage_key from public.export_jobs j
+                          where j.requested_by = p_user_id and j.storage_key is not null
+                            and not j.closure_backup))
+      -- G37 (20261108005000): an ordinary export may have parts 2..n at
+      -- their own keys; they are this account's bytes too.
+      or (o.bucket_id = 'exports'
+          and o.name in (select p.storage_key from public.export_job_parts p
+                           join public.export_jobs j on j.id = p.job_id
+                          where j.requested_by = p_user_id and not j.closure_backup));
+  if v_n > 0 then
+    raise exception 'erase_account: % stored object(s) belonging to this account are still in their buckets', v_n
+      using errcode = '55000', hint = 'bytes_not_purged';
+  end if;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('bytes_purged', true);
+
+  -- (4) PRIVATE NOTES ARE HARD-DELETED --------------------------------------
+  delete from public.notes n
+   where n.owner_user_id = p_user_id and n.visibility = 'private';
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('notes.private_deleted', v_n);
+
+  select count(*) into v_n from public.notes n
+   where n.owner_user_id = p_user_id and n.visibility = 'company';
+  v_counts := v_counts || pg_catalog.jsonb_build_object('notes.company_kept', v_n);
+
+  -- (5) THE REGISTER AND ITS NOTES (Q158) -----------------------------------
+  update public.data_subject_requests d
+     set user_id          = v_tomb,
+         user_email       = '[erased]',
+         detail           = '[erased]',
+         rejection_reason = case when d.rejection_reason is not null then '[erased]' end
+   where d.user_id = p_user_id;
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('data_subject_requests', v_n);
+
+  -- (5b) Q206: A CLOSURE BACKUP SURVIVES ITS REQUESTER. The backup
+  -- the Owner's closure RPC queued belongs to the closed WORKSPACE (the
+  -- superuser's decision item reads it); its requested_by is re-pointed at
+  -- the tombstone rather than cascaded away with auth.users. The marker is
+  -- what private.export_jobs_before_update() admits this one rewrite on.
+  perform pg_catalog.set_config('app.erasing_account', p_user_id::text, true);
+  update public.export_jobs j
+     set requested_by = v_tomb
+   where j.requested_by = p_user_id and j.closure_backup;
+  get diagnostics v_n = row_count;
+  perform pg_catalog.set_config('app.erasing_account', '', true);
+  v_counts := v_counts || pg_catalog.jsonb_build_object('export_jobs.closure_backups_kept', v_n);
+
+  update public.data_subject_request_notes t
+     set author_user_id = v_tomb
+   where t.author_user_id = p_user_id;
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('data_subject_request_notes', v_n);
+
+  -- (5c) THE PERSON'S OWN INTEGRATIONS, BEFORE THE DELETE (Phase 9 Task 3,
+  -- 20261030003000; Task 1 review finding). owner_user_id is ON DELETE SET
+  -- NULL, so leaving a person-scoped connection to step 9 turned it into a
+  -- WORKSPACE-scoped one an Owner or Admin can read, orphaned its Vault
+  -- secret, and -- when the workspace already held a live connection to the
+  -- same provider -- FAILED the whole erasure on the one-live unique index.
+  -- So each is revoked through the one primitive (the Vault secret first;
+  -- audited with the tombstone as actor), then its sync runs and the row go.
+  -- Every workspace, closed ones included: it is the person's own.
+  for v_rec in
+    select c.id from public.integration_connections c
+     where c.owner_user_id = p_user_id
+     order by c.id
+  loop
+    perform private.revoke_integration_row(v_rec.id, v_tomb, 'account_erased');
+  end loop;
+  delete from public.integration_sync_runs r
+   using public.integration_connections c
+   where r.organisation_id = c.organisation_id and r.connection_id = c.id
+     and c.owner_user_id = p_user_id;
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('integration_sync_runs.deleted', v_n);
+  delete from public.integration_connections c where c.owner_user_id = p_user_id;
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('integration_connections.deleted', v_n);
+
+  -- What they created or revoked FOR A WORKSPACE stays the workspace's, and is
+  -- attributed to the tombstone. Both keys are ON DELETE SET NULL, which step
+  -- 7's walk (NO ACTION keys only) does not reach, and NULL would read as
+  -- "nobody did this"; the guard admits this one move on a revoked row.
+  update public.integration_connections c set created_by = v_tomb where c.created_by = p_user_id;
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('integration_connections.created_by', v_n);
+  update public.integration_connections c set revoked_by = v_tomb where c.revoked_by = p_user_id;
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('integration_connections.revoked_by', v_n);
+
+  -- (6) THE IDENTIFIERS NO FOREIGN KEY PROTECTS -----------------------------
+  -- 6a. THE OWNER-ID SNAPSHOTS, RUN FROM THE ROLL RATHER THAN LISTED. Plain
+  --     uuid columns with no foreign key, so step 9's delete would leave them
+  --     naming a person who no longer exists -- a stable identifier surviving
+  --     erasure, which is the one thing pseudonymisation must not produce.
+  --     This loop is the C1 fix: the version that listed them named
+  --     public.merges and NOT public.merge_candidates, whose two columns
+  --     public.screen_for_duplicates() writes on every flagged duplicate, and
+  --     no derived assertion in this function could see the omission.
+  for v_rec in
+    select r.table_name as tbl, r.column_name as col
+      from private.fkless_identifier_columns() r
+     where r.identifies = 'user' and r.treatment = 'null_on_match'
+     order by 1, 2
+  loop
+    execute pg_catalog.format('update %s set %I = null where %I = $1',
+                              v_rec.tbl, v_rec.col, v_rec.col)
+      using p_user_id;
+    get diagnostics v_n = row_count;
+    v_counts := v_counts || pg_catalog.jsonb_build_object(
+      pg_catalog.replace(v_rec.tbl, 'public.', '') || '.' || v_rec.col, v_n);
+  end loop;
+
+  -- 6b. THE AUDIT LOG AS A TARGET. `actor_user_id` is handled by the derived
+  --     re-point below (it is a foreign key). `target_id` is not a foreign
+  --     key at all -- it is polymorphic -- so a row whose TARGET was this
+  --     person keeps their id unless it is moved here, and its before/after
+  --     payload describes them and is dropped. What happened stays; who it
+  --     happened to stops being nameable.
+  update public.audit_events a
+     set target_id = v_tomb,
+         before    = null,
+         after     = null
+   where a.target_id = p_user_id;
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('audit_events.targeted', v_n);
+
+  -- 6e. AND THE PAYLOADS OF THE ROWS THIS PERSON WAS THE ACTOR ON (M1).
+  --     actor_user_id itself is a foreign key and the derived walk at step 7
+  --     re-points it; the payload beside it is not a foreign key, is not a
+  --     uuid column, and was left untouched. The page promises that "any
+  --     description of the change is dropped" for every entry of theirs, so
+  --     it is dropped here -- what happened, when, to what and on which
+  --     correlation thread all stay.
+  update public.audit_events a
+     set before = null,
+         after  = null
+   where a.actor_user_id = p_user_id
+     and (a.before is not null or a.after is not null);
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('audit_events.acted_payloads', v_n);
+
+  -- 6c. INCIDENT ALERT DETAILS. A jsonb blob with no foreign key that carries
+  --     subject ids (a rate-limit crossing names the subject it metered). The
+  --     whole document is rewritten with the id replaced, which is complete
+  --     regardless of where in the shape it sits -- a key-by-key walk would
+  --     miss a nested one.
+  update public.incident_alerts i
+     set details = pg_catalog.replace(i.details::text, p_user_id::text, v_tomb::text)::jsonb
+   where i.details::text like '%' || p_user_id::text || '%';
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('incident_alerts.details', v_n);
+
+  -- 6f. THE PAYLOAD VALUES THAT NAME THIS PERSON ON SOMEBODY ELSE'S ROW
+  --     (Phase 8 Task 7 fix round 1, C1). 6b clears the rows that TARGET the
+  --     person and 6e the rows they ACTED on. Since 20261006000000 a third
+  --     shape exists on every workspace: an Admin's `membership.created`
+  --     carries the invitee's user_id, a Manager's `task.updated` carries the
+  --     colleague the task was reassigned to, a screen's `merge_candidate.*`
+  --     carries two owners -- rows whose actor and target are both somebody
+  --     or something else. Neither 6b nor 6e can see them.
+  --     THE VALUE IS REPLACED, NOT THE PAYLOAD DROPPED: the row is the
+  --     workspace's record of what its Admin did, and "an Admin invited the
+  --     erased user" is still true and still worth keeping; who the invitee
+  --     was is what stops being nameable -- the same tombstone step 7 points
+  --     every foreign key at. Whole-document text replace, the 6c shape,
+  --     because it is complete regardless of which key, which depth or which
+  --     writer put the id there, including writers that do not exist yet.
+  --     Case-insensitive, because a payload built by application code is not
+  --     guaranteed to have gone through the uuid type's lower-case output.
+  update public.audit_events a
+     set before = case when a.before is null then null else
+                    pg_catalog.regexp_replace(a.before::text, p_user_id::text, v_tomb::text, 'gi')::jsonb end,
+         after  = case when a.after is null then null else
+                    pg_catalog.regexp_replace(a.after::text, p_user_id::text, v_tomb::text, 'gi')::jsonb end
+   where pg_catalog.strpos(pg_catalog.lower(coalesce(a.before::text, '')), p_user_id::text) > 0
+      or pg_catalog.strpos(pg_catalog.lower(coalesce(a.after::text, '')), p_user_id::text) > 0;
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('audit_events.payload_values', v_n);
+
+  -- 6d. RATE LIMIT COUNTERS. Enforcement state about a person who will not be
+  --     making any more requests. Deleted rather than re-pointed: rolling an
+  --     erased account's spent budget onto the tombstone would throttle the
+  --     next one (Q110 leaves the general sweep to Task 6; this is the
+  --     subject-scoped part of it).
+  --     Run from the roll too, with the roll carrying the scope predicate --
+  --     `subject_id` is polymorphic and a workspace's counters are not this
+  --     person's to delete.
+  for v_rec in
+    select r.table_name as tbl, r.column_name as col, r.predicate as pred
+      from private.fkless_identifier_columns() r
+     where r.identifies = 'user' and r.treatment = 'delete_row'
+     order by 1, 2
+  loop
+    execute pg_catalog.format('delete from %s where %I = $1 and (%s)',
+                              v_rec.tbl, v_rec.col,
+                              coalesce(v_rec.pred, 'true'))
+      using p_user_id;
+    get diagnostics v_n = row_count;
+    v_counts := v_counts || pg_catalog.jsonb_build_object(
+      pg_catalog.replace(v_rec.tbl, 'public.', ''), v_n);
+  end loop;
+
+  -- (7) THE RE-POINT, DERIVED ------------------------------------------------
+  -- ASSERT WHAT THE DERIVATION WOULD DROP, first: a COMPOSITE foreign key to
+  -- auth.users cannot be re-pointed by the single-column walk below, and would
+  -- be skipped silently. There is none today; there must not be one tomorrow
+  -- without somebody noticing.
+  select pg_catalog.string_agg(con.conname, ', ') into v_multi
+    from pg_catalog.pg_constraint con
+   where con.contype = 'f'
+     and con.confrelid = 'auth.users'::pg_catalog.regclass
+     and pg_catalog.array_length(con.conkey, 1) > 1;
+  if v_multi is not null then
+    raise exception 'erase_account: composite foreign key(s) to auth.users (%) are not handled by the re-point walk', v_multi
+      using errcode = '55000', hint = 'composite_fk_to_auth_users';
+  end if;
+
+  for v_rec in
+    select con.conrelid::pg_catalog.regclass::text as tbl, a.attname::text as col
+      from pg_catalog.pg_constraint con
+      join pg_catalog.pg_class c on c.oid = con.conrelid
+      join pg_catalog.pg_attribute a
+        on a.attrelid = con.conrelid and a.attnum = con.conkey[1]
+     where con.contype = 'f'
+       and con.confrelid = 'auth.users'::pg_catalog.regclass
+       and con.confdeltype = 'a'          -- NO ACTION: the ones that BLOCK
+       and c.relkind in ('r', 'p')
+     order by 1, 2
+  loop
+    execute pg_catalog.format('update %s set %I = $1 where %I = $2',
+                              v_rec.tbl, v_rec.col, v_rec.col)
+      using v_tomb, p_user_id;
+    get diagnostics v_n = row_count;
+    v_total := v_total + v_n;
+    if v_n > 0 then
+      v_counts := v_counts || pg_catalog.jsonb_build_object(
+        pg_catalog.replace(v_rec.tbl, 'public.', '') || '.' || v_rec.col, v_n);
+    end if;
+  end loop;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('tombstoned_references', v_total);
+
+  -- (8) ASSERT IT WORKED -----------------------------------------------------
+  for v_rec in
+    select con.conrelid::pg_catalog.regclass::text as tbl, a.attname::text as col
+      from pg_catalog.pg_constraint con
+      join pg_catalog.pg_class c on c.oid = con.conrelid
+      join pg_catalog.pg_attribute a
+        on a.attrelid = con.conrelid and a.attnum = con.conkey[1]
+     where con.contype = 'f'
+       and con.confrelid = 'auth.users'::pg_catalog.regclass
+       and con.confdeltype = 'a'
+       and c.relkind in ('r', 'p')
+  loop
+    execute pg_catalog.format('select count(*) from %s where %I = $1', v_rec.tbl, v_rec.col)
+      into v_n using p_user_id;
+    if v_n > 0 then
+      raise exception 'erase_account: %.% still names the account after the re-point (% row(s)) -- a guard refused it',
+        v_rec.tbl, v_rec.col, v_n
+        using errcode = '55000', hint = 'reference_survived_the_repoint';
+    end if;
+  end loop;
+
+  -- (8b) Q131'S NARROW CASE --------------------------------------------------
+  for v_org in
+    select w.organisation_id from private.account_last_owner_workspaces(p_user_id) w
+     where w.other_members = 0 and w.is_empty
+  loop
+    perform private.erase_organisation(v_org.organisation_id, p_job_id, false);
+    v_counts := v_counts || pg_catalog.jsonb_build_object('workspace_purged', true);
+  end loop;
+
+  -- (9) THE DELETE -----------------------------------------------------------
+  delete from auth.users u where u.id = p_user_id;
+  get diagnostics v_n = row_count;
+  v_counts := v_counts || pg_catalog.jsonb_build_object('auth_users', v_n);
+
+  -- (9b) AND THE Q131 INVARIANT ITSELF, AFTER THE DELETE (C2) ----------------
+  -- The lock at step 2 is what stops the race; this is what proves it held.
+  -- Every live workspace this person was an active member of must still have
+  -- an active Owner -- unless 8b took the whole workspace with them, in which
+  -- case there is nothing left to strand.
+  select pg_catalog.string_agg(o.name, ', ' order by o.name)
+    into v_left
+    from public.organisations o
+   where o.id = any (coalesce(v_orgs, '{}'::uuid[]))
+     and o.deleted_at is null
+     and not exists (
+       select 1 from public.organisation_memberships m
+        where m.organisation_id = o.id
+          and m.role = 'owner'
+          and m.status = 'active');
+  if v_left is not null then
+    raise exception 'erase_account: % would be left with no owner -- another erasure of a co-owner committed while this one was running', v_left
+      using errcode = '55000', hint = 'workspace_left_ownerless';
+  end if;
+
+  -- (10) ASSERT AGAIN, OVER EVERY FOREIGN KEY --------------------------------
+  for v_rec in
+    select con.conrelid::pg_catalog.regclass::text as tbl, a.attname::text as col
+      from pg_catalog.pg_constraint con
+      join pg_catalog.pg_class c on c.oid = con.conrelid
+      join pg_catalog.pg_attribute a
+        on a.attrelid = con.conrelid and a.attnum = con.conkey[1]
+     where con.contype = 'f'
+       and con.confrelid = 'auth.users'::pg_catalog.regclass
+       and c.relkind in ('r', 'p')
+  loop
+    execute pg_catalog.format('select count(*) from %s where %I = $1', v_rec.tbl, v_rec.col)
+      into v_n using p_user_id;
+    if v_n > 0 then
+      raise exception 'erase_account: %.% still names the account after the delete (% row(s))',
+        v_rec.tbl, v_rec.col, v_n
+        using errcode = '55000', hint = 'reference_survived_the_delete';
+    end if;
+  end loop;
+
+  -- (10b) AND OVER EVERY AUDIT PAYLOAD (C1) -------------------------------
+  -- The foreign-key walks above cannot see inside jsonb. This can: after the
+  -- delete, so that anything a cascade wrote is inside the measurement too,
+  -- not one audit row's before/after may still contain the account's id.
+  -- Refusing rolls the whole erasure back, which is the fail-closed direction
+  -- -- a success that left the id in a payload is the thing C1 was.
+  select count(*) into v_n
+    from public.audit_events a
+   where pg_catalog.strpos(pg_catalog.lower(coalesce(a.before::text, '')), p_user_id::text) > 0
+      or pg_catalog.strpos(pg_catalog.lower(coalesce(a.after::text, '')), p_user_id::text) > 0;
+  if v_n > 0 then
+    raise exception 'erase_account: % audit payload(s) still contain the account''s id after the scrub', v_n
+      using errcode = '55000', hint = 'identifier_survived_in_audit_payload';
+  end if;
+
+  -- (11) ONE SUMMARY ROW -----------------------------------------------------
+  -- Counts, never content, and the ACTOR IS THE TOMBSTONE because the person
+  -- who asked no longer exists. It is written last so that its own
+  -- actor_user_id is already a pseudonym rather than something step 7 would
+  -- have had to rewrite.
+  insert into public.audit_events
+    (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, after)
+  values (
+    null, v_tomb, 'account.erased', 'erasure_job',
+    p_job_id,
+    coalesce(p_job_id, pg_catalog.gen_random_uuid()),
+    v_counts);
+
+  return v_counts;
+end;
+$function$;

@@ -130,6 +130,10 @@ select count(*) as fin_before from public.financial_entries where organisation_i
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'super_c';
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'super_c') \g /dev/null
 select ov.try('OB1 the superuser grants a billing override naming Pro for ALPHA',
   $$select public.grant_billing_override('org-alpha','pro',null,
              'goodwill extension while the invoice is queried', now()+interval '1 hour')$$,

@@ -354,19 +354,23 @@ describe("the network path names no tenant-private relation (the CI-visible half
     expect(targets.size).toBeGreaterThan(0);
   });
 
-  it("every DYNAMIC `.from(...)` target is enumerated, and there is exactly one", () => {
+  it("every DYNAMIC `.from(...)` target is enumerated, and there are exactly two", () => {
     // A literal search cannot see `.from(SOME_MAP[kind])`, so a dynamic call
     // site is a hole in the assertion above unless it is named and justified.
-    // There is exactly one on the whole path: lib/network/entities.ts:305
-    // dispatches over ENTITY_TABLE, whose four values are the four entity
-    // tables on ALLOWED_LITERAL_TABLES -- and the query it builds carries
+    // There are two on the whole path, both in lib/network/entities.ts and
+    // both dispatching over ENTITY_TABLE, whose four values are the four
+    // entity tables on ALLOWED_LITERAL_TABLES: loadEntityName, and (Phase 10
+    // Task 14, G6) loadPublishableEntities' bounded scan. Each query carries
     // `.eq("organisation_id", organisationId)` for the caller's OWN
-    // organisation. A second dynamic call site turns this red and has to be
+    // organisation. A third dynamic call site turns this red and has to be
     // justified the same way.
     const dynamic = FILES.flatMap((f) =>
       dynamicFromCalls(SOURCES.get(f)!).map((expr) => `${f}: ${expr}`),
     );
-    expect(dynamic).toEqual(["lib/network/entities.ts: ENTITY_TABLE[entityKind]"]);
+    expect(dynamic).toEqual([
+      "lib/network/entities.ts: ENTITY_TABLE[entityKind]",
+      "lib/network/entities.ts: ENTITY_TABLE[entityKind]",
+    ]);
   });
 
   it("ENTITY_TABLE's four values are all on the allowlist, so the dynamic call cannot escape it", () => {

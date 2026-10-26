@@ -17,6 +17,7 @@
 // that reached the function can produce.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createFixtures, destroyFixtures, type RlsFixtures } from "../rls/support/fixtures";
 import { getLocalSupabaseStatus } from "../rls/support/env";
 
@@ -42,6 +43,9 @@ vi.mock("@/lib/auth", () => ({
 vi.mock("@/lib/auth/step-up-gate", () => ({
   checkStepUp: async () => true,
   sessionIsAal2: async () => true,
+  // The real mint, through the persona's own (server-marked) client.
+  mintStepUpToken: async (purpose: string) =>
+    !(await (current.client as SupabaseClient).rpc("mint_step_up_token", { p_purpose: purpose })).error,
 }));
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => current.client,

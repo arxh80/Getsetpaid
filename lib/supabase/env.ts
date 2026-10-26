@@ -74,6 +74,17 @@ export function supabaseSecretKey(): string {
 }
 
 /**
+ * `cookieOptions` for every @supabase/ssr client (Phase 10 Task 2 F6). The
+ * library's defaults carry no `secure` at all, so the access and refresh
+ * tokens travelled in clear on any plain-http request. Secure in production
+ * only, like `gsp_current_org`: the local stack and `next dev` serve http.
+ * Merged over the library defaults (path "/", SameSite=Lax, 400-day max age).
+ */
+export function authCookieOptions(): { secure: boolean } {
+  return { secure: process.env.NODE_ENV === "production" };
+}
+
+/**
  * Absolute origin used to build auth redirect URLs (OAuth callback, magic
  * link, invite link).
  *

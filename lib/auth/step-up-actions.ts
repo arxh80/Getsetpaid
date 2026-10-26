@@ -10,6 +10,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUser } from "./index";
 import { safeNextPath } from "./redirects";
+import { mayTryPassword, recordPasswordOutcome } from "./login-budget";
 import { field, type FormState } from "@/lib/forms";
 
 /** Same mapping step-up's MFA path uses -- see lib/auth/mfa-actions.ts for
@@ -79,10 +80,16 @@ export async function reauthenticateAction(
     redirect(`/login?next=${encodeURIComponent(next)}`);
   }
 
+  // The same per-account budget as signInAction (lib/auth/login-budget.ts):
+  // a stolen session must not brute-force its owner's password here either.
+  if (!(await mayTryPassword(user.email))) {
+    return { error: "That password wasn't right. Try again." };
+  }
   const { error } = await supabase.auth.signInWithPassword({
     email: user.email,
     password,
   });
+  await recordPasswordOutcome(user.email, error);
 
   if (error) {
     // Same one-message rule as signInAction: never confirm or deny which

@@ -26,6 +26,7 @@ import { LineupPanel } from "@/components/crm/lineup-panel";
 import {
   loadCustomFieldCellsForEntities,
   loadCustomFieldPanel,
+  TOO_MANY_CUSTOM_FIELDS_MESSAGE,
 } from "@/lib/crm/custom-field-queries";
 import {
   describeCustomFieldValue,
@@ -447,8 +448,9 @@ export default async function EventDetailPage({
           none, which is the one thing the empty state must never do. */}
       {customFields.outcome === "unavailable" ? (
         <Alert tone="error">
-          We couldn’t load this event’s custom fields just now. Refresh the page
-          to try again — nothing has been changed.
+          {customFields.reason === "too_many"
+            ? TOO_MANY_CUSTOM_FIELDS_MESSAGE
+            : "We couldn’t load this event’s custom fields just now. Refresh the page to try again — nothing has been changed."}
         </Alert>
       ) : (
         // `disabledReason={panelBlocked}` IS THE SAME EXPRESSION THE LINEUP

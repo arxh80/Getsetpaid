@@ -35,6 +35,7 @@ export function ConnectButton({
   canWrite,
   explanation,
   ownProfiles,
+  moreOwnProfiles = false,
 }: {
   orgSlug: string;
   toProfileId: string;
@@ -44,6 +45,8 @@ export function ConnectButton({
    *  it depends on `ownProfiles` rather than on `connectAccess`. */
   explanation: string | undefined;
   ownProfiles: readonly OwnPublishedProfile[];
+  /** G6: the list stops at OWN_PROFILES_LIMIT and there are more. */
+  moreOwnProfiles?: boolean;
 }) {
   const noteId = "network-connect-note";
   const [state, formAction, pending] = useActionState(
@@ -144,6 +147,11 @@ export function ConnectButton({
               </option>
             ))}
           </select>
+          {moreOwnProfiles ? (
+            <p className="max-w-prose text-sm text-ink-muted">
+              Showing your first {ownProfiles.length} published profiles, in name order.
+            </p>
+          ) : null}
         </div>
       )}
 

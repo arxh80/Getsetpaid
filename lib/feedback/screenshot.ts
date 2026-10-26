@@ -45,7 +45,7 @@ import "server-only";
 
 import { isSuperuser } from "@/lib/admin/superuser";
 import { createClient } from "@/lib/supabase/server";
-import { createStorageClient } from "@/lib/supabase/storage";
+import { createStorageClient, objectPresence } from "@/lib/supabase/storage";
 import { UUID_RE } from "@/lib/feedback/contract";
 
 const BUCKET = "feedback-screenshots";
@@ -85,22 +85,15 @@ export async function issueFeedbackScreenshotUrl(
   // THE BYTES, BEFORE THE AUDIT. An audit row must record a view that can
   // happen; a key with nothing behind it is "not found", not "viewed".
   const bucket = createStorageClient().storage.from(BUCKET);
-  // storage-js's exists(): {data:true} when the HEAD succeeds, {data:false,
-  // error} on a 404 (the error is SET in that case, so it is not the
-  // failure branch), and a throw for anything else.
-  let present: { data: boolean | null; error: { message: string } | null };
-  try {
-    present = await bucket.exists(data.screenshot_key as string);
-  } catch (cause) {
-    console.error("[feedback] screenshot existence check threw; withholding the URL:", cause instanceof Error ? cause.message : String(cause));
-    return { ok: false, status: 500 };
-  }
-  if (present.data === false) {
+  // objectPresence(), not exists(): a HEAD cannot tell a missing object from a
+  // Storage fault (G20), and a fault must not read as "no screenshot".
+  const presence = await objectPresence(bucket, data.screenshot_key as string);
+  if (presence === "missing") {
     console.error(`[feedback] row ${feedbackId} names screenshot ${data.screenshot_key} but no object exists; no audit row written`);
     return { ok: false, status: 404 };
   }
-  if (present.error || present.data !== true) {
-    console.error("[feedback] screenshot existence check failed; withholding the URL:", present.error?.message ?? "no answer");
+  if (presence === "error") {
+    console.error("[feedback] screenshot existence check failed; withholding the URL");
     return { ok: false, status: 500 };
   }
 

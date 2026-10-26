@@ -589,6 +589,10 @@ select lg.val('LV12 the refused edits changed nothing: the draft holds the LV10 
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'super_c') \g /dev/null
 select lg.try('LR1 a Manager cannot record a counsel review',
   format($$select public.record_legal_document_counsel_review(%L, 'Some Firm LLP')$$, :'terms_draft'),
   'denied(42501)');

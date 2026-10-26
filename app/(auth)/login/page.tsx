@@ -31,6 +31,8 @@ const ERRORS: Record<string, string> = {
  */
 const NOTICES: Record<string, string> = {
   idle_timeout: "You were signed out after 30 minutes of inactivity.",
+  // choosePasswordAction (Phase 10 Task 20): saved, but the session could not refresh.
+  password_saved: "Your new password is saved. Sign in with it to continue.",
 };
 
 export default async function LoginPage({

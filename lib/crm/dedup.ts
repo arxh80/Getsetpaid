@@ -38,6 +38,7 @@ import {
   parseOptions,
   type CustomFieldDefinition,
 } from "@/lib/crm/custom-fields";
+import { CUSTOM_FIELD_READ_CEILING, POSTGREST_MAX_ROWS } from "@/lib/crm/custom-field-queries";
 import type { CrmWriteAccess } from "@/lib/crm/write-access";
 import { defineListSpec } from "@/lib/list/spec";
 import { commitWrite } from "@/lib/crm/write";
@@ -543,15 +544,29 @@ export async function loadRecordPair(
       .select("field_id, entity_id, value")
       .eq("organisation_id", organisationId)
       .eq("entity_type", entityType)
-      .in("entity_id", [keepId, duplicateId]),
+      .in("entity_id", [keepId, duplicateId])
+      .limit(POSTGREST_MAX_ROWS),
     supabase
       .from("custom_field_definitions")
       .select("id, key, label, field_type, options, deleted_at")
       .eq("organisation_id", organisationId)
       .eq("entity_type", entityType)
       .is("deleted_at", null)
-      .order("label", { ascending: true }),
+      .order("label", { ascending: true })
+      .limit(CUSTOM_FIELD_READ_CEILING + 1),
   ]);
+
+  // G5: a merge decided over a truncated field list would drop the values it
+  // never showed. Past either bound the pair is not offered (logged, not silent).
+  if (
+    (values.data?.length ?? 0) >= POSTGREST_MAX_ROWS ||
+    (definitions.data?.length ?? 0) > CUSTOM_FIELD_READ_CEILING
+  ) {
+    console.error(
+      `[crm] merge pair for organisation ${organisationId} has more custom fields than the merge screen can show; refusing it.`,
+    );
+    return null;
+  }
 
   if (records.error || !records.data) {
     console.error(
