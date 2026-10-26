@@ -1323,6 +1323,8 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Phase 10 Task 20 -- the auth callback asks whether an account's address was already proved (private.address_first_proofs); one boolean about one account; refuses any session",
   "record_address_first_proof(p_user_id uuid, p_password_kept boolean)":
     "Phase 10 Task 20 -- the ONLY write path of private.address_first_proofs, called by the auth callback once a first proof is settled; refuses any session",
+  "meter_password_sign_in(p_email text, p_outcome text)":
+    "Phase 10 Task 8 (G4 fallback) -- the sign-in and step-up password paths spend the account's login_email budget BEFORE GoTrue and report the outcome after; refuses any session, so no browser can spend or clear another person's budget",
   "claim_erasure_job()": "Task 5 -- the erasure runner takes the next queued job; bearer-secret route only",
   "claim_export_job()": "Task 4 -- the export runner takes the next queued job; bearer-secret route only",
   "consent_is_granted(p_user_id uuid, p_purpose text)":

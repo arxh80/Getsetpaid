@@ -722,7 +722,7 @@ fi
 # assuming zero, because an earlier suite could raise one.
 # ============================================================================
 
-run_suite "PHASE 7 RATE LIMITS" rls_phase7_rate_limits.sql rl 191 "${P7VARS[@]}"
+run_suite "PHASE 7 RATE LIMITS" rls_phase7_rate_limits.sql rl 209 "${P7VARS[@]}"
 rl_fails=$SUITE_FAILS
 if [ "$rl_fails" != "0" ]; then
   echo "PHASE 7 RATE-LIMIT SUITE FAILED: $rl_fails failing assertion(s)" >&2

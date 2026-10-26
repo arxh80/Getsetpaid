@@ -23,6 +23,7 @@ import { siteUrl } from "@/lib/supabase/env";
 import { safeNextPath } from "./redirects";
 import { mayChangePassword, readAuthFreshness } from "./step-up";
 import { bindSignUp, clearMustChoosePassword, isNewSignUp } from "./first-proof";
+import { mayTryPassword, recordPasswordOutcome } from "./login-budget";
 import { MUST_CHOOSE_PASSWORD_KEY } from "@/lib/supabase/middleware";
 import {
   field,
@@ -114,6 +115,8 @@ export async function signUpAction(
 // ---------------------------------------------------------------------------
 // Sign in (email + password)
 // ---------------------------------------------------------------------------
+const BAD_SIGN_IN = "That email and password don't match. Check both and try again.";
+
 export async function signInAction(
   _prev: FormState,
   formData: FormData,
@@ -131,15 +134,20 @@ export async function signInAction(
     };
   }
 
+  // G4 fallback (lib/auth/login-budget.ts): the account's failed-attempt
+  // budget is checked BEFORE GoTrue. A spent budget gets the same message as
+  // a wrong password, for an address with no account too, so it reveals
+  // neither the lockout's cause nor whether the account exists.
+  if (!(await mayTryPassword(email))) return { error: BAD_SIGN_IN };
+
   const supabase = await createClient();
   const { error } = await supabase.auth.signInWithPassword({ email, password });
+  await recordPasswordOutcome(email, error);
 
   if (error) {
     // ONE message for wrong-password and no-such-account alike. Do not
     // "improve" this by reading error.code and being more specific.
-    return {
-      error: "That email and password don't match. Check both and try again.",
-    };
+    return { error: BAD_SIGN_IN };
   }
 
   redirect(next);
