@@ -27,10 +27,13 @@ const envStep = spawnSync(process.execPath, [join(here, "dev-env.mjs"), ...args]
 });
 if (envStep.status !== 0) process.exit(envStep.status ?? 1);
 
+// Next's own entry point under this Node, not `npx.cmd`: Node >= 20.12 refuses
+// to spawn a .cmd without a shell (CVE-2024-27980), which failed silently here.
 const port = String(resolveAppPort());
 const next = spawnSync(
-  process.platform === "win32" ? "npx.cmd" : "npx",
-  ["next", "dev", "--port", port],
+  process.execPath,
+  [join(repo, "node_modules", "next", "dist", "bin", "next"), "dev", "--port", port],
   { stdio: "inherit", cwd: repo, env: { ...process.env, PORT: port } },
 );
+if (next.error) console.error(`dev: could not start next dev: ${next.error.message}`);
 process.exit(next.status ?? 1);
