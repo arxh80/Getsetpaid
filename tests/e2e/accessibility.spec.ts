@@ -3,10 +3,11 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   FINANCE_LINES,
   PASSWORD,
+  plantAxeRecords,
   setUpWorld,
   tearDownWorld,
-  type E2eWorld,
 } from "./support/fixtures";
+import { AXE_PAGES, type AxeWorld } from "./support/axe-routes";
 import { signIn, signOut } from "./support/sign-in";
 import { totpCode } from "../support/totp";
 
@@ -136,22 +137,15 @@ async function scan(page: Page, label: string, deferred: Deferred[] = []) {
   ).toEqual([]);
 }
 
-let world: E2eWorld;
+let world: AxeWorld;
 
 test.beforeAll(async () => {
-  world = await setUpWorld();
+  const base = await setUpWorld();
+  world = { ...base, ...(await plantAxeRecords(base)) };
 });
 
 test.afterAll(async () => {
   if (world) await tearDownWorld(world);
-});
-
-test("the signed-out login page has no automated accessibility violations", async ({
-  page,
-}) => {
-  await page.goto("/login");
-  await expect(page.locator('input[name="email"]')).toBeVisible();
-  await scan(page, "/login");
 });
 
 // ===========================================================================
@@ -176,81 +170,18 @@ test("the signed-out login page has no automated accessibility violations", asyn
 // the session does not carry across; a password sign-in is a form POST and a
 // redirect, which is seconds against a first-hit compile of tens of seconds.
 // Paying it buys a report that says WHICH page is slow.
-const SIGNED_IN_PAGES: [string, (w: E2eWorld) => string][] = [
-  ["contacts list", (w) => `/${w.orgSlug}/contacts`],
-  ["new contact", (w) => `/${w.orgSlug}/contacts/new`],
-  [
-    "contact detail + timeline",
-    (w) => `/${w.orgSlug}/contacts/${w.managerOwnedContactId}`,
-  ],
-  ["companies list", (w) => `/${w.orgSlug}/companies`],
-  ["new company", (w) => `/${w.orgSlug}/companies/new`],
-  ["new artist", (w) => `/${w.orgSlug}/artists/new`],
-  ["new venue", (w) => `/${w.orgSlug}/venues/new`],
-  // ---- PHASE 3'S FOUR SURFACES (Task 8 brief § 3) ------------------------
-  // The list, the create form, a detail page and the deleted list -- the same
-  // four shapes the Phase 2 entries above cover, on the entity this phase
-  // added. The DETAIL page is the one that earns its place twice over: it is
-  // the only page in the product carrying three lib/list/ surfaces at once (the
-  // lineup panel, the custom-fields panel and the activity timeline), plus the
-  // status chip, so it is where a duplicate `id`, an orphaned
-  // `aria-describedby` or a second `role="list"` with no accessible name would
-  // land first.
-  ["events list", (w) => `/${w.orgSlug}/events`],
-  ["new event", (w) => `/${w.orgSlug}/events/new`],
-  [
-    // ALSO THE THREE-LIST RELATED PANEL (Task 8 brief § 3). The event detail
-    // page carries the "Tasks, notes & documents" RelatedPanel — three lists on
-    // one page, each with its own pager — and the operations fixtures now link a
-    // task and a document to this event, so the panel is POPULATED here rather
-    // than rendering three empty states. It is where a duplicate `id`, an
-    // orphaned `aria-describedby` on a scan/priority chip, or a second
-    // `role="list"` with no accessible name would land first.
-    "event detail + lineup + timeline + related panel",
-    (w) => `/${w.orgSlug}/events/${w.managerOwnedEventId}`,
-  ],
-  ["deleted events", (w) => `/${w.orgSlug}/events/deleted`],
-  // ---- PHASE 4'S OPERATIONS SURFACES (Task 8 brief § 3) ------------------
-  // The list, the create form and a detail page for the operations entity
-  // (tasks), plus the notes list, the documents list and its deleted queue.
-  // The documents list is the one carrying the SCAN CHIP and the inline
-  // download/delete controls; the task detail carries the PRIORITY CHIP, the
-  // task-status chip and the entity-link picker.
-  ["tasks list", (w) => `/${w.orgSlug}/tasks`],
-  ["new task", (w) => `/${w.orgSlug}/tasks/new`],
-  ["task detail + link picker", (w) => `/${w.orgSlug}/tasks/${w.taskId}`],
-  ["notes list", (w) => `/${w.orgSlug}/notes`],
-  ["documents list + scan chips", (w) => `/${w.orgSlug}/documents`],
-  ["deleted documents", (w) => `/${w.orgSlug}/documents/deleted`],
-  // ---- PHASE 6 (NETWORK), TASK 2 -----------------------------------------
-  // "This organisation's own profiles" -- empty for the manager's own
-  // workspace here (no company has been published to the network by this
-  // suite's fixtures), which is a real and common state: the "Publish a
-  // record" picker, the empty-state copy and the list toolbar all render
-  // over zero rows. The EDITOR page -- the most consequential screen in the
-  // product, with its nine-field publish summary and seven radio ladders --
-  // needs a real profile to scan and gets its own dedicated test below,
-  // the same shape the finance panel's dedicated test uses.
-  ["network profiles list", (w) => `/${w.orgSlug}/network/profiles`],
-  // ---- PHASE 8 TASK 5 (ERASURE) ------------------------------------------
-  // /account/erase, scanned as the MANAGER and therefore with its control
-  // REACHABLE: a Manager is the last Owner of nothing, so the Q131 warning is
-  // absent, the step-up gate is satisfied by the sign-in that just happened,
-  // and the typed-confirmation field and its danger button are both in the
-  // tree. Scanned as an Owner it would be a page of prose with a disabled
-  // button and no field -- the state that proves least.
-  ["delete your account", () => "/account/erase"],
-  // ---- PHASE 10 TASK 22 ----------------------------------------------------
-  // Scanned, never pressed: a global sign-out would end the manager's other
-  // sessions mid-run.
-  ["sign out everywhere", () => "/account/sessions"],
-];
-
-for (const [label, url] of SIGNED_IN_PAGES) {
+// THE PAGE LIST LIVES IN support/axe-routes.ts (Phase 10 Task 15, G21), where
+// tests/unit/design/axe-route-census.test.ts holds it against app/**/page.tsx.
+for (const { label, url, role } of AXE_PAGES) {
   test(`${label} has no automated accessibility violations`, async ({ page }) => {
-    await signIn(page, world, "manager");
+    if (role === "manager") await signIn(page, world, "manager");
+    if (role === "superuser") await signInAsSuperuser(page);
     await page.goto(url(world));
     await settled(page);
+    // NON-VACUITY: a refused page renders the in-app 404, whose own <h1>
+    // satisfies settled() and whose scan is clean -- a green row that never
+    // saw the page it names.
+    await expect(page.getByRole("heading", { level: 1, name: "Page not found." })).toHaveCount(0);
     await scan(page, label);
   });
 }

@@ -3490,3 +3490,42 @@ export async function deletePlantedMember(userId: string): Promise<void> {
   await sql(`delete from public.audit_events where actor_user_id = $1`, [userId]);
   await api(`/auth/v1/admin/users/${userId}`, { key: serviceRoleKey, method: "DELETE" });
 }
+
+/**
+ * PHASE 10 TASK 15 (G21): the records accessibility.spec.ts needs for the
+ * company and agency detail/edit pages and the merge screen, which the world
+ * does not carry. Planted here, in that spec's own world only, so no other
+ * spec's lists or pickers gain rows. merge_candidates has no INSERT grant
+ * (screen_for_duplicates() writes it), so the pair goes in as `postgres`.
+ * The organisation delete in tearDownWorld removes all of it.
+ */
+export async function plantAxeRecords(world: E2eWorld): Promise<{
+  companyId: string;
+  agencyId: string;
+  mergeCandidateId: string;
+}> {
+  const managerId = world.users.manager.id;
+  const companyId = randomUUID();
+  const agencyId = randomUUID();
+  const duplicateAgencyId = randomUUID();
+  const mergeCandidateId = randomUUID();
+  await sql(
+    `insert into public.companies (id, organisation_id, owner_user_id, name)
+     values ($1,$2,$3,'E2E Axe Company')`,
+    [companyId, world.orgId, managerId],
+  );
+  await sql(
+    `insert into public.agencies (id, organisation_id, owner_user_id, name, created_at)
+     values ($1,$3,$4,'E2E Axe Agency', now() - interval '1 day'),
+            ($2,$3,$4,'E2E Axe Agency Ltd', now())`,
+    [agencyId, duplicateAgencyId, world.orgId, managerId],
+  );
+  await sql(
+    `insert into public.merge_candidates
+       (id, organisation_id, entity_type, keep_id, duplicate_id,
+        keep_owner_user_id, duplicate_owner_user_id, label, reason, similarity)
+     values ($1,$2,'agency',$3,$4,$5,$5,'E2E Axe Agency','fuzzy_name',0.9)`,
+    [mergeCandidateId, world.orgId, agencyId, duplicateAgencyId, managerId],
+  );
+  return { companyId, agencyId, mergeCandidateId };
+}
