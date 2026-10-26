@@ -48,6 +48,7 @@ export const PRIVATE_POLICY_HELPERS: Readonly<Record<string, string>> = {
   "private.lifecycle_lock(uuid)": "row lock behind private.lifecycle_target() for the invoker lifecycle RPCs",
   "private.lifecycle_has_active_owner(uuid)": "reinstate_organisation() refuses a workspace with no active Owner",
   "private.network_profile_is_discoverable(uuid, uuid)": "is this profile visible to the caller through network_directory",
+  "private.network_reaching_organisations()": "G29: the organisations whose network profiles the caller may see, as a set, read by both network views",
   "private.is_active_owner(uuid)": "Q248: only an Owner may create, change or remove a membership role",
   "private.consume_step_up(text)": "G13: every step-up RPC takes the caller's one-use step-up token",
 };
