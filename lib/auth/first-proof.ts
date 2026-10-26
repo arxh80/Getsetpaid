@@ -57,7 +57,7 @@ const BINDING_MAX_AGE_SECONDS = 60 * 60 * 24;
 
 /**
  * GoTrue refuses to re-send a confirmation to one account inside
- * `[auth.email] max_frequency` (1s locally; asserted >= 1s by
+ * `[auth.email] max_frequency` (20m since G3; asserted >= 1s by
  * tests/unit/security/auth-config.test.ts). So a RE-sign-up's
  * confirmation_sent_at is at least that long after the account's created_at,
  * while a new account's two stamps are milliseconds apart (14ms measured).

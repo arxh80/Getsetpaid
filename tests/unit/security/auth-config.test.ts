@@ -17,7 +17,7 @@ import { describe, expect, it } from "vitest";
 // `enable_confirmations` appears under BOTH [auth.email] and [auth.sms], so a
 // plain grep for the key would happily read the wrong one.
 //
-// Phase 10 Task 8 extends this file with further keys.
+// Phase 10 Task 8 added max_frequency (G3) and the per-IP limits (G10).
 // ===========================================================================
 
 const CONFIG_PATH = fileURLToPath(new URL("../../../supabase/config.toml", import.meta.url));
@@ -93,6 +93,29 @@ describe("supabase/config.toml auth settings", () => {
     expect(match, `unparsed max_frequency ${values[0]}`).not.toBeNull();
     const unitMs = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[match![2] as "ms" | "s" | "m" | "h"];
     expect(Number(match![1]) * unitMs).toBeGreaterThanOrEqual(1_000);
+  });
+
+  // G3 (Phase 10 Task 8). SECURITY.md § 5's "password recovery 3 / hour per
+  // account" has no hook to enforce it; GoTrue's own per-user mail timer is
+  // the enforcement point, and 20 minutes is at most three an hour. A longer
+  // value is not a looser control, but it is not what § 5 promises, and it
+  // also throttles the emailed sign-in link (the lockout's escape hatch), so
+  // the value is pinned exactly.
+  it('[auth.email] max_frequency is "20m": at most 3 recovery emails per account per hour (G3)', () => {
+    expect(valuesOf(toml, "auth.email", "max_frequency")).toEqual(['"20m"']);
+  });
+
+  // G10 (Phase 10 Task 8). GoTrue's per-IP limits. Without the per-account
+  // hook on the hosted plan (G4, F8) sign_in_sign_ups is production's only
+  // GoTrue-side brute-force bound, so raising it would go unnoticed without
+  // this. A live 31st-request check belongs on the hosted project from an
+  // isolated source (SECURITY.md § 15), never on the shared local stack.
+  it.each([
+    ["sign_in_sign_ups", "30"],
+    ["token_verifications", "30"],
+    ["email_sent", "30"],
+  ])("[auth.rate_limit] %s = %s (G10)", (key, value) => {
+    expect(valuesOf(toml, "auth.rate_limit", key)).toEqual([value]);
   });
 
   // The two templates that send every sign-up confirmation and recovery link

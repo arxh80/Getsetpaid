@@ -243,6 +243,11 @@ password_requirements = ""
 # rp_origins = ["http://127.0.0.1:3000"]
 
 [auth.rate_limit]
+# email_sent, sign_in_sign_ups and token_verifications are pinned by
+# tests/unit/security/auth-config.test.ts (G10): without the per-account hook
+# (G4, founder action F8) the per-IP sign_in_sign_ups is production's only
+# GoTrue-side login bound, and SECURITY.md § 15 lists all three for the hosted
+# project.
 # Number of emails that can be sent per hour. Requires auth.email.smtp to be enabled.
 #
 # Raised from the CLI default of 2. Two auth emails per hour PER PROJECT (not
@@ -310,7 +315,21 @@ enable_confirmations = true
 # changing theirs both still succeed.
 secure_password_change = true
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
-max_frequency = "1s"
+#
+# 20 MINUTES, AND IT IS A SECURITY CONTROL (G3 in docs/launch-gates.md; Phase
+# 10 Task 8). SECURITY.md § 5 promises password recovery at most 3 per hour
+# per account, and GoTrue offers no per-account hook on recovery, so this
+# per-user timer is the only enforcement point: one recovery mail per account
+# per 20 minutes. GoTrue applies the same timer to the emailed sign-in link and
+# to re-sent sign-up confirmations (measured: tests/integration/security/
+# recovery-frequency.test.ts), which is why lib/auth/actions.ts treats its 429
+# like success (it would otherwise say which addresses have accounts) and the
+# magic-link "sent" page says "at most one link every 20 minutes". Q245's
+# first-proof discriminator needs at least 1s; 20m satisfies it. Asserted by
+# tests/unit/security/auth-config.test.ts, and on the SECURITY.md § 15
+# checklist for the hosted project. Changing it needs a `supabase stop &&
+# supabase start`.
+max_frequency = "20m"
 # Number of characters used in the email OTP.
 otp_length = 6
 # Number of seconds before the email OTP expires (defaults to 1 hour).
