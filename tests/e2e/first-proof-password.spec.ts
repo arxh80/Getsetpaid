@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   PASSWORD,
   authUserByEmail,
+  ageAuthMailClocks,
   createDisposableUser,
   localStack,
   setUpInviteWorld,
@@ -77,9 +78,10 @@ async function squat(address: string): Promise<void> {
   const { error } = await attacker.auth.signUp({ email: address, password: P1 });
   expect(error).toBeNull();
   await waitForMail(address, /confirm/i, 1);
-  // [auth.email] max_frequency = "1s": the owner's own step re-sends a mail to
-  // this account, and inside a second that is a 429, which is not the case.
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  // [auth.email] max_frequency = "20m" (G3): the owner's own step re-sends a
+  // mail to this account, which inside 20 minutes is refused. The owner
+  // arrives later, so the account's clocks are moved back past the window.
+  await ageAuthMailClocks(address);
 }
 
 /**

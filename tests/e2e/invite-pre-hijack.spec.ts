@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   PASSWORD,
   authUserByEmail,
+  ageAuthMailClocks,
   localStack,
   membershipsOfUser,
   setUpInviteWorld,
@@ -119,7 +120,8 @@ async function signInOwner(page: Page): Promise<void> {
 /** Sends an invitation through the members page and returns what the form says. */
 async function invite(owner: Page, orgSlug: string, address: string): Promise<string> {
   await owner.goto(`/${orgSlug}/members`);
-  const form = owner.locator("form").filter({ has: owner.locator('input[name="orgSlug"]') });
+  // The invite form, not a member row's role form (Task 21 added those, also with orgSlug).
+  const form = owner.locator("form").filter({ has: owner.getByRole("button", { name: "Send invitation" }) });
   await form.locator('input[name="email"]').fill(address);
   await form.locator('select[name="role"]').selectOption("manager");
   await form.getByRole("button", { name: "Send invitation" }).click();
@@ -299,9 +301,10 @@ test("an unconfirmed re-sign-up mails the same inbox again, and confirming kills
   const first = await newPage(browser);
   await signUp(first, address, P1);
   await waitForMail(address, /confirm/i, 1);
-  // [auth.email] max_frequency = "1s": a second confirmation for the same
-  // account inside a second is refused with 429, which is not what is measured.
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  // [auth.email] max_frequency = "20m" (G3): a second confirmation for the
+  // same account inside 20 minutes is refused, which is not what is measured.
+  // The second registrant arrives later: the clocks move back past the window.
+  await ageAuthMailClocks(address);
 
   const second = await newPage(browser);
   await signUp(second, address, P2);
@@ -349,9 +352,10 @@ test("invitation first: a squatter signing up over a pending invitee's account p
   );
   const [invitation] = await waitForMail(address, new RegExp(INVITE_SUBJECT));
 
-  // [auth.email] max_frequency = "1s" applies to the confirmation this
-  // sign-up sends; inside a second it would be a 429, which is not the case.
-  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  // [auth.email] max_frequency = "20m" (G3) applies to the confirmation this
+  // sign-up sends; inside the window it would be refused, which is not the
+  // case measured. The squatter arrives later than the invitation.
+  await ageAuthMailClocks(address);
   const { apiUrl, anonKey } = localStack();
   const attacker = createClient(apiUrl, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false },

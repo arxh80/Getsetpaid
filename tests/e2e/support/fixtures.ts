@@ -3402,6 +3402,29 @@ export async function authUserByEmail(email: string): Promise<{
   return row ? { id: row.id, emailConfirmed: row.confirmed, invited: row.invited } : null;
 }
 
+/**
+ * Moves every GoTrue clock on one account 21 minutes into the past, as if the
+ * next person came along later. [auth.email] max_frequency (20 minutes since
+ * G3, Phase 10 Task 8) refuses a second mail to one account inside the
+ * window, and the auth-journey specs model a squatter and an owner who arrive
+ * at different times. Shifted together, so their order (the invite step's
+ * invited_at test, isNewSignUp()'s created_at gap) is unchanged.
+ */
+export async function ageAuthMailClocks(email: string): Promise<void> {
+  const { rowCount } = await db().query(
+    `update auth.users
+        set created_at               = created_at - interval '21 minutes',
+            confirmation_sent_at     = confirmation_sent_at - interval '21 minutes',
+            recovery_sent_at         = recovery_sent_at - interval '21 minutes',
+            invited_at               = invited_at - interval '21 minutes',
+            email_change_sent_at     = email_change_sent_at - interval '21 minutes',
+            reauthentication_sent_at = reauthentication_sent_at - interval '21 minutes'
+      where lower(email) = lower($1)`,
+    [email],
+  );
+  if (rowCount !== 1) throw new Error(`ageAuthMailClocks: ${rowCount} accounts for ${email}`);
+}
+
 /** Every organisation_memberships row this user holds, read as `postgres`. */
 export async function membershipsOfUser(
   userId: string,
