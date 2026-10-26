@@ -43,7 +43,7 @@ const ALLOWED: Record<string, string> = {
   "lib/crm/dedup.ts loadRecordPair from(table)": "exactly two ids, the merge pair",
   'lib/network/discovery.ts loadNetworkProfileSummaries from("network_connected_profiles")': "one page's profile ids",
   'lib/network/discovery.ts loadNetworkProfileSummaries from("network_directory")': "one page's profile ids, the second half of the lookup",
-  'app/(app)/[orgSlug]/members/page.tsx listMembers from("profiles")': "at most 200 member ids (the membership read's flat cap, G8)",
+  'lib/org/members.ts listMembers from("profiles")': "at most MEMBERS_LIMIT (200) member ids",
   // --- the list chokepoint itself: bounded through wrapper helpers ---
   "lib/list/query.ts buildPage from(table)": "the chokepoint's page: .limit(pageSize + 1) on the wrapped query",
   "lib/list/query.ts fetchListPage from(table)": "the two edge probes: applyCursor(...).limit(1)",
