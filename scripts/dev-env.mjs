@@ -21,8 +21,15 @@
 import { execSync } from "node:child_process";
 import { writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { resolveWorkdir, resolveAppPort } from "./stack.mjs";
 
 const TARGET = join(process.cwd(), ".env.development.local");
+
+// WHICH STACK. Slot 0 (the committed supabase/config.toml, shared by every
+// worktree) unless this worktree ran `node scripts/stack.mjs claim`, in which
+// case it is the generated `.supabase-slot/` overlay. See scripts/stack.mjs.
+const WORKDIR = resolveWorkdir();
+const APP_PORT = resolveAppPort();
 
 // Keys are read out of `supabase status -o env` rather than hardcoded. They are
 // the CLI's well-known local demo keys today, but a CLI upgrade may rotate them
@@ -35,10 +42,24 @@ function readLocalStack() {
     // fails with ENOENT, which this script would then report as "the stack is
     // not running", sending the reader to fix the wrong thing. Nothing here is
     // interpolated, so there is nothing for a shell to expand.
-    raw = execSync("npx --yes supabase status -o env", {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    // A `supabase` ALREADY ON PATH IS PREFERRED, and this is not a
+    // micro-optimisation: on a CI runner the CLI is installed by
+    // supabase/setup-cli and `npx --yes supabase` would download a SECOND,
+    // possibly different version of it before every dev-server start. On a
+    // developer machine there is usually no `supabase` on PATH and the npx
+    // fallback is what has always run.
+    const status = `status -o env --workdir "${WORKDIR}"`;
+    try {
+      raw = execSync(`supabase ${status}`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      raw = execSync(`npx --yes supabase ${status}`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
   } catch {
     return null;
   }
@@ -54,7 +75,7 @@ function readLocalStack() {
 // PR #2 fixed a hosted-auth bug caused by exactly that distinction. Read it
 // rather than assuming, so the two cannot drift.
 function readSiteUrl() {
-  const configPath = join(process.cwd(), "supabase", "config.toml");
+  const configPath = join(WORKDIR, "supabase", "config.toml");
   if (!existsSync(configPath)) return "http://localhost:3000";
   const match = readFileSync(configPath, "utf8").match(/^site_url\s*=\s*"([^"]+)"/m);
   return match?.[1] ?? "http://localhost:3000";
@@ -131,8 +152,16 @@ writeFileSync(
     "# localhost and 127.0.0.1 as different origins.",
     `NEXT_PUBLIC_SITE_URL=${readSiteUrl()}`,
     "",
+    "# The dev-server port this worktree owns. 3000 on the shared default stack;",
+    "# 3000+slot once `node scripts/stack.mjs claim` has run. scripts/dev.mjs",
+    "# passes it to `next dev`; this line is here so anything else reading the",
+    "# generated env sees the same number.",
+    `PORT=${APP_PORT}`,
+    "",
   ].join("\n"),
   "utf8",
 );
 
-console.log(`dev-env: app pointed at the local stack (${stack.apiUrl}).`);
+console.log(
+  `dev-env: app pointed at the local stack (${stack.apiUrl}), dev server on ${APP_PORT}.`,
+);

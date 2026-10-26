@@ -18,8 +18,33 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-CTR="supabase_db_$(grep -E '^project_id' "$ROOT/supabase/config.toml" | cut -d'"' -f2)"
-API="http://127.0.0.1:54321"
+# WHICH STACK. Both of these used to be constants -- the committed project_id
+# and a hardcoded 127.0.0.1:54321 -- which meant this script always ran against
+# the one shared stack no matter which worktree invoked it. A worktree that has
+# run `node scripts/stack.mjs claim` owns a different project id and a different
+# API port, so both are now derived:
+#
+#   WORKDIR  $SUPABASE_WORKDIR (the Supabase CLI's own variable, exported by
+#            `stack.mjs claim`), else this worktree's generated
+#            .supabase-slot/, else the repo root -- unchanged behaviour.
+#   CTR      the project_id of whichever config.toml that workdir holds.
+#   API      read from `supabase status`, which already knows -- so it moves
+#            with the slot instead of being pinned to 54321.
+WORKDIR="${SUPABASE_WORKDIR:-}"
+if [ -z "$WORKDIR" ]; then
+  if [ -f "$ROOT/.supabase-slot/supabase/config.toml" ]; then
+    WORKDIR="$ROOT/.supabase-slot"
+  else
+    WORKDIR="$ROOT"
+  fi
+fi
+CTR="supabase_db_$(grep -E '^project_id' "$WORKDIR/supabase/config.toml" | cut -d'"' -f2)"
+API=$(cd "$ROOT" && supabase status -o json --workdir "$WORKDIR" 2>/dev/null \
+      | python -c "import sys,json;print(json.load(sys.stdin)['API_URL'])")
+if [ -z "${API:-}" ]; then
+  echo "Could not read API_URL from 'supabase status'. Is the local stack up?" >&2
+  exit 1
+fi
 
 # The LOCAL server-only request mark (Phase 10 Task 5): read from .env.example,
 # whose digest seed.sql seeds. The HTTP section sends it on every curl; the
@@ -27,7 +52,7 @@ API="http://127.0.0.1:54321"
 SERVER_MARK=$(sed -n 's/^GETSETPAID_SERVER_REQUEST_SECRET=//p' "$ROOT/.env.example" | tr -d '\r')
 [ -n "$SERVER_MARK" ] || { echo "no GETSETPAID_SERVER_REQUEST_SECRET in .env.example" >&2; exit 1; }
 
-SRK=$(cd "$ROOT" && supabase status -o json 2>/dev/null \
+SRK=$(cd "$ROOT" && supabase status -o json --workdir "$WORKDIR" 2>/dev/null \
       | python -c "import sys,json;print(json.load(sys.stdin)['SERVICE_ROLE_KEY'])")
 if [ -z "${SRK:-}" ]; then
   echo "Could not read SERVICE_ROLE_KEY from 'supabase status'. Is the local stack up?" >&2
@@ -235,6 +260,32 @@ fi
 echo
 
 
+# ---------------------------------------------------------------------------
+# RECORD THE FIXTURE VARIABLES FOR run-one.sh.
+#
+# Every suite after rls_foundation.sql is handed a -v array of fixture user
+# uuids and session claims that this script builds from auth.users it creates
+# over the Auth admin API. Nothing else can reconstruct them, which is why a
+# single suite could not be re-run on its own -- and re-running one is exactly
+# what iterating on a psql file wants (a full run is ~19 suites and minutes).
+#
+# So each array is written out as it is built, and supabase/tests/run-one.sh
+# replays it against the still-live database. The suites do not tear their
+# fixtures down (see the preflight above), so after a full run the rows the
+# variables point at are all still there.
+#
+# The file holds throwaway local-stack user uuids and unsigned claim JSON --
+# no keys, no tokens, nothing signed -- and is gitignored regardless.
+VARS_DUMP="$HERE/.last-run-vars.sh"
+dump_vars() {
+  local name=$1; shift
+  printf '%s=(' "$name" >> "$VARS_DUMP"
+  printf ' %q' "$@" >> "$VARS_DUMP"
+  printf ')\n' >> "$VARS_DUMP"
+}
+: > "$VARS_DUMP"
+
+
 VARS=()
 for u in alice bob carol dave super; do
   VARS+=( -v "$u=${ID[$u]}" )
@@ -242,6 +293,7 @@ for u in alice bob carol dave super; do
   VARS+=( -v "${u}_c1={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
   VARS+=( -v "${u}_c0={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\"}" )
 done
+dump_vars FOUNDATION_VARS "${VARS[@]}"
 
 run_suite "RLS FOUNDATION" rls_foundation.sql harness 196 "${VARS[@]}"
 fails=$SUITE_FAILS
@@ -595,6 +647,7 @@ fi
 P7VARS=( "${P6VARS[@]}" )
 P7VARS+=( -v "super_c1={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
 P7VARS+=( -v "server_mark=$SERVER_MARK" )
+dump_vars SUITE_VARS "${P7VARS[@]}"
 
 
 run_suite "PHASE 7 IMPERSONATION" rls_phase7_impersonation.sql imp 126 "${P7VARS[@]}"

@@ -1,4 +1,30 @@
+import { existsSync, readFileSync } from "node:fs";
 import { defineConfig, devices } from "@playwright/test";
+
+// THIS WORKTREE'S DEV-SERVER PORT, NOT A CONSTANT.
+//
+// `scripts/stack.mjs claim` gives a worktree its own Supabase stack and its own
+// app port (3000 + slot), written to `.supabase-slot/slot.json`. Reading that
+// file directly -- rather than importing scripts/stack.mjs -- keeps this config
+// free of a module-resolution dependency it does not otherwise have, for four
+// lines. No slot claimed means 3000, exactly as before.
+function appPort(): number {
+  if (process.env.PORT) return Number(process.env.PORT);
+  try {
+    if (existsSync("./.supabase-slot/slot.json")) {
+      const meta = JSON.parse(readFileSync("./.supabase-slot/slot.json", "utf8")) as {
+        appPort?: number;
+      };
+      if (meta.appPort) return meta.appPort;
+    }
+  } catch {
+    // A corrupt slot file is not a reason to refuse to run; 3000 is the
+    // documented default and the webServer check below fails loudly anyway.
+  }
+  return 3000;
+}
+
+const APP_ORIGIN = `http://localhost:${appPort()}`;
 
 // PLAYWRIGHT, LOCAL STACK ONLY.
 //
@@ -58,7 +84,7 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 15_000 },
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL: APP_ORIGIN,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     // The app sets a 30-minute idle timeout and stores activity in
@@ -70,7 +96,7 @@ export default defineConfig({
   ],
   webServer: {
     command: "pnpm dev",
-    url: "http://localhost:3000/login",
+    url: `${APP_ORIGIN}/login`,
     reuseExistingServer: process.env.PLAYWRIGHT_REUSE_SERVER === "1",
     timeout: 180_000,
     stdout: "ignore",
