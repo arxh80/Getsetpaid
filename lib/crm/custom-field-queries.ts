@@ -38,9 +38,32 @@ import {
   type CustomFieldEntityType,
 } from "@/lib/crm/custom-fields";
 
+// ===========================================================================
+// AND A TRUNCATED READ IS NOT A WHOLE ONE (Phase 10 Task 14, G5)
+// ===========================================================================
+// Pro's custom fields are unlimited and removed definitions accumulate on
+// every tier, while PostgREST returns at most `[api] max_rows` (1000) rows and
+// says nothing when it stops. So every read here is bounded, and one that
+// reaches its bound returns `unavailable` with `reason: "too_many"` rather
+// than a short list: a form that silently drops fields would save over them.
+
+/** The most definitions of one entity type a page will render (G5). */
+export const CUSTOM_FIELD_READ_CEILING = 500;
+
+/** supabase/config.toml `[api] max_rows`: a longer response is cut here, silently. */
+export const POSTGREST_MAX_ROWS = 1000;
+
+/** Unavailable: the read failed, or (`reason: "too_many"`) it passed a ceiling. */
+export type Unavailable = { readonly outcome: "unavailable"; readonly reason?: "too_many" };
+
+const TOO_MANY: Unavailable = { outcome: "unavailable", reason: "too_many" };
+
+/** What a page says instead of rendering a truncated set of custom fields. */
+export const TOO_MANY_CUSTOM_FIELDS_MESSAGE = `This record type has more than ${CUSTOM_FIELD_READ_CEILING} custom fields, counting removed ones, which is more than this page can show. Nothing has been changed; contact support and we will help you tidy them up.`;
+
 export type DefinitionsResult =
   | { readonly outcome: "loaded"; readonly definitions: CustomFieldDefinition[] }
-  | { readonly outcome: "unavailable" };
+  | Unavailable;
 
 /** The columns every read below selects. One list, so they cannot drift. */
 const DEFINITION_COLUMNS =
@@ -115,10 +138,18 @@ export async function loadCustomFieldDefinitions(
     .eq("entity_type", entityType);
   if (!options.includeRemoved) query = query.is("deleted_at", null);
 
-  const { data, error } = await query.order("label", { ascending: true });
+  const { data, error } = await query
+    .order("label", { ascending: true })
+    .limit(CUSTOM_FIELD_READ_CEILING + 1);
   if (error) {
     console.error("[crm] custom field definitions lookup failed:", error.message);
     return { outcome: "unavailable" };
+  }
+  if (data.length > CUSTOM_FIELD_READ_CEILING) {
+    console.error(
+      `[crm] more than ${CUSTOM_FIELD_READ_CEILING} ${entityType} custom field definitions in organisation ${organisationId}; refusing a truncated list.`,
+    );
+    return TOO_MANY;
   }
   const definitions = (data as DefinitionRow[])
     .map((row) => toDefinition(row, entityType))
@@ -132,17 +163,15 @@ export type CountsResult =
       /** Live definitions per entity type. Every key present, zeros included. */
       readonly counts: Readonly<Record<CustomFieldEntityType, number>>;
     }
-  | { readonly outcome: "unavailable" };
+  | Unavailable;
 
 /**
  * How many LIVE definitions each entity type already has.
  *
- * ONE ROUND TRIP FOR ALL FIVE, counted in JavaScript rather than five
- * `head: true` count queries: the row set is bounded by the tier limit times
- * five (or by whatever a Pro workspace has chosen), the settings page needs
- * every number at once to render "3 of 5 used" per tab, and five sequential
- * count requests on one render is the shape lib/list/query.ts already warns
- * about.
+ * ONE `head: true` COUNT PER ENTITY TYPE, in parallel (G5). It used to read
+ * every live definition and count in JavaScript, which past max_rows counted
+ * only the first 1000 -- a Pro workspace has no limit -- and said nothing.
+ * A count returns no rows, so it has no ceiling to pass.
  *
  * IT COUNTS WHAT THE TRIGGER COUNTS -- `deleted_at is null`, per entity type
  * -- because it is what the UI compares against the limit. It is NOT the
@@ -153,26 +182,27 @@ export async function loadCustomFieldCounts(
   organisationId: string,
 ): Promise<CountsResult> {
   const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("custom_field_definitions")
-    .select("entity_type")
-    .eq("organisation_id", organisationId)
-    .is("deleted_at", null);
-
-  if (error) {
-    console.error("[crm] custom field count lookup failed:", error.message);
-    return { outcome: "unavailable" };
-  }
-  // SEEDED FROM THE VOCABULARY, NOT A HAND-KEPT LIST. Every entity type gets a
-  // zero so the settings tab strip renders a count for each -- iterating the
-  // literal here was how `event` (Phase 3) and `financial_entry` (Phase 5)
-  // reached the tab strip with a blank count while their `deleted_at is null`
-  // rows piled up uncounted. `if (... in counts)` still fences the loop, so a
-  // row of some type this build does not know is ignored rather than crashing.
+  // SEEDED FROM THE VOCABULARY, NOT A HAND-KEPT LIST, so every entity type
+  // gets a count -- iterating a literal was how `event` (Phase 3) and
+  // `financial_entry` (Phase 5) reached the tab strip with a blank count.
+  const results = await Promise.all(
+    CUSTOM_FIELD_ENTITY_TYPES.map((type) =>
+      supabase
+        .from("custom_field_definitions")
+        .select("id", { count: "exact", head: true })
+        .eq("organisation_id", organisationId)
+        .eq("entity_type", type)
+        .is("deleted_at", null),
+    ),
+  );
   const counts: Record<string, number> = {};
-  for (const type of CUSTOM_FIELD_ENTITY_TYPES) counts[type] = 0;
-  for (const row of data as { entity_type: string }[]) {
-    if (row.entity_type in counts) counts[row.entity_type] += 1;
+  for (const [i, type] of CUSTOM_FIELD_ENTITY_TYPES.entries()) {
+    const { count, error } = results[i]!;
+    if (error || count === null) {
+      console.error("[crm] custom field count lookup failed:", error?.message ?? "no count returned");
+      return { outcome: "unavailable" };
+    }
+    counts[type] = count;
   }
   return {
     outcome: "loaded",
@@ -193,7 +223,7 @@ export interface CustomFieldPanel {
 
 export type PanelResult =
   | { readonly outcome: "loaded"; readonly panel: CustomFieldPanel }
-  | { readonly outcome: "unavailable" };
+  | Unavailable;
 
 /**
  * Everything one entity row's custom fields panel needs, in two round trips.
@@ -216,14 +246,17 @@ export async function loadCustomFieldPanel(
       .select("field_id, value")
       .eq("organisation_id", organisationId)
       .eq("entity_type", entityType)
-      .eq("entity_id", entityId),
+      .eq("entity_id", entityId)
+      // At most one value per definition, and the definitions are capped above.
+      .limit(CUSTOM_FIELD_READ_CEILING + 1),
   ]);
 
-  if (definitions.outcome === "unavailable") return { outcome: "unavailable" };
+  if (definitions.outcome === "unavailable") return definitions;
   if (values.error) {
     console.error("[crm] custom field values lookup failed:", values.error.message);
     return { outcome: "unavailable" };
   }
+  if (values.data.length > CUSTOM_FIELD_READ_CEILING) return TOO_MANY;
 
   const stored = new Map<string, unknown>();
   for (const row of values.data as { field_id: string; value: unknown }[]) {
@@ -256,7 +289,7 @@ export interface EntityCustomFields {
 
 export type EntityCustomFieldsResult =
   | { readonly outcome: "loaded"; readonly fields: EntityCustomFields }
-  | { readonly outcome: "unavailable" };
+  | Unavailable;
 
 /**
  * The LIVE custom fields for MANY entity rows of one type, in two round trips.
@@ -282,10 +315,14 @@ export async function loadCustomFieldCellsForEntities(
   entityType: CustomFieldEntityType,
   entityIds: readonly string[],
 ): Promise<EntityCustomFieldsResult> {
-  const definitions = await loadCustomFieldDefinitions(organisationId, entityType);
-  if (definitions.outcome === "unavailable") return { outcome: "unavailable" };
+  // Removed definitions too: their values come back for these entities as
+  // well, so they count toward how many rows one entity can carry.
+  const definitions = await loadCustomFieldDefinitions(organisationId, entityType, {
+    includeRemoved: true,
+  });
+  if (definitions.outcome === "unavailable") return definitions;
 
-  const live = definitions.definitions;
+  const live = definitions.definitions.filter((d) => d.deletedAt === null);
   // Nothing defined, or nothing to look up: the definitions still travel back
   // (the ADD form renders empty cells from them), but there are no values to
   // fetch, so the second round trip is skipped.
@@ -293,25 +330,38 @@ export async function loadCustomFieldCellsForEntities(
     return { outcome: "loaded", fields: { definitions: live, cellsByEntity: new Map() } };
   }
 
+  // G5: a page of entities times every definition can pass max_rows, so the
+  // ids go in chunks whose worst case stays under it. A chunk that still
+  // fills max_rows was cut short, and the read refuses rather than truncate.
+  const perChunk = Math.max(1, Math.floor((POSTGREST_MAX_ROWS - 1) / definitions.definitions.length));
+  const chunks: string[][] = [];
+  for (let i = 0; i < entityIds.length; i += perChunk) chunks.push(entityIds.slice(i, i + perChunk));
   const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("custom_field_values")
-    .select("entity_id, field_id, value")
-    .eq("organisation_id", organisationId)
-    .eq("entity_type", entityType)
-    .in("entity_id", [...entityIds]);
+  const results = await Promise.all(
+    chunks.map((ids) =>
+      supabase
+        .from("custom_field_values")
+        .select("entity_id, field_id, value")
+        .eq("organisation_id", organisationId)
+        .eq("entity_type", entityType)
+        .in("entity_id", ids)
+        .limit(POSTGREST_MAX_ROWS),
+    ),
+  );
 
-  if (error) {
-    console.error(
-      "[crm] custom field values (batch) lookup failed:",
-      error.message,
-    );
-    return { outcome: "unavailable" };
+  const rows: { entity_id: string; field_id: string; value: unknown }[] = [];
+  for (const { data, error } of results) {
+    if (error) {
+      console.error("[crm] custom field values (batch) lookup failed:", error.message);
+      return { outcome: "unavailable" };
+    }
+    if (data.length >= POSTGREST_MAX_ROWS) return TOO_MANY;
+    rows.push(...(data as typeof rows));
   }
 
   // entityId -> (fieldId -> value)
   const stored = new Map<string, Map<string, unknown>>();
-  for (const row of data as { entity_id: string; field_id: string; value: unknown }[]) {
+  for (const row of rows) {
     let perEntity = stored.get(row.entity_id);
     if (perEntity === undefined) {
       perEntity = new Map<string, unknown>();

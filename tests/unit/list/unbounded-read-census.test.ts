@@ -27,13 +27,6 @@ import { unboundedReads } from "./unbounded-read-detector";
 // entry; key on the line too if that ever matters more than churn.
 
 const ALLOWED: Record<string, string> = {
-  // --- G5 (Task 14 bounds these and removes them) ---
-  'lib/crm/custom-field-queries.ts loadCustomFieldDefinitions from("custom_field_definitions")': "G5: every definition of one entity type; Pro is unlimited",
-  'lib/crm/custom-field-queries.ts loadCustomFieldCounts from("custom_field_definitions")': "G5: every live definition, read only to count it",
-  'lib/crm/custom-field-queries.ts loadCustomFieldPanel from("custom_field_values")': "G5: one entity's values, times the definition count",
-  'lib/crm/custom-field-queries.ts loadCustomFieldCellsForEntities from("custom_field_values")': "G5: a page of entities' values, times the definition count",
-  'lib/crm/dedup.ts loadRecordPair from("custom_field_values")': "G5: two entities' values, times the definition count",
-  'lib/crm/dedup.ts loadRecordPair from("custom_field_definitions")': "G5: every live definition of one entity type",
   // --- G6 (Task 14 bounds these and removes them) ---
   'lib/network/entities.ts loadPublishedEntityIds from("network_profiles")': "G6: every live profile of one kind in the org",
   'lib/network/entities.ts loadOwnPublishedProfiles from("network_profiles")': "G6: every published profile of the org (Send from)",
