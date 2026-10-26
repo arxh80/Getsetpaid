@@ -899,6 +899,49 @@ select inv.val('IE7 ...and the issued snapshot is byte-identical', format($$sele
 select inv.val('IE8 no invoice audit payload names the erased person', format($$select count(*)::text from public.audit_events where (action like 'invoice.%%' or action like 'invoice_settings.%%') and (coalesce(before::text, '') || coalesce(after::text, '')) like '%%' || %L || '%%'$$, :'fin_e'), '0');
 
 -- ===========================================================================
+-- § IX SETTINGS (Task 7, 20261107004000)
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
+select inv.val('IX1 changing the bank account returns true (the bank changed)', format($$select public.save_invoice_settings(%L, 'Alpha Promotions Ltd', '1 Alpha Street, London', 'GB123456789', 'Alpha Promotions Ltd', '654321', '87654321', 'INV-', 30)::text$$, :'org_a'), 'true');
+select inv.val('IX2 ...stored, and next_number untouched by a save (Tasks 5-6 issued five)', format($$select bank_sort_code || '|' || bank_account_number || '|' || next_number from public.invoice_settings where organisation_id = %L$$, :'org_a'), '654321|87654321|6');
+select inv.val('IX6 saving the business name alone returns false (no bank field changed)', format($$select public.save_invoice_settings(%L, 'Alpha Promotions Limited', '1 Alpha Street, London', 'GB123456789', 'Alpha Promotions Ltd', '654321', '87654321', 'INV-', 30)::text$$, :'org_a'), 'false');
+select inv.val('IX7 saving nothing new returns false too', format($$select public.save_invoice_settings(%L, 'Alpha Promotions Limited', '1 Alpha Street, London', 'GB123456789', 'Alpha Promotions Ltd', '654321', '87654321', 'INV-', 30)::text$$, :'org_a'), 'false');
+select inv.val('IX8 an invalid sort code is refused with the settings hint', format($$select public.save_invoice_settings(%L, 'A', 'B', null, 'N', '12-34', '12345678', 'INV-', 30)::text$$, :'org_a'), 'denied(22023:invoice_settings_invalid)');
+select inv.val('IX9 B''s settings cannot be saved by A''s Finance user', format($$select public.save_invoice_settings(%L, 'A', 'B', null, null, null, null, 'INV-', 30)::text$$, :'org_b'), 'denied(42501:forbidden)');
+set request.jwt.claims = :'mgr_a_c';
+select inv.val('IX10 a Manager cannot save settings', format($$select public.save_invoice_settings(%L, 'A', 'B', null, null, null, null, 'INV-', 30)::text$$, :'org_a'), 'denied(42501:forbidden)');
+set request.jwt.claims = :'fin_s_c';
+select inv.val('IX11 a STARTER workspace cannot save settings', format($$select public.save_invoice_settings(%L, 'A', 'B', null, null, null, null, 'INV-', 30)::text$$, :'org_s'), 'denied(42501:plan_does_not_include_invoicing)');
+reset role;
+reset request.jwt.claims;
+-- The audit log is superuser-readable only, so it is read as postgres.
+select inv.val('IX3 two invoice_settings.changed rows, naming columns only: the bank save, then the name save (the no-op save wrote none)', format($$select count(*) || '|' || string_agg(after ->> 'changed', ';' order by created_at, id) from public.audit_events where action = 'invoice_settings.changed' and organisation_id = %L$$, :'org_a'), '2|["bank_account_number", "bank_sort_code"];["business_name"]');
+select inv.val('IX4 ONE bank_details_changed row (the name and no-op saves wrote none): exact key set {changed}, the bank column names, no digit anywhere', format($$select count(*) || '|' || string_agg((select string_agg(k, ',' order by k) from jsonb_object_keys(after) k), ';') || '|' || max(after ->> 'changed') || '|' || bool_and(before is null and after::text !~ '[0-9]')::text from public.audit_events where action = 'invoice_settings.bank_details_changed' and organisation_id = %L$$, :'org_a'), '1|changed|["bank_account_number", "bank_sort_code"]|true');
+select inv.val('IX5 ...and no audit row anywhere carries the full account number', $$select count(*)::text from public.audit_events where (coalesce(before::text, '') || coalesce(after::text, '')) like '%87654321%'$$, '0');
+
+-- ===========================================================================
+-- § IQ THE BANK-CHANGE NOTICE QUEUE (Task 7). Read and stamped by the sender
+-- (service_role, no person on the session), never by a person.
+-- ===========================================================================
+select id as bank_audit from public.audit_events where action = 'invoice_settings.bank_details_changed' and organisation_id = :'org_a' \gset
+select id as issued_audit from public.audit_events where action = 'invoice.issued' and organisation_id = :'org_a' limit 1 \gset
+set role service_role;
+select inv.val('IQ1 the sender sees the change, addressed to A''s current Owner and Admin only, with the CURRENT account''s last four', format($$select count(*) || '|' || max(cardinality(emails)) || '|' || bool_and(emails @> array[%L, %L]::text[])::text || '|' || max(account_last4) from public.pending_invoice_bank_change_notifications(30) where audit_event_id = %L$$, 'inv-own-a-' || :'own_a' || '@test.local', 'inv-adm-a-' || :'adm_a' || '@test.local', :'bank_audit'), '1|2|true|4321');
+select inv.val('IQ2 a stamp on a row of another action writes nothing', format($$select public.mark_notices_delivered('invoice_bank_details_changed', array[%L]::uuid[])::text$$, :'issued_audit'), '0');
+select inv.val('IQ3 the stamp on the bank-change row writes one ledger row', format($$select public.mark_notices_delivered('invoice_bank_details_changed', array[%L]::uuid[])::text$$, :'bank_audit'), '1');
+select inv.val('IQ4 ...and the row leaves the queue', format($$select count(*)::text from public.pending_invoice_bank_change_notifications(30) where audit_event_id = %L$$, :'bank_audit'), '0');
+select inv.val('IQ5 the undeliverable branch accepts the notice too (idempotent on the same row)', format($$select public.mark_notices_undeliverable('invoice_bank_details_changed', array[%L]::uuid[], 'no_recipient')::text$$, :'bank_audit'), '0');
+select inv.val('IQ6 REGRESSION: the existing notices are still accepted', $$select public.mark_notices_delivered('workspace_closed', array[gen_random_uuid()]::uuid[])::text$$, '0');
+reset role;
+-- As postgres (which may execute it) but WITH a person on the session: the
+-- body's own guard must refuse. (authenticated holds no EXECUTE at all, IQ8.)
+set request.jwt.claims = :'own_a_c';
+select inv.val('IQ7 a person''s session cannot read the queue, not even the Owner''s', $$select count(*)::text from public.pending_invoice_bank_change_notifications(30)$$, 'denied(42501:notification_stamp_is_server_only)');
+reset request.jwt.claims;
+select inv.val('IQ8 the resolver is service_role-only, the settings RPC authenticated-only', $$select concat_ws('|', has_function_privilege('service_role', 'public.pending_invoice_bank_change_notifications(integer)', 'EXECUTE')::text, has_function_privilege('authenticated', 'public.pending_invoice_bank_change_notifications(integer)', 'EXECUTE')::text, has_function_privilege('authenticated', 'public.save_invoice_settings(uuid,text,text,text,text,text,text,text,integer)', 'EXECUTE')::text, has_function_privilege('anon', 'public.save_invoice_settings(uuid,text,text,text,text,text,text,text,integer)', 'EXECUTE')::text)$$, 'true|false|true|false');
+
+-- ===========================================================================
 -- § IZ HOUSEKEEPING (later tasks insert their sections ABOVE this line)
 -- ===========================================================================
 reset role;
