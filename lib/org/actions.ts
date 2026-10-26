@@ -393,8 +393,10 @@ async function resolveOrInviteAuthUser(
     return { userId: existing.id, created: false };
   }
 
+  // GoTrue mails one address at most once per [auth.email] max_frequency (20
+  // minutes since G3), so a re-invite inside that window lands here too.
   if (error?.status === 429) {
-    return { error: "Too many invitations sent. Wait a minute and try again." };
+    return { error: "Too many invitations sent. Try again in 20 minutes." };
   }
 
   return { error: INVITE_FAILED };
