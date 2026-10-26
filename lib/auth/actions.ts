@@ -81,7 +81,14 @@ export async function signUpAction(
     // Supabase distinguishes "already registered" from other failures. We do
     // not pass that distinction on -- see the enumeration note above. A user
     // who really does have an account gets the same "check your email" screen.
-    if (error.status === 422 || error.code === "user_already_exists") {
+    // over_email_send_rate_limit too: GoTrue answers it to a re-sign-up of
+    // an unconfirmed account mailed inside [auth.email] max_frequency (20
+    // minutes, G3), which a new address never gets -- the same oracle.
+    if (
+      error.status === 422 ||
+      error.code === "user_already_exists" ||
+      error.code === "over_email_send_rate_limit"
+    ) {
       redirect(`/signup/check-email?email=${encodeURIComponent(email!)}`);
     }
     return { error: authErrorMessage(error.message) };
@@ -169,7 +176,14 @@ export async function magicLinkAction(
   // exists -- and showing it turns this form into an account-existence checker
   // for any address an attacker cares to type. Rate limiting is what bounds
   // abuse, not a distinguishable error message.
-  if (error && error.status === 429) {
+  //
+  // The same holds for GoTrue's per-account mail throttle ([auth.email]
+  // max_frequency, 20 minutes since G3): over_email_send_rate_limit comes back
+  // only for an address that HAS an account and was mailed recently, so it
+  // gets the "sent" page like everything else. The project-wide email cap
+  // shares that code and is treated the same way. Only the per-IP request
+  // limit, which says nothing about the address, is shown.
+  if (error && error.status === 429 && error.code !== "over_email_send_rate_limit") {
     return { error: "Too many requests. Wait a minute and try again." };
   }
 
