@@ -25,6 +25,7 @@
 //      about it.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { randomBytes } from "node:crypto";
 import type { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
 import { createFixtures, destroyFixtures, type RlsFixtures } from "../rls/support/fixtures";
@@ -49,6 +50,16 @@ const PNG = Buffer.from(
 let subjectId = "";
 let screenshotKey = "";
 let exportKey = "";
+/** Every key of the account export, part 1 first (G37: it is built in parts). */
+let exportPartKeys: string[] = [];
+
+/**
+ * Each screenshot is 95 KiB of PNG-signed random bytes. Two of them pass a 160 KiB
+ * single archive, so the account export is built in parts, and each part's
+ * 64 KiB manifest reserve leaves room for one (Phase 10 Task 18, finding 1).
+ */
+// Random, so deflate cannot shrink it under the ceiling.
+const SHOT = Buffer.concat([PNG, randomBytes(95 * 1024 - PNG.length)]);
 
 async function objectExists(bucket: string, key: string): Promise<boolean> {
   const { data, error } = await createStorageClient().storage.from(bucket).download(key);
@@ -87,7 +98,7 @@ describe("the erasure runner removes the account's bytes from their buckets", ()
     screenshotKey = `feedback/${feedbackId}`;
     const up = await createStorageClient()
       .storage.from("feedback-screenshots")
-      .upload(screenshotKey, PNG, { contentType: "image/png", upsert: true });
+      .upload(screenshotKey, SHOT, { contentType: "image/png", upsert: true });
     expect(up.error?.message).toBeUndefined();
 
     const feedback = await persona.client.from("feedback").insert({
@@ -98,11 +109,35 @@ describe("the erasure runner removes the account's bytes from their buckets", ()
       route: "/",
       screenshot_key: screenshotKey,
       screenshot_mime: "image/png",
-      screenshot_size_bytes: PNG.length,
+      screenshot_size_bytes: SHOT.length,
       screenshot_scan_status: "clean",
       screenshot_scanned_at: new Date().toISOString(),
     } as never);
     expect(feedback.error?.message, "POSITIVE CONTROL: the feedback row").toBeUndefined();
+
+    // A SECOND 95 KiB screenshot, so the single archive passes the 160 KiB
+    // ceiling below and the export is built in parts (G37) -- one screenshot
+    // fits a single archive, whose ceiling has no 64 KiB manifest reserve.
+    {
+      const secondId = crypto.randomUUID();
+      const second = await createStorageClient()
+        .storage.from("feedback-screenshots")
+        .upload(`feedback/${secondId}`, SHOT, { contentType: "image/png", upsert: true });
+      expect(second.error?.message).toBeUndefined();
+      const row = await persona.client.from("feedback").insert({
+        id: secondId,
+        organisation_id: fx.orgA.id,
+        category: "bug",
+        message: "erasure runner fixture, second screenshot",
+        route: "/",
+        screenshot_key: `feedback/${secondId}`,
+        screenshot_mime: "image/png",
+        screenshot_size_bytes: SHOT.length,
+        screenshot_scan_status: "clean",
+        screenshot_scanned_at: new Date().toISOString(),
+      } as never);
+      expect(row.error?.message, "POSITIVE CONTROL: the second feedback row").toBeUndefined();
+    }
 
     // ---- a REAL export archive, built by the real export runner ----------
     {
@@ -112,7 +147,7 @@ describe("the erasure runner removes the account's bytes from their buckets", ()
         .select("id");
       expect(error?.message, "POSITIVE CONTROL: the export job").toBeUndefined();
       const jobId = ((data ?? []) as { id: string }[])[0].id;
-      await runPendingExportJobs();
+      await runPendingExportJobs({ limitsOverride: { max_archive_bytes: 160 * 1024 } });
       const { rows } = await pool.query<{ storage_key: string | null; status: string }>(
         `select storage_key, status from public.export_jobs where id = $1`,
         [jobId],
@@ -120,11 +155,19 @@ describe("the erasure runner removes the account's bytes from their buckets", ()
       expect(rows[0].status, "the export job built an archive").toBe("succeeded");
       exportKey = rows[0].storage_key ?? "";
       expect(exportKey).not.toBe("");
+      const { rows: parts } = await pool.query<{ storage_key: string }>(
+        `select storage_key from public.export_job_parts where job_id = $1 order by part_no`,
+        [jobId],
+      );
+      exportPartKeys = parts.map((p) => p.storage_key);
+      expect(exportPartKeys.length, "DENOMINATOR: the account export really is in parts").toBeGreaterThanOrEqual(2);
+      expect(exportPartKeys[0]).toBe(exportKey);
     }
 
     // ---- THE DENOMINATOR: both objects are really in their buckets -------
     expect(await objectExists("feedback-screenshots", screenshotKey)).toBe(true);
     expect(await objectExists("exports", exportKey)).toBe(true);
+    for (const key of exportPartKeys) expect(await objectExists("exports", key), key).toBe(true);
 
     // ---- the erasure, asked for the way a person asks for it -------------
     await mintStepUp(persona.client, "account_erasure");
@@ -177,6 +220,9 @@ describe("the erasure runner removes the account's bytes from their buckets", ()
     expect(await objectExists("exports", exportKey), "the archive is still in its bucket").toBe(
       false,
     );
+    for (const key of exportPartKeys) {
+      expect(await objectExists("exports", key), `export part ${key} is still in its bucket`).toBe(false);
+    }
 
     // A second run finds nothing to do: the claim loop stops, it does not spin.
     const again = await runPendingErasureJobs();
