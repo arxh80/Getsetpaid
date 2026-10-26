@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-// @ts-expect-error -- a plain .mjs script with no type declarations
 import { violations } from "../../../scripts/check-licenses.mjs";
 
 // Phase 10 Task 9 (G23): scripts/check-licenses.mjs. The REAL production
