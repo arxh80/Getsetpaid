@@ -53,7 +53,7 @@ Run all five before claiming a change is done:
 
 **One stack per worktree** is opt-in: `pnpm stack:claim` gives a worktree its own project id and ports, and you must export `SUPABASE_WORKDIR` as it prints, or a bare `npx supabase db reset` still resets the shared stack. Recipe and the tiered-gate policy (what to run while iterating; the full five gates still gate every handback): `docs/parallel-stacks.md`.
 
-**CI is a subset.** `.github/workflows/ci.yml` runs lint, `next typegen`, typecheck, `vitest run tests/unit`, `pnpm audit --audit-level high` and gitleaks. It does **not** run integration, psql or Playwright, because they need a Supabase stack. A green CI tick is not a green phase. Actions are pinned to full SHAs. To bump one, look it up with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and update the `# vX.Y.Z` trailer.
+**CI runs every gate**, in five jobs on pull requests and pushes to `main`: `gates` (lint, `next typegen`, typecheck, `vitest run tests/unit`), `scan` (`pnpm audit --audit-level high`, gitleaks, the licence allowlist `scripts/check-licenses.mjs`, Semgrep), and three jobs that each start a real local stack: `integration`, `psql` and `e2e`. `tests/unit/ci/workflow-jobs.test.ts` pins that shape. A green CI tick is still not a green launch: nothing in CI checks the hosted project (`SECURITY.md` § 15). Actions are pinned to full SHAs. To bump one, look it up with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and update the `# vX.Y.Z` trailer.
 
 **Forbidden here:** `pnpm build` / `pnpm start` in a worktree pointed at the local stack. They resolve to the **hosted** project.
 
