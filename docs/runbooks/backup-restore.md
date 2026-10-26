@@ -28,7 +28,7 @@ The original database is always swapped back (a trap), and the script exits 0 on
 
 ### What a database backup does not cover
 
-- **Storage objects.** The files in the `documents`, `feedback-screenshots` and export buckets are not in any database backup, only their metadata rows (`storage.objects`). The drill proves the metadata; G30 (a Storage backup job) covers the files.
+- **Storage objects.** The files in the `documents`, `feedback-screenshots` and export buckets are not in any database backup, only their metadata rows (`storage.objects`). The drill proves the metadata; § 3 (G30) covers the files.
 - **Secrets outside the database.** `GETSETPAID_SERVER_REQUEST_SECRET`, the runner secrets, and the Brevo and Telegram credentials live in the host's environment (`SECURITY.md` § 15). Vault secret names survive (check 2). A Vault restore into a different project needs that project's encryption key, which only Supabase holds.
 
 ### Runs
@@ -54,3 +54,28 @@ Record each production drill in the table below. Engineering cannot run this: it
 | Date | Backup age (RPO) | Elapsed (RTO) | Storage sample | By |
 |---|---|---|---|---|
 | (not yet run) | | | | |
+
+## 3. The Storage backup (G30)
+
+Database backups hold Storage's metadata rows only, never the files. `scripts/storage-backup.mjs` copies every object in `documents`, `feedback-screenshots` and `exports` to S3-compatible object storage as `<BACKUP_S3_BUCKET>/<YYYY-MM-DD>/<bucket>/<path>`.
+
+```bash
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
+BACKUP_S3_ENDPOINT=https://... BACKUP_S3_BUCKET=... BACKUP_S3_REGION=... \
+BACKUP_S3_ACCESS_KEY_ID=... BACKUP_S3_SECRET_ACCESS_KEY=... \
+node scripts/storage-backup.mjs
+```
+
+- It refuses to start if a setting is missing, or if the endpoint is not https (plain http only for localhost).
+- It only lists and downloads from Supabase. Objects go to `BACKUP_S3_ENDPOINT` and nowhere else, one SigV4-signed PUT each.
+- One failed object does not stop the run. The run then exits 1 and names every object it did not copy, so the scheduler sees a failed night. `BACKUP_PREFIX` overrides the date folder.
+- It deletes nothing. Retention is the destination bucket's own expiry rule.
+
+**Deploying it is founder action (Q261):** a nightly schedule on the app host, a UK/EU destination bucket under the host's DPA with encryption at rest and a 30-day expiry rule, and the settings in the host's environment (`SECURITY.md` § 15). Check each morning that the newest dated folder exists.
+
+**Restoring a file:** download `<YYYY-MM-DD>/<bucket>/<path>` from the backup and upload it to `<bucket>/<path>` with the service role. Not drilled yet: step 4 of the production drill (§ 2) does it for one object per bucket.
+
+### Checks (2026-10-26)
+
+- **Unit:** `tests/unit/backup/storage-backup.test.ts`, a fake Storage source and a fake `fetch`. Mutant (stop after the first list page): 2 tests red.
+- **Live, local stack:** one object seeded per bucket (one at a nested path with a space in it), then the real CLI into a scratch bucket through the stack's S3 endpoint (`http://127.0.0.1:54321/storage/v1/s3`): 3 copied, all byte-identical. With a wrong secret every PUT got 403 and the CLI exited 1.
