@@ -21,7 +21,7 @@ import { createServiceClient } from "@/lib/supabase/service";
 // read, the password attempt is refused. Magic link and Google still work.
 // ===========================================================================
 
-type Outcome = "attempt" | "failed" | "succeeded";
+type Outcome = "attempt" | "succeeded";
 
 async function meter(email: string, outcome: Outcome): Promise<boolean> {
   const { data, error } = await createServiceClient().rpc("meter_password_sign_in", {
@@ -38,24 +38,16 @@ async function meter(email: string, outcome: Outcome): Promise<boolean> {
   return data;
 }
 
-/** May this password attempt go to GoTrue? False once the account's budget is spent. */
+/**
+ * Spend one attempt and say whether it may go to GoTrue. Every attempt is
+ * counted up front, atomically, so a burst of simultaneous guesses cannot all
+ * pass before any failure lands; false once the account's budget is spent.
+ */
 export function mayTryPassword(email: string): Promise<boolean> {
   return meter(email, "attempt");
 }
 
-/**
- * Report what GoTrue said. Only a 4xx refusal of the credentials counts: a
- * 429, a server error or a network failure is not a wrong password.
- */
-export async function recordPasswordOutcome(
-  email: string,
-  error: { status?: number } | null,
-): Promise<void> {
-  if (!error) {
-    await meter(email, "succeeded");
-    return;
-  }
-  const status = error.status ?? 0;
-  if (status < 400 || status >= 500 || status === 429) return;
-  await meter(email, "failed");
+/** Report what GoTrue said: a success clears the account's count. */
+export async function recordPasswordOutcome(email: string, error: unknown): Promise<void> {
+  if (!error) await meter(email, "succeeded");
 }

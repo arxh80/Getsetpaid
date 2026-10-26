@@ -11,9 +11,11 @@
 // itself. That is why the assertion is on GoTrue's request count: with the
 // app-side check removed the sixth attempt still fails, but it reaches
 // GoTrue. MUTANT (Task 8): signInAction without mayTryPassword() -> red.
+// MUTANT (Task 8 review): count on failure after GoTrue instead of on the
+// attempt before it -> the simultaneous burst below reaches GoTrue 8 times, red.
 //
 // Does NOT drive GoTrue's per-IP limit (30 per 5 minutes) anywhere near its
-// boundary: this file sends at most fourteen password grants.
+// boundary: this file sends at most seventeen password grants.
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
@@ -166,21 +168,30 @@ describe("signInAction's per-account budget (G4 fallback)", () => {
     expect(await counter(ghostSubject), "keyed on the SHA-256 of the normalised address").toBe(6);
   });
 
+  it("a burst of eight simultaneous guesses: only five reach GoTrue", async () => {
+    const u = await makeUser("burst");
+    current.tokenRequests = 0;
+    const results = await Promise.all(Array.from({ length: 8 }, () => signIn(u.email, WRONG)));
+    expect(results.every((r) => "error" in r && r.error === BAD_SIGN_IN)).toBe(true);
+    expect(current.tokenRequests, "the budget is checked before any failure lands").toBe(5);
+    expect(await counter(u.id)).toBe(8);
+  });
+
   it("a browser cannot spend or clear anybody's budget over PostgREST, signed in or not", async () => {
     const u = await makeUser("direct");
     // POSITIVE CONTROL: the app's server (service role) can.
-    const server = await admin.rpc("meter_password_sign_in", { p_email: u.email, p_outcome: "failed" });
+    const server = await admin.rpc("meter_password_sign_in", { p_email: u.email, p_outcome: "attempt" });
     expect(server.error, server.error?.message).toBeNull();
     expect(await counter(u.id)).toBe(1);
 
     const anon = createClient(apiUrl, anonKey, { auth: { autoRefreshToken: false, persistSession: false } });
-    const bare = await anon.rpc("meter_password_sign_in", { p_email: u.email, p_outcome: "failed" });
+    const bare = await anon.rpc("meter_password_sign_in", { p_email: u.email, p_outcome: "attempt" });
     expect(bare.error?.code).toBe("42501");
 
     const session = createClient(apiUrl, anonKey, { auth: { autoRefreshToken: false, persistSession: false } });
     const { error: signInError } = await session.auth.signInWithPassword({ email: users[0].email, password: PASSWORD });
     expect(signInError).toBeNull();
-    for (const outcome of ["failed", "succeeded"]) {
+    for (const outcome of ["attempt", "succeeded"]) {
       const { error } = await session.rpc("meter_password_sign_in", { p_email: u.email, p_outcome: outcome });
       expect(error?.code, `a session could call ${outcome}`).toBe("42501");
     }

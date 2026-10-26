@@ -14,13 +14,16 @@
 -- THE SHAPE: public.meter_password_sign_in(p_email, p_outcome), called by
 -- lib/auth/login-budget.ts from signInAction and from the step-up password
 -- path, with the service-role client:
---   'attempt'    BEFORE GoTrue. False when the budget is spent: the app then
---                refuses without calling GoTrue. The refused attempt is
---                counted, and its count reaching max+1 files the alert (the
---                hook's own semantics, so a correct password does not lift a
---                lockout early).
---   'failed'     after GoTrue refused the credentials: one counted failure.
---   'succeeded'  after GoTrue accepted them: the slate is cleared.
+--   'attempt'    BEFORE GoTrue: one counted attempt, atomically (the limiter
+--                core's upsert). False once the count passes max: the app
+--                then refuses without calling GoTrue, and the count reaching
+--                max+1 files the alert (the hook's own semantics, so a
+--                correct password does not lift a lockout early).
+--   'succeeded'  after GoTrue accepted the credentials: the slate is cleared.
+-- Counting the ATTEMPT rather than the failure is what bounds a burst: a
+-- check-then-count-on-failure design lets N simultaneous guesses all pass the
+-- check before any failure lands. A GoTrue 429 or outage therefore spends
+-- one attempt too; a correct password clears it.
 --
 -- A NEW CATEGORY, login_email, NOT login_account. Locally (and on hosted
 -- once F8 is bought) the hook counts the same failures under login_account by
@@ -169,9 +172,8 @@ set search_path = ''
 as $$
 declare
   v_email   text := pg_catalog.lower(pg_catalog.btrim(p_email));
-  v_policy  public.rate_limit_policies%rowtype;
   v_subject uuid;
-  v_count   integer;
+  v_allowed boolean;
 begin
   if (select auth.uid()) is not null
      or coalesce(pg_catalog.current_setting('role', true), 'none')
@@ -180,16 +182,9 @@ begin
       using errcode = '42501', hint = 'login_budget_is_server_only';
   end if;
   if v_email is null or v_email = '' or p_outcome is null
-     or p_outcome not in ('attempt', 'failed', 'succeeded') then
-    raise exception 'meter_password_sign_in: an email and an outcome of attempt, failed or succeeded are required'
+     or p_outcome not in ('attempt', 'succeeded') then
+    raise exception 'meter_password_sign_in: an email and an outcome of attempt or succeeded are required'
       using errcode = '22023', hint = 'login_budget_bad_call';
-  end if;
-
-  -- FAIL CLOSED on a missing policy row, as the hook does (20260909100000).
-  select * into v_policy from public.rate_limit_policies p where p.category = 'login_email';
-  if not found then
-    raise exception 'meter_password_sign_in: no rate-limit policy for login_email'
-      using errcode = '22023';
   end if;
 
   -- shortcut: lower(email) is not indexed, so this scans auth.users per call;
@@ -209,24 +204,12 @@ begin
     return true;
   end if;
 
-  if p_outcome = 'failed' then
-    perform private.record_rate_limit_event('login_email', 'account', v_subject);
-    return true;
-  end if;
-
-  -- 'attempt': refused once the window holds max failures. The refusal is
-  -- counted too, and the first one (count max+1) files the alert.
-  select c.request_count into v_count
-    from public.rate_limit_counters c
-   where c.category = 'login_email'
-     and c.subject_scope = 'account'
-     and c.subject_id = v_subject
-     and c.window_start = private.rate_limit_window_start(pg_catalog.now(), v_policy.window_seconds);
-  if coalesce(v_count, 0) >= v_policy.max_requests then
-    perform private.record_rate_limit_event('login_email', 'account', v_subject);
-    return false;
-  end if;
-  return true;
+  -- 'attempt': counted BEFORE GoTrue, atomically, so simultaneous guesses get
+  -- distinct counts and only max of them pass. FAILS CLOSED on a missing
+  -- policy row: the core raises 22023 (unknown category).
+  select e.allowed into v_allowed
+    from private.record_rate_limit_event('login_email', 'account', v_subject) e;
+  return v_allowed;
 end;
 $$;
 
@@ -234,4 +217,4 @@ revoke all on function public.meter_password_sign_in(text, text) from public, an
 grant execute on function public.meter_password_sign_in(text, text) to service_role;
 
 comment on function public.meter_password_sign_in(text, text) is
-  'Phase 10 Task 8 (G4 fallback): the app''s per-account password budget, spent BEFORE GoTrue by lib/auth/login-budget.ts (signInAction and the step-up password path). p_outcome attempt -> false once 5 failures sit in the 15-minute window (the refusal is counted, and count max+1 files repeated_login_failures); failed -> one counted failure; succeeded -> the counter is cleared. Category login_email, keyed on the normalised email: the password account''s id when one exists (so the alert reaches the account holder, Q114), else the first 16 bytes of the address''s SHA-256. service_role only; refuses any session (42501 login_budget_is_server_only). A direct GoTrue password grant bypasses it; the hook (F8) or GoTrue''s per-IP limit bounds that path.';
+  'Phase 10 Task 8 (G4 fallback): the app''s per-account password budget, spent BEFORE GoTrue by lib/auth/login-budget.ts (signInAction and the step-up password path). p_outcome attempt -> one atomically counted attempt, false once the 15-minute window holds more than 5 (count max+1 files repeated_login_failures); succeeded -> the counter is cleared. Attempts, not failures, are counted so a burst of simultaneous guesses cannot all pass a check before any failure lands. Category login_email, keyed on the normalised email: the password account''s id when one exists (so the alert reaches the account holder, Q114), else the first 16 bytes of the address''s SHA-256. service_role only; refuses any session (42501 login_budget_is_server_only). A direct GoTrue password grant bypasses it; the hook (F8) or GoTrue''s per-IP limit bounds that path.';

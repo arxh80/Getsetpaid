@@ -868,9 +868,9 @@ delete from public.rate_limit_counters where subject_id in (:'pro', :'re_ghost_s
 select rl.val('RE1 a fresh account may try',
   format($$select public.meter_password_sign_in(%L,'attempt')::text$$, :'pro_email'), 'true');
 \o /dev/null
-select public.meter_password_sign_in(:'pro_email', 'failed') from generate_series(1,5);
+select public.meter_password_sign_in(:'pro_email', 'attempt') from generate_series(1,4);
 \o
-select rl.val('RE2 five failures are counted under login_email, keyed on the ACCOUNT id',
+select rl.val('RE2 five attempts are counted under login_email, keyed on the ACCOUNT id',
   format($$select request_count::text from public.rate_limit_counters
             where category='login_email' and subject_scope='account' and subject_id=%L$$, :'pro'),
   '5');
@@ -896,11 +896,11 @@ select rl.val('RE7b ...and clears the slate',
             where category='login_email' and subject_id=%L$$, :'pro'),
   '0');
 \o /dev/null
-select public.meter_password_sign_in(:'re_ghost', 'failed') from generate_series(1,5);
+select public.meter_password_sign_in(:'re_ghost', 'attempt') from generate_series(1,5);
 \o
 select rl.val('RE8 an address with NO account has a budget too, and is refused the same way',
   format($$select public.meter_password_sign_in(%L,'attempt')::text$$, :'re_ghost'), 'false');
-select rl.val('RE8b ...keyed on the SHA-256 of the normalised address (five failures + the refusal)',
+select rl.val('RE8b ...keyed on the SHA-256 of the normalised address (five attempts + the refusal)',
   format($$select request_count::text from public.rate_limit_counters
             where category='login_email' and subject_id=%L$$, :'re_ghost_subject'),
   '6');
@@ -911,13 +911,13 @@ select rl.try('RE10 an empty address is a caller bug (22023)',
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 select rl.try('RE11 a signed-in session cannot spend anybody''s budget (42501)',
-  format($$select public.meter_password_sign_in(%L,'failed')$$, :'pro_email'), 'denied(42501)');
+  format($$select public.meter_password_sign_in(%L,'attempt')$$, :'pro_email'), 'denied(42501)');
 select rl.try('RE12 ...nor clear it',
   format($$select public.meter_password_sign_in(%L,'succeeded')$$, :'pro_email'), 'denied(42501)');
 reset role; reset request.jwt.claims;
 set role anon;
 select rl.try('RE13 anon cannot either',
-  format($$select public.meter_password_sign_in(%L,'failed')$$, :'pro_email'), 'denied(42501)');
+  format($$select public.meter_password_sign_in(%L,'attempt')$$, :'pro_email'), 'denied(42501)');
 reset role;
 select rl.val('RE14 grants: service_role only',
   $$select has_function_privilege('service_role','public.meter_password_sign_in(text,text)','EXECUTE')::text
