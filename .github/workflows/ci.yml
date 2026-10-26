@@ -302,7 +302,9 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: pnpm
+          # No `cache: pnpm`: this job never runs `pnpm install`, so the store
+          # path does not exist and the post-step save fails the job after the
+          # suites pass (run 40329179441).
 
       - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
         with:
