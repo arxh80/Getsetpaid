@@ -217,6 +217,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # LICENCE SCAN (Phase 10 Task 9, G23). Production dependencies only; the
+      # allowlist and its one scoped exception live in the script.
+      - name: Licence scan
+        run: pnpm licenses list --prod --json | node scripts/check-licenses.mjs
+
+      # SAST (Phase 10 Task 9, G24). Semgrep CE, version-pinned. p/default is
+      # there because p/typescript and p/react alone miss `eval(req.query.x)`
+      # (measured locally, 1.181.1). Excluded with reasons, triaged 2026-10-26:
+      # unsafe-formatstring (70 hits, every one a console.* call whose first
+      # argument is a template string; the worst case is a garbled log line,
+      # no execution), and .superpowers/ (planning and mutation artefacts, not
+      # shipped). --error makes any other finding fail the step.
+      - name: SAST (Semgrep)
+        run: |
+          python3 -m pip install --quiet semgrep==1.181.1
+          semgrep scan --error --metrics=off \
+            --config p/default --config p/typescript --config p/react \
+            --exclude-rule javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring \
+            --exclude .superpowers
+
   # =========================================================================
   # THE THREE STACK JOBS.
   #
