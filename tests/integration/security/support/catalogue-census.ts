@@ -51,6 +51,35 @@ export function exposedSchemas(root = process.cwd()): string[] {
 
 const GRANTEE_IS_API = `(ax.grantee = 0 or pg_catalog.pg_get_userbyid(ax.grantee) in ('anon','authenticated'))`;
 
+/** How a SECURITY DEFINER function in `public` or `private` is reached. */
+export type DefinerClass = "trigger" | "api" | "service-role" | "no-api-grant";
+
+/**
+ * Phase 10 Task 12 (G26). Every SECURITY DEFINER function in `public` and
+ * `private`, by signature (`schema.name(args)`), with how it can be reached:
+ * a trigger; EXECUTE for a browser role (`anon`, `authenticated` or PUBLIC,
+ * a null ACL counting as PUBLIC's default); EXECUTE for `service_role` only;
+ * or no API role at all. definer-register.test.ts asserts the classes.
+ */
+export async function definerClasses(q: Queryable): Promise<{ sig: string; cls: DefinerClass }[]> {
+  const { rows } = await q.query<{ sig: string; cls: DefinerClass }>(
+    `select n.nspname || '.' || p.proname || '(' || pg_catalog.oidvectortypes(p.proargtypes) || ')' as sig,
+            case
+              when p.prorettype in ('pg_catalog.trigger'::pg_catalog.regtype, 'pg_catalog.event_trigger'::pg_catalog.regtype) then 'trigger'
+              when exists (select 1 from pg_catalog.aclexplode(coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))) ax
+                            where ax.privilege_type = 'EXECUTE' and ${GRANTEE_IS_API}) then 'api'
+              when exists (select 1 from pg_catalog.aclexplode(coalesce(p.proacl, pg_catalog.acldefault('f', p.proowner))) ax
+                            where ax.privilege_type = 'EXECUTE' and pg_catalog.pg_get_userbyid(ax.grantee) = 'service_role') then 'service-role'
+              else 'no-api-grant'
+            end as cls
+       from pg_catalog.pg_proc p
+       join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+      where p.prosecdef and n.nspname in ('public', 'private')
+      order by 1`,
+  );
+  return rows;
+}
+
 /** Function NAMES in `public` a browser may EXECUTE -- the matrix's original
  *  census, unchanged in meaning, now callable on any connection. */
 export async function publicRpcNames(q: Queryable): Promise<string[]> {
