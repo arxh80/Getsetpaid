@@ -1,6 +1,3 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, join, relative, sep } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { BROWSER_STORAGE, type StorageKind } from "../../lib/legal/storage-inventory";
 import { localStack, setUpWorld, tearDownWorld, type E2eWorld } from "./support/fixtures";
@@ -93,51 +90,6 @@ async function readStorage(page: Page): Promise<BrowserStorage> {
       serviceWorkers: registrations.map((r) => r.scope),
     };
   });
-}
-
-/**
- * FOUND BY THIS SPEC ON ITS FIRST RUN, and not visible to the source census:
- * Next.js's DEVELOPMENT client opens an IndexedDB database named
- * `__next_debug_channel` (next/dist/client/dev/debug-channel.js). This suite
- * always runs against `next dev`, so it is excused HERE ONLY, and only while
- * it is provably development tooling.
- *
- * THE CHECK (fix round 1, review M5): the database is opened by CLIENT code,
- * so the first cut's search of the server runtimes looked in the wrong place.
- * This searches every file of Next's browser code (`dist/client`,
- * `dist/esm/client`, and the compiled next-server runtimes for good measure) and requires every mention
- * to sit in a development-only file -- a `dev/` directory or a `.dev.js`
- * runtime -- with a positive control that the client dev file really is found.
- * The day a production file mentions the name, the excuse is void. It covers
- * this one name and nothing else, so it cannot excuse a real key.
- */
-const DEV_ONLY_INDEXED_DB = "__next_debug_channel";
-
-function nonDevFilesMentioning(name: string): { devHits: string[]; prodHits: string[] } {
-  const require = createRequire(__filename);
-  const nextDir = dirname(require.resolve("next/package.json"));
-  const roots = [
-    join(nextDir, "dist", "client"),
-    join(nextDir, "dist", "esm", "client"),
-    join(nextDir, "dist", "compiled", "next-server"),
-  ];
-  const devHits: string[] = [];
-  const prodHits: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir)) {
-      const full = join(dir, entry);
-      if (statSync(full).isDirectory()) walk(full);
-      else if (/\.(c|m)?js$/.test(entry) && readFileSync(full, "utf8").includes(name)) {
-        const rel = relative(nextDir, full).split(sep).join("/");
-        (/(^|\/)dev\/|\.dev\.js$|\.development\.js$/.test(rel) ? devHits : prodHits).push(rel);
-      }
-    }
-  };
-  for (const root of roots) {
-    if (!existsSync(root)) throw new Error(`${root} is missing -- the check below would prove nothing`);
-    walk(root);
-  }
-  return { devHits, prodHits };
 }
 
 const declared = (name: string, kind: StorageKind) =>
@@ -245,16 +197,10 @@ test("after a signed-in walk, every cookie and storage key the browser holds is 
     "the browser holds a localStorage key the Cookie Policy does not declare as local storage",
   ).toEqual([]);
   expect(storage.session, "the product declares no sessionStorage, and something set some").toEqual([]);
-  const devExcuse = nonDevFilesMentioning(DEV_ONLY_INDEXED_DB);
-  expect(
-    devExcuse.devHits.filter((f) => f.startsWith("dist/client/dev/")),
-    "POSITIVE CONTROL: the dev client file that opens the database is found by the search",
-  ).not.toEqual([]);
-  expect(devExcuse.prodHits, "the dev-only IndexedDB name is in a NON-development Next file -- the excuse is void").toEqual([]);
-  expect(
-    storage.indexedDb.filter((n) => n !== DEV_ONLY_INDEXED_DB),
-    "the product declares no IndexedDB database, and one exists",
-  ).toEqual([]);
+  // Next.js 15/16.0 dev clients opened an IndexedDB database `__next_debug_channel`,
+  // excused here while provably dev tooling. Next 16.4 opens none (no client file
+  // mentions IndexedDB, checked 2026-10-26), so there is no excuse left to make.
+  expect(storage.indexedDb, "the product declares no IndexedDB database, and one exists").toEqual([]);
   expect(storage.caches, "the product declares no Cache Storage, and an entry exists").toEqual([]);
   expect(storage.serviceWorkers, "the product registers no service worker, and one is registered").toEqual([]);
   expect(context.serviceWorkers().map((w) => w.url()), "a service worker is running in this context").toEqual([]);
