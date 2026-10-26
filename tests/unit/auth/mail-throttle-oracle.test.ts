@@ -11,6 +11,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const current = vi.hoisted(() => ({
   error: null as null | { status: number; code: string; message: string },
   redirectedTo: null as string | null,
+  cookiesSet: [] as string[],
+}));
+
+// The sign-up binding cookie (lib/auth/first-proof.ts) is set on every
+// sign-up outcome; recorded by name so the branches can be compared.
+vi.mock("next/headers", () => ({
+  cookies: async () => ({ set: (name: string) => current.cookiesSet.push(name), get: () => undefined }),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -53,6 +60,7 @@ async function run(action: () => Promise<unknown>): Promise<{ redirectedTo: stri
 beforeEach(() => {
   vi.stubEnv("NEXT_PUBLIC_SITE_URL", "http://localhost:3000");
   current.error = null;
+  current.cookiesSet = [];
 });
 
 describe("magicLinkAction", () => {
@@ -82,6 +90,17 @@ describe("signUpAction", () => {
   it("the per-account throttle lands on check-email, as an existing account does", async () => {
     current.error = THROTTLED;
     expect((await run(ask)).redirectedTo).toBe("/signup/check-email?email=someone%40example.test");
+  });
+
+  it("and sets the same cookie a successful sign-up sets (Task 18 finding 2: no Set-Cookie oracle)", async () => {
+    current.error = THROTTLED;
+    await run(ask);
+    const refused = current.cookiesSet;
+    current.cookiesSet = [];
+    current.error = null;
+    expect((await run(ask)).redirectedTo).toBe("/signup/check-email?email=someone%40example.test");
+    expect(refused).toEqual(["gsp_signup_binding"]);
+    expect(current.cookiesSet).toEqual(refused);
   });
 
   it("the per-IP limit is still shown", async () => {

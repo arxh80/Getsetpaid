@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
 import type { User } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -99,16 +99,29 @@ const COOKIE_OPTIONS = {
 };
 
 /**
- * Called by signUpAction when signUp() CREATED the account. Best effort: with
- * no binding the first proof requires a new password, which is the safe side.
+ * Called by signUpAction on EVERY sign-up outcome, with the account's id when
+ * signUp() CREATED it and `null` otherwise. Best effort: with no binding the
+ * first proof requires a new password, which is the safe side.
+ *
+ * THE COOKIE IS ALWAYS SET (Phase 10 Task 18, review finding 2). A binding is
+ * written only for a new account, so a Set-Cookie present on some sign-ups and
+ * absent on others would tell a prober which addresses already have an
+ * account -- the oracle GoTrue's obfuscated sign-up response exists to close.
+ * When no binding is written (an existing address, or the Admin update
+ * failing on GoTrue's obfuscated id), the cookie carries a random id and
+ * nonce, the same name, shape and attributes, and can never match a stored
+ * hash (bindingMatches).
  */
-export async function bindSignUp(userId: string): Promise<void> {
+export async function bindSignUp(userId: string | null): Promise<void> {
   const nonce = randomBytes(32).toString("base64url");
-  const { error } = await createAdminClient().auth.admin.updateUserById(userId, {
-    app_metadata: { [BINDING_HASH_KEY]: sha256(nonce) },
-  });
-  if (error) return;
-  (await cookies()).set(SIGNUP_BINDING_COOKIE, `${userId}.${nonce}`, {
+  let bound = userId;
+  if (userId !== null) {
+    const { error } = await createAdminClient().auth.admin.updateUserById(userId, {
+      app_metadata: { [BINDING_HASH_KEY]: sha256(nonce) },
+    });
+    if (error) bound = null;
+  }
+  (await cookies()).set(SIGNUP_BINDING_COOKIE, `${bound ?? randomUUID()}.${nonce}`, {
     ...COOKIE_OPTIONS,
     maxAge: BINDING_MAX_AGE_SECONDS,
   });

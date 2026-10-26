@@ -90,6 +90,8 @@ export async function signUpAction(
       error.code === "user_already_exists" ||
       error.code === "over_email_send_rate_limit"
     ) {
+      // The same Set-Cookie a new account gets (bindSignUp's header).
+      await bindSignUp(null);
       redirect(`/signup/check-email?email=${encodeURIComponent(email!)}`);
     }
     return { error: authErrorMessage(error.message) };
@@ -99,8 +101,9 @@ export async function signUpAction(
   // here keeps the password just typed. A sign-up that returned an EXISTING,
   // unconfirmed account gets no binding: GoTrue kept the FIRST registrant's
   // password on it, so whoever proves the inbox must choose a new one
-  // (lib/auth/first-proof.ts).
-  if (signedUp.user && isNewSignUp(signedUp.user)) await bindSignUp(signedUp.user.id);
+  // (lib/auth/first-proof.ts). Every outcome still sets the cookie, a decoy
+  // when unbound, so its presence says nothing about the address.
+  await bindSignUp(signedUp.user && isNewSignUp(signedUp.user) ? signedUp.user.id : null);
 
   // With email confirmations disabled (the local default), signUp returns a
   // live session and the user is already signed in. With them enabled there is
