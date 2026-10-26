@@ -425,7 +425,7 @@ fi
 # so the HTTP checks below start clean.
 # ============================================================================
 
-run_suite "PHASE 4 FILE ACCESS" file_access_phase4.sql fa 11 "${P2VARS[@]}"
+run_suite "PHASE 4 FILE ACCESS" file_access_phase4.sql fa 19 "${P2VARS[@]}"
 fa_fails=$SUITE_FAILS
 if [ "$fa_fails" != "0" ]; then
   echo "PHASE 4 FILE-ACCESS SUITE FAILED: $fa_fails failing assertion(s)" >&2
@@ -433,6 +433,7 @@ if [ "$fa_fails" != "0" ]; then
   echo "  file is now insertable); in B, a BREACHED storage.objects fence" >&2
   echo "  (a client can read the private bytes); in C, a scan-status guard" >&2
   echo "  that no longer holds (a verdict can be rolled back). Treat as Sev1." >&2
+  echo "  In Q, the storage quota (G36) no longer refuses the byte past the plan." >&2
   psql_status=1
 else
   echo "Phase 4 file-access suite: all assertions passed."

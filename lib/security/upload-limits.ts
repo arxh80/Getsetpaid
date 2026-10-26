@@ -68,6 +68,14 @@
 export const DOCUMENT_MAX_SIZE_BYTES = 26214400;
 
 /**
+ * What an upload past the plan's storage says (G36, 20261108004000: the
+ * documents quota trigger's hint `storage_quota_exceeded`). Here for the same
+ * reason as the ceiling above: lib/crm/documents.ts cannot export it.
+ */
+export const STORAGE_QUOTA_MESSAGE =
+  "This workspace has used all the document storage its plan includes, so the file wasn’t uploaded. Deleted files keep counting until they are permanently removed. An Owner or Admin can move to a larger plan.";
+
+/**
  * The Server Action body cap, in bytes: 26 MiB, the 25 MiB documents promise
  * plus 1 MiB of headroom. Passed to `experimental.serverActions.bodySizeLimit`
  * as a number -- see the header for why not a string.
