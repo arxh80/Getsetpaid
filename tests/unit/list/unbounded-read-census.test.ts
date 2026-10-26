@@ -27,9 +27,6 @@ import { unboundedReads } from "./unbounded-read-detector";
 // entry; key on the line too if that ever matters more than churn.
 
 const ALLOWED: Record<string, string> = {
-  // --- G6 (Task 14 bounds these and removes them) ---
-  'lib/network/entities.ts loadPublishedEntityIds from("network_profiles")': "G6: every live profile of one kind in the org",
-  'lib/network/entities.ts loadOwnPublishedProfiles from("network_profiles")': "G6: every published profile of the org (Send from)",
   // --- the caller's own memberships ---
   'lib/auth/index.ts getMemberships from("organisation_memberships")': "the signed-in user's own memberships; bounded per person, index-backed",
   'lib/auth/mfa-gate.ts callerHasPrivilegedRole from("organisation_memberships")': "the signed-in user's own active memberships",

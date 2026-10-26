@@ -35,7 +35,7 @@ import { cache } from "react";
 // both" (the brief) means in practice.
 
 import { createClient } from "@/lib/supabase/server";
-import { loadLinkOptions } from "@/lib/crm/queries";
+import { LINK_PANEL_LIMIT } from "@/lib/crm/queries";
 import {
   parseFieldVisibility,
   type FieldVisibility,
@@ -56,61 +56,85 @@ export interface EntityOption {
   name: string;
 }
 
-/**
- * The entity_ids of THIS organisation's live network profiles of one kind.
- *
- * The exclusion list for the "Publish a record" picker (Q74: one profile per
- * record) -- a record already speaking through a live profile is not offered
- * a second time. Soft-deleted profiles are EXCLUDED from this read (`is
- * ("deleted_at", null)`), which is deliberate: `network_profiles_entity_unique`
- * is itself partial on `deleted_at is null`, so a record whose profile was
- * deleted may be republished, and the picker should offer it again.
- */
-async function loadPublishedEntityIds(
-  organisationId: string,
-  entityKind: NetworkEntityKind,
-): Promise<string[]> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("network_profiles")
-    .select("entity_id")
-    .eq("organisation_id", organisationId)
-    .eq("entity_kind", entityKind)
-    .is("deleted_at", null);
-
-  if (error || !data) {
-    if (error) {
-      console.error(
-        `[network] existing-profile lookup failed for ${entityKind}:`,
-        error.message,
-      );
-    }
-    // Fail closed in the SAFE direction for a picker: on a failed read, treat
-    // every record as already published (offer none) rather than offering a
-    // record that already has a live profile and hitting network_profiles_
-    // entity_unique's 23505 a moment later. Worse case is an honest "nothing to
-    // publish right now, try again" rather than a confusing duplicate refusal.
-    return [];
-  }
-  return data.map((row) => String(row.entity_id));
-}
+/** How many pages of records the publish picker scans for unpublished ones. */
+export const PUBLISHABLE_SCAN_PAGES = 10;
 
 /**
  * Live records of one kind this organisation could publish -- i.e. not
- * already speaking through a live profile.
+ * already speaking through a live profile (Q74: one profile per record).
+ *
+ * BOUNDED (Phase 10 Task 14, G6). It used to read EVERY live profile id of the
+ * kind as an exclusion list, which past max_rows (1000) was cut short and
+ * offered already-published records again. Now it walks the records in name
+ * order a page at a time, asks which of THAT page's ids have a live profile
+ * (one per record, so at most a page of rows), and keeps the rest, until it
+ * has LINK_PANEL_LIMIT or has scanned PUBLISHABLE_SCAN_PAGES pages.
+ * shortcut: a workspace with more than 1,000 published records of one kind
+ * may see fewer than 100 options; a search box is the upgrade.
+ *
+ * Soft-deleted profiles do not count (`network_profiles_entity_unique` is
+ * partial on `deleted_at is null`), so a record whose profile was deleted is
+ * offered again.
+ *
+ * A FAILED READ OFFERS NOTHING: treating every record as unpublished would
+ * offer ones that already have a profile and hit the unique index's 23505.
  *
  * DOES NOT CHECK MANAGEABILITY. That is `getNetworkPublishAccessForEntity`'s
- * job (lib/network/access.ts) and the caller's: this function answers "what
- * exists", the access function answers "may this caller publish this kind at
- * all", and the page combines them -- offering the kind's picker only when
- * the access answer is yes (M4).
+ * job (lib/network/access.ts) and the caller's (M4).
  */
 export async function loadPublishableEntities(
   organisationId: string,
   entityKind: NetworkEntityKind,
 ): Promise<EntityOption[]> {
-  const alreadyPublished = await loadPublishedEntityIds(organisationId, entityKind);
-  return loadLinkOptions(ENTITY_TABLE[entityKind], organisationId, alreadyPublished);
+  const supabase = await createClient();
+  const options: EntityOption[] = [];
+  // Walked by name with `.gte` (no offset: tests/unit/list/one-cursor-only
+  // bans it), skipping ids already seen, so records sharing the boundary name
+  // are neither repeated nor lost.
+  const seen = new Set<string>();
+  let fromName: string | null = null;
+  for (let page = 0; page < PUBLISHABLE_SCAN_PAGES && options.length < LINK_PANEL_LIMIT; page += 1) {
+    let query = supabase
+      .from(ENTITY_TABLE[entityKind])
+      .select("id, name")
+      .eq("organisation_id", organisationId)
+      .is("deleted_at", null);
+    if (fromName !== null) query = query.gte("name", fromName);
+    const records = await query
+      .order("name", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(LINK_PANEL_LIMIT);
+    if (records.error) {
+      console.error(`[network] publishable ${entityKind} lookup failed:`, records.error.message);
+      return [];
+    }
+    const fresh = records.data.filter((row) => !seen.has(String(row.id)));
+    if (fresh.length === 0) break;
+    for (const row of fresh) seen.add(String(row.id));
+    fromName = String(records.data[records.data.length - 1]!.name);
+
+    const ids = fresh.map((row) => String(row.id));
+    const profiles = await supabase
+      .from("network_profiles")
+      .select("entity_id")
+      .eq("organisation_id", organisationId)
+      .eq("entity_kind", entityKind)
+      .is("deleted_at", null)
+      .in("entity_id", ids)
+      .limit(LINK_PANEL_LIMIT);
+    if (profiles.error) {
+      console.error(`[network] existing-profile lookup failed for ${entityKind}:`, profiles.error.message);
+      return [];
+    }
+    const published = new Set(profiles.data.map((row) => String(row.entity_id)));
+    for (const row of fresh) {
+      if (options.length < LINK_PANEL_LIMIT && !published.has(String(row.id))) {
+        options.push({ id: String(row.id), name: String(row.name) });
+      }
+    }
+    if (records.data.length < LINK_PANEL_LIMIT) break;
+  }
+  return options;
 }
 
 /** One organisation's live network profile for one of its own private
@@ -240,6 +264,9 @@ export const loadNetworkProfileById = cache(async (
   };
 });
 
+/** How many of its own published profiles the "Send from" choice lists (G6). */
+export const OWN_PROFILES_LIMIT = 100;
+
 /** One of this organisation's own PUBLISHED profiles, as the "Send from"
  *  picker (components/network/connect-button.tsx, Task 4) needs it. */
 export interface OwnPublishedProfile {
@@ -266,15 +293,18 @@ export interface OwnPublishedProfile {
  */
 export async function loadOwnPublishedProfiles(
   organisationId: string,
-): Promise<OwnPublishedProfile[]> {
+): Promise<{ profiles: OwnPublishedProfile[]; more: boolean }> {
   const supabase = await createClient();
+  // G6: the first OWN_PROFILES_LIMIT by name, and `more` when there are others,
+  // so the "Send from" choice says it is partial instead of going quiet.
   const { data, error } = await supabase
     .from("network_profiles")
     .select("id, display_name, entity_kind")
     .eq("organisation_id", organisationId)
     .eq("status", "published")
     .is("deleted_at", null)
-    .order("display_name", { ascending: true });
+    .order("display_name", { ascending: true })
+    .limit(OWN_PROFILES_LIMIT + 1);
 
   if (error || !data) {
     if (error) {
@@ -285,13 +315,16 @@ export async function loadOwnPublishedProfiles(
     }
     // Fail closed to "nothing to send from" -- the safe direction for a
     // control whose empty state is "publish a profile first", not a crash.
-    return [];
+    return { profiles: [], more: false };
   }
-  return data.map((row) => ({
-    id: String(row.id),
-    displayName: String(row.display_name),
-    entityKind: row.entity_kind as NetworkEntityKind,
-  }));
+  return {
+    profiles: data.slice(0, OWN_PROFILES_LIMIT).map((row) => ({
+      id: String(row.id),
+      displayName: String(row.display_name),
+      entityKind: row.entity_kind as NetworkEntityKind,
+    })),
+    more: data.length > OWN_PROFILES_LIMIT,
+  };
 }
 
 /**
