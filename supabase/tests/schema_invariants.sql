@@ -1390,6 +1390,54 @@ select invariants.val('R5  nor any direct write of erasure_jobs.summary, the one
 
 
 -- ===========================================================================
+-- S. EVERY SECURITY DEFINER FUNCTION LOCKS ITS search_path (Phase 10 Task 12, G25)
+-- ===========================================================================
+-- A definer runs with its owner's rights. Without `set search_path = ''` an
+-- unqualified name in its body resolves through the caller's search_path, so
+-- a caller who can create an object earlier on that path runs code as the
+-- owner. Until G25 only five helpers were asserted (rls_phase2_crm.sql H11);
+-- this sweeps every definer in `public` and `private`.
+
+create function invariants.unlocked_definers() returns text
+language sql stable set search_path = '' as $$
+  select pg_catalog.count(*)::text
+    from pg_catalog.pg_proc p
+   where p.prosecdef
+     and p.pronamespace in ('public'::pg_catalog.regnamespace, 'private'::pg_catalog.regnamespace)
+     and not coalesce('search_path=""' = any(p.proconfig), false)
+$$;
+
+select invariants.val('S1  no SECURITY DEFINER function in public/private runs without search_path = ''''',
+  $$select invariants.unlocked_definers()$$, '0');
+
+-- THE DENOMINATOR for S1: 199 definers when this landed (2026-10-26).
+select invariants.val('S2  DENOMINATOR: the sweep sees at least 180 definers',
+  $$select (pg_catalog.count(*) >= 180)::text from pg_catalog.pg_proc
+     where prosecdef and pronamespace in ('public'::regnamespace, 'private'::regnamespace)$$, 'true');
+
+-- THE MUTANT, kept as a permanent control: unlock one real definer inside a
+-- block that is rolled back, and the sweep must count it.
+create function invariants.unlocked_definers_with_mutant() returns text
+language plpgsql set search_path = '' as $$
+declare v_count text;
+begin
+  begin
+    alter function private.is_active_member(uuid) reset search_path;
+    v_count := invariants.unlocked_definers();
+    raise exception 'roll back the mutant' using errcode = 'P0001';
+  exception when sqlstate 'P0001' then null;
+  end;
+  return v_count;
+end $$;
+
+select invariants.val('S3  MUTANT: private.is_active_member without its search_path is counted',
+  $$select invariants.unlocked_definers_with_mutant()$$, '1');
+
+select invariants.val('S4  and the mutant was rolled back',
+  $$select invariants.unlocked_definers()$$, '0');
+
+
+-- ===========================================================================
 -- Results
 -- ===========================================================================
 \o
