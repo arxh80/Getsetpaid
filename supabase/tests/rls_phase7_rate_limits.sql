@@ -904,6 +904,10 @@ select rl.val('RE8b ...keyed on the SHA-256 of the normalised address (five atte
   format($$select request_count::text from public.rate_limit_counters
             where category='login_email' and subject_id=%L$$, :'re_ghost_subject'),
   '6');
+select rl.val('RE8c ...but files NO alert: an invented address cannot flood incident_alerts (Task 18 finding 5)',
+  format($$select count(*)::text from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$, :'re_ghost_subject'),
+  '0');
 select rl.try('RE9 an unknown outcome is a caller bug (22023)',
   format($$select public.meter_password_sign_in(%L,'reset')$$, :'pro_email'), 'denied(22023)');
 select rl.try('RE10 an empty address is a caller bug (22023)',
