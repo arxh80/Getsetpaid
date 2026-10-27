@@ -1,5 +1,7 @@
+import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import {
+  countAuditRows,
   INVOICE_FIXTURES,
   PRO_SUPPLIER_NAME,
   setUpWorld,
@@ -52,4 +54,23 @@ test("a Finance user drafts an invoice, sees live totals, and saves it", async (
   await page.goto(`/${world.proOrgSlug}/invoices`);
   await expect(page.getByRole("main")).toContainText("£360.00");
   await expect(page.getByRole("main")).toContainText(INVOICE_FIXTURES.issuedNumber);
+});
+
+test("issuing the planted draft takes the workspace's next number, freezes it, and downloads as <number>.pdf", async ({ page }) => {
+  await signIn(page, world, "finance");
+  await page.goto(`/${world.proOrgSlug}/invoices/${world.proDraftInvoiceId}`);
+  await page.getByRole("button", { name: "Issue invoice" }).click();
+  // The counter starts at 1: the planted FIX-0001 never came from it.
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Invoice INV-0001");
+  await expect(page.getByRole("button", { name: "Save draft" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Invoice lines" })).toContainText(INVOICE_FIXTURES.draftLine);
+
+  const downloading = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Download PDF" }).click();
+  const download = await downloading;
+  expect(download.suggestedFilename()).toBe("INV-0001.pdf");
+  const bytes = await readFile(await download.path());
+  expect(bytes.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+  // AUDITED BEFORE A BYTE WAS SENT: exactly one row for this download.
+  expect(await countAuditRows("invoice.pdf_downloaded", world.proDraftInvoiceId)).toBe(1);
 });

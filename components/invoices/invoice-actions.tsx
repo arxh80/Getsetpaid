@@ -2,7 +2,7 @@
 
 import { useActionState, type ReactNode } from "react";
 import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
-import { deleteInvoiceDraftAction } from "@/lib/invoices/actions";
+import { deleteInvoiceDraftAction, issueInvoiceAction } from "@/lib/invoices/actions";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 import { BLOCKED_NOTE_ID } from "@/lib/invoices/draft-form";
@@ -57,4 +57,8 @@ function ActionForm({
 
 export function DeleteDraftForm(props: { orgSlug: string; invoiceId: string; disabledReason: string | null }) {
   return <ActionForm {...props} action={deleteInvoiceDraftAction} submitLabel="Delete draft" pendingLabel="Deleting…" variant="danger" />;
+}
+
+export function IssueInvoiceForm(props: { orgSlug: string; invoiceId: string; disabledReason: string | null }) {
+  return <ActionForm {...props} action={issueInvoiceAction} submitLabel="Issue invoice" pendingLabel="Issuing…" variant="primary" />;
 }

@@ -1308,7 +1308,7 @@ fi
 # re-runnable (it removes its own fixtures). Pin:
 # grep -c '^select inv.val(' supabase/tests/rls_invoices.sql
 # ============================================================================
-run_suite "INVOICES" rls_invoices.sql inv 239
+run_suite "INVOICES" rls_invoices.sql inv 246
 inv_fails=$SUITE_FAILS
 if [ "$inv_fails" != "0" ]; then
   echo "INVOICES SUITE FAILED: $inv_fails failing assertion(s)" >&2

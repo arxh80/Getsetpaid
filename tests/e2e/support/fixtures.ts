@@ -946,6 +946,15 @@ export async function countSentConnectionRequests(
   return Number(result.rows[0]?.count ?? "0");
 }
 
+/** Audit rows of one action about one target (Invoices part 1). As postgres. */
+export async function countAuditRows(action: string, targetId: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.audit_events where action = $1 and target_id = $2`,
+    [action, targetId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
 /**
  * PHASE 7 TASK 1, FIX ROUND 1 (⚠️ 5). Count `audit_log.viewed` self-audit
  * rows for one actor -- the audit-log spec's ground truth for "did viewing

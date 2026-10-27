@@ -12,7 +12,7 @@ import { InvoiceEditor } from "@/components/invoices/invoice-editor";
 import { BLOCKED_NOTE_ID, type EditorInitial } from "@/lib/invoices/draft-form";
 import { InvoiceView } from "@/components/invoices/invoice-view";
 import { InvoiceStatusChip } from "@/components/invoices/invoice-status-chip";
-import { DeleteDraftForm } from "@/components/invoices/invoice-actions";
+import { DeleteDraftForm, IssueInvoiceForm } from "@/components/invoices/invoice-actions";
 
 export async function generateMetadata({ params }: PageProps<"/[orgSlug]/invoices/[invoiceId]">): Promise<Metadata> {
   const { orgSlug } = await params;
@@ -77,7 +77,13 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
         </div>
         {blocked}
         <InvoiceEditor orgSlug={org.slug} invoiceId={invoice.id} companies={companies} contacts={contacts} events={events} vatRegistered={vatRegistered} initial={editorInitial(invoice)} disabledReason={disabledReason} />
-        {/* ISSUE (Task 10) renders here. */}
+        <section aria-labelledby="issue-heading" className="flex flex-col gap-3 border-t border-rule pt-6">
+          <h2 id="issue-heading" className="text-xl font-bold text-ink">Issue</h2>
+          <p className="max-w-prose text-base text-ink-muted">
+            Issuing gives this draft the next invoice number and freezes it: after that it can be sent, marked paid or voided, never edited. Save any changes first.
+          </p>
+          <IssueInvoiceForm orgSlug={org.slug} invoiceId={invoice.id} disabledReason={disabledReason} />
+        </section>
         <section aria-labelledby="delete-heading" className="flex flex-col gap-3 border-t border-rule pt-6">
           <h2 id="delete-heading" className="text-xl font-bold text-ink">Delete this draft</h2>
           <DeleteDraftForm orgSlug={org.slug} invoiceId={invoice.id} disabledReason={disabledReason} />
@@ -103,7 +109,19 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
       ) : (
         <Alert tone="error">This invoice’s issued copy could not be read. Nothing has been changed; contact support.</Alert>
       )}
-      {/* ACTIONS (Tasks 10-12) render here. */}
+      <section aria-labelledby="invoice-actions-heading" className="flex flex-col gap-6 border-t border-rule pt-6">
+        <h2 id="invoice-actions-heading" className="text-xl font-bold text-ink">Actions</h2>
+        <p>
+          <a
+            href={`/${org.slug}/invoices/${invoice.id}/pdf`}
+            download
+            className="inline-flex h-11 items-center justify-center border border-rule bg-surface px-4 text-base font-semibold text-ink hover:border-ink hover:bg-shell"
+          >
+            Download PDF
+          </a>
+        </p>
+        {/* SEND (Task 11), MARK PAID and VOID (Task 12) render here. */}
+      </section>
     </div>
   );
 }

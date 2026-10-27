@@ -1144,6 +1144,11 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "invoice settings (step-up in the Server Action). A bank change is audited by " +
     "column name only and queued as an email to the Owners and Admins. " +
     "Asserted in rls_invoices.sql § IX.",
+  audit_invoice_download:
+    "Invoices part 1 Task 10 -- the PDF route calls it before rendering, so it is " +
+    "reachable by whoever may read the invoice (view_finance, not tier-gated). It " +
+    "refuses a draft and anything outside the caller's workspace, writes an " +
+    "identifier-only audit row, and returns no data. Asserted in rls_invoices.sql § IY.",
 };
 
 /**

@@ -77,3 +77,16 @@ export async function deleteInvoiceDraftAction(_prev: FormState, formData: FormD
   revalidatePath(`/${auth.org.slug}/invoices`);
   redirect(`/${auth.org.slug}/invoices`);
 }
+
+export async function issueInvoiceAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const auth = await authorise(formData);
+  if (!auth.ok) return auth.state;
+  const invoiceId = field(formData, "invoiceId");
+  if (!invoiceId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("issue_invoice", { p_invoice_id: invoiceId });
+  if (error) return refused(error, "issue", formData);
+  revalidatePath(`/${auth.org.slug}/invoices`);
+  revalidatePath(`/${auth.org.slug}/invoices/${invoiceId}`);
+  return { message: `Issued as ${String(data)}.` };
+}

@@ -942,6 +942,33 @@ reset request.jwt.claims;
 select inv.val('IQ8 the resolver is service_role-only, the settings RPC authenticated-only', $$select concat_ws('|', has_function_privilege('service_role', 'public.pending_invoice_bank_change_notifications(integer)', 'EXECUTE')::text, has_function_privilege('authenticated', 'public.pending_invoice_bank_change_notifications(integer)', 'EXECUTE')::text, has_function_privilege('authenticated', 'public.save_invoice_settings(uuid,text,text,text,text,text,text,text,integer)', 'EXECUTE')::text, has_function_privilege('anon', 'public.save_invoice_settings(uuid,text,text,text,text,text,text,text,integer)', 'EXECUTE')::text)$$, 'true|false|true|false');
 
 -- ===========================================================================
+-- § IY THE PDF DOWNLOAD AUDIT (Task 10, 20261107005000)
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
+select inv.val('IY1 a Finance user''s download of a (void) invoice is recorded', format($$select 'ok' from (select public.audit_invoice_download(%L)) s$$, :'id_p'), 'ok');
+-- Read as postgres: audit_events is superuser-read, so the Finance user
+-- would see no row at all (the same reason § IS/IP/IV/IX read it so).
+reset role;
+select inv.val('IY2 ...as one invoice.pdf_downloaded row naming the number (read as postgres)', format($$select count(*) || '|' || max(after ->> 'number') from public.audit_events where action = 'invoice.pdf_downloaded' and target_id = %L$$, :'id_p'), '1|INV-0002');
+set role authenticated;
+select inv.val('IY3 an id that does not exist is refused like one that is not yours', $$select 'ok' from (select public.audit_invoice_download(gen_random_uuid())) s$$, 'denied(42501:forbidden)');
+set request.jwt.claims = :'mgr_a_c';
+select inv.val('IY4 a Manager (no view_finance) cannot download', format($$select 'ok' from (select public.audit_invoice_download(%L)) s$$, :'id_p'), 'denied(42501:forbidden)');
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IY5 a draft has no PDF', format($$select 'ok' from (select public.audit_invoice_download(%L)) s$$, :'inv_n3'), 'denied(22023:invoice_not_issued)');
+reset role;
+reset request.jwt.claims;
+update public.organisation_subscriptions set plan_id = 'starter' where organisation_id = :'org_b';
+set role authenticated;
+set request.jwt.claims = :'fin_b_c';
+select inv.val('IY6 DOWNGRADE: a workspace moved to Starter still downloads its invoices', format($$select 'ok' from (select public.audit_invoice_download(%L)) s$$, :'id_e'), 'ok');
+reset role;
+reset request.jwt.claims;
+update public.organisation_subscriptions set plan_id = 'pro' where organisation_id = :'org_b';
+select inv.val('IY7 only authenticated may execute audit_invoice_download', $$select has_function_privilege('authenticated', 'public.audit_invoice_download(uuid)', 'EXECUTE')::text || '/' || (has_function_privilege('anon', 'public.audit_invoice_download(uuid)', 'EXECUTE') or has_function_privilege('service_role', 'public.audit_invoice_download(uuid)', 'EXECUTE'))::text$$, 'true/false');
+
+-- ===========================================================================
 -- § IZ HOUSEKEEPING (later tasks insert their sections ABOVE this line)
 -- ===========================================================================
 reset role;
