@@ -23,7 +23,13 @@ import { repoRoot as root, readSource as read } from "../../support/source";
 const NEW_ROUTE = /[\\/]new[\\/]page\.tsx$/;
 
 /** Create routes that legitimately do not use the factory. */
-const EXEMPT: readonly string[] = [];
+const EXEMPT: readonly string[] = [
+  // Invoices Task 9: not a CRM record. Its gate is finance (view_finance to
+  // see, finance write access + Pro to save, getFinanceReadAccess before
+  // anything renders), not the CRM write gate newRecordPage applies, and its
+  // form is a line editor with live totals, not one record's fields.
+  "app/(app)/[orgSlug]/invoices/new/page.tsx",
+];
 
 function newRoutes(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(root + dir)) {

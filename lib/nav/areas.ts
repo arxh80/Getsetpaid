@@ -156,6 +156,16 @@ export const OPERATIONS_AREAS: readonly NavAreaWithBlurb[] = [
 ] as const;
 
 /**
+ * The finance group (Invoices part 1): the invoices list and its settings.
+ * Gated as a GROUP on `view_finance` (lib/nav/sidebar-groups.ts) -- Owner,
+ * Admin and Finance. The event finance panel stays on the event page.
+ */
+export const FINANCE_ITEMS: readonly NavArea[] = [
+  { path: "invoices", label: "Invoices", sub: "Bill and get paid" },
+  { path: "settings/invoicing", label: "Invoice settings", sub: "Business and bank details" },
+] as const;
+
+/**
  * The network group's four destinations (Phase 6), in the order the org-home
  * page's own "Network" section already lists them: discover first (the point
  * of an industry network), then your own published identities, then the
