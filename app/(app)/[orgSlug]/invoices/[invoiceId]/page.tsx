@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { getCurrentOrg } from "@/lib/auth";
 import { getFinanceReadAccess, getFinanceWriteAccess } from "@/lib/crm/finance-access";
 import { loadLinkOptions } from "@/lib/crm/queries";
-import { loadInvoice, loadInvoiceSettings, type InvoiceDetail } from "@/lib/invoices/queries";
+import { loadInvoice, loadInvoiceSends, loadInvoiceSettings, type InvoiceDetail } from "@/lib/invoices/queries";
 import { parseSnapshot } from "@/lib/invoices/snapshot";
 import { minorToPoundsInput } from "@/lib/format/money";
 import { Alert } from "@/components/ui/alert";
@@ -12,7 +12,8 @@ import { InvoiceEditor } from "@/components/invoices/invoice-editor";
 import { BLOCKED_NOTE_ID, type EditorInitial } from "@/lib/invoices/draft-form";
 import { InvoiceView } from "@/components/invoices/invoice-view";
 import { InvoiceStatusChip } from "@/components/invoices/invoice-status-chip";
-import { DeleteDraftForm, IssueInvoiceForm } from "@/components/invoices/invoice-actions";
+import { DeleteDraftForm, IssueInvoiceForm, SendInvoiceForm } from "@/components/invoices/invoice-actions";
+import { formatDateTime } from "@/lib/format/date";
 
 export async function generateMetadata({ params }: PageProps<"/[orgSlug]/invoices/[invoiceId]">): Promise<Metadata> {
   const { orgSlug } = await params;
@@ -93,6 +94,8 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
   }
 
   const snapshot = parseSnapshot(invoice.snapshot);
+  // The non-draft branch only: a draft has never been sent.
+  const sends = await loadInvoiceSends(org.id, invoice.id);
   return (
     <div className="flex flex-col gap-6">
       {back}
@@ -120,7 +123,22 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
             Download PDF
           </a>
         </p>
-        {/* SEND (Task 11), MARK PAID and VOID (Task 12) render here. */}
+        {invoice.status !== "void" ? (
+          <div className="flex max-w-prose flex-col gap-3">
+            <h3 className="text-lg font-bold text-ink">Send by email</h3>
+            <SendInvoiceForm orgSlug={org.slug} invoiceId={invoice.id} defaultEmail={snapshot?.recipient.email ?? ""} disabledReason={disabledReason} />
+            {sends.length > 0 ? (
+              <ul className="flex flex-col gap-1 text-sm text-ink-muted">
+                {sends.map((s) => (
+                  <li key={`${s.sentAt}-${s.toEmail}`}>
+                    Sent to {s.toEmail} on <time dateTime={s.sentAt} className="tabular-nums">{formatDateTime(s.sentAt)}</time>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+        {/* MARK PAID and VOID (Task 12) render here. */}
       </section>
     </div>
   );

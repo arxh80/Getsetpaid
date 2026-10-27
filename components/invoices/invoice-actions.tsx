@@ -6,6 +6,8 @@ import { deleteInvoiceDraftAction, issueInvoiceAction } from "@/lib/invoices/act
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 import { BLOCKED_NOTE_ID } from "@/lib/invoices/draft-form";
+import { sendInvoiceAction } from "@/lib/invoices/send-action";
+import { Field } from "@/components/ui/field";
 
 /** The one explanation every disabled invoice control points at (rendered by the page). */
 
@@ -61,4 +63,27 @@ export function DeleteDraftForm(props: { orgSlug: string; invoiceId: string; dis
 
 export function IssueInvoiceForm(props: { orgSlug: string; invoiceId: string; disabledReason: string | null }) {
   return <ActionForm {...props} action={issueInvoiceAction} submitLabel="Issue invoice" pendingLabel="Issuing…" variant="primary" />;
+}
+
+export function SendInvoiceForm(props: { orgSlug: string; invoiceId: string; defaultEmail: string; disabledReason: string | null }) {
+  const { defaultEmail, ...rest } = props;
+  return (
+    <ActionForm
+      {...rest}
+      action={sendInvoiceAction}
+      submitLabel="Send invoice"
+      pendingLabel="Sending…"
+      fields={(state) => (
+        <Field
+          label="Send to"
+          name="toEmail"
+          type="email"
+          required
+          defaultValue={state.values?.toEmail ?? defaultEmail}
+          error={state.fieldErrors?.toEmail}
+          hint="The PDF is attached. A company has no email on record, so type the address."
+        />
+      )}
+    />
+  );
 }

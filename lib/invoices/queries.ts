@@ -138,3 +138,19 @@ export async function loadInvoice(
     },
   };
 }
+
+export async function loadInvoiceSends(organisationId: string, invoiceId: string): Promise<{ toEmail: string; sentAt: string }[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("invoice_sends")
+    .select("to_email, sent_at")
+    .eq("organisation_id", organisationId)
+    .eq("invoice_id", invoiceId)
+    .order("sent_at", { ascending: false })
+    .limit(20);
+  if (error) {
+    console.error("[invoices] send history lookup failed:", error.message);
+    return [];
+  }
+  return (data ?? []).map((r) => ({ toEmail: String(r.to_email), sentAt: String(r.sent_at) }));
+}

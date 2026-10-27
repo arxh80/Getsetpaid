@@ -134,6 +134,7 @@ const SERVER_ACTION_MODULES = [
   "lib/feedback/actions.ts",
   "lib/feedback/admin-actions.ts",
   "lib/invoices/actions.ts",
+  "lib/invoices/send-action.ts",
   "lib/invoices/settings-actions.ts",
   "lib/legal/admin-actions.ts",
   "lib/network/connections.ts",

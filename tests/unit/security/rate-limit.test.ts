@@ -113,6 +113,12 @@ describe("consumeRateLimit — what it asks the database", () => {
       args: { p_category: "uploads" },
     });
   });
+
+  it("meters INVOICE SENDS under their own name, user-scoped (no organisation)", async () => {
+    returns([{ allowed: false, retry_after_seconds: 600, request_count: 31 }]);
+    await expect(consumeRateLimit("invoice_send")).resolves.toEqual({ allowed: false, retryAfterSeconds: 600 });
+    expect(rpc.calls[0]).toEqual({ name: "consume_rate_limit", args: { p_category: "invoice_send" } });
+  });
 });
 
 describe("consumeRateLimit — reading a well-formed verdict", () => {

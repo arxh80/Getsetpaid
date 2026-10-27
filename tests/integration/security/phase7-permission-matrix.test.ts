@@ -1149,6 +1149,11 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "reachable by whoever may read the invoice (view_finance, not tier-gated). It " +
     "refuses a draft and anything outside the caller's workspace, writes an " +
     "identifier-only audit row, and returns no data. Asserted in rls_invoices.sql § IY.",
+  record_invoice_send:
+    "Invoices part 1 Task 11 -- sendInvoiceAction records an email Brevo accepted: " +
+    "issued or paid only, manage_finance + Pro; audits invoice.sent with the number " +
+    "only. The budget (invoice_send, 30/h/user) is spent in the action before the " +
+    "send. Asserted in rls_invoices.sql § IW.",
 };
 
 /**

@@ -969,6 +969,35 @@ update public.organisation_subscriptions set plan_id = 'pro' where organisation_
 select inv.val('IY7 only authenticated may execute audit_invoice_download', $$select has_function_privilege('authenticated', 'public.audit_invoice_download(uuid)', 'EXECUTE')::text || '/' || (has_function_privilege('anon', 'public.audit_invoice_download(uuid)', 'EXECUTE') or has_function_privilege('service_role', 'public.audit_invoice_download(uuid)', 'EXECUTE'))::text$$, 'true/false');
 
 -- ===========================================================================
+-- § IW SEND (Task 11, 20261107006000)
+-- ===========================================================================
+select inv.val('IW1 the invoice_send budget is 30 an hour, per user', $$select max_requests || '/' || window_seconds || '/' || subject_scope from public.rate_limit_policies where category = 'invoice_send'$$, '30/3600/user');
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
+select inv.val('IW2 a Finance user records a send of an issued invoice', format($$select (public.record_invoice_send(%L, 'ap@customer.example', 'brevo-123') is not null)::text$$, :'inv_ad'), 'true');
+select inv.val('IW3 ...the send row names the address, the provider id and the sender', format($$select count(*) || '|' || bool_and(to_email = 'ap@customer.example' and provider_message_id = 'brevo-123' and sent_by = %L)::text from public.invoice_sends where invoice_id = %L$$, :'fin_a', :'inv_ad'), '1|true');
+-- Read as postgres: audit_events is superuser-read (as § IY's IY2).
+reset role;
+select inv.val('IW4 ...one invoice.sent audit row with the number, and NOT the address (read as postgres)', format($$select count(*) || '|' || max(after ->> 'number') || '|' || bool_and(coalesce(after::text, '') not like '%%customer.example%%')::text from public.audit_events where action = 'invoice.sent' and target_id = %L$$, :'inv_ad'), '1|INV-0001|true');
+set role authenticated;
+select inv.val('IW5 a VOID invoice cannot be sent', format($$select public.record_invoice_send(%L, 'x@example.test', null)::text$$, :'id_p'), 'denied(22023:invoice_not_sendable)');
+select inv.val('IW6 an address that is not one is refused', format($$select public.record_invoice_send(%L, 'not an address', null)::text$$, :'inv_ad'), 'denied(22023:invoice_send_email_invalid)');
+set request.jwt.claims = :'fin_n_c';
+select inv.val('IW7 a DRAFT cannot be sent', format($$select public.record_invoice_send(%L, 'x@example.test', null)::text$$, :'inv_n3'), 'denied(22023:invoice_not_sendable)');
+set request.jwt.claims = :'mgr_a_c';
+select inv.val('IW8 a Manager cannot record a send', format($$select public.record_invoice_send(%L, 'x@example.test', null)::text$$, :'inv_ad'), 'denied(42501:forbidden)');
+reset role;
+reset request.jwt.claims;
+update public.organisation_subscriptions set plan_id = 'starter' where organisation_id = :'org_b';
+set role authenticated;
+set request.jwt.claims = :'fin_b_c';
+select inv.val('IW9 a STARTER workspace cannot send (downgrade: read and download only)', format($$select public.record_invoice_send(%L, 'x@example.test', null)::text$$, :'id_e'), 'denied(42501:plan_does_not_include_invoicing)');
+reset role;
+reset request.jwt.claims;
+update public.organisation_subscriptions set plan_id = 'pro' where organisation_id = :'org_b';
+select inv.val('IW10 only authenticated may execute record_invoice_send', $$select has_function_privilege('authenticated', 'public.record_invoice_send(uuid,text,text)', 'EXECUTE')::text || '/' || (has_function_privilege('anon', 'public.record_invoice_send(uuid,text,text)', 'EXECUTE') or has_function_privilege('service_role', 'public.record_invoice_send(uuid,text,text)', 'EXECUTE'))::text$$, 'true/false');
+
+-- ===========================================================================
 -- § IZ HOUSEKEEPING (later tasks insert their sections ABOVE this line)
 -- ===========================================================================
 reset role;

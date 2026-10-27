@@ -205,9 +205,16 @@ select rl.val('RV6d Document uploads: 10 / hour, per user (Q113)',
   $$select max_requests || '/' || window_seconds || '/' || subject_scope
       from public.rate_limit_policies where category='uploads'$$,
   '10/3600/user');
+-- Invoices part 1 (20261107006000): invoice emails, 30 / hour per USER --
+-- outbound mail to an arbitrary address is a spam vector (spec § Send).
+select rl.val('RV6e Invoice sends: 30 / hour, per user',
+  $$select max_requests || '/' || window_seconds || '/' || subject_scope
+      from public.rate_limit_policies where category='invoice_send'$$,
+  '30/3600/user');
 -- TWELVE SINCE PHASE 8 TASK 9a (`uploads`, Q113), with its § 5 row.
-select rl.val('RV7 the policy table holds exactly the twelve § 5 categories',
-  $$select count(*)::text from public.rate_limit_policies$$, '12');
+-- THIRTEEN SINCE INVOICES PART 1 (invoice_send), with its § 5 row.
+select rl.val('RV7 the policy table holds exactly the thirteen § 5 categories',
+  $$select count(*)::text from public.rate_limit_policies$$, '13');
 -- The ACCOUNT export's budget is its own category and not `exports`, because
 -- `exports` is organisation-scoped and an account export belongs to no
 -- workspace: metering it against one would be the caller-supplied attribution
@@ -238,8 +245,8 @@ select rl.try('RV10 ...nor INSERT a new category',
       (category, subject_scope, max_requests, window_seconds, description)
     values ('smuggled','user',1,1,'x')$$,
   'denied(42501)');
-select rl.val('RV11 the superuser CAN read the configuration, all twelve rows (the health view states it)',
-  $$select count(*)::text from public.rate_limit_policies$$, '12');
+select rl.val('RV11 the superuser CAN read the configuration, all thirteen rows (the health view states it)',
+  $$select count(*)::text from public.rate_limit_policies$$, '13');
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -1475,8 +1482,8 @@ select rl.val('RZ3 the two suite documents are gone (not soft-deleted -- never e
 select rl.val('RZ4 ALPHA is still active and untouched',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
          :'alpha_org'), 'true');
-select rl.val('RZ5 the twelve seeded policy rows (seven + consent_grant + data_subject_request + account_export + account_erasure + uploads) are exactly as they were',
-  $$select count(*)::text from public.rate_limit_policies$$, '12');
+select rl.val('RZ5 the thirteen seeded policy rows (seven + consent_grant + data_subject_request + account_export + account_erasure + uploads + invoice_send) are exactly as they were',
+  $$select count(*)::text from public.rate_limit_policies$$, '13');
 
 \pset format aligned
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual

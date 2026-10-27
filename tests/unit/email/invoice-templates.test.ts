@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildBankDetailsChangedNotice } from "@/lib/email/invoice-templates";
+import { buildBankDetailsChangedNotice, buildInvoiceEmail } from "@/lib/email/invoice-templates";
 
 const base = {
   organisationSlug: "neon-nights",
@@ -28,5 +28,31 @@ describe("buildBankDetailsChangedNotice", () => {
   it("neutralises a link smuggled into the workspace name", () => {
     const body = buildBankDetailsChangedNotice({ ...base, organisationName: "Evil https://evil.example/login" });
     expect(body.text).not.toContain("https://evil.example");
+  });
+});
+
+describe("buildInvoiceEmail", () => {
+  const input = {
+    number: "INV-0001",
+    sellerName: "Alpha Promotions Ltd",
+    recipientName: "Sam Booker",
+    grossMinor: 396000,
+    dueDate: "2026-11-19",
+    bank: { accountName: "Alpha Promotions Ltd", sortCode: "123456", accountNumber: "12345678" },
+  };
+  it("says who it is from, the total, the due date and how to pay; carries no link", () => {
+    const body = buildInvoiceEmail(input);
+    expect(body.subject).toBe("Invoice INV-0001 from Alpha Promotions Ltd");
+    expect(body.text).toContain("£3,960.00");
+    expect(body.text).toContain("12345678");
+    expect(body.html).not.toMatch(/<a\s/i);
+  });
+  it("neutralises a link smuggled into a name", () => {
+    const body = buildInvoiceEmail({ ...input, sellerName: "Pay https://evil.example now" });
+    expect(body.text).not.toContain("https://evil.example");
+    expect(body.subject).not.toContain("https://");
+  });
+  it("refuses a number outside the invoice shape", () => {
+    expect(() => buildInvoiceEmail({ ...input, number: "../x" })).toThrow();
   });
 });
