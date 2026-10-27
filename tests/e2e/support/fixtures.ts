@@ -946,6 +946,15 @@ export async function countSentConnectionRequests(
   return Number(result.rows[0]?.count ?? "0");
 }
 
+/** Issued, paid or void invoices of one workspace (Invoices part 1). As postgres. */
+export async function countIssuedInvoices(organisationId: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.invoices where organisation_id = $1 and status <> 'draft'`,
+    [organisationId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
 /** Audit rows of one action about one target (Invoices part 1). As postgres. */
 export async function countAuditRows(action: string, targetId: string): Promise<number> {
   const { rows } = await db().query<{ n: string }>(

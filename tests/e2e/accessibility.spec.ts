@@ -371,6 +371,28 @@ test("the event page WITH the finance panel has no automated accessibility viola
   await scan(page, "event detail + finance panel");
 });
 
+// ===========================================================================
+// INVOICES PART 1: the four new pages (five renders -- a draft and an issued
+// invoice are different renders of one route), scanned as the FINANCE role,
+// because a Manager holds no view_finance and would scan a not-found page.
+// ===========================================================================
+const INVOICE_PAGES: [string, (w: E2eWorld) => string][] = [
+  ["invoices list", (w) => `/${w.proOrgSlug}/invoices`],
+  ["new invoice (the line editor)", (w) => `/${w.proOrgSlug}/invoices/new`],
+  ["a draft invoice (editor, issue, delete)", (w) => `/${w.proOrgSlug}/invoices/${w.proDraftInvoiceId}`],
+  ["an issued invoice (view, download, send, paid, void)", (w) => `/${w.proOrgSlug}/invoices/${w.proIssuedInvoiceId}`],
+  ["invoice settings (fresh credential, so the form, not the prompt)", (w) => `/${w.proOrgSlug}/settings/invoicing`],
+];
+
+for (const [label, url] of INVOICE_PAGES) {
+  test(`${label} has no automated accessibility violations`, async ({ page }) => {
+    await signIn(page, world, "finance");
+    await page.goto(url(world));
+    await settled(page);
+    await scan(page, label);
+  });
+}
+
 test("custom-field settings, EDITABLE, has no automated accessibility violations", async ({
   page,
 }) => {
