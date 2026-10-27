@@ -154,3 +154,30 @@ export async function loadInvoiceSends(organisationId: string, invoiceId: string
   }
   return (data ?? []).map((r) => ({ toEmail: String(r.to_email), sentAt: String(r.sent_at) }));
 }
+
+export async function loadInvoiceableIncomeLines(
+  organisationId: string,
+  eventId: string,
+): Promise<{ id: string; description: string | null; amountMinor: number; status: "budgeted" | "actual" }[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("financial_entries")
+    .select("id, description, amount_minor, status")
+    .eq("organisation_id", organisationId)
+    .eq("event_id", eventId)
+    .eq("category", "income")
+    .is("deleted_at", null)
+    .order("occurred_on", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(50);
+  if (error) {
+    console.error("[invoices] invoiceable income lookup failed:", error.message);
+    return [];
+  }
+  return (data ?? []).map((r) => ({
+    id: String(r.id),
+    description: (r.description as string | null) ?? null,
+    amountMinor: Number(r.amount_minor),
+    status: r.status as "budgeted" | "actual",
+  }));
+}

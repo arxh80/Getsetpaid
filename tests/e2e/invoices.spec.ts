@@ -2,7 +2,9 @@ import { readFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import {
   countAuditRows,
+  INVOICE_EVENT_NAME,
   INVOICE_FIXTURES,
+  INVOICE_INCOME,
   PRO_SUPPLIER_NAME,
   setUpWorld,
   tearDownWorld,
@@ -93,4 +95,21 @@ test("the planted issued invoice is marked paid, then voided -- keeping its numb
   await expect(page.getByRole("button", { name: "Void invoice" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Send invoice" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Download PDF" })).toHaveCount(1);
+});
+
+test("ticking an event's income line creates a draft with that line pulled in and linked", async ({ page }) => {
+  await signIn(page, world, "finance");
+  await page.goto(`/${world.proOrgSlug}/events/${world.invoiceEventId}`);
+  await expect(page.getByRole("heading", { name: INVOICE_EVENT_NAME, level: 1 })).toBeVisible();
+  const section = page.getByRole("region", { name: "Invoice these lines" });
+  await section.getByLabel(new RegExp(INVOICE_INCOME.description)).check();
+  await section.getByRole("button", { name: "Create draft invoice" }).click();
+
+  await expect(page.getByRole("heading", { name: "Draft invoice", level: 1 })).toBeVisible();
+  await expect(page.getByLabel("Line 1 description")).toHaveValue(INVOICE_INCOME.description);
+  await expect(page.getByLabel("Line 1 quantity")).toHaveValue("1.00");
+  await expect(page.getByLabel("Line 1 unit price")).toHaveValue(/^3,?000\.00$/);
+  await expect(page.locator("main")).toContainText("From event finance");
+  // No recipient yet: the user picks one (spec § Screens 3).
+  await expect(page.getByRole("combobox", { name: /^Recipient/ })).toHaveValue("");
 });

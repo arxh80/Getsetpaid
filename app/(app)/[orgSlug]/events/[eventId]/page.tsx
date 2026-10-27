@@ -54,6 +54,8 @@ import {
 import { formatDateTime } from "@/lib/format/date";
 import { Absent } from "@/components/ui/absent";
 import { Detail } from "@/components/ui/detail";
+import { loadInvoiceableIncomeLines } from "@/lib/invoices/queries";
+import { InvoiceFromFinanceForm } from "@/components/invoices/invoice-from-finance-form";
 
 // One event.
 //
@@ -212,6 +214,7 @@ export default async function EventDetailPage({
     financeSummary,
     financeArtistOptions,
     financeSupplierOptions,
+    invoiceableLines,
   ] = await Promise.all([
     // THE RAW QUERY STRING GOES IN and the parsed params come back: the loader
     // owns LINEUP_LIST's namespace and the `lineup_q` drop, so this page
@@ -252,6 +255,11 @@ export default async function EventDetailPage({
     financeCanWrite
       ? loadLinkOptions("contacts", org.id, [])
       : Promise.resolve([] as { id: string; name: string }[]),
+    // "Invoice these lines" (Invoices part 1): only when the caller can write
+    // finance on a live event -- the panel above already explains read-only.
+    financeReadable && financeCanWrite
+      ? loadInvoiceableIncomeLines(org.id, event.id)
+      : Promise.resolve([] as Awaited<ReturnType<typeof loadInvoiceableIncomeLines>>),
   ]);
 
   // THE FINANCE LINES' CUSTOM FIELDS (Phase 5 Task 3). Loaded AFTER the main
@@ -496,6 +504,9 @@ export default async function EventDetailPage({
           disabledReason={financeDisabledReason}
           preserve={raw}
         />
+      ) : null}
+      {financeReadable && financeCanWrite && invoiceableLines.length > 0 ? (
+        <InvoiceFromFinanceForm orgSlug={org.slug} eventId={event.id} lines={invoiceableLines} />
       ) : null}
 
       {/* THE RELATED PANEL (Phase 4 Task 3): tasks, notes and documents linked

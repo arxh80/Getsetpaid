@@ -9,7 +9,7 @@ import { redirect } from "next/navigation";
 import { getCurrentOrg, type CurrentOrg } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
-import { FAILED_MESSAGE } from "@/lib/crm/write";
+import { FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { getFinanceWriteAccess } from "@/lib/crm/finance-access";
 import { readDraftForm } from "@/lib/invoices/draft-form";
 import { invoiceRefusal } from "@/lib/invoices/refusals";
@@ -123,4 +123,52 @@ export async function voidInvoiceAction(_prev: FormState, formData: FormData): P
   revalidatePath(`/${auth.org.slug}/invoices`);
   revalidatePath(`/${auth.org.slug}/invoices/${invoiceId}`);
   return { message: "Voided. The number stays used; issue a new invoice to correct it." };
+}
+
+export async function createDraftFromFinanceAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const auth = await authorise(formData);
+  if (!auth.ok) return auth.state;
+  const eventId = field(formData, "eventId");
+  const ids = [...new Set(formData.getAll("entryId").filter((v): v is string => typeof v === "string" && v !== ""))];
+  if (!eventId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  if (ids.length === 0) return { error: "Tick at least one income line to invoice.", values: echoedValues(formData) };
+
+  // Read through RLS; the RPC re-checks each entry is live income on this event.
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("financial_entries")
+    .select("id, description, amount_minor")
+    .eq("organisation_id", auth.org.id)
+    .eq("event_id", eventId)
+    .eq("category", "income")
+    .is("deleted_at", null)
+    .in("id", ids);
+  if (error || !data || data.length !== ids.length) {
+    return { error: REFUSED_MESSAGE, values: echoedValues(formData) };
+  }
+  const byId = new Map(data.map((e) => [String(e.id), e]));
+  const lines = ids.map((id) => {
+    const e = byId.get(id)!;
+    return {
+      description: (e.description as string | null) ?? "Income",
+      quantity: "1.00",
+      unit_price_minor: Number(e.amount_minor),
+      vat_rate: "standard_20",
+      financial_entry_id: id,
+    };
+  });
+  const { data: invoiceId, error: saveError } = await supabase.rpc("save_invoice_draft", {
+    p_org: auth.org.id,
+    p_invoice_id: null,
+    p_recipient_company_id: null,
+    p_recipient_contact_id: null,
+    p_event_id: eventId,
+    p_recipient_address: null,
+    p_supply_date: null,
+    p_notes: null,
+    p_lines: lines,
+  });
+  if (saveError) return refused(saveError, "draft from finance", formData);
+  revalidatePath(`/${auth.org.slug}/invoices`);
+  redirect(`/${auth.org.slug}/invoices/${String(invoiceId)}`);
 }
