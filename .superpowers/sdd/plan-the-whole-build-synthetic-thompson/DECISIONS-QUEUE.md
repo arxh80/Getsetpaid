@@ -1687,3 +1687,28 @@ Scheduled as a follow-up branch off main after the Phase 9 PR, built under the s
 ## Q42 -- answered 2026-10-13: self-hosted ClamAV
 
 Founder: "go ClamAV". Wired on branch `clamav-scanner` (PR #30): fail-closed clamd client, container + config, runbook `docs/clamav.md`. Owed: the opt-in live test on the first server.
+
+## Q276 -- Invoicing enters scope (founder 2026-10-20), part 1 built on `invoicing` (the plan numbered these Q248-Q250; Phase 10 had taken those, so Q276-Q278)
+
+- **Q276 -- Scope change, by founder decision 2026-10-20 (recorded, not a question).** Until now finance was "budget & actuals only, no invoicing" (CLAUDE.md § Scope discipline). The founder reversed that: workspaces generate invoices, and later take card payment through their own linked Stripe account. Three sub-projects, each with its own spec, plan and branch, built in order: (1) **Invoices** -- draft, issue, number, PDF, email, mark paid, void, pull lines from event finance; bank transfer only (spec `docs/superpowers/specs/2026-10-20-invoices-design.md`, plan `docs/superpowers/plans/2026-10-20-invoices.md`); (2) **Stripe Connect** -- link an existing Standard account (OAuth), a "Pay by card" Checkout link as a direct charge carrying a percentage application fee, a webhook marks the invoice paid; (3) **Network delivery** -- an invoice to a connected network organisation also appears inside that organisation's GetSetPaid. The answers that bind all three:
+
+  | Question | Answer |
+  |---|---|
+  | Timing | Built in parallel with Phase 10 |
+  | Recipient | Any CRM company/contact by email, and (part 3) connected network orgs in-app |
+  | Platform fee | A small percentage per Stripe payment (part 2; rate to DECISIONS-QUEUE with a default) |
+  | Connect type | Link an existing Stripe account (Standard) |
+  | Line items | Free lines, plus "pull from event finance" |
+  | Tier | Pro only |
+  | Without Stripe | Invoicing works; bank details on the invoice; marked paid by hand |
+  | Approach | Our own invoices (A); Stripe only takes the payment |
+
+  Part 1's own defaults where the spec was silent are listed in the plan's "Decisions this plan takes" section (no client write grants; a recipient address column; a draft may have no recipient; `paid_on` as a date; "remaining lines" = lines with no pulled entry; no finance link for a deleted event; the bank-change email on the delivery tick; drafts unaudited; numbers never truncate; UK-local issue date). Task 1 spike result: @react-pdf/renderer 4.3.0 renders under `next dev` (7.6 KB in 232 ms) with no `serverExternalPackages` entry; the live Brevo send with a PDF attachment is OWED (no Brevo key in a development worktree; founder to run it once against the hosted project).
+
+## Q277 -- Invoices part 1: a contact's erasure and the drafts that name it, default implemented
+
+- **Q277 -- Should a draft invoice be soft-deleted when its recipient is deleted?** The spec says a data-subject erasure of a contact "soft-deletes drafts that name it". No code path erases a contact: a contact's request is routed to the workspace (Q132), which soft-deletes the record -- reversibly -- and a merge retires a duplicate the same way, so auto-deleting drafts would destroy work on a restore or a merge. **Default (built): drafts are left alone; `issue_invoice` refuses a deleted recipient (`invoice_recipient_deleted`) and the draft stays editable; issued snapshots are never touched (legal-obligation basis).** Measured: `rls_invoices.sql` IS19/IS20. Revisit if a real contact-erasure engine is ever built.
+
+## Q278 -- Invoices part 1: how long an invoice is kept, default implemented
+
+- **Q278 -- Retention class of an invoice.** The spec says an issued, paid or void invoice is a financial record kept 7 years. Today `financial_entries` is `retained_with_workspace` and nothing deletes a financial record on a clock (Q180 is still open). **Default (built): the four invoice tables are classified `cascades` -- they live exactly as long as the workspace, and an issued invoice cannot be deleted by its workspace at all (the freeze trigger).** Classifying `invoices` as `retained_with_workspace` instead would require `/legal/data-retention` to name invoices (rls_phase8_retention.sql RL4 binds that class to the page), which is a new published legal version and waits for counsel. When Q180 is answered, invoices take the same seven-year class as financial entries.
