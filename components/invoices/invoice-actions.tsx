@@ -2,12 +2,12 @@
 
 import { useActionState, type ReactNode } from "react";
 import { EMPTY_FORM_STATE, type FormState } from "@/lib/forms";
-import { deleteInvoiceDraftAction, issueInvoiceAction } from "@/lib/invoices/actions";
+import { deleteInvoiceDraftAction, issueInvoiceAction, markInvoicePaidAction, voidInvoiceAction } from "@/lib/invoices/actions";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
 import { BLOCKED_NOTE_ID } from "@/lib/invoices/draft-form";
 import { sendInvoiceAction } from "@/lib/invoices/send-action";
-import { Field } from "@/components/ui/field";
+import { Field, TextAreaField } from "@/components/ui/field";
 
 /** The one explanation every disabled invoice control points at (rendered by the page). */
 
@@ -82,6 +82,54 @@ export function SendInvoiceForm(props: { orgSlug: string; invoiceId: string; def
           defaultValue={state.values?.toEmail ?? defaultEmail}
           error={state.fieldErrors?.toEmail}
           hint="The PDF is attached. A company has no email on record, so type the address."
+        />
+      )}
+    />
+  );
+}
+
+export function MarkPaidForm(props: { orgSlug: string; invoiceId: string; today: string; disabledReason: string | null }) {
+  const { today, ...rest } = props;
+  return (
+    <ActionForm
+      {...rest}
+      action={markInvoicePaidAction}
+      submitLabel="Mark as paid"
+      pendingLabel="Saving…"
+      variant="primary"
+      fields={(state) => (
+        <Field
+          label="Date the payment arrived"
+          name="paidOn"
+          type="date"
+          required
+          max={today}
+          defaultValue={state.values?.paidOn ?? today}
+          error={state.fieldErrors?.paidOn}
+        />
+      )}
+    />
+  );
+}
+
+export function VoidInvoiceForm(props: { orgSlug: string; invoiceId: string; disabledReason: string | null }) {
+  return (
+    <ActionForm
+      {...props}
+      action={voidInvoiceAction}
+      submitLabel="Void invoice"
+      pendingLabel="Voiding…"
+      variant="danger"
+      fields={(state) => (
+        <TextAreaField
+          label="Reason for voiding"
+          name="reason"
+          required
+          rows={2}
+          maxLength={500}
+          defaultValue={state.values?.reason ?? ""}
+          error={state.fieldErrors?.reason}
+          hint="Voiding keeps the number and cancels the invoice. If it was paid, the income it booked on the event is taken back off."
         />
       )}
     />

@@ -90,3 +90,37 @@ export async function issueInvoiceAction(_prev: FormState, formData: FormData): 
   revalidatePath(`/${auth.org.slug}/invoices/${invoiceId}`);
   return { message: `Issued as ${String(data)}.` };
 }
+
+export async function markInvoicePaidAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const auth = await authorise(formData);
+  if (!auth.ok) return auth.state;
+  const invoiceId = field(formData, "invoiceId");
+  const paidOn = field(formData, "paidOn");
+  if (!invoiceId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  if (!paidOn || !/^\d{4}-\d{2}-\d{2}$/.test(paidOn)) {
+    return { fieldErrors: { paidOn: "Choose the date the payment arrived." }, values: echoedValues(formData) };
+  }
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("mark_invoice_paid", { p_invoice_id: invoiceId, p_paid_on: paidOn });
+  if (error) return refused(error, "mark paid", formData);
+  revalidatePath(`/${auth.org.slug}/invoices`);
+  revalidatePath(`/${auth.org.slug}/invoices/${invoiceId}`);
+  return { message: "Marked as paid. Any income it brings in is now on its event’s finance." };
+}
+
+export async function voidInvoiceAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const auth = await authorise(formData);
+  if (!auth.ok) return auth.state;
+  const invoiceId = field(formData, "invoiceId");
+  const reason = field(formData, "reason");
+  if (!invoiceId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  if (!reason || reason.length > 500) {
+    return { fieldErrors: { reason: "Give a reason for voiding — 500 characters at most." }, values: echoedValues(formData) };
+  }
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("void_invoice", { p_invoice_id: invoiceId, p_reason: reason });
+  if (error) return refused(error, "void", formData);
+  revalidatePath(`/${auth.org.slug}/invoices`);
+  revalidatePath(`/${auth.org.slug}/invoices/${invoiceId}`);
+  return { message: "Voided. The number stays used; issue a new invoice to correct it." };
+}

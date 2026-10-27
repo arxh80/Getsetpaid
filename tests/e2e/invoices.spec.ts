@@ -74,3 +74,23 @@ test("issuing the planted draft takes the workspace's next number, freezes it, a
   // AUDITED BEFORE A BYTE WAS SENT: exactly one row for this download.
   expect(await countAuditRows("invoice.pdf_downloaded", world.proDraftInvoiceId)).toBe(1);
 });
+
+test("the planted issued invoice is marked paid, then voided -- keeping its number, losing its actions", async ({ page }) => {
+  await signIn(page, world, "finance");
+  await page.goto(`/${world.proOrgSlug}/invoices/${world.proIssuedInvoiceId}`);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(`Invoice ${INVOICE_FIXTURES.issuedNumber}`);
+
+  await page.getByRole("button", { name: "Mark as paid" }).click();
+  await expect(page.locator("main").getByText("Paid", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Mark as paid" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Send invoice" })).toHaveCount(1);
+
+  await page.getByLabel("Reason for voiding").fill("E2E wrong amount");
+  await page.getByRole("button", { name: "Void invoice" }).click();
+  await expect(page.locator("main").getByText("Void", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(`Invoice ${INVOICE_FIXTURES.issuedNumber}`);
+  await expect(page.locator("main")).toContainText("Voided: E2E wrong amount");
+  await expect(page.getByRole("button", { name: "Void invoice" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Send invoice" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Download PDF" })).toHaveCount(1);
+});

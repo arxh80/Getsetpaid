@@ -12,7 +12,7 @@ import { InvoiceEditor } from "@/components/invoices/invoice-editor";
 import { BLOCKED_NOTE_ID, type EditorInitial } from "@/lib/invoices/draft-form";
 import { InvoiceView } from "@/components/invoices/invoice-view";
 import { InvoiceStatusChip } from "@/components/invoices/invoice-status-chip";
-import { DeleteDraftForm, IssueInvoiceForm, SendInvoiceForm } from "@/components/invoices/invoice-actions";
+import { DeleteDraftForm, IssueInvoiceForm, MarkPaidForm, SendInvoiceForm, VoidInvoiceForm } from "@/components/invoices/invoice-actions";
 import { formatDateTime } from "@/lib/format/date";
 
 export async function generateMetadata({ params }: PageProps<"/[orgSlug]/invoices/[invoiceId]">): Promise<Metadata> {
@@ -96,6 +96,7 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
   const snapshot = parseSnapshot(invoice.snapshot);
   // The non-draft branch only: a draft has never been sent.
   const sends = await loadInvoiceSends(org.id, invoice.id);
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/London" }).format(new Date());
   return (
     <div className="flex flex-col gap-6">
       {back}
@@ -123,7 +124,7 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
             Download PDF
           </a>
         </p>
-        {invoice.status !== "void" ? (
+        {invoice.status === "issued" || invoice.status === "paid" ? (
           <div className="flex max-w-prose flex-col gap-3">
             <h3 className="text-lg font-bold text-ink">Send by email</h3>
             <SendInvoiceForm orgSlug={org.slug} invoiceId={invoice.id} defaultEmail={snapshot?.recipient.email ?? ""} disabledReason={disabledReason} />
@@ -138,7 +139,18 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
             ) : null}
           </div>
         ) : null}
-        {/* MARK PAID and VOID (Task 12) render here. */}
+        {invoice.status === "issued" ? (
+          <div className="flex max-w-prose flex-col gap-3">
+            <h3 className="text-lg font-bold text-ink">Record the payment</h3>
+            <MarkPaidForm orgSlug={org.slug} invoiceId={invoice.id} today={today} disabledReason={disabledReason} />
+          </div>
+        ) : null}
+        {invoice.status === "issued" || invoice.status === "paid" ? (
+          <div className="flex max-w-prose flex-col gap-3 border-t border-rule pt-6">
+            <h3 className="text-lg font-bold text-ink">Void</h3>
+            <VoidInvoiceForm orgSlug={org.slug} invoiceId={invoice.id} disabledReason={disabledReason} />
+          </div>
+        ) : null}
       </section>
     </div>
   );
