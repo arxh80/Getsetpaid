@@ -44,3 +44,5 @@ Task 6: review CHANGES REQUIRED; fixes done (I1, m1-m4) 2026-10-24 (4501154 I1 +
 - Task 12 COMPLETE (2026-10-27, coordinator inline). Mark paid / void actions and forms, status-gated sections. invoices.spec 3 passed; mutants red (mark paid on paid, send on void); unit 2865; lint, typecheck clean. Next: Task 13 (invoice these lines from the event finance).
 
 - Task 13 COMPLETE (2026-10-27, coordinator inline). Invoice-these-lines on the event page. invoices.spec 4 passed; finance + accessibility 30 passed; mutants red (unlinked line, quantity 2.00); unit 2865. Next: Task 14 (golden path, tier refusal, breakout, scans, keyboard).
+
+- Task 14 COMPLETE (2026-10-27, coordinator inline). invoices 7, tenant-breakout 26 (soft-delete test flaked once on a slow compile, passed alone), accessibility 33, finance + keyboard 9. Mutants red (canWrite skipped, list read check dropped, gross booked via scratch DB function, restored). Next: Task 15 (the record: SECURITY.md, CLAUDE.md, the decisions queue, the final gate run).
