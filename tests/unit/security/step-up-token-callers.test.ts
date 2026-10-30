@@ -30,6 +30,12 @@ const UNMINTED: Record<string, { readonly count: number; readonly why: string }>
     count: 1,
     why: "decides whether to RENDER the re-auth prompt; writes nothing",
   },
+  // shortcut: app-layer step-up only, no database token, so a direct PostgREST call to
+  // save_invoice_settings skips it; give it a purpose (CHECK + consume_step_up + an SG target) before launch.
+  "lib/invoices/settings-actions.ts": {
+    count: 1,
+    why: "saveInvoiceSettingsAction: the bank-details change is stepped up in the app only; the RPC consumes no token yet",
+  },
   "lib/admin/retention-actions.ts": {
     count: 1,
     why: "previewRetentionRunAction's dry run: its only write is the runner's own service-role call, with no PostgREST path to gate",
