@@ -1128,6 +1128,46 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "integration.revoked. Revoking only reduces access, so it works on a " +
     "suspended or closed workspace; anyone else gets 42501 whether or not the " +
     "id exists. Asserted in rls_phase9_integrations.sql § IC11/IC12/IV9.",
+  save_invoice_draft:
+    "Invoices part 1 Task 4 -- a manage_finance holder (Owner/Admin/Finance, aal2) " +
+    "in a Pro workspace creates or replaces a DRAFT and its lines; amounts are " +
+    "computed in the database. Refused in order: forbidden, plan, then the " +
+    "line/recipient/event/entry checks. Asserted in rls_invoices.sql § ID.",
+  delete_invoice_draft:
+    "Invoices part 1 Task 4 -- the same holder soft-deletes a live draft in the " +
+    "invoice's own workspace; an issued invoice is refused (voided, never " +
+    "deleted). Asserted in rls_invoices.sql § ID.",
+  issue_invoice:
+    "Invoices part 1 Task 5 -- a manage_finance holder in a Pro workspace issues a " +
+    "live, complete draft: number from invoice_settings under a row lock, UK-local " +
+    "dates, snapshot, audit invoice.issued; a pulled entry already on a live " +
+    "invoice is refused (Q255). Anyone else gets 42501 forbidden whether or not " +
+    "the id exists. Asserted in rls_invoices.sql § IS and " +
+    "invoice_issue_concurrency_probe.sh.",
+  mark_invoice_paid:
+    "Invoices part 1 Task 6 -- a manage_finance holder in a Pro workspace marks an " +
+    "issued invoice paid; with a live event it flips the pulled budgeted entries and " +
+    "books the net of the free lines as actual income. Anyone else gets 42501 " +
+    "forbidden whether or not the id exists. Asserted in rls_invoices.sql § IP.",
+  void_invoice:
+    "Invoices part 1 Task 6 -- the same holder voids an issued or paid invoice with a " +
+    "reason, keeping its number and reversing exactly what mark-paid did. Asserted in " +
+    "rls_invoices.sql § IV.",
+  save_invoice_settings:
+    "Invoices part 1 Task 7 -- a manage_finance holder in a Pro workspace saves the " +
+    "invoice settings (step-up in the Server Action). A bank change is audited by " +
+    "column name only and queued as an email to the Owners and Admins. " +
+    "Asserted in rls_invoices.sql § IX.",
+  audit_invoice_download:
+    "Invoices part 1 Task 10 -- the PDF route calls it before rendering, so it is " +
+    "reachable by whoever may read the invoice (view_finance, not tier-gated). It " +
+    "refuses a draft and anything outside the caller's workspace, writes an " +
+    "identifier-only audit row, and returns no data. Asserted in rls_invoices.sql § IY.",
+  record_invoice_send:
+    "Invoices part 1 Task 11 -- sendInvoiceAction records an email Brevo accepted: " +
+    "issued or paid only, manage_finance + Pro; audits invoice.sent with the number " +
+    "only. The budget (invoice_send, 30/h/user) is spent in the action before the " +
+    "send. Asserted in rls_invoices.sql § IW.",
   mint_step_up_token:
     "Phase 10 Task 6 (G13) -- the app's server records a passed step-up for " +
     "the CALLER, for one purpose, right after checkStepUp(); every gated RPC " +
@@ -1195,6 +1235,14 @@ const PRE_PHASE7_RELATIONS = [
   // persona by persona in supabase/tests/rls_phase9_integrations.sql IR/IB.
   "integration_connections",
   "integration_sync_runs",
+  // Invoices part 1 (20261107000000). Tenant tables: SELECT only, rows to
+  // view_finance holders (Owner, Admin, Finance; aal2); no INSERT, UPDATE or
+  // DELETE grant for any client role (every write is a SECURITY DEFINER RPC).
+  // Proved persona by persona in supabase/tests/rls_invoices.sql IR/IB.
+  "invoice_lines",
+  "invoice_sends",
+  "invoice_settings",
+  "invoices",
   "meeting_links",
   "meetings",
   "merge_candidates",
@@ -1349,6 +1397,8 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Task 9b job 2 -- the DSR received/closed notice queue; the address is auth.users through user_id, the tombstone excluded",
   "pending_export_ready_notifications(p_limit integer)":
     "Task 9b job 2 -- the export-ready notice queue; returns no archive key and no URL",
+  "pending_invoice_bank_change_notifications(p_limit integer)":
+    "Invoices part 1 Task 7 -- the delivery tick reads bank-detail changes not yet emailed, with the workspace's current Owner/Admin addresses and the current account's last four; refuses any session",
   "pending_lockout_notifications(p_limit integer)":
     "Phase 7 Task 6c -- the account-holder lockout notice queue, read by the sender",
   "pending_workspace_closure_notifications(p_limit integer)":

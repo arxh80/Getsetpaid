@@ -176,6 +176,11 @@ const WORKSPACE_EXPORTED = [
   // token_secret_id (projected out by name), and the sync history.
   "integration_connections",
   "integration_sync_runs",
+  // Invoices part 1 (20261107000000).
+  "invoice_lines",
+  "invoice_sends",
+  "invoice_settings",
+  "invoices",
   "meeting_links",
   "meetings",
   "merge_candidates",
@@ -253,6 +258,8 @@ const ACCOUNT_EXCUSED = [
   "export_jobs",
   "financial_entries",
   "incident_alerts",
+  "invoice_sends",
+  "invoices",
   "legal_documents",
   "meetings",
   "merge_candidates",
@@ -498,7 +505,8 @@ describe("the tables in NEITHER derivation are a disposition, not a residue", ()
       // 56 = 54 + Phase 9 Task 1's integration_connections and
       // integration_sync_runs (20261030000000); 57 = 56 + Q228's
       // export_job_parts (20261101000000).
-    ).toBe(57);
+      // 61 = 57 + Invoices part 1's four tables (20261107000000).
+    ).toBe(61);
     // Kept, and no longer pretending to be the load-bearing one: the two
     // derivations overlap (a table can have both paths), so the remainder is
     // the complement by construction. What makes it worth a line is that it

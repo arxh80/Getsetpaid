@@ -37,6 +37,13 @@ export interface EmailAddress {
   name?: string;
 }
 
+/** A file sent with the message. Brevo takes base64 content and a file name;
+ *  the name is the caller's, so it must never be user-supplied text. */
+export interface EmailAttachment {
+  name: string;
+  contentBase64: string;
+}
+
 export interface SendEmailInput {
   to: EmailAddress[];
   /**
@@ -53,6 +60,8 @@ export interface SendEmailInput {
   /** Overrides the default sender for this one message. */
   from?: EmailAddress;
   replyTo?: EmailAddress;
+  /** Files attached to the message (an invoice PDF). Omitted when empty. */
+  attachments?: readonly EmailAttachment[];
   /** Overrides BREVO_TIMEOUT_MS. Exists so the unit test can prove the
    *  abort path in milliseconds rather than ten seconds; production callers
    *  leave it unset. */
@@ -119,6 +128,9 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
         htmlContent: input.html,
         ...(input.text ? { textContent: input.text } : {}),
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+        ...(input.attachments && input.attachments.length > 0
+          ? { attachment: input.attachments.map((a) => ({ name: a.name, content: a.contentBase64 })) }
+          : {}),
       }),
       // A stalled connection is a network failure, not a wait. See the header.
       signal: AbortSignal.timeout(input.timeoutMs ?? BREVO_TIMEOUT_MS),

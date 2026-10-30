@@ -586,7 +586,7 @@ P6VARS+=( -v "super=${ID[super]}" )
 P6VARS+=( -v "super_c={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal2\"}" )
 
 
-run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 225 "${P6VARS[@]}"
+run_suite "PHASE 6 NETWORK LEAKAGE" network_leakage_phase6.sql leak 226 "${P6VARS[@]}"
 lk_fails=$SUITE_FAILS
 if [ "$lk_fails" != "0" ]; then
   echo "PHASE 6 NETWORK-LEAKAGE SUITE FAILED: $lk_fails failing assertion(s)" >&2
@@ -776,7 +776,7 @@ fi
 # assuming zero, because an earlier suite could raise one.
 # ============================================================================
 
-run_suite "PHASE 7 RATE LIMITS" rls_phase7_rate_limits.sql rl 210 "${P7VARS[@]}"
+run_suite "PHASE 7 RATE LIMITS" rls_phase7_rate_limits.sql rl 211 "${P7VARS[@]}"
 rl_fails=$SUITE_FAILS
 if [ "$rl_fails" != "0" ]; then
   echo "PHASE 7 RATE-LIMIT SUITE FAILED: $rl_fails failing assertion(s)" >&2
@@ -1376,6 +1376,31 @@ else
 fi
 
 # ============================================================================
+# INVOICES, PART 1 OF 3 (20261107000000 onwards; founder 2026-10-20). Four
+# tenant tables no client role writes, the freeze triggers, the arithmetic
+# and numbering, and (Tasks 4-11) the draft/issue/paid/void/send RPCs, the
+# settings RPC and the bank-change notice queue. Self-contained and
+# re-runnable (it removes its own fixtures). Pin:
+# grep -c '^select inv.val(' supabase/tests/rls_invoices.sql
+# ============================================================================
+run_suite "INVOICES" rls_invoices.sql inv 256
+inv_fails=$SUITE_FAILS
+if [ "$inv_fails" != "0" ]; then
+  echo "INVOICES SUITE FAILED: $inv_fails failing assertion(s)" >&2
+  echo "  IT/IB red: an invoice table lost RLS, a constraint, or a client role" >&2
+  echo "  gained a write grant. IR red: AN INVOICE IS READABLE OUTSIDE ITS" >&2
+  echo "  WORKSPACE, or without view_finance. IF red: AN ISSUED INVOICE CAN BE" >&2
+  echo "  CHANGED, or the purge no longer passes the freeze. IA red: the" >&2
+  echo "  arithmetic or the numbering moved. IN red: a network view reads an" >&2
+  echo "  invoice table. IC red: a catalogue lost an invoice table or action." >&2
+  echo "  ID/IS/IP/IV/IE/IX/IQ/ID2/IY red: an RPC lost a refusal, its order, or" >&2
+  echo "  its finance link (each section's header says which)." >&2
+  psql_status=1
+else
+  echo "Invoices suite: all assertions passed."
+fi
+
+# ============================================================================
 # PHASE 10 TASK 6 -- STEP-UP, ENFORCED IN THE DATABASE (G13; Task 2 F4;
 # 20261108001000). The server-marked mint, the single-use five-minute token per
 # purpose, and every gated RPC plus the export_jobs / erasure_jobs inserts
@@ -1430,6 +1455,22 @@ else
   echo "  The per-run ceiling, the sanity ceiling and the before/after totals are" >&2
   echo "  all arithmetic over ONE run; retention_runs_one_running_idx is what" >&2
   echo "  serialises them (20261004003000)." >&2
+  psql_status=1
+fi
+
+# ============================================================================
+# TWO INVOICE ISSUES IN ONE WORKSPACE, UNDER A REAL RACE (Invoices part 1,
+# Task 5). public.issue_invoice() locks invoice_settings FOR UPDATE; without
+# it two sessions read the same next_number, and with the Q255 check above
+# the lock two drafts pulling one entry both issue.
+# ============================================================================
+if bash "$HERE/invoice_issue_concurrency_probe.sh"; then
+  :
+else
+  echo "INVOICE ISSUE CONCURRENCY PROBE FAILED: two concurrent issues did not get" >&2
+  echo "  two consecutive numbers, one entry was billed twice under a race, or a" >&2
+  echo "  draft issued for an entry deleted under it (issue_invoice's settings row" >&2
+  echo "  lock, the Q255 check after it, and the FOR SHARE on the pulled entries)." >&2
   psql_status=1
 fi
 

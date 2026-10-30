@@ -349,6 +349,15 @@ Single hardcoded superuser (the founder) at MVP — no multi-account superuser r
 
 **Impersonation.** Break-glass only: the superuser requests impersonation, the org's admin must accept the request, and the session is time-boxed and fully audited (actor, org, reason, start/end). No silent or unilateral impersonation.
 
+**Invoices, as they actually shipped (part 1 of 3, founder 2026-10-20)** — draft, issue, PDF, email, mark paid, void, and "invoice these lines" from an event's finance. Things that read as gaps and are deliberate:
+
+- **Bank transfer only.** Card payment through the workspace's own Stripe account is part 2; delivery into a connected network organisation is part 3. Each has its own spec.
+- **No client write on any invoice table.** Every write is a `SECURITY DEFINER` RPC that re-checks `manage_finance` and Pro; an issued invoice is frozen for every role by trigger. Corrections are void-and-reissue: there are no credit notes, and a void keeps its number (the sequence never has a gap).
+- **Income is booked net of VAT** on mark-paid: pulled `budgeted` lines flip to `actual`, the free lines' net becomes one new `actual` income line; void reverses exactly that. An invoice whose event was deleted is marked paid without touching finance.
+- **The bank-change email is not instant.** It is queued on the existing delivery tick like every other notification (`lib/email/invoice-notifications.ts`).
+- **A deleted recipient does not delete the drafts that name it** (Q277); the draft cannot be issued until another recipient is chosen.
+- **Out of scope**: an invoices panel on company/contact pages, recurring invoices, reminders, multiple currencies, per-sender reply-to, a branded email.
+
 **Impersonation, as it actually shipped in Phase 7 Task 2.** `/super/impersonation` requests and starts (behind step-up); `/[orgSlug]/support-access` — inside the customer's own workspace, behind their own `manage_organisation` — accepts, declines, and ends a running session. Six things read as gaps or as details and are none of them accidental:
 
 - **No membership row is ever minted.** The grant is derived from the session row by `private.impersonated_organisations()` and evaluated on every permission check, so **the 60-minute time-box IS the grant** (Q95) — at `expires_at` the organisation simply stops being returned, with nothing to revoke, sweep or forget. `status` is bookkeeping; the clock is the enforcement, and an expired session reads `active` in the column while granting nothing.

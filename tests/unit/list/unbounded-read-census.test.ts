@@ -41,6 +41,7 @@ const ALLOWED: Record<string, string> = {
   "lib/crm/queries.ts loadDocumentLinks from(TABLE_FOR_ENTITY[type])": "names for one document's capped links",
   "lib/crm/finance-queries.ts resolveNames from(table)": "names for one event's finance lines",
   "lib/crm/dedup.ts loadRecordPair from(table)": "exactly two ids, the merge pair",
+  'lib/invoices/actions.ts createDraftFromFinanceAction from("financial_entries")': "the ticked entry ids (.in id); a truncated read fails the length check and refuses",
   'lib/network/discovery.ts loadNetworkProfileSummaries from("network_connected_profiles")': "one page's profile ids",
   'lib/network/discovery.ts loadNetworkProfileSummaries from("network_directory")': "one page's profile ids, the second half of the lookup",
   'lib/org/members.ts listMembers from("profiles")': "at most MEMBERS_LIMIT (200) member ids",

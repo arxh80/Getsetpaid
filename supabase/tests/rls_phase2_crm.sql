@@ -1284,11 +1284,14 @@ select crm.val('L5  every table carrying updated_at has the trigger',
 -- a list. 20261003010000 attaches it. The RPC that writes the row sets
 -- updated_at itself, so the trigger changes nothing today; "the one writer
 -- remembers to" is exactly the guarantee it replaces.
-select crm.val('L6  ...and that is 34 tables (+1 legal_documents, +1 retention_settings in Phase 8)',
+-- 36 SINCE INVOICES PART 1 (20261107000000): public.invoice_settings and
+-- public.invoices carry updated_at and a hand-added set_updated_at; the
+-- line and send tables have no updated_at column.
+select crm.val('L6  ...and that is 36 tables (+1 legal_documents, +1 retention_settings in Phase 8, +2 invoices)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '34');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '36');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together
