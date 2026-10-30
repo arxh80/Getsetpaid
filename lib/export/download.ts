@@ -29,7 +29,7 @@ import "server-only";
 // unreachable, and if it is ever raised it is a 500 like any audit fault.
 
 import { createClient } from "@/lib/supabase/server";
-import { createStorageClient } from "@/lib/supabase/storage";
+import { createStorageClient, objectPresence } from "@/lib/supabase/storage";
 import { getCurrentUser } from "@/lib/auth";
 import { EXPORT_BUCKET, archiveIsDownloadable, isUuid } from "./contract";
 
@@ -39,7 +39,9 @@ const SIGNED_URL_TTL_SECONDS = 60;
 export type ExportDownloadOutcome =
   | { readonly ok: true; readonly url: string }
   | { readonly ok: false; readonly status: 404 }
-  | { readonly ok: false; readonly status: 500 };
+  | { readonly ok: false; readonly status: 500 }
+  /** Storage could not say whether the archive is there (G20). */
+  | { readonly ok: false; readonly status: 503 };
 
 export async function issueExportDownloadUrl(
   jobId: string,
@@ -91,21 +93,14 @@ export async function issueExportDownloadUrl(
 
   // THE BYTES, BEFORE THE AUDIT (the screenshot route's fix-round finding
   // M1): an audit row for an access that could not happen is a false record.
-  let present: { data: boolean | null; error: { message: string } | null };
-  try {
-    present = await bucket.exists(storageKey);
-  } catch (cause) {
-    console.error("[export] storage exists() threw:", cause);
-    return { ok: false, status: 500 };
-  }
-  if (present.data === false) {
+  // A Storage fault is 503, not the not-found answer (G20): a blip must not
+  // tell the owner of a real archive that it does not exist.
+  const presence = await objectPresence(bucket, storageKey);
+  if (presence === "missing") {
     console.error(`[export] job ${jobId} part ${part}: no archive object; no audit row written`);
     return { ok: false, status: 404 };
   }
-  if (present.error || present.data !== true) {
-    console.error("[export] storage exists() failed:", present.error?.message);
-    return { ok: false, status: 500 };
-  }
+  if (presence === "error") return { ok: false, status: 503 };
 
   const { error: auditError } = await supabase.rpc("audit_export_download", {
     p_job_id: jobId,

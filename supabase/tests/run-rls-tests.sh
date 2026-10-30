@@ -18,10 +18,41 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-CTR="supabase_db_$(grep -E '^project_id' "$ROOT/supabase/config.toml" | cut -d'"' -f2)"
-API="http://127.0.0.1:54321"
+# WHICH STACK. Both of these used to be constants -- the committed project_id
+# and a hardcoded 127.0.0.1:54321 -- which meant this script always ran against
+# the one shared stack no matter which worktree invoked it. A worktree that has
+# run `node scripts/stack.mjs claim` owns a different project id and a different
+# API port, so both are now derived:
+#
+#   WORKDIR  $SUPABASE_WORKDIR (the Supabase CLI's own variable, exported by
+#            `stack.mjs claim`), else this worktree's generated
+#            .supabase-slot/, else the repo root -- unchanged behaviour.
+#   CTR      the project_id of whichever config.toml that workdir holds.
+#   API      read from `supabase status`, which already knows -- so it moves
+#            with the slot instead of being pinned to 54321.
+WORKDIR="${SUPABASE_WORKDIR:-}"
+if [ -z "$WORKDIR" ]; then
+  if [ -f "$ROOT/.supabase-slot/supabase/config.toml" ]; then
+    WORKDIR="$ROOT/.supabase-slot"
+  else
+    WORKDIR="$ROOT"
+  fi
+fi
+CTR="supabase_db_$(grep -E '^project_id' "$WORKDIR/supabase/config.toml" | cut -d'"' -f2)"
+API=$(cd "$ROOT" && supabase status -o json --workdir "$WORKDIR" 2>/dev/null \
+      | python -c "import sys,json;print(json.load(sys.stdin)['API_URL'])")
+if [ -z "${API:-}" ]; then
+  echo "Could not read API_URL from 'supabase status'. Is the local stack up?" >&2
+  exit 1
+fi
 
-SRK=$(cd "$ROOT" && supabase status -o json 2>/dev/null \
+# The LOCAL server-only request mark (Phase 10 Task 5): read from .env.example,
+# whose digest seed.sql seeds. The HTTP section sends it on every curl; the
+# impersonation suite's IM5/IM6 hand it to api_hooks.pre_request() directly.
+SERVER_MARK=$(sed -n 's/^GETSETPAID_SERVER_REQUEST_SECRET=//p' "$ROOT/.env.example" | tr -d '\r')
+[ -n "$SERVER_MARK" ] || { echo "no GETSETPAID_SERVER_REQUEST_SECRET in .env.example" >&2; exit 1; }
+
+SRK=$(cd "$ROOT" && supabase status -o json --workdir "$WORKDIR" 2>/dev/null \
       | python -c "import sys,json;print(json.load(sys.stdin)['SERVICE_ROLE_KEY'])")
 if [ -z "${SRK:-}" ]; then
   echo "Could not read SERVICE_ROLE_KEY from 'supabase status'. Is the local stack up?" >&2
@@ -83,7 +114,12 @@ run_suite() {
 
   local out
   out=$(mktemp)
-  MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q --pset=footer=off \
+  # The server-only request mark is ON for every suite (Phase 10 Task 5): a
+  # psql session stands in for lib/supabase/server.ts, the path every
+  # assertion here was written against. rls_phase7_impersonation.sql § IM3
+  # turns it off to measure the direct path.
+  MSYS_NO_PATHCONV=1 docker exec -e PGOPTIONS="-c getsetpaid.from_server=on" "$CTR" \
+    psql -U postgres -d postgres -q --pset=footer=off \
     "$@" -f "/tmp/$file" 2>&1 | tee "$out"
 
   local errors
@@ -148,6 +184,15 @@ if [ "${dirty:-0}" != "0" ]; then
 fi
 
 # ----------------------------------------------------------------------------
+# THE STEP-UP FIXTURE HELPER (Phase 10 Task 6, G13). Every gated RPC and the
+# export_jobs / erasure_jobs inserts consume a single-use token now; a suite's
+# fixture mints one through step_up_fixture.mint() (see its header). Installed
+# once, here, for every suite and probe below.
+# ----------------------------------------------------------------------------
+docker cp "$HERE/step_up_fixture.sql" "$CTR:/tmp/step_up_fixture.sql" >/dev/null
+MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1   -f /tmp/step_up_fixture.sql 2>&1 | grep -v 'NOTICE' || true
+
+# ----------------------------------------------------------------------------
 # ASSURANCE LEVEL PER FIXTURE USER.
 #
 # A real Supabase access token always carries a top-level `aal` claim --
@@ -203,7 +248,7 @@ done
 # rls_foundation.sql opens with `drop schema if exists harness cascade`, and it
 # tears its own fixtures down so the suite below still meets an empty schema.
 # ============================================================================
-run_suite "SCHEMA INVARIANTS" schema_invariants.sql invariants 88
+run_suite "SCHEMA INVARIANTS" schema_invariants.sql invariants 92
 inv_fails=$SUITE_FAILS
 if [ "$inv_fails" != "0" ]; then
   echo "SCHEMA INVARIANT SUITE FAILED: $inv_fails failing assertion(s)" >&2
@@ -215,6 +260,32 @@ fi
 echo
 
 
+# ---------------------------------------------------------------------------
+# RECORD THE FIXTURE VARIABLES FOR run-one.sh.
+#
+# Every suite after rls_foundation.sql is handed a -v array of fixture user
+# uuids and session claims that this script builds from auth.users it creates
+# over the Auth admin API. Nothing else can reconstruct them, which is why a
+# single suite could not be re-run on its own -- and re-running one is exactly
+# what iterating on a psql file wants (a full run is ~19 suites and minutes).
+#
+# So each array is written out as it is built, and supabase/tests/run-one.sh
+# replays it against the still-live database. The suites do not tear their
+# fixtures down (see the preflight above), so after a full run the rows the
+# variables point at are all still there.
+#
+# The file holds throwaway local-stack user uuids and unsigned claim JSON --
+# no keys, no tokens, nothing signed -- and is gitignored regardless.
+VARS_DUMP="$HERE/.last-run-vars.sh"
+dump_vars() {
+  local name=$1; shift
+  printf '%s=(' "$name" >> "$VARS_DUMP"
+  printf ' %q' "$@" >> "$VARS_DUMP"
+  printf ')\n' >> "$VARS_DUMP"
+}
+: > "$VARS_DUMP"
+
+
 VARS=()
 for u in alice bob carol dave super; do
   VARS+=( -v "$u=${ID[$u]}" )
@@ -222,6 +293,7 @@ for u in alice bob carol dave super; do
   VARS+=( -v "${u}_c1={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
   VARS+=( -v "${u}_c0={\"sub\":\"${ID[$u]}\",\"role\":\"authenticated\"}" )
 done
+dump_vars FOUNDATION_VARS "${VARS[@]}"
 
 run_suite "RLS FOUNDATION" rls_foundation.sql harness 196 "${VARS[@]}"
 fails=$SUITE_FAILS
@@ -353,7 +425,7 @@ fi
 # so the HTTP checks below start clean.
 # ============================================================================
 
-run_suite "PHASE 4 FILE ACCESS" file_access_phase4.sql fa 11 "${P2VARS[@]}"
+run_suite "PHASE 4 FILE ACCESS" file_access_phase4.sql fa 19 "${P2VARS[@]}"
 fa_fails=$SUITE_FAILS
 if [ "$fa_fails" != "0" ]; then
   echo "PHASE 4 FILE-ACCESS SUITE FAILED: $fa_fails failing assertion(s)" >&2
@@ -361,6 +433,7 @@ if [ "$fa_fails" != "0" ]; then
   echo "  file is now insertable); in B, a BREACHED storage.objects fence" >&2
   echo "  (a client can read the private bytes); in C, a scan-status guard" >&2
   echo "  that no longer holds (a verdict can be rolled back). Treat as Sev1." >&2
+  echo "  In Q, the storage quota (G36) no longer refuses the byte past the plan." >&2
   psql_status=1
 else
   echo "Phase 4 file-access suite: all assertions passed."
@@ -574,9 +647,11 @@ fi
 # ============================================================================
 P7VARS=( "${P6VARS[@]}" )
 P7VARS+=( -v "super_c1={\"sub\":\"${ID[super]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
+P7VARS+=( -v "server_mark=$SERVER_MARK" )
+dump_vars SUITE_VARS "${P7VARS[@]}"
 
 
-run_suite "PHASE 7 IMPERSONATION" rls_phase7_impersonation.sql imp 121 "${P7VARS[@]}"
+run_suite "PHASE 7 IMPERSONATION" rls_phase7_impersonation.sql imp 126 "${P7VARS[@]}"
 p7_fails=$SUITE_FAILS
 if [ "$p7_fails" != "0" ]; then
   echo "PHASE 7 IMPERSONATION SUITE FAILED: $p7_fails failing assertion(s)" >&2
@@ -701,7 +776,7 @@ fi
 # assuming zero, because an earlier suite could raise one.
 # ============================================================================
 
-run_suite "PHASE 7 RATE LIMITS" rls_phase7_rate_limits.sql rl 192 "${P7VARS[@]}"
+run_suite "PHASE 7 RATE LIMITS" rls_phase7_rate_limits.sql rl 211 "${P7VARS[@]}"
 rl_fails=$SUITE_FAILS
 if [ "$rl_fails" != "0" ]; then
   echo "PHASE 7 RATE-LIMIT SUITE FAILED: $rl_fails failing assertion(s)" >&2
@@ -1326,6 +1401,28 @@ else
 fi
 
 # ============================================================================
+# PHASE 10 TASK 6 -- STEP-UP, ENFORCED IN THE DATABASE (G13; Task 2 F4;
+# 20261108001000). The server-marked mint, the single-use five-minute token per
+# purpose, and every gated RPC plus the export_jobs / erasure_jobs inserts
+# refusing without one. Self-contained (it removes its own fixtures).
+# ============================================================================
+run_suite "PHASE 10 STEP-UP" rls_phase10_step_up.sql st 211
+st_fails=$SUITE_FAILS
+if [ "$st_fails" != "0" ]; then
+  echo "PHASE 10 STEP-UP SUITE FAILED: $st_fails failing assertion(s)" >&2
+  echo "  SM red: A BROWSER CAN MINT (no server mark), a sessionless or off-list" >&2
+  echo "  mint lands, or a client role can touch the token table. SP red: a token" >&2
+  echo "  is reusable, outlives five minutes, or counts for another purpose or" >&2
+  echo "  another user. SG red: A GATED WRITE RUNS WITHOUT A FRESH TOKEN (or a" >&2
+  echo "  refusal came from another guard), or the positive control broke. SC red:" >&2
+  echo "  something that is not gated now asks for a token. SN red: the purpose" >&2
+  echo "  list, the consuming functions and SG's targets have drifted apart." >&2
+  psql_status=1
+else
+  echo "Phase 10 step-up suite: all assertions passed."
+fi
+
+# ============================================================================
 # AN OWNER'S CLOSE AND A SUPERUSER'S SUSPEND/DELETE, UNDER A REAL RACE (Task 9c
 # fix round 2, re-review N1; 20261028000000). Two sessions: the Owner holds
 # close_my_workspace() open for two seconds while the superuser calls
@@ -1451,6 +1548,16 @@ echo "=== API surface (PostgREST) ==="
 
 ANON=$(cd "$ROOT" && supabase status -o json 2>/dev/null \
        | python -c "import sys,json;print(json.load(sys.stdin)['ANON_KEY'])")
+
+# THE SERVER-ONLY REQUEST MARK (Phase 10 Task 5). Every check below was written
+# against what the app's server can reach, and the server now sends this
+# header on every request -- without it the database refuses both network
+# directory views and an impersonation session grants nothing. So every curl
+# from here on carries the LOCAL value (read from .env.example; seed.sql seeds
+# its digest). The direct, unmarked path -- the browser's -- is measured in
+# its own block at the end, through `command curl`. SERVER_MARK is read at
+# the top of this script.
+curl() { command curl -H "x-getsetpaid-server: $SERVER_MARK" "$@"; }
 
 TOKEN=$(curl -s -X POST "$API/auth/v1/token?grant_type=password" \
   -H "apikey: $ANON" -H "Content-Type: application/json" \
@@ -4259,6 +4366,97 @@ p2_code "IG aal2 Owner GETs select=* (refused: one column is withheld)" 403 GET 
 p2_sub "delete from public.integration_connections where id in ('$IG_CONN', '$IG_NEW');"
 db_val "IG CLEANUP: the planted rows are gone" "0" \
        "select count(*) from public.integration_connections where id in ('$IG_CONN', '$IG_NEW')"
+
+# ============================================================================
+# PHASE 10 TASK 5 -- THE DIRECT PATH, WITHOUT THE SERVER-ONLY MARK (G2, G14).
+#
+# Everything above runs with the mark, as the app's server does. THIS is the
+# browser's request: the public anon key plus a real session's access token,
+# straight at PostgREST, with no `x-getsetpaid-server` header (`command curl`
+# bypasses the wrapper). Each refusal is paired with the same session WITH the
+# mark, so a 403 or a [] is the mark and not a dead token or an empty table.
+# ============================================================================
+echo
+echo "=== Phase 10 Task 5: the direct path, without the server-only mark ==="
+
+direct_get() { # path token [mark] -> "<http code> <row count, or -1 for a non-list body>"
+  local out mark=()
+  [ -n "${3:-}" ] && mark=(-H "x-getsetpaid-server: $3")
+  out=$(command curl -s -w "\n%{http_code}" "$API/rest/v1/$1" \
+        -H "apikey: $ANON" -H "Authorization: Bearer $2" "${mark[@]}")
+  printf '%s %s' "$(printf '%s' "$out" | tail -n1)" \
+    "$(printf '%s' "$out" | sed '$d' | python -c \
+       "import sys,json;d=json.load(sys.stdin);print(len(d) if isinstance(d,list) else -1)")"
+}
+mark_check() { # name want path token [mark]
+  local got; got=$(direct_get "$3" "$4" "${5:-}")
+  if [ "$got" = "$2" ]; then printf '  PASS  %-58s %s\n' "$1" "$got"
+  else printf '  FAIL  %-58s got %s want %s\n' "$1" "$got" "$2"; api_fails=$((api_fails+1)); fi
+}
+
+# G2: the 30/min discovery limit is metered in the app, so the views must not
+# be readable around it.
+mark_check "G2 (a) UNMARKED GET network_directory -> 403, no rows" "403 -1" \
+           "network_directory?select=id" "$UNCON"
+p2_rows_min "G2 (a) CONTROL: the same session WITH the mark reads it" 1 \
+           "network_directory?select=id" "$UNCON"
+mark_check "G2 (b) UNMARKED GET network_connected_profiles -> 403" "403 -1" \
+           "network_connected_profiles?select=id" "$CONN"
+p2_rows_min "G2 (b) CONTROL: the same session WITH the mark reads it" 1 \
+           "network_connected_profiles?select=id" "$CONN"
+# G2 (c): a WRONG mark is no mark. The hook compares the header's SHA-256 with
+# the Vault digest; a check that only asked "is the header present?" passes
+# every refusal above and fails here (review I1, 2026-10-24). The control is
+# G2 (a)'s: the same session with the right value reads the view.
+mark_check "G2 (c) WRONG mark GET network_directory -> 403, no rows" "403 -1" \
+           "network_directory?select=id" "$UNCON" "wrong"
+
+# G14: an impersonating superuser's direct reads see nothing; the app's
+# audited path (getCurrentOrg's page_viewed) is the only way in. A live,
+# accepted session is planted as postgres and removed below.
+SUP=$(p2_token super); [ -n "$SUP" ] || { echo "no token for super" >&2; exit 1; }
+SUP2=$(p2_totp_elevate "$SUP")
+[ "$(p2_aal "$SUP2")" = "aal2" ] || { echo "could not elevate super to aal2" >&2; exit 1; }
+IMP_S=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select gen_random_uuid()" | tr -d '[:space:]')
+p2_sub "insert into public.impersonation_sessions
+          (id, superuser_user_id, target_organisation_id, reason, status,
+           admin_accepted_by, accepted_at, started_at, expires_at)
+        values ('$IMP_S', '${ID[super]}', '$ALPHA_ORG', 'Phase 10 Task 5 runner: the direct path', 'active',
+                (select id from auth.users where email = 'powner@test.local'),
+                now(), now(), now() + interval '10 minutes');"
+mark_check "G14 (d) UNMARKED impersonator GET ALPHA contacts -> []" "200 0" \
+           "contacts?select=id&organisation_id=eq.$ALPHA_ORG" "$SUP2"
+p2_rows_min "G14 (d) CONTROL: the same session WITH the mark reads them" 1 \
+           "contacts?select=id&organisation_id=eq.$ALPHA_ORG" "$SUP2"
+p2_sub "delete from public.impersonation_sessions where id = '$IMP_S';"
+db_val "G14 CLEANUP: the planted session is gone" "0" \
+       "select count(*) from public.impersonation_sessions where id = '$IMP_S'"
+
+# G35: AN EMBED OF A DIRECTORY VIEW. The hook sees the path, not the query
+# string, so `network_links?select=...,network_directory(...)` is not refused
+# by it. The views' own WHERE carries private.request_is_from_server(), so the
+# unmarked embed resolves to null while the link row itself still comes back
+# (the "1:" half: the caller's own row, so a 0 is the mark and not RLS). A
+# link from GAMMA (the unconnected session's organisation) to ALPHA's
+# published profile is planted as postgres and removed below.
+G35_LINK=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc "select gen_random_uuid()" | tr -d '[:space:]')
+p2_sub "insert into public.network_links (id, organisation_id, network_profile_id, private_entity_type, private_entity_id)
+        values ('$G35_LINK', (select id from public.organisations where slug = 'org-gamma-leak'),
+                '$ALPHA_PROFILE', 'company', gen_random_uuid());"
+embed_check() { # name want token [mark] -> "<link rows>:<rows whose directory embed resolved>"
+  local mark=() got
+  [ -n "${4:-}" ] && mark=(-H "x-getsetpaid-server: $4")
+  got=$(command curl -s "$API/rest/v1/network_links?select=id,network_directory(id)&id=eq.$G35_LINK" \
+          -H "apikey: $ANON" -H "Authorization: Bearer $3" "${mark[@]}" \
+        | python -c "import sys,json;d=json.load(sys.stdin);print(f'{len(d)}:{sum(1 for r in d if r.get(\"network_directory\"))}' if isinstance(d,list) else -1)")
+  if [ "$got" = "$2" ]; then printf '  PASS  %-58s %s\n' "$1" "$got"
+  else printf '  FAIL  %-58s got %s want %s\n' "$1" "$got" "$2"; api_fails=$((api_fails+1)); fi
+}
+embed_check "G35 UNMARKED embed network_links -> network_directory: none" "1:0" "$UNCON"
+embed_check "G35 CONTROL: the same embed WITH the mark resolves" "1:1" "$UNCON" "$SERVER_MARK"
+p2_sub "delete from public.network_links where id = '$G35_LINK';"
+db_val "G35 CLEANUP: the planted link is gone" "0" \
+       "select count(*) from public.network_links where id = '$G35_LINK'"
 
 if [ "$api_fails" != "0" ]; then
   echo "API SURFACE FAILED: $api_fails check(s)" >&2

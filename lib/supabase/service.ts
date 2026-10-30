@@ -64,7 +64,9 @@ import "server-only";
 //      whose whole reach is public.record_document_scan_verdict(), and (since
 //      20261104000000, Phase 10 Task 20) lib/auth/first-proof.ts, whose whole
 //      reach is public.address_is_proved() and
-//      public.record_address_first_proof(). tests/unit/email/service-client-census.test.ts
+//      public.record_address_first_proof(), and (since 20261108002000, Phase
+//      10 Task 8) lib/auth/login-budget.ts, whose whole reach is
+//      public.meter_password_sign_in(). tests/unit/email/service-client-census.test.ts
 //      is the source-only census that keeps it that way -- a second importer
 //      fails the suite, so growing this into a general-purpose RLS bypass is
 //      a visible decision rather than a drift.

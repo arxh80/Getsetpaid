@@ -73,6 +73,9 @@ insert into public.organisation_memberships (organisation_id, user_id, role, sta
 begin;
 set local role authenticated;
 set local request.jwt.claims = '$OWNER_C';
+-- Step-up is a token now (20261108001000); the race is about the lock.
+select set_config('getsetpaid.from_server', 'on', true) is not null;
+select step_up_fixture.mint('workspace_close');
 select 'closed:' || (public.close_my_workspace('$org', '$slug', 'race') is not null);
 select pg_sleep(2);
 commit;
@@ -84,6 +87,8 @@ SQL
 begin;
 set local role authenticated;
 set local request.jwt.claims = '$SU_C';
+select set_config('getsetpaid.from_server', 'on', true) is not null;
+select step_up_fixture.mint('organisation_lifecycle');
 select 'superuser:' || public.$rpc('$slug', 'race');
 commit;
 SQL

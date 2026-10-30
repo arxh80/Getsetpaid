@@ -38,6 +38,7 @@ const routes = pages.map((p) => {
   const segs = url.split("/").filter(Boolean);
   const dyn = "(?:\\$\\{[^}]+\\}|[^/\"'`$]+)";
   const body = segs.map((s) => (/^\[.*\]$/.test(s) ? dyn : esc(s))).join("/");
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- built from esc()-escaped route segments
   const exactRe = new RegExp(`["'\`]/${body}(?:[?#][^"'\`]*)?["'\`]`);
   const statics = segs.filter((s) => !/^\[.*\]$/.test(s));
   const tail = statics.length ? "/" + statics.slice(-2).join("/") : "";

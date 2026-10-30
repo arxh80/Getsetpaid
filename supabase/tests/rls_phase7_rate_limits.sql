@@ -205,16 +205,23 @@ select rl.val('RV6d Document uploads: 10 / hour, per user (Q113)',
   $$select max_requests || '/' || window_seconds || '/' || subject_scope
       from public.rate_limit_policies where category='uploads'$$,
   '10/3600/user');
+-- Phase 10 Task 8 (G4 fallback, `20261108002000`): the app's pre-GoTrue
+-- password budget, the same numbers as login_account, counted separately.
+select rl.val('RV6e login_email: 5 per 15 minutes, per account (G4 fallback)',
+  $$select max_requests || '/' || window_seconds || '/' || subject_scope
+      from public.rate_limit_policies where category='login_email'$$,
+  '5/900/account');
 -- Invoices part 1 (20261107006000): invoice emails, 30 / hour per USER --
 -- outbound mail to an arbitrary address is a spam vector (spec § Send).
-select rl.val('RV6e Invoice sends: 30 / hour, per user',
+select rl.val('RV6f Invoice sends: 30 / hour, per user',
   $$select max_requests || '/' || window_seconds || '/' || subject_scope
       from public.rate_limit_policies where category='invoice_send'$$,
   '30/3600/user');
--- TWELVE SINCE PHASE 8 TASK 9a (`uploads`, Q113), with its § 5 row.
--- THIRTEEN SINCE INVOICES PART 1 (invoice_send), with its § 5 row.
-select rl.val('RV7 the policy table holds exactly the thirteen § 5 categories',
-  $$select count(*)::text from public.rate_limit_policies$$, '13');
+-- TWELVE SINCE PHASE 8 TASK 9a (`uploads`, Q113), THIRTEEN SINCE PHASE 10
+-- TASK 8 (`login_email`), FOURTEEN SINCE INVOICES PART 1 (`invoice_send`),
+-- each with its § 5 row.
+select rl.val('RV7 the policy table holds exactly the fourteen § 5 categories',
+  $$select count(*)::text from public.rate_limit_policies$$, '14');
 -- The ACCOUNT export's budget is its own category and not `exports`, because
 -- `exports` is organisation-scoped and an account export belongs to no
 -- workspace: metering it against one would be the caller-supplied attribution
@@ -245,8 +252,8 @@ select rl.try('RV10 ...nor INSERT a new category',
       (category, subject_scope, max_requests, window_seconds, description)
     values ('smuggled','user',1,1,'x')$$,
   'denied(42501)');
-select rl.val('RV11 the superuser CAN read the configuration, all thirteen rows (the health view states it)',
-  $$select count(*)::text from public.rate_limit_policies$$, '13');
+select rl.val('RV11 the superuser CAN read the configuration, all fourteen rows (the health view states it)',
+  $$select count(*)::text from public.rate_limit_policies$$, '14');
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -850,6 +857,96 @@ select rl.val('RH14 supabase_auth_admin -- GoTrue itself -- does',
   'true');
 
 -- ===========================================================================
+-- § RE  THE APP'S PRE-GoTrue PASSWORD BUDGET (Phase 10 Task 8, G4 fallback)
+--
+-- public.meter_password_sign_in(p_email, p_outcome), 20261108002000. Driven
+-- as `postgres` (the guard admits postgres and service_role, nobody's
+-- session). The real sign-in action is driven end to end, GoTrue included, by
+-- tests/integration/security/login-account-budget.test.ts; this owns the
+-- state machine, the key and the grants.
+-- ===========================================================================
+\o /dev/null
+select email as pro_email from auth.users where id = :'pro' \gset
+select 'RE-Ghost-' || pg_catalog.gen_random_uuid() || '@Test.Local' as re_ghost \gset
+select pg_catalog.left(pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+         pg_catalog.lower(:'re_ghost'), 'UTF8')), 'hex'), 32)::uuid::text as re_ghost_subject \gset
+delete from public.rate_limit_counters where subject_id in (:'pro', :'re_ghost_subject');
+\o
+select rl.val('RE1 a fresh account may try',
+  format($$select public.meter_password_sign_in(%L,'attempt')::text$$, :'pro_email'), 'true');
+\o /dev/null
+select public.meter_password_sign_in(:'pro_email', 'attempt') from generate_series(1,4);
+\o
+select rl.val('RE2 five attempts are counted under login_email, keyed on the ACCOUNT id',
+  format($$select request_count::text from public.rate_limit_counters
+            where category='login_email' and subject_scope='account' and subject_id=%L$$, :'pro'),
+  '5');
+select rl.val('RE3 ...and NOT under the hook''s login_account (no double count)',
+  format($$select count(*)::text from public.rate_limit_counters
+            where category='login_account' and subject_id=%L$$, :'pro'),
+  '0');
+select rl.val('RE4 the sixth attempt is refused -- the lockout',
+  format($$select public.meter_password_sign_in(%L,'attempt')::text$$, :'pro_email'), 'false');
+select rl.val('RE5 a differently cased, padded address is the same budget',
+  format($$select public.meter_password_sign_in(%L,'attempt')::text$$,
+         '  ' || upper(:'pro_email') || ' '), 'false');
+select rl.val('RE6 exactly ONE repeated_login_failures alert, naming the account (Q114 joins on it)',
+  format($$select count(*)::text || '/' || min(details->>'category') from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$, :'pro'),
+  '1/login_email');
+-- Each read is its own statement: a subquery in the same SELECT reads the
+-- statement's snapshot, from before the function wrote.
+select rl.val('RE7 a success is accepted...',
+  format($$select public.meter_password_sign_in(%L,'succeeded')::text$$, :'pro_email'), 'true');
+select rl.val('RE7b ...and clears the slate',
+  format($$select count(*)::text from public.rate_limit_counters
+            where category='login_email' and subject_id=%L$$, :'pro'),
+  '0');
+\o /dev/null
+select public.meter_password_sign_in(:'re_ghost', 'attempt') from generate_series(1,5);
+\o
+select rl.val('RE8 an address with NO account has a budget too, and is refused the same way',
+  format($$select public.meter_password_sign_in(%L,'attempt')::text$$, :'re_ghost'), 'false');
+select rl.val('RE8b ...keyed on the SHA-256 of the normalised address (five attempts + the refusal)',
+  format($$select request_count::text from public.rate_limit_counters
+            where category='login_email' and subject_id=%L$$, :'re_ghost_subject'),
+  '6');
+select rl.val('RE8c ...but files NO alert: an invented address cannot flood incident_alerts (Task 18 finding 5)',
+  format($$select count(*)::text from public.incident_alerts
+            where alert_type='repeated_login_failures' and details->>'subject_id' = %L$$, :'re_ghost_subject'),
+  '0');
+select rl.try('RE9 an unknown outcome is a caller bug (22023)',
+  format($$select public.meter_password_sign_in(%L,'reset')$$, :'pro_email'), 'denied(22023)');
+select rl.try('RE10 an empty address is a caller bug (22023)',
+  $$select public.meter_password_sign_in('  ','attempt')$$, 'denied(22023)');
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select rl.try('RE11 a signed-in session cannot spend anybody''s budget (42501)',
+  format($$select public.meter_password_sign_in(%L,'attempt')$$, :'pro_email'), 'denied(42501)');
+select rl.try('RE12 ...nor clear it',
+  format($$select public.meter_password_sign_in(%L,'succeeded')$$, :'pro_email'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+set role anon;
+select rl.try('RE13 anon cannot either',
+  format($$select public.meter_password_sign_in(%L,'attempt')$$, :'pro_email'), 'denied(42501)');
+reset role;
+select rl.val('RE14 grants: service_role only',
+  $$select has_function_privilege('service_role','public.meter_password_sign_in(text,text)','EXECUTE')::text
+        || '/' || has_function_privilege('authenticated','public.meter_password_sign_in(text,text)','EXECUTE')::text
+        || '/' || has_function_privilege('anon','public.meter_password_sign_in(text,text)','EXECUTE')::text$$,
+  'true/false/false');
+set role service_role;
+select rl.val('RE15 POSITIVE CONTROL: the service role (the app''s server) may call it',
+  format($$select public.meter_password_sign_in(%L,'succeeded')::text$$, :'pro_email'), 'true');
+reset role;
+-- Removed HERE, not only at § RZ: § RD counts the pending login alerts
+-- and would otherwise count these two.
+\o /dev/null
+delete from public.incident_alerts where details->>'subject_id' in (:'pro', :'re_ghost_subject');
+delete from public.rate_limit_counters where subject_id in (:'pro', :'re_ghost_subject');
+\o
+
+-- ===========================================================================
 -- § RQ  THE MALWARE-QUARANTINE TRIGGER
 --
 -- A TRIGGER rather than app code, so no upload path -- present or future --
@@ -1447,9 +1544,11 @@ reset role; reset request.jwt.claims;
 delete from public.documents where id in (:'doc_a', :'doc_b');
 delete from public.incident_alerts
  where details->>'document_id' in (:'doc_a', :'doc_b')
-    or details->>'subject_id'  in (:'synth_a', :'synth_b', :'pstd1', :'pstd2', :'pmanager', :'ghost_subject');
+    or details->>'subject_id'  in (:'synth_a', :'synth_b', :'pstd1', :'pstd2', :'pmanager', :'ghost_subject',
+                                   :'pro', :'re_ghost_subject');
 delete from public.rate_limit_counters
- where subject_id in (:'synth_a', :'synth_b', :'pstd1', :'pstd2', :'pmanager', :'alpha_org');
+ where subject_id in (:'synth_a', :'synth_b', :'pstd1', :'pstd2', :'pmanager', :'alpha_org',
+                      :'pro', :'re_ghost_subject');
 -- AND THE COLUMN § RD28 BLANKET-STAMPED IS PUT BACK (pre-merge fix round).
 -- Deleting this suite's own fixture ids was never enough: § RD28 stamped
 -- account_notified_at on every OTHER pending row to clear the queue, and a
@@ -1482,8 +1581,8 @@ select rl.val('RZ3 the two suite documents are gone (not soft-deleted -- never e
 select rl.val('RZ4 ALPHA is still active and untouched',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
          :'alpha_org'), 'true');
-select rl.val('RZ5 the thirteen seeded policy rows (seven + consent_grant + data_subject_request + account_export + account_erasure + uploads + invoice_send) are exactly as they were',
-  $$select count(*)::text from public.rate_limit_policies$$, '13');
+select rl.val('RZ5 the fourteen seeded policy rows (seven + consent_grant + data_subject_request + account_export + account_erasure + uploads + login_email + invoice_send) are exactly as they were',
+  $$select count(*)::text from public.rate_limit_policies$$, '14');
 
 \pset format aligned
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual

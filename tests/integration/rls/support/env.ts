@@ -8,6 +8,8 @@
 // CLAUDE.md, "Never commit ... Supabase service-role keys", and the same
 // warning in run-rls-tests.sh.
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 export interface LocalSupabaseStatus {
   apiUrl: string;
@@ -85,3 +87,22 @@ export function getLocalSupabaseStatus(): LocalSupabaseStatus {
   cached = { apiUrl, anonKey, serviceRoleKey, dbUrl, mailUrl };
   return cached;
 }
+
+/**
+ * The LOCAL server-only request mark (Phase 10 Task 5), read from the one line
+ * in `.env.example` that documents it (supabase/seed.sql seeds its digest).
+ * Every fixture client sends it, because every fixture client stands in for
+ * lib/supabase/server.ts; a test of the browser's direct path builds a client
+ * WITHOUT it.
+ */
+export function localServerRequestSecret(): string {
+  const raw = readFileSync(join(process.cwd(), ".env.example"), "utf8");
+  const value = raw.match(/^GETSETPAID_SERVER_REQUEST_SECRET=(\S+)/m)?.[1];
+  if (!value) throw new Error(".env.example has no GETSETPAID_SERVER_REQUEST_SECRET value");
+  return value;
+}
+
+/** The header lib/supabase/server.ts sends, for a supabase-js `global.headers`. */
+export const serverMarkHeaders = (): Record<string, string> => ({
+  "x-getsetpaid-server": localServerRequestSecret(),
+});

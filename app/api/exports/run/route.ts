@@ -1,5 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { refuseUnlessRunner } from "@/lib/security/runner-auth";
 import { runPendingExportJobs } from "@/lib/export/runner";
 
 // ===========================================================================
@@ -16,13 +16,8 @@ import { runPendingExportJobs } from "@/lib/export/runner";
 // it, a person who asked for a copy of their data would wait for ever and
 // nothing would say so.
 //
-// The incident-digest route's credential rules, verbatim and for the same
-// reasons: lib/supabase/middleware.ts lists this path as public so the
-// signed-out bounce does not redirect a cron to /login; the credential is the
-// bearer secret, compared in constant time; with the secret UNSET the route
-// answers 404 for every caller — an unconfigured deployment has no runner
-// endpoint at all rather than an open one — and a wrong secret answers 404
-// too, so a prober cannot tell the two apart.
+// The credential check is lib/security/runner-auth.ts, shared with the other
+// runner routes; this route's secret is EXPORT_RUNNER_SECRET.
 //
 // A DIFFERENT SECRET FROM THE DIGEST'S, deliberately: leaking one must not
 // hand over the other, and this one can be made to read every queued export.
@@ -31,26 +26,9 @@ import { runPendingExportJobs } from "@/lib/export/runner";
 // exports is a side effect.
 // ===========================================================================
 
-function configuredSecret(): string | null {
-  const value = process.env.EXPORT_RUNNER_SECRET;
-  return value && value.trim().length >= 32 ? value.trim() : null;
-}
-
-function bearerMatches(header: string | null, secret: string): boolean {
-  if (!header || !header.startsWith("Bearer ")) return false;
-  const presented = Buffer.from(header.slice("Bearer ".length));
-  const expected = Buffer.from(secret);
-  return presented.length === expected.length && timingSafeEqual(presented, expected);
-}
-
 export async function POST(request: Request): Promise<NextResponse> {
-  const secret = configuredSecret();
-  if (!secret || !bearerMatches(request.headers.get("authorization"), secret)) {
-    return new NextResponse("Not found", {
-      status: 404,
-      headers: { "Cache-Control": "no-store" },
-    });
-  }
+  const refused = refuseUnlessRunner(request, "EXPORT_RUNNER_SECRET");
+  if (refused) return refused;
 
   const result = await runPendingExportJobs();
   return NextResponse.json(result, {

@@ -26,6 +26,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
+import { MINT_STEP_UP_SQL } from "../rls/support/step-up";
 
 type Override = {
   max_rows_per_table?: number;
@@ -229,6 +230,7 @@ async function seedClosableWorkspace(label: string): Promise<Workspace> {
 
 async function startExport(userId: string, kind: "workspace" | "account", orgId: string | null): Promise<string> {
   const id = await asPerson<{ id: string }>(userId, async (q) => {
+    if (kind === "workspace") await q(MINT_STEP_UP_SQL, ["workspace_export"]);
     const rows = await q(
       `insert into public.export_jobs (kind, organisation_id) values ($1, $2) returning id`,
       [kind, orgId],
@@ -241,6 +243,7 @@ async function startExport(userId: string, kind: "workspace" | "account", orgId:
 
 async function closeWorkspace(ws: Workspace): Promise<string> {
   const row = await asPerson<{ id: string }>(ws.ownerId, async (q) => {
+    await q(MINT_STEP_UP_SQL, ["workspace_close"]);
     const rows = await q(`select public.close_my_workspace($1, $2, $3)::text as id`, [
       ws.orgId,
       ws.slug,
@@ -812,6 +815,7 @@ describe("C11: a workspace reopened part-way stops its backup, and leaves nothin
     );
     await pool.query(`insert into public.platform_admins (user_id) values ($1)`, [suId]);
     await asPerson<null>(suId, async (q) => {
+      await q(MINT_STEP_UP_SQL, ["closure_decision"]);
       await q(`select public.reassign_closed_workspace($1, $2, $3)`, [ws.slug, ws.managerId, "C11: reopened part-way"]);
       return null;
     });
@@ -834,7 +838,7 @@ describe("C11: a workspace reopened part-way stops its backup, and leaves nothin
   }, 600_000);
 });
 
-describe("C8: ordinary exports are unchanged", () => {
+describe("C8: ordinary exports: one archive when they fit, parts when they do not", () => {
   it("an ordinary workspace export and an account export are one archive each, version 2, part_count 0", async () => {
     const ws = await seedClosableWorkspace("c8a");
     const wsJob = await startExport(ws.ownerId, "workspace", ws.orgId);
@@ -850,15 +854,90 @@ describe("C8: ordinary exports are unchanged", () => {
     }
   }, 300_000);
 
-  it("an ordinary export over a ceiling still FAILS with today's sentence -- it is never split", async () => {
+  // Q263 (Phase 10 Task 24, G37): an ordinary export past a ceiling is no
+  // longer refused. It is built in parts like a closure backup, but every
+  // part in the SAME claim -- one runner call, never queued between parts --
+  // so it is no less consistent than the single archive it replaces.
+  it("an ordinary export over a ceiling is built in parts, all in ONE claim (Q263)", async () => {
     const ws = await seedClosableWorkspace("c8b");
     const job = await startExport(ws.ownerId, "workspace", ws.orgId);
-    const row = await buildUntilDone(job, { max_rows_per_table: 3 });
-    expect(row.status).toBe("failed");
-    expect(row.failure_reason).toMatch(
-      /^The export could not be built: public\.\w+ has more than the 3-row ceiling for one table\. Nothing was truncated: the export failed instead\.$/,
+    const row = await buildUntilDone(job, { max_archive_bytes: 160 * 1024 }, 1);
+    expect(row.status, `${row.failure_reason}`).toBe("succeeded");
+    expect(row.part_count).toBeGreaterThanOrEqual(2);
+    expect(row.resume_cursor).toBeNull();
+    const parts = await partRows(job);
+    expect(parts.map((p) => p.part_no)).toEqual(Array.from({ length: row.part_count }, (_, i) => i + 1));
+    expect(row.storage_key).toBe(exportStorageKey(job));
+
+    // Every part is a valid zip that says which part it is; the last holds
+    // the index, which lists every part.
+    const docs = new Map<string, number>();
+    let last: PartManifest | null = null;
+    for (const p of parts) {
+      const entries = readZip(await download(p.storage_key));
+      const manifest = JSON.parse(entries.get("manifest.json")!.toString("utf8")) as PartManifest;
+      expect(manifest.part).toBe(p.part_no);
+      for (const [name, bytes] of entries) {
+        const id = /^files\/documents\/([0-9a-f-]{36})-/.exec(name)?.[1];
+        if (id) {
+          expect(bytes.equals(ws.cleanDocs.get(id)!), `documents/${id} byte for byte`).toBe(true);
+          docs.set(id, (docs.get(id) ?? 0) + 1);
+        }
+      }
+      last = manifest;
+    }
+    expect([...docs.keys()].sort()).toEqual([...ws.cleanDocs.keys()].sort());
+    expect([...docs.values()].every((n) => n === 1)).toBe(true);
+    expect(last?.indexPart).toBe(row.part_count);
+    expect(last?.parts?.map((p) => p.part)).toEqual(parts.map((p) => p.part_no));
+    // The unreadable document is withheld under its own reason, not as unclean.
+    expect(last?.withheld.find((w) => w.what.startsWith(`documents/${ws.missingDocId}`))?.reason).toBe(
+      "document_unreadable",
     );
-    expect(row.part_count).toBe(0);
-    expect(await partRows(job)).toEqual([]);
+    expect(last?.withheld.find((w) => w.what.startsWith(`documents/${ws.dirtyDocId}`))?.reason).toBe(
+      "document_not_clean",
+    );
+  }, 300_000);
+
+  it("an account export carried past a ceiling by its screenshots is built in parts too (Q263)", async () => {
+    const ws = await seedClosableWorkspace("c8c");
+    const shots = new Map<string, Buffer>();
+    const bucket = createStorageClient().storage.from("feedback-screenshots");
+    for (let i = 0; i < 3; i += 1) {
+      const id = randomUUID();
+      const bytes = randomBytes(DOC_BYTES);
+      const up = await bucket.upload(`feedback/${id}`, bytes, { contentType: "image/png", upsert: true });
+      if (up.error) throw new Error(`fixture screenshot: ${up.error.message}`);
+      await asPerson(ws.managerId, async (q) => {
+        await q(
+          `insert into public.feedback
+             (id, organisation_id, category, message, route, screenshot_key, screenshot_mime,
+              screenshot_size_bytes, screenshot_scan_status, screenshot_scanned_at)
+           values ($1, $2, 'bug', 'Q263 screenshot fixture', '/', $3, 'image/png', $4, 'clean', now())`,
+          [id, ws.orgId, `feedback/${id}`, bytes.length],
+        );
+        return [] as never;
+      });
+      shots.set(id, bytes);
+    }
+    const job = await startExport(ws.managerId, "account", null);
+    const row = await buildUntilDone(job, { max_archive_bytes: 160 * 1024 }, 1);
+    expect(row.status, `${row.failure_reason}`).toBe("succeeded");
+    expect(row.part_count).toBeGreaterThanOrEqual(2);
+
+    const seen = new Map<string, number>();
+    for (const p of await partRows(job)) {
+      for (const [name, bytes] of readZip(await download(p.storage_key))) {
+        const id = /^files\/feedback\/([0-9a-f-]{36})$/.exec(name)?.[1];
+        if (id) {
+          expect(bytes.equals(shots.get(id)!), `feedback/${id} byte for byte`).toBe(true);
+          seen.set(id, (seen.get(id) ?? 0) + 1);
+        }
+      }
+    }
+    expect([...seen.keys()].sort()).toEqual([...shots.keys()].sort());
+    expect([...seen.values()].every((n) => n === 1)).toBe(true);
+    await bucket.remove([...shots.keys()].map((id) => `feedback/${id}`));
   }, 300_000);
 });
+

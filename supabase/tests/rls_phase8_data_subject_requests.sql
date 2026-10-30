@@ -516,6 +516,10 @@ reset role; reset request.jwt.claims;
 -- ===========================================================================
 set role authenticated;
 set request.jwt.claims = :'pstd1_c';
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'super_c') \g /dev/null
 select dsr.try('DT1 the requester cannot progress their own request',
   format($$select * from public.transition_data_subject_request(%L,'in_progress')$$, :'req_access'),
   'denied(42501)');

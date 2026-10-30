@@ -221,6 +221,122 @@ select fa.try('C4 CONTROL the upload write pending->clean is allowed',
      where id='fa000000-0000-0000-0000-0000000000c2'$$, 'ok(1)');
 
 -- ===========================================================================
+-- Q. THE STORAGE QUOTA (Phase 10 Task 23, G36). A Starter workspace may hold
+-- 5 GiB of document bytes (subscription_plans.storage_limit_gb, read through
+-- private.effective_organisation_plan so a billing override counts). A
+-- BEFORE INSERT trigger refuses the byte that would pass it, under a
+-- per-workspace advisory lock. Soft-deleted documents count until their
+-- bytes are purged. Planted as postgres (no auth.uid(), so the trigger's
+-- oracle guard does not apply and the quota is the only thing answering).
+-- ALPHA is put on Starter here and restored at teardown.
+-- ===========================================================================
+\o /dev/null
+select plan_id as alpha_plan from public.organisation_subscriptions
+ where organisation_id = :'alpha_org' \gset
+update public.organisation_subscriptions set plan_id = 'starter'
+ where organisation_id = :'alpha_org';
+
+-- Fill ALPHA to one byte under 5 GiB with 25 MiB plants and one remainder.
+do $$
+declare
+  v_org uuid := (select id from public.organisations where slug = 'org-alpha');
+  v_limit bigint := 5::bigint * 1073741824;
+  v_used bigint := (select coalesce(sum(size_bytes), 0) from public.documents
+                     where organisation_id = v_org and bytes_purged_at is null);
+  v_left bigint := v_limit - 1 - v_used;
+  v_full int := (v_left / 26214400)::int;
+begin
+  insert into public.documents
+    (organisation_id, filename, storage_key, mime_type, size_bytes, scan_status, scanned_at)
+  select v_org, 'q-fill.pdf', v_org || '/q-fill-' || g, 'application/pdf', 26214400, 'clean', now()
+    from generate_series(1, v_full) g;
+  insert into public.documents
+    (organisation_id, filename, storage_key, mime_type, size_bytes, scan_status, scanned_at)
+  values (v_org, 'q-rest.pdf', v_org || '/q-rest', 'application/pdf',
+          v_left - v_full::bigint * 26214400, 'clean', now());
+end $$;
+\o
+
+select fa.val('Q1 DENOMINATOR: ALPHA is on Starter and one byte under 5 GiB',
+  format($$select (select storage_limit_gb from private.effective_organisation_plan(%L))::text || '/' ||
+                  (5::bigint * 1073741824 - sum(size_bytes))::text
+             from public.documents where organisation_id = %L and bytes_purged_at is null$$,
+         :'alpha_org', :'alpha_org'),
+  '5/1');
+
+\o /dev/null
+-- The refusal names its reason in the hint, which uploadDocumentAction maps.
+do $$
+declare v_org uuid := (select id from public.organisations where slug = 'org-alpha');
+        v_state text; v_hint text;
+begin
+  begin
+    insert into public.documents
+      (organisation_id, filename, storage_key, mime_type, size_bytes, scan_status, scanned_at)
+    values (v_org, 'q-two.pdf', v_org || '/q-two', 'application/pdf', 2, 'clean', now());
+    v_state := 'ok'; v_hint := '';
+  exception when others then
+    get stacked diagnostics v_state = returned_sqlstate, v_hint = pg_exception_hint;
+  end;
+  perform fa.record('Q2 a 2-byte document one byte under the limit is refused, hint storage_quota_exceeded',
+                    '42501/storage_quota_exceeded', v_state || '/' || v_hint);
+end $$;
+\o
+
+select fa.try('Q3 CONTROL a 1-byte document fills it exactly and is accepted',
+  format($$insert into public.documents
+             (organisation_id, filename, storage_key, mime_type, size_bytes, scan_status, scanned_at)
+           values (%L, 'q-one.pdf', %L, 'application/pdf', 1, 'clean', now())$$,
+         :'alpha_org', :'alpha_org' || '/q-one'),
+  'ok(1)');
+select fa.try('Q4 at the limit exactly, a 0-byte document is accepted',
+  format($$insert into public.documents
+             (organisation_id, filename, storage_key, mime_type, size_bytes, scan_status, scanned_at)
+           values (%L, 'q-zero.pdf', %L, 'application/pdf', 0, 'clean', now())$$,
+         :'alpha_org', :'alpha_org' || '/q-zero'),
+  'ok(1)');
+
+\o /dev/null
+update public.documents set deleted_at = now()
+ where storage_key = :'alpha_org' || '/q-fill-1';
+\o
+select fa.try('Q5 a soft-deleted document still counts (its bytes stay until the sweep): 1 byte refused',
+  format($$insert into public.documents
+             (organisation_id, filename, storage_key, mime_type, size_bytes, scan_status, scanned_at)
+           values (%L, 'q-after-delete.pdf', %L, 'application/pdf', 1, 'clean', now())$$,
+         :'alpha_org', :'alpha_org' || '/q-after-delete'),
+  'denied(42501)');
+
+\o /dev/null
+update public.organisation_subscriptions set plan_id = 'pro'
+ where organisation_id = :'alpha_org';
+\o
+select fa.try('Q6 the same workspace on Pro (20 GiB) is accepted',
+  format($$insert into public.documents
+             (organisation_id, filename, storage_key, mime_type, size_bytes, scan_status, scanned_at)
+           values (%L, 'q-pro.pdf', %L, 'application/pdf', 2, 'clean', now())$$,
+         :'alpha_org', :'alpha_org' || '/q-pro'),
+  'ok(1)');
+
+select fa.val('Q7 STRUCTURAL: the quota trigger is on documents and serialises per workspace',
+  $$select (exists (select 1 from pg_catalog.pg_trigger
+                     where tgrelid = 'public.documents'::regclass
+                       and tgname = 'enforce_storage_quota' and tgenabled = 'O')
+            and pg_catalog.pg_get_functiondef('private.enforce_storage_quota()'::regprocedure)
+                ~ 'pg_advisory_xact_lock')::text$$,
+  'true');
+select fa.val('Q8 STRUCTURAL: the custom-field limit now serialises per workspace too',
+  $$select (pg_catalog.pg_get_functiondef('private.enforce_custom_field_limit()'::regprocedure)
+            ~ 'pg_advisory_xact_lock')::text$$,
+  'true');
+
+\o /dev/null
+delete from public.documents where storage_key like :'alpha_org' || '/q-%';
+update public.organisation_subscriptions set plan_id = :'alpha_plan'
+ where organisation_id = :'alpha_org';
+\o
+
+-- ===========================================================================
 -- Teardown -- leave the schema exactly as found for the HTTP checks that follow.
 -- ===========================================================================
 \o /dev/null

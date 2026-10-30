@@ -1369,6 +1369,10 @@ select c7.org_updates(:'alpha_org', :'c7_t0')::text as po_n_before \gset
 \o
 set role authenticated;
 set request.jwt.claims = :'super_c';
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'super_c') \g /dev/null
 select c7.val('PO10 the superuser suspends ALPHA through public.suspend_organisation()',
   $$select (public.suspend_organisation('org-alpha', 'C7 Q189 lifecycle round trip') is not null)::text$$, 'true');
 select c7.val('PO10a ...and reinstates it through public.reinstate_organisation()',

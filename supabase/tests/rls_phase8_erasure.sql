@@ -751,6 +751,10 @@ set request.jwt.claims to :'esub_c';
 -- ATTRIBUTION IS NOT THE CALLER'S TO SUPPLY. `subject_user_id` is outside the
 -- INSERT grant, so naming it is refused before any trigger runs -- the
 -- feedback table's I1 shape.
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'esub_c') \g /dev/null
 select er.try('EW1 a client naming a subject is refused by the COLUMN GRANT',
   $$insert into public.erasure_jobs (kind, subject_user_id)
     values ('account', '$$ || :'emate' || $$')$$, 'denied(42501)');

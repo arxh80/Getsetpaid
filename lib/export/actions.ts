@@ -22,7 +22,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentOrg, getCurrentUser } from "@/lib/auth";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { createClient } from "@/lib/supabase/server";
 import { formatRetryAfter } from "@/lib/format/duration";
 import type { FormState } from "@/lib/forms";
@@ -86,7 +86,7 @@ export async function startExportAction(
   // STEP-UP. CLAUDE.md § Session security names "large data exports"
   // explicitly, and a workspace export is the largest thing this product
   // hands out.
-  if (!(await checkStepUp())) {
+  if (!(await checkStepUp()) || !(await mintStepUpToken("workspace_export"))) {
     return {
       error:
         "Confirm it is you before exporting this workspace. Use the prompt on this page, then start the export again.",

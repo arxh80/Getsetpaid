@@ -21,9 +21,8 @@ vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({ auth: { admin: { updateUserById: adminUpdate } } }),
 }));
 
-const { settleFirstProof, unknowablePassword, passwordMayStay, confirmedJustNow } = await import(
-  "@/lib/auth/first-proof"
-);
+const { settleFirstProof, unknowablePassword, passwordMayStay, confirmedJustNow, bindSignUp, bindingMatches } =
+  await import("@/lib/auth/first-proof");
 
 function session() {
   return {
@@ -163,5 +162,48 @@ describe("the pieces", () => {
     expect(confirmedJustNow({ email_confirmed_at: "2026-10-19T11:59:50Z" }, t)).toBe(true);
     expect(confirmedJustNow({ email_confirmed_at: undefined }, t)).toBe(true);
     expect(confirmedJustNow({ email_confirmed_at: "2026-10-19T11:00:00Z" }, t)).toBe(false);
+  });
+});
+
+// Phase 10 Task 18, review finding 2: a binding is written only for a NEW
+// account, so the cookie's presence must not depend on it -- otherwise its
+// Set-Cookie header says which addresses already have an account.
+describe("the sign-up binding cookie is no account oracle", () => {
+  const USER = "11111111-1111-4111-8111-111111111111";
+  const set = () => cookieStore.set.mock.calls.at(-1) as [string, string, Record<string, unknown>];
+  const shape = (value: string) => /^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/.test(value);
+
+  beforeEach(() => {
+    cookieStore.set.mockReset();
+    adminUpdate.mockReset();
+  });
+
+  it("a new account: bound to it, and the stored hash matches the cookie (positive control)", async () => {
+    adminUpdate.mockResolvedValue({ data: {}, error: null });
+    await bindSignUp(USER);
+    const [name, value] = set();
+    expect(name).toBe("gsp_signup_binding");
+    expect(value.startsWith(`${USER}.`)).toBe(true);
+    const stored = (adminUpdate.mock.calls[0][1] as { app_metadata: Record<string, string> }).app_metadata;
+    expect(bindingMatches(value, USER, Object.values(stored)[0])).toBe(true);
+  });
+
+  it("an existing address and a failed binding set the same cookie, which matches nobody", async () => {
+    adminUpdate.mockResolvedValue({ data: {}, error: { message: "User not found" } });
+    await bindSignUp(USER);
+    const failed = set();
+    await bindSignUp(null);
+    const existing = set();
+    adminUpdate.mockResolvedValue({ data: {}, error: null });
+    await bindSignUp(USER);
+    const bound = set();
+
+    for (const [name, value, options] of [failed, existing]) {
+      expect(name).toBe(bound[0]);
+      expect(options).toEqual(bound[2]);
+      expect(shape(value)).toBe(true);
+      expect(value.startsWith(`${USER}.`)).toBe(false);
+    }
+    expect(shape(bound[1])).toBe(true);
   });
 });

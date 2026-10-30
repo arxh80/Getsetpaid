@@ -28,7 +28,7 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
 import { isSuperuser } from "@/lib/admin/superuser";
@@ -87,7 +87,9 @@ function rpcRefusal(
 async function authorise(formData: FormData): Promise<FormState | null> {
   if (!(await getCurrentUser())) return refuse(FAILED_MESSAGE, formData);
   if (!(await isSuperuser())) return refuse(NOT_YOURS, formData);
-  if (!(await checkStepUp())) return refuse(STEP_UP_REQUIRED, formData);
+  if (!(await checkStepUp()) || !(await mintStepUpToken("closure_decision"))) {
+    return refuse(STEP_UP_REQUIRED, formData);
+  }
   return null;
 }
 

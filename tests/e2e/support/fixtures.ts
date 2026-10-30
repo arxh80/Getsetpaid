@@ -3086,6 +3086,11 @@ export async function createDisposableUser(label: string): Promise<E2eUser> {
   return createUser(`e2e-erase-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`);
 }
 
+/** Deletes a disposable account a spec made and did not destroy itself. */
+export async function deleteDisposableUser(userId: string): Promise<void> {
+  await db().query(`delete from auth.users where id = $1`, [userId]);
+}
+
 /** Does this account still exist? The only fact the erasure e2e needs. */
 export async function accountStillExists(userId: string): Promise<boolean> {
   const { rows } = await db().query<{ n: string }>(
@@ -3263,6 +3268,10 @@ export async function plantOwnerClosedWorkspace(
     await client.query(`select set_config('request.jwt.claims', $1, true)`, [
       JSON.stringify({ sub: owner.id, role: "authenticated", aal: "aal2" }),
     ]);
+    // The step-up token the server mints after checkStepUp() (Phase 10 Task 6).
+    await client.query(
+      `select set_config('getsetpaid.from_server', 'on', true), public.mint_step_up_token('workspace_close')`,
+    );
     await client.query(`select public.close_my_workspace($1, $2, $3)`, [
       id,
       slug,
@@ -3512,6 +3521,29 @@ export async function authUserByEmail(email: string): Promise<{
   return row ? { id: row.id, emailConfirmed: row.confirmed, invited: row.invited } : null;
 }
 
+/**
+ * Moves every GoTrue clock on one account 21 minutes into the past, as if the
+ * next person came along later. [auth.email] max_frequency (20 minutes since
+ * G3, Phase 10 Task 8) refuses a second mail to one account inside the
+ * window, and the auth-journey specs model a squatter and an owner who arrive
+ * at different times. Shifted together, so their order (the invite step's
+ * invited_at test, isNewSignUp()'s created_at gap) is unchanged.
+ */
+export async function ageAuthMailClocks(email: string): Promise<void> {
+  const { rowCount } = await db().query(
+    `update auth.users
+        set created_at               = created_at - interval '21 minutes',
+            confirmation_sent_at     = confirmation_sent_at - interval '21 minutes',
+            recovery_sent_at         = recovery_sent_at - interval '21 minutes',
+            invited_at               = invited_at - interval '21 minutes',
+            email_change_sent_at     = email_change_sent_at - interval '21 minutes',
+            reauthentication_sent_at = reauthentication_sent_at - interval '21 minutes'
+      where lower(email) = lower($1)`,
+    [email],
+  );
+  if (rowCount !== 1) throw new Error(`ageAuthMailClocks: ${rowCount} accounts for ${email}`);
+}
+
 /** Every organisation_memberships row this user holds, read as `postgres`. */
 export async function membershipsOfUser(
   userId: string,
@@ -3576,4 +3608,43 @@ export async function deletePlantedMember(userId: string): Promise<void> {
   const { serviceRoleKey } = localStack();
   await sql(`delete from public.audit_events where actor_user_id = $1`, [userId]);
   await api(`/auth/v1/admin/users/${userId}`, { key: serviceRoleKey, method: "DELETE" });
+}
+
+/**
+ * PHASE 10 TASK 15 (G21): the records accessibility.spec.ts needs for the
+ * company and agency detail/edit pages and the merge screen, which the world
+ * does not carry. Planted here, in that spec's own world only, so no other
+ * spec's lists or pickers gain rows. merge_candidates has no INSERT grant
+ * (screen_for_duplicates() writes it), so the pair goes in as `postgres`.
+ * The organisation delete in tearDownWorld removes all of it.
+ */
+export async function plantAxeRecords(world: E2eWorld): Promise<{
+  companyId: string;
+  agencyId: string;
+  mergeCandidateId: string;
+}> {
+  const managerId = world.users.manager.id;
+  const companyId = randomUUID();
+  const agencyId = randomUUID();
+  const duplicateAgencyId = randomUUID();
+  const mergeCandidateId = randomUUID();
+  await sql(
+    `insert into public.companies (id, organisation_id, owner_user_id, name)
+     values ($1,$2,$3,'E2E Axe Company')`,
+    [companyId, world.orgId, managerId],
+  );
+  await sql(
+    `insert into public.agencies (id, organisation_id, owner_user_id, name, created_at)
+     values ($1,$3,$4,'E2E Axe Agency', now() - interval '1 day'),
+            ($2,$3,$4,'E2E Axe Agency Ltd', now())`,
+    [agencyId, duplicateAgencyId, world.orgId, managerId],
+  );
+  await sql(
+    `insert into public.merge_candidates
+       (id, organisation_id, entity_type, keep_id, duplicate_id,
+        keep_owner_user_id, duplicate_owner_user_id, label, reason, similarity)
+     values ($1,$2,'agency',$3,$4,$5,$5,'E2E Axe Agency','fuzzy_name',0.9)`,
+    [mergeCandidateId, world.orgId, agencyId, duplicateAgencyId, managerId],
+  );
+  return { companyId, agencyId, mergeCandidateId };
 }

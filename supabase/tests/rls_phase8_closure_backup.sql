@@ -231,6 +231,11 @@ select ck.seed(:'org_a', :'owner_a', :'mgr_a', :'su_u', :'org_x', :'prof_x');
 select ck.seed(:'org_b', :'owner_b', :'mgr_b', :'su_u', :'org_x', :'prof_x');
 set session_replication_role = origin;
 
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'owner_a_c') \g /dev/null
+select step_up_fixture.arm(:'owner_b_c') \g /dev/null
 -- The pre-closure workspace export of each, through the real INSERT path.
 set role authenticated;
 set request.jwt.claims = :'owner_a_c';

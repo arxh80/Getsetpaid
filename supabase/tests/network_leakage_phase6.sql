@@ -818,12 +818,22 @@ select leak.val('LE1 N5: NOTHING on the network surface names a rating, in any f
 -- private.network_profile_is_discoverable, the predicate the write policies
 -- use for a foreign profile. The policy count is unchanged: the cross-tenant
 -- directory policy left and network_profiles_select_own_published (Q6) came.
-select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 18 functions',
+-- 11/2/19/32 SINCE PHASE 10 TASK 5's REVIEW FIXES (20261108000000, G35). One
+-- function entered by net (b) -- named by a network VIEW:
+-- private.request_is_from_server, the server-only request mark, now in both
+-- views' WHERE. It reads one GUC and no relation. Inspected for the word
+-- "rating" by LE1 above the day it joins.
+-- 11/2/20/33 SINCE PHASE 10 TASK 16 (20261108003000, G29). One function
+-- entered by net (b): private.network_reaching_organisations, the views' reach
+-- rule as a set. It reads organisations and organisation_memberships (tenant
+-- metadata) and returns organisation ids that decide rows, never a projected
+-- value.
+select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 20 functions',
   $$select count(*) filter (where objname like 'policy:%')::text || '/' ||
            count(*) filter (where objname like 'view:%')::text || '/' ||
            count(*) filter (where objname like 'function:%')::text || '/' ||
            count(*)::text
-      from leak.network_surface_wide$$, '11/2/18/31');
+      from leak.network_surface_wide$$, '11/2/20/33');
 -- M6, NAMED. The two functions rls_phase6_network.sql § NF1b could not see.
 select leak.val('LE1c M6: the two functions the NAME filter missed are INSIDE this census',
   $$select string_agg(objname, ',' order by objname) from leak.network_surface_wide
@@ -837,10 +847,10 @@ select leak.val('LE1d ...and the functions in the census, by name, so a dropped 
   'private.fill_connection_request_recipient,private.is_active_member,'
   'private.meter_connection_request,'
   'private.network_profile_is_discoverable,private.network_profile_reaches_caller,'
-  'private.network_publish_organisations,'
+  'private.network_publish_organisations,private.network_reaching_organisations,'
   'private.network_request_status_transition_guard,private.network_visibility_is_valid,'
   'private.organisation_network_presence_active,'
-  'private.permitted_organisations,private.set_updated_at,private.stamp_row_attribution');
+  'private.permitted_organisations,private.request_is_from_server,private.set_updated_at,private.stamp_row_attribution');
 
 -- THE PLANTED POSITIVE CONTROL. Without it, "0 bodies mention rating" is a
 -- claim about a regex nobody has watched fire.
@@ -1012,12 +1022,25 @@ select leak.val('LF1b DENOMINATOR: 28 private relation names were the needle set
 -- organisation_subscriptions -- tenant metadata, no record content, none in
 -- the needle set -- and return a boolean that decides a row, never a value
 -- that is projected. LF1 and LF5 stay green over all ten.
+--
+-- RE-READ AND RE-RECORDED 2026-10-23 (PHASE 10 TASK 5, G14). TEN -> ELEVEN:
+-- private.impersonated_organisations() now also calls
+-- private.request_is_from_server(), whose body reads one GUC
+-- (getsetpaid.from_server) and no relation at all.
+-- Since the G35 fix both views also call it directly, so it is in LF2c's
+-- seed twice; the closure is still the same eleven bodies.
+--
+-- RE-READ AND RE-RECORDED 2026-10-26 (PHASE 10 TASK 16, G29). STILL ELEVEN:
+-- the views now call private.network_reaching_organisations() instead of
+-- private.network_profile_reaches_caller(), which left the closure (it is
+-- membership in the new set, called only by network_profile_is_discoverable).
+-- The new body reads the same tenant metadata through the same two helpers.
 select leak.val('LF2 DENOMINATOR: the closure, by name -- these are the bodies that were read',
   $$select count(*)::text || ':' || string_agg(fqn, ',' order by fqn) from leak.fn_closure$$,
-  '10:private.closure_backup_read_admits,private.has_platform_permission,'
+  '11:private.closure_backup_read_admits,private.has_platform_permission,'
   'private.impersonated_organisations,private.is_active_member,'
-  'private.network_profile_reaches_caller,private.organisation_network_presence_active,'
-  'private.permitted_organisations,private.role_requires_mfa,'
+  'private.network_reaching_organisations,private.organisation_network_presence_active,'
+  'private.permitted_organisations,private.request_is_from_server,private.role_requires_mfa,'
   'private.session_is_aal2,public.has_permission');
 -- THE DEPTH ASSERTION. private.role_requires_mfa is NOT a pg_depend child of
 -- either view -- it is reached only by reading permitted_organisations' body.
@@ -1031,7 +1054,8 @@ select leak.val('LF2b DEPTH: the closure reaches a function NEITHER view depends
 select leak.val('LF2c ...and the seed really is the two views'' direct calls, and only that',
   $$select string_agg(nspname || '.' || proname, ',' order by nspname || '.' || proname)
       from leak.view_seed_fns$$,
-  'private.network_profile_reaches_caller,private.network_profile_reaches_caller,private.permitted_organisations');
+  'private.network_reaching_organisations,private.network_reaching_organisations,private.permitted_organisations,'
+  'private.request_is_from_server,private.request_is_from_server');
 
 -- THE PLANTED POSITIVE CONTROL: a helper that reads a private table, called by
 -- a view, is exactly the shape I1 describes. It is caught.

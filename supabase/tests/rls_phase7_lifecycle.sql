@@ -246,6 +246,10 @@ select lc.val('LP1b ...and deleted_at really is still set',
 select lc.try('LP2 SUSPENDED: nor can the Owner flip lifecycle_state directly',
   $$update public.organisations set lifecycle_state='active', deleted_at=null
      where slug='org-alpha'$$, 'ok(0)');
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'super_c') \g /dev/null
 select lc.try('LP3 the Owner cannot call the reinstate RPC either',
   $$select public.reinstate_organisation('org-alpha','I would like my workspace back')$$,
   'denied(42501)');

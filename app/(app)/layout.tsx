@@ -347,6 +347,15 @@ export default async function AppLayout({
           >
             Delete your account
           </Link>
+          {/* Phase 10 Task 22: for a lost or stolen device. Account-level, so
+              in the footer with the other account pages. */}
+          <Link
+            href="/account/sessions"
+            prefetch={false}
+            className="underline underline-offset-4 hover:text-ink"
+          >
+            Sign out everywhere
+          </Link>
         </div>
       </footer>
     </div>

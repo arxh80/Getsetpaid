@@ -17,3 +17,13 @@
 --
 -- Note the RLS test suite (supabase/tests/) does NOT rely on this file -- it
 -- builds its own fixtures and requires an empty public schema.
+
+-- THE LOCAL SERVER-ONLY REQUEST MARK (Phase 10 Task 5). The digest of the
+-- clearly-local value .env.example documents for GETSETPAID_SERVER_REQUEST_SECRET,
+-- so `pnpm dev`, the psql runner and the vitest fixtures can read the network
+-- directory and use impersonation. Not a secret, and never a hosted value:
+-- every other environment inserts its own digest (SECURITY.md § 15).
+select vault.create_secret(
+  encode(sha256(convert_to('local-only-server-request-mark-not-a-secret', 'UTF8')), 'hex'),
+  'server_request_mark_digest',
+  'LOCAL ONLY: SHA-256 (hex) of the .env.example GETSETPAID_SERVER_REQUEST_SECRET');

@@ -43,3 +43,28 @@ export function createStorageClient() {
     },
   });
 }
+
+/**
+ * Is an object there? "missing" only when Storage says so (Phase 10 Task 14,
+ * G20). storage-js's exists() is a HEAD, and the storage API answers a HEAD on
+ * a missing object with 400 -- the same status a fault gets -- so exists()
+ * cannot tell "gone" from "Storage is having a moment" and both became a 404.
+ * info() carries a body: a missing object (or bucket) is HTTP 400 with
+ * `statusCode: "404"` in it (measured 2026-10-26 against the local stack).
+ */
+export async function objectPresence(
+  bucket: { info(path: string): Promise<{ data: unknown; error: unknown }> },
+  path: string,
+): Promise<"present" | "missing" | "error"> {
+  try {
+    const { data, error } = await bucket.info(path);
+    if (!error && data) return "present";
+    if (error && typeof error === "object" && "statusCode" in error && String(error.statusCode) === "404") {
+      return "missing";
+    }
+    console.error("[storage] info() failed:", error instanceof Error ? error.message : String(error));
+  } catch (cause) {
+    console.error("[storage] info() threw:", cause instanceof Error ? cause.message : String(cause));
+  }
+  return "error";
+}

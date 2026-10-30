@@ -484,14 +484,20 @@ select nw.val('ND3b2 ...and the probe is gone, so nothing downstream reads it',
 -- what makes "calls nothing" and "was not inspected" the same visible answer
 -- here; ND3d is the paired control that the query finds a function when there
 -- is one to find.
-select nw.val('ND3c network_directory calls EXACTLY private.network_profile_reaches_caller',
+-- Phase 10 Task 5 (G35) added private.request_is_from_server() to both views'
+-- WHERE: it reads one GUC (getsetpaid.from_server) and no relation, so both
+-- function sets grow by it and the relation sets (ND1/ND2) do not change.
+-- Phase 10 Task 16 (G29, 20261108003000) swapped reaches_caller for
+-- private.network_reaching_organisations(), the same rule as a set asked once
+-- per query; reaches_caller is now membership in it. Relation sets unchanged.
+select nw.val('ND3c network_directory calls EXACTLY private.network_reaching_organisations and private.request_is_from_server',
   $$select coalesce((select fns || ' (' || n || ')' from nw.view_fn_deps
                       where viewname='network_directory'), '<none> (0)')$$,
-  'private.network_profile_reaches_caller (1)');
-select nw.val('ND3d network_connected_profiles calls EXACTLY that and private.permitted_organisations',
+  'private.network_reaching_organisations,private.request_is_from_server (2)');
+select nw.val('ND3d network_connected_profiles calls EXACTLY those and private.permitted_organisations',
   $$select fns || ' (' || n || ')' from nw.view_fn_deps
      where viewname='network_connected_profiles'$$,
-  'private.network_profile_reaches_caller,private.permitted_organisations (2)');
+  'private.network_reaching_organisations,private.permitted_organisations,private.request_is_from_server (3)');
 
 -- FLIPPED by Phase 10 Task 19 (F1). The views used to be security_invoker so
 -- that the base table's cross-tenant policy was their row gate; that policy
@@ -1680,13 +1686,14 @@ select nw.val('NF1 N5: NO network policy, view or function body contains the sub
 
 -- 5 functions SINCE PHASE 10 TASK 19 (20261103000000): the name filter now
 -- also matches private.network_profile_reaches_caller and
--- private.network_profile_is_discoverable.
-select nw.val('NF1b DENOMINATOR: it inspected 11 policies, 2 views and 5 functions (18), non-zero',
+-- private.network_profile_is_discoverable. 6 SINCE PHASE 10 TASK 16
+-- (20261108003000): private.network_reaching_organisations.
+select nw.val('NF1b DENOMINATOR: it inspected 11 policies, 2 views and 6 functions (19), non-zero',
   $$select count(*) filter (where objname like 'policy:%')::text || '/' ||
            count(*) filter (where objname like 'view:%')::text || '/' ||
            count(*) filter (where objname like 'function:%')::text || '/' ||
            count(*)::text
-      from nw.network_surface$$, '11/2/5/18');
+      from nw.network_surface$$, '11/2/6/19');
 
 -- ...and the same guard over the two masking views' COLUMN lists, which is
 -- where an "anonymised aggregate on a network profile" would actually land.
