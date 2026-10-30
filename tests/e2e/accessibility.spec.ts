@@ -6,6 +6,7 @@ import {
   plantAxeRecords,
   setUpWorld,
   tearDownWorld,
+  type E2eWorld,
 } from "./support/fixtures";
 import { AXE_PAGES, type AxeWorld } from "./support/axe-routes";
 import { signIn, signOut } from "./support/sign-in";
