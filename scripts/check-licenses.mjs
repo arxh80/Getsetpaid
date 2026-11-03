@@ -7,7 +7,8 @@
 // { "<licence expression>": [{ name, versions, ... }], ... }.
 import { readFileSync } from "node:fs";
 
-export const ALLOWED = ["MIT", "Apache-2.0", "ISC", "BSD-2-Clause", "BSD-3-Clause", "0BSD", "CC-BY-4.0"];
+// "(MIT AND Zlib)" is pako (the invoice PDF's deflate): both halves are permissive.
+export const ALLOWED = ["MIT", "Apache-2.0", "ISC", "BSD-2-Clause", "BSD-3-Clause", "0BSD", "CC-BY-4.0", "(MIT AND Zlib)"];
 
 // sharp's prebuilt binaries bundle libvips (LGPL), dynamically linked, which the
 // LGPL permits without copyleft reaching this code. Admitted for @img/sharp-*
