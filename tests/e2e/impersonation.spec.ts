@@ -1,0 +1,660 @@
+import AxeBuilder from "@axe-core/playwright";
+import { expect, test, type Page } from "@playwright/test";
+import {
+  PASSWORD,
+  clearFeedbackState,
+  feedbackRowByMessage,
+  impersonationAuditActions,
+  impersonationAuditedRoutes,
+  setOrganisationSuspended,
+  setUpWorld,
+  tearDownWorld,
+  type E2eWorld,
+} from "./support/fixtures";
+import { signIn } from "./support/sign-in";
+import { totpCode } from "../support/totp";
+
+// PHASE 7 TASK 2: BREAK-GLASS IMPERSONATION, THROUGH THE BROWSER.
+//
+// ===========================================================================
+// WHAT THIS FILE IS FOR, GIVEN THAT THE psql SUITE ALREADY EXISTS
+// ===========================================================================
+// supabase/tests/rls_phase7_impersonation.sql (121 assertions -- 105 was this
+// header's count at the time it was written and is stale everywhere else)
+// proves the
+// DATABASE: no grant without consent, none after expiry, exactly the
+// read_only key set, one organisation, one correlation thread. None of that is
+// re-proved here, and re-proving it through a browser would be slower and
+// weaker.
+//
+// Three things are only observable HERE, and they are this file's whole job:
+//
+//   1. THE APP REACHES THE GRANT AT ALL. The psql suite calls
+//      has_permission() directly. It cannot tell whether getCurrentOrg()'s
+//      impersonation branch fires, or whether the org segment 404s anyway
+//      because the resolver never asked -- which was the single most likely
+//      way for this feature to ship half-built.
+//   2. EVERY PAGE ACCESS IS AUDITED. The psql suite proves the RPC works when
+//      called. Only a real navigation can show that the app calls it on every
+//      org-scoped page rather than once at the start of a session.
+//   3. THE BANNER. A support session that looks exactly like the operator's
+//      own workspace is the human failure mode this feature has; the banner is
+//      the whole mitigation, and it either renders on every page or it does
+//      not.
+//
+// Plus one refusal-parity check and one axe scan, matching every other spec
+// in this directory.
+//
+// ===========================================================================
+// SIBLING SPEC, NOT A REWRITE
+// ===========================================================================
+// `audit-log.spec.ts` is Phase 7 Task 1's file and stays exactly as it is.
+// This is the sixth golden-path sibling in the sentence CLAUDE.md § Design
+// keeps; whoever extends it next adds a seventh.
+
+// SERIAL, AND NOT ONLY BECAUSE playwright.config.ts ALREADY SETS workers: 1.
+// impersonation_sessions_live_pair permits at most ONE live (requested/
+// accepted/active) session per superuser per organisation, so two tests in
+// this file that both request access to `orgSlug` would collide on a unique
+// index rather than run independently -- and the second axe test reads the
+// request the first one left pending. Declaring the dependency is better than
+// relying on a config value another task could reasonably change.
+test.describe.configure({ mode: "serial" });
+
+let world: E2eWorld;
+
+test.beforeAll(async () => {
+  world = await setUpWorld();
+});
+
+test.afterAll(async () => {
+  // The golden walk now submits feedback from inside the session (fix round 1,
+  // I1), so this suite owns feedback rows and a rate-limit counter for the
+  // superuser. Cleared the same way feedback.spec.ts clears its own.
+  if (world) {
+    await clearFeedbackState([world.superuser.id]);
+    await tearDownWorld(world);
+  }
+});
+
+/**
+ * Sign in as the platform superuser -- copied deliberately from
+ * audit-log.spec.ts's own helper rather than shared out of it. The two specs
+ * run in separate worlds against separate throwaway accounts, and a shared
+ * helper in ./support would make one file's sign-in shape a dependency of the
+ * other's, for four lines.
+ *
+ * The TOTP step is not optional: the platform superuser is MFA-required
+ * (CLAUDE.md § Session security), private.has_platform_permission() is
+ * aal2-gated, and private.impersonated_organisations() carries that check --
+ * so a password-only session would render every page here and be granted
+ * nothing at all.
+ */
+async function signInAsSuperuser(page: Page): Promise<void> {
+  await page.goto("/login");
+  await page.locator('input[name="email"]').fill(world.superuser.email);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).not.toHaveURL(/\/login/);
+
+  const heading = page.getByRole("heading", { name: "Enter your two-factor code" });
+  await expect(heading).toBeVisible();
+  await page.locator('input[name="code"]').fill(totpCode(world.superuserTotpSecret));
+  await page.getByRole("button", { name: "Verify and continue" }).click();
+  await expect(heading).toHaveCount(0);
+}
+
+/**
+ * Sign in as the ADMIN of the impersonated workspace -- the party whose
+ * consent the whole feature turns on. Also MFA-challenged for real:
+ * `admin` is one of the roles private.role_requires_mfa() covers, so an aal1
+ * session of this account holds `manage_organisation` not at all and the
+ * accept control would refuse.
+ */
+async function signInAsOrgAdmin(page: Page): Promise<void> {
+  await page.goto("/login");
+  await page.locator('input[name="email"]').fill(world.orgAdmin.email);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).not.toHaveURL(/\/login/);
+
+  const heading = page.getByRole("heading", { name: "Enter your two-factor code" });
+  await expect(heading).toBeVisible();
+  await page.locator('input[name="code"]').fill(totpCode(world.orgAdminTotpSecret));
+  await page.getByRole("button", { name: "Verify and continue" }).click();
+  await expect(heading).toHaveCount(0);
+}
+
+/** Ask for support access, from /super/impersonation. */
+async function requestAccess(page: Page, reason: string): Promise<void> {
+  await page.goto("/super/impersonation");
+  await expect(page.getByRole("heading", { name: "Impersonation", level: 1 })).toBeVisible();
+  // STEP-UP IS ALREADY SATISFIED at this point and that is not an accident
+  // being glossed over: the TOTP challenge in signInAsSuperuser() above is a
+  // `mfa/totp` entry in the JWT's `amr`, seconds old, which is exactly what
+  // lib/auth/step-up.ts's five-minute credential window accepts. So the form
+  // renders rather than the re-auth prompt -- and the test that the gate is
+  // real is `the request form is behind the step-up gate` below, which drives
+  // the same page with a stale credential.
+  await page.locator('input[name="organisationSlug"]').fill(world.orgSlug);
+  await page.locator('textarea[name="reason"]').fill(reason);
+  await page.getByRole("button", { name: "Request access" }).click();
+  await expect(page.getByText("Request sent.")).toBeVisible();
+}
+
+/**
+ * Same refusal shape audit-log.spec.ts's expectStreamedRefusal asserts, and
+ * for the same reason: DESIGN.md § Error pages' property is "the IDENTICAL
+ * document", not "the words 'Page not found' appear somewhere in it". A
+ * refusal that still carried the /super layout's "Superuser" eyebrow or the
+ * page's own <title> would tell a non-superuser that this route exists and is
+ * superuser-gated, which is the enumeration oracle CLAUDE.md's
+ * tenant-isolation rule forbids.
+ */
+async function expectStreamedRefusal(page: Page, url: string): Promise<void> {
+  const response = await page.goto(url);
+  const status = response?.status() ?? -1;
+  expect(
+    [200, 404],
+    `${url} must refuse as 404 or a streamed not-found (200) -- never 403; got ${status}`,
+  ).toContain(status);
+  expect(page.url(), `${url} must not bounce an authenticated probe to login`).not.toMatch(
+    /\/login/,
+  );
+  await expect(page.locator("body")).toContainText("Page not found");
+  await expect(
+    page.locator("body"),
+    `${url}'s refusal must not carry the /super layout's "Superuser" chrome`,
+  ).not.toContainText("Superuser");
+  await expect(
+    page,
+    `${url}'s refusal must not carry a <title> that names the superuser area`,
+  ).not.toHaveTitle(/Superuser/);
+}
+
+// ===========================================================================
+// THE GOLDEN IMPERSONATION WALK
+// ===========================================================================
+// One test, not six, and deliberately so. The steps are not independent --
+// each one's precondition is the previous one's effect, and there is exactly
+// one live session per (superuser, organisation) by construction
+// (impersonation_sessions_live_pair), so six tests would either fight over the
+// same row or need six worlds. Every step carries its own assertion, so a
+// failure still names the step that broke.
+test("the golden walk: request → accept as the org admin → start → bannered read-only view → write refused → end", async ({
+  browser,
+}) => {
+  // 180 s, not the config's 60 s, and the reason is arithmetic rather than
+  // taste. This is the longest single test in the suite by a wide margin: two
+  // browser contexts, two real MFA sign-ins with real TOTP, a request, an
+  // accept, a start, a client-side navigation into the bannered workspace, a
+  // refused write, a feedback submission and an end -- about a dozen full page
+  // loads against a dev server. It measured 21.6 s on an idle machine and
+  // EXCEEDED the 60 s cap on a loaded one during this task's own review, which
+  // took the file's remaining 7 tests down with it (`mode: "serial"`). Phase 7
+  // Task 7 also widened the gap: `setUpWorld` now enrols two more TOTP
+  // factors on every run, ahead of this test.
+  //
+  // Raising the cap rather than splitting the walk is deliberate -- the steps
+  // are not independent (see the comment above) and each one's assertion still
+  // names the step that broke, so the only thing the cap was buying was a
+  // false failure under load. 3x headroom over the measured worst case.
+  test.setTimeout(180_000);
+  const superuserContext = await browser.newContext();
+  const adminContext = await browser.newContext();
+  const superuserPage = await superuserContext.newPage();
+  const adminPage = await adminContext.newPage();
+
+  try {
+    // ---- 1. REQUEST -------------------------------------------------------
+    await signInAsSuperuser(superuserPage);
+    await requestAccess(superuserPage, "ticket 4711: customer cannot see an event");
+
+    // NOTHING IS REACHABLE YET. This is the assertion the whole feature turns
+    // on, and it is checked BEFORE the accept rather than only after the end:
+    // the workspace refuses identically to any stranger's, which is the
+    // tenant-isolation 404 every org route already gives.
+    await expectStreamedRefusal(superuserPage, `/${world.orgSlug}`);
+
+    // ---- 2. ACCEPT, AS THE CUSTOMER ---------------------------------------
+    await signInAsOrgAdmin(adminPage);
+    await adminPage.goto(`/${world.orgSlug}/support-access`);
+    await expect(
+      adminPage.getByRole("heading", { name: "Support access", level: 1 }),
+    ).toBeVisible();
+    // The reason the superuser typed is what the admin is deciding on.
+    await expect(adminPage.locator("main")).toContainText(
+      "ticket 4711: customer cannot see an event",
+    );
+
+    await adminPage.getByRole("button", { name: /^Accept/ }).click();
+    await adminPage.getByRole("button", { name: "Yes, allow it" }).click();
+    // THE ROW MOVING IS THE CONFIRMATION, NOT THE FLASH MESSAGE -- measured
+    // in the browser, exactly as components/network/request-actions.tsx
+    // documents for the identical shape. The same server revalidation that
+    // repaints the page also unmounts the form that would have rendered
+    // `state.message`, because the row is no longer `requested` and the
+    // "Waiting for you" section stops rendering it. Asserting the message
+    // would be asserting a race; asserting the ROW STATE is asserting the
+    // outcome.
+    // The visibility claim moved OUT of this sentence in the pre-merge fix
+    // round (finding I1): "nobody can see this workspace" is a statement about
+    // SESSIONS and was being made by the section about REQUESTS, so it was
+    // false whenever a session ran with no new request pending. The section
+    // that can check it makes it.
+    await expect(adminPage.getByText("No open requests.")).toBeVisible();
+    await expect(adminPage.locator("main")).toContainText("Accepted — not started");
+
+    // ---- 3. ACCEPTANCE IS NOT A SESSION -----------------------------------
+    // Still refused. The distinction between "may look" and "is looking" is
+    // the reason started_at exists, and it is invisible unless asserted.
+    await expectStreamedRefusal(superuserPage, `/${world.orgSlug}`);
+
+    // ---- 4. START ---------------------------------------------------------
+    await superuserPage.goto("/super/impersonation");
+    await superuserPage.getByRole("button", { name: /^Start session/ }).click();
+    await superuserPage.getByRole("button", { name: "Yes, start" }).click();
+    // Same reasoning as the accept above: the row leaves `accepted`, the
+    // "Start session" control unmounts, and an "Open workspace" link and an
+    // "End session" control take its place. That transition IS the outcome.
+    await expect(
+      superuserPage.getByRole("link", { name: "Open workspace" }),
+    ).toBeVisible();
+    await expect(superuserPage.locator("main")).toContainText("Ends at");
+
+    // ---- 5. THE BANNERED, READ-ONLY VIEW ----------------------------------
+    //
+    // ===========================================================================
+    // FIX ROUND 1, IMPORTANT 1: THE FIRST ENTRY IS A CLIENT-SIDE NAVIGATION,
+    // AND UNTIL THIS STEP EXISTED THE SUITE COULD NOT SEE IT
+    // ===========================================================================
+    // Every other navigation in this file is `page.goto()` — a full document
+    // load, which re-renders every layout in the tree and therefore always
+    // produces a banner. The operator's ACTUAL first step into the workspace
+    // is the "Open workspace" <Link> on /super/impersonation: a client-side
+    // navigation from a route where `currentOrg` resolved to null and no
+    // banner was rendered. If the router reuses the shared `(app)` layout
+    // segment rather than re-rendering it, the first impersonated page a
+    // human ever sees is the one page that is NOT bannered — the single thing
+    // the brief calls out by name.
+    //
+    // So this step clicks the real control, and asserts the banner, before
+    // any goto() in this test gets a chance to paper over it.
+    await superuserPage.goto("/super/impersonation");
+    await superuserPage.getByRole("link", { name: "Open workspace" }).click();
+    await expect(superuserPage).toHaveURL(
+      (url) => url.pathname === `/${world.orgSlug}`,
+    );
+    await expect(
+      superuserPage.getByTestId("impersonation-banner"),
+      "the FIRST impersonated page, reached by a client-side navigation from /super/impersonation, must be bannered — a shared ancestor layout does not necessarily re-render on one",
+    ).toBeVisible();
+
+    await superuserPage.goto(`/${world.orgSlug}`);
+    const banner = superuserPage.getByTestId("impersonation-banner");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("Support access.");
+    await expect(banner).toContainText("session ends at");
+
+    // TENANT DATA IS VISIBLE -- and specifically a record the superuser does
+    // NOT own, because private.full_scope_organisations()'s impersonation
+    // branch (Q97) is what makes that work and a record-scoped reading of the
+    // read_only role would show an empty list instead.
+    await superuserPage.goto(`/${world.orgSlug}/contacts`);
+    await expect(superuserPage.getByTestId("impersonation-banner")).toBeVisible();
+    await expect(superuserPage.locator("main")).toContainText("Manager Only Contact");
+
+    // ---- 5b. THE OPERATOR CAN SEND FEEDBACK FROM INSIDE THE SESSION -------
+    //
+    // =======================================================================
+    // FIX ROUND 1, IMPORTANT 1: THE Q121 UN-GATE HAD NO TEST AT ALL
+    // =======================================================================
+    // Founder ruling Q121's explicit WORK OWED was to UNDO Task 6 fix round
+    // 1's hide-and-refuse, so the Feedback control renders during support
+    // access and the submission is ACCEPTED, workspace-less and labelled.
+    // Everything about that was covered EXCEPT the thing the ruling exists to
+    // serve: rls_phase7_feedback.sql § FX proves the label from real session
+    // claims but runs no layout; feedback.spec.ts proves the RENDER of a
+    // PLANTED row; submit-action-budget.test.ts proves the action's branch
+    // with a stubbed getCurrentOrg. Re-adding `&& !currentOrg?.isImpersonated`
+    // to app/(app)/layout.tsx left all five gates green with the feature
+    // unreachable from the one place it is for. THIS is the walk that closes
+    // it, and it is cheap because the live session above already exists.
+    //
+    // It fails if the control is hidden (the click times out), if
+    // submitFeedbackAction sends `org.id` instead of null (the trigger raises
+    // 42501 -- an impersonator holds no membership -- and the dialog shows the
+    // generic refusal instead of the receipt), if getCurrentOrg() stops
+    // setting isImpersonated on the real submit path, or if the database
+    // stops stamping the label for this route.
+    const supportFeedback = `E2E support-access feedback ${world.orgSlug} the contacts filter resets`;
+    await superuserPage.getByRole("button", { name: "Feedback" }).click();
+    const feedbackDialog = superuserPage.getByRole("dialog");
+    await expect(
+      feedbackDialog.getByRole("heading", { name: "Send feedback" }),
+      "the Feedback control must render INSIDE a support-access session (Q121 reversed the gating)",
+    ).toBeVisible();
+    await feedbackDialog.getByLabel(/Category/).selectOption("bug");
+    await feedbackDialog.getByLabel(/Message/).fill(supportFeedback);
+    await feedbackDialog.getByRole("button", { name: "Send feedback" }).click();
+    await expect(
+      feedbackDialog.getByText("Done. Thanks — your feedback has been recorded."),
+      "the submission must be ACCEPTED, not refused -- fix round 1 of Task 6 refused it and Q121 reversed that",
+    ).toBeVisible();
+    await feedbackDialog.getByRole("button", { name: "Close" }).click();
+
+    // READ STRAIGHT OUT OF POSTGRES, because nothing in this browser can see
+    // the row: the submitter has no SELECT policy on their own feedback
+    // (Q103) and the superuser is mid-session.
+    const supportRow = await feedbackRowByMessage(supportFeedback);
+    expect(supportRow, "the support-access submission must have landed").not.toBeNull();
+    expect(supportRow!.userId, "attributed to the operator, like every submission").toBe(
+      world.superuser.id,
+    );
+    expect(
+      supportRow!.organisationId,
+      "a support-access row carries NO workspace -- the operator holds no membership of it",
+    ).toBeNull();
+    expect(supportRow!.organisationRole).toBeNull();
+    expect(
+      supportRow!.duringSupportAccess,
+      "the DATABASE must label it: this is the only assertion that walks layout -> action -> trigger on one path",
+    ).toBe(true);
+    expect(
+      supportRow!.route,
+      "the route is where the operator WAS, captured exactly as for anyone else",
+    ).toBe(`/${world.orgSlug}/contacts`);
+
+    // ---- 6. AND IT IS READ-ONLY -------------------------------------------
+    // THE CONTROL IS PRESENT AND INERT, NOT ABSENT, and that is the product's
+    // own rule rather than a concession: components/crm/write-gate.tsx renders
+    // a blocked action as a `<button disabled>` with a visible sentence,
+    // because "hidden loses the explanation; present-and-failing produces a
+    // 403 the user cannot interpret" (FOLLOW-UPS.md's Q6 item). So the
+    // assertion is that the LINK is gone and a DISABLED BUTTON stands in its
+    // place -- a link would be a navigable write affordance.
+    await expect(
+      superuserPage.getByRole("link", { name: "New contact" }),
+      "a working create link must not render for an impersonating superuser",
+    ).toHaveCount(0);
+    await expect(
+      superuserPage.getByRole("button", { name: "New contact" }),
+      "the create control must still be present, disabled, and explained",
+    ).toBeDisabled();
+
+    // The stronger claim, at the route rather than the control: the
+    // new-contact route serves no FORM. A form that rendered would be one
+    // whose submit the database refuses -- the "the render lied" half of the
+    // two-layer failure SECURITY.md warns about.
+    await superuserPage.goto(`/${world.orgSlug}/contacts/new`);
+    await expect(
+      superuserPage.getByRole("heading", { name: "New contact", level: 1 }),
+    ).toBeVisible();
+    await expect(
+      superuserPage.locator("main form"),
+      "no create form may render on a write route during impersonation",
+    ).toHaveCount(0);
+
+    // SUPPORT ACCESS CANNOT EXTEND ITSELF. manage_organisation is not in the
+    // envelope, so the consent page the customer uses is refused to the
+    // operator -- they cannot accept their own next request from inside the
+    // session they are already in.
+    await expectStreamedRefusal(superuserPage, `/${world.orgSlug}/support-access`);
+
+    // ---- 7. EVERY PAGE WAS AUDITED ----------------------------------------
+    // Read straight out of Postgres: nobody can read this through the app
+    // (audit_events is superuser-only and the superuser is mid-session).
+    const routes = await impersonationAuditedRoutes(world.orgId);
+    expect(
+      routes,
+      `every org-scoped page reached during the session must be audited by route. Recorded: ${routes.join(", ")}`,
+    ).toEqual(expect.arrayContaining([`/${world.orgSlug}`, `/${world.orgSlug}/contacts`]));
+    // AND NOTHING BUT ROUTES. A query string is where a list page's `q=`
+    // search term lives, and a search term is content -- which the audit
+    // contract excludes. lib/admin/impersonation-session.ts's auditableRoute()
+    // is what strips it; this is that decision measured end to end.
+    for (const route of routes) {
+      expect(route, `an audited route must carry no query string: ${route}`).not.toContain(
+        "?",
+      );
+    }
+
+    // ---- 8. END -----------------------------------------------------------
+    await superuserPage.goto("/super/impersonation");
+    await superuserPage.getByRole("button", { name: /^End session/ }).click();
+    await superuserPage.getByRole("button", { name: "Yes, end it" }).click();
+    // And again: the "Open workspace" link and the "End session" control both
+    // disappear, because the row is terminal. The refusals immediately below
+    // are the stronger claim; this is the one the operator can see.
+    await expect(
+      superuserPage.getByRole("link", { name: "Open workspace" }),
+    ).toHaveCount(0);
+
+    // THE ACCESS IS GONE, MEASURED THE SAME WAY IT WAS MEASURED BEFORE IT
+    // EXISTED -- the identical refusal, so "ended" means the same thing as
+    // "never granted".
+    await expectStreamedRefusal(superuserPage, `/${world.orgSlug}`);
+    await expectStreamedRefusal(superuserPage, `/${world.orgSlug}/contacts`);
+
+    // ---- 9. THE WHOLE STORY IS ON THE RECORD ------------------------------
+    const actions = await impersonationAuditActions(world.orgId);
+    expect(actions.slice(0, 3)).toEqual([
+      "impersonation.requested",
+      "impersonation.accepted",
+      "impersonation.started",
+    ]);
+    expect(
+      actions[actions.length - 1],
+      `the session's last recorded event must be its end. Trail: ${actions.join(", ")}`,
+    ).toBe("impersonation.ended");
+    expect(
+      actions.filter((a) => a === "impersonation.page_viewed").length,
+      "at least one page access was recorded",
+    ).toBeGreaterThan(0);
+  } finally {
+    await superuserContext.close();
+    await adminContext.close();
+  }
+});
+
+// ===========================================================================
+// THE REFUSALS
+// ===========================================================================
+
+test("a non-superuser gets the streamed not-found contract at /super/impersonation", async ({
+  page,
+}) => {
+  // `manager`, not an Owner, for the reason audit-log.spec.ts states at
+  // length: lib/admin/superuser.ts's isSuperuser() has exactly one branch (is
+  // this account on public.platform_admins) and reads no organisation role at
+  // all, so there is no code path that could treat an Owner differently.
+  await signIn(page, world, "manager");
+  await expectStreamedRefusal(page, "/super/impersonation");
+  await expectStreamedRefusal(page, "/super");
+});
+
+test("a member without manage_organisation cannot reach their own workspace's support-access page", async ({
+  page,
+}) => {
+  // The consent surface is Owner/Admin only -- the same permission
+  // public.accept_impersonation_request() requires -- and the refusal is the
+  // streamed not-found contract, not a 403 that would confirm the page is
+  // there and merely gated.
+  await signIn(page, world, "manager");
+  const response = await page.goto(`/${world.orgSlug}/support-access`);
+  expect([200, 404]).toContain(response?.status() ?? -1);
+  await expect(page.locator("body")).toContainText("Page not found");
+  await expect(page).toHaveTitle(/Not found/);
+  // And it is not offered in the rail either.
+  await page.goto(`/${world.orgSlug}`);
+  await expect(page.getByRole("link", { name: "Support access" })).toHaveCount(0);
+});
+
+test("the request form is behind the step-up gate, and the action re-checks it", async ({
+  page,
+}) => {
+  // THE GATE IS NOT THE CONTROL, AND THIS TEST IS ABOUT BOTH HALVES.
+  // lib/auth/step-up.ts accepts a credential presented in the last five
+  // minutes; a session that signed in and then sat still is exactly the
+  // "cookie stolen eleven hours later" case the window exists to refuse. The
+  // fixture cannot wait five minutes, so this drives the half that IS
+  // observable: an aal1 superuser session (password only, no TOTP) reaches
+  // the page and is offered no working form -- either the re-auth prompt (no
+  // fresh credential) or nothing at all.
+  await page.goto("/login");
+  await page.locator('input[name="email"]').fill(world.superuser.email);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole("button", { name: "Sign in" }).click();
+
+  // The MFA CHALLENGE gate stands in the way first: the platform superuser is
+  // MFA-required, so app/(app)/layout.tsx replaces <main>'s content with the
+  // challenge screen for every route until a factor is presented. That IS the
+  // refusal for this case -- the impersonation form is unreachable, and the
+  // reason it is unreachable is the gate rather than the page.
+  await expect(
+    page.getByRole("heading", { name: "Enter your two-factor code" }),
+  ).toBeVisible();
+  await page.goto("/super/impersonation");
+  await expect(
+    page.getByRole("heading", { name: "Enter your two-factor code" }),
+    "an aal1 superuser session must not reach the impersonation request form",
+  ).toBeVisible();
+  await expect(page.locator('input[name="organisationSlug"]')).toHaveCount(0);
+});
+
+// ===========================================================================
+// FIX ROUND 1, IMPORTANT 2: THE Q98 CONSEQUENCE IS EXPLAINED, NOT 404'd
+// ===========================================================================
+// `manage_organisation` has survives_suspension = false, so a SUSPENDED
+// workspace's own Owner/Admin holds it not at all -- which is consequence P7
+// working as designed. The alert written to explain that was unreachable dead
+// code behind the page's own permission gate, so the consequence reached the
+// customer as a bare 404 on a page they had been told exists.
+//
+// These two tests are the pair that matters: the explanation is REACHABLE for
+// the workspace's administrator, and REFUSAL PARITY IS INTACT for everyone
+// else. A fix that achieved only the first would have opened the page up.
+//
+// Q98 itself is untouched and still queued: accepting remains impossible while
+// suspended, because public.accept_impersonation_request() asks
+// has_permission() and gets false. Asserted below rather than assumed.
+test("a SUSPENDED workspace's admin gets the paused explanation, not a bare 404", async ({
+  browser,
+}) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await setOrganisationSuspended(world.orgId, true);
+    await signInAsOrgAdmin(page);
+    await page.goto(`/${world.orgSlug}/support-access`);
+
+    await expect(
+      page.getByRole("heading", { name: "Support access", level: 1 }),
+    ).toBeVisible();
+    await expect(page.locator("main")).toContainText("paused");
+    await expect(page.locator("main")).toContainText("suspended");
+    // The <title> must agree with the body in BOTH directions -- a page that
+    // renders its content under a "Not found" tab is the same oracle problem
+    // in reverse.
+    await expect(page).not.toHaveTitle(/Not found/);
+
+    // NO REQUEST DATA AND NO ACCEPT/DECLINE CONTROL. Q98 is untouched:
+    // answering a request is a change to the workspace and stays refused.
+    await expect(page.getByRole("button", { name: /^Accept/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Decline/ })).toHaveCount(0);
+    await expect(page.locator("main")).not.toContainText("Waiting for you");
+
+    // ...BUT THE SENTENCE ABOUT WHAT SUPPORT CAN SEE IS NOW TRUE, AND IS
+    // DERIVED (pre-merge review finding I1). This branch used to state flatly
+    // "Nobody at GetSetPaid can see this workspace in the meantime", which is
+    // false whenever a session granted before the suspension is still running
+    // -- `view_crm` is the one read key with survives_suspension = true, so the
+    // operator keeps reading while the customer, on manage_organisation, could
+    // neither see nor end it. The claim is now read out of the database, and
+    // the state asserted here is the one with no session running.
+    await expect(page.locator("main")).toContainText("No support session is running.");
+    await expect(page.locator("main")).not.toContainText(
+      "Nobody at GetSetPaid can see this workspace in the meantime",
+    );
+  } finally {
+    await setOrganisationSuspended(world.orgId, false);
+    await context.close();
+  }
+});
+
+test("...and a member without the role still gets the identical not-found, suspended or not", async ({
+  browser,
+}) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await setOrganisationSuspended(world.orgId, true);
+    await signIn(page, world, "manager");
+    const response = await page.goto(`/${world.orgSlug}/support-access`);
+
+    // REFUSAL PARITY. The suspended branch is gated on the caller's own role
+    // granting manage_organisation in the catalogue, so a Manager sees the
+    // same document they saw before this fix existed -- never the
+    // explanation, which would confirm the page is there and merely gated.
+    expect([200, 404]).toContain(response?.status() ?? -1);
+    await expect(page.locator("body")).toContainText("Page not found");
+    await expect(page).toHaveTitle(/Not found/);
+    await expect(page.locator("body")).not.toContainText("paused");
+  } finally {
+    await setOrganisationSuspended(world.orgId, false);
+    await context.close();
+  }
+});
+
+// ===========================================================================
+// ACCESSIBILITY
+// ===========================================================================
+// One scan per new page, matching accessibility.spec.ts's own convention.
+// Both are scanned POPULATED -- an empty list has no chips, no confirmation
+// reveals and no rows, which is the state least likely to fail and therefore
+// the least worth scanning.
+test("axe: the superuser impersonation page, with a pending request on it", async ({
+  browser,
+}) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await signInAsSuperuser(page);
+    await requestAccess(page, "ticket 4712: accessibility scan fixture");
+    await page.goto("/super/impersonation");
+    await expect(page.getByRole("heading", { name: "Impersonation", level: 1 })).toBeVisible();
+    await expect(page.locator("main")).toContainText("ticket 4712");
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(results.violations).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
+
+test("axe: the workspace's own support-access page, with a request waiting on it", async ({
+  browser,
+}) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await signInAsOrgAdmin(page);
+    await page.goto(`/${world.orgSlug}/support-access`);
+    await expect(page.getByRole("heading", { name: "Support access", level: 1 })).toBeVisible();
+    // The scan is worth more with the confirmation revealed than with it
+    // closed: the reveal moves focus onto a `tabIndex={-1}` paragraph and
+    // swaps a button for a form, which is the part of this surface most
+    // likely to have an accessibility defect.
+    await page.getByRole("button", { name: /^Accept/ }).first().click();
+    await expect(page.getByRole("button", { name: "Yes, allow it" })).toBeVisible();
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(results.violations).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});

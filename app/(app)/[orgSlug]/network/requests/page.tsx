@@ -16,14 +16,15 @@ import { Alert } from "@/components/ui/alert";
 // ListToolbar.
 //
 // ===========================================================================
-// THIS PAGE, PLUS THE HUB COUNT, IS THE WHOLE DISCOVERY SURFACE
+// THIS PAGE, PLUS THE HUB COUNT, IS THE WHOLE IN-APP SURFACE
 // ===========================================================================
-// CLAUDE.md's `reminder_at` precedent and Q45: there is no notification
-// subsystem at MVP. A request is discovered by visiting this page and by the
-// pending-received count on app/(app)/[orgSlug]/page.tsx's Network card --
-// nothing else tells either side a request exists, was accepted, or was
-// declined. Stated here, in FOLLOW-UPS.md, and in the task report, because
-// "we sent them a request and nothing happened" reads as a bug otherwise.
+// Since Phase 8 Task 9b job 3 (founder 2026-09-30, Q157(3)/Q174/Q45;
+// 20261016000000, lib/email/network-notifications.ts) a request is also
+// EMAILED: received to this workspace's Owners and Admins, accepted and
+// declined to whoever sent it -- each linking here and naming the other side's
+// published profile at most. In the app there is still no toast: this page
+// and the pending-received count on app/(app)/[orgSlug]/page.tsx's Network
+// card are where a request is seen.
 export async function generateMetadata({
   params,
 }: PageProps<"/[orgSlug]/network/requests">): Promise<Metadata> {
@@ -58,9 +59,9 @@ export default async function NetworkRequestsPage({
         Connection requests
       </h1>
       <p className="max-w-prose text-base text-ink-muted">
-        Requests to connect, in both directions. There is no notification for
-        any of this — check back here, or watch the count on your workspace
-        home.
+        Requests to connect, in both directions. A new request is emailed to
+        your workspace’s owners and admins, and the answer to one you sent is
+        emailed to you; this page is where you act on them.
       </p>
     </div>
   );

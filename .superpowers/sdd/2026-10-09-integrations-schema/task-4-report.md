@@ -1,0 +1,7 @@
+
+## Fix round 1
+
+1. Reasoning paragraph (docs/integrations-discovery.md, Ranked recommendation): removed "documented gate is lighter" and "one Google registration later unlocks Gmail"; now states Google vs Microsoft is a close call, the confirmed Google gate is on Gmail scopes not Calendar, and Google is ranked first on the pre-work, not a documented difference.
+2. Narrowest scopes. Graph Mail (section 3): delegated AdminConsentRequired = No for Mail.Read/ReadBasic/ReadWrite/Send, from learn.microsoft.com/en-us/graph/permissions-reference (fetched at offset 200000, checked 2026-10-10); added the MC1163922 consent-policy caveat as community/unconfirmed. Xero (section 6): developer.xero.com scopes page returned title only; devblog.xero.com post 403. Granular scope names (accounting.invoices.read, accounting.banktransactions.read, accounting.contacts unchanged, 2 March 2026 cutoff, Sept 2027 migration) taken from apideck.com/blog/xero-scopes and labelled third-party/unconfirmed. QuickBooks (section 7): developer.intuit.com scopes page title only; a search summary of an Intuit support answer says no read-only variant of com.intuit.quickbooks.accounting; labelled community/unconfirmed.
+3. DECISIONS-QUEUE Q232: "Fatsoma publishes no API" reworded to "no public API or developer docs were found (a private partner API is not excluded)".
+Optional Xero 2 March 2026 pricing sourcing: not done; Xero's own pages could not be read.

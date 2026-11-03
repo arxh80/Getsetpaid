@@ -188,13 +188,22 @@ export const NETWORK_ITEMS: readonly NavArea[] = [
 
 /**
  * The admin group. Unlike CRM_AREAS/OPERATIONS_AREAS/NETWORK_ITEMS, each of
- * these two is gated INDIVIDUALLY (app/(app)/[orgSlug]/layout.tsx), matching
- * the org-home page's own header links -- `manage_members` and
- * `manage_custom_fields` are two different permissions Owner and Admin both
- * hold and nobody else does, so a Manager who can invite people but not
- * define fields sees "Members" without "Settings", not both or neither.
+ * these three is gated INDIVIDUALLY (lib/nav/sidebar-groups.ts), matching
+ * the org-home page's own header links -- `manage_members`,
+ * `manage_custom_fields` and `manage_organisation` are three different
+ * permissions, so a Manager who can invite people but not define fields sees
+ * "Members" without "Settings", not both or neither.
  * "Settings" routes to /settings/custom-fields, the only settings route that
  * exists -- there is no bare /settings page to link to instead.
+ *
+ * "Support access" (Phase 7 Task 2) is gated on `manage_organisation`, which
+ * is Owner/Admin only -- the same permission
+ * public.accept_impersonation_request() requires in the database, so the item
+ * appears exactly for the people who can act on what it shows. It is also the
+ * one Admin item an IMPERSONATING SUPERUSER never sees: manage_organisation
+ * is not in the read-only envelope private.impersonated_organisations()
+ * grants (DECISIONS-QUEUE Q96), so support access cannot be used to extend
+ * itself.
  */
 export const ADMIN_ITEMS: readonly NavArea[] = [
   {
@@ -206,5 +215,10 @@ export const ADMIN_ITEMS: readonly NavArea[] = [
     path: "settings/custom-fields",
     label: "Settings",
     sub: "Custom fields and config",
+  },
+  {
+    path: "support-access",
+    label: "Support access",
+    sub: "GetSetPaid support requests",
   },
 ] as const;

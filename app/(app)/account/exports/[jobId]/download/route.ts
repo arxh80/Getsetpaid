@@ -1,0 +1,45 @@
+import { NextResponse } from "next/server";
+import { issueExportDownloadUrl } from "@/lib/export/download";
+
+// ===========================================================================
+// GET /account/exports/[jobId]/download
+//
+// The ONE server-mediated way to read an export archive's bytes, for BOTH
+// kinds — an account export and a workspace one are downloaded here, because
+// the authorisation is the same one in both cases (you asked for it) and a
+// second route would be a second place for it to be wrong.
+//
+// The browser never holds a Storage grant: the `exports` bucket is private
+// and `storage.objects` is deny-all fenced for every client role
+// (20260927001000 § 3). It asks this handler, which authorises through RLS,
+// refuses an expired or unfinished archive, AUDITS the access, and only then
+// issues a 60-second signed URL and redirects to it. The order is the
+// control and lives in issueExportDownloadUrl; this is the thin HTTP shell.
+//
+//   302 : to the signed URL, minted only after identity + RLS + expiry +
+//         existence + audit.
+//   404 : not signed in, not a uuid, not your job, no such job, still
+//         running, failed, or expired — indistinguishable on purpose.
+//   500 : a lookup, audit or signing fault. Never a URL.
+//
+// A route handler never streams, so this keeps the literal 404
+// (DESIGN.md § Error pages, the document download route's own rule).
+// ===========================================================================
+export async function GET(
+  _request: Request,
+  ctx: { params: Promise<{ jobId: string }> },
+): Promise<NextResponse> {
+  const { jobId } = await ctx.params;
+  const outcome = await issueExportDownloadUrl(jobId);
+
+  if (outcome.ok) {
+    return new NextResponse(null, {
+      status: 302,
+      headers: { Location: outcome.url, "Cache-Control": "no-store" },
+    });
+  }
+  return new NextResponse(outcome.status === 404 ? "Not found" : "Error", {
+    status: outcome.status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}

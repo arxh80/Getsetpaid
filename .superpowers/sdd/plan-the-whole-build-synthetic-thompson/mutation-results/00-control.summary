@@ -1,0 +1,8 @@
+mutant: 00-control
+migrations before/after: 210/210
+runner exit: 0   vitest exit: 0
+--- psql: red assertions, read from each suite's results table ---
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+        Tests  690 passed (690)

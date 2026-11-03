@@ -1,0 +1,71 @@
+-- ===========================================================================
+-- PHASE 8 TASK 5, FIX ROUND 2 -- N3 AND N4: TWO THINGS THAT ARE TRUE AND
+-- WERE NOWHERE WRITTEN DOWN. COMMENTS ONLY; NO BEHAVIOUR CHANGES.
+--
+-- Both are `comment on` statements reissued against live database objects,
+-- which is the one additive way a shipped statement's text can be corrected
+-- (the 20260904007000 precedent). Nothing else in this file.
+--
+-- ---------------------------------------------------------------------------
+-- N3 -- THE ACCOUNT-CASCADE EXEMPTION DOES NOT KNOW WHO DELETED THE ACCOUNT.
+-- ---------------------------------------------------------------------------
+-- private.membership_keeps_an_owner() admits a DELETE whose `auth.users` row
+-- has already gone. `organisation_memberships.user_id` is ON DELETE CASCADE,
+-- so that branch is reachable ONLY during an account deletion -- the
+-- exemption cannot be borrowed by something that is not one, which is what
+-- mattered. But it does not tell private.erase_account()'s deletion (which
+-- has asked Q131 under a lock, and re-asserts it after the delete) from an
+-- out-of-band one. Measured by the scoped re-review, as `postgres`:
+--
+--   delete from auth.users where id = <the sole Owner>;
+--   --> ALLOWED, leaving a live workspace: owners 0 / members 1 / crm 1
+--
+-- THE RESIDUAL RISK IS ACCEPTED, and this is the record of why rather than
+-- an omission:
+--
+--   * the only principals who can do it are `supabase_auth_admin` (GoTrue's
+--     admin API, `auth.admin.deleteUser`) and anything with direct database
+--     access. No client role can delete an `auth.users` row.
+--   * there is NO `deleteUser` call site anywhere in this product -- grep
+--     over `lib/` and `app/` finds none -- so no application path reaches it.
+--     private.erase_account() is the ONLY SANCTIONED ACCOUNT DELETION.
+--   * Supabase Studio's Auth page offers the button, so an operator can
+--     still do it by hand. That is the real event this note exists for.
+--
+-- The alternative -- requiring a transaction-local GUC that erase_account()
+-- sets, in the shape of private.begin_lifecycle_transition() -- would turn
+-- that operator's click into a hard failure of the cascade rather than a
+-- stranded workspace. It is a better answer and it is a behaviour change
+-- with reach well past this task (every fixture and suite that deletes an
+-- auth user), so it is QUEUED AS Q179 rather than taken in a fix round.
+-- Until then: if an account is ever deleted outside this function, check
+-- `private.account_last_owner_workspaces()` for the workspaces it left
+-- behind, and close them from /super/organisations.
+--
+-- ---------------------------------------------------------------------------
+-- N4 -- WHAT THE LOCK COSTS, MEASURED.
+-- ---------------------------------------------------------------------------
+-- private.account_lock_workspaces() takes `FOR UPDATE` on EVERY membership
+-- row of EVERY live workspace the subject is an active member of, plus one
+-- advisory transaction lock per workspace, and holds all of it for the whole
+-- erasure transaction. So every concurrent role change, revoke and removal in
+-- those workspaces BLOCKS until the erasure commits or rolls back. INSERTs
+-- are not blocked, so invitations still work.
+--
+-- Measured on the local stack at 184 migrations:
+--
+--   * taking the locks over 5 workspaces and 250 membership rows -- far past
+--     anything realistic -- cost 1.22 ms.
+--   * the window they are HELD for is one erasure transaction: 29 ms end to
+--     end for a subject in one workspace with the usual re-point walk.
+--
+-- The bound is the subject's OWN memberships: n advisory locks and the
+-- membership rows of n workspaces, for tens of milliseconds. It is nothing at
+-- any realistic n, and it is here because nothing in the repository said so.
+-- ===========================================================================
+
+comment on function private.membership_keeps_an_owner() is
+  'BEFORE UPDATE OR DELETE on public.organisation_memberships (Phase 8 Task 5 fix round 1, I1/Q176). Refuses any change that would leave a LIVE workspace which still has other members or records in it with no active Owner -- demotion, suspension of the Owner''s membership, removal and leaving alike -- with 22023 / last_owner_of_workspace and a sentence naming the workspace. Before it there was no last-owner guard anywhere on this table, so an Admin at aal2 holding manage_members could demote the sole Owner, after which the erasure guard (keyed on the word "owner") stopped firing for everybody. It admits exactly two cascades: the workspace being deleted, and the ACCOUNT being deleted, where private.erase_account() has already asked the same question under a lock and asserts it again after the delete. THE ACCOUNT EXEMPTION IS KEYED ON THE OUTCOME, NOT THE CALLER (fix round 2, N3): it admits any DELETE whose auth.users row has already gone. user_id is ON DELETE CASCADE, so only an account deletion can satisfy it and it cannot be borrowed by something that is not one -- but it does not tell THIS function''s deletion from a direct `delete from auth.users`, which strands a live workspace exactly as I1 described. private.erase_account() is the ONLY SANCTIONED ACCOUNT DELETION; there is no auth.admin.deleteUser call site anywhere in the product, and the residual is an operator using Supabase Studio''s Auth page by hand. Closing it with a transaction-local GUC is Q179.';
+
+comment on function private.account_lock_workspaces(uuid) is
+  'C2: locks every live workspace this person is an active member of, before the Q131 guard reads them -- an advisory transaction lock per workspace (in id order, so two erasures queue instead of deadlocking) and FOR UPDATE on that workspace''s membership rows, so a concurrent DEMOTION blocks as well as a concurrent erasure. Without it two erasures of two co-Owners both passed the guard and both committed, leaving a live workspace with a record in it, no members and no owner -- reproduced with two psql sessions, and reachable in the product because claim_erasure_job() hands two runners two different jobs. WHAT IT COSTS (fix round 2, N4, measured rather than reasoned about): every concurrent role change, revoke and removal in those workspaces blocks for the whole erasure transaction; INSERTs do not, so invitations still work. Taking the locks over 5 workspaces and 250 membership rows cost 1.22 ms locally, and the window they are held for is one erasure -- 29 ms end to end for a subject in one workspace. The bound is the subject''s own memberships: n advisory locks plus the membership rows of n workspaces, for tens of milliseconds.';

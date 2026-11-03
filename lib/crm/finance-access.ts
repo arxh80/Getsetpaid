@@ -45,23 +45,37 @@ import "server-only";
 // EVERY FINANCE CONTROL IN THE PRODUCT
 // ===========================================================================
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
-// to { status: "no-subscription" }, and every organisation has no subscription
-// today (create_organisation writes no row). private.finance_module_
-// organisations() exempts exactly that case ("not yet billed => not yet
-// gated"). So entitlementsPermitFinance MUST return true for "no-subscription"
-// -- reading financeModule straight off TIER_MATRIX.free (which is false) would
-// disable every finance control in every workspace while the database happily
+// to { status: "no-subscription" }. private.finance_module_organisations()
+// exempts exactly that case ("not yet billed => not yet gated") -- STILL, as
+// of Phase 7 Task A (2026-09-08): that task closed the identical escape on
+// private.crm_write_organisations() and private.custom_field_limit(), but
+// deliberately left this one (and private.network_publish_organisations()'s
+// twin) untouched -- see FOLLOW-UPS.md § "Phase 7 -- superuser dashboard" for
+// the follow-up entry Task A added when it discharged the CRM one.
+// public.create_organisation() DOES write a subscription row now (a Starter
+// one, at birth), so "no subscription row" is no longer the state every
+// organisation is in -- it is reachable only by an organisation planted
+// directly (bypassing create_organisation()), which is exactly how the
+// binding test below constructs it. So entitlementsPermitFinance MUST still
+// return true for "no-subscription" -- reading financeModule straight off
+// TIER_MATRIX.free (which is false) would disable every finance control in
+// every workspace still reachable in that state, while the database happily
 // accepted the write. The mirror is explicit and bound by Task 4's finance
 // analogue of tests/integration/crm/crm-write-access-matches-db.test.ts; when
-// Phase 7 removes the escape from the function, that test goes red here.
+// a future task removes the escape from the function, that test goes red
+// here -- the same way crm-write-access-matches-db.test.ts did for the CRM
+// escape in Task A.
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import { hasPermission, type CurrentOrg } from "@/lib/auth";
+import {
+  SUSPENDED_READ_ONLY_EXPLANATION,
+  readOnlyExplanation,
+} from "@/lib/admin/lifecycle-contract";
 import type { CrmWriteAccess } from "@/lib/crm/write-access";
 
 const EXPLANATION = {
-  suspended:
-    "This workspace is suspended, so it’s read-only. You can still see everything in it. Contact GetSetPaid support to have it reinstated — an Owner can’t do it from here.",
+  suspended: SUSPENDED_READ_ONLY_EXPLANATION,
   tier: "Finance is a Pro feature. An Owner can upgrade the workspace to add budget and actuals.",
   permission:
     "Your role in this workspace can’t change finance. Ask an Owner, Admin or someone with the Finance role.",
@@ -102,7 +116,7 @@ export async function getFinanceWriteAccess(
   org: CurrentOrg,
 ): Promise<CrmWriteAccess> {
   if (org.isSuspended) {
-    return { canWrite: false, reason: "suspended", explanation: EXPLANATION.suspended };
+    return { canWrite: false, reason: "suspended", explanation: readOnlyExplanation(org.lifecycle) };
   }
 
   const [entitlements, permitted] = await Promise.all([

@@ -1,0 +1,12 @@
+mutant: 07a-dsr-who-withdraw-leg
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 0
+--- psql: red assertions, read from each suite's results table ---
+  [dsr] DT13b the TRIGGER refuses the OPERATOR withdrawing on the requester's behalf
+  [dsr] DT13c neither attempt moved anything
+  [dsr] DT15 ...and the TRIGGER refuses it even when the WHERE clause does not
+  [dsr] DT16 POSITIVE: the requester withdraws their own routed request
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+        Tests  690 passed (690)

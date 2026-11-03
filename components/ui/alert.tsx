@@ -11,6 +11,10 @@ import type { ReactNode } from "react";
 // role="alert" for errors (assertive -- the user just failed an action and
 // needs to know now); role="status" otherwise (polite -- it must not interrupt
 // whatever a screen-reader user is currently reading).
+//
+// `live={false}` drops the role, for an Alert rendered INSIDE a live region
+// that already exists on the page (components/admin/legal-editor-outcome.tsx):
+// nesting a second live role would announce the message twice.
 
 type Tone = "error" | "success" | "info";
 
@@ -22,15 +26,17 @@ const TONES: Record<Tone, { border: string; text: string; word: string }> = {
 
 export function Alert({
   tone = "info",
+  live = true,
   children,
 }: {
   tone?: Tone;
+  live?: boolean;
   children: ReactNode;
 }) {
   const { border, text, word } = TONES[tone];
   return (
     <p
-      role={tone === "error" ? "alert" : "status"}
+      role={live ? (tone === "error" ? "alert" : "status") : undefined}
       className={`border ${border} bg-surface px-3 py-3 text-base text-ink`}
     >
       <span className={`font-semibold ${text}`}>{word}.</span>{" "}

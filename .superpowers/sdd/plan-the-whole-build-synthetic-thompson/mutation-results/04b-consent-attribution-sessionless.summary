@@ -1,0 +1,11 @@
+mutant: 04b-consent-attribution-sessionless
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [cs] CW13 postgres with no session cannot record a consent
+  [pm] DR3 the consent ledger's twin rule, asked the same way (sessionless postgres, a real user named)
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+|integration| tests/integration/legal/catalogue-bindings-match-db.test.ts > the migration walk picks the body the database runs > private.consents_before_insert: one deployed definition, equal to the latest one in the migrations
+        Tests  1 failed | 689 passed (690)

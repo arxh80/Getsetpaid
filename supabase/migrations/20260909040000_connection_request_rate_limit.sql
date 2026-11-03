@@ -1,0 +1,63 @@
+-- Phase 7 Task 5, fix 2: a budget for SENDING connection requests.
+--
+-- ===========================================================================
+-- WHY A SEVENTH CATEGORY, WHEN SECURITY.md § 5's TABLE HAS SIX ROWS
+-- ===========================================================================
+-- Task 5's brief names three things the limiter is meant to resolve, and one
+-- of them is "the Q79 re-request spam mitigation". The other two -- Q86/Q87's
+-- discovery cost and § 5's own "SPECIFIED AND NOT IMPLEMENTED" disclosure --
+-- are closed by 20260909020000. This one was not, and the gap is easy to miss
+-- because the two look adjacent: metering the DIRECTORY bounds how fast an
+-- abuser can FIND organisations to pester, and does nothing at all about how
+-- fast they can pester the ones they already found. A connection request is a
+-- server action, not a list read, so it never passes the one chokepoint
+-- lib/list/query.ts meters.
+--
+-- Q79 is what makes this live rather than theoretical. It shipped with a
+-- declined pair as TERMINAL -- the single zero-cost anti-harassment control in
+-- a product with no blocking, muting or moderation -- and the founder reversed
+-- it on 2026-09-07 (20260907000000). FOLLOW-UPS' own Q79 entry says so
+-- plainly: "a declined organisation can be asked again immediately and
+-- indefinitely, and nothing meters it -- the mitigation is the Phase 7 network
+-- rate limiter". This is that mitigation.
+--
+-- ===========================================================================
+-- PER ORGANISATION, NOT PER USER, AND THAT IS THE LOAD-BEARING CHOICE
+-- ===========================================================================
+-- A per-user budget is bypassed by the abuser inviting colleagues: seats are
+-- cheap, six roles hold `manage_network_connections` (Q77), and the recipient
+-- experiences one workspace pestering them regardless of which of its members
+-- clicked. The request itself is organisation-to-organisation by construction
+-- (Q83's honest two-column shape; Q80's org-wide unlock), so the ORGANISATION
+-- is the actor the recipient sees and the actor the budget must bind.
+--
+-- The org-scoped consume path already exists and is already proved: the
+-- wrapper requires active membership before it will spend an organisation's
+-- budget (rls_phase7_rate_limits.sql § RS7/RS8/RS9 -- a stranger, and a
+-- foreign Owner, are both refused 42501), which is what stops this becoming a
+-- denial of service where anyone can exhaust anyone's allowance.
+--
+-- ===========================================================================
+-- THE NUMBER IS A RECOMMENDED DEFAULT, NOT A FOUNDER RULING (Q112)
+-- ===========================================================================
+-- SECURITY.md § 5's table did not contain this row, so unlike every other
+-- category here the value is not copied from a decision that was already
+-- made -- it is proposed. 10 / hour / organisation is the same shape as the
+-- in-app feedback row (10/hour), and it is chosen to be far above real use
+-- (a promoter onboarding by hand does not send eleven connection requests in
+-- an hour) while turning an unbounded channel into a bounded, ALERTED one:
+-- the crossing files a rate_limit_tripped row the operator reads on
+-- /super/health, which is the first time network harassment has been visible
+-- to anyone at all. § 5 gains the row with its provenance marked. If the
+-- founder wants a different number it is one UPDATE to this table and one
+-- line of that document -- no code changes, which is the whole point of
+-- keeping values out of TypeScript.
+--
+-- ADDITIVE. No previously applied migration is edited; the six existing
+-- policy rows are untouched.
+
+insert into public.rate_limit_policies
+  (category, subject_scope, max_requests, window_seconds, description)
+values
+  ('network_connection_request', 'organisation', 10, 3600,
+   'Connection requests sent per organisation. Q79''s re-request spam mitigation: org-scoped so inviting a colleague does not double the budget. Number is Task 5''s recommended default (Q112), not a founder ruling.');

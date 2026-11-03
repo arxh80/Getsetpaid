@@ -1,0 +1,62 @@
+-- Phase 7 Task 3, SELF-REVIEW FIX: say out loud that the suspension reason is
+-- CUSTOMER-VISIBLE, and make the product behave as if it is.
+--
+-- ===========================================================================
+-- THE FINDING
+-- ===========================================================================
+-- 20260908030000 put `lifecycle_reason` on public.organisations. That table is
+-- readable by every active member of the organisation through
+-- organisations_select_member (`private.is_active_member(id)`, no column
+-- restriction and no aal term), and `authenticated` holds SELECT on it -- so
+--
+--     GET /rest/v1/organisations?select=lifecycle_reason
+--
+-- returns the operator's reason to any member of that workspace, from a
+-- browser, with the anon key. Measured, not reasoned: an aal1 member read
+-- "INTERNAL: customer flagged by legal, do not contact" back verbatim.
+--
+-- MEANWHILE the product was telling both parties the opposite. The operator's
+-- form said the reason "Goes on the permanent audit record" -- which reads as
+-- "this is an internal note" -- and the customer's banner deliberately did not
+-- render it. So the reason was disclosed to whoever thought to inspect the
+-- API, and withheld from the person it is about. That is the worst of the
+-- three possible arrangements.
+--
+-- ===========================================================================
+-- WHY THIS IS FIXED FORWARD RATHER THAN HIDDEN
+-- ===========================================================================
+-- The three options were: drop the column and keep the reason only in
+-- public.audit_events; hide it from members; or make it customer-visible and
+-- say so.
+--
+--   HIDE IT IS NOT AVAILABLE. RLS filters ROWS, not columns, and Postgres
+--   column privileges are per-ROLE -- the customer and the superuser are both
+--   `authenticated`, so there is no grant that shows the column to one and not
+--   the other.
+--
+--   DROP IT costs the operator the thing the column is for. audit_events is
+--   hot/queryable for 30 days (CLAUDE.md § Non-negotiable rules), so a
+--   workspace suspended 45 days ago would show no reason at all on
+--   /super/organisations -- and the long-suspended workspaces are exactly the
+--   ones where the next operator most needs to know why.
+--
+--   CUSTOMER-VISIBLE IS ALSO THE BETTER PRODUCT. A suspended customer being
+--   told "Non-payment: invoice 902 is 21 days overdue" is not a leak; it is
+--   the single most useful sentence the banner can carry, and it is what
+--   turns "why has this stopped working" into an action. An operator who
+--   needs to write something the customer must not read should not be putting
+--   it in this field, and now the form says so.
+--
+-- SO: the column stays, the banner renders it, and the operator's form warns
+-- them before they type. Queued as DECISIONS-QUEUE Q103 -- if the founder
+-- wants a separate internal-only note, it is a second column that is never
+-- projected to a member, not a change to this one.
+--
+-- NOTHING BUT COMMENTS CHANGES HERE. The disclosure existed the moment
+-- 20260908030000 shipped; this migration is the record of it being deliberate,
+-- and the code change beside it (the banner, the two form hints, the e2e
+-- assertion) is what makes the product agree.
+-- ===========================================================================
+
+comment on column public.organisations.lifecycle_reason is
+  'The operator''s reason for the current lifecycle state, mandatory on every transition (the three RPCs raise 22023 for an empty one) and copied into the audit record. Null iff lifecycle_state = ''active'' -- reinstating clears it, because the reason for a state that has ended is history and lives in public.audit_events, which is append-only. IT IS CUSTOMER-VISIBLE, AND THAT IS DELIBERATE (Phase 7 Task 3 self-review, 20260908032000): public.organisations is readable by every active member through organisations_select_member, RLS filters rows and not columns, and Postgres column privileges are per-role -- so there is no arrangement in which the superuser sees this and the workspace''s own people do not. Rather than leave it disclosed-by-accident and withheld-by-design, the suspended-workspace banner RENDERS it and the operator''s form warns them that the workspace''s own people will read it. DO NOT PUT ANYTHING HERE THAT THE CUSTOMER MUST NOT READ. If a separate internal-only note is ever wanted it is a SECOND column that no member-facing query projects (DECISIONS-QUEUE Q103), never a quiet re-use of this one.';

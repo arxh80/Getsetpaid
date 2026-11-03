@@ -1,0 +1,11 @@
+mutant: 11-export-private-note-exclusion
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [xp] XP5 THE RULE Q54 CLOSED: a colleague's PRIVATE note is NOT in the Owner's export
+  [xp] XP7 three of the four planted notes, not two and not four
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+|integration| tests/integration/export/runner.test.ts > the workspace export, opened > THE RULE Q54 CLOSED: a colleague's PRIVATE note is NOT in it
+        Tests  1 failed | 689 passed (690)

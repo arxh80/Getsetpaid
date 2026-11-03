@@ -1,0 +1,73 @@
+2026-10-04 00:42:19 START 00-control
+2026-10-04 00:47:43 END 00-control exit=0
+2026-10-04 00:47:44 START 01-legal-immutability
+2026-10-04 00:52:52 END 01-legal-immutability exit=0
+2026-10-04 00:52:52 START 02-legal-anon-column-grant
+2026-10-04 00:58:05 END 02-legal-anon-column-grant exit=0
+2026-10-04 00:58:05 START 03-consents-append-only
+2026-10-04 01:03:15 END 03-consents-append-only exit=0
+2026-10-04 01:03:15 START 04a-consent-attribution-trusts-client
+2026-10-04 01:08:26 END 04a-consent-attribution-trusts-client exit=0
+2026-10-04 01:08:26 START 04b-consent-attribution-sessionless
+2026-10-04 01:15:20 END 04b-consent-attribution-sessionless exit=0
+2026-10-04 01:15:20 START 05a-dsr-attribution-trusts-client
+2026-10-04 01:19:29 END 05a-dsr-attribution-trusts-client exit=0
+2026-10-04 01:19:30 START 05b-dsr-attribution-sessionless
+2026-10-04 01:27:44 END 05b-dsr-attribution-sessionless exit=0
+2026-10-04 01:27:44 START 06-dsr-transition-table
+2026-10-04 01:35:54 END 06-dsr-transition-table exit=0
+2026-10-04 01:35:54 START 07a-dsr-who-withdraw-leg
+2026-10-04 01:43:44 END 07a-dsr-who-withdraw-leg exit=0
+2026-10-04 01:43:44 START 07b-dsr-who-operator-leg
+2026-10-04 01:52:02 END 07b-dsr-who-operator-leg exit=0
+2026-10-04 01:52:02 START 08-dsr-operator-notes-boundary
+2026-10-04 02:00:07 END 08-dsr-operator-notes-boundary exit=0
+2026-10-04 02:00:07 START 09a-fulfilment-seam-dormant
+2026-10-04 02:06:43 END 09a-fulfilment-seam-dormant exit=0
+2026-10-04 02:06:43 START 09b-fulfilment-seam-server-only
+2026-10-04 02:11:57 END 09b-fulfilment-seam-server-only exit=0
+2026-10-04 02:11:57 START 10-export-download-authorisation
+2026-10-04 02:17:11 END 10-export-download-authorisation exit=0
+2026-10-04 02:17:11 START 11-export-private-note-exclusion
+2026-10-04 02:22:26 END 11-export-private-note-exclusion exit=0
+2026-10-04 02:22:26 START 12a-erasure-last-owner-guard
+2026-10-04 02:25:34 END 12a-erasure-last-owner-guard exit=0
+2026-10-04 02:25:34 START 12b-membership-keeps-an-owner
+2026-10-04 02:30:46 END 12b-membership-keeps-an-owner exit=0
+2026-10-04 02:30:46 START 13-tombstone-rewrite-deletes
+2026-10-04 02:33:53 END 13-tombstone-rewrite-deletes exit=0
+2026-10-04 02:33:53 START 14-retention-audit-floor
+2026-10-04 02:39:09 END 14-retention-audit-floor exit=0
+2026-10-04 02:39:09 START 15-01-crm-audit-document-links
+2026-10-04 02:44:18 END 15-01-crm-audit-document-links exit=0
+2026-10-04 02:44:18 START 15-02-crm-audit-documents
+2026-10-04 02:50:37 END 15-02-crm-audit-documents exit=0
+2026-10-04 02:50:37 START 15-03-crm-audit-event-lineup
+2026-10-04 02:58:24 END 15-03-crm-audit-event-lineup exit=0
+2026-10-04 02:58:24 START 15-04-crm-audit-events
+2026-10-04 03:06:11 END 15-04-crm-audit-events exit=0
+2026-10-04 03:06:12 START 15-05-crm-audit-financial-entries
+2026-10-04 03:14:00 END 15-05-crm-audit-financial-entries exit=0
+2026-10-04 03:14:01 START 15-06-crm-audit-meeting-links
+2026-10-04 03:21:49 END 15-06-crm-audit-meeting-links exit=0
+2026-10-04 03:21:49 START 15-07-crm-audit-meetings
+2026-10-04 03:29:35 END 15-07-crm-audit-meetings exit=0
+2026-10-04 03:29:35 START 15-08-crm-audit-merge-candidates
+2026-10-04 03:37:29 END 15-08-crm-audit-merge-candidates exit=0
+2026-10-04 03:37:29 START 15-09-crm-audit-network-links
+2026-10-04 03:45:21 END 15-09-crm-audit-network-links exit=0
+2026-10-04 03:45:22 START 15-10-crm-audit-network-profiles
+2026-10-04 03:53:03 END 15-10-crm-audit-network-profiles exit=0
+2026-10-04 03:53:04 START 15-11-crm-audit-note-links
+2026-10-04 04:00:48 END 15-11-crm-audit-note-links exit=0
+2026-10-04 04:00:48 START 15-12-crm-audit-notes
+2026-10-04 04:08:34 END 15-12-crm-audit-notes exit=0
+2026-10-04 04:08:35 START 15-13-crm-audit-organisation-memberships
+2026-10-04 04:16:20 END 15-13-crm-audit-organisation-memberships exit=0
+2026-10-04 04:16:20 START 15-14-crm-audit-organisation-subscriptions
+2026-10-04 04:24:06 END 15-14-crm-audit-organisation-subscriptions exit=0
+2026-10-04 04:24:06 START 15-15-crm-audit-task-links
+2026-10-04 04:31:56 END 15-15-crm-audit-task-links exit=0
+2026-10-04 04:31:56 START 15-16-crm-audit-tasks
+2026-10-04 04:39:47 END 15-16-crm-audit-tasks exit=0
+2026-10-04 04:40:33 ALL DONE

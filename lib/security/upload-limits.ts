@@ -71,5 +71,14 @@ export const DOCUMENT_MAX_SIZE_BYTES = 26214400;
  * The Server Action body cap, in bytes: 26 MiB, the 25 MiB documents promise
  * plus 1 MiB of headroom. Passed to `experimental.serverActions.bodySizeLimit`
  * as a number -- see the header for why not a string.
+ *
+ * TWO CONSUMERS, NOT ONE. Documents (25 MiB, above) is the larger, but Phase
+ * 7's in-app feedback dialog posts a screenshot through a Server Action too
+ * and promises 5 MiB (`FEEDBACK_SCREENSHOT_MAX_BYTES` in
+ * lib/feedback/contract.ts, the `feedback.screenshot_size_bytes` CHECK and
+ * the `feedback-screenshots` bucket cap, 20260911000000). The 1 MB default
+ * killed a 4.9 MiB screenshot exactly as it killed a 2 MB PDF. The cap is
+ * stated ONCE, here, and the test binds it to BOTH promises -- raising one
+ * and forgetting the other is the same defect a second time.
  */
 export const SERVER_ACTION_BODY_SIZE_LIMIT = 27262976;

@@ -37,6 +37,27 @@ export async function checkStepUp(
   return isStepUpSatisfied(readAuthFreshness(resolvedClaims));
 }
 
+/**
+ * True when the CURRENT session's verified claims say `aal: "aal2"`.
+ *
+ * Phase 8 Task 9c job 3b: closing a workspace needs BOTH a fresh credential
+ * (checkStepUp, above) and an aal2 session. public.close_my_workspace()
+ * refuses aal1 itself (`close_needs_step_up`), so this is the app-side half
+ * that turns that refusal into a sentence before the round trip. Read through
+ * getClaims() for the same reason checkStepUp is. NOT the enforcement.
+ */
+export async function sessionIsAal2(
+  claims?: Record<string, unknown> | null,
+): Promise<boolean> {
+  let resolvedClaims = claims;
+  if (resolvedClaims === undefined) {
+    const supabase = await createClient();
+    const { data } = await supabase.auth.getClaims();
+    resolvedClaims = data?.claims;
+  }
+  return resolvedClaims?.aal === "aal2";
+}
+
 // ===========================================================================
 // FIX ROUND 1, IMPORTANT 4: what PROOF should the re-auth prompt actually
 // ask for?

@@ -19,6 +19,8 @@
 // modern OOXML documents (docx/xlsx/pptx). Macro-enabled OOXML
 // (.docm/.xlsm/.pptm) and every executable are rejected.
 
+import { inflateRawSync } from "node:zlib";
+
 export interface SniffOk {
   readonly ok: true;
   /** The SNIFFED content type -- what documents.mime_type stores. */
@@ -88,46 +90,158 @@ const SIG = {
   javaClass: [0xca, 0xfe, 0xba, 0xbe],
 } as const;
 
+/** The most central-directory entries an accepted OOXML file may carry. */
+const OOXML_MAX_ENTRIES = 10_000;
+/** The most bytes `[Content_Types].xml` may inflate to (a zip-bomb fence). */
+const CONTENT_TYPES_MAX_BYTES = 1_048_576;
+
+/** One central-directory record, as far as the allowlist needs it. */
+interface ZipEntry {
+  readonly name: string;
+  readonly method: number;
+  readonly encrypted: boolean;
+  readonly compressedSize: number;
+  readonly localHeaderOffset: number;
+}
+
+/**
+ * Read a ZIP's central directory, or return null for anything malformed,
+ * truncated, ZIP64 or over `OOXML_MAX_ENTRIES`. Every offset is bounds-checked
+ * against the buffer before it is read: this parses attacker-supplied bytes.
+ */
+function readCentralDirectory(bytes: Uint8Array): ZipEntry[] | null {
+  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // The end record is 22 bytes plus a comment of at most 65 535.
+  const floor = Math.max(0, buf.length - 22 - 0xffff);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= floor; i -= 1) {
+    if (buf.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return null;
+
+  const count = buf.readUInt16LE(eocd + 10);
+  const dirSize = buf.readUInt32LE(eocd + 12);
+  const dirOffset = buf.readUInt32LE(eocd + 16);
+  // 0xffff / 0xffffffff are the ZIP64 escape values: no Office file needs them.
+  if (count === 0xffff || dirOffset === 0xffffffff || count > OOXML_MAX_ENTRIES) return null;
+  if (dirOffset + dirSize > eocd) return null;
+
+  const entries: ZipEntry[] = [];
+  let at = dirOffset;
+  for (let n = 0; n < count; n += 1) {
+    if (at + 46 > eocd || buf.readUInt32LE(at) !== 0x02014b50) return null;
+    const flags = buf.readUInt16LE(at + 8);
+    const method = buf.readUInt16LE(at + 10);
+    const compressedSize = buf.readUInt32LE(at + 20);
+    const nameLength = buf.readUInt16LE(at + 28);
+    const extraLength = buf.readUInt16LE(at + 30);
+    const commentLength = buf.readUInt16LE(at + 32);
+    const localHeaderOffset = buf.readUInt32LE(at + 42);
+    const next = at + 46 + nameLength + extraLength + commentLength;
+    if (next > eocd) return null;
+    entries.push({
+      name: buf.toString(flags & 0x0800 ? "utf8" : "latin1", at + 46, at + 46 + nameLength),
+      method,
+      encrypted: (flags & 0x0001) !== 0,
+      compressedSize,
+      localHeaderOffset,
+    });
+    at = next;
+  }
+  return entries;
+}
+
+/** Inflate one entry's bytes, capped; null if it cannot be read safely. */
+function readEntry(bytes: Uint8Array, entry: ZipEntry, maxBytes: number): Buffer | null {
+  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const lh = entry.localHeaderOffset;
+  if (entry.encrypted || lh + 30 > buf.length || buf.readUInt32LE(lh) !== 0x04034b50) {
+    return null;
+  }
+  const start = lh + 30 + buf.readUInt16LE(lh + 26) + buf.readUInt16LE(lh + 28);
+  const end = start + entry.compressedSize;
+  if (end > buf.length) return null;
+  const raw = buf.subarray(start, end);
+  if (entry.method === 0) return raw.length <= maxBytes ? raw : null;
+  if (entry.method !== 8) return null;
+  try {
+    // maxOutputLength makes inflate THROW past the cap instead of allocating:
+    // a 1 KB deflate stream that claims to be 4 GB stops at 1 MiB.
+    return inflateRawSync(raw, { maxOutputLength: maxBytes });
+  } catch {
+    return null;
+  }
+}
+
+/** The main-part content type OOXML declares for each accepted document. */
+const OOXML_MAIN_PART: ReadonlyArray<readonly [string, string]> = [
+  [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ],
+  [
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ],
+  [
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ],
+];
+
 /**
  * Inspect an OOXML zip container and return its office MIME, or reject.
  *
  * A `.docx` and a `.docm` share the `PK\x03\x04` signature, so the zip magic
- * alone cannot tell a document from a macro-enabled one. This does NOT unzip:
- * a ZIP stores its ENTRY NAMES uncompressed in every local file header and in
- * the central directory, and OOXML's `[Content_Types].xml` (which names the
- * main-part content type) is customarily stored too -- so the distinguishing
- * strings appear verbatim in the raw bytes whether or not the parts are
- * deflated. We scan for them:
+ * alone cannot tell a document from a macro-enabled one. This reads the
+ * archive's CENTRAL DIRECTORY (every part's name) and INFLATES
+ * `[Content_Types].xml` (every part's declared type), because the earlier
+ * raw-byte substring scan could be walked past: Office lets the VBA part take
+ * any name its relationships point at, and `[Content_Types].xml` is normally
+ * deflated, so neither `vbaProject.bin` nor `macroEnabled` need appear in the
+ * raw bytes of a working .docm saved as .docx.
  *
- *   - a `vbaProject.bin` part or a `macroEnabled` content type => macro file,
- *     REJECTED. This is the entry name Office writes for the VBA blob and the
- *     content-type token it writes for .docm/.xlsm/.pptm; either is decisive.
- *   - `word/document.xml` / `wordprocessingml.document`  => docx
- *   - `xl/workbook.xml`   / `spreadsheetml.sheet`        => xlsx
- *   - `ppt/presentation.xml` / `presentationml.presentation` => pptx
- *   - anything else (a plain zip, a jar) => REJECTED: only OOXML is allowed.
+ *   - a part named `vbaProject.bin` / `vbaData.xml`, an ActiveX control part,
+ *     or a content type naming a VBA project, ActiveX or `macroEnabled` =>
+ *     macro file, REJECTED. Either the name or the type is decisive.
+ *   - an encrypted entry, a malformed or ZIP64 directory, a missing or
+ *     unreadable `[Content_Types].xml` => REJECTED as not a document.
+ *   - the main part's content type picks docx / xlsx / pptx; anything else (a
+ *     plain zip, a jar, a .dotx template) => REJECTED: only OOXML documents.
  */
 function inspectOoxml(bytes: Uint8Array): SniffResult {
-  // latin1 keeps every byte 1:1 as a char code, so a substring search over
-  // this string is a substring search over the raw bytes.
-  const text = Buffer.from(bytes).toString("latin1");
-  if (text.includes("vbaProject.bin") || /macroenabled/i.test(text)) {
+  const entries = readCentralDirectory(bytes);
+  if (!entries) return { ok: false, reason: REJECT_UNKNOWN };
+
+  if (entries.some((e) => e.encrypted)) return { ok: false, reason: REJECT_UNKNOWN };
+  if (
+    entries.some((e) => {
+      const name = e.name.toLowerCase();
+      return (
+        name.endsWith("vbaproject.bin") ||
+        name.endsWith("vbadata.xml") ||
+        name.includes("/activex/")
+      );
+    })
+  ) {
     return { ok: false, reason: REJECT_MACRO };
   }
-  if (text.includes("word/document.xml") || text.includes("wordprocessingml.document")) {
-    const mime =
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    return { ok: true, mime, ext: CANONICAL_EXT[mime] };
+
+  const manifest = entries.find((e) => e.name === "[Content_Types].xml");
+  const xml = manifest ? readEntry(bytes, manifest, CONTENT_TYPES_MAX_BYTES) : null;
+  if (!xml) return { ok: false, reason: REJECT_UNKNOWN };
+  const types = xml.toString("utf8");
+  if (/macroenabled|vbaproject|ms-office\.activex/i.test(types)) {
+    return { ok: false, reason: REJECT_MACRO };
   }
-  if (text.includes("xl/workbook.xml") || text.includes("spreadsheetml.sheet")) {
-    const mime =
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    return { ok: true, mime, ext: CANONICAL_EXT[mime] };
-  }
-  if (text.includes("ppt/presentation.xml") || text.includes("presentationml.presentation")) {
-    const mime =
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-    return { ok: true, mime, ext: CANONICAL_EXT[mime] };
+
+  for (const [mainPart, mime] of OOXML_MAIN_PART) {
+    if (types.includes(`"${mainPart}"`)) {
+      return { ok: true, mime, ext: CANONICAL_EXT[mime] };
+    }
   }
   return { ok: false, reason: REJECT_UNKNOWN };
 }
@@ -227,4 +341,25 @@ export function sanitiseFilename(name: string): string {
   if (base.length > 200) base = base.slice(0, 200);
   base = base.trim();
   return base === "" ? "file" : base;
+}
+
+/**
+ * The filename a download is SAVED under: the display name, made to end in the
+ * canonical extension of the type the bytes were sniffed as.
+ *
+ * The declared extension is never checked against the content at upload (text
+ * has no magic bytes), so `payload.bat` or `page.html` is stored as text/plain
+ * under its own name. Served as an attachment named `payload.bat`, one
+ * double-click would run it on a colleague's machine. Appending the sniffed
+ * extension -- `payload.bat.txt` -- makes the saved file open as what it is.
+ * A name that already ends in its type's extension is left alone.
+ */
+export function downloadFilename(name: string, mime: string): string {
+  const base = sanitiseFilename(name);
+  const ext = CANONICAL_EXT[mime];
+  if (!ext) return base;
+  const accepted = mime === "image/jpeg" ? ["jpg", "jpeg"] : [ext];
+  const dot = base.lastIndexOf(".");
+  const current = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+  return accepted.includes(current) ? base : `${base}.${ext}`;
 }

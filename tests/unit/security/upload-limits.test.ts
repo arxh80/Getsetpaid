@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import nextConfig from "../../../next.config";
+import { FEEDBACK_SCREENSHOT_MAX_BYTES } from "@/lib/feedback/contract";
 import {
   DOCUMENT_MAX_SIZE_BYTES,
   SERVER_ACTION_BODY_SIZE_LIMIT,
@@ -53,6 +54,24 @@ describe("the Server Action body cap covers what the product promises", () => {
     expect(DOCUMENT_MAX_SIZE_BYTES).toBe(25 * 1024 * 1024);
     expect(SERVER_ACTION_BODY_SIZE_LIMIT).toBeGreaterThanOrEqual(
       DOCUMENT_MAX_SIZE_BYTES + MULTIPART_HEADROOM_BYTES,
+    );
+  });
+
+  it("the cap clears the feedback screenshot promise plus headroom", () => {
+    // THE SECOND CONSUMER OF THE SAME BODY CAP, and the reason the cap is
+    // stated once rather than beside the documents action. Phase 7's in-app
+    // feedback dialog promises "up to 5 MiB" for a screenshot and posts it
+    // through a Server Action too, so the 1 MB default killed a 4.9 MiB
+    // screenshot exactly as it killed a 2 MB PDF. A cap raised for documents
+    // and forgotten for feedback would be the same defect a second time, so
+    // the feedback promise is bound here beside the documents one.
+    //
+    // tests/e2e/feedback.spec.ts drives a 6 MiB PNG to the dialog's OWN
+    // "larger than the 5 MiB limit" sentence, which only exists because the
+    // cap sits above the promise rather than on it.
+    expect(FEEDBACK_SCREENSHOT_MAX_BYTES).toBe(5 * 1024 * 1024);
+    expect(SERVER_ACTION_BODY_SIZE_LIMIT).toBeGreaterThanOrEqual(
+      FEEDBACK_SCREENSHOT_MAX_BYTES + MULTIPART_HEADROOM_BYTES,
     );
   });
 

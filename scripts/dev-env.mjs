@@ -10,7 +10,7 @@
 //
 // HOW IT WORKS. Next.js loads `.env.development.local` ahead of `.env.local` in
 // development, so writing the local stack's values there wins for `next dev`
-// and leaves `.env.local` untouched for every other purpose (Vercel builds,
+// and leaves `.env.local` untouched for every other purpose (production builds,
 // scripts, the Supabase CLI itself). The file is gitignored and per-machine,
 // which is why it is generated rather than committed.
 //

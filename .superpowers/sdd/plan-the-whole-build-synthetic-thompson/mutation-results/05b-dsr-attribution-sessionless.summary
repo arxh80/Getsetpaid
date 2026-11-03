@@ -1,0 +1,10 @@
+mutant: 05b-dsr-attribution-sessionless
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [pm] DR1 a sessionless postgres INSERT naming a real user is refused BY THE SESSION RULE (42501), not by a later check
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+|integration| tests/integration/legal/catalogue-bindings-match-db.test.ts > the migration walk picks the body the database runs > private.data_subject_requests_before_insert: one deployed definition, equal to the latest one in the migrations
+        Tests  1 failed | 689 passed (690)

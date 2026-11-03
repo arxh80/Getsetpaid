@@ -55,8 +55,24 @@ import {
  * the one list in the product where that is true (CLAUDE.md § Non-negotiable
  * rules): an unbounded directory page would scan every published profile of
  * every customer. Nothing here can raise it -- there is no parameter that
- * reaches past what `parseListParams` already clamps, and there is no second
- * code path into `network_directory` that skips it.
+ * reaches past what `parseListParams` already clamps, and no LIST path into
+ * `network_directory` skips it.
+ *
+ * THE SENTENCE ABOVE USED TO END "there is no second code path into
+ * `network_directory` that skips it", AND THAT WAS TOO STRONG (fix round 1,
+ * minor M4). Two functions in this very file --
+ * `loadNetworkProfileForViewer` and `loadNetworkProfileSummaries` -- select
+ * from `network_directory` (and `network_connected_profiles`) directly rather
+ * than through `fetchListPage`, so they pass neither the page ceiling nor,
+ * since Phase 7 Task 5, the `network_discovery` meter that now lives at the
+ * same chokepoint. That is deliberate and stays deliberate: both are
+ * `id`-equality lookups, one row or a bounded `.in()` over ids the caller
+ * already holds, so neither is the O(published profiles platform-wide) scan
+ * either control exists to bound. Metering them would spend a browse budget
+ * on opening a single profile -- charging for the cheap thing to protect the
+ * expensive one. The claim that holds without qualification is the narrower
+ * one now written above: no LIST of the directory avoids the ceiling or the
+ * meter.
  */
 export async function loadNetworkDirectory(
   raw: RawSearchParams,

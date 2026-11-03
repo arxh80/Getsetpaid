@@ -1,0 +1,15 @@
+mutant: 14-retention-audit-floor
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 0
+--- psql: red assertions, read from each suite's results table ---
+  [rt] RA4 ...and the purge REFUSES it rather than deleting a year of evidence
+  [rt] RA5 nothing was deleted while it refused
+  [rt] RA9 the DRY run counts three and deletes none, reporting the total either side
+  [rt] RA10 a run limited to 2 deletes 2 and REPORTS that it was capped
+  [rt] RA10a ...leaving exactly ONE, and it is the NEWEST of the three -- the two OLDEST went first
+  [rt] RA11 ...and the next run finishes the remainder rather than skipping it
+  [rt] RA12 the row ONE DAY INSIDE the year survives, and so do the 200 recent ones
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+        Tests  690 passed (690)

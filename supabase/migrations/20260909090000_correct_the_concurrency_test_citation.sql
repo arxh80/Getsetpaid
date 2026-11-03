@@ -1,0 +1,35 @@
+-- Phase 7 Task 5, fix round 1, review finding I5: a shipped migration cites a
+-- test file that did not exist.
+--
+-- `20260909020000` says, above the upsert in
+-- `private.record_rate_limit_event()`:
+--
+--   -- THE ATOMIC INCREMENT. ON CONFLICT serialises concurrent callers on the
+--   -- row: two simultaneous requests get counts n and n+1, never both n
+--   -- (tests/integration/rls/rate-limits.test.ts fires ten in parallel and
+--   -- asserts the final count is exactly ten).
+--
+-- No such file existed anywhere in the repository, and nothing in any suite
+-- exercised concurrency at all -- while the brief's Requirement 6 asked for
+-- "concurrent increment semantics as implemented" by name. The claim is true;
+-- it was simply unmeasured, and a migration is immutable, so a citation to a
+-- file nobody wrote is permanent.
+--
+-- BOTH HALVES ARE FIXED, NOT ONE. The test now exists, at the path the shipped
+-- comment names, doing what the shipped comment says
+-- (`tests/integration/rls/rate-limits.test.ts` -- ten dedicated connections
+-- fired at once, asserting the ten callers received ten DISTINCT counts rather
+-- than only that the total reached ten, plus a MAX+1 parallel burst proving
+-- the crossing is observed exactly once and files exactly one alert). And this
+-- migration reissues the function's `comment on`, which is a LIVE DATABASE
+-- OBJECT and therefore additively correctable -- the `20260904007000`
+-- precedent, which applies to `comment on` statements and not to plain `--`
+-- script comments. The `--` comment inside `20260909020000` stays as written,
+-- immutable; this comment, and the file it now names accurately, are the
+-- correction of record.
+--
+-- ADDITIVE. No previously applied migration is edited, and no behaviour
+-- changes: this migration reissues one comment and nothing else.
+
+comment on function private.record_rate_limit_event(text, text, uuid, uuid) is
+  'THE limiter core: one call = one counted request against one subject''s fixed-window budget, returning (allowed, retry_after_seconds, request_count). Counts refusals too, and NEVER raises on one -- a raise would roll back the refusal''s own increment and the alert-at-crossing insert (20260909020000''s header). CONCURRENCY: the ON CONFLICT upsert serialises simultaneous callers on the counter row, so N callers receive N DISTINCT counts and never the same n twice -- measured in tests/integration/rls/rate-limits.test.ts, which holds ten Postgres connections open, fires them at once, and asserts the ten counts are exactly 1..10, then repeats at MAX+1 callers to prove the crossing is observed by exactly one of them and files exactly one alert (fix round 1, finding I5: 20260909020000''s inline comment cited that file before it was written). SECURITY DEFINER with NO client grant: reachable only through public.consume_rate_limit() (session-scoped, guarded), public.hook_password_verification_attempt() (GoTrue''s hook) and private.meter_connection_request() (the connection-request INSERT trigger, 20260909060000). Raises 22023 only for caller bugs: an unknown category, a scope mismatch, a null subject.';

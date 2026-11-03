@@ -170,7 +170,7 @@ const MFA_REQUIRED_ROLES = new Set<RoleKey>(["owner", "admin", "finance"]);
  * tests/integration/mfa/mfa-lifecycle.test.ts. So this does not mint a second
  * session or restart any clock the rest of the fixture depends on.
  */
-async function elevateToAal2(client: SupabaseClient, label: string): Promise<void> {
+export async function elevateToAal2(client: SupabaseClient, label: string): Promise<void> {
   const enrolled = await client.auth.mfa.enroll({ factorType: "totp" });
   if (enrolled.error || !enrolled.data) {
     throw new Error(`Fixture: could not enrol TOTP for ${label}: ${enrolled.error?.message}`);
@@ -371,10 +371,20 @@ export async function createFixtures(): Promise<RlsFixtures> {
     superuser.userId,
   ]);
 
-  // ---- 7. Give both orgs a subscription, through the REAL client path as
-  // the now-superuser persona (has_platform_permission gates this write).
-  // This exercises organisation_subscriptions_insert_platform_billing for
-  // real, rather than seeding it out of band.
+  // ---- 7. Give both orgs the subscription tier THIS suite needs, through the
+  // REAL client path as the now-superuser persona (has_platform_permission
+  // gates this write). This exercises organisation_subscriptions_insert_
+  // platform_billing / _update_platform_billing for real, rather than
+  // seeding it out of band.
+  //
+  // UPSERT, NOT INSERT (Phase 7 Task A). create_organisation() -- step 3
+  // above -- now writes a Starter organisation_subscriptions row for both
+  // orgs at birth, so a plain INSERT here would collide with that row on
+  // organisation_id's UNIQUE constraint. `onConflict` reaches the UPDATE
+  // policy instead of the INSERT one, which is a different real client path
+  // than this comment used to describe, but still the sanctioned one -- there
+  // is no other way to change an existing organisation's plan from the
+  // client, platform-superuser or not.
   const subsPayload = (orgId: string, plan: string) => ({
     organisation_id: orgId,
     plan_id: plan,
@@ -385,15 +395,15 @@ export async function createFixtures(): Promise<RlsFixtures> {
   });
   const { error: subAErr } = await superuser.client
     .from("organisation_subscriptions")
-    .insert(subsPayload(orgAId as string, "pro"));
+    .upsert(subsPayload(orgAId as string, "pro"), { onConflict: "organisation_id" });
   if (subAErr) {
-    throw new Error(`Fixture subscription insert (org A) failed: ${subAErr.message}`);
+    throw new Error(`Fixture subscription upsert (org A) failed: ${subAErr.message}`);
   }
   const { error: subBErr } = await superuser.client
     .from("organisation_subscriptions")
-    .insert(subsPayload(orgBId as string, "starter"));
+    .upsert(subsPayload(orgBId as string, "starter"), { onConflict: "organisation_id" });
   if (subBErr) {
-    throw new Error(`Fixture subscription insert (org B) failed: ${subBErr.message}`);
+    throw new Error(`Fixture subscription upsert (org B) failed: ${subBErr.message}`);
   }
 
   const activeByRole = Object.fromEntries(

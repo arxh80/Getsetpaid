@@ -1,0 +1,65 @@
+-- ===========================================================================
+-- PHASE 7 TASK 6c, FIX ROUND 1, FINDING M1 -- A CLAIM THIS TASK'S OWN SECOND
+-- HALF FALSIFIED. DOCUMENTATION ONLY: no function body changes here, no
+-- schedule changes, no grant changes.
+--
+-- 20260916000000's header argued, in the present tense:
+--
+--   "At ten minutes, with a 15-second HTTP timeout below and a bounded 200-row
+--    digest, overlap needs the route to hang for ten minutes, which the
+--    sender's own 10-second Brevo timeout rules out."
+--
+-- That was true of the route AS IT THEN WAS: one Brevo call, so one 10-second
+-- worst case. 20260916001000 -- the very next migration -- added a SECOND
+-- delivery to the same route, and lib/email/lockout-notification.ts loops over
+-- it SEQUENTIALLY, one send per locked-out account, each with the same
+-- 10-second timeout. At the first cut's limit of 100 accounts the worst case
+-- was ~1000 s against a 600 s cadence, so overlap was reachable: a
+-- credential-stuffing spray locks a few dozen accounts, Brevo answers slowly,
+-- tick 2 fires into tick 1's tail and reads exactly the accounts tick 1 has
+-- sent to but not yet STAMPED (the stamp is after the send, deliberately, so
+-- nothing is ever marked delivered that was not). The duplicate lands on the
+-- ACCOUNT HOLDER, which is the outcome founder ruling Q114's cap exists to
+-- bound.
+--
+-- ===========================================================================
+-- THE FIX IS IN THE ROUTE, NOT HERE -- AND A LOCK HERE WOULD NOT HAVE WORKED
+-- ===========================================================================
+-- Fix round 1 bounds the work so overlap is unreachable rather than arguing it
+-- away (lib/email/lockout-notification.ts):
+--
+--   * LOCKOUT_NOTIFICATION_LIMIT 100 -> 30 accounts per tick;
+--   * a 120-SECOND WALL-CLOCK BUDGET checked before each send, so no send is
+--     started once the run is out of time.
+--
+-- Worst case: 120 s + one in-flight 10 s send + the digest's single 10 s call
+-- ~= 140 s, against a 600 s tick. Deferred accounts are stamped with nothing,
+-- so the next tick returns them unchanged -- retry is the schedule, as
+-- everywhere else on this path.
+--
+-- THE OBVIOUS ALTERNATIVE, WRITTEN DOWN SO IT IS NOT TRIED LATER:
+-- `pg_try_advisory_lock` inside private.deliver_incident_alerts() CANNOT
+-- serialise these runs. That function calls net.http_post, which is
+-- FIRE-AND-FORGET: pg_net queues the request and a background worker makes it,
+-- so the function returns -- and any lock it holds is released -- in
+-- microseconds, before the Next.js route has even been dialled. The lock would
+-- guard the queueing, not the sending. Genuine mutual exclusion would need a
+-- LEASE held across the HTTP request (a claimed row with an expiry, released
+-- by the route), which adds a second failure mode of its own: a lease that
+-- outlives a crashed run blocks every later tick until it expires. Bounding
+-- the work is smaller, has no state, and cannot be forgotten.
+--
+-- The double-SEND / never double-STAMP property itself is UNCHANGED and still
+-- accepted: a claim-before-send would stamp rows nothing has emailed, and a
+-- crashed run would then leave alerts marked delivered that never were.
+--
+-- ADDITIVE, and specifically the 20260909090000 / 20260915002000 precedent: a
+-- committed migration's `--` script comments are immutable, so the correction
+-- of record is a re-issued `comment on`, which is a live database object.
+-- ===========================================================================
+
+comment on function private.deliver_incident_alerts() is
+  'THE INCIDENT-ALERT CLOCK''S BODY (founder ruling Q118). Runs from pg_cron every 10 minutes and POSTs /api/incident-alerts/deliver with the bearer, so the Task 6 sender empties `incident_alerts where notified_at is null` into one Brevo digest AND lib/email/lockout-notification.ts emails each locked-out account holder (Q114). The URL and the bearer come from Supabase Vault (`incident_alert_delivery_url` / `incident_alert_delivery_secret`), created by hand once per environment and NEVER by a migration -- with either missing this function returns without building a request, which is what local dev and CI do on every tick. SECURITY DEFINER for the Vault read; granted to no client role. Failure needs no handling: the sender stamps nothing on a failed send, so the next tick retries the identical set. OVERLAP (fix round 1, M1): 20260916000000''s header claimed a 10-second Brevo timeout made two overlapping ticks impossible -- FALSE once 20260916001000 added a sequential per-account loop to the same route (worst case ~1000 s at the original 100-account limit, against a 600 s cadence). Overlap is now ruled out in the ROUTE instead: 30 accounts per tick and a 120-second wall-clock budget, so the worst case is ~140 s. An advisory lock HERE would not have helped -- net.http_post is fire-and-forget, so this function returns before the route runs and any lock it held is already released.';
+
+comment on extension pg_net is
+  'The transport for the product''s ONE scheduled job (founder ruling Q118): private.deliver_incident_alerts() queues a POST to /api/incident-alerts/deliver through net.http_post and does NOT read the response. FIRE-AND-FORGET IS THE LOAD-BEARING PROPERTY, in both directions: the cron tick never blocks on Brevo, and -- fix round 1, M1 -- no lock or timeout in the database can bound how long the route runs, so the route bounds itself (lib/email/lockout-notification.ts: 30 accounts, 120-second budget). A failed or 404''d POST is invisible from here; the signal is rows staying unnotified, visible on /super/health, and net._http_response for a human who wants the status (SECURITY.md § 15).';

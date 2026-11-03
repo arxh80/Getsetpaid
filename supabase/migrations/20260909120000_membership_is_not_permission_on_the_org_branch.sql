@@ -1,0 +1,48 @@
+-- Phase 7 Task 5, cleanup round, review nit N1: a shipped comment claims more
+-- than the code does.
+--
+-- `20260909050000` gives `public.consume_rate_limit()` this sentence:
+--
+--   Organisation-scoped categories require p_organisation_id plus active
+--   membership (so a stranger cannot burn another tenant's budget, and so the
+--   one branch that DOES attribute an alert to a workspace has verified the
+--   caller belongs to it)
+--
+-- Both halves are true. The parenthetical is the problem: BELONGING IS A
+-- WEAKER PROPERTY THAN THE SENTENCE IMPLIES, and the sentence sits in the one
+-- place a reader goes to find out what the attribution guarantee is worth.
+--
+-- WHAT IS ACTUALLY TRUE. The gate is `private.is_active_member()` --
+-- MEMBERSHIP, not permission. `public.consume_rate_limit` is granted to
+-- `authenticated` and callable directly over PostgREST, so any active member
+-- of a workspace, including a Read Only one holding neither
+-- `manage_network_connections` nor any export right, can
+--
+--   POST /rest/v1/rpc/consume_rate_limit
+--   {"p_category":"network_connection_request","p_organisation_id":"<their own>"}
+--
+-- ten times and (a) deny their own workspace the ability to send a connection
+-- request for the rest of the hour, and (b) file a `rate_limit_tripped`
+-- incident alert NAMING THEIR OWN WORKSPACE on the operator's feed. The same
+-- applies to `exports`.
+--
+-- WHY THIS IS A COMMENT AND NOT A CODE CHANGE. It is in-tenant, not a tenant
+-- crossing: the member is spending their own workspace's budget and pointing
+-- the operator at their own workspace, which is neither privilege escalation
+-- nor the forged cross-tenant attribution finding I1 closed. It is also
+-- pre-existing -- it is how the organisation branch has behaved since
+-- `20260909020000`. Tightening it to a PERMISSION check means teaching the
+-- limiter which permission key each organisation-scoped category corresponds
+-- to, which is a policy decision (does a Read Only member's *browse* spend the
+-- discovery budget? today every category's answer would have to be written
+-- down) rather than a one-line fix. Queued as Q116 with a recommended default;
+-- this migration makes the shipped claim honest in the meantime.
+--
+-- ADDITIVE, and the `20260904007000` precedent: a `comment on` statement names
+-- a LIVE DATABASE OBJECT and is therefore correctable by reissuing it, which a
+-- plain `--` script comment inside an applied migration is not. No previously
+-- applied migration is edited, no behaviour changes, and nothing but this one
+-- comment is touched.
+
+comment on function public.consume_rate_limit(text, uuid) is
+  'The application''s one rate-limiting call (lib/security/rate-limit.ts): counts this request against the caller''s own budget for p_category and returns the verdict. User-scoped categories bind to auth.uid() and take NO organisation -- supplying one is a caller bug (22023) and can never reach an incident alert''s organisation_id, which is fix round 1''s I1: attribution is non-forgeable, not merely validated. Organisation-scoped categories require p_organisation_id plus active MEMBERSHIP, which is what stops a STRANGER burning another tenant''s budget or making the operator''s alert feed name a workspace the caller has nothing to do with. MEMBERSHIP IS NOT PERMISSION, and the cleanup round''s N1 says so here rather than leaving it to be found: this function is granted to authenticated and callable over PostgREST, so any active member -- a Read Only one holding no export right and no manage_network_connections -- can spend their OWN workspace''s hourly budget directly and file a rate_limit_tripped alert naming their own workspace. That is in-tenant, not a crossing, and pre-existing; tightening it to a per-category permission check is Q116. Account-scoped categories refuse (42501 -- they belong to the auth hooks). Returns a verdict rather than raising a 429-alike, deliberately: the refusal must COMMIT its own increment and possible alert row (see 20260909020000''s header), and the app shapes the 429.';

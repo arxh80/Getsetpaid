@@ -17,6 +17,7 @@ import { columnLabel } from "@/lib/crm/dedup";
 import type { RawSearchParams } from "@/lib/list/params";
 import type { ListPage, RecoveryReason } from "@/lib/list/query";
 import { ListPager } from "@/components/list/list-pager";
+import { RateLimitNotice } from "@/components/list/rate-limit-notice";
 import { formatDateTime } from "@/lib/format/date";
 
 // The shared activity timeline. One component, every entity, every phase.
@@ -124,6 +125,14 @@ export function ActivityTimeline({
           load this {noun}’s activity just now. Refresh the page to try again —
           nothing has been deleted.
         </p>
+      ) : page.outcome === "rate_limited" ? (
+        // Reachable when the URL carries a search term (the timeline's spec
+        // declares a searchColumn) and the caller's search budget is spent --
+        // SECURITY.md § 5. Not the error state: see RateLimitNotice.
+        <RateLimitNotice
+          retryAfterSeconds={page.retryAfterSeconds}
+          subject="this timeline"
+        />
       ) : (
         <Loaded
           ctx={{ orgSlug, subjectType, noun }}

@@ -1,0 +1,62 @@
+-- Phase 7 Task 5, fix round 1, review finding I3: the Task 6 email seam had
+-- no access path. `service_role` held NEITHER `SELECT` NOR `UPDATE` on
+-- `public.incident_alerts`.
+--
+-- ===========================================================================
+-- WHAT WAS WRONG
+-- ===========================================================================
+-- 20260909020000 wrote:
+--
+--   revoke all on public.incident_alerts from public, anon, authenticated, service_role;
+--   grant select, update on public.incident_alerts to authenticated;
+--
+-- and the task-5 report then claimed the row shape made Task 6 "a
+-- no-schema-change wiring". Measured on the stack, both
+-- `has_table_privilege('service_role','public.incident_alerts','SELECT')` and
+-- `...,'UPDATE')` were FALSE. `service_role` carries `rolbypassrls`, and
+-- BYPASSRLS bypasses POLICIES, NOT TABLE PRIVILEGES -- so a server-side Brevo
+-- sender, which runs with the service-role key and no user session, would fail
+-- its very first query ("permission denied for table incident_alerts") and
+-- fail its stamp the same way. The COLUMNS were complete; the REACHABILITY was
+-- not, and the brief's Requirement 4 was about exactly that.
+--
+-- ===========================================================================
+-- THE MINIMUM THAT MAKES THE SEAM REAL
+-- ===========================================================================
+-- `select` on the table, and `update` ON ONE COLUMN. The sender's whole job is
+-- "read the rows nobody has emailed about, send, stamp `notified_at`", so it
+-- needs to read alert content and to write that one column and nothing else.
+-- A table-level `update` grant would let a leaked service-role key rewrite an
+-- alert's summary, re-point it at another workspace, or mark it resolved --
+-- none of which the sender does, and all of which would corrupt the operator's
+-- only triage surface.
+--
+-- No `insert`, no `delete`: the writers are still the SECURITY DEFINER
+-- functions and triggers of 20260909020000/20260909060000, and an alert is
+-- still evidence rather than something anything gets to remove.
+--
+-- ===========================================================================
+-- THE OPERATOR STILL CANNOT SILENCE AN EMAIL, WHICH WAS THE POINT OF PUTTING
+-- notified_at IN THE IMMUTABLE SET
+-- ===========================================================================
+-- `private.incident_alert_resolution_guard()` refuses any client update that
+-- moves `notified_at`, and § RA16 measures it. That is unchanged: it exempts
+-- callers for whom `row_security_active()` is false -- `postgres` and
+-- `service_role`, which bypass RLS -- and binds every session that does not,
+-- which is every browser. So the split after this migration is exactly the one
+-- the seam was designed around:
+--
+--   the operator's browser (authenticated)  -> may resolve, may NOT stamp
+--   Task 6's sender (service_role)          -> may stamp, may NOT resolve
+--                                              (no privilege on those columns)
+--
+-- and neither can do the other's job. § RA19-RA23 assert both halves.
+--
+-- ADDITIVE. No previously applied migration is edited; the revoke above stands
+-- and this narrows back only what the sender needs.
+
+grant select on public.incident_alerts to service_role;
+grant update (notified_at) on public.incident_alerts to service_role;
+
+comment on column public.incident_alerts.notified_at is
+  'THE TASK 6 EMAIL SEAM (Q91). Null = no email has been sent for this alert. Task 6''s Brevo sender runs server-side with the service-role key, reads `where notified_at is null order by created_at`, sends, and stamps this column -- which is why service_role holds `select` on the table and `update` on THIS COLUMN ONLY (20260909070000, fix round 1 finding I3: before it, service_role held no privilege at all and the seam was unreachable). A client session can never move it: private.incident_alert_resolution_guard() keeps it in the immutable set, so an operator cannot silence an alert''s email without one being sent.';

@@ -1,0 +1,787 @@
+# Review package: 1a50967..HEAD
+
+## Commits
+5666782 Record the Phase 9 Task 5 report and gate results
+6edd5e4 Document Phase 9 and give the storage census walk its own timeout
+5e397d6 Add the Phase 9 mutation driver and its results: 11 mutants red, control green
+309cf17 Align the discovery doc's Fatsoma and Microsoft lines with their sources
+a183155 Tighten the integrations discovery claims to their sources
+
+## Files changed
+ .../sdd/2026-10-09-integrations-schema/progress.md |  44 +++++++++
+ .../task-4-report.md                               |   7 ++
+ .../task-5-report.md                               |  46 +++++++++
+ .../DECISIONS-QUEUE.md                             |   7 +-
+ .../mutation-results/phase9/clean.sql              |  12 +++
+ .../mutation-results/phase9/mutants.py             | 107 +++++++++++++++++++++
+ .../mutation-results/phase9/progress.log           |   4 +
+ .../mutation-results/phase9/results.txt            |  14 +++
+ .../mutation-results/phase9/run.log                |  14 +++
+ .../mutation-results/phase9/run.sh                 |  11 +++
+ CLAUDE.md                                          |  10 +-
+ FOLLOW-UPS.md                                      |   7 ++
+ SECURITY.md                                        |  46 +++++++++
+ docs/integrations-discovery.md                     |  62 +++++++++---
+ docs/sub-processors.md                             |   5 +
+ tests/unit/legal/storage-census.test.ts            |   4 +-
+ 16 files changed, 381 insertions(+), 19 deletions(-)
+
+## Diff
+diff --git a/.superpowers/sdd/2026-10-09-integrations-schema/progress.md b/.superpowers/sdd/2026-10-09-integrations-schema/progress.md
+new file mode 100644
+index 0000000..078a4a1
+--- /dev/null
++++ b/.superpowers/sdd/2026-10-09-integrations-schema/progress.md
+@@ -0,0 +1,44 @@
++# SDD ledger — plan: docs/superpowers/plans/2026-10-09-integrations-schema.md
++Task 1: dispatched (base 01a0d31)
++Task 4: implemented (docs/integrations-discovery.md + Q232; uncommitted until Task 1 lands; recommends Google Calendar; gaps labelled: Calendar scope sensitivity, Fatsoma no API, Intuit/Xero/Microsoft partial)
++Task 1: implemented d7545ad (DONE_WITH_CONCERNS: interim retention/fk-less/export rows for Task 3; provider guard definer; attribution no-op under definer RPCs; CRLF -> fixed by .gitattributes b55054d)
++Task 1: review NEEDS FIXES (1C: view_crm conjunct of person-scoped read has no mutant; 1I: four CHECKs untested; 1I plan-mandated: owner_user_id set null vs erase_account -> ROUTED to Task 3, carried in its brief; 4 minors in task-1-review.md)
++Task 1: fix round 1/5 dispatched (resume implementer)
++Task 1: minor (deferred): M4 interim export phrase misdescribes integration tables as platform records -> Task 3 replaces it
++Task 1: minor (deferred): M5 revoked is terminal for status only; freeze organisation_id/owner_user_id/everything on a revoked row -> Task 2's guard rebuild
++Task 1: minor (deferred): M6 IT4 does not check REFERENCES/TRIGGER (covered by privilege census)
++Task 1: minor (deferred): M7 tests/unit/legal/storage-census.test.ts 5s timeout under load (pre-existing, = F-T8-1) -> Task 5
++Task 1: fix round 1/5 (2 addressed, 0 open; commits 439cb71..82d6771)
++Task 1: complete (commits 01a0d31..82d6771, review clean after round 1; suite ig pinned 56, runner 27 suites 4333)
++Task 2: dispatched (base 82d6771)
++Task 2: implemented 82d6771..90b0499 (DONE_WITH_CONCERNS: token unreadable in 'error' blocks retry -> queue; service_role reads vault directly by default; purge leaves secrets -> Task 3; new lifecycle-ignoring role helper to keep refusal order; real bug found+fixed: cross-org revoke via NULL fallthrough)
++Task 2: review NEEDS FIXES (C1: role half of server-session rail has no assertion/mutant; 7 minors)
++Task 2: minor (deferred): m1 server audit rows show tombstone actor in tenant audit viewer -> Task 5 docs / final review
++Task 2: minor (deferred): m2 server RPCs ignore lifecycle/tier (no caller today) -> SECURITY.md note in Task 5; enforce when first connector lands
++Task 2: minor (deferred): m3 active-only token read blocks retry (plan-mandated) -> queued Q233
++Task 2: minor (deferred): m5 admin can create person-scoped connection for another member; OAuth callback must bind to owner_user_id -> SECURITY.md/FOLLOW-UPS in Task 5
++Task 2: fix round 1/5 dispatched (C1 + m4 fail-closed freeze + m6 dangling secret + m7 invoker)
++Task 2: fix round 1 agent stopped by API limit, nothing landed (tip 14a022e); resumed same agent with db-reset instruction
++Task 2: fix round 1/5 (4 addressed, 0 open; commits 14a022e..054dea0)
++Task 2: complete (commits 82d6771..054dea0, review clean after round 1; ig pinned 146, runner 27 suites 4423)
++Task 3: dispatched (base 054dea0)
++Controller: founder rulings 2026-10-10 recorded; Q189 + Q228 (contact-us, multi-part any-size closure backup, keep delete-without-backup) scheduled as follow-up branches off main after Phase 9 PR
++Task 3: implementer DONE_WITH_CONCERNS (commits 054dea0..a58561e; ig 191, runner 27 suites 4469; concerns: revoke-in-place on out-of-erasure account delete, data-retention v8 published, network_leakage_phase6 not re-runnable on one DB)
++Task 3: review dispatched (opus, package review-054dea0..a58561e.diff)
++Task 3: review Needs fixes — 3 Critical (unmeasured guards: sweep Vault delete; name-clause secret lookup x3 sites; membership trigger org-equality), 1 Important (false comment in export_catalogue body)
++Task 3: minor (deferred): retention_clock_columns note omits guard's out-of-band revoked_at writer
++Task 3: minor (deferred): IX5/IN4 `>= 1` terms loose
++Task 3: concerns adjudicated — out-of-band revoke ACCEPT; data-retention v8 ACCEPT; network_leakage_phase6 not re-runnable = pre-existing, own follow-up (not this task)
++Task 3: fix round 1 dispatched (resume implementer)
++Task 3: fix round 1 committed f70a0e3+1a50967 (run 6 green, vitest 168/3821, ig 195); re-review dispatched
++Task 4: committed 439cb71 (never reviewed); review dispatched
++Task 3: fix round 1/5 (4 addressed, 0 open; commits a58561e..1a50967)
++Task 3: complete (commits 054dea0..1a50967, review clean after round 1; ig pinned 195, runner 27 suites 4473)
++Task 5: dispatched (base 1a50967, sonnet; carries deferred minors M7, T2 m1/m2/m5)
++Task 4: review Needs fixes (3 Important: inference-as-fact in recommendation; Xero/QBO/Graph Mail scopes unconfirmed; Q232 Fatsoma overstated)
++Task 4: minor (deferred): Xero tier pricing sourced to Apideck only; MS publisher-verification cost third-party; Skiddle sub-processor call for counsel
++Task 4: fix round 1/5 dispatched (fresh sonnet; original implementer unavailable)
++Task 4: fix round 1/5 (3 addressed, 0 open; a183155) + controller nit fix (Fatsoma/MS consent caveat/ranking wording)
++Task 4: minor (deferred): Xero/QBO scopes unconfirmed from vendor pages (unreadable to tools) -> founder confirms at app registration; Mail.ReadBasic gloss unsourced
++Task 4: complete (commits 439cb71, a183155 + nit; re-review clean)
++Task 5: complete (docs, 12 mutants all red/control green, gates green; 4 e2e RAM-timeouts green in isolation)
+diff --git a/.superpowers/sdd/2026-10-09-integrations-schema/task-4-report.md b/.superpowers/sdd/2026-10-09-integrations-schema/task-4-report.md
+new file mode 100644
+index 0000000..fb1e43c
+--- /dev/null
++++ b/.superpowers/sdd/2026-10-09-integrations-schema/task-4-report.md
+@@ -0,0 +1,7 @@
++
++## Fix round 1
++
++1. Reasoning paragraph (docs/integrations-discovery.md, Ranked recommendation): removed "documented gate is lighter" and "one Google registration later unlocks Gmail"; now states Google vs Microsoft is a close call, the confirmed Google gate is on Gmail scopes not Calendar, and Google is ranked first on the pre-work, not a documented difference.
++2. Narrowest scopes. Graph Mail (section 3): delegated AdminConsentRequired = No for Mail.Read/ReadBasic/ReadWrite/Send, from learn.microsoft.com/en-us/graph/permissions-reference (fetched at offset 200000, checked 2026-10-10); added the MC1163922 consent-policy caveat as community/unconfirmed. Xero (section 6): developer.xero.com scopes page returned title only; devblog.xero.com post 403. Granular scope names (accounting.invoices.read, accounting.banktransactions.read, accounting.contacts unchanged, 2 March 2026 cutoff, Sept 2027 migration) taken from apideck.com/blog/xero-scopes and labelled third-party/unconfirmed. QuickBooks (section 7): developer.intuit.com scopes page title only; a search summary of an Intuit support answer says no read-only variant of com.intuit.quickbooks.accounting; labelled community/unconfirmed.
++3. DECISIONS-QUEUE Q232: "Fatsoma publishes no API" reworded to "no public API or developer docs were found (a private partner API is not excluded)".
++Optional Xero 2 March 2026 pricing sourcing: not done; Xero's own pages could not be read.
+diff --git a/.superpowers/sdd/2026-10-09-integrations-schema/task-5-report.md b/.superpowers/sdd/2026-10-09-integrations-schema/task-5-report.md
+new file mode 100644
+index 0000000..4188a57
+--- /dev/null
++++ b/.superpowers/sdd/2026-10-09-integrations-schema/task-5-report.md
+@@ -0,0 +1,46 @@
++# Task 5 report: docs, mutations, gates
++
++Status: DONE_WITH_CONCERNS (see Concerns).
++
++## Files changed
++- `CLAUDE.md` (Current state sentence + "Integrations, as they actually shipped in Phase 9")
++- `SECURITY.md` (new § 2 subsection "Integrations: schema only"; § 4 tombstone-actor bullet; § 15 connector launch gate)
++- `FOLLOW-UPS.md` (Phase 9 Task 5 section: service_role RPC lifecycle/tier, Admin-named owner, tombstone actor, closed storage-census item)
++- `docs/sub-processors.md` (sentence: no row, nothing sent to a vendor)
++- `tests/unit/legal/storage-census.test.ts` (30 s explicit timeout on "no scanned file imports code from a place the scan skips"; no retry)
++- `.superpowers/sdd/plan-the-whole-build-synthetic-thompson/DECISIONS-QUEUE.md` (Q236)
++- `.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/` (`run.sh`, `mutants.py`, `clean.sql`, `results.txt`, `run.log`, `progress.log`)
++
++## Mutants (ig suite, 195 assertions; applied to the live DB, restored after each)
++| Mutant | Red assertions |
++|---|---|
++| control before | 0 red |
++| M01 grant insert to authenticated | IT4, IB1 |
++| M02 select policy `using (true)` | IR1a IR1b IR2a IR2b IR3a IR3b IR4a IR4b IR5a IR5b IR6a IR6b IR7 IR8a IR8b IR9a IR9b (17) |
++| M03 connect: has_permission removed | IC2, IC2b, IC7, IC7b |
++| M04 connect: plan check removed | IC3, IC10b |
++| M05 connect: live check removed | IC6, IC6b, IC8, IC9b, IC9z, IC10, IA1 |
++| M06 revoke row: Vault delete removed | IV9b, IL1b, IM3, IM8, IM10, IE4, IP3 |
++| M07 execute read_integration_token to authenticated | IC0b, IV6b |
++| M08 membership trigger removed | IM0, IA1, IM2, IM3, IM6, IM8, IM10, IM10b, IP3 |
++| M09 erase_account step removed | IE1, IE2, IE3, IE5, IE6, IE8 |
++| M10 export includes token_secret_id | IX1, IX2, IX3, IX4, IX8 |
++| M11 revoked_is_terminal removed | IT10, IT10c, IT10c2, IT10c3, IT10e |
++| M12 control (no mutation) | 0 red |
++| control restored | 0 red |
++No mutant survived; no assertion had to be added.
++
++## Gates (final tip after both commits)
++- `pnpm lint`: exit 0.
++- `npx next typegen && pnpm typecheck`: exit 0.
++- `pnpm test` (fresh reset): Test Files 168 passed (168); Tests 3821 passed (3821); exit 0.
++- Runner (fresh reset): "All suites passed." exit 0 (27 suites, ig pinned 195; pinned total 4473 per brief).
++- `pnpm test:e2e` (fresh reset): 172 passed, 4 failed, 2 did not run, 43.9 min. Free RAM was 0.34 GB when sampled mid-run; failures were 60 s test timeouts / a 15 s request timeout, none in integration code. Isolated re-run of those specs (fresh reset, RAM 6 GB): accessibility.spec.ts:633, data-requests.spec.ts (all 3, incl. the 2 not run), network-leakage.spec.ts:192, network-profile-editor.spec.ts:184: **6 passed (2.0m)**. No config touched.
++
++## Commits
++5e397d6 (mutation driver and results), 6edd5e4 (docs + storage-census timeout), plus the report commit.
++
++## Concerns
++- e2e not green in a single cold run (RAM-starved, 4 timeouts); green in isolation. None are refusal-parity specs.
++- Q236 default (b) is my proposal for the founder; no code change.
++- SECURITY.md § 4 is "Authentication and session security"; the audit-actor note lives there per the brief, though § 7 is the audit section.
+diff --git a/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/DECISIONS-QUEUE.md b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/DECISIONS-QUEUE.md
+index 5f498dc..3c7f6e9 100644
+--- a/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/DECISIONS-QUEUE.md
++++ b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/DECISIONS-QUEUE.md
+@@ -1574,21 +1574,21 @@ The founder answered every open question from Q89 to Q187. These are rulings, no
+ 
+ ## Q232 -- Phase 9 Task 4: which connector is first after launch? 2026-10-09
+ 
+ - **Q232 -- Which connector is first after launch?** The research is in
+   `docs/integrations-discovery.md` (eight candidates, every fact sourced and
+   dated 2026-10-09). **Default (recommendation, nothing built):** Google
+   Calendar first, via event-level scopes (`calendar.events.owned`, or
+   `calendar.app.created`); then Microsoft Graph calendar; Skiddle ticket-URL
+   import after written commercial approval (its API is non-commercial only);
+   then Xero, QuickBooks, and mail last because Gmail needs a restricted scope
+-  and an annual third-party security assessment. Fatsoma publishes no API.
++  and an annual third-party security assessment. For Fatsoma no public API or developer docs were found (a private partner API is not excluded).
+   Open facts that could reorder it: whether Google Calendar scopes trigger
+   that assessment (read the label in the Cloud Console consent screen), and
+   which calendar the first customers use. Founder pre-work (consent screen,
+   Entra app and publisher verification, DPAs, two emails) is the last section
+   of the discovery document. No provider is made live by this phase.
+ 
+ ## Q233 -- Phase 9 Task 2: can a connection in `error` have its token read? 2026-10-09
+ 
+ - **Q233 -- `read_integration_token()` refuses any status except `active`.** After a failed sync, `record_integration_sync_run()` moves the connection to `error`. From then on, the server cannot read the token to retry, even when the failure is transient (`rate_limited`, `provider_unavailable`). Options:
+   - (a) Keep it: a failed connection must be re-authorised through `store_integration_token()`, which moves it back to `active`.
+@@ -1615,10 +1615,15 @@ Each ruling below is confirmed as built:
+ 1. **A "Contact us" button** on the Owner's closure screen when the closure backup has failed. It points to the single support contact (`SECURITY.md` § 13).
+ 2. **The Owner can download a backup of any size.** It must still respect CLAUDE.md's "exports are async and bounded" rule. The planned shape is a **multi-part** closure backup: every part stays within today's per-archive ceilings, the number of parts is not capped, and each part is downloadable and audited the same way. A size ceiling therefore never fails the backup; it is split instead.
+ 3. **Keep "Delete without a backup"**, the audited acknowledgement that is already built.
+ 
+ Scheduled as a follow-up branch off main after the Phase 9 PR, built under the same review loop.
+ 
+ ## Q234-Q235 -- Phase 9 Task 3: what the exports carry, 2026-10-10
+ 
+ - **Q234 -- Should a workspace export list colleagues' person-scoped (mailbox/calendar) connection metadata?** The workspace export is read under the requester's own RLS. An Owner or Admin holds `manage_integrations`, and Task 1's read policy lets that holder read EVERY connection in the workspace (IR1a). That includes a colleague's personal mailbox or calendar connection: provider, scopes, dates and owner id, never a token. So the workspace export carries that metadata too (`rls_phase9_integrations.sql` IX4). The alternative is to narrow the policy (or the export's scope) to workspace-scoped rows plus the requester's own. **Default: yes, as built**, consistent with IR1a: the workspace can see which integrations reach into it. Revisit before the first person-scoped connector (Google Calendar, Q232) ships.
+ - **Q235 -- A person who has LEFT a workspace does not get their revoked connection rows there in their account export.** The account export reads `integration_connections` under the person's own RLS (scope `owner_user_id`). The person-scoped read needs `view_crm` in that workspace, so once the membership ends, the row is outside their read and their export. The row stays revoked, holds no token, and still carries their `owner_user_id` until they are erased. The alternative is an elevated, projected read filtered on `owner_user_id`, the shape `impersonation_sessions` uses for a departed person. **Default: as built (requester_rls)**: a revoked connection in a workspace they left is that workspace's record of an integration that has ended.
++
++## Q236 -- Phase 9 Task 5: may an Admin create a person-scoped connection for another member? 2026-10-10
++
++- **Q236 -- `connect_integration(org, provider, owner_user_id)` lets an Owner or Admin name any active member as the owner of a mailbox/calendar connection.** Harmless today: no provider is live, so the call always refuses. When the first connector lands (Google Calendar, Q232), OAuth consent is given by one person, and a token minted in an Admin's session but stored against someone else's `owner_user_id` would be a mailbox the owner never consented to. Options: (a) keep the RPC as is and make the OAuth callback bind the token to the consenting session's own user, refusing a callback whose session is not `owner_user_id`; (b) restrict `p_owner_user_id` to the caller (a person connects only their own mailbox; workspace-scoped connections stay Admin-made).
++  **Default: (b)**, enforced in the RPC when the first connector ships, because it needs no callback trick to be safe. Revisit with Q232's connector. No code change in Phase 9.
+diff --git a/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/clean.sql b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/clean.sql
+new file mode 100644
+index 0000000..4f33eda
+--- /dev/null
++++ b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/clean.sql
+@@ -0,0 +1,12 @@
++delete from vault.secrets where name in (select 'integration:' || c.id::text from public.integration_connections c join public.organisations o on o.id = c.organisation_id where o.slug like 'ig-%');
++delete from public.integration_connections c using public.organisations o where o.id = c.organisation_id and o.slug like 'ig-%';
++set session_replication_role = replica;
++delete from public.audit_events where organisation_id in (select id from public.organisations where slug like 'ig-%');
++delete from public.export_jobs where organisation_id in (select id from public.organisations where slug like 'ig-%');
++delete from public.organisation_memberships where organisation_id in (select id from public.organisations where slug like 'ig-%');
++delete from public.organisation_subscriptions where organisation_id in (select id from public.organisations where slug like 'ig-%');
++delete from public.organisations where slug like 'ig-%';
++set session_replication_role = origin;
++delete from public.export_jobs where requested_by in (select id from auth.users where email like 'ig-%');
++delete from auth.users where email like 'ig-%';
++select count(*) from public.integration_connections;
+diff --git a/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/mutants.py b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/mutants.py
+new file mode 100644
+index 0000000..8e49f40
+--- /dev/null
++++ b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/mutants.py
+@@ -0,0 +1,107 @@
++"""Phase 9 Task 5: the 12-mutant run against supabase/tests/rls_phase9_integrations.sql.
++
++Each mutant is applied to the LIVE database (latest pg_get_functiondef with one
++change, or one DDL statement), the ig suite is run, the named red assertions are
++recorded, and the original definition is restored in a finally block. Usage:
++  python mutants.py [M01 M02 ...]   (default: all, control first and last)
++Local stack only. Run from anywhere; paths resolve from this file.
++"""
++import os, subprocess, sys
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++ROOT = os.path.abspath(os.path.join(HERE, *[".."] * 5))
++SUITE = os.path.join(ROOT, "supabase", "tests", "rls_phase9_integrations.sql")
++CTR = "supabase_db_getsetpaid"
++ENV = dict(os.environ, MSYS_NO_PATHCONV="1")
++
++
++def psql(sql):
++    r = subprocess.run(["docker", "exec", "-i", CTR, "psql", "-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-tA"],
++                       input=sql, capture_output=True, text=True, env=ENV, encoding="utf-8")
++    if r.returncode != 0:
++        raise RuntimeError(r.stderr)
++    return r.stdout
++
++
++def fdef(sig):
++    return psql(f"select pg_get_functiondef('{sig}'::regprocedure)").rstrip("\n") + ";"
++
++
++CLEAN = open(os.path.join(HERE, "clean.sql"), encoding="utf-8").read()
++
++
++def run_suite():
++    psql(CLEAN)
++    subprocess.run(["docker", "cp", SUITE, f"{CTR}:/tmp/ig.sql"], check=True, capture_output=True, env=ENV)
++    r = subprocess.run(["docker", "exec", CTR, "psql", "-U", "postgres", "-d", "postgres", "-q", "--pset=footer=off", "-f", "/tmp/ig.sql"],
++                       capture_output=True, text=True, env=ENV, encoding="utf-8")
++    errs = [l for l in (r.stdout + r.stderr).splitlines() if l.startswith("psql:") and "ERROR" in l]
++    total, red = psql("select count(*) || '|' || count(*) filter (where not pass) from ig.results").strip().split("|")
++    labels = psql("select label from ig.results where not pass order by seq").strip().splitlines()
++    return int(total), int(red), labels, errs
++
++
++def rep(t, old, new):
++    assert t.count(old) == 1, (old, t.count(old))
++    return t.replace(old, new)
++
++
++def cut(t, a, b):
++    i = t.index(a); j = t.index(b, i)
++    return t[:i] + t[j:]
++
++
++SIG = {
++    "connect": "public.connect_integration(uuid,text,uuid)",
++    "row": "private.revoke_integration_row(uuid,uuid,text)",
++    "erase": "private.erase_account(uuid,uuid)",
++    "cat": "private.export_catalogue()",
++    "guard": "private.integration_connections_guard()",
++}
++ORIG = {k: fdef(v) for k, v in SIG.items()}
++TRIG = psql("select pg_get_triggerdef(oid) from pg_trigger where tgname='integration_connections_follow_membership'").strip() + ";"
++POL = "create policy integration_connections_select on public.integration_connections for select to authenticated using ("
++POLQ = psql("select qual from pg_policies where policyname='integration_connections_select'").strip()
++assert TRIG.startswith("CREATE") and POLQ
++
++# name -> (apply-sql builder, restore-sql)
++def fn(key, f):
++    return (lambda: f(ORIG[key]) , ORIG[key])
++
++M = {
++ "M01 grant insert on connections to authenticated": (lambda: "grant insert on public.integration_connections to authenticated;", "revoke insert on public.integration_connections from authenticated;"),
++ "M02 select policy dropped and recreated as using (true)": (lambda: "drop policy integration_connections_select on public.integration_connections;" + POL + "true);",
++        "drop policy integration_connections_select on public.integration_connections;" + POL + POLQ + ");"),
++ "M03 connect: has_permission check removed": fn("connect", lambda d: rep(d, "if not (public.has_permission(p_org, 'manage_integrations')\n          or (v_live", "if not (true\n          or (v_live")),
++ "M04 connect: plan check removed": fn("connect", lambda d: rep(d, "if not exists (select 1 from private.crm_write_organisations() w where w = p_org)\n     and not (v_live", "if false\n     and not (v_live")),
++ "M05 connect: live check removed": fn("connect", lambda d: rep(d, "if not exists (select 1 from private.integration_providers() p\n                  where p.provider = p_provider and p.live) then", "if false then")),
++ "M06 revoke_integration_row: Vault delete removed": fn("row", lambda d: rep(d, "  delete from vault.secrets s\n   where s.id = v_c.token_secret_id\n      or s.name = 'integration:' || v_c.id::text;\n", "")),
++ "M07 grant execute on read_integration_token to authenticated": (lambda: "grant execute on function public.read_integration_token(uuid) to authenticated;", "revoke execute on function public.read_integration_token(uuid) from authenticated;"),
++ "M08 membership trigger removed": (lambda: "drop trigger integration_connections_follow_membership on public.organisation_memberships;", TRIG),
++ "M09 erase_account: integration step removed": fn("erase", lambda d: cut(d, "  -- (5c) THE PERSON'S OWN INTEGRATIONS", "  -- (6) THE IDENTIFIERS NO FOREIGN KEY PROTECTS")),
++ "M10 export: token_secret_id in the workspace projection": fn("cat", lambda d: d.replace("array['id','organisation_id','provider','owner_user_id','status','scopes','token_expires_at'", "array['id','organisation_id','provider','owner_user_id','status','scopes','token_secret_id','token_expires_at'", 1)),
++ "M11 guard: revoked_is_terminal removed": fn("guard", lambda d: rep(d, "  if tg_op = 'UPDATE' and old.status = 'revoked' then", "  if false then")),
++ "M12 control: no mutation": (lambda: "select 1;", "select 1;"),
++}
++
++only = sys.argv[1:]
++out = []
++def report(name, res):
++    total, red, labels, errs = res
++    line = f"{name} -> {total} assertions, {red} red" + (f" ({'; '.join(labels)})" if labels else "") + (f" ERRORS={errs}" if errs else "")
++    print(line, flush=True); out.append(line)
++
++report("CONTROL (before)", run_suite())
++for name, (apply, restore) in M.items():
++    if only and name.split()[0] not in only:
++        continue
++    sql = apply()
++    if name.startswith(("M03", "M04", "M05", "M06", "M09", "M10", "M11")) and sql == restore:
++        out.append(name + " -> MUTATION DID NOT APPLY"); print(out[-1]); continue
++    try:
++        psql(sql)
++        report(name, run_suite())
++    finally:
++        psql(restore)
++report("CONTROL (restored)", run_suite())
++open(os.path.join(HERE, "results.txt"), "w", encoding="utf-8").write("\n".join(out) + "\n")
+diff --git a/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/progress.log b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/progress.log
+new file mode 100644
+index 0000000..d2a2495
+--- /dev/null
++++ b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/progress.log
+@@ -0,0 +1,4 @@
++2026-10-10 16:59:21 START
++2026-10-10 16:59:25 END exit=0
++2026-10-10 17:00:27 START
++2026-10-10 17:00:59 END exit=0
+diff --git a/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/results.txt b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/results.txt
+new file mode 100644
+index 0000000..70868ff
+--- /dev/null
++++ b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/results.txt
+@@ -0,0 +1,14 @@
++CONTROL (before) -> 195 assertions, 0 red
++M01 grant insert on connections to authenticated -> 195 assertions, 2 red (IT4 authenticated holds NO INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER on either table (12 checks, 0 held); IB1 a forged INSERT on integration_connections is refused by privilege)
++M02 select policy dropped and recreated as using (true) -> 195 assertions, 17 red (IR1a A's Owner reads both of A's connections and none of B's; IR1b ...and both of A's sync runs, none of B's; IR2a A's Admin reads both of A's connections and none of B's; IR2b ...and both of A's sync runs; IR3a A's Manager reads ONLY the person-scoped connection they own; IR3b ...and only its sync run; IR4a A's Read Only reads no connection; IR4b ...and no sync run; IR5a B's Owner reads B's connection and never A's; IR5b ...and B's sync run, never A's; IR6a DOWNGRADE HIDES NOTHING: a Free workspace's Owner still reads its connection; IR6b ...and its sync run; IR7 MFA: A's Owner at aal1 reads no workspace-scoped connection (manage_integrations is aal2-gated); IR8a a REVOKED member no longer reads the person-scoped connection they own; IR8b ...nor its sync run; IR9a a member who has LEFT (membership deleted) no longer reads the connection they own; IR9b ...nor its sync run)
++M03 connect: has_permission check removed -> 195 assertions, 4 red (IC2 forbidden: A's Manager (no manage_integrations); IC2b forbidden: A's Owner at aal1 (manage_integrations is MFA-gated); IC7 forbidden: B's Owner on A; IC7b forbidden: a workspace that does not exist)
++M04 connect: plan check removed -> 195 assertions, 2 red (IC3 plan: F's Owner (Free tier); IC10b ...and a new connect is refused on the plan)
++M05 connect: live check removed -> 195 assertions, 7 red (IC6 NOT LIVE: 'google_gmail' (at MVP every real call ends here); IC6b ...and as A's Admin; IC8 no refused connect wrote a row or an audit row; IC9b ...and one integration.connected audit row per landed connect, actor the caller, payload {provider, owner_scoped}; IC9z ...and the rollback took the row, the audit and the live provider with it; IC10 downgraded to Free, A's Owner still SELECTs both of A's connections; IA1 DENOMINATOR: the integration audit rows written (4 revokes, 4 stores, 1 failed sync))
++M06 revoke_integration_row: Vault delete removed -> 195 assertions, 7 red (IV9b ...the Vault secret is DELETED; IL1b ...and the secret found only BY NAME is gone (revoke_integration_row's name clause); IM3 ...and its Vault secret is GONE (by id and by name); IM8 ...their person-scoped connection is revoked and its secret gone; IM10 a membership moved to ANOTHER person (status still active) revokes the old person's person-scoped connection there; IE4 (b) its Vault secret is GONE (by id and by name); IP3 0 Vault secrets named integration:<P's connection ids>, and 0 by their former ids)
++M07 grant execute on read_integration_token to authenticated -> 195 assertions, 2 red (IC0b server RPCs: service_role ALONE may EXECUTE store/read/sync; IV6b ...nor read_integration_token)
++M08 membership trigger removed -> 195 assertions, 9 red (IM0 IR8's membership revoke already revoked the Manager's person-scoped connection (trigger, no session: tombstone actor, reason membership_ended); IA1 DENOMINATOR: the integration audit rows written (4 revokes, 4 stores, 1 failed sync); IM2 their person-scoped connection in A is REVOKED, with no secret reference, revoked_by = the Owner who removed them; IM3 ...and its Vault secret is GONE (by id and by name); IM6 ONE integration.revoked row: actor the Owner, payload {provider, owner_scoped, reason membership_ended}; IM8 ...their person-scoped connection is revoked and its secret gone; IM10 a membership moved to ANOTHER person (status still active) revokes the old person's person-scoped connection there; IM10b a membership moved to ANOTHER WORKSPACE revokes the person's person-scoped connection in the one they left; IP3 0 Vault secrets named integration:<P's connection ids>, and 0 by their former ids)
++M09 erase_account: integration step removed -> 195 assertions, 6 red (IE1 (c) THE ERASURE SUCCEEDS: auth.users row deleted, the person's connection and its two runs counted on the summary; IE2 (a) NO ROW with the person's former connection id survives, and NONE became workspace-scoped (A has one live xero, conn_a); IE3 ...nor any of its sync runs; IE5 the WORKSPACE-scoped connection they created stays, active, created_by = the tombstone; IE6 the REVOKED one they created and revoked: both columns moved to the tombstone (the guard admits that one move); IE8 the revoke step audited as the tombstone, reason account_erased, and no id of theirs in it)
++M10 export: token_secret_id in the workspace projection -> 195 assertions, 5 red (IX1 POSITIVE CONTROL: A's workspace export carries A's connections (conn_a, the created conn_w3); IX2 NO ROW of it has a key named token_secret_id; every row has exactly the twelve metadata keys; IX3 ...and neither conn_w3's secret id nor any token text is anywhere in the page (its row IS there); IX4 the workspace export is EXACTLY the Owner's own RLS read of A's connections, row for row (a colleague's person-scoped conn_p included, as IR1a reads it); IX8 the catalogue: both tables exported from the workspace, connections from the account, token_secret_id projected OUT)
++M11 guard: revoked_is_terminal removed -> 195 assertions, 5 red (IT10 REVOKED IS TERMINAL: revoked -> active is refused, even as postgres with the row otherwise consistent; IT10c REVOKED IS FROZEN: any other column of a revoked row is refused (scopes), even as postgres; IT10c2 ...and last_synced_at; IT10c3 ...and re-pointing revoked_by at another person (only NULLING it is the FK's); IT10e a column added LATER is frozen on a revoked row too (the freeze compares the whole row, not a list))
++M12 control: no mutation -> 195 assertions, 0 red
++CONTROL (restored) -> 195 assertions, 0 red
+diff --git a/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/run.log b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/run.log
+new file mode 100644
+index 0000000..70868ff
+--- /dev/null
++++ b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/run.log
+@@ -0,0 +1,14 @@
++CONTROL (before) -> 195 assertions, 0 red
++M01 grant insert on connections to authenticated -> 195 assertions, 2 red (IT4 authenticated holds NO INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER on either table (12 checks, 0 held); IB1 a forged INSERT on integration_connections is refused by privilege)
++M02 select policy dropped and recreated as using (true) -> 195 assertions, 17 red (IR1a A's Owner reads both of A's connections and none of B's; IR1b ...and both of A's sync runs, none of B's; IR2a A's Admin reads both of A's connections and none of B's; IR2b ...and both of A's sync runs; IR3a A's Manager reads ONLY the person-scoped connection they own; IR3b ...and only its sync run; IR4a A's Read Only reads no connection; IR4b ...and no sync run; IR5a B's Owner reads B's connection and never A's; IR5b ...and B's sync run, never A's; IR6a DOWNGRADE HIDES NOTHING: a Free workspace's Owner still reads its connection; IR6b ...and its sync run; IR7 MFA: A's Owner at aal1 reads no workspace-scoped connection (manage_integrations is aal2-gated); IR8a a REVOKED member no longer reads the person-scoped connection they own; IR8b ...nor its sync run; IR9a a member who has LEFT (membership deleted) no longer reads the connection they own; IR9b ...nor its sync run)
++M03 connect: has_permission check removed -> 195 assertions, 4 red (IC2 forbidden: A's Manager (no manage_integrations); IC2b forbidden: A's Owner at aal1 (manage_integrations is MFA-gated); IC7 forbidden: B's Owner on A; IC7b forbidden: a workspace that does not exist)
++M04 connect: plan check removed -> 195 assertions, 2 red (IC3 plan: F's Owner (Free tier); IC10b ...and a new connect is refused on the plan)
++M05 connect: live check removed -> 195 assertions, 7 red (IC6 NOT LIVE: 'google_gmail' (at MVP every real call ends here); IC6b ...and as A's Admin; IC8 no refused connect wrote a row or an audit row; IC9b ...and one integration.connected audit row per landed connect, actor the caller, payload {provider, owner_scoped}; IC9z ...and the rollback took the row, the audit and the live provider with it; IC10 downgraded to Free, A's Owner still SELECTs both of A's connections; IA1 DENOMINATOR: the integration audit rows written (4 revokes, 4 stores, 1 failed sync))
++M06 revoke_integration_row: Vault delete removed -> 195 assertions, 7 red (IV9b ...the Vault secret is DELETED; IL1b ...and the secret found only BY NAME is gone (revoke_integration_row's name clause); IM3 ...and its Vault secret is GONE (by id and by name); IM8 ...their person-scoped connection is revoked and its secret gone; IM10 a membership moved to ANOTHER person (status still active) revokes the old person's person-scoped connection there; IE4 (b) its Vault secret is GONE (by id and by name); IP3 0 Vault secrets named integration:<P's connection ids>, and 0 by their former ids)
++M07 grant execute on read_integration_token to authenticated -> 195 assertions, 2 red (IC0b server RPCs: service_role ALONE may EXECUTE store/read/sync; IV6b ...nor read_integration_token)
++M08 membership trigger removed -> 195 assertions, 9 red (IM0 IR8's membership revoke already revoked the Manager's person-scoped connection (trigger, no session: tombstone actor, reason membership_ended); IA1 DENOMINATOR: the integration audit rows written (4 revokes, 4 stores, 1 failed sync); IM2 their person-scoped connection in A is REVOKED, with no secret reference, revoked_by = the Owner who removed them; IM3 ...and its Vault secret is GONE (by id and by name); IM6 ONE integration.revoked row: actor the Owner, payload {provider, owner_scoped, reason membership_ended}; IM8 ...their person-scoped connection is revoked and its secret gone; IM10 a membership moved to ANOTHER person (status still active) revokes the old person's person-scoped connection there; IM10b a membership moved to ANOTHER WORKSPACE revokes the person's person-scoped connection in the one they left; IP3 0 Vault secrets named integration:<P's connection ids>, and 0 by their former ids)
++M09 erase_account: integration step removed -> 195 assertions, 6 red (IE1 (c) THE ERASURE SUCCEEDS: auth.users row deleted, the person's connection and its two runs counted on the summary; IE2 (a) NO ROW with the person's former connection id survives, and NONE became workspace-scoped (A has one live xero, conn_a); IE3 ...nor any of its sync runs; IE5 the WORKSPACE-scoped connection they created stays, active, created_by = the tombstone; IE6 the REVOKED one they created and revoked: both columns moved to the tombstone (the guard admits that one move); IE8 the revoke step audited as the tombstone, reason account_erased, and no id of theirs in it)
++M10 export: token_secret_id in the workspace projection -> 195 assertions, 5 red (IX1 POSITIVE CONTROL: A's workspace export carries A's connections (conn_a, the created conn_w3); IX2 NO ROW of it has a key named token_secret_id; every row has exactly the twelve metadata keys; IX3 ...and neither conn_w3's secret id nor any token text is anywhere in the page (its row IS there); IX4 the workspace export is EXACTLY the Owner's own RLS read of A's connections, row for row (a colleague's person-scoped conn_p included, as IR1a reads it); IX8 the catalogue: both tables exported from the workspace, connections from the account, token_secret_id projected OUT)
++M11 guard: revoked_is_terminal removed -> 195 assertions, 5 red (IT10 REVOKED IS TERMINAL: revoked -> active is refused, even as postgres with the row otherwise consistent; IT10c REVOKED IS FROZEN: any other column of a revoked row is refused (scopes), even as postgres; IT10c2 ...and last_synced_at; IT10c3 ...and re-pointing revoked_by at another person (only NULLING it is the FK's); IT10e a column added LATER is frozen on a revoked row too (the freeze compares the whole row, not a list))
++M12 control: no mutation -> 195 assertions, 0 red
++CONTROL (restored) -> 195 assertions, 0 red
+diff --git a/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/run.sh b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/run.sh
+new file mode 100644
+index 0000000..efd2425
+--- /dev/null
++++ b/.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/run.sh
+@@ -0,0 +1,11 @@
++#!/usr/bin/env bash
++# Phase 9 Task 5 mutation driver. Detached: nohup bash run.sh > run.log 2>&1 &
++# Applies 12 mutants to the LIVE local database one at a time (restoring each),
++# running supabase/tests/rls_phase9_integrations.sql against each; writes
++# results.txt beside this script. Resumable by arguments: bash run.sh M05 M06.
++# The database must be freshly reset to the repo's migrations first.
++set -uo pipefail
++HERE="$(cd "$(dirname "$0")" && pwd)"
++echo "$(date '+%F %T') START" >> "$HERE/progress.log"
++python "$HERE/mutants.py" "$@"
++echo "$(date '+%F %T') END exit=$?" >> "$HERE/progress.log"
+diff --git a/CLAUDE.md b/CLAUDE.md
+index ea011c0..f6089ed 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -8,21 +8,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
+ 
+ Core workflow the product exists to serve:
+ `relationship → enquiry/hold → booking/event → delivery → settlement/history`
+ 
+ **`getsetpaid_crm_prd.docx` in the repo root is the source of truth.** Read the relevant section before implementing a feature — it defines entities, roles, security controls and acceptance criteria in detail. This file is a summary, not a replacement.
+ 
+ The PRD is a binary docx and no text version is committed. To read it, run `python scripts/read-prd.py` (see below), or unzip `word/document.xml` and strip the tags.
+ 
+ ## Current state
+ 
+-The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrastructure, core CRM writes, since Phase 3 events with their lineup, since Phase 4 operations: tasks, meetings, notes and documents behind a private-bucket, malware-scanned file pipeline, since Phase 5 event-level finance, since Phase 6 **the network**: publishable profiles for companies/artists/venues/agencies, a browsable directory, request-to-connect, and an explicit, manual private-record-to-network-identity link, and — since Phase 7 — the operator's own surfaces: a searchable cross-tenant **audit log viewer** at `/super/audit-log` **break-glass impersonation**, the product's only sanctioned deep-access path, and **organisation lifecycle** at `/super/organisations` — suspend, close and reopen a workspace, soft-delete only, every transition reasoned and audited and every one of them reversible, and — since Phase 7 Task 4 — **billing and feature overrides** at `/super/billing`: a time-boxed, audited exception to one workspace's effective tier, seat count or a named feature flag, routed through a single shared effective-tier function on each side (`private.effective_organisation_plan()` in SQL, `getOrganisationEntitlements()` in TypeScript) so every existing tier gate (CRM writes, custom-field limits, the finance module, network publishing) picks up an active override automatically, with no scheduler needed to revert it — an override simply stops being read once it expires), and — since Phase 7 Task 5 — **platform health at `/super/health`** with the **rate limiting and incident alerting** behind it: `SECURITY.md` § 5's whole table is now built as one mechanism whose values live in Postgres, metered at the single `lib/list/query.ts` list chokepoint for search and the named network-directory path and in GoTrue's own password-verification hook for the per-account login lockout, with the counters it writes doubling as what the three incident triggers read, and — since Phase 7 Task 6 — **in-app feedback**: a "Feedback" dialog on every signed-in screen writing a platform-scoped `feedback` table whose attribution and 10/hour budget are both enforced at the `INSERT`, a founder's list at `/super/feedback` with audited screenshot views, and the **one Brevo sender** (`lib/email/send.ts`) that emails the feedback receipt and delivers the incident-alert digest, and — since Phase 7 Task 6b — **every INSERT and UPDATE on the eleven mutable Phase 2 CRM tables audited by trigger**, with a name-only diff (changed column names, values for a per-table structural allowlist only — never tenant content, because the audit log is superuser-readable), soft-delete/restore as their own actions, and one correlation id per multi-row RPC (`SECURITY.md` § 7) — **and, since Phase 8 Task 7 (Q122), on sixteen more: every Phase 3–6 table a client can write plus `organisation_memberships`, `organisation_subscriptions` and `merge_candidates`, derived by `private.audit_coverage()` from the live catalogue so a later table with a client grant and no audit writer is a red census test naming itself; `organisations` itself (an Owner's rename) is the one declared excusal, Q189** — and — since Phase 8 Task 1 — **the fifteen PRD §12 legal pages**: `/legal` and `/legal/<slug>`, readable signed out, each rendering the current published version of a document from a versioned store (`public.legal_documents`) that the founder edits at `/super/legal` without a deploy — drafts, a preview, step-up-gated publishing and a per-version counsel-review marker, with **every published version immutable for every role** and **every page carrying a non-dismissable "draft pending legal review" notice until counsel's review of that exact version is recorded** (none has been: all fifteen are engineering drafts; see § Legal and regulatory compliance), and — since Phase 8 Task 2 — **a consent ledger and an account-level marketing preference**: `public.consents`, one append-only row per grant or withdrawal, attributed from the session and pointing at the exact published legal version, edited at `/account/privacy` with the same single button either way; and, instead of a cookie banner (Q129), **a storage census** — a source scan in CI of every app-shipped file for the cookie, storage, script and tracker shapes `SECURITY.md` § 8 lists, plus a browser check that runs only on a developer machine — that fails when an undeclared one appears in a shape it recognises (see § Legal and regulatory compliance), and — since Phase 8 Task 3 — **data subject requests**: `/account/data-requests`, where any signed-in person exercises the six UK/EU GDPR rights and tracks what happened, and `/super/data-requests`, the operator's queue ordered by deadline, with the **30 days computed and enforced by the database** (a `GENERATED ALWAYS` `due_by` no role can write, a state machine in a `BEFORE UPDATE` trigger rather than labels on a column, operator notes in a separate table the requester has no read of at all, and an overdue or approaching deadline arriving as an `incident_alerts` row on `/super/health` and in the existing email digest, written by the existing `pg_cron` job rather than a second one). and, since Phase 8 Task 4 — **the two data exports Q132's controller/processor split makes necessary**: `/account/exports`, where anyone signed in takes a machine-readable copy of what the PLATFORM holds about them as a user, and `/[orgSlug]/settings/export`, where an Owner or Admin takes one of everything the WORKSPACE holds — deleted rows included and marked as deleted, with the files themselves — both built outside the request that asked for them, both bounded by ceilings a job fails against rather than truncates, both delivered as a zip in a private bucket behind a server-mediated, audited, expiring download that only the requester can use, and the workspace one **built with the requester's own access rights** so a colleague's private notes are not in it. Marking an account-scope access or portability request `fulfilled` now REQUIRES such an export to have run for that person since they asked, and — since Phase 8 Task 5 — **the other half of that: account erasure**. `/account/erase` deletes a person's account for good, behind step-up and a typed confirmation phrase, with the page saying specifically what goes and what stays before anything is pressed; `/super/data-requests` gains the control that runs one for a statutory request, and marking an account-scope `erasure` request `fulfilled` now requires the job to have actually run. **The audit trail is pseudonymised, never deleted (Q130):** thirteen foreign keys reference `auth.users` with no `ON DELETE` action, and every one is rewritten — by a walk of `pg_constraint` at run time, not by a list — to a single platform-owned tombstone identity that can never sign in, never be a member of anything and never be deleted. The whole sequence is ONE database function in ONE transaction: all-or-nothing (any refusal rolls it back and records a reason; there is no partial erasure), idempotent, refusing to run under `session_replication_role = replica` or while a byte of the account's stored files is still in its bucket. A private note is HARD-deleted because nulling its owner leaves it readable by nobody and stored for ever; a workspace's own records stay, because Q132 makes the business their controller. The last Owner of a workspace with people or records in it is REFUSED, in the database, with a sentence naming the workspace (Q131). `private.erase_organisation()` ships beside it as the primitive Task 6's 60-day purge calls, and — since Phase 8 Task 6 — **the retention and garbage-collection job that calls it**. One `pg_cron`-scheduled sweep, which is the FIFTH half of the product's one and only tick rather than a second clock: it purges the bytes of an expired soft-deleted document (Q52), an expired feedback row and its screenshot (Q120), stale rate-limit counters (Q110), resolved incident alerts and their subject-id JSON (Q117), a failed erasure job at 90 days (Q175 — a succeeded one is kept for ever, because it is pseudonymous and it is the proof), a job left stuck `running` (Q166 — FAILED, not deleted; what is released is the index that was locking somebody out of a statutory right), an export archive past its own `expires_at`, orphaned objects in all three buckets, a workspace 60 days after it was closed (Q88/Q92/Q102, by calling the Task 5 primitive), and — behind five separable rails — the AUDIT LOG at one year. **Every period lives in ONE declared function** (`private.retention_periods()`), so counsel's answer to Q133 is one migration; **every table in `public` is classified** by a roll whose derivation refuses the job outright when a later phase adds one nobody has decided about. **The audit purge is the dangerous one and is built as `SECURITY.md` § 7's "narrowly controlled platform security process":** a hard floor of one year that no configuration can lower, its own kill switch, a sanity ceiling that refuses a run deleting more than a fifth of the table, a bounded resumable per-run ceiling, and the totals before and after in the same transaction. The founder can stop the job (or just its audit purge) without a deploy, can PREVIEW what a run would delete, and — since Phase 8 Task 9a (Q184, founder 2026-09-30) — can RELEASE the sanity ceiling for exactly 3 days, behind step-up and a reason, lapsing by read-time expiry with the floor and the per-run ceiling still in force, from `/super/health`, where the last five runs are rendered with their counts and — the column that matters — what each one refused. And Q179: an unsanctioned `delete from auth.users` (the Supabase Studio Auth-page button) now REFUSES rather than stranding a live workspace with no owner. **That job's review graded it MAJOR and its fix round 1 changed four things a reader should not have to find:** (C1) **the document retention clock was writable by the tenant** — `authenticated` held table-wide INSERT/UPDATE on `public.documents`, so an Owner could back-date `deleted_at` eight years and have a seven-year financial document's file destroyed within the hour, or forge `bytes_purged_at`; it is now column-level grants plus a guard that OVERWRITES `deleted_at` with the database's `now()` plus a CHECK, and **every other clock is asked the same question by derivation** — `private.assert_retention_clocks()` refuses the job when a client role can write a column a sweep's cutoff reads with no guard that really exists, so the next sweep is covered before anybody writes it; (C2) **the roll's tripwire fired after the bytes were gone** — the runner deleted objects before step 0 was asked — so every refusal is now evaluated in `start_retention_run()` before a run exists AND in `retention_object_manifest()`, which takes the run id and names no key at all for a run that would refuse; (I2) **only one run is ever `running`**, by a partial unique index, proved with two real sessions; and (m5/Q182) **a refused live run files an incident alert**, one per distinct fault, because a column on `/super/health` is visible only to somebody who looks. `SECURITY.md` § 8 has the as-built description and the operator's table of what each refusal means. Since Phase 8 Task 9b the product also sends **all notification emails** (DSR, export-ready, erasure-failure, connection requests, task reminders) and a counts-only **Telegram** operator alert on the same 10-minute tick, and — since Task 9c — **an Owner may close their own workspace** (read-only, automatic backup, a superuser reassign/delete decision at `/super/closures`, the Q88 60-day purge as the backstop). The PRD, the design and security docs and the pinned agent skills (`skills-lock.json` + `.agents/skills/`) sit alongside them.
++The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrastructure, core CRM writes, since Phase 3 events with their lineup, since Phase 4 operations: tasks, meetings, notes and documents behind a private-bucket, malware-scanned file pipeline, since Phase 5 event-level finance, since Phase 6 **the network**: publishable profiles for companies/artists/venues/agencies, a browsable directory, request-to-connect, and an explicit, manual private-record-to-network-identity link, and — since Phase 9 — an **integrations schema with no live connector** (connections, sync runs, Vault-held tokens, RPC-only writes; see "Integrations, as they actually shipped in Phase 9"), and — since Phase 7 — the operator's own surfaces: a searchable cross-tenant **audit log viewer** at `/super/audit-log` **break-glass impersonation**, the product's only sanctioned deep-access path, and **organisation lifecycle** at `/super/organisations` — suspend, close and reopen a workspace, soft-delete only, every transition reasoned and audited and every one of them reversible, and — since Phase 7 Task 4 — **billing and feature overrides** at `/super/billing`: a time-boxed, audited exception to one workspace's effective tier, seat count or a named feature flag, routed through a single shared effective-tier function on each side (`private.effective_organisation_plan()` in SQL, `getOrganisationEntitlements()` in TypeScript) so every existing tier gate (CRM writes, custom-field limits, the finance module, network publishing) picks up an active override automatically, with no scheduler needed to revert it — an override simply stops being read once it expires), and — since Phase 7 Task 5 — **platform health at `/super/health`** with the **rate limiting and incident alerting** behind it: `SECURITY.md` § 5's whole table is now built as one mechanism whose values live in Postgres, metered at the single `lib/list/query.ts` list chokepoint for search and the named network-directory path and in GoTrue's own password-verification hook for the per-account login lockout, with the counters it writes doubling as what the three incident triggers read, and — since Phase 7 Task 6 — **in-app feedback**: a "Feedback" dialog on every signed-in screen writing a platform-scoped `feedback` table whose attribution and 10/hour budget are both enforced at the `INSERT`, a founder's list at `/super/feedback` with audited screenshot views, and the **one Brevo sender** (`lib/email/send.ts`) that emails the feedback receipt and delivers the incident-alert digest, and — since Phase 7 Task 6b — **every INSERT and UPDATE on the eleven mutable Phase 2 CRM tables audited by trigger**, with a name-only diff (changed column names, values for a per-table structural allowlist only — never tenant content, because the audit log is superuser-readable), soft-delete/restore as their own actions, and one correlation id per multi-row RPC (`SECURITY.md` § 7) — **and, since Phase 8 Task 7 (Q122), on sixteen more: every Phase 3–6 table a client can write plus `organisation_memberships`, `organisation_subscriptions` and `merge_candidates`, derived by `private.audit_coverage()` from the live catalogue so a later table with a client grant and no audit writer is a red census test naming itself; `organisations` itself (an Owner's rename) is the one declared excusal, Q189** — and — since Phase 8 Task 1 — **the fifteen PRD §12 legal pages**: `/legal` and `/legal/<slug>`, readable signed out, each rendering the current published version of a document from a versioned store (`public.legal_documents`) that the founder edits at `/super/legal` without a deploy — drafts, a preview, step-up-gated publishing and a per-version counsel-review marker, with **every published version immutable for every role** and **every page carrying a non-dismissable "draft pending legal review" notice until counsel's review of that exact version is recorded** (none has been: all fifteen are engineering drafts; see § Legal and regulatory compliance), and — since Phase 8 Task 2 — **a consent ledger and an account-level marketing preference**: `public.consents`, one append-only row per grant or withdrawal, attributed from the session and pointing at the exact published legal version, edited at `/account/privacy` with the same single button either way; and, instead of a cookie banner (Q129), **a storage census** — a source scan in CI of every app-shipped file for the cookie, storage, script and tracker shapes `SECURITY.md` § 8 lists, plus a browser check that runs only on a developer machine — that fails when an undeclared one appears in a shape it recognises (see § Legal and regulatory compliance), and — since Phase 8 Task 3 — **data subject requests**: `/account/data-requests`, where any signed-in person exercises the six UK/EU GDPR rights and tracks what happened, and `/super/data-requests`, the operator's queue ordered by deadline, with the **30 days computed and enforced by the database** (a `GENERATED ALWAYS` `due_by` no role can write, a state machine in a `BEFORE UPDATE` trigger rather than labels on a column, operator notes in a separate table the requester has no read of at all, and an overdue or approaching deadline arriving as an `incident_alerts` row on `/super/health` and in the existing email digest, written by the existing `pg_cron` job rather than a second one). and, since Phase 8 Task 4 — **the two data exports Q132's controller/processor split makes necessary**: `/account/exports`, where anyone signed in takes a machine-readable copy of what the PLATFORM holds about them as a user, and `/[orgSlug]/settings/export`, where an Owner or Admin takes one of everything the WORKSPACE holds — deleted rows included and marked as deleted, with the files themselves — both built outside the request that asked for them, both bounded by ceilings a job fails against rather than truncates, both delivered as a zip in a private bucket behind a server-mediated, audited, expiring download that only the requester can use, and the workspace one **built with the requester's own access rights** so a colleague's private notes are not in it. Marking an account-scope access or portability request `fulfilled` now REQUIRES such an export to have run for that person since they asked, and — since Phase 8 Task 5 — **the other half of that: account erasure**. `/account/erase` deletes a person's account for good, behind step-up and a typed confirmation phrase, with the page saying specifically what goes and what stays before anything is pressed; `/super/data-requests` gains the control that runs one for a statutory request, and marking an account-scope `erasure` request `fulfilled` now requires the job to have actually run. **The audit trail is pseudonymised, never deleted (Q130):** thirteen foreign keys reference `auth.users` with no `ON DELETE` action, and every one is rewritten — by a walk of `pg_constraint` at run time, not by a list — to a single platform-owned tombstone identity that can never sign in, never be a member of anything and never be deleted. The whole sequence is ONE database function in ONE transaction: all-or-nothing (any refusal rolls it back and records a reason; there is no partial erasure), idempotent, refusing to run under `session_replication_role = replica` or while a byte of the account's stored files is still in its bucket. A private note is HARD-deleted because nulling its owner leaves it readable by nobody and stored for ever; a workspace's own records stay, because Q132 makes the business their controller. The last Owner of a workspace with people or records in it is REFUSED, in the database, with a sentence naming the workspace (Q131). `private.erase_organisation()` ships beside it as the primitive Task 6's 60-day purge calls, and — since Phase 8 Task 6 — **the retention and garbage-collection job that calls it**. One `pg_cron`-scheduled sweep, which is the FIFTH half of the product's one and only tick rather than a second clock: it purges the bytes of an expired soft-deleted document (Q52), an expired feedback row and its screenshot (Q120), stale rate-limit counters (Q110), resolved incident alerts and their subject-id JSON (Q117), a failed erasure job at 90 days (Q175 — a succeeded one is kept for ever, because it is pseudonymous and it is the proof), a job left stuck `running` (Q166 — FAILED, not deleted; what is released is the index that was locking somebody out of a statutory right), an export archive past its own `expires_at`, orphaned objects in all three buckets, a workspace 60 days after it was closed (Q88/Q92/Q102, by calling the Task 5 primitive), and — behind five separable rails — the AUDIT LOG at one year. **Every period lives in ONE declared function** (`private.retention_periods()`), so counsel's answer to Q133 is one migration; **every table in `public` is classified** by a roll whose derivation refuses the job outright when a later phase adds one nobody has decided about. **The audit purge is the dangerous one and is built as `SECURITY.md` § 7's "narrowly controlled platform security process":** a hard floor of one year that no configuration can lower, its own kill switch, a sanity ceiling that refuses a run deleting more than a fifth of the table, a bounded resumable per-run ceiling, and the totals before and after in the same transaction. The founder can stop the job (or just its audit purge) without a deploy, can PREVIEW what a run would delete, and — since Phase 8 Task 9a (Q184, founder 2026-09-30) — can RELEASE the sanity ceiling for exactly 3 days, behind step-up and a reason, lapsing by read-time expiry with the floor and the per-run ceiling still in force, from `/super/health`, where the last five runs are rendered with their counts and — the column that matters — what each one refused. And Q179: an unsanctioned `delete from auth.users` (the Supabase Studio Auth-page button) now REFUSES rather than stranding a live workspace with no owner. **That job's review graded it MAJOR and its fix round 1 changed four things a reader should not have to find:** (C1) **the document retention clock was writable by the tenant** — `authenticated` held table-wide INSERT/UPDATE on `public.documents`, so an Owner could back-date `deleted_at` eight years and have a seven-year financial document's file destroyed within the hour, or forge `bytes_purged_at`; it is now column-level grants plus a guard that OVERWRITES `deleted_at` with the database's `now()` plus a CHECK, and **every other clock is asked the same question by derivation** — `private.assert_retention_clocks()` refuses the job when a client role can write a column a sweep's cutoff reads with no guard that really exists, so the next sweep is covered before anybody writes it; (C2) **the roll's tripwire fired after the bytes were gone** — the runner deleted objects before step 0 was asked — so every refusal is now evaluated in `start_retention_run()` before a run exists AND in `retention_object_manifest()`, which takes the run id and names no key at all for a run that would refuse; (I2) **only one run is ever `running`**, by a partial unique index, proved with two real sessions; and (m5/Q182) **a refused live run files an incident alert**, one per distinct fault, because a column on `/super/health` is visible only to somebody who looks. `SECURITY.md` § 8 has the as-built description and the operator's table of what each refusal means. Since Phase 8 Task 9b the product also sends **all notification emails** (DSR, export-ready, erasure-failure, connection requests, task reminders) and a counts-only **Telegram** operator alert on the same 10-minute tick, and — since Task 9c — **an Owner may close their own workspace** (read-only, automatic backup, a superuser reassign/delete decision at `/super/closures`, the Q88 60-day purge as the backstop). The PRD, the design and security docs and the pinned agent skills (`skills-lock.json` + `.agents/skills/`) sit alongside them.
+ 
+ **The gates. Run all five before claiming a change is done:**
+ 
+ | Command | What it is |
+ |---|---|
+ | `pnpm lint` | ESLint (`eslint`). |
+ | `pnpm typecheck` | `tsc --noEmit`. CI runs this too (below), but **nothing on this machine does** — there is no git hook, and `pnpm build` is forbidden in a worktree pointed at the local stack. Several exhaustiveness guards (the `switch` with no `default` in `lib/crm/contacts.ts`, `lib/crm/companies.ts` and `lib/crm/actions.ts`) are compile-time only, so skipping this locally means finding out on a push at best. |
+ | `pnpm test` | Vitest, unit and integration (`vitest run`). |
+ | `pnpm test:rls` | The RLS integration tests (`vitest run tests/integration/rls`), included in `pnpm test`. |
+ | `pnpm test:e2e` | Playwright (`playwright test`) — the Phase 2, Phase 3, Phase 4, Phase 5 and Phase 6 golden paths (`operations.spec.ts` walks a task to its event timeline and the note-visibility payoff; `documents.spec.ts` walks the clean/quarantine file pipeline; `finance.spec.ts` walks a Finance user through a budgeted fee, an actual income and the gross/expense/net summary, and the Starter-tier read-only refusal; `network.spec.ts` walks a Manager publishing a venue with two network-level fields and one connections-level field, a second organisation discovering it in the directory, sending and having a connection request accepted, seeing the connections-level field resolve, and linking the profile to its own private company record), tenant/role/tier breakout and record scope (since the loading-skeletons pass, a *record*-level refusal under a valid slug is asserted as the **streamed not-found contract** — HTTP 404 or a streamed 200 with the identical "Page not found" document, never 403, with the enumeration-oracle property measured directly by tenant-breakout's REFUSAL PARITY test; workspace-slug refusals and route handlers still assert the literal 404 — see `DESIGN.md` § Error pages; the Phase 6 network block: a foreign tenant's draft profile refuses identically and never surfaces in that tenant's own directory search; a Free-tier organisation's disabled "Request connection" control refuses server-side even with the `disabled` attribute stripped, with the sent-request row count in the database asserted unchanged around the click), and the axe accessibility scan (one test per page, **25 scans over 24 pages** — the event detail page is scanned twice, once as a Manager with no finance panel and once as a Finance user with it; Phase 6 adds five scans over five new pages: the network directory, a published profile viewed by a foreign organisation, this workspace's own network-profiles list, the populated publish-field editor, and the connection-requests page; the keyboard-a11y pass adds a 26th scan, of the OPEN command palette — the one surface that exists only after a keypress, in `keyboard.spec.ts`; Phase 7 Task 1 adds a 27th scan, of the platform-superuser-only audit log at `/super/audit-log`, populated and filtered — see `audit-log.spec.ts`; Phase 7 Task 2 adds a 28th and 29th, of `/super/impersonation` with a pending request on it and of a workspace's own `/[orgSlug]/support-access` with the accept confirmation revealed — see `impersonation.spec.ts`; Phase 7 Task 3 adds a 30th, of `/super/organisations` scanned **with a wound-down workspace on it**, so the list, its status text and the reveal-confirm trigger are all in the tree — an empty-state scan would miss every component that task added; Phase 7 Task 4 adds a 31st, of `/super/billing` scanned **with an active billing override on it**, so the grant forms and the active-override list with its clock are all in the tree; Phase 7 Task 5 adds a 32nd, of `/super/health` scanned **with an incident alert on it**, so the alert row, its type label and its Resolve control are in the tree beside the counts — an empty-state scan would reach the numbers and miss the whole alerting half of that task; Phase 7 Task 6 adds a 33rd and 34th, of `/super/feedback` scanned **with a submission on it** and of the **open feedback dialog** — the one surface that exists only after a click, `feedback.spec.ts`; Phase 7 Task 6b adds the last, of `/super/audit-log` filtered to a **CRM write action with a payload `<details>` open** — the state no earlier scan could reach because no CRM row existed to open, `audit-log.spec.ts`. **The running ordinals above are a narrative and the total is a measurement, and they had drifted apart: the tally said 35 and there are 37 — 36 until the rebase onto main, which brought a 37th, the first scan of anything under `/[orgSlug]/settings` (custom fields), repointed here at the Owner the page is gated on.** Count them, do not increment them — **10 direct `await scan(` calls in `accessibility.spec.ts` plus its `SIGNED_IN_PAGES` loop, which is 19 entries since Phase 8 Task 5 added `/account/erase` (18 before it), = 29**, plus the `new AxeBuilder` sites in `audit-log`, `consent`, `documents`, `data-requests` (one site, called twice), `exports`, `feedback` ×2, `impersonation` ×2, `keyboard`, `legal` (one site, seven scans), `organisation-lifecycle`, `overrides` and `platform-health`. The running ordinals in the sentences above stopped being maintained several tasks ago and are kept as the NARRATIVE of which task added what; `grep -c "await scan(\|new AxeBuilder" tests/e2e/*.spec.ts` is the measurement), and — since the keyboard-a11y pass — the **keyboard-only suite** (`keyboard.spec.ts`: Tab/Enter/Escape/arrow journeys with no pointer events — skip link, rail Escape-collapse and its suppression, the delete confirmation's focus round-trip, the command palette's combobox contract and its tenant-boundary search, and the login form end to end including implicit submission), and — since Phase 7 Task 2 — `impersonation.spec.ts`: the golden break-glass walk driven in two browser contexts at once (the superuser requests support access with a reason; the workspace's own Admin, MFA-challenged for real, reads that reason and accepts; the superuser starts the session and reaches the workspace **through the real "Open workspace" link, as a client-side navigation** — the step that caught the banner rendering from a shared ancestor layout that does not re-render on one — and reads a **bannered** workspace including a contact they do not own; the create control is present-and-disabled and the create route serves no form; the consent page refuses them, because support access cannot extend itself; the session ends and the workspace refuses identically to before it was granted), with the page-access audit trail read straight out of Postgres rather than through a UI that could be hiding it, plus the suspended-workspace pair (a suspended workspace's own Admin reads the "requests are paused" explanation instead of a bare 404, while a Manager still gets the identical not-found document — Q98's consequence made legible without softening it), and — since Phase 7 Task 1 — `audit-log.spec.ts`: the platform superuser signs in through a real TOTP challenge, reads `/super/audit-log` and gets rows from BOTH tenants, narrows by organisation/actor/action, confirms viewing the log is itself audited, and walks a real "Next" keyset page; a non-superuser (including, at the RLS-integration layer rather than here, a fully aal2'd Org Owner) gets the streamed not-found contract at `/super` and `/super/audit-log`, with no audit content leaked into the refusal; and — since Phase 7 Task 6b — the same spec walks a Manager through the **real contact edit form and the real delete confirmation**, then has the founder find both under `contact.updated` and `contact.soft_deleted` (populated, not the empty state), open the diff to read the changed column NAMES, and read **none of the text the Manager typed** — the no-content-leak rule of `SECURITY.md` § 7 asserted on the one cross-tenant screen the operator reads without an impersonation request; and — since Phase 7 Task 3 — `organisation-lifecycle.spec.ts`: the operator suspends a workspace from `/super/organisations` with a reason, that workspace's own Manager reads the four facts on the suspended banner on every route (read-only, which state, the retention deadline, that support reverses it) and does *not* read the operator's reason, the operator reopens it and the banner is gone for the same person on the same page, with both transitions and both verbatim reasons read straight out of `audit_events`; plus the workspace's own Admin being offered no undo anywhere, refusal parity at `/super/organisations`, and the aal1 refusal; and — since Phase 7 Task 4 — `overrides.spec.ts`: the operator grants a Pro billing override to world's real Starter workspace from `/super/billing`, and the workspace's own custom-fields settings page — read by a Manager who never touches the superuser area — visibly changes from "5 fields used" to "doesn't limit how many", the same `getOrganisationEntitlements()` code path every write-access gate in the app calls; the org's own Admin reads the override's tier and clock on the workspace home; a (simulated) expiry reverts both the copy and the clock with nothing scheduled; a second walk grants an `early_access_preview` feature override and shows the badge to an ordinary Standard User, not just an admin, then removes it on expiry; plus refusal parity at `/super/billing` and the aal1 refusal; and — since Phase 7 Task 5 — `platform-health.spec.ts`: the operator reaches `/super/health` **through the landing page's own link**, reads live counts with a floor the fixture guarantees (at least the two real workspaces), reads the “declared seats, not billed truth” caveat that keeps Task A's backfill from being presented as a billing figure, finds a real `incident_alerts` row rendered under its label, and resolves it — with the row still listed afterwards, because an alert is evidence and resolving is a flag, and (since that task's fix round 1) narrows the list with the alert-type filter and clears it again, because the flat 50-row read that shipped first was not the paginated list `CLAUDE.md`'s own "paginate everything" rule asks for; plus refusal parity at `/super/health` **asserted on the title as well as the body** (a static `metadata` export leaks “Superuser” into a streamed 404 whatever the body does) and the aal1 refusal, and — since the dark rebrand — `brand.spec.ts` (the checks a source-reading unit test cannot make: the signed-out header renders the wordmark lockup, with no mark beside it, on a computed `--color-shell` background and the wordmark resolving `--color-ink` through the token rather than a hardcoded fallback; `color-scheme` computes to `dark` so native controls follow the page; and `app/icon.svg` loads as a real decoded image over the network with a square natural size, not merely a well-formed file on disk), and — since Phase 7 Task 6 — `feedback.spec.ts`: a Manager opens the Feedback dialog **over a contact record**, reads the screenshot warning **before** the file picker (DOM order asserted), submits a bug with a PNG, and the row read straight out of Postgres carries their user id, email, `manager` role and that record's path with no field for any of it; the superuser reaches `/super/feedback` through the landing page, reads it **populated**, narrows by category and workspace slug, follows the real "View screenshot" link to a signed storage URL with the `feedback.screenshot_viewed` audit count going 0 → 1, and marks it Read (audited); a Standard User whose hourly budget is spent is refused in minutes, never raw seconds; plus refusal parity with title gating, the aal1 refusal (page and screenshot route), and the two axe scans; and — since that task's cleanup round (N5) — **two uploads over Next's 1 MB default Server Action body cap**: a 2 MiB PDF through the documents page (`documents.spec.ts`) and a 2 MiB then a 6 MiB PNG through the feedback dialog (`feedback.spec.ts`), the first two landing as the app's own success and the third refused by the dialog's own "larger than the 5 MiB limit" sentence — every earlier upload fixture was a few hundred bytes, which is how "up to 5 MiB" and "25 MiB" were both promised over a 1 MB cap that answered first with a framework 413 and a generic error; the cap now lives in `lib/security/upload-limits.ts`, read by `next.config.ts`, and is bound to both promises by `tests/unit/security/upload-limits.test.ts`. Against a real browser and the local stack. **178 tests in 30 files, run cold on its own dev server** (by `--list` at 238 migrations: 177 in 29 since Phase 8 Task 9c job 3a added `super-closures.spec.ts`, 2 tests and 2 axe scans, and 178 in 30 since job 3b added `workspace-closure.spec.ts`, 1 test and 2 axe scans — the Owner's settings page with the close section in the tree, and a closed workspace's CRM page with the banner; both specs have since run green in the full gate at `b0eac34` (178 passed, 0 failed, 238 migrations); 174 until Phase 8 Task 9a job 4 added the purged-document walk to `documents.spec.ts` -- the retention notice in place of Restore, a forced restore POST refused with the row unchanged, and an axe scan of that state, a new `new AxeBuilder` site (Q185); 173 until Phase 8 Task 9a added the ceiling-release walk to `platform-health.spec.ts`, which also brings that file a second `new AxeBuilder` site, scanning the release in its active state; 164 in 27 until Phase 8 Task 8 added `phase8-refusal-parity.spec.ts`, 9 tests: each Phase 8 refusal (`/super/legal`, `/super/data-requests`, a foreign `/[orgSlug]/settings/export`, a colleague's export download, the signed-out `/account` pages) compared with the document produced for something that does not exist -- on status, rendered text and title, and for `/super` (all nine pages plus `?doc=terms`, as four refused principals) on the RAW HTML too, normalised only for what differs between two fetches of one URL, with a superuser control proving the normaliser still tells a real page from the ghost. Its first run found every `/super` page to be an existence oracle. The `app/(app)/super/[...unknown]/page.tsx` catch-all closed the rendered half only: each page's own skeleton and the flight data naming its segment still differed in the raw document. What closes it is the rewrite in `lib/supabase/middleware.ts`, which routes every `/super` request from a signed-in caller not on the allowlist (`public.is_platform_admin()`, failing closed) onto the fixed `/super/not-found`; the pages' own `isSuperuser()` gates are now unreachable by a refused principal and are held by a source census in `tests/unit/security/super-page-census.test.ts` instead. One residual is accepted and written down in `SECURITY.md`: the exempt `/super/feedback/[id]/screenshot` route handler keeps its literal 404, so that one route shape is distinguishable. Also 163 until Phase 8 Task 6 added the retention preview walk to `platform-health.spec.ts`) (143 until Phase 8 Task 1 added `legal.spec.ts`'s seven, 150 until Phase 8 Task 2 added `consent.spec.ts` and `storage-census.spec.ts` — see the end of this cell) — the number sat stale at 113 from Task 4 through Task 5 and was corrected in Task 5's fix round 1, moved from 128 to 129 in Task 6b, to 130 in Task 6c, to 142 in Task 7 and **to 143 on the rebase onto main**, which brought main's custom-field settings scan — Task 7 added `tests/e2e/super-permissions.spec.ts` (12 tests then, 14 since Phase 8 by `--list`: the ROUTE half of the permission gate — every `/super` page and the delivery route handler walked as a wrong principal, with the page census built from a glob of the route tree at test time so a Phase 8 page under `app/(app)/super/**` lands as a red test naming itself) — a task whose own fix round corrected four psql suite counts and missed this one, which is why the check is `npx playwright test --list` and not this sentence (`feedback.spec.ts` gains the founder ruling Q121 render contrast: a support-access submission reads "Sent during support access" on `/super/feedback` while a genuinely workspace-less one still reads "Not inside a workspace" — both rows asserted present first, because the whole of the ruling's user-visible half is that the two cases must not look the same, and a page that rendered neither would satisfy every other assertion); `npx playwright test --list` is the check and it is cheap. **Since Phase 8 Task 1, `legal.spec.ts`** (7 tests): a signed-out browser reads all fifteen legal pages and each renders ITS OWN title as the `<h1>`, a version line, a body section heading and the draft notice (fifteen distinct first headings asserted, so one document served fifteen times fails); the index and the sign-in page's footer list all fifteen; `/legalese` and `/super/legal` still bounce a signed-out request to `/login` while `/legal/terms` answers 200 and `/legal/not-a-page` 404s; the Cookie Policy and Subprocessors tables render one row per entry of the code lists they are generated from, and the Contact and Vulnerability Disclosure pages render either a `mailto:` link or the "no contact address has been configured" sentence, never both and never the raw placeholder; a signed-in Manager reaches `/legal` from the new app footer; and the golden walk — the superuser opens the editor from `/super`, drafts a new AI Use Policy version, has a `javascript:` link refused beside the field and not stored, and the signed-out visitor keeps reading version 1 until publish, then reads version 2 with the notice, then (after the review is recorded) without it and without the reviewer's name, with the four audit rows read straight out of Postgres carrying neither the text nor the name. It adds **seven axe scans through one `new AxeBuilder` site** — four legal pages at 320px (with a no-horizontal-scroll assertion), the `/legal` index, the `/super/legal` list and the editor **with a draft open** — each preceded by proof that the document body (or the populated editor) actually rendered. **Since Phase 8 Task 2, `consent.spec.ts`** (1 test): a Manager reaches `/account/privacy` from the signed-in footer, reads that no marketing email is sent today, agrees in one press and reads the time and the marketing page's version (the version read out of Postgres, not a literal), is scanned by axe **with the grant on the page** (one more `new AxeBuilder` site, one more scan), withdraws in one press with no dialog, and the table and the audit log are read straight out of Postgres for both events, the grant unchanged by the withdrawal; **and `storage-census.spec.ts`** (1 test): after a signed-in walk that is built to produce all four declared storage items (sign in, open a workspace, pin the rail, be active) each is asserted PRESENT, then every cookie, `localStorage`/`sessionStorage` key, IndexedDB database and Cache Storage entry the browser holds must match `lib/legal/storage-inventory.ts`, and the page must have contacted no host but the app and its Supabase API. Its first run found a real item the source scan cannot see — the IndexedDB database `__next_debug_channel`, opened by Next.js's development client — which it excuses by name only while it is provably dev tooling (absent from every production server runtime, present in a development one); the suite runs `next dev`, so storage only a production build or the host would set is not observed (Q153). **The golden walk did not pass as Task 1 first shipped it:** its first full run was 149/150, because every editor confirmation ("Draft created", "Draft saved", "Published", "Counsel's review recorded") was rendered by the form that submitted it and thrown away by the revalidated page that no longer held that form — so the two editor scans after the first confirmation had never run in a full suite. Since fix round 1 the outcome lives in a region above everything an action changes (`components/admin/legal-editor-outcome.tsx`), and the walk passes with its original assertions. **Since Phase 8 Task 3, `data-requests.spec.ts`** (3 tests): one walk in two
+@@ -293,20 +293,28 @@ Full baseline table list is in PRD §11.
+ 
+ **Network, as it actually shipped in Phase 6** — publishable profiles for company/artist/venue/agency, a browsable directory, request-to-connect, and an explicit private-record-to-network-identity link. Four things read as gaps and are deliberate:
+ 
+ - **The base table is readable and the VIEW is the mask, not the policy.** `public.network_profiles` carries the one policy in the whole schema that permits a cross-tenant read (`network_profiles_select_published_directory`) — a row policy filters rows, it cannot filter columns, so a query against the base table directly would see every field, including ones the publisher marked `hidden`. The **only** sanctioned read path is two views, `public.network_directory` (`network`-level fields) and `public.network_connected_profiles` (`network` + `connections`-level fields, for an accepted connection), each locked to a fixed dependency set asserted from `pg_depend` (N2) — a future join against a private table to resolve a nicer display name is the failure mode that assertion exists to catch. `SECURITY.md` § 2 has the full as-built description.
+ - **Nothing private unlocks on accept.** An accepted `network_connection_requests` row changes exactly one thing: the requesting/requested organisation's *published profile fields* marked `connections` resolve for the other side. It grants no access to any tenant table — no notes, no financial entries, no documents, no events, no activity, no tasks, no meetings, and no ratings (which do not exist as a table yet and are guarded structurally against the day they do, N5/Q85). Proved query path by query path in `supabase/tests/network_leakage_phase6.sql`. **The unlock is also organisation-wide, not profile-pair-scoped (Q80)** — accepting one request resolves the requesting organisation's *other* published profiles' `connections`-level fields too, not only the one profile the request named.
+ - **Linking is manual only, never suggested.** `network_links` — "this network profile is the same entity as my own private record" — is created by an explicit search-and-confirm the user runs from their own record's page (Q73). No fuzzy matching, no auto-suggestion, no pre-filled search term, and no ranking by similarity: the search box starts empty. A link is also strictly private to the linking organisation (Q82) — the profile's publisher is never told who linked it, and no policy gives them a read of `network_links` at all.
+ - **A connection request is emailed, since Phase 8 Task 9b** (founder 2026-09-30, Q157(3)/Q174/Q45; `20261016000000`, `lib/email/network-notifications.ts`). **Received** goes to the requested workspace's active Owners and Admins; **accepted** and **declined** go to the member who sent it while they are still an active member of the sending workspace, and otherwise to that workspace's active Owners and Admins (Q202 — the PRD names no recipient). Each carries the counterparty's **published** display name at most (nothing when its profile is no longer published, which the requests page shows as "No longer available") and one link to `/[orgSlug]/network/requests` — never an organisation name, a member, who answered, a field of any visibility, a note, a rating or a financial; a declined notice says only that it was declined, which is what the Sent list says. Delivery is the existing `pg_cron` tick, not the server action, so a request POSTed straight to PostgREST is announced too; stamped in `private.notification_deliveries` (a ledger, because both tables grant `authenticated` table-level `UPDATE`, Q203) only after `ok:true`; none more than seven days late. There is still **no in-app toast**: `/[orgSlug]/network/requests` and the pending-received count on the workspace hub remain the in-app surfaces. Until then this read "a connection request arrives silently".
+ 
+ Three further things worth stating plainly rather than leaving a pentester or a reviewer to find them: **a declined connection request no longer blocks re-requesting** — Q79 shipped with declined-as-terminal (the one zero-cost anti-harassment control), and the founder reversed it on 2026-09-07 (`20260907000000` narrows the live-pair unique index to `pending`/`accepted`; the declined row itself stays immutable, a re-request is a fresh row beside it), which reopens a spam vector whose mitigation is the Phase 7 rate limiter below, not anything in Phase 6 — **built in Phase 7 Task 5** (`20260909040000`) as its own budget on SENDING, 10 per hour **per organisation** rather than per user, because a per-user budget is bypassed by inviting a colleague and the pestered workspace experiences one workspace whoever clicked; the crossing files an incident alert, which is the first time network harassment is visible to the operator at all, and the number is the only one in `SECURITY.md` § 5 that the document proposes rather than inherits (Q112). **It is enforced at the WRITE, since that task's fix round 1** (`20260909060000`, a `BEFORE INSERT` trigger): the first cut metered only `sendConnectionRequestAction`, and `network_connection_requests` carries a client `INSERT` grant and a permissive `INSERT` policy, so a scripted sender POSTing straight to PostgREST was unmetered and — worse — filed no alert, leaving the one abuser worth detecting invisible. PostgREST's read-only-GET constraint, which is why the DIRECTORY budget must be app-side, does not apply to a `POST`; the meter MOVED rather than doubling, because two meters on one click would halve the limit. One deliberate consequence, stated because it differs from every other category: this counter does not count past its limit (a refusal must raise, and a raise rolls back its own increment), so the crossing alert is filed by the last ACCEPTED request and the number means "hit the ceiling", not "tried n times" (Q115); the **30 requests/min network-discovery rate limit `SECURITY.md` § 5 specifies IS implemented, since Phase 7 Task 5** (`20260909020000`) — metered in the app at the one `lib/list/query.ts` chokepoint, on every `network_directory` read whether or not anyone typed a search term, under its own budget rather than the generic per-user search one, because its unit cost is O(published profiles platform-wide); the refusal is a `rate_limited` list outcome carrying the real remainder, and the 31st-in-a-minute is proved against a real Postgres through the real page function in `tests/integration/security/rate-limit-network-discovery.test.ts`. **One residual, named rather than implied:** a direct `GET /rest/v1/network_directory` with the anon key and a session JWT never enters the app and is not metered — PostgREST runs GETs in read-only transactions, so no DB-side hook on that path can write a counter (`SECURITY.md` § 5 carries the probe and the recommended Phase 10 closure; Q107); and a **suspended organisation's published profile stays visible** to a counterparty *and* to the suspended organisation's own members (Q88, measured in Task 5) — reads are not suspension-gated anywhere else either (`view_crm` is the only READ key with `survives_suspension = true`; since the Phase 7 pre-merge fix round the catalogue also carries `end_support_access`, which grants no read of anything — see § Superuser dashboard's impersonation paragraph), so this is consistent with the rest of the product rather than an oversight specific to the network. **The counterparty half of that sentence is now time-boxed, since Phase 7 Task 3 (`20260908031000`):** founder ruling Q88 gives a suspended organisation its directory presence until the end of its current subscription period and no longer than the 60-day retention window (Q92), and a *closed* one loses it at once (Q101) — implemented as a read rule in `network_profiles_select_published_directory` rather than a bulk unpublish, so it is correct at every instant with nothing scheduled and reverses when the workspace does. **The own-members half is unchanged and deliberately so**: the new term is disjoined with `private.is_active_member()`, because founder decision Q6 (suspension does not hide a customer's own data) is older and stronger. Both sides of both clocks are measured — `rls_phase7_lifecycle.sql` § LN on the predicate, `network_leakage_phase6.sql` § LJ through the directory view from a real counterparty's session. **A shipped migration comment is wrong about this and is not silently correctable:** `supabase/migrations/20260904002000_network_permissions.sql:42-45` claims "a suspended organisation's members cannot browse the directory or read their own network profiles until the workspace is reinstated" — measured false on both halves. It is a plain `--` script comment, not a `comment on policy`/`comment on view` statement, so there is no live database object whose comment a later migration could additively reissue (the `20260904007000` precedent applies only to `comment on` statements) — the shipped migration file is left as written, immutable, and this paragraph plus `FOLLOW-UPS.md`'s Q88 entry are the correction of record.
+ 
++**Integrations, as they actually shipped in Phase 9** — the schema for third-party mail/calendar/accounting connections, with **no live connector**. Five things read as gaps and are deliberate:
++
++- **Schema only, no live provider.** `private.integration_providers()` lists the candidates, every one `live = false`; `public.connect_integration()` therefore **always refuses a real call today** (`integration_provider_not_live`). Nothing is sent to any vendor, so `docs/sub-processors.md` has no integration row. Google Calendar is first after launch (Q232).
++- **Tokens live in Supabase Vault**, referenced by `token_secret_id` (in no client grant, and projected out of exports). Revoking deletes the secret by id and by name.
++- **Writes are RPC-only.** `authenticated` has column-level SELECT on `integration_connections` and `integration_sync_runs` and nothing else; `connect_integration` and `revoke_integration` are the person-facing RPCs, and `store_integration_token`, `read_integration_token` and `record_integration_sync_run` are `service_role` only. Revoked is terminal.
++- **Starter+ gate.** Connecting needs `manage_integrations` (Owner, Admin; MFA-gated) in a Starter-or-Pro workspace on an active lifecycle. A downgrade hides nothing already connected.
++- **The privacy lifecycle covers it** (erasure of a person's person-scoped connections and secrets, workspace purge, both exports, retention: revoked connections 2 years, sync runs 90 days). The `service_role` RPCs do not yet check lifecycle or tier, and an Admin can name another member as a connection's owner; both are owed when the first connector lands (`SECURITY.md` § 2, `FOLLOW-UPS.md` § Phase 9 Task 5).
++
+ **Duplicate contacts/companies:** an **exact, case-insensitive email match auto-merges**; everything else — including an exact name match — is flagged for manual review and never auto-merged silently. Every merge is audited. Name is only ever a *fuzzy* signal: `screen_for_duplicates()` labels a pair `exact_email` only when both emails are non-null and equal case-insensitively, and `fuzzy_name` otherwise (`supabase/migrations/20260829020000_dedup_detection_and_merge_workflow.sql:385`), and the application merges only on the ids the database proposes for that first case (`lib/crm/dedup.ts:704`, "AUTO-MERGE IS EMAIL-ONLY AND FIRES ONLY WHEN THE DATABASE PROPOSES IT"). In practice that means **contacts only**, because `contact` is the one entity in `MERGEABLE_COLUMNS` with an `email` column (`lib/crm/dedup.ts:65`).
+ 
+ ### Permissions
+ 
+ An action is allowed only if **all** of these permit it: platform policy ∩ subscription entitlement ∩ organisation role ∩ record scope ∩ user-specific exception. Entitlements are enforced **server-side** — hiding UI is not enforcement. Roles: Owner, Admin, Manager, Booker, Venue Manager, Finance, Marketing, Standard User, Read Only, Platform Superuser.
+ 
+ Downgrading a subscription makes features read-only or limited; it must never silently delete data.
+ 
+ ### Subscription tiers
+ 
+diff --git a/FOLLOW-UPS.md b/FOLLOW-UPS.md
+index b0ade5f..17b6e59 100644
+--- a/FOLLOW-UPS.md
++++ b/FOLLOW-UPS.md
+@@ -4567,10 +4567,17 @@ ledger holds them. The 9b residuals (m4, m6, the bare-domain autolink, the
+   `CLAUDE.md` § Superuser dashboard says the dashboard shows "only aggregate
+   metadata"; the reassign picker lists a closed workspace's member names and
+   roles (Q215, audited as `organisation.closure_candidates_viewed`, Q223).
+   That is a second deliberate exception beside feedback screenshots, and §
+   Superuser dashboard does not name it yet (DECISIONS-QUEUE Q231).
+ 
+ ## Phase 9 Task 3 (integrations in the privacy lifecycle) -- owed
+ 
+ - **A sync run stuck `running` is on no retention clock.** The `integration_sync_run` class (90 days) keys on `finished_at`, and the schema ties `status = 'running'` to `finished_at is null`. So a run a crashed connector never closed lives until its connection or workspace goes. This is harmless while no provider is live. Before the first connector (Q232), add a reaper in the `stuck_job` shape (mark it `failed` with a closed `error_code` after N hours) or a clock on `started_at`.
+ - **`supabase/tests/network_leakage_phase6.sql` is not re-runnable on one database.** This breaks the "every psql suite passes twice on one DB" rule (Phase 8 lesson 11). A second run on the same database records 218 assertions with 8 state-dependent reds: LA4, LA5b, LB4, LB4b, LC0c, LW7d, LZ1 and LZ1b. They read fixture state that the runner's later HTTP sections change (GAMMA's connection requests, `network_links`, published profiles, `document_versions`). This predates Phase 9. Phase 9's only change to the suite is IN9, a stateless catalogue query that passes on both runs. Fix it by making the suite build and tear down its own GAMMA fixtures, or by pinning the counts relative to a snapshot taken at the start of the suite.
++
++## Phase 9 Task 5 (docs, mutations, gates) -- owed
++
++- **The `service_role` integration RPCs ignore the workspace lifecycle and the tier.** `store_integration_token`, `read_integration_token` and `record_integration_sync_run` check neither a suspended or closed workspace nor a downgrade to Free, because no caller exists. The first connector must enforce both (or decide, with the founder, that a sync may continue on a Free workspace, and say so). `SECURITY.md` section 2.
++- **An Admin can create a person-scoped connection for another member** (`connect_integration` with `p_owner_user_id`). Harmless while no provider is live. The future OAuth callback must bind the token to `owner_user_id`, the person who consented, and refuse a callback whose session is not that person. Q236.
++- **Server-side integration audit rows carry the tombstone actor and appear in the tenant audit viewer.** Documented in `SECURITY.md` section 4. A distinct "system" actor would be a schema change to `audit_events`; not done here.
++- **Closed:** `tests/unit/legal/storage-census.test.ts` "no scanned file imports code from a place the scan skips" now has its own 30 s timeout (F-T8-1). It is a CPU-bound walk; a retry was never the answer.
+diff --git a/SECURITY.md b/SECURITY.md
+index 74814c9..8104fc2 100644
+--- a/SECURITY.md
++++ b/SECURITY.md
+@@ -85,40 +85,85 @@ four organisation paths in this schema are not called `organisation_id`, and a
+ name-keyed census would have dropped all four silently.
+ 
+ **Download is the requester's alone**, for both kinds — not "any Admin of that
+ workspace", because an archive is a snapshot taken under one person's rights
+ at one moment. There is therefore no cross-member read of `public.export_jobs`
+ at all, and the audit log is where an export is visible to anybody else. The
+ download route mints nothing until `public.audit_export_download()` has
+ written its row, and that function re-asks the ownership question inside a
+ definer so the audit path cannot be the weaker of the two.
+ 
++### Integrations: schema only, no live provider (Phase 9)
++
++`public.integration_connections` and `public.integration_sync_runs` exist so
++a connector can be built later without a schema change; **no provider is
++live** (`private.integration_providers()` returns `live = false` for every
++row), so `connect_integration()` refuses every real call with
++`integration_provider_not_live`. Controls as built:
++
++- **No client role writes either table.** `authenticated` holds column-level
++  SELECT only (the token reference column is not in the grant); every write
++  is a `SECURITY DEFINER` RPC. Reading is `manage_integrations` (Owner and
++  Admin, MFA-gated) or, for a person-scoped connection, its own owner.
++- **Tokens live in Supabase Vault**, never in a table column or an audit
++  payload. `store_integration_token`, `read_integration_token` and
++  `record_integration_sync_run` execute for `service_role` alone; the
++  browser and every signed-in session are refused.
++- **Revoked is terminal** (guard trigger, fails closed over the whole row),
++  and a revoke deletes the Vault secret by id and by name.
++- Connecting needs a Starter-or-above workspace (the CRM-write gate); a
++  downgrade hides nothing already connected.
++- Measured by `supabase/tests/rls_phase9_integrations.sql` (195 assertions)
++  and by twelve mutants
++  (`.superpowers/sdd/plan-the-whole-build-synthetic-thompson/mutation-results/phase9/`),
++  each of which turns at least one named assertion red.
++
++**Two gaps that are deliberate today and must be closed when the first
++connector lands** (`FOLLOW-UPS.md` § Phase 9 Task 5):
++
++1. The three `service_role` RPCs ignore the workspace lifecycle and the tier:
++   no caller exists, so nothing can reach them. The first connector must make
++   them refuse a suspended or closed workspace and a workspace that has
++   fallen to Free, or document why a running sync should continue.
++2. `connect_integration` lets an Admin name any active member as
++   `owner_user_id`. The future OAuth callback must bind the stored token to
++   that `owner_user_id` (the person who consented), never to the session that
++   happened to finish the callback (Q236).
++
+ ## 3. Input handling
+ 
+ - All queries are parameterised or built with a trusted query builder — no string-concatenated SQL, anywhere.
+ - Search/filter/sort inputs map to an allowlist of column names and operators; free-form input never becomes a column/operator name.
+ - Rich text is sanitised against stored and reflected XSS. URLs are validated against an allowlist of protocols (`javascript:` and `data:` rejected). `dangerouslySetInnerHTML` is avoided; where unavoidable, it requires security review.
+ - A strong Content Security Policy is shipped with the Next.js app.
+ - **Legal documents (Phase 8 Task 1) are the one place a platform operator's free text becomes a public page, and it never becomes HTML.** The stored body is a small Markdown subset (`##`/`###` headings, `-`/`1.` lists, `**bold**`, `[text](target)`, three `{{placeholders}}`) that `lib/legal/markup.ts` parses into typed blocks and `components/legal/legal-body.tsx` maps to React elements — there is no HTML string on the path and no `dangerouslySetInnerHTML` under `components/legal`, `lib/legal`, `app/legal` or the editor (asserted from source). Three layers refuse the same things: **save time** (`validateDraft` names the problem beside the field), **the database** (CHECK constraints: a link target must start `https://`, `mailto:` or a single `/`; no `<` followed by a letter, `/` or `!`; no unknown placeholder; the Cookie Policy, Subprocessors, Contact and Vulnerability Disclosure pages must keep their generated placeholder; and, since fix round 1, a placeholder only where it renders — `legal_documents_body_placeholders_placed` carries `lib/legal/markup.ts`'s five `PLACEMENT_PATTERNS` verbatim, proved equal to the parser's linear scan over a generated corpus against the LIVE constraint), and **render time** (a refused link renders as its text only, a tag is stripped, and React escapes the rest). `javascript:`, `data:`, `vbscript:`, `http:`, scheme-relative `//host` and targets containing whitespace or control characters are refused in every case variant (`tests/unit/legal/markup.test.ts`, `renderer.test.tsx`). **A scheme is accepted in lower case only** (fix round 1, M4): the parser used to accept `HTTPS://` and `MAILTO:`, which the case-sensitive CHECK refuses, so the layers disagreed; the stricter rule won. **The parse is linear** (M5): the original alternation regex took 5.8 s on a 100 000-character body of `[`, on every anonymous page view; a single scan replaced it and a timing test at the length limit fails the old form. **Fix round 1 left four quadratic expressions on the same path** (fix round 2): the per-line `/\s+$/` trim (4 to 6 s on a 100 000-character whitespace run), the heading, bullet and numbered-list patterns (quadratic when a U+2028 follows a long whitespace run, since `\s` matches it and `.` does not), and the `mailto:` address pattern (quadratic on a run of dots, and the database accepts any target beginning `mailto:`); plus the save-time placement check's `/[ \t]+$/` trim. Each is now a linear helper in `lib/legal/markup.ts`, proved equal to the regex it replaced on a generated corpus, and the timing test fails each old form when it is restored. The contact-address regex in `lib/legal/contact.ts` was checked and measured linear (under 1 ms at 100 000 characters). Mutation-tested: making the link check accept everything reds 27 unit assertions; disabling tag stripping reds 8 — and leaves the `<script>`/`<iframe>` render checks green, because React's escaping is the real control and stripping is defence in depth.
+ 
+ 
+ **`public.events.ticket_link` is guarded three times, and the middle one is stronger than its own comment claims (measured, Phase 3 Task 8).** `normaliseWebsite()` refuses a non-http(s) scheme on the way in, `safeHref()` refuses it on the way out (a value it rejects renders as inert text, never as an anchor), and the column additionally carries `events_ticket_link_is_http`, `check (ticket_link is null or ticket_link ~* '^https?://')`. That CHECK's own comment (`supabase/migrations/20260901000000_events_and_lineup.sql:147`) calls itself "DEFENCE IN DEPTH, NOT THE CONTROL"; the phrase "a row written before it, by an import, or by a direct PostgREST PATCH is still possible" is the DETAIL PAGE's comment (`app/(app)/[orgSlug]/events/[eventId]/page.tsx:60-64`), not the constraint's — and on this column none of the three is possible today: it is a **validated** CHECK (not `NOT VALID`), so it binds every writer including `postgres` and `supabase_admin`, and `public.events` was created *with* it, so there are no older rows. Phase 3 Task 8 tried to plant a `javascript:` ticket link as `postgres` for a render test and could not. **Two things follow.** A pentester should not spend time hunting for a stored `javascript:` on this column — but `contacts.website` and `contacts.socials` have **no** equivalent CHECK and a hostile value *is* plantable there, which is why `tests/e2e/tenant-breakout.spec.ts` plants one and asserts the render. And nobody should weaken `safeHref()` on the strength of the CHECK: it is one column's constraint, it does not run on render, and it does not normalise.
+ 
+ ## 4. Authentication and session security
+ 
+ - Identity: Supabase Auth. Email/password and magic-link/OTP at MVP; **Google SSO ships at MVP**, Microsoft SSO is post-MVP.
+ - Session limits: **30-minute inactivity timeout, 12-hour absolute session lifetime.**
+ - MFA is **required** for Platform Superuser, Organisation Owner, Admin and Finance roles. Optional (not enforced) for all other roles at MVP.
+ - MFA is **enforced at every sign-in, not just at enrollment**. A privileged user with a verified TOTP factor who signs in at `aal1` is challenged for a code before reaching the app — an enrolled-but-never-challenged factor satisfies the requirement in name only. Founder decision, 2026-08-27.
+ - **MFA recovery (lost authenticator) has no self-service path at MVP.** Because the challenge is enforced, a privileged user who loses their TOTP device cannot sign in at all. There are no backup codes and no admin reset UI. The only recovery today is a manual operator action: delete that user's row from `auth.mfa_factors` in the Supabase dashboard (SQL editor, filtered by `user_id`) after verifying the requester out-of-band, which drops them back to the enrollment gate on next sign-in. **This is a deliberate MVP gap, not an oversight** — self-service recovery (backup codes at enrollment, plus a superuser-initiated, audited reset) belongs to Phase 7 (Admin/Security) alongside the rest of the superuser dashboard. Until then: the manual deletion must be treated as a high-risk admin action — verify identity out-of-band before performing it, since it is a complete bypass of the second factor.
+ - **MFA is enforced in the database, not only in the UI.** `public.has_permission()` and `private.has_platform_permission()` return false for an MFA-required role on a session that has not reached `aal2` (`supabase/migrations/20260827210000_mfa_aal_permission_gate.sql`), so every write policy in the schema inherits the requirement. The app-layer gate (`lib/auth/mfa-gate.ts`, plus `assertMfaSatisfied()` on the privileged Server Actions) gives a readable refusal and stops side effects outside the database; it is not the enforcement. The anon key ships in the browser bundle by design, so anyone holding a session token can call PostgREST directly and bypass the entire Next.js app — the database is the only chokepoint on that path.
+ 
++- **Server-side integration RPCs audit as the tombstone actor.** When the
++  caller is not a person (`store_integration_token`, `record_integration_sync_run`,
++  and the revokes performed by the membership trigger or the erasure), the
++  `integration.*` audit rows carry the Q130 tombstone as `actor_user_id`
++  (`reason` in the payload says why). They sit in the tenant's own audit trail
++  and appear in the tenant audit viewer; read "actor = erased user" on such a
++  row as "the system acted", not "an erased person did".
++
+ ### Known limitation: MFA gates privileged WRITES, and — since Phase 2 — CRM READS
+ 
+ **Narrowed on 2026-08-28 (Phase 2, Task 2). The CRM tables are now `aal2`-gated for reads as well; Foundation's tables are not.** Read the whole section: the half that remains open is still the half a pentester will find.
+ 
+ **What changed.** Every Phase 2 CRM policy — all twelve tables, reads included — is built on `private.permitted_organisations()`, which restates `public.has_permission()`'s body including the `aal2` clause. So an Owner, Admin or Finance user on an `aal1` session now reads **zero** contacts, companies, agencies, artists, venues, rooms, links, representations, fee history, custom field definitions, custom field values and merge records. Measured over real HTTP with a real password-grant token plus the public anon key, i.e. the exact stolen-password request this section is about (`supabase/tests/run-rls-tests.sh`, "Phase 2 CRM at the API surface"), and in psql (`rls_phase2_crm.sql` § J).
+ 
+ **Why that is not the lockout described below.** The enrolment path needs `profiles`, `organisations` and `organisation_memberships`. It needs no CRM row. So an un-enrolled Owner still signs in, still loads the app, still reaches the enrolment screen — asserted as a lockout guard at both layers — and simply sees an empty CRM until they present a factor.
+ 
+ **What is still open.** A stolen `standard_user`, `booker`, `manager`, `venue_manager` or `marketing` password still reads that user's CRM rows at `aal1`, because MFA is **optional** for those roles at MVP and there is no factor to present. And Foundation's own read policies are unchanged, for the reason in the next paragraph. So the section title's original claim still holds for most of the product; it no longer holds for the largest tenant-data surface in it.
+ 
+@@ -835,20 +880,21 @@ Carried over from `CLAUDE.md` § Open decisions — these need founder/legal inp
+ 
+ `supabase/config.toml` governs the **local CLI stack only**. Nothing in this repo pushes it to a hosted Supabase project, so every value below must be set by hand in the hosted project's dashboard before launch, or the control it represents does not exist in the environment that matters:
+ 
+ - **Project region — Ireland (eu-west-1)** (§ 8; founder 2026-09-30, Q145). Chosen when the hosted project is created, not settable from `config.toml`, and checked by nothing in this repository. Since Phase 8 Task 9a the public Privacy Notice (v4), DPA (v5), Security page (v3) and Subprocessors table state the region by name, on the founder's ruling, where until then they marked "a UK/EU region" as a **(deployment setting)** — so this check is now what makes the published sentence true: confirm the production project's region reads `eu-west-1` before launch, and if it does not, the four pages are wrong and must be republished.
+ - **Application host — an IONOS VPS (IONOS SE, Germany), region PENDING** (founder 2026-09-30, Q142). Not bought yet. When it is: record its region in `docs/sub-processors.md` and `lib/legal/sub-processors.ts` together, settle its transfer basis with counsel, sign its DPA, and republish the Privacy Notice, DPA, Security page and Subprocessors page, which today say its location is pending. No application code, configuration or current document in this repository assumes any other host (or any host type); the only mentions of Vercel are third-party tooling names, `.gitignore` boilerplate, and two shipped migration comments that are immutable history — `20260916000000` (a negation: the alert clock is *not* an external/Vercel cron) and `20260922005000` (recording what an older FOLLOW-UPS once implied).
+ - `jwt_expiry = 900` — bounds how long an already-issued access token keeps working after its underlying session has been invalidated server-side. Left at the 3600s default, that window is an hour.
+ - `[auth.sessions] timebox = "12h"` and `inactivity_timeout = "30m"` — these are what actually enforce the session limits in § 4; the app-side idle tracker is a proactive UX layer on top, not the enforcement.
+ - `[auth.mfa.totp] enroll_enabled` / `verify_enabled = true` — without these the MFA gate has nothing to enroll or challenge against.
+ - `minimum_password_length = 10` — must match `MIN_PASSWORD_LENGTH` in `lib/forms.ts`, or the app's validation is bypassable by calling GoTrue directly.
+ - **Email delivery (Phase 7 Task 6) — four environment values and one cron, none of which ships itself:** `BREVO_API_KEY` / `BREVO_SENDER_EMAIL` / `BREVO_SENDER_NAME` (`docs/email-setup.md` — domain authentication first, or mail lands in spam), `SUPPORT_CONTACT_EMAIL` (§ 13), and `INCIDENT_ALERT_DELIVERY_SECRET` (≥ 32 chars) **plus the two Supabase Vault entries the database's own clock reads** (Q118): `select vault.create_secret('https://<host>/api/incident-alerts/deliver', 'incident_alert_delivery_url', '…');` and `select vault.create_secret('<the same value as INCIDENT_ALERT_DELIVERY_SECRET>', 'incident_alert_delivery_secret', '…');`. The `pg_cron` job ships with the schema (`20260916000000`, every 10 minutes) and is a silent no-op until both entries exist — so a deploy that sets the environment variables and forgets the Vault entries has a scheduler that runs and delivers nothing. Verify with `select * from cron.job_run_details order by start_time desc limit 5;` and `select status_code from net._http_response order by created desc limit 5;`. With any of these missing the product degrades honestly — feedback is stored and shown "email not sent", alerts stay rows — but silently as far as the inbox is concerned. Verify after deploy by submitting one feedback and confirming the receipt arrives and the row on `/super/feedback` no longer reads "email not sent"; then `curl -X POST -H "Authorization: Bearer …" https://<host>/api/incident-alerts/deliver` and confirm a JSON `outcome`, never a 404. Sign Brevo's DPA before real personal data flows (`docs/sub-processors.md`). Every Brevo call carries a 10-second timeout (`BREVO_TIMEOUT_MS`, fix round 1 I2) and the feedback receipt runs after the submission's response through `next/server`'s `after()`, so a Brevo stall can neither hang a submission nor, via the retry it invited, duplicate the row. **Supabase Auth's own mail (sign-up, magic link, reset) is NOT relayed through Brevo today** — that is a hosted-project SMTP setting nothing in this repository configures (`docs/email-setup.md` § 3); until it is done, auth mail is Supabase's built-in sender and Brevo processes only the support contact's address and feedback receipts.
++- **A real integration connector is a launch-gate-style item (Phase 9, Q232).** The schema ships with no live provider. Before any provider's `live` flag turns on: a signed per-vendor DPA and a `docs/sub-processors.md` row (none is needed until then, because nothing is sent to a vendor); the transfer basis checked (IDTA or SCCs where the vendor is outside the UK/EU); the vendor's OAuth app review completed and the minimum scopes confirmed (Google Calendar is first, Q232); the two Phase 9 gaps in section 2 closed; and the token paths exercised against the hosted Vault.
+ - **The export runner's own secret and Vault pair (Phase 8 Task 4)** — `EXPORT_RUNNER_SECRET` (≥ 32 chars, and **a different value from `INCIDENT_ALERT_DELIVERY_SECRET`**: leaking one must not hand over the other, and this one can be made to run every queued export) plus `select vault.create_secret('https://<host>/api/exports/run', 'export_runner_url', '…');` and `select vault.create_secret('<the same value as EXPORT_RUNNER_SECRET>', 'export_runner_secret', '…');`. The same `pg_cron` job carries it — there is still exactly one — and it is a silent no-op until both entries exist. **Unlike the digest, a missing pair is not the whole failure:** the request that starts a job also nudges the runner in-process, so exports still run; what is lost is the RETRY for a job whose nudge died with its process, which is a person waiting for a statutory response while nothing happens. Verify with `curl -X POST -H "Authorization: Bearer …" https://<host>/api/exports/run` and confirm a JSON `outcome`, never a 404.
+ - **The retention runner's own secret and Vault pair (Phase 8 Task 6)** — `RETENTION_RUNNER_SECRET` (≥ 32 chars, and **a different value from all three of the above**) plus `select vault.create_secret('https://<host>/api/retention/run', 'retention_runner_url', '…');` and `select vault.create_secret('<the same value as RETENTION_RUNNER_SECRET>', 'retention_runner_secret', '…');`. The same `pg_cron` job a fourth time — there is still exactly one — and a silent no-op until both entries exist. **This is the one whose blast radius includes the audit log**, which is why it is not allowed to be the erasure runner's secret under another name. It still cannot choose what to delete: every period is declared in `private.retention_periods()`, and the audit purge's hard floor, sanity ceiling and kill switch are all beyond this endpoint's reach. **A missing pair is a real consequence rather than a quiet one:** the job never runs, `/super/health` shows no runs at all and says in words that a deployment with no runner URL never records one, and data past its retention period is simply kept. Verify with `curl -X POST -H "Authorization: Bearer …" -d '{"dry":true}' https://<host>/api/retention/run` — a DRY run, which counts and deletes nothing — and confirm a JSON `outcome`, never a 404.
+ - **The erasure runner's own secret and Vault pair (Phase 8 Task 5)** — `ERASURE_RUNNER_SECRET` (≥ 32 chars, and **a different value from both of the above**: this is the one that makes queued DELETIONS happen sooner) plus `select vault.create_secret('https://<host>/api/erasure/run', 'erasure_runner_url', '…');` and `select vault.create_secret('<the same value as ERASURE_RUNNER_SECRET>', 'erasure_runner_secret', '…');`. The same `pg_cron` job again — there is still exactly one — and a silent no-op until both entries exist. It cannot CHOOSE a deletion: the route takes no argument, and every job it can reach is one somebody already asked for through a gate the endpoint does not control. **A missing pair matters more here than it does for exports:** without the retry, a person whose account is "being deleted" and is not being deleted cannot even ask again, because the one-live-job index refuses. Verify with `curl -X POST -H "Authorization: Bearer …" https://<host>/api/erasure/run` and confirm a JSON `outcome`, never a 404. **`EXPORT_RUNNER_SECRET` was documented here by Task 4 and never added to `.env.example`; Task 5 added both.**
+ - **`[auth.hook.password_verification_attempt] enabled = true`, pointing at `pg-functions://postgres/public/hook_password_verification_attempt`** — this is the whole of § 5's per-account login limit. A hook that is not enabled in the hosted dashboard is a limit that does not exist, and it fails silently: sign-in keeps working, brute force is simply unmetered, and nothing in the app can tell. Verify after deploy by making six failed sign-ins against a test account and confirming the sixth is refused *and* that a `repeated_login_failures` row appears in `public.incident_alerts`.
+ 
+ ### The platform superuser grant
+ 
+ `public.platform_admins` is the platform-superuser allowlist. It has RLS enabled with **zero policies and zero client grants**, so no client role — not even a leaked service-role key — can write to it. Rows are added by migration or DBA action only, and it seeds **empty** on purpose.
+ 
+ That is the correct shape for the table and a launch blocker for the product, because three separately-correct decisions compose into a dead end while it stays empty:
+diff --git a/docs/integrations-discovery.md b/docs/integrations-discovery.md
+index 8438284..2b562dd 100644
+--- a/docs/integrations-discovery.md
++++ b/docs/integrations-discovery.md
+@@ -96,23 +96,31 @@ personal data too.
+ 
+ **Documented public API.** Yes. Permissions reference:
+ https://learn.microsoft.com/en-us/graph/permissions-reference (checked 2026-10-09).
+ 
+ **Auth model and narrowest scopes.** OAuth 2.0 on the Microsoft identity
+ platform. Delegated `Calendars.Read`, `Calendars.ReadWrite` and
+ `Calendars.ReadWrite.Shared` are listed with admin consent **not** required;
+ `Calendars.ReadBasic` also exists (same page, checked 2026-10-09). For mail,
+ `Mail.ReadBasic` (no body, preview or attachments) is the narrow read, and
+ `Mail.Send` is separate (https://learn.microsoft.com/en-us/exchange/permissions-exo/application-rbac,
+-which lists the application-permission equivalents, checked 2026-10-09). I
+-could not read the Mail rows of the permissions-reference page (truncated), so
+-the delegated Mail admin-consent defaults are not confirmed here.
++which lists the application-permission equivalents, checked 2026-10-09). On the
++permissions-reference page, read in a later chunk, the delegated
++`AdminConsentRequired` value is "No" for `Mail.Read`, `Mail.ReadBasic`,
++`Mail.ReadWrite` and `Mail.Send` (https://learn.microsoft.com/en-us/graph/permissions-reference,
++checked 2026-10-10, via a page-reading tool's quotation of the table, not a
++visual read). That is the default only: a search summary of a Microsoft Q&A
++thread quoting Message Center notice MC1163922 says Microsoft-managed consent
++policy may require admin approval for third-party apps reading Exchange content,
++possibly including `Mail.ReadBasic`; Microsoft had not published a definitive
++list there (checked 2026-10-10, third-party/community, unconfirmed). A tenant's
++own consent settings can also force admin approval.
+ For a customer that wants to restrict an app to named mailboxes, Exchange
+ Online "RBAC for Applications" scopes Graph application permissions per
+ mailbox (same Exchange page).
+ 
+ **Partner or licensing gates.** Publisher verification (a verified Microsoft
+ Cloud Partner Program account tied to the app registration) is aimed at
+ multitenant apps; per a search summary of Microsoft's docs, newly registered
+ unverified multitenant apps cannot get end-user consent when risk-based
+ step-up consent is on, and verification has no cost
+ (https://learn.microsoft.com/en-ca/entra/identity-platform/publisher-verification-overview,
+@@ -179,24 +187,34 @@ https://www.fatsoma.com/policies, checked 2026-10-09); that is a term about
+ processors, not a statement of where Fatsoma stores data.
+ 
+ **Sub-processor row.** Not determinable without an API to evaluate.
+ 
+ ## 6. Xero
+ 
+ **Documented public API.** Yes: https://developer.xero.com/ (pricing page
+ reached: https://developer.xero.com/pricing, checked 2026-10-09).
+ 
+ **Auth model and narrowest scopes.** OAuth 2.0 with granular scopes. The
+-scopes page returned no scope names to my fetch
+-(https://developer.xero.com/documentation/guides/oauth2/scopes/, checked
+-2026-10-09), so the exact narrowest scopes for invoices, contacts and bank
+-transactions: not confirmed here.
++scopes page returned only its title to my fetch on 2026-10-09 and again on
++2026-10-10 (https://developer.xero.com/documentation/guides/oauth2/scopes/), and
++Xero's developer blog post on the change
++(https://devblog.xero.com/upcoming-changes-to-xero-accounting-api-scopes-705c5a9621a0)
++returned HTTP 403 (2026-10-10). So the following comes from Apideck's write-up
++(https://www.apideck.com/blog/xero-scopes, third-party, checked 2026-10-10) and
++is unconfirmed against Xero: apps created on or after 2 March 2026 have no
++access to the broad `accounting.transactions` scope and must use granular
++scopes, each with a `.read` variant: `accounting.invoices.read` for invoices,
++`accounting.banktransactions.read` for bank transactions. Contacts stay on
++`accounting.contacts` with no `.read` variant listed. Older apps have until
++about September 2027 to migrate. Per the same source, the journals endpoint is
++gated behind the Advanced tier plus a security assessment and Xero approval.
++Confirm all of it on Xero's scopes page before relying on it.
+ 
+ **Partner or licensing gates.** Since 2 March 2026 Xero prices API use by
+ tier (third-party summaries, including
+ https://developers.apideck.com/apis/accounting/xero/overview, checked
+ 2026-10-09). Xero's own pricing page lists: Starter, max 5 connections, no
+ charge; Core, 50 connections, $35 AUD per month; Plus, 1000, $245 AUD; Advanced,
+ 10,000, $1445 AUD; Enterprise, no limit, price on application. Paid tiers
+ require a payment method. It lists App Certification and an initial and annual
+ Security Assessment as prerequisites, but the flattened table does not show
+ which tiers need which (https://developer.xero.com/pricing, checked
+@@ -210,30 +228,36 @@ representative (https://www.xero.com/uk/legal/privacy/, checked 2026-10-09).
+ Where API data is hosted and which UK transfer mechanism applies: not found in
+ what I could read.
+ 
+ **Sub-processor row.** Yes if we pull invoices or contacts (customer names
+ and bank detail on invoices are personal data). A Xero row, DPA first.
+ 
+ ## 7. QuickBooks (Intuit)
+ 
+ **Documented public API.** Yes: Intuit's developer scopes page exists at
+ https://developer.intuit.com/app/developer/qbo/docs/learn/scopes but renders
+-without content to my fetch, so I relied on search summaries
+-(checked 2026-10-09).
++without content to my fetch (retried 2026-10-10: page title only), so I relied
++on search summaries (checked 2026-10-09 and 2026-10-10).
+ 
+ **Auth model and narrowest scopes.** OAuth 2.0. The accounting scope is
+ `com.intuit.quickbooks.accounting`; there is a separate
+ `com.intuit.quickbooks.payment` scope. Changing scopes forces
+ re-authorisation (third-party summaries, e.g.
+ https://developers.apideck.com/connectors/quickbooks/docs/application_owner+oauth_credentials,
+ checked 2026-10-09). A finer-grained scope than the single accounting scope:
+-not found.
++not found. A search summary of an Intuit developer-support answer
++(https://help.developer.intuit.com/s/question/0D5TR00001FvXDB0A3/how-can-i-give-an-api-read-access-only,
++checked 2026-10-10, community, unconfirmed against Intuit's docs) says the
++accounting scope has no read-only variant; the suggested workaround is GET-only
++code or a view-only QuickBooks user role, neither enforced by the scope. Other
++scopes for specific features (e.g. `sales.sales-order.read`) are mentioned by
++community posts as limited to higher developer tiers (same caveat).
+ 
+ **Partner or licensing gates.** Production keys require completing an app
+ assessment questionnaire; apps on the app store and apps with over 500
+ connections get an annual review (same summary, third-party; confirm on
+ Intuit's own page).
+ 
+ **Data residency / transfer basis.** Intuit's UK data processor terms restrict
+ transfers outside the EEA and list examples of safeguards, naming EU SCCs and a
+ now-invalid Privacy Shield; they do not name the IDTA or UK Addendum
+ (https://www.intuit.com/legal/terms/en-gb/quickbooks/payroll-data-processing/,
+@@ -267,32 +291,38 @@ reached.
+ 6. Gmail, then Microsoft mail.
+ 7. Fatsoma, blocked until Fatsoma says whether an API exists.
+ 
+ **Reasoning.** Calendar is the smallest honest step on the PRD's own list: it
+ asks only for explicit consent and conflict handling, it needs event-level
+ scopes (`calendar.events.owned`, or `calendar.app.created` if we write only to
+ a calendar we create), and it never reads mail bodies, so it avoids the one
+ gate that is certain and heavy, Google's restricted-scope annual security
+ assessment that mail sync triggers. It also fits the product's core workflow
+ (holds and shows on a date) better than accounting does. Google first rather
+-than Microsoft only because the documented gate is lighter to reason about and
+-one Google registration later unlocks Gmail; Microsoft is a close second and
+-carries no assessment I could find. Two uncertainties could reorder this and
++than Microsoft is a close call, not a finding: the only gate I could confirm
++for Google is on the Gmail (mail) scopes, which Calendar does not need, and I
++did not confirm how Google labels the Calendar scopes; Microsoft's calendar
++scopes need no admin consent by default (subject to the unconfirmed tenant
++consent-policy caveat in § 3) and I found no assessment, though that is not
++proof none exists. Neither source shows one is easier. Google is ranked
++first as a judgement call, not on a documented difference, and the founder
++chose it (Q232). Two uncertainties could reorder this and
+ both are cheap to settle before building: whether Calendar scopes trigger the
+ Google assessment, and what the audience actually uses (ask the first ten
+ customers which calendar they live in). Xero is held back by tiered API fees
+-and certification; Skiddle by its non-commercial clause; Fatsoma by publishing
+-nothing at all.
++and certification; Skiddle by its non-commercial clause; Fatsoma because no
++public API or developer docs were found (a private partner API is not
++excluded).
+ 
+ ## Founder pre-work list
+ 
+-None of this needs code, and none of it should start until Q232 is answered.
++None of this needs code, and Q232 is answered: Google Calendar first.
+ 
+ 1. Ask ten prospective customers which calendar and mail they use (Google vs
+    Microsoft); that decides rank 1 versus 2 more than any doc.
+ 2. Create a Google Cloud project and OAuth consent screen under a company
+    Google account (not personal). Add the Calendar scopes in the scope picker
+    and read the label Google shows (sensitive or restricted). That settles the
+    open assessment question.
+ 3. Register the Microsoft Entra multitenant app and start Microsoft Cloud
+    Partner Program verification (publisher verification takes calendar time;
+    needs a verified domain).
+diff --git a/docs/sub-processors.md b/docs/sub-processors.md
+index c6272c5..88beb1a 100644
+--- a/docs/sub-processors.md
++++ b/docs/sub-processors.md
+@@ -30,10 +30,15 @@ Supabase row carried while the region was unconfirmed is gone.
+ 
+ | Sub-processor | Purpose | Personal data it processes | Location | Transfer basis (UK → there) | DPA |
+ |---|---|---|---|---|---|
+ | **Supabase, Inc.** | Database, authentication, file storage — the system of record | Everything the product stores: account identities, workspace records, documents, audit trail | Incorporated in the United States; data hosted in Ireland (eu-west-1) (founder 2026-09-30, Q145; `CLAUDE.md` § Non-functional targets) | **Not established.** The data region is Ireland (eu-west-1) (founder 2026-09-30); it is set when the hosted project is created, and `SECURITY.md` § 15 "Project region" is the pre-launch check that it is. Supabase, Inc. is US-incorporated with no signed DPA, so whether any restricted transfer takes place (for example support or sub-processor access from outside the UK) and which safeguard covers it (adequacy, the IDTA or SCCs) is for counsel to confirm. Supabase's own sub-processors (cloud provider) would be covered by its DPA once signed | **Not yet signed** — pre-launch |
+ | **Brevo (Sendinblue SAS)** | **Built:** transactional email — the in-app feedback receipt and the incident-alert digest to the support contact, and the account-lockout notice to the affected account holder (`lib/email/send.ts`, `lib/email/lockout-notification.ts`); since Phase 8 Task 9b/9c, the requester's data-subject-request received/closed and export-ready notices, the connection-request received/accepted/declined notices to the Owners and Admins (or the sender), task reminders to the assignee, and the workspace-closure and closure-decision notices (`lib/email/requester-notifications.ts`, `network-notifications.ts`, `task-reminder-notifications.ts`, `workspace-closure-notifications.ts`). **Not yet configured:** Supabase Auth SMTP relay for sign-up, magic-link and reset mail — a hosted-project setting (`docs/email-setup.md` § 3) that nothing in the repository configures today; this row's scope widens to auth mail only when that step is done | **Today:** the support contact's address; for a feedback receipt, the submitter's email, workspace name, role, the page path and **the message text they typed**; for a lockout notice, the locked account's email address; for those notices, the recipient's email address plus a request reference, right and status, a counterparty's published display name, a task's title and due date, or a workspace's name and slug (never a note, rating, financial or the superuser's reason). **Once the Auth relay is configured:** every user's address, on every sign-up / magic link / reset | France (EU) | The EEA is covered by the UK's adequacy regulations, so **no IDTA/SCCs are needed for the transfer itself**. Phase 7's DECISIONS-QUEUE Q91 described Brevo as "non-UK/EU"; it is EU-based, and Q119 records the correction | **Not yet signed** — must be before real personal data flows (`SECURITY.md` § 15) |
+ | **IONOS SE** | Application host — the virtual private server the Next.js application will run on. **Not yet bought:** nothing is deployed to it today | Every request and response: session cookies, IP addresses, page content, form submissions and uploads in transit | Incorporated in Germany (EU); server region PENDING — the server has not been set up yet (founder 2026-09-30: "most likely UK"; `DECISIONS-QUEUE` Q142) | **Not established.** It depends on the server's region, which is pending. Counsel to confirm the basis once the region is chosen, alongside IONOS SE's own sub-processors | **Not yet signed** — pre-launch |
+ 
+ Not sub-processors (no personal data reaches them): the malware scanner at
+ MVP is a local stub (`SECURITY.md` § 6, Q42) — a scanning SaaS, when chosen,
+ is added here first.
++
++Integrations (Phase 9) add **no row**: the schema ships with no live provider,
++so no connection can be made and nothing is sent to a mail or calendar vendor.
++The first connector (Google Calendar, Q232) adds its vendor here, with its DPA
++and transfer basis, before its `live` flag turns on.
+diff --git a/tests/unit/legal/storage-census.test.ts b/tests/unit/legal/storage-census.test.ts
+index 2bec447..ae2d37a 100644
+--- a/tests/unit/legal/storage-census.test.ts
++++ b/tests/unit/legal/storage-census.test.ts
+@@ -299,21 +299,23 @@ describe("the scanned file set is derived, so a new root file or folder cannot b
+         references++;
+         const target = ref.specifier === null ? null : resolveSpecifier(rel, ref.specifier);
+         const top = target?.split("/")[0];
+         if (top && (NON_SHIPPED_ROOT_DIRS.has(top) || top.startsWith(".") || top === "node_modules")) {
+           leaks.push(`${rel} -> ${ref.specifier}`);
+         }
+       }
+     }
+     expect(references, "DENOMINATOR: the import walk read imports").toBeGreaterThan(1000);
+     expect(leaks, "an app module imports from a folder the storage census does not scan").toEqual([]);
+-  });
++    // A CPU-bound walk that parses every app file: its own 30 s ceiling, because the 5 s
++    // default times out under load (F-T8-1). A longer limit, never a retry.
++  }, 30_000);
+ });
+ 
+ describe("the storage census (Phase 8 Task 2, Q129)", () => {
+   const sites = scanTree();
+ 
+   it("NON-VACUITY: the scan finds every declared site, so a pass below is not a scan of nothing", () => {
+     for (const declared of DECLARED) {
+       const found = sites.filter((s) => key(s) === key(declared));
+       expect(found.length, `${key(declared)} -- the scan no longer sees it`).toBeGreaterThan(0);
+     }

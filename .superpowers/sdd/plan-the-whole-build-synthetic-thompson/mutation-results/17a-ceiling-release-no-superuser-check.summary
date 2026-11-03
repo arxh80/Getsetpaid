@@ -1,0 +1,17 @@
+mutant: 17a-ceiling-release-no-superuser-check
+migrations before/after: 213/213
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [rt] REL5 an Owner AT aal2 who is not the platform superuser is refused (the superuser check)
+  [rt] REL8 ...and NOT ONE of those refusals released anything or wrote an audit row
+  [rt] REL9 THE aal2 SUPERUSER releases it with a reason -- for EXACTLY 72 hours, starting now
+  [rt] REL11 it was audited ONCE, as the operator, with the reason and the window
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+integration  tests/integration/security/phase7-permission-matrix.test.ts > RPC 'release_audit_purge_ceiling' > refuses 'impersonatedOrgOwner', with no side effect and no audit row
+integration  tests/integration/security/phase7-permission-matrix.test.ts > RPC 'release_audit_purge_ceiling' > refuses 'orgOwner', with no side effect and no audit row
+integration  tests/integration/security/phase7-permission-matrix.test.ts > RPC 'release_audit_purge_ceiling' > refuses 'overriddenOrgOwner', with no side effect and no audit row
+integration  tests/integration/security/phase7-permission-matrix.test.ts > RPC 'release_audit_purge_ceiling' > refuses 'superuserAal1', with no side effect and no audit row
+integration  tests/integration/security/phase7-permission-matrix.test.ts > RPC 'release_audit_purge_ceiling' > refuses 'suspendedMember', with no side effect and no audit row
+        Tests  5 failed | 552 passed (557)

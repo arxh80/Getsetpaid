@@ -1,0 +1,11 @@
+mutant: 17e-purge-ignores-release
+migrations before/after: 213/213
+runner exit: 1   vitest exit: 
+--- psql: red assertions, read from each suite's results table ---
+  [rt] REL13 the DRY run under a release counts the per-run ceiling and SAYS it ran released
+  [rt] REL14 the LIVE run under a release deletes -- at most p_limit (rail 4 still holds)
+  [rt] REL19 at 71 hours old the release is STILL active, and the purge still runs released
+  [rt] REL22 ...deleting nothing more
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---

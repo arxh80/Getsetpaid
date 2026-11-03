@@ -52,27 +52,41 @@ import "server-only";
 // EVERY NETWORK WRITE CONTROL IN THE PRODUCT
 // ===========================================================================
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
-// to { status: "no-subscription", tier: "free" }, and every organisation has no
-// subscription today (create_organisation writes no row).
+// to { status: "no-subscription", tier: "free" }.
 // private.network_publish_organisations() exempts exactly that case ("not yet
-// billed => not yet gated"). So entitlementsPermitNetworkPublish MUST return
-// TRUE for "no-subscription" -- reading networkPublish straight off
-// TIER_MATRIX.free (which is FALSE) would disable every network write control
-// in every workspace while the database happily accepted the write. The mirror
-// is explicit and bound by
+// billed => not yet gated") -- STILL, as of Phase 7 Task A (2026-09-08): that
+// task closed the identical escape on private.crm_write_organisations() and
+// private.custom_field_limit(), but deliberately left this one (and private.
+// finance_module_organisations()'s twin) untouched -- see FOLLOW-UPS.md
+// § "Phase 7 -- superuser dashboard" for the follow-up entry Task A added when
+// it discharged the CRM one. public.create_organisation() DOES write a
+// subscription row now (a Starter one, at birth), so "no subscription row" is
+// no longer the state every organisation is in -- it is reachable only by an
+// organisation planted directly (bypassing create_organisation()), which is
+// exactly how the binding test below constructs it. So
+// entitlementsPermitNetworkPublish MUST still return TRUE for
+// "no-subscription" -- reading networkPublish straight off TIER_MATRIX.free
+// (which is FALSE) would disable every network write control in every
+// workspace still reachable in that state, while the database happily
+// accepted the write. The mirror is explicit and bound by
 // tests/integration/network/network-access-matches-db.test.ts, which drives
-// BOTH sides across every subscription status and both grace sides; when Phase
-// 7 removes the escape from the function, that test goes red here.
+// BOTH sides across every subscription status and both grace sides; when a
+// future task removes the escape from the function, that test goes red here
+// -- the same way crm-write-access-matches-db.test.ts did for the CRM escape
+// in Task A.
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import { hasPermission, type CurrentOrg } from "@/lib/auth";
+import {
+  SUSPENDED_READ_ONLY_EXPLANATION,
+  readOnlyExplanation,
+} from "@/lib/admin/lifecycle-contract";
 import type { CrmWriteAccess } from "@/lib/crm/write-access";
 import { PERMISSION_FOR_ENTITY } from "@/lib/crm/custom-fields";
 import { NETWORK_ENTITY_KINDS, type NetworkEntityKind } from "@/lib/network/fields";
 
 const EXPLANATION = {
-  suspended:
-    "This workspace is suspended, so it’s read-only. You can still see everything in it. Contact GetSetPaid support to have it reinstated — an Owner can’t do it from here.",
+  suspended: SUSPENDED_READ_ONLY_EXPLANATION,
   tier: "Publishing to the network is a paid feature. An Owner can upgrade the workspace to Starter or Pro to publish a profile and connect.",
   profilePermission:
     "Your role in this workspace can’t change what it publishes to the network. Ask an Owner, Admin or Manager.",
@@ -119,7 +133,7 @@ export async function getNetworkPublishAccess(
   org: CurrentOrg,
 ): Promise<CrmWriteAccess> {
   if (org.isSuspended) {
-    return { canWrite: false, reason: "suspended", explanation: EXPLANATION.suspended };
+    return { canWrite: false, reason: "suspended", explanation: readOnlyExplanation(org.lifecycle) };
   }
 
   const [entitlements, permitted] = await Promise.all([
@@ -163,7 +177,7 @@ export async function getNetworkConnectionAccess(
   org: CurrentOrg,
 ): Promise<CrmWriteAccess> {
   if (org.isSuspended) {
-    return { canWrite: false, reason: "suspended", explanation: EXPLANATION.suspended };
+    return { canWrite: false, reason: "suspended", explanation: readOnlyExplanation(org.lifecycle) };
   }
 
   const [entitlements, permitted] = await Promise.all([

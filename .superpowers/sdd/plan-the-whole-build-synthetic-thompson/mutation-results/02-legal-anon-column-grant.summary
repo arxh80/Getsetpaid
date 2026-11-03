@@ -1,0 +1,19 @@
+mutant: 02-legal-anon-column-grant
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [lg] LG3 anon may SELECT exactly the eight public columns
+  [lg] LA5 anon cannot name counsel_reviewer (outside the grant)
+  [lg] LA6 anon cannot name status
+  [lg] LA7 anon cannot name published_by
+  [lg] LA8 anon cannot select * (the grant is column-level)
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+    FAIL  anon select=* is refused (column-level grant) -> 401       got 200 want 401
+    FAIL  anon cannot select the reviewer name -> 401                got 200 want 401
+--- integration: red tests ---
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > GATE 0 (Phase 8): the censuses reach every Phase 8 surface > EVERY privilege on `public` -- table and column level, API roles and service_role -- is declared
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > GATE 0 (Phase 8): the censuses reach every Phase 8 surface > PLANT: a COLUMN-level grant on a registered table -- invisible to the relation census, named by the privilege census
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table legal_documents (public-read by design) > 'anonymous' cannot name the reviewer or the status
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table legal_documents (public-read by design) > no client role holds a write privilege, and anon holds exactly the eight-column read
+        Tests  4 failed | 686 passed (690)

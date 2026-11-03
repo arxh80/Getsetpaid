@@ -792,6 +792,26 @@ select invariants.val('D5  every grant on the 29 is justified by a policy, and v
           on g.table_schema='public' and g.table_name=t.relname
          and g.grantee='authenticated'
        where g.privilege_type in ('SELECT','INSERT','UPDATE','DELETE')
+      -- COLUMN-LEVEL GRANTS ARE GRANTS (Phase 8 Task 6 fix round 1). Until
+      -- 20261004000000 every one of the 29 held its privileges table-wide, so
+      -- role_table_grants was the whole truth. public.documents now holds
+      -- INSERT and UPDATE on NAMED COLUMNS ONLY -- the retention clock
+      -- deleted_at, and bytes_purged_at and storage_key, were writable by the
+      -- tenant (review finding C1) -- and a column-level grant does not
+      -- appear in role_table_grants at all. Read without this arm, the
+      -- narrowing looks like "an INSERT and an UPDATE policy with no grant
+      -- behind them", i.e. dead code, which is the opposite of what it is.
+      -- The same blindness the permission matrix's relation census had, and
+      -- was taught out of in Phase 8 Task 2.
+      union
+      select distinct c.relname, g.privilege_type::text
+        from invariants.phase2_tables t
+        join pg_catalog.pg_class c on c.relname=t.relname
+         and c.relnamespace='public'::regnamespace
+        join information_schema.column_privileges g
+          on g.table_schema='public' and g.table_name=t.relname
+         and g.grantee='authenticated'
+       where g.privilege_type in ('SELECT','INSERT','UPDATE')
     ), policed as (
       select distinct c.relname,
              case p.polcmd when 'r' then 'SELECT' when 'a' then 'INSERT'
@@ -1299,6 +1319,75 @@ select invariants.val('Z1  teardown left no fixture rows behind',
            (select count(*) from public.task_links)::text || '/' ||
            (select count(*) from public.document_versions)::text$$,
   '0/0/0/0/0/0/0/0/0/0/0');
+
+-- ===========================================================================
+-- R. A CHECK's FUNCTION IS ONLY AS REACHABLE AS ITS SCHEMA (Task 5 fix 1, I3)
+-- ===========================================================================
+-- A CHECK constraint is evaluated with the privileges of the role performing
+-- the write. A `private` helper a CHECK calls that a client role cannot reach
+-- therefore makes the table unwritable by that role -- which is how
+-- public.erasure_jobs came to refuse every account deletion request, and it is
+-- a CLASS rather than an incident. `has_function_privilege` alone reports all
+-- of these as fine; `has_schema_privilege` is the column that shows it, which
+-- is why the sweep asks for both.
+
+select invariants.val('R1  no private function a CHECK calls is unreachable by `authenticated`',
+  $$select count(*)::text from private.constraint_function_reachability()
+     where not reachable and role_name = 'authenticated'
+       and function_name like 'private.%'$$, '0');
+
+-- THE POSITIVE CONTROL for R1: the sweep is looking at something. If the roll
+-- of functions were empty, R1 would pass for want of a subject.
+select invariants.val('R1a DENOMINATOR: the sweep finds the FOUR private CHECK functions',
+  $$select pg_catalog.string_agg(distinct function_name, ',' order by function_name)
+      from private.constraint_function_reachability()
+     where function_name like 'private.%'$$,
+  -- FOUR since Phase 8 Task 6 added private.jsonb_is_retention_summary(), the
+  -- CHECK on public.retention_runs.swept. This denominator is meant to move
+  -- with the schema: a sweep that stopped finding these would pass R1 and R2
+  -- perfectly on an empty set.
+  'private.custom_field_options_valid,'
+  'private.jsonb_is_count_map,'
+  'private.jsonb_is_retention_summary,'
+  'private.network_visibility_is_valid');
+
+-- AND THE PINNED ROLL OF THE UNREACHABLE. Three functions, unreachable by
+-- `anon` (which holds no write on any of these tables) and by `service_role`
+-- (which has no USAGE on schema `private` at all). Every one is evaluated in
+-- practice as a SECURITY DEFINER's, which is why nothing is broken today --
+-- and a fourth member arriving here is the warning that was missing.
+select invariants.val('R2  the roll of unreachable CHECK functions is exactly the eight known pairs',
+  $$select pg_catalog.string_agg(function_name || '/' || role_name, ' ' order by function_name, role_name)
+      from private.constraint_function_reachability()
+     where not reachable and function_name like 'private.%'$$,
+  -- EIGHT since Phase 8 Task 6, and the two new ones are the same two every
+  -- other entry here has: `anon` and `service_role`. R1 above is what keeps
+  -- `authenticated` off this roll -- 20261003010000 grants EXECUTE on
+  -- private.jsonb_is_retention_summary() to that role although no client role
+  -- can write public.retention_runs at all, because a CHECK is evaluated with
+  -- the privileges of the role performing the WRITE and Task 5 section 5(a)
+  -- is what the other answer costs.
+  'private.custom_field_options_valid/anon '
+  'private.custom_field_options_valid/service_role '
+  'private.jsonb_is_count_map/anon '
+  'private.jsonb_is_count_map/service_role '
+  'private.jsonb_is_retention_summary/anon '
+  'private.jsonb_is_retention_summary/service_role '
+  'private.network_visibility_is_valid/anon '
+  'private.network_visibility_is_valid/service_role');
+
+select invariants.val('R3  `authenticated` really can reach jsonb_is_count_map -- the half that was broken',
+  $$select (has_function_privilege('authenticated', 'private.jsonb_is_count_map(jsonb)', 'execute')
+            and has_schema_privilege('authenticated', 'private', 'usage'))::text$$, 'true');
+
+select invariants.val('R4  and `service_role` holds no EXECUTE on it -- I2 removed a grant that granted nothing',
+  $$select has_function_privilege('service_role', 'private.jsonb_is_count_map(jsonb)', 'execute')::text$$,
+  'false');
+
+select invariants.val('R5  nor any direct write of erasure_jobs.summary, the one path that made I2 live',
+  $$select has_column_privilege('service_role', 'public.erasure_jobs', 'summary', 'update')::text$$,
+  'false');
+
 
 -- ===========================================================================
 -- Results

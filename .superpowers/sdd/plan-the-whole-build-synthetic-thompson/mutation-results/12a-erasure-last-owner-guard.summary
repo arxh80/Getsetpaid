@@ -1,0 +1,22 @@
+mutant: 12a-erasure-last-owner-guard
+migrations before/after: 210/210
+runner exit: 3   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [er] EL3 the guard REFUSES the erasure itself
+  [er] EL4a the refusal NAMES the workspace
+  [er] EL4b and says what to do first (Q131: a refusal that only says no is not enough)
+  [er] EL5 the INSERT is refused by the same guard, with the same hint
+  [er] EL6 nothing was written -- a refused ask costs no job row
+  [er] EL7 and no budget was spent on it
+  [er] EN3 the erasure is still refused -- the guard is unchanged
+  [er] EN4 the refusal NAMES the workspace, as Q131 requires either way
+  [er] EN5 and names the one door that opens: support closing it
+  [er] EE1 DENOMINATOR: audit_events.actor_user_id names the subject
+  [er] EE8 DENOMINATOR: the FK-LESS identifiers name the subject too
+  [er] EE12 and nothing moved -- the refusal is all-or-nothing like every other
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+|integration| tests/integration/erasure/runner.test.ts > the erasure runner removes the account's bytes from their buckets > purges a feedback screenshot and an export archive, and only then deletes the rows
+|integration| tests/integration/erasure/runner.test.ts > the erasure runner removes the account's bytes from their buckets > records a refused erasure as failed, with the sentence the person is shown
+        Tests  2 failed | 688 passed (690)

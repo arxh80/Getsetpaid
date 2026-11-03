@@ -60,6 +60,7 @@ import { field, isValidEmail, type FormState } from "@/lib/forms";
 // async functions, and exporting the roles array from here compiles fine then
 // throws on module evaluation at runtime. See lib/org/roles.ts.
 import { isInvitableRole } from "./roles";
+import { RESERVED_SLUG_HINT, RESERVED_SLUG_MESSAGE, isReservedWorkspaceSlug } from "./reserved-slugs";
 
 // ---------------------------------------------------------------------------
 // Create organisation
@@ -89,6 +90,9 @@ export async function createOrganisationAction(
     // still enforces it -- this is a nicety, not the rule.
     fieldErrors.slug =
       "Use 2-63 lowercase letters, numbers and single hyphens.";
+  } else if (isReservedWorkspaceSlug(slug)) {
+    // Also a nicety: the database refuses it (hint reserved_slug, below).
+    fieldErrors.slug = RESERVED_SLUG_MESSAGE;
   }
   if (Object.keys(fieldErrors).length > 0) return { fieldErrors };
 
@@ -110,6 +114,12 @@ export async function createOrganisationAction(
     // is taken" is the only message that lets the user actually proceed.
     if (error.code === "23505") {
       return { fieldErrors: { slug: "That workspace address is already taken." } };
+    }
+    // The database's own refusal of a slug that is one of the app's routes
+    // (20260923005000) -- reached only if the list above has drifted, which
+    // tests/unit/org/reserved-slugs.test.ts exists to prevent.
+    if (error.code === "22023" && error.hint === RESERVED_SLUG_HINT) {
+      return { fieldErrors: { slug: RESERVED_SLUG_MESSAGE } };
     }
     return { error: "We couldn't create that organisation. Try again." };
   }

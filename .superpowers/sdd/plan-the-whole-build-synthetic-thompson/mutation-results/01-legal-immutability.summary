@@ -1,0 +1,16 @@
+mutant: 01-legal-immutability
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 0
+--- psql: red assertions, read from each suite's results table ---
+  [lg] LI1 postgres cannot change the body of the published version
+  [lg] LI2 ...nor its title
+  [lg] LI3 ...nor its effective date
+  [lg] LI4 ...nor its published_at
+  [lg] LI10 postgres cannot change the SUPERSEDED body
+  [lg] LI20 after every attempt, version 2's text, title, date and review are intact
+  [lg] LI21 ...and version 1 is byte-for-byte the seed apart from its supersede stamp
+  [lg] LZ1 the table is byte-for-byte the seed again
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+        Tests  690 passed (690)

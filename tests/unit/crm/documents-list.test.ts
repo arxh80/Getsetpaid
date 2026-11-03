@@ -25,6 +25,10 @@ describe("DOCUMENT_SELECT", () => {
     expect(DOCUMENT_DELETED_SELECT).not.toContain("storage_key");
   });
 
+  it("the restore queue carries bytes_purged_at, so a purged file says so in place of Restore (Q185)", () => {
+    expect(DOCUMENT_DELETED_SELECT.split(", ")).toContain("bytes_purged_at");
+  });
+
   it("carries owner_user_id, for the 'Uploaded by' column and the 'Mine' filter", () => {
     expect(DOCUMENT_SELECT).toContain("owner_user_id");
   });

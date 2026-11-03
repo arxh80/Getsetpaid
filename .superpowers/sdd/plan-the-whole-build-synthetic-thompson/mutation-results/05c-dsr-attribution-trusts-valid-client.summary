@@ -1,0 +1,8 @@
+mutant: 05c-dsr-attribution-trusts-valid-client
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 
+--- psql: red assertions, read from each suite's results table ---
+  [dsr] DW4b a forged row WITH A SESSION (postgres as pstd1, naming pstd2, a forged email, `fulfilled`) is stored as pstd1's, with pstd1's email, open
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---

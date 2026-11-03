@@ -1,0 +1,10 @@
+mutant: 07b-dsr-who-operator-leg
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 0
+--- psql: red assertions, read from each suite's results table ---
+  [dsr] DT13a the TRIGGER refuses the REQUESTER closing their own request
+  [er] ES4c a sessionless write cannot close a request with no erasure in flight
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+        Tests  690 passed (690)

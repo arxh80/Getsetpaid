@@ -1,0 +1,24 @@
+mutant: 08-dsr-operator-notes-boundary
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [dsr] DG4 exactly ONE policy on the notes, and it is the superuser's (no own-rows policy)
+  [dsr] DN5 THE REQUESTER READS ZERO NOTES ON THEIR OWN REQUEST
+  [dsr] DN5a ...and the bounded COUNT read tells them nothing (it reads as the caller)
+  [dsr] DN5b ...nor does the RECENT read
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+    FAIL  carol reads ZERO operator notes, with one on HER request   got 1 want 0
+    FAIL  ...not through an embed on her own readable row either     got 1:1 want 1:0
+    FAIL  ...nor through the bounded COUNT read                      got 1 want 0
+    FAIL  ...nor through the bounded RECENT read                     got 1 want 0
+--- integration: red tests ---
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > RPCs Phase 7 added that are deliberately member-reachable > the two note reads return the OPERATOR's rows and none of the requester's own
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table data_subject_requests (own rows only) and its operator notes > 'impersonatedOrgOwner' reads an operator note only if it is the aal2 operator
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table data_subject_requests (own rows only) and its operator notes > 'noOrganisation' reads an operator note only if it is the aal2 operator
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table data_subject_requests (own rows only) and its operator notes > 'orgOwner' reads an operator note only if it is the aal2 operator
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table data_subject_requests (own rows only) and its operator notes > 'overriddenOrgOwner' reads an operator note only if it is the aal2 operator
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table data_subject_requests (own rows only) and its operator notes > 'readOnlyMember' reads an operator note only if it is the aal2 operator
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table data_subject_requests (own rows only) and its operator notes > 'superuserAal1' reads an operator note only if it is the aal2 operator
+|integration| tests/integration/security/phase7-permission-matrix.test.ts > table data_subject_requests (own rows only) and its operator notes > 'suspendedMember' reads an operator note only if it is the aal2 operator
+        Tests  8 failed | 682 passed (690)

@@ -26,15 +26,27 @@
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
 // to { status: "no-subscription", tier: "free" }, and TIER_MATRIX.free
 // .financeModule is FALSE. private.finance_module_organisations() says the
-// opposite for that case, deliberately. public.create_organisation() writes no
-// subscription row, so EVERY organisation in the product today has none:
-// reading `financeModule` straight off the resolved entitlements -- the obvious
-// thing -- would disable every finance control in every workspace while the
-// database happily accepted the write from anything that bypassed the UI.
+// opposite for that case, deliberately -- STILL, as of Phase 7 Task A
+// (2026-09-08): that task closed the identical escape on private.
+// crm_write_organisations() and private.custom_field_limit() (and their
+// TypeScript mirrors), but this one and private.network_publish_
+// organisations()'s twin are a deliberate, separate follow-up (FOLLOW-UPS.md
+// § "Phase 7 -- superuser dashboard"). public.create_organisation() NOW writes
+// a Starter subscription row at birth, so "no subscription row" is no longer
+// the state every organisation in the product is in -- the organisation this
+// test drives is planted by a direct insert into public.organisations
+// (`bothSides()` below), bypassing create_organisation() on purpose, which is
+// the only way left to reach that state at all. It remains true that reading
+// `financeModule` straight off the resolved entitlements for an organisation
+// in that state -- the obvious thing -- would disable its finance controls
+// while the database happily accepted the write from anything that bypassed
+// the UI.
 //
-// If this file goes red because Phase 7 removed the `s.organisation_id is null`
-// escape, the fix is to remove it from lib/crm/finance-access.ts in the same
-// change -- not to relax the test.
+// If this file goes red because a future task removed the
+// `s.organisation_id is null` escape from private.finance_module_
+// organisations(), the fix is to remove it from lib/crm/finance-access.ts in
+// the same change -- not to relax the test. (This is exactly what happened to
+// tests/integration/crm/crm-write-access-matches-db.test.ts in Task A.)
 //
 // ===========================================================================
 // BOTH EXPORTS, NOT JUST THE PURE ONE
@@ -239,6 +251,14 @@ async function bothSides(subscription: Subscription | null): Promise<Sides> {
       role: "owner",
       slug: "fin-probe",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      // Phase 7 Task 3 added `lifecycle`: null for an ACTIVE workspace, which
+      // every fixture here is.
+      lifecycle: null,
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     });
 
     return {
@@ -518,6 +538,22 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
       role: "owner",
       slug: "x",
       isSuspended: true,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      // Phase 7 Task 3 added `lifecycle`. A suspended workspace really does
+      // carry one -- getCurrentOrg() never returns isSuspended with a null
+      // lifecycle for a member -- so the fixture carries the shape the
+      // database would actually produce rather than a convenient null.
+      lifecycle: {
+        state: "suspended" as const,
+        changedAt: "2026-09-08T00:00:00.000Z",
+        reason: "fixture",
+        retentionExpiresAt: "2026-11-07T00:00:00.000Z",
+        networkPresenceUntil: "2026-10-08T00:00:00.000Z",
+      },
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     });
     expect(
       refusal(suspended, "a suspended workspace").reason,
@@ -530,6 +566,14 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
       role: "owner",
       slug: "x",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      // Phase 7 Task 3 added `lifecycle`: null for an ACTIVE workspace, which
+      // every fixture here is.
+      lifecycle: null,
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     });
     expect(
       refusal(tier, "a Starter workspace whose caller also lacks the key").reason,
@@ -546,6 +590,14 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
       role: "read_only",
       slug: "x",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      // Phase 7 Task 3 added `lifecycle`: null for an ACTIVE workspace, which
+      // every fixture here is.
+      lifecycle: null,
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     });
     expect(refusal(permission, "a read_only caller on an ungated plan").reason).toBe(
       "permission",
@@ -560,6 +612,14 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
       role: "finance",
       slug: "x",
       isSuspended: false,
+      // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+      // these fixtures: nothing here exercises impersonation, and a fixture
+      // that quietly claimed to would be asserting about the wrong feature.
+      // Phase 7 Task 3 added `lifecycle`: null for an ACTIVE workspace, which
+      // every fixture here is.
+      lifecycle: null,
+      isImpersonated: false,
+      impersonationExpiresAt: null,
     });
     expect(allowed.canWrite).toBe(true);
   });
@@ -585,6 +645,22 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
               role: "owner",
               slug: "x",
               isSuspended: true,
+              // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+              // these fixtures: nothing here exercises impersonation, and a fixture
+              // that quietly claimed to would be asserting about the wrong feature.
+              // Phase 7 Task 3 added `lifecycle`. A suspended workspace really does
+              // carry one -- getCurrentOrg() never returns isSuspended with a null
+              // lifecycle for a member -- so the fixture carries the shape the
+              // database would actually produce rather than a convenient null.
+              lifecycle: {
+                state: "suspended" as const,
+                changedAt: "2026-09-08T00:00:00.000Z",
+                reason: "fixture",
+                retentionExpiresAt: "2026-11-07T00:00:00.000Z",
+                networkPresenceUntil: "2026-10-08T00:00:00.000Z",
+              },
+              isImpersonated: false,
+              impersonationExpiresAt: null,
             });
           },
         ],
@@ -608,6 +684,14 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
               role: "owner",
               slug: "x",
               isSuspended: false,
+              // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+              // these fixtures: nothing here exercises impersonation, and a fixture
+              // that quietly claimed to would be asserting about the wrong feature.
+              // Phase 7 Task 3 added `lifecycle`: null for an ACTIVE workspace, which
+              // every fixture here is.
+              lifecycle: null,
+              isImpersonated: false,
+              impersonationExpiresAt: null,
             });
           },
         ],
@@ -624,6 +708,14 @@ describe("entitlementsPermitFinance mirrors private.finance_module_organisations
               role: "booker",
               slug: "x",
               isSuspended: false,
+              // Phase 7 Task 2 added these two to CurrentOrg. Always false/null in
+              // these fixtures: nothing here exercises impersonation, and a fixture
+              // that quietly claimed to would be asserting about the wrong feature.
+              // Phase 7 Task 3 added `lifecycle`: null for an ACTIVE workspace, which
+              // every fixture here is.
+              lifecycle: null,
+              isImpersonated: false,
+              impersonationExpiresAt: null,
             });
           },
         ],

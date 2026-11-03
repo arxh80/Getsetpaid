@@ -17,8 +17,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // getting them the wrong way round returns a wrong page with a 200.
 
 const supabaseFrom = vi.fn();
+
+// THE RATE-LIMIT SEAM (Phase 7 Task 5). `fetchListPage` is the one chokepoint
+// SECURITY.md § 5's search and network-discovery budgets are metered at, and
+// the meter is a `consume_rate_limit` RPC on this same client -- so the fake
+// has to answer it or every search-carrying test in this file dies on
+// `supabase.rpc is not a function` (which is exactly what it did when the
+// meter landed). The default verdict is ALLOW, because none of the pagination
+// properties below are about the limiter; `rateLimit` lets one test flip it.
+const rateLimit = { allowed: true, retry_after_seconds: 0, request_count: 1 };
+const supabaseRpc = vi.fn(async () => ({ data: [rateLimit], error: null }));
+
 vi.mock("@/lib/supabase/server", () => ({
-  createClient: async () => ({ from: supabaseFrom }),
+  createClient: async () => ({ from: supabaseFrom, rpc: supabaseRpc }),
 }));
 
 const { fetchListPage } = await import("@/lib/list/query");
@@ -189,6 +200,8 @@ const arg = (calls: Call[], method: string) =>
 
 beforeEach(() => {
   supabaseFrom.mockReset();
+  supabaseRpc.mockClear();
+  rateLimit.allowed = true;
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -687,5 +700,73 @@ describe("filters reach both the page and the count", () => {
     // makes the total disagree with the rows under it.
     expect(seen).toEqual(["mine", "mine"]);
     expect(made.count[0].calls.filter((c) => c.method === "eq")).toHaveLength(2);
+  });
+});
+
+describe("the rate-limit gate — SECURITY.md § 5, at the one chokepoint", () => {
+  // The CATEGORY DECISION lives here, in the function every list read goes
+  // through, and it is made from the TABLE NAME and the search term rather
+  // than from anything a caller passes -- the same reasoning as
+  // TABLES_WITHOUT_SOFT_DELETE, so a copied spec cannot opt out. That decision
+  // is pure logic over two inputs, which makes it exactly a unit's worth of
+  // test; the counting behind it is proved against a real Postgres in
+  // tests/integration/security/rate-limit-network-discovery.test.ts and
+  // supabase/tests/rls_phase7_rate_limits.sql.
+
+  it("does NOT meter a plain browse of a tenant list", async () => {
+    // A browse with no search term is O(page) by this file's own keyset
+    // measurements. Metering it would spend a budget on paging through a
+    // list, which is the ordinary use of the product.
+    stubQueries({ page: { data: [row(1)] }, count: { count: 1 } });
+    await load({});
+    expect(supabaseRpc).not.toHaveBeenCalled();
+  });
+
+  it("meters a SEARCH-carrying request as 'search'", async () => {
+    stubQueries({ page: { data: [row(1)] }, count: { count: 1 } });
+    await load({ q: "sam" });
+    expect(supabaseRpc).toHaveBeenCalledOnce();
+    expect(supabaseRpc.mock.calls[0]).toEqual([
+      "consume_rate_limit",
+      { p_category: "search" },
+    ]);
+  });
+
+  it("meters EVERY read of network_directory as 'network_discovery'", async () => {
+    // THE NAMED PATH (FOLLOW-UPS:3408-3419). Note there is no search term
+    // here: a plain BROWSE of the directory is metered, unlike a plain browse
+    // of a tenant list, because its unit cost is O(platform-wide published
+    // rows) whether or not anyone typed anything.
+    stubQueries({ page: { data: [row(1)] }, count: { count: 1 } });
+    await fetchListPage({
+      ...baseOptions,
+      table: "network_directory",
+      params: parseListParams(SPEC, {}),
+    });
+    expect(supabaseRpc.mock.calls[0]).toEqual([
+      "consume_rate_limit",
+      { p_category: "network_discovery" },
+    ]);
+  });
+
+  it("refuses with `rate_limited` and NEVER builds the query", async () => {
+    // The property that makes the limiter worth having: a refused request
+    // must not cost the database the very work the limit exists to bound. If
+    // the gate ever moved below the query build, this is the assertion that
+    // goes red -- `outcome` alone would stay right while the protection was
+    // gone.
+    rateLimit.allowed = false;
+    rateLimit.retry_after_seconds = 41;
+    stubQueries({ page: { data: [row(1)] }, count: { count: 1 } });
+    const page = await fetchListPage({
+      ...baseOptions,
+      table: "network_directory",
+      params: parseListParams(SPEC, {}),
+    });
+    expect(page.outcome).toBe("rate_limited");
+    if (page.outcome === "rate_limited") {
+      expect(page.retryAfterSeconds).toBe(41);
+    }
+    expect(supabaseFrom).not.toHaveBeenCalled();
   });
 });

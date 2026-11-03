@@ -8,6 +8,7 @@ import {
 import type { RawSearchParams } from "@/lib/list/params";
 import type { ListPage, RecoveryReason } from "@/lib/list/query";
 import { ListPager } from "@/components/list/list-pager";
+import { RateLimitNotice } from "@/components/list/rate-limit-notice";
 import {
   AddSlotForm,
   RemoveSlotForm,
@@ -179,6 +180,15 @@ export function LineupPanel({
           load this event’s lineup just now. Refresh the page to try again —
           nothing has been removed.
         </p>
+      ) : page.outcome === "rate_limited" ? (
+        // Reachable only by a hand-edited URL (the lineup page renders no
+        // search box, but its spec's searchColumn still reaches PostgREST
+        // when ?q= is set) -- and a hand-edited URL is exactly the caller the
+        // limit is for. SECURITY.md § 5; see RateLimitNotice.
+        <RateLimitNotice
+          retryAfterSeconds={page.retryAfterSeconds}
+          subject="this event’s lineup"
+        />
       ) : (
         <Bill
           orgSlug={orgSlug}

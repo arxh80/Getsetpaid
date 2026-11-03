@@ -38,33 +38,40 @@ import "server-only";
 //   3. permission   this role does not have the key. Ask an Owner or Admin.
 //
 // ===========================================================================
-// THE TIER CHECK MIRRORS A DATABASE ESCAPE, AND GETTING THAT WRONG WOULD HAVE
-// DISABLED EVERY BUTTON IN THE PRODUCT
+// THE TIER CHECK USED TO MIRROR A DATABASE ESCAPE -- PHASE 7 TASK A REMOVED IT
 // ===========================================================================
-// `lib/entitlements/policy.ts` resolves an organisation with NO subscription
-// row to `{ status: "no-subscription", tier: "free" }`, and
-// `TIER_MATRIX.free.crmWrites` is false. `private.crm_write_organisations()`
-// does the opposite, deliberately and in as many words:
+// Before Task A, `private.crm_write_organisations()` read a MISSING
+// organisation_subscriptions row as "not yet billed, therefore not yet
+// gated" and permitted the write, while `lib/entitlements/policy.ts` resolved
+// the same missing row to `{ status: "no-subscription", tier: "free" }` --
+// and `TIER_MATRIX.free.crmWrites` is false. `public.create_organisation()`
+// wrote no subscription row at the time, so EVERY ORGANISATION IN THE PRODUCT
+// was in that state, and reading `crmWrites` straight off the entitlements
+// result would have disabled every write control in every workspace while the
+// database happily accepted the write from anything that bypassed the UI.
+// That divergence was the reason for an explicit, named mirror function here.
 //
-//     -- No subscription row => not yet billed => not yet gated. Phase 7
-//     -- removes this branch in the same migration that backfills the rows.
-//     s.organisation_id is null
-//
-// `public.create_organisation()` writes no subscription row, so TODAY EVERY
-// ORGANISATION IN THIS PRODUCT HAS NO SUBSCRIPTION. Reading `crmWrites`
-// straight off the entitlements result would have disabled every write control
-// in every workspace, with the reason "your plan does not include this", while
-// the database happily accepted the write from anything that bypassed the UI.
-//
-// So the mirror is explicit, it is named, and it is bound by a test that
-// drives BOTH sides (tests/integration/crm/crm-write-access-matches-db.test.ts)
-// -- the same treatment `record-scope-matches-db`, `tiers-match-db` and
-// `past-due-grace-matches-db` already give the other four places where one
-// rule is written in two languages. When Phase 7 removes the escape from the
-// function, that test goes red here.
+// TASK A (20260908000000) CLOSED THE GAP AT THE SOURCE instead:
+// `public.create_organisation()` now writes a Starter row at birth, and every
+// organisation that predates it was backfilled one, so "no subscription row"
+// is no longer a state a real organisation is in. The escape is gone from
+// `private.crm_write_organisations()`, and it is gone here too -- this
+// function no longer special-cases "no-subscription" and simply reads
+// `entitlements.crmWrites`, which `resolveEntitlements()` already sets to
+// Free's `false` for that status. The mirror function stays (a UI hint still
+// needs somewhere to read the tier reason from), and so does the test that
+// drives both sides at once
+// (tests/integration/crm/crm-write-access-matches-db.test.ts) -- the same
+// treatment `record-scope-matches-db`, `tiers-match-db` and
+// `past-due-grace-matches-db` give the other three places where one rule is
+// written in two languages.
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import { hasPermission, type CurrentOrg } from "@/lib/auth";
+import {
+  SUSPENDED_READ_ONLY_EXPLANATION,
+  readOnlyExplanation,
+} from "@/lib/admin/lifecycle-contract";
 // One direction only: lib/crm/write.ts imports nothing from here, so this is
 // not a cycle. REFUSED_MESSAGE is the sentence that declines to guess WHY, and
 // joinEndExplanation() below needs exactly that for the case where guessing
@@ -86,8 +93,7 @@ export type CrmWriteAccess =
     };
 
 const EXPLANATION: Record<WriteBlockedReason, string> = {
-  suspended:
-    "This workspace is suspended, so it’s read-only. You can still see everything in it. Contact GetSetPaid support to have it reinstated — an Owner can’t do it from here.",
+  suspended: SUSPENDED_READ_ONLY_EXPLANATION,
   tier: "Your plan doesn’t include adding or editing records. An Owner can upgrade the workspace to change that.",
   permission:
     "Your role in this workspace can view records but not change them. Ask an Owner or Admin if you need to.",
@@ -199,20 +205,23 @@ export function joinEndExplanation(
  * True when a resolved entitlements answer permits CRM writes.
  *
  * EXPORTED AND PURE so the mirror test can drive it against the database
- * without a session, and so the "no subscription" branch is one expression
- * with a name rather than a condition repeated at three call sites.
+ * without a session, and so the reason PHASE 7 TASK A removed the
+ * "no-subscription" branch (see this file's header) is one expression with a
+ * name rather than a condition repeated at three call sites.
  *
  * "indeterminate" (the subscription lookup failed) denies. That is the
  * conservative half of the mirror and it is deliberately NOT what the database
  * does -- a failed query in the application is not the same event as a missing
  * row in the database, and the consequence of getting it wrong differs: here
- * it disables a button, there it would open a gate.
+ * it disables a button, there it would open a gate. "no-subscription" now
+ * falls through to `entitlements.crmWrites`, which resolveEntitlements()
+ * already sets to Free's `false` for that status -- the same safe default,
+ * for the same reason.
  */
 export function entitlementsPermitCrmWrites(result: {
   status: "no-subscription" | "resolved" | "indeterminate";
   entitlements: { crmWrites: boolean };
 }): boolean {
-  if (result.status === "no-subscription") return true;
   if (result.status === "indeterminate") return false;
   return result.entitlements.crmWrites;
 }
@@ -232,7 +241,7 @@ export async function getCrmWriteAccess(
   permissionKey: string,
 ): Promise<CrmWriteAccess> {
   if (org.isSuspended) {
-    return { canWrite: false, reason: "suspended", explanation: EXPLANATION.suspended };
+    return { canWrite: false, reason: "suspended", explanation: readOnlyExplanation(org.lifecycle) };
   }
 
   // Both round trips at once: neither answer depends on the other, and this is

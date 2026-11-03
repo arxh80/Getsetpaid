@@ -1,0 +1,15 @@
+mutant: 06-dsr-transition-table
+migrations before/after: 210/210
+runner exit: 1   vitest exit: 1
+--- psql: red assertions, read from each suite's results table ---
+  [dsr] DT5 a state that does not follow is refused (in_progress -> open)
+  [dsr] DT6 a no-op is not a transition
+  [dsr] DT7 a state outside the vocabulary is refused by the transition table
+  [dsr] DT19 a terminal request is terminal, for the operator too
+  [dsr] DA1 every event wrote exactly one audit row, and the actions are the states
+--- psql: pinned-total mismatches and ERROR lines ---
+--- HTTP: red checks ---
+--- integration: red tests ---
+|integration| tests/integration/legal/catalogue-bindings-match-db.test.ts > the live lists equal the TypeScript lists > private.dsr_transition_allowed() answers as dsrTransitionAllowed() does, for EVERY pair
+|integration| tests/integration/legal/catalogue-bindings-match-db.test.ts > the migration walk picks the body the database runs > private.dsr_transition_allowed: one deployed definition, equal to the latest one in the migrations
+        Tests  2 failed | 688 passed (690)

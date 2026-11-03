@@ -1,323 +1,259 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code in this repository. **Rules and architecture only.** The detailed as-built description of every phase, each deliberate gap and the history of every fix round lives in [`docs/as-built.md`](docs/as-built.md). Code comments that cite "`CLAUDE.md` § X … as it actually shipped" mean the matching section there.
+
+**Keep this file short.** Do not add test counts, assertion totals, migration counts or fix-round history here. Counts go stale, so measure them instead (see § Gates). History goes in the PR description, or in `docs/as-built.md` if a later reader needs it.
 
 ## Project
 
-**GetSetPaid** — a UK-first, multi-tenant CRM for the live events industry (promoters, venues, booking agents, DJs/artists, suppliers). It combines a **private per-company CRM** with a **controlled industry network**, so each business keeps its operational data private while being able to discover and connect with other industry entities.
+**GetSetPaid** is a UK-first, multi-tenant CRM for the live events industry (promoters, venues, booking agents, DJs/artists, suppliers). It pairs a **private per-company CRM** with a **controlled industry network**.
 
-Core workflow the product exists to serve:
-`relationship → enquiry/hold → booking/event → delivery → settlement/history`
+Core workflow: `relationship → enquiry/hold → booking/event → delivery → settlement/history`
 
-**`getsetpaid_crm_prd.docx` in the repo root is the source of truth.** Read the relevant section before implementing a feature — it defines entities, roles, security controls and acceptance criteria in detail. This file is a summary, not a replacement.
+**`getsetpaid_crm_prd.docx` is the source of truth.** Read the relevant section before implementing a feature. To read it, run `python scripts/read-prd.py`, or unzip `word/document.xml` and strip the tags.
 
-The PRD is a binary docx and no text version is committed. To read it, run `python scripts/read-prd.py` (see below), or unzip `word/document.xml` and strip the tags.
+Also read before touching their area:
+- `SECURITY.md`: every security control, rate limit, incident process and known risk. Read it before anything security-sensitive.
+- `DESIGN.md`: tokens and the design-skill contract. Read it before any UI.
+- `.superpowers/sdd/plan-the-whole-build-synthetic-thompson/DECISIONS-QUEUE.md`: founder questions (Qnnn) and their rulings.
 
 ## Current state
 
-The Next.js app and the Supabase schema are scaffolded (auth, orgs, list infrastructure, core CRM writes, since Phase 3 events with their lineup, since Phase 4 operations: tasks, meetings, notes and documents behind a private-bucket, malware-scanned file pipeline, since Phase 5 event-level finance, and — since Phase 6 — **the network**: publishable profiles for companies/artists/venues/agencies, a browsable directory, request-to-connect, and an explicit, manual private-record-to-network-identity link). The PRD, the design and security docs and the pinned agent skills (`skills-lock.json` + `.agents/skills/`) sit alongside them.
+Phases 2–9 are shipped and merged:
 
-**The gates. Run all five before claiming a change is done:**
-
-| Command | What it is |
+| Phase | What it built |
 |---|---|
-| `pnpm lint` | ESLint (`eslint`). |
-| `pnpm typecheck` | `tsc --noEmit`. CI runs this too (below), but **nothing on this machine does** — there is no git hook, and `pnpm build` is forbidden in a worktree pointed at the local stack. Several exhaustiveness guards (the `switch` with no `default` in `lib/crm/contacts.ts`, `lib/crm/companies.ts` and `lib/crm/actions.ts`) are compile-time only, so skipping this locally means finding out on a push at best. |
-| `pnpm test` | Vitest, unit and integration (`vitest run`). |
-| `pnpm test:rls` | The RLS integration tests (`vitest run tests/integration/rls`), included in `pnpm test`. |
-| `pnpm test:e2e` | Playwright (`playwright test`) — the Phase 2, Phase 3, Phase 4, Phase 5 and Phase 6 golden paths (`operations.spec.ts` walks a task to its event timeline and the note-visibility payoff; `documents.spec.ts` walks the clean/quarantine file pipeline; `finance.spec.ts` walks a Finance user through a budgeted fee, an actual income and the gross/expense/net summary, and the Starter-tier read-only refusal; `network.spec.ts` walks a Manager publishing a venue with two network-level fields and one connections-level field, a second organisation discovering it in the directory, sending and having a connection request accepted, seeing the connections-level field resolve, and linking the profile to its own private company record), tenant/role/tier breakout and record scope (since the loading-skeletons pass, a *record*-level refusal under a valid slug is asserted as the **streamed not-found contract** — HTTP 404 or a streamed 200 with the identical "Page not found" document, never 403, with the enumeration-oracle property measured directly by tenant-breakout's REFUSAL PARITY test; workspace-slug refusals and route handlers still assert the literal 404 — see `DESIGN.md` § Error pages; the Phase 6 network block: a foreign tenant's draft profile refuses identically and never surfaces in that tenant's own directory search; a Free-tier organisation's disabled "Request connection" control refuses server-side even with the `disabled` attribute stripped, with the sent-request row count in the database asserted unchanged around the click), and the axe accessibility scan (one test per page, **25 scans over 24 pages** — the event detail page is scanned twice, once as a Manager with no finance panel and once as a Finance user with it; Phase 6 adds five scans over five new pages: the network directory, a published profile viewed by a foreign organisation, this workspace's own network-profiles list, the populated publish-field editor, and the connection-requests page; the keyboard-a11y pass adds a 26th scan, of the OPEN command palette — the one surface that exists only after a keypress, in `keyboard.spec.ts`), and — since the keyboard-a11y pass — the **keyboard-only suite** (`keyboard.spec.ts`: Tab/Enter/Escape/arrow journeys with no pointer events — skip link, rail Escape-collapse and its suppression, the delete confirmation's focus round-trip, the command palette's combobox contract and its tenant-boundary search, and the login form end to end including implicit submission), and — since the dark rebrand — `brand.spec.ts` (the checks a source-reading unit test cannot make: the signed-out header renders the wordmark lockup, with no mark beside it, on a computed `--color-shell` background and the wordmark resolving `--color-ink` through the token rather than a hardcoded fallback; `color-scheme` computes to `dark` so native controls follow the page; and `app/icon.svg` loads as a real decoded image over the network with a square natural size, not merely a well-formed file on disk). Against a real browser and the local stack. **90 tests, run cold on its own dev server. Prerequisite:** `npx playwright install chromium` once per machine. It starts its own dev server; set `PLAYWRIGHT_REUSE_SERVER=1` only to reuse one on port 3000 that you know is current. |
+| 2 | Auth, orgs, invites, list infrastructure, core CRM |
+| 3 | Events and lineup |
+| 4 | Tasks, meetings, notes, documents |
+| 5 | Event finance |
+| 6 | The network |
+| 7 | Superuser dashboard: audit log, impersonation, lifecycle, overrides, health and rate limits, feedback, CRM audit triggers |
+| 8 | Legal pages, consent, data subject requests, exports, erasure, retention, notification emails, Owner workspace closure |
+| 9 | Integrations schema, with no live connector |
 
-The psql/HTTP RLS suite is separate and needs a fresh database:
-`npx supabase db reset --local` then `bash supabase/tests/run-rls-tests.sh`. It
-refuses to run twice without a reset in between.
+Per-phase detail is in `docs/as-built.md` § Current state and the "as it actually shipped" sections.
 
-**CI runs a subset, and knowing which subset is the point.**
-`.github/workflows/ci.yml` runs on every pull request, and on pushes to
-`main` only, in two jobs:
-`pnpm lint`, `npx next typegen`, `pnpm typecheck` and
-`pnpm exec vitest run tests/unit`; and `pnpm audit --audit-level high` plus a
-gitleaks secret scan. (`next typegen` is there for the same reason it is named
-above — a clean checkout has no `.next/types/`, so `tsc` cannot find
-`PageProps`.) It does **not**
-run `tests/integration`, the psql/HTTP suite or Playwright — all three need a
-running Supabase stack (`npx supabase start` plus a reset), which is a
-container pull and minutes per run, and is a deliberate decision nobody has
-made yet. **So a green tick on CI is not a green phase**, and the
-tenant-boundary suites `CLAUDE.md` § Testing gates calls the ones that "matter
-most" still run only on a developer's machine. Every action in that workflow is
-pinned to a full commit SHA; bump one by looking the new SHA up with
-`gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and updating the `# vX.Y.Z`
-trailer beside it.
+## Gates
 
-`pnpm build` and `pnpm start` resolve to the **hosted** project and must not be
-run from a worktree that is deliberately unlinked from it.
+Run all five before claiming a change is done:
 
-**After adding or renaming a route, run `npx next typegen` before
-`pnpm typecheck`.** Next.js types `PageProps<"/some/route">` against a
-generated manifest in `.next/types/`, and `pnpm build` — the usual thing that
-regenerates it — is forbidden here. Without it a new page fails with
-`Type '"/[orgSlug]/…"' does not satisfy the constraint 'AppRoutes'`, which
-looks like a mistake in the page and is not. `pnpm dev` regenerates it too;
-`next typegen` is the version that does not start a server.
+| Command | Notes |
+|---|---|
+| `pnpm lint` | ESLint. |
+| `pnpm typecheck` | `tsc --noEmit`. Nothing local runs it for you. Several exhaustiveness guards are compile-time only. **After adding or renaming a route, run `npx next typegen` first**, or `PageProps<"/…">` fails with a misleading `AppRoutes` error. |
+| `pnpm test` | Vitest, unit and integration. Includes `pnpm test:rls` (`tests/integration/rls`). |
+| `pnpm test:e2e` | Playwright against a real browser and the local stack. It starts its own dev server (`PLAYWRIGHT_REUSE_SERVER=1` reuses one on :3000). It covers the golden paths, tenant breakout, refusal parity, axe scans, keyboard-only journeys and the storage census. Run `npx playwright install chromium` once per machine. |
+| psql RLS suite | `npx supabase db reset --local`, then `bash supabase/tests/run-rls-tests.sh`. It refuses a second run without a reset. Every suite goes through `run_suite()`, which fails on any `psql: ERROR:` line and on a **pinned assertion total**. Update the pin when you add assertions. |
 
-Skills are pinned project-level so every agent and every machine gets the same set: restore with `npx skills experimental_install`, check updates with `npx skills check`. The roster and what each one is for live in `DESIGN.md` § "Build-time design tooling".
+**Measure counts, never increment them:**
+- Playwright: `npx playwright test --list`.
+- Axe scans: `grep -c "await scan(\|new AxeBuilder" tests/e2e/*.spec.ts`.
+- psql: the `run_suite` pins in `run-rls-tests.sh`.
+
+**CI is a subset.** `.github/workflows/ci.yml` runs lint, `next typegen`, typecheck, `vitest run tests/unit`, `pnpm audit --audit-level high` and gitleaks. It does **not** run integration, psql or Playwright, because they need a Supabase stack. A green CI tick is not a green phase. Actions are pinned to full SHAs. To bump one, look it up with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and update the `# vX.Y.Z` trailer.
+
+**Forbidden here:** `pnpm build` / `pnpm start` in a worktree pointed at the local stack. They resolve to the **hosted** project.
+
+**Do not start the ClamAV container on this machine.** The 2 GB Docker VM cannot hold it beside Supabase, and it hung the VM once. Runbook: `docs/clamav.md`.
+
+Skills are pinned project-level. Restore them with `npx skills experimental_install` and check for updates with `npx skills check`. The roster is in `DESIGN.md` § "Build-time design tooling".
 
 ## Git workflow (required)
 
-This repo is linked to a GitHub remote. **Commit and push after every change.**
-
-- One logical change per commit; do not batch unrelated work into a single commit.
-- Commit as soon as a change is complete and verified — not at the end of a long session.
-- Push immediately after committing (`git push`), so the remote always reflects local state.
+- Commit and push after every change: one logical change per commit, pushed immediately.
 - Never leave the working tree dirty at the end of a task.
-- Work on a branch and open a PR when the change is non-trivial; never commit feature work directly to the default branch.
-- Never commit secrets, `.env` files, Supabase service-role keys, or the contents of private buckets.
+- Work on a branch and open a PR for non-trivial changes. Never commit feature work straight to `main`.
+- Never commit secrets, `.env` files, service-role keys or private-bucket contents.
 
 ## Architecture
 
-**Backend:** Supabase — PostgreSQL is the system of record, Supabase Auth for identity, Supabase Storage (private buckets only) for documents, RLS for row access.
-
-**Frontend:** Next.js (React). Desktop-first responsive web app; no native mobile for MVP.
+**Backend:** Supabase. Postgres is the system of record; Supabase Auth handles identity; Storage holds files in private buckets only; RLS controls row access. **Frontend:** Next.js App Router, desktop-first, no native mobile at MVP.
 
 ### Tenancy model
 
-`Organisation` is the tenant. Users belong to one or more organisations via `organisation_memberships` **from MVP** — the workspace switcher ships at launch, not deferred. Every tenant-owned table must have a reliable row → organisation path, and RLS derives the current user from the authenticated session and checks membership **in the database**. Never trust a client-supplied organisation ID.
+`Organisation` is the tenant. Users belong to one or more organisations via `organisation_memberships`, and the workspace switcher ships at MVP. Every tenant-owned table has a reliable row → organisation path. RLS derives the user from the session and checks membership **in the database**. Never trust a client-supplied organisation ID.
 
 ### The private/network split (highest-risk boundary)
 
-Network identities and tenant-private records are **separate concepts in separate tables** (`network_profiles`, `network_links` vs. the tenant tables). Matching a private contact to a network identity must never expose private notes, ratings, financials, documents or activity. Discovery queries read only explicitly published fields, and publishing is opt-in per field. Do not join private tables into public discovery paths without an explicit, tested policy.
-
-**Discovery model: request-to-connect.** Published fields make a profile discoverable, but private/network data (ratings, history, financials, notes) never unlocks until both sides accept an explicit connection request. No public, logged-out profiles at MVP.
-
-**Ratings are permanently private in v1.** They never leave the rating organisation's tenant — not even as an anonymised aggregate on a network profile. Revisit only as a deliberate future decision, not an MVP default.
+- Network identities (`network_profiles`, `network_links`) and tenant-private records live in **separate tables**.
+- Discovery reads only explicitly published fields. Publishing is opt-in per field.
+- **The views are the mask, not the policy.** The base `network_profiles` table has the schema's only cross-tenant read policy, and a row policy cannot hide columns. The only sanctioned read paths are `network_directory` and `network_connected_profiles`, whose dependencies are pinned from `pg_depend`. Never join a private table into them.
+- **Request-to-connect.** An accepted request unlocks only the other side's `connections`-level *published fields*, organisation-wide (Q80). It never unlocks notes, ratings, financials, documents, events or activity.
+- Linking a private record to a network profile is **manual only**: an empty search box, no suggestions. The link is private to the linking organisation.
+- **Ratings are permanently private in v1.** No aggregate, ever, without a deliberate future decision.
 
 ### Domain entities
 
-Organisation, User, Contact, Company, Artist/DJ, Agency, Venue (+ rooms), Supplier, Event (+ lineup), Tour, Offer/Hold/Booking, Task, Meeting, Note, Email activity, Document (+ versions), Financial entry, Relationship, Rating, Network profile, Audit event, Notification, Consent, Data subject request, Integration connection, Feedback.
+Organisation, User, Contact, Company, Artist/DJ, Agency, Venue (+ rooms), Supplier, Event (+ lineup), Tour, Offer/Hold/Booking, Task, Meeting, Note, Email activity, Document (+ versions), Financial entry, Relationship, Rating, Network profile, Audit event, Notification, Consent, Data subject request, Integration connection, Feedback. The full table list is in PRD §11.
 
-Full baseline table list is in PRD §11.
-
-**Events, as they actually shipped in Phase 3** — stated here because three of these read as features and are not:
-
-- `events.status` carries all eight PRD values including `hold`, `confirmed`, `on_sale` and `sold_out`. They are **labels on one column**, with no transition rules, no state machine and no derived behaviour. Offers/holds/bookings remain out of MVP scope, and a status value is not that workflow arriving early. `public.event_status_changes` records transitions (founder Q33) and validates none of them.
-- **Events are not dedup-screened and not mergeable.** `merges.entity_type` and `merge_candidates.entity_type` deliberately exclude `'event'`, and `createEventAction` does not call `screenAfterCreate`: an event's name is not identifying (a recurring club night shares its name with every instalment by design) and `public.events` has no `email` column, so the only auto-merge signal is unreachable by construction.
-- **A lineup artist is always a real `artists` row** (`event_lineup.artist_id` is `NOT NULL` with a tenant-scoped composite FK); there is no free-text artist. **`venue_id` is nullable** — an event routinely exists before the venue is confirmed.
-
-**Operations, as they actually shipped in Phase 4** — tasks, meetings, notes and documents, each a top-level tenant entity that attaches to CRM records through its own per-entity `*_links` table (Q22). Four things read as gaps and are deliberate:
-
-- **Note visibility is binary** (`notes.visibility` is `private` or `company`, nothing finer): a `private` note reaches only its author; a `company` note is readable by the whole workspace but **editable only by its author** (founder Q54 — the UPDATE `USING` clause carries owner-scope, which closes a proven company-note theft path). Team/role-scoped or per-user sharing is a real feature (Q44), not shipped.
-- **A task's `reminder_at` is stored (constrained `<= due_at`) but never delivered** — there is no notification subsystem at MVP (Q45). Setting a reminder is silent.
-- **The malware scanner is a local EICAR stub**, not a real engine. `getScanner()` defaults to a stub that quarantines an EICAR-marked file end to end; `clamav`/SaaS names resolve to an **unconfigured adapter that throws**. The stub proves the pipeline (upload → scan → quarantine → the download gate refuses a non-`clean` document with 409); it does **not** prove real-malware detection. Wiring a real scanner is a launch gate (Q42, `SECURITY.md` § 6).
-- **`document_versions` ships dormant** (SELECT-only, no write path — versioning is Release 1.1), and **soft-deleting a document does not purge its bytes** — a retention/GC job is owed (Q52, Phase 8). Downloads and uploads are server-mediated; the browser never gets a Storage grant (`storage.objects` is deny-all fenced), which is what lets the download path authorise, audit and gate on scan status before any signed URL exists.
-
-**Network, as it actually shipped in Phase 6** — publishable profiles for company/artist/venue/agency, a browsable directory, request-to-connect, and an explicit private-record-to-network-identity link. Four things read as gaps and are deliberate:
-
-- **The base table is readable and the VIEW is the mask, not the policy.** `public.network_profiles` carries the one policy in the whole schema that permits a cross-tenant read (`network_profiles_select_published_directory`) — a row policy filters rows, it cannot filter columns, so a query against the base table directly would see every field, including ones the publisher marked `hidden`. The **only** sanctioned read path is two views, `public.network_directory` (`network`-level fields) and `public.network_connected_profiles` (`network` + `connections`-level fields, for an accepted connection), each locked to a fixed dependency set asserted from `pg_depend` (N2) — a future join against a private table to resolve a nicer display name is the failure mode that assertion exists to catch. `SECURITY.md` § 2 has the full as-built description.
-- **Nothing private unlocks on accept.** An accepted `network_connection_requests` row changes exactly one thing: the requesting/requested organisation's *published profile fields* marked `connections` resolve for the other side. It grants no access to any tenant table — no notes, no financial entries, no documents, no events, no activity, no tasks, no meetings, and no ratings (which do not exist as a table yet and are guarded structurally against the day they do, N5/Q85). Proved query path by query path in `supabase/tests/network_leakage_phase6.sql`. **The unlock is also organisation-wide, not profile-pair-scoped (Q80)** — accepting one request resolves the requesting organisation's *other* published profiles' `connections`-level fields too, not only the one profile the request named.
-- **Linking is manual only, never suggested.** `network_links` — "this network profile is the same entity as my own private record" — is created by an explicit search-and-confirm the user runs from their own record's page (Q73). No fuzzy matching, no auto-suggestion, no pre-filled search term, and no ranking by similarity: the search box starts empty. A link is also strictly private to the linking organisation (Q82) — the profile's publisher is never told who linked it, and no policy gives them a read of `network_links` at all.
-- **A connection request arrives silently.** There is no notification subsystem at MVP (the same answer as `reminder_at`, Q45, for a second feature): a request is discovered by visiting `/[orgSlug]/network/requests` or reading the pending-received count on the workspace hub, and nothing else — not email, not an in-app toast — tells either side a request exists, was accepted or was declined. "We sent them a request and nothing happened" is the expected experience today, not a bug report.
-
-Three further things worth stating plainly rather than leaving a pentester or a reviewer to find them: **a declined connection request no longer blocks re-requesting** — Q79 shipped with declined-as-terminal (the one zero-cost anti-harassment control), and the founder reversed it on 2026-09-07 (`20260907000000` narrows the live-pair unique index to `pending`/`accepted`; the declined row itself stays immutable, a re-request is a fresh row beside it), which reopens a spam vector whose mitigation is the Phase 7 rate limiter below, not anything in Phase 6; the **30 requests/min network-discovery rate limit `SECURITY.md` § 5 specifies is not implemented** (deferred to Phase 7, Q86/Q87); and a **suspended organisation's published profile stays visible** to a counterparty *and* to the suspended organisation's own members (Q88, measured in Task 5) — reads are not suspension-gated anywhere else either (`view_crm` is the sole `survives_suspension = true` key), so this is consistent with the rest of the product rather than an oversight specific to the network. **A shipped migration comment is wrong about this and is not silently correctable:** `supabase/migrations/20260904002000_network_permissions.sql:42-45` claims "a suspended organisation's members cannot browse the directory or read their own network profiles until the workspace is reinstated" — measured false on both halves. It is a plain `--` script comment, not a `comment on policy`/`comment on view` statement, so there is no live database object whose comment a later migration could additively reissue (the `20260904007000` precedent applies only to `comment on` statements) — the shipped migration file is left as written, immutable, and this paragraph plus `FOLLOW-UPS.md`'s Q88 entry are the correction of record.
-
-**Duplicate contacts/companies:** an **exact, case-insensitive email match auto-merges**; everything else — including an exact name match — is flagged for manual review and never auto-merged silently. Every merge is audited. Name is only ever a *fuzzy* signal: `screen_for_duplicates()` labels a pair `exact_email` only when both emails are non-null and equal case-insensitively, and `fuzzy_name` otherwise (`supabase/migrations/20260829020000_dedup_detection_and_merge_workflow.sql:385`), and the application merges only on the ids the database proposes for that first case (`lib/crm/dedup.ts:704`, "AUTO-MERGE IS EMAIL-ONLY AND FIRES ONLY WHEN THE DATABASE PROPOSES IT"). In practice that means **contacts only**, because `contact` is the one entity in `MERGEABLE_COLUMNS` with an `email` column (`lib/crm/dedup.ts:65`).
+These look like gaps but are deliberate (detail in `docs/as-built.md`):
+- `events.status` values are **labels with no state machine**. Offers/holds/bookings are not MVP.
+- Events are **not dedup-screened or mergeable**. A lineup artist is always a real `artists` row. `venue_id` is nullable.
+- Note visibility is binary (`private` | `company`). A company note is editable only by its author.
+- `document_versions` is dormant (versioning is Release 1.1).
+- `documents.deleted_at` and `retention_class` are database-owned retention clocks. A client cannot write them.
+- Malware scanning: an EICAR stub when `MALWARE_SCANNER` is unset, fail-closed ClamAV (`MALWARE_SCANNER=clamav`) in production. A misconfiguration throws. It never falls back to the stub.
+- Integrations (Phase 9) are **schema only**. No provider is live, so `connect_integration()` always refuses. Tokens live in Supabase Vault, and writes are RPC-only.
+- **Dedup:** only an exact, case-insensitive email match auto-merges, which means contacts only. Everything else, name included, is flagged for manual review. Every merge is audited.
 
 ### Permissions
 
-An action is allowed only if **all** of these permit it: platform policy ∩ subscription entitlement ∩ organisation role ∩ record scope ∩ user-specific exception. Entitlements are enforced **server-side** — hiding UI is not enforcement. Roles: Owner, Admin, Manager, Booker, Venue Manager, Finance, Marketing, Standard User, Read Only, Platform Superuser.
+An action is allowed only if **all** of these permit it: platform policy ∩ subscription entitlement ∩ organisation role ∩ record scope ∩ user exception. Entitlements are enforced **server-side**, because hiding UI is not enforcement.
 
-Downgrading a subscription makes features read-only or limited; it must never silently delete data.
+Roles: Owner, Admin, Manager, Booker, Venue Manager, Finance, Marketing, Standard User, Read Only, Platform Superuser.
+
+`organisations.deleted_at is not null` is **the** read-only flag that every gate reads. `lifecycle_state` is a discriminator beside it, held equivalent by a CHECK constraint. Only a few permission keys have `survives_suspension = true` (`view_crm`, `end_support_access`, `export_organisation_data`). Adding one is a deliberate decision.
+
+Tier gates go through **one effective-tier function per language**: `private.effective_organisation_plan()` in SQL and `getOrganisationEntitlements()` in TypeScript. Never fork a gate. A downgrade makes features read-only or limited and never deletes data.
 
 ### Subscription tiers
 
-Per-seat pricing, monthly or annual (15% off annual), GBP. No seat minimum — a single paid seat is valid. Enterprise/contact-sales tier is deliberately deferred past MVP (see Scope discipline).
+Per-seat pricing in GBP, monthly or annual (15% off annual), no seat minimum. Enterprise is deferred.
 
 | Tier | Price | CRM writes | Network profile | Custom fields | Finance module | Storage |
 |---|---|---|---|---|---|---|
-| Free | £0 | No — view-only network browsing | No | 0 | No | — |
+| Free | £0 | No (view-only network browsing) | No | 0 | No | — |
 | Starter | £19/seat/mo | Yes | Yes, can publish | 5 per entity | No | 5GB/org |
 | Pro | £39/seat/mo | Yes | Yes, can publish | Unlimited | Yes (budget & actuals) | 20GB/org |
 
 ### Superuser dashboard
 
-Single hardcoded superuser (the founder) at MVP — no multi-account superuser role yet.
+There is a single hardcoded superuser (the founder) at MVP. Every `/super` request from a caller not on the allowlist is rewritten to `/super/not-found` in `lib/supabase/middleware.ts`, so a refusal is indistinguishable from a missing page.
 
-**Impersonation.** Break-glass only: the superuser requests impersonation, the org's admin must accept the request, and the session is time-boxed and fully audited (actor, org, reason, start/end). No silent or unilateral impersonation.
-
-**No direct tenant-data access outside impersonation.** The dashboard never shows record content (contacts, events, documents) directly — only aggregate metadata (seat count, storage used, record counts). Any deeper look goes through the audited, admin-approved impersonation flow above.
-
-**Org lifecycle.** Suspend/reinstate and delete are soft-delete only, require step-up re-auth, and notify the org's admin. Deletion follows the standard retention/soft-delete policy — no immediate hard delete.
-
-**Billing overrides** (manual tier/seat change, comps, refunds): require step-up re-auth, a mandatory reason field (goes into the audit record), and notify the org admin automatically. Comps/overrides are time-boxed and auto-revert to the org's actual paid tier when the period ends — never a silent permanent edit.
-
-**Per-org feature overrides** (early access, custom gating): scoped per org per flag, with a **mandatory expiry date** — no open-ended overrides. Prevents forgotten one-off grants from becoming permanent tech debt.
-
-**Platform health/ops view:** basic counts only at MVP (active orgs, signups, seat/storage usage, error counts), queried on-demand/daily from Postgres directly — no separate metrics/observability pipeline. Deeper real-time monitoring stays in existing infra tooling (Supabase dashboard, hosting provider), not rebuilt in-app.
-
-**Audit log viewer** is a core dashboard feature — searchable/filterable by org, actor, action type and date range, not just a raw DB table.
-
-**Incident alerting:** basic trigger-based email/SMS alerts only (e.g. repeated failed logins across an org, a malware-scan hit) — not a full alerting platform. A complete on-call/runbook build-out stays post-MVP per `SECURITY.md` § Incident response.
-
-**In-app feedback** is a dashboard section fed by the feature below — see § In-app feedback.
+- **No direct tenant-data access.** Only aggregates. Any deeper look goes through impersonation.
+- **Impersonation is break-glass:**
+  - The superuser requests it with a reason, the org admin accepts, and the superuser starts it behind step-up.
+  - It is read-only (the `read_only` role's keys at full record scope) and time-boxed at 60 minutes. The time box **is** the grant: no membership row is created.
+  - Every org-scoped page is bannered and audited by route (no query string).
+  - Support access cannot extend itself. The customer can always end it, even when the workspace is suspended.
+- **Org lifecycle** (`/super/organisations`): suspend, close and reopen. These are soft-delete only, need step-up and a reason, are audited and reversible, and are written only through audited RPCs. An Owner cannot change the lifecycle columns, except through `close_my_workspace()`, which the superuser then decides at `/super/closures`. The retention sweep purges a closed workspace 60 days later (Q88).
+- **Billing and feature overrides** (`/super/billing`): separate tables, never edits to `organisation_subscriptions`. Each needs step-up, a reason and a **mandatory future expiry**. They revert by **read-time expiry**, with nothing scheduled.
+- **Health, rate limits and alerts** (`/super/health`):
+  - Limits live in `public.rate_limit_policies`. TypeScript never holds a number.
+  - Reads are metered app-side at the `lib/list/query.ts` chokepoint. Writes are metered by DB triggers at the insert. A direct PostgREST GET is unmetered, a known residual (Q107).
+  - Login lockout is a GoTrue hook, **which must be enabled in the hosted dashboard**.
+  - Incident alerts are `incident_alerts` rows, delivered as an email digest plus a counts-only Telegram message by the single `pg_cron` 10-minute tick.
+- **Audit log viewer** (`/super/audit-log`): searchable by org, actor, action and date. Superuser access audits itself.
 
 ### In-app feedback
 
-Any logged-in user, on any tier, can submit feedback (bug / idea / other) from within the app. Always identified — no anonymous option — capturing user, org, role, category, free-text message, current page/route, browser/device info, and an optional single screenshot attachment.
-
-**On submit:** an email is sent to the founder's inbox (the same single support/security contact as `SECURITY.md` § 13 at this stage — no separate feedback address yet), and the submission is written to a `feedback` table, platform-scoped (not tenant-owned — the superuser dashboard reads it directly, it does not go through org RLS).
-
-**Superuser dashboard view:** a dedicated Feedback list — filterable by org, category, and date — with a status per item (New / Read / Actioned / Archived) the founder updates manually. Separate UI from the audit log viewer, though the submission event itself is also audited like any other write.
-
-**Screenshot attachment** goes through the same file-security pipeline as any other upload (§ Non-negotiable rules, `SECURITY.md` § 6): private bucket, malware-scanned, strict allowlist (image types only), signed URL, access logged.
-
-**Screenshot risk (ties to § Superuser dashboard's "no direct tenant-data access" rule):** a screenshot can capture on-screen tenant-private data (another org's CRM record) that the submitting user happened to have open. The submit UI must warn the user before upload that the screenshot may include on-screen data. Because this is the one deliberate exception to "no direct tenant-data access outside impersonation," every superuser view of a feedback screenshot is itself an audited action (actor, feedback ID, timestamp) — same audit discipline as impersonation, not a silent read.
-
-**Rate limit:** 10 submissions / hour per user, same tier as other write actions (`SECURITY.md` § 5).
-
-**Retention:** 2 years, same as the inactive-account default — feedback is low-sensitivity operational data, not a financial or audit record.
+- Any signed-in user on any tier can send bug / idea / other. It is always identified.
+- Attribution (user, email, role, workspace, route without query string, user agent) is stamped **by the database** and is outside the client's INSERT grant.
+- The rate limit is 10 per hour, enforced by the `BEFORE INSERT` trigger.
+- No submitter can read any row, including their own.
+- The optional screenshot goes through the full file pipeline (private bucket, magic-byte sniff, malware scan). The UI warns before the picker that it may capture on-screen data.
+- Every superuser view of a screenshot is audited before a 60-second signed URL is minted.
+- The founder gets an email through the one Brevo sender (`lib/email/send.ts`), sent after the response. A failure leaves `notified_at` null and is visible on `/super/feedback`.
+- Retention is 2 years.
 
 ### Session security
 
-- Inactivity timeout **30 minutes**; absolute max session lifetime **12 hours**.
-- MFA is **required** for: Platform Superuser, Organisation Owner, Admin, Finance. Optional (not enforced) for other roles at MVP.
-- Step-up re-authentication (re-enter credentials/MFA) is required before: changing security settings (MFA, password, email), large data exports, deleting organisation data, and any high-risk admin/superuser function (including impersonation).
-- SSO: **Google sign-in ships at MVP** (in addition to email/password + magic-link). Microsoft SSO is post-MVP.
+- Inactivity timeout 30 minutes; absolute lifetime 12 hours.
+- MFA is **required** for Platform Superuser, Owner, Admin and Finance, and optional for everyone else.
+- Step-up re-auth is required before: security-setting changes, large exports, deleting org data, and any high-risk admin/superuser function (impersonation included).
+- Sign-in: email/password, magic link and Google. Microsoft SSO is post-MVP.
 
 ### Non-functional targets
 
-- Availability SLO: **99.9%**, excluding planned maintenance.
-- Backup targets: **RPO 24h / RTO 4h** for the database.
-- Data residency: **UK/EU Supabase region only** — no US-region hosting for customer data.
-- Currency: **GBP only at MVP**; `financial_entries` and related tables store a currency column and use minor units so multi-currency UI can be added later without a schema migration.
+99.9% availability SLO. RPO 24h / RTO 4h. **UK/EU region only** (Supabase in Ireland, eu-west-1). GBP only, but money is stored in minor units with a currency column.
 
 ## Non-negotiable rules
 
 These are acceptance criteria, not hardening tasks. A feature is not done until they hold.
 
-**`SECURITY.md` consolidates all security controls, rate limits, incident response and known risk areas into one reference — read it before touching anything security-sensitive, and before any pentest/audit.**
-
-- **RLS on before access.** Enable RLS on every tenant-owned table before the application can reach it. Separate policies per operation where useful.
-- **Service-role keys stay server-side.** They bypass RLS. Never ship them to the browser.
-- **Parameterise everything.** No string-concatenated SQL. Search/filter/sort inputs map to allowlisted columns and operators.
-- **Paginate everything.** No unbounded list endpoint. Server-side page-size ceiling; cursor/keyset pagination for activity feeds. Exports are async and bounded.
-- **Files are private.** Private buckets, short-lived signed URLs issued after authorisation, sanitised filenames (never user-supplied paths as storage keys), every access logged. **Malware-scan every upload at MVP** (e.g. ClamAV or a scanning API) and hold quarantined files until cleared. Accept only a strict allowlist of file types (documents, images, PDFs) — not just MIME/extension checks, no executables or macro-enabled Office formats.
-- **Treat all user content as untrusted.** Sanitise rich text; validate URL protocols (reject `javascript:`, `data:`); avoid `dangerouslySetInnerHTML`; ship a strong CSP.
-- **Audit high-value actions.** Actor, org, timestamp, action, target, correlation ID, before/after. Append-only from the application. Superuser access audits itself. Never log passwords, tokens or keys. Retention: hot/queryable for 30 days, archived (cold storage) for up to 1 year total, then purged.
-- **Soft-delete operational records** rather than hard deletion, subject to the retention policy. Default retention: 7 years for financial records, 2 years for inactive-account data — confirm exact periods per record type with legal counsel before launch (see § Legal and regulatory compliance).
-- **UTC in the database**, UK local time in the UI with explicit timezone handling. UUID primary keys. Index every foreign key.
+- **RLS on before access.** Enable RLS on every tenant-owned table before the app can reach it.
+- **Service-role keys stay server-side.** They bypass RLS. `lib/supabase/service.ts` importers are censused.
+- **Parameterise everything.** Search, filter and sort inputs map to allowlisted columns and operators.
+- **Paginate everything.** Use a server-side page-size ceiling and keyset pagination for feeds. Exports are async and bounded: they fail at a ceiling and never truncate.
+- **Files are private.** Use private buckets, short-lived signed URLs issued after authorisation, opaque storage keys, logged access, malware scanning with quarantine, and a strict type allowlist checked by content, not just MIME or extension.
+- **Treat user content as untrusted.** Sanitise rich text, reject `javascript:` and `data:` URLs, avoid `dangerouslySetInnerHTML`, and keep the strong CSP.
+- **Audit high-value actions.** Record actor, org, timestamp, action, target, correlation ID and before/after. Audit payloads are **name-only diffs** and never carry tenant content (the log is superuser-readable). New client-writable tables are caught by `private.audit_coverage()`. Never log passwords, tokens or keys. Retention: 30 days hot, 1 year total.
+- **Soft-delete operational records**, subject to retention. All periods live in `private.retention_periods()`, and every `public` table must be classified.
+- **UTC in the database**, UK local time in the UI. UUID primary keys. Index every foreign key.
+- **A refusal looks like not-found.** Record and `/super` refusals follow the streamed not-found contract (`DESIGN.md` § Error pages). Never return a 403 that confirms existence.
+- **Show outcomes where the action can't unmount them.** Use `components/ui/action-outcome.tsx`.
 
 ## Design
 
-**`DESIGN.md` holds the colour, type, spacing and shape tokens. Read it before writing any UI.**
-
-Direction in one line: minimalist, sharp-edged, bold serif on a near-black ground — square corners everywhere (`--radius: 0`), no shadows, no gradients, structure from hairline rules and typographic weight.
-
-Palette is a dark ground: `#0B0B0E` shell, `#15151A` surface, `#1E1E25` raised, `#F5F5F7` ink for all text, and **one brand green** `#20FC8F` — from the logo — carrying `--primary`, `--accent` and `--success` alike. That green is unusable on a light ground (1.27:1 on the shell it replaced), which is why the product is dark. There is deliberately no second accent: `--chart-1` … `--chart-5` are a separate namespace that must never appear in UI chrome, and success is told apart from interactive green **structurally** — a bordered uppercase chip versus an underlined link or a filled button — never by hue. Always go through the token, never a literal hex.
-
-Type is Source Serif 4 throughout, with `tabular-nums` mandatory on every number in a table.
-
-`python scripts/contrast.py` audits the whole token contract against WCAG 2.2 AA and exits non-zero on any failure. Run it after touching a colour; any colour added to `DESIGN.md` arrives with its measured ratio.
-
-The product must not look like a re-skinned generic sales CRM. **`DESIGN.md` § "Build-time design tooling" is the contract for which design/UI/UX/frontend skills to invoke and in what order.** Three passes over every piece of UI:
-
-1. **Decide** — `superpowers:brainstorming` → `hallmark` → `ui-ux-pro-max` → `frontend-design`.
-2. **Build** — `tailwind-design-system` (v4 `@theme`) → `shadcn-ui` + `ui-ux-pro-max:ui-styling` → `nextjs-app-router-patterns` + `vercel-composition-patterns` → `typescript-advanced-types`; `dataviz` for charts, `framer-motion-best-practices` for motion.
-3. **Review before merge** — `web-design-guidelines` on the diff, `accessibility-compliance` for WCAG 2.2 AA, `vercel-react-best-practices` on anything rendering a list or table.
-
-Skills supply method; `DESIGN.md` supplies the tokens and **outranks every skill default** (rounded corners, shadows, gradients, sans stacks, stock palettes).
-
-Priorities: high information density without clutter; keyboard-first navigation and global command/search; contextual drawers for quick edits; one consistent timeline/activity component reused across every entity; status chips and relationship indicators; empty states that teach the workflow; WCAG 2.2 AA from the start, not retrofitted.
-
-Golden path to prototype and protect: create contact → create event → add artist → add venue → add task → view activity.
-
-**What of it ships today, checked against the suite rather than asserted.** Every step is now walked in a real browser on every `pnpm test:e2e`: the Phase 2 half (contact, company, link, artist, venue, room, activity) in `tests/e2e/golden-path.spec.ts`, the Phase 3 half (create event, add the artist to the bill, change the venue, read the activity timeline) in `tests/e2e/events.spec.ts`, the Phase 4 "add task → view activity" step in `tests/e2e/operations.spec.ts` (create a task, link it to an event, complete it, read `task_completed` on that event's timeline), the Phase 5 money step in `tests/e2e/finance.spec.ts` (a Finance user — MFA-challenged for real, in a Pro-tier workspace — budgets a fee, books the actual income, and reads the gross/expense/net summary those two lines produce), and — the fifth sibling, Phase 6 — `tests/e2e/network.spec.ts`: a Manager publishes a venue with two fields at `network` and one at `connections`; a genuinely disconnected second organisation finds it in the directory and reads exactly the two `network` fields, not the third; it publishes a minimal profile of its own, sends a connection request, and has it accepted; it then reads the `connections`-level field for the first time; and it links the profile to its own private company record, which then shows the link. Five specs are siblings on purpose; whoever extends the sentence adds a sixth, not rewrites the others.
+- **Read `DESIGN.md` before writing UI.** Its tokens outrank every skill default.
+- Look: minimalist and sharp-edged, a bold serif (Source Serif 4) on a near-black ground. `--radius: 0`, no shadows, no gradients.
+- **One brand green**, `#20FC8F`. Always use a token, never a literal hex.
+- `tabular-nums` on every number in a table.
+- Run `python scripts/contrast.py` after touching any colour.
+- Skill passes: Decide (brainstorming → hallmark → ui-ux-pro-max → frontend-design), Build, then Review (web-design-guidelines, accessibility-compliance, vercel-react-best-practices). The full contract is in `DESIGN.md` § "Build-time design tooling".
+- Priorities: dense but uncluttered, keyboard-first (Ctrl/Cmd-K palette), contextual drawers, one shared timeline component, empty states that teach, and WCAG 2.2 AA from the start.
+- Golden path to protect: create contact → create event → add artist → add venue → add task → view activity. It is walked by `golden-path`, `events`, `operations`, `finance` and `network` specs. Extend it with a new sibling spec rather than rewriting one.
 
 ## Testing gates
 
-Beyond unit tests, a release needs: **RLS integration tests across roles, tenants and network visibility**; API tests for validation, pagination and rate limiting; security tests for XSS, SQLi, IDOR/BOLA, CSRF, session handling, file access, privilege escalation and tenant breakout; accessibility (automated plus keyboard/screen-reader spot checks); dependency and secret scanning in CI.
+A release needs:
+- RLS integration tests across roles, tenants and network visibility
+- API tests for validation, pagination and rate limiting
+- Security tests: XSS, SQLi, IDOR/BOLA, CSRF, sessions, file access, privilege escalation, tenant breakout
+- Accessibility: axe plus keyboard and screen-reader spot checks
+- Dependency and secret scanning in CI
 
-Tenant-breakout and network-leakage tests matter most — write them alongside the feature, not after.
+**Tenant-breakout and network-leakage tests matter most. Write them alongside the feature.**
 
-**Skills for these gates** (pinned project-level; full mapping in `SECURITY.md` § 11): `supabase` and `supabase-postgres-best-practices` for schema and policy design, `supabase-audit-rls` for RLS bypass auditing (**dev/staging only, anon key only**), `owasp-security-check` for the XSS/SQLi/IDOR/CSRF pass, `javascript-testing-patterns` for RLS integration and API tests, `e2e-testing-patterns` for Playwright golden-path and tenant-breakout runs, `wcag-audit-patterns` and `screen-reader-testing` for accessibility.
+Where they live:
+- `supabase/tests/*.sql`: role and tenant isolation.
+- `rls_phase6_network.sql` and `network_leakage_phase6.sql`: network visibility.
+- `tests/integration/security/phase7-permission-matrix.test.ts` and `tests/e2e/super-permissions.spec.ts`: privilege escalation. Both are **censuses built from the live catalogue and route tree**, so a new RPC, table, grant or `/super` page lands as a red test until it is declared.
+- Pair every refusal with a positive control. A refusal that passes for lack of a fixture looks identical to one that passes because the guard held.
+
+Skills: `supabase`, `supabase-postgres-best-practices`, `supabase-audit-rls` (dev/staging, anon key only), `owasp-security-check`, `javascript-testing-patterns`, `e2e-testing-patterns`, `wcag-audit-patterns`, `screen-reader-testing`. The mapping is in `SECURITY.md` § 11.
 
 ## Scope discipline
 
-MVP (PRD §4) is: auth + orgs + invites, core CRM entities, events with lineup, tasks/meetings/notes/attachments, basic event finance, RLS isolation, entitlements, network profiles, audit log, legal pages, superuser dashboard (§ Superuser dashboard), in-app feedback (§ In-app feedback).
+**MVP (PRD §4):** auth, orgs and invites; core CRM; events with lineup; tasks, meetings, notes and attachments; basic event finance; RLS isolation; entitlements; network profiles; audit log; legal pages; superuser dashboard; in-app feedback.
 
-**Not MVP:** email/calendar integration, offers/holds/contracts workflow, settlements, ticketing APIs, file versioning, public profiles and connection requests, tour management, AI features, external API, first-class supplier management (suppliers exist only as a generic Contact/Company tag at MVP), network profile verification badges, Microsoft SSO, Enterprise/contact-sales subscription tier. Don't build ahead into these.
+**Not MVP — don't build ahead:**
+- Email/calendar integration
+- Offers/holds/contracts, settlements, ticketing APIs
+- File versioning
+- Public profiles; tours
+- AI features; an external API
+- First-class suppliers (they are a Contact/Company tag)
+- Verification badges; Microsoft SSO; an Enterprise tier
 
-Finance starts at event/booking level and MVP scope is **budget & actuals only** — fee, cost and income lines per event, no invoicing, no full P&L. Resist expanding it toward accounting software or invoicing — that is an integration, later.
+Finance is **budget & actuals only** (fee, cost and income lines per event). No invoicing, no P&L.
 
 ## Decisions log
 
-Resolved 2026-08-26 (founder sign-off):
+Resolved 2026-08-26 (founder sign-off), and still binding:
 
-- **Frontend:** Next.js (React).
-- **Multi-org:** supported from MVP, not deferred.
-- **Network discovery:** request-to-connect (see private/network split).
-- **Suppliers:** not first-class at MVP.
-- **Pricing shape:** free + paid tiers.
-- **Subscription tiers:** Free (£0) / Starter (£19/seat/mo) / Pro (£39/seat/mo), 15% off annual, no seat minimum. Enterprise deferred past MVP. Full gating matrix in § Subscription tiers.
-- **Ratings:** permanently private in v1.
-- **Finance scope:** budget & actuals only at MVP.
-- **Retention:** 7yr financial / 2yr inactive as working defaults, pending legal review.
-- **Superuser impersonation:** allowed, but only with org-admin acceptance, time-boxing and full audit.
-- **Superuser dashboard scope:** single hardcoded superuser at MVP; org lifecycle (soft-delete only) + billing overrides (time-boxed, auto-revert) + per-org feature overrides (mandatory expiry) + basic platform health counts + searchable audit log viewer + trigger-based incident alerts. No direct tenant-record access outside impersonation. Full spec in § Superuser dashboard.
-- **In-app feedback:** any logged-in user can submit (bug/idea/other), always identified, optional screenshot. Emails the founder and lands in a dedicated superuser dashboard list (New/Read/Actioned/Archived). Platform-scoped table, not tenant RLS. 10/hour rate limit, 2yr retention. Screenshot upload carries a leakage warning and every superuser view of one is audited. Full spec in § In-app feedback.
-- **Superuser dashboard and in-app feedback are MVP**, not fast-follows — added to § Scope discipline.
-- **Tier gating dimension:** seats + features (not pure usage/event-volume gating).
-- **Free tier shape:** view-only network access, no CRM writes.
-- **Audit log retention:** hot 30 days, archived up to 1 year total, then purged.
-- **GDPR DSR turnaround target:** 30 days (ICO statutory maximum).
-- **Session limits:** 30min inactivity / 12hr absolute lifetime.
-- **MFA scope:** required for Superuser, Owner, Admin, Finance; optional for other roles at MVP.
-- **Step-up re-auth triggers:** security-setting changes, large exports, org data deletion, high-risk admin/superuser functions.
-- **Malware scanning:** enabled at MVP, plus a strict file-type allowlist (not just MIME/extension checks).
-- **SSO:** Google at MVP; Microsoft deferred.
-- **Currency:** GBP only at MVP, schema is multi-currency-ready.
-- **Availability SLO:** 99.9% excluding planned maintenance.
-- **Backup targets:** RPO 24h / RTO 4h.
-- **Data residency:** UK/EU Supabase region only.
-- **Dedup/merge:** an exact email match auto-merges (contacts only, since they are the only entity with an email); every other match, name included, is flagged for manual review. See § Architecture.
-- **Custom field limits:** tier-gated (free: none, paid: more).
-- **Network profile verification:** deferred past MVP.
+- **Product:** Next.js frontend. Multi-org from MVP. Request-to-connect discovery. Suppliers not first-class. Ratings permanently private in v1. Network verification deferred.
+- **Pricing and tiers:** Free / Starter £19 / Pro £39 per seat, 15% off annual, Enterprise deferred. Gating is seats plus features. The Free tier is view-only network with no CRM writes. Custom fields are tier-gated.
+- **Finance and money:** budget & actuals only. GBP only, multi-currency-ready schema.
+- **Retention and privacy:** 7 years financial, 2 years inactive (pending counsel). Audit log 30 days hot / 1 year total. DSR turnaround 30 days.
+- **Superuser and feedback:** impersonation needs admin acceptance, a time box and full audit. The superuser dashboard and in-app feedback are MVP (scope as above).
+- **Security:** sessions 30 min idle / 12 h absolute. MFA for Superuser, Owner, Admin and Finance. Step-up triggers as listed. Malware scanning plus a strict allowlist at MVP. Google SSO at MVP.
+- **Operations and data:** 99.9% SLO. RPO 24h / RTO 4h. UK/EU residency. Dedup auto-merges on exact email only.
+
+Later rulings are recorded per question in the decisions queue (see § Project).
 
 ## Open decisions (need founder sign-off — ask, don't assume)
 
-- **First ticketing API partner** — deliberately deferred; ticketing integration is out of MVP scope, revisit when that phase starts.
-- **Exact retention periods per record type** — working defaults are set above (financial, inactive-account, audit log); needs sign-off from qualified UK legal/privacy counsel before launch (see § Legal and regulatory compliance).
-- **EU Art 27 representative** — need and appointment unconfirmed; required before onboarding meaningful EU-based org signups if the company has no EU establishment.
-- **DPIA, ROPA and ICO registration** — none completed yet; all are pre-launch legal/compliance tasks, not engineering defaults (see § Legal and regulatory compliance).
-- **Analytics/tracking vendor** — none chosen; the choice determines whether a PECR cookie-consent banner is needed at launch.
-- **Payment processor** — not yet selected; must be confirmed PCI-DSS-compliant and used via tokenisation/redirect so the product stays out of PCI DSS scope.
+- First ticketing API partner (deferred with ticketing).
+- Exact retention periods per record type (counsel, Q133).
+- EU Art 27 representative.
+- DPIA, ROPA and ICO registration (legal tasks, not engineering defaults).
+- Analytics/tracking vendor. This decides whether a PECR cookie banner is needed (see `SECURITY.md` § 8).
+- Payment processor. It must be PCI-DSS compliant and used via tokenisation or redirect.
 
 ## Legal and regulatory compliance
 
-Legal pages and compliance decisions require review by qualified UK legal/privacy counsel before launch. Drafted content here is a starting point for that review, never a substitute for it. PRD §12 lists the required pages and the ICO/OWASP sources behind them.
+**Counsel must review legal pages and compliance decisions before launch.** Drafts are a starting point, never a substitute.
 
-**Applicable frameworks.** UK GDPR + Data Protection Act 2018 (primary, since the company and its Supabase region are UK-based); EU GDPR applies in parallel for any data subject located in the EU — a UK-first live-events product will have EU venues, artists and agents in its network from early on, so build to the aligned standard rather than UK-only with an EU bolt-on later. PECR (Privacy and Electronic Communications Regulations 2003, as amended) governs marketing email/SMS and non-essential cookies. The Equality Act 2010 underpins the accessibility requirement already in `DESIGN.md` and § Testing gates.
-
-**Lawful basis.** Contract (Art 6(1)(b)) for core CRM processing needed to deliver the service a customer signed up for; legitimate interests (Art 6(1)(f)) for product analytics, fraud/abuse prevention, and the in-app feedback feature (§ In-app feedback); consent only where legally required (marketing communications, non-essential cookies) — never bundled with core-service consent, and as easy to withdraw as to give. No MVP entity collects special category data (health, biometric, etc.); a future feature that would must trigger a DPIA before build, not after.
-
-**Data Protection Impact Assessment (DPIA).** Required pre-launch given systematic profiling for network matching/discovery and processing at scale across many orgs — a screening DPIA is a legal pre-launch task, owned by counsel + founder, not an engineering default.
-
-**Records of Processing Activities (ROPA)**, Art 30: required once the company crosses the regular/risky-processing threshold, which a multi-tenant CRM handling personal and financial data does. One ROPA entry per domain entity category (PRD §11), kept current as the schema changes.
-
-**International transfers.** Database and file storage are UK/EU-region-only (§ Non-functional targets) — no transfer issue there. Any sub-processor outside the UK/EU (transactional email provider, error-tracking/analytics, etc.) needs either an adequacy-covered location, the UK International Data Transfer Addendum (IDTA), or EU Standard Contractual Clauses before it touches personal data — checked per vendor at integration time, never assumed.
-
-**Sub-processor / DPA register.** Every third-party processor (Supabase, email provider, malware-scan API, future integrations) needs a signed Data Processing Agreement and a line in a public sub-processor list — required under Art 28 and expected by security-conscious customers even pre-Enterprise-tier.
-
-**EU representative (Art 27).** A UK company with no EU establishment that processes EU residents' data beyond an occasional/low-risk level must appoint an EU-based Art 27 representative — likely true here given the network's EU venues/artists. Confirm need and appoint before onboarding meaningful EU-based org signups (see Open decisions).
-
-**ICO registration.** The company must register as a data controller with the ICO (annual fee, tiered by size) before processing personal data commercially. A compliance task that blocks launch if missed, not a technical one.
-
-**Breach notification.** `SECURITY.md` § 12 already sets a 72-hour ICO notification clock for notifiable UK GDPR breaches. EU GDPR carries the equivalent 72-hour obligation to the relevant EU supervisory authority when EU data subjects are affected — the same incident-response process covers both; no separate EU-only path.
-
-**Cookies/tracking (PECR).** Any non-essential cookie (analytics, third-party embeds) requires prior opt-in consent via a cookie banner; strictly-necessary cookies (session, auth, CSRF) are exempt. No analytics/tracking vendor is chosen yet — its cookie footprint decides whether a consent banner ships alongside it.
-
-**B2B does not mean no individual rights.** GetSetPaid is sold to organisations, not consumers, so consumer-protection law (e.g. Consumer Rights Act cancellation rights) mostly doesn't apply — but individual users within a customer org remain data subjects with full UK/EU GDPR rights regardless of the B2B commercial relationship.
-
-**Payments.** No card data is handled directly — subscription billing routes through a PCI-DSS-compliant processor (provider TBD) via tokenisation/redirect, keeping the product itself out of PCI DSS scope. Reconfirm this holds once the billing integration is actually chosen.
-
-**Existing controls already meeting GDPR requirements** (cross-referenced, not duplicated): 30-day DSR export/erasure (§ Decisions log); UK/EU-only data residency (§ Non-functional targets); soft-delete + retention schedule (§ Non-negotiable rules, `SECURITY.md` § 8); audited access with defined retention (`SECURITY.md` § 7); RLS-enforced access minimisation (`SECURITY.md` § 2); the `Consent` and `Data subject request` domain entities (PRD §11) as the technical backbone for rights requests and consent records.
-
-**Data subject request (export/erasure) target: 30 days**, matching the ICO statutory maximum. Build the DSR workflow to hit this deadline, not just aim for it informally.
+- **Frameworks:** UK GDPR + DPA 2018, with EU GDPR built to in parallel. PECR covers marketing and non-essential cookies. The Equality Act backs the accessibility requirement.
+- **Lawful basis:** contract for core CRM. Legitimate interests for analytics, abuse prevention and feedback. Consent only for marketing and non-essential cookies, never bundled. No special-category data: a feature that would collect it needs a DPIA first.
+- **Sub-processors:**
+  - Every vendor needs a DPA, plus a line in `docs/sub-processors.md` and `lib/legal/sub-processors.ts` **in the same change** that first sends it personal data. A drift test binds the two lists.
+  - A vendor outside the UK/EU needs adequacy, the IDTA or SCCs first.
+- **Legal pages:** the fifteen `/legal/<slug>` pages are versioned in `public.legal_documents` and edited at `/super/legal`. They are **all engineering drafts** carrying a non-dismissable notice until counsel's review of that exact version is recorded. Published versions are immutable.
+- **Cookies:** no banner today. A storage census (`tests/unit/legal/storage-census.test.ts` in CI, plus a local browser check) fails on any undeclared cookie, storage write or tracker. Adding a vendor means consent-before-load, a banner, an inventory entry and a sub-processor entry, together.
+- **Rights:** `/account/privacy` handles consent, an append-only ledger. `/account/data-requests` handles DSRs, with `due_by` computed by the database and enforced. `/account/exports` and `/[orgSlug]/settings/export` produce exports, read with the requester's own rights. `/account/erase` erases an account in one transaction that pseudonymises the audit trail to a tombstone and refuses for the last Owner (Q131).
+- **B2B:** individual users in customer orgs keep full GDPR rights.
+- **Breaches:** 72-hour notification, under `SECURITY.md` § 12.
+- **Payments:** no card data is ever handled directly.

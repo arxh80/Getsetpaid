@@ -3,6 +3,7 @@ import {
   restoreDocumentAction,
 } from "@/lib/crm/documents";
 import type { ScanStatus } from "@/lib/crm/task-status";
+import { formatDate } from "@/lib/format/date";
 import {
   DeleteRecordForm,
   RestoreRecordForm,
@@ -124,5 +125,25 @@ export function DocumentRestoreControl({
       blocked={blocked}
       describedBy={describedBy}
     />
+  );
+}
+
+/**
+ * In place of Restore, for a deleted document whose file the retention job has
+ * destroyed (Q185, founder 2026-09-30). Plain text, not a disabled button: a
+ * disabled control implies a state that could change, and this one cannot.
+ * The date is the UK local day (`formatDate`, Europe/London) of the UTC
+ * `bytes_purged_at`, in a <time> carrying the instant itself.
+ *
+ * NOT THE CONTROL. `restoreDocumentAction` refuses a purged row on its own read
+ * and the database refuses it for every writer
+ * (`documents_purged_implies_deleted`); this only says so before anyone tries.
+ */
+export function DocumentPurgedNotice({ purgedAt }: { purgedAt: string }) {
+  return (
+    <p className="max-w-56 text-sm text-ink-muted">
+      File deleted under the retention policy on{" "}
+      <time dateTime={purgedAt}>{formatDate(purgedAt)}</time>
+    </p>
   );
 }

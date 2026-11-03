@@ -1266,11 +1266,29 @@ select crm.val('L5  every table carrying updated_at has the trigger',
 -- no updated_at column, because a link is created or soft-deleted and never
 -- edited. 29 + 2 = 31, and a reviewer of 20260904000000 checks that arithmetic
 -- against the three tables it creates.
-select crm.val('L6  ...and that is 31 tables (+2 network tables in Phase 6)',
+-- 32 SINCE PHASE 7 TASK 5, up from 31. ONE added out of the six tables Phase 7
+-- creates: only public.rate_limit_counters carries an updated_at column
+-- (impersonation_sessions, rate_limit_policies, incident_alerts,
+-- organisation_billing_overrides and organisation_feature_overrides do not --
+-- each is written once and then either read, resolved or expired, never
+-- edited), and § L5 above caught it arriving WITHOUT the trigger. 20260909030000
+-- attaches it. That is this guard doing the exact job it was written for, so
+-- the fix was to add the trigger rather than to carve out the table -- see that
+-- migration's header for why an exception list would have destroyed the guard.
+-- 33 SINCE PHASE 8 TASK 1, up from 32: public.legal_documents carries an
+-- updated_at column, and § L5 above caught it arriving without the trigger --
+-- 20260922002000 attaches it, the 20260909030000 way.
+-- 34 SINCE PHASE 8 TASK 6: public.retention_settings, the retention job's two
+-- kill switches, and § L5 caught THAT one arriving without the trigger too --
+-- for the third time, which is the whole argument for a count here rather than
+-- a list. 20261003010000 attaches it. The RPC that writes the row sets
+-- updated_at itself, so the trigger changes nothing today; "the one writer
+-- remembers to" is exactly the guarantee it replaces.
+select crm.val('L6  ...and that is 34 tables (+1 legal_documents, +1 retention_settings in Phase 8)',
   $$select count(*)::text from pg_trigger t
     join pg_class c on c.oid=t.tgrelid
     join pg_namespace n on n.oid=c.relnamespace
-    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '31');
+    where n.nspname='public' and not t.tgisinternal and t.tgname='set_updated_at'$$, '34');
 
 -- ===========================================================================
 -- M. THE MIRROR TEST -- one rule, two representations, bound together
@@ -1496,11 +1514,21 @@ end $fn$;
 -- the round-1 hole -- leaving the clause intact and wrapping a second disjunct
 -- around it -- now removes the substring instead of nesting it, and this
 -- assertion goes red on its own.
-select crm.val('M1c the suspension clause is EXACTLY the catalogue form, in both PARSED bodies',
+--
+-- RE-PINNED 2026-10-05 (PHASE 8 TASK 9c FIX ROUND 1b, Q227 -- controller
+-- decision (a), pending founder). The clause gained a THIRD disjunct in both
+-- bodies, private.closure_backup_read_admits(o.id) (20261025000000, C1): a
+-- closure backup reads the workspace as it was before the closure. It is TRUE
+-- only inside public.export_read_page()'s read of a closure_backup job, in
+-- that transaction, for that organisation, off a marker row no client role can
+-- write (rls_phase8_closure_backup.sql § KA/KM). The expected string is the
+-- whole flattened clause, so a fourth disjunct, or the term in one body and
+-- not the other, is still red here.
+select crm.val('M1c the suspension clause is EXACTLY the catalogue form plus the closure-backup marker, in both PARSED bodies',
   $$select ( (crm.canon('public','has_permission')
-                like '%(o.deleted_at IS NULL OR perm.survives_suspension)%')::int
+                like '%(o.deleted_at IS NULL OR perm.survives_suspension OR private.closure_backup_read_admits(o.id))%')::int
            + (crm.canon('private','permitted_organisations')
-                like '%(o.deleted_at IS NULL OR perm.survives_suspension)%')::int )::text$$,
+                like '%(o.deleted_at IS NULL OR perm.survives_suspension OR private.closure_backup_read_admits(o.id))%')::int )::text$$,
   '2');
 
 -- M1d: the whole shape of each PARSED body -- `deleted_at` once,
@@ -1530,10 +1558,37 @@ select crm.val('M1d the ONLY suspension term and the ONLY literal, per PARSED bo
 -- b.key = rp.permission_key)`, or `or rp.permission_key = private.some_fn()`.
 -- Neither adds a literal, so M1d stays green; both add a dependency, and the
 -- parser records it.
-select crm.val('M1d2 the two PARSED bodies read exactly the four tables and three functions the rule is made of',
+--
+-- ===========================================================================
+-- RE-READ AND RE-RECORDED 2026-09-08 (PHASE 7 TASK 2, IMPERSONATION)
+-- ===========================================================================
+-- This assertion went red, exactly as designed, when 20260908020000 added the
+-- impersonation disjunct to both bodies. THE EXPECTED VALUE WAS NOT RELAXED --
+-- it gained ONE named function, `private.impersonated_organisations`, and it
+-- gained it in BOTH halves, which is itself the check: a one-sided
+-- implementation (the disjunct added to has_permission and forgotten in
+-- permitted_organisations, or the reverse) would leave the two sides of the
+-- `||` different and this assertion red. The M1 sweep cannot catch that on its
+-- own, because no impersonation session exists at the point M1 runs --
+-- supabase/tests/rls_phase7_impersonation.sql § IM re-runs the sweep WITH one
+-- live, and § IM2 covers full_scope_organisations(), the third consumer.
+--
+-- THE TABLE HALF IS UNCHANGED, and that is the substantive fact this line now
+-- also records: neither body reads a new TABLE. impersonation_sessions is
+-- read inside private.impersonated_organisations(), a SECURITY DEFINER helper
+-- with its own four conditions (live session, unexpired, still-allowlisted at
+-- aal2, key held by `read_only`), rather than inlined here where it would be
+-- evaluated under the caller's RLS and could form a cycle with the policy on
+-- that same table.
+--
+-- RE-RECORDED 2026-10-05 (Q227): FOUR -> FIVE functions, in BOTH halves --
+-- private.closure_backup_read_admits, the C1 marker term pinned in M1c. The
+-- table half is still unchanged: the marker table is read inside that
+-- SECURITY DEFINER helper, never inlined here.
+select crm.val('M1d2 the two PARSED bodies read exactly the four tables and five functions the rule is made of',
   $$select crm.canon_deps('has_permission') || '  ||  '
         || crm.canon_deps('permitted_organisations')$$,
-  'organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.role_requires_mfa,private.session_is_aal2  ||  organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.role_requires_mfa,private.session_is_aal2');
+  'organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.closure_backup_read_admits,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2  ||  organisation_memberships,organisations,permissions,role_permissions | auth.uid,private.closure_backup_read_admits,private.impersonated_organisations,private.role_requires_mfa,private.session_is_aal2');
 -- The catalogue is only trustworthy if nothing can grant a key that is not in
 -- it -- otherwise an uncatalogued key silently inherits "no row, no join, no
 -- permission" for reads AND the wrong suspension answer.
@@ -1546,9 +1601,30 @@ select crm.val('M1f every permission key in use has a catalogue row',
   $$select count(*)::text from public.role_permissions rp
      where not exists (select 1 from public.permissions p where p.key = rp.permission_key)$$,
   '0');
-select crm.val('M1g exactly one key survives suspension today, and it is view_crm',
+-- TWO KEYS SINCE THE PHASE 7 PRE-MERGE FIX ROUND (finding I1), and the
+-- assertion is still the EXACT SET rather than a count, so a third cannot
+-- arrive unnoticed. `end_support_access` (20260921002000) lets a SUSPENDED
+-- workspace's Owner/Admin see and end a support-access session already running
+-- against them: suspending a workspace mid-session used to revoke the
+-- CUSTOMER's control while leaving the operator's read running, because
+-- view_crm survives suspension and manage_organisation does not. Withdrawing a
+-- grant is not a change to the workspace. It grants no read of any tenant
+-- table and no write anywhere; ACCEPTING a new request still needs
+-- manage_organisation and is still refused while suspended (Q98).
+-- THREE SINCE PHASE 8 TASK 4. `export_organisation_data` (20260927000000)
+-- lets a suspended or CLOSED workspace's Owner/Admin take a copy of their own
+-- data during the 60-day retention window (Q88/Q92) -- which is the window in
+-- which they most need it, and locking them out of it would make the
+-- retention promise unkeepable. It is a READ, like view_crm, and it grants no
+-- write anywhere: starting an export inserts one row in public.export_jobs
+-- and the archive is built under the requester's own read rights, so a
+-- suspended workspace's export is read-only by construction rather than by a
+-- rule somebody has to remember. The assertion stays the EXACT SET rather
+-- than a count, so a fourth cannot arrive unnoticed.
+select crm.val('M1g exactly three keys survive suspension today: view_crm, end_support_access and export_organisation_data',
   $$select coalesce(string_agg(key, ',' order by key), '<none>')
-      from public.permissions where survives_suspension$$, 'view_crm');
+      from public.permissions where survives_suspension$$,
+  'end_support_access,export_organisation_data,view_crm');
 -- The default is the control that protects Phase 5's author from themselves.
 select crm.val('M1h survives_suspension DEFAULTS to false (a new key arrives closed)',
   $$select column_default from information_schema.columns
@@ -1868,29 +1944,35 @@ select crm.val('M2  full_scope_organisations excludes exactly the scoped roles',
        )$$, '0');
 
 -- ===========================================================================
--- N. SUBSCRIPTION ENTITLEMENT (IMP-1) -- the gate that is inert today
+-- N. SUBSCRIPTION ENTITLEMENT (IMP-1) -- THE GATE IS NOW LIVE (Phase 7 Task A)
 -- ===========================================================================
--- private.crm_write_organisations() ships with the `s.organisation_id is null`
--- escape, because create_organisation() writes no subscription row and a gate
--- without it would deny every CRM write in the product. So in normal operation
--- this control does nothing, and NOTHING ELSE IN THIS SUITE WOULD NOTICE IF IT
--- WERE DELETED. This section is the only thing that will.
+-- private.crm_write_organisations() shipped with an `s.organisation_id is
+-- null` escape (20260828140000), because create_organisation() wrote no
+-- subscription row and a gate without it would have denied every CRM write in
+-- the product. Phase 7 Task A (20260908000000) removed that escape: it made
+-- create_organisation() write a Starter row at birth and backfilled one onto
+-- every organisation that predates it, so this section now drives a LIVE
+-- control rather than proving inert machinery.
 --
--- It drives the gate directly: insert a real `free` subscription row for org
--- ALPHA, watch every write close for every role while reads keep working,
--- upgrade the row to `starter`, watch writes come back, and restore the
--- no-row state so the rest of the fixture is untouched.
---
--- Phase 7 removes the escape and backfills. When it does, N1 and N16 are the
--- assertions that will change; everything between them is the behaviour Phase 7
--- is switching on and must keep.
+-- Org ALPHA already carries the Starter row create_organisation() gave it at
+-- line 163 above. N1 strips it -- the only way left to REACH the "no
+-- subscription row" state at all -- and proves the gate now DENIES rather
+-- than falling back open. It then plants a real `free` row and walks the same
+-- free/starter/past_due/cancelled sequence this section always has, and N16
+-- strips the row a second time to prove the denial is not a one-off. The
+-- section's own cleanup then leaves ALPHA on a real Starter row (not row-less)
+-- -- there is no more "inert" state to restore to, and every section after
+-- this one, in this file and in the phase 3-6 suites that reuse this fixture,
+-- needs ALPHA's CRM writes to keep working.
 
--- N1: the baseline. No subscription row = not yet billed = not yet gated.
+-- N1: strip the row and prove the escape is GONE -- a stripped organisation is
+-- now denied, not "not yet billed, not yet gated".
+delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select crm.try('N1  BASELINE: no subscription row, a write is allowed',
+select crm.try('N1  STRIPPED: no subscription row, the write is now DENIED (escape removed)',
   format($$insert into public.contacts (organisation_id, name)
-    values (%L,'Entitlement Baseline')$$, :'alpha_org'), 'ok(1)');
+    values (%L,'Entitlement Baseline')$$, :'alpha_org'), 'denied(42501)');
 reset role; reset request.jwt.claims;
 
 -- Free tier, active. CLAUDE.md § Subscription tiers: crm_writes = No.
@@ -2098,14 +2180,38 @@ select crm.val('N15c a NULL period end denies (fails closed, not open)',
         + make_interval(days => private.past_due_grace_days()))::text,
       'null-not-true')$$, 'null-not-true');
 
--- Restore the shipped state: no subscription row anywhere.
+-- N16: strip the row A SECOND TIME, from a 'cancelled' state this time
+-- rather than the birth state N1 stripped it from, and prove the denial is
+-- not a one-off finding -- a stripped organisation is denied regardless of
+-- what its subscription looked like a moment before it was stripped.
 delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
 
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select crm.try('N16 RESTORED: back to the inert state, writes allowed again',
+select crm.try('N16 STRIPPED AGAIN: still no subscription row, still DENIED',
   format($$insert into public.contacts (organisation_id, name)
-    values (%L,'inert again')$$, :'alpha_org'), 'ok(1)');
+    values (%L,'still stripped')$$, :'alpha_org'), 'denied(42501)');
+reset role; reset request.jwt.claims;
+
+-- N17: leave ALPHA on a REAL, working subscription row. There is no more
+-- "inert/no-row" state to restore to (that was the whole point of this
+-- section) -- every section below this one, in this file and in the phase
+-- 3-6 suites that reuse ALPHA's fixture whole, needs its CRM writes (and,
+-- from rls_phase5_finance.sql onward, its finance and network writes too) to
+-- keep working. Pro rather than Starter so this one row satisfies every
+-- downstream gate (crm_writes, finance_module, network_publish, an unlimited
+-- custom-field count) without a later section having to know to upgrade it
+-- first -- sections that care about a SPECIFIC tier (§ FE, § FI, § NT) already
+-- set their own explicit plan_id and are unaffected by what this leaves
+-- behind.
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'alpha_org'::uuid, 'pro', 'monthly', 1, 'active', now() + interval '30 days');
+set role authenticated;
+set request.jwt.claims = :'pmanager_c';
+select crm.try('N17 RESTORED: a real Pro-tier row, CRM writes come back',
+  format($$insert into public.contacts (organisation_id, name)
+    values (%L,'restored on pro')$$, :'alpha_org'), 'ok(1)');
 reset role; reset request.jwt.claims;
 
 -- ===========================================================================
@@ -2247,8 +2353,16 @@ set request.jwt.claims = :'pmanager_c';
 -- counts are exact. RLS does not hide soft-deleted ROWS (design note (g)), so
 -- these include the fixture's soft-deleted contacts -- that is the pre-existing
 -- rule and it is unrelated to organisation suspension.
+--
+-- 12, NOT 13 -- PHASE 7 TASK A. § N above used to insert TWO extra contacts
+-- through the (then-inert) escape: N1's baseline write and N16's restore, both
+-- ok(1). N1 and N16 now DENY instead of writing (that is what Task A switched
+-- on), and N17 -- the new final step, which N16 never had -- adds exactly one
+-- back. Net: one fewer contact than before Task A. This denominator (also at
+-- P10b and P20 below) is READ from the fixture, not derived here; if it drifts
+-- again, count what § N actually inserts rather than guessing.
 select crm.val('P1  SUSPENDED: contacts are still readable (was: expect 0)',
-  $$select count(*)::text from public.contacts$$, '13');
+  $$select count(*)::text from public.contacts$$, '12');
 select crm.val('P1a SUSPENDED: companies still readable',
   $$select count(*)::text from public.companies$$, '3');
 select crm.val('P1b SUSPENDED: agencies still readable',
@@ -2512,7 +2626,7 @@ reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'powner_c';
 select crm.val('P10b POSITIVE CONTROL: the same owner at aal2 DOES read the suspended org',
-  $$select count(*)::text from public.contacts$$, '13');
+  $$select count(*)::text from public.contacts$$, '12');
 select crm.try('P10c ...and still cannot write to it',
   format($$insert into public.contacts (organisation_id, name)
     values (%L,'suspended-owner')$$, :'alpha_org'), 'denied(42501)');
@@ -2750,7 +2864,7 @@ set role authenticated;
 set request.jwt.claims = :'pmanager_c';
 select crm.val('P8  REINSTATED: the CRM comes back',
   $$select (count(*) > 0)::text from public.contacts$$, 'true');
-select crm.val('P20 LIVE baseline: contacts',            $$select count(*)::text from public.contacts$$, '13');
+select crm.val('P20 LIVE baseline: contacts',            $$select count(*)::text from public.contacts$$, '12');
 select crm.val('P21 LIVE baseline: companies',           $$select count(*)::text from public.companies$$, '3');
 select crm.val('P22 LIVE baseline: agencies',            $$select count(*)::text from public.agencies$$, '1');
 select crm.val('P23 LIVE baseline: artists',             $$select count(*)::text from public.artists$$, '3');
@@ -5048,6 +5162,17 @@ from (values
   (:'powner','owner'), (:'pmanager','manager'), (:'pbooker','booker'),
   (:'pstd1','standard_user'), (:'pro','read_only')
 ) as v(uid, rk);
+
+-- org-merge is planted by direct INSERT, not create_organisation(), so it
+-- gets no subscription row for free the way ALPHA and BETA do. W20/W26 below
+-- call public.screen_for_duplicates()/public.merge_records() as pmanager --
+-- CRM writes, gated by private.crm_write_organisations() since Phase 7 Task A
+-- removed that function's "no subscription row" escape -- so without a row
+-- of its own this organisation would deny every merge in this section.
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values ('a0a00000-0000-0000-0000-00000000000a', 'starter', 'monthly', 1, 'active',
+        now() + interval '30 days');
 
 -- CONTACTS. m1 is the OLDEST and is therefore the winner of every pair it is
 -- in; m2 shares its email in a different case; m3 is a near-name owned by the

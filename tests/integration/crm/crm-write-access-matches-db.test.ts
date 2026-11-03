@@ -9,28 +9,33 @@
 //   private.crm_write_organisations() vs entitlementsPermitCrmWrites()  <- here
 //
 // ===========================================================================
-// THE DIVERGENCE THIS TEST WAS WRITTEN FOR ALREADY EXISTED, AND IT WOULD HAVE
-// DISABLED EVERY WRITE BUTTON IN THE PRODUCT
+// THE DIVERGENCE THIS TEST WAS WRITTEN FOR IS GONE -- PHASE 7 TASK A CLOSED IT
 // ===========================================================================
-// `lib/entitlements/policy.ts` resolves an organisation with NO subscription
-// row to `{ status: "no-subscription", tier: "free" }`, and
-// `TIER_MATRIX.free.crmWrites` is FALSE.
-// `private.crm_write_organisations()` does the opposite, in as many words:
+// Before Task A, `lib/entitlements/policy.ts` resolved an organisation with
+// NO subscription row to `{ status: "no-subscription", tier: "free" }` (and
+// `TIER_MATRIX.free.crmWrites` is FALSE), while `private.crm_write_
+// organisations()` did the opposite, in as many words:
 //
 //     -- No subscription row => not yet billed => not yet gated. Phase 7
 //     -- removes this branch in the same migration that backfills the rows.
 //     s.organisation_id is null
 //
-// `public.create_organisation()` writes no subscription row, so every
-// organisation in the product today has none. Reading `crmWrites` straight off
-// the entitlements result -- the obvious thing -- would have rendered every
-// "New contact" button disabled, with the reason "your plan does not include
-// this", in every workspace, while the database happily accepted the write
-// from anything that bypassed the UI. A wrong disabled state is not a security
-// bug, which is exactly why nothing else would have caught it.
+// `public.create_organisation()` wrote no subscription row at the time, so
+// every organisation in the product had none, and reading `crmWrites`
+// straight off the entitlements result -- the obvious thing -- would have
+// rendered every "New contact" button disabled while the database happily
+// accepted the write from anything that bypassed the UI.
 //
-// So this test drives BOTH sides for every combination of subscription state
-// the two implementations disagree about most easily.
+// TASK A (20260908000000) removed the escape from BOTH halves: `public.
+// create_organisation()` now writes a Starter row at birth and every
+// pre-existing organisation was backfilled one, so "no subscription row" is
+// no longer a state a real organisation can be in, and `private.crm_write_
+// organisations()` denies it outright. `entitlementsPermitCrmWrites()`
+// mirrors that now too (lib/crm/write-access.ts). This test still drives
+// BOTH sides for every combination of subscription state the two
+// implementations could disagree about most easily -- the "no subscription
+// row" case included, now proving agreement on DENIAL rather than on the old
+// escape.
 //
 // LOCAL ONLY, everything rolled back. Same guard as every other integration
 // test here: env.ts refuses anything that is not the loopback stack.
@@ -156,14 +161,16 @@ async function bothSides(subscription: {
 }
 
 describe("entitlementsPermitCrmWrites mirrors private.crm_write_organisations()", () => {
-  it("agrees on NO SUBSCRIPTION ROW, which is every organisation today", async () => {
-    // The case the naive reading gets backwards. If this goes red because
-    // Phase 7 removed the `s.organisation_id is null` escape, the fix is to
-    // remove it from lib/crm/write-access.ts in the same change -- not to
-    // relax the test.
+  it("agrees on NO SUBSCRIPTION ROW, which Phase 7 Task A made impossible for a real organisation and DENIED", async () => {
+    // This organisation is planted by a direct INSERT into
+    // public.organisations, not through public.create_organisation() -- the
+    // same accommodation rls_phase2_crm.sql § N's N1 needs -- so "no
+    // subscription row" is still reachable here even though no real
+    // organisation is ever in that state any more. Both sides now agree it
+    // DENIES: the escape this test used to prove is gone from both halves.
     const result = await bothSides(null);
-    expect(result.database, "the database permits writes with no subscription")
-      .toBe(true);
+    expect(result.database, "the database now REFUSES writes with no subscription")
+      .toBe(false);
     expect(result.typescript, result.label).toBe(result.database);
   });
 
