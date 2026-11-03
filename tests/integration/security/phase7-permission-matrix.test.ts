@@ -1226,6 +1226,12 @@ const OWN_ROW_RELATIONS = [
   // second Admin of the same workspace -- an archive is a snapshot taken
   // under one person's access rights.
   "export_jobs",
+  // Q228 (20261101000000): a closure backup's parts. SELECT to authenticated
+  // through a policy that reads the parent export_jobs row under the
+  // caller's own RLS -- so exactly the requester's own jobs' parts, never a
+  // second Admin's -- and no INSERT, UPDATE or DELETE for any client role;
+  // the export runner (service_role) and the part guard are the only writers.
+  "export_job_parts",
   // Phase 8 Task 5: the erasure register. SELECT to authenticated, rows
   // filtered to the caller as SUBJECT or REQUESTER -- plus the aal2
   // operator's oversight read, which export_jobs deliberately does NOT have
@@ -2107,6 +2113,7 @@ describe("GATE 0 (Phase 8): the censuses reach every Phase 8 surface", () => {
       "data_subject_requests",
       "data_subject_request_notes",
       "export_jobs",
+      "export_job_parts",
       "erasure_jobs",
       "retention_runs",
       "retention_settings",
@@ -3586,6 +3593,134 @@ describe("table erasure_jobs (own rows + operator oversight, Phase 8 Task 8)", (
   it("INVARIANT: nothing in this file erased the held job's subject", async () => {
     const { rows } = await pool.query(`select count(*)::int as n from auth.users where id = $1`, [noOrgUserId]);
     expect(rows[0].n).toBe(1);
+  });
+});
+
+// =============================================================================
+// Q228 TASK 1: A CLOSURE BACKUP'S PARTS (OWN ROWS, THROUGH THE PARENT JOB)
+// =============================================================================
+// `export_job_parts` is registered in OWN_ROW_RELATIONS, so it is read as one
+// here -- the erasure_jobs lesson above, applied the day the table arrived
+// rather than a phase later. The held job is a RUNNING closure backup of org
+// A requested by Owner A, with part 1 stored through the real part guard (a
+// server session: the pool's postgres connection, no person on it). Only the
+// JOB row is planted under `replica`, because closing org A for real would
+// close the workspace every other block in this file runs against; the part
+// itself goes through the guard, which is the positive control that the
+// guard admits the server. The readers who must read NOTHING include a Read
+// Only member and the Admin of the SAME workspace -- an archive is one
+// person's snapshot -- and the aal2 operator, who has no oversight read of
+// export_jobs and therefore none of its parts.
+describe("table export_job_parts (own rows through the parent job, Q228)", () => {
+  let jobId = "";
+  // Owner A is principal 4 AND principal 5 (the impersonated Owner is the
+  // same person), so both must read the part.
+  const readsIt = new Set(["orgOwner", "impersonatedOrgOwner"]);
+  const everyone: { key: string; client: () => SupabaseClient }[] = [
+    ...PRINCIPALS.map(({ key, client }) => ({ key: key as string, client })),
+    { key: "sameWorkspaceAdmin", client: () => fx.activeByRole.admin.client },
+    { key: "superuserAal2", client: () => superuser },
+  ];
+
+  beforeAll(async () => {
+    const conn = await pool.connect();
+    try {
+      await conn.query("begin");
+      await conn.query("set local session_replication_role = replica");
+      const { rows } = await conn.query<{ id: string }>(
+        `insert into public.export_jobs
+           (kind, organisation_id, requested_by, requested_aal, status, started_at, closure_backup)
+         values ('workspace', $1, $2, 'aal2', 'running', now(), true)
+         returning id`,
+        [fx.orgA.id, fx.ownerA.userId],
+      );
+      jobId = rows[0].id;
+      await conn.query("commit");
+    } catch (e) {
+      await conn.query("rollback");
+      throw e;
+    } finally {
+      conn.release();
+    }
+    // Through the guard, as the export runner would store it.
+    await pool.query(
+      `insert into public.export_job_parts (job_id, part_no, storage_key, byte_size, row_count)
+       values ($1::uuid, 1, 'exports/' || $1::uuid::text || '.zip', 100, 10)`,
+      [jobId],
+    );
+  });
+
+  afterAll(async () => {
+    // The job's own delete; the part goes with it by the FK cascade, which the
+    // guard admits (no parent visible).
+    if (jobId) await pool.query(`delete from public.export_jobs where id = $1`, [jobId]);
+    const { rows } = await pool.query(`select count(*)::int as n from public.export_job_parts where job_id = $1`, [
+      jobId,
+    ]);
+    expect(rows[0].n, "the cascade left a part behind").toBe(0);
+  });
+
+  it("DENOMINATOR: the held job is Owner A's running closure backup, with exactly part 1 stored", async () => {
+    const { rows } = await pool.query(
+      `select j.requested_by, j.closure_backup, j.status, j.part_count,
+              (select string_agg(p.part_no::text, ',') from public.export_job_parts p where p.job_id = j.id) as parts
+         from public.export_jobs j where j.id = $1`,
+      [jobId],
+    );
+    expect(rows).toEqual([
+      { requested_by: fx.ownerA.userId, closure_backup: true, status: "running", part_count: 0, parts: "1" },
+    ]);
+  });
+
+  it.each(everyone)("$key reads the held part only if it requested the job", async ({ key, client }) => {
+    const { data, error } = await client().from("export_job_parts").select("job_id, part_no").eq("job_id", jobId);
+    if (key === "anonymous") {
+      expect(error, "anon read a closure backup's parts").not.toBeNull();
+      expect(mechanismOf(error), error?.message).toBe("no-grant");
+      return;
+    }
+    // RLS FILTER, not an error: the grant is there and the policy decides.
+    expect(error, error?.message).toBeNull();
+    expect((data ?? []).length, key).toBe(readsIt.has(key) ? 1 : 0);
+  });
+
+  it.each(everyone)("$key cannot insert, alter or delete a part -- the requester included", async ({ key, client }) => {
+    const before = await tableChecksum("export_job_parts");
+    const ins = await client()
+      .from("export_job_parts")
+      .insert({ job_id: jobId, part_no: 2, storage_key: `exports/${jobId}-part-0002.zip`, byte_size: 1, row_count: 1 } as never);
+    const upd = await client()
+      .from("export_job_parts")
+      .update({ byte_size: 0 } as never)
+      .eq("job_id", jobId)
+      .select("job_id");
+    const del = await client().from("export_job_parts").delete().eq("job_id", jobId).select("job_id");
+    expect(await tableChecksum("export_job_parts"), `${key}: a direct write changed the parts`).toBe(before);
+    // BY WHICH RULE: the missing grant, for every principal -- never the part
+    // guard (which would mean a client role had been granted a write and the
+    // trigger was the last line) and never an RLS filter returning 0 rows.
+    for (const [what, r] of [
+      ["insert", ins],
+      ["update", upd],
+      ["delete", del],
+    ] as const) {
+      expect(r.error, `${key}: ${what} was not refused`).not.toBeNull();
+      expect(mechanismOf(r.error), `${key}: ${what}: ${r.error?.message}`).toBe("no-grant");
+    }
+  });
+
+  it("no CLIENT role holds a write privilege on the table, at table or column level", async () => {
+    const { rows } = await pool.query<{ grantee: string; privilege_type: string }>(
+      `select distinct grantee, privilege_type from information_schema.column_privileges
+        where table_schema = 'public' and table_name = 'export_job_parts'
+          and grantee in ('anon', 'authenticated')
+        union
+       select distinct grantee, privilege_type from information_schema.table_privileges
+        where table_schema = 'public' and table_name = 'export_job_parts'
+          and grantee in ('anon', 'authenticated')
+        order by grantee, privilege_type`,
+    );
+    expect(rows).toEqual([{ grantee: "authenticated", privilege_type: "SELECT" }]);
   });
 });
 

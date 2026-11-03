@@ -273,6 +273,12 @@ export function failureSentence(cause: unknown): string {
     case "export_job_is_finished":
     case "export_outcome_is_server_only":
     case "illegal_export_transition":
+    // Q228 (20261101000000): the same export guard now also counts a closure
+    // backup's stored parts on a re-queue or a success. Reached by the
+    // textual walk through export_jobs_before_update(); the erasure's own
+    // re-point of a backup's requester returns before it, so this is the
+    // same "related record refused" family, never a partial deletion.
+    case "export_part_count_mismatch":
     case "unknown_retention_class":
     case "audit_retention_below_floor":
     case "audit_purge_over_ceiling":

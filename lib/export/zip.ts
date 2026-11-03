@@ -94,14 +94,64 @@ export class ZipWriter {
   private readonly entries: Entry[] = [];
   private size = 0;
   private held = 0;
+  /** 46 + name bytes per entry already added: what finish() will append. */
+  private directoryBytes = 0;
   private finished = false;
+  private readonly entryCeiling: number;
 
   /**
    * `byteCeiling` bounds BOTH the archive written so far and the serialised
    * bytes being held for an entry that is still open, so neither half can
    * grow without the job failing.
+   *
+   * `entryCeiling` (Q228) bounds the entry count, and is capped at 65 535 --
+   * the most a zip without ZIP64 can hold -- whatever a caller asks for.
    */
-  constructor(private readonly byteCeiling: number) {}
+  constructor(
+    private readonly byteCeiling: number,
+    entryCeiling: number = MAX_ENTRIES,
+  ) {
+    this.entryCeiling = Math.min(MAX_ENTRIES, entryCeiling);
+  }
+
+  /** The entry ceiling in force, after the 65 535 cap. */
+  get entryLimit(): number {
+    return this.entryCeiling;
+  }
+
+  /** The central-directory bytes finish() will append for the entries so far. */
+  get directoryByteLength(): number {
+    return this.directoryBytes;
+  }
+
+  /**
+   * Q228: WOULD THIS ENTRY STILL LEAVE A FINISHABLE ARCHIVE? The question a
+   * parted builder asks BEFORE writing, so it can close a part instead of
+   * failing the job.
+   *
+   * True when, with `rawBytes` written under `name` and `reserveBytes` /
+   * `reserveEntries` still owed (the part's manifest), the finished archive --
+   * local headers, payloads, the WHOLE central directory including every entry
+   * already added, and the end record -- stays within `byteCeiling`, and the
+   * entry count within the entry ceiling. `rawBytes` is the input's length,
+   * an upper bound: a stored payload is never larger than its input and a
+   * deflated one is only kept when it is smaller.
+   */
+  wouldFit(name: string, rawBytes: number, reserveBytes = 0, reserveEntries = 0): boolean {
+    const nameLen = Buffer.byteLength(name, "utf8");
+    const bytes =
+      this.size +
+      this.held +
+      30 +
+      nameLen +
+      rawBytes +
+      this.directoryBytes +
+      46 +
+      nameLen +
+      END_RECORD_BYTES +
+      reserveBytes;
+    return bytes <= this.byteCeiling && this.entries.length + 1 + reserveEntries <= this.entryCeiling;
+  }
 
   get byteLength(): number {
     return this.size;
@@ -121,10 +171,19 @@ export class ZipWriter {
     this.held = Math.max(0, this.held - bytes);
   }
 
-  addEntry(name: string, data: Uint8Array, at: Date = new Date()): void {
+  addEntry(
+    name: string,
+    data: Uint8Array,
+    at: Date = new Date(),
+    options: { readonly store?: boolean } = {},
+  ): void {
     if (this.finished) throw new Error("zip: the archive is already finished");
-    if (this.entries.length >= MAX_ENTRIES) {
-      throw new Error(`zip: more than ${MAX_ENTRIES} entries needs ZIP64`);
+    if (this.entries.length >= this.entryCeiling) {
+      throw new Error(
+        this.entryCeiling === MAX_ENTRIES
+          ? `zip: more than ${MAX_ENTRIES} entries needs ZIP64`
+          : `zip: more than ${this.entryCeiling} entries passes this archive's entry ceiling`,
+      );
     }
     if (data.length > MAX_UINT32) {
       throw new Error("zip: an entry over 4 GiB needs ZIP64");
@@ -136,10 +195,15 @@ export class ZipWriter {
     // level 6 is zlib's default: the difference to 9 on JSON is a percent or
     // two of size for several times the CPU, and this runs on a request's
     // tail.
-    const deflated = data.length === 0 ? Buffer.alloc(0) : deflateRawSync(data, { level: 6 });
+    //
+    // `store` (Q228) skips DEFLATE: the closure-backup index states its own
+    // part's byte length, which is only computable in advance when the
+    // manifest's payload length is its input length.
+    const deflated =
+      data.length === 0 || options.store ? Buffer.alloc(0) : deflateRawSync(data, { level: 6 });
     // DEFLATE can be LARGER than its input on already-compressed bytes (a PDF,
     // a PNG). Store those rather than growing them.
-    const stored = deflated.length >= data.length;
+    const stored = options.store === true || deflated.length >= data.length;
     const payload = stored ? Buffer.from(data) : deflated;
     const method = stored ? 0 : 8;
 
@@ -163,6 +227,7 @@ export class ZipWriter {
     this.push(nameBytes);
     this.push(payload);
 
+    this.directoryBytes += 46 + nameBytes.length;
     this.entries.push({
       name,
       offset,

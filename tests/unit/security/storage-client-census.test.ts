@@ -73,6 +73,11 @@ const ALLOWED = new Set([
   // signs a URL for it after the audit row is written.
   "lib/export/runner.ts",
   "lib/export/download.ts",
+  // Q228 Task 2. The closure backup's parted builder: it uploads each part
+  // and reads each document's bytes as the runner does, and removes the
+  // parts of a FAILED backup by derived key (removeClosureParts) --
+  // tests/unit/export/export-bucket-removal-census.test.ts rolls that removal.
+  "lib/export/parts.ts",
   // Phase 8 Task 5. The erasure runner deletes a subject's stored objects
   // BEFORE the database transaction, because the database refuses to delete
   // the rows while any byte remains.

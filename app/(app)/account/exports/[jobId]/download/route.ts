@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { issueExportDownloadUrl } from "@/lib/export/download";
+import { parsePartParam } from "@/lib/export/contract";
 
 // ===========================================================================
 // GET /account/exports/[jobId]/download
@@ -19,18 +20,24 @@ import { issueExportDownloadUrl } from "@/lib/export/download";
 //   302 : to the signed URL, minted only after identity + RLS + expiry +
 //         existence + audit.
 //   404 : not signed in, not a uuid, not your job, no such job, still
-//         running, failed, or expired — indistinguishable on purpose.
+//         running, failed, expired, or a malformed, zero or missing part
+//         (`?part=`, Q228; absent means part 1) — indistinguishable on
+//         purpose. A malformed part is refused before any lookup.
 //   500 : a lookup, audit or signing fault. Never a URL.
 //
 // A route handler never streams, so this keeps the literal 404
 // (DESIGN.md § Error pages, the document download route's own rule).
 // ===========================================================================
 export async function GET(
-  _request: Request,
+  request: Request,
   ctx: { params: Promise<{ jobId: string }> },
 ): Promise<NextResponse> {
+  const part = parsePartParam(new URL(request.url).searchParams.get("part"));
+  if (part === null) {
+    return new NextResponse("Not found", { status: 404, headers: { "Cache-Control": "no-store" } });
+  }
   const { jobId } = await ctx.params;
-  const outcome = await issueExportDownloadUrl(jobId);
+  const outcome = await issueExportDownloadUrl(jobId, part);
 
   if (outcome.ok) {
     return new NextResponse(null, {

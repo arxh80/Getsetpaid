@@ -252,6 +252,41 @@ describe("private.audit_coverage(): every tenant-owned client-writable table is 
     }
   });
 
+  it("Q228: export_job_parts is outside the denominator, because no client role can write it (the census proves that, it does not assume it)", async () => {
+    // The parts of a closure backup (20261101000000) are written by the export
+    // runner alone, so the CRM write-audit question does not arise for them.
+    // Two facts make that true, and both are measured: the census returns no
+    // row for the table, and no client role holds any write privilege on it
+    // at table OR column level (a column grant is the shape a table-level
+    // check would miss). Its FK is to export_jobs, not organisations, so the
+    // derivation's FK walk is a second reason it is absent; the grant check
+    // is the one that would still hold if that walk ever widened.
+    const rows = await coverage(pool);
+    expect(rows.some((r) => r.table_name === "export_job_parts")).toBe(false);
+    const { rows: held } = await pool.query<{ r: string; p: string }>(
+      `select r, p
+         from unnest(array['anon', 'authenticated']) r,
+              unnest(array['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE']) p
+        where has_table_privilege(r, 'public.export_job_parts', p)
+           or (p in ('INSERT', 'UPDATE') and has_any_column_privilege(r, 'public.export_job_parts', p))
+        order by r, p`,
+    );
+    expect(held, "a client role can write export_job_parts").toEqual([]);
+    // DENOMINATOR: the probe sees a write grant when there is one.
+    const client = await pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("grant insert (part_no) on public.export_job_parts to authenticated");
+      const { rows: lent } = await client.query<{ ok: boolean }>(
+        `select has_any_column_privilege('authenticated', 'public.export_job_parts', 'INSERT') as ok`,
+      );
+      expect(lent[0]?.ok).toBe(true);
+    } finally {
+      await client.query("rollback");
+      client.release();
+    }
+  });
+
   it("M2, PLANTED: the three shapes the first census could not see are each in the denominator and red", async () => {
     // Fix round 1. Each shape is planted in one rolled-back transaction and
     // must read `unaudited` BY NAME -- and each has a positive control, so the

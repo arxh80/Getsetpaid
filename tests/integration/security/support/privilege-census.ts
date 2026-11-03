@@ -127,6 +127,14 @@ export const DECLARED_PRIVILEGES: readonly string[] = [
   "events|authenticated|INSERT|*",
   "events|authenticated|SELECT|*",
   "events|authenticated|UPDATE|*",
+  // export_job_parts (Q228, 20261101000000): the requester reads its job's
+  // parts (RLS); no client write at all. service_role stores a part
+  // (INSERT), deletes a failed build's parts (DELETE, which needs SELECT for
+  // its WHERE) and totals them (SELECT) -- and never rewrites one (no UPDATE).
+  "export_job_parts|authenticated|SELECT|*",
+  "export_job_parts|service_role|DELETE|*",
+  "export_job_parts|service_role|INSERT|*",
+  "export_job_parts|service_role|SELECT|*",
   // export_jobs
   "export_jobs|authenticated|INSERT|kind",
   "export_jobs|authenticated|INSERT|organisation_id",
@@ -137,7 +145,10 @@ export const DECLARED_PRIVILEGES: readonly string[] = [
   "export_jobs|service_role|UPDATE|expires_at",
   "export_jobs|service_role|UPDATE|failure_reason",
   "export_jobs|service_role|UPDATE|manifest",
+  // Q228: the closure-backup runner's part count and resume point.
+  "export_jobs|service_role|UPDATE|part_count",
   "export_jobs|service_role|UPDATE|ready_notified_at",
+  "export_jobs|service_role|UPDATE|resume_cursor",
   "export_jobs|service_role|UPDATE|row_count",
   "export_jobs|service_role|UPDATE|started_at",
   "export_jobs|service_role|UPDATE|status",

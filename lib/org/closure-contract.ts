@@ -98,3 +98,28 @@ export const CLOSE_SECTION_ID = "close-workspace";
 export function closeWorkspacePath(orgSlug: string): string {
   return `/${orgSlug}/settings/export#${CLOSE_SECTION_ID}`;
 }
+
+// ---------------------------------------------------------------------------
+// Q228 Task 4: the closure backup on the Owner's page.
+// ---------------------------------------------------------------------------
+
+export const CLOSURE_BACKUP_FAILED_LINE =
+  "Your backup could not be built. Contact us and we will help you get a copy of your data.";
+
+/** Shown under a multi-part backup's list: the last part carries the index. */
+export function PARTS_TOGETHER_LINE(n: number): string {
+  return `These ${n} parts together are the whole backup. Part ${n} holds the index (its manifest.json lists every part).`;
+}
+
+/**
+ * Where "Contact us" goes when the backup failed. With the one configured
+ * support address (SECURITY.md § 13) it is a mailto whose subject carries the
+ * workspace slug and the job id and NOTHING else -- no name, no record
+ * content. Without one it is the contact page, which says so in words.
+ * `address` has already passed lib/legal/contact's conservative pattern.
+ */
+export function closureBackupHelpHref(address: string | null, slug: string, jobId: string): string {
+  if (address === null) return "/legal/contact";
+  const subject = `Closure backup failed: ${slug} (job ${jobId})`;
+  return `mailto:${address}?subject=${encodeURIComponent(subject)}`;
+}
