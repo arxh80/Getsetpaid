@@ -11,6 +11,7 @@ import {
   type NoteFilterKey,
   type NoteRow,
   type NoteSortKey,
+  notePreview,
 } from "@/lib/crm/notes-list";
 import {
   isNarrowed,
@@ -163,7 +164,7 @@ function noteColumns(orgSlug: string): readonly ListColumn<NoteRow, NoteSortKey>
           href={`/${orgSlug}/notes/${row.id}`}
           className="break-words text-primary underline underline-offset-4 hover:text-ink"
         >
-          {preview(row.body)}
+          {notePreview(row.body)}
         </Link>
       ),
     },
@@ -188,7 +189,3 @@ function noteColumns(orgSlug: string): readonly ListColumn<NoteRow, NoteSortKey>
 }
 
 /** A one-line preview so the cell stays a cell. React escapes it on render. */
-function preview(body: string): string {
-  const oneLine = body.replace(/\s+/g, " ").trim();
-  return oneLine.length > 140 ? `${oneLine.slice(0, 137)}…` : oneLine;
-}
