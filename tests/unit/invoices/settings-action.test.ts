@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const h = vi.hoisted(() => ({ stepUp: true, canWrite: true, rpc: vi.fn() }));
+const h = vi.hoisted(() => ({ stepUp: true, mint: true, canWrite: true, rpc: vi.fn() }));
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 vi.mock("@/lib/auth", () => ({ getCurrentOrg: async () => ({ id: "org-1", slug: "neon", name: "Neon" }) }));
-vi.mock("@/lib/auth/step-up-gate", () => ({ checkStepUp: async () => h.stepUp }));
+vi.mock("@/lib/auth/step-up-gate", () => ({ checkStepUp: async () => h.stepUp, mintStepUpToken: async () => h.mint }));
 vi.mock("@/lib/crm/finance-access", () => ({
   getFinanceWriteAccess: async () =>
     h.canWrite ? { canWrite: true } : { canWrite: false, reason: "tier", explanation: "Finance is a Pro feature." },
@@ -24,6 +24,7 @@ function form(): FormData {
 
 beforeEach(() => {
   h.stepUp = true;
+  h.mint = true;
   h.canWrite = true;
   h.rpc.mockReset();
   h.rpc.mockResolvedValue({ data: true, error: null });
@@ -35,6 +36,11 @@ describe("saveInvoiceSettingsAction", () => {
     const s = await saveInvoiceSettingsAction({}, form());
     expect(s.error).toContain("Confirm it is you");
     expect(s.values?.businessName).toBe("A");
+    expect(h.rpc).not.toHaveBeenCalled();
+  });
+  it("refuses when the database would not record the step-up, and never reaches the save", async () => {
+    h.mint = false;
+    expect((await saveInvoiceSettingsAction({}, form())).error).toContain("Confirm it is you");
     expect(h.rpc).not.toHaveBeenCalled();
   });
   it("refuses a Starter workspace with the disabled form's own sentence", async () => {

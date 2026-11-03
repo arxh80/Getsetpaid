@@ -30,12 +30,6 @@ const UNMINTED: Record<string, { readonly count: number; readonly why: string }>
     count: 1,
     why: "decides whether to RENDER the re-auth prompt; writes nothing",
   },
-  // shortcut: app-layer step-up only, no database token, so a direct PostgREST call to
-  // save_invoice_settings skips it; give it a purpose (CHECK + consume_step_up + an SG target) before launch.
-  "lib/invoices/settings-actions.ts": {
-    count: 1,
-    why: "saveInvoiceSettingsAction: the bank-details change is stepped up in the app only; the RPC consumes no token yet",
-  },
   "lib/admin/retention-actions.ts": {
     count: 1,
     why: "previewRetentionRunAction's dry run: its only write is the runner's own service-role call, with no PostgREST path to gate",
@@ -100,11 +94,15 @@ describe("step-up token callers", () => {
   });
 
   it("the TypeScript list is the migration's CHECK, exactly", () => {
-    const sql = readFileSync(
-      join(ROOT, "supabase/migrations/20261108001000_step_up_tokens.sql"),
-      "utf8",
-    );
-    const check = sql.match(/check \(purpose in \(([^)]*)\)\)/);
+    // The CHECK is created by 20261108001000 and re-added by each later migration
+    // that grows the list, so the live one is the last migration that states it.
+    const dir = join(ROOT, "supabase/migrations");
+    const stating = readdirSync(dir)
+      .filter((f) => f.endsWith(".sql"))
+      .sort()
+      .map((f) => readFileSync(join(dir, f), "utf8"))
+      .filter((sql) => /step_up_tokens_purpose_known|check \(purpose in \(/.test(sql));
+    const check = stating.at(-1)?.match(/check \(purpose in \(([^)]*)\)\)/);
     expect(check).not.toBeNull();
     const listed = [...check![1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
     expect(listed.sort()).toEqual([...STEP_UP_PURPOSES].sort());

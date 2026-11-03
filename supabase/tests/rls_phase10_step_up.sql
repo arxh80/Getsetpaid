@@ -240,6 +240,7 @@ select gen_random_uuid()::text as other   \gset
 select gen_random_uuid()::text as org_a   \gset
 select gen_random_uuid()::text as org_c   \gset
 select gen_random_uuid()::text as org_d   \gset
+select gen_random_uuid()::text as org_e   \gset
 select 'st-a-' || left(:'org_a', 8) as slug_a \gset
 select 'st-c-' || left(:'org_c', 8) as slug_c \gset
 select 'st-d-' || left(:'org_d', 8) as slug_d \gset
@@ -267,16 +268,23 @@ insert into st.ids values ('other', :'other');
 insert into public.organisations (id, name, slug) values
   (:'org_a', 'Step-up A', :'slug_a'),
   (:'org_c', 'Step-up C', :'slug_c'),
-  (:'org_d', 'Step-up D', :'slug_d');
+  (:'org_d', 'Step-up D', :'slug_d'),
+  (:'org_e', 'Step-up E', 'st-e-' || left(:'org_e', 8));
 insert into public.organisation_subscriptions
   (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
 select o, 'starter', 'monthly', 3, 'active', now() + interval '30 days'
   from unnest(array[:'org_a', :'org_c', :'org_d']::uuid[]) o
 on conflict (organisation_id) do update set plan_id = 'starter', status = 'active';
+-- E is the one Pro workspace: invoicing is a Pro feature (save_invoice_settings).
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'org_e', 'pro', 'monthly', 3, 'active', now() + interval '30 days')
+on conflict (organisation_id) do update set plan_id = 'pro', status = 'active';
 insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at) values
   (:'org_a', :'owner_a', 'owner', 'active', now()),
   (:'org_c', :'owner_c', 'owner', 'active', now()),
-  (:'org_d', :'owner_d', 'owner', 'active', now());
+  (:'org_d', :'owner_d', 'owner', 'active', now()),
+  (:'org_e', :'owner_a', 'owner', 'active', now());
 
 -- C, closed by its Owner (the closure decisions' precondition).
 set role authenticated;
@@ -485,6 +493,10 @@ select st.gate('SG20 start_erasure_for_request', 'start_erasure_for_request', :'
         $$select set_config('st.dsr', (select request_id from public.submit_data_subject_request('erasure', 'account', 'st: please erase my account'))::text, true) is not null$$,
         st.as_claims(:'su_c')]);
 
+-- invoice_settings (E is Pro; owner_a is its Owner, so manage_finance holds)
+select st.gate('SG21 save_invoice_settings', 'save_invoice_settings', :'owner_a_c', 'invoice_settings',
+  format($$select public.save_invoice_settings(%L, 'St Ltd', '1 St Street', null, 'St Ltd', '123456', '12345678', 'STP-', 30) is not null$$, :'org_e'), 'true');
+
 -- ===========================================================================
 -- § SC  CONTROLS: WHAT IS NOT GATED STILL WORKS WITHOUT A TOKEN
 -- ===========================================================================
@@ -516,24 +528,24 @@ select st.val('SN1 the closed purpose list',
       select replace(split_part(unnest(string_to_array(
                regexp_replace(pg_get_constraintdef(oid), '^.*ARRAY\[(.*)\].*$', '\1'), ', ')), '::', 1), '''', '') p
         from pg_constraint where conname = 'step_up_tokens_purpose_known') s$$,
-  'account_erasure,closure_decision,dsr_rejection,impersonation,legal_document,organisation_lifecycle,override,retention_settings,workspace_close,workspace_export');
+  'account_erasure,closure_decision,dsr_rejection,impersonation,invoice_settings,legal_document,organisation_lifecycle,override,retention_settings,workspace_close,workspace_export');
 select st.val('SN2 every purpose on the list is consumed by some function body, and none off it',
   $$select string_agg(distinct m[1], ',' order by m[1])
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      cross join lateral regexp_matches(p.prosrc, $r$consume_step_up\('([a-z_]+)'\)$r$, 'g') m
      where n.nspname in ('public', 'private')$$,
-  'account_erasure,closure_decision,dsr_rejection,impersonation,legal_document,organisation_lifecycle,override,retention_settings,workspace_close,workspace_export');
+  'account_erasure,closure_decision,dsr_rejection,impersonation,invoice_settings,legal_document,organisation_lifecycle,override,retention_settings,workspace_close,workspace_export');
 select st.val('SN3 the functions that consume a token',
   $$select string_agg(p.proname, ',' order by p.proname)
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname in ('public', 'private') and strpos(p.prosrc, 'consume_step_up(''') > 0$$,
-  'close_my_workspace,delete_closed_workspace,delete_organisation,erasure_jobs_before_insert,export_jobs_before_insert,grant_billing_override,grant_feature_override,publish_legal_document,reassign_closed_workspace,record_legal_document_counsel_review,reinstate_organisation,release_audit_purge_ceiling,request_impersonation,revoke_billing_override,revoke_feature_override,set_retention_enabled,start_impersonation_session,suspend_organisation,transition_data_subject_request');
+  'close_my_workspace,delete_closed_workspace,delete_organisation,erasure_jobs_before_insert,export_jobs_before_insert,grant_billing_override,grant_feature_override,publish_legal_document,reassign_closed_workspace,record_legal_document_counsel_review,reinstate_organisation,release_audit_purge_ceiling,request_impersonation,revoke_billing_override,revoke_feature_override,save_invoice_settings,set_retention_enabled,start_impersonation_session,suspend_organisation,transition_data_subject_request');
 select st.val('SN4 every function that consumes a token is a target in § SG (none untested)',
   $$select count(*)::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname in ('public', 'private') and strpos(p.prosrc, 'consume_step_up(''') > 0
        and p.proname not in (select fn from st.targets)$$, '0');
-select st.val('SN5 § SG covered 20 entry points',
-  $$select count(*)::text from st.targets$$, '20');
+select st.val('SN5 § SG covered 21 entry points',
+  $$select count(*)::text from st.targets$$, '21');
 
 -- ===========================================================================
 -- TEARDOWN (rls_q228_closure_backup_parts.sql § QZ's shape: `replica` turns
@@ -541,23 +553,24 @@ select st.val('SN5 § SG covered 20 entry points',
 -- ===========================================================================
 \o /dev/null
 set session_replication_role = replica;
-delete from public.export_jobs where organisation_id in (:'org_a', :'org_c', :'org_d')
+delete from public.export_jobs where organisation_id in (:'org_a', :'org_c', :'org_d', :'org_e')
    or requested_by in (:'owner_a', :'owner_c', :'owner_d', :'eraser', :'subj', :'su', :'other');
 delete from public.erasure_jobs where subject_user_id in (:'eraser', :'subj') or requested_by in (:'su', :'eraser', :'subj');
-delete from public.audit_events where organisation_id in (:'org_a', :'org_c', :'org_d')
+delete from public.invoice_settings where organisation_id = :'org_e';
+delete from public.audit_events where organisation_id in (:'org_a', :'org_c', :'org_d', :'org_e')
    or actor_user_id in (:'su', :'owner_a', :'owner_c', :'owner_d', :'eraser', :'subj', :'other');
-delete from public.organisation_memberships where organisation_id in (:'org_a', :'org_c', :'org_d');
-delete from public.organisation_subscriptions where organisation_id in (:'org_a', :'org_c', :'org_d');
-delete from public.organisations where id in (:'org_a', :'org_c', :'org_d');
+delete from public.organisation_memberships where organisation_id in (:'org_a', :'org_c', :'org_d', :'org_e');
+delete from public.organisation_subscriptions where organisation_id in (:'org_a', :'org_c', :'org_d', :'org_e');
+delete from public.organisations where id in (:'org_a', :'org_c', :'org_d', :'org_e');
 set session_replication_role = origin;
 delete from public.platform_admins where user_id = :'su';
 delete from auth.users where id in (:'su', :'owner_a', :'owner_c', :'owner_d', :'eraser', :'subj', :'other');
 \o
 select st.val('SZ1 no fixture organisation, user or token is left',
-  format($$select (select count(*) from public.organisations where id in (%L, %L, %L))::text || '/' ||
+  format($$select (select count(*) from public.organisations where id in (%L, %L, %L, %L))::text || '/' ||
                   (select count(*) from auth.users where email like 'st-%%@test.local')::text || '/' ||
                   (select count(*) from private.step_up_tokens where user_id in (%L, %L, %L, %L, %L, %L, %L))::text$$,
-         :'org_a', :'org_c', :'org_d', :'su', :'owner_a', :'owner_c', :'owner_d', :'eraser', :'subj', :'other'),
+         :'org_a', :'org_c', :'org_d', :'org_e', :'su', :'owner_a', :'owner_c', :'owner_d', :'eraser', :'subj', :'other'),
   '0/0/0');
 
 select label, expected, actual from st.results where not pass order by seq;

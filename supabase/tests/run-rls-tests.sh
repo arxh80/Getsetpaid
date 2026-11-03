@@ -1406,7 +1406,7 @@ fi
 # purpose, and every gated RPC plus the export_jobs / erasure_jobs inserts
 # refusing without one. Self-contained (it removes its own fixtures).
 # ============================================================================
-run_suite "PHASE 10 STEP-UP" rls_phase10_step_up.sql st 211
+run_suite "PHASE 10 STEP-UP" rls_phase10_step_up.sql st 224
 st_fails=$SUITE_FAILS
 if [ "$st_fails" != "0" ]; then
   echo "PHASE 10 STEP-UP SUITE FAILED: $st_fails failing assertion(s)" >&2

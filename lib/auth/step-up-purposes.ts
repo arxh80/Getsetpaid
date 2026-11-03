@@ -14,6 +14,7 @@ export const STEP_UP_PURPOSES = [
   "dsr_rejection",
   "account_erasure",
   "workspace_export",
+  "invoice_settings",
 ] as const;
 
 export type StepUpPurpose = (typeof STEP_UP_PURPOSES)[number];

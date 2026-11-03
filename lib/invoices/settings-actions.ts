@@ -3,12 +3,13 @@
 // (membership), finance WRITE access (manage_finance + Pro + not suspended --
 // the same sentence the disabled form shows), STEP-UP re-authentication
 // (spec § Permissions: it changes where money is paid), then the form.
-// public.save_invoice_settings() re-checks the first two in the database and
+// public.save_invoice_settings() re-checks the first two in the database,
+// spends the step-up token minted here (purpose invoice_settings) and
 // writes the audit rows; a bank change is emailed to the Owners and Admins by
 // the delivery tick (lib/email/invoice-notifications.ts).
 import { revalidatePath } from "next/cache";
 import { getCurrentOrg } from "@/lib/auth";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
@@ -27,7 +28,7 @@ export async function saveInvoiceSettingsAction(_prev: FormState, formData: Form
 
   const access = await getFinanceWriteAccess(org);
   if (!access.canWrite) return { error: access.explanation, values };
-  if (!(await checkStepUp())) return { error: NEEDS_STEP_UP, values };
+  if (!(await checkStepUp()) || !(await mintStepUpToken("invoice_settings"))) return { error: NEEDS_STEP_UP, values };
 
   const parsed = readSettingsForm(formData);
   if (!parsed.ok) return { fieldErrors: parsed.fieldErrors, values };

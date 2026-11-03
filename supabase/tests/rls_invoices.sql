@@ -901,6 +901,10 @@ select inv.val('IE8 no invoice audit payload names the erased person', format($$
 -- ===========================================================================
 -- § IX SETTINGS (Task 7, 20261107004000)
 -- ===========================================================================
+-- save_invoice_settings spends an invoice_settings step-up token (20261109001000);
+-- this section's subject is the settings, so the Finance user is armed the way
+-- the server would be after a passed step-up (step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'fin_a_c') \g /dev/null
 set role authenticated;
 set request.jwt.claims = :'fin_a_c';
 select inv.val('IX1 changing the bank account returns true (the bank changed)', format($$select public.save_invoice_settings(%L, 'Alpha Promotions Ltd', '1 Alpha Street, London', 'GB123456789', 'Alpha Promotions Ltd', '654321', '87654321', 'INV-', 30)::text$$, :'org_a'), 'true');
