@@ -140,3 +140,21 @@ export function mapDeletedNoteRow(row: Record<string, unknown>): DeletedNoteRow 
 
 export type NoteDeletedSortKey = keyof (typeof NOTE_DELETED_LIST)["sort"];
 export type NoteDeletedFilterKey = keyof (typeof NOTE_DELETED_LIST)["filters"];
+
+/**
+ * A note's first line, for anywhere a note has to be NAMED.
+ *
+ * A note has no title — the body is all there is — so every surface that has to
+ * identify one shows its opening words: the list, the restore queue, and the
+ * "this has been deleted" notice on its edit route. Three copies of this lived
+ * in two route files before the third caller needed it.
+ *
+ * `max` is a parameter because the callers differ in kind, not in taste: a
+ * table cell can carry 140 characters, but the deleted notice puts this INSIDE
+ * A SENTENCE ("X has been deleted, so it can't be edited"), and 140 characters
+ * of body text there is unreadable.
+ */
+export function notePreview(body: string, max = 140): string {
+  const oneLine = body.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 3)}…` : oneLine;
+}
