@@ -18,6 +18,8 @@ allowBuilds:
 #   brace-expansion <1.1.20 / 4.x <5.0.11 -- recursion DoS (via eslint's and
 #           typescript-estree's minimatch); one entry per major so neither
 #           line is dragged across a major boundary
+#   vite    7.0.0-7.3.6 -- launch-editor advisories (one high, two moderate),
+#           patched in 7.3.7. Arrives through vitest (dev-only test runner).
 #
 # Both are patch bumps inside the same minor, which is why an override is the
 # proportionate tool here rather than waiting on the parents to re-release.
@@ -35,6 +37,7 @@ overrides:
   source-map-js: "^1.2.2"
   "brace-expansion@<2": "^1.1.20"
   "brace-expansion@>=4 <6": "^5.0.11"
+  "vite@>=7 <8": "^7.3.7"
 
 # AUDIT EXCEPTIONS -- each one has NO published fix, is dev-only, and says why
 # it cannot be reached. Delete the entry the day a patched version ships (the
