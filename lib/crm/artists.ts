@@ -60,10 +60,9 @@ import {
   type FieldProblem,
 } from "@/lib/crm/validate";
 import {
-  hasUnsafeScheme,
   mergeSocials,
   normaliseWebsite,
-  SOCIAL_PLATFORMS,
+  readSocialFields,
 } from "@/lib/crm/urls";
 
 const PERMISSION = "manage_artists";
@@ -120,39 +119,7 @@ function readArtist(
   const { genres, problem: genreProblem } = parseGenres(field(formData, "genres"));
   problems.push(genreProblem);
 
-  // SOCIALS. The one field group where the database can enforce nothing at all
-  // beyond "it is an object" -- 20260827232510's column comment says so -- so
-  // this is the only write-side check that exists. It is not the CONTROL,
-  // though: lib/crm/urls.ts's render side is, because PostgREST is reachable
-  // from a browser with the anon key and rows predating this file exist by
-  // assumption.
-  //
-  // WHAT THIS RETURNS IS THE SIX KEYS THE FORM OWNS, NOT THE WHOLE COLUMN.
-  // `createArtistAction` stores it as-is (there is nothing to merge with);
-  // `updateArtistAction` puts it through `mergeSocials()` over the stored
-  // object, so a key from an import that the form never rendered is not
-  // destroyed by an unrelated edit.
-  const socials: Record<string, string> = {};
-  for (const platform of SOCIAL_PLATFORMS) {
-    const value = field(formData, `social_${platform.key}`);
-    if (value === null) continue;
-    if (value.length > 300) {
-      problems.push({
-        field: `social_${platform.key}`,
-        message: "Use 300 characters or fewer.",
-      });
-      continue;
-    }
-    if (hasUnsafeScheme(value)) {
-      problems.push({
-        field: `social_${platform.key}`,
-        message:
-          "Only http:// and https:// links can be stored. A plain handle is fine too.",
-      });
-      continue;
-    }
-    socials[platform.key] = value;
-  }
+  const socials = readSocialFields(formData, problems);
 
   const fieldErrors: Record<string, string> = {};
   for (const problem of problems) {
