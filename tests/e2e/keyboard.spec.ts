@@ -23,6 +23,13 @@ import { signIn } from "./support/sign-in";
 
 let world: E2eWorld;
 
+// The heading is in the server HTML, so it is visible before the palette's
+// hotkey listener attaches; a Ctrl+K pressed in that gap is swallowed. The
+// palette sets this marker on <html> once the listener is live.
+async function paletteReady(page: Page) {
+  await page.locator("html[data-palette-ready]").waitFor({ state: "attached" });
+}
+
 test.beforeAll(async () => {
   world = await setUpWorld();
 });
@@ -146,6 +153,7 @@ test("command palette: Ctrl+K opens, arrows move the active option, Enter naviga
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}`);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await paletteReady(page);
 
   await page.keyboard.press("Control+k");
   const dialog = page.getByRole("dialog", { name: "Command palette" });
@@ -194,6 +202,7 @@ test("command palette: record search finds this tenant's record and never the ot
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}`);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await paletteReady(page);
 
   await page.keyboard.press("Control+k");
   const dialog = page.getByRole("dialog", { name: "Command palette" });
@@ -240,6 +249,7 @@ test("command palette: open state passes the axe scan", async ({ page }) => {
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}`);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await paletteReady(page);
 
   await page.keyboard.press("Control+k");
   await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
