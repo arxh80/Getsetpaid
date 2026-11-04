@@ -29,7 +29,7 @@
 // 2. TWO GATES, AND THE WITHDRAW PATH DELIBERATELY SKIPS ONE
 // ===========================================================================
 // Sending and accepting both need the tier (Q76: a Free organisation cannot
-// form a connection), so they go through `authoriseConnections`, which calls
+// form a connection), so they go through `authoriseConnectionWrite`, which calls
 // getNetworkConnectionAccess. WITHDRAWING DOES NOT, and that asymmetry is in
 // the database too: 20260904003000's sender-withdraws policy carries no
 // network_publish term, because gating the RETRACTION of a request behind the
@@ -71,7 +71,7 @@ import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
-import { getNetworkConnectionAccess } from "@/lib/network/access";
+import { authoriseConnectionWrite } from "@/lib/network/access";
 import { formatRetryAfter } from "@/lib/format/duration";
 
 /**
@@ -96,30 +96,6 @@ const ALREADY_ANSWERED =
  */
 const UNREACHABLE_PROFILE =
   "That profile can’t be reached from here — it may have been unpublished. Reload the network directory and try again.";
-
-/**
- * Resolve the organisation and check CONNECTION write access.
- *
- * The gate for SEND, ACCEPT and DECLINE. Tier included (Q76).
- */
-async function authoriseConnections(
-  orgSlug: string | null,
-  formData: FormData,
-): Promise<
-  | { readonly ok: true; readonly org: CurrentOrg }
-  | { readonly ok: false; readonly state: FormState }
-> {
-  const echoed = echoedValues(formData);
-  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-  const org = await getCurrentOrg(orgSlug);
-  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-
-  const access = await getNetworkConnectionAccess(org);
-  if (!access.canWrite) {
-    return { ok: false, state: { error: access.explanation, values: echoed } };
-  }
-  return { ok: true, org };
-}
 
 /**
  * The NARROWER gate, for WITHDRAW only: suspension and the permission, NO tier.
@@ -265,7 +241,7 @@ export async function sendConnectionRequestAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authoriseConnections(field(formData, "orgSlug"), formData);
+  const auth = await authoriseConnectionWrite(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -354,7 +330,7 @@ export async function acceptConnectionRequestAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authoriseConnections(field(formData, "orgSlug"), formData);
+  const auth = await authoriseConnectionWrite(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -390,7 +366,7 @@ export async function declineConnectionRequestAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authoriseConnections(field(formData, "orgSlug"), formData);
+  const auth = await authoriseConnectionWrite(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 

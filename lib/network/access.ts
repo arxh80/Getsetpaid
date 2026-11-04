@@ -76,7 +76,9 @@ import "server-only";
 // in Task A.
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
-import { hasPermission, type CurrentOrg } from "@/lib/auth";
+import { getCurrentOrg, hasPermission, type CurrentOrg } from "@/lib/auth";
+import { FAILED_MESSAGE } from "@/lib/crm/write";
+import { echoedValues, type FormState } from "@/lib/forms";
 import {
   SUSPENDED_READ_ONLY_EXPLANATION,
   readOnlyExplanation,
@@ -196,6 +198,33 @@ export async function getNetworkConnectionAccess(
     };
   }
   return { canWrite: true };
+}
+
+/**
+ * Resolve the organisation and check CONNECTION write access, for a Server
+ * Action. The gate for sending, accepting and declining a request and for
+ * linking a record (lib/network/connections.ts, lib/network/links.ts): to a
+ * user, linking and connecting are one job, so they share a key and a tier.
+ * It lives here because both callers are "use server" modules, where every
+ * export becomes a callable action.
+ */
+export async function authoriseConnectionWrite(
+  orgSlug: string | null,
+  formData: FormData,
+): Promise<
+  | { readonly ok: true; readonly org: CurrentOrg }
+  | { readonly ok: false; readonly state: FormState }
+> {
+  const echoed = echoedValues(formData);
+  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
+  const org = await getCurrentOrg(orgSlug);
+  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
+
+  const access = await getNetworkConnectionAccess(org);
+  if (!access.canWrite) {
+    return { ok: false, state: { error: access.explanation, values: echoed } };
+  }
+  return { ok: true, org };
 }
 
 /**

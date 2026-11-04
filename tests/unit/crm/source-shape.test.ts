@@ -252,8 +252,11 @@ describe("the join actions refuse a soft-deleted end (M-1)", () => {
     // RLS deliberately does not perform. What the surviving copy must do is
     // asserted once, over lib/crm/actions.ts, in "the new child writes refuse
     // a soft-deleted parent" below.
-    expect(contacts).not.toContain("async function liveInOrg(");
-    expect(contacts).toContain('import { liveInOrg } from "@/lib/crm/actions";');
+    // The same now holds for authorise/stateFor/failureState/refusedEndState.
+    for (const fn of ["liveInOrg(", "authorise(", "stateFor(", "failureState(", "refusedEndState("]) {
+      expect(contacts).not.toContain(`function ${fn}`);
+    }
+    expect(contacts).toMatch(/import \{[^}]*liveInOrg[^}]*\} from "@\/lib\/crm\/actions";/);
   });
 
   it("only setPrimaryCompanyAction overrides the generic conflict sentence (N-9)", () => {
@@ -979,9 +982,12 @@ describe("the merge path goes through the shared write vocabulary", () => {
   });
 
   it("the outcome switch has no default arm", () => {
-    const body = merge.slice(
-      merge.indexOf("function failureState("),
-      merge.indexOf("const PAIR_GONE_MESSAGE"),
+    // merge.ts uses the shared failureState rather than a copy of its own.
+    expect(merge).toMatch(/import \{[^}]*failureState[^}]*\} from "@\/lib\/crm\/actions";/);
+    const shared = read("lib/crm/actions.ts");
+    const body = shared.slice(
+      shared.indexOf("export function failureState("),
+      shared.indexOf("export function stateFor("),
     );
     expect(body).toContain("switch (result.outcome)");
     expect(

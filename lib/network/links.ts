@@ -48,46 +48,17 @@
 // event_lineup, applied to the same shape of problem.
 
 import { revalidatePath } from "next/cache";
-import { getCurrentUser, getCurrentOrg, type CurrentOrg } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
-import { getNetworkConnectionAccess } from "@/lib/network/access";
+import { authoriseConnectionWrite } from "@/lib/network/access";
 import {
   isNetworkEntityKind,
   NETWORK_ENTITY_URL_SEGMENT,
   type NetworkEntityKind,
 } from "@/lib/network/fields";
-
-/**
- * Resolve the organisation and check CONNECTION write access.
- *
- * The same gate sending and accepting use (getNetworkConnectionAccess), for the
- * reason the header gives: linking and connecting are one job to a user, so
- * they share a key and a tier. Kept as its own local function rather than
- * imported from lib/network/connections.ts because that module is
- * `"use server"` -- every export of it is a server action, so a shared helper
- * could not live there.
- */
-async function authoriseLinks(
-  orgSlug: string | null,
-  formData: FormData,
-): Promise<
-  | { readonly ok: true; readonly org: CurrentOrg }
-  | { readonly ok: false; readonly state: FormState }
-> {
-  const echoed = echoedValues(formData);
-  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-  const org = await getCurrentOrg(orgSlug);
-  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-
-  const access = await getNetworkConnectionAccess(org);
-  if (!access.canWrite) {
-    return { ok: false, state: { error: access.explanation, values: echoed } };
-  }
-  return { ok: true, org };
-}
 
 /**
  * Both routes a link write changes -- ADDED BY TASK 4.
@@ -124,7 +95,7 @@ export async function createNetworkLinkAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authoriseLinks(field(formData, "orgSlug"), formData);
+  const auth = await authoriseConnectionWrite(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -207,7 +178,7 @@ export async function removeNetworkLinkAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authoriseLinks(field(formData, "orgSlug"), formData);
+  const auth = await authoriseConnectionWrite(field(formData, "orgSlug"), formData);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
