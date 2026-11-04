@@ -21,7 +21,10 @@ import {
   loadRepresentationsForAgency,
 } from "@/lib/crm/queries";
 import { deleteAgencyAction, restoreAgencyAction } from "@/lib/crm/agencies";
-import { loadCustomFieldPanel } from "@/lib/crm/custom-field-queries";
+import {
+  loadCustomFieldPanel,
+  TOO_MANY_CUSTOM_FIELDS_MESSAGE,
+} from "@/lib/crm/custom-field-queries";
 import { CustomFieldsPanel } from "@/components/crm/custom-fields-panel";
 import { Alert } from "@/components/ui/alert";
 import { MergedIntoNotice } from "@/components/crm/merged-notice";
@@ -338,8 +341,9 @@ export default async function AgencyDetailPage({
           which is the one thing the empty state must never do. */}
       {customFields.outcome === "unavailable" ? (
         <Alert tone="error">
-          We couldn’t load this record’s custom fields just now. Refresh the
-          page to try again — nothing has been changed.
+          {customFields.reason === "too_many"
+            ? TOO_MANY_CUSTOM_FIELDS_MESSAGE
+            : "We couldn’t load this record’s custom fields just now. Refresh the page to try again — nothing has been changed."}
         </Alert>
       ) : (
         <CustomFieldsPanel

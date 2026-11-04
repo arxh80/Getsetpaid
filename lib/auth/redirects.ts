@@ -39,13 +39,14 @@ export function safeNextPath(
     const base = "https://gsp.invalid";
     const url = new URL(candidate, base);
     if (url.origin !== base) return fallback;
-    // Dot segments can collapse into a leading "//" after the raw check above:
-    // "/.//evil.test" parses to pathname "//evil.test", off-site once emitted.
-    // The parser has already turned any "\" into "/", so one check covers both.
-    if (url.pathname.startsWith("//")) return fallback;
     // Rebuild from parts. Anything that survived parsing but is not path,
     // query or fragment is discarded rather than trusted.
-    return `${url.pathname}${url.search}${url.hash}`;
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    // Checked AGAIN after parsing (Phase 10 Task 2 F5): dot-segment removal
+    // turns "/.//evil.test" into "//evil.test", which the pre-parse check
+    // above never saw. Protocol-relative output leaves the site.
+    if (path.startsWith("//") || path.startsWith("/\\")) return fallback;
+    return path;
   } catch {
     return fallback;
   }

@@ -28,7 +28,9 @@ const stubs = vi.hoisted(() => ({
   org: null as Org | null,
   stepUp: true,
   aal2: true,
+  mint: true,
   rpc: vi.fn(),
+  minted: [] as string[],
   result: { error: null } as { error: { code: string; hint?: string; message: string } | null },
 }));
 
@@ -39,6 +41,7 @@ vi.mock("@/lib/auth", () => ({
 }));
 vi.mock("@/lib/auth/step-up-gate", () => ({
   checkStepUp: async () => stubs.stepUp,
+  mintStepUpToken: async (purpose: string) => (stubs.minted.push(purpose), stubs.mint),
   sessionIsAal2: async () => stubs.aal2,
 }));
 vi.mock("@/lib/supabase/server", () => ({
@@ -78,6 +81,8 @@ beforeEach(() => {
   stubs.user = { id: "u1" };
   stubs.stepUp = true;
   stubs.aal2 = true;
+  stubs.mint = true;
+  stubs.minted = [];
   stubs.org = {
     id: ORG_ID,
     name: "Neon Nights",
@@ -154,6 +159,17 @@ describe("closeMyWorkspaceAction", () => {
 
   it("a stale credential is refused with the step-up sentence", async () => {
     stubs.stepUp = false;
+    const out = await closeMyWorkspaceAction(EMPTY_FORM_STATE, form(GOOD));
+    expect(out.error).toBe(CLOSE_MESSAGES.stepUp);
+    expect(stubs.rpc).not.toHaveBeenCalled();
+    expect(stubs.minted).toEqual([]);
+  });
+
+  it("G13: a fresh credential mints the workspace_close token; a refused mint is the step-up sentence", async () => {
+    await closeMyWorkspaceAction(EMPTY_FORM_STATE, form(GOOD));
+    expect(stubs.minted).toEqual(["workspace_close"]);
+    stubs.rpc.mockReset();
+    stubs.mint = false;
     const out = await closeMyWorkspaceAction(EMPTY_FORM_STATE, form(GOOD));
     expect(out.error).toBe(CLOSE_MESSAGES.stepUp);
     expect(stubs.rpc).not.toHaveBeenCalled();

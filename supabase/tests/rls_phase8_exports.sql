@@ -387,6 +387,13 @@ select xp.val('XC9 every excused table says why',
 set role authenticated;
 set request.jwt.claims = :'powner_c';
 
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'powner_c') \g /dev/null
+select step_up_fixture.arm(:'padmin_c') \g /dev/null
+select step_up_fixture.arm(:'pbowner_c') \g /dev/null
+select step_up_fixture.arm(:'super_c') \g /dev/null
 select xp.try_hint('XW1 an Owner can start a WORKSPACE export of their own workspace',
   format($$insert into public.export_jobs (kind, organisation_id) values ('workspace', %L)$$, :'alpha_org'),
   'ok');

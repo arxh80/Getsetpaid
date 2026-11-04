@@ -334,6 +334,16 @@ export function CommandPalette({
     };
   }, [open]);
 
+  // Declared after the hotkey effect so it runs once the listener is live:
+  // server HTML paints before hydration and swallows an early Ctrl+K, so the
+  // keyboard e2e waits on this marker rather than on a heading.
+  useEffect(() => {
+    document.documentElement.dataset.paletteReady = "";
+    return () => {
+      delete document.documentElement.dataset.paletteReady;
+    };
+  }, []);
+
   const onInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     switch (event.key) {
       case "ArrowDown":

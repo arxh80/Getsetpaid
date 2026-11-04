@@ -26,10 +26,12 @@
 //      every route renders a closed banner today.
 
 import { revalidatePath } from "next/cache";
+import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
-import { authoriseSuperuser } from "@/lib/admin/superuser-gate";
+import { isSuperuser } from "@/lib/admin/superuser";
 
 const STEP_UP_REQUIRED =
   "Confirm it’s you before deciding a closed workspace. Use the re-authentication prompt at the top of this page, then try again.";
@@ -82,6 +84,15 @@ function rpcRefusal(
   return refuse(FAILED_MESSAGE, formData);
 }
 
+async function authorise(formData: FormData): Promise<FormState | null> {
+  if (!(await getCurrentUser())) return refuse(FAILED_MESSAGE, formData);
+  if (!(await isSuperuser())) return refuse(NOT_YOURS, formData);
+  if (!(await checkStepUp()) || !(await mintStepUpToken("closure_decision"))) {
+    return refuse(STEP_UP_REQUIRED, formData);
+  }
+  return null;
+}
+
 /** Slug and reason, shape-checked. Returns the field errors, or the values. */
 function common(
   formData: FormData,
@@ -109,8 +120,8 @@ export async function reassignClosedWorkspaceAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const refusal = await authoriseSuperuser(formData, { notSuperuser: NOT_YOURS, stepUp: STEP_UP_REQUIRED });
-  if (refusal) return refusal;
+  const denied = await authorise(formData);
+  if (denied) return denied;
   const base = common(formData);
   if (!base.ok) return base.state;
   const newOwner = field(formData, "newOwnerUserId");
@@ -137,8 +148,8 @@ export async function deleteClosedWorkspaceAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const refusal = await authoriseSuperuser(formData, { notSuperuser: NOT_YOURS, stepUp: STEP_UP_REQUIRED });
-  if (refusal) return refusal;
+  const denied = await authorise(formData);
+  if (denied) return denied;
   const base = common(formData);
   if (!base.ok) return base.state;
   // Retyped, exactly -- no trimming beyond field()'s, no case-folding.

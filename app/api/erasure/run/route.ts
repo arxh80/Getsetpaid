@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { cronAuthorised } from "@/lib/security/cron-auth";
+import { refuseUnlessRunner } from "@/lib/security/runner-auth";
 import { runPendingErasureJobs } from "@/lib/erasure/runner";
 
 // ===========================================================================
@@ -28,25 +28,16 @@ import { runPendingErasureJobs } from "@/lib/erasure/runner";
 // blast radius of this one is "make already-requested deletions happen
 // sooner", and neither should be reachable from the other.
 //
-// The incident-digest route's credential rules, verbatim and for the same
-// reasons: lib/supabase/middleware.ts lists this path as public so the
-// signed-out bounce does not redirect a cron to /login; the credential is the
-// bearer secret, compared in constant time; with the secret UNSET the route
-// answers 404 for every caller -- an unconfigured deployment has no runner
-// endpoint at all rather than an open one -- and a wrong secret answers 404
-// too, so a prober cannot tell the two apart.
+// The credential check is lib/security/runner-auth.ts, shared with the other
+// runner routes; this route's secret is ERASURE_RUNNER_SECRET.
 //
 // POST only: a GET is what a crawler or a browser prefetch sends, and running
 // erasures is a side effect.
 // ===========================================================================
 
 export async function POST(request: Request): Promise<NextResponse> {
-  if (!cronAuthorised(request, "ERASURE_RUNNER_SECRET")) {
-    return new NextResponse("Not found", {
-      status: 404,
-      headers: { "Cache-Control": "no-store" },
-    });
-  }
+  const refused = refuseUnlessRunner(request, "ERASURE_RUNNER_SECRET");
+  if (refused) return refused;
 
   const result = await runPendingErasureJobs();
   return NextResponse.json(result, {

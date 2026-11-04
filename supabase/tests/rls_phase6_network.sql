@@ -30,7 +30,8 @@
 -- The boundary has FOUR independent controls and this file drives each of them
 -- both ways round:
 --
---   ROWS    the base table's RLS -- which profiles exist for this caller.
+--   ROWS    which profiles exist for this caller: for a FOREIGN profile, the
+--           two definer views' own WHERE clauses (since 20261103000000, F1).
 --   COLUMNS the two masking views -- which fields of them are legible.
 --   VALUES  network_profiles_hidden_fields_are_null -- a hidden field is not
 --           merely masked at read time, it is NULL in the base column (N3).
@@ -472,9 +473,10 @@ select nw.val('ND3b2 ...and the probe is gone, so nothing downstream reads it',
   $$select count(*)::text from pg_catalog.pg_class
      where relname='probe_view_over_view'$$, '0');
 
--- THE FUNCTION SET. The directory calls none; the connected view calls exactly
--- one, and it is the permission helper its `exists` needs. A SECURITY DEFINER
--- helper reading a private table would appear here and nowhere else.
+-- THE FUNCTION SET. Each view calls private.network_profile_reaches_caller,
+-- its row filter's caller-side terms (20261103000000, F1), and the connected
+-- view also calls the permission helper its `exists` needs. A SECURITY
+-- DEFINER helper reading a private table would appear here and nowhere else.
 -- NOTE THE `coalesce` AND WHY IT IS OUTSIDE THE SUBQUERY. A view that calls no
 -- function has NO ROW in nw.view_fn_deps at all -- the aggregate inside that
 -- view never runs for it -- so the scalar select returns NULL, not the
@@ -482,25 +484,34 @@ select nw.val('ND3b2 ...and the probe is gone, so nothing downstream reads it',
 -- what makes "calls nothing" and "was not inspected" the same visible answer
 -- here; ND3d is the paired control that the query finds a function when there
 -- is one to find.
-select nw.val('ND3c network_directory calls NO function at all',
+-- Phase 10 Task 5 (G35) added private.request_is_from_server() to both views'
+-- WHERE: it reads one GUC (getsetpaid.from_server) and no relation, so both
+-- function sets grow by it and the relation sets (ND1/ND2) do not change.
+-- Phase 10 Task 16 (G29, 20261108003000) swapped reaches_caller for
+-- private.network_reaching_organisations(), the same rule as a set asked once
+-- per query; reaches_caller is now membership in it. Relation sets unchanged.
+select nw.val('ND3c network_directory calls EXACTLY private.network_reaching_organisations and private.request_is_from_server',
   $$select coalesce((select fns || ' (' || n || ')' from nw.view_fn_deps
                       where viewname='network_directory'), '<none> (0)')$$,
-  '<none> (0)');
-select nw.val('ND3d network_connected_profiles calls EXACTLY private.permitted_organisations',
+  'private.network_reaching_organisations,private.request_is_from_server (2)');
+select nw.val('ND3d network_connected_profiles calls EXACTLY those and private.permitted_organisations',
   $$select fns || ' (' || n || ')' from nw.view_fn_deps
      where viewname='network_connected_profiles'$$,
-  'private.permitted_organisations (1)');
+  'private.network_reaching_organisations,private.permitted_organisations,private.request_is_from_server (3)');
 
--- security_invoker is what makes the base policy the SINGLE gate. Without it
--- the views would run as their owner and become a second, independent access
--- surface nothing keeps in step -- the classic view-bypasses-RLS defect.
-select nw.val('ND4 BOTH views are security_invoker (one gate, not two that drift)',
-  $$select (select (c.reloptions::text like '%security_invoker=true%')::text
-              from pg_catalog.pg_class c where c.oid='public.network_directory'::regclass)
+-- FLIPPED by Phase 10 Task 19 (F1). The views used to be security_invoker so
+-- that the base table's cross-tenant policy was their row gate; that policy
+-- let any member read every connections-level value straight off the base
+-- table over PostgREST. It is dropped, and the views are definer views that
+-- carry the row filter themselves -- with security_barrier, so a caller's own
+-- filter cannot be evaluated ahead of that WHERE clause.
+select nw.val('ND4 F1: BOTH views are definer views with security_barrier',
+  $$select (select c.reloptions::text from pg_catalog.pg_class c
+             where c.oid='public.network_directory'::regclass)
         || '/' ||
-           (select (c.reloptions::text like '%security_invoker=true%')::text
-              from pg_catalog.pg_class c where c.oid='public.network_connected_profiles'::regclass)$$,
-  'true/true');
+           (select c.reloptions::text from pg_catalog.pg_class c
+             where c.oid='public.network_connected_profiles'::regclass)$$,
+  '{security_invoker=false,security_barrier=true}/{security_invoker=false,security_barrier=true}');
 
 -- ===========================================================================
 -- NC. THE COLUMN-LIST ASSERTION.
@@ -586,12 +597,14 @@ select nw.val('NM4 the CONNECTED view is empty for them before any request is ac
 select nw.val('NM5 ALPHA''s DRAFT profile is invisible to BETA in the directory',
   $$select count(*)::text from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000d'$$, '0');
-select nw.val('NM5b ...and so is it in the BASE TABLE (the directory policy needs published)',
+select nw.val('NM5b ...and so is it in the BASE TABLE',
   $$select count(*)::text from public.network_profiles
      where id='e0110000-0000-0000-0000-00000000000d'$$, '0');
-select nw.val('NM5c CONTROL: the same caller DOES see ALPHA''s PUBLISHED row in the base table',
+-- FLIPPED by Phase 10 Task 19 (F1): this read ALPHA's published row off the
+-- base table ('1') through the dropped cross-tenant policy. NM1 is the control.
+select nw.val('NM5c F1: ...and ALPHA''s PUBLISHED row is 0 rows in the base table too',
   $$select count(*)::text from public.network_profiles
-     where id='e0110000-0000-0000-0000-00000000000a'$$, '1');
+     where id='e0110000-0000-0000-0000-00000000000a'$$, '0');
 reset role; reset request.jwt.claims;
 
 -- ALPHA sees its own draft. The pair NM5/NM6 is what makes "invisible" mean
@@ -772,20 +785,19 @@ set request.jwt.claims = :'pbooker_c';
 -- variables are resolved as postgres at the top of this file, so what is
 -- measured here is the network policy alone.
 --
--- 3 / 1. ALPHA holds its published profile, its draft and section NT's escape
+-- 3 / 0. ALPHA holds its published profile, its draft and section NT's escape
 -- profile, all three visible to its own member through the own-select policy.
--- Of BETA's two rows at this point in the run the booker sees exactly ONE: the
--- published live profile, through the DIRECTORY policy. The soft-deleted one is
--- filtered by that policy's `deleted_at is null`, and BETA's second published
--- profile does not exist yet -- section NR creates it below.
-select nw.val('NT6 CONTROL: a BOOKER reads ALPHA''s 3 own profiles, and 1 of BETA''s 2 (the published live one)',
+-- Of BETA's two rows the booker sees NONE. Until Phase 10 Task 19 it saw the
+-- published live one through the cross-tenant directory policy (F1); that
+-- policy is dropped, and BETA's profile reaches it only through the views.
+select nw.val('NT6 CONTROL: a BOOKER reads ALPHA''s 3 own profiles, and 0 of BETA''s off the base table (F1)',
   format($$select (select count(*) from public.network_profiles
                      where organisation_id = %L)::text
                 || '/' ||
                   (select count(*) from public.network_profiles
                      where organisation_id = %L)::text$$,
          :'alpha_org', :'beta_org'),
-  '3/1');
+  '3/0');
 select nw.try('NT7 a BOOKER''s profile INSERT is refused (no manage_network_profile)',
   format($$insert into public.network_profiles
              (organisation_id, entity_kind, entity_id, display_name, field_visibility)
@@ -1561,14 +1573,16 @@ create view nw.network_policy_exprs as
 select nw.val('NS0 DENOMINATOR: 11 network policies were inspected, and that is non-zero',
   $$select count(*)::text from nw.network_policy_exprs$$, '11');
 
--- The directory policy is the ONE that does not name permitted_organisations,
--- deliberately: it asks "is this an active member of ANY organisation", which
--- is not a per-key question. So 10 of 11.
-select nw.val('NS1 10 of the 11 use the SET form; the 11th is the directory policy',
+-- ONE policy does not name permitted_organisations, deliberately:
+-- network_profiles_select_own_published asks private.is_active_member() about
+-- the row's own organisation (the Q6 read a suspended workspace keeps without
+-- view_network). Until Phase 10 Task 19 (F1) the 11th was the cross-tenant
+-- directory policy, now dropped.
+select nw.val('NS1 10 of the 11 use the SET form; the 11th is the own-published policy (Q6)',
   $$select count(*) filter (where expr like '%permitted_organisations(%')::text || '/' ||
            string_agg(polname, ',') filter (where expr not like '%permitted_organisations(%')
       from nw.network_policy_exprs$$,
-  '10/network_profiles_select_published_directory');
+  '10/network_profiles_select_own_published');
 
 select nw.val('NS2 NONE of the 11 uses the per-row has_permission( form',
   $$select count(*)::text from nw.network_policy_exprs
@@ -1604,9 +1618,13 @@ select nw.val('NS5 network_links'' write policies name NO network_profiles colum
      where relname='network_links'
        and (expr like '%p.organisation_id%' or expr like '%p.display_name%'
             or expr like '%p.entity_id%'   or expr like '%p.field_visibility%')$$, '0');
-select nw.val('NS5b CONTROL: those write policies DO read p.status (the guard is not vacuous)',
+-- Since Phase 10 Task 19 (F1) the target check is a SECURITY DEFINER
+-- predicate: the caller can no longer read the foreign row an inline
+-- `p.status` subquery needed.
+select nw.val('NS5b CONTROL: those write policies DO check the target (private.network_profile_is_discoverable)',
   $$select count(*)::text from nw.network_policy_exprs
-     where relname='network_links' and expr like '%p.status%'$$, '2');
+     where relname='network_links'
+       and expr like '%private.network_profile_is_discoverable(network_profile_id)%'$$, '2');
 
 -- NO POLICY GRANTS A NON-OWNING ORGANISATION ANY READ OF network_links.
 select nw.val('NS6 network_links has exactly ONE select policy, and no other read path',
@@ -1666,12 +1684,16 @@ create view nw.network_surface as
 select nw.val('NF1 N5: NO network policy, view or function body contains the substring `rating`',
   $$select count(*)::text from nw.network_surface where body ~* 'rating'$$, '0');
 
-select nw.val('NF1b DENOMINATOR: it inspected 11 policies, 2 views and 3 functions (16), non-zero',
+-- 5 functions SINCE PHASE 10 TASK 19 (20261103000000): the name filter now
+-- also matches private.network_profile_reaches_caller and
+-- private.network_profile_is_discoverable. 6 SINCE PHASE 10 TASK 16
+-- (20261108003000): private.network_reaching_organisations.
+select nw.val('NF1b DENOMINATOR: it inspected 11 policies, 2 views and 6 functions (19), non-zero',
   $$select count(*) filter (where objname like 'policy:%')::text || '/' ||
            count(*) filter (where objname like 'view:%')::text || '/' ||
            count(*) filter (where objname like 'function:%')::text || '/' ||
            count(*)::text
-      from nw.network_surface$$, '11/2/3/16');
+      from nw.network_surface$$, '11/2/6/19');
 
 -- ...and the same guard over the two masking views' COLUMN lists, which is
 -- where an "anonymised aggregate on a network profile" would actually land.

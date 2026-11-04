@@ -23,7 +23,7 @@
 import { randomUUID } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
-import { getLocalSupabaseStatus } from "./env";
+import { getLocalSupabaseStatus, serverMarkHeaders } from "./env";
 import { totpCode } from "@/tests/support/totp";
 
 const PASSWORD = "Test-Passw0rd!-rls-js";
@@ -114,8 +114,11 @@ async function signInClient(
   anonKey: string,
   email: string,
 ): Promise<SupabaseClient> {
+  // Carries the server-only request mark: a persona client stands in for
+  // lib/supabase/server.ts, which sends it on every request (Phase 10 Task 5).
   const client = createClient(apiUrl, anonKey, {
     auth: { autoRefreshToken: false, persistSession: false },
+    global: { headers: serverMarkHeaders() },
   });
   const { error } = await client.auth.signInWithPassword({
     email,

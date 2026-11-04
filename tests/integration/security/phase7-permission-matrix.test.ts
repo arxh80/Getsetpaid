@@ -174,6 +174,8 @@ import {
   type Queryable,
 } from "./support/catalogue-census";
 import { DECLARED_PRIVILEGES } from "./support/privilege-census";
+import { mintStepUp, STEP_UP_PURPOSE_OF_RPC } from "../rls/support/step-up";
+import { serverMarkHeaders } from "../rls/support/env";
 
 // The SQLSTATEs a Phase 7 guard refuses with. 42501 is the house code for
 // "caller is not the platform superuser at aal2" (every Phase 7 guard raises
@@ -536,6 +538,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
       // legitimate request on org B fail with 23505 -- and a positive control
       // that fails for a fixture reason is indistinguishable from the function
       // being broken, which is the failure mode this whole file is about.
+      await mintStepUp(superuser, "impersonation");
       const { data: id, error } = await superuser.rpc("request_impersonation", {
         p_organisation_slug: fx.orgB.slug,
         p_reason: "matrix positive control: request support access",
@@ -571,6 +574,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
       // accept (that workspace's own Owner), start (superuser), end. A replay
       // against ARGS.impersonationSessionId would refuse -- it is already
       // running -- and would then look exactly like the guard refusing.
+      await mintStepUp(superuser, "impersonation");
       const { data: id, error: reqErr } = await superuser.rpc("request_impersonation", {
         p_organisation_slug: fx.orgB.slug,
         p_reason: "positive control for start_impersonation_session",
@@ -580,6 +584,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
         p_session_id: id as string,
       });
       expect(acc.error, `accept_impersonation_request: ${acc.error?.message}`).toBeNull();
+      await mintStepUp(superuser, "impersonation");
       const started = await superuser.rpc("start_impersonation_session", {
         p_session_id: id as string,
       });
@@ -653,6 +658,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
     positiveControl: async () => {
       // Granted on org A and revoked again, so org B keeps exactly the one
       // override principal 7 is defined by.
+      await mintStepUp(superuser, "override");
       const { data: id, error } = await superuser.rpc("grant_billing_override", {
         p_organisation_slug: fx.orgA.slug,
         p_override_tier: "starter",
@@ -664,6 +670,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
         error,
         `grant_billing_override must be reachable by the aal2 superuser: ${error?.message}`,
       ).toBeNull();
+      await mintStepUp(superuser, "override");
       await superuser.rpc("revoke_billing_override", {
         p_override_id: id as string,
         p_reason: "positive control cleanup",
@@ -681,6 +688,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
       // A DISPOSABLE override on org A, so the refusals below still point at a
       // real, live id (org B's) without the positive control revoking the very
       // row principal 7 is built from.
+      await mintStepUp(superuser, "override");
       const { data: id, error } = await superuser.rpc("grant_billing_override", {
         p_organisation_slug: fx.orgA.slug,
         p_override_tier: "starter",
@@ -689,6 +697,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
         p_expires_at: new Date(Date.now() + 86_400_000).toISOString(),
       });
       expect(error, `grant_billing_override: ${error?.message}`).toBeNull();
+      await mintStepUp(superuser, "override");
       const revoked = await superuser.rpc("revoke_billing_override", {
         p_override_id: id as string,
         p_reason: "positive control cleanup",
@@ -787,6 +796,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
         p_slug: LEGAL_SCRATCH_SLUG,
       });
       expect(error, `create_legal_document_draft: ${error?.message}`).toBeNull();
+      await mintStepUp(superuser, "legal_document");
       const published = await superuser.rpc("publish_legal_document", { p_document_id: id });
       expect(
         published.error,
@@ -913,6 +923,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
       expect(rows[0]?.n, "a refused principal erased the requester's account").toBe("1");
     },
     positiveControl: async () => {
+      await mintStepUp(superuser, "account_erasure");
       const { data: id, error } = await superuser.rpc("start_erasure_for_request", {
         p_request_id: ARGS.dsrErasureRequestId,
       });
@@ -958,6 +969,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
       expect(rows[0]?.audit, "a refused principal stopped the audit purge").toBe(true);
     },
     positiveControl: async () => {
+      await mintStepUp(superuser, "retention_settings");
       const { error } = await superuser.rpc("set_retention_enabled", {
         p_enabled: true,
         p_audit_purge_enabled: true,
@@ -986,6 +998,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
       expect(rows[0]?.at ?? null, "a refused principal released the audit purge ceiling").toBeNull();
     },
     positiveControl: async () => {
+      await mintStepUp(superuser, "retention_settings");
       const { data, error } = await superuser.rpc("release_audit_purge_ceiling", {
         p_reason: "matrix positive control",
       });
@@ -1026,6 +1039,7 @@ const SUPERUSER_ONLY_RPCS: RpcSurface[] = [
         p_slug: LEGAL_SCRATCH_SLUG,
       });
       expect(error, `create_legal_document_draft: ${error?.message}`).toBeNull();
+      await mintStepUp(superuser, "legal_document");
       const reviewed = await superuser.rpc("record_legal_document_counsel_review", {
         p_document_id: id,
         p_reviewer: "Matrix Counsel LLP",
@@ -1114,6 +1128,12 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "integration.revoked. Revoking only reduces access, so it works on a " +
     "suspended or closed workspace; anyone else gets 42501 whether or not the " +
     "id exists. Asserted in rls_phase9_integrations.sql § IC11/IC12/IV9.",
+  mint_step_up_token:
+    "Phase 10 Task 6 (G13) -- the app's server records a passed step-up for " +
+    "the CALLER, for one purpose, right after checkStepUp(); every gated RPC " +
+    "and the export_jobs / erasure_jobs inserts spend it. Refused without the " +
+    "server request mark, so a browser holding the session cannot mint; " +
+    "asserted below and in rls_phase10_step_up.sql § SM/SP.",
 };
 
 /**
@@ -1299,6 +1319,12 @@ function accountedRelations(): string[] {
  * and what stops anybody else?" about.
  */
 const SERVER_ONLY_RPCS: Record<string, string> = {
+  "address_is_proved(p_user_id uuid)":
+    "Phase 10 Task 20 -- the auth callback asks whether an account's address was already proved (private.address_first_proofs); one boolean about one account; refuses any session",
+  "record_address_first_proof(p_user_id uuid, p_password_kept boolean)":
+    "Phase 10 Task 20 -- the ONLY write path of private.address_first_proofs, called by the auth callback once a first proof is settled; refuses any session",
+  "meter_password_sign_in(p_email text, p_outcome text)":
+    "Phase 10 Task 8 (G4 fallback) -- the sign-in and step-up password paths spend the account's login_email budget BEFORE GoTrue and report the outcome after; refuses any session, so no browser can spend or clear another person's budget",
   "claim_erasure_job()": "Task 5 -- the erasure runner takes the next queued job; bearer-secret route only",
   "claim_export_job()": "Task 4 -- the export runner takes the next queued job; bearer-secret route only",
   "consent_is_granted(p_user_id uuid, p_purpose text)":
@@ -1422,6 +1448,9 @@ beforeAll(async () => {
   noOrgUserId = created.user.id;
   noOrgClient = createClient(fx.apiUrl, fx.anonKey, {
     auth: { autoRefreshToken: false, persistSession: false },
+    // The server mark, as the fixtures' persona clients carry it (Task 5): it
+    // stands in for lib/supabase/server.ts, which also mints step-up tokens.
+    global: { headers: serverMarkHeaders() },
   });
   {
     const { error } = await noOrgClient.auth.signInWithPassword({
@@ -1475,6 +1504,9 @@ beforeAll(async () => {
     suspendedUserId = made.user.id;
     suspendedClient = createClient(fx.apiUrl, fx.anonKey, {
       auth: { autoRefreshToken: false, persistSession: false },
+      // The server mark, as the fixtures' persona clients carry it (Task 5): it
+      // stands in for lib/supabase/server.ts, which also mints step-up tokens.
+      global: { headers: serverMarkHeaders() },
     });
     const signedIn = await suspendedClient.auth.signInWithPassword({
       email,
@@ -1490,6 +1522,7 @@ beforeAll(async () => {
     if (orgErr || !orgId) throw new Error(`suspended principal's workspace: ${orgErr?.message}`);
     suspendedOrg.id = orgId as string;
     fx._allOrgIds.push(suspendedOrg.id);
+    await mintStepUp(superuser, "organisation_lifecycle");
     const suspended = await superuser.rpc("suspend_organisation", {
       p_organisation_slug: suspendedOrg.slug,
       p_reason: "permission matrix: the suspended-workspace principal",
@@ -1517,6 +1550,7 @@ beforeAll(async () => {
   // accept_impersonation_request (the org's own Owner) and
   // start_impersonation_session (superuser), in that order and all real.
   {
+    await mintStepUp(superuser, "impersonation");
     const { data: sessionId, error } = await superuser.rpc("request_impersonation", {
       p_organisation_slug: fx.orgA.slug,
       p_reason: "permission matrix: a live session on org A",
@@ -1531,6 +1565,7 @@ beforeAll(async () => {
     if (accepted.error) {
       throw new Error(`POSITIVE CONTROL FAILED: accept_impersonation_request: ${accepted.error.message}`);
     }
+    await mintStepUp(superuser, "impersonation");
     const started = await superuser.rpc("start_impersonation_session", {
       p_session_id: ARGS.impersonationSessionId,
     });
@@ -1576,6 +1611,7 @@ beforeAll(async () => {
     // down with the other two rather than left behind for the next suite.
     fx._allOrgIds.push(orgCId as string);
 
+    await mintStepUp(superuser, "impersonation");
     const { data: sessionId, error } = await superuser.rpc("request_impersonation", {
       p_organisation_slug: orgCSlug,
       p_reason: "permission matrix: a session that stays ACCEPTED, never started",
@@ -1610,6 +1646,7 @@ beforeAll(async () => {
 
   // ---- Principal 7: an active Pro billing override on org B (Starter) -----
   {
+    await mintStepUp(superuser, "override");
     const { data: id, error } = await superuser.rpc("grant_billing_override", {
       p_organisation_slug: fx.orgB.slug,
       p_override_tier: "pro",
@@ -1623,6 +1660,7 @@ beforeAll(async () => {
     ARGS.billingOverrideId = id as string;
   }
   {
+    await mintStepUp(superuser, "override");
     const { data: id, error } = await superuser.rpc("grant_feature_override", {
       p_organisation_slug: fx.orgB.slug,
       p_flag_key: "early_access_preview",
@@ -1788,6 +1826,7 @@ beforeAll(async () => {
   // for themself, through the real one-column INSERT -- the row the new
   // erasure_jobs block reads. Nothing in this file runs a runner.
   {
+    await mintStepUp(noOrgClient, "account_erasure");
     const { data, error } = await noOrgClient
       .from("erasure_jobs")
       .insert({ kind: "account" } as never)
@@ -2076,6 +2115,69 @@ describe("GATE 0 (Phase 8): the censuses reach every Phase 8 surface", () => {
     }
   });
 
+  it("api_hooks holds ONLY the PostgREST pre-request hook: definer, search_path '', the three request roles, never exposed", async () => {
+    // Phase 10 Task 5. A schema every request role has USAGE on, outside the
+    // exposed-schema censuses above, so it is pinned here: a second function
+    // in it, a widened grant or a lost search_path is a red, and so is the
+    // schema ever being exposed (which would publish the hook as an RPC).
+    const { rows } = await pool.query<{ entry: string }>(
+      `select p.proname || '|' || p.prosecdef || '|' || coalesce(pg_catalog.array_to_string(p.proconfig, ','), '') || '|' ||
+              (select pg_catalog.string_agg(g, ',' order by g)
+                 from (select case when ax.grantee = 0 then 'PUBLIC' else pg_catalog.pg_get_userbyid(ax.grantee)::text end as g
+                         from pg_catalog.aclexplode(p.proacl) ax where ax.privilege_type = 'EXECUTE') x) as entry
+         from pg_catalog.pg_proc p
+         join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'api_hooks'`,
+    );
+    expect(rows.map((r) => r.entry)).toEqual([
+      'pre_request|true|search_path=""|anon,authenticated,postgres,service_role',
+    ]);
+    expect(exposedSchemas()).not.toContain("api_hooks");
+  });
+
+  it("the step-up pair (G13): SECURITY DEFINER, search_path '', EXECUTE to authenticated only", async () => {
+    // Phase 10 Task 6. The mint is the only writer of private.step_up_tokens
+    // and refuses without the server mark; consume spends the caller's own
+    // token. A widened grant (anon, PUBLIC, service_role) or a lost
+    // search_path is red.
+    const { rows } = await pool.query<{ entry: string }>(
+      `select n.nspname || '.' || p.proname || '|' || p.prosecdef || '|' || coalesce(pg_catalog.array_to_string(p.proconfig, ','), '') || '|' ||
+              (select pg_catalog.string_agg(g, ',' order by g)
+                 from (select case when ax.grantee = 0 then 'PUBLIC' else pg_catalog.pg_get_userbyid(ax.grantee)::text end as g
+                         from pg_catalog.aclexplode(p.proacl) ax where ax.privilege_type = 'EXECUTE') x) as entry
+         from pg_catalog.pg_proc p
+         join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+        where (n.nspname, p.proname) in (('public', 'mint_step_up_token'), ('private', 'consume_step_up'))
+        order by 1`,
+    );
+    expect(rows.map((r) => r.entry)).toEqual([
+      'private.consume_step_up|true|search_path=""|authenticated,postgres',
+      'public.mint_step_up_token|true|search_path=""|authenticated,postgres',
+    ]);
+  });
+
+  it("api_hooks' schema ACL: USAGE to the three request roles, CREATE to its owner alone", async () => {
+    // Phase 10 Task 5 review m6. The function ACL above does not cover the
+    // schema's own: a CREATE granted to a request role would let it plant a
+    // function beside the hook, and a USAGE lost by one role fails every one
+    // of its requests (PostgREST calls the hook as the request's role).
+    const { rows } = await pool.query<{ acl: string; owner: string }>(
+      `select (select pg_catalog.string_agg(g || ':' || ax.privilege_type, ',' order by g, ax.privilege_type)
+                 from pg_catalog.aclexplode(n.nspacl) ax,
+                      lateral (select case when ax.grantee = 0 then 'PUBLIC'
+                                           else pg_catalog.pg_get_userbyid(ax.grantee)::text end as g) x) as acl,
+              pg_catalog.pg_get_userbyid(n.nspowner)::text as owner
+         from pg_catalog.pg_namespace n
+        where n.nspname = 'api_hooks'`,
+    );
+    expect(rows).toEqual([
+      {
+        acl: "anon:USAGE,authenticated:USAGE,postgres:CREATE,postgres:USAGE,service_role:USAGE",
+        owner: "postgres",
+      },
+    ]);
+  });
+
   it("the destructive primitives are executable by postgres ALONE", async () => {
     const acl = await destructivePrimitiveAcl(pool);
     // REACH: the census must contain the erasure primitive and the retention
@@ -2341,6 +2443,8 @@ describe.each(SUPERUSER_ONLY_RPCS)(
         await positiveControl();
         return;
       }
+      const purpose = STEP_UP_PURPOSE_OF_RPC[fn];
+      if (purpose) await mintStepUp(superuser, purpose);
       const { error } = await superuser.rpc(fn, args() as never);
       expect(
         error,
@@ -2430,6 +2534,17 @@ describe("RPCs Phase 7 added that are deliberately member-reachable", () => {
     },
   );
 
+  it("mint_step_up_token refuses a session without the server mark, and records one with it", async () => {
+    // POSITIVE CONTROL FIRST: a persona client carries the mark (fixtures.ts).
+    const marked = await fx.activeByRole.manager.client.rpc("mint_step_up_token", {
+      p_purpose: "account_erasure",
+    });
+    expect(marked.error, `the server-marked mint was refused: ${marked.error?.message}`).toBeNull();
+    // superuserAal1Client is a plain anon-key client: no mark, as a browser.
+    const bare = await superuserAal1Client.rpc("mint_step_up_token", { p_purpose: "account_erasure" });
+    expect(bare.error?.hint).toBe("step_up_mint_needs_the_server");
+  });
+
   it("consume_rate_limit cannot be pointed at an organisation the caller is not in", async () => {
     // The boundary that IS asserted for a member-reachable RPC: Task 5's I1
     // class -- a caller-supplied organisation reaching a platform counter.
@@ -2511,6 +2626,7 @@ describe("RPCs Phase 7 added that are deliberately member-reachable", () => {
       `delete from public.impersonation_sessions where target_organisation_id = $1 and status = 'pending'`,
       [fx.orgB.id],
     );
+    await mintStepUp(superuser, "impersonation");
     const { data: sessionId, error: reqErr } = await superuser.rpc(
       "request_impersonation",
       { p_organisation_slug: fx.orgB.slug, p_reason: "consent-gate probe" },
@@ -3579,6 +3695,7 @@ describe("table erasure_jobs (own rows + operator oversight, Phase 8 Task 8)", (
     // Same principal, honest body: admitted as far as the TRIGGER, which is
     // what proves the refusal above was the grant and not "a manager cannot
     // insert at all". Rolled straight back out; nothing runs it.
+    await mintStepUp(fx.activeByRole.manager.client, "account_erasure");
     const { data, error } = await fx.activeByRole.manager.client
       .from("erasure_jobs")
       .insert({ kind: "account" } as never)
@@ -3791,6 +3908,7 @@ describe("Phase 8: each principal's own rights, and the mechanism behind each an
       .insert({ kind: "account" } as never)
       .select("id, requested_by");
     expect(account.error, `account export refused to a suspended member: ${account.error?.message}`).toBeNull();
+    await mintStepUp(suspendedClient, "workspace_export");
     const workspace = await suspendedClient
       .from("export_jobs")
       .insert({ kind: "workspace", organisation_id: suspendedOrg.id } as never)
@@ -3808,6 +3926,8 @@ describe("Phase 8: each principal's own rights, and the mechanism behind each an
   });
 
   it("CONTROL: a SUSPENDED Owner still cannot export a workspace they are not in -- the RLS check, not the suspension", async () => {
+    // A token, so the refusal is the permission's and not step-up's (G13).
+    await mintStepUp(suspendedClient, "workspace_export");
     const { error } = await suspendedClient
       .from("export_jobs")
       .insert({ kind: "workspace", organisation_id: fx.orgA.id } as never);
@@ -3931,6 +4051,7 @@ async function discardLegalRows(ids: string[]): Promise<void> {
  *  controls: a disposable flag on org A, so org B keeps the single active
  *  feature override principal 7 is defined by. */
 async function grantAndRevokeFeatureOverrideOnOrgA(under: string): Promise<void> {
+  await mintStepUp(superuser, "override");
   const { data: id, error } = await superuser.rpc("grant_feature_override", {
     p_organisation_slug: fx.orgA.slug,
     p_flag_key: "early_access_preview",
@@ -3938,6 +4059,7 @@ async function grantAndRevokeFeatureOverrideOnOrgA(under: string): Promise<void>
     p_expires_at: new Date(Date.now() + 86_400_000).toISOString(),
   });
   expect(error, `grant_feature_override (${under}): ${error?.message}`).toBeNull();
+  await mintStepUp(superuser, "override");
   const revoked = await superuser.rpc("revoke_feature_override", {
     p_override_id: id as string,
     p_reason: "positive control cleanup",

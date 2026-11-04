@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
-import type { EmailOtpType } from "@supabase/supabase-js";
+import type { EmailOtpType, User } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { safeNextPath } from "@/lib/auth/redirects";
+import { settleFirstProof } from "@/lib/auth/first-proof";
 
 // ===========================================================================
 // The single landing point for every Supabase auth redirect.
@@ -15,7 +16,8 @@ import { safeNextPath } from "@/lib/auth/redirects";
 //                                verifier lives in a cookie the browser client
 //                                set when it started the flow.
 //
-//   ?token_hash=<hash>&type=...  Invites and magic links, via verifyOtp().
+//   ?token_hash=<hash>&type=...  Invites, magic links, sign-up confirmations
+//                                and recovery links, via verifyOtp().
 //
 // WHY BOTH, AND WHY THE EMAIL TEMPLATES WERE CHANGED:
 //   supabase-js documents that "PKCE is not supported when using
@@ -27,7 +29,8 @@ import { safeNextPath } from "@/lib/auth/redirects";
 //   so a route handler cannot see it at all; picking it up would mean shipping
 //   the tokens into client-side JavaScript and posting them back.
 //
-//   So supabase/templates/invite.html and magic-link.html link here with
+//   So supabase/templates/invite.html, magic-link.html, confirmation.html and
+//   recovery.html link here with
 //   `token_hash` instead, and verifyOtp() completes the exchange server-side.
 //   The tokens never touch the browser's URL, its history, or a Referer
 //   header. Do not revert those templates to {{ .ConfirmationURL }} without
@@ -95,6 +98,36 @@ function failure(reason: string): NextResponse {
   return redirectTo(`/login?error=${encodeURIComponent(reason)}`);
 }
 
+/**
+ * Every successful proof ends here (Phase 10 Task 20, Q245). If this was the
+ * FIRST proof of the address and the browser is not the one whose sign-up
+ * created the account, settleFirstProof() has replaced the password and
+ * signed out every other session, and the user must choose a new password
+ * before going anywhere -- `destination` waits behind /set-password. Any
+ * failure signs this session out and fails the link: the next proof retries,
+ * because nothing is recorded until the outcome is complete.
+ */
+async function afterProof(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  user: User | null,
+  otpType: EmailOtpType | null,
+  destination: string,
+): Promise<NextResponse> {
+  if (!user) return failure("link_failed");
+  try {
+    const outcome = await settleFirstProof(supabase, user, otpType);
+    if (outcome === "must-choose-password") {
+      return redirectTo(
+        destination === "/" ? "/set-password" : `/set-password?next=${encodeURIComponent(destination)}`,
+      );
+    }
+  } catch {
+    await supabase.auth.signOut({ scope: "local" });
+    return failure("link_failed");
+  }
+  return redirectTo(destination);
+}
+
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
 
@@ -114,9 +147,11 @@ export async function GET(request: NextRequest) {
 
   const code = params.get("code");
   if (code) {
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
     if (error) return failure("link_failed");
-    return redirectTo(next);
+    // Google sign-in, and any PKCE email link still in flight from before the
+    // templates sent them here with a token hash.
+    return afterProof(supabase, data.user, null, next);
   }
 
   const tokenHash = params.get("token_hash");
@@ -128,28 +163,28 @@ export async function GET(request: NextRequest) {
     }
     const type = rawType as EmailOtpType;
 
-    const { error } = await supabase.auth.verifyOtp({ type, token_hash: tokenHash });
+    const { data, error } = await supabase.auth.verifyOtp({ type, token_hash: tokenHash });
     if (error) return failure("link_failed");
 
     // A recovery link means "let me set a new password", which is the account
     // -setup screen's job, not the destination the link happened to carry.
     if (type === "recovery") {
-      return redirectTo("/invites?welcome=1");
+      return afterProof(supabase, data.user, type, "/invites?welcome=1");
     }
     // An invite lands on the invite screen in "welcome" mode, which offers to
     // set a password -- an invited user has none yet (see
     // completeAccountSetupAction) and would otherwise be locked out when this
     // session expires.
     if (type === "invite") {
-      if (next === "/") return redirectTo("/invites?welcome=1");
+      if (next === "/") return afterProof(supabase, data.user, type, "/invites?welcome=1");
       // The base is a throwaway -- only pathname+search are kept, so the
       // Location stays relative. `next` has already been through safeNextPath.
       const withWelcome = new URL(next, "https://gsp.invalid");
       withWelcome.searchParams.set("welcome", "1");
-      return redirectTo(`${withWelcome.pathname}${withWelcome.search}`);
+      return afterProof(supabase, data.user, type, `${withWelcome.pathname}${withWelcome.search}`);
     }
 
-    return redirectTo(next);
+    return afterProof(supabase, data.user, type, next);
   }
 
   // Neither mechanism present: somebody navigated here directly, or a link was

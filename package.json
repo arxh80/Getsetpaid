@@ -3,8 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "node scripts/dev-env.mjs && next dev",
+    "dev": "node scripts/dev.mjs",
     "dev:hosted": "node scripts/dev-env.mjs --hosted && next dev",
+    "stack:claim": "node scripts/stack.mjs claim",
+    "stack:release": "node scripts/stack.mjs release",
+    "stack:info": "node scripts/stack.mjs info",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

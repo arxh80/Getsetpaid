@@ -174,24 +174,35 @@ async function expectRecordRefused(
  * the fixture exports no constant for them, and the copy is safe because the
  * positive control fails loudly if the fixture's wording ever drifts.
  */
+const ALPHA_PRIVATE_ROUTES: ReadonlyArray<
+  readonly [string, (w: E2eWorld) => string, string]
+> = [
+  ["contact", (w) => `contacts/${w.managerOwnedContactId}`, "Manager Only Contact"],
+  ["event", (w) => `events/${w.managerOwnedEventId}`, EVENT_NAMES.managerOwned],
+  ["task", (w) => `tasks/${w.taskId}`, "Fixture task — confirm the rider"],
+  ["meeting", (w) => `meetings/${w.meetingId}`, "Fixture meeting — production call"],
+  ["company note", (w) => `notes/${w.companyNoteId}`, NOTE_BODIES.company],
+  ["private note", (w) => `notes/${w.privateNoteId}`, NOTE_BODIES.managerPrivate],
+  ["venue", (w) => `venues/${w.venueId}`, VENUE_NAME],
+  ["artist", (w) => `artists/${w.artistId}`, ARTIST_NAME],
+];
+
 function alphaPrivateRoutes(
   w: E2eWorld,
 ): ReadonlyArray<readonly [string, string, string]> {
-  return [
-    ["contact", `contacts/${w.managerOwnedContactId}`, "Manager Only Contact"],
-    ["event", `events/${w.managerOwnedEventId}`, EVENT_NAMES.managerOwned],
-    ["task", `tasks/${w.taskId}`, "Fixture task — confirm the rider"],
-    ["meeting", `meetings/${w.meetingId}`, "Fixture meeting — production call"],
-    ["company note", `notes/${w.companyNoteId}`, NOTE_BODIES.company],
-    ["private note", `notes/${w.privateNoteId}`, NOTE_BODIES.managerPrivate],
-    ["venue", `venues/${w.venueId}`, VENUE_NAME],
-    ["artist", `artists/${w.artistId}`, ARTIST_NAME],
-  ] as const;
+  return ALPHA_PRIVATE_ROUTES.map(([label, path, marker]) => [label, path(w), marker] as const);
 }
 
-test("an UNCONNECTED counterparty, signed in for real, reaches none of ALPHA's private records", async ({
-  page,
-}) => {
+/** BOTH of ALPHA's fixture documents, because the clean one and the
+ *  quarantined one take different branches inside `issueDownloadUrl` for
+ *  their own tenant and a counterparty must not reach either branch. */
+const ALPHA_DOCUMENTS: ReadonlyArray<readonly [string, (w: E2eWorld) => string]> = [
+  ["clean", (w) => w.cleanDocumentId],
+  ["quarantined", (w) => w.quarantinedDocumentId],
+];
+
+/** Sign in as the UNCONNECTED counterparty and prove the session is live. */
+async function signInUnconnectedAndProveLive(page: Page): Promise<void> {
   await signInAsOtherMember(page);
 
   // THE SESSION IS LIVE AND HOLDS ITS KEYS. Without this, every 404 below is
@@ -209,48 +220,10 @@ test("an UNCONNECTED counterparty, signed in for real, reaches none of ALPHA's p
   await expect(
     page.getByRole("link", { name: world.networkAlphaProfileName }),
   ).toBeVisible();
+}
 
-  // THE MATRIX. Every id is a real, live row in ALPHA; every one is addressed
-  // through the counterparty's OWN slug, which is the request an attacker
-  // sends (the org slug is in every URL and the record id is guessable from
-  // nothing, but a leaked or enumerated one must still refuse).
-  for (const [label, path, marker] of alphaPrivateRoutes(world)) {
-    await expectRecordRefused(page, world.otherOrgSlug, path, label, marker);
-  }
-
-  // THE FILE BYTES. The download Route Handler is the one path in the product
-  // that mints a signed URL, so a refusal here is the difference between "no
-  // link on a page" and "no bytes". BOTH of ALPHA's fixture documents, because
-  // the clean one and the quarantined one take different branches inside
-  // `issueDownloadUrl` for their own tenant and a counterparty must not reach
-  // either branch.
-  for (const [label, id] of [
-    ["clean", world.cleanDocumentId],
-    ["quarantined", world.quarantinedDocumentId],
-  ] as const) {
-    const download = await page.request.get(
-      `/${world.otherOrgSlug}/documents/${id}/download`,
-      { maxRedirects: 0 },
-    );
-    expect(
-      download.status(),
-      `ALPHA's ${label} document must not mint a signed URL for a counterparty`,
-    ).toBe(404);
-  }
-
-  // AND THROUGH ALPHA'S OWN SLUG, which is the other half of the same attack:
-  // knowing the victim's slug must not help either. A workspace this viewer
-  // is no member of refuses at the layout, above every loading boundary, so
-  // the literal 404 still holds here.
-  expect(
-    await statusOf(page, `/${world.orgSlug}/contacts/${world.managerOwnedContactId}`),
-    "ALPHA's own slug does not admit a non-member",
-  ).toBe(404);
-});
-
-test("a CONNECTED counterparty reaches none of them either -- accept unlocks fields, not tables", async ({
-  page,
-}) => {
+/** Sign in as the CONNECTED counterparty and prove the connection is live. */
+async function signInConnectedAndProveLive(page: Page): Promise<void> {
   // N4, in a browser. `world.proOrgSlug` holds an ACCEPTED connection with
   // ALPHA (`networkAcceptedRequestId`), and network-discovery.spec.ts proves
   // that connection is live by reading a `connections`-level field through it.
@@ -263,27 +236,87 @@ test("a CONNECTED counterparty reaches none of them either -- accept unlocks fie
   await page.goto(`/${world.proOrgSlug}/network/${world.networkAlphaProfileId}`);
   await expect(page.getByText("You’re connected")).toBeVisible();
   await expect(page.locator("main")).toContainText("alpha-connections@example.test");
+}
 
-  // An accepted connection grants no access to any tenant table (N4): the
-  // identical refusal-and-parity contract as the unconnected pass above.
-  for (const [label, path, marker] of alphaPrivateRoutes(world)) {
-    await expectRecordRefused(page, world.proOrgSlug, path, label, marker);
-  }
+// One test per record, as tenant-breakout.spec.ts's REFUSAL PARITY split
+// (1c98bd6) and accessibility.spec.ts's "ONE TEST PER PAGE" header explain:
+// eight records and two downloads under one 60s budget ran at 58.7s alone and
+// timed out beside network.spec.ts on 2026-10-23 with every assertion green,
+// an empty failure that reads like an oracle and is not one.
+//
+// THE MATRIX. Every id is a real, live row in ALPHA; every one is addressed
+// through the counterparty's OWN slug, which is the request an attacker
+// sends (the org slug is in every URL and the record id is guessable from
+// nothing, but a leaked or enumerated one must still refuse).
+for (const [label, path, marker] of ALPHA_PRIVATE_ROUTES) {
+  test(`an UNCONNECTED counterparty, signed in for real, does not reach ALPHA's ${label}`, async ({
+    page,
+  }) => {
+    await signInUnconnectedAndProveLive(page);
+    await expectRecordRefused(page, world.otherOrgSlug, path(world), label, marker);
+  });
+}
 
-  for (const [label, id] of [
-    ["clean", world.cleanDocumentId],
-    ["quarantined", world.quarantinedDocumentId],
-  ] as const) {
+// THE FILE BYTES. The download Route Handler is the one path in the product
+// that mints a signed URL, so a refusal here is the difference between "no
+// link on a page" and "no bytes".
+for (const [label, id] of ALPHA_DOCUMENTS) {
+  test(`an UNCONNECTED counterparty does not mint a signed URL for ALPHA's ${label} document`, async ({
+    page,
+  }) => {
+    await signInUnconnectedAndProveLive(page);
     const download = await page.request.get(
-      `/${world.proOrgSlug}/documents/${id}/download`,
+      `/${world.otherOrgSlug}/documents/${id(world)}/download`,
+      { maxRedirects: 0 },
+    );
+    expect(
+      download.status(),
+      `ALPHA's ${label} document must not mint a signed URL for a counterparty`,
+    ).toBe(404);
+  });
+}
+
+test("an UNCONNECTED counterparty gets nothing through ALPHA's own slug either", async ({
+  page,
+}) => {
+  await signInUnconnectedAndProveLive(page);
+  // AND THROUGH ALPHA'S OWN SLUG, which is the other half of the same attack:
+  // knowing the victim's slug must not help either. A workspace this viewer
+  // is no member of refuses at the layout, above every loading boundary, so
+  // the literal 404 still holds here.
+  expect(
+    await statusOf(page, `/${world.orgSlug}/contacts/${world.managerOwnedContactId}`),
+    "ALPHA's own slug does not admit a non-member",
+  ).toBe(404);
+});
+
+// An accepted connection grants no access to any tenant table (N4): the
+// identical refusal-and-parity contract as the unconnected tests above, one
+// test per record for the same reason.
+for (const [label, path, marker] of ALPHA_PRIVATE_ROUTES) {
+  test(`a CONNECTED counterparty does not reach ALPHA's ${label} either -- accept unlocks fields, not tables`, async ({
+    page,
+  }) => {
+    await signInConnectedAndProveLive(page);
+    await expectRecordRefused(page, world.proOrgSlug, path(world), label, marker);
+  });
+}
+
+for (const [label, id] of ALPHA_DOCUMENTS) {
+  test(`a CONNECTED counterparty does not mint a signed URL for ALPHA's ${label} document`, async ({
+    page,
+  }) => {
+    await signInConnectedAndProveLive(page);
+    const download = await page.request.get(
+      `/${world.proOrgSlug}/documents/${id(world)}/download`,
       { maxRedirects: 0 },
     );
     expect(
       download.status(),
       `a connected counterparty must not mint a signed URL for the ${label} document either`,
     ).toBe(404);
-  }
-});
+  });
+}
 
 test("POSITIVE CONTROL: ALPHA's own manager opens every one of those records, and reaches the download gate", async ({
   page,

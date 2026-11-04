@@ -158,7 +158,9 @@ export const CLOSURE_BACKUP_STOPPED: Readonly<Record<string, string>> = {
 export type WithholdingReason =
   | "table_excused"
   | "document_not_clean"
+  | "document_unreadable"
   | "screenshot_not_clean"
+  | "screenshot_unreadable"
   | "audit_payload_withheld";
 
 export const WITHHOLDING_COPY: Record<WithholdingReason, string> = {
@@ -166,8 +168,12 @@ export const WITHHOLDING_COPY: Record<WithholdingReason, string> = {
     "This table is deliberately not part of this export. The reason is recorded beside it.",
   document_not_clean:
     "This file's bytes are not included: it did not pass the malware scan, or the scan has not finished. The document's own record is included, with its scan status.",
+  document_unreadable:
+    "This file's record is included but its bytes could not be read from storage when the archive was built.",
   screenshot_not_clean:
     "This screenshot's bytes are not included: it did not pass the malware scan, or the scan has not finished.",
+  screenshot_unreadable:
+    "This screenshot's bytes could not be read from storage when the archive was built. The feedback row itself is included.",
   audit_payload_withheld:
     "Audit rows are included as identifiers, action and timestamps. The before/after payload is not: it holds the changed column names and structural values of other people's records, which are not your data.",
 };
@@ -302,9 +308,10 @@ export interface ResumeCursor {
   /** Rows of the current table already written in earlier parts. */
   tableRowsSoFar: number;
   rowCounts: Record<string, number>;
-  /** Documents whose bytes were written, in order: id and byte count. */
+  /** Files whose bytes were written, in order: id and byte count. A
+   *  workspace export's documents; an account export's feedback screenshots. */
   documents: { id: string; bytes: number }[];
-  /** Documents withheld, in order: id, and why (`not_clean`, or `unreadable` storage). */
+  /** Files withheld, in order: id, and why (`not_clean`, or `unreadable` storage). */
   withheldDocuments: { id: string; why: DocumentWithheldBecause }[];
   parts: PartSummary[];
   generatedAt: string;

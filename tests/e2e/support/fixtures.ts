@@ -79,6 +79,9 @@ export interface LocalStack {
   anonKey: string;
   serviceRoleKey: string;
   dbUrl: string;
+  /** The local mail catcher (Mailpit, `[local_smtp]` in config.toml), when
+   *  the CLI reports one. Only the invite pre-hijack spec reads it. */
+  mailUrl?: string;
 }
 
 let cachedStack: LocalStack | undefined;
@@ -120,7 +123,14 @@ export function localStack(): LocalStack {
   if (!/^postgres(?:ql)?:\/\/[^@]*@(127\.0\.0\.1|localhost):/.test(dbUrl)) {
     throw new Error("Refusing to run: DB_URL is not a local Postgres instance.");
   }
-  cachedStack = { apiUrl, anonKey, serviceRoleKey, dbUrl };
+  // Same loopback refusal as the API: a mail catcher on another host would
+  // mean the stack is not local, and nothing here reads a real inbox.
+  const rawMailUrl = parsed.MAILPIT_URL ?? parsed.INBUCKET_URL;
+  const mailUrl =
+    rawMailUrl && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(rawMailUrl)
+      ? rawMailUrl
+      : undefined;
+  cachedStack = { apiUrl, anonKey, serviceRoleKey, dbUrl, mailUrl };
   return cachedStack;
 }
 
@@ -2957,6 +2967,11 @@ export async function createDisposableUser(label: string): Promise<E2eUser> {
   return createUser(`e2e-erase-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}@test.local`);
 }
 
+/** Deletes a disposable account a spec made and did not destroy itself. */
+export async function deleteDisposableUser(userId: string): Promise<void> {
+  await db().query(`delete from auth.users where id = $1`, [userId]);
+}
+
 /** Does this account still exist? The only fact the erasure e2e needs. */
 export async function accountStillExists(userId: string): Promise<boolean> {
   const { rows } = await db().query<{ n: string }>(
@@ -3134,6 +3149,10 @@ export async function plantOwnerClosedWorkspace(
     await client.query(`select set_config('request.jwt.claims', $1, true)`, [
       JSON.stringify({ sub: owner.id, role: "authenticated", aal: "aal2" }),
     ]);
+    // The step-up token the server mints after checkStepUp() (Phase 10 Task 6).
+    await client.query(
+      `select set_config('getsetpaid.from_server', 'on', true), public.mint_step_up_token('workspace_close')`,
+    );
     await client.query(`select public.close_my_workspace($1, $2, $3)`, [
       id,
       slug,
@@ -3313,4 +3332,200 @@ export async function countContactsNamed(organisationId: string, name: string): 
     [organisationId, name],
   );
   return Number(rows[0]?.n ?? 0);
+}
+
+// =============================================================================
+// PHASE 10 TASK 4: THE INVITE PRE-HIJACK (G11)
+// =============================================================================
+// A deliberately SMALL world, not setUpWorld(): the invite pre-hijack spec
+// needs one Owner who can actually send an invitation (an MFA-required role,
+// so a real enrolled TOTP factor, walked in the browser) and two workspaces
+// that Owner may invite into. Two, because "a person invited by one workspace
+// and then by another before accepting either" is the legitimate re-invite
+// the squatter refusal must not break (the positive control beside it).
+
+export interface InviteOrg {
+  id: string;
+  slug: string;
+  name: string;
+}
+
+export interface InviteWorld {
+  owner: E2eUser;
+  ownerTotpSecret: string;
+  orgs: [InviteOrg, InviteOrg];
+}
+
+export async function setUpInviteWorld(): Promise<InviteWorld> {
+  const suffix = randomUUID().slice(0, 8);
+  const owner = await createUser(`e2e-inviter-${suffix}@test.local`);
+  const ownerTotpSecret = await enrolTotp(owner.email);
+  const orgs: [InviteOrg, InviteOrg] = [
+    { id: randomUUID(), slug: `e2e-inv-a-${suffix}`, name: `E2E Invite A ${suffix}` },
+    { id: randomUUID(), slug: `e2e-inv-b-${suffix}`, name: `E2E Invite B ${suffix}` },
+  ];
+  await sql(
+    `insert into public.organisations (id, name, slug) values ($1,$2,$3), ($4,$5,$6)`,
+    [orgs[0].id, orgs[0].name, orgs[0].slug, orgs[1].id, orgs[1].name, orgs[1].slug],
+  );
+  // Starter rows for the same reason setUpWorld() plants them: every real
+  // workspace has one from birth, and these two are planted by SQL rather
+  // than through create_organisation().
+  await sql(
+    `insert into public.organisation_subscriptions
+       (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+     values ($1,'starter','monthly',3,'active', now() + interval '30 days'),
+            ($2,'starter','monthly',3,'active', now() + interval '30 days')`,
+    [orgs[0].id, orgs[1].id],
+  );
+  await sql(
+    `insert into public.organisation_memberships
+       (organisation_id, user_id, role, status, joined_at)
+     values ($1,$3,'owner','active',now()), ($2,$3,'owner','active',now())`,
+    [orgs[0].id, orgs[1].id, owner.id],
+  );
+  return { owner, ownerTotpSecret, orgs };
+}
+
+/** The auth.users row for an address (exact, case-insensitive), read as `postgres`. */
+export async function authUserByEmail(email: string): Promise<{
+  id: string;
+  emailConfirmed: boolean;
+  invited: boolean;
+} | null> {
+  const { rows } = await db().query<{ id: string; confirmed: boolean; invited: boolean }>(
+    `select id, email_confirmed_at is not null as confirmed, invited_at is not null as invited
+       from auth.users where lower(email) = lower($1)`,
+    [email],
+  );
+  const row = rows[0];
+  return row ? { id: row.id, emailConfirmed: row.confirmed, invited: row.invited } : null;
+}
+
+/**
+ * Moves every GoTrue clock on one account 21 minutes into the past, as if the
+ * next person came along later. [auth.email] max_frequency (20 minutes since
+ * G3, Phase 10 Task 8) refuses a second mail to one account inside the
+ * window, and the auth-journey specs model a squatter and an owner who arrive
+ * at different times. Shifted together, so their order (the invite step's
+ * invited_at test, isNewSignUp()'s created_at gap) is unchanged.
+ */
+export async function ageAuthMailClocks(email: string): Promise<void> {
+  const { rowCount } = await db().query(
+    `update auth.users
+        set created_at               = created_at - interval '21 minutes',
+            confirmation_sent_at     = confirmation_sent_at - interval '21 minutes',
+            recovery_sent_at         = recovery_sent_at - interval '21 minutes',
+            invited_at               = invited_at - interval '21 minutes',
+            email_change_sent_at     = email_change_sent_at - interval '21 minutes',
+            reauthentication_sent_at = reauthentication_sent_at - interval '21 minutes'
+      where lower(email) = lower($1)`,
+    [email],
+  );
+  if (rowCount !== 1) throw new Error(`ageAuthMailClocks: ${rowCount} accounts for ${email}`);
+}
+
+/** Every organisation_memberships row this user holds, read as `postgres`. */
+export async function membershipsOfUser(
+  userId: string,
+): Promise<{ organisationId: string; role: string; status: string }[]> {
+  const { rows } = await db().query<{ organisation_id: string; role: string; status: string }>(
+    `select organisation_id, role, status from public.organisation_memberships
+      where user_id = $1 order by created_at`,
+    [userId],
+  );
+  return rows.map((r) => ({ organisationId: r.organisation_id, role: r.role, status: r.status }));
+}
+
+/**
+ * Tear the invite world down, plus every auth user the spec created through
+ * the real forms (found by address, since /signup and inviteUserByEmail mint
+ * the ids, not this file). audit_events rows go first, for the reason
+ * tearDownWorld() gives: actor_user_id blocks a hard delete of the user.
+ */
+export async function tearDownInviteWorld(
+  world: InviteWorld,
+  createdAddresses: string[],
+): Promise<void> {
+  const { serviceRoleKey } = localStack();
+  await sql(`delete from public.organisations where id = any($1::uuid[])`, [
+    world.orgs.map((o) => o.id),
+  ]);
+  const ids = [world.owner.id];
+  for (const address of createdAddresses) {
+    const user = await authUserByEmail(address);
+    if (user) ids.push(user.id);
+  }
+  await sql(`delete from public.audit_events where actor_user_id = any($1::uuid[])`, [ids]);
+  for (const id of ids) {
+    await api(`/auth/v1/admin/users/${id}`, { key: serviceRoleKey, method: "DELETE" });
+  }
+  await closeDb();
+}
+
+/**
+ * PHASE 10 TASK 21. A throwaway ACTIVE member of `organisationId`, with a
+ * named profile so their row on the members page can be found by name, for a
+ * spec that removes them. Planted as `postgres` like every fixture here; the
+ * removal under test is what goes through the product. The caller deletes it
+ * with deletePlantedMember() (the org's teardown cascades the membership).
+ */
+export async function plantActiveMember(
+  organisationId: string,
+  role: string,
+  name: string,
+): Promise<E2eUser> {
+  const user = await createUser(`e2e-planted-${randomUUID().slice(0, 8)}@test.local`);
+  await sql(`update public.profiles set full_name = $2 where id = $1`, [user.id, name]);
+  await sql(
+    `insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+     values ($1, $2, $3, 'active', now())`,
+    [organisationId, user.id, role],
+  );
+  return user;
+}
+
+export async function deletePlantedMember(userId: string): Promise<void> {
+  const { serviceRoleKey } = localStack();
+  await sql(`delete from public.audit_events where actor_user_id = $1`, [userId]);
+  await api(`/auth/v1/admin/users/${userId}`, { key: serviceRoleKey, method: "DELETE" });
+}
+
+/**
+ * PHASE 10 TASK 15 (G21): the records accessibility.spec.ts needs for the
+ * company and agency detail/edit pages and the merge screen, which the world
+ * does not carry. Planted here, in that spec's own world only, so no other
+ * spec's lists or pickers gain rows. merge_candidates has no INSERT grant
+ * (screen_for_duplicates() writes it), so the pair goes in as `postgres`.
+ * The organisation delete in tearDownWorld removes all of it.
+ */
+export async function plantAxeRecords(world: E2eWorld): Promise<{
+  companyId: string;
+  agencyId: string;
+  mergeCandidateId: string;
+}> {
+  const managerId = world.users.manager.id;
+  const companyId = randomUUID();
+  const agencyId = randomUUID();
+  const duplicateAgencyId = randomUUID();
+  const mergeCandidateId = randomUUID();
+  await sql(
+    `insert into public.companies (id, organisation_id, owner_user_id, name)
+     values ($1,$2,$3,'E2E Axe Company')`,
+    [companyId, world.orgId, managerId],
+  );
+  await sql(
+    `insert into public.agencies (id, organisation_id, owner_user_id, name, created_at)
+     values ($1,$3,$4,'E2E Axe Agency', now() - interval '1 day'),
+            ($2,$3,$4,'E2E Axe Agency Ltd', now())`,
+    [agencyId, duplicateAgencyId, world.orgId, managerId],
+  );
+  await sql(
+    `insert into public.merge_candidates
+       (id, organisation_id, entity_type, keep_id, duplicate_id,
+        keep_owner_user_id, duplicate_owner_user_id, label, reason, similarity)
+     values ($1,$2,'agency',$3,$4,$5,$5,'E2E Axe Agency','fuzzy_name',0.9)`,
+    [mergeCandidateId, world.orgId, agencyId, duplicateAgencyId, managerId],
+  );
+  return { companyId, agencyId, mergeCandidateId };
 }

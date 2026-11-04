@@ -1066,6 +1066,10 @@ select rt.val('REL3 the release is reachable by `authenticated` and by nobody el
   'true/false/false');
 
 -- WHO. postgres with no session, an aal2 NON-superuser, the superuser at aal1.
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm('{"sub":"00000000-0000-4000-9000-0000000067a3","role":"authenticated","aal":"aal2"}') \g /dev/null
 select rt.try_hint('REL4 the release is superuser-only, even for `postgres`',
   $$select public.release_audit_purge_ceiling('rt probe')$$,
   'denied(42501:audit_ceiling_release_is_superuser_only)');

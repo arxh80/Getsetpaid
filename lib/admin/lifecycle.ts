@@ -53,10 +53,12 @@
 // where that stops being the whole story.
 
 import { revalidatePath } from "next/cache";
+import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
-import { authoriseSuperuser } from "@/lib/admin/superuser-gate";
+import { isSuperuser } from "@/lib/admin/superuser";
 
 const STEP_UP_REQUIRED =
   "Confirm it’s you before changing a workspace’s status. Use the re-authentication prompt at the top of this page, then try again.";
@@ -115,13 +117,38 @@ function rpcRefusal(
   return refuse(FAILED_MESSAGE, formData);
 }
 
+/**
+ * On the allowlist, and a credential presented in the last five minutes.
+ *
+ * isSuperuser() is the IDENTITY check and is deliberately not aal-gated
+ * (lib/admin/superuser.ts); the aal2 requirement is enforced by
+ * private.has_platform_permission() inside every RPC. This checks the two
+ * things the database cannot see for itself: that the caller is signed in at
+ * all, and that step-up is fresh.
+ */
+async function authoriseSuperuser(
+  formData: FormData,
+): Promise<{ readonly ok: true } | { readonly ok: false; readonly state: FormState }> {
+  if (!(await getCurrentUser())) {
+    return { ok: false, state: refuse(FAILED_MESSAGE, formData) };
+  }
+  if (!(await isSuperuser())) {
+    // Not a distinguishing message: nothing to learn here.
+    return { ok: false, state: refuse(NOT_YOURS, formData) };
+  }
+  if (!(await checkStepUp()) || !(await mintStepUpToken("organisation_lifecycle"))) {
+    return { ok: false, state: refuse(STEP_UP_REQUIRED, formData) };
+  }
+  return { ok: true };
+}
+
 async function callLifecycleRpc(
   fn: "suspend_organisation" | "delete_organisation" | "reinstate_organisation",
   formData: FormData,
   success: (slug: string) => string,
 ): Promise<FormState> {
-  const refusal = await authoriseSuperuser(formData, { notSuperuser: NOT_YOURS, stepUp: STEP_UP_REQUIRED });
-  if (refusal) return refusal;
+  const gate = await authoriseSuperuser(formData);
+  if (!gate.ok) return gate.state;
 
   const slug = field(formData, "organisationSlug");
   const reason = field(formData, "reason");

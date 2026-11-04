@@ -215,6 +215,15 @@ insert into public.organisation_memberships (organisation_id, user_id, role, sta
   (:'org_s', :'admin_s2', 'admin',   'active', now()),
   (:'org_t', :'owner_t',  'owner',   'active', now());
 
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'owner_p_c') \g /dev/null
+select step_up_fixture.arm(:'owner_r_c') \g /dev/null
+select step_up_fixture.arm(:'owner_s_c') \g /dev/null
+select step_up_fixture.arm(:'owner_t_c') \g /dev/null
+select step_up_fixture.arm(:'admin_p2_c') \g /dev/null
+select step_up_fixture.arm(:'su_c') \g /dev/null
 -- The closure backups, each made by its Owner closing the workspace under
 -- aal2 claims (tests/e2e/support/fixtures.ts plantOwnerClosedWorkspace).
 set role authenticated;
@@ -393,10 +402,13 @@ select qp.sc('QT8a part_count < 0 is refused by export_jobs_part_count_shape',
   array['set local session_replication_role = replica',
         format($$update public.export_jobs set part_count = -1 where id = %L$$, :'j')],
   'ok|denied(23514:export_jobs_part_count_shape)');
-select qp.sc('QT8b part_count > 0 on a non-closure job is refused',
+-- Since 20261108005000 (Phase 10 Task 24, Q263) any export may be built in
+-- parts, so part_count > 0 on an ordinary job is admitted; QT8c still holds
+-- the resume cursor to closure backups.
+select qp.sc('QT8b part_count > 0 on a non-closure job is admitted (Q263: every export may have parts)',
   array['set local session_replication_role = replica',
         format($$update public.export_jobs set part_count = 1 where id = %L$$, :'o')],
-  'ok|denied(23514:export_jobs_part_count_shape)');
+  'ok|ok');
 select qp.sc('QT8c a resume_cursor on a non-closure (queued) job is refused',
   array['set local session_replication_role = replica',
         format($$update public.export_jobs set resume_cursor = '{"v":1}' where id = %L$$, :'o')],
@@ -487,20 +499,24 @@ select label as qg1_label, expected as qg1_expected, actual as qg1_actual from q
 rollback;
 select qp.record(:'qg1_label', :'qg1_expected', :'qg1_actual');
 
-select qp.undo('QG2 a part for K (an ordinary account export) is refused: closure only',
+-- Q263 (20261108005000): an ordinary export may have parts, but only while
+-- it runs -- K is not running and O is queued, so both are refused on that.
+select qp.undo('QG2 a part for K (an ordinary account export, not running) is refused: parts only while running',
   format($$insert into public.export_job_parts (job_id, part_no, storage_key, byte_size, row_count)
            values (%L, 1, 'exports/' || %L || '.zip', 1, 1)$$, :'k', :'k'),
-  'denied(22023:export_parts_are_closure_only)');
+  'denied(22023:export_part_needs_a_running_job)');
 select qp.undo('QG2b ...and for O (ordinary, queued) the same',
   format($$insert into public.export_job_parts (job_id, part_no, storage_key, byte_size, row_count)
            values (%L, 1, 'exports/' || %L || '.zip', 1, 1)$$, :'o', :'o'),
-  'denied(22023:export_parts_are_closure_only)');
--- J is running at part_count 1 with part 2 already stored: the next part by
--- the guard's count IS 2, so the duplicate passes the guard and meets the PK.
-select qp.undo('QG4b a second part 2 while part_count is 1 is refused by the primary key',
+  'denied(22023:export_part_needs_a_running_job)');
+-- J is running at part_count 1 with part 2 already stored. Since
+-- 20261108005000 the guard orders parts by those STORED (an ordinary export
+-- adds parts without leaving `running`), so the next part is 3 and a second
+-- part 2 is out of order before it can reach the primary key.
+select qp.undo('QG4b a second part 2 while part 2 is stored is refused: the next part is 3',
   format($$insert into public.export_job_parts (job_id, part_no, storage_key, byte_size, row_count)
            values (%L, 2, 'exports/' || %L || '-part-0002.zip', 1, 1)$$, :'j', :'j'),
-  'denied(23505:export_job_parts_pkey)');
+  'denied(22023:export_part_out_of_order)');
 
 -- Re-queue J at part_count 2.
 select qp.try('QG-fixture J re-queued at part_count 2',

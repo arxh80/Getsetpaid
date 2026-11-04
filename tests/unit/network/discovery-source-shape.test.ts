@@ -10,17 +10,14 @@ import { readSource as read, stripComments } from "../../support/source";
 // point:
 //
 //   1. (the HTTP suite, supabase/tests/run-rls-tests.sh) a hand-crafted
-//      `GET /rest/v1/network_profiles?select=*` for a non-owning caller
-//      returns every masked column POPULATED -- and that is EXPECTED AND
-//      CORRECT, because the base table is deliberately readable and the view
-//      is the mask (20260904003000's own comment on
-//      `network_profiles_select_published_directory`). That assertion exists
-//      to keep the design intent on permanent record.
-//   2. (THIS FILE) the one that matters: no application code path reachable
-//      from Task 3's read surface selects from `public.network_profiles` for
-//      a foreign organisation. Because assertion #1 is true, this is the ONLY
-//      thing standing between "the base table is readable by design" and "the
-//      base table is readable by an application bug".
+//      `GET /rest/v1/network_profiles?select=*` for a non-owning caller.
+//      Until Phase 10 Task 19 it returned every masked column POPULATED, "by
+//      design"; that was Task 2 finding F1 (Critical), and since
+//      20261103000000 it returns [] (LEAKAGE #1a).
+//   2. (THIS FILE) no application code path reachable from Task 3's read
+//      surface selects from `public.network_profiles` for a foreign
+//      organisation. Since F1 such a read would return nothing rather than
+//      leak, so this now guards a broken page, not a breach.
 //
 // ===========================================================================
 // WHY THIS IS SOURCE-ONLY, AND WHY THAT IS NOT A LESSER VERSION OF THE SAME

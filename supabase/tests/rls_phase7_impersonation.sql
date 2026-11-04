@@ -197,6 +197,10 @@ select imp.val('IP4 the time-box is 60 minutes (bound to IMPERSONATION_TIME_BOX_
 set role authenticated;
 set request.jwt.claims = :'super_c';
 
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'super_c') \g /dev/null
 select public.request_impersonation('org-alpha', 'ticket 9001: customer reports a missing event') as s1 \gset
 
 select imp.val('IR0 CONTROL: the request created exactly one row, visible to its superuser',
@@ -589,6 +593,54 @@ begin
     'IM2 the impersonated organisation is in full_scope_organisations() (Q97 -- otherwise every list is empty)',
     'true', v_full::text);
 end $$;
+
+-- IM3/IM4: THE SERVER-ONLY REQUEST MARK (Phase 10 Task 5, G14). An
+-- impersonation session grants its target only to a request the app's own
+-- server made: api_hooks.pre_request() sets `getsetpaid.from_server` when the
+-- request carries the server's secret, and impersonated_organisations() reads
+-- it through private.request_is_from_server(). The runner starts every psql
+-- session with the mark ON (it stands in for the server, as every assertion
+-- above was written to), so IM3 turns it OFF -- the impersonator's browser
+-- aimed straight at PostgREST -- and IM4 is the same session with it back.
+set role authenticated;
+set request.jwt.claims = :'super_c';
+set getsetpaid.from_server = 'off';
+select imp.val('IM3 a LIVE session WITHOUT the server mark reads 0 ALPHA contacts (G14: direct reads see nothing)',
+  format($$select count(*)::text from public.contacts where organisation_id=%L$$, :'alpha_org'), '0');
+reset getsetpaid.from_server;
+select imp.val('IM4 CONTROL: the same session WITH the mark reads ALPHA''s contacts',
+  format($$select (count(*) > 0)::text from public.contacts where organisation_id=%L$$, :'alpha_org'), 'true');
+reset role; reset request.jwt.claims;
+
+-- IM5/IM6: THE DIGEST COMPARISON ITSELF (Phase 10 Task 5 review I1). IM3/IM4
+-- set the flag by hand; these call the hook the way PostgREST does, with the
+-- RIGHT header (the runner's :server_mark, read from .env.example), so the
+-- comparison against Vault is what decides. IM6 deletes the digest inside a
+-- rolled-back transaction: no Vault entry must mean no mark, even for the right
+-- secret. A hook that only asked "is the header present?" passes IM5 and fails
+-- IM6. Each answer is read into a psql variable before its rollback, which
+-- would otherwise take the record() row with it.
+\o /dev/null
+begin;
+select pg_catalog.set_config('request.headers',
+         pg_catalog.json_build_object('x-getsetpaid-server', :'server_mark')::text, true);
+select api_hooks.pre_request();
+select private.request_is_from_server()::text as im5_marked \gset
+rollback;
+begin;
+delete from vault.secrets where name = 'server_request_mark_digest';
+select pg_catalog.set_config('request.headers',
+         pg_catalog.json_build_object('x-getsetpaid-server', :'server_mark')::text, true);
+select api_hooks.pre_request();
+select private.request_is_from_server()::text as im6_marked \gset
+rollback;
+\o
+select imp.record('IM5 CONTROL: the hook, given the right header with the digest in Vault, marks the request',
+  'true', :'im5_marked');
+select imp.record('IM6 the same header with NO digest in Vault does not mark it (fails closed on the comparison)',
+  'false', :'im6_marked');
+select imp.val('IM6b ...and the rollback restored the digest',
+  $$select count(*)::text from vault.secrets where name = 'server_request_mark_digest'$$, '1');
 
 -- ===========================================================================
 -- § ID  A DECLINED REQUEST GRANTS NOTHING, EVER

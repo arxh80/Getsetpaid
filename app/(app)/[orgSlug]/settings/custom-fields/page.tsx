@@ -7,6 +7,7 @@ import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import {
   loadCustomFieldCounts,
   loadCustomFieldDefinitions,
+  TOO_MANY_CUSTOM_FIELDS_MESSAGE,
 } from "@/lib/crm/custom-field-queries";
 import {
   CUSTOM_FIELD_ENTITY_TYPES,
@@ -125,8 +126,9 @@ export default async function CustomFieldsSettingsPage({
       <div className="flex flex-col gap-8">
         {heading}
         <Alert tone="error">
-          We couldn’t load this workspace’s custom fields just now. Refresh the
-          page to try again — nothing has been changed.
+          {definitions.outcome === "unavailable" && definitions.reason === "too_many"
+            ? TOO_MANY_CUSTOM_FIELDS_MESSAGE
+            : "We couldn’t load this workspace’s custom fields just now. Refresh the page to try again — nothing has been changed."}
         </Alert>
       </div>
     );

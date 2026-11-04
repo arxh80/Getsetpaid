@@ -447,11 +447,11 @@ const TABLES_WITHOUT_SOFT_DELETE = new Set([
  *      tests/integration/list/soft-delete-tables-match-db.test.ts asserts that
  *      every relation named here genuinely HAS NO SUCH COLUMN. Adding
  *      `contacts` is red on the next run, before it is a breakout.
- *   3. RLS IS UNAFFECTED. Dropping the client-side predicate does not widen
- *      what the caller may read by one row: `network_directory` is
- *      `security_invoker`, so its rows are exactly what
- *      `network_profiles_select_published_directory` permits -- published,
- *      live, and only to an active member of some organisation.
+ *   3. THE DATABASE IS UNAFFECTED. Dropping the client-side predicate does
+ *      not widen what the caller may read by one row: `network_directory`'s
+ *      own WHERE clause is its row gate (a definer view since Phase 10 Task
+ *      19, F1) -- published, live, and only to an active member of some
+ *      organisation (`private.network_profile_reaches_caller`).
  */
 // ADDED BY PHASE 6 TASK 4, FOR A DIFFERENT REASON THAN network_directory'S.
 // `public.network_connection_requests` is BI-TENANT (Q83): it carries TWO

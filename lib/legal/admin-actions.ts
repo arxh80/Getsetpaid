@@ -18,10 +18,12 @@
 //   3. A sentence per refusal, and revalidatePath.
 
 import { revalidatePath } from "next/cache";
+import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
-import { authoriseSuperuser } from "@/lib/admin/superuser-gate";
+import { isSuperuser } from "@/lib/admin/superuser";
 import { isLegalSlug, legalDocumentHref, type LegalSlug } from "./documents";
 import { validateDraft } from "./draft-validation";
 
@@ -93,13 +95,13 @@ async function authorise(
   formData: FormData,
   { stepUp }: { stepUp: boolean },
 ): Promise<{ readonly ok: true; readonly slug: LegalSlug } | { readonly ok: false; readonly state: FormState }> {
-  const refusal = await authoriseSuperuser(formData, {
-    notSuperuser: NOT_ALLOWED,
-    stepUp: stepUp ? STEP_UP_REQUIRED : null,
-  });
-  if (refusal) return { ok: false, state: refusal };
+  if (!(await getCurrentUser())) return { ok: false, state: refuse(FAILED_MESSAGE, formData) };
+  if (!(await isSuperuser())) return { ok: false, state: refuse(NOT_ALLOWED, formData) };
   const slug = field(formData, "slug");
   if (!isLegalSlug(slug)) return { ok: false, state: refuse(NOT_ALLOWED, formData) };
+  if (stepUp && (!(await checkStepUp()) || !(await mintStepUpToken("legal_document")))) {
+    return { ok: false, state: refuse(STEP_UP_REQUIRED, formData) };
+  }
   return { ok: true, slug };
 }
 

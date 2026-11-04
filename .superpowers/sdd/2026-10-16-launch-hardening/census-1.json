@@ -1,0 +1,3211 @@
+{
+  "routes": [
+    {
+      "url": "/account/data-requests",
+      "file": "app/(app)/account/data-requests/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/account/erase",
+      "file": "app/(app)/account/erase/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/account/exports",
+      "file": "app/(app)/account/exports/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/account/privacy",
+      "file": "app/(app)/account/privacy/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/invites",
+      "file": "app/(app)/invites/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/onboarding",
+      "file": "app/(app)/onboarding/page.tsx",
+      "axe": "by tail"
+    },
+    {
+      "url": "/super/audit-log",
+      "file": "app/(app)/super/audit-log/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/super/billing",
+      "file": "app/(app)/super/billing/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/super/closures",
+      "file": "app/(app)/super/closures/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/super/data-requests",
+      "file": "app/(app)/super/data-requests/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/super/feedback",
+      "file": "app/(app)/super/feedback/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/super/health",
+      "file": "app/(app)/super/health/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/super/impersonation",
+      "file": "app/(app)/super/impersonation/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/super/legal",
+      "file": "app/(app)/super/legal/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/super/organisations",
+      "file": "app/(app)/super/organisations/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/super",
+      "file": "app/(app)/super/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/super/[...unknown]",
+      "file": "app/(app)/super/[...unknown]/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/agencies/deleted",
+      "file": "app/(app)/[orgSlug]/agencies/deleted/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/agencies/new",
+      "file": "app/(app)/[orgSlug]/agencies/new/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/agencies",
+      "file": "app/(app)/[orgSlug]/agencies/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/agencies/[agencyId]/edit",
+      "file": "app/(app)/[orgSlug]/agencies/[agencyId]/edit/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/agencies/[agencyId]",
+      "file": "app/(app)/[orgSlug]/agencies/[agencyId]/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/artists/deleted",
+      "file": "app/(app)/[orgSlug]/artists/deleted/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/artists/new",
+      "file": "app/(app)/[orgSlug]/artists/new/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/artists",
+      "file": "app/(app)/[orgSlug]/artists/page.tsx",
+      "axe": "by tail"
+    },
+    {
+      "url": "/[orgSlug]/artists/[artistId]/edit",
+      "file": "app/(app)/[orgSlug]/artists/[artistId]/edit/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/artists/[artistId]",
+      "file": "app/(app)/[orgSlug]/artists/[artistId]/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/companies/deleted",
+      "file": "app/(app)/[orgSlug]/companies/deleted/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/companies/new",
+      "file": "app/(app)/[orgSlug]/companies/new/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/companies",
+      "file": "app/(app)/[orgSlug]/companies/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/companies/[companyId]/edit",
+      "file": "app/(app)/[orgSlug]/companies/[companyId]/edit/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/companies/[companyId]",
+      "file": "app/(app)/[orgSlug]/companies/[companyId]/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/contacts/deleted",
+      "file": "app/(app)/[orgSlug]/contacts/deleted/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/contacts/new",
+      "file": "app/(app)/[orgSlug]/contacts/new/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/contacts",
+      "file": "app/(app)/[orgSlug]/contacts/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/contacts/[contactId]/edit",
+      "file": "app/(app)/[orgSlug]/contacts/[contactId]/edit/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/contacts/[contactId]",
+      "file": "app/(app)/[orgSlug]/contacts/[contactId]/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/documents/deleted",
+      "file": "app/(app)/[orgSlug]/documents/deleted/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/documents",
+      "file": "app/(app)/[orgSlug]/documents/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/duplicates",
+      "file": "app/(app)/[orgSlug]/duplicates/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/duplicates/resolved",
+      "file": "app/(app)/[orgSlug]/duplicates/resolved/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/duplicates/[candidateId]",
+      "file": "app/(app)/[orgSlug]/duplicates/[candidateId]/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/events/deleted",
+      "file": "app/(app)/[orgSlug]/events/deleted/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/events/new",
+      "file": "app/(app)/[orgSlug]/events/new/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/events",
+      "file": "app/(app)/[orgSlug]/events/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/events/[eventId]/edit",
+      "file": "app/(app)/[orgSlug]/events/[eventId]/edit/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/events/[eventId]",
+      "file": "app/(app)/[orgSlug]/events/[eventId]/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/meetings/deleted",
+      "file": "app/(app)/[orgSlug]/meetings/deleted/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/meetings/new",
+      "file": "app/(app)/[orgSlug]/meetings/new/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/meetings",
+      "file": "app/(app)/[orgSlug]/meetings/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/meetings/[meetingId]/edit",
+      "file": "app/(app)/[orgSlug]/meetings/[meetingId]/edit/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/meetings/[meetingId]",
+      "file": "app/(app)/[orgSlug]/meetings/[meetingId]/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/members",
+      "file": "app/(app)/[orgSlug]/members/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/merges",
+      "file": "app/(app)/[orgSlug]/merges/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/network/links",
+      "file": "app/(app)/[orgSlug]/network/links/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/network",
+      "file": "app/(app)/[orgSlug]/network/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/network/profiles",
+      "file": "app/(app)/[orgSlug]/network/profiles/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/network/profiles/[profileId]",
+      "file": "app/(app)/[orgSlug]/network/profiles/[profileId]/page.tsx",
+      "axe": "by tail"
+    },
+    {
+      "url": "/[orgSlug]/network/requests",
+      "file": "app/(app)/[orgSlug]/network/requests/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/network/[profileId]",
+      "file": "app/(app)/[orgSlug]/network/[profileId]/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/notes/deleted",
+      "file": "app/(app)/[orgSlug]/notes/deleted/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/notes/new",
+      "file": "app/(app)/[orgSlug]/notes/new/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/notes",
+      "file": "app/(app)/[orgSlug]/notes/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/notes/[noteId]/edit",
+      "file": "app/(app)/[orgSlug]/notes/[noteId]/edit/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/notes/[noteId]",
+      "file": "app/(app)/[orgSlug]/notes/[noteId]/page.tsx",
+      "axe": "by tail"
+    },
+    {
+      "url": "/[orgSlug]",
+      "file": "app/(app)/[orgSlug]/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/settings/custom-fields",
+      "file": "app/(app)/[orgSlug]/settings/custom-fields/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/settings/export",
+      "file": "app/(app)/[orgSlug]/settings/export/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/support-access",
+      "file": "app/(app)/[orgSlug]/support-access/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/tasks/deleted",
+      "file": "app/(app)/[orgSlug]/tasks/deleted/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/tasks/new",
+      "file": "app/(app)/[orgSlug]/tasks/new/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/tasks",
+      "file": "app/(app)/[orgSlug]/tasks/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/tasks/[taskId]/edit",
+      "file": "app/(app)/[orgSlug]/tasks/[taskId]/edit/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/tasks/[taskId]",
+      "file": "app/(app)/[orgSlug]/tasks/[taskId]/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/venues/deleted",
+      "file": "app/(app)/[orgSlug]/venues/deleted/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/venues/new",
+      "file": "app/(app)/[orgSlug]/venues/new/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/venues",
+      "file": "app/(app)/[orgSlug]/venues/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/[orgSlug]/venues/[venueId]/edit",
+      "file": "app/(app)/[orgSlug]/venues/[venueId]/edit/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/[orgSlug]/venues/[venueId]",
+      "file": "app/(app)/[orgSlug]/venues/[venueId]/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/login",
+      "file": "app/(auth)/login/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/magic-link",
+      "file": "app/(auth)/magic-link/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/magic-link/sent",
+      "file": "app/(auth)/magic-link/sent/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/signup/check-email",
+      "file": "app/(auth)/signup/check-email/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/signup",
+      "file": "app/(auth)/signup/page.tsx",
+      "axe": "none"
+    },
+    {
+      "url": "/legal",
+      "file": "app/legal/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/legal/[slug]",
+      "file": "app/legal/[slug]/page.tsx",
+      "axe": "exact"
+    },
+    {
+      "url": "/page.tsx",
+      "file": "app/page.tsx",
+      "axe": "by tail"
+    }
+  ],
+  "lists": [
+    {
+      "file": "lib/admin/audit-log.ts",
+      "line": 349,
+      "table": "audit_events"
+    },
+    {
+      "file": "lib/admin/health.ts",
+      "line": 542,
+      "table": "incident_alerts"
+    },
+    {
+      "file": "lib/admin/health.ts",
+      "line": 620,
+      "table": "organisations"
+    },
+    {
+      "file": "lib/admin/overrides-list.ts",
+      "line": 74,
+      "table": "organisations"
+    },
+    {
+      "file": "lib/auth/index.ts",
+      "line": 186,
+      "table": "organisation_memberships"
+    },
+    {
+      "file": "lib/auth/mfa-gate.ts",
+      "line": 204,
+      "table": "organisation_memberships"
+    },
+    {
+      "file": "lib/crm/custom-field-queries.ts",
+      "line": 109,
+      "table": "custom_field_definitions"
+    },
+    {
+      "file": "lib/crm/custom-field-queries.ts",
+      "line": 157,
+      "table": "custom_field_definitions"
+    },
+    {
+      "file": "lib/crm/custom-field-queries.ts",
+      "line": 215,
+      "table": "custom_field_values"
+    },
+    {
+      "file": "lib/crm/custom-field-queries.ts",
+      "line": 298,
+      "table": "custom_field_values"
+    },
+    {
+      "file": "lib/crm/dedup.ts",
+      "line": 542,
+      "table": "custom_field_values"
+    },
+    {
+      "file": "lib/crm/dedup.ts",
+      "line": 548,
+      "table": "custom_field_definitions"
+    },
+    {
+      "file": "lib/crm/queries.ts",
+      "line": 323,
+      "table": "contact_companies"
+    },
+    {
+      "file": "lib/crm/queries.ts",
+      "line": 355,
+      "table": "contact_companies"
+    },
+    {
+      "file": "lib/crm/queries.ts",
+      "line": 903,
+      "table": "artist_representations"
+    },
+    {
+      "file": "lib/crm/queries.ts",
+      "line": 946,
+      "table": "artist_representations"
+    },
+    {
+      "file": "lib/crm/queries.ts",
+      "line": 1006,
+      "table": "venue_rooms"
+    },
+    {
+      "file": "lib/crm/queries.ts",
+      "line": 1090,
+      "table": "venues"
+    },
+    {
+      "file": "lib/crm/queries.ts",
+      "line": 1571,
+      "table": "event_lineup"
+    },
+    {
+      "file": "lib/crm/queries.ts",
+      "line": 1606,
+      "table": "artists"
+    },
+    {
+      "file": "lib/crm/queries.ts",
+      "line": 1798,
+      "table": "event_lineup"
+    },
+    {
+      "file": "lib/crm/queries.ts",
+      "line": 2444,
+      "table": "profiles"
+    },
+    {
+      "file": "lib/dsr/queue.ts",
+      "line": 172,
+      "table": "data_subject_requests"
+    },
+    {
+      "file": "lib/feedback/list.ts",
+      "line": 221,
+      "table": "feedback"
+    },
+    {
+      "file": "lib/feedback/list.ts",
+      "line": 270,
+      "table": "organisations"
+    },
+    {
+      "file": "lib/legal/published.ts",
+      "line": 57,
+      "table": "legal_documents"
+    },
+    {
+      "file": "lib/network/discovery.ts",
+      "line": 233,
+      "table": "network_connected_profiles"
+    },
+    {
+      "file": "lib/network/discovery.ts",
+      "line": 254,
+      "table": "network_directory"
+    },
+    {
+      "file": "lib/network/entities.ts",
+      "line": 75,
+      "table": "network_profiles"
+    },
+    {
+      "file": "lib/network/entities.ts",
+      "line": 272,
+      "table": "network_profiles"
+    },
+    {
+      "file": "app/(app)/[orgSlug]/members/page.tsx",
+      "line": 192,
+      "table": "organisation_memberships"
+    },
+    {
+      "file": "app/(app)/[orgSlug]/members/page.tsx",
+      "line": 238,
+      "table": "profiles"
+    }
+  ],
+  "rateLimits": [
+    {
+      "key": "account_erasure",
+      "tests": [
+        "tests/e2e/support/fixtures.ts",
+        "supabase/tests/mutations/12a-erasure-last-owner-guard.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_erasure.sql"
+      ]
+    },
+    {
+      "key": "account_export",
+      "tests": [
+        "tests/e2e/support/fixtures.ts",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_exports.sql"
+      ]
+    },
+    {
+      "key": "exports",
+      "tests": [
+        "tests/e2e/closure-backup-parts.spec.ts",
+        "tests/e2e/exports.spec.ts",
+        "tests/e2e/network-leakage.spec.ts",
+        "tests/e2e/phase8-refusal-parity.spec.ts",
+        "tests/e2e/super-permissions.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/email/requester-notifications.test.ts",
+        "tests/integration/erasure/runner.test.ts",
+        "tests/integration/export/closure-parts.test.ts",
+        "tests/integration/export/excluded-tables-match-db.test.ts",
+        "tests/integration/export/export-bucket-functions-census.test.ts",
+        "tests/integration/export/limits-match-db.test.ts",
+        "tests/integration/export/runner.test.ts",
+        "tests/integration/network/network-access-matches-db.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/support/catalogue-census.ts",
+        "tests/unit/crm/source-shape.test.ts",
+        "tests/unit/email/delivery-route.test.ts",
+        "tests/unit/email/requester-notifications.test.ts",
+        "tests/unit/email/requester-templates.test.ts",
+        "tests/unit/erasure/failure-sentence.test.ts",
+        "tests/unit/export/download-part-guard.test.ts",
+        "tests/unit/export/export-bucket-removal-census.test.ts",
+        "tests/unit/export/parts-contract.test.ts",
+        "tests/unit/forms/use-server-exports-census.test.ts",
+        "tests/unit/legal/storage-scanner.ts",
+        "tests/unit/security/public-paths.test.ts",
+        "tests/unit/security/rate-limit.test.ts",
+        "supabase/tests/mutations/10-export-download-authorisation.sql",
+        "supabase/tests/mutations/13-tombstone-rewrite-deletes.sql",
+        "supabase/tests/mutations/21c-manifest-orphans-ignore-parts.sql",
+        "supabase/tests/mutations/21d-manifest-parts-never-expire.sql",
+        "supabase/tests/mutations/21e-manifest-keeps-failed-parts.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/rls_phase9_integrations.sql",
+        "supabase/tests/rls_q228_closure_backup_parts.sql",
+        "supabase/tests/run-rls-tests.sh"
+      ]
+    },
+    {
+      "key": "repeated_login_failures",
+      "tests": [
+        "supabase/tests/rls_phase7_rate_limits.sql"
+      ]
+    },
+    {
+      "key": "pg_cron",
+      "tests": [
+        "supabase/tests/retention_concurrency_probe.sh",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_retention.sql"
+      ]
+    },
+    {
+      "key": "service_role",
+      "tests": [
+        "tests/e2e/super-permissions.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/admin/crm-audit-coverage-census.test.ts",
+        "tests/integration/email/connection-reminder-notifications.test.ts",
+        "tests/integration/email/notice-queue-fairness.test.ts",
+        "tests/integration/email/requester-notifications.test.ts",
+        "tests/integration/email/workspace-closure-notifications.test.ts",
+        "tests/integration/rls/rls.test.ts",
+        "tests/integration/rls/support/fixtures.ts",
+        "tests/integration/security/feedback-budget.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/support/catalogue-census.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "tests/unit/email/service-client-census.test.ts",
+        "tests/unit/security/storage-client-census.test.ts",
+        "supabase/tests/file_access_phase4.sql",
+        "supabase/tests/mutations/07a-dsr-who-withdraw-leg.sql",
+        "supabase/tests/mutations/07b-dsr-who-operator-leg.sql",
+        "supabase/tests/mutations/09b-fulfilment-seam-server-only.sql",
+        "supabase/tests/mutations/20g-lifecycle-guard-open.sql",
+        "supabase/tests/mutations/21c-manifest-orphans-ignore-parts.sql",
+        "supabase/tests/mutations/21d-manifest-parts-never-expire.sql",
+        "supabase/tests/mutations/21e-manifest-keeps-failed-parts.sql",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_foundation.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase3_events.sql",
+        "supabase/tests/rls_phase4_operations.sql",
+        "supabase/tests/rls_phase5_finance.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_crm_audit.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_impersonation.sql",
+        "supabase/tests/rls_phase7_lifecycle.sql",
+        "supabase/tests/rls_phase7_overrides.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_legal.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_permissions.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/rls_phase9_integrations.sql",
+        "supabase/tests/rls_q228_closure_backup_parts.sql",
+        "supabase/tests/run-rls-tests.sh",
+        "supabase/tests/schema_invariants.sql"
+      ]
+    },
+    {
+      "key": "sign_in_sign_ups",
+      "tests": []
+    },
+    {
+      "key": "hint",
+      "tests": [
+        "tests/e2e/platform-health.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/legal/consents.test.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/integration/security/feedback-budget.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/unit/consent/catalogue.test.ts",
+        "tests/unit/consent/set-marketing-consent-action.test.ts",
+        "tests/unit/erasure/failure-sentence.test.ts",
+        "tests/unit/erasure/hint-roll.ts",
+        "tests/unit/export/parts-contract.test.ts",
+        "tests/unit/feedback/submit-action-budget.test.ts",
+        "tests/unit/list/fetch-list-page.test.ts",
+        "tests/unit/org/close-workspace-action.test.ts",
+        "tests/unit/security/rate-limit.test.ts",
+        "supabase/tests/lifecycle_concurrency_probe.sh",
+        "supabase/tests/mutations/04a-consent-attribution-trusts-client.sql",
+        "supabase/tests/mutations/04b-consent-attribution-sessionless.sql",
+        "supabase/tests/mutations/05a-dsr-attribution-trusts-client.sql",
+        "supabase/tests/mutations/05b-dsr-attribution-sessionless.sql",
+        "supabase/tests/mutations/05c-dsr-attribution-trusts-valid-client.sql",
+        "supabase/tests/mutations/07a-dsr-who-withdraw-leg.sql",
+        "supabase/tests/mutations/07b-dsr-who-operator-leg.sql",
+        "supabase/tests/mutations/09b-fulfilment-seam-server-only.sql",
+        "supabase/tests/mutations/10-export-download-authorisation.sql",
+        "supabase/tests/mutations/12a-erasure-last-owner-guard.sql",
+        "supabase/tests/mutations/12b-membership-keeps-an-owner.sql",
+        "supabase/tests/mutations/13-tombstone-rewrite-deletes.sql",
+        "supabase/tests/mutations/14-retention-audit-floor.sql",
+        "supabase/tests/mutations/16-retention-rpc-ignores-enabled.sql",
+        "supabase/tests/mutations/17a-ceiling-release-no-superuser-check.sql",
+        "supabase/tests/mutations/17b-ceiling-release-no-aal2.sql",
+        "supabase/tests/mutations/17c-ceiling-release-no-reason-check.sql",
+        "supabase/tests/mutations/17e-purge-ignores-release.sql",
+        "supabase/tests/mutations/17f-release-lifts-the-floor.sql",
+        "supabase/tests/mutations/17g-ceiling-release-thirty-days.sql",
+        "supabase/tests/mutations/17h-ceiling-release-can-be-extended.sql",
+        "supabase/tests/mutations/20a-close-no-owner-check.sql",
+        "supabase/tests/mutations/20b-close-no-aal2.sql",
+        "supabase/tests/mutations/20c-close-no-confirmation.sql",
+        "supabase/tests/mutations/20d-close-no-reason-check.sql",
+        "supabase/tests/mutations/20e-close-leaves-workspace-writable.sql",
+        "supabase/tests/mutations/20g-lifecycle-guard-open.sql",
+        "supabase/tests/mutations/21c-manifest-orphans-ignore-parts.sql",
+        "supabase/tests/mutations/21d-manifest-parts-never-expire.sql",
+        "supabase/tests/mutations/21e-manifest-keeps-failed-parts.sql",
+        "supabase/tests/mutations/21f-download-audit-no-part-check.sql",
+        "supabase/tests/rls_foundation.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_lifecycle.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/rls_phase9_integrations.sql",
+        "supabase/tests/rls_q228_closure_backup_parts.sql",
+        "supabase/tests/run-rls-tests.sh"
+      ]
+    },
+    {
+      "key": "export_organisation_data",
+      "tests": [
+        "tests/e2e/exports.spec.ts",
+        "tests/e2e/phase8-refusal-parity.spec.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase8_exports.sql"
+      ]
+    },
+    {
+      "key": "network_directory",
+      "tests": [
+        "tests/e2e/tenant-breakout.spec.ts",
+        "tests/integration/list/soft-delete-tables-match-db.test.ts",
+        "tests/integration/network/directory-list-page.test.ts",
+        "tests/integration/network/discovery.test.ts",
+        "tests/integration/network/field-vocabulary-matches-db.test.ts",
+        "tests/integration/network/publish-editor-flow.test.ts",
+        "tests/integration/network/task4-connections-and-links.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "tests/unit/list/fetch-list-page.test.ts",
+        "tests/unit/network/discovery-source-shape.test.ts",
+        "tests/unit/network/no-private-table-in-network-path.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/run-rls-tests.sh"
+      ]
+    },
+    {
+      "key": "documents",
+      "tests": [
+        "tests/e2e/accessibility.spec.ts",
+        "tests/e2e/documents.spec.ts",
+        "tests/e2e/impersonation.spec.ts",
+        "tests/e2e/legal.spec.ts",
+        "tests/e2e/network-leakage.spec.ts",
+        "tests/e2e/network-profile-editor.spec.ts",
+        "tests/e2e/network.spec.ts",
+        "tests/e2e/operations.spec.ts",
+        "tests/e2e/overrides.spec.ts",
+        "tests/e2e/phase8-refusal-parity.spec.ts",
+        "tests/e2e/platform-health.spec.ts",
+        "tests/e2e/storage-census.spec.ts",
+        "tests/e2e/super-permissions.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/e2e/tenant-breakout.spec.ts",
+        "tests/integration/admin/crm-audit-coverage-census.test.ts",
+        "tests/integration/crm/operations-vocabularies-match-db.test.ts",
+        "tests/integration/documents/restore-purged.test.ts",
+        "tests/integration/documents/upload-rate-limit.test.ts",
+        "tests/integration/documents/upload-scan-download.test.ts",
+        "tests/integration/export/closure-parts.test.ts",
+        "tests/integration/export/completeness-census.test.ts",
+        "tests/integration/export/runner.test.ts",
+        "tests/integration/legal/consents.test.ts",
+        "tests/integration/legal/legal-documents.test.ts",
+        "tests/integration/mfa/mfa-lifecycle.test.ts",
+        "tests/integration/network/publish-editor-flow.test.ts",
+        "tests/integration/network/task4-connections-and-links.test.ts",
+        "tests/integration/retention/runner.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/support/catalogue-census.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "tests/unit/consent/catalogue.test.ts",
+        "tests/unit/crm/documents-list.test.ts",
+        "tests/unit/crm/storage-keys.test.ts",
+        "tests/unit/crm/task-status.test.ts",
+        "tests/unit/design/absent-renders-identically.test.tsx",
+        "tests/unit/design/one-absent.test.ts",
+        "tests/unit/export/export-bucket-removal-census.test.ts",
+        "tests/unit/export/parts-contract.test.ts",
+        "tests/unit/export/zip.test.ts",
+        "tests/unit/feedback/contract.test.ts",
+        "tests/unit/forms/use-server-exports-census.test.ts",
+        "tests/unit/legal/markup-placement.test.ts",
+        "tests/unit/legal/seed-matches-catalogue.test.ts",
+        "tests/unit/list/one-cursor-only.test.ts",
+        "tests/unit/list/one-restore-queue.test.ts",
+        "tests/unit/network/no-private-table-in-network-path.test.ts",
+        "tests/unit/org/current-org-cookie.test.ts",
+        "tests/unit/palette/entities.test.ts",
+        "tests/unit/security/file-allowlist.test.ts",
+        "tests/unit/security/storage-client-census.test.ts",
+        "tests/unit/security/upload-limits.test.ts",
+        "supabase/tests/file_access_phase4.sql",
+        "supabase/tests/mutations/01-legal-immutability.sql",
+        "supabase/tests/mutations/02-legal-anon-column-grant.sql",
+        "supabase/tests/mutations/04a-consent-attribution-trusts-client.sql",
+        "supabase/tests/mutations/04b-consent-attribution-sessionless.sql",
+        "supabase/tests/mutations/15-02-crm-audit-documents.sql",
+        "supabase/tests/mutations/18a-purged-document-restorable.sql",
+        "supabase/tests/mutations/21c-manifest-orphans-ignore-parts.sql",
+        "supabase/tests/mutations/21d-manifest-parts-never-expire.sql",
+        "supabase/tests/mutations/21e-manifest-keeps-failed-parts.sql",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase4_operations.sql",
+        "supabase/tests/rls_phase7_crm_audit.sql",
+        "supabase/tests/rls_phase7_impersonation.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_legal.sql",
+        "supabase/tests/rls_phase8_permissions.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/run-rls-tests.sh",
+        "supabase/tests/schema_invariants.sql"
+      ]
+    },
+    {
+      "key": "feedback",
+      "tests": [
+        "tests/e2e/feedback.spec.ts",
+        "tests/e2e/impersonation.spec.ts",
+        "tests/e2e/platform-health.spec.ts",
+        "tests/e2e/super-permissions.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/admin/crm-audit-coverage-census.test.ts",
+        "tests/integration/erasure/runner.test.ts",
+        "tests/integration/export/completeness-census.test.ts",
+        "tests/integration/export/excluded-tables-match-db.test.ts",
+        "tests/integration/export/runner.test.ts",
+        "tests/integration/retention/runner.test.ts",
+        "tests/integration/rls/retention-matches-db.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak.test.ts",
+        "tests/integration/security/feedback-budget.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "tests/support/super-route-census.ts",
+        "tests/unit/consent/marketing-sender-census.test.ts",
+        "tests/unit/email/connection-reminder-notifications.test.ts",
+        "tests/unit/email/requester-notifications.test.ts",
+        "tests/unit/email/senders.test.ts",
+        "tests/unit/email/service-client-census.test.ts",
+        "tests/unit/email/templates.test.ts",
+        "tests/unit/email/workspace-closure-notifications.test.ts",
+        "tests/unit/export/export-bucket-removal-census.test.ts",
+        "tests/unit/export/parts-contract.test.ts",
+        "tests/unit/feedback/contract.test.ts",
+        "tests/unit/feedback/list-direction.test.ts",
+        "tests/unit/feedback/submit-action-budget.test.ts",
+        "tests/unit/forms/use-server-exports-census.test.ts",
+        "tests/unit/network/no-private-table-in-network-path.test.ts",
+        "tests/unit/security/rate-limit.test.ts",
+        "tests/unit/security/storage-client-census.test.ts",
+        "tests/unit/security/super-page-census.test.ts",
+        "tests/unit/security/upload-limits.test.ts",
+        "supabase/tests/mutations/04a-consent-attribution-trusts-client.sql",
+        "supabase/tests/mutations/04b-consent-attribution-sessionless.sql",
+        "supabase/tests/mutations/05a-dsr-attribution-trusts-client.sql",
+        "supabase/tests/mutations/05b-dsr-attribution-sessionless.sql",
+        "supabase/tests/mutations/05c-dsr-attribution-trusts-valid-client.sql",
+        "supabase/tests/mutations/13-tombstone-rewrite-deletes.sql",
+        "supabase/tests/mutations/21c-manifest-orphans-ignore-parts.sql",
+        "supabase/tests/mutations/21d-manifest-parts-never-expire.sql",
+        "supabase/tests/mutations/21e-manifest-keeps-failed-parts.sql",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase7_crm_audit.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/run-rls-tests.sh"
+      ]
+    },
+    {
+      "key": "manage_network_connections",
+      "tests": [
+        "tests/e2e/network-discovery.spec.ts",
+        "tests/e2e/network.spec.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql"
+      ]
+    },
+    {
+      "key": "rate_limit_tripped",
+      "tests": [
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/admin/incident-alert-vocabularies-match-db.test.ts",
+        "tests/integration/rls/rate-limits.test.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/integration/security/feedback-budget.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/unit/admin/incident-alerts.test.ts",
+        "tests/unit/email/senders.test.ts",
+        "tests/unit/email/templates.test.ts",
+        "tests/unit/telegram/incident-alert-payload.test.ts",
+        "supabase/tests/mutations/04a-consent-attribution-trusts-client.sql",
+        "supabase/tests/mutations/04b-consent-attribution-sessionless.sql",
+        "supabase/tests/mutations/05a-dsr-attribution-trusts-client.sql",
+        "supabase/tests/mutations/05b-dsr-attribution-sessionless.sql",
+        "supabase/tests/mutations/05c-dsr-attribution-trusts-valid-client.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_retention.sql"
+      ]
+    },
+    {
+      "key": "rate_limit_policies",
+      "tests": [
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/documents/upload-rate-limit.test.ts",
+        "tests/integration/export/completeness-census.test.ts",
+        "tests/integration/rls/rate-limits.test.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/integration/security/feedback-budget.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "supabase/tests/mutations/04a-consent-attribution-trusts-client.sql",
+        "supabase/tests/mutations/04b-consent-attribution-sessionless.sql",
+        "supabase/tests/mutations/05a-dsr-attribution-trusts-client.sql",
+        "supabase/tests/mutations/05b-dsr-attribution-sessionless.sql",
+        "supabase/tests/mutations/05c-dsr-attribution-trusts-valid-client.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql"
+      ]
+    },
+    {
+      "key": "authenticated",
+      "tests": [
+        "tests/e2e/audit-log.spec.ts",
+        "tests/e2e/data-requests.spec.ts",
+        "tests/e2e/documents.spec.ts",
+        "tests/e2e/impersonation.spec.ts",
+        "tests/e2e/network-leakage.spec.ts",
+        "tests/e2e/organisation-lifecycle.spec.ts",
+        "tests/e2e/overrides.spec.ts",
+        "tests/e2e/platform-health.spec.ts",
+        "tests/e2e/super-permissions.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/e2e/tenant-breakout.spec.ts",
+        "tests/integration/admin/crm-audit-coverage-census.test.ts",
+        "tests/integration/crm/crm-write-access-matches-db.test.ts",
+        "tests/integration/crm/event-finance-summary-rls.test.ts",
+        "tests/integration/crm/finance-access-matches-db.test.ts",
+        "tests/integration/crm/finance-custom-field-values-rls.test.ts",
+        "tests/integration/crm/permission-for-entity-matches-db.test.ts",
+        "tests/integration/entitlements/billing-override-matches-db.test.ts",
+        "tests/integration/entitlements/past-due-grace-matches-db.test.ts",
+        "tests/integration/export/closure-parts.test.ts",
+        "tests/integration/list/record-scope-matches-db.test.ts",
+        "tests/integration/list/soft-delete-tables-match-db.test.ts",
+        "tests/integration/mfa/mfa-lifecycle.test.ts",
+        "tests/integration/network/network-access-matches-db.test.ts",
+        "tests/integration/rls/impersonation-matches-db.test.ts",
+        "tests/integration/rls/rate-limits.test.ts",
+        "tests/integration/rls/rls.test.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak.test.ts",
+        "tests/integration/security/feedback-budget.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/support/catalogue-census.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "tests/unit/auth/mfa-gate.test.ts",
+        "tests/unit/auth/step-up.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "tests/unit/security/storage-client-census.test.ts",
+        "supabase/tests/erasure_concurrency_probe.sh",
+        "supabase/tests/file_access_phase4.sql",
+        "supabase/tests/lifecycle_concurrency_probe.sh",
+        "supabase/tests/mutations/08-dsr-operator-notes-boundary.sql",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_foundation.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase3_events.sql",
+        "supabase/tests/rls_phase4_operations.sql",
+        "supabase/tests/rls_phase5_finance.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_crm_audit.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_impersonation.sql",
+        "supabase/tests/rls_phase7_lifecycle.sql",
+        "supabase/tests/rls_phase7_overrides.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_legal.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_permissions.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/rls_phase9_integrations.sql",
+        "supabase/tests/rls_q228_closure_backup_parts.sql",
+        "supabase/tests/run-rls-tests.sh",
+        "supabase/tests/schema_invariants.sql"
+      ]
+    },
+    {
+      "key": "pg_depend",
+      "tests": [
+        "tests/unit/network/source-shape.test.ts",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/run-rls-tests.sh"
+      ]
+    },
+    {
+      "key": "display_name",
+      "tests": [
+        "tests/e2e/network-profile-editor.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/email/connection-reminder-notifications.test.ts",
+        "tests/integration/network/directory-list-page.test.ts",
+        "tests/integration/network/discovery.test.ts",
+        "tests/integration/network/field-vocabulary-matches-db.test.ts",
+        "tests/integration/network/publish-editor-flow.test.ts",
+        "tests/integration/network/task4-connections-and-links.test.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/unit/network/drift.test.ts",
+        "tests/unit/network/fields.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_lifecycle.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/run-rls-tests.sh"
+      ]
+    },
+    {
+      "key": "exists",
+      "tests": [
+        "tests/e2e/accessibility.spec.ts",
+        "tests/e2e/audit-log.spec.ts",
+        "tests/e2e/erasure.spec.ts",
+        "tests/e2e/events.spec.ts",
+        "tests/e2e/exports.spec.ts",
+        "tests/e2e/golden-path.spec.ts",
+        "tests/e2e/impersonation.spec.ts",
+        "tests/e2e/keyboard.spec.ts",
+        "tests/e2e/network-discovery.spec.ts",
+        "tests/e2e/network-leakage.spec.ts",
+        "tests/e2e/network.spec.ts",
+        "tests/e2e/organisation-lifecycle.spec.ts",
+        "tests/e2e/phase8-refusal-parity.spec.ts",
+        "tests/e2e/platform-health.spec.ts",
+        "tests/e2e/storage-census.spec.ts",
+        "tests/e2e/super-permissions.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/e2e/tenant-breakout.spec.ts",
+        "tests/integration/admin/audit-actions-match-db.test.ts",
+        "tests/integration/admin/crm-audit-coverage-census.test.ts",
+        "tests/integration/crm/custom-field-limit-matches-db.test.ts",
+        "tests/integration/crm/entity-dispatch-branches-match-db.test.ts",
+        "tests/integration/crm/event-vocabularies-match-db.test.ts",
+        "tests/integration/crm/finance-custom-field-values-rls.test.ts",
+        "tests/integration/crm/link-allowlist-matches-db.test.ts",
+        "tests/integration/crm/mergeable-columns-match-db.test.ts",
+        "tests/integration/email/notice-queue-fairness.test.ts",
+        "tests/integration/entitlements/billing-override-matches-db.test.ts",
+        "tests/integration/entitlements/past-due-grace-matches-db.test.ts",
+        "tests/integration/entitlements/tiers-match-db.test.ts",
+        "tests/integration/erasure/runner.test.ts",
+        "tests/integration/export/closure-parts.test.ts",
+        "tests/integration/export/completeness-census.test.ts",
+        "tests/integration/export/export-bucket-functions-census.test.ts",
+        "tests/integration/export/runner.test.ts",
+        "tests/integration/list/record-scope-matches-db.test.ts",
+        "tests/integration/list/soft-delete-tables-match-db.test.ts",
+        "tests/integration/mfa/aal-enforcement.test.ts",
+        "tests/integration/mfa/mfa-lifecycle.test.ts",
+        "tests/integration/network/discovery.test.ts",
+        "tests/integration/network/field-vocabulary-matches-db.test.ts",
+        "tests/integration/network/publish-editor-flow.test.ts",
+        "tests/integration/network/task4-connections-and-links.test.ts",
+        "tests/integration/retention/runner.test.ts",
+        "tests/integration/rls/impersonation-matches-db.test.ts",
+        "tests/integration/rls/lifecycle-matches-db.test.ts",
+        "tests/integration/rls/rls.test.ts",
+        "tests/integration/rls/support/fixtures.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/support/catalogue-census.ts",
+        "tests/integration/session/session-limits.test.ts",
+        "tests/support/super-route-census.ts",
+        "tests/unit/admin/audit-action-catalogue.test.ts",
+        "tests/unit/auth/idle-timeout.test.ts",
+        "tests/unit/auth/mfa-gate.test.ts",
+        "tests/unit/auth/step-up-gate.test.ts",
+        "tests/unit/auth/step-up.test.ts",
+        "tests/unit/consent/catalogue.test.ts",
+        "tests/unit/consent/marketing-sender-census.test.ts",
+        "tests/unit/crm/activity.test.ts",
+        "tests/unit/crm/custom-fields.test.ts",
+        "tests/unit/crm/documents-list.test.ts",
+        "tests/unit/crm/event-status.test.ts",
+        "tests/unit/crm/events-list.test.ts",
+        "tests/unit/crm/finance-summary.test.ts",
+        "tests/unit/crm/form-echo.test.ts",
+        "tests/unit/crm/lineup-list.test.ts",
+        "tests/unit/crm/merge-agreement.test.ts",
+        "tests/unit/crm/one-create-page.test.ts",
+        "tests/unit/crm/one-edit-page.test.ts",
+        "tests/unit/crm/source-shape.test.ts",
+        "tests/unit/crm/task-status.test.ts",
+        "tests/unit/crm/tasks-list.test.ts",
+        "tests/unit/crm/validate.test.ts",
+        "tests/unit/crm/write.test.ts",
+        "tests/unit/design/icon.test.ts",
+        "tests/unit/design/one-absent.test.ts",
+        "tests/unit/design/token-drift.test.ts",
+        "tests/unit/design/wordmark.test.ts",
+        "tests/unit/dsr/admin-actions.test.ts",
+        "tests/unit/email/delivery-route.test.ts",
+        "tests/unit/email/service-client-census.test.ts",
+        "tests/unit/entitlements/policy.test.ts",
+        "tests/unit/erasure/blocker-sentences.test.ts",
+        "tests/unit/erasure/hint-roll.ts",
+        "tests/unit/export/download-part-guard.test.ts",
+        "tests/unit/format/date.test.ts",
+        "tests/unit/legal/admin-actions-step-up.test.ts",
+        "tests/unit/legal/renderer.test.tsx",
+        "tests/unit/legal/storage-census.test.ts",
+        "tests/unit/legal/storage-scanner.ts",
+        "tests/unit/legal/sub-processors-drift.test.ts",
+        "tests/unit/list/fetch-list-page.test.ts",
+        "tests/unit/list/one-cursor-only.test.ts",
+        "tests/unit/list/one-entity-list.test.ts",
+        "tests/unit/list/one-restore-queue.test.ts",
+        "tests/unit/list/param-prefix.test.ts",
+        "tests/unit/network/access.test.ts",
+        "tests/unit/network/discovery-source-shape.test.ts",
+        "tests/unit/network/no-private-table-in-network-path.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "tests/unit/org/reserved-slugs.test.ts",
+        "tests/unit/security/migration-encoding.test.ts",
+        "tests/unit/security/rate-limit.test.ts",
+        "tests/unit/security/storage-client-census.test.ts",
+        "tests/unit/security/super-page-census.test.ts",
+        "tests/unit/security/upload-limits.test.ts",
+        "tests/unit/support/app-source.ts",
+        "tests/unit/support/sql-definitions.ts",
+        "supabase/tests/file_access_phase4.sql",
+        "supabase/tests/lifecycle_concurrency_probe.sh",
+        "supabase/tests/mutations/03-consents-append-only.sql",
+        "supabase/tests/mutations/04a-consent-attribution-trusts-client.sql",
+        "supabase/tests/mutations/04b-consent-attribution-sessionless.sql",
+        "supabase/tests/mutations/05a-dsr-attribution-trusts-client.sql",
+        "supabase/tests/mutations/05b-dsr-attribution-sessionless.sql",
+        "supabase/tests/mutations/05c-dsr-attribution-trusts-valid-client.sql",
+        "supabase/tests/mutations/07a-dsr-who-withdraw-leg.sql",
+        "supabase/tests/mutations/07b-dsr-who-operator-leg.sql",
+        "supabase/tests/mutations/09b-fulfilment-seam-server-only.sql",
+        "supabase/tests/mutations/10-export-download-authorisation.sql",
+        "supabase/tests/mutations/12b-membership-keeps-an-owner.sql",
+        "supabase/tests/mutations/13-tombstone-rewrite-deletes.sql",
+        "supabase/tests/mutations/15-01-crm-audit-document-links.sql",
+        "supabase/tests/mutations/15-02-crm-audit-documents.sql",
+        "supabase/tests/mutations/15-03-crm-audit-event-lineup.sql",
+        "supabase/tests/mutations/15-04-crm-audit-events.sql",
+        "supabase/tests/mutations/15-05-crm-audit-financial-entries.sql",
+        "supabase/tests/mutations/15-06-crm-audit-meeting-links.sql",
+        "supabase/tests/mutations/15-07-crm-audit-meetings.sql",
+        "supabase/tests/mutations/15-08-crm-audit-merge-candidates.sql",
+        "supabase/tests/mutations/15-09-crm-audit-network-links.sql",
+        "supabase/tests/mutations/15-10-crm-audit-network-profiles.sql",
+        "supabase/tests/mutations/15-11-crm-audit-note-links.sql",
+        "supabase/tests/mutations/15-12-crm-audit-notes.sql",
+        "supabase/tests/mutations/15-13-crm-audit-organisation-memberships.sql",
+        "supabase/tests/mutations/15-14-crm-audit-organisation-subscriptions.sql",
+        "supabase/tests/mutations/15-15-crm-audit-task-links.sql",
+        "supabase/tests/mutations/15-16-crm-audit-tasks.sql",
+        "supabase/tests/mutations/17b-ceiling-release-no-aal2.sql",
+        "supabase/tests/mutations/19a-release-bumps-switch-time.sql",
+        "supabase/tests/mutations/20a-close-no-owner-check.sql",
+        "supabase/tests/mutations/20b-close-no-aal2.sql",
+        "supabase/tests/mutations/20c-close-no-confirmation.sql",
+        "supabase/tests/mutations/20d-close-no-reason-check.sql",
+        "supabase/tests/mutations/20e-close-leaves-workspace-writable.sql",
+        "supabase/tests/mutations/21a-closure-hold-any-part-releases.sql",
+        "supabase/tests/mutations/21b-closure-hold-any-actor.sql",
+        "supabase/tests/mutations/21c-manifest-orphans-ignore-parts.sql",
+        "supabase/tests/mutations/21d-manifest-parts-never-expire.sql",
+        "supabase/tests/mutations/21e-manifest-keeps-failed-parts.sql",
+        "supabase/tests/mutations/21f-download-audit-no-part-check.sql",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_foundation.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase3_events.sql",
+        "supabase/tests/rls_phase4_operations.sql",
+        "supabase/tests/rls_phase5_finance.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_crm_audit.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_impersonation.sql",
+        "supabase/tests/rls_phase7_lifecycle.sql",
+        "supabase/tests/rls_phase7_overrides.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_legal.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_permissions.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/rls_phase9_integrations.sql",
+        "supabase/tests/rls_q228_closure_backup_parts.sql",
+        "supabase/tests/run-rls-tests.sh",
+        "supabase/tests/schema_invariants.sql"
+      ]
+    },
+    {
+      "key": "dsr_deadline_approaching",
+      "tests": [
+        "supabase/tests/rls_phase8_data_subject_requests.sql"
+      ]
+    },
+    {
+      "key": "dsr_overdue",
+      "tests": [
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql"
+      ]
+    },
+    {
+      "key": "notified_at",
+      "tests": [
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/email/requester-notifications.test.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/integration/security/feedback-budget.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "tests/unit/email/lockout-notification.test.ts",
+        "tests/unit/email/requester-notifications.test.ts",
+        "tests/unit/email/senders.test.ts",
+        "tests/unit/email/service-client-census.test.ts",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/run-rls-tests.sh"
+      ]
+    },
+    {
+      "key": "select",
+      "tests": [
+        "tests/e2e/accessibility.spec.ts",
+        "tests/e2e/events.spec.ts",
+        "tests/e2e/feedback.spec.ts",
+        "tests/e2e/finance.spec.ts",
+        "tests/e2e/golden-path.spec.ts",
+        "tests/e2e/impersonation.spec.ts",
+        "tests/e2e/network-connections.spec.ts",
+        "tests/e2e/network-leakage.spec.ts",
+        "tests/e2e/network-profile-editor.spec.ts",
+        "tests/e2e/network.spec.ts",
+        "tests/e2e/operations.spec.ts",
+        "tests/e2e/organisation-lifecycle.spec.ts",
+        "tests/e2e/overrides.spec.ts",
+        "tests/e2e/platform-health.spec.ts",
+        "tests/e2e/super-closures.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/e2e/tenant-breakout.spec.ts",
+        "tests/integration/admin/audit-actions-match-db.test.ts",
+        "tests/integration/admin/crm-audit-coverage-census.test.ts",
+        "tests/integration/admin/incident-alert-vocabularies-match-db.test.ts",
+        "tests/integration/crm/crm-write-access-matches-db.test.ts",
+        "tests/integration/crm/custom-field-entity-types-match-db.test.ts",
+        "tests/integration/crm/custom-field-limit-matches-db.test.ts",
+        "tests/integration/crm/entity-dispatch-branches-match-db.test.ts",
+        "tests/integration/crm/event-finance-summary-rls.test.ts",
+        "tests/integration/crm/event-vocabularies-match-db.test.ts",
+        "tests/integration/crm/finance-access-matches-db.test.ts",
+        "tests/integration/crm/finance-custom-field-values-rls.test.ts",
+        "tests/integration/crm/link-allowlist-matches-db.test.ts",
+        "tests/integration/crm/mergeable-columns-match-db.test.ts",
+        "tests/integration/crm/operations-vocabularies-match-db.test.ts",
+        "tests/integration/crm/permission-for-entity-matches-db.test.ts",
+        "tests/integration/documents/restore-purged.test.ts",
+        "tests/integration/documents/upload-rate-limit.test.ts",
+        "tests/integration/documents/upload-scan-download.test.ts",
+        "tests/integration/email/connection-reminder-notifications.test.ts",
+        "tests/integration/email/notice-queue-fairness.test.ts",
+        "tests/integration/email/requester-notifications.test.ts",
+        "tests/integration/email/workspace-closure-notifications.test.ts",
+        "tests/integration/entitlements/billing-override-matches-db.test.ts",
+        "tests/integration/entitlements/past-due-grace-matches-db.test.ts",
+        "tests/integration/entitlements/tiers-match-db.test.ts",
+        "tests/integration/erasure/runner.test.ts",
+        "tests/integration/export/closure-parts.test.ts",
+        "tests/integration/export/completeness-census.test.ts",
+        "tests/integration/export/excluded-tables-match-db.test.ts",
+        "tests/integration/export/export-bucket-functions-census.test.ts",
+        "tests/integration/export/limits-match-db.test.ts",
+        "tests/integration/export/runner.test.ts",
+        "tests/integration/legal/catalogue-bindings-match-db.test.ts",
+        "tests/integration/legal/consents.test.ts",
+        "tests/integration/legal/legal-documents.test.ts",
+        "tests/integration/list/record-scope-matches-db.test.ts",
+        "tests/integration/list/soft-delete-tables-match-db.test.ts",
+        "tests/integration/mfa/aal-enforcement.test.ts",
+        "tests/integration/mfa/mfa-lifecycle.test.ts",
+        "tests/integration/mfa/roles-match-db.test.ts",
+        "tests/integration/network/directory-list-page.test.ts",
+        "tests/integration/network/field-vocabulary-matches-db.test.ts",
+        "tests/integration/network/network-access-matches-db.test.ts",
+        "tests/integration/network/publish-editor-flow.test.ts",
+        "tests/integration/network/task4-connections-and-links.test.ts",
+        "tests/integration/retention/runner.test.ts",
+        "tests/integration/rls/impersonation-matches-db.test.ts",
+        "tests/integration/rls/lifecycle-matches-db.test.ts",
+        "tests/integration/rls/rate-limits.test.ts",
+        "tests/integration/rls/retention-matches-db.test.ts",
+        "tests/integration/rls/rls.test.ts",
+        "tests/integration/rls/support/fixtures.ts",
+        "tests/integration/security/close-workspace-action.test.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak.test.ts",
+        "tests/integration/security/feedback-budget.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/integration/security/support/catalogue-census.ts",
+        "tests/unit/consent/catalogue.test.ts",
+        "tests/unit/crm/custom-fields.test.ts",
+        "tests/unit/crm/documents-list.test.ts",
+        "tests/unit/crm/event-picker.test.ts",
+        "tests/unit/crm/events-list.test.ts",
+        "tests/unit/crm/finance-summary-outcome.test.ts",
+        "tests/unit/crm/form-echo.test.ts",
+        "tests/unit/crm/lineup-list.test.ts",
+        "tests/unit/crm/one-create-page.test.ts",
+        "tests/unit/crm/source-shape.test.ts",
+        "tests/unit/design/token-drift.test.ts",
+        "tests/unit/dsr/admin-actions.test.ts",
+        "tests/unit/dsr/contract.test.ts",
+        "tests/unit/email/requester-notifications.test.ts",
+        "tests/unit/email/senders.test.ts",
+        "tests/unit/email/service-client-census.test.ts",
+        "tests/unit/export/download-part-guard.test.ts",
+        "tests/unit/legal/seed-matches-catalogue.test.ts",
+        "tests/unit/list/fetch-list-page.test.ts",
+        "tests/unit/list/one-cursor-only.test.ts",
+        "tests/unit/list/params.test.ts",
+        "tests/unit/network/discovery-source-shape.test.ts",
+        "tests/unit/network/no-private-table-in-network-path.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "tests/unit/org/current-org-cookie.test.ts",
+        "tests/unit/palette/entities.test.ts",
+        "tests/unit/security/pg-catalog-constructs.test.ts",
+        "tests/unit/security/storage-client-census.test.ts",
+        "supabase/tests/erasure_concurrency_probe.sh",
+        "supabase/tests/file_access_phase4.sql",
+        "supabase/tests/lifecycle_concurrency_probe.sh",
+        "supabase/tests/mutations/00-control.sql",
+        "supabase/tests/mutations/02-legal-anon-column-grant.sql",
+        "supabase/tests/mutations/03-consents-append-only.sql",
+        "supabase/tests/mutations/04a-consent-attribution-trusts-client.sql",
+        "supabase/tests/mutations/04b-consent-attribution-sessionless.sql",
+        "supabase/tests/mutations/05a-dsr-attribution-trusts-client.sql",
+        "supabase/tests/mutations/05b-dsr-attribution-sessionless.sql",
+        "supabase/tests/mutations/05c-dsr-attribution-trusts-valid-client.sql",
+        "supabase/tests/mutations/06-dsr-transition-table.sql",
+        "supabase/tests/mutations/07a-dsr-who-withdraw-leg.sql",
+        "supabase/tests/mutations/07b-dsr-who-operator-leg.sql",
+        "supabase/tests/mutations/08-dsr-operator-notes-boundary.sql",
+        "supabase/tests/mutations/09a-fulfilment-seam-dormant.sql",
+        "supabase/tests/mutations/09b-fulfilment-seam-server-only.sql",
+        "supabase/tests/mutations/10-export-download-authorisation.sql",
+        "supabase/tests/mutations/12a-erasure-last-owner-guard.sql",
+        "supabase/tests/mutations/12b-membership-keeps-an-owner.sql",
+        "supabase/tests/mutations/13-tombstone-rewrite-deletes.sql",
+        "supabase/tests/mutations/14-retention-audit-floor.sql",
+        "supabase/tests/mutations/16-retention-rpc-ignores-enabled.sql",
+        "supabase/tests/mutations/17a-ceiling-release-no-superuser-check.sql",
+        "supabase/tests/mutations/17b-ceiling-release-no-aal2.sql",
+        "supabase/tests/mutations/17c-ceiling-release-no-reason-check.sql",
+        "supabase/tests/mutations/17d-ceiling-release-never-expires.sql",
+        "supabase/tests/mutations/17e-purge-ignores-release.sql",
+        "supabase/tests/mutations/17f-release-lifts-the-floor.sql",
+        "supabase/tests/mutations/17g-ceiling-release-thirty-days.sql",
+        "supabase/tests/mutations/17h-ceiling-release-can-be-extended.sql",
+        "supabase/tests/mutations/20a-close-no-owner-check.sql",
+        "supabase/tests/mutations/20b-close-no-aal2.sql",
+        "supabase/tests/mutations/20c-close-no-confirmation.sql",
+        "supabase/tests/mutations/20d-close-no-reason-check.sql",
+        "supabase/tests/mutations/20e-close-leaves-workspace-writable.sql",
+        "supabase/tests/mutations/20f-crm-writes-ignore-closure.sql",
+        "supabase/tests/mutations/21a-closure-hold-any-part-releases.sql",
+        "supabase/tests/mutations/21b-closure-hold-any-actor.sql",
+        "supabase/tests/mutations/21c-manifest-orphans-ignore-parts.sql",
+        "supabase/tests/mutations/21d-manifest-parts-never-expire.sql",
+        "supabase/tests/mutations/21e-manifest-keeps-failed-parts.sql",
+        "supabase/tests/mutations/21f-download-audit-no-part-check.sql",
+        "supabase/tests/mutations/run-mutation.sh",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/retention_concurrency_probe.sh",
+        "supabase/tests/rls_foundation.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase3_events.sql",
+        "supabase/tests/rls_phase4_operations.sql",
+        "supabase/tests/rls_phase5_finance.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_crm_audit.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_impersonation.sql",
+        "supabase/tests/rls_phase7_lifecycle.sql",
+        "supabase/tests/rls_phase7_overrides.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_legal.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_permissions.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/rls_phase9_integrations.sql",
+        "supabase/tests/rls_q228_closure_backup_parts.sql",
+        "supabase/tests/run-rls-tests.sh",
+        "supabase/tests/schema_invariants.sql"
+      ]
+    },
+    {
+      "key": "update",
+      "tests": [
+        "tests/e2e/audit-log.spec.ts",
+        "tests/e2e/events.spec.ts",
+        "tests/e2e/legal.spec.ts",
+        "tests/e2e/network-discovery.spec.ts",
+        "tests/e2e/network-profile-editor.spec.ts",
+        "tests/e2e/operations.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/admin/audit-actions-match-db.test.ts",
+        "tests/integration/admin/crm-audit-coverage-census.test.ts",
+        "tests/integration/crm/crm-write-access-matches-db.test.ts",
+        "tests/integration/crm/custom-field-limit-matches-db.test.ts",
+        "tests/integration/crm/entity-dispatch-branches-match-db.test.ts",
+        "tests/integration/crm/event-finance-summary-rls.test.ts",
+        "tests/integration/crm/finance-access-matches-db.test.ts",
+        "tests/integration/crm/finance-custom-field-values-rls.test.ts",
+        "tests/integration/crm/mergeable-columns-match-db.test.ts",
+        "tests/integration/crm/permission-for-entity-matches-db.test.ts",
+        "tests/integration/documents/restore-purged.test.ts",
+        "tests/integration/email/connection-reminder-notifications.test.ts",
+        "tests/integration/entitlements/billing-override-matches-db.test.ts",
+        "tests/integration/entitlements/tiers-match-db.test.ts",
+        "tests/integration/export/closure-parts.test.ts",
+        "tests/integration/export/completeness-census.test.ts",
+        "tests/integration/export/runner.test.ts",
+        "tests/integration/legal/consents.test.ts",
+        "tests/integration/list/record-scope-matches-db.test.ts",
+        "tests/integration/list/soft-delete-tables-match-db.test.ts",
+        "tests/integration/mfa/aal-enforcement.test.ts",
+        "tests/integration/network/field-vocabulary-matches-db.test.ts",
+        "tests/integration/network/network-access-matches-db.test.ts",
+        "tests/integration/network/publish-editor-flow.test.ts",
+        "tests/integration/retention/runner.test.ts",
+        "tests/integration/rls/impersonation-matches-db.test.ts",
+        "tests/integration/rls/lifecycle-matches-db.test.ts",
+        "tests/integration/rls/rate-limits.test.ts",
+        "tests/integration/rls/rls.test.ts",
+        "tests/integration/rls/support/fixtures.ts",
+        "tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/integration/security/support/catalogue-census.ts",
+        "tests/integration/session/session-limits.test.ts",
+        "tests/support/totp.ts",
+        "tests/unit/admin/audit-actions.test.ts",
+        "tests/unit/consent/catalogue.test.ts",
+        "tests/unit/crm/documents-list.test.ts",
+        "tests/unit/crm/events-list.test.ts",
+        "tests/unit/crm/lineup-list.test.ts",
+        "tests/unit/crm/one-edit-page.test.ts",
+        "tests/unit/crm/source-shape.test.ts",
+        "tests/unit/crm/write.test.ts",
+        "tests/unit/email/lockout-notification.test.ts",
+        "tests/unit/email/requester-notifications.test.ts",
+        "tests/unit/email/senders.test.ts",
+        "tests/unit/legal/admin-actions-step-up.test.ts",
+        "tests/unit/legal/seed-matches-catalogue.test.ts",
+        "tests/unit/list/cursor.test.ts",
+        "tests/unit/list/fetch-list-page.test.ts",
+        "tests/unit/list/params.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "supabase/tests/file_access_phase4.sql",
+        "supabase/tests/mutations/01-legal-immutability.sql",
+        "supabase/tests/mutations/07a-dsr-who-withdraw-leg.sql",
+        "supabase/tests/mutations/07b-dsr-who-operator-leg.sql",
+        "supabase/tests/mutations/09b-fulfilment-seam-server-only.sql",
+        "supabase/tests/mutations/13-tombstone-rewrite-deletes.sql",
+        "supabase/tests/mutations/15-01-crm-audit-document-links.sql",
+        "supabase/tests/mutations/15-02-crm-audit-documents.sql",
+        "supabase/tests/mutations/15-03-crm-audit-event-lineup.sql",
+        "supabase/tests/mutations/15-04-crm-audit-events.sql",
+        "supabase/tests/mutations/15-05-crm-audit-financial-entries.sql",
+        "supabase/tests/mutations/15-06-crm-audit-meeting-links.sql",
+        "supabase/tests/mutations/15-07-crm-audit-meetings.sql",
+        "supabase/tests/mutations/15-08-crm-audit-merge-candidates.sql",
+        "supabase/tests/mutations/15-09-crm-audit-network-links.sql",
+        "supabase/tests/mutations/15-10-crm-audit-network-profiles.sql",
+        "supabase/tests/mutations/15-11-crm-audit-note-links.sql",
+        "supabase/tests/mutations/15-12-crm-audit-notes.sql",
+        "supabase/tests/mutations/15-13-crm-audit-organisation-memberships.sql",
+        "supabase/tests/mutations/15-14-crm-audit-organisation-subscriptions.sql",
+        "supabase/tests/mutations/15-15-crm-audit-task-links.sql",
+        "supabase/tests/mutations/15-16-crm-audit-tasks.sql",
+        "supabase/tests/mutations/16-retention-rpc-ignores-enabled.sql",
+        "supabase/tests/mutations/17a-ceiling-release-no-superuser-check.sql",
+        "supabase/tests/mutations/17b-ceiling-release-no-aal2.sql",
+        "supabase/tests/mutations/17c-ceiling-release-no-reason-check.sql",
+        "supabase/tests/mutations/17g-ceiling-release-thirty-days.sql",
+        "supabase/tests/mutations/17h-ceiling-release-can-be-extended.sql",
+        "supabase/tests/mutations/19a-release-bumps-switch-time.sql",
+        "supabase/tests/mutations/20a-close-no-owner-check.sql",
+        "supabase/tests/mutations/20b-close-no-aal2.sql",
+        "supabase/tests/mutations/20c-close-no-confirmation.sql",
+        "supabase/tests/mutations/20d-close-no-reason-check.sql",
+        "supabase/tests/mutations/20e-close-leaves-workspace-writable.sql",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_foundation.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase3_events.sql",
+        "supabase/tests/rls_phase4_operations.sql",
+        "supabase/tests/rls_phase5_finance.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_crm_audit.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_impersonation.sql",
+        "supabase/tests/rls_phase7_lifecycle.sql",
+        "supabase/tests/rls_phase7_overrides.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_legal.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/rls_phase9_integrations.sql",
+        "supabase/tests/rls_q228_closure_backup_parts.sql",
+        "supabase/tests/run-rls-tests.sh",
+        "supabase/tests/schema_invariants.sql"
+      ]
+    },
+    {
+      "key": "account_notified_at",
+      "tests": [
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "tests/unit/email/lockout-notification.test.ts",
+        "tests/unit/email/service-client-census.test.ts",
+        "supabase/tests/rls_phase7_rate_limits.sql"
+      ]
+    },
+    {
+      "key": "pg_net",
+      "tests": [
+        "tests/e2e/platform-health.spec.ts",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_retention.sql"
+      ]
+    },
+    {
+      "key": "organisation_id",
+      "tests": [
+        "tests/e2e/data-requests.spec.ts",
+        "tests/e2e/exports.spec.ts",
+        "tests/e2e/network-connections.spec.ts",
+        "tests/e2e/operations.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/e2e/tenant-breakout.spec.ts",
+        "tests/integration/admin/crm-audit-coverage-census.test.ts",
+        "tests/integration/crm/crm-write-access-matches-db.test.ts",
+        "tests/integration/crm/custom-field-limit-matches-db.test.ts",
+        "tests/integration/crm/entity-dispatch-branches-match-db.test.ts",
+        "tests/integration/crm/event-finance-summary-rls.test.ts",
+        "tests/integration/crm/event-vocabularies-match-db.test.ts",
+        "tests/integration/crm/finance-access-matches-db.test.ts",
+        "tests/integration/crm/finance-custom-field-values-rls.test.ts",
+        "tests/integration/crm/link-allowlist-matches-db.test.ts",
+        "tests/integration/crm/mergeable-columns-match-db.test.ts",
+        "tests/integration/crm/operations-vocabularies-match-db.test.ts",
+        "tests/integration/crm/permission-for-entity-matches-db.test.ts",
+        "tests/integration/documents/restore-purged.test.ts",
+        "tests/integration/documents/upload-rate-limit.test.ts",
+        "tests/integration/documents/upload-scan-download.test.ts",
+        "tests/integration/email/connection-reminder-notifications.test.ts",
+        "tests/integration/email/notice-queue-fairness.test.ts",
+        "tests/integration/email/workspace-closure-notifications.test.ts",
+        "tests/integration/entitlements/billing-override-matches-db.test.ts",
+        "tests/integration/entitlements/past-due-grace-matches-db.test.ts",
+        "tests/integration/erasure/runner.test.ts",
+        "tests/integration/export/closure-parts.test.ts",
+        "tests/integration/export/completeness-census.test.ts",
+        "tests/integration/export/runner.test.ts",
+        "tests/integration/list/record-scope-matches-db.test.ts",
+        "tests/integration/list/soft-delete-tables-match-db.test.ts",
+        "tests/integration/mfa/aal-enforcement.test.ts",
+        "tests/integration/mfa/mfa-lifecycle.test.ts",
+        "tests/integration/network/directory-list-page.test.ts",
+        "tests/integration/network/discovery.test.ts",
+        "tests/integration/network/field-vocabulary-matches-db.test.ts",
+        "tests/integration/network/network-access-matches-db.test.ts",
+        "tests/integration/network/publish-editor-flow.test.ts",
+        "tests/integration/network/task4-connections-and-links.test.ts",
+        "tests/integration/retention/runner.test.ts",
+        "tests/integration/rls/impersonation-matches-db.test.ts",
+        "tests/integration/rls/rls.test.ts",
+        "tests/integration/rls/support/fixtures.ts",
+        "tests/integration/security/close-workspace-action.test.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak.test.ts",
+        "tests/integration/security/feedback-budget.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "tests/unit/admin/audit-log.test.ts",
+        "tests/unit/crm/documents-list.test.ts",
+        "tests/unit/crm/source-shape.test.ts",
+        "tests/unit/crm/write.test.ts",
+        "tests/unit/dsr/admin-actions.test.ts",
+        "tests/unit/email/connection-reminder-templates.test.ts",
+        "tests/unit/email/senders.test.ts",
+        "tests/unit/feedback/submit-action-budget.test.ts",
+        "tests/unit/list/fetch-list-page.test.ts",
+        "tests/unit/network/no-private-table-in-network-path.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "tests/unit/org/close-workspace-action.test.ts",
+        "tests/unit/security/rate-limit.test.ts",
+        "supabase/tests/erasure_concurrency_probe.sh",
+        "supabase/tests/file_access_phase4.sql",
+        "supabase/tests/lifecycle_concurrency_probe.sh",
+        "supabase/tests/mutations/04a-consent-attribution-trusts-client.sql",
+        "supabase/tests/mutations/04b-consent-attribution-sessionless.sql",
+        "supabase/tests/mutations/05a-dsr-attribution-trusts-client.sql",
+        "supabase/tests/mutations/05b-dsr-attribution-sessionless.sql",
+        "supabase/tests/mutations/05c-dsr-attribution-trusts-valid-client.sql",
+        "supabase/tests/mutations/07a-dsr-who-withdraw-leg.sql",
+        "supabase/tests/mutations/07b-dsr-who-operator-leg.sql",
+        "supabase/tests/mutations/09b-fulfilment-seam-server-only.sql",
+        "supabase/tests/mutations/10-export-download-authorisation.sql",
+        "supabase/tests/mutations/12b-membership-keeps-an-owner.sql",
+        "supabase/tests/mutations/13-tombstone-rewrite-deletes.sql",
+        "supabase/tests/mutations/20a-close-no-owner-check.sql",
+        "supabase/tests/mutations/20b-close-no-aal2.sql",
+        "supabase/tests/mutations/20c-close-no-confirmation.sql",
+        "supabase/tests/mutations/20d-close-no-reason-check.sql",
+        "supabase/tests/mutations/20e-close-leaves-workspace-writable.sql",
+        "supabase/tests/mutations/20f-crm-writes-ignore-closure.sql",
+        "supabase/tests/mutations/21a-closure-hold-any-part-releases.sql",
+        "supabase/tests/mutations/21b-closure-hold-any-actor.sql",
+        "supabase/tests/mutations/21c-manifest-orphans-ignore-parts.sql",
+        "supabase/tests/mutations/21d-manifest-parts-never-expire.sql",
+        "supabase/tests/mutations/21e-manifest-keeps-failed-parts.sql",
+        "supabase/tests/mutations/21f-download-audit-no-part-check.sql",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_foundation.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase3_events.sql",
+        "supabase/tests/rls_phase4_operations.sql",
+        "supabase/tests/rls_phase5_finance.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_crm_audit.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_impersonation.sql",
+        "supabase/tests/rls_phase7_lifecycle.sql",
+        "supabase/tests/rls_phase7_overrides.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_legal.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_permissions.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/rls_phase9_integrations.sql",
+        "supabase/tests/rls_q228_closure_backup_parts.sql",
+        "supabase/tests/run-rls-tests.sh",
+        "supabase/tests/schema_invariants.sql"
+      ]
+    },
+    {
+      "key": "resolved_by",
+      "tests": [
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/run-rls-tests.sh"
+      ]
+    },
+    {
+      "key": "search",
+      "tests": [
+        "tests/e2e/feedback.spec.ts",
+        "tests/e2e/impersonation.spec.ts",
+        "tests/e2e/keyboard.spec.ts",
+        "tests/e2e/network.spec.ts",
+        "tests/e2e/platform-health.spec.ts",
+        "tests/e2e/storage-census.spec.ts",
+        "tests/e2e/super-permissions.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/e2e/tenant-breakout.spec.ts",
+        "tests/integration/export/closure-parts.test.ts",
+        "tests/integration/network/directory-list-page.test.ts",
+        "tests/integration/rls/impersonation-matches-db.test.ts",
+        "tests/integration/rls/rate-limits.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/unit/admin/audit-log.test.ts",
+        "tests/unit/admin/incident-alerts.test.ts",
+        "tests/unit/consent/catalogue.test.ts",
+        "tests/unit/crm/activity.test.ts",
+        "tests/unit/crm/events-list.test.ts",
+        "tests/unit/crm/lineup-list.test.ts",
+        "tests/unit/crm/source-shape.test.ts",
+        "tests/unit/email/templates.test.ts",
+        "tests/unit/forms/use-server-exports-census.test.ts",
+        "tests/unit/legal/data-retention-v6.test.ts",
+        "tests/unit/list/fetch-list-page.test.ts",
+        "tests/unit/list/one-cursor-only.test.ts",
+        "tests/unit/list/param-prefix.test.ts",
+        "tests/unit/list/params.test.ts",
+        "tests/unit/list/postgrest.test.ts",
+        "tests/unit/network/discovery-source-shape.test.ts",
+        "tests/unit/network/link-picker-source-shape.test.ts",
+        "tests/unit/network/no-private-table-in-network-path.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "tests/unit/palette/entities.test.ts",
+        "tests/unit/security/pg-catalog-constructs.test.ts",
+        "tests/unit/security/rate-limit.test.ts",
+        "tests/unit/security/super-page-census.test.ts",
+        "tests/unit/support/sql-definitions.ts",
+        "supabase/tests/file_access_phase4.sql",
+        "supabase/tests/mutations/01-legal-immutability.sql",
+        "supabase/tests/mutations/03-consents-append-only.sql",
+        "supabase/tests/mutations/04a-consent-attribution-trusts-client.sql",
+        "supabase/tests/mutations/04b-consent-attribution-sessionless.sql",
+        "supabase/tests/mutations/05a-dsr-attribution-trusts-client.sql",
+        "supabase/tests/mutations/05b-dsr-attribution-sessionless.sql",
+        "supabase/tests/mutations/05c-dsr-attribution-trusts-valid-client.sql",
+        "supabase/tests/mutations/06-dsr-transition-table.sql",
+        "supabase/tests/mutations/07a-dsr-who-withdraw-leg.sql",
+        "supabase/tests/mutations/07b-dsr-who-operator-leg.sql",
+        "supabase/tests/mutations/09a-fulfilment-seam-dormant.sql",
+        "supabase/tests/mutations/09b-fulfilment-seam-server-only.sql",
+        "supabase/tests/mutations/10-export-download-authorisation.sql",
+        "supabase/tests/mutations/12a-erasure-last-owner-guard.sql",
+        "supabase/tests/mutations/12b-membership-keeps-an-owner.sql",
+        "supabase/tests/mutations/13-tombstone-rewrite-deletes.sql",
+        "supabase/tests/mutations/14-retention-audit-floor.sql",
+        "supabase/tests/mutations/16-retention-rpc-ignores-enabled.sql",
+        "supabase/tests/mutations/17a-ceiling-release-no-superuser-check.sql",
+        "supabase/tests/mutations/17b-ceiling-release-no-aal2.sql",
+        "supabase/tests/mutations/17c-ceiling-release-no-reason-check.sql",
+        "supabase/tests/mutations/17d-ceiling-release-never-expires.sql",
+        "supabase/tests/mutations/17e-purge-ignores-release.sql",
+        "supabase/tests/mutations/17f-release-lifts-the-floor.sql",
+        "supabase/tests/mutations/17g-ceiling-release-thirty-days.sql",
+        "supabase/tests/mutations/17h-ceiling-release-can-be-extended.sql",
+        "supabase/tests/mutations/20a-close-no-owner-check.sql",
+        "supabase/tests/mutations/20b-close-no-aal2.sql",
+        "supabase/tests/mutations/20c-close-no-confirmation.sql",
+        "supabase/tests/mutations/20d-close-no-reason-check.sql",
+        "supabase/tests/mutations/20e-close-leaves-workspace-writable.sql",
+        "supabase/tests/mutations/20f-crm-writes-ignore-closure.sql",
+        "supabase/tests/mutations/20g-lifecycle-guard-open.sql",
+        "supabase/tests/mutations/21a-closure-hold-any-part-releases.sql",
+        "supabase/tests/mutations/21b-closure-hold-any-actor.sql",
+        "supabase/tests/mutations/21c-manifest-orphans-ignore-parts.sql",
+        "supabase/tests/mutations/21d-manifest-parts-never-expire.sql",
+        "supabase/tests/mutations/21e-manifest-keeps-failed-parts.sql",
+        "supabase/tests/mutations/21f-download-audit-no-part-check.sql",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_foundation.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase3_events.sql",
+        "supabase/tests/rls_phase4_operations.sql",
+        "supabase/tests/rls_phase5_finance.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_crm_audit.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_impersonation.sql",
+        "supabase/tests/rls_phase7_lifecycle.sql",
+        "supabase/tests/rls_phase7_overrides.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_legal.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_permissions.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/rls_phase9_integrations.sql",
+        "supabase/tests/rls_q228_closure_backup_parts.sql",
+        "supabase/tests/schema_invariants.sql"
+      ]
+    },
+    {
+      "key": "network_discovery",
+      "tests": [
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/unit/admin/incident-alerts.test.ts",
+        "tests/unit/list/fetch-list-page.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "tests/unit/security/rate-limit.test.ts",
+        "supabase/tests/rls_phase7_rate_limits.sql"
+      ]
+    },
+    {
+      "key": "grant",
+      "tests": [
+        "tests/e2e/consent.spec.ts",
+        "tests/e2e/feedback.spec.ts",
+        "tests/e2e/impersonation.spec.ts",
+        "tests/e2e/network-leakage.spec.ts",
+        "tests/e2e/network.spec.ts",
+        "tests/e2e/overrides.spec.ts",
+        "tests/e2e/platform-health.spec.ts",
+        "tests/e2e/super-permissions.spec.ts",
+        "tests/e2e/support/fixtures.ts",
+        "tests/integration/admin/audit-actions-match-db.test.ts",
+        "tests/integration/admin/crm-audit-coverage-census.test.ts",
+        "tests/integration/crm/event-vocabularies-match-db.test.ts",
+        "tests/integration/crm/finance-access-matches-db.test.ts",
+        "tests/integration/crm/finance-custom-field-values-rls.test.ts",
+        "tests/integration/crm/permission-for-entity-matches-db.test.ts",
+        "tests/integration/email/requester-notifications.test.ts",
+        "tests/integration/entitlements/billing-override-matches-db.test.ts",
+        "tests/integration/legal/consents.test.ts",
+        "tests/integration/list/soft-delete-tables-match-db.test.ts",
+        "tests/integration/mfa/aal-enforcement.test.ts",
+        "tests/integration/network/directory-list-page.test.ts",
+        "tests/integration/network/network-access-matches-db.test.ts",
+        "tests/integration/rls/impersonation-matches-db.test.ts",
+        "tests/integration/rls/rls.test.ts",
+        "tests/integration/rls/support/fixtures.ts",
+        "tests/integration/security/connection-request-budget.test.ts",
+        "tests/integration/security/crm-audit-no-content-leak-p3-6.test.ts",
+        "tests/integration/security/feedback-budget.test.ts",
+        "tests/integration/security/phase7-permission-matrix.test.ts",
+        "tests/integration/security/rate-limit-network-discovery.test.ts",
+        "tests/integration/security/support/catalogue-census.ts",
+        "tests/integration/security/support/privilege-census.ts",
+        "tests/integration/session/session-limits.test.ts",
+        "tests/unit/admin/impersonation-status.test.ts",
+        "tests/unit/auth/step-up-gate.test.ts",
+        "tests/unit/consent/catalogue.test.ts",
+        "tests/unit/consent/set-marketing-consent-action.test.ts",
+        "tests/unit/crm/source-shape.test.ts",
+        "tests/unit/email/senders.test.ts",
+        "tests/unit/email/service-client-census.test.ts",
+        "tests/unit/feedback/submit-action-budget.test.ts",
+        "tests/unit/list/one-cursor-only.test.ts",
+        "tests/unit/network/access.test.ts",
+        "tests/unit/network/source-shape.test.ts",
+        "tests/unit/security/migration-encoding.test.ts",
+        "tests/unit/security/rate-limit.test.ts",
+        "supabase/tests/file_access_phase4.sql",
+        "supabase/tests/mutations/02-legal-anon-column-grant.sql",
+        "supabase/tests/mutations/04a-consent-attribution-trusts-client.sql",
+        "supabase/tests/mutations/04b-consent-attribution-sessionless.sql",
+        "supabase/tests/mutations/17g-ceiling-release-thirty-days.sql",
+        "supabase/tests/mutations/20a-close-no-owner-check.sql",
+        "supabase/tests/mutations/20b-close-no-aal2.sql",
+        "supabase/tests/mutations/20c-close-no-confirmation.sql",
+        "supabase/tests/mutations/20d-close-no-reason-check.sql",
+        "supabase/tests/mutations/20e-close-leaves-workspace-writable.sql",
+        "supabase/tests/network_leakage_phase6.sql",
+        "supabase/tests/rls_foundation.sql",
+        "supabase/tests/rls_phase2_crm.sql",
+        "supabase/tests/rls_phase3_events.sql",
+        "supabase/tests/rls_phase4_operations.sql",
+        "supabase/tests/rls_phase5_finance.sql",
+        "supabase/tests/rls_phase6_network.sql",
+        "supabase/tests/rls_phase7_crm_audit.sql",
+        "supabase/tests/rls_phase7_feedback.sql",
+        "supabase/tests/rls_phase7_impersonation.sql",
+        "supabase/tests/rls_phase7_lifecycle.sql",
+        "supabase/tests/rls_phase7_overrides.sql",
+        "supabase/tests/rls_phase7_rate_limits.sql",
+        "supabase/tests/rls_phase8_closure_backup.sql",
+        "supabase/tests/rls_phase8_consents.sql",
+        "supabase/tests/rls_phase8_crm_audit_p3_6.sql",
+        "supabase/tests/rls_phase8_data_subject_requests.sql",
+        "supabase/tests/rls_phase8_erasure.sql",
+        "supabase/tests/rls_phase8_exports.sql",
+        "supabase/tests/rls_phase8_legal.sql",
+        "supabase/tests/rls_phase8_notification_stamps.sql",
+        "supabase/tests/rls_phase8_permissions.sql",
+        "supabase/tests/rls_phase8_retention.sql",
+        "supabase/tests/rls_phase8_workspace_closure.sql",
+        "supabase/tests/rls_phase9_integrations.sql",
+        "supabase/tests/rls_q228_closure_backup_parts.sql",
+        "supabase/tests/run-rls-tests.sh",
+        "supabase/tests/schema_invariants.sql"
+      ]
+    }
+  ],
+  "definers": [
+    {
+      "name": "private.is_active_member",
+      "migration": "20260826154304_permission_engine_and_rls.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.shares_active_organisation",
+      "migration": "20260826154304_permission_engine_and_rls.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.has_platform_permission",
+      "migration": "20260827210000_mfa_aal_permission_gate.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.membership_update_is_permitted",
+      "migration": "20260826154304_permission_engine_and_rls.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.log_audit_event",
+      "migration": "20260912001000_crm_bulk_audit_thread.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.create_organisation",
+      "migration": "20260908000000_switch_on_subscription_entitlement_gate.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.handle_new_user",
+      "migration": "20260827015924_auth_provisioning_and_invite_acceptance.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.accept_invite",
+      "migration": "20260827015924_auth_provisioning_and_invite_acceptance.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.is_platform_admin",
+      "migration": "20260827210000_mfa_aal_permission_gate.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.permitted_organisations",
+      "migration": "20261027000000_closure_backup_marker_on_the_network_path.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.full_scope_organisations",
+      "migration": "20260908020000_impersonation_sessions.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.entity_is_visible",
+      "migration": "20260903020000_finance_custom_field_widening.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.entity_is_manageable",
+      "migration": "20260903030000_finance_custom_field_value_tier_gate.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.entity_org_unchanged",
+      "migration": "20260904000000_network_tables.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.crm_write_organisations",
+      "migration": "20260909000000_billing_and_feature_overrides.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_crm_row",
+      "migration": "20260828160000_audit_cascade_and_merges_read_path.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.organisation_is_live",
+      "migration": "20260828220000_second_gate_on_foundation_writes.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.custom_field_limit",
+      "migration": "20260909000000_billing_and_feature_overrides.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.custom_field_slot_available",
+      "migration": "20260829010500_custom_field_tier_limit.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.enforce_custom_field_limit",
+      "migration": "20260829010500_custom_field_tier_limit.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.entity_is_live",
+      "migration": "20260903020000_finance_custom_field_widening.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.custom_field_definition_type_unchanged",
+      "migration": "20260829012000_custom_field_definition_entity_type_is_immutable.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.duplicate_probe",
+      "migration": "20260830010000_duplicate_probe_ignores_a_blank_email.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.duplicate_matches",
+      "migration": "20260829020000_dedup_detection_and_merge_workflow.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.record_merge",
+      "migration": "20260829020000_dedup_detection_and_merge_workflow.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.screen_for_duplicates",
+      "migration": "20260829020000_dedup_detection_and_merge_workflow.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.clear_event_room_before_venue_delete",
+      "migration": "20260901002000_venue_delete_clears_event_room.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.record_event_status_change",
+      "migration": "20260901031000_event_status_changes.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_document_action",
+      "migration": "20260902031000_document_scan_and_access_audit.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.audit_document_action",
+      "migration": "20260902031000_document_scan_and_access_audit.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.guard_document_scan_status",
+      "migration": "20260902031000_document_scan_and_access_audit.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.finance_module_organisations",
+      "migration": "20260909000000_billing_and_feature_overrides.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.network_publish_organisations",
+      "migration": "20260909000000_billing_and_feature_overrides.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.network_request_status_transition_guard",
+      "migration": "20260904003000_network_rls_policies.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_network_row",
+      "migration": "20261006000000_audit_phase3_to_6_crm_writes.sql",
+      "inMatrix": false,
+      "inCensus": true
+    },
+    {
+      "name": "private.fill_connection_request_recipient",
+      "migration": "20260904006000_connection_request_recipient_is_derived.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_superuser_audit_log_view",
+      "migration": "20260908010000_superuser_audit_log_self_audit.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.audit_superuser_audit_log_view",
+      "migration": "20260908010000_superuser_audit_log_self_audit.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.impersonation_time_box",
+      "migration": "20260908020000_impersonation_sessions.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.impersonated_organisations",
+      "migration": "20260908020000_impersonation_sessions.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.impersonation_counterparty_organisations",
+      "migration": "20260908020000_impersonation_sessions.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.request_impersonation",
+      "migration": "20260908020000_impersonation_sessions.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.accept_impersonation_request",
+      "migration": "20260908020000_impersonation_sessions.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.decline_impersonation_request",
+      "migration": "20260908020000_impersonation_sessions.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.start_impersonation_session",
+      "migration": "20260908020000_impersonation_sessions.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.end_impersonation_session",
+      "migration": "20260921002000_ending_support_access_survives_suspension.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.audit_impersonated_page_view",
+      "migration": "20260908020000_impersonation_sessions.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.lifecycle_transition_in_progress",
+      "migration": "20260908030000_organisation_lifecycle.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.log_organisation_lifecycle_event",
+      "migration": "20260908030000_organisation_lifecycle.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.organisation_network_presence_active",
+      "migration": "20260908031000_network_presence_wind_down.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.organisation_id_for_slug",
+      "migration": "20260909000000_billing_and_feature_overrides.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.active_billing_override",
+      "migration": "20260909000000_billing_and_feature_overrides.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.active_feature_override",
+      "migration": "20260909000000_billing_and_feature_overrides.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.effective_organisation_plan",
+      "migration": "20260909010000_seats_only_override_keeps_subscription_status.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.log_override_event",
+      "migration": "20260909000000_billing_and_feature_overrides.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.record_rate_limit_event",
+      "migration": "20260909020000_rate_limiting_and_incident_alerts.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.consume_rate_limit",
+      "migration": "20260909050000_rate_limit_attribution_cannot_be_forged.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.hook_password_verification_attempt",
+      "migration": "20260909100000_login_hook_fails_closed_by_construction.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.document_quarantine_alert",
+      "migration": "20260909020000_rate_limiting_and_incident_alerts.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.platform_health_snapshot",
+      "migration": "20260921001000_health_lockout_queue_is_the_senders_queue.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.meter_connection_request",
+      "migration": "20260909060000_connection_request_budget_is_enforced_at_the_write.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_incident_alert_resolution",
+      "migration": "20260925002000_dsr_alerts_reraise_and_resolve.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.feedback_before_insert",
+      "migration": "20260921003000_support_access_feedback_is_attributable.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_feedback_submission",
+      "migration": "20260921003000_support_access_feedback_is_attributable.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_feedback_status_change",
+      "migration": "20260921003000_support_access_feedback_is_attributable.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.feedback_quarantine_alert",
+      "migration": "20260911000000_in_app_feedback.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.audit_feedback_screenshot_view",
+      "migration": "20260921003000_support_access_feedback_is_attributable.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.feedback_budget_remaining",
+      "migration": "20260911010000_feedback_budget_remaining.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_crm_change",
+      "migration": "20260912000000_audit_crm_inserts_and_updates.sql",
+      "inMatrix": false,
+      "inCensus": true
+    },
+    {
+      "name": "private.deliver_incident_alerts",
+      "migration": "20260916000000_incident_alert_delivery_clock.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.pending_lockout_notifications",
+      "migration": "20260918000000_lockout_queue_ages_by_oldest_alert.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "private.is_impersonating",
+      "migration": "20260916002000_feedback_during_support_access.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.is_impersonating_route",
+      "migration": "20260917001000_support_access_label_is_route_scoped.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.impersonated_route_session",
+      "migration": "20260921003000_support_access_feedback_is_attributable.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.operator_legal_document_versions",
+      "migration": "20260922000000_legal_documents.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.create_legal_document_draft",
+      "migration": "20260922000000_legal_documents.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.update_legal_document_draft",
+      "migration": "20260922000000_legal_documents.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.publish_legal_document",
+      "migration": "20260922000000_legal_documents.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.record_legal_document_counsel_review",
+      "migration": "20260922000000_legal_documents.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.consents_before_insert",
+      "migration": "20260923003000_consents_statement_pinned.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.consents_guard",
+      "migration": "20260923002000_consents_guard_account_deletion.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_consent_event",
+      "migration": "20260923000000_consents.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.record_consent",
+      "migration": "20260923000000_consents.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "public.consent_is_granted",
+      "migration": "20260923000000_consents.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.organisations_slug_not_reserved",
+      "migration": "20260923006000_workspace_slug_grammar.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.data_subject_requests_before_insert",
+      "migration": "20260925000000_dsr_register_integrity.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.data_subject_requests_before_update",
+      "migration": "20261001006000_erasure_closes_its_request.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.data_subject_request_notes_guard",
+      "migration": "20260930003000_erase_account.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_dsr_submitted",
+      "migration": "20260924000000_data_subject_requests.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_dsr_transition",
+      "migration": "20261001006000_erasure_closes_its_request.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_dsr_note",
+      "migration": "20260924000000_data_subject_requests.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.submit_data_subject_request",
+      "migration": "20260924000000_data_subject_requests.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.withdraw_data_subject_request",
+      "migration": "20260924000000_data_subject_requests.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.transition_data_subject_request",
+      "migration": "20260925000000_dsr_register_integrity.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.add_data_subject_request_note",
+      "migration": "20260924000000_data_subject_requests.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.raise_dsr_deadline_alerts",
+      "migration": "20260925002000_dsr_alerts_reraise_and_resolve.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.dsr_routing_needs_handover_note",
+      "migration": "20260925000000_dsr_register_integrity.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.route_data_subject_request",
+      "migration": "20260925000000_dsr_register_integrity.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.dsr_resolve_alerts_on_close",
+      "migration": "20260925002000_dsr_alerts_reraise_and_resolve.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.run_incident_alert_tick",
+      "migration": "20261003005000_retention_clock.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "private.export_jobs_before_insert",
+      "migration": "20261021000000_owner_may_close_their_workspace.sql",
+      "inMatrix": false,
+      "inCensus": true
+    },
+    {
+      "name": "private.export_jobs_before_update",
+      "migration": "20261101000000_closure_backup_parts.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_export_job_requested",
+      "migration": "20260927001000_export_jobs_register.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.export_read_page_as_requester",
+      "migration": "20260927007000_export_reader_role.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.export_read_page",
+      "migration": "20261101002000_closure_backup_stops_when_reopened.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.claim_export_job",
+      "migration": "20261101000000_closure_backup_parts.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.deliver_export_jobs",
+      "migration": "20260927004000_export_runner_clock.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.audit_export_download",
+      "migration": "20261101001000_closure_backup_parts_download_and_purge.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.export_plan",
+      "migration": "20260928003000_export_plan_names_the_key_column.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.export_limits_for_runner",
+      "migration": "20260927006000_export_plan.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.tombstone_is_nobody",
+      "migration": "20260930000000_erasure_tombstone.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.tombstone_is_not_a_login",
+      "migration": "20261001005000_tombstone_role_and_metadata.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.erasure_jobs_before_insert",
+      "migration": "20260930005000_erasure_on_behalf_of_a_request.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.erasure_jobs_before_update",
+      "migration": "20260930001000_erasure_jobs.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_erasure_job_requested",
+      "migration": "20260930001000_erasure_jobs.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.sweep_custom_field_values",
+      "migration": "20260930002000_erase_organisation.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.organisation_is_empty",
+      "migration": "20260930002000_erase_organisation.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.erase_organisation",
+      "migration": "20261030003000_integrations_in_the_privacy_lifecycle.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.account_last_owner_workspaces",
+      "migration": "20261001001000_ownerless_workspaces.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.account_erasure_blockers",
+      "migration": "20261002001000_ownerless_refusal_names_a_door_that_opens.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.assert_account_is_erasable",
+      "migration": "20261002001000_ownerless_refusal_names_a_door_that_opens.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.my_erasure_blockers",
+      "migration": "20260930003000_erase_account.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.erase_account",
+      "migration": "20261030003000_integrations_in_the_privacy_lifecycle.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "public.claim_erasure_job",
+      "migration": "20260930004000_erasure_runner_and_seam.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.erasure_purge_manifest",
+      "migration": "20261022000000_closure_backup_survives_owner_erasure.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "public.run_erasure_job",
+      "migration": "20261001006000_erasure_closes_its_request.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "public.fail_erasure_job",
+      "migration": "20260930004000_erasure_runner_and_seam.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.start_erasure_for_request",
+      "migration": "20260930005000_erasure_on_behalf_of_a_request.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.deliver_erasure_jobs",
+      "migration": "20260930006000_erasure_runner_clock.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.fkless_identifier_columns",
+      "migration": "20261030003000_integrations_in_the_privacy_lifecycle.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.unclassified_fkless_identifiers",
+      "migration": "20261002000000_roll_sees_more_column_shapes.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.assert_fkless_identifier_roll",
+      "migration": "20261002000000_roll_sees_more_column_shapes.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.account_lock_workspaces",
+      "migration": "20261003006000_sanctioned_account_deletion.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.membership_keeps_an_owner",
+      "migration": "20261003006000_sanctioned_account_deletion.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.constraint_function_reachability",
+      "migration": "20261001002000_check_function_reachability.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.set_retention_enabled",
+      "migration": "20261003001000_retention_runs_and_kill_switch.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.document_retention_class",
+      "migration": "20261003002000_retention_sweeps.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.retention_object_manifest",
+      "migration": "20261101001000_closure_backup_parts_download_and_purge.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "private.sweep_rate_limit_counters",
+      "migration": "20261003002000_retention_sweeps.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.sweep_feedback",
+      "migration": "20261003002000_retention_sweeps.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.sweep_incident_alerts",
+      "migration": "20261003002000_retention_sweeps.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.sweep_erasure_jobs",
+      "migration": "20261003002000_retention_sweeps.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.reap_stuck_jobs",
+      "migration": "20261003002000_retention_sweeps.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.sweep_document_bytes",
+      "migration": "20261005000000_document_retention_class_is_frozen_at_deletion.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.sweep_expired_workspaces",
+      "migration": "20261029002000_closure_delete_holds_the_purge_for_the_backup.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.purge_audit_events",
+      "migration": "20261010000000_audit_purge_ceiling_release.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.start_retention_run",
+      "migration": "20261004003000_one_retention_run_at_a_time.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "public.fail_retention_run",
+      "migration": "20261003008000_retention_runner_gate_matches_its_siblings.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "private.retention_sweep_body",
+      "migration": "20261030003000_integrations_in_the_privacy_lifecycle.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "public.run_retention_sweep",
+      "migration": "20261004002000_retention_refuses_before_any_object_is_named.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "private.deliver_retention_sweep",
+      "migration": "20261004004000_retention_refusals_alert_and_previews_postpone_nothing.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.retention_refusal",
+      "migration": "20261004002000_retention_refuses_before_any_object_is_named.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.retention_run_raises_alert",
+      "migration": "20261004004000_retention_refusals_alert_and_previews_postpone_nothing.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.retention_sweep_is_due",
+      "migration": "20261004004000_retention_refusals_alert_and_previews_postpone_nothing.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_ceiling_release_active",
+      "migration": "20261010000000_audit_purge_ceiling_release.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.release_audit_purge_ceiling",
+      "migration": "20261010000000_audit_purge_ceiling_release.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.notification_stamp_guard",
+      "migration": "20261015000000_requester_notification_stamps.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.pending_dsr_notifications",
+      "migration": "20261015000000_requester_notification_stamps.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.pending_export_ready_notifications",
+      "migration": "20261015000000_requester_notification_stamps.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.mark_erasure_failures_notified",
+      "migration": "20261015000000_requester_notification_stamps.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.notification_delivery_guard",
+      "migration": "20261016000000_connection_and_task_reminder_notices.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.mark_notices_delivered",
+      "migration": "20261022001000_superuser_decides_a_closed_workspace.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.pending_connection_request_notifications",
+      "migration": "20261019000000_connection_email_names_only_a_present_profile.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.pending_task_reminder_notifications",
+      "migration": "20261018000000_notice_queue_cannot_be_poisoned.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.mark_notices_undeliverable",
+      "migration": "20261022001000_superuser_decides_a_closed_workspace.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.close_my_workspace",
+      "migration": "20261028000000_lifecycle_transitions_lock_and_recheck.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.closure_decision_target",
+      "migration": "20261022001000_superuser_decides_a_closed_workspace.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.closure_decision_recipients",
+      "migration": "20261022001000_superuser_decides_a_closed_workspace.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.reassign_closed_workspace",
+      "migration": "20261028000000_lifecycle_transitions_lock_and_recheck.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.delete_closed_workspace",
+      "migration": "20261029002000_closure_delete_holds_the_purge_for_the_backup.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.closed_workspaces_awaiting_decision",
+      "migration": "20261022001000_superuser_decides_a_closed_workspace.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.pending_workspace_closure_notifications",
+      "migration": "20261022001000_superuser_decides_a_closed_workspace.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.pending_workspace_decision_notifications",
+      "migration": "20261022001000_superuser_decides_a_closed_workspace.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.closed_workspace_reassign_candidates",
+      "migration": "20261027003000_closure_candidates_keyset_paging.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.closure_backup_read_admits",
+      "migration": "20261025000000_closure_backup_reads_the_live_workspace.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.lifecycle_lock",
+      "migration": "20261028000000_lifecycle_transitions_lock_and_recheck.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.lifecycle_has_active_owner",
+      "migration": "20261028001000_reinstate_needs_an_active_owner.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.record_document_scan_verdict",
+      "migration": "20261029000000_scan_verdict_is_the_scanners.sql",
+      "inMatrix": true,
+      "inCensus": true
+    },
+    {
+      "name": "private.closure_backup_owed",
+      "migration": "20261101001000_closure_backup_parts_download_and_purge.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.integration_connections_guard",
+      "migration": "20261030003000_integrations_in_the_privacy_lifecycle.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.integration_role_held",
+      "migration": "20261030001000_integration_rpcs.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "public.connect_integration",
+      "migration": "20261030001000_integration_rpcs.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.revoke_integration",
+      "migration": "20261030003000_integrations_in_the_privacy_lifecycle.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.store_integration_token",
+      "migration": "20261030002000_integration_rpcs_fix_round_1.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.read_integration_token",
+      "migration": "20261030001000_integration_rpcs.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "public.record_integration_sync_run",
+      "migration": "20261030001000_integration_rpcs.sql",
+      "inMatrix": true,
+      "inCensus": false
+    },
+    {
+      "name": "private.revoke_integration_row",
+      "migration": "20261030003000_integrations_in_the_privacy_lifecycle.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.integration_connections_follow_membership",
+      "migration": "20261030003000_integrations_in_the_privacy_lifecycle.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.sweep_integration_records",
+      "migration": "20261030003000_integrations_in_the_privacy_lifecycle.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.audit_organisation_update",
+      "migration": "20261031000000_organisation_edits_are_audited.sql",
+      "inMatrix": false,
+      "inCensus": false
+    },
+    {
+      "name": "private.export_job_parts_guard",
+      "migration": "20261101000000_closure_backup_parts.sql",
+      "inMatrix": false,
+      "inCensus": true
+    }
+  ]
+}

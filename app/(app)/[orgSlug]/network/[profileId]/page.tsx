@@ -118,7 +118,7 @@ export default async function NetworkProfileViewPage({
   // by ConnectButton -- loaded in parallel, since neither depends on the
   // other and `ownProfiles` is a plain read of THIS organisation's own rows
   // (never a cross-tenant query).
-  const [connectAccess, ownProfiles] = await Promise.all([
+  const [connectAccess, sendFrom] = await Promise.all([
     getNetworkConnectionAccess(org),
     loadOwnPublishedProfiles(org.id),
   ]);
@@ -129,7 +129,8 @@ export default async function NetworkProfileViewPage({
         orgSlug={org.slug}
         viewer={viewer}
         connectAccess={connectAccess}
-        ownProfiles={ownProfiles}
+        ownProfiles={sendFrom.profiles}
+        moreOwnProfiles={sendFrom.more}
       />
     </div>
   );
@@ -207,11 +208,13 @@ function PublicProfileView({
   viewer,
   connectAccess,
   ownProfiles,
+  moreOwnProfiles,
 }: {
   orgSlug: string;
   viewer: NetworkProfileForViewer;
   connectAccess: CrmWriteAccess;
   ownProfiles: readonly OwnPublishedProfile[];
+  moreOwnProfiles: boolean;
 }) {
   const { row, source } = viewer;
 
@@ -256,6 +259,7 @@ function PublicProfileView({
         canWrite={connectAccess.canWrite}
         explanation={connectAccess.canWrite ? undefined : connectAccess.explanation}
         ownProfiles={ownProfiles}
+        moreOwnProfiles={moreOwnProfiles}
       />
     </div>
   );

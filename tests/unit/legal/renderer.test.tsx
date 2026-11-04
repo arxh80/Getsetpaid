@@ -106,7 +106,7 @@ describe("the generated tables come from code", () => {
   it("renders every storage item and every subprocessor", () => {
     const html = render("{{storage_inventory}}\n\n{{subprocessors}}");
     const unescaped = html.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&#x27;", "'");
-    expect(BROWSER_STORAGE.length).toBe(4);
+    expect(BROWSER_STORAGE.length).toBe(5);
     for (const item of BROWSER_STORAGE) expect(unescaped).toContain(item.name);
     expect(SUB_PROCESSORS.length).toBeGreaterThan(0);
     for (const vendor of SUB_PROCESSORS) expect(unescaped).toContain(vendor.name);

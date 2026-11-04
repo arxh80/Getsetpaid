@@ -87,8 +87,8 @@ describe("the Server Action body cap covers what the product promises", () => {
     // next.config.ts had nothing to be checked against. A re-declared literal
     // there would pass every assertion above while drifting from the cap.
     const src = read("lib/crm/documents.ts");
-    expect(src).toContain(
-      'import { DOCUMENT_MAX_SIZE_BYTES } from "@/lib/security/upload-limits"',
+    expect(src).toMatch(
+      /import \{[^}]*\bDOCUMENT_MAX_SIZE_BYTES\b[^}]*\} from "@\/lib\/security\/upload-limits"/,
     );
     expect(src).toContain("file.size > DOCUMENT_MAX_SIZE_BYTES");
     expect(
