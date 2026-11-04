@@ -20,9 +20,7 @@
 // as every other form in this product (lib/forms.ts).
 
 import { revalidatePath } from "next/cache";
-import { getCurrentUser } from "@/lib/auth";
-import { isSuperuser } from "@/lib/admin/superuser";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
+import { authoriseSuperuser } from "@/lib/admin/superuser-gate";
 import { createClient } from "@/lib/supabase/server";
 import { runRetentionSweep } from "@/lib/retention/runner";
 import { echoedValues, type FormState } from "@/lib/forms";
@@ -32,32 +30,14 @@ const STEP_UP_REQUIRED =
   "Confirm it’s you first — re-enter your credentials, then try again.";
 const MAX_REASON = 500;
 
-async function authorise(
-  formData: FormData,
-): Promise<{ ok: true } | { ok: false; state: FormState }> {
-  // Server actions are public endpoints; everything is untrusted. The RPC's
-  // own private.has_platform_permission() and the tables' policies are the
-  // enforcement — these checks pick the sentence, and pick the same one a
-  // non-superuser gets everywhere else on /super: nothing that confirms the
-  // control exists.
-  if (!(await getCurrentUser()) || !(await isSuperuser())) {
-    return { ok: false, state: { error: FAILED_MESSAGE, values: {} } };
-  }
-  if (!(await checkStepUp())) {
-    return {
-      ok: false,
-      state: { error: STEP_UP_REQUIRED, values: echoedValues(formData) },
-    };
-  }
-  return { ok: true };
-}
-
 export async function setRetentionEnabledAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authorise(formData);
-  if (!gate.ok) return gate.state;
+  // The same sentence a non-superuser gets everywhere else on /super: nothing
+  // that confirms the control exists.
+  const refusal = await authoriseSuperuser(formData, { notSuperuser: FAILED_MESSAGE, stepUp: STEP_UP_REQUIRED });
+  if (refusal) return refusal;
 
   // BOTH SWITCHES ARE SENT ON EVERY SUBMIT, because the RPC requires both:
   // a form that posted only the one being changed would silently re-enable
@@ -104,8 +84,10 @@ export async function previewRetentionRunAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authorise(formData);
-  if (!gate.ok) return gate.state;
+  // The same sentence a non-superuser gets everywhere else on /super: nothing
+  // that confirms the control exists.
+  const refusal = await authoriseSuperuser(formData, { notSuperuser: FAILED_MESSAGE, stepUp: STEP_UP_REQUIRED });
+  if (refusal) return refusal;
 
   // `dry: true` all the way down: start_retention_run() records the mode on
   // the row, every sweep counts instead of deleting, and the runner skips the
@@ -173,8 +155,10 @@ export async function releaseAuditCeilingAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authorise(formData);
-  if (!gate.ok) return gate.state;
+  // The same sentence a non-superuser gets everywhere else on /super: nothing
+  // that confirms the control exists.
+  const refusal = await authoriseSuperuser(formData, { notSuperuser: FAILED_MESSAGE, stepUp: STEP_UP_REQUIRED });
+  if (refusal) return refusal;
 
   const reason = String(formData.get("reason") ?? "").trim();
   if (reason === "") {

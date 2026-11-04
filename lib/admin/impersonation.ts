@@ -47,12 +47,11 @@
 // product's word for the access, not a description of a spoofed session.
 
 import { revalidatePath } from "next/cache";
-import { getCurrentOrg, getCurrentUser } from "@/lib/auth";
+import { getCurrentOrg } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
-import { isSuperuser } from "@/lib/admin/superuser";
+import { authoriseSuperuser } from "@/lib/admin/superuser-gate";
 
 const STEP_UP_REQUIRED =
   "Confirm it’s you before opening support access. Use the re-authentication prompt at the top of this page, then try again.";
@@ -110,34 +109,6 @@ function rpcRefusal(
   return refuse(FAILED_MESSAGE, formData);
 }
 
-/**
- * The superuser-side gate: on the allowlist, and a credential presented in the
- * last five minutes.
- *
- * isSuperuser() is the IDENTITY check and is deliberately not aal-gated
- * (lib/admin/superuser.ts); the aal2 requirement is enforced by
- * private.has_platform_permission() inside every RPC. This function therefore
- * checks the two things the database cannot see for itself: that the caller is
- * signed in at all, and that step-up is fresh.
- */
-async function authoriseSuperuser(
-  formData: FormData,
-  { requireStepUp }: { requireStepUp: boolean },
-): Promise<{ readonly ok: true } | { readonly ok: false; readonly state: FormState }> {
-  if (!(await getCurrentUser())) {
-    return { ok: false, state: refuse(FAILED_MESSAGE, formData) };
-  }
-  if (!(await isSuperuser())) {
-    // Not a distinguishing message: the same sentence a superuser gets when
-    // they aim at somebody else's session. There is nothing to learn here.
-    return { ok: false, state: refuse(NOT_YOURS, formData) };
-  }
-  if (requireStepUp && !(await checkStepUp())) {
-    return { ok: false, state: refuse(STEP_UP_REQUIRED, formData) };
-  }
-  return { ok: true };
-}
-
 // ---------------------------------------------------------------------------
 // 1. REQUEST (superuser)
 // ---------------------------------------------------------------------------
@@ -146,8 +117,8 @@ export async function requestImpersonationAction(
   formData: FormData,
 ): Promise<FormState> {
   // STEP-UP REQUIRED: this is the act CLAUDE.md § Session security names.
-  const gate = await authoriseSuperuser(formData, { requireStepUp: true });
-  if (!gate.ok) return gate.state;
+  const refusal = await authoriseSuperuser(formData, { notSuperuser: NOT_YOURS, stepUp: STEP_UP_REQUIRED });
+  if (refusal) return refusal;
 
   const slug = field(formData, "organisationSlug");
   const reason = field(formData, "reason");
@@ -187,8 +158,8 @@ export async function startImpersonationAction(
   // time the sign-in that covered the request is long stale. The page's
   // <StepUpGate> renders the re-auth prompt above this list when it is, which
   // is where STEP_UP_REQUIRED sends the caller.
-  const gate = await authoriseSuperuser(formData, { requireStepUp: true });
-  if (!gate.ok) return gate.state;
+  const refusal = await authoriseSuperuser(formData, { notSuperuser: NOT_YOURS, stepUp: STEP_UP_REQUIRED });
+  if (refusal) return refusal;
 
   const sessionId = field(formData, "sessionId");
   if (!sessionId) return refuse(FAILED_MESSAGE, formData);
@@ -245,8 +216,8 @@ export async function endImpersonationAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authoriseSuperuser(formData, { requireStepUp: false });
-  if (!gate.ok) return gate.state;
+  const refusal = await authoriseSuperuser(formData, { notSuperuser: NOT_YOURS, stepUp: null });
+  if (refusal) return refusal;
 
   const sessionId = field(formData, "sessionId");
   if (!sessionId) return refuse(FAILED_MESSAGE, formData);

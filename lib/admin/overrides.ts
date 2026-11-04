@@ -34,12 +34,10 @@
 // unmentioned, the same discipline lib/admin/lifecycle.ts's header applies.
 
 import { revalidatePath } from "next/cache";
-import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
-import { isSuperuser } from "@/lib/admin/superuser";
+import { authoriseSuperuser } from "@/lib/admin/superuser-gate";
 import { londonWallClockToInstant } from "@/lib/format/date";
 import { isTierKey } from "@/lib/entitlements/tiers";
 import { isFeatureFlagKey } from "@/lib/admin/overrides-contract";
@@ -99,22 +97,6 @@ function rpcRefusal(
   return refuse(FAILED_MESSAGE, formData);
 }
 
-/** Same shape as lib/admin/lifecycle.ts's authoriseSuperuser(). */
-async function authoriseSuperuser(
-  formData: FormData,
-): Promise<{ readonly ok: true } | { readonly ok: false; readonly state: FormState }> {
-  if (!(await getCurrentUser())) {
-    return { ok: false, state: refuse(FAILED_MESSAGE, formData) };
-  }
-  if (!(await isSuperuser())) {
-    return { ok: false, state: refuse(NOT_YOURS, formData) };
-  }
-  if (!(await checkStepUp())) {
-    return { ok: false, state: refuse(STEP_UP_REQUIRED, formData) };
-  }
-  return { ok: true };
-}
-
 function revalidateOverrideSurfaces(): void {
   revalidatePath("/super/billing");
   // Every organisation's own home renders the early-access badge and (a
@@ -129,8 +111,8 @@ export async function grantBillingOverrideAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authoriseSuperuser(formData);
-  if (!gate.ok) return gate.state;
+  const refusal = await authoriseSuperuser(formData, { notSuperuser: NOT_YOURS, stepUp: STEP_UP_REQUIRED });
+  if (refusal) return refusal;
 
   const slug = field(formData, "organisationSlug");
   const tierRaw = field(formData, "overrideTier");
@@ -198,8 +180,8 @@ export async function revokeBillingOverrideAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authoriseSuperuser(formData);
-  if (!gate.ok) return gate.state;
+  const refusal = await authoriseSuperuser(formData, { notSuperuser: NOT_YOURS, stepUp: STEP_UP_REQUIRED });
+  if (refusal) return refusal;
 
   const overrideId = field(formData, "overrideId");
   const reason = field(formData, "reason");
@@ -225,8 +207,8 @@ export async function grantFeatureOverrideAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authoriseSuperuser(formData);
-  if (!gate.ok) return gate.state;
+  const refusal = await authoriseSuperuser(formData, { notSuperuser: NOT_YOURS, stepUp: STEP_UP_REQUIRED });
+  if (refusal) return refusal;
 
   const slug = field(formData, "organisationSlug");
   const flagKey = field(formData, "flagKey");
@@ -273,8 +255,8 @@ export async function revokeFeatureOverrideAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const gate = await authoriseSuperuser(formData);
-  if (!gate.ok) return gate.state;
+  const refusal = await authoriseSuperuser(formData, { notSuperuser: NOT_YOURS, stepUp: STEP_UP_REQUIRED });
+  if (refusal) return refusal;
 
   const overrideId = field(formData, "overrideId");
   const reason = field(formData, "reason");
