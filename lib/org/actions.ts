@@ -289,7 +289,14 @@ async function resolveOrInviteAuthUser(
       // membership to the wrong person.
       return { error: "We couldn't send that invitation. Try again." };
     }
-    return { userId: existing, created: false };
+    if (!existing.confirmed) {
+      // Anyone can sign up as an address they don't own; until it is
+      // confirmed, the account is not proof of who the invitee is.
+      return {
+        error: `${email} has an account that hasn't been confirmed yet. Ask them to confirm their email address, then invite them again.`,
+      };
+    }
+    return { userId: existing.id, created: false };
   }
 
   if (error?.status === 429) {
@@ -334,13 +341,20 @@ const LOOKUP_MAX_PAGES = 10;
  *    attach the membership to the wrong account, in a flow whose entire job is
  *    granting somebody access to a tenant.
  *
+ * 3. AN UNCONFIRMED MATCH IS NOT THE INVITEE. Signing up as an address proves
+ *    nothing until the address is confirmed, so `confirmed` is returned for
+ *    the caller to refuse on. Only bites while email confirmations are on:
+ *    with them off, GoTrue confirms every signup at creation.
+ *
  * Pagination metadata is honoured rather than ignored: the walk follows the
  * `link: ...; rel="next"` header until the match is found or the pages run
  * out. With `filter` set to a complete address a second page is vanishingly
  * unlikely -- it would need other addresses CONTAINING this whole address as a
  * substring -- but "unlikely" was the previous version's failure mode too.
  */
-async function findAuthUserByEmail(email: string): Promise<string | null> {
+async function findAuthUserByEmail(
+  email: string,
+): Promise<{ id: string; confirmed: boolean } | null> {
   const target = email.toLowerCase();
 
   for (let page = 1; page <= LOOKUP_MAX_PAGES; page++) {
@@ -354,12 +368,12 @@ async function findAuthUserByEmail(email: string): Promise<string | null> {
     const body: unknown = await response.json();
     const users =
       typeof body === "object" && body !== null && "users" in body
-        ? (body as { users?: { id?: string; email?: string }[] }).users
+        ? (body as { users?: { id?: string; email?: string; email_confirmed_at?: string | null }[] }).users
         : undefined;
     if (!Array.isArray(users) || users.length === 0) return null;
 
     const match = users.find((u) => u.email?.toLowerCase() === target);
-    if (match?.id) return match.id;
+    if (match?.id) return { id: match.id, confirmed: Boolean(match.email_confirmed_at) };
 
     // GoTrue emits `link: <...>; rel="next"` only while another page exists.
     // No rel="next" means this was the last page and there is no exact match.
