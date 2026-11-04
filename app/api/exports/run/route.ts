@@ -1,5 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { cronAuthorised } from "@/lib/security/cron-auth";
 import { runPendingExportJobs } from "@/lib/export/runner";
 
 // ===========================================================================
@@ -31,21 +31,8 @@ import { runPendingExportJobs } from "@/lib/export/runner";
 // exports is a side effect.
 // ===========================================================================
 
-function configuredSecret(): string | null {
-  const value = process.env.EXPORT_RUNNER_SECRET;
-  return value && value.trim().length >= 32 ? value.trim() : null;
-}
-
-function bearerMatches(header: string | null, secret: string): boolean {
-  if (!header || !header.startsWith("Bearer ")) return false;
-  const presented = Buffer.from(header.slice("Bearer ".length));
-  const expected = Buffer.from(secret);
-  return presented.length === expected.length && timingSafeEqual(presented, expected);
-}
-
 export async function POST(request: Request): Promise<NextResponse> {
-  const secret = configuredSecret();
-  if (!secret || !bearerMatches(request.headers.get("authorization"), secret)) {
+  if (!cronAuthorised(request, "EXPORT_RUNNER_SECRET")) {
     return new NextResponse("Not found", {
       status: 404,
       headers: { "Cache-Control": "no-store" },

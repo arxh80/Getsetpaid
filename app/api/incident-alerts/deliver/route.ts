@@ -1,5 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { cronAuthorised } from "@/lib/security/cron-auth";
 import {
   deliverPendingIncidentAlerts,
   deliverPendingIncidentAlertsToTelegram,
@@ -68,18 +68,6 @@ import {
 // is a side effect.
 // ===========================================================================
 
-function configuredSecret(): string | null {
-  const value = process.env.INCIDENT_ALERT_DELIVERY_SECRET;
-  return value && value.trim().length >= 32 ? value.trim() : null;
-}
-
-function bearerMatches(header: string | null, secret: string): boolean {
-  if (!header || !header.startsWith("Bearer ")) return false;
-  const presented = Buffer.from(header.slice("Bearer ".length));
-  const expected = Buffer.from(secret);
-  return presented.length === expected.length && timingSafeEqual(presented, expected);
-}
-
 async function settle<T>(
   run: () => Promise<T>,
 ): Promise<T | { readonly outcome: "unavailable"; readonly error: string }> {
@@ -93,8 +81,7 @@ async function settle<T>(
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const secret = configuredSecret();
-  if (!secret || !bearerMatches(request.headers.get("authorization"), secret)) {
+  if (!cronAuthorised(request, "INCIDENT_ALERT_DELIVERY_SECRET")) {
     return new NextResponse("Not found", {
       status: 404,
       headers: { "Cache-Control": "no-store" },
