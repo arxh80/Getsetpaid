@@ -84,7 +84,6 @@ export type CrmAuditTarget = keyof typeof CRM_AUDIT_TARGETS;
  *  in a list. `soft_deleted`, not `deleted`: the latter already means a HARD
  *  delete on the two tables that have one. */
 export const CRM_AUDIT_VERBS = ["created", "updated", "soft_deleted", "restored"] as const;
-export type CrmAuditVerb = (typeof CRM_AUDIT_VERBS)[number];
 
 /** The audit table's physical name for a target type -- what the integration
  *  test joins pg_trigger against. */

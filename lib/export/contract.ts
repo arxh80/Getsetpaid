@@ -473,10 +473,6 @@ export const WORKSPACE_EXPORT_EXCLUDES =
   "It is built with YOUR access, not with everybody’s: anything you cannot see in the product is not in the archive either — a colleague’s private notes, for example. It also leaves out the platform’s own records about this workspace: " +
   `${listPhrases(WORKSPACE_EXCLUDED_TABLES.map((t) => t.plainEnglish))}.`;
 
-/** The one sentence about who may open the file. */
-export const EXPORT_DOWNLOAD_IS_YOURS =
-  "Only you can download it, from this page. The link is signed and lasts a minute; the archive itself is kept for";
-
 export function describeArchiveLife(days: number): string {
   return days === 1 ? "1 day" : `${days} days`;
 }

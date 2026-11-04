@@ -115,7 +115,6 @@ export const NETWORK_LINKS_LIST = defineListSpec<LinkSortKey, LinkFilterKey>({
 });
 
 export type NetworkLinkSortKey = keyof (typeof NETWORK_LINKS_LIST)["sort"];
-export type NetworkLinkFilterKey = keyof (typeof NETWORK_LINKS_LIST)["filters"];
 
 /**
  * This organisation's own links, paginated -- consumed by its own route,

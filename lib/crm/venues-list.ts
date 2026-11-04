@@ -92,7 +92,6 @@ export const VENUE_LIST = defineListSpec({
 });
 
 export type VenueSortKey = keyof (typeof VENUE_LIST)["sort"];
-export type VenueFilterKey = keyof (typeof VENUE_LIST)["filters"];
 
 /**
  * The restore view's spec. See lib/crm/artists-list.ts's copy of this note.
@@ -131,4 +130,3 @@ export interface DeletedVenueRow {
 }
 
 export type VenueDeletedSortKey = keyof (typeof VENUE_DELETED_LIST)["sort"];
-export type VenueDeletedFilterKey = keyof (typeof VENUE_DELETED_LIST)["filters"];

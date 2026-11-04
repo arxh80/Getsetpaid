@@ -241,19 +241,3 @@ export const FINANCIAL_ENTRY_DELETED_LIST = defineListSpec({
 export const FINANCIAL_ENTRY_DELETED_SELECT =
   "id, event_id, category, status, amount_minor, currency, occurred_on, description, deleted_at";
 
-export interface DeletedFinancialEntryRow {
-  id: string;
-  eventId: string;
-  category: FinanceCategory;
-  status: FinanceStatus;
-  amountMinor: number;
-  currency: string;
-  occurredOn: string;
-  description: string | null;
-  deletedAt: string;
-}
-
-export type FinancialEntryDeletedSortKey =
-  keyof (typeof FINANCIAL_ENTRY_DELETED_LIST)["sort"];
-export type FinancialEntryDeletedFilterKey =
-  keyof (typeof FINANCIAL_ENTRY_DELETED_LIST)["filters"];

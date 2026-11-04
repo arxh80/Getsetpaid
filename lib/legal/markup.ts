@@ -586,9 +586,3 @@ export function parseLegalMarkup(source: string): ParsedMarkup {
   return { blocks, problems: [...new Set(problems)] };
 }
 
-/** The plain text of an inline run -- for tests and for metadata. */
-export function inlineText(content: readonly Inline[], supportEmailText: string): string {
-  return content
-    .map((part) => (part.kind === "support-email" ? supportEmailText : part.text))
-    .join("");
-}

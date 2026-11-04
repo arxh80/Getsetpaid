@@ -105,7 +105,6 @@ export const CONTACT_LIST = defineListSpec({
 });
 
 export type ContactSortKey = keyof (typeof CONTACT_LIST)["sort"];
-export type ContactFilterKey = keyof (typeof CONTACT_LIST)["filters"];
 
 /**
  * The restore view's spec. Its own spec, not a mode of the one above.
@@ -149,4 +148,3 @@ export interface DeletedContactRow {
 }
 
 export type ContactDeletedSortKey = keyof (typeof CONTACT_DELETED_LIST)["sort"];
-export type ContactDeletedFilterKey = keyof (typeof CONTACT_DELETED_LIST)["filters"];

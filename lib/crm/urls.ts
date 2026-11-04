@@ -265,8 +265,6 @@ export const SOCIAL_PLATFORMS = [
   { key: "x", label: "X" },
 ] as const;
 
-export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number]["key"];
-
 /**
  * Read the six social inputs a CRM form renders (`social_<key>`), adding a
  * problem for any value over 300 characters or carrying an unsafe scheme.
