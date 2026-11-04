@@ -73,7 +73,8 @@ describe("inviting an address that already has an account", () => {
     stubs.confirmedAt = "2026-11-01T00:00:00Z";
     const result = await inviteMemberAction({}, form());
     expect(stubs.insert).toHaveBeenCalledWith(expect.objectContaining({ user_id: "existing-1" }));
-    expect(result).toHaveProperty("message");
+    // Nothing is mailed to an existing account, so the message must not say so.
+    expect(result).toEqual({ message: expect.stringContaining("no email was sent") });
   });
 
   it("refuses an unconfirmed account and creates no membership", async () => {
