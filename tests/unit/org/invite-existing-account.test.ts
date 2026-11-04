@@ -81,6 +81,6 @@ describe("inviting an address that already has an account", () => {
     stubs.confirmedAt = null;
     const result = await inviteMemberAction({}, form());
     expect(stubs.insert).not.toHaveBeenCalled();
-    expect(result).toEqual({ error: expect.stringContaining("hasn't been confirmed") });
+    expect(result).toEqual({ error: expect.stringContaining("unfinished GetSetPaid sign-up") });
   });
 });
