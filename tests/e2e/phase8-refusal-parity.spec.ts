@@ -288,30 +288,36 @@ test("POSITIVE CONTROL: the aal2 superuser reaches each Phase 8 /super page, and
   );
 });
 
+// ONE TEST PER (PRINCIPAL, PAGE), as accessibility.spec.ts split its walk:
+// four principals walking every /super page under one 60s budget measured
+// 59.5-60s locally, so a cold page failed it with an EMPTY timeout that names
+// no page. Split, each page pays its own first-hit compile and a slow one is
+// NAMED. The cost is a sign-in per test.
 for (const who of ["read_only", "owner", "no-workspace", "suspended manager"] as const) {
-  test(`REFUSAL PARITY: ${who} -- every /super page equals a /super page that does not exist, rendered and raw`, async ({
-    page,
-  }) => {
-    if (who === "no-workspace") await signInByEmail(page, noWorkspace.email);
-    else if (who === "suspended manager") {
-      await setOrganisationSuspended(world.orgId, true);
-      await signIn(page, world, "manager");
-    } else await signIn(page, world, who);
-    try {
-      for (const url of ALL_SUPER) await expectParity(page, who, url, SUPER_GHOST);
-      // THE RAW DOCUMENT (review I2): what `curl` sees, not what a browser
-      // renders. The ghost is fetched beside each page, not once, so a dev
-      // server warming up between the two cannot be mistaken for the oracle.
-      for (const url of ALL_SUPER) {
+  for (const url of ALL_SUPER) {
+    test(`REFUSAL PARITY: ${who} -- ${url} equals a /super page that does not exist, rendered and raw`, async ({
+      page,
+    }) => {
+      if (who === "no-workspace") await signInByEmail(page, noWorkspace.email);
+      else if (who === "suspended manager") {
+        await setOrganisationSuspended(world.orgId, true);
+        await signIn(page, world, "manager");
+      } else await signIn(page, world, who);
+      try {
+        await expectParity(page, who, url, SUPER_GHOST);
+        // THE RAW DOCUMENT (review I2): what `curl` sees, not what a browser
+        // renders. The ghost is fetched beside the page, not once per run, so
+        // a dev server warming up between the two cannot be mistaken for the
+        // oracle.
         const ghost = await rawDocumentOf(page, SUPER_GHOST);
         const real = await rawDocumentOf(page, url);
         expect.soft(real.status, `${who}: ${url} raw status`).toBe(ghost.status);
         expect.soft(real.html, `${who}: ${url} and ${SUPER_GHOST} must be the same raw HTML`).toBe(ghost.html);
+      } finally {
+        if (who === "suspended manager") await setOrganisationSuspended(world.orgId, false);
       }
-    } finally {
-      if (who === "suspended manager") await setOrganisationSuspended(world.orgId, false);
-    }
-  });
+    });
+  }
 }
 
 test("REFUSAL PARITY: /[orgSlug]/settings/export -- a real foreign workspace equals one nobody has, as a literal 404", async ({
