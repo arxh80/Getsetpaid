@@ -48,6 +48,9 @@
 // user-supplied mailto, and a two-entry allowlist that is right is better than
 // a four-entry one that has to be re-argued.
 
+import { field } from "@/lib/forms";
+import type { FieldProblem } from "@/lib/crm/validate";
+
 /**
  * Exactly what the URL parser ignores, removed before the scheme is read.
  *
@@ -262,7 +265,39 @@ export const SOCIAL_PLATFORMS = [
   { key: "x", label: "X" },
 ] as const;
 
-export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number]["key"];
+/**
+ * Read the six social inputs a CRM form renders (`social_<key>`), adding a
+ * problem for any value over 300 characters or carrying an unsafe scheme.
+ *
+ * The write-side check only: the database cannot look inside the jsonb, and
+ * the CONTROL is the render side (safeHref), because PostgREST is reachable
+ * with the anon key. Returns only the keys the form owns, never the whole
+ * column: a create stores it as-is, an update puts it through mergeSocials()
+ * so a key the form never rendered survives an unrelated edit.
+ */
+export function readSocialFields(
+  formData: FormData,
+  problems: (FieldProblem | null)[],
+): Record<string, string> {
+  const socials: Record<string, string> = {};
+  for (const platform of SOCIAL_PLATFORMS) {
+    const value = field(formData, `social_${platform.key}`);
+    if (value === null) continue;
+    if (value.length > 300) {
+      problems.push({ field: `social_${platform.key}`, message: "Use 300 characters or fewer." });
+      continue;
+    }
+    if (hasUnsafeScheme(value)) {
+      problems.push({
+        field: `social_${platform.key}`,
+        message: "Only http:// and https:// links can be stored. A plain handle is fine too.",
+      });
+      continue;
+    }
+    socials[platform.key] = value;
+  }
+  return socials;
+}
 
 /**
  * What to STORE in `socials` after an edit: the submitted six, over the top of

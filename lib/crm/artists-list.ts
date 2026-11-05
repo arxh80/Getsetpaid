@@ -113,7 +113,6 @@ export const ARTIST_LIST = defineListSpec({
 });
 
 export type ArtistSortKey = keyof (typeof ARTIST_LIST)["sort"];
-export type ArtistFilterKey = keyof (typeof ARTIST_LIST)["filters"];
 
 /**
  * The restore view's spec. Its own spec, not a mode of the one above.
@@ -163,7 +162,6 @@ export interface DeletedArtistRow {
 }
 
 export type ArtistDeletedSortKey = keyof (typeof ARTIST_DELETED_LIST)["sort"];
-export type ArtistDeletedFilterKey = keyof (typeof ARTIST_DELETED_LIST)["filters"];
 
 // ---------------------------------------------------------------------------
 // The fee-history panel

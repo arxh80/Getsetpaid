@@ -72,7 +72,6 @@ export const AGENCY_LIST = defineListSpec({
 });
 
 export type AgencySortKey = keyof (typeof AGENCY_LIST)["sort"];
-export type AgencyFilterKey = keyof (typeof AGENCY_LIST)["filters"];
 
 /**
  * The restore view's spec. See lib/crm/artists-list.ts's copy of this note for
@@ -115,4 +114,3 @@ export interface DeletedAgencyRow {
 }
 
 export type AgencyDeletedSortKey = keyof (typeof AGENCY_DELETED_LIST)["sort"];
-export type AgencyDeletedFilterKey = keyof (typeof AGENCY_DELETED_LIST)["filters"];

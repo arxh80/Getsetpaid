@@ -9,26 +9,10 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentUser } from "./index";
+import { mfaErrorMessage } from "./mfa-errors";
 import { safeNextPath } from "./redirects";
 import { mayTryPassword, recordPasswordOutcome } from "./login-budget";
 import { field, type FormState } from "@/lib/forms";
-
-/** Same mapping step-up's MFA path uses -- see lib/auth/mfa-actions.ts for
- * the full reasoning behind distinguishing these cases. Duplicated rather
- * than imported: mfa-actions.ts is a "use server" file, which may only
- * export async Server Actions, not a plain helper function. */
-function mfaErrorMessage(error: { code?: string } | null): string {
-  switch (error?.code) {
-    case "over_request_rate_limit":
-      return "Too many attempts. Wait a minute and try again.";
-    case "mfa_challenge_expired":
-      return "That code expired before it was checked. Enter the newest 6-digit code from your app and try again.";
-    case "mfa_verification_failed":
-    case "mfa_verification_rejected":
-    default:
-      return "That code didn't match. Check the time on your device and your authenticator app, then try again.";
-  }
-}
 
 export async function reauthenticateAction(
   _prev: FormState,

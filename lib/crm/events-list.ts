@@ -265,7 +265,6 @@ export interface DeletedEventRow {
 }
 
 export type EventDeletedSortKey = keyof (typeof EVENT_DELETED_LIST)["sort"];
-export type EventDeletedFilterKey = keyof (typeof EVENT_DELETED_LIST)["filters"];
 
 // ===========================================================================
 // TASK 7: THE TWO DERIVED SURFACES -- "EVENTS HERE" AND "EVENT HISTORY"

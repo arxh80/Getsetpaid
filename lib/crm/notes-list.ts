@@ -139,7 +139,6 @@ export function mapDeletedNoteRow(row: Record<string, unknown>): DeletedNoteRow 
 }
 
 export type NoteDeletedSortKey = keyof (typeof NOTE_DELETED_LIST)["sort"];
-export type NoteDeletedFilterKey = keyof (typeof NOTE_DELETED_LIST)["filters"];
 
 /**
  * A note's first line, for anywhere a note has to be NAMED.

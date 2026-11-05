@@ -40,18 +40,14 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { getCurrentOrg, getCurrentUser, type CurrentOrg } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
-import { getCrmWriteAccess } from "@/lib/crm/write-access";
 import {
   commitWrite,
-  CONFLICT_MESSAGE,
   FAILED_MESSAGE,
-  REFUSED_MESSAGE,
-  UNKNOWN_MESSAGE,
-  type WriteResult,
 } from "@/lib/crm/write";
+import { authoriseOrg, failureState } from "@/lib/crm/actions";
 import {
   entityHref,
   isMergeEntityType,
@@ -62,59 +58,6 @@ import { ENTITY_PATH_SEGMENT } from "@/lib/crm/custom-fields";
 
 /** The key every write below is gated on. */
 const PERMISSION = "merge_records";
-
-/**
- * Resolve the organisation and check write access in one step.
- *
- * A copy of lib/crm/contacts.ts's `authorise()` down to the echoed values,
- * because the property it protects is the same one: a refused submit that also
- * empties the form has taken the user's work twice. It is a copy rather than a
- * shared helper for the reason Task 4b gave when it made the fifth one --
- * `PERMISSION` differs per module and hoisting it would mean passing the key
- * plus the entity noun plus the redirect target, which is the whole function.
- */
-async function authorise(
-  orgSlug: string | null,
-  formData: FormData,
-): Promise<
-  | { readonly ok: true; readonly org: CurrentOrg }
-  | { readonly ok: false; readonly state: FormState }
-> {
-  const echoed = echoedValues(formData);
-  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-  const org = await getCurrentOrg(orgSlug);
-  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-  const access = await getCrmWriteAccess(org, PERMISSION);
-  if (!access.canWrite) {
-    return { ok: false, state: { error: access.explanation, values: echoed } };
-  }
-  return { ok: true, org };
-}
-
-/**
- * The FormState for a write that did not apply.
- *
- * A SWITCH WITH NO `default` ARM, which is the point: five outcomes today, and
- * a sixth is a compile error here rather than a wrong sentence in front of
- * somebody who has just destroyed a record. `pnpm typecheck` is what runs it --
- * nothing else in this repository invokes tsc.
- */
-function failureState(
-  result: Exclude<WriteResult, { outcome: "applied" }>,
-  formData: FormData,
-): FormState {
-  const values = echoedValues(formData);
-  switch (result.outcome) {
-    case "refused":
-      return { error: REFUSED_MESSAGE, values };
-    case "conflict":
-      return { error: CONFLICT_MESSAGE, values };
-    case "unknown":
-      return { error: UNKNOWN_MESSAGE, values };
-    case "failed":
-      return { error: FAILED_MESSAGE, values };
-  }
-}
 
 /**
  * The sentence for a merge screen whose two records are no longer mergeable.
@@ -152,7 +95,7 @@ export async function mergeRecordsAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -287,7 +230,7 @@ export async function dismissCandidateAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 

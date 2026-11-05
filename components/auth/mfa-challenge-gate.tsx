@@ -29,7 +29,7 @@ export function MfaChallengeGate({ next }: { next: string }) {
   // `state.error` was set, mirroring one MfaEnrollGate's VerifyStep already
   // carried. Fix round 1 then pointed out that its `[state.error]` dependency
   // could never fire twice in a row -- mfaErrorMessage() in
-  // lib/auth/mfa-actions.ts maps every rejection to a FIXED string, so a
+  // lib/auth/mfa-errors.ts maps every rejection to a FIXED string, so a
   // second consecutive wrong code produces a byte-identical value, and
   // useEffect compares deps with Object.is.
   //

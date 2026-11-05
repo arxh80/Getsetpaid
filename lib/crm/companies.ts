@@ -31,18 +31,15 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { getCurrentOrg, getCurrentUser, type CurrentOrg } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
-import { getCrmWriteAccess } from "@/lib/crm/write-access";
 import {
   commitWrite,
-  CONFLICT_MESSAGE,
   FAILED_MESSAGE,
   REFUSED_MESSAGE,
-  UNKNOWN_MESSAGE,
-  type WriteResult,
 } from "@/lib/crm/write";
+import { authoriseOrg, stateFor } from "@/lib/crm/actions";
 import { screenAfterCreate } from "@/lib/crm/dedup";
 import { checkName, type FieldProblem } from "@/lib/crm/validate";
 import { COMPANY_TYPES } from "@/lib/crm/companies-list";
@@ -50,63 +47,6 @@ import { COMPANY_TYPES } from "@/lib/crm/companies-list";
 const PERMISSION = "manage_contacts";
 
 const ALLOWED_TYPES = new Set<string>(COMPANY_TYPES.map((t) => t.value));
-
-async function authorise(
-  orgSlug: string | null,
-  formData: FormData,
-): Promise<
-  | { readonly ok: true; readonly org: CurrentOrg }
-  | { readonly ok: false; readonly state: FormState }
-> {
-  // EVERY REFUSAL CARRIES THE SUBMITTED VALUES BACK, not just the validation
-  // ones. Measured in a browser: with the org suspended mid-edit, the form
-  // correctly refused to say it saved -- and threw away the change the user
-  // had just typed, because React resets the form and this path returned no
-  // `values`. Losing the edit is the same insult whichever gate refused it.
-  const echoed = echoedValues(formData);
-  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-  const org = await getCurrentOrg(orgSlug);
-  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-  const access = await getCrmWriteAccess(org, PERMISSION);
-  if (!access.canWrite) {
-    return { ok: false, state: { error: access.explanation, values: echoed } };
-  }
-  return { ok: true, org };
-}
-
-/**
- * Turn a WriteResult into the FormState a form renders.
- *
- * `formData` so a refusal echoes the submitted values back with the message --
- * React 19 resets the form after the action, and a refused save that also
- * empties the form has taken the user's work twice.
- */
-function stateFor(
-  result: WriteResult,
-  success: string,
-  formData: FormData,
-): FormState {
-  if (result.outcome === "applied") return { message: success };
-  const values = echoedValues(formData);
-  // See lib/crm/contacts.ts's copy: a switch with NO `default` arm, so a new
-  // outcome is a compile error rather than a wrong sentence. The mechanism is
-  // the declared `FormState` return type under `strict` -- a fifth member of
-  // the union leaves a path that falls off the end returning `undefined`, and
-  // TS2366 says so. There is no `never` arm; an earlier version of this comment
-  // said there was. `pnpm typecheck` is the only thing that runs it.
-  // `unknown` in particular must not be told "Nothing has been changed",
-  // because that is exactly what is not known.
-  switch (result.outcome) {
-    case "refused":
-      return { error: REFUSED_MESSAGE, values };
-    case "conflict":
-      return { error: CONFLICT_MESSAGE, values };
-    case "unknown":
-      return { error: UNKNOWN_MESSAGE, values };
-    case "failed":
-      return { error: FAILED_MESSAGE, values };
-  }
-}
 
 interface CompanyValues {
   name: string;
@@ -158,7 +98,7 @@ export async function createCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -232,7 +172,7 @@ export async function updateCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -267,7 +207,7 @@ export async function deleteCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -301,7 +241,7 @@ export async function restoreCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 

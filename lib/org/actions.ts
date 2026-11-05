@@ -238,7 +238,8 @@ export async function inviteMemberAction(
   return {
     message: identity.created
       ? `Invitation sent to ${email}. They'll get an email with a link to join.`
-      : `${email} already has a GetSetPaid account. We've sent them an invitation to this workspace.`,
+      : // No email goes to an existing account: GoTrue mails only new ones.
+        `${email} already has a GetSetPaid account, so no email was sent. Ask them to open /invites after signing in to accept.`,
   };
 }
 

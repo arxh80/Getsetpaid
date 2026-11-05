@@ -45,23 +45,18 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { getCurrentOrg, getCurrentUser, type CurrentOrg } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import {
-  getCrmWriteAccess,
-  joinEndExplanation,
   type RecordPresence,
 } from "@/lib/crm/write-access";
 import {
   commitWrite,
-  CONFLICT_MESSAGE,
   FAILED_MESSAGE,
   REFUSED_MESSAGE,
-  UNKNOWN_MESSAGE,
-  type WriteResult,
 } from "@/lib/crm/write";
-import { liveInOrg } from "@/lib/crm/actions";
+import { authoriseOrg, failureState, liveInOrg, refusedEndState, stateFor } from "@/lib/crm/actions";
 import { screenAfterCreate } from "@/lib/crm/dedup";
 import {
   checkEmail,
@@ -72,106 +67,13 @@ import {
   type FieldProblem,
 } from "@/lib/crm/validate";
 import {
-  hasUnsafeScheme,
   mergeSocials,
   normaliseWebsite,
-  SOCIAL_PLATFORMS,
+  readSocialFields,
 } from "@/lib/crm/urls";
 
 /** The permission key every write below is gated on. */
 const PERMISSION = "manage_contacts";
-
-// ---------------------------------------------------------------------------
-// Shared plumbing
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the organisation and check write access in one step.
- *
- * Returns either the org or the FormState to hand straight back. The
- * suspended/tier/permission explanation is used verbatim, so the message next
- * to a disabled control and the message after a submitted form are the same
- * sentence -- which matters, because the form can be submitted by anyone who
- * ignores the disabled attribute, and the two paths disagreeing is how a user
- * concludes one of them is wrong.
- */
-async function authorise(
-  orgSlug: string | null,
-  formData: FormData,
-): Promise<
-  | { readonly ok: true; readonly org: CurrentOrg }
-  | { readonly ok: false; readonly state: FormState }
-> {
-  // EVERY REFUSAL CARRIES THE SUBMITTED VALUES BACK, not just the validation
-  // ones. Measured in a browser: with the org suspended mid-edit, the form
-  // correctly refused to say it saved -- and threw away the change the user
-  // had just typed, because React resets the form and this path returned no
-  // `values`. Losing the edit is the same insult whichever gate refused it.
-  const echoed = echoedValues(formData);
-  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-  const org = await getCurrentOrg(orgSlug);
-  // A slug that does not exist, belongs to another tenant, or that the caller
-  // is only invited to. All three are the same answer, on purpose.
-  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-
-  const access = await getCrmWriteAccess(org, PERMISSION);
-  if (!access.canWrite) {
-    return { ok: false, state: { error: access.explanation, values: echoed } };
-  }
-  return { ok: true, org };
-}
-
-/**
- * Turn a WriteResult into the FormState a form renders.
- *
- * `formData` so a refusal echoes the submitted values back with the message --
- * React 19 resets the form after the action, and a refused save that also
- * empties the form has taken the user's work twice.
- */
-function stateFor(
-  result: WriteResult,
-  success: string,
-  formData: FormData,
-): FormState {
-  if (result.outcome === "applied") return { message: success };
-  return failureState(result, formData);
-}
-
-/**
- * The FormState for a write that did not apply.
- *
- * Split out because `setPrimaryCompanyAction` has no success string to pass --
- * its confirmation depends on whether a company was named -- and calling
- * `stateFor(result, "", formData)` to reach this branch reads as a bug.
- */
-function failureState(
-  result: Exclude<WriteResult, { outcome: "applied" }>,
-  formData: FormData,
-  // The generic sentence unless a caller has earned a specific one. Only
-  // `setPrimaryCompanyAction` does -- see PRIMARY_COMPANY_CONFLICT and
-  // CONFLICT_MESSAGE's own comment for why the default stopped naming it.
-  conflictMessage: string = CONFLICT_MESSAGE,
-): FormState {
-  const values = echoedValues(formData);
-  // A SWITCH RATHER THAN AN IF-CHAIN WITH A FALLBACK, and NO `default` arm.
-  // Four outcomes today; a fifth is a compile error here rather than a wrong
-  // sentence in front of a customer -- which is how "Nothing has been changed"
-  // came to be shown for a write that had changed something. The mechanism is
-  // the declared `FormState` return type under `strict`: with every arm
-  // returning and no default, a new member of the union leaves a path that
-  // falls off the end returning `undefined`, and TS2366 says so. There is no
-  // `never` arm and none is needed. `pnpm typecheck` is what runs it.
-  switch (result.outcome) {
-    case "refused":
-      return { error: REFUSED_MESSAGE, values };
-    case "conflict":
-      return { error: conflictMessage, values };
-    case "unknown":
-      return { error: UNKNOWN_MESSAGE, values };
-    case "failed":
-      return { error: FAILED_MESSAGE, values };
-  }
-}
 
 interface ContactValues {
   name: string;
@@ -216,39 +118,7 @@ function readContact(
   const { tags, problem: tagProblem } = parseTags(field(formData, "tags"));
   problems.push(tagProblem);
 
-  // SOCIALS. The one field group where the database can enforce nothing at all
-  // beyond "it is an object" -- 20260827232510's column comment says so -- so
-  // this is the only write-side check that exists. It is not the CONTROL,
-  // though: lib/crm/urls.ts's render side is, because PostgREST is reachable
-  // from a browser with the anon key and rows predating this file exist by
-  // assumption.
-  //
-  // WHAT THIS RETURNS IS THE SIX KEYS THE FORM OWNS, NOT THE WHOLE COLUMN.
-  // `createContactAction` stores it as-is (there is nothing to merge with);
-  // `updateContactAction` puts it through `mergeSocials()` over the stored
-  // object, so a key from an import that the form never rendered is not
-  // destroyed by an unrelated edit.
-  const socials: Record<string, string> = {};
-  for (const platform of SOCIAL_PLATFORMS) {
-    const value = field(formData, `social_${platform.key}`);
-    if (value === null) continue;
-    if (value.length > 300) {
-      problems.push({
-        field: `social_${platform.key}`,
-        message: "Use 300 characters or fewer.",
-      });
-      continue;
-    }
-    if (hasUnsafeScheme(value)) {
-      problems.push({
-        field: `social_${platform.key}`,
-        message:
-          "Only http:// and https:// links can be stored. A plain handle is fine too.",
-      });
-      continue;
-    }
-    socials[platform.key] = value;
-  }
+  const socials = readSocialFields(formData, problems);
 
   const fieldErrors: Record<string, string> = {};
   for (const problem of problems) {
@@ -288,7 +158,7 @@ export async function createContactAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -381,7 +251,7 @@ export async function updateContactAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -469,7 +339,7 @@ export async function deleteContactAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -503,7 +373,7 @@ export async function restoreContactAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -564,34 +434,11 @@ export async function restoreContactAction(
 // (the company end of a link, measured at S28b), moved with it: read
 // `liveInOrg`'s docblock in lib/crm/actions.ts.
 
-/**
- * The FormState a join write gets when an end is not live, or null when all
- * are and the write should go ahead.
- *
- * The sentence is chosen by `joinEndExplanation()` -- `DELETED_RECORD_EXPLANATION`
- * only when being deleted is the only thing wrong, because that string ends
- * with an instruction ("Restore it first") and an instruction that will not
- * help is worse than no explanation. Everything else gets `REFUSED_MESSAGE`,
- * which does not guess.
- *
- * `values` for the same reason every other refusal carries them: React 19
- * resets the form after the action, and a refused save that also empties it has
- * taken the user's work twice.
- */
-function refusedEndState(
-  ends: readonly RecordPresence[],
-  formData: FormData,
-): FormState | null {
-  const explanation = joinEndExplanation(ends);
-  if (explanation === null) return null;
-  return { error: explanation, values: echoedValues(formData) };
-}
-
 export async function linkCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -648,7 +495,7 @@ export async function unlinkCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 
@@ -732,7 +579,7 @@ export async function setPrimaryCompanyAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authorise(field(formData, "orgSlug"), formData);
+  const auth = await authoriseOrg(field(formData, "orgSlug"), formData, PERMISSION);
   if (!auth.ok) return auth.state;
   const org = auth.org;
 

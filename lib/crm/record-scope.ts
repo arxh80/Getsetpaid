@@ -32,8 +32,6 @@
 
 export const RECORD_SCOPED_ROLES = ["standard_user", "read_only"] as const;
 
-export type RecordScopedRole = (typeof RECORD_SCOPED_ROLES)[number];
-
 export function isRecordScopedRole(role: string): boolean {
   return (RECORD_SCOPED_ROLES as readonly string[]).includes(role);
 }

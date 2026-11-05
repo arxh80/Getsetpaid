@@ -902,7 +902,7 @@ export async function closeDb(): Promise<void> {
  * A stripped-`disabled`-and-submitted form is a claim about the RENDER layer
  * ("the button lied about being disabled"); the interesting failure mode
  * `SECURITY.md` warns against is the two-layer one where the render lied AND
- * the write went through anyway. `authoriseConnections`'s tier term is what
+ * the write went through anyway. `authoriseConnectionWrite`'s tier term is what
  * the psql/HTTP suites already prove refuses the INSERT; this is the same
  * claim read from the browser's own position, straight out of Postgres as
  * `postgres` (bypassing RLS on purpose, the same as every other fixture

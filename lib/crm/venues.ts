@@ -46,10 +46,9 @@ import {
   type FieldProblem,
 } from "@/lib/crm/validate";
 import {
-  hasUnsafeScheme,
   mergeSocials,
   normaliseWebsite,
-  SOCIAL_PLATFORMS,
+  readSocialFields,
 } from "@/lib/crm/urls";
 
 const PERMISSION = "manage_venues";
@@ -107,31 +106,7 @@ function readVenue(
   const websiteValue = website.ok ? website.value : null;
   if (!website.ok) problems.push({ field: "website", message: website.message });
 
-  // SOCIALS. The same six keys, the same write-side check, and the same
-  // reminder that the CONTROL is the render side (lib/crm/urls.ts): PostgREST
-  // is reachable from a browser with the anon key, so a stored `javascript:`
-  // has to be inert on the way out whatever happened on the way in.
-  const socials: Record<string, string> = {};
-  for (const platform of SOCIAL_PLATFORMS) {
-    const value = field(formData, `social_${platform.key}`);
-    if (value === null) continue;
-    if (value.length > 300) {
-      problems.push({
-        field: `social_${platform.key}`,
-        message: "Use 300 characters or fewer.",
-      });
-      continue;
-    }
-    if (hasUnsafeScheme(value)) {
-      problems.push({
-        field: `social_${platform.key}`,
-        message:
-          "Only http:// and https:// links can be stored. A plain handle is fine too.",
-      });
-      continue;
-    }
-    socials[platform.key] = value;
-  }
+  const socials = readSocialFields(formData, problems);
 
   const fieldErrors: Record<string, string> = {};
   for (const problem of problems) {

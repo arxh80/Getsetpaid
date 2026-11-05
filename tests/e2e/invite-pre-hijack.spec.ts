@@ -220,7 +220,7 @@ test("an unconfirmed sign-up is refused an invite; once its owner confirms, a fr
 
   // ...and a fresh invitation binds to the confirmed account and is accepted.
   expect(await invite(owner, world.orgs[1].slug, address)).toBe(
-    `${address} already has a GetSetPaid account. We've sent them an invitation to this workspace.`,
+    `${address} already has a GetSetPaid account, so no email was sent. Ask them to open /invites after signing in to accept.`,
   );
   await acceptFromInvites(holder, world.orgs[1]);
   expect(await membershipsOfUser(before!.id)).toEqual([

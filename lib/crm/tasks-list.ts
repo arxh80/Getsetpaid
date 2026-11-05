@@ -197,7 +197,6 @@ export function mapDeletedTaskRow(row: Record<string, unknown>): DeletedTaskRow 
 }
 
 export type TaskDeletedSortKey = keyof (typeof TASK_DELETED_LIST)["sort"];
-export type TaskDeletedFilterKey = keyof (typeof TASK_DELETED_LIST)["filters"];
 
 // ---------------------------------------------------------------------------
 // Meetings
@@ -350,4 +349,3 @@ export function mapDeletedMeetingRow(
 }
 
 export type MeetingDeletedSortKey = keyof (typeof MEETING_DELETED_LIST)["sort"];
-export type MeetingDeletedFilterKey = keyof (typeof MEETING_DELETED_LIST)["filters"];

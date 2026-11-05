@@ -77,6 +77,3 @@ export function legalDocumentHref(slug: LegalSlug): `/legal/${LegalSlug}` {
   return `/legal/${slug}`;
 }
 
-/** The root every public legal page lives under -- the one prefix
- *  lib/supabase/middleware.ts's PUBLIC_PATHS adds for this feature. */
-export const LEGAL_ROOT = "/legal";

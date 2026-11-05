@@ -126,7 +126,6 @@ export const COMPANY_LIST = defineListSpec({
 });
 
 export type CompanySortKey = keyof (typeof COMPANY_LIST)["sort"];
-export type CompanyFilterKey = keyof (typeof COMPANY_LIST)["filters"];
 
 /**
  * The restore view's spec. Its own spec, not a mode of the one above.
@@ -176,4 +175,3 @@ export interface DeletedCompanyRow {
 }
 
 export type CompanyDeletedSortKey = keyof (typeof COMPANY_DELETED_LIST)["sort"];
-export type CompanyDeletedFilterKey = keyof (typeof COMPANY_DELETED_LIST)["filters"];

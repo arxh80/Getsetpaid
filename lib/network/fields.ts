@@ -90,8 +90,6 @@ export type PublishableField = (typeof PUBLISHABLE_FIELDS)[number];
  */
 export const ALWAYS_NETWORK_FIELDS = ["display_name", "entity_kind"] as const;
 
-export type AlwaysNetworkField = (typeof ALWAYS_NETWORK_FIELDS)[number];
-
 /**
  * The four kinds of private record a network profile can speak for. Q74.
  *
