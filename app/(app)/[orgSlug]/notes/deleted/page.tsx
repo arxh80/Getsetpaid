@@ -5,6 +5,7 @@ import {
   mapDeletedNoteRow,
   type DeletedNoteRow,
   type NoteDeletedSortKey,
+  notePreview,
 } from "@/lib/crm/notes-list";
 import type { ListColumn } from "@/lib/list/spec";
 import { deletedRecordsPage } from "@/components/list/deleted-records-page";
@@ -56,7 +57,7 @@ function columnsFor(
           href={`/${orgSlug}/notes/${row.id}`}
           className="break-words text-primary underline underline-offset-4 hover:text-ink"
         >
-          {preview(row.body)}
+          {notePreview(row.body)}
         </Link>
       ),
     },
@@ -82,7 +83,3 @@ function columnsFor(
   ];
 }
 
-function preview(body: string): string {
-  const oneLine = body.replace(/\s+/g, " ").trim();
-  return oneLine.length > 140 ? `${oneLine.slice(0, 137)}…` : oneLine;
-}

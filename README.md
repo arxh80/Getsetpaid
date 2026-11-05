@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="brand/logo_with_text.png" alt="GetSetPaid" width="360">
+</p>
+
 # GetSetPaid
 
 A UK-first, multi-tenant CRM for the live events industry: promoters, venues, booking agents, DJs/artists and suppliers.
@@ -8,7 +12,7 @@ Each company keeps a **private CRM**, and can also publish a profile to a **cont
 
 ## What's built
 
-- **Auth and organisations:** authentication, multi-organisation workspaces, roles and subscription-tier entitlements
+- **Auth and organisations:** email and Google sign-in, multi-organisation workspaces, roles and subscription-tier entitlements
 - **Core CRM:** contacts, companies, and list views
 - **Events:** events with their lineup
 - **Operations:** tasks, meetings, notes, and documents (private storage bucket; uploads go through a scan-and-quarantine pipeline, currently using a stub scanner rather than a real malware engine)
@@ -43,13 +47,14 @@ Prerequisites: Node.js, [pnpm](https://pnpm.io), Docker (for the local Supabase 
 git clone https://github.com/arxh80/Getsetpaid.git
 cd Getsetpaid
 pnpm install
-cp .env.example .env.local   # then fill in the values
 npx supabase start
 npx supabase db reset --local
 pnpm dev
 ```
 
 Open http://localhost:3000.
+
+`pnpm dev` reads the keys from the running local Supabase stack and writes them to a git-ignored `.env.development.local` (see `scripts/dev-env.mjs`), so there is nothing to copy for local development. `.env.example` lists the variables a hosted deployment needs, including the Google OAuth client for Google sign-in.
 
 For the end-to-end tests, run `npx playwright install chromium` once first.
 
