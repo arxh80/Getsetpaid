@@ -20,6 +20,10 @@
 //                                 against the local stack). Look the existing
 //                                 user up by email through the Admin API
 //                                 instead and reuse their id.
+//           - Has an account that signed ITSELF up and never confirmed its
+//                                 email -> REFUSED, before any invitation
+//                                 email exists (G11, account pre-hijacking;
+//                                 see resolveOrInviteAuthUser()).
 //
 //   Step 2  Create the membership row -- as the INVITING ADMIN, through their
 //           own session, under RLS. NOT with the service-role client.
@@ -240,33 +244,123 @@ export async function inviteMemberAction(
 
 interface ResolvedIdentity {
   userId: string;
-  /** True when this call created the auth.users row (and sent the email). */
+  /** True when inviteUserByEmail answered 200 (and sent the email). */
   created: boolean;
 }
 
 /**
+ * Shown to the inviter when the address belongs to an account that signed
+ * itself up and has not confirmed its email.
+ *
+ * NEUTRAL ON PURPOSE: IT TELLS NOBODY TO CONFIRM ANYTHING (Task 4 fix round
+ * 1). The first wording ("Ask them to confirm it, then invite again") sent
+ * the inviter to have the address's owner confirm an account a squatter may
+ * have created -- and confirming it is exactly what makes the squatter's
+ * password work (GoTrue keeps the first password; the RESIDUAL test in
+ * tests/e2e/invite-pre-hijack.spec.ts). Measured on the local stack before
+ * choosing this wording, on a squatter's unconfirmed account:
+ *   - the sign-in page's only "forgotten it?" route, the emailed sign-in
+ *     link, makes GoTrue send a sign-up confirmation instead; following it
+ *     confirms the account and the squatter's password still signs in;
+ *   - GoTrue's recovery flow does confirm the account, and the squatter's
+ *     password fails once a new one is set -- but this app has no "Forgot
+ *     password" page to send anyone to, and the password form it shows after
+ *     a recovery link is optional.
+ * Phase 10 Task 20 (Q245) closed that: an address's first proof now
+ * replaces any password set before it unless the proving browser created
+ * the account (lib/auth/first-proof.ts). The wording stays neutral until the
+ * hosted project carries the email templates that proof depends on
+ * (SECURITY.md § 15, DECISIONS-QUEUE Q247); then it may say "ask them to
+ * finish signing up".
+ */
+const UNCONFIRMED_SIGN_UP_REFUSAL =
+  "We can't invite that address yet: it has an unfinished GetSetPaid sign-up. Check the address with the person you're inviting, or invite them at a different address.";
+
+const INVITE_FAILED = "We couldn't send that invitation. Try again.";
+
+/**
  * Returns an auth.users id for `email`, creating the account if it does not
- * exist yet.
+ * exist yet -- or refuses, when binding the invitation would hand a tenant
+ * membership to somebody who never proved they hold that inbox.
  *
  * OBSERVED BEHAVIOUR of supabase.auth.admin.inviteUserByEmail(), verified
  * against the local stack rather than assumed:
  *   - address with no account       -> 200, returns the newly created user
  *                                      with invited_at set; sends the invite
  *                                      email.
- *   - address with a full account   -> 422 { code: "email_exists" }, no user
+ *   - address with a CONFIRMED
+ *     account                       -> 422 { code: "email_exists" }, no user
  *                                      returned.
  *   - address invited but never
  *     accepted                      -> 200 again, SAME user id, invited_at
  *                                      refreshed, email re-sent. So re-inviting
  *                                      a pending user is naturally idempotent.
+ *   - address that SIGNED ITSELF UP
+ *     and never confirmed           -> ALSO 200, SAME user id, and an invite
+ *                                      email sent (measured with confirmations
+ *                                      on, Phase 10 Task 4: the squatter's
+ *                                      account came back with invited_at now
+ *                                      set). Only a confirmed account gets the
+ *                                      422.
  *
- * The 422 is what the fallback below handles.
+ * THE LAST CASE IS G11 PATH 2, AND WHY THE CHECK RUNS BEFORE THE CALL.
+ * A squatter signs up as bookings@victim.example with a password of their
+ * own and never confirms (they cannot: the inbox is not theirs). Before this
+ * check, a workspace inviting that address bound the squatter's id through
+ * the 200 above. The real owner then followed the invitation link, which is
+ * what CONFIRMS an account in GoTrue -- with the squatter's password still on
+ * it -- and the squatter signed in and held the membership. Reproduced end to
+ * end in tests/e2e/invite-pre-hijack.spec.ts.
+ *
+ * So the address is looked up FIRST, and an unconfirmed self-service sign-up
+ * is refused before inviteUserByEmail runs. Refusing after the call would be
+ * too late: the invitation email would already be in the victim's inbox, and
+ * following it confirms the squatter's account whether or not a membership
+ * row was written.
+ *
+ * WHAT TELLS A SQUATTER FROM A PENDING INVITEE. Both are existing,
+ * unconfirmed accounts, and inviteUserByEmail treats them identically. The
+ * difference is how the account came to exist: a pending invitee was created
+ * by an invitation (invited_at is set before this call, and the account has
+ * no password anybody chose), a squatter by a sign-up (invited_at is null).
+ * Refusing every unconfirmed account would break one person being invited by
+ * two workspaces before accepting either, which the e2e spec keeps working.
+ * invited_at is reliable here because nothing but this function invites, and
+ * it never invites an unconfirmed sign-up -- so an account carrying a
+ * password somebody chose never acquires an invited_at through this product.
+ *
+ * RESIDUALS, stated rather than left for a reviewer (SECURITY.md § 10):
+ *   - A squatter signing up in the milliseconds between the lookup and the
+ *     inviteUserByEmail call would still be bound. They would have to know
+ *     when the invitation is sent -- and since Phase 10 Task 20 the
+ *     invitee's first proof replaces whatever password the account carries.
+ *   - CLOSED by Phase 10 Task 20 (Q245): confirming a squatter's sign-up
+ *     used to leave the squatter's password working (GoTrue keeps the FIRST
+ *     password on an unconfirmed re-sign-up). The first proof now replaces
+ *     it unless the proving browser created the account.
+ *
+ * THE OTHER ORDERING IS SAFE (measured, and pinned by the e2e spec): when the
+ * invitation comes FIRST, the account it creates has no password, and a
+ * squatter signing up over it afterwards stores none either -- GoTrue does
+ * not update an existing unconfirmed user on sign-up. The squatter's
+ * sign-up does re-send a confirmation, which voids the invitation link, so
+ * the invitee may need the newer email or a fresh invitation; that is a
+ * nuisance, not a takeover.
  */
 async function resolveOrInviteAuthUser(
   email: string,
   orgSlug: string,
 ): Promise<ResolvedIdentity | { error: string }> {
   const admin = createAdminClient();
+
+  // ---- G11: never bind an unconfirmed self-service sign-up ---------------
+  // Fails CLOSED: if the lookup itself fails we cannot tell a squatter from a
+  // stranger, and proceeding would bind the squatter through the 200 above.
+  const lookup = await findAuthUserByEmail(email);
+  if (lookup === LOOKUP_FAILED) return { error: INVITE_FAILED };
+  if (lookup && isUnconfirmedSignUp(lookup)) {
+    return { error: UNCONFIRMED_SIGN_UP_REFUSAL };
+  }
 
   // The invitee is sent to our own callback, which verifies the emailed token
   // server-side and then lands them on the invite screen for this workspace.
@@ -282,21 +376,53 @@ async function resolveOrInviteAuthUser(
   }
 
   if (error && (error.code === "email_exists" || error.status === 422)) {
-    const existing = await findAuthUserByEmail(email);
-    if (!existing) {
+    // The lookup above normally already holds this account. Look again only
+    // if it found nothing (the account appeared since).
+    const existing = lookup ?? (await findAuthUserByEmail(email));
+    if (!existing || existing === LOOKUP_FAILED) {
       // inviteUserByEmail said the address is taken but we cannot find it.
       // Refuse rather than guess -- inventing an id here would attach the
       // membership to the wrong person.
-      return { error: "We couldn't send that invitation. Try again." };
+      return { error: INVITE_FAILED };
     }
-    return { userId: existing, created: false };
+    // GoTrue answers 422 only for a confirmed account, so this is belt and
+    // braces: the binding rule is "proven inbox", whichever branch got here.
+    if (existing.emailConfirmedAt === null) {
+      return { error: UNCONFIRMED_SIGN_UP_REFUSAL };
+    }
+    return { userId: existing.id, created: false };
   }
 
+  // GoTrue mails one address at most once per [auth.email] max_frequency (20
+  // minutes since G3), so a re-invite inside that window lands here too.
   if (error?.status === 429) {
-    return { error: "Too many invitations sent. Wait a minute and try again." };
+    return { error: "Too many invitations sent. Try again in 20 minutes." };
   }
 
-  return { error: "We couldn't send that invitation. Try again." };
+  return { error: INVITE_FAILED };
+}
+
+/** The fields of a GoTrue admin user record this file reads. */
+interface AuthUserRecord {
+  id: string;
+  emailConfirmedAt: string | null;
+  invitedAt: string | null;
+}
+
+/** An account that signed ITSELF up and has never proved its address. */
+function isUnconfirmedSignUp(user: AuthUserRecord): boolean {
+  return user.emailConfirmedAt === null && user.invitedAt === null;
+}
+
+/** The Admin API could not be asked. Distinct from "no such account". */
+const LOOKUP_FAILED = "lookup_failed";
+
+/** The slice of a GoTrue admin user row this file reads, as the API sends it. */
+interface AdminUserRow {
+  id?: string;
+  email?: string;
+  email_confirmed_at?: string | null;
+  invited_at?: string | null;
 }
 
 /** Users per page when scanning the Admin API's filtered result set. */
@@ -310,6 +436,12 @@ const LOOKUP_MAX_PAGES = 10;
 
 /**
  * Finds an existing auth user by email address.
+ *
+ * Returns its id, email_confirmed_at and invited_at (the last two are G11's
+ * binding rule, above); null when no account matches exactly; LOOKUP_FAILED
+ * when the Admin API could not be asked. A failure is NOT "no account": the
+ * invite step reads it as a reason to stop, since "no account" would let it
+ * proceed to inviteUserByEmail and bind whatever is there.
  *
  * TWO THINGS ARE GOING ON HERE, and they are easy to confuse.
  *
@@ -340,7 +472,9 @@ const LOOKUP_MAX_PAGES = 10;
  * unlikely -- it would need other addresses CONTAINING this whole address as a
  * substring -- but "unlikely" was the previous version's failure mode too.
  */
-async function findAuthUserByEmail(email: string): Promise<string | null> {
+async function findAuthUserByEmail(
+  email: string,
+): Promise<AuthUserRecord | null | typeof LOOKUP_FAILED> {
   const target = email.toLowerCase();
 
   for (let page = 1; page <= LOOKUP_MAX_PAGES; page++) {
@@ -349,17 +483,24 @@ async function findAuthUserByEmail(email: string): Promise<string | null> {
       page: String(page),
       per_page: String(LOOKUP_PAGE_SIZE),
     });
-    if (!response.ok) return null;
+    if (!response.ok) return LOOKUP_FAILED;
 
     const body: unknown = await response.json();
     const users =
       typeof body === "object" && body !== null && "users" in body
-        ? (body as { users?: { id?: string; email?: string }[] }).users
+        ? (body as { users?: AdminUserRow[] }).users
         : undefined;
-    if (!Array.isArray(users) || users.length === 0) return null;
+    if (!Array.isArray(users)) return LOOKUP_FAILED;
+    if (users.length === 0) return null;
 
     const match = users.find((u) => u.email?.toLowerCase() === target);
-    if (match?.id) return match.id;
+    if (match?.id) {
+      return {
+        id: match.id,
+        emailConfirmedAt: match.email_confirmed_at ?? null,
+        invitedAt: match.invited_at ?? null,
+      };
+    }
 
     // GoTrue emits `link: <...>; rel="next"` only while another page exists.
     // No rel="next" means this was the last page and there is no exact match.
@@ -406,6 +547,11 @@ export async function acceptInviteAction(
   });
 
   if (error) {
+    // G11 (20261102010000): the account has not proved its email address.
+    // Told apart from the 42501 below by its hint, and about the caller only.
+    if (error.code === "42501" && error.hint === "invite_email_unconfirmed") {
+      return { error: "Confirm your email address before accepting this invitation." };
+    }
     // 42501 is raised for BOTH "no such invitation" and "that invitation is
     // not yours" -- the function does not distinguish them, and neither do we.
     // See the migration's design note (c).
@@ -432,6 +578,100 @@ export async function acceptInviteAction(
   revalidatePath("/invites");
   if (org?.slug) redirect(`/${org.slug}`);
   redirect("/");
+}
+
+// ---------------------------------------------------------------------------
+// Remove a member / cancel an invitation, and change a member's role
+// (Phase 10 Task 21, audit finding 4)
+// ---------------------------------------------------------------------------
+// Both write through the CALLER'S RLS-bound client, never service-role. The
+// control is the database: the manage_members UPDATE/DELETE policies (with
+// 20261106000000's Owner-rows-are-an-Owner's term), the membership_keeps_an_
+// owner trigger and the membership.* audit triggers. This code only maps a
+// refusal to a sentence. An Owner's row is FILTERED OUT of a non-Owner's USING
+// clause, so a refusal arrives as zero rows as often as 42501 -- hence
+// `count: "exact"` and treating 0 as refused (the lib/crm/write.ts rule).
+//
+// Removal is the hard DELETE the policy allows (audited membership.deleted);
+// the same call cancels a pending invitation. Sessions are NOT revoked: the
+// person may belong to other workspaces, and every read in this one re-checks
+// membership in the database, so removal bites on their next request.
+// No step-up (Q249 default): both roles holding manage_members are
+// MFA-required, so these already run at aal2.
+
+const MEMBER_REFUSED = "You can’t change that member.";
+
+function memberWriteState(
+  result: { error: { code?: string; hint?: string | null } | null; count: number | null },
+  success: string,
+): FormState {
+  if (result.error?.code === "22023" && result.error.hint === "last_owner_of_workspace") {
+    return { error: "A workspace needs at least one active Owner." };
+  }
+  if (result.error?.code === "42501" || (!result.error && result.count === 0)) {
+    return { error: MEMBER_REFUSED };
+  }
+  if (result.error || result.count === null) {
+    console.error("[org] member write failed:", result.error);
+    return { error: "We couldn’t save that change. Try again." };
+  }
+  return { message: success };
+}
+
+async function memberWriteContext(formData: FormData) {
+  const refusal = await assertMfaSatisfied();
+  if (refusal) return { state: refusal } as const;
+  const orgSlug = field(formData, "orgSlug");
+  const membershipId = field(formData, "membershipId");
+  if (!orgSlug || !membershipId) return { state: { error: "Missing member." } } as const;
+  // Resolved THROUGH RLS: a foreign or unknown slug is null, and the org id
+  // comes from the database, never from the form.
+  const org = await getCurrentOrg(orgSlug);
+  if (!org) return { state: { error: "That workspace isn’t available." } } as const;
+  return { org, membershipId, supabase: await createClient() } as const;
+}
+
+export async function removeMemberAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const ctx = await memberWriteContext(formData);
+  if (ctx.state) return ctx.state;
+
+  const result = await ctx.supabase
+    .from("organisation_memberships")
+    .delete({ count: "exact" })
+    .eq("id", ctx.membershipId)
+    .eq("organisation_id", ctx.org.id);
+
+  const state = memberWriteState(result, "Removed.");
+  if (state.message) revalidatePath(`/${ctx.org.slug}/members`);
+  return state;
+}
+
+export async function changeMemberRoleAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  // Allowlisted before the database: the invitable roles plus 'owner'. Whether
+  // THIS caller may write 'owner' is the policy's call (Q248), not this file's.
+  const role = field(formData, "role");
+  if (!isInvitableRole(role) && role !== "owner") {
+    return { fieldErrors: { role: "Choose a role." } };
+  }
+
+  const ctx = await memberWriteContext(formData);
+  if (ctx.state) return ctx.state;
+
+  const result = await ctx.supabase
+    .from("organisation_memberships")
+    .update({ role }, { count: "exact" })
+    .eq("id", ctx.membershipId)
+    .eq("organisation_id", ctx.org.id);
+
+  const state = memberWriteState(result, "Role changed.");
+  if (state.message) revalidatePath(`/${ctx.org.slug}/members`);
+  return state;
 }
 
 /**

@@ -26,6 +26,7 @@ import { inflateRawSync } from "node:zlib";
 import type { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
 import { createFixtures, destroyFixtures, type RlsFixtures } from "../rls/support/fixtures";
+import { mintStepUp } from "../rls/support/step-up";
 
 let fx: RlsFixtures;
 let pool: Pool;
@@ -235,6 +236,7 @@ beforeAll(async () => {
 
   // ---- the two jobs, started through the real INSERT path ----------------
   {
+    await mintStepUp(fx.ownerA.client, "workspace_export");
     const { data, error } = await fx.ownerA.client
       .from("export_jobs")
       .insert({ kind: "workspace", organisation_id: fx.orgA.id } as never)

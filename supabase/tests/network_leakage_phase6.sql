@@ -256,9 +256,9 @@ reset role; reset request.jwt.claims;
 --   network_directory            network fields only, BOTH distances
 --   network_connected_profiles   0 rows unconnected; network+connections
 --                                fields connected
---   network_profiles (base)      readable BY DESIGN, both distances -- the
---                                documented fact the source-shape guards are
---                                paired with
+--   network_profiles (base)      0 rows, both distances (since
+--                                20261103000000; it was readable, Task 2
+--                                finding F1)
 --
 -- The subject is ALPHA's published profile e0110000-...-000a, whose seven
 -- publishable fields are spread across all three levels by
@@ -303,27 +303,27 @@ select leak.val('LB5b UNCONNECTED: ...and 0 rows in the BASE TABLE too (no exist
   $$select count(*)::text from public.network_profiles
      where id='e0110000-0000-0000-0000-00000000000d'$$, '0');
 
--- THE BASE TABLE IS READABLE BY DESIGN, AND THAT IS THE DOCUMENTED FACT the
--- source-shape guards are the other half of (20260904003000's own comment on
--- network_profiles_select_published_directory). It is asserted from the
--- UNCONNECTED distance here for the first time -- run-rls-tests.sh's Task 3
--- block measures it as ALPHA's own manager reading BETA's row, which is a
--- different caller.
-select leak.val('LB6 BY DESIGN: the UNCONNECTED counterparty reads ALPHA''s organisation_id off the BASE TABLE',
-  format($$select (organisation_id = %L)::text from public.network_profiles
-             where id='e0110000-0000-0000-0000-00000000000a'$$, :'alpha_org'), 'true');
-select leak.val('LB6b BY DESIGN: ...and entity_id, which names one of ALPHA''s private companies',
-  $$select entity_id::text from public.network_profiles
-     where id='e0110000-0000-0000-0000-00000000000a'$$,
-  '11110000-0000-0000-0000-000000000002');
-select leak.val('LB6c BY DESIGN: ...and a `connections`-level VALUE, unmasked',
-  $$select contact_email from public.network_profiles
-     where id='e0110000-0000-0000-0000-00000000000a'$$, 'bookings@alpha.test');
-select leak.val('LB6d ...while a HIDDEN field is NULL in the base column too (N3 -- nothing to leak)',
-  $$select coalesce(region,'<null>') || '/' || coalesce(country,'<null>') || '/' ||
-           coalesce(website_url,'<null>')
-      from public.network_profiles where id='e0110000-0000-0000-0000-00000000000a'$$,
-  '<null>/<null>/<null>');
+-- FLIPPED by Phase 10 Task 19 (Task 2 finding F1). These read "BY DESIGN":
+-- the unconnected counterparty read ALPHA's organisation_id, entity_id and the
+-- connections-level contact_email straight off the base table, and so could
+-- anyone over PostgREST. 20261103000000 drops the cross-tenant policy. LB2 is
+-- the same session's control (the same row through the directory). LB6d is
+-- the finding's whole GET minus GAMMA's own rows, so it counts every foreign
+-- published row whatever GAMMA has published; the N3 check it used to make is
+-- NM9 in rls_phase6_network.sql.
+select leak.val('LB6 F1: the UNCONNECTED counterparty gets no organisation_id off the BASE TABLE',
+  $$select count(organisation_id)::text from public.network_profiles
+     where id='e0110000-0000-0000-0000-00000000000a'$$, '0');
+select leak.val('LB6b F1: ...and no entity_id',
+  $$select count(entity_id)::text from public.network_profiles
+     where id='e0110000-0000-0000-0000-00000000000a'$$, '0');
+select leak.val('LB6c F1: contact_email, organisation_id, entity_id of ALPHA''s published profile: 0 rows',
+  $$select count(*)::text from (
+      select contact_email, organisation_id, entity_id from public.network_profiles
+       where id='e0110000-0000-0000-0000-00000000000a') s$$, '0');
+select leak.val('LB6d F1: ...and every FOREIGN published profile off the base table (the finding''s GET): 0 rows',
+  format($$select count(*)::text from public.network_profiles
+             where status = 'published' and organisation_id <> %L$$, :'gamma_org'), '0');
 reset role; reset request.jwt.claims;
 
 -- ---- CONNECTED ------------------------------------------------------------
@@ -363,6 +363,11 @@ select leak.val('LB11 CONTROL: ALPHA reads ALL its own published values, unmaske
 select leak.val('LB11b CONTROL: ...and sees its OWN draft, which neither counterparty could',
   $$select display_name from public.network_profiles
      where id='e0110000-0000-0000-0000-00000000000d'$$, 'Alpha Draft Venue');
+select leak.val('LB11c CONTROL (F1): ...and its own organisation_id and entity_id',
+  format($$select (organisation_id = %L)::text || '|' || entity_id::text
+             from public.network_profiles where id='e0110000-0000-0000-0000-00000000000a'$$,
+         :'alpha_org'),
+  'true|11110000-0000-0000-0000-000000000002');
 reset role; reset request.jwt.claims;
 
 -- ---- THE DIRECTORY VIEW'S `deleted_at is null` PREDICATE IS LOAD-BEARING ---
@@ -371,14 +376,12 @@ reset role; reset request.jwt.claims;
 -- WHY THIS COULD NOT BE PROVEN FROM A COUNTERPARTY, AND WHY THE PREDICATE
 -- STILL MATTERS
 -- ===========================================================================
--- A SOFT-DELETED published profile is kept out of discovery by TWO independent
--- terms: the `network_profiles_select_published_directory` RLS policy carries
--- `deleted_at is null`, AND the view carries it too. For a COUNTERPARTY the RLS
--- term is the backstop -- drop it from the view and a counterparty still sees
--- nothing, because the policy filters the row before the view is even reached.
--- So no counterparty assertion in this file (or in rls_phase6_network.sql) can
--- observe the view's own `deleted_at is null` being removed, and the mutation
--- that removes it survives the whole suite unless THIS block exists.
+-- Until Phase 10 Task 19 a SOFT-DELETED published profile was kept out of
+-- discovery by TWO terms, the cross-tenant RLS policy's and the view's own,
+-- and for a counterparty the policy's hid the view's. That policy is dropped
+-- (20261103000000), so the view's term is now the only one for a
+-- counterparty too, and § LB13 drives it from one. This block is the
+-- own-member half.
 --
 -- The term still matters, and here is the exposure it closes: an organisation's
 -- OWN members hold `network_profiles_select_view_network`, which is
@@ -424,6 +427,77 @@ delete from public.network_profiles where id='e0110000-0000-0000-0000-0000000000
 select leak.val('LB12d HOUSEKEEPING: the planted soft-deleted profile is gone (nothing downstream meets it)',
   $$select count(*)::text from public.network_profiles
      where id='e0110000-0000-0000-0000-0000000000fd'$$, '0');
+
+-- ===========================================================================
+-- LB13. THE DRIFT CHECK (Phase 10 Task 19, F1).
+--
+-- The write policies check a foreign profile through
+-- private.network_profile_is_discoverable(); a read goes through the two
+-- views. For one caller, each state reads `predicate:directory:connected`, and
+-- the two must agree. The caller is BETA's manager, connected to ALPHA, the
+-- only distance at which the connected view can show a row at all. Wound-down
+-- is ALPHA suspended with no subscription row (presence has no period end to
+-- run against). LB13e covers the membership term the four states cannot: a
+-- session that belongs to no organisation.
+-- ===========================================================================
+\o /dev/null
+insert into public.network_profiles
+  (id, organisation_id, entity_kind, entity_id, display_name, status,
+   field_visibility, published_at, deleted_at)
+values ('e0110000-0000-0000-0000-0000000000f9', :'alpha_org', 'company',
+        '11110000-0000-0000-0000-000000000002', 'Alpha Drift Withdrawn', 'published',
+        '{"city":"network"}'::jsonb, now(), now());
+\o
+set role authenticated;
+set request.jwt.claims = :'pbmgr_c1';
+select leak.val('LB13a DRIFT, PUBLISHED: predicate:directory:connected agree',
+  $$select private.network_profile_is_discoverable('e0110000-0000-0000-0000-00000000000a')::text || ':' ||
+           (select count(*) from public.network_directory where id='e0110000-0000-0000-0000-00000000000a')::text || ':' ||
+           (select count(*) from public.network_connected_profiles where id='e0110000-0000-0000-0000-00000000000a')::text$$,
+  'true:1:1');
+select leak.val('LB13b DRIFT, DRAFT',
+  $$select private.network_profile_is_discoverable('e0110000-0000-0000-0000-00000000000d')::text || ':' ||
+           (select count(*) from public.network_directory where id='e0110000-0000-0000-0000-00000000000d')::text || ':' ||
+           (select count(*) from public.network_connected_profiles where id='e0110000-0000-0000-0000-00000000000d')::text$$,
+  'false:0:0');
+select leak.val('LB13c DRIFT, SOFT-DELETED',
+  $$select private.network_profile_is_discoverable('e0110000-0000-0000-0000-0000000000f9')::text || ':' ||
+           (select count(*) from public.network_directory where id='e0110000-0000-0000-0000-0000000000f9')::text || ':' ||
+           (select count(*) from public.network_connected_profiles where id='e0110000-0000-0000-0000-0000000000f9')::text$$,
+  'false:0:0');
+reset role; reset request.jwt.claims;
+
+\o /dev/null
+update public.organisations set deleted_at = now() where id = :'alpha_org';
+\o
+set role authenticated;
+set request.jwt.claims = :'pbmgr_c1';
+select leak.val('LB13d DRIFT, WOUND-DOWN (ALPHA suspended, no subscription row)',
+  $$select private.network_profile_is_discoverable('e0110000-0000-0000-0000-00000000000a')::text || ':' ||
+           (select count(*) from public.network_directory where id='e0110000-0000-0000-0000-00000000000a')::text || ':' ||
+           (select count(*) from public.network_connected_profiles where id='e0110000-0000-0000-0000-00000000000a')::text$$,
+  'false:0:0');
+reset role; reset request.jwt.claims;
+\o /dev/null
+update public.organisations set deleted_at = null where id = :'alpha_org';
+delete from public.network_profiles where id = 'e0110000-0000-0000-0000-0000000000f9';
+\o
+
+set role authenticated;
+set request.jwt.claims = '{"sub":"f1000000-0000-0000-0000-00000000dead","role":"authenticated","aal":"aal1"}';
+select leak.val('LB13e DRIFT, NO MEMBERSHIP: a member of nothing is reached by neither path',
+  $$select private.network_profile_is_discoverable('e0110000-0000-0000-0000-00000000000a')::text || ':' ||
+           (select count(*) from public.network_directory where id='e0110000-0000-0000-0000-00000000000a')::text || ':' ||
+           (select count(*) from public.network_connected_profiles where id='e0110000-0000-0000-0000-00000000000a')::text$$,
+  'false:0:0');
+reset role; reset request.jwt.claims;
+
+select leak.val('LB13f HOUSEKEEPING: ALPHA is active again and the planted profile is gone',
+  format($$select o.lifecycle_state || ':' ||
+                  (select count(*) from public.network_profiles
+                    where id = 'e0110000-0000-0000-0000-0000000000f9')::text
+             from public.organisations o where o.id = %L$$, :'alpha_org'),
+  'active:0');
 
 -- ===========================================================================
 -- LC. THE PRIVATE-RELATION SWEEP.
@@ -738,12 +812,28 @@ select leak.val('LE1 N5: NOTHING on the network surface names a rating, in any f
 -- network_links: private.stamp_row_attribution, which refuses a forged
 -- created_by/created_at and stamps them from the session. Inspected for the
 -- word "rating" by LE1 above the day it joins.
-select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 16 functions',
+-- 11/2/18/31 SINCE PHASE 10 TASK 19 (20261103000000, F1). Two functions
+-- entered by net (b) and (c): private.network_profile_reaches_caller, the
+-- caller-side terms of both views' row filter, and
+-- private.network_profile_is_discoverable, the predicate the write policies
+-- use for a foreign profile. The policy count is unchanged: the cross-tenant
+-- directory policy left and network_profiles_select_own_published (Q6) came.
+-- 11/2/19/32 SINCE PHASE 10 TASK 5's REVIEW FIXES (20261108000000, G35). One
+-- function entered by net (b) -- named by a network VIEW:
+-- private.request_is_from_server, the server-only request mark, now in both
+-- views' WHERE. It reads one GUC and no relation. Inspected for the word
+-- "rating" by LE1 above the day it joins.
+-- 11/2/20/33 SINCE PHASE 10 TASK 16 (20261108003000, G29). One function
+-- entered by net (b): private.network_reaching_organisations, the views' reach
+-- rule as a set. It reads organisations and organisation_memberships (tenant
+-- metadata) and returns organisation ids that decide rows, never a projected
+-- value.
+select leak.val('LE1b DENOMINATOR: the widened census inspected 11 policies, 2 views and 20 functions',
   $$select count(*) filter (where objname like 'policy:%')::text || '/' ||
            count(*) filter (where objname like 'view:%')::text || '/' ||
            count(*) filter (where objname like 'function:%')::text || '/' ||
            count(*)::text
-      from leak.network_surface_wide$$, '11/2/16/29');
+      from leak.network_surface_wide$$, '11/2/20/33');
 -- M6, NAMED. The two functions rls_phase6_network.sql § NF1b could not see.
 select leak.val('LE1c M6: the two functions the NAME filter missed are INSIDE this census',
   $$select string_agg(objname, ',' order by objname) from leak.network_surface_wide
@@ -756,10 +846,11 @@ select leak.val('LE1d ...and the functions in the census, by name, so a dropped 
   'private.audit_crm_change,private.audit_network_row,private.connection_request_born_pending,private.connection_request_bound_update,private.entity_is_manageable,private.entity_org_unchanged,'
   'private.fill_connection_request_recipient,private.is_active_member,'
   'private.meter_connection_request,'
-  'private.network_publish_organisations,'
+  'private.network_profile_is_discoverable,private.network_profile_reaches_caller,'
+  'private.network_publish_organisations,private.network_reaching_organisations,'
   'private.network_request_status_transition_guard,private.network_visibility_is_valid,'
   'private.organisation_network_presence_active,'
-  'private.permitted_organisations,private.set_updated_at,private.stamp_row_attribution');
+  'private.permitted_organisations,private.request_is_from_server,private.set_updated_at,private.stamp_row_attribution');
 
 -- THE PLANTED POSITIVE CONTROL. Without it, "0 bodies mention rating" is a
 -- claim about a regex nobody has watched fire.
@@ -920,11 +1011,36 @@ select leak.val('LF1b DENOMINATOR: 28 private relation names were the needle set
 -- engine's entry point schema-qualified, and the text closure followed it into
 -- the export catalogue. 20261027000000 rewords that comment; no masking view
 -- ever reached the export engine.)
+--
+-- RE-READ AND RE-RECORDED 2026-10-18 (PHASE 10 TASK 19, F1). SEVEN -> TEN.
+-- The views became definer views that carry their own row filter, so the
+-- three helpers that filter used to reach through the dropped cross-tenant
+-- policy are now in the views' closure: private.network_profile_reaches_caller
+-- (a direct call of both views) and, through it,
+-- private.organisation_network_presence_active and private.is_active_member.
+-- Their bodies read organisation_memberships, organisations and
+-- organisation_subscriptions -- tenant metadata, no record content, none in
+-- the needle set -- and return a boolean that decides a row, never a value
+-- that is projected. LF1 and LF5 stay green over all ten.
+--
+-- RE-READ AND RE-RECORDED 2026-10-23 (PHASE 10 TASK 5, G14). TEN -> ELEVEN:
+-- private.impersonated_organisations() now also calls
+-- private.request_is_from_server(), whose body reads one GUC
+-- (getsetpaid.from_server) and no relation at all.
+-- Since the G35 fix both views also call it directly, so it is in LF2c's
+-- seed twice; the closure is still the same eleven bodies.
+--
+-- RE-READ AND RE-RECORDED 2026-10-26 (PHASE 10 TASK 16, G29). STILL ELEVEN:
+-- the views now call private.network_reaching_organisations() instead of
+-- private.network_profile_reaches_caller(), which left the closure (it is
+-- membership in the new set, called only by network_profile_is_discoverable).
+-- The new body reads the same tenant metadata through the same two helpers.
 select leak.val('LF2 DENOMINATOR: the closure, by name -- these are the bodies that were read',
   $$select count(*)::text || ':' || string_agg(fqn, ',' order by fqn) from leak.fn_closure$$,
-  '7:private.closure_backup_read_admits,private.has_platform_permission,'
-  'private.impersonated_organisations,'
-  'private.permitted_organisations,private.role_requires_mfa,'
+  '11:private.closure_backup_read_admits,private.has_platform_permission,'
+  'private.impersonated_organisations,private.is_active_member,'
+  'private.network_reaching_organisations,private.organisation_network_presence_active,'
+  'private.permitted_organisations,private.request_is_from_server,private.role_requires_mfa,'
   'private.session_is_aal2,public.has_permission');
 -- THE DEPTH ASSERTION. private.role_requires_mfa is NOT a pg_depend child of
 -- either view -- it is reached only by reading permitted_organisations' body.
@@ -937,7 +1053,9 @@ select leak.val('LF2b DEPTH: the closure reaches a function NEITHER view depends
   'true');
 select leak.val('LF2c ...and the seed really is the two views'' direct calls, and only that',
   $$select string_agg(nspname || '.' || proname, ',' order by nspname || '.' || proname)
-      from leak.view_seed_fns$$, 'private.permitted_organisations');
+      from leak.view_seed_fns$$,
+  'private.network_reaching_organisations,private.network_reaching_organisations,private.permitted_organisations,'
+  'private.request_is_from_server,private.request_is_from_server');
 
 -- THE PLANTED POSITIVE CONTROL: a helper that reads a private table, called by
 -- a view, is exactly the shape I1 describes. It is caught.
@@ -1336,7 +1454,7 @@ set request.jwt.claims = :'pgmgr_c1';
 select leak.val('LJ2c Q88 BOUNDARY: past period end, the counterparty NO LONGER sees the profile',
   $$select display_name from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, '<null>');
-select leak.val('LJ2d ...not through the base table either -- the row policy is what closed',
+select leak.val('LJ2d ...not through the base table either',
   $$select count(*)::text from public.network_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, '0');
 reset role; reset request.jwt.claims;
@@ -1375,7 +1493,7 @@ select leak.val('LJ4b CONSEQUENCE: ...and its network_links',
 -- M2, MEASURED. The shipped comment says the opposite of both of these.
 select leak.val('LJ5 M2 (measured, contradicts 20260904002000:41-45): it STILL browses the directory',
   $$select (count(*) >= 1)::text from public.network_directory$$, 'true');
-select leak.val('LJ5b M2: ...and STILL reads its own PUBLISHED profile, through the directory policy',
+select leak.val('LJ5b M2: ...and STILL reads its own PUBLISHED profile (network_profiles_select_own_published since F1)',
   $$select display_name from public.network_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'Alpha Promotions');
 select leak.val('LJ6 CONSEQUENCE: and it can no longer WRITE its profile (the USING clause filters it)',

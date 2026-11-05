@@ -50,7 +50,7 @@ import {
   WITHHOLDING_COPY,
 } from "./contract";
 import { ExportTooLargeError, ZipWriter } from "./zip";
-import { buildNextClosurePart, removeClosureParts, type PartLimits } from "./parts";
+import { buildNextClosurePart, removeClosureParts, type ClosurePartResult, type PartLimits } from "./parts";
 
 /** At most this many jobs per invocation, so neither entry point runs long. */
 const MAX_JOBS_PER_RUN = 3;
@@ -170,12 +170,12 @@ export async function runPendingExportJobs(options?: {
     if (!job) break;
 
     claimed += 1;
-    let isClosureBackup = false;
     try {
       const limits = effectiveLimits(await readLimits(supabase), options?.limitsOverride);
-      // Q228: a CLOSURE BACKUP is built in parts, one part per claim; every
-      // other export is one archive that fails at a ceiling, exactly as
-      // before. service_role holds SELECT on export_jobs.
+      // Q228: a CLOSURE BACKUP is built in parts, one part per claim. Every
+      // other export is one archive -- and, since Q263, when that archive
+      // would pass a ceiling, in parts too, all in this claim (below).
+      // service_role holds SELECT on export_jobs.
       const { data: closure, error: closureError } = await supabase
         .from("export_jobs")
         .select("closure_backup, part_count, resume_cursor")
@@ -184,11 +184,10 @@ export async function runPendingExportJobs(options?: {
       if (closureError || !closure) {
         throw new Error(`export job: ${closureError?.message ?? "the claimed job could not be read"}`);
       }
-      isClosureBackup = closure.closure_backup === true;
       if (closure.closure_backup) {
         const built = await buildNextClosurePart(
           supabase,
-          { ...job, part_count: closure.part_count, resume_cursor: closure.resume_cursor },
+          { ...job, closure_backup: true, part_count: closure.part_count, resume_cursor: closure.resume_cursor },
           limits,
         );
         if (!built.final) {
@@ -206,24 +205,21 @@ export async function runPendingExportJobs(options?: {
           if (requeueError) throw new Error(`export re-queue: ${requeueError.message}`);
           requeued += 1;
         } else {
-          const { error: stampError } = await supabase
-            .from("export_jobs")
-            .update({
-              status: "succeeded",
-              storage_key: exportStorageKey(job.id),
-              byte_size: built.byteSize,
-              row_count: built.rowCount,
-              table_count: built.tableCount,
-              manifest: built.index as unknown as Record<string, unknown>,
-              part_count: built.part,
-              resume_cursor: null,
-            })
-            .eq("id", job.id);
-          if (stampError) throw new Error(`export stamp: ${stampError.message}`);
+          await stampPartsSucceeded(supabase, job.id, built);
           succeeded += 1;
         }
       } else {
-        await buildAndStore(supabase, job, limits);
+        try {
+          await buildAndStore(supabase, job, limits);
+        } catch (cause) {
+          if (!(cause instanceof ExportTooLargeError)) throw cause;
+          // Q263 (Phase 10 Task 24): past a ceiling an ordinary export is no
+          // longer refused. It is built in parts, every part in THIS claim, so
+          // it never sits queued between parts and is no less consistent than
+          // the single archive it replaces. buildAndStore uploads only on
+          // success, so nothing of the refused archive is left to remove.
+          await buildInPartsNow(supabase, job, limits);
+        }
         succeeded += 1;
       }
     } catch (cause) {
@@ -245,8 +241,10 @@ export async function runPendingExportJobs(options?: {
         // stuck state a person can see on their own page. Loud rather than
         // silent, and Task 6's sweep is where a reaper belongs.
         console.error(`[export] job ${job.id} could not be marked failed:`, failError.message);
-      } else if (isClosureBackup) {
-        // Q228: A FAILED BACKUP LEAVES NO PARTS. No partial backup is
+      } else {
+        // Q228: A FAILED BACKUP LEAVES NO PARTS (and, since Q263, a failed
+        // ordinary export built in parts leaves none either; for one that
+        // never reached parts this removes nothing). No partial backup is
         // presented as a backup: every part already stored -- and the one
         // whose upload may have landed without its row -- is removed, now
         // that the job is failed and the part guard admits the delete. Only
@@ -263,6 +261,47 @@ export async function runPendingExportJobs(options?: {
   }
 
   return { outcome: "ok", claimed, succeeded, failed, requeued };
+}
+
+/** A job built in parts is done: its totals, its index, part_count = the parts. */
+async function stampPartsSucceeded(
+  supabase: ServiceClient,
+  jobId: string,
+  built: Extract<ClosurePartResult, { final: true }>,
+): Promise<void> {
+  const { error } = await supabase
+    .from("export_jobs")
+    .update({
+      status: "succeeded",
+      storage_key: exportStorageKey(jobId),
+      byte_size: built.byteSize,
+      row_count: built.rowCount,
+      table_count: built.tableCount,
+      manifest: built.index as unknown as Record<string, unknown>,
+      part_count: built.part,
+      resume_cursor: null,
+    })
+    .eq("id", jobId);
+  if (error) throw new Error(`export stamp: ${error.message}`);
+}
+
+/**
+ * Q263: an ordinary export that passed a ceiling, built in parts back to back
+ * inside the current claim. The job stays `running` throughout (the parts
+ * guard orders parts by those already stored), the cursor lives only in
+ * memory, and the success stamp is the closure backup's.
+ */
+async function buildInPartsNow(supabase: ServiceClient, job: ClaimedJob, limits: PartLimits): Promise<void> {
+  let state = { ...job, closure_backup: false, part_count: 0, resume_cursor: null as unknown };
+  for (;;) {
+    const built = await buildNextClosurePart(supabase, state, limits);
+    if (built.final) {
+      await stampPartsSucceeded(supabase, job.id, built);
+      if (job.kind === "account") await recordFulfilment(supabase, job);
+      return;
+    }
+    state = { ...state, part_count: built.part, resume_cursor: built.cursor };
+  }
 }
 
 async function readLimits(supabase: ServiceClient): Promise<Limits> {
@@ -562,9 +601,8 @@ async function addDocumentBytes(
     if (bytes === null) {
       withheld.push({
         what: `documents/${id} (${sanitiseFilename(name)})`,
-        reason: "document_not_clean",
-        detail:
-          "This file's record is included but its bytes could not be read from storage when the archive was built.",
+        reason: "document_unreadable",
+        detail: WITHHOLDING_COPY.document_unreadable,
       });
       continue;
     }
@@ -598,7 +636,14 @@ async function addScreenshotBytes(
     // The key is `feedback/{id}` by a database CHECK, so it is derived rather
     // than carried: the catalogue deliberately projects screenshot_key away.
     const bytes = await downloadBytes(bucket, `feedback/${id}`);
-    if (bytes === null) continue;
+    if (bytes === null) {
+      withheld.push({
+        what: `feedback/${id}`,
+        reason: "screenshot_unreadable",
+        detail: WITHHOLDING_COPY.screenshot_unreadable,
+      });
+      continue;
+    }
     const path = `files/feedback/${id}`;
     zip.addEntry(path, bytes, at);
     files.push({ path, bytes: bytes.length });

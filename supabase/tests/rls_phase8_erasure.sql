@@ -743,6 +743,10 @@ set request.jwt.claims to :'esub_c';
 -- ATTRIBUTION IS NOT THE CALLER'S TO SUPPLY. `subject_user_id` is outside the
 -- INSERT grant, so naming it is refused before any trigger runs -- the
 -- feedback table's I1 shape.
+-- Phase 10 Task 6: this suite's subject is not step-up, so its principals
+-- are armed the way the server would be after a passed step-up
+-- (supabase/tests/step_up_fixture.sql; step-up is rls_phase10_step_up.sql's).
+select step_up_fixture.arm(:'esub_c') \g /dev/null
 select er.try('EW1 a client naming a subject is refused by the COLUMN GRANT',
   $$insert into public.erasure_jobs (kind, subject_user_id)
     values ('account', '$$ || :'emate' || $$')$$, 'denied(42501)');
@@ -840,10 +844,14 @@ select er.try_hint('EM4 demoting the SOLE owner is refused -- as postgres, which
 
 set role authenticated;
 set request.jwt.claims to :'emate_a2';
-select er.try_hint('EM5 and refused for the aal2 ADMIN who holds manage_members -- the route that reached it',
+-- Since 20261106000000 (Phase 10 Task 2 F2, Q248) an Admin's UPDATE never
+-- sees an Owner's row at all (only an Owner may change one), so the route
+-- that reached the trigger is now closed one step earlier: ok(0), and EM9
+-- below still proves nothing moved. EM4 keeps the trigger's own refusal.
+select er.try('EM5 and refused for the aal2 ADMIN who holds manage_members -- the route that reached it (now the F2 policy: the Owner row is filtered out)',
   $$update public.organisation_memberships set role = 'standard_user'
      where organisation_id = '$$ || :'org_blocked' || $$' and user_id = '$$ || :'esub' || $$'$$,
-  'denied(22023:last_owner_of_workspace)');
+  'ok(0)');
 reset role;
 reset request.jwt.claims;
 

@@ -17,8 +17,10 @@
 // session established in the browser is visible to Server Components on the
 // next request, and a refresh performed in middleware is visible here.
 import { createBrowserClient } from "@supabase/ssr";
-import { supabasePublicKey, supabaseUrl } from "./env";
+import { authCookieOptions, supabasePublicKey, supabaseUrl } from "./env";
 
 export function createClient() {
-  return createBrowserClient(supabaseUrl(), supabasePublicKey());
+  return createBrowserClient(supabaseUrl(), supabasePublicKey(), {
+    cookieOptions: authCookieOptions(),
+  });
 }

@@ -243,6 +243,11 @@ password_requirements = ""
 # rp_origins = ["http://127.0.0.1:3000"]
 
 [auth.rate_limit]
+# email_sent, sign_in_sign_ups and token_verifications are pinned by
+# tests/unit/security/auth-config.test.ts (G10): without the per-account hook
+# (G4, founder action F8) the per-IP sign_in_sign_ups is production's only
+# GoTrue-side login bound, and SECURITY.md § 15 lists all three for the hosted
+# project.
 # Number of emails that can be sent per hour. Requires auth.email.smtp to be enabled.
 #
 # Raised from the CLI default of 2. Two auth emails per hour PER PROJECT (not
@@ -280,7 +285,20 @@ enable_signup = true
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
-enable_confirmations = false
+#
+# ON SINCE PHASE 10 TASK 4, AND IT IS A SECURITY CONTROL (G11 in
+# docs/launch-gates.md). With it off, anyone could sign up as an address they
+# do not own and hold a confirmed, usable account at once -- and a workspace
+# that later invited that address bound the invitation to the squatter's
+# account (reproduced through the real forms before this change). With it on,
+# an account's address means "the holder of this inbox": accept_invite()
+# refuses an unconfirmed account (20261102010000), and the invite step refuses
+# to bind an existing unconfirmed sign-up (lib/org/actions.ts). Asserted by
+# tests/unit/security/auth-config.test.ts, and on the SECURITY.md § 15
+# checklist for the hosted project ("Confirm email" ON). Changing it needs a
+# `supabase stop && supabase start`: a `db reset` restarts the auth container
+# with its old environment.
+enable_confirmations = true
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
 #
 # ON AS A BACKSTOP, NOT AS THE GATE. Read GoTrue's actual rule before relying
@@ -297,7 +315,21 @@ enable_confirmations = false
 # changing theirs both still succeed.
 secure_password_change = true
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
-max_frequency = "1s"
+#
+# 20 MINUTES, AND IT IS A SECURITY CONTROL (G3 in docs/launch-gates.md; Phase
+# 10 Task 8). SECURITY.md § 5 promises password recovery at most 3 per hour
+# per account, and GoTrue offers no per-account hook on recovery, so this
+# per-user timer is the only enforcement point: one recovery mail per account
+# per 20 minutes. GoTrue applies the same timer to the emailed sign-in link and
+# to re-sent sign-up confirmations (measured: tests/integration/security/
+# recovery-frequency.test.ts), which is why lib/auth/actions.ts treats its 429
+# like success (it would otherwise say which addresses have accounts) and the
+# magic-link "sent" page says "at most one link every 20 minutes". Q245's
+# first-proof discriminator needs at least 1s; 20m satisfies it. Asserted by
+# tests/unit/security/auth-config.test.ts, and on the SECURITY.md § 15
+# checklist for the hosted project. Changing it needs a `supabase stop &&
+# supabase start`.
+max_frequency = "20m"
 # Number of characters used in the email OTP.
 otp_length = 6
 # Number of seconds before the email OTP expires (defaults to 1 hour).
@@ -332,6 +364,18 @@ content_path = "./supabase/templates/invite.html"
 subject = "Your GetSetPaid sign-in link"
 content_path = "./supabase/templates/magic-link.html"
 
+# Phase 10 Task 20 (Q245): sign-up confirmations and recovery links go
+# through /auth/callback with a token hash, so the first proof of an address
+# always reaches lib/auth/first-proof.ts. The hosted dashboard needs the same
+# two templates pasted in (SECURITY.md § 15).
+[auth.email.template.confirmation]
+subject = "Confirm your GetSetPaid email address"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "Reset your GetSetPaid password"
+content_path = "./supabase/templates/recovery.html"
+
 # Password-change notification. ON DELIBERATELY, and intended as a security
 # control rather than a nicety.
 #
@@ -343,15 +387,19 @@ content_path = "./supabase/templates/magic-link.html"
 # than the recovery flow, but it should not be SILENT. This notification is
 # what would make an unexpected change visible to the account holder.
 #
-# NOT VERIFIED WORKING LOCALLY, and the honest state is worth writing down
-# rather than assuming. Supabase CLI 2.108 ACCEPTS this block (it validates
-# content_path and fails the config load on a wrong one) but does not pass it
-# to the local GoTrue container: after two password writes, no notification
-# reached Mailpit, and `docker exec supabase_auth_… env | grep GOTRUE_MAILER`
-# shows subjects/templates for INVITE and MAGIC_LINK only -- no notification
-# variable of any kind. So this is currently declared intent, not an active
-# control. Re-check it on a newer CLI and on the hosted project before counting
-# it as the mitigation for the residual named in lib/auth/step-up.ts.
+# VERIFIED WORKING LOCALLY since Supabase CLI 2.116 (Phase 10 Task 2, F3): the
+# CLI passes these blocks to GoTrue (GOTRUE_MAILER_NOTIFICATIONS_*_ENABLED in
+# the auth container's environment), and
+# tests/integration/session/security-notifications.test.ts changes a password
+# and enrols and removes a TOTP factor straight through GoTrue, as a stolen
+# token would, and reads each notice out of Mailpit. CLI 2.108 accepted the
+# block but did not pass it on. The two MFA notifications below are the same
+# control for the other half of F3: GoTrue lets an aal2 session enrol a new
+# factor and remove the holder's with no step-up, and nothing configurable in
+# the pinned toolchain stops it (SECURITY.md § 4), so it must at least not be
+# silent. The hosted project needs all three switched on (SECURITY.md § 15).
+# Asserted by tests/unit/security/auth-config.test.ts. A change here needs
+# `supabase stop && supabase start`; a `db reset` keeps the old environment.
 [auth.email.notification.password_changed]
 enabled = true
 subject = "Your GetSetPaid password was changed"
@@ -360,6 +408,16 @@ subject = "Your GetSetPaid password was changed"
 # relative to supabase/ itself, and a path with the extra segment fails the
 # config load outright ("open supabase\supabase\templates\..."). Not a typo.
 content_path = "./templates/password-changed.html"
+
+[auth.email.notification.mfa_factor_enrolled]
+enabled = true
+subject = "A sign-in factor was added to your GetSetPaid account"
+content_path = "./templates/mfa-factor-enrolled.html"
+
+[auth.email.notification.mfa_factor_unenrolled]
+enabled = true
+subject = "A sign-in factor was removed from your GetSetPaid account"
+content_path = "./templates/mfa-factor-unenrolled.html"
 
 [auth.sms]
 # Allow/disallow new user signups via SMS to your project.

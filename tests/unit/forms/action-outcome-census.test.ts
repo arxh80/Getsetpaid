@@ -49,6 +49,9 @@ const REPORTED_SURFACES = [
   // will leave it as soon as it is marked answered -- the same I6 shape the
   // two transition forms above carry.
   "components/admin/dsr-erasure-run-form.tsx",
+  // Phase 10 Task 21. Removing a member revalidates the members page into a
+  // tree without that member's row, and so without these controls.
+  "components/org/member-controls.tsx",
 ];
 
 /**

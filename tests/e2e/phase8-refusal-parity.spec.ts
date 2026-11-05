@@ -393,7 +393,7 @@ test("REFUSAL PARITY: signed out, each /account page is bounced exactly like an 
   page,
 }) => {
   const ghost = await page.request.get("/account/zzz-phase8-ghost", { maxRedirects: 0 });
-  for (const path of ["privacy", "data-requests", "exports", "erase"]) {
+  for (const path of ["privacy", "data-requests", "exports", "erase", "sessions"]) {
     const real = await page.request.get(`/account/${path}`, { maxRedirects: 0 });
     expect(real.status(), `/account/${path}`).toBe(ghost.status());
     const loc = (r: typeof real) => new URL(r.headers()["location"] ?? "http://x/", "http://x").pathname;
@@ -420,6 +420,7 @@ test("a SUSPENDED workspace's members keep every /account page, and its Owner ke
       ["data-requests", "Your data protection requests"],
       ["exports", "A copy of your data"],
       ["erase", "Delete your account"],
+      ["sessions", "Sign out everywhere"],
     ] as const) {
       const response = await page.goto(`/account/${path}`);
       expect(response?.status(), `/account/${path} for a suspended workspace's member`).toBe(200);

@@ -55,7 +55,7 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
 import { isSuperuser } from "@/lib/admin/superuser";
@@ -136,7 +136,7 @@ async function authoriseSuperuser(
     // Not a distinguishing message: nothing to learn here.
     return { ok: false, state: refuse(NOT_YOURS, formData) };
   }
-  if (!(await checkStepUp())) {
+  if (!(await checkStepUp()) || !(await mintStepUpToken("organisation_lifecycle"))) {
     return { ok: false, state: refuse(STEP_UP_REQUIRED, formData) };
   }
   return { ok: true };

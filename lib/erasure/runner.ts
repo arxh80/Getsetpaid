@@ -220,6 +220,11 @@ export function failureSentence(cause: unknown): string {
       return "Nothing was deleted: the backup of a workspace this account closed has not finished being built, and deleting the account first would leave that backup empty. Ask again in a few minutes, once it is ready.";
     case "bytes_not_purged":
       return "Nothing was deleted: some stored files could not be removed first, and deleting the records while the files remain would leave them unreachable rather than gone. This will be retried.";
+    case "step_up_required":
+      // private.consume_step_up() (Phase 10 Task 6, G13). The runner's own
+      // path never spends a token; tests/unit/erasure/hint-roll.ts reaches it
+      // through a function a walked body names, so it gets a true sentence.
+      return "Nothing was deleted: the request to delete needed a fresh sign-in, and it had expired. Confirm it is you, then ask again.";
     case "replication_role_must_be_origin":
       return "Nothing was deleted: the database session was not in a state where deleting safely was possible.";
     case "reference_survived_the_repoint":

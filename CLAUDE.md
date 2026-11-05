@@ -51,7 +51,9 @@ Run all five before claiming a change is done:
 - Axe scans: `grep -c "await scan(\|new AxeBuilder" tests/e2e/*.spec.ts`.
 - psql: the `run_suite` pins in `run-rls-tests.sh`.
 
-**CI is a subset.** `.github/workflows/ci.yml` runs lint, `next typegen`, typecheck, `vitest run tests/unit`, `pnpm audit --audit-level high` and gitleaks. It does **not** run integration, psql or Playwright, because they need a Supabase stack. A green CI tick is not a green phase. Actions are pinned to full SHAs. To bump one, look it up with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and update the `# vX.Y.Z` trailer.
+**One stack per worktree** is opt-in: `pnpm stack:claim` gives a worktree its own project id and ports, and you must export `SUPABASE_WORKDIR` as it prints, or a bare `npx supabase db reset` still resets the shared stack. Recipe and the tiered-gate policy (what to run while iterating; the full five gates still gate every handback): `docs/parallel-stacks.md`.
+
+**CI runs every gate**, in five jobs on pull requests and pushes to `main`: `gates` (lint, `next typegen`, typecheck, `vitest run tests/unit`), `scan` (`pnpm audit --audit-level high`, gitleaks, the licence allowlist `scripts/check-licenses.mjs`, Semgrep), and three jobs that each start a real local stack: `integration`, `psql` and `e2e`. `tests/unit/ci/workflow-jobs.test.ts` pins that shape. A green CI tick is still not a green launch: nothing in CI checks the hosted project (`SECURITY.md` § 15). Actions are pinned to full SHAs. To bump one, look it up with `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` and update the `# vX.Y.Z` trailer.
 
 **Forbidden here:** `pnpm build` / `pnpm start` in a worktree pointed at the local stack. They resolve to the **hosted** project.
 
@@ -78,7 +80,7 @@ Skills are pinned project-level. Restore them with `npx skills experimental_inst
 
 - Network identities (`network_profiles`, `network_links`) and tenant-private records live in **separate tables**.
 - Discovery reads only explicitly published fields. Publishing is opt-in per field.
-- **The views are the mask, not the policy.** The base `network_profiles` table has the schema's only cross-tenant read policy, and a row policy cannot hide columns. The only sanctioned read paths are `network_directory` and `network_connected_profiles`, whose dependencies are pinned from `pg_depend`. Never join a private table into them.
+- **The two views are the only foreign read path.** The base `network_profiles` table answers only its own organisation's members (its cross-tenant row policy was dropped in Phase 10 Task 19, because a row policy cannot hide columns). A foreign profile reaches a caller only through the **definer** views `network_directory` and `network_connected_profiles`, whose WHERE clauses call `private.network_profile_reaches_caller` and whose dependencies are pinned from `pg_depend`. Never join a private table into them.
 - **Request-to-connect.** An accepted request unlocks only the other side's `connections`-level *published fields*, organisation-wide (Q80). It never unlocks notes, ratings, financials, documents, events or activity.
 - Linking a private record to a network profile is **manual only**: an empty search box, no suggestions. The link is private to the linking organisation.
 - **Ratings are permanently private in v1.** No aggregate, ever, without a deliberate future decision.
@@ -165,7 +167,7 @@ These are acceptance criteria, not hardening tasks. A feature is not done until 
 - **RLS on before access.** Enable RLS on every tenant-owned table before the app can reach it.
 - **Service-role keys stay server-side.** They bypass RLS. `lib/supabase/service.ts` importers are censused.
 - **Parameterise everything.** Search, filter and sort inputs map to allowlisted columns and operators.
-- **Paginate everything.** Use a server-side page-size ceiling and keyset pagination for feeds. Exports are async and bounded: they fail at a ceiling (a closure backup is split into parts instead, Q228) and never truncate.
+- **Paginate everything.** Use a server-side page-size ceiling and keyset pagination for feeds. Exports are async and bounded: every archive (or part) stays under the per-archive ceilings, an export past one is split into parts, and nothing is ever truncated.
 - **Files are private.** Use private buckets, short-lived signed URLs issued after authorisation, opaque storage keys, logged access, malware scanning with quarantine, and a strict type allowlist checked by content, not just MIME or extension.
 - **Treat user content as untrusted.** Sanitise rich text, reject `javascript:` and `data:` URLs, avoid `dangerouslySetInnerHTML`, and keep the strong CSP.
 - **Audit high-value actions.** Record actor, org, timestamp, action, target, correlation ID and before/after. Audit payloads are **name-only diffs** and never carry tenant content (the log is superuser-readable). New client-writable tables are caught by `private.audit_coverage()`. Never log passwords, tokens or keys. Retention: 30 days hot, 1 year total.

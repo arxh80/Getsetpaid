@@ -23,7 +23,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/lib/auth";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { createClient } from "@/lib/supabase/server";
 import { formatRetryAfter } from "@/lib/format/duration";
 import type { FormState } from "@/lib/forms";
@@ -61,7 +61,9 @@ export async function startAccountErasureAction(
   // STEP-UP. CLAUDE.md § Session security names "deleting organisation data";
   // deleting a person's own account is the same class and is irreversible,
   // which the export next door is not.
-  if (!(await checkStepUp())) return { error: ERASURE_NEEDS_STEP_UP };
+  if (!(await checkStepUp()) || !(await mintStepUpToken("account_erasure"))) {
+    return { error: ERASURE_NEEDS_STEP_UP };
+  }
 
   const supabase = await createClient();
   const { error } = await supabase.from("erasure_jobs").insert({ kind: "account" });

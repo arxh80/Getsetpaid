@@ -88,6 +88,9 @@ export interface ClaimedClosureJob {
   organisation_id: string | null;
   requested_by: string;
   requested_at: string;
+  /** A closure backup (one part per claim), or an ordinary export built in
+   *  parts in one claim because it passed a ceiling (Q263). Words only. */
+  closure_backup: boolean;
   /** Parts already stored (export_jobs.part_count). */
   part_count: number;
   /** export_jobs.resume_cursor, as stored -- parsed strictly here. */
@@ -185,8 +188,7 @@ export async function buildNextClosurePart(
   // ---- the tables -------------------------------------------------------
   while (cursor.phase === "tables" && closedBy === null) {
     if (cursor.planIndex >= exported.length) {
-      const hasDocuments = job.kind === "workspace" && exported.some((t) => t.table_name === "documents");
-      cursor.phase = hasDocuments ? "files" : "index";
+      cursor.phase = exported.some((t) => t.table_name === filesTable(job.kind)) ? "files" : "index";
       cursor.after = "";
       cursor.tableRowsSoFar = 0;
       break;
@@ -203,17 +205,21 @@ export async function buildNextClosurePart(
     }
   }
 
-  // ---- the files (a closure backup is a workspace export: documents) -----
+  // ---- the files: a workspace's documents, an account's screenshots -----
   if (cursor.phase === "files" && closedBy === null) {
-    const documents = exported.find((t) => t.table_name === "documents")!;
-    closedBy = await writeDocuments(supabase, zip, job.id, documents.key_column!, limits, cursor, part, at);
+    const source = exported.find((t) => t.table_name === filesTable(job.kind))!;
+    closedBy = await writeFiles(
+      supabase, zip, job.id, job.kind === "account" ? SCREENSHOTS : DOCUMENTS,
+      source.key_column!, limits, cursor, part, at,
+    );
   }
 
   // ---- the index ---------------------------------------------------------
   if (cursor.phase === "index" && closedBy === null) {
     // The paths and withholding sentences are RE-DERIVED here, from the
     // database, never carried in the cursor (no record content in it).
-    const documentsEntry = exported.find((t) => t.table_name === "documents");
+    const isAccount = job.kind === "account";
+    const documentsEntry = isAccount ? undefined : exported.find((t) => t.table_name === "documents");
     const names =
       cursor.documents.length + cursor.withheldDocuments.length > 0 && documentsEntry
         ? await readDocumentNames(supabase, job.id, documentsEntry.key_column!, limits.page_size)
@@ -223,10 +229,17 @@ export async function buildNextClosurePart(
       if (!found) throw new Error(`documents/${id} is no longer readable, so the backup's index cannot name it`);
       return found;
     };
-    const files = cursor.documents.map((d) => ({ path: documentPath(d.id, nameOf(d.id).filename), bytes: d.bytes }));
+    const files = cursor.documents.map((d) => ({
+      path: isAccount ? screenshotPath(d.id) : documentPath(d.id, nameOf(d.id).filename),
+      bytes: d.bytes,
+    }));
     const withheld = [
       ...staticWithheld(plan),
-      ...cursor.withheldDocuments.map((w) => documentWithholding(w.id, nameOf(w.id).filename, w.why, nameOf(w.id).scan)),
+      ...cursor.withheldDocuments.map((w) =>
+        isAccount
+          ? screenshotWithholding(w.id, w.why, null)
+          : documentWithholding(w.id, nameOf(w.id).filename, w.why, nameOf(w.id).scan),
+      ),
     ];
     const indexOf = (bytes: number): ClosureFinalManifest => ({
       schemaVersion: CLOSURE_PARTS_MANIFEST_VERSION,
@@ -239,7 +252,7 @@ export async function buildNextClosurePart(
       withheld,
       notes: [
         ...archiveNotes(job.kind, plan),
-        `This backup is ${n} parts. Together they are the whole backup; this part (${n}) holds the index.`,
+        `This ${noun(job)} is ${n} parts. Together they are the whole ${noun(job)}; this part (${n}) holds the index.`,
       ],
       parts: [
         ...cursor.parts,
@@ -312,7 +325,7 @@ export async function buildNextClosurePart(
     files: part.files,
     withheld: part.withheld,
     notes: [
-      `This is part ${n} of a closure backup in several parts. Together the parts are the whole backup; the last part holds the index, which lists every part.`,
+      `This is part ${n} of ${job.closure_backup ? "a closure backup" : "an export"} in several parts. Together the parts are the whole ${noun(job)}; the last part holds the index, which lists every part.`,
       "Deleted records are included and carry their deleted_at timestamp.",
       "Times are UTC.",
     ],
@@ -450,14 +463,33 @@ function documentWithholding(
   why: DocumentWithheldBecause,
   scanStatus: unknown,
 ): ExportWithholding {
-  return {
-    what: `documents/${id} (${sanitiseFilename(filename)})`,
-    reason: "document_not_clean",
-    detail:
-      why === "not_clean"
-        ? `${WITHHOLDING_COPY.document_not_clean} Scan status: ${String(scanStatus)}.`
-        : "This file's record is included but its bytes could not be read from storage when the archive was built.",
-  };
+  const what = `documents/${id} (${sanitiseFilename(filename)})`;
+  return why === "not_clean"
+    ? { what, reason: "document_not_clean", detail: `${WITHHOLDING_COPY.document_not_clean} Scan status: ${String(scanStatus)}.` }
+    : { what, reason: "document_unreadable", detail: WITHHOLDING_COPY.document_unreadable };
+}
+
+/** A screenshot's path in the archive -- buildAndStore's shape. */
+function screenshotPath(id: string): string {
+  return `files/feedback/${id}`;
+}
+
+/** The statement for a withheld screenshot (the index has no scan status to state). */
+function screenshotWithholding(id: string, why: DocumentWithheldBecause, scanStatus: unknown): ExportWithholding {
+  const what = `feedback/${id}`;
+  if (why === "unreadable") return { what, reason: "screenshot_unreadable", detail: WITHHOLDING_COPY.screenshot_unreadable };
+  const status = scanStatus === null ? "" : ` Scan status: ${String(scanStatus)}.`;
+  return { what, reason: "screenshot_not_clean", detail: `${WITHHOLDING_COPY.screenshot_not_clean}${status}` };
+}
+
+/** The table whose rows name the archive's files, by kind. */
+function filesTable(kind: ExportKind): string {
+  return kind === "account" ? "feedback" : "documents";
+}
+
+/** What the archive is called in its own notes. */
+function noun(job: ClaimedClosureJob): string {
+  return job.closure_backup ? "backup" : "export";
 }
 
 /**
@@ -706,32 +738,68 @@ async function writeSlice(
   return reason;
 }
 
+/** Where a kind's files come from, and how one is named or withheld. */
+interface FileSource {
+  table: string;
+  bucket: string;
+  /** The row's file, or null when the row has none. */
+  file(row: Record<string, unknown>): { id: string; key: string; path: string; scan: unknown } | null;
+  withholding(id: string, row: Record<string, unknown>, why: DocumentWithheldBecause): ExportWithholding;
+}
+
+const DOCUMENTS: FileSource = {
+  table: "documents",
+  bucket: "documents",
+  file(row) {
+    if (typeof row.id !== "string" || typeof row.storage_key !== "string") return null;
+    const name = typeof row.filename === "string" ? row.filename : "document";
+    return { id: row.id, key: row.storage_key, path: documentPath(row.id, name), scan: row.scan_status };
+  },
+  withholding: (id, row, why) =>
+    documentWithholding(id, typeof row.filename === "string" ? row.filename : "document", why, row.scan_status),
+};
+
+// The key is `feedback/{id}` by a database CHECK, so it is derived rather than
+// carried: the catalogue projects screenshot_key away.
+const SCREENSHOTS: FileSource = {
+  table: "feedback",
+  bucket: "feedback-screenshots",
+  file(row) {
+    const scan = row.screenshot_scan_status;
+    if (typeof row.id !== "string" || scan === null || scan === undefined) return null;
+    return { id: row.id, key: `feedback/${row.id}`, path: screenshotPath(row.id), scan };
+  },
+  withholding: (id, row, why) => screenshotWithholding(id, why, row.screenshot_scan_status),
+};
+
 /**
- * The documents' BYTES, from `cursor.after` in the documents' keyset order.
- * A clean file goes in whole or not at all: when it does not fit, the part
- * closes and the next claim starts with it -- and when it does not fit an
- * EMPTY part, the backup cannot be built and the job fails (Spec correction
- * 8). A file that is not clean, or whose bytes cannot be read, is withheld
- * with the same statement an ordinary archive makes.
+ * The files' BYTES -- a workspace's documents, or an account's feedback
+ * screenshots -- from `cursor.after` in their table's keyset order. A clean
+ * file goes in whole or not at all: when it does not fit, the part closes and
+ * the next one starts with it -- and when it does not fit an EMPTY part, the
+ * export cannot be built and the job fails (Spec correction 8). A file that is
+ * not clean, or whose bytes cannot be read, is withheld with the same
+ * statement an ordinary archive makes.
  *
- * Returns the ceiling that closed the part, or `null` when the documents
- * ended (the cursor moves to the index).
+ * Returns the ceiling that closed the part, or `null` when the files ended
+ * (the cursor moves to the index).
  */
-async function writeDocuments(
+async function writeFiles(
   supabase: ServiceClient,
   zip: ZipWriter,
   jobId: string,
+  source: FileSource,
   keyColumn: string,
   limits: PartLimits,
   cursor: ResumeCursor,
   part: PartState,
   at: Date,
 ): Promise<PartCloseReason | null> {
-  const bucket = createStorageClient().storage.from("documents");
+  const bucket = createStorageClient().storage.from(source.bucket);
   // The part's own manifest (inside the zip) states the sentence; the CURSOR
-  // keeps only the document's id and why -- never its filename.
-  const withhold = (id: string, name: string, why: DocumentWithheldBecause, scan: unknown): boolean => {
-    const entry = documentWithholding(id, name, why, scan);
+  // keeps only the file's id and why -- never its filename.
+  const withhold = (id: string, row: Record<string, unknown>, why: DocumentWithheldBecause): boolean => {
+    const entry = source.withholding(id, row, why);
     const cost = entryReserve(entry);
     if (!zip.wouldFit("manifest.json", 0, part.reserve + cost, 0)) return false;
     part.withheld.push(entry);
@@ -741,35 +809,32 @@ async function writeDocuments(
   };
 
   for (;;) {
-    const page = await readPage(supabase, jobId, "documents", cursor.after, limits.page_size);
+    const page = await readPage(supabase, jobId, source.table, cursor.after, limits.page_size);
     if (page.length === 0) break;
     for (const row of page) {
       const rowKey = keyOf(row, keyColumn);
-      if (rowKey === null) throw new Error(`export read documents: a row has no ${keyColumn}`);
-      const id = typeof row.id === "string" ? row.id : null;
-      const storageKey = typeof row.storage_key === "string" ? row.storage_key : null;
-      const name = typeof row.filename === "string" ? row.filename : "document";
+      if (rowKey === null) throw new Error(`export read ${source.table}: a row has no ${keyColumn}`);
+      const file = source.file(row);
 
-      if (id !== null && storageKey !== null) {
-        if (row.scan_status !== "clean") {
-          if (!withhold(id, name, "not_clean", row.scan_status)) return "bytes";
+      if (file !== null) {
+        if (file.scan !== "clean") {
+          if (!withhold(file.id, row, "not_clean")) return "bytes";
         } else {
-          const { data, error } = await bucket.download(storageKey);
+          const { data, error } = await bucket.download(file.key);
           const bytes = error || !data ? null : new Uint8Array(await data.arrayBuffer());
           if (bytes === null) {
-            if (!withhold(id, name, "unreadable", row.scan_status)) return "bytes";
+            if (!withhold(file.id, row, "unreadable")) return "bytes";
           } else {
-            const path = documentPath(id, name);
-            const cost = entryReserve({ path, bytes: bytes.length });
-            if (!zip.wouldFit(path, bytes.length, part.reserve + cost, 1)) {
+            const cost = entryReserve({ path: file.path, bytes: bytes.length });
+            if (!zip.wouldFit(file.path, bytes.length, part.reserve + cost, 1)) {
               if (zip.entryCount === 0) {
-                throw new Error(`documents/${id} is larger than one part of the backup can hold`);
+                throw new Error(`${source.table}/${file.id} is larger than one part of the backup can hold`);
               }
               return closeReasonOf(zip);
             }
-            zip.addEntry(path, bytes, at);
-            part.files.push({ path, bytes: bytes.length });
-            cursor.documents.push({ id, bytes: bytes.length });
+            zip.addEntry(file.path, bytes, at);
+            part.files.push({ path: file.path, bytes: bytes.length });
+            cursor.documents.push({ id: file.id, bytes: bytes.length });
             part.reserve += cost;
           }
         }

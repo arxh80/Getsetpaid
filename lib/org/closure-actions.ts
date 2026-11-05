@@ -21,7 +21,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getCurrentOrg, getCurrentUser } from "@/lib/auth";
-import { checkStepUp, sessionIsAal2 } from "@/lib/auth/step-up-gate";
+import { checkStepUp, mintStepUpToken, sessionIsAal2 } from "@/lib/auth/step-up-gate";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, type FormState } from "@/lib/forms";
 import {
@@ -51,7 +51,9 @@ export async function closeMyWorkspaceAction(
   }
   if (org.isSuspended) return { error: CLOSE_MESSAGES.notActive, values };
 
-  if (!(await checkStepUp())) return { error: CLOSE_MESSAGES.stepUp, values };
+  if (!(await checkStepUp()) || !(await mintStepUpToken("workspace_close"))) {
+    return { error: CLOSE_MESSAGES.stepUp, values };
+  }
   if (!(await sessionIsAal2())) return { error: CLOSE_MESSAGES.aal2, values };
 
   const checked = checkCloseForm(formData, org.slug);

@@ -1,5 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { refuseUnlessRunner } from "@/lib/security/runner-auth";
 import { runRetentionSweep } from "@/lib/retention/runner";
 
 // ===========================================================================
@@ -32,29 +32,12 @@ import { runRetentionSweep } from "@/lib/retention/runner";
 // because the endpoint is already the runner's own credential, and a preview
 // is strictly less than what the same credential can already do.
 //
-// The incident-digest route's credential rules, verbatim and for the same
-// reasons: lib/supabase/middleware.ts lists this path as public so the
-// signed-out bounce does not redirect a cron to /login; the credential is the
-// bearer secret, compared in constant time; with the secret UNSET the route
-// answers 404 for every caller -- an unconfigured deployment has no runner
-// endpoint at all rather than an open one -- and a wrong secret answers 404
-// too, so a prober cannot tell the two apart.
+// The credential check is lib/security/runner-auth.ts, shared with the other
+// runner routes; this route's secret is RETENTION_RUNNER_SECRET.
 //
 // POST only: a GET is what a crawler or a browser prefetch sends, and running
 // a garbage collection is a side effect.
 // ===========================================================================
-
-function configuredSecret(): string | null {
-  const value = process.env.RETENTION_RUNNER_SECRET;
-  return value && value.trim().length >= 32 ? value.trim() : null;
-}
-
-function bearerMatches(header: string | null, secret: string): boolean {
-  if (!header || !header.startsWith("Bearer ")) return false;
-  const presented = Buffer.from(header.slice("Bearer ".length));
-  const expected = Buffer.from(secret);
-  return presented.length === expected.length && timingSafeEqual(presented, expected);
-}
 
 /** `{"dry": true}` and nothing else. An unparseable body is a live run,
  *  which is what the cron sends (`{}`) -- never the other way round, so a
@@ -70,13 +53,8 @@ async function wantsDryRun(request: Request): Promise<boolean> {
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const secret = configuredSecret();
-  if (!secret || !bearerMatches(request.headers.get("authorization"), secret)) {
-    return new NextResponse("Not found", {
-      status: 404,
-      headers: { "Cache-Control": "no-store" },
-    });
-  }
+  const refused = refuseUnlessRunner(request, "RETENTION_RUNNER_SECRET");
+  if (refused) return refused;
 
   const result = await runRetentionSweep({ dry: await wantsDryRun(request) });
   return NextResponse.json(result, {

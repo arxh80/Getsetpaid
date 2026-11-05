@@ -49,7 +49,7 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentOrg, getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
-import { checkStepUp } from "@/lib/auth/step-up-gate";
+import { checkStepUp, mintStepUpToken } from "@/lib/auth/step-up-gate";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE } from "@/lib/crm/write";
 import { isSuperuser } from "@/lib/admin/superuser";
@@ -132,7 +132,7 @@ async function authoriseSuperuser(
     // they aim at somebody else's session. There is nothing to learn here.
     return { ok: false, state: refuse(NOT_YOURS, formData) };
   }
-  if (requireStepUp && !(await checkStepUp())) {
+  if (requireStepUp && (!(await checkStepUp()) || !(await mintStepUpToken("impersonation")))) {
     return { ok: false, state: refuse(STEP_UP_REQUIRED, formData) };
   }
   return { ok: true };

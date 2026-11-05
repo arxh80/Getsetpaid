@@ -24,6 +24,7 @@ import "server-only";
 // auth server rather than trusting whatever the cookie claims.
 import { createClient } from "@/lib/supabase/server";
 import { isStepUpSatisfied, readAuthFreshness } from "./step-up";
+import type { StepUpPurpose } from "./step-up-purposes";
 
 export async function checkStepUp(
   claims?: Record<string, unknown> | null,
@@ -35,6 +36,25 @@ export async function checkStepUp(
     resolvedClaims = data?.claims;
   }
   return isStepUpSatisfied(readAuthFreshness(resolvedClaims));
+}
+
+/**
+ * The database's half of step-up (Phase 10 Task 6, G13). Call it ONLY right
+ * after checkStepUp() passes and before the gated RPC or insert, which spends
+ * it: public.mint_step_up_token() records one single-use, five-minute token
+ * for this user and `purpose`, and refuses unless the request carries the
+ * server mark, so a browser holding the session cannot mint one itself.
+ * False when the database refused; the caller treats that as the step-up
+ * refusal it is. tests/unit/security/step-up-token-callers.test.ts holds
+ * every checkStepUp() caller to this.
+ */
+export async function mintStepUpToken(purpose: StepUpPurpose): Promise<boolean> {
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("mint_step_up_token", { p_purpose: purpose });
+  if (error) {
+    console.error("[step-up] the database refused a step-up token:", error.code, error.hint ?? error.message);
+  }
+  return !error;
 }
 
 /**

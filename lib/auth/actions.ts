@@ -22,6 +22,9 @@ import { createClient } from "@/lib/supabase/server";
 import { siteUrl } from "@/lib/supabase/env";
 import { safeNextPath } from "./redirects";
 import { mayChangePassword, readAuthFreshness } from "./step-up";
+import { bindSignUp, clearMustChoosePassword, isNewSignUp } from "./first-proof";
+import { mayTryPassword, recordPasswordOutcome } from "./login-budget";
+import { MUST_CHOOSE_PASSWORD_KEY } from "@/lib/supabase/middleware";
 import {
   field,
   isValidEmail,
@@ -63,7 +66,7 @@ export async function signUpAction(
   if (Object.keys(fieldErrors).length > 0) return { fieldErrors };
 
   const supabase = await createClient();
-  const { error } = await supabase.auth.signUp({
+  const { data: signedUp, error } = await supabase.auth.signUp({
     email: email!,
     password: password!,
     options: {
@@ -79,11 +82,28 @@ export async function signUpAction(
     // Supabase distinguishes "already registered" from other failures. We do
     // not pass that distinction on -- see the enumeration note above. A user
     // who really does have an account gets the same "check your email" screen.
-    if (error.status === 422 || error.code === "user_already_exists") {
+    // over_email_send_rate_limit too: GoTrue answers it to a re-sign-up of
+    // an unconfirmed account mailed inside [auth.email] max_frequency (20
+    // minutes, G3), which a new address never gets -- the same oracle.
+    if (
+      error.status === 422 ||
+      error.code === "user_already_exists" ||
+      error.code === "over_email_send_rate_limit"
+    ) {
+      // The same Set-Cookie a new account gets (bindSignUp's header).
+      await bindSignUp(null);
       redirect(`/signup/check-email?email=${encodeURIComponent(email!)}`);
     }
     return { error: authErrorMessage(error.message) };
   }
+
+  // Phase 10 Task 20 (Q245): tie a NEW account to this browser, so confirming
+  // here keeps the password just typed. A sign-up that returned an EXISTING,
+  // unconfirmed account gets no binding: GoTrue kept the FIRST registrant's
+  // password on it, so whoever proves the inbox must choose a new one
+  // (lib/auth/first-proof.ts). Every outcome still sets the cookie, a decoy
+  // when unbound, so its presence says nothing about the address.
+  await bindSignUp(signedUp.user && isNewSignUp(signedUp.user) ? signedUp.user.id : null);
 
   // With email confirmations disabled (the local default), signUp returns a
   // live session and the user is already signed in. With them enabled there is
@@ -98,6 +118,8 @@ export async function signUpAction(
 // ---------------------------------------------------------------------------
 // Sign in (email + password)
 // ---------------------------------------------------------------------------
+const BAD_SIGN_IN = "That email and password don't match. Check both and try again.";
+
 export async function signInAction(
   _prev: FormState,
   formData: FormData,
@@ -115,15 +137,20 @@ export async function signInAction(
     };
   }
 
+  // G4 fallback (lib/auth/login-budget.ts): the account's failed-attempt
+  // budget is checked BEFORE GoTrue. A spent budget gets the same message as
+  // a wrong password, for an address with no account too, so it reveals
+  // neither the lockout's cause nor whether the account exists.
+  if (!(await mayTryPassword(email))) return { error: BAD_SIGN_IN };
+
   const supabase = await createClient();
   const { error } = await supabase.auth.signInWithPassword({ email, password });
+  await recordPasswordOutcome(email, error);
 
   if (error) {
     // ONE message for wrong-password and no-such-account alike. Do not
     // "improve" this by reading error.code and being more specific.
-    return {
-      error: "That email and password don't match. Check both and try again.",
-    };
+    return { error: BAD_SIGN_IN };
   }
 
   redirect(next);
@@ -160,7 +187,14 @@ export async function magicLinkAction(
   // exists -- and showing it turns this form into an account-existence checker
   // for any address an attacker cares to type. Rate limiting is what bounds
   // abuse, not a distinguishable error message.
-  if (error && error.status === 429) {
+  //
+  // The same holds for GoTrue's per-account mail throttle ([auth.email]
+  // max_frequency, 20 minutes since G3): over_email_send_rate_limit comes back
+  // only for an address that HAS an account and was mailed recently, so it
+  // gets the "sent" page like everything else. The project-wide email cap
+  // shares that code and is treated the same way. Only the per-IP request
+  // limit, which says nothing about the address, is shown.
+  if (error && error.status === 429 && error.code !== "over_email_send_rate_limit") {
     return { error: "Too many requests. Wait a minute and try again." };
   }
 
@@ -349,14 +383,75 @@ async function passwordChangeGate(
 }
 
 // ---------------------------------------------------------------------------
+// Choose a password after the first proof (Phase 10 Task 20, Q245)
+// ---------------------------------------------------------------------------
+//
+// Reachable only by an account carrying the must-choose mark, which
+// lib/auth/first-proof.ts sets when it replaced the password at the first
+// proof of the address. No step-up: the session is seconds old and was minted
+// by that proof, and the password it replaces is one nobody knows. Without the
+// mark this action changes nothing -- it must not become a password-change
+// path that skips the step-up completeAccountSetupAction enforces.
+export async function choosePasswordAction(
+  _prev: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const password = field(formData, "password");
+  const next = safeNextPath(field(formData, "next"));
+
+  if (!password) return { fieldErrors: { password: "Choose a password." } };
+  const problem = passwordProblem(password);
+  if (problem) return { fieldErrors: { password: problem } };
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { error: "Your session has expired. Sign in again." };
+  if (user.app_metadata?.[MUST_CHOOSE_PASSWORD_KEY] !== true) redirect(next);
+
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) return { fieldErrors: { password: authErrorMessage(error.message) } };
+
+  if (!(await clearMustChoosePassword(user.id))) {
+    // The mark stays, so a retry works; GoTrue refuses the same password twice.
+    return { error: "We couldn't finish saving that. Try again with a different password." };
+  }
+  // The proxy reads the mark from the JWT; this session's still carries it.
+  // If the refresh fails, the stale JWT would bounce them back here for good:
+  // sign out and let them sign in with the password they just chose.
+  const { error: refreshError } = await supabase.auth.refreshSession();
+  if (refreshError) {
+    await supabase.auth.signOut({ scope: "local" });
+    redirect("/login?error=password_saved");
+  }
+  redirect(next);
+}
+
+// ---------------------------------------------------------------------------
 // Sign out
 // ---------------------------------------------------------------------------
 export async function signOutAction(): Promise<void> {
   const supabase = await createClient();
   // 'local' clears this browser's session only. Signing every device out is a
-  // deliberate, separate security action ("sign out everywhere"), not what a
+  // deliberate, separate security action (signOutEverywhereAction), not what a
   // user expects from a header menu.
   await supabase.auth.signOut({ scope: "local" });
+  redirect("/login");
+}
+
+// Phase 10 Task 22: "sign out everywhere", for a lost or stolen device.
+// 'global' revokes every refresh token this user holds, this browser's
+// included. An access token already issued keeps working until it expires
+// (jwt_expiry, SECURITY.md § 4). No step-up: signing out cannot harm the
+// account. A failure is reported, never redirected, so nobody is told every
+// device is signed out when none is.
+export async function signOutEverywhereAction(): Promise<FormState> {
+  const supabase = await createClient();
+  const { error } = await supabase.auth.signOut({ scope: "global" });
+  if (error) {
+    return { error: "We couldn't sign you out everywhere. Try again in a moment." };
+  }
   redirect("/login");
 }
 

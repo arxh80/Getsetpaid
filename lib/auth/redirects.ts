@@ -41,7 +41,12 @@ export function safeNextPath(
     if (url.origin !== base) return fallback;
     // Rebuild from parts. Anything that survived parsing but is not path,
     // query or fragment is discarded rather than trusted.
-    return `${url.pathname}${url.search}${url.hash}`;
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    // Checked AGAIN after parsing (Phase 10 Task 2 F5): dot-segment removal
+    // turns "/.//evil.test" into "//evil.test", which the pre-parse check
+    // above never saw. Protocol-relative output leaves the site.
+    if (path.startsWith("//") || path.startsWith("/\\")) return fallback;
+    return path;
   } catch {
     return fallback;
   }

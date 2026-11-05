@@ -28,19 +28,55 @@
 # smallest honest version of it and NOT the rest:
 #
 #   COVERED HERE          lint, typecheck, the unit tests, a dependency audit,
-#                         a secret scan.
-#   NOT COVERED HERE      `vitest run tests/integration`, the 850 psql
-#                         assertions, the 174 HTTP checks and the 9 Playwright
-#                         tests. Every one of those needs a running Supabase
-#                         stack (`npx supabase start` plus `db reset`), which
-#                         is a container pull and several minutes per run and a
-#                         deliberate decision somebody has to make about CI
-#                         minutes. It is scoped in the Task 8 exit document,
-#                         not smuggled in here.
+#                         a secret scan -- and, since the parallel-stacks
+#                         change, the three suites that used to run only on
+#                         a developer's machine:
+#                         `vitest run tests/integration`, the psql/HTTP
+#                         suite, and Playwright. Each is its own job below,
+#                         so they run in parallel and a red tick names the
+#                         suite without anybody opening a log.
+#   NOT COVERED HERE      none of the five documented gates. What is still
+#                         missing is a real malware engine
+#                         (`SECURITY.md` § 6), a pentest, and any check of
+#                         the HOSTED project's configuration
+#                         (`SECURITY.md` § 15) -- none of which a CI runner
+#                         can do.
 #
-# So a green tick on this workflow is NOT a green phase. It is four of the
-# project's gates and the two scans, and the tenant-boundary suites -- the ones
-# `CLAUDE.md` says "matter most" -- still run only on a developer's machine.
+# ===========================================================================
+# WHAT THE THREE HEAVY JOBS COST, STATED RATHER THAN DISCOVERED
+# ===========================================================================
+# Each of them starts a full local Supabase stack on the runner: eleven
+# containers, pulled cold because a runner has no Docker layer cache, then a
+# migrate of every file in supabase/migrations. On the developer machine this
+# was written on that is about three minutes before a single assertion runs,
+# and a hosted runner is slower. Rough per-PR wall clock, jobs in parallel:
+#
+#   gates          ~3 min      unchanged
+#   scan           ~2 min      unchanged
+#   integration    ~10 min     stack + `vitest run tests/integration`
+#   psql           ~12 min     stack + reset + nineteen psql suites + HTTP
+#   e2e            ~25 min     stack + chromium + the whole Playwright suite
+#                              on ONE worker (playwright.config.ts pins
+#                              workers: 1 -- the fixtures share one stack)
+#
+# Call it ~50 runner-minutes a pull request against about 5 before. THOSE
+# NUMBERS ARE ESTIMATES FROM LOCAL TIMINGS, not measurements of a real run;
+# whoever reads the first green run should replace them with what it cost.
+# On a private repository this is real money.
+#
+# The three heavy jobs run on `pull_request` and on pushes to `main`, like
+# everything else here -- narrowing them further was considered and is left
+# to whoever sees the bill, because a merge to `main` with no PR is exactly
+# the case the `push` trigger exists for.
+#
+# ONE STACK TO A RUNNER, so none of this needs `scripts/stack.mjs`: each job
+# owns its machine and takes the committed config.toml's ports unchanged.
+# That script exists for a developer machine with several worktrees on it --
+# see docs/parallel-stacks.md.
+#
+# So a green tick is now genuinely the five gates. It is still not a green
+# PHASE: nothing here says whether the hosted project's auth settings, its
+# MFA hook or its region are configured.
 name: CI
 
 # EVERY PR RAN BOTH JOBS TWICE (deferred-minor L1145). `push: ["**"]` fires on
@@ -180,3 +216,183 @@ jobs:
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # LICENCE SCAN (Phase 10 Task 9, G23). Production dependencies only; the
+      # allowlist and its one scoped exception live in the script.
+      - name: Licence scan
+        run: pnpm licenses list --prod --json | node scripts/check-licenses.mjs
+
+      # SAST (Phase 10 Task 9, G24). Semgrep CE, version-pinned. p/default is
+      # there because p/typescript and p/react alone miss `eval(req.query.x)`
+      # (measured locally, 1.181.1). Excluded with reasons, triaged 2026-10-26:
+      # unsafe-formatstring (70 hits, every one a console.* call whose first
+      # argument is a template string; the worst case is a garbled log line,
+      # no execution), and .superpowers/ (planning and mutation artefacts, not
+      # shipped). --error makes any other finding fail the step.
+      - name: SAST (Semgrep)
+        run: |
+          python3 -m pip install --quiet semgrep==1.181.1
+          semgrep scan --error --metrics=off \
+            --config p/default --config p/typescript --config p/react \
+            --exclude-rule javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring \
+            --exclude .superpowers
+
+  # =========================================================================
+  # THE THREE STACK JOBS.
+  #
+  # Each one is the same four steps -- checkout, pnpm+node, the Supabase CLI,
+  # `supabase start` -- and then one suite. They are separate jobs rather than
+  # steps of one job on purpose: they parallelise, and a red tick names the
+  # suite that failed without anybody opening a log.
+  #
+  # The CLI is PINNED to 2.116.0, the version this project is developed
+  # against. `latest` would mean a CLI release could turn a green branch red
+  # with no commit of ours, and config.toml's schema is versioned with the CLI.
+  # =========================================================================
+  integration:
+    name: integration tests (real stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 11.24.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
+        with:
+          version: 2.116.0
+
+      # `supabase start` applies every migration on a fresh stack, so there is
+      # no separate reset here. It is the slow step: eleven container images
+      # pulled cold on a runner with no layer cache, then the migrate.
+      - name: Start Supabase
+        run: supabase start
+
+      # tests/integration/rls/support/env.ts shells out to
+      # `supabase status -o json` and REFUSES to run against anything but a
+      # loopback API -- it creates and deletes real auth users. That refusal is
+      # why no hosted credential is needed, or wanted, in this job.
+      - name: Integration tests
+        run: pnpm exec vitest run tests/integration
+
+      - name: Supabase state on failure
+        if: failure()
+        run: docker ps -a && docker logs supabase_db_getsetpaid --tail 200
+
+  psql:
+    name: psql + HTTP RLS suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 11.24.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          # No `cache: pnpm`: this job never runs `pnpm install`, so the store
+          # path does not exist and the post-step save fails the job after the
+          # suites pass (run 40329179441).
+
+      - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
+        with:
+          version: 2.116.0
+
+      # run-rls-tests.sh parses JSON with `python -c`, not `python3`. The runner
+      # image ships python3 and does not guarantee the bare name, and a missing
+      # interpreter here surfaces as "Could not read SERVICE_ROLE_KEY ... Is the
+      # local stack up?", which sends the reader to fix the wrong thing.
+      - name: Ensure `python` resolves
+        run: sudo ln -sf "$(command -v python3)" /usr/local/bin/python
+
+      - name: Start Supabase
+        run: supabase start
+
+      # The suite REFUSES to run against a non-empty public schema (its own
+      # preflight) and is not idempotent. A fresh `supabase start` is already
+      # empty; the reset is here because it is what the documented recipe says
+      # and it is a cheap no-op on a clean stack.
+      - name: Reset the database
+        run: supabase db reset
+
+      - name: RLS / tenant-boundary suite
+        run: bash supabase/tests/run-rls-tests.sh
+
+      - name: Supabase state on failure
+        if: failure()
+        run: docker ps -a && docker logs supabase_db_getsetpaid --tail 200
+
+  e2e:
+    name: Playwright (golden paths, tenant breakout, axe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 11.24.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Chromium is ~150 MB and only changes when @playwright/test does, so the
+      # lockfile hash is the right key. A miss costs the download below; a hit
+      # costs nothing.
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      # `--with-deps` installs the shared libraries a headless Chromium needs on
+      # a bare runner -- which is why the local prerequisite in CLAUDE.md is the
+      # shorter `npx playwright install chromium`. Run even on a cache hit: the
+      # apt packages are not in that cache.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
+        with:
+          version: 2.116.0
+
+      - name: Start Supabase
+        run: supabase start
+
+      # Playwright starts its OWN dev server (reuseExistingServer is false
+      # unless PLAYWRIGHT_REUSE_SERVER=1, deliberately -- see that config's
+      # header), and `pnpm dev` runs scripts/dev.mjs, which refuses to start
+      # unless the stack above is up. So there is no readiness race to paper
+      # over here.
+      - name: E2E suite
+        run: pnpm test:e2e
+
+      - name: Upload the report on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+
+      - name: Supabase state on failure
+        if: failure()
+        run: docker ps -a && docker logs supabase_db_getsetpaid --tail 200

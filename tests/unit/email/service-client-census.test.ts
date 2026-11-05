@@ -86,6 +86,15 @@ const ALLOWED = new Set([
   // public.record_document_scan_verdict() (service_role alone, refuses a
   // person's session, pending -> terminal on one live row) and nothing else.
   "lib/crm/scan-verdict.ts",
+  // Phase 10 Task 20 (Q245). The auth callback's first-proof settlement: two
+  // RPCs granted to service_role alone, address_is_proved() and
+  // record_address_first_proof() (20261104000000), each about one account
+  // the callback has just verified -- no table at all.
+  "lib/auth/first-proof.ts",
+  // Phase 10 Task 8 (G4 fallback). The pre-GoTrue password budget: one RPC
+  // granted to service_role alone, meter_password_sign_in()
+  // (20261108002000), which refuses any session -- no table at all.
+  "lib/auth/login-budget.ts",
 ]);
 
 interface Scanned {

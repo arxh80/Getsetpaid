@@ -2,17 +2,19 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
-import { getOwnExportJobs } from "@/lib/export/jobs";
+import { getOwnExportJobs, partsPageFor } from "@/lib/export/jobs";
 import {
   ACCOUNT_EXPORT_EXCLUDES,
   ACCOUNT_EXPORT_INCLUDES,
   EXPORT_ALREADY_RUNNING,
   EXPORT_LIMITS,
   describeArchiveLife,
+  parsePartsCursor,
+  partsCursorParam,
 } from "@/lib/export/contract";
 import { Alert } from "@/components/ui/alert";
 import { ActionOutcome } from "@/components/ui/action-outcome";
-import { ExportJobList } from "@/components/account/export-job-list";
+import { ExportJobList, type JobParts } from "@/components/account/export-job-list";
 import { ExportStartForm } from "@/components/account/export-start-form";
 
 export const metadata: Metadata = { title: "A copy of your data · GetSetPaid" };
@@ -31,12 +33,24 @@ export const metadata: Metadata = { title: "A copy of your data · GetSetPaid" }
 // lasts a minute. The workspace export hands out somebody else's whole
 // business, which is the "large data export" CLAUDE.md § Session security
 // names.
-export default async function AccountExportsPage() {
+export default async function AccountExportsPage({ searchParams }: PageProps<"/account/exports">) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
+  const { parts: rawParts } = await searchParams;
+  const partsCursor = parsePartsCursor(typeof rawParts === "string" ? rawParts : null);
 
   const state = await getOwnExportJobs("account");
   const live = state.jobs.some((j) => j.status === "queued" || j.status === "running");
+
+  // Q263: an account export past a ceiling is built in parts, listed the way
+  // the workspace page lists them (one page of parts per multi-part job).
+  const parts: Record<string, JobParts> = Object.fromEntries(
+    await Promise.all(
+      state.jobs
+        .filter((j) => j.partCount > 1)
+        .map(async (j): Promise<[string, JobParts]> => [j.id, { ...(await partsPageFor(j.id, partsCursor)), total: j.partCount }]),
+    ),
+  );
 
   return (
     <div className="flex flex-col gap-10">
@@ -100,6 +114,12 @@ export default async function AccountExportsPage() {
             jobs={state.jobs}
             truncated={state.truncated}
             archiveDays={EXPORT_LIMITS.archiveDays}
+            parts={parts}
+            partsHref={(jobId, from) =>
+              from <= 1
+                ? "/account/exports"
+                : `/account/exports?parts=${encodeURIComponent(partsCursorParam(jobId, from))}`
+            }
             emptyText="You have not asked for a copy of your data. When you do, it appears here with its progress and, when it is ready, a download link."
           />
         </section>

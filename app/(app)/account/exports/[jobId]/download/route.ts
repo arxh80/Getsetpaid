@@ -24,6 +24,8 @@ import { parsePartParam } from "@/lib/export/contract";
 //         (`?part=`, Q228; absent means part 1) — indistinguishable on
 //         purpose. A malformed part is refused before any lookup.
 //   500 : a lookup, audit or signing fault. Never a URL.
+//   503 : Storage could not say whether the archive is there (G20), so it is
+//         neither a URL nor a claim that the archive does not exist.
 //
 // A route handler never streams, so this keeps the literal 404
 // (DESIGN.md § Error pages, the document download route's own rule).
@@ -43,6 +45,12 @@ export async function GET(
     return new NextResponse(null, {
       status: 302,
       headers: { Location: outcome.url, "Cache-Control": "no-store" },
+    });
+  }
+  if (outcome.status === 503) {
+    return new NextResponse("This download is temporarily unavailable. Try again in a minute.", {
+      status: 503,
+      headers: { "Cache-Control": "no-store", "Retry-After": "60" },
     });
   }
   return new NextResponse(outcome.status === 404 ? "Not found" : "Error", {
