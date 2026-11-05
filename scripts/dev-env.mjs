@@ -106,6 +106,24 @@ function readLocalServerMark() {
   return value;
 }
 
+// The local card-payment fake (Invoices part 2): the five lines .env.example
+// carries, copied one regex per name. Fake values, not secrets.
+const STRIPE_NAMES = [
+  "STRIPE_MODE",
+  "STRIPE_SECRET_KEY",
+  "STRIPE_WEBHOOK_SECRET",
+  "STRIPE_CONNECT_CLIENT_ID",
+  "INVOICE_PAY_LINK_SECRET",
+];
+function readLocalStripeLines() {
+  const raw = readFileSync(join(process.cwd(), ".env.example"), "utf8");
+  return STRIPE_NAMES.map((name) => {
+    const value = raw.match(new RegExp(`^${name}=(\\S+)`, "m"))?.[1];
+    if (!value) throw new Error(`dev-env: .env.example has no ${name} value`);
+    return `${name}=${value}`;
+  });
+}
+
 const stack = readLocalStack();
 
 if (!stack) {
@@ -148,6 +166,10 @@ writeFileSync(
     "# The LOCAL server-only request mark, copied from .env.example (whose digest",
     "# supabase/seed.sql seeds). Not a secret. SECURITY.md § 15.",
     `GETSETPAID_SERVER_REQUEST_SECRET=${readLocalServerMark()}`,
+    "",
+    "# Card payments run against the in-process fake locally, copied from",
+    "# .env.example (lib/stripe/fake.ts). Fake values, not secrets.",
+    ...readLocalStripeLines(),
     "",
     "# Mirrors supabase/config.toml site_url. GoTrue's redirect allowlist treats",
     "# localhost and 127.0.0.1 as different origins.",

@@ -226,6 +226,7 @@ const RUNTIME_DEPENDENCIES: Record<string, string> = {
   react: "nothing",
   "react-dom": "nothing",
   "server-only": "nothing (a build-time guard)",
+  stripe: "nothing in a browser: imported only by server code (lib/stripe/client.ts, fake.ts); the customer pays on Stripe's hosted Checkout page, not through Stripe.js here",
 };
 
 function key(site: { file: string; kind: SiteKind }): string {
