@@ -198,7 +198,8 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
     // 179 since Invoices part 1 (20261107000000): invoice.issued, .sent,
     // .marked_paid, .voided, .pdf_downloaded, invoice_settings.changed and
     // invoice_settings.bank_details_changed.
-    expect(live.length).toBe(179);
+    // 184 = 179 + the five Stripe actions of Invoices part 2 (20261110000000).
+    expect(live.length).toBe(184);
     expect(new Set(live).size, "the database catalogue lists a name twice").toBe(live.length);
     expect(live).toEqual([...knownAuditActions()].sort());
   });

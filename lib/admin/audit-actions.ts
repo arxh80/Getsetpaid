@@ -387,6 +387,16 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "invoice.pdf_downloaded",
   "invoice_settings.changed",
   "invoice_settings.bank_details_changed",
+
+  // Invoices part 2 (20261110000000). Card payments and the Stripe link.
+  // paid_by_card / card_payment_conflict / card_refund_flagged are the
+  // sessionless webhook's, written with the Q130 tombstone as actor;
+  // linked / ended are a member's act (or Stripe's deauthorisation).
+  "invoice.paid_by_card",
+  "invoice.card_payment_conflict",
+  "invoice.card_refund_flagged",
+  "invoice_stripe_account.linked",
+  "invoice_stripe_account.ended",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

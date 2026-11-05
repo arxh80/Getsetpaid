@@ -1383,7 +1383,7 @@ fi
 # re-runnable (it removes its own fixtures). Pin:
 # grep -c '^select inv.val(' supabase/tests/rls_invoices.sql
 # ============================================================================
-run_suite "INVOICES" rls_invoices.sql inv 256
+run_suite "INVOICES" rls_invoices.sql inv 257
 inv_fails=$SUITE_FAILS
 if [ "$inv_fails" != "0" ]; then
   echo "INVOICES SUITE FAILED: $inv_fails failing assertion(s)" >&2
@@ -1398,6 +1398,30 @@ if [ "$inv_fails" != "0" ]; then
   psql_status=1
 else
   echo "Invoices suite: all assertions passed."
+fi
+
+# ============================================================================
+# INVOICES, PART 2 OF 3 -- STRIPE CONNECT (20261110000000 onwards; Q276/Q279).
+# Task 2: the five Stripe tables and private.stripe_link_states, invoices.paid_via
+# with its rebuilt shape and freeze, the shared booking helper, and the
+# catalogues they joined. Later tasks add the link, pay and webhook RPCs. Self-
+# contained and re-runnable (it removes its own fixtures). Pin:
+# grep -c '^select ist.val(' supabase/tests/rls_invoices_stripe.sql
+# ============================================================================
+run_suite "INVOICES STRIPE" rls_invoices_stripe.sql ist 81
+ist_fails=$SUITE_FAILS
+if [ "$ist_fails" != "0" ]; then
+  echo "INVOICES STRIPE SUITE FAILED: $ist_fails failing assertion(s)" >&2
+  echo "  ST/SB red: a Stripe table lost RLS or a client role gained a grant." >&2
+  echo "  SR red: A CARD PAYMENT OR A STRIPE ACCOUNT IS READABLE OUTSIDE ITS" >&2
+  echo "  WORKSPACE, or without view_finance. SP red: paid_via, the paid shape or" >&2
+  echo "  the freeze moved (A PAID INVOICE CAN BE REWRITTEN). SC red: a table" >&2
+  echo "  constraint Tasks 3-4 rely on moved. SH red: the shared booking helper" >&2
+  echo "  changed what a payment books. SF red: the fee drifted from the TS port." >&2
+  echo "  SK red: a catalogue lost a Stripe table, action or alert type." >&2
+  psql_status=1
+else
+  echo "Invoices Stripe suite: all assertions passed."
 fi
 
 # ============================================================================

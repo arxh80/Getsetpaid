@@ -489,12 +489,14 @@ select er.try('ET14 POSITIVE CONTROL: another account CAN have its ban set',
 -- voided_by and invoice_sends.sent_by. erase_account()'s walk re-points them
 -- to the tombstone; private.invoices_freeze() admits exactly that re-point on
 -- an issued invoice (rls_invoices.sql IF14).
-select er.val('EB1 exactly seventeen foreign keys to auth.users have NO ON DELETE action',
+-- 18 SINCE INVOICES PART 2 (20261110000000): invoice_stripe_accounts.linked_by,
+-- re-pointed to the tombstone by the same walk (nothing freezes that table).
+select er.val('EB1 exactly eighteen foreign keys to auth.users have NO ON DELETE action',
   $$select count(*)::text from pg_catalog.pg_constraint con
      where con.contype = 'f' and con.confrelid = 'auth.users'::pg_catalog.regclass
-       and con.confdeltype = 'a'$$, '17');
+       and con.confdeltype = 'a'$$, '18');
 
-select er.val('EB2 and they are these seventeen, by name',
+select er.val('EB2 and they are these eighteen, by name',
   $$select string_agg(t, ',' order by t) from (
       select con.conrelid::pg_catalog.regclass::text || '.' || a.attname as t
         from pg_catalog.pg_constraint con
@@ -510,6 +512,7 @@ select er.val('EB2 and they are these seventeen, by name',
   'public.impersonation_sessions.superuser_user_id,'
   'public.incident_alerts.resolved_by,'
   'public.invoice_sends.sent_by,'
+  'public.invoice_stripe_accounts.linked_by,'
   'public.invoices.created_by,'
   'public.invoices.paid_by,'
   'public.invoices.voided_by,'

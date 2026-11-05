@@ -1239,9 +1239,17 @@ const PRE_PHASE7_RELATIONS = [
   // view_finance holders (Owner, Admin, Finance; aal2); no INSERT, UPDATE or
   // DELETE grant for any client role (every write is a SECURITY DEFINER RPC).
   // Proved persona by persona in supabase/tests/rls_invoices.sql IR/IB.
+  //
+  // Invoices part 2 (20261110000000): the two Stripe tables a client reads,
+  // on the same terms (SELECT only, view_finance, aal2, every write an RPC).
+  // Proved in supabase/tests/rls_invoices_stripe.sql SR/SB. The other three
+  // (invoice_pay_sessions, stripe_events, stripe_platform_settings) grant
+  // authenticated NOTHING, so this census does not see them (ST3).
+  "invoice_card_payments",
   "invoice_lines",
   "invoice_sends",
   "invoice_settings",
+  "invoice_stripe_accounts",
   "invoices",
   "meeting_links",
   "meetings",

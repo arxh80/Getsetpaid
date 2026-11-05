@@ -180,6 +180,14 @@ begin
    where id = v_inv;
   insert into public.invoice_sends (organisation_id, invoice_id, to_email, sent_by)
     values (p_org, v_inv, 'ck@example.test', p_owner);
+  -- Invoices part 2 (20261110000000): the Stripe link and the card payments
+  -- are exported (the other three new tables are excused). Ids are unique
+  -- per workspace: the account id by a fresh suffix, the payment intent too.
+  insert into public.invoice_stripe_accounts (organisation_id, stripe_account_id, charges_enabled, linked_by)
+    values (p_org, 'acct_ck' || pg_catalog.replace(gen_random_uuid()::text, '-', ''), true, p_owner);
+  insert into public.invoice_card_payments (organisation_id, invoice_id, stripe_event_id,
+                                            stripe_payment_intent_id, amount_minor, currency, outcome)
+    values (p_org, v_inv, 'evt_ck', 'pi_ck' || pg_catalog.replace(gen_random_uuid()::text, '-', ''), 10000, 'GBP', 'applied');
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -262,7 +270,8 @@ select ck.val('KS1 the workspace export exports a pinned number of tables',
   $$select count(*)::text from private.export_catalogue() where export_kind = 'workspace' and disposition = 'exported'$$,
   -- 37 = 35 + Phase 9 Task 3's integration_connections and integration_sync_runs.
   -- 41 = 37 + Invoices part 1's four tables.
-  '41');
+  -- 43 = 41 + Invoices part 2's invoice_stripe_accounts and invoice_card_payments.
+  '43');
 select ck.val('KS2 EVERY ONE of them is non-empty in the pre-closure export (none is vacuous)',
   $$select coalesce(string_agg(tbl, ',' order by tbl), '') from ck.counts where job = 'pre_a' and n = 0$$, '');
 select ck.val('KS3 ...for the second workspace too',
@@ -418,6 +427,8 @@ delete from public.merges where organisation_id in (:'org_a', :'org_b');
 delete from public.network_connection_requests where from_organisation_id in (:'org_a', :'org_b');
 -- Replica mode runs no cascade, and the invoices' NO ACTION created_by/sent_by
 -- would otherwise block the auth.users delete below.
+delete from public.invoice_card_payments  where organisation_id in (:'org_a', :'org_b');
+delete from public.invoice_stripe_accounts where organisation_id in (:'org_a', :'org_b');
 delete from public.invoice_sends    where organisation_id in (:'org_a', :'org_b');
 delete from public.invoice_lines    where organisation_id in (:'org_a', :'org_b');
 delete from public.invoices         where organisation_id in (:'org_a', :'org_b');
