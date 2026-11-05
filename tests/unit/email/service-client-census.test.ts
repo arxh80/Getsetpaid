@@ -65,6 +65,10 @@ const ALLOWED = new Set([
   // closure and decision notices: two service_role-only resolver RPCs and the
   // same two ledger RPCs (20261022001000) -- no table at all.
   "lib/email/workspace-closure-notifications.ts",
+  // Invoices Task 8. The bank-details-changed notice: one service_role-only
+  // resolver RPC (pending_invoice_bank_change_notifications, 20261107004000)
+  // and the same two ledger RPCs -- no table at all.
+  "lib/email/invoice-notifications.ts",
   // Phase 8 Task 4. The export runner is the second kind of sessionless
   // caller this client exists for: it has no user, so no RLS policy can name
   // it, and its whole reach is the column-narrow grants in 20260927001000 § 7

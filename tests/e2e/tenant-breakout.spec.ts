@@ -926,3 +926,25 @@ test("a Free-tier org's connection request is refused server-side even with disa
   const after = await countSentConnectionRequests(world.freeOrgId);
   expect(after, "no row was inserted despite the stripped, submitted form").toBe(before);
 });
+
+test("another tenant's invoice is unreachable by id under my slug, by its own slug, and as a PDF", async ({ page }) => {
+  await signIn(page, world, "finance");
+  // RECORD level, under a valid slug: the streamed not-found contract.
+  await expectRefused(page, `/${world.proOrgSlug}/invoices/${world.otherInvoiceId}`);
+  // WORKSPACE level: a slug the caller cannot see is a literal 404.
+  await expectRefusedAtWorkspace(page, `/${world.otherOrgSlug}/invoices/${world.otherInvoiceId}`);
+  // The PDF route handler is not a page: a literal 404, never a 403.
+  const pdf = await page.request.get(`/${world.proOrgSlug}/invoices/${world.otherInvoiceId}/pdf`);
+  expect(pdf.status()).toBe(404);
+});
+
+test("a Booker (no view_finance) gets no invoice surface at all", async ({ page }) => {
+  await signIn(page, world, "booker");
+  await expectRefused(page, `/${world.proOrgSlug}/invoices`);
+  await expectRefused(page, `/${world.proOrgSlug}/invoices/${world.proIssuedInvoiceId}`);
+  await expectRefused(page, `/${world.proOrgSlug}/settings/invoicing`);
+  const pdf = await page.request.get(`/${world.proOrgSlug}/invoices/${world.proIssuedInvoiceId}/pdf`);
+  expect(pdf.status()).toBe(404);
+  await page.goto(`/${world.proOrgSlug}`);
+  await expect(page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: /^Invoices/ })).toHaveCount(0);
+});

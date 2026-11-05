@@ -3,6 +3,7 @@ import "server-only";
 import {
   ADMIN_ITEMS,
   CRM_AREAS,
+  FINANCE_ITEMS,
   NETWORK_ITEMS,
   OPERATIONS_AREAS,
   OVERVIEW_ITEM,
@@ -26,27 +27,22 @@ import type { SidebarNavGroup } from "@/components/nav/types";
 // invite people but not define custom fields sees "Members" alone, not a
 // half-disabled group. A group only appears once it has at least one item.
 //
-// NOT INCLUDED: a "Finance" group. The sidebar task brief's spec names one,
-// but there is no route to point it at -- Phase 5 shipped finance as a panel
-// ON THE EVENT DETAIL PAGE (components/crm/finance-panel.tsx), not a
-// standalone list. CLAUDE.md's instruction for a sidebar item is explicit:
-// "do not invent sections that have no route." A link that only ever lands
-// on /events, mislabelled "Finance", would duplicate the Events item under a
-// false name -- so the group is omitted rather than faked, and the sidebar
-// build report names it as a deviation for a design-system owner to weigh in
-// on (a dedicated /[orgSlug]/finance rollup page is the real fix, and is not
-// this build's to invent).
+// THE FINANCE GROUP (Invoices part 1) is gated on view_finance: the invoices list
+// and its settings now give it routes to point at; the event finance panel stays
+// on the event page.
 export async function buildSidebarGroups(
   orgId: string,
   orgSlug: string,
 ): Promise<SidebarNavGroup[]> {
   const [
+    canViewFinance,
     canViewNetwork,
     canManageMembers,
     canManageCustomFields,
     canManageOrganisationKey,
     canEndSupportAccess,
   ] = await Promise.all([
+    hasPermission(orgId, "view_finance"),
     hasPermission(orgId, "view_network"),
     hasPermission(orgId, "manage_members"),
     hasPermission(orgId, "manage_custom_fields"),
@@ -88,6 +84,9 @@ export async function buildSidebarGroups(
       heading: "Operations",
       items: OPERATIONS_AREAS.map((area) => toNavItem(orgSlug, area)),
     },
+    ...(canViewFinance
+      ? [{ id: "finance", heading: "Finance", items: FINANCE_ITEMS.map((area) => toNavItem(orgSlug, area)) }]
+      : []),
     ...(canViewNetwork
       ? [
           {

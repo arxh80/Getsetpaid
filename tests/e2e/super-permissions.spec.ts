@@ -223,6 +223,8 @@ const ROUTE_HANDLERS: Record<string, string> = {
     "session + own-row RLS: only the requester of that job, audited before the signed URL is minted",
   "app/(app)/[orgSlug]/documents/[documentId]/download/route.ts":
     "session + org membership + scan-status gate, audited before the signed URL is minted",
+  "app/(app)/[orgSlug]/invoices/[invoiceId]/pdf/route.ts":
+    "session + org membership + view_finance through RLS (another tenant's, a missing and a draft invoice are the same 404), audited before the PDF is rendered -- probed in tenant-breakout.spec.ts",
   "app/(app)/super/feedback/[feedbackId]/screenshot/route.ts":
     "platform superuser at aal2 -- probed principal by principal in this file",
   "app/api/erasure/run/route.ts":

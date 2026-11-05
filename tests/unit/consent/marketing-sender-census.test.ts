@@ -59,6 +59,12 @@ const PROVIDER_KEY_PREFIX = /^(?:BREVO|SENDINBLUE)_/;
 const isProviderString = (value: string) => PROVIDER_HOST.test(value) || PROVIDER_KEY.test(value);
 
 const TRANSACTIONAL: Record<string, string> = {
+  // Invoices part 1 Task 11. The invoice itself, emailed by a workspace's
+  // Finance user to the customer named on it, with the PDF attached: a
+  // business document the sender chose to send, not marketing. Rate-limited
+  // (invoice_send, 30/h/user) because it goes to an address the sender types.
+  "lib/invoices/send-action.ts":
+    "an invoice a workspace sends to its own customer, with the PDF attached -- a business document requested by the sender, not marketing",
   "lib/email/feedback-notification.ts":
     "the in-app feedback receipt to the founder's own support inbox -- an operational message, not marketing",
   "lib/email/incident-alerts.ts":

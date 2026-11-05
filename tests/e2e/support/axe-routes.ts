@@ -152,6 +152,11 @@ export const SCANNED_ELSEWHERE: readonly { route: string; spec: string }[] = [
   { route: "/[orgSlug]/settings/export", spec: "workspace-closure.spec.ts" },
   { route: "/[orgSlug]/support-access", spec: "impersonation.spec.ts" },
   { route: "/[orgSlug]/members", spec: "members.spec.ts" },
+  // Scanned as the Finance role (a Manager holds no view_finance and would scan a not-found page).
+  { route: "/[orgSlug]/invoices", spec: "accessibility.spec.ts" },
+  { route: "/[orgSlug]/invoices/new", spec: "accessibility.spec.ts" },
+  { route: "/[orgSlug]/invoices/[invoiceId]", spec: "accessibility.spec.ts" },
+  { route: "/[orgSlug]/settings/invoicing", spec: "accessibility.spec.ts" },
   { route: "/[orgSlug]/network", spec: "accessibility.spec.ts" },
   { route: "/[orgSlug]/network/[profileId]", spec: "accessibility.spec.ts" },
   { route: "/[orgSlug]/network/profiles/[profileId]", spec: "accessibility.spec.ts" },

@@ -362,8 +362,8 @@ select c7.val('PA6 the five network_connection.* names are in the database catal
   'network_connection.accepted,network_connection.declined,network_connection.requested,network_connection.updated,network_connection.withdrawn');
 select c7.val('PA6b membership.deleted is in it too',
   $$select (exists (select 1 from private.platform_audit_actions() a where a = 'membership.deleted'))::text$$, 'true');
-select c7.val('PA6c the whole derived catalogue is 171 names (162 + retention.audit_ceiling_released, Q184, + organisation.closed_by_owner, Task 9c, + organisation.closure_reassigned/.closure_deleted, Task 9c job 2, + organisation.closure_candidates_viewed, Q223, + the four integration.* actions, Phase 9 Task 2, + organisation.updated, Q189), none duplicated',
-  $$select count(*)::text || '/' || count(distinct a)::text from private.audit_action_catalogue() a$$, '172/172');
+select c7.val('PA6c the whole derived catalogue is 179 names (162 + retention.audit_ceiling_released, Q184, + organisation.closed_by_owner, Task 9c, + organisation.closure_reassigned/.closure_deleted, Task 9c job 2, + organisation.closure_candidates_viewed, Q223, + the four integration.* actions, Phase 9 Task 2, + organisation.updated, Q189; 172 by Phase 10; 179 = 172 + the seven invoice.* and invoice_settings.* actions, Invoices part 1), none duplicated',
+  $$select count(*)::text || '/' || count(distinct a)::text from private.audit_action_catalogue() a$$, '179/179');
 select c7.val('PA6d ...and every <target>.<verb> the new triggers can produce is in it',
   $$select count(*)::text from (
       select t || '.' || v as a

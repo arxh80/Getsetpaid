@@ -317,6 +317,20 @@ export const FINANCE_LINES: Record<
   },
 };
 
+// ---- INVOICES PART 1 (Task 9) ----------------------------------------------
+/** A Pro-org event with ONE budgeted income line, invoiced by the golden path. */
+export const INVOICE_EVENT_NAME = "Pro Invoice Night";
+export const INVOICE_INCOME = {
+  description: "Invoice fixture — box office guarantee",
+  amountMinor: 300000,
+  formatted: "£3,000.00",
+} as const;
+export const INVOICE_FIXTURES = {
+  draftLine: "Fixture draft line — PA hire",
+  issuedNumber: "FIX-0001",
+  starterLine: "Starter draft line — must not issue",
+} as const;
+
 /** Roles this suite signs in as. */
 export type E2eRole =
   | "manager"
@@ -548,6 +562,16 @@ export interface E2eWorld {
    * whether the finance keys are held at all.
    */
   financeTotpSecret: string;
+  /** Invoices part 1 (Task 9): the event with a budgeted income line, a Pro
+   *  draft (to the supplier contact, one line), a Pro issued invoice
+   *  (FIX-0001, planted, not from the counter), a Starter draft the tier
+   *  must refuse to issue, and another tenant's draft for the breakout. */
+  invoiceEventId: string;
+  invoiceIncomeEntryId: string;
+  proDraftInvoiceId: string;
+  proIssuedInvoiceId: string;
+  starterDraftInvoiceId: string;
+  otherInvoiceId: string;
 
   /**
    * PHASE 7 TASK 7. The real, verified factors the `owner` and `admin`
@@ -920,6 +944,24 @@ export async function countSentConnectionRequests(
     [organisationId],
   );
   return Number(result.rows[0]?.count ?? "0");
+}
+
+/** Issued, paid or void invoices of one workspace (Invoices part 1). As postgres. */
+export async function countIssuedInvoices(organisationId: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.invoices where organisation_id = $1 and status <> 'draft'`,
+    [organisationId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+/** Audit rows of one action about one target (Invoices part 1). As postgres. */
+export async function countAuditRows(action: string, targetId: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.audit_events where action = $1 and target_id = $2`,
+    [action, targetId],
+  );
+  return Number(rows[0]?.n ?? 0);
 }
 
 /**
@@ -1610,6 +1652,74 @@ export async function impersonationAuditedRoutes(
  * cannot collide with the next one -- and `teardown` still removes them by
  * organisation, which cascades.
  */
+async function plantInvoiceFixtures(p: {
+  proOrgId: string;
+  starterOrgId: string;
+  otherOrgId: string;
+  financeUserId: string;
+  otherOwnerId: string;
+  proContactId: string;
+}) {
+  const invoiceEventId = randomUUID();
+  const invoiceIncomeEntryId = randomUUID();
+  const proDraftInvoiceId = randomUUID();
+  const proIssuedInvoiceId = randomUUID();
+  const starterDraftInvoiceId = randomUUID();
+  const otherInvoiceId = randomUUID();
+  const starterContactId = randomUUID();
+
+  await sql(
+    `insert into public.invoice_settings (organisation_id, business_name, business_address, vat_number,
+                                          bank_account_name, bank_sort_code, bank_account_number)
+     values ($1, 'E2E Pro Promotions Ltd', '1 Ledger Street, London', 'GB123456789', 'E2E Pro Promotions Ltd', '123456', '12345678'),
+            ($2, 'E2E Starter Shows', '2 Starter Lane, Bristol', null, null, null, null)`,
+    [p.proOrgId, p.starterOrgId],
+  );
+  await sql(
+    `insert into public.events (id, organisation_id, owner_user_id, name, starts_at, status)
+     values ($1, $2, $3, $4, now() + interval '30 days', 'confirmed')`,
+    [invoiceEventId, p.proOrgId, p.financeUserId, INVOICE_EVENT_NAME],
+  );
+  await sql(
+    `insert into public.financial_entries (id, organisation_id, event_id, category, status, amount_minor, description)
+     values ($1, $2, $3, 'income', 'budgeted', $4, $5)`,
+    [invoiceIncomeEntryId, p.proOrgId, invoiceEventId, INVOICE_INCOME.amountMinor, INVOICE_INCOME.description],
+  );
+  await sql(`insert into public.contacts (id, organisation_id, name) values ($1, $2, 'E2E Starter Customer')`, [
+    starterContactId,
+    p.starterOrgId,
+  ]);
+  // Drafts first; the issued one is flipped after its line exists (the line freeze).
+  await sql(
+    `insert into public.invoices (id, organisation_id, recipient_contact_id, recipient_address, created_by)
+     values ($1, $2, $3, '1 Supplier Street, London', $4),
+            ($5, $2, $3, '1 Supplier Street, London', $4),
+            ($6, $7, $8, '3 Customer Close, Bristol', $4),
+            ($9, $10, null, null, $11)`,
+    [proDraftInvoiceId, p.proOrgId, p.proContactId, p.financeUserId, proIssuedInvoiceId,
+     starterDraftInvoiceId, p.starterOrgId, starterContactId, otherInvoiceId, p.otherOrgId, p.otherOwnerId],
+  );
+  await sql(
+    `insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity, unit_price_minor, vat_rate, net_minor, vat_minor)
+     values ($1, $2, 1, $3, 1, 50000, 'standard_20', 50000, 10000),
+            ($1, $4, 1, 'Fixture issued line — headline fee', 1, 120000, 'standard_20', 120000, 24000),
+            ($5, $6, 1, $7, 1, 50000, 'none', 50000, 0)`,
+    [p.proOrgId, proDraftInvoiceId, INVOICE_FIXTURES.draftLine, proIssuedInvoiceId, p.starterOrgId,
+     starterDraftInvoiceId, INVOICE_FIXTURES.starterLine],
+  );
+  await sql(`update public.invoices set net_minor = 50000, vat_minor = 10000, gross_minor = 60000 where id = $1`, [proDraftInvoiceId]);
+  await sql(`update public.invoices set net_minor = 50000, gross_minor = 50000 where id = $1`, [starterDraftInvoiceId]);
+  await sql(
+    `update public.invoices i
+        set status = 'issued', number = $2, issue_date = current_date, supply_date = current_date,
+            due_date = current_date + 30, net_minor = 120000, vat_minor = 24000, gross_minor = 144000,
+            snapshot = private.build_invoice_snapshot(i.id, $2, current_date, current_date, current_date + 30)
+      where i.id = $1`,
+    [proIssuedInvoiceId, INVOICE_FIXTURES.issuedNumber],
+  );
+  return { invoiceEventId, invoiceIncomeEntryId, proDraftInvoiceId, proIssuedInvoiceId, starterDraftInvoiceId, otherInvoiceId };
+}
+
 export async function setUpWorld(): Promise<E2eWorld> {
   const suffix = randomUUID().slice(0, 8);
   const orgId = randomUUID();
@@ -2278,6 +2388,14 @@ export async function setUpWorld(): Promise<E2eWorld> {
       FINANCE_LINES.otherTenant.description,
     ],
   );
+  const invoiceFixtures = await plantInvoiceFixtures({
+    proOrgId,
+    starterOrgId,
+    otherOrgId,
+    financeUserId: users.finance.id,
+    otherOwnerId: otherOwner.id,
+    proContactId: proSupplierContactId,
+  });
 
   // =========================================================================
   // PHASE 6 TASK 3's OWN ROWS
@@ -2428,6 +2546,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
   );
 
   return {
+    ...invoiceFixtures,
     orgSlug,
     orgName,
     orgId,

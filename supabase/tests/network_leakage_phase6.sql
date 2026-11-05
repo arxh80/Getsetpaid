@@ -1134,6 +1134,24 @@ select leak.val('IN9 neither masking view depends on an integration table, and n
                and relname in ('integration_connections','integration_sync_runs'))::text$$,
   '0/0/2');
 
+-- IN10 (Invoices part 1). The invoice tables are tenant-private finance; the
+-- same two depths as IN9, by name, plus the denominator.
+select leak.val('IN10 neither masking view depends on an invoice table, and no function in their closure names one',
+  $$select (select count(*) from pg_catalog.pg_class v
+              join pg_catalog.pg_rewrite rw on rw.ev_class = v.oid
+              join pg_catalog.pg_depend d on d.objid = rw.oid
+               and d.classid = 'pg_catalog.pg_rewrite'::regclass
+               and d.refclassid = 'pg_catalog.pg_class'::regclass
+              join pg_catalog.pg_class t on t.oid = d.refobjid
+             where v.relname in ('network_directory','network_connected_profiles')
+               and t.relname in ('invoice_settings','invoices','invoice_lines','invoice_sends'))::text || '/' ||
+           (select count(*) from leak.fn_closure f
+             where f.body ~ '\mpublic\.invoice(s|_lines|_sends|_settings)\M')::text || '/' ||
+           (select count(*) from pg_catalog.pg_class
+             where relnamespace = 'public'::regnamespace
+               and relname in ('invoice_settings','invoices','invoice_lines','invoice_sends'))::text$$,
+  '0/0/4');
+
 -- THE STATED BOUND. The write policies' helper DOES read private tables, by
 -- design, and is outside this closure -- recorded as a measurement so the
 -- exclusion cannot be read as an omission.

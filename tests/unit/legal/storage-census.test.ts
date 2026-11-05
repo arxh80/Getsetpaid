@@ -217,6 +217,7 @@ const DECLARED: readonly DeclaredSite[] = [
  * checks the declaration.
  */
 const RUNTIME_DEPENDENCIES: Record<string, string> = {
+  "@react-pdf/renderer": "nothing in a browser: imported only by server code (the invoice PDF route and the send action), which returns bytes",
   "@supabase/ssr": "the sb-* auth cookies (declared) -- nothing else",
   "@supabase/supabase-js": "nothing of its own: the browser client is created through @supabase/ssr, whose cookie storage replaces the localStorage default",
   "framer-motion": "nothing",
@@ -487,7 +488,9 @@ describe("the storage census (Phase 8 Task 2, Q129)", () => {
     // them, and stopped at the RPC boundary rather than at nothing.
     expect(boundaries.length, "the walk reached a `use server` module").toBeGreaterThan(3);
     expect(boundaries.some((b) => b.includes("lib/org/actions.ts"))).toBe(true);
-  });
+    // The same CPU-bound walk as the reference census above, so the same 30 s
+    // ceiling: it measured 5.4 s against the 5 s default once invoicing added files.
+  }, 30_000);
 
   it("FIXTURE (N6): the server-only import is read from the parse, so a commented-out one does not count", () => {
     expect(importsServerOnly(parse("a.ts", `import "server-only";\nexport const x = 1;`))).toBe(true);

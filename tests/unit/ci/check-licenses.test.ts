@@ -19,6 +19,10 @@ describe("check-licenses (G23)", () => {
     ]);
   });
 
+  it("pako's (MIT AND Zlib) is admitted", () => {
+    expect(violations({ "(MIT AND Zlib)": [pkg("pako")] })).toEqual([]);
+  });
+
   it("the LGPL is admitted for @img/sharp-* only", () => {
     expect(
       violations({

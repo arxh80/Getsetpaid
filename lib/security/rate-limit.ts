@@ -93,7 +93,8 @@ export type RateLimitCategory =
   // a BEFORE INSERT trigger like the write budgets above, because the
   // documents row lands only AFTER the bytes are stored -- a trigger there
   // would refuse too late (20261011000000's header).
-  | "uploads";
+  | "uploads"
+  | "invoice_send";
 
 export type RateLimitVerdict =
   | { readonly allowed: true }

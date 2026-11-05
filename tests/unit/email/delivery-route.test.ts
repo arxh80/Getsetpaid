@@ -15,6 +15,7 @@ const deliver = vi.hoisted(() => ({
   reminders: vi.fn(),
   closures: vi.fn(),
   decisions: vi.fn(),
+  bank: vi.fn(),
 }));
 vi.mock("@/lib/email/incident-alerts", () => ({
   deliverPendingIncidentAlerts: () => deliver.fn(),
@@ -37,6 +38,9 @@ vi.mock("@/lib/email/task-reminder-notifications", () => ({
 vi.mock("@/lib/email/workspace-closure-notifications", () => ({
   deliverWorkspaceClosureNotifications: () => deliver.closures(),
   deliverWorkspaceDecisionNotifications: () => deliver.decisions(),
+}));
+vi.mock("@/lib/email/invoice-notifications", () => ({
+  deliverInvoiceBankChangeNotifications: () => deliver.bank(),
 }));
 
 import { POST } from "@/app/api/incident-alerts/deliver/route";
@@ -61,6 +65,7 @@ beforeEach(() => {
   deliver.reminders.mockResolvedValue({ outcome: "nothing_pending" });
   deliver.closures.mockResolvedValue({ outcome: "nothing_pending" });
   deliver.decisions.mockResolvedValue({ outcome: "nothing_pending" });
+  deliver.bank.mockResolvedValue({ outcome: "nothing_pending" });
 });
 afterEach(() => {
   deliver.fn.mockReset();
@@ -73,6 +78,7 @@ afterEach(() => {
   deliver.reminders.mockReset();
   deliver.closures.mockReset();
   deliver.decisions.mockReset();
+  deliver.bank.mockReset();
   delete process.env.INCIDENT_ALERT_DELIVERY_SECRET;
 });
 
@@ -119,6 +125,7 @@ describe("the delivery route's gate", () => {
       taskReminderNotifications: { outcome: "nothing_pending" },
       workspaceClosureNotifications: { outcome: "nothing_pending" },
       workspaceDecisionNotifications: { outcome: "nothing_pending" },
+      invoiceBankChangeNotifications: { outcome: "nothing_pending" },
     });
   });
 
@@ -137,6 +144,18 @@ describe("the delivery route's gate", () => {
     await expect(res.json()).resolves.toMatchObject({
       workspaceClosureNotifications: { outcome: "unavailable", error: "TypeError" },
       workspaceDecisionNotifications: { outcome: "delivered", sent: 1 },
+    });
+  });
+
+  it("runs the invoice bank-change notices on the same tick, independent of the others", async () => {
+    process.env.INCIDENT_ALERT_DELIVERY_SECRET = SECRET;
+    deliver.decisions.mockRejectedValue(new TypeError("boom"));
+    deliver.bank.mockResolvedValue({ outcome: "delivered", sent: 1, failed: 0, deferred: 0 });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await POST(post(`Bearer ${SECRET}`));
+    expect(deliver.bank).toHaveBeenCalledOnce();
+    await expect(res.json()).resolves.toMatchObject({
+      invoiceBankChangeNotifications: { outcome: "delivered", sent: 1 },
     });
   });
 
@@ -195,6 +214,7 @@ describe("the delivery route's gate", () => {
       taskReminderNotifications: { outcome: "nothing_pending" },
       workspaceClosureNotifications: { outcome: "nothing_pending" },
       workspaceDecisionNotifications: { outcome: "nothing_pending" },
+      invoiceBankChangeNotifications: { outcome: "nothing_pending" },
     });
   });
 

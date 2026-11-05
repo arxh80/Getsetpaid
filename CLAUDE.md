@@ -32,6 +32,8 @@ Phases 2–9 are shipped and merged:
 | 8 | Legal pages, consent, data subject requests, exports, erasure, retention, notification emails, Owner workspace closure |
 | 9 | Integrations schema, with no live connector |
 
+Beside Phase 10, **Invoices part 1** (Q276): draft, issue under a gap-free per-workspace number, PDF, email, mark paid (booking the income on the event, net of VAT) and void, bank transfer only. Detail in `docs/as-built.md` § "Invoices, as they actually shipped".
+
 Per-phase detail is in `docs/as-built.md` § Current state and the "as it actually shipped" sections.
 
 ## Gates
@@ -43,7 +45,7 @@ Run all five before claiming a change is done:
 | `pnpm lint` | ESLint. |
 | `pnpm typecheck` | `tsc --noEmit`. Nothing local runs it for you. Several exhaustiveness guards are compile-time only. **After adding or renaming a route, run `npx next typegen` first**, or `PageProps<"/…">` fails with a misleading `AppRoutes` error. |
 | `pnpm test` | Vitest, unit and integration. Includes `pnpm test:rls` (`tests/integration/rls`). |
-| `pnpm test:e2e` | Playwright against a real browser and the local stack. It starts its own dev server (`PLAYWRIGHT_REUSE_SERVER=1` reuses one on :3000). It covers the golden paths, tenant breakout, refusal parity, axe scans, keyboard-only journeys and the storage census. Run `npx playwright install chromium` once per machine. |
+| `pnpm test:e2e` | Playwright against a real browser and the local stack. It starts its own dev server (`PLAYWRIGHT_REUSE_SERVER=1` reuses one on :3000). It covers the golden paths (`invoices.spec.ts` is the sixth: settings behind step-up, a draft from an event's income plus a free line, issue, PDF, paid, the income on the event net of VAT), tenant breakout, refusal parity, axe scans, keyboard-only journeys and the storage census. Run `npx playwright install chromium` once per machine. |
 | psql RLS suite | `npx supabase db reset --local`, then `bash supabase/tests/run-rls-tests.sh`. It refuses a second run without a reset. Every suite goes through `run_suite()`, which fails on any `psql: ERROR:` line and on a **pinned assertion total**. Update the pin when you add assertions. |
 
 **Measure counts, never increment them:**
@@ -185,7 +187,7 @@ These are acceptance criteria, not hardening tasks. A feature is not done until 
 - Run `python scripts/contrast.py` after touching any colour.
 - Skill passes: Decide (brainstorming → hallmark → ui-ux-pro-max → frontend-design), Build, then Review (web-design-guidelines, accessibility-compliance, vercel-react-best-practices). The full contract is in `DESIGN.md` § "Build-time design tooling".
 - Priorities: dense but uncluttered, keyboard-first (Ctrl/Cmd-K palette), contextual drawers, one shared timeline component, empty states that teach, and WCAG 2.2 AA from the start.
-- Golden path to protect: create contact → create event → add artist → add venue → add task → view activity. It is walked by `golden-path`, `events`, `operations`, `finance` and `network` specs. Extend it with a new sibling spec rather than rewriting one.
+- Golden path to protect: create contact → create event → add artist → add venue → add task → view activity. It is walked by `golden-path`, `events`, `operations`, `finance`, `network` and `invoices` specs. Extend it with a new sibling spec rather than rewriting one.
 
 ## Testing gates
 
@@ -219,7 +221,7 @@ Skills: `supabase`, `supabase-postgres-best-practices`, `supabase-audit-rls` (de
 - First-class suppliers (they are a Contact/Company tag)
 - Verification badges; Microsoft SSO; an Enterprise tier
 
-Finance is **budget & actuals only** (fee, cost and income lines per event). No invoicing, no P&L.
+Finance is budget & actuals per event and, since the founder's 2026-10-20 scope change (Q276), **invoices**: part 1 shipped (bank transfer); part 2 Stripe Connect and part 3 network delivery follow, each with its own spec. Still no full P&L and no accounting-software features.
 
 ## Decisions log
 
@@ -227,7 +229,8 @@ Resolved 2026-08-26 (founder sign-off), and still binding:
 
 - **Product:** Next.js frontend. Multi-org from MVP. Request-to-connect discovery. Suppliers not first-class. Ratings permanently private in v1. Network verification deferred.
 - **Pricing and tiers:** Free / Starter £19 / Pro £39 per seat, 15% off annual, Enterprise deferred. Gating is seats plus features. The Free tier is view-only network with no CRM writes. Custom fields are tier-gated.
-- **Finance and money:** budget & actuals only. GBP only, multi-currency-ready schema.
+- **Finance and money:** budget & actuals, plus invoicing (below). GBP only, multi-currency-ready schema.
+- **Invoicing (2026-10-20):** in scope, in three parts: invoices (bank transfer), Stripe Connect (Standard accounts, a percentage application fee), network delivery. Pro only. Our own invoices; Stripe only takes the payment. Q276.
 - **Retention and privacy:** 7 years financial, 2 years inactive (pending counsel). Audit log 30 days hot / 1 year total. DSR turnaround 30 days.
 - **Superuser and feedback:** impersonation needs admin acceptance, a time box and full audit. The superuser dashboard and in-app feedback are MVP (scope as above).
 - **Security:** sessions 30 min idle / 12 h absolute. MFA for Superuser, Owner, Admin and Finance. Step-up triggers as listed. Malware scanning plus a strict allowlist at MVP. Google SSO at MVP.
