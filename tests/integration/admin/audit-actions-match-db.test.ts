@@ -474,6 +474,10 @@ describe("every literal action a function INSERTS into audit_events directly is 
         "public.record_integration_sync_run",
         "public.run_retention_sweep",
         "public.store_integration_token",
+        // Invoices part 2 Task 3 (20261110001000): the webhook ends a link
+        // Stripe says was deauthorized. Nobody is on the session, so
+        // log_audit_event() would raise 28000; actor = the Q130 tombstone.
+        "public.stripe_account_deauthorized",
       ],
     );
 

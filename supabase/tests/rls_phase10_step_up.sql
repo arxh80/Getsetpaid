@@ -496,6 +496,11 @@ select st.gate('SG20 start_erasure_for_request', 'start_erasure_for_request', :'
 -- invoice_settings (E is Pro; owner_a is its Owner, so manage_finance holds)
 select st.gate('SG21 save_invoice_settings', 'save_invoice_settings', :'owner_a_c', 'invoice_settings',
   format($$select public.save_invoice_settings(%L, 'St Ltd', '1 St Street', null, 'St Ltd', '123456', '12345678', 'STP-', 30) is not null$$, :'org_e'), 'true');
+-- Invoices part 2 Task 3: linking and ending a Stripe account spend the same purpose
+select st.gate('SG22 begin_stripe_link', 'begin_stripe_link', :'owner_a_c', 'invoice_settings',
+  format($$select public.begin_stripe_link(%L) is not null$$, :'org_e'), 'true');
+select st.gate('SG23 end_stripe_account_link', 'end_stripe_account_link', :'owner_a_c', 'invoice_settings',
+  format($$select public.end_stripe_account_link(%L) is null$$, :'org_e'), 'true');
 
 -- ===========================================================================
 -- § SC  CONTROLS: WHAT IS NOT GATED STILL WORKS WITHOUT A TOKEN
@@ -539,13 +544,13 @@ select st.val('SN3 the functions that consume a token',
   $$select string_agg(p.proname, ',' order by p.proname)
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname in ('public', 'private') and strpos(p.prosrc, 'consume_step_up(''') > 0$$,
-  'close_my_workspace,delete_closed_workspace,delete_organisation,erasure_jobs_before_insert,export_jobs_before_insert,grant_billing_override,grant_feature_override,publish_legal_document,reassign_closed_workspace,record_legal_document_counsel_review,reinstate_organisation,release_audit_purge_ceiling,request_impersonation,revoke_billing_override,revoke_feature_override,save_invoice_settings,set_retention_enabled,start_impersonation_session,suspend_organisation,transition_data_subject_request');
+  'begin_stripe_link,close_my_workspace,delete_closed_workspace,delete_organisation,end_stripe_account_link,erasure_jobs_before_insert,export_jobs_before_insert,grant_billing_override,grant_feature_override,publish_legal_document,reassign_closed_workspace,record_legal_document_counsel_review,reinstate_organisation,release_audit_purge_ceiling,request_impersonation,revoke_billing_override,revoke_feature_override,save_invoice_settings,set_retention_enabled,start_impersonation_session,suspend_organisation,transition_data_subject_request');
 select st.val('SN4 every function that consumes a token is a target in § SG (none untested)',
   $$select count(*)::text from pg_proc p join pg_namespace n on n.oid = p.pronamespace
      where n.nspname in ('public', 'private') and strpos(p.prosrc, 'consume_step_up(''') > 0
        and p.proname not in (select fn from st.targets)$$, '0');
-select st.val('SN5 § SG covered 21 entry points',
-  $$select count(*)::text from st.targets$$, '21');
+select st.val('SN5 § SG covered 23 entry points',
+  $$select count(*)::text from st.targets$$, '23');
 
 -- ===========================================================================
 -- TEARDOWN (rls_q228_closure_backup_parts.sql § QZ's shape: `replica` turns

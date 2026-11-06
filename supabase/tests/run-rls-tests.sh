@@ -1404,11 +1404,12 @@ fi
 # INVOICES, PART 2 OF 3 -- STRIPE CONNECT (20261110000000 onwards; Q276/Q279).
 # Task 2: the five Stripe tables and private.stripe_link_states, invoices.paid_via
 # with its rebuilt shape and freeze, the shared booking helper, and the
-# catalogues they joined. Later tasks add the link, pay and webhook RPCs. Self-
+# catalogues they joined. Task 3: the link / end RPCs, the webhook's two, the
+# notice. Later tasks add the pay and webhook RPCs. Self-
 # contained and re-runnable (it removes its own fixtures). Pin:
 # grep -c '^select ist.val(' supabase/tests/rls_invoices_stripe.sql
 # ============================================================================
-run_suite "INVOICES STRIPE" rls_invoices_stripe.sql ist 81
+run_suite "INVOICES STRIPE" rls_invoices_stripe.sql ist 139
 ist_fails=$SUITE_FAILS
 if [ "$ist_fails" != "0" ]; then
   echo "INVOICES STRIPE SUITE FAILED: $ist_fails failing assertion(s)" >&2
@@ -1419,6 +1420,9 @@ if [ "$ist_fails" != "0" ]; then
   echo "  constraint Tasks 3-4 rely on moved. SH red: the shared booking helper" >&2
   echo "  changed what a payment books. SF red: the fee drifted from the TS port." >&2
   echo "  SK red: a catalogue lost a Stripe table, action or alert type." >&2
+  echo "  SL red: LINKING OR ENDING A STRIPE ACCOUNT lost a guard (the step-up token, the" >&2
+  echo "  user-bound one-use OAuth state, the account-in-use refusal, a service_role-only" >&2
+  echo "  write, or the Owner/Admin notice that tells the workspace its payee changed)." >&2
   psql_status=1
 else
   echo "Invoices Stripe suite: all assertions passed."
@@ -1430,7 +1434,7 @@ fi
 # purpose, and every gated RPC plus the export_jobs / erasure_jobs inserts
 # refusing without one. Self-contained (it removes its own fixtures).
 # ============================================================================
-run_suite "PHASE 10 STEP-UP" rls_phase10_step_up.sql st 224
+run_suite "PHASE 10 STEP-UP" rls_phase10_step_up.sql st 236
 st_fails=$SUITE_FAILS
 if [ "$st_fails" != "0" ]; then
   echo "PHASE 10 STEP-UP SUITE FAILED: $st_fails failing assertion(s)" >&2

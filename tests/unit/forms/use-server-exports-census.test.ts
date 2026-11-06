@@ -136,6 +136,7 @@ const SERVER_ACTION_MODULES = [
   "lib/invoices/actions.ts",
   "lib/invoices/send-action.ts",
   "lib/invoices/settings-actions.ts",
+  "lib/invoices/stripe-actions.ts",
   "lib/legal/admin-actions.ts",
   "lib/network/connections.ts",
   "lib/network/link-search.ts",

@@ -16,7 +16,10 @@ import {
   deliverWorkspaceClosureNotifications,
   deliverWorkspaceDecisionNotifications,
 } from "@/lib/email/workspace-closure-notifications";
-import { deliverInvoiceBankChangeNotifications } from "@/lib/email/invoice-notifications";
+import {
+  deliverInvoiceBankChangeNotifications,
+  deliverInvoiceStripeAccountNotifications,
+} from "@/lib/email/invoice-notifications";
 
 // ===========================================================================
 // POST /api/incident-alerts/deliver
@@ -101,6 +104,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   const workspaceClosures = await settle(deliverWorkspaceClosureNotifications);
   const workspaceDecisions = await settle(deliverWorkspaceDecisionNotifications);
   const invoiceBankChanges = await settle(deliverInvoiceBankChangeNotifications);
+  const invoiceStripeAccounts = await settle(deliverInvoiceStripeAccountNotifications);
 
   const unavailable = [
     digest,
@@ -114,6 +118,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     workspaceClosures,
     workspaceDecisions,
     invoiceBankChanges,
+    invoiceStripeAccounts,
   ].some(
     (r) => r.outcome === "unavailable",
   );
@@ -130,6 +135,7 @@ export async function POST(request: Request): Promise<NextResponse> {
       workspaceClosureNotifications: workspaceClosures,
       workspaceDecisionNotifications: workspaceDecisions,
       invoiceBankChangeNotifications: invoiceBankChanges,
+      invoiceStripeAccountNotifications: invoiceStripeAccounts,
     },
     {
       status: unavailable ? 503 : 200,

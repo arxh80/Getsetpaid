@@ -1158,6 +1158,27 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "invoice settings (step-up in the Server Action). A bank change is audited by " +
     "column name only and queued as an email to the Owners and Admins. " +
     "Asserted in rls_invoices.sql § IX.",
+  begin_stripe_link:
+    "Invoices part 2 Task 3 -- a manage_finance holder in a Pro workspace, with a " +
+    "fresh invoice_settings step-up token, starts linking the workspace's own Stripe " +
+    "account: stores the hash of a single-use ten-minute OAuth state bound to the " +
+    "caller and returns it. Refused in order: forbidden, plan, step-up. Asserted in " +
+    "rls_invoices_stripe.sql § SL and rls_phase10_step_up.sql § SG22.",
+  complete_stripe_link:
+    "Invoices part 2 Task 3 -- the OAuth callback: the same holder, with a state THEY " +
+    "began for THIS workspace (single use, unexpired), stores the account Stripe " +
+    "returned; an account another workspace holds live is refused. Audits by name " +
+    "only. Asserted in rls_invoices_stripe.sql § SL.",
+  end_stripe_account_link:
+    "Invoices part 2 Task 3 -- the same holder, with a step-up token, disconnects the " +
+    "workspace's live Stripe link and gets the account id back for the deauthorise " +
+    "call; with nothing live it returns null and writes nothing. Asserted in " +
+    "rls_invoices_stripe.sql § SL and rls_phase10_step_up.sql § SG23.",
+  stripe_application_fee_bps:
+    "Invoices part 2 Task 3 -- returns the one integer the settings page states " +
+    "(Q279: 100 = 1%); reachable by any signed-in user, discloses nothing else " +
+    "(stripe_platform_settings grants no client a read). Asserted in " +
+    "rls_invoices_stripe.sql § SL.",
   audit_invoice_download:
     "Invoices part 1 Task 10 -- the PDF route calls it before rendering, so it is " +
     "reachable by whoever may read the invoice (view_finance, not tier-gated). It " +
@@ -1405,6 +1426,12 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Task 9b job 2 -- the DSR received/closed notice queue; the address is auth.users through user_id, the tombstone excluded",
   "pending_export_ready_notifications(p_limit integer)":
     "Task 9b job 2 -- the export-ready notice queue; returns no archive key and no URL",
+  "pending_invoice_stripe_account_notifications(p_limit integer)":
+    "Invoices part 2 Task 3 -- the delivery tick reads Stripe link/end audit rows not yet emailed, with the workspace's current Owner/Admin addresses; no account id; refuses any session",
+  "stripe_account_deauthorized(p_account text)":
+    "Invoices part 2 Task 3 -- the webhook ends the live link of an account Stripe says revoked GetSetPaid, and audits it with the tombstone as actor; refuses any session",
+  "stripe_account_updated(p_account text, p_charges_enabled boolean)":
+    "Invoices part 2 Task 3 -- the webhook mirrors Stripe's charges_enabled onto the live link of an account; refuses any session",
   "pending_invoice_bank_change_notifications(p_limit integer)":
     "Invoices part 1 Task 7 -- the delivery tick reads bank-detail changes not yet emailed, with the workspace's current Owner/Admin addresses and the current account's last four; refuses any session",
   "pending_lockout_notifications(p_limit integer)":

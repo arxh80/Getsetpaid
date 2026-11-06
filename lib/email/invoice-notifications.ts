@@ -1,7 +1,8 @@
 import "server-only";
-// THE BANK-CHANGE NOTICE (Invoices part 1, spec § Security 2) through the ONE
-// Brevo sender, on the existing delivery tick. Database half: 20261106004000
-// (the resolver, the ledger notice). Same loop, stamps and bounds as
+// THE BANK-CHANGE NOTICE (Invoices part 1, spec § Security 2) and its sibling,
+// THE STRIPE-ACCOUNT NOTICE (Invoices part 2: a link or an end), through the ONE
+// Brevo sender, on the existing delivery tick. Database halves: 20261107004000
+// and 20261110001000 (the resolvers, the ledger notices). Same loop, stamps and bounds as
 // lib/email/workspace-closure-notifications.ts: one email per audit row, its
 // recipients Bcc'd by deliverEach, the stamp written only after ok:true.
 import {
@@ -13,7 +14,7 @@ import {
 } from "@/lib/email/requester-notifications";
 import { createServiceClient } from "@/lib/supabase/service";
 import { siteUrl } from "@/lib/supabase/env";
-import { buildBankDetailsChangedNotice } from "@/lib/email/invoice-templates";
+import { buildBankDetailsChangedNotice, buildStripeAccountChangedNotice } from "@/lib/email/invoice-templates";
 
 const NOTICE = "invoice_bank_details_changed";
 
@@ -69,4 +70,61 @@ export async function deliverInvoiceBankChangeNotifications(
     },
   }));
   return deliverEach("invoice bank-change notice", rows);
+}
+
+const STRIPE_NOTICE = "invoice_stripe_account_changed";
+
+interface PendingStripeRow {
+  readonly audit_event_id: string;
+  readonly emails: string[] | null;
+  readonly organisation_slug: string;
+  readonly organisation_name: string;
+  readonly change: string;
+  readonly changed_at: string;
+}
+
+/** A copy of the bank-change sender: its own resolver, notice name and builder. No account id ever reaches it. */
+export async function deliverInvoiceStripeAccountNotifications(
+  limit: number = REQUESTER_NOTICE_LIMIT,
+): Promise<RequesterNoticeResult> {
+  const service = createServiceClient();
+  const { data, error } = await service.rpc("pending_invoice_stripe_account_notifications", {
+    p_limit: Math.max(1, Math.min(limit, REQUESTER_NOTICE_LIMIT)),
+  });
+  if (error) {
+    console.error("[email] invoice Stripe-account notices could not be read:", error.message);
+    return { outcome: "unavailable", error: error.message };
+  }
+  const origin = siteUrl();
+  const rows = ((data ?? []) as PendingStripeRow[]).map((row): Pending => ({
+    id: row.audit_event_id,
+    to: row.emails ?? [],
+    // FIVE FIELDS, by name -- never a spread of the row. An unknown `change` is refused by the builder.
+    build: () =>
+      buildStripeAccountChangedNotice({
+        organisationSlug: row.organisation_slug,
+        organisationName: row.organisation_name,
+        change: row.change as "linked" | "ended",
+        changedAt: row.changed_at,
+        siteUrl: origin,
+      }),
+    stamp: async () => {
+      const { data: stamped, error: stampError } = await createServiceClient().rpc("mark_notices_delivered", {
+        p_notice: STRIPE_NOTICE,
+        p_subject_ids: [row.audit_event_id],
+      });
+      if (stampError) return { error: { message: stampError.message } };
+      if (stamped !== 1) return { error: { message: `stamped ${String(stamped)} of 1` } };
+      return { error: null };
+    },
+    refuse: async (reason: NoticeRefusal) => {
+      const { error: refuseError } = await createServiceClient().rpc("mark_notices_undeliverable", {
+        p_notice: STRIPE_NOTICE,
+        p_subject_ids: [row.audit_event_id],
+        p_reason: reason,
+      });
+      return { error: refuseError ? { message: refuseError.message } : null };
+    },
+  }));
+  return deliverEach("invoice Stripe-account notice", rows);
 }

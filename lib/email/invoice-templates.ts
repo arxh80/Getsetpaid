@@ -13,6 +13,7 @@ import type { InvoiceSnapshot } from "@/lib/invoices/snapshot";
 
 export const INVOICE_NOTICE_ALLOWLIST = {
   bankDetailsChanged: ["organisationSlug", "organisationName", "accountLast4", "changedAt", "siteUrl"],
+  stripeAccountChanged: ["organisationSlug", "organisationName", "change", "changedAt", "siteUrl"],
 } as const;
 
 export interface BankDetailsChangedInput {
@@ -47,6 +48,40 @@ export function buildBankDetailsChangedNotice(input: BankDetailsChangedInput): E
     "Open invoice settings",
   );
   assertOnlyLink("bankDetailsChanged", body, link);
+  return body;
+}
+
+export interface StripeAccountChangedInput {
+  readonly organisationSlug: string;
+  readonly organisationName: string;
+  readonly change: "linked" | "ended";
+  readonly changedAt: string;
+  readonly siteUrl: string;
+}
+
+/** The Stripe-account fraud-guard notice: a payee on the invoices changed. Names no account. */
+export function buildStripeAccountChangedNotice(input: StripeAccountChangedInput): EmailBody {
+  assertInputAllowlisted("stripeAccountChanged", INVOICE_NOTICE_ALLOWLIST.stripeAccountChanged, input);
+  const slug = slugOrRefuse("stripeAccountChanged", input.organisationSlug);
+  if (input.change !== "linked" && input.change !== "ended") {
+    throw new NoticeContentError("stripeAccountChanged notice refused: unknown change");
+  }
+  const name = oneLine(input.organisationName, 120);
+  const label = name ? `“${name}” (${slug})` : slug;
+  const link = `${origin(input.siteUrl)}/${slug}/settings/invoicing`;
+  const linked = input.change === "linked";
+  const body = render(
+    `[GetSetPaid] A Stripe account was ${linked ? "connected to" : "disconnected from"} ${slug}'s invoices`,
+    [
+      linked
+        ? `A Stripe account was connected on ${ukDateTime(input.changedAt)} to the workspace ${label}, so its invoices can now be paid by card.`
+        : `The Stripe account connected to the workspace ${label} was disconnected on ${ukDateTime(input.changedAt)}, so its invoices no longer offer a card payment.`,
+      "If you expected this, there is nothing to do. If you did not, open Invoice settings now and check it, and contact GetSetPaid support straight away.",
+    ],
+    link,
+    "Open invoice settings",
+  );
+  assertOnlyLink("stripeAccountChanged", body, link);
   return body;
 }
 
