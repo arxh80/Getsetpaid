@@ -1,5 +1,5 @@
 import type { NextConfig } from "next";
-import { staticSecurityHeaders } from "./lib/security/headers";
+import { payPageHeaders, staticSecurityHeaders } from "./lib/security/headers";
 import { SERVER_ACTION_BODY_SIZE_LIMIT } from "./lib/security/upload-limits";
 
 const nextConfig: NextConfig = {
@@ -9,6 +9,8 @@ const nextConfig: NextConfig = {
         source: "/:path*",
         headers: staticSecurityHeaders(),
       },
+      // After the global rule so its Referrer-Policy wins (the token is in the URL).
+      { source: "/pay/:path*", headers: payPageHeaders() },
     ];
   },
   experimental: {

@@ -83,6 +83,16 @@
 //     With 'self' alone the no-JS path of Google SSO is silently blocked.
 //     Two named origins, not a wildcard.
 //
+//   form-action also names checkout.stripe.com and connect.stripe.com
+//     The same redirect-chain rule, for two more native form submissions. The
+//     pay page's "Pay by card" is a plain <form method="post"> whose route
+//     answers 303 to https://checkout.stripe.com/..., and the no-JS "Connect
+//     Stripe" button is a Server Action that redirects to
+//     https://connect.stripe.com/oauth/authorize; with 'self' alone Chrome
+//     blocks both at the redirect. Two named origins, not a wildcard. The
+//     development fake's host (checkout.stripe.test) is deliberately NOT here:
+//     production has no use for it.
+//
 //   connect-src includes the Supabase origin
 //     The browser Supabase client talks to it directly on every session
 //     refresh. wss: for the same origin is included because @supabase/ssr
@@ -175,6 +185,19 @@ export function staticSecurityHeaders(): { key: string; value: string }[] {
 }
 
 /**
+ * Extra headers for every /pay/... response (invoices part 2 Task 5), applied
+ * after the global ones so they win. The signed token is in the URL, so the
+ * page sends no Referer at all (the global policy would still send the origin
+ * cross-origin, and the full URL to ourselves), and nothing is cached.
+ */
+export function payPageHeaders(): { key: string; value: string }[] {
+  return [
+    { key: "Referrer-Policy", value: "no-referrer" },
+    { key: "Cache-Control", value: "no-store" },
+  ];
+}
+
+/**
  * Builds the CSP for one request, around one nonce.
  *
  * Newline-separated directives are legal CSP and are what Next's own example
@@ -187,7 +210,13 @@ export function contentSecurityPolicy(nonce: string): string {
   const isDev = process.env.NODE_ENV !== "production";
 
   const connect = ["'self'", supabase, supabaseWs].filter(Boolean).join(" ");
-  const form = ["'self'", supabase, "https://accounts.google.com"]
+  const form = [
+    "'self'",
+    supabase,
+    "https://accounts.google.com",
+    "https://checkout.stripe.com",
+    "https://connect.stripe.com",
+  ]
     .filter(Boolean)
     .join(" ");
 

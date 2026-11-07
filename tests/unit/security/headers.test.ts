@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { contentSecurityPolicy, staticSecurityHeaders } from "@/lib/security/headers";
+import { contentSecurityPolicy, payPageHeaders, staticSecurityHeaders } from "@/lib/security/headers";
 
 // Phase 10 Task 7 (G17): pin the CSP directives and the static headers, so a
 // production `script-src` that gains 'unsafe-inline' or 'unsafe-eval', or a
@@ -75,5 +75,37 @@ describe("over plain http", () => {
     vi.stubEnv("NODE_ENV", "development");
     vi.stubEnv("NEXT_PUBLIC_SITE_URL", "http://localhost:3000");
     expect(directives(contentSecurityPolicy("n")).get("script-src")).toContain("'unsafe-eval'");
+  });
+});
+
+// Invoices part 2 Task 5. Chrome enforces form-action against the whole
+// redirect chain, so the pay page's POST -> 303 -> Stripe Checkout and the
+// no-JS "Connect Stripe" Server Action -> Stripe OAuth are blocked unless both
+// Stripe origins are named. Two origins, no wildcard, and never the fake's.
+describe("form-action and the Stripe redirects", () => {
+  it("names exactly the two Stripe origins beside 'self', Supabase and Google", () => {
+    deploy("https://app.getsetpaid.example");
+    expect(directives(contentSecurityPolicy("n")).get("form-action")).toEqual([
+      "'self'",
+      "https://abc.supabase.co",
+      "https://accounts.google.com",
+      "https://checkout.stripe.com",
+      "https://connect.stripe.com",
+    ]);
+  });
+
+  it("never allows the fake gateway's host or a wildcard", () => {
+    deploy("https://app.getsetpaid.example");
+    const form = directives(contentSecurityPolicy("n")).get("form-action")!.join(" ");
+    expect(form).not.toMatch(/stripe\.test|\*/);
+  });
+});
+
+describe("the /pay response headers", () => {
+  it("never sends the token onward in a Referer, and is never cached", () => {
+    expect(payPageHeaders()).toEqual([
+      { key: "Referrer-Policy", value: "no-referrer" },
+      { key: "Cache-Control", value: "no-store" },
+    ]);
   });
 });

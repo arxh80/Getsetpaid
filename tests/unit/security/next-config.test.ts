@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import nextConfig from "@/next.config";
-import { staticSecurityHeaders } from "@/lib/security/headers";
+import { payPageHeaders, staticSecurityHeaders } from "@/lib/security/headers";
 
 // Phase 10 Task 7 (G12): Next refuses a Server Action whose Origin does not
 // match the Host, unless the origin is in serverActions.allowedOrigins. That
@@ -19,6 +19,9 @@ describe("next.config.ts (G12)", () => {
   it("sends the static security headers on every path (G17: X-Frame-Options, nosniff, HSTS)", async () => {
     expect(await nextConfig.headers!()).toEqual([
       { source: "/:path*", headers: staticSecurityHeaders() },
+      // Last, so its Referrer-Policy overrides the global one: the signed token
+      // is in the /pay URL (invoices part 2 Task 5).
+      { source: "/pay/:path*", headers: payPageHeaders() },
     ]);
   });
 
