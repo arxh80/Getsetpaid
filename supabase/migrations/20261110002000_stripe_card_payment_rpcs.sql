@@ -167,6 +167,7 @@ declare
   v_inv     public.invoices;
   v_paid_on date;
   v_entry   uuid;
+  v_flipped integer;
   v_outcome text;
   v_found   boolean;
 begin
@@ -214,16 +215,20 @@ begin
   if v_inv.status = 'issued' then
     -- Stripe's clock is the UK date of the payment, never before the issue date.
     v_paid_on := greatest((p_paid_at at time zone 'Europe/London')::date, v_inv.issue_date);
-    select b.entry_id into v_entry from private.book_invoice_payment(v_inv.id, v_paid_on, null) b;
+    select b.flipped, b.entry_id into v_flipped, v_entry from private.book_invoice_payment(v_inv.id, v_paid_on, null) b;
     update public.invoices i
        set status = 'paid', paid_on = v_paid_on, paid_via = 'card', paid_entry_id = v_entry
      where i.id = v_inv.id;
     insert into public.invoice_card_payments (organisation_id, invoice_id, stripe_event_id, stripe_payment_intent_id,
                                               amount_minor, currency, outcome)
     values (v_org, v_inv.id, p_event_id, p_payment_intent, p_amount_minor, v_inv.currency, 'applied');
-    insert into public.audit_events (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, after)
+    -- The same facts public.mark_invoice_paid audits: a count and a boolean, no amount.
+    insert into public.audit_events (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, before, after)
     values (v_org, private.erased_user_id(), 'invoice.paid_by_card', 'invoice', v_inv.id, pg_catalog.gen_random_uuid(),
-            pg_catalog.jsonb_build_object('status', 'paid', 'number', v_inv.number));
+            pg_catalog.jsonb_build_object('status', 'issued'),
+            pg_catalog.jsonb_build_object('status', 'paid', 'number', v_inv.number,
+                                          'entries_flipped', v_flipped,
+                                          'income_entry_created', v_entry is not null));
     return 'applied';
   end if;
 
@@ -239,7 +244,7 @@ begin
 end;
 $$;
 comment on function public.record_stripe_checkout_completed(text, text, uuid, text, bigint, text, timestamptz) is
-  'service_role only: a paid Stripe Checkout (checkout.session.completed). unknown_account for an account no workspace has (nothing written); duplicate for an event id or payment intent already recorded; mismatch (and a stripe_payment_mismatch incident alert carrying only the invoice and event ids) when the invoice is missing, another workspace''s, a draft, the account is not that workspace''s live link, or the amount or currency differs; applied for an issued invoice (booked through private.book_invoice_payment with no actor, marked paid by card on the UK date of p_paid_at, not before the issue date, audited invoice.paid_by_card as {status, number}); after_paid / after_void for an invoice already settled (the payment is kept, audited invoice.card_payment_conflict as {status, number}).';
+  'service_role only: a paid Stripe Checkout (checkout.session.completed). unknown_account for an account no workspace has (nothing written); duplicate for an event id or payment intent already recorded; mismatch (and a stripe_payment_mismatch incident alert carrying only the invoice and event ids) when the invoice is missing, another workspace''s, a draft, the account is not that workspace''s live link, or the amount or currency differs; applied for an issued invoice (booked through private.book_invoice_payment with no actor, marked paid by card on the UK date of p_paid_at, not before the issue date, audited invoice.paid_by_card as before {status: issued}, after {status, number, entries_flipped, income_entry_created}, as mark_invoice_paid does); after_paid / after_void for an invoice already settled (the payment is kept, audited invoice.card_payment_conflict as {status, number}).';
 revoke all on function public.record_stripe_checkout_completed(text, text, uuid, text, bigint, text, timestamptz) from public, anon, authenticated, service_role;
 grant execute on function public.record_stripe_checkout_completed(text, text, uuid, text, bigint, text, timestamptz) to service_role;
 
@@ -263,6 +268,9 @@ declare
   v_org     uuid;
   v_invoice uuid;
   v_inv     public.invoices;
+  v_amount  bigint;
+  v_old     bigint;
+  v_new     bigint;
 begin
   select a.organisation_id into v_org
     from public.invoice_stripe_accounts a
@@ -280,24 +288,33 @@ begin
     return 'duplicate';
   end if;
 
-  -- Stripe sends the cumulative refunded amount; it can never exceed the payment.
-  update public.invoice_card_payments p
-     set refunded_minor = least(p_refunded_minor, p.amount_minor), refunded_at = p_refunded_at
+  select p.invoice_id, p.amount_minor, coalesce(p.refunded_minor, 0) into v_invoice, v_amount, v_old
+    from public.invoice_card_payments p
    where p.stripe_payment_intent_id = p_payment_intent and p.organisation_id = v_org
-  returning p.invoice_id into v_invoice;
+     for update;
   if v_invoice is null then
     return 'unknown_payment';
   end if;
 
-  select * into v_inv from public.invoices i where i.id = v_invoice;
-  insert into public.audit_events (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, after)
-  values (v_org, private.erased_user_id(), 'invoice.card_refund_flagged', 'invoice', v_invoice, pg_catalog.gen_random_uuid(),
-          pg_catalog.jsonb_build_object('status', v_inv.status, 'number', v_inv.number));
+  -- Stripe sends the CUMULATIVE refunded amount and does not promise event order, so the stored
+  -- amount only ever grows (an older, smaller event changes nothing) and never exceeds the payment.
+  -- refunded_at moves with it. An event that raises nothing is still answered flagged, and writes
+  -- no second audit row: the flag it would repeat is already there.
+  v_new := greatest(v_old, least(coalesce(p_refunded_minor, 0), v_amount));
+  if v_new > v_old then
+    update public.invoice_card_payments p
+       set refunded_minor = v_new, refunded_at = p_refunded_at
+     where p.stripe_payment_intent_id = p_payment_intent and p.organisation_id = v_org;
+    select * into v_inv from public.invoices i where i.id = v_invoice;
+    insert into public.audit_events (organisation_id, actor_user_id, action, target_type, target_id, correlation_id, after)
+    values (v_org, private.erased_user_id(), 'invoice.card_refund_flagged', 'invoice', v_invoice, pg_catalog.gen_random_uuid(),
+            pg_catalog.jsonb_build_object('status', v_inv.status, 'number', v_inv.number));
+  end if;
   return 'flagged';
 end;
 $$;
 comment on function public.record_stripe_charge_refunded(text, text, text, bigint, timestamptz) is
-  'service_role only: a Stripe refund (charge.refunded). Sets the payment''s refunded_minor (the cumulative amount, clamped to the payment) and refunded_at and audits invoice.card_refund_flagged as {status, number}; the invoice stays paid (a refund is flagged for the Owner, never applied). unknown_account for an account no workspace has (nothing written); duplicate for an event id already recorded; unknown_payment for a payment intent this workspace never received.';
+  'service_role only: a Stripe refund (charge.refunded). Raises the payment''s refunded_minor to the cumulative amount (clamped to the payment, never lowered by an older event) and moves refunded_at with it, auditing invoice.card_refund_flagged as {status, number} only when the amount grew; an event that raises nothing is still answered flagged and audits nothing. The invoice stays paid (a refund is flagged for the Owner, never applied). unknown_account for an account no workspace has (nothing written); duplicate for an event id already recorded; unknown_payment for a payment intent this workspace never received.';
 revoke all on function public.record_stripe_charge_refunded(text, text, text, bigint, timestamptz) from public, anon, authenticated, service_role;
 grant execute on function public.record_stripe_charge_refunded(text, text, text, bigint, timestamptz) to service_role;
 
