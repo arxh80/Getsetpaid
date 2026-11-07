@@ -898,7 +898,7 @@ revoke all on function private.invoice_is_payable_online(public.invoices) from p
 
 **Files:**
 - Create: `lib/invoices/stripe-webhook.ts`, `app/api/stripe/webhook/route.ts`, `tests/unit/stripe/webhook-route.test.ts`, `tests/integration/invoices/stripe-webhook.test.ts`
-- Modify: `lib/supabase/middleware.ts` (`PUBLIC_PATHS` gains `"/api/stripe"`), `tests/unit/security/public-paths.test.ts`, `tests/unit/email/service-client-census.test.ts`, `lib/supabase/service.ts`
+- Modify: `lib/supabase/middleware.ts` (`PUBLIC_PATHS` gains the exact `"/api/stripe/webhook"`; the prefix would make the sign-in-only callback public), `tests/unit/security/public-paths.test.ts`, `tests/unit/email/service-client-census.test.ts`, `lib/supabase/service.ts`
 
 **Interfaces:**
 - Consumes: Task 1 `getStripe().constructEvent`; Tasks 3–4 service RPCs.
@@ -953,7 +953,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   Implement `lib/invoices/stripe-webhook.ts` (`import "server-only"`, service client). Use a `switch` on `event.type`. Read fields with narrow guards (`typeof x === "string"`), never by spreading the object. Pass `currency.toUpperCase()`, and `new Date(created * 1000).toISOString()` as the paid or refund time. A UUID check on `metadata.invoice_id` comes before the RPC (anything else is `ignored`).
 
 - [ ] **Step 3: Public path and census.**
-  - Add `"/api/stripe"` to `PUBLIC_PATHS`, with the test cases `/api/stripe/webhook` (public) and `/api/stripes` (not public).
+  - Add the exact `"/api/stripe/webhook"` to `PUBLIC_PATHS`, with the test cases `/api/stripe/webhook` (public), and `/api/stripe/connect/callback` and `/api/stripe/webhooks` (not public).
   - Add `"lib/invoices/stripe-webhook.ts"` to the service-client `ALLOWED` list, with its reason, and to `service.ts`'s header.
 
 - [ ] **Step 4: Mutants.**
