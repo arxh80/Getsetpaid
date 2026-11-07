@@ -7,7 +7,7 @@
 // net, total VAT, total gross; due date and bank details. With no VAT number
 // every VAT field is omitted. A void invoice carries a VOID banner so a
 // printed copy cannot be mistaken for a live one.
-import { Document, Page, StyleSheet, Text, View } from "@react-pdf/renderer";
+import { Document, Link, Page, StyleSheet, Text, View } from "@react-pdf/renderer";
 import type { InvoiceSnapshot } from "@/lib/invoices/snapshot";
 import { VAT_RATE_LABELS } from "@/lib/invoices/arithmetic";
 import { formatGbp } from "@/lib/format/money";
@@ -31,7 +31,16 @@ const s = StyleSheet.create({
   section: { marginTop: 20 },
 });
 
-export function InvoiceDocument({ snapshot: x, status }: { snapshot: InvoiceSnapshot; status: "issued" | "paid" | "void" }) {
+export function InvoiceDocument({
+  snapshot: x,
+  status,
+  payUrl,
+}: {
+  snapshot: InvoiceSnapshot;
+  status: "issued" | "paid" | "void";
+  /** The signed card-payment link; the caller passes it only for an issued invoice on a live Stripe account. */
+  payUrl?: string | null;
+}) {
   return (
     <Document title={`Invoice ${x.number}`} author={x.seller.name}>
       <Page size="A4" style={s.page}>
@@ -95,6 +104,11 @@ export function InvoiceDocument({ snapshot: x, status }: { snapshot: InvoiceSnap
           ) : (
             <Text>Contact {x.seller.name} for payment details, quoting {x.number}.</Text>
           )}
+          {payUrl ? (
+            <Text>
+              Pay by card: <Link src={payUrl}>{payUrl}</Link>
+            </Text>
+          ) : null}
         </View>
         {x.notes ? (
           <View style={s.section}>

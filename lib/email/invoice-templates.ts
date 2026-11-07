@@ -94,17 +94,26 @@ export interface InvoiceEmailInput {
   readonly grossMinor: number;
   readonly dueDate: string;
   readonly bank: InvoiceSnapshot["seller"]["bank"];
+  /** The signed /pay link (Stripe Connect), only for an issued invoice on a live account. */
+  readonly payUrl?: string | null;
 }
 
-/** The invoice email to the customer: plain, no link (the PDF is attached),
- *  every person's text one line and neutralised. */
+// The ONE link an invoice email may carry: our own signed pay page. Anything
+// else in payUrl is refused, never rendered.
+const PAY_URL = /^https?:\/\/[^\s"<>]+\/pay\/[0-9a-f-]{36}\.[A-Za-z0-9_-]+$/;
+
+/** The invoice email to the customer: plain, no link but the optional pay link
+ *  (the PDF is attached), every person's text one line and neutralised. */
 export function buildInvoiceEmail(input: InvoiceEmailInput): EmailBody {
   if (!INVOICE_NUMBER.test(input.number)) throw new NoticeContentError("invoice email refused: bad number");
   const seller = oneLine(input.sellerName, 120);
   const recipient = oneLine(input.recipientName, 120);
+  const payUrl = input.payUrl ?? null;
+  if (payUrl !== null && !PAY_URL.test(payUrl)) throw new NoticeContentError("invoice email refused: bad pay link");
   const paragraphs = [
     `Dear ${recipient},`,
     `Please find attached invoice ${input.number} from ${seller} for ${formatGbp(input.grossMinor)}, due on ${formatDateOnly(input.dueDate)}.`,
+    ...(payUrl ? [`Pay by card: ${payUrl}`] : []),
     input.bank
       ? `Please pay by bank transfer to ${oneLine(input.bank.accountName, 140)}, sort code ${input.bank.sortCode}, account number ${input.bank.accountNumber}, quoting ${input.number}.`
       : `Please contact ${seller} for payment details, quoting ${input.number}.`,
@@ -113,6 +122,8 @@ export function buildInvoiceEmail(input: InvoiceEmailInput): EmailBody {
   return {
     subject: `Invoice ${input.number} from ${seller}`,
     text: paragraphs.join("\n\n"),
-    html: paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join("\n"),
+    html: paragraphs
+      .map((p) => (payUrl && p === `Pay by card: ${payUrl}` ? `<p><a href="${escapeHtml(payUrl)}">Pay by card</a></p>` : `<p>${escapeHtml(p)}</p>`))
+      .join("\n"),
   };
 }

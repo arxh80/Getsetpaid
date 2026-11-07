@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { NoticeContentError } from "@/lib/email/requester-templates";
 import { buildBankDetailsChangedNotice, buildInvoiceEmail, buildStripeAccountChangedNotice } from "@/lib/email/invoice-templates";
 
 const base = {
@@ -83,6 +84,40 @@ describe("buildInvoiceEmail", () => {
     expect(body.text).toContain("£3,960.00");
     expect(body.text).toContain("12345678");
     expect(body.html).not.toMatch(/<a\s/i);
+  });
+  it("without a pay link the output is exactly what it was before the pay link existed", () => {
+    const expected = [
+      "Dear Sam Booker,",
+      "Please find attached invoice INV-0001 from Alpha Promotions Ltd for £3,960.00, due on 19 Nov 2026.",
+      "Please pay by bank transfer to Alpha Promotions Ltd, sort code 123456, account number 12345678, quoting INV-0001.",
+      "Sent on behalf of Alpha Promotions Ltd by GetSetPaid.",
+    ];
+    for (const body of [buildInvoiceEmail(input), buildInvoiceEmail({ ...input, payUrl: null })]) {
+      expect(body.text).toBe(expected.join("\n\n"));
+      expect(body.html).toBe(expected.map((p) => `<p>${p}</p>`).join("\n"));
+    }
+  });
+  describe("with a pay link", () => {
+    const payUrl = "https://app.example.test/pay/11111111-2222-4333-8444-555555555555.abc-DEF_123";
+    it("adds 'Pay by card: <url>' before the bank paragraph, as a link in the HTML", () => {
+      const body = buildInvoiceEmail({ ...input, payUrl });
+      const paragraphs = body.text.split("\n\n");
+      expect(paragraphs[2]).toBe(`Pay by card: ${payUrl}`);
+      expect(paragraphs[3]).toContain("bank transfer");
+      expect(body.html).toContain(`<a href="${payUrl}">Pay by card</a>`);
+      expect(body.html.indexOf("Pay by card")).toBeLessThan(body.html.indexOf("bank transfer"));
+    });
+    it.each([
+      "javascript:alert(1)",
+      "https://app.example.test/pay/not-a-uuid.sig",
+      "https://app.example.test/pay/11111111-2222-4333-8444-555555555555.",
+      'https://app.example.test/pay/11111111-2222-4333-8444-555555555555.a"onmouseover="x',
+      "https://app.example.test/pay/11111111-2222-4333-8444-555555555555.abc\n",
+      "https://app.example.test/pay/11111111-2222-4333-8444-555555555555.abc def",
+      "https://app.example.test/other/11111111-2222-4333-8444-555555555555.abc",
+    ])("refuses %j with NoticeContentError", (bad) => {
+      expect(() => buildInvoiceEmail({ ...input, payUrl: bad })).toThrow(NoticeContentError);
+    });
   });
   it("neutralises a link smuggled into a name", () => {
     const body = buildInvoiceEmail({ ...input, sellerName: "Pay https://evil.example now" });

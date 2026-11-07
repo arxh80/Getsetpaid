@@ -37,3 +37,19 @@ describe("renderInvoicePdf", () => {
     expect(pdf.subarray(0, 5).toString("latin1")).toBe("%PDF-");
   });
 });
+
+describe("renderInvoicePdf: pay by card", () => {
+  const payUrl = "https://app.example.test/pay/11111111-2222-4333-8444-555555555555.abc-DEF_123";
+  // The page text sits in compressed, subsetted font streams, but a Link is a
+  // plain /URI annotation: that is the thing a reader clicks, so that is what is checked.
+  const uris = (pdf: Buffer) => [...pdf.toString("latin1").matchAll(/\/URI \(([^)]*)\)/g)].map((m) => m[1]);
+
+  it("carries the pay link as a clickable annotation when payUrl is set", async () => {
+    const pdf = await renderInvoicePdf(snapshot, { status: "issued", payUrl });
+    expect(uris(pdf)).toEqual([payUrl]);
+  });
+  it("carries no link without a payUrl", async () => {
+    expect(uris(await renderInvoicePdf(snapshot, { status: "issued" }))).toEqual([]);
+    expect(uris(await renderInvoicePdf(snapshot, { status: "issued", payUrl: null }))).toEqual([]);
+  });
+});

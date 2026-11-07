@@ -17,6 +17,7 @@ import { consumeRateLimit } from "@/lib/security/rate-limit";
 import { formatRetryAfter } from "@/lib/format/duration";
 import { parseSnapshot } from "@/lib/invoices/snapshot";
 import { renderInvoicePdf } from "@/lib/invoices/pdf/render";
+import { invoicePayUrl } from "@/lib/invoices/pay-url";
 import { invoiceRefusal } from "@/lib/invoices/refusals";
 import { sendEmail } from "@/lib/email/send";
 import { buildInvoiceEmail } from "@/lib/email/invoice-templates";
@@ -62,7 +63,8 @@ export async function sendInvoiceAction(_prev: FormState, formData: FormData): P
     };
   }
 
-  const pdf = await renderInvoicePdf(snapshot, { status: data.status });
+  const payUrl = await invoicePayUrl(org.id, invoiceId, data.status);
+  const pdf = await renderInvoicePdf(snapshot, { status: data.status, payUrl });
   const body = buildInvoiceEmail({
     number: snapshot.number,
     sellerName: snapshot.seller.name,
@@ -70,6 +72,7 @@ export async function sendInvoiceAction(_prev: FormState, formData: FormData): P
     grossMinor: snapshot.totals.grossMinor,
     dueDate: snapshot.dueDate,
     bank: snapshot.seller.bank,
+    payUrl,
   });
   const sent = await sendEmail({
     to: [{ email: toEmail }],
