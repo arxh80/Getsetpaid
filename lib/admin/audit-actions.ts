@@ -397,6 +397,8 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "invoice.card_refund_flagged",
   "invoice_stripe_account.linked",
   "invoice_stripe_account.ended",
+  // 20261110001000: the webhook mirrored a real flip of charges_enabled (Q130 tombstone actor; no notice).
+  "invoice_stripe_account.charges_enabled_changed",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

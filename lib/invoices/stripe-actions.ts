@@ -5,7 +5,8 @@
 // server, STEP-UP re-authentication (it changes where card payments go).
 // begin_stripe_link / end_stripe_account_link spend the token minted here
 // (purpose invoice_settings); the OAuth state is a database row bound to this
-// user (plan decision 3), and the callback route finishes the link. Each link
+// user (plan decision 3), and the ONE fixed callback route (/api/stripe/connect/callback,
+// which Stripe's exact-match redirect list requires) finishes the link. Each link
 // or end is emailed to the Owners and Admins by the delivery tick.
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -46,7 +47,7 @@ export async function startStripeLinkAction(_prev: FormState, formData: FormData
     return { error: error ? invoiceRefusal(error) : FAILED_MESSAGE };
   }
   // Outside any try/catch: redirect() is a thrown signal Next must see.
-  redirect(gateway.authorizeUrl(state, `${siteUrl()}/${org.slug}/settings/invoicing/stripe/callback`));
+  redirect(gateway.authorizeUrl(state, `${siteUrl()}/api/stripe/connect/callback`));
 }
 
 export async function disconnectStripeAction(_prev: FormState, formData: FormData): Promise<FormState> {

@@ -1164,11 +1164,18 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "account: stores the hash of a single-use ten-minute OAuth state bound to the " +
     "caller and returns it. Refused in order: forbidden, plan, step-up. Asserted in " +
     "rls_invoices_stripe.sql § SL and rls_phase10_step_up.sql § SG22.",
+  claim_stripe_link_state:
+    "Invoices part 2 Task 3 fix 1 -- the OAuth callback's first call, BEFORE the code is " +
+    "exchanged (Stripe revokes a connection whose code is used twice): claims, once, a " +
+    "state the CALLER began and that has not expired, re-checks manage_finance and Pro on " +
+    "the state's workspace and returns that workspace. Anyone else's, a second claim, an " +
+    "expired or made-up state gets 42501 stripe_link_state_invalid. Asserted in " +
+    "rls_invoices_stripe.sql § SL.",
   complete_stripe_link:
-    "Invoices part 2 Task 3 -- the OAuth callback: the same holder, with a state THEY " +
-    "began for THIS workspace (single use, unexpired), stores the account Stripe " +
-    "returned; an account another workspace holds live is refused. Audits by name " +
-    "only. Asserted in rls_invoices_stripe.sql § SL.",
+    "Invoices part 2 Task 3 -- the OAuth callback's last call: the same holder completes a " +
+    "state THEY claimed (single use, unexpired); the workspace is the state's, never an " +
+    "argument. Stores the account Stripe returned; an account another workspace holds " +
+    "live is refused. Audits by name only. Asserted in rls_invoices_stripe.sql § SL.",
   end_stripe_account_link:
     "Invoices part 2 Task 3 -- the same holder, with a step-up token, disconnects the " +
     "workspace's live Stripe link and gets the account id back for the deauthorise " +

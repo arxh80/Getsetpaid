@@ -2,7 +2,9 @@
 -- INVOICES PART 2 -- TASK 3: LINKING AND ENDING A WORKSPACE'S STRIPE ACCOUNT.
 --
 --   begin_stripe_link        step-up; mints the OAuth state (a row, plan decision 3)
---   complete_stripe_link     the callback: spends the state, stores the account
+--   claim_stripe_link_state  the callback's FIRST call, before the code is exchanged:
+--                            claims the state once, says which workspace it is for
+--   complete_stripe_link     the callback's last: spends a CLAIMED state, stores the account
 --   end_stripe_account_link  step-up; ends the link, returns the id to deauthorise
 --   stripe_account_deauthorized / stripe_account_updated   service_role: the webhook's
 --   stripe_application_fee_bps                              the fee the settings page names
@@ -214,11 +216,71 @@ revoke all on function public.begin_stripe_link(uuid) from public, anon, authent
 grant execute on function public.begin_stripe_link(uuid) to authenticated;
 
 -- ---------------------------------------------------------------------------
--- 3. COMPLETE: the callback. The state must be this user's, this workspace's,
---    unused and unexpired; it is spent in the same statement that checks it.
+-- 3. CLAIM, THEN COMPLETE. The callback is ONE fixed URL (Stripe matches the
+--    redirect_uri exactly against a registered list), so the workspace is not
+--    in the path: the state row says which one. Stripe's token endpoint is not
+--    idempotent (a code used twice REVOKES the connection), so the state is
+--    CLAIMED -- once, by the user who began it, still unexpired, with
+--    manage_finance and Pro re-checked on the row's workspace -- BEFORE the
+--    code is exchanged. A replay, a reload or a forged GET is refused here and
+--    never reaches Stripe. complete_stripe_link then accepts only a state this
+--    user claimed and has not completed.
 -- ---------------------------------------------------------------------------
+alter table private.stripe_link_states add column claimed_at timestamptz;
+
+-- The earlier shape of complete_stripe_link (it took the workspace as an
+-- argument) never left this branch.
+drop function if exists public.complete_stripe_link(uuid, text, text, boolean);
+
+create or replace function public.claim_stripe_link_state(p_state text)
+returns table (organisation_id uuid, slug text)
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_uid uuid := (select auth.uid());
+  v_org uuid;
+begin
+  if v_uid is null then
+    raise exception 'claim_stripe_link_state: no authenticated user'
+      using errcode = '28000', hint = 'not_authenticated';
+  end if;
+
+  update private.stripe_link_states s
+     set claimed_at = pg_catalog.now()
+   where s.state_hash = extensions.digest(coalesce(p_state, ''), 'sha256')
+     and s.user_id = v_uid
+     and s.claimed_at is null
+     and s.used_at is null
+     and s.expires_at > pg_catalog.now()
+  returning s.organisation_id into v_org;
+  if v_org is null then
+    raise exception 'claim_stripe_link_state: the state is unknown, claimed, used, expired or another user''s'
+      using errcode = '42501', hint = 'stripe_link_state_invalid';
+  end if;
+
+  -- A refusal below rolls the claim back with the rest of this call.
+  if not public.has_permission(v_org, 'manage_finance') then
+    raise exception 'claim_stripe_link_state: the caller may no longer manage finance in this workspace'
+      using errcode = '42501', hint = 'forbidden';
+  end if;
+  if not exists (select 1 from private.finance_module_organisations() f where f = v_org) then
+    raise exception 'claim_stripe_link_state: this workspace''s plan does not include invoicing'
+      using errcode = '42501', hint = 'plan_does_not_include_invoicing';
+  end if;
+
+  return query select o.id, o.slug from public.organisations o where o.id = v_org;
+end;
+$$;
+
+comment on function public.claim_stripe_link_state(text) is
+  'The OAuth callback''s first database call, BEFORE the code is exchanged with Stripe (whose token endpoint revokes the connection if a code is used twice). Claims, once, a state this user began and that has not expired; re-checks manage_finance and Pro on the state''s workspace (a refusal rolls the claim back) and returns that workspace -- the only source of the workspace the callback acts on. stripe_link_state_invalid for an unknown, already claimed, used, expired or another user''s state.';
+revoke all on function public.claim_stripe_link_state(text) from public, anon, authenticated, service_role;
+grant execute on function public.claim_stripe_link_state(text) to authenticated;
+
 create or replace function public.complete_stripe_link(
-  p_org              uuid,
   p_state            text,
   p_account          text,
   p_charges_enabled  boolean
@@ -230,20 +292,12 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_uid  uuid := (select auth.uid());
-  v_used integer;
+  v_uid uuid := (select auth.uid());
+  v_org uuid;
 begin
   if v_uid is null then
     raise exception 'complete_stripe_link: no authenticated user'
       using errcode = '28000', hint = 'not_authenticated';
-  end if;
-  if p_org is null or not public.has_permission(p_org, 'manage_finance') then
-    raise exception 'complete_stripe_link: the caller may not manage finance in this workspace'
-      using errcode = '42501', hint = 'forbidden';
-  end if;
-  if not exists (select 1 from private.finance_module_organisations() f where f = p_org) then
-    raise exception 'complete_stripe_link: this workspace''s plan does not include invoicing'
-      using errcode = '42501', hint = 'plan_does_not_include_invoicing';
   end if;
   if p_account is null or p_account !~ '^acct_[A-Za-z0-9]+$' then
     raise exception 'complete_stripe_link: not a Stripe account id'
@@ -253,25 +307,35 @@ begin
   update private.stripe_link_states s
      set used_at = pg_catalog.now()
    where s.state_hash = extensions.digest(coalesce(p_state, ''), 'sha256')
-     and s.organisation_id = p_org
      and s.user_id = v_uid
+     and s.claimed_at is not null
      and s.used_at is null
-     and s.expires_at > pg_catalog.now();
-  get diagnostics v_used = row_count;
-  if v_used = 0 then
-    raise exception 'complete_stripe_link: the state is unknown, used, expired or another user''s'
+     and s.expires_at > pg_catalog.now()
+  returning s.organisation_id into v_org;
+  if v_org is null then
+    raise exception 'complete_stripe_link: the state is unknown, unclaimed, used, expired or another user''s'
       using errcode = '42501', hint = 'stripe_link_state_invalid';
   end if;
 
+  -- Re-checked on the state's workspace; a refusal rolls the state's use back.
+  if not public.has_permission(v_org, 'manage_finance') then
+    raise exception 'complete_stripe_link: the caller may no longer manage finance in this workspace'
+      using errcode = '42501', hint = 'forbidden';
+  end if;
+  if not exists (select 1 from private.finance_module_organisations() f where f = v_org) then
+    raise exception 'complete_stripe_link: this workspace''s plan does not include invoicing'
+      using errcode = '42501', hint = 'plan_does_not_include_invoicing';
+  end if;
+
   if exists (select 1 from public.invoice_stripe_accounts a
-              where a.stripe_account_id = p_account and a.ended_at is null and a.organisation_id <> p_org) then
+              where a.stripe_account_id = p_account and a.ended_at is null and a.organisation_id <> v_org) then
     raise exception 'complete_stripe_link: that Stripe account is linked to another workspace'
       using errcode = '22023', hint = 'stripe_account_in_use';
   end if;
 
   begin
     insert into public.invoice_stripe_accounts (organisation_id, stripe_account_id, charges_enabled, linked_by, linked_at)
-    values (p_org, p_account, coalesce(p_charges_enabled, false), v_uid, pg_catalog.now())
+    values (v_org, p_account, coalesce(p_charges_enabled, false), v_uid, pg_catalog.now())
     on conflict (organisation_id) do update
       set stripe_account_id = excluded.stripe_account_id,
           charges_enabled   = excluded.charges_enabled,
@@ -285,15 +349,15 @@ begin
   end;
 
   -- The account id is never in the audit row: the fact that it changed is.
-  perform private.log_audit_event('invoice_stripe_account.linked', 'invoice_stripe_account', p_org, null, null, null,
+  perform private.log_audit_event('invoice_stripe_account.linked', 'invoice_stripe_account', v_org, null, null, null,
                                   pg_catalog.jsonb_build_object('changed', pg_catalog.jsonb_build_array('stripe_account')));
 end;
 $$;
 
-comment on function public.complete_stripe_link(uuid, text, text, boolean) is
-  'Finishes a Stripe link from the OAuth callback: requires manage_finance and the Pro entitlement, a well-formed acct_ id, and a state this user began for this workspace (single use, ten minutes; stripe_link_state_invalid otherwise). Refuses an account another workspace holds live (stripe_account_in_use). Upserts the workspace''s one row (a re-link replaces the account) and audits invoice_stripe_account.linked as {changed: [stripe_account]} -- never the id.';
-revoke all on function public.complete_stripe_link(uuid, text, text, boolean) from public, anon, authenticated, service_role;
-grant execute on function public.complete_stripe_link(uuid, text, text, boolean) to authenticated;
+comment on function public.complete_stripe_link(text, text, boolean) is
+  'Finishes a Stripe link from the OAuth callback, AFTER claim_stripe_link_state. Takes the workspace from the state row, never from the caller: the state must be this user''s, claimed, not yet completed and unexpired (stripe_link_state_invalid otherwise). Requires manage_finance and the Pro entitlement on that workspace, a well-formed acct_ id, and refuses an account another workspace holds live (stripe_account_in_use). Upserts the workspace''s one row (a re-link replaces the account) and audits invoice_stripe_account.linked as {changed: [stripe_account]} -- never the id.';
+revoke all on function public.complete_stripe_link(text, text, boolean) from public, anon, authenticated, service_role;
+grant execute on function public.complete_stripe_link(text, text, boolean) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- 4. END: a person disconnects. Returns the id for the Stripe deauthorise call.
@@ -390,22 +454,35 @@ set search_path = ''
 as $$
 declare
   v_org uuid;
+  v_old boolean;
+  v_new boolean := coalesce(p_charges_enabled, false);
 begin
   if (select auth.uid()) is not null
      or coalesce(pg_catalog.current_setting('role', true), 'none') not in ('postgres', 'service_role', 'none') then
     raise exception 'stripe_account_updated: written by the webhook, never from a person''s session'
       using errcode = '42501', hint = 'stripe_write_is_server_only';
   end if;
-  update public.invoice_stripe_accounts a
-     set charges_enabled = coalesce(p_charges_enabled, false)
+  select a.organisation_id, a.charges_enabled into v_org, v_old
+    from public.invoice_stripe_accounts a
    where a.stripe_account_id = p_account and a.ended_at is null
-  returning a.organisation_id into v_org;
-  return v_org is not null;
+     for update;
+  if v_org is null then
+    return false;
+  end if;
+  -- account.updated is noisy: only a real flip is written, and audited.
+  if v_old is distinct from v_new then
+    update public.invoice_stripe_accounts a set charges_enabled = v_new where a.organisation_id = v_org;
+    -- Sessionless, so private.log_audit_event cannot be used. No notice reads this action.
+    insert into public.audit_events (organisation_id, actor_user_id, action, target_type, correlation_id, after)
+    values (v_org, private.erased_user_id(), 'invoice_stripe_account.charges_enabled_changed', 'invoice_stripe_account',
+            pg_catalog.gen_random_uuid(), pg_catalog.jsonb_build_object('changed', pg_catalog.jsonb_build_array('charges_enabled')));
+  end if;
+  return true;
 end;
 $$;
 
 comment on function public.stripe_account_updated(text, boolean) is
-  'service_role only: mirrors Stripe''s charges_enabled for the live link on p_account (account.updated). True when a live link was found, false otherwise. A mirror of Stripe''s state, not an act by a person, so it writes no audit row.';
+  'service_role only: mirrors Stripe''s charges_enabled for the live link on p_account (account.updated). True when a live link was found, false otherwise. When the stored value actually flips it audits invoice_stripe_account.charges_enabled_changed as {changed: [charges_enabled]} with the Q130 tombstone as actor; a repeat of the same value writes nothing. That action feeds no notice.';
 revoke all on function public.stripe_account_updated(text, boolean) from public, anon, authenticated, service_role;
 grant execute on function public.stripe_account_updated(text, boolean) to service_role;
 
@@ -477,3 +554,108 @@ grant execute on function public.pending_invoice_stripe_account_notifications(in
 
 comment on table public.invoice_stripe_accounts is
   'A workspace''s link to its own Stripe account (Invoices part 2, Standard Connect). One row per workspace; ended_at/ended_reason mark a link that was disconnected or deauthorized, and free the account id for another workspace. Read by view_finance; written only by public.complete_stripe_link and public.end_stripe_account_link (linking begins with begin_stripe_link, and begin and end each spend a step-up token) and, sessionless, by the webhook''s stripe_account_deauthorized / stripe_account_updated. Every link and end is audited by name and emailed to the Owners and Admins.';
+
+-- ---------------------------------------------------------------------------
+-- 8. THE AUDIT CATALOGUE gains invoice_stripe_account.charges_enabled_changed:
+--    stripe_account_updated writes it when the stored value really flips. Rebuilt
+--    from the live definition (diffed identical to 20261110000000 first); only
+--    that row is added. No notice reads it.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION private.platform_audit_actions()
+ RETURNS SETOF text
+ LANGUAGE sql
+ IMMUTABLE
+ SET search_path TO ''
+AS $function$
+  values
+    -- The four irreversible CRM actions (CRM_IRREVERSIBLE_AUDIT_ACTIONS).
+    ('contact_company.deleted'),
+    ('custom_field_value.deleted'),
+    ('records.merged'),
+    ('records.merged.fields'),
+    ('membership.deleted'),
+    -- PLATFORM_AUDIT_ACTIONS, in catalogue order.
+    ('organisation.created'),
+    ('organisation.updated'),
+    ('membership.accepted'),
+    ('document_uploaded'),
+    ('document_downloaded'),
+    ('document_deleted'),
+    ('document_quarantined'),
+    ('network_profile.published'),
+    ('network_profile.unpublished'),
+    ('network_profile.visibility_changed'),
+    ('network_connection.requested'),
+    ('network_connection.accepted'),
+    ('network_connection.declined'),
+    ('network_connection.withdrawn'),
+    ('network_connection.updated'),
+    ('audit_log.viewed'),
+    ('impersonation.requested'),
+    ('impersonation.accepted'),
+    ('impersonation.declined'),
+    ('impersonation.started'),
+    ('impersonation.page_viewed'),
+    ('impersonation.ended'),
+    ('impersonation.expired'),
+    ('organisation.suspended'),
+    ('organisation.deleted'),
+    ('organisation.reinstated'),
+    ('organisation.closed_by_owner'),
+    ('organisation.closure_reassigned'),
+    ('organisation.closure_deleted'),
+    ('organisation.closure_candidates_viewed'),
+    ('organisation.billing_override_granted'),
+    ('organisation.billing_override_revoked'),
+    ('organisation.feature_override_granted'),
+    ('organisation.feature_override_revoked'),
+    ('platform_health.viewed'),
+    ('incident_alert.resolved'),
+    ('incident_alert.reopened'),
+    ('feedback.submitted'),
+    ('feedback.status_changed'),
+    ('feedback.screenshot_viewed'),
+    ('legal_document.draft_created'),
+    ('legal_document.draft_updated'),
+    ('legal_document.published'),
+    ('legal_document.counsel_review_recorded'),
+    ('consent.granted'),
+    ('consent.withdrawn'),
+    ('data_subject_request.submitted'),
+    ('data_subject_request.in_progress'),
+    ('data_subject_request.routed'),
+    ('data_subject_request.fulfilled'),
+    ('data_subject_request.rejected'),
+    ('data_subject_request.withdrawn'),
+    ('data_subject_request.fulfilment_recorded'),
+    ('data_subject_request.note_added'),
+    ('data_subject_request.rerouted'),
+    ('export_job.requested'),
+    ('export_job.downloaded'),
+    ('erasure_job.requested'),
+    ('account.erased'),
+    ('organisation.erased'),
+    ('retention_settings.changed'),
+    ('retention.swept'),
+    ('retention.audit_ceiling_released'),
+    ('integration.connected'),
+    ('integration.revoked'),
+    ('integration.token_stored'),
+    ('integration.sync_failed'),
+    -- Invoices part 1 (20261107000000; written by Tasks 5, 6, 7, 10, 11).
+    ('invoice.issued'),
+    ('invoice.sent'),
+    ('invoice.marked_paid'),
+    ('invoice.voided'),
+    ('invoice.pdf_downloaded'),
+    ('invoice_settings.changed'),
+    ('invoice_settings.bank_details_changed'),
+    -- Invoices part 2 (20261110000000; written by Tasks 3 and 4).
+    ('invoice.paid_by_card'),
+    ('invoice.card_payment_conflict'),
+    ('invoice.card_refund_flagged'),
+    ('invoice_stripe_account.linked'),
+    ('invoice_stripe_account.ended'),
+    ('invoice_stripe_account.charges_enabled_changed')
+$function$;
+

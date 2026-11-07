@@ -99,8 +99,8 @@ describe("startStripeLinkAction", () => {
     h.rpc.mockResolvedValue({ data: "STATE43", error: null });
     const to = await redirectedTo(startStripeLinkAction({}, form()));
     expect(h.rpc).toHaveBeenCalledWith("begin_stripe_link", { p_org: "org-1" });
-    expect(h.gateway!.authorizeUrl).toHaveBeenCalledWith("STATE43", "https://app.example.test/neon/settings/invoicing/stripe/callback");
-    expect(to).toBe("https://stripe.test/authorize?state=STATE43&redirect_uri=https://app.example.test/neon/settings/invoicing/stripe/callback");
+    expect(h.gateway!.authorizeUrl).toHaveBeenCalledWith("STATE43", "https://app.example.test/api/stripe/connect/callback");
+    expect(to).toBe("https://stripe.test/authorize?state=STATE43&redirect_uri=https://app.example.test/api/stripe/connect/callback");
   });
   it("a database refusal is a sentence, not a redirect", async () => {
     h.rpc.mockResolvedValue({ data: null, error: { code: "42501", hint: "plan_does_not_include_invoicing", message: "x" } });

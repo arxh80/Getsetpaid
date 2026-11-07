@@ -30,8 +30,12 @@ payment, invoicing works without Stripe).
   is paid). A random `state` is bound to the user's session (an httpOnly,
   short-lived cookie) and compared on return; a mismatch or a missing
   cookie refuses and stores nothing. The callback
-  (`/[orgSlug]/settings/invoicing/stripe/callback`) exchanges the code and
-  keeps only `stripe_user_id`.
+  (one fixed path, `/api/stripe/connect/callback`, behind sign-in) claims
+  the state, exchanges the code and keeps only `stripe_user_id`. The path
+  is fixed because Stripe matches `redirect_uri` exactly against a
+  registered list, so the workspace cannot be in it: the state row, bound
+  to the user and claimed once before the code is exchanged (Stripe
+  revokes a connection whose code is used twice), says which workspace.
 - **Stored:** `public.invoice_stripe_accounts`, one row per organisation:
   `organisation_id` (PK, FK), `stripe_account_id` (text, `^acct_[A-Za-z0-9]+$`,
   unique among live rows), `charges_enabled` (boolean, refreshed from the

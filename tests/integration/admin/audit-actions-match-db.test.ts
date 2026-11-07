@@ -199,7 +199,8 @@ describe("the CRM audit triggers agree with CRM_AUDIT_TARGETS", () => {
     // .marked_paid, .voided, .pdf_downloaded, invoice_settings.changed and
     // invoice_settings.bank_details_changed.
     // 184 = 179 + the five Stripe actions of Invoices part 2 (20261110000000).
-    expect(live.length).toBe(184);
+    // 185 = 184 + invoice_stripe_account.charges_enabled_changed (20261110001000, Task 3 fix 1).
+    expect(live.length).toBe(185);
     expect(new Set(live).size, "the database catalogue lists a name twice").toBe(live.length);
     expect(live).toEqual([...knownAuditActions()].sort());
   });
@@ -478,6 +479,8 @@ describe("every literal action a function INSERTS into audit_events directly is 
         // Stripe says was deauthorized. Nobody is on the session, so
         // log_audit_event() would raise 28000; actor = the Q130 tombstone.
         "public.stripe_account_deauthorized",
+        // Task 3 fix 1: the webhook mirroring a REAL flip of charges_enabled, same reason.
+        "public.stripe_account_updated",
       ],
     );
 

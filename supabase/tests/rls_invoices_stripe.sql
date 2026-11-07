@@ -328,7 +328,7 @@ select ist.val('SE2 the account erasure runs over a person who linked a Stripe a
 select ist.val('SE3 ...the link survives, re-pointed to the tombstone, still live and charge-enabled', format($$select (linked_by = private.erased_user_id())::text || '|' || charges_enabled || '|' || (ended_at is null) from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_e'), 'true|true|true');
 
 -- ===========================================================================
--- § SL LINKING AND ENDING (Task 3, 20261110001000): begin, complete, end, the
+-- § SL LINKING AND ENDING (Task 3, 20261110001000): begin, claim, complete, end, the
 -- webhook's two, the fee, and the Owner/Admin notice. Step-up is spent from a
 -- stock the way the server would after a passed step-up (step_up_fixture.arm);
 -- fin_a2 is a second A Finance user who is deliberately NOT armed.
@@ -358,7 +358,7 @@ delete from public.invoice_stripe_accounts where organisation_id = :'org_a';
 select stripe_account_id as acct_b from public.invoice_stripe_accounts where organisation_id = :'org_b' \gset
 select step_up_fixture.arm(:'fin_a_c') \g /dev/null
 
-select ist.val('SL0 who may EXECUTE the seven (anon, authenticated, service_role), and all are definers with an empty search_path (! marks one that is not)', $$select string_agg(p.proname || '=' || coalesce((select string_agg(r, '/' order by r) from unnest(array['anon','authenticated','service_role']) r where has_function_privilege(r, p.oid, 'EXECUTE')), '-') || (case when p.prosecdef and p.proconfig = array['search_path=""'] then '' else '!' end), ',' order by p.proname) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in ('begin_stripe_link','complete_stripe_link','end_stripe_account_link','stripe_account_deauthorized','stripe_account_updated','pending_invoice_stripe_account_notifications','stripe_application_fee_bps')$$, 'begin_stripe_link=authenticated,complete_stripe_link=authenticated,end_stripe_account_link=authenticated,pending_invoice_stripe_account_notifications=service_role,stripe_account_deauthorized=service_role,stripe_account_updated=service_role,stripe_application_fee_bps=authenticated');
+select ist.val('SL0 who may EXECUTE the eight (anon, authenticated, service_role), and all are definers with an empty search_path (! marks one that is not)', $$select string_agg(p.proname || '=' || coalesce((select string_agg(r, '/' order by r) from unnest(array['anon','authenticated','service_role']) r where has_function_privilege(r, p.oid, 'EXECUTE')), '-') || (case when p.prosecdef and p.proconfig = array['search_path=""'] then '' else '!' end), ',' order by p.proname) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in ('begin_stripe_link','claim_stripe_link_state','complete_stripe_link','end_stripe_account_link','stripe_account_deauthorized','stripe_account_updated','pending_invoice_stripe_account_notifications','stripe_application_fee_bps')$$, 'begin_stripe_link=authenticated,claim_stripe_link_state=authenticated,complete_stripe_link=authenticated,end_stripe_account_link=authenticated,pending_invoice_stripe_account_notifications=service_role,stripe_account_deauthorized=service_role,stripe_account_updated=service_role,stripe_application_fee_bps=authenticated');
 
 -- ---- BEGIN -----------------------------------------------------------------
 set role authenticated;
@@ -379,45 +379,76 @@ select ist.val('SL6 a Starter workspace is refused plan_does_not_include_invoici
 reset role;
 reset request.jwt.claims;
 
--- ---- COMPLETE --------------------------------------------------------------
+-- ---- CLAIM, THEN COMPLETE --------------------------------------------------
+-- The callback is one fixed URL, so the workspace comes ONLY from the state row.
 set role authenticated;
 set request.jwt.claims = :'fin_a_c';
-select ist.val('SL7 complete with the state: ok', format($$select 'ok' from (select public.complete_stripe_link(%L, %L, %L, true)) s$$, :'org_a', :'st1', :'acct_l1'), 'ok');
+select ist.val('SL7 an UNCLAIMED state cannot be completed: stripe_link_state_invalid', format($$select public.complete_stripe_link(%L, %L, true)$$, :'st1', :'acct_l1'), 'denied(42501:stripe_link_state_invalid)');
+set request.jwt.claims = :'fin_a2_c';
+select ist.val('SL7a CLAIM BINDS TO THE USER: another A Finance user claiming fin_a''s state is refused stripe_link_state_invalid', format($$select organisation_id::text from public.claim_stripe_link_state(%L)$$, :'st1'), 'denied(42501:stripe_link_state_invalid)');
+set request.jwt.claims = :'fin_a_c';
+select ist.val('SL7b a made-up state cannot be claimed', $$select organisation_id::text from public.claim_stripe_link_state('not-a-state-anybody-minted')$$, 'denied(42501:stripe_link_state_invalid)');
+select ist.val('SL7c POSITIVE CONTROL: fin_a claims the state (refused to the other user, untouched) and gets A and A''s slug back -- though fin_a also manages B, the workspace is the row''s', format($$select (organisation_id = %L)::text || '|' || slug from public.claim_stripe_link_state(%L)$$, :'org_a', :'st1'), 'true|ist-alpha-' || left(:'org_a', 8));
+select ist.val('SL7d A SECOND CLAIM of the same state is refused stripe_link_state_invalid (a reload or replay never reaches Stripe)', format($$select organisation_id::text from public.claim_stripe_link_state(%L)$$, :'st1'), 'denied(42501:stripe_link_state_invalid)');
+select ist.val('SL7e a claimed state completes: ok', format($$select 'ok' from (select public.complete_stripe_link(%L, %L, true)) s$$, :'st1', :'acct_l1'), 'ok');
 reset role;
 select ist.val('SL8 ...a live row: the account, charges enabled, linked by fin_a, not ended', format($$select (stripe_account_id = %2$L)::text || '|' || charges_enabled::text || '|' || (linked_by = %3$L)::text || '|' || (ended_at is null)::text from public.invoice_stripe_accounts where organisation_id = %1$L$$, :'org_a', :'acct_l1', :'fin_a'), 'true|true|true|true');
 select ist.val('SL9 ...ONE invoice_stripe_account.linked audit row: after = {"changed":["stripe_account"]}, no before, and no acct_ anywhere in it', format($$select count(*) || '|' || max(after::text) || '|' || bool_and(before is null)::text || '|' || bool_and(coalesce(after::text, '') not like '%%acct\_%%')::text from public.audit_events where action = 'invoice_stripe_account.linked' and organisation_id = %L$$, :'org_a'), '1|{"changed": ["stripe_account"]}|true|true');
-select ist.val('SL10 ...and the state is marked used', format($$select (used_at is not null)::text from private.stripe_link_states where state_hash = extensions.digest(%L, 'sha256')$$, :'st1'), 'true');
+select ist.val('SL10 ...and the state is claimed and used', format($$select (claimed_at is not null)::text || '|' || (used_at is not null)::text from private.stripe_link_states where state_hash = extensions.digest(%L, 'sha256')$$, :'st1'), 'true|true');
 set role authenticated;
 set request.jwt.claims = :'fin_a_c';
-select ist.val('SL11 the same state again is refused stripe_link_state_invalid', format($$select public.complete_stripe_link(%L, %L, %L, true)$$, :'org_a', :'st1', :'acct_l1'), 'denied(42501:stripe_link_state_invalid)');
-select ist.val('SL12 a made-up state is refused the same way', format($$select public.complete_stripe_link(%L, 'not-a-state-anybody-minted', %L, true)$$, :'org_a', :'acct_l2'), 'denied(42501:stripe_link_state_invalid)');
+select ist.val('SL11 the same state completed again is refused stripe_link_state_invalid', format($$select public.complete_stripe_link(%L, %L, true)$$, :'st1', :'acct_l1'), 'denied(42501:stripe_link_state_invalid)');
+select ist.val('SL12 a made-up state cannot be completed either', format($$select public.complete_stripe_link('not-a-state-anybody-minted', %L, true)$$, :'acct_l2'), 'denied(42501:stripe_link_state_invalid)');
 select public.begin_stripe_link(:'org_a') as st2 \gset
+select organisation_id as st2_org from public.claim_stripe_link_state(:'st2') \gset
 set request.jwt.claims = :'fin_a2_c';
-select ist.val('SL13 A STATE MINTED BY fin_a COMPLETED BY ANOTHER A FINANCE USER is refused stripe_link_state_invalid', format($$select public.complete_stripe_link(%L, %L, %L, true)$$, :'org_a', :'st2', :'acct_l2'), 'denied(42501:stripe_link_state_invalid)');
+select ist.val('SL13 A CLAIMED STATE COMPLETED BY ANOTHER A FINANCE USER is refused stripe_link_state_invalid', format($$select public.complete_stripe_link(%L, %L, true)$$, :'st2', :'acct_l2'), 'denied(42501:stripe_link_state_invalid)');
 set request.jwt.claims = :'fin_a_c';
-select ist.val('SL14 THE SAME STATE USED FOR ANOTHER WORKSPACE fin_a also manages is refused stripe_link_state_invalid', format($$select public.complete_stripe_link(%L, %L, %L, true)$$, :'org_b', :'st2', :'acct_l2'), 'denied(42501:stripe_link_state_invalid)');
-select ist.val('SL15 POSITIVE CONTROL: that state, untouched by both refusals, completes for fin_a and A -- a RE-LINK over the live account', format($$select 'ok' from (select public.complete_stripe_link(%L, %L, %L, false)) s$$, :'org_a', :'st2', :'acct_l2'), 'ok');
+select ist.val('SL15 POSITIVE CONTROL: that state, untouched by the refusal, completes for fin_a -- a RE-LINK over the live account', format($$select 'ok' from (select public.complete_stripe_link(%L, %L, false)) s$$, :'st2', :'acct_l2'), 'ok');
+-- An expired state: unclaimed (cannot be claimed), and claimed-then-expired (cannot be completed).
 select public.begin_stripe_link(:'org_a') as st3 \gset
+select public.begin_stripe_link(:'org_a') as st3b \gset
+select organisation_id as st3b_org from public.claim_stripe_link_state(:'st3b') \gset
 reset role;
-update private.stripe_link_states set expires_at = now() - interval '1 minute' where state_hash = extensions.digest(:'st3', 'sha256');
+update private.stripe_link_states set expires_at = now() - interval '1 minute' where state_hash in (extensions.digest(:'st3', 'sha256'), extensions.digest(:'st3b', 'sha256'));
 set role authenticated;
 set request.jwt.claims = :'fin_a_c';
-select ist.val('SL16 AN EXPIRED STATE is refused stripe_link_state_invalid', format($$select public.complete_stripe_link(%L, %L, %L, true)$$, :'org_a', :'st3', :'acct_l3'), 'denied(42501:stripe_link_state_invalid)');
+select ist.val('SL16 AN EXPIRED STATE cannot be claimed', format($$select organisation_id::text from public.claim_stripe_link_state(%L)$$, :'st3'), 'denied(42501:stripe_link_state_invalid)');
+select ist.val('SL16a ...and a state claimed before it expired cannot be completed', format($$select public.complete_stripe_link(%L, %L, true)$$, :'st3b', :'acct_l3'), 'denied(42501:stripe_link_state_invalid)');
 select public.begin_stripe_link(:'org_a') as st4 \gset
 reset role;
-select ist.val('SL17 the next mint swept the expired state (the table is a scratchpad)', format($$select count(*)::text from private.stripe_link_states where state_hash = extensions.digest(%L, 'sha256')$$, :'st3'), '0');
+select ist.val('SL17 the next mint swept the expired states (the table is a scratchpad)', format($$select count(*)::text from private.stripe_link_states where state_hash in (extensions.digest(%L, 'sha256'), extensions.digest(%L, 'sha256'))$$, :'st3', :'st3b'), '0');
 set role authenticated;
 set request.jwt.claims = :'fin_a_c';
-select ist.val('SL18 an account id that is not acct_ + letters and digits is refused stripe_account_invalid', format($$select public.complete_stripe_link(%L, %L, 'acct_x; drop table', true)$$, :'org_a', :'st4'), 'denied(22023:stripe_account_invalid)');
-select ist.val('SL19 an account B holds live is refused stripe_account_in_use', format($$select public.complete_stripe_link(%L, %L, %L, true)$$, :'org_a', :'st4', :'acct_b'), 'denied(22023:stripe_account_in_use)');
-select ist.val('SL20 POSITIVE CONTROL: the same state with a FRESH id succeeds (neither refusal spent it)', format($$select 'ok' from (select public.complete_stripe_link(%L, %L, %L, true)) s$$, :'org_a', :'st4', :'acct_l3'), 'ok');
-set request.jwt.claims = :'ro_a_c';
-select ist.val('SL21 A''s Read Only user cannot complete: forbidden', format($$select public.complete_stripe_link(%L, %L, %L, true)$$, :'org_a', :'st4', :'acct_l4'), 'denied(42501:forbidden)');
-set request.jwt.claims = :'fin_s_c';
-select ist.val('SL22 a Starter workspace cannot complete: plan_does_not_include_invoicing', format($$select public.complete_stripe_link(%L, %L, %L, true)$$, :'org_s', :'st4', :'acct_l4'), 'denied(42501:plan_does_not_include_invoicing)');
+select organisation_id as st4_org from public.claim_stripe_link_state(:'st4') \gset
+select ist.val('SL18 an account id that is not acct_ + letters and digits is refused stripe_account_invalid', format($$select public.complete_stripe_link(%L, 'acct_x; drop table', true)$$, :'st4'), 'denied(22023:stripe_account_invalid)');
+select ist.val('SL19 an account B holds live is refused stripe_account_in_use', format($$select public.complete_stripe_link(%L, %L, true)$$, :'st4', :'acct_b'), 'denied(22023:stripe_account_in_use)');
+select ist.val('SL20 POSITIVE CONTROL: the same claimed state with a FRESH id succeeds (neither refusal spent it)', format($$select 'ok' from (select public.complete_stripe_link(%L, %L, true)) s$$, :'st4', :'acct_l3'), 'ok');
 reset role;
 reset request.jwt.claims;
-select ist.val('SL23 three links (one a re-link, one after refusals) left ONE row for A, on the last account, charges enabled', format($$select count(*) || '|' || bool_and(stripe_account_id = %2$L and charges_enabled and ended_at is null)::text from public.invoice_stripe_accounts where organisation_id = %1$L$$, :'org_a', :'acct_l3'), '1|true');
+
+-- Permission and plan are re-checked on the STATE'S workspace, at claim and at
+-- complete, and a refusal rolls the claim (or the use) back. Rows are planted
+-- directly: the refusals are about who holds them now, not who began them.
+insert into private.stripe_link_states (state_hash, organisation_id, user_id, expires_at, claimed_at) values
+  (extensions.digest('sl-ro-unclaimed', 'sha256'), :'org_a', :'ro_a',   now() + interval '5 minutes', null),
+  (extensions.digest('sl-ok-unclaimed', 'sha256'), :'org_a', :'fin_a2', now() + interval '5 minutes', null),
+  (extensions.digest('sl-st-unclaimed', 'sha256'), :'org_s', :'fin_s',  now() + interval '5 minutes', null),
+  (extensions.digest('sl-ro-claimed',   'sha256'), :'org_a', :'ro_a',   now() + interval '5 minutes', now()),
+  (extensions.digest('sl-st-claimed',   'sha256'), :'org_s', :'fin_s',  now() + interval '5 minutes', now());
+set role authenticated;
+set request.jwt.claims = :'ro_a_c';
+select ist.val('SL21 a Read Only user cannot claim even a state held in their name: forbidden', $$select organisation_id::text from public.claim_stripe_link_state('sl-ro-unclaimed')$$, 'denied(42501:forbidden)');
+select ist.val('SL21a A Read Only user cannot complete a claimed state either: forbidden', format($$select public.complete_stripe_link('sl-ro-claimed', %L, true)$$, :'acct_l4'), 'denied(42501:forbidden)');
+set request.jwt.claims = :'fin_s_c';
+select ist.val('SL22 a Starter workspace cannot claim: plan_does_not_include_invoicing', $$select organisation_id::text from public.claim_stripe_link_state('sl-st-unclaimed')$$, 'denied(42501:plan_does_not_include_invoicing)');
+select ist.val('SL22a ...nor complete: plan_does_not_include_invoicing', format($$select public.complete_stripe_link('sl-st-claimed', %L, true)$$, :'acct_l4'), 'denied(42501:plan_does_not_include_invoicing)');
+set request.jwt.claims = :'fin_a2_c';
+select ist.val('SL22b POSITIVE CONTROL: the same kind of planted row held by a Finance user of a Pro workspace claims fine', $$select (organisation_id is not null)::text from public.claim_stripe_link_state('sl-ok-unclaimed')$$, 'true');
+reset role;
+reset request.jwt.claims;
+select ist.val('SL22c every refusal rolled back its claim or use: the four refused rows are as planted', $$select string_agg(s, ',' order by s) from (select case when state_hash = extensions.digest('sl-ro-unclaimed', 'sha256') then 'ro-un' when state_hash = extensions.digest('sl-st-unclaimed', 'sha256') then 'st-un' when state_hash = extensions.digest('sl-ro-claimed', 'sha256') then 'ro-cl' else 'st-cl' end || ':' || (claimed_at is not null)::text || ':' || (used_at is not null)::text as s from private.stripe_link_states where state_hash in (extensions.digest('sl-ro-unclaimed', 'sha256'), extensions.digest('sl-st-unclaimed', 'sha256'), extensions.digest('sl-ro-claimed', 'sha256'), extensions.digest('sl-st-claimed', 'sha256'))) x$$, 'ro-cl:true:false,ro-un:false:false,st-cl:true:false,st-un:false:false');
+select ist.val('SL23 three links (a first, a re-link, one after refusals) left ONE row for A, on the last account, charges enabled', format($$select count(*) || '|' || bool_and(stripe_account_id = %2$L and charges_enabled and ended_at is null)::text from public.invoice_stripe_accounts where organisation_id = %1$L$$, :'org_a', :'acct_l3'), '1|true');
 select ist.val('SL24 B''s account was not touched by the refusals', format($$select (stripe_account_id = %2$L)::text from public.invoice_stripe_accounts where organisation_id = %1$L$$, :'org_b', :'acct_b'), 'true');
 
 -- ---- END -------------------------------------------------------------------
@@ -451,6 +482,9 @@ select ist.val('SL35a ...and updated flips it back on', format($$select public.s
 reset role;
 select ist.val('SL35b ...which the table shows', format($$select charges_enabled::text from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'true');
 set role service_role;
+select ist.val('SL35c a REPEAT of the stored value is still found (true) and flips nothing', format($$select public.stripe_account_updated(%L, true)::text$$, :'acct_l4'), 'true');
+reset role;
+set role service_role;
 select ist.val('SL36 an account nobody holds is false', $$select public.stripe_account_updated('acct_Nobody1', true)::text$$, 'false');
 select ist.val('SL37 service_role: deauthorized ends the live link and says it found one', format($$select public.stripe_account_deauthorized(%L)::text$$, :'acct_l4'), 'true');
 select ist.val('SL38 ...a second time finds nothing live: false', format($$select public.stripe_account_deauthorized(%L)::text$$, :'acct_l4'), 'false');
@@ -459,7 +493,8 @@ select ist.val('SL40 an ENDED account is not updated (false): its id is free for
 reset role;
 select ist.val('SL41 the link is ended with reason deauthorized', format($$select ended_reason from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'deauthorized');
 select ist.val('SL42 the deauthorize audit row is by the tombstone (no person), {reason: deauthorized}, no acct_', format($$select count(*) || '|' || bool_and(actor_user_id = private.erased_user_id())::text || '|' || max(after::text) || '|' || bool_and(coalesce(after::text, '') not like '%%acct\_%%')::text from public.audit_events where action = 'invoice_stripe_account.ended' and organisation_id = %L and after ->> 'reason' = 'deauthorized'$$, :'org_a'), '1|true|{"reason": "deauthorized"}|true');
-select ist.val('SL43 the updated writes left no audit row of their own: A has 3 linked, 2 ended, nothing else on the account', format($$select count(*) filter (where action = 'invoice_stripe_account.linked') || '/' || count(*) filter (where action = 'invoice_stripe_account.ended') || '/' || count(*) filter (where action like 'invoice_stripe_account.%%' and action not in ('invoice_stripe_account.linked', 'invoice_stripe_account.ended')) from public.audit_events where organisation_id = %L$$, :'org_a'), '3/2/0');
+select ist.val('SL43 the updated writes audited exactly the two real flips (off, on; the repeat wrote none): A has 3 linked, 2 ended, 2 charges_enabled_changed, nothing else on the account', format($$select count(*) filter (where action = 'invoice_stripe_account.linked') || '/' || count(*) filter (where action = 'invoice_stripe_account.ended') || '/' || count(*) filter (where action = 'invoice_stripe_account.charges_enabled_changed') || '/' || count(*) filter (where action like 'invoice_stripe_account.%%' and action not in ('invoice_stripe_account.linked', 'invoice_stripe_account.ended', 'invoice_stripe_account.charges_enabled_changed')) from public.audit_events where organisation_id = %L$$, :'org_a'), '3/2/2/0');
+select ist.val('SL43a ...each by the tombstone, after = {"changed":["charges_enabled"]}, no before, no acct_', format($$select bool_and(actor_user_id = private.erased_user_id() and after = '{"changed": ["charges_enabled"]}'::jsonb and before is null and after::text not like '%%acct\_%%')::text from public.audit_events where organisation_id = %L and action = 'invoice_stripe_account.charges_enabled_changed'$$, :'org_a'), 'true');
 
 -- ---- THE FEE -----------------------------------------------------------------
 set role authenticated;
@@ -477,6 +512,7 @@ reset role;
 reset request.jwt.claims;
 set role service_role;
 select ist.val('SL47 service_role: A''s three links and two ends are all pending, each as linked or ended', format($$select count(*) filter (where change = 'linked') || '/' || count(*) filter (where change = 'ended') from public.pending_invoice_stripe_account_notifications() where organisation_slug = %L$$, 'ist-alpha-' || left(:'org_a', 8)), '3/2');
+select ist.val('SL47a ...and the charges_enabled flips produce NO notice: A''s pending rows are exactly those five', format($$select count(*)::text from public.pending_invoice_stripe_account_notifications() where organisation_slug = %L$$, 'ist-alpha-' || left(:'org_a', 8)), '5');
 select ist.val('SL48 ...each addressed to A''s Owner and Admin and nobody else (a Finance user is not told)', format($$select max(cardinality(emails)) || '|' || bool_and(emails @> array[%L, %L]::text[])::text || '|' || bool_and(not (emails @> array[%L]::text[]))::text from public.pending_invoice_stripe_account_notifications() where organisation_slug = %L$$, 'ist-own-a-' || :'own_a' || '@test.local', 'ist-adm-a-' || :'adm_a' || '@test.local', 'ist-fin-a-' || :'fin_a' || '@test.local', 'ist-alpha-' || left(:'org_a', 8)), '2|true|true');
 select ist.val('SL49 ...carrying the workspace name and a time, and no account id anywhere in the row', format($$select bool_and(organisation_name = 'Stripe Alpha' and changed_at is not null and to_jsonb(r)::text not like '%%acct\_%%')::text from public.pending_invoice_stripe_account_notifications() r where organisation_slug = %L$$, 'ist-alpha-' || left(:'org_a', 8)), 'true');
 reset role;

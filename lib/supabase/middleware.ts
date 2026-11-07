@@ -59,7 +59,10 @@ import { authCookieOptions, supabasePublicKey, supabaseUrl } from "./env";
  *  point -- not a retry behind a nudge, because nobody is waiting for a
  *  garbage collection -- on the same tick, throttled in the database to about
  *  hourly, with its OWN bearer secret: this is the one that runs the sweep
- *  which deletes the audit log. Listed under `/api/retention`. */
+ *  which deletes the audit log. Listed under `/api/retention`.
+ *
+ *  NOT `/api/stripe`: its connect callback needs a signed-in user. The Stripe
+ *  webhook is public by its EXACT path, `/api/stripe/webhook`, never a prefix. */
 export const PUBLIC_PATHS = [
   "/login",
   "/signup",
