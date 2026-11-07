@@ -34,6 +34,8 @@ Phases 2–9 are shipped and merged:
 
 Beside Phase 10, **Invoices part 1** (Q276): draft, issue under a gap-free per-workspace number, PDF, email, mark paid (booking the income on the event, net of VAT) and void, bank transfer only. Detail in `docs/as-built.md` § "Invoices, as they actually shipped".
 
+**Invoices part 2** (Q279): link a Stripe Standard account behind step-up; a signed `/pay/<id>.<sig>` link on the PDF and email starts a Checkout direct charge with a 1% application fee; the signed webhook marks the invoice paid by card through part 1's booking path. Detail in `docs/as-built.md`.
+
 Per-phase detail is in `docs/as-built.md` § Current state and the "as it actually shipped" sections.
 
 ## Gates
@@ -221,7 +223,7 @@ Skills: `supabase`, `supabase-postgres-best-practices`, `supabase-audit-rls` (de
 - First-class suppliers (they are a Contact/Company tag)
 - Verification badges; Microsoft SSO; an Enterprise tier
 
-Finance is budget & actuals per event and, since the founder's 2026-10-20 scope change (Q276), **invoices**: part 1 shipped (bank transfer); part 2 Stripe Connect and part 3 network delivery follow, each with its own spec. Still no full P&L and no accounting-software features.
+Finance is budget & actuals per event and, since the founder's 2026-10-20 scope change (Q276), **invoices**: part 1 shipped (bank transfer); part 2 Stripe Connect shipped; part 3 network delivery follows. Still no full P&L and no accounting-software features.
 
 ## Decisions log
 
