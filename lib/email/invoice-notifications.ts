@@ -12,38 +12,81 @@ import {
   type Pending,
   type RequesterNoticeResult,
 } from "@/lib/email/requester-notifications";
+import type { EmailBody } from "@/lib/email/templates";
 import { createServiceClient } from "@/lib/supabase/service";
 import { siteUrl } from "@/lib/supabase/env";
 import { buildBankDetailsChangedNotice, buildStripeAccountChangedNotice } from "@/lib/email/invoice-templates";
 
-const NOTICE = "invoice_bank_details_changed";
-
-interface PendingRow {
+/** What every resolver row carries; each notice adds its own fields. */
+interface NoticeRow {
   readonly audit_event_id: string;
   readonly emails: string[] | null;
+}
+
+/**
+ * The one sender both notices share: read the resolver, build one email per
+ * audit row, stamp it only after Brevo accepted it, record a deterministic
+ * refusal once. `build` names the row's fields one by one -- never a spread.
+ */
+async function deliverAuditNotices<Row extends NoticeRow>(spec: {
+  readonly resolver: string;
+  readonly notice: string;
+  /** Names the notice in the log line. */
+  readonly label: string;
+  readonly build: (row: Row, origin: string) => EmailBody;
+  readonly limit: number;
+}): Promise<RequesterNoticeResult> {
+  const service = createServiceClient();
+  const { data, error } = await service.rpc(spec.resolver, {
+    p_limit: Math.max(1, Math.min(spec.limit, REQUESTER_NOTICE_LIMIT)),
+  });
+  if (error) {
+    console.error(`[email] ${spec.label}s could not be read:`, error.message);
+    return { outcome: "unavailable", error: error.message };
+  }
+  const origin = siteUrl();
+  const rows = ((data ?? []) as Row[]).map((row): Pending => ({
+    id: row.audit_event_id,
+    to: row.emails ?? [],
+    build: () => spec.build(row, origin),
+    stamp: async () => {
+      const { data: stamped, error: stampError } = await createServiceClient().rpc("mark_notices_delivered", {
+        p_notice: spec.notice,
+        p_subject_ids: [row.audit_event_id],
+      });
+      if (stampError) return { error: { message: stampError.message } };
+      if (stamped !== 1) return { error: { message: `stamped ${String(stamped)} of 1` } };
+      return { error: null };
+    },
+    refuse: async (reason: NoticeRefusal) => {
+      const { error: refuseError } = await createServiceClient().rpc("mark_notices_undeliverable", {
+        p_notice: spec.notice,
+        p_subject_ids: [row.audit_event_id],
+        p_reason: reason,
+      });
+      return { error: refuseError ? { message: refuseError.message } : null };
+    },
+  }));
+  return deliverEach(spec.label, rows);
+}
+
+interface BankChangeRow extends NoticeRow {
   readonly organisation_slug: string;
   readonly organisation_name: string;
   readonly account_last4: string | null;
   readonly changed_at: string;
 }
 
-export async function deliverInvoiceBankChangeNotifications(
+export function deliverInvoiceBankChangeNotifications(
   limit: number = REQUESTER_NOTICE_LIMIT,
 ): Promise<RequesterNoticeResult> {
-  const service = createServiceClient();
-  const { data, error } = await service.rpc("pending_invoice_bank_change_notifications", {
-    p_limit: Math.max(1, Math.min(limit, REQUESTER_NOTICE_LIMIT)),
-  });
-  if (error) {
-    console.error("[email] invoice bank-change notices could not be read:", error.message);
-    return { outcome: "unavailable", error: error.message };
-  }
-  const origin = siteUrl();
-  const rows = ((data ?? []) as PendingRow[]).map((row): Pending => ({
-    id: row.audit_event_id,
-    to: row.emails ?? [],
+  return deliverAuditNotices<BankChangeRow>({
+    resolver: "pending_invoice_bank_change_notifications",
+    notice: "invoice_bank_details_changed",
+    label: "invoice bank-change notice",
+    limit,
     // FIVE FIELDS, by name -- never a spread of the row.
-    build: () =>
+    build: (row, origin) =>
       buildBankDetailsChangedNotice({
         organisationSlug: row.organisation_slug,
         organisationName: row.organisation_name,
@@ -51,56 +94,27 @@ export async function deliverInvoiceBankChangeNotifications(
         changedAt: row.changed_at,
         siteUrl: origin,
       }),
-    stamp: async () => {
-      const { data: stamped, error: stampError } = await createServiceClient().rpc("mark_notices_delivered", {
-        p_notice: NOTICE,
-        p_subject_ids: [row.audit_event_id],
-      });
-      if (stampError) return { error: { message: stampError.message } };
-      if (stamped !== 1) return { error: { message: `stamped ${String(stamped)} of 1` } };
-      return { error: null };
-    },
-    refuse: async (reason: NoticeRefusal) => {
-      const { error: refuseError } = await createServiceClient().rpc("mark_notices_undeliverable", {
-        p_notice: NOTICE,
-        p_subject_ids: [row.audit_event_id],
-        p_reason: reason,
-      });
-      return { error: refuseError ? { message: refuseError.message } : null };
-    },
-  }));
-  return deliverEach("invoice bank-change notice", rows);
+  });
 }
 
-const STRIPE_NOTICE = "invoice_stripe_account_changed";
-
-interface PendingStripeRow {
-  readonly audit_event_id: string;
-  readonly emails: string[] | null;
+interface StripeAccountRow extends NoticeRow {
   readonly organisation_slug: string;
   readonly organisation_name: string;
   readonly change: string;
   readonly changed_at: string;
 }
 
-/** A copy of the bank-change sender: its own resolver, notice name and builder. No account id ever reaches it. */
-export async function deliverInvoiceStripeAccountNotifications(
+/** No account id ever reaches it: the resolver does not return one. */
+export function deliverInvoiceStripeAccountNotifications(
   limit: number = REQUESTER_NOTICE_LIMIT,
 ): Promise<RequesterNoticeResult> {
-  const service = createServiceClient();
-  const { data, error } = await service.rpc("pending_invoice_stripe_account_notifications", {
-    p_limit: Math.max(1, Math.min(limit, REQUESTER_NOTICE_LIMIT)),
-  });
-  if (error) {
-    console.error("[email] invoice Stripe-account notices could not be read:", error.message);
-    return { outcome: "unavailable", error: error.message };
-  }
-  const origin = siteUrl();
-  const rows = ((data ?? []) as PendingStripeRow[]).map((row): Pending => ({
-    id: row.audit_event_id,
-    to: row.emails ?? [],
-    // FIVE FIELDS, by name -- never a spread of the row. An unknown `change` is refused by the builder.
-    build: () =>
+  return deliverAuditNotices<StripeAccountRow>({
+    resolver: "pending_invoice_stripe_account_notifications",
+    notice: "invoice_stripe_account_changed",
+    label: "invoice Stripe-account notice",
+    limit,
+    // FIVE FIELDS, by name. An unknown `change` is refused by the builder.
+    build: (row, origin) =>
       buildStripeAccountChangedNotice({
         organisationSlug: row.organisation_slug,
         organisationName: row.organisation_name,
@@ -108,23 +122,5 @@ export async function deliverInvoiceStripeAccountNotifications(
         changedAt: row.changed_at,
         siteUrl: origin,
       }),
-    stamp: async () => {
-      const { data: stamped, error: stampError } = await createServiceClient().rpc("mark_notices_delivered", {
-        p_notice: STRIPE_NOTICE,
-        p_subject_ids: [row.audit_event_id],
-      });
-      if (stampError) return { error: { message: stampError.message } };
-      if (stamped !== 1) return { error: { message: `stamped ${String(stamped)} of 1` } };
-      return { error: null };
-    },
-    refuse: async (reason: NoticeRefusal) => {
-      const { error: refuseError } = await createServiceClient().rpc("mark_notices_undeliverable", {
-        p_notice: STRIPE_NOTICE,
-        p_subject_ids: [row.audit_event_id],
-        p_reason: reason,
-      });
-      return { error: refuseError ? { message: refuseError.message } : null };
-    },
-  }));
-  return deliverEach("invoice Stripe-account notice", rows);
+  });
 }
