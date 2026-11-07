@@ -27,9 +27,10 @@ payment, invoicing works without Stripe).
 - **Link** runs Stripe Connect OAuth for Standard accounts
   (`connect.stripe.com/oauth/authorize`, `scope=read_write`). Starting it
   needs step-up re-auth (purpose `invoice_settings`: it changes where money
-  is paid). A random `state` is bound to the user's session (an httpOnly,
-  short-lived cookie) and compared on return; a mismatch or a missing
-  cookie refuses and stores nothing. The callback
+  is paid). A random `state` is kept (hashed) as a database row bound to the
+  user and the workspace, with a 10-minute expiry, and is claimed once on
+  return; an unknown, expired, already-claimed or another user's state
+  refuses and stores nothing. The callback
   (one fixed path, `/api/stripe/connect/callback`, behind sign-in) claims
   the state, exchanges the code and keeps only `stripe_user_id`. The path
   is fixed because Stripe matches `redirect_uri` exactly against a

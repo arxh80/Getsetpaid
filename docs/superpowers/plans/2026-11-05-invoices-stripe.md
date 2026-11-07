@@ -38,7 +38,7 @@ Each is recorded in the task that implements it and reported at the end.
 
 1. **Card-payment state lives in its own table, `invoice_card_payments`, not in columns on `invoices`.** The spec put the conflict and refund fields on `invoices`, which would mean widening `private.invoices_freeze()` for four more columns. One row per Stripe payment carries the payment-intent ID, the amount, the outcome (`applied` | `after_paid` | `after_void`), and the refunded amount and time. `invoices` gains a single column, `paid_via`. The behaviour the spec describes is unchanged.
 2. **`invoices.paid_via` (`manual` | `card`) and a rebuilt `invoices_paid_shape`.** Part 1's check requires `paid_by` whenever `paid_on` is set, but a card payment has no person. The new shape: `paid_on` set ⇔ `paid_via` set; `manual` ⇒ `paid_by` set; `card` ⇒ `paid_by` null. Existing paid and void-after-paid rows are backfilled to `manual` inside the migration, with the freeze trigger disabled for that one statement.
-3. **The OAuth `state` is a database row bound to the user, not a cookie.** `begin_stripe_link(org)` spends the step-up token, stores the SHA-256 of a random state with the user, the organisation and a 10-minute expiry in `private.stripe_link_states`, and returns the state. `complete_stripe_link(org, state, …)` accepts it only for the same `auth.uid()`, once, before expiry. A forged callback cannot carry a state minted for the victim's session, so this blocks login-CSRF account substitution without a cookie, and it outlives the step-up token's short life across the round trip to Stripe.
+3. **The OAuth `state` is a database row bound to the user, not a cookie.** `begin_stripe_link(org)` spends the step-up token, stores the SHA-256 of a random state with the user, the organisation and a 10-minute expiry in `private.stripe_link_states`, and returns the state. `claim_stripe_link_state(state)` accepts it only for the same `auth.uid()`, once, before expiry, and says which workspace; it runs before the code is exchanged, and `complete_stripe_link(state, …)` accepts only a claimed state. A forged callback cannot carry a state minted for the victim's session, so this blocks login-CSRF account substitution without a cookie, and it outlives the step-up token's short life across the round trip to Stripe.
 4. **The pay link opens a page, and a button creates the Checkout Session (POST).** The spec had the GET itself redirect to Stripe. Mail scanners (Outlook Safe Links, Gmail's link checker) GET every link in an email, and each GET would create a Checkout Session and spend the 20-per-hour budget. The GET page shows "Invoice <number> from <seller>: <amount>" and a "Pay by card" button. Its POST runs the spec's checks, creates the session and redirects with 303. Every refusal still renders the one uniform page, and the GET has no side effect.
 5. **`stripe_events` carries `organisation_id` (not null, FK, cascade).** An event for an account no workspace has linked is acknowledged (200) and not recorded. So the idempotency ledger is tenant-attributable, is classified `cascades`, and goes with the workspace.
 6. **The development and test fake is chosen by `STRIPE_MODE=fake`, which production refuses.** This follows the malware scanner's rule (`lib/security/malware-scan.ts:188`). With `NODE_ENV=production`, `STRIPE_MODE=fake` makes `getStripe()` return `null` (card payments unconfigured), never the fake. `scripts/dev-env.mjs` writes `STRIPE_MODE=fake` and the fake secrets from `.env.example` into `.env.development.local`.
@@ -71,7 +71,7 @@ Each is recorded in the task that implements it and reported at the end.
 **Email:** `lib/email/invoice-templates.ts` (pay line, Stripe-account notice), `lib/email/invoice-notifications.ts` (`deliverInvoiceStripeAccountNotifications`), `app/api/incident-alerts/deliver/route.ts`.
 
 **Routes**
-- `app/(app)/[orgSlug]/settings/invoicing/stripe/callback/route.ts` (GET)
+- `app/api/stripe/connect/callback/route.ts` (GET)
 - `app/pay/[token]/page.tsx`, `app/pay/[token]/loading.tsx`, `app/pay/[token]/start/route.ts` (POST), `app/pay/[token]/thanks/page.tsx`
 - `app/api/stripe/webhook/route.ts` (POST)
 
@@ -621,7 +621,7 @@ Check `private.permitted_organisations(text)` against `rls_invoices.sql`'s polic
 ### Task 3: Linking and ending: the RPCs, the notice, the settings panel, the callback
 
 **Files:**
-- Create: `supabase/migrations/20261110001000_stripe_link_rpcs.sql`, `lib/invoices/stripe-actions.ts`, `lib/invoices/stripe-account.ts`, `components/invoices/stripe-connection-panel.tsx`, `app/(app)/[orgSlug]/settings/invoicing/stripe/callback/route.ts`, `tests/unit/invoices/stripe-actions.test.ts`
+- Create: `supabase/migrations/20261110001000_stripe_link_rpcs.sql`, `lib/invoices/stripe-actions.ts`, `lib/invoices/stripe-account.ts`, `components/invoices/stripe-connection-panel.tsx`, `app/api/stripe/connect/callback/route.ts`, `tests/unit/invoices/stripe-actions.test.ts`
 - Modify: `supabase/tests/rls_invoices_stripe.sql` (§ SL), `lib/invoices/refusals.ts`, `app/(app)/[orgSlug]/settings/invoicing/page.tsx`, `lib/email/invoice-templates.ts`, `lib/email/invoice-notifications.ts`, `app/api/incident-alerts/deliver/route.ts`, `tests/unit/email/invoice-templates.test.ts`, `tests/unit/email/invoice-notifications.test.ts`, `tests/unit/email/delivery-route.test.ts`, `tests/unit/security/step-up-token-callers.test.ts` (only if it lists files), `tests/integration/security/phase7-permission-matrix.test.ts`
 
 **Interfaces:**
@@ -706,13 +706,13 @@ Declare all six in `phase7-permission-matrix.test.ts`, following `save_invoice_s
   - no write access: the explanation;
   - `checkStepUp()` false: the step-up sentence, and the RPC is never called;
   - `getStripe()` null: "Card payments aren’t set up on this server yet.", and no RPC;
-  - success: `begin_stripe_link` called with the org, then `redirect()` to `gateway.authorizeUrl(state, `${siteUrl()}/${slug}/settings/invoicing/stripe/callback`)`;
+  - success: `begin_stripe_link` called with the org, then `redirect()` to `gateway.authorizeUrl(state, `${siteUrl()}/api/stripe/connect/callback`)`;
   - disconnect success: `end_stripe_account_link`, then `gateway.deauthorize(account)`, with message "Disconnected. Card payment links on this workspace’s invoices now say they can’t be paid online.";
   - disconnect where Stripe's call throws: the row is still ended (the RPC was called first), with message "Disconnected here, but Stripe didn’t confirm it. Remove GetSetPaid under Settings → Connected accounts in your Stripe dashboard."
 
   Implement `lib/invoices/stripe-actions.ts` in `settings-actions.ts`'s shape. Its step-up line is literally `if (!(await checkStepUp()) || !(await mintStepUpToken("invoice_settings")))` in each action, which is what `step-up-token-callers.test.ts` requires. Call `redirect()` from `next/navigation` outside any try/catch.
 
-- [ ] **Step 4: The callback route.** `app/(app)/[orgSlug]/settings/invoicing/stripe/callback/route.ts`, GET:
+- [ ] **Step 4: The callback route.** `app/api/stripe/connect/callback/route.ts`, GET:
   1. Resolve the org with `getCurrentOrg(slug)`; with none, `notFound()` semantics. Copy how `invoices/[invoiceId]/pdf/route.ts` refuses.
   2. Read `code`, `state` and `error` from the query.
   3. On `error`, or a missing code or state, redirect to `/${slug}/settings/invoicing?stripe=cancelled`.
@@ -1005,7 +1005,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   2. Run the drift test (`grep -rl sub-processors tests/unit | head`). It goes red until `docs/sub-processors.md` gets the matching row, so add it.
   3. If the legal page `/legal/sub-processors` is generated from a published `legal_documents` version, do **not** publish a new version. That waits for counsel (F3). Add Q280 with the default "engineering-draft row added; the published page is updated with counsel's next review".
 
-- [ ] **Step 2: Founder actions.** In `docs/launch-gates.md` § Founder actions, add F13: "Stripe platform account with Connect (Standard) on; the four secrets (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CONNECT_CLIENT_ID`, `INVOICE_PAY_LINK_SECRET`, at least 32 bytes) in the hosted environment, `STRIPE_MODE` unset; the Connect webhook URL `https://<domain>/api/stripe/webhook` for `checkout.session.completed`, `charge.refunded`, `account.updated` and `account.application.deauthorized`; the OAuth redirect URI `https://<domain>/<any org>/settings/invoicing/stripe/callback` (Stripe allows a prefix); one real test-mode payment end to end; accept Stripe's DPA". The lead time is half a day once a domain exists. Add the same items to `SECURITY.md` § 15 with their verification steps, and add the keys to `security-md-checklist.test.ts` if it enumerates them.
+- [ ] **Step 2: Founder actions.** In `docs/launch-gates.md` § Founder actions, add F13: "Stripe platform account with Connect (Standard) on; the four secrets (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_CONNECT_CLIENT_ID`, `INVOICE_PAY_LINK_SECRET`, at least 32 bytes) in the hosted environment, `STRIPE_MODE` unset; the Connect webhook URL `https://<domain>/api/stripe/webhook` for `checkout.session.completed`, `charge.refunded`, `account.updated` and `account.application.deauthorized`; the one OAuth redirect URI `https://<domain>/api/stripe/connect/callback` (Stripe matches `redirect_uri` exactly against the registered list); one real test-mode payment end to end; accept Stripe's DPA". The lead time is half a day once a domain exists. Add the same items to `SECURITY.md` § 15 with their verification steps, and add the keys to `security-md-checklist.test.ts` if it enumerates them.
 
 - [ ] **Step 3: Decisions queue.** Append `## Q279 -- Invoices part 2: Stripe Connect answers (founder 2026-11-05), recorded`, with the answers table from the spec and the plan's eight decisions listed by one line each. Q280 is the sub-processor page, if Step 1 needed it.
 
@@ -1047,7 +1047,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   7. **Keyboard:** on `/pay/<token>`, Tab reaches "Pay by card" and Enter submits it. Unlink, issue another invoice, and the PDF has no `/pay/`.
   8. **Tier:** a Starter workspace's settings page shows no Connect button (finance write access refuses).
 
-  If `tenant-breakout.spec.ts` walks finance routes by list, add `/settings/invoicing/stripe/callback` for a foreign org, which must render the not-found contract.
+  The callback `/api/stripe/connect/callback` has no workspace in its path, so `tenant-breakout.spec.ts` has no foreign-org route to add; the claim RPC's user binding (Task 3's tests) is the cross-tenant guard.
 
 - [ ] **Step 3: Run the new spec.** Stop any dev server you started, start one in the background with `pnpm dev`, then run `PLAYWRIGHT_REUSE_SERVER=1 npx playwright test tests/e2e/invoices-card.spec.ts --workers=1`. Expected: all pass. **Mutant:** make `startCardPayment` skip `begin_invoice_card_payment`'s status check by passing a paid invoice (temporarily allow `paid` in `private.invoice_is_payable_online`). Step 4's "paid invoice refused" goes red. Revert it.
 
