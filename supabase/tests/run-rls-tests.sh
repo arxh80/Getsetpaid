@@ -1405,11 +1405,12 @@ fi
 # Task 2: the five Stripe tables and private.stripe_link_states, invoices.paid_via
 # with its rebuilt shape and freeze, the shared booking helper, and the
 # catalogues they joined. Task 3: the link / end RPCs, the webhook's two, the
-# notice. Later tasks add the pay and webhook RPCs. Self-
+# notice. Task 4: the pay page, the Checkout session counter and the card-
+# payment webhook RPCs. Self-
 # contained and re-runnable (it removes its own fixtures). Pin:
 # grep -c '^select ist.val(' supabase/tests/rls_invoices_stripe.sql
 # ============================================================================
-run_suite "INVOICES STRIPE" rls_invoices_stripe.sql ist 151
+run_suite "INVOICES STRIPE" rls_invoices_stripe.sql ist 242
 ist_fails=$SUITE_FAILS
 if [ "$ist_fails" != "0" ]; then
   echo "INVOICES STRIPE SUITE FAILED: $ist_fails failing assertion(s)" >&2

@@ -473,6 +473,11 @@ describe("every literal action a function INSERTS into audit_events directly is 
         // failed sync. Nobody is on either session, so log_audit_event()
         // would raise 28000; actor = the Q130 tombstone.
         "public.record_integration_sync_run",
+        // Invoices part 2 Task 4 (20261110002000): the webhook booking a card
+        // payment, flagging one that arrived after the invoice was settled, and
+        // flagging a refund. Nobody is on the session; actor = the Q130 tombstone.
+        "public.record_stripe_charge_refunded",
+        "public.record_stripe_checkout_completed",
         "public.run_retention_sweep",
         "public.store_integration_token",
         // Invoices part 2 Task 3 (20261110001000): the webhook ends a link

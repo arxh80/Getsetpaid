@@ -13,6 +13,9 @@
 --   SE  an erased account's Stripe link (linked_by) is re-pointed, not blocking
 -- Task 3 (20261110001000_stripe_link_rpcs.sql):
 --   SL  begin / complete / end, the webhook's two, the fee, the Owner/Admin notice
+-- Task 4 (20261110002000_stripe_card_payment_rpcs.sql):
+--   SY  the pay page, begin / attach (the gate, the fee, the hourly budget)
+--   SW  the checkout and refund webhooks, and the two account events' event ids
 -- Later tasks add their sections ABOVE § SZ.
 --
 -- EVERY ASSERTION IS ONE LINE BEGINNING `select ist.val(`: run-rls-tests.sh's
@@ -469,27 +472,27 @@ select ist.val('SL31 THREE linked audit rows, one per completion that succeeded 
 update public.invoice_stripe_accounts set stripe_account_id = :'acct_l4', charges_enabled = true, ended_at = null, ended_reason = null where organisation_id = :'org_a';
 set role authenticated;
 set request.jwt.claims = :'fin_a_c';
-select ist.val('SL32 as authenticated, stripe_account_deauthorized is refused by privilege', format($$select public.stripe_account_deauthorized(%L)::text$$, :'acct_l4'), 'denied(42501)');
-select ist.val('SL33 as authenticated, stripe_account_updated is refused by privilege', format($$select public.stripe_account_updated(%L, false)::text$$, :'acct_l4'), 'denied(42501)');
+select ist.val('SL32 as authenticated, stripe_account_deauthorized is refused by privilege', format($$select public.stripe_account_deauthorized('evt_sl32', %L)::text$$, :'acct_l4'), 'denied(42501)');
+select ist.val('SL33 as authenticated, stripe_account_updated is refused by privilege', format($$select public.stripe_account_updated('evt_sl33', %L, false)::text$$, :'acct_l4'), 'denied(42501)');
 reset role;
 reset request.jwt.claims;
 set role service_role;
-select ist.val('SL34 service_role: updated flips charges_enabled off for a live link and says it found one', format($$select public.stripe_account_updated(%L, false)::text$$, :'acct_l4'), 'true');
+select ist.val('SL34 service_role: updated flips charges_enabled off for a live link and says it found one', format($$select public.stripe_account_updated('evt_sl34', %L, false)::text$$, :'acct_l4'), 'true');
 reset role;
 select ist.val('SL35 ...the flip landed: charges_enabled is false in the table', format($$select charges_enabled::text from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'false');
 set role service_role;
-select ist.val('SL35a ...and updated flips it back on', format($$select public.stripe_account_updated(%L, true)::text$$, :'acct_l4'), 'true');
+select ist.val('SL35a ...and updated flips it back on', format($$select public.stripe_account_updated('evt_sl35a', %L, true)::text$$, :'acct_l4'), 'true');
 reset role;
 select ist.val('SL35b ...which the table shows', format($$select charges_enabled::text from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'true');
 set role service_role;
-select ist.val('SL35c a REPEAT of the stored value is still found (true) and flips nothing', format($$select public.stripe_account_updated(%L, true)::text$$, :'acct_l4'), 'true');
+select ist.val('SL35c a REPEAT of the stored value is still found (true) and flips nothing', format($$select public.stripe_account_updated('evt_sl35c', %L, true)::text$$, :'acct_l4'), 'true');
 reset role;
 set role service_role;
-select ist.val('SL36 an account nobody holds is false', $$select public.stripe_account_updated('acct_Nobody1', true)::text$$, 'false');
-select ist.val('SL37 service_role: deauthorized ends the live link and says it found one', format($$select public.stripe_account_deauthorized(%L)::text$$, :'acct_l4'), 'true');
-select ist.val('SL38 ...a second time finds nothing live: false', format($$select public.stripe_account_deauthorized(%L)::text$$, :'acct_l4'), 'false');
-select ist.val('SL39 an unknown account is false', $$select public.stripe_account_deauthorized('acct_Nobody1')::text$$, 'false');
-select ist.val('SL40 an ENDED account is not updated (false): its id is free for another workspace, not a live link', format($$select public.stripe_account_updated(%L, true)::text$$, :'acct_l4'), 'false');
+select ist.val('SL36 an account nobody holds is false', $$select public.stripe_account_updated('evt_sl36', 'acct_Nobody1', true)::text$$, 'false');
+select ist.val('SL37 service_role: deauthorized ends the live link and says it found one', format($$select public.stripe_account_deauthorized('evt_sl37', %L)::text$$, :'acct_l4'), 'true');
+select ist.val('SL38 ...a second time finds nothing live: false', format($$select public.stripe_account_deauthorized('evt_sl38', %L)::text$$, :'acct_l4'), 'false');
+select ist.val('SL39 an unknown account is false', $$select public.stripe_account_deauthorized('evt_sl39', 'acct_Nobody1')::text$$, 'false');
+select ist.val('SL40 an ENDED account is not updated (false): its id is free for another workspace, not a live link', format($$select public.stripe_account_updated('evt_sl40', %L, true)::text$$, :'acct_l4'), 'false');
 reset role;
 select ist.val('SL41 the link is ended with reason deauthorized', format($$select ended_reason from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'deauthorized');
 select ist.val('SL42 the deauthorize audit row is by the tombstone (no person), {reason: deauthorized}, no acct_', format($$select count(*) || '|' || bool_and(actor_user_id = private.erased_user_id())::text || '|' || max(after::text) || '|' || bool_and(coalesce(after::text, '') not like '%%acct\_%%')::text from public.audit_events where action = 'invoice_stripe_account.ended' and organisation_id = %L and after ->> 'reason' = 'deauthorized'$$, :'org_a'), '1|true|{"reason": "deauthorized"}|true');
@@ -526,6 +529,240 @@ select ist.val('SL53 both are off the queue now: 2 linked and 1 ended remain', f
 select ist.val('SL54 the bank-change notice does not stamp a Stripe audit row (its own action map)', format($$select public.mark_notices_delivered('invoice_bank_details_changed', array[%L]::uuid[])::text$$, :'sl_linked'), '0');
 reset role;
 select ist.val('SL55 the ledger holds exactly the two Stripe stamps, keyed on their audit rows, one undeliverable', format($$select count(*) || '|' || count(*) filter (where outcome = 'undeliverable') from private.notification_deliveries where audit_event_id in (%L, %L)$$, :'sl_linked', :'sl_ended'), '2|1');
+
+-- ===========================================================================
+-- § SY PAYING: the pay page and the card-payment RPCs (Task 4, 20261110002000).
+-- All five are service_role only. The pay page runs with NOBODY on the
+-- session, so the tier gate reads private.effective_organisation_plan() for the
+-- invoice's own workspace (private.finance_module_organisations() answers for
+-- auth.uid() and would call every workspace unpayable). Fresh invoices of
+-- workspace A, each gross 12000 (net 10000 + 20% VAT 2000), built like the
+-- fixtures above; A's link is re-pointed at a fresh live account.
+-- ===========================================================================
+\o /dev/null
+select gen_random_uuid()::text as y_ok  \gset
+select gen_random_uuid()::text as y_rl  \gset
+select gen_random_uuid()::text as y_pd  \gset
+select gen_random_uuid()::text as y_vd  \gset
+select gen_random_uuid()::text as y_zero \gset
+select gen_random_uuid()::text as w_ok  \gset
+select gen_random_uuid()::text as w_mm  \gset
+select gen_random_uuid()::text as w_pd  \gset
+select gen_random_uuid()::text as w_vd  \gset
+select gen_random_uuid()::text as ev_w  \gset
+select gen_random_uuid()::text as fe_w  \gset
+select 'acct_Y' || replace(gen_random_uuid()::text, '-', '') as acct_y \gset
+select 'pi_W'  || replace(gen_random_uuid()::text, '-', '') as pi_w  \gset
+select 'pi_M'  || replace(gen_random_uuid()::text, '-', '') as pi_m  \gset
+select 'pi_P'  || replace(gen_random_uuid()::text, '-', '') as pi_p  \gset
+select 'pi_V'  || replace(gen_random_uuid()::text, '-', '') as pi_v  \gset
+\o
+update public.invoice_stripe_accounts set stripe_account_id = :'acct_y', charges_enabled = true, ended_at = null, ended_reason = null where organisation_id = :'org_a';
+insert into public.events (id, organisation_id, name, starts_at) values (:'ev_w', :'org_a', 'Alpha Card Night', now() + interval '12 days');
+insert into public.financial_entries (id, organisation_id, event_id, category, status, amount_minor, description)
+  values (:'fe_w', :'org_a', :'ev_w', 'income', 'budgeted', 8000, 'Guarantee');
+insert into public.invoices (id, organisation_id, recipient_company_id, event_id, recipient_address, created_by) values
+  (:'y_ok',   :'org_a', :'com_a', null,    '8 Customer Road, London', :'fin_a'),
+  (:'y_rl',   :'org_a', :'com_a', null,    '8 Customer Road, London', :'fin_a'),
+  (:'y_pd',   :'org_a', :'com_a', null,    '8 Customer Road, London', :'fin_a'),
+  (:'y_vd',   :'org_a', :'com_a', null,    '8 Customer Road, London', :'fin_a'),
+  (:'y_zero', :'org_a', :'com_a', null,    '8 Customer Road, London', :'fin_a'),
+  (:'w_ok',   :'org_a', :'com_a', :'ev_w', '8 Customer Road, London', :'fin_a'),
+  (:'w_mm',   :'org_a', :'com_a', null,    '8 Customer Road, London', :'fin_a'),
+  (:'w_pd',   :'org_a', :'com_a', null,    '8 Customer Road, London', :'fin_a'),
+  (:'w_vd',   :'org_a', :'com_a', null,    '8 Customer Road, London', :'fin_a');
+insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity, unit_price_minor, vat_rate, net_minor, vat_minor)
+select i.organisation_id, i.id, 1, 'Fee', 1.00, 10000, 'standard_20', 10000, 2000
+  from public.invoices i where i.id in (:'y_ok', :'y_rl', :'y_pd', :'y_vd', :'w_mm', :'w_pd', :'w_vd');
+insert into public.invoice_lines (organisation_id, invoice_id, position, description, quantity, unit_price_minor, vat_rate, net_minor, vat_minor, financial_entry_id) values
+  (:'org_a', :'w_ok', 1, 'Guarantee', 1.00, 8000, 'standard_20', 8000, 1600, :'fe_w'),
+  (:'org_a', :'w_ok', 2, 'Production', 1.00, 2000, 'standard_20', 2000, 400, null),
+  (:'org_a', :'y_zero', 1, 'Complimentary', 1.00, 0, 'none', 0, 0, null);
+update public.invoices set net_minor = 10000, vat_minor = 2000, gross_minor = 12000
+ where id in (:'y_ok', :'y_rl', :'y_pd', :'y_vd', :'w_ok', :'w_mm', :'w_pd', :'w_vd');
+update public.invoices i
+   set status = 'issued', number = v.n, issue_date = current_date, supply_date = current_date,
+       due_date = current_date + 30,
+       snapshot = private.build_invoice_snapshot(i.id, v.n, current_date, current_date, current_date + 30)
+  from (values (:'y_ok'::uuid, 'IST-0101'), (:'y_rl'::uuid, 'IST-0102'), (:'y_pd'::uuid, 'IST-0103'),
+               (:'y_vd'::uuid, 'IST-0104'), (:'y_zero'::uuid, 'IST-0105'), (:'w_ok'::uuid, 'IST-0201'),
+               (:'w_mm'::uuid, 'IST-0202'), (:'w_pd'::uuid, 'IST-0203'), (:'w_vd'::uuid, 'IST-0204')) v(id, n)
+ where i.id = v.id;
+update public.invoices set status = 'paid', paid_on = current_date, paid_by = :'fin_a', paid_via = 'manual' where id in (:'y_pd', :'w_pd');
+update public.invoices set status = 'void', voided_at = now(), voided_by = :'fin_a', void_reason = 'Raised in error' where id in (:'y_vd', :'w_vd');
+grant usage on schema ist to anon;
+grant execute on function ist.record(text,text,text) to anon;
+grant execute on function ist.val(text,text,text) to anon;
+
+-- ---- WHO MAY CALL (a missing grant: the function's own guard never runs) -----
+set role authenticated;
+set request.jwt.claims = :'fin_a_c';
+select ist.val('SY1 as authenticated, invoice_pay_page is refused by privilege', format($$select payable::text from public.invoice_pay_page(%L)$$, :'y_ok'), 'denied(42501)');
+select ist.val('SY2 as authenticated, begin_invoice_card_payment is refused by privilege', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_ok'), 'denied(42501)');
+select ist.val('SY3 as authenticated, attach_invoice_pay_session is refused by privilege', $$select public.attach_invoice_pay_session(gen_random_uuid(), 'cs_test_x')::text$$, 'denied(42501)');
+select ist.val('SY4 as authenticated, record_stripe_checkout_completed is refused by privilege', format($$select public.record_stripe_checkout_completed('evt_sy4', %L, %L, %L, 12000, 'GBP', now())$$, :'acct_y', :'w_mm', :'pi_m'), 'denied(42501)');
+select ist.val('SY5 as authenticated, record_stripe_charge_refunded is refused by privilege', format($$select public.record_stripe_charge_refunded('evt_sy5', %L, %L, 100, now())$$, :'acct_y', :'pi_m'), 'denied(42501)');
+reset role;
+reset request.jwt.claims;
+set role anon;
+select ist.val('SY6 as anon, invoice_pay_page is refused by privilege', format($$select payable::text from public.invoice_pay_page(%L)$$, :'y_ok'), 'denied(42501)');
+select ist.val('SY7 as anon, begin_invoice_card_payment is refused by privilege', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_ok'), 'denied(42501)');
+select ist.val('SY8 as anon, attach_invoice_pay_session is refused by privilege', $$select public.attach_invoice_pay_session(gen_random_uuid(), 'cs_test_x')::text$$, 'denied(42501)');
+select ist.val('SY9 as anon, record_stripe_checkout_completed is refused by privilege', format($$select public.record_stripe_checkout_completed('evt_sy9', %L, %L, %L, 12000, 'GBP', now())$$, :'acct_y', :'w_mm', :'pi_m'), 'denied(42501)');
+select ist.val('SY10 as anon, record_stripe_charge_refunded is refused by privilege', format($$select public.record_stripe_charge_refunded('evt_sy10', %L, %L, 100, now())$$, :'acct_y', :'pi_m'), 'denied(42501)');
+reset role;
+select ist.val('SY11 the tier-and-link gate is private: no client role can execute it', $$select count(*) filter (where has_function_privilege(r, 'private.invoice_is_payable_online(public.invoices)', 'EXECUTE'))::text from unnest(array['anon','authenticated','service_role']) r$$, '0');
+
+-- ---- THE PAY PAGE: payable, then every refusal ------------------------------
+set role service_role;
+select ist.val('SY12 POSITIVE CONTROL: A linked and charging, an issued invoice is payable, with the seller, number and gross', format($$select concat_ws('|', payable::text, coalesce(seller_name, '-'), coalesce(number, '-'), coalesce(gross_minor::text, '-')) from public.invoice_pay_page(%L)$$, :'y_ok'), 'true|Alpha Promotions Ltd|IST-0101|12000');
+select ist.val('SY13 an unknown id: every column false or null', $$select concat_ws('|', payable::text, coalesce(seller_name, '-'), coalesce(number, '-'), coalesce(gross_minor::text, '-')) from public.invoice_pay_page(gen_random_uuid())$$, 'false|-|-|-');
+select ist.val('SY14 a draft: every column false or null (it differs from a known-but-unpayable link only by the seller)', format($$select concat_ws('|', payable::text, coalesce(seller_name, '-'), coalesce(number, '-'), coalesce(gross_minor::text, '-')) from public.invoice_pay_page(%L)$$, :'inv_ad'), 'false|-|-|-');
+select ist.val('SY15 a PAID invoice: not payable, the seller present, number and gross null', format($$select concat_ws('|', payable::text, coalesce(seller_name, '-'), coalesce(number, '-'), coalesce(gross_minor::text, '-')) from public.invoice_pay_page(%L)$$, :'y_pd'), 'false|Alpha Promotions Ltd|-|-');
+select ist.val('SY16 a VOID invoice: the same', format($$select concat_ws('|', payable::text, coalesce(seller_name, '-'), coalesce(number, '-'), coalesce(gross_minor::text, '-')) from public.invoice_pay_page(%L)$$, :'y_vd'), 'false|Alpha Promotions Ltd|-|-');
+select ist.val('SY17 an issued invoice for nothing (gross 0) is not payable: Stripe cannot charge it', format($$select concat_ws('|', payable::text, coalesce(seller_name, '-'), coalesce(number, '-'), coalesce(gross_minor::text, '-')) from public.invoice_pay_page(%L)$$, :'y_zero'), 'false|Alpha Promotions Ltd|-|-');
+select ist.val('SY18 begin on an unknown id raises invoice_not_payable_online', $$select account from public.begin_invoice_card_payment(gen_random_uuid())$$, 'denied(22023:invoice_not_payable_online)');
+select ist.val('SY19 begin on a draft raises invoice_not_payable_online', format($$select account from public.begin_invoice_card_payment(%L)$$, :'inv_ad'), 'denied(22023:invoice_not_payable_online)');
+select ist.val('SY20 begin on a paid invoice raises invoice_not_payable_online', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_pd'), 'denied(22023:invoice_not_payable_online)');
+select ist.val('SY21 begin on a void invoice raises invoice_not_payable_online', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_vd'), 'denied(22023:invoice_not_payable_online)');
+select ist.val('SY22 begin on a zero-gross invoice raises invoice_not_payable_online', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_zero'), 'denied(22023:invoice_not_payable_online)');
+reset role;
+-- charges_enabled false
+update public.invoice_stripe_accounts set charges_enabled = false where organisation_id = :'org_a';
+set role service_role;
+select ist.val('SY23 charges_enabled false: not payable, the seller present', format($$select concat_ws('|', payable::text, coalesce(seller_name, '-'), coalesce(number, '-'), coalesce(gross_minor::text, '-')) from public.invoice_pay_page(%L)$$, :'y_ok'), 'false|Alpha Promotions Ltd|-|-');
+select ist.val('SY24 ...and begin raises invoice_not_payable_online', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_ok'), 'denied(22023:invoice_not_payable_online)');
+reset role;
+update public.invoice_stripe_accounts set charges_enabled = true where organisation_id = :'org_a';
+-- an ended link
+update public.invoice_stripe_accounts set ended_at = now(), ended_reason = 'disconnected' where organisation_id = :'org_a';
+set role service_role;
+select ist.val('SY25 an ENDED link: not payable, the seller present', format($$select concat_ws('|', payable::text, coalesce(seller_name, '-'), coalesce(number, '-'), coalesce(gross_minor::text, '-')) from public.invoice_pay_page(%L)$$, :'y_ok'), 'false|Alpha Promotions Ltd|-|-');
+select ist.val('SY26 ...and begin raises invoice_not_payable_online', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_ok'), 'denied(22023:invoice_not_payable_online)');
+reset role;
+update public.invoice_stripe_accounts set ended_at = null, ended_reason = null where organisation_id = :'org_a';
+-- no link at all
+delete from public.invoice_stripe_accounts where organisation_id = :'org_a';
+set role service_role;
+select ist.val('SY27 NO link row: not payable, the seller present', format($$select concat_ws('|', payable::text, coalesce(seller_name, '-'), coalesce(number, '-'), coalesce(gross_minor::text, '-')) from public.invoice_pay_page(%L)$$, :'y_ok'), 'false|Alpha Promotions Ltd|-|-');
+select ist.val('SY28 ...and begin raises invoice_not_payable_online', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_ok'), 'denied(22023:invoice_not_payable_online)');
+reset role;
+insert into public.invoice_stripe_accounts (organisation_id, stripe_account_id, charges_enabled, linked_by) values (:'org_a', :'acct_y', true, :'fin_a');
+-- A workspace that left Pro cannot disconnect Stripe in the app (the end RPC needs Pro), so THIS refusal is what stops it being charged.
+update public.organisation_subscriptions set plan_id = 'starter' where organisation_id = :'org_a';
+set role service_role;
+select ist.val('SY29 LOAD-BEARING: workspace A DOWNGRADED to Starter, its link still live: not payable, the seller present', format($$select concat_ws('|', payable::text, coalesce(seller_name, '-'), coalesce(number, '-'), coalesce(gross_minor::text, '-')) from public.invoice_pay_page(%L)$$, :'y_ok'), 'false|Alpha Promotions Ltd|-|-');
+select ist.val('SY30 LOAD-BEARING: ...and begin raises invoice_not_payable_online', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_ok'), 'denied(22023:invoice_not_payable_online)');
+reset role;
+update public.organisation_subscriptions set plan_id = 'pro' where organisation_id = :'org_a';
+set role service_role;
+select ist.val('SY31 POSITIVE CONTROL: back on Pro the same invoice is payable again', format($$select payable::text from public.invoice_pay_page(%L)$$, :'y_ok'), 'true');
+select ist.val('SY32 service_role holds no table privilege on the pay-session counter: only the RPCs write it', format($$select count(*)::text from public.invoice_pay_sessions where organisation_id = %L$$, :'org_a'), 'denied(42501:missing_grant)');
+reset role;
+select ist.val('SY33 no refused call wrote a pay-session row (read as postgres)', format($$select count(*)::text from public.invoice_pay_sessions where organisation_id = %L$$, :'org_a'), '0');
+
+-- ---- BEGIN: the fee, the session row, the hourly budget ---------------------
+set role service_role;
+select ist.val('SY34 begin returns A''s live account, the number, the gross, a 1% fee of 120 on 12000, and a session id', format($$select concat_ws('|', (account = %L)::text, number, gross_minor, fee_minor, (pay_session_id is not null)::text) from public.begin_invoice_card_payment(%L)$$, :'acct_y', :'y_ok'), 'true|IST-0101|12000|120|true');
+reset role;
+select ist.val('SY35 ...and wrote exactly ONE pay-session row, for A and that invoice, with no Stripe session yet', format($$select count(*) || '|' || bool_and(organisation_id = %L and invoice_id = %L and stripe_session_id is null)::text from public.invoice_pay_sessions where invoice_id = %L$$, :'org_a', :'y_ok', :'y_ok'), '1|true');
+select id as y_sess from public.invoice_pay_sessions where invoice_id = :'y_ok' \gset
+set role service_role;
+select ist.val('SY36 attach stores the Stripe session id on the row', format($$select coalesce(public.attach_invoice_pay_session(%L, 'cs_test_sy36')::text, 'void')$$, :'y_sess'), 'void');
+select ist.val('SY37 ...a second attach does not overwrite it', format($$select coalesce(public.attach_invoice_pay_session(%L, 'cs_test_other')::text, 'void')$$, :'y_sess'), 'void');
+reset role;
+select ist.val('SY38 ...the row still carries the first', format($$select stripe_session_id from public.invoice_pay_sessions where id = %L$$, :'y_sess'), 'cs_test_sy36');
+-- 5 rows from two hours ago (outside the window) and 19 from the last five minutes.
+insert into public.invoice_pay_sessions (organisation_id, invoice_id, created_at)
+select :'org_a', :'y_rl', now() - interval '2 hours' from generate_series(1, 5);
+insert into public.invoice_pay_sessions (organisation_id, invoice_id, created_at)
+select :'org_a', :'y_rl', now() - interval '5 minutes' from generate_series(1, 19);
+set role service_role;
+select ist.val('SY39 POSITIVE CONTROL: with 19 sessions in the hour (and 5 stale ones, which do not count) the next call succeeds', format($$select (pay_session_id is not null)::text from public.begin_invoice_card_payment(%L)$$, :'y_rl'), 'true');
+select ist.val('SY40 the next is the 21st in the hour: invoice_pay_rate_limited', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_rl'), 'denied(54000:invoice_pay_rate_limited)');
+select ist.val('SY41 the budget is per invoice: another invoice is unaffected', format($$select (pay_session_id is not null)::text from public.begin_invoice_card_payment(%L)$$, :'y_ok'), 'true');
+reset role;
+select ist.val('SY42 the refused call wrote no row: the rate-limited invoice holds 20 in the hour', format($$select count(*)::text from public.invoice_pay_sessions where invoice_id = %L and created_at > now() - interval '1 hour'$$, :'y_rl'), '20');
+
+-- ===========================================================================
+-- § SW THE WEBHOOK'S WRITES (Task 4): a paid checkout, a refund, and the two
+-- account events now taking an event id. Nobody is on any session.
+-- ===========================================================================
+select ist.val('SW1 the Task 3 events that found a live link are on the ledger and the others are not (made-up account, ended link, denied calls)', $$select string_agg(id, ',' order by id) from public.stripe_events where id like 'evt\_sl%'$$, 'evt_sl34,evt_sl35a,evt_sl35c,evt_sl37');
+select count(*) as sw_fin_before from public.financial_entries where organisation_id = :'org_a' \gset
+set role service_role;
+select ist.val('SW2 a WRONG ACCOUNT (B''s live one) naming A''s invoice is a mismatch', format($$select public.record_stripe_checkout_completed('evt_sw2', %L, %L, %L, 12000, 'GBP', now())$$, :'acct_b', :'w_mm', :'pi_m'), 'mismatch');
+reset role;
+select ist.val('SW3 ...nothing changed (still issued, no card payment) and ONE stripe_payment_mismatch alert for A carries only {invoice_id, event_id}', format($$select (select status from public.invoices where id = %1$L) || '|' || (select count(*) from public.invoice_card_payments where invoice_id = %1$L) || '|' || count(*) || '|' || coalesce(bool_and(a.organisation_id = %2$L)::text, '-') || '|' || coalesce(bool_and(a.details = jsonb_build_object('invoice_id', %1$L::text, 'event_id', 'evt_sw2'))::text, '-') from public.incident_alerts a where a.alert_type = 'stripe_payment_mismatch' and a.details ->> 'invoice_id' = %1$L$$, :'w_mm', :'org_a'), 'issued|0|1|true|true');
+set role service_role;
+select ist.val('SW4 a WRONG AMOUNT is a mismatch', format($$select public.record_stripe_checkout_completed('evt_sw4', %L, %L, %L, 11999, 'GBP', now())$$, :'acct_y', :'w_mm', :'pi_m'), 'mismatch');
+select ist.val('SW5 a WRONG CURRENCY (EUR) is a mismatch', format($$select public.record_stripe_checkout_completed('evt_sw5', %L, %L, %L, 12000, 'EUR', now())$$, :'acct_y', :'w_mm', :'pi_m'), 'mismatch');
+select ist.val('SW6 an invoice id that names nothing is a mismatch too', format($$select public.record_stripe_checkout_completed('evt_sw6', %L, gen_random_uuid(), %L, 12000, 'GBP', now())$$, :'acct_y', :'pi_m'), 'mismatch');
+select ist.val('SW7 an account no workspace has is unknown_account', format($$select public.record_stripe_checkout_completed('evt_sw7', 'acct_NobodyHasThis', %L, %L, 12000, 'GBP', now())$$, :'w_mm', :'pi_m'), 'unknown_account');
+reset role;
+select ist.val('SW8 ...unknown_account wrote no event row and no alert; the four mismatches wrote four alerts', $$select (select count(*) from public.stripe_events where id = 'evt_sw7') || '|' || (select count(*) from public.incident_alerts where alert_type = 'stripe_payment_mismatch' and details ->> 'event_id' = 'evt_sw7') || '|' || (select count(*) from public.incident_alerts where alert_type = 'stripe_payment_mismatch' and details ->> 'event_id' in ('evt_sw2','evt_sw4','evt_sw5','evt_sw6'))$$, '0|0|4');
+select ist.val('SW9 the four mismatched events are on the ledger (a retry of one is a duplicate), the unknown account''s is not', $$select string_agg(id, ',' order by id) from public.stripe_events where id in ('evt_sw2','evt_sw4','evt_sw5','evt_sw6','evt_sw7')$$, 'evt_sw2,evt_sw4,evt_sw5,evt_sw6');
+select ist.val('SW10 a mismatch left the invoice issued, with no card payment and no finance written', format($$select status || '|' || (select count(*) from public.invoice_card_payments where invoice_id = %1$L) || '|' || ((select count(*) from public.financial_entries where organisation_id = %2$L) - %3$s) from public.invoices where id = %1$L$$, :'w_mm', :'org_a', :'sw_fin_before'), 'issued|0|0');
+set role service_role;
+select ist.val('SW11 POSITIVE CONTROL: the right account, amount and currency APPLIES the same invoice; a Stripe clock before the issue date is clamped to it', format($$select public.record_stripe_checkout_completed('evt_sw11', %L, %L, %L, 12000, 'GBP', now() - interval '5 days')$$, :'acct_y', :'w_mm', :'pi_m'), 'applied');
+select ist.val('SW12 a lower-case currency from Stripe is accepted as GBP (the invoice on the event, applied)', format($$select public.record_stripe_checkout_completed('evt_sw12', %L, %L, %L, 12000, 'gbp', timestamptz '2099-07-01 23:30:00+00')$$, :'acct_y', :'w_ok', :'pi_w'), 'applied');
+reset role;
+select ist.val('SW13 w_mm is paid by card, nobody paid it, and paid_on is the issue date (the clamp)', format($$select status || '|' || paid_via || '|' || coalesce(paid_by::text, 'nobody') || '|' || (paid_on = issue_date)::text || '|' || coalesce(paid_entry_id::text, 'no entry') from public.invoices where id = %L$$, :'w_mm'), 'paid|card|nobody|true|no entry');
+select ist.val('SW14 w_ok is paid by card, nobody paid it, and paid_on is the UK date of 23:30 UTC in July: the next day', format($$select status || '|' || paid_via || '|' || coalesce(paid_by::text, 'nobody') || '|' || paid_on::text from public.invoices where id = %L$$, :'w_ok'), 'paid|card|nobody|2099-07-02');
+select ist.val('SW15 ONE card payment each, outcome applied, for the amount and A', format($$select string_agg(invoice_id::text || ':' || outcome || ':' || amount_minor || ':' || currency || ':' || (organisation_id = %3$L)::text || ':' || refunded_minor, ',' order by stripe_event_id) from public.invoice_card_payments where invoice_id in (%1$L, %2$L)$$, :'w_mm', :'w_ok', :'org_a'), :'w_mm' || ':applied:12000:GBP:true:0,' || :'w_ok' || ':applied:12000:GBP:true:0');
+select ist.val('SW16 NULL-ACTOR FLIP: the pulled budgeted entry is now actual (amount untouched), its line records the flip', format($$select (select status || '|' || amount_minor from public.financial_entries where id = %L) || '|' || (select string_agg(position || ':' || entry_flipped::text, ',' order by position) from public.invoice_lines where invoice_id = %L)$$, :'fe_w', :'w_ok'), 'actual|8000|1:true,2:false');
+select ist.val('SW17 ...and the free line''s NET (not gross) became one actual income entry on the event, dated the payment, named for the invoice, created by nobody: what mark_invoice_paid books', format($$select concat_ws('|', fe.category, fe.status, fe.amount_minor, fe.description, (fe.occurred_on = i.paid_on)::text, (fe.event_id = %L)::text, coalesce(fe.created_by::text, 'nobody')) from public.invoices i join public.financial_entries fe on fe.id = i.paid_entry_id where i.id = %L$$, :'ev_w', :'w_ok'), 'income|actual|2000|Invoice IST-0201|true|true|nobody');
+select ist.val('SW18 A''s two payments wrote exactly one new financial entry between them (the free line); the flip created none', format($$select ((select count(*) from public.financial_entries where organisation_id = %L) - %s)::text$$, :'org_a', :'sw_fin_before'), '1');
+select ist.val('SW19 TWO invoice.paid_by_card audit rows, one per invoice, by the tombstone, after = {status, number} exactly, no before', format($$select count(*) || '|' || bool_and(a.actor_user_id = private.erased_user_id() and a.before is null and a.after = jsonb_build_object('status', 'paid', 'number', i.number) and a.organisation_id = %L and a.target_type = 'invoice')::text from public.audit_events a join public.invoices i on i.id = a.target_id where a.action = 'invoice.paid_by_card' and a.target_id in (%L, %L)$$, :'org_a', :'w_mm', :'w_ok'), '2|true');
+select ist.val('SW20 ...and the audit payloads hold no account, payment intent, amount or email', format($$select bool_and(after::text !~* '(acct_|pi_|@|12000|8000|2000)')::text from public.audit_events where action = 'invoice.paid_by_card' and target_id in (%L, %L)$$, :'w_mm', :'w_ok'), 'true');
+select ist.val('SW21 the ledger holds both checkout events, typed', $$select string_agg(id || ':' || type, ',' order by id) from public.stripe_events where id in ('evt_sw11','evt_sw12')$$, 'evt_sw11:checkout.session.completed,evt_sw12:checkout.session.completed');
+set role service_role;
+select ist.val('SW22 THE SAME EVENT AGAIN is a duplicate', format($$select public.record_stripe_checkout_completed('evt_sw12', %L, %L, %L, 12000, 'GBP', now())$$, :'acct_y', :'w_ok', :'pi_w'), 'duplicate');
+select ist.val('SW23 THE SAME PAYMENT INTENT under a new event id is a duplicate (the unique payment intent)', format($$select public.record_stripe_checkout_completed('evt_sw23', %L, %L, %L, 12000, 'GBP', now())$$, :'acct_y', :'w_ok', :'pi_w'), 'duplicate');
+reset role;
+select ist.val('SW24 ...the duplicates wrote no second card payment, audit row or income entry for w_ok (the new event id is on the ledger, as a retry of it should be)', format($$select (select count(*) from public.invoice_card_payments where invoice_id = %1$L) || '|' || (select count(*) from public.audit_events where target_id = %1$L and action like 'invoice.%%') || '|' || (select count(*) from public.financial_entries where event_id = %2$L) || '|' || (select count(*) from public.stripe_events where id in ('evt_sw12','evt_sw23'))$$, :'w_ok', :'ev_w'), '1|1|2|2');
+set role service_role;
+select ist.val('SW25 A PAID (by hand) invoice receiving a card payment is after_paid', format($$select public.record_stripe_checkout_completed('evt_sw25', %L, %L, %L, 12000, 'GBP', now())$$, :'acct_y', :'w_pd', :'pi_p'), 'after_paid');
+select ist.val('SW26 A VOID invoice receiving a card payment is after_void', format($$select public.record_stripe_checkout_completed('evt_sw26', %L, %L, %L, 12000, 'GBP', now())$$, :'acct_y', :'w_vd', :'pi_v'), 'after_void');
+reset role;
+select ist.val('SW27 ...the paid invoice is as it was (paid by hand, by Finance), the void one still void, and no finance was written beyond the one income entry', format($$select (select status || '|' || paid_via || '|' || (paid_by = %3$L)::text from public.invoices where id = %1$L) || '|' || (select status from public.invoices where id = %2$L) || '|' || ((select count(*) from public.financial_entries where organisation_id = %4$L) - %5$s - 1)$$, :'w_pd', :'w_vd', :'fin_a', :'org_a', :'sw_fin_before'), 'paid|manual|true|void|0');
+select ist.val('SW28 ...each kept as a card-payment row with its outcome (money to refund by hand)', format($$select string_agg(invoice_id::text || ':' || outcome || ':' || amount_minor, ',' order by outcome) from public.invoice_card_payments where invoice_id in (%L, %L)$$, :'w_pd', :'w_vd'), :'w_pd' || ':after_paid:12000,' || :'w_vd' || ':after_void:12000');
+select ist.val('SW29 ...and each audited invoice.card_payment_conflict by the tombstone, name-only', format($$select count(*) || '|' || bool_and(a.actor_user_id = private.erased_user_id() and a.after = jsonb_build_object('status', i.status, 'number', i.number) and a.after::text !~* '(acct_|pi_|@|12000)')::text from public.audit_events a join public.invoices i on i.id = a.target_id where a.action = 'invoice.card_payment_conflict' and a.target_id in (%L, %L)$$, :'w_pd', :'w_vd'), '2|true');
+select ist.val('SW30 ...and no invoice.paid_by_card row for either', format($$select count(*)::text from public.audit_events where action = 'invoice.paid_by_card' and target_id in (%L, %L)$$, :'w_pd', :'w_vd'), '0');
+
+-- ---- REFUNDS ----------------------------------------------------------------
+set role service_role;
+select ist.val('SW31 a refund of 5000 on the applied payment is flagged', format($$select public.record_stripe_charge_refunded('evt_sw31', %L, %L, 5000, timestamptz '2099-08-01 10:00:00+00')$$, :'acct_y', :'pi_w'), 'flagged');
+reset role;
+select ist.val('SW32 ...refunded_minor 5000 and refunded_at set; the invoice is STILL paid, by card', format($$select p.refunded_minor || '|' || p.refunded_at || '|' || i.status || '|' || i.paid_via from public.invoice_card_payments p join public.invoices i on i.id = p.invoice_id where p.stripe_payment_intent_id = %L$$, :'pi_w'), '5000|2099-08-01 10:00:00+00|paid|card');
+set role service_role;
+select ist.val('SW33 a later event with a CUMULATIVE 12000 sets 12000', format($$select public.record_stripe_charge_refunded('evt_sw33', %L, %L, 12000, timestamptz '2099-08-02 10:00:00+00')$$, :'acct_y', :'pi_w'), 'flagged');
+select ist.val('SW34 a refund greater than the payment clamps to the payment', format($$select public.record_stripe_charge_refunded('evt_sw34', %L, %L, 20000, timestamptz '2099-08-03 10:00:00+00')$$, :'acct_y', :'pi_w'), 'flagged');
+select ist.val('SW35 an unknown payment intent is unknown_payment', format($$select public.record_stripe_charge_refunded('evt_sw35', %L, 'pi_NoSuchPayment', 100, now())$$, :'acct_y'), 'unknown_payment');
+select ist.val('SW36 B''s live account cannot flag a refund on A''s payment: unknown_payment (breakout)', format($$select public.record_stripe_charge_refunded('evt_sw36', %L, %L, 100, now())$$, :'acct_b', :'pi_w'), 'unknown_payment');
+select ist.val('SW37 an account no workspace has is unknown_account', format($$select public.record_stripe_charge_refunded('evt_sw37', 'acct_NobodyHasThis', %L, 100, now())$$, :'pi_w'), 'unknown_account');
+select ist.val('SW38 the same refund event again is a duplicate', format($$select public.record_stripe_charge_refunded('evt_sw34', %L, %L, 100, now())$$, :'acct_y', :'pi_w'), 'duplicate');
+reset role;
+select ist.val('SW39 ...refunded_minor is 12000 (the clamp), the duplicate and the breakout changed nothing, the invoice is still paid', format($$select p.refunded_minor || '|' || p.refunded_at || '|' || i.status from public.invoice_card_payments p join public.invoices i on i.id = p.invoice_id where p.stripe_payment_intent_id = %L$$, :'pi_w'), '12000|2099-08-03 10:00:00+00|paid');
+select ist.val('SW40 THREE invoice.card_refund_flagged audit rows (the duplicate, unknowns and breakout wrote none), the tombstone, name-only', format($$select count(*) || '|' || bool_and(actor_user_id = private.erased_user_id() and after = jsonb_build_object('status', 'paid', 'number', 'IST-0201') and after::text !~* '(acct_|pi_|@|12000|5000)')::text from public.audit_events where action = 'invoice.card_refund_flagged' and target_id = %L$$, :'w_ok'), '3|true');
+select ist.val('SW41 the ledger holds the refund events that resolved a workspace (not the unknown_account one), typed charge.refunded', $$select string_agg(id || ':' || type, ',' order by id) from public.stripe_events where id in ('evt_sw31','evt_sw33','evt_sw34','evt_sw35','evt_sw36','evt_sw37')$$, 'evt_sw31:charge.refunded,evt_sw33:charge.refunded,evt_sw34:charge.refunded,evt_sw35:charge.refunded,evt_sw36:charge.refunded');
+
+-- ---- THE ACCOUNT EVENTS NOW CARRY AN EVENT ID --------------------------------
+set role service_role;
+select ist.val('SW42 account.updated flips charges_enabled off for a live link', format($$select public.stripe_account_updated('evt_sw42', %L, false)::text$$, :'acct_y'), 'true');
+select ist.val('SW43 THE SAME EVENT ID again with the other value is a duplicate (false) and applies nothing', format($$select public.stripe_account_updated('evt_sw42', %L, true)::text$$, :'acct_y'), 'false');
+reset role;
+select ist.val('SW44 ...charges_enabled is still false and the event is on the ledger once, typed account.updated', format($$select (select charges_enabled::text from public.invoice_stripe_accounts where organisation_id = %L) || '|' || (select count(*) || max(type) from public.stripe_events where id = 'evt_sw42')$$, :'org_a'), 'false|1account.updated');
+set role service_role;
+select ist.val('SW45 a NEW event id flips it back on', format($$select public.stripe_account_updated('evt_sw45', %L, true)::text$$, :'acct_y'), 'true');
+select ist.val('SW46 deauthorized ends the live link', format($$select public.stripe_account_deauthorized('evt_sw46', %L)::text$$, :'acct_y'), 'true');
+reset role;
+select ist.val('SW47 ...the event is on the ledger for A, typed account.application.deauthorized', format($$select (organisation_id = %L)::text || '|' || type from public.stripe_events where id = 'evt_sw46'$$, :'org_a'), 'true|account.application.deauthorized');
+update public.invoice_stripe_accounts set ended_at = null, ended_reason = null where organisation_id = :'org_a';
+set role service_role;
+select ist.val('SW48 the SAME deauthorized event id replayed after a re-link is a duplicate (false) and does not end the new link', format($$select public.stripe_account_deauthorized('evt_sw46', %L)::text$$, :'acct_y'), 'false');
+reset role;
+select ist.val('SW49 ...the link is still live', format($$select (ended_at is null)::text from public.invoice_stripe_accounts where organisation_id = %L$$, :'org_a'), 'true');
 
 -- ===========================================================================
 -- § SZ HOUSEKEEPING (later tasks insert their sections ABOVE this line)
