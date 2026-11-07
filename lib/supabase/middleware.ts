@@ -78,6 +78,7 @@ export const PUBLIC_PATHS = [
   "/api/retention",
   "/legal",
   "/pay",
+  "/api/stripe/webhook",
 ] as const;
 
 /** Signed-in users have no business on these -- bounce them to the hub. */

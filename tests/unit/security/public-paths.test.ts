@@ -23,6 +23,7 @@ describe("PUBLIC_PATHS and isUnder()", () => {
       "/api/retention",
       "/legal",
       "/pay",
+      "/api/stripe/webhook",
     ]);
   });
 
@@ -35,6 +36,8 @@ describe("PUBLIC_PATHS and isUnder()", () => {
     "/pay/sometoken",
     "/pay/sometoken/start",
     "/pay/sometoken/thanks",
+    // Invoices part 2 Task 6: the Stripe webhook, by its exact path.
+    "/api/stripe/webhook",
     "/api/erasure",
     "/api/erasure/run",
     "/api/retention",
@@ -68,6 +71,12 @@ describe("PUBLIC_PATHS and isUnder()", () => {
     "/payments",
     "/pay-anything",
     "/paylater",
+    // Invoices part 2 Task 6: only the webhook is public. The OAuth return
+    // address needs a signed-in user, so no `/api/stripe` prefix.
+    "/api/stripe",
+    "/api/stripes",
+    "/api/stripe/connect/callback",
+    "/api/stripe/webhooks",
   ])("%s is NOT public", (path) => {
     expect(isUnder(path, PUBLIC_PATHS)).toBe(false);
   });
