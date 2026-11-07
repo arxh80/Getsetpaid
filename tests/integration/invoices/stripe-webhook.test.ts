@@ -21,8 +21,9 @@ let acctB: string; // org B's live link, for the account.* events
 let company: string;
 let n = 0;
 
-const evt = (type: string, account: string | undefined, object: Record<string, unknown>): Ev =>
-  ({ id: `evt_${fx.runId}_${(n += 1)}`, type, ...(account ? { account } : {}), data: { object } }) as unknown as Ev;
+// `envelope` overrides the event's own fields: `created` is the event's time, the one the handler uses.
+const evt = (type: string, account: string | undefined, object: Record<string, unknown>, envelope: Record<string, unknown> = {}): Ev =>
+  ({ id: `evt_${fx.runId}_${(n += 1)}`, type, created: 1_790_000_000, ...(account ? { account } : {}), data: { object }, ...envelope }) as unknown as Ev;
 
 async function issuedInvoice(): Promise<string> {
   const num = `WH-${String((n += 1)).padStart(4, "0")}`;
@@ -50,10 +51,10 @@ async function issuedInvoice(): Promise<string> {
 
 const session = (invoiceId: string, intent: string, over: Record<string, unknown> = {}) => ({
   metadata: { invoice_id: invoiceId }, payment_intent: intent, amount_total: 12000, currency: "gbp",
-  payment_status: "paid", created: 1_790_000_000, ...over,
+  payment_status: "paid", ...over,
 });
-const paid = (invoiceId: string, intent: string, over: Record<string, unknown> = {}) =>
-  handleStripeEvent(evt("checkout.session.completed", acctA, session(invoiceId, intent, over)));
+const paid = (invoiceId: string, intent: string, over: Record<string, unknown> = {}, envelope: Record<string, unknown> = {}) =>
+  handleStripeEvent(evt("checkout.session.completed", acctA, session(invoiceId, intent, over), envelope));
 const invoiceRow = async (id: string) =>
   (await pool.query<{ status: string; paid_via: string | null }>(`select status, paid_via from public.invoices where id = $1`, [id])).rows[0];
 const paymentCount = async (intent: string) =>
@@ -132,7 +133,6 @@ describe("checkout.session.completed", () => {
     ["a null amount_total", { amount_total: null }],
     ["a negative amount_total", { amount_total: -1 }],
     ["a fractional amount_total", { amount_total: 120.5 }],
-    ["a null created", { created: null }],
     ["a missing currency", { currency: null }],
   ])("%s is ignored (200), never a CHECK-constraint 500", async (_label, over) => {
     const inv = await issuedInvoice();
@@ -140,6 +140,25 @@ describe("checkout.session.completed", () => {
     expect(await paid(inv, intent, over)).toEqual({ status: 200, outcome: "ignored" });
     expect(await invoiceRow(inv)).toEqual({ status: "issued", paid_via: null });
     expect(await paymentCount(intent)).toBe(0);
+  });
+
+  it("a null or non-numeric event.created is ignored (200), never a CHECK-constraint 500", async () => {
+    for (const created of [null, "soon"]) {
+      const inv = await issuedInvoice();
+      const intent = pi();
+      expect(await paid(inv, intent, {}, { created })).toEqual({ status: 200, outcome: "ignored" });
+      expect(await invoiceRow(inv)).toEqual({ status: "issued", paid_via: null });
+      expect(await paymentCount(intent)).toBe(0);
+    }
+  });
+
+  it("paid_on follows event.created (UK date), not the session's created", async () => {
+    // Event 2027-06-15 23:30Z = 00:30 BST on the 16th; the session opened at 22:30Z = 23:30 BST on the 15th.
+    const inv = await issuedInvoice();
+    const out = await paid(inv, pi(), { created: 1_813_098_600 }, { created: 1_813_102_200 });
+    expect(out).toEqual({ status: 200, outcome: "applied" });
+    const { rows } = await pool.query<{ d: string }>(`select to_char(paid_on, 'YYYY-MM-DD') d from public.invoices where id = $1`, [inv]);
+    expect(rows[0].d).toBe("2027-06-16");
   });
 
   it("a wrong amount is a mismatch, answered 200 so Stripe does not retry, and the invoice stays issued", async () => {
@@ -173,7 +192,7 @@ describe("charge.refunded", () => {
     const inv = await issuedInvoice();
     const intent = pi();
     expect((await paid(inv, intent)).outcome).toBe("applied");
-    const out = await handleStripeEvent(evt("charge.refunded", acctA, { payment_intent: intent, amount_refunded: 5000, created: 1_790_000_100 }));
+    const out = await handleStripeEvent(evt("charge.refunded", acctA, { payment_intent: intent, amount_refunded: 5000 }, { created: 1_790_000_100 }));
     expect(out).toEqual({ status: 200, outcome: "flagged" });
     expect(await refunded(intent)).toBe(5000);
     expect(await invoiceRow(inv)).toEqual({ status: "paid", paid_via: "card" });
@@ -183,21 +202,41 @@ describe("charge.refunded", () => {
     ["a zero amount_refunded", { amount_refunded: 0 }],
     ["a null amount_refunded", { amount_refunded: null }],
     ["a fractional amount_refunded", { amount_refunded: 10.5 }],
-    ["a null created", { created: null }],
     ["a null payment_intent", { payment_intent: null }],
   ])("%s is ignored (200), never a CHECK-constraint 500", async (_label, over) => {
     const inv = await issuedInvoice();
     const intent = pi();
     await paid(inv, intent);
     const out = await handleStripeEvent(
-      evt("charge.refunded", acctA, { payment_intent: intent, amount_refunded: 1000, created: 1_790_000_100, ...over }),
+      evt("charge.refunded", acctA, { payment_intent: intent, amount_refunded: 1000, ...over }),
     );
     expect(out).toEqual({ status: 200, outcome: "ignored" });
     expect(await refunded(intent)).toBe(0);
   });
 
+  it("a null event.created is ignored (200)", async () => {
+    const inv = await issuedInvoice();
+    const intent = pi();
+    await paid(inv, intent);
+    const out = await handleStripeEvent(evt("charge.refunded", acctA, { payment_intent: intent, amount_refunded: 1000 }, { created: null }));
+    expect(out).toEqual({ status: 200, outcome: "ignored" });
+    expect(await refunded(intent)).toBe(0);
+  });
+
+  it("refunded_at follows event.created, not the charge's created", async () => {
+    const inv = await issuedInvoice();
+    const intent = pi();
+    await paid(inv, intent);
+    const chargeMade = 1_790_000_000; // the payment, long before the refund
+    const refundEvent = 1_813_102_200;
+    await handleStripeEvent(evt("charge.refunded", acctA, { payment_intent: intent, amount_refunded: 1000, created: chargeMade }, { created: refundEvent }));
+    const { rows } = await pool.query<{ t: string }>(
+      `select extract(epoch from refunded_at)::bigint t from public.invoice_card_payments where stripe_payment_intent_id = $1`, [intent]);
+    expect(Number(rows[0].t)).toBe(refundEvent);
+  });
+
   it("a refund for a payment this workspace never received is 200 unknown_payment", async () => {
-    const out = await handleStripeEvent(evt("charge.refunded", acctA, { payment_intent: pi(), amount_refunded: 100, created: 1_790_000_100 }));
+    const out = await handleStripeEvent(evt("charge.refunded", acctA, { payment_intent: pi(), amount_refunded: 100 }));
     expect(out).toEqual({ status: 200, outcome: "unknown_payment" });
   });
 });

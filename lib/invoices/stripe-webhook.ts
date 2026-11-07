@@ -30,6 +30,9 @@ const num = (v: unknown): v is number => typeof v === "number" && Number.isFinit
 export async function handleStripeEvent(event: StripeEvent): Promise<WebhookResult> {
   const account = typeof event.account === "string" ? event.account : null;
   if (!account) return OK("ignored"); // a platform event: not a workspace's
+  // The EVENT's time, not the object's: session.created is when Checkout opened (up to 24 h
+  // before payment) and charge.created is the payment, not the refund.
+  const { created } = event as { created?: unknown };
   const obj: Record<string, unknown> = (event.data?.object ?? {}) as unknown as Record<string, unknown>;
   const db = createServiceClient();
 
@@ -37,7 +40,7 @@ export async function handleStripeEvent(event: StripeEvent): Promise<WebhookResu
     case "checkout.session.completed": {
       const metadata = (obj.metadata ?? {}) as Record<string, unknown>;
       const invoiceId = metadata.invoice_id;
-      const { payment_intent: intent, amount_total: amount, currency, created } = obj;
+      const { payment_intent: intent, amount_total: amount, currency } = obj;
       if (
         obj.payment_status !== "paid" || typeof invoiceId !== "string" || !UUID.test(invoiceId) ||
         !str(intent) || !Number.isSafeInteger(amount) || (amount as number) < 0 || !str(currency) || !num(created)
@@ -50,7 +53,7 @@ export async function handleStripeEvent(event: StripeEvent): Promise<WebhookResu
       return rpcResult(error, data);
     }
     case "charge.refunded": {
-      const { payment_intent: intent, amount_refunded: refunded, created } = obj;
+      const { payment_intent: intent, amount_refunded: refunded } = obj;
       if (!str(intent) || !Number.isSafeInteger(refunded) || (refunded as number) <= 0 || !num(created)) return OK("ignored");
       const { data, error } = await db.rpc("record_stripe_charge_refunded", {
         p_event_id: event.id, p_account: account, p_payment_intent: intent,
