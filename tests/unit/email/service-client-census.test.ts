@@ -99,6 +99,10 @@ const ALLOWED = new Set([
   // granted to service_role alone, meter_password_sign_in()
   // (20261108002000), which refuses any session -- no table at all.
   "lib/auth/login-budget.ts",
+  // Invoices part 2 Task 5. The card-payment page: no session; calls only
+  // invoice_pay_page / begin_invoice_card_payment / attach_invoice_pay_session,
+  // all service_role-only (20261110002000).
+  "lib/invoices/pay.ts",
 ]);
 
 interface Scanned {

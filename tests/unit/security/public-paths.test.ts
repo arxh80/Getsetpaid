@@ -22,6 +22,7 @@ describe("PUBLIC_PATHS and isUnder()", () => {
       "/api/erasure",
       "/api/retention",
       "/legal",
+      "/pay",
     ]);
   });
 
@@ -31,6 +32,9 @@ describe("PUBLIC_PATHS and isUnder()", () => {
     "/legal/privacy",
     "/legal/cookies",
     "/legal/not-a-page",
+    "/pay/sometoken",
+    "/pay/sometoken/start",
+    "/pay/sometoken/thanks",
     "/api/erasure",
     "/api/erasure/run",
     "/api/retention",
@@ -60,6 +64,10 @@ describe("PUBLIC_PATHS and isUnder()", () => {
     // Phase 8 Task 6, the same pair for the retention runner.
     "/api/retentions",
     "/api/retention-run",
+    // Invoices part 2 Task 5: /pay is the recipient's card-payment page.
+    "/payments",
+    "/pay-anything",
+    "/paylater",
   ])("%s is NOT public", (path) => {
     expect(isUnder(path, PUBLIC_PATHS)).toBe(false);
   });

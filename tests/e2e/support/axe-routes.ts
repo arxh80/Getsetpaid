@@ -88,6 +88,12 @@ export const AXE_PAGES: readonly AxePage[] = [
   // sessions mid-run.
   { route: "/account/sessions", label: "sign out everywhere", url: () => "/account/sessions", role: "manager" },
   { route: "/login", label: "/login", url: () => "/login", role: "signed-out" },
+  // ---- INVOICES PART 2 TASK 5: the recipient's pay pages -------------------
+  // Signed out, with a token that verifies to nothing, so these scan the
+  // REFUSED state (the thanks page reads the same either way). The payable
+  // state needs a real signed token; Task 9's invoices-card.spec.ts scans it.
+  { route: "/pay/[token]", label: "pay page (refused)", url: () => "/pay/not-a-token", role: "signed-out" },
+  { route: "/pay/[token]/thanks", label: "pay thanks", url: () => "/pay/not-a-token/thanks", role: "signed-out" },
   // ---- PHASE 10 TASK 15 (G21): THE 42 PAGES THAT HAD NEVER BEEN SCANNED ----
   // Signed out, and the two signed-in pages before a workspace exists.
   { route: "/signup", label: "/signup", url: () => "/signup", role: "signed-out" },
