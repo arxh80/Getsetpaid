@@ -24,13 +24,17 @@ export async function POST(
   ctx: { params: Promise<{ token: string }> },
 ): Promise<Response> {
   const { token } = await ctx.params;
+  // The token may have failed verification, so the sender chose it: encode it before it
+  // reaches a Location header (a char above U+00FF or a CR/LF would throw; `..//x` would
+  // resolve to `//x`).
+  const segment = encodeURIComponent(token);
   const outcome = await startCardPayment(token, siteUrl());
   switch (outcome.kind) {
     case "redirect":
       return NextResponse.redirect(outcome.url, { status: 303, headers: NO_STORE });
     case "refused":
-      return seeOther(`/pay/${token}`);
+      return seeOther(`/pay/${segment}`);
     case "unavailable":
-      return seeOther(`/pay/${token}?unavailable=1`);
+      return seeOther(`/pay/${segment}?unavailable=1`);
   }
 }
