@@ -113,7 +113,7 @@ describe("sendInvoiceAction", () => {
       expect(s.message).toContain("ap@customer.example");
       expect(h.renderOptions?.payUrl ?? null).toBeNull();
       expect(h.mail?.text).not.toContain("Pay by card");
-      expect(h.mail?.html).not.toMatch(/<as/i);
+      expect(h.mail?.html).not.toMatch(/<a\s/i);
     });
   });
   it("a bad address and a draft are refused before any budget is spent", async () => {
