@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getStripe } from "@/lib/stripe/client";
 import { stripeEnv } from "@/lib/stripe/env";
@@ -48,5 +49,27 @@ describe("stripeEnv().live: the mode the webhook accepts events from (final revi
   ])("%s with STRIPE_MODE=%j is live=%s", (key, mode, live) => {
     set({ STRIPE_SECRET_KEY: key, STRIPE_MODE: mode });
     expect(stripeEnv()?.live).toBe(live);
+  });
+});
+
+// Read from the file itself, so a placeholder changed there without env.ts goes red.
+const EXAMPLE: Record<string, string> = Object.fromEntries(
+  [...readFileSync(".env.example", "utf8").matchAll(/^(STRIPE_[A-Z_]+|INVOICE_PAY_LINK_SECRET)=(\S+)\r?$/gm)].map((m) => [m[1], m[2]]),
+);
+
+describe("the .env.example placeholders under NODE_ENV=production (final review F7)", () => {
+  it.each(Object.keys(KEYS))("%s at its placeholder reads as unset: card payments unconfigured, no throw", (name) => {
+    expect(EXAMPLE[name]).toBeTruthy();
+    set({ NODE_ENV: "production", [name]: EXAMPLE[name] });
+    expect(stripeEnv()).toBeNull();
+    expect(getStripe()).toBeNull();
+  });
+  it("real-looking keys under production are configured (the control)", () => {
+    set({ NODE_ENV: "production" });
+    expect(stripeEnv()).not.toBeNull();
+  });
+  it("outside production the placeholders still drive the fake (development)", () => {
+    set({ STRIPE_MODE: "fake", STRIPE_SECRET_KEY: EXAMPLE.STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET: EXAMPLE.STRIPE_WEBHOOK_SECRET, STRIPE_CONNECT_CLIENT_ID: EXAMPLE.STRIPE_CONNECT_CLIENT_ID });
+    expect(getStripe()).toBeInstanceOf(FakeStripeGateway);
   });
 });

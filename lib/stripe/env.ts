@@ -8,9 +8,19 @@ import "server-only";
 // The fake is test mode.
 export interface StripeEnv { mode: "live" | "fake"; live: boolean; secretKey: string; webhookSecret: string; connectClientId: string }
 
+// The .env.example placeholders (public, in the repo): a production deployment that
+// copied the file reads as unconfigured, never as configured with known secrets.
+const PLACEHOLDERS = new Set([
+  "sk_test_fake_not_a_real_key",
+  "whsec_fake_local_webhook_secret_0123456789",
+  "ca_fake_local_client",
+  "local-pay-link-secret-not-for-production-0123",
+]);
+
 function value(name: string): string | null {
   const raw = process.env[name]?.trim();
-  return raw ? raw : null;
+  if (!raw || (process.env.NODE_ENV === "production" && PLACEHOLDERS.has(raw))) return null;
+  return raw;
 }
 
 export function stripeEnv(): StripeEnv | null {

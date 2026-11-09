@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { payLinkSecret } from "@/lib/stripe/env";
 import { payLinkToken, payLinkUrl, verifyPayLinkToken } from "@/lib/stripe/pay-link";
 
 const ID = "3f0c9a52-6f0e-4d8e-9a43-0d5c2b1e7a10";
@@ -34,6 +36,16 @@ describe("the pay-link token", () => {
     vi.stubEnv("INVOICE_PAY_LINK_SECRET", "short");
     expect(payLinkToken(ID)).toBeNull();
     expect(verifyPayLinkToken(`${ID}.abc`)).toBeNull();
+  });
+  it("the .env.example placeholder is no secret under NODE_ENV=production: no pay link, no throw (final review F7)", () => {
+    const placeholder = /^INVOICE_PAY_LINK_SECRET=(\S+)\r?$/m.exec(readFileSync(".env.example", "utf8"))![1];
+    vi.stubEnv("INVOICE_PAY_LINK_SECRET", placeholder);
+    expect(payLinkToken(ID)).not.toBeNull(); // development: the placeholder works
+    vi.stubEnv("NODE_ENV", "production");
+    expect(payLinkSecret()).toBeNull();
+    expect(payLinkToken(ID)).toBeNull();
+    vi.stubEnv("INVOICE_PAY_LINK_SECRET", SECRET);
+    expect(payLinkToken(ID)).not.toBeNull(); // the control: a real secret under production
   });
   it("builds an absolute URL on the site origin", () => {
     vi.stubEnv("INVOICE_PAY_LINK_SECRET", SECRET);
