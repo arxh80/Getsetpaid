@@ -229,8 +229,8 @@ export type IncidentAlertType =
   | "retention_run_refused"
   // Invoices part 2 Task 2 (20261110000000): a Stripe webhook whose account,
   // amount or currency did not match the invoice it named. Raised by the
-  // sessionless webhook RPC (Task 4); the payload is counts and ids, never an
-  // amount or a Stripe identifier.
+  // sessionless webhook RPC (Task 4); the details are the invoice id and the
+  // Stripe event id, never an amount, an account or a payment-intent id.
   | "stripe_payment_mismatch";
 
 export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {

@@ -18,7 +18,7 @@ export class FakeStripeGateway implements StripeGateway {
   async exchangeCode(code: string) {
     const m = FAKE_CODE.exec(code);
     if (!m) throw new Error("fake stripe: unknown code");
-    // The code is the first 8 chars of a base64url state: `-` and `_` would fail the database's ^acct_[A-Za-z0-9]+$ check (1 in ~8 links).
+    // The code is the first 8 chars of a base64url state: `-` and `_` would fail the database's ^acct_[A-Za-z0-9]+$ check (about 22% of links: 1 - (62/64)^8).
     return { account: `acct_fake${m[1].replace(/[-_]/g, "")}` };
   }
   async chargesEnabled(account: string) {
