@@ -1790,9 +1790,9 @@ Founder: "go ClamAV". Wired on branch `clamav-scanner` (PR #30): fail-closed cla
   4. **Payment and refund times come from the Stripe event envelope's `created`**, not `data.object.created` (founder approved, 2026-11-07).
   5. **`PUBLIC_PATHS` gets the exact `/api/stripe/webhook`**, not the prefix `/api/stripe`, which would make the sign-in-only callback public. `/pay` is public too, with `Referrer-Policy: no-referrer` and noindex.
   6. **CSP `form-action` gained `https://checkout.stripe.com` and `https://connect.stripe.com`**, because Chrome applies form-action to the whole redirect chain. The workspace slug `pay` is reserved (`20261110002500_reserve_the_pay_slug.sql`, `lib/org/reserved-slugs.ts`).
-  7. **Known limits.** A workspace whose plan lapsed below Pro cannot disconnect Stripe in-app, and the pay path refuses non-Pro anyway. The webhook route reads the request body before the signature check, with no size cap; this is open for the final review.
+  7. **Known limits.** A workspace whose plan lapsed below Pro cannot disconnect Stripe in-app, and the pay path refuses non-Pro anyway. The webhook route reads the request body before the signature check, with no size cap; the final review put the cap on F13's go-live list (in the app or at the proxy).
 
-  **Owed to the founder:** F13 in `docs/launch-gates.md` (Stripe account, four secrets, webhook, the one redirect URI, a real test-mode payment, Stripe's DPA; on the live deployment, confirm a test-mode event is acknowledged and ignored). Detail in `docs/as-built.md` § "Invoices part 2 (Stripe Connect), as it actually shipped".
+  **Owed to the founder:** F13 in `docs/launch-gates.md` (Stripe account, four secrets, webhook, the one redirect URI, a real test-mode payment, Stripe's DPA, a webhook body cap before go-live; on the live deployment, confirm a test-mode event is acknowledged and ignored). Detail in `docs/as-built.md` § "Invoices part 2 (Stripe Connect), as it actually shipped".
 
 ## Q280 -- Invoices part 2: the Subprocessors page and Stripe, default implemented
 
