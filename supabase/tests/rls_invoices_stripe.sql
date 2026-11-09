@@ -460,6 +460,8 @@ set request.jwt.claims = :'fin_a2_c';
 select ist.val('SL25 ending with NO step-up token is refused step_up_required', format($$select public.end_stripe_account_link(%L)$$, :'org_a'), 'denied(42501:step_up_required)');
 set request.jwt.claims = :'ro_a_c';
 select ist.val('SL26 A''s Read Only user cannot end: forbidden', format($$select public.end_stripe_account_link(%L)$$, :'org_a'), 'denied(42501:forbidden)');
+set request.jwt.claims = :'fin_b_c';
+select ist.val('SL26a TENANT BREAKOUT: B''s Finance user cannot end A''s link: forbidden (SL27 is the control)', format($$select public.end_stripe_account_link(%L)$$, :'org_a'), 'denied(42501:forbidden)');
 set request.jwt.claims = :'fin_a_c';
 select ist.val('SL27 POSITIVE CONTROL: with a token, end returns the account id it ended', format($$select public.end_stripe_account_link(%L)$$, :'org_a'), :'acct_l3');
 select ist.val('SL28 ending again returns null (nothing live)', format($$select public.end_stripe_account_link(%L)$$, :'org_a'), '<null>');
