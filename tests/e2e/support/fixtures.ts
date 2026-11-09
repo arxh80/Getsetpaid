@@ -1529,14 +1529,18 @@ export async function plantFeedback(
  * Spend a user's whole hourly feedback budget in one write, so the NEXT real
  * submission through the dialog is the refused one. The window arithmetic is
  * the database's own (private.rate_limit_window_start), so the row lands in
- * the bin the trigger will read.
+ * the bin the trigger will read. The NEXT bin is spent too: the window is
+ * epoch-aligned, and a fill at 03:59:58 with the submit at 04:00:01 read a
+ * fresh budget and was accepted (CI, PR #46).
  */
 export async function fillFeedbackBudget(userId: string): Promise<void> {
   await sql(
     `insert into public.rate_limit_counters (category, subject_scope, subject_id, window_start, request_count)
      select 'feedback', 'user', $1,
-            private.rate_limit_window_start(now(), p.window_seconds), p.max_requests
-       from public.rate_limit_policies p where p.category = 'feedback'
+            private.rate_limit_window_start(now(), p.window_seconds) + k.n * make_interval(secs => p.window_seconds),
+            p.max_requests
+       from public.rate_limit_policies p cross join (values (0), (1)) k(n)
+      where p.category = 'feedback'
      on conflict (category, subject_scope, subject_id, window_start)
        do update set request_count = excluded.request_count`,
     [userId],
