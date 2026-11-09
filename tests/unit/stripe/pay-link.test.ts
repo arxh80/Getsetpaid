@@ -5,6 +5,7 @@ import { payLinkToken, payLinkUrl, verifyPayLinkToken } from "@/lib/stripe/pay-l
 
 const ID = "3f0c9a52-6f0e-4d8e-9a43-0d5c2b1e7a10";
 const SECRET = "pay-link-test-secret-0123456789abcdef0123";
+const B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -22,6 +23,11 @@ describe("the pay-link token", () => {
     ["an empty signature", (t: string) => `${t.split(".")[0]}.`],
     ["a non-uuid id", (t: string) => `x.${t.split(".")[1]}`],
     ["three parts", (t: string) => `${t}.x`],
+    // Non-canonical spellings of the same MAC (final review F8): Node's base64url decoder skips
+    // characters outside the alphabet and ignores the last character's two padding bits.
+    ["an appended !", (t: string) => `${t}!`],
+    ["an inserted %", (t: string) => `${t.slice(0, 50)}%${t.slice(50)}`],
+    ["a last character that differs only in its padding bits", (t: string) => t.slice(0, -1) + B64URL[B64URL.indexOf(t.at(-1)!) ^ 1]],
   ])("refuses %s", (_label, mutate) => {
     vi.stubEnv("INVOICE_PAY_LINK_SECRET", SECRET);
     expect(verifyPayLinkToken(mutate(payLinkToken(ID)!))).toBeNull();

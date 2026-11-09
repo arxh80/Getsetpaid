@@ -21,8 +21,10 @@ export function verifyPayLinkToken(token: string): string | null {
   const secret = payLinkSecret();
   const parts = token.split(".");
   if (!secret || parts.length !== 2 || !UUID.test(parts[0]) || !parts[1]) return null;
-  const presented = Buffer.from(parts[1], "base64url");
-  const expected = sign(secret, parts[0]);
+  // Compare the canonical STRINGS, not decoded bytes: the decoder skips characters
+  // outside the alphabet, so a decoded compare would accept `sig + "!"`.
+  const presented = Buffer.from(parts[1]);
+  const expected = Buffer.from(sign(secret, parts[0]).toString("base64url"));
   return presented.length === expected.length && timingSafeEqual(presented, expected) ? parts[0] : null;
 }
 
