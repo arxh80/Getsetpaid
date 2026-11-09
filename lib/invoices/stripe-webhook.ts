@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { StripeEvent } from "@/lib/stripe/client";
+import { stripeEnv } from "@/lib/stripe/env";
 import { createServiceClient } from "@/lib/supabase/service";
 
 // ===========================================================================
@@ -28,6 +29,10 @@ const str = (v: unknown): v is string => typeof v === "string" && v.length > 0;
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
 export async function handleStripeEvent(event: StripeEvent): Promise<WebhookResult> {
+  // Before any RPC, for every type: a test-mode event carries the same acct_ id as a
+  // live one, so under a live key it could pay an invoice with no money received.
+  const env = stripeEnv();
+  if (!env || (event.livemode === true) !== env.live) return OK("ignored");
   const account = typeof event.account === "string" ? event.account : null;
   if (!account) return OK("ignored"); // a platform event: not a workspace's
   // The EVENT's time, not the object's: session.created is when Checkout opened (up to 24 h

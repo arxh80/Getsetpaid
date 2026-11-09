@@ -2,7 +2,7 @@ import Stripe from "stripe";
 import { describe, expect, it } from "vitest";
 import { FakeStripeGateway } from "@/lib/stripe/fake";
 
-const ENV = { mode: "fake" as const, secretKey: "sk_test_fake", webhookSecret: "whsec_fake_secret", connectClientId: "ca_fake" };
+const ENV = { mode: "fake" as const, live: false, secretKey: "sk_test_fake", webhookSecret: "whsec_fake_secret", connectClientId: "ca_fake" };
 const INVOICE = "3f0c9a52-6f0e-4d8e-9a43-0d5c2b1e7a10";
 
 describe("FakeStripeGateway", () => {

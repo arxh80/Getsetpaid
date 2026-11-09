@@ -4,7 +4,7 @@
 // guard case sits beside the applied control (the first), so a refusal cannot
 // pass for want of a fixture.
 import Stripe from "stripe";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
 import { createFixtures, destroyFixtures, type RlsFixtures } from "../rls/support/fixtures";
@@ -22,8 +22,9 @@ let company: string;
 let n = 0;
 
 // `envelope` overrides the event's own fields: `created` is the event's time, the one the handler uses.
+// livemode false: these run under the fake's test-mode key (F1: the mode must match the key's).
 const evt = (type: string, account: string | undefined, object: Record<string, unknown>, envelope: Record<string, unknown> = {}): Ev =>
-  ({ id: `evt_${fx.runId}_${(n += 1)}`, type, created: 1_790_000_000, ...(account ? { account } : {}), data: { object }, ...envelope }) as unknown as Ev;
+  ({ id: `evt_${fx.runId}_${(n += 1)}`, type, created: 1_790_000_000, livemode: false, ...(account ? { account } : {}), data: { object }, ...envelope }) as unknown as Ev;
 
 async function issuedInvoice(): Promise<string> {
   const num = `WH-${String((n += 1)).padStart(4, "0")}`;
@@ -270,6 +271,74 @@ describe("account events and the rest", () => {
     expect(await handleStripeEvent(evt("checkout.session.completed", undefined, session(inv, pi()))))
       .toEqual({ status: 200, outcome: "ignored" });
     expect(await invoiceRow(inv)).toEqual({ status: "issued", paid_via: null });
+  });
+});
+
+describe("livemode must match the key's mode (final review F1)", () => {
+  // Stripe sends a Connect platform's endpoint BOTH modes' events for a connected
+  // account, under the same acct_ id. A test-mode Checkout paid with 4242 must
+  // never mark a live invoice paid, nor may a test account.* event touch the link.
+  const LIVE_KEY = "sk_live_not_a_real_key";
+  const underKey = (key: string) => {
+    vi.stubEnv("STRIPE_MODE", "");
+    vi.stubEnv("STRIPE_SECRET_KEY", key);
+  };
+  afterEach(() => {
+    vi.stubEnv("STRIPE_MODE", "fake");
+    vi.stubEnv("STRIPE_SECRET_KEY", "sk_test_fake");
+  });
+  const recorded = async (id: string) =>
+    Number((await pool.query<{ c: string }>(`select count(*) c from public.stripe_events where id = $1`, [id])).rows[0].c);
+  const link = async (account: string) =>
+    (await pool.query<{ s: string }>(
+      `select charges_enabled || '|' || (ended_at is null) s from public.invoice_stripe_accounts where stripe_account_id = $1`, [account])).rows[0]?.s;
+
+  let acctC: string; // org B re-linked: the account events below end it
+  beforeAll(async () => {
+    acctC = `acct_WC${fx.runId.replaceAll("-", "").slice(0, 16)}`;
+    await pool.query(
+      `update public.invoice_stripe_accounts set stripe_account_id = $2, charges_enabled = true, ended_at = null, ended_reason = null
+        where organisation_id = $1`, [fx.orgB.id, acctC]);
+  });
+
+  type Setup = () => Promise<{ account: string; object: Record<string, unknown>; state: () => Promise<unknown> }>;
+  const CASES: [string, string, Setup][] = [
+    ["checkout.session.completed", "applied", async () => {
+      const inv = await issuedInvoice();
+      const intent = pi();
+      return { account: acctA, object: session(inv, intent), state: async () => [await invoiceRow(inv), await paymentCount(intent)] };
+    }],
+    ["charge.refunded", "flagged", async () => {
+      const inv = await issuedInvoice();
+      const intent = pi();
+      expect((await paid(inv, intent)).outcome).toBe("applied"); // under the test key, a test-mode event
+      return { account: acctA, object: { payment_intent: intent, amount_refunded: 1000 }, state: () => refunded(intent) };
+    }],
+    ["account.updated", "applied", async () => ({ account: acctC, object: { charges_enabled: false }, state: () => link(acctC) })],
+    ["account.application.deauthorized", "applied", async () => ({ account: acctC, object: {}, state: () => link(acctC) })],
+  ];
+
+  it.each(CASES)("%s: a test-mode event under a live key, and a live one under a test key, are ignored and write nothing; live under live is applied (the control)", async (type, applied, setup) => {
+    const { account, object, state } = await setup();
+    const before = await state();
+
+    underKey(LIVE_KEY);
+    const testMode = evt(type, account, object, { livemode: false });
+    expect(await handleStripeEvent(testMode)).toEqual({ status: 200, outcome: "ignored" });
+    expect(await recorded(testMode.id)).toBe(0);
+    expect(await state()).toEqual(before);
+
+    underKey("sk_test_not_a_real_key");
+    const liveUnderTest = evt(type, account, object, { livemode: true });
+    expect(await handleStripeEvent(liveUnderTest)).toEqual({ status: 200, outcome: "ignored" });
+    expect(await recorded(liveUnderTest.id)).toBe(0);
+    expect(await state()).toEqual(before);
+
+    underKey(LIVE_KEY);
+    const live = evt(type, account, object, { livemode: true });
+    expect(await handleStripeEvent(live)).toEqual({ status: 200, outcome: applied });
+    expect(await recorded(live.id)).toBe(1);
+    expect(await state()).not.toEqual(before);
   });
 });
 

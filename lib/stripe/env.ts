@@ -3,7 +3,10 @@ import "server-only";
 // STRIPE_MODE=fake selects lib/stripe/fake.ts for development and tests; under
 // NODE_ENV=production it is refused (card payments read as unconfigured), the
 // malware scanner's rule: a typo must never downgrade production to a stub.
-export interface StripeEnv { mode: "live" | "fake"; secretKey: string; webhookSecret: string; connectClientId: string }
+// `live` is the key's Stripe mode (sk_live_/rk_live_), not `mode`: the webhook ignores
+// every event whose livemode differs (a Connect endpoint receives both modes' events).
+// The fake is test mode.
+export interface StripeEnv { mode: "live" | "fake"; live: boolean; secretKey: string; webhookSecret: string; connectClientId: string }
 
 function value(name: string): string | null {
   const raw = process.env[name]?.trim();
@@ -17,7 +20,8 @@ export function stripeEnv(): StripeEnv | null {
   const webhookSecret = value("STRIPE_WEBHOOK_SECRET");
   const connectClientId = value("STRIPE_CONNECT_CLIENT_ID");
   if (!secretKey || !webhookSecret || !connectClientId) return null;
-  return { mode, secretKey, webhookSecret, connectClientId };
+  const live = mode === "live" && /^[sr]k_live_/.test(secretKey);
+  return { mode, live, secretKey, webhookSecret, connectClientId };
 }
 
 export function payLinkSecret(): Buffer | null {

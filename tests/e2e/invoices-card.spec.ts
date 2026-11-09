@@ -62,6 +62,7 @@ function paidEvent(account: string, intent: string, amount: number) {
     id: eventId(),
     type: "checkout.session.completed",
     created: nowSeconds(),
+    livemode: false, // the fake is test mode; the webhook ignores a mode mismatch
     account,
     data: {
       object: {
@@ -284,6 +285,7 @@ test("a signed refund shows 'Refunded in Stripe' against the payment", async ({ 
     id: eventId(),
     type: "charge.refunded",
     created: nowSeconds(),
+    livemode: false,
     account: await accountId(),
     data: { object: { payment_intent: firstIntent, amount_refunded: 50000 } },
   });

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getStripe } from "@/lib/stripe/client";
+import { stripeEnv } from "@/lib/stripe/env";
 import { FakeStripeGateway } from "@/lib/stripe/fake";
 
 const KEYS = {
@@ -34,5 +35,18 @@ describe("getStripe", () => {
     expect(gw).not.toBeNull();
     expect(gw).not.toBeInstanceOf(FakeStripeGateway);
     expect(gw!.authorizeUrl("s", "https://app.test/cb")).toContain("https://connect.stripe.com/oauth/authorize?");
+  });
+});
+
+describe("stripeEnv().live: the mode the webhook accepts events from (final review F1)", () => {
+  it.each([
+    ["sk_live_x", "", true],
+    ["rk_live_x", "", true],
+    ["sk_test_x", "", false],
+    ["rk_test_x", "", false],
+    ["sk_live_x", "fake", false], // the fake is test mode, whatever key it holds
+  ])("%s with STRIPE_MODE=%j is live=%s", (key, mode, live) => {
+    set({ STRIPE_SECRET_KEY: key, STRIPE_MODE: mode });
+    expect(stripeEnv()?.live).toBe(live);
   });
 });
