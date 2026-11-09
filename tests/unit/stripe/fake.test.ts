@@ -15,6 +15,7 @@ describe("FakeStripeGateway", () => {
   });
   it("exchanges only a fake code", async () => {
     await expect(fake.exchangeCode("fake_code_abcd1234")).resolves.toEqual({ account: "acct_fakeabcd1234" });
+    await expect(fake.exchangeCode("fake_code_a-b_c123")).resolves.toEqual({ account: "acct_fakeabc123" });
     await expect(fake.exchangeCode("real_code")).rejects.toThrow();
   });
   it("reports charges enabled unless the account ends in _off", async () => {

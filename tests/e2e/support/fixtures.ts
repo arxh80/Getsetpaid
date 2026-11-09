@@ -65,9 +65,11 @@
 //
 // LOCAL ONLY. `localStack()` refuses anything that is not loopback.
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
+import Stripe from "stripe";
 // RELATIVE, NOT `@/tests/support/totp`. This file is loaded by Playwright's own
 // transform, which does not resolve the `@/` alias vitest's config sets up --
 // the same reason `localStack()` below is a copy of the integration suite's env
@@ -962,6 +964,68 @@ export async function countAuditRows(action: string, targetId: string): Promise<
     [action, targetId],
   );
   return Number(rows[0]?.n ?? 0);
+}
+
+// ---- INVOICES PART 2: the card-payment fake ---------------------------------
+/** A fake Stripe value: the running env, else the file `pnpm dev` wrote, else .env.example (what dev-env copies). */
+function fakeStripeValue(name: string): string {
+  if (process.env[name]) return process.env[name] as string;
+  for (const file of [".env.development.local", ".env.example"]) {
+    try {
+      const m = readFileSync(file, "utf8").match(new RegExp(`^${name}=(\\S+)`, "m"));
+      if (m) return m[1];
+    } catch {
+      /* the file may not exist yet; try the next */
+    }
+  }
+  throw new Error(`No ${name} in the environment, .env.development.local or .env.example.`);
+}
+
+/** A Stripe event signed with the dev webhook secret, ready for `request.post("/api/stripe/webhook", ...)`. */
+export function signedWebhook(event: Record<string, unknown>): { data: string; headers: Record<string, string> } {
+  const body = JSON.stringify(event);
+  const signature = Stripe.webhooks.generateTestHeaderString({ payload: body, secret: fakeStripeValue("STRIPE_WEBHOOK_SECRET") });
+  return { data: body, headers: { "content-type": "application/json", "stripe-signature": signature } };
+}
+
+/** The Stripe account a workspace linked through the UI (the fake derives it from the OAuth state). As postgres. */
+export async function liveStripeAccountId(organisationId: string): Promise<string> {
+  const { rows } = await db().query<{ id: string }>(
+    `select stripe_account_id as id from public.invoice_stripe_accounts where organisation_id = $1 and ended_at is null`,
+    [organisationId],
+  );
+  if (!rows[0]) throw new Error("This workspace has no live Stripe link.");
+  return rows[0].id;
+}
+
+/** An invoice's gross in minor units, as the database stored it. As postgres. */
+export async function invoiceGrossMinor(invoiceId: string): Promise<number> {
+  const { rows } = await db().query<{ g: string }>(`select gross_minor::text as g from public.invoices where id = $1`, [invoiceId]);
+  return Number(rows[0]?.g);
+}
+
+/** Audit rows of one action in one workspace (Invoices part 2: the Stripe link audits carry no target). As postgres. */
+export async function countOrgAuditRows(action: string, organisationId: string): Promise<number> {
+  const { rows } = await db().query<{ n: string }>(
+    `select count(*)::text as n from public.audit_events where action = $1 and organisation_id = $2`,
+    [action, organisationId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+export interface CardPaymentRead {
+  outcome: string;
+  amount_minor: string;
+  refunded_minor: string;
+}
+
+/** The `invoice_card_payments` rows of one invoice, oldest first. As postgres. */
+export async function cardPaymentsFor(invoiceId: string): Promise<CardPaymentRead[]> {
+  const { rows } = await db().query<CardPaymentRead>(
+    `select outcome, amount_minor::text, refunded_minor::text from public.invoice_card_payments where invoice_id = $1 order by received_at, id`,
+    [invoiceId],
+  );
+  return rows;
 }
 
 /**
