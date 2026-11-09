@@ -118,6 +118,7 @@ const STRIPE_NAMES = [
 function readLocalStripeLines() {
   const raw = readFileSync(join(process.cwd(), ".env.example"), "utf8");
   return STRIPE_NAMES.map((name) => {
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- name is one of the five literals above
     const value = raw.match(new RegExp(`^${name}=(\\S+)`, "m"))?.[1];
     if (!value) throw new Error(`dev-env: .env.example has no ${name} value`);
     return `${name}=${value}`;
