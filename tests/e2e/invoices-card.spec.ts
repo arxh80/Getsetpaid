@@ -181,9 +181,11 @@ test("the recipient's pay page: not shared-cacheable, accessible, and the button
 
     // KEYBOARD: Tab reaches the button, Enter submits it.
     await page.goto(`/pay/${token}`);
-    await page.keyboard.press("Tab"); // the skip link
-    await page.keyboard.press("Tab"); // past the header, onto the button
-    for (let i = 0; i < 6 && !(await page.getByRole("button", { name: "Pay by card" }).evaluate((el) => el === document.activeElement)); i += 1) {
+    await expect(page.getByRole("heading", { name: `Invoice ${invoiceNumber}`, level: 1 })).toBeVisible();
+    await page.waitForLoadState("load");
+    // Tab from the top of the document until the button has focus: the skip link and the footer are not the target.
+    const payButton = page.getByRole("button", { name: "Pay by card" });
+    for (let i = 0; i < 10 && !(await payButton.evaluate((el) => el === document.activeElement)); i += 1) {
       await page.keyboard.press("Tab");
     }
     await expect(page.getByRole("button", { name: "Pay by card" })).toBeFocused();
