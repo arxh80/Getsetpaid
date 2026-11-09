@@ -150,9 +150,9 @@ test("the recipient's pay page: not shared-cacheable, accessible, and the button
   try {
     const response = await page.goto(`/pay/${token}`);
     const cacheControl = response?.headers()["cache-control"] ?? "";
-    // Shared caches must not keep a page whose URL is the credential.
-    expect(cacheControl, `Cache-Control was "${cacheControl}"`).toMatch(/no-store|private/);
-    expect(cacheControl).toMatch(/no-store|no-cache/);
+    // The exact values payPageHeaders() sets: a page whose URL is the credential is never cached and sends no Referer.
+    expect(cacheControl).toBe("no-store");
+    expect(response?.headers()["referrer-policy"]).toBe("no-referrer");
     test.info().annotations.push({ type: "cache-control", description: cacheControl });
 
     await expect(page.getByRole("heading", { name: `Invoice ${invoiceNumber}`, level: 1 })).toBeVisible();
@@ -245,7 +245,9 @@ test("a tampered token and a paid invoice's token refuse alike, with no amount; 
     await expect(page.locator("body")).not.toContainText("£");
     await expect(page.getByRole("button", { name: "Pay by card" })).toHaveCount(0);
 
-    const tampered = `${token.slice(0, -1)}${token.endsWith("A") ? "B" : "A"}`;
+    // Flip the FIRST signature character (all 6 bits significant); the last one carries only 4, so flipping it can decode to the same MAC.
+    const [id, sig] = token.split(".");
+    const tampered = `${id}.${sig[0] === "A" ? "B" : "A"}${sig.slice(1)}`;
     expect(tampered).not.toBe(token);
     await page.goto(`/pay/${tampered}`);
     await expect(refused).toBeVisible();
