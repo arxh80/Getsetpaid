@@ -16,6 +16,7 @@ import {
   type E2eWorld,
 } from "./support/fixtures";
 import { signIn } from "./support/sign-in";
+import { INVOICE_ID_METADATA_KEY } from "../../lib/stripe/metadata";
 
 // INVOICES, PART 2 -- the card-payment golden path, the seventh sibling of
 // golden-path, events, operations, finance, network and invoices. Serial: the
@@ -67,7 +68,7 @@ function paidEvent(account: string, intent: string, amount: number) {
     data: {
       object: {
         id: `cs_fake_${invoiceId.replaceAll("-", "")}`,
-        metadata: { invoice_id: invoiceId },
+        metadata: { [INVOICE_ID_METADATA_KEY]: invoiceId },
         payment_intent: intent,
         amount_total: amount,
         currency: "gbp",

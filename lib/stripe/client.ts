@@ -6,6 +6,7 @@ import "server-only";
 import Stripe from "stripe";
 import { stripeEnv, type StripeEnv } from "@/lib/stripe/env";
 import { FakeStripeGateway } from "@/lib/stripe/fake";
+import { INVOICE_ID_METADATA_KEY } from "@/lib/stripe/metadata";
 
 export type StripeEvent = Stripe.Event;
 export interface CheckoutInput {
@@ -31,7 +32,8 @@ class LiveStripeGateway implements StripeGateway {
     return `https://connect.stripe.com/oauth/authorize?${q}`;
   }
   async exchangeCode(code: string) {
-    const token = await this.stripe.oauth.token({ grant_type: "authorization_code", code });
+    // No retry: Stripe counts a retried exchange as a second use of the code and revokes the link.
+    const token = await this.stripe.oauth.token({ grant_type: "authorization_code", code }, { maxNetworkRetries: 0 });
     if (!token.stripe_user_id) throw new Error("stripe oauth: no stripe_user_id");
     return { account: token.stripe_user_id };
   }
@@ -47,8 +49,8 @@ class LiveStripeGateway implements StripeGateway {
         mode: "payment",
         allowed_payment_method_types: ["card"],
         line_items: [{ quantity: 1, price_data: { currency: "gbp", unit_amount: i.grossMinor, product_data: { name: `Invoice ${i.number}` } } }],
-        payment_intent_data: { application_fee_amount: i.feeMinor, metadata: { invoice_id: i.invoiceId } },
-        metadata: { invoice_id: i.invoiceId },
+        payment_intent_data: { application_fee_amount: i.feeMinor, metadata: { [INVOICE_ID_METADATA_KEY]: i.invoiceId } },
+        metadata: { [INVOICE_ID_METADATA_KEY]: i.invoiceId },
         success_url: i.successUrl,
         cancel_url: i.cancelUrl,
       },

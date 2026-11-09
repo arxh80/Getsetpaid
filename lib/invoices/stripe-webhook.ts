@@ -2,6 +2,7 @@ import "server-only";
 
 import type { StripeEvent } from "@/lib/stripe/client";
 import { stripeEnv } from "@/lib/stripe/env";
+import { INVOICE_ID_METADATA_KEY } from "@/lib/stripe/metadata";
 import { createServiceClient } from "@/lib/supabase/service";
 
 // ===========================================================================
@@ -44,7 +45,7 @@ export async function handleStripeEvent(event: StripeEvent): Promise<WebhookResu
   switch (event.type) {
     case "checkout.session.completed": {
       const metadata = (obj.metadata ?? {}) as Record<string, unknown>;
-      const invoiceId = metadata.invoice_id;
+      const invoiceId = metadata[INVOICE_ID_METADATA_KEY];
       const { payment_intent: intent, amount_total: amount, currency } = obj;
       if (
         obj.payment_status !== "paid" || typeof invoiceId !== "string" || !UUID.test(invoiceId) ||

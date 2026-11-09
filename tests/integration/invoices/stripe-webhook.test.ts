@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { Pool } from "pg";
 import { getLocalSupabaseStatus } from "../rls/support/env";
 import { createFixtures, destroyFixtures, type RlsFixtures } from "../rls/support/fixtures";
+import { INVOICE_ID_METADATA_KEY as KEY } from "@/lib/stripe/metadata";
 
 let fx: RlsFixtures;
 let pool: Pool;
@@ -51,7 +52,7 @@ async function issuedInvoice(): Promise<string> {
 }
 
 const session = (invoiceId: string, intent: string, over: Record<string, unknown> = {}) => ({
-  metadata: { invoice_id: invoiceId }, payment_intent: intent, amount_total: 12000, currency: "gbp",
+  metadata: { [KEY]: invoiceId }, payment_intent: intent, amount_total: 12000, currency: "gbp",
   payment_status: "paid", ...over,
 });
 const paid = (invoiceId: string, intent: string, over: Record<string, unknown> = {}, envelope: Record<string, unknown> = {}) =>
@@ -128,8 +129,8 @@ describe("checkout.session.completed", () => {
   });
 
   it.each([
-    ["a non-UUID invoice_id", { metadata: { invoice_id: "not-a-uuid" } }],
-    ["no invoice_id", { metadata: {} }],
+    ["a non-UUID invoice id", { metadata: { [KEY]: "not-a-uuid" } }],
+    ["no invoice id", { metadata: {} }],
     ["no payment_intent", { payment_intent: null }],
     ["a null amount_total", { amount_total: null }],
     ["a negative amount_total", { amount_total: -1 }],
@@ -139,6 +140,14 @@ describe("checkout.session.completed", () => {
     const inv = await issuedInvoice();
     const intent = pi();
     expect(await paid(inv, intent, over)).toEqual({ status: 200, outcome: "ignored" });
+    expect(await invoiceRow(inv)).toEqual({ status: "issued", paid_via: null });
+    expect(await paymentCount(intent)).toBe(0);
+  });
+
+  it("a plain invoice_id (a linked account's own Checkout, not ours) is ignored, though it names a real invoice", async () => {
+    const inv = await issuedInvoice();
+    const intent = pi();
+    expect(await paid(inv, intent, { metadata: { invoice_id: inv } })).toEqual({ status: 200, outcome: "ignored" });
     expect(await invoiceRow(inv)).toEqual({ status: "issued", paid_via: null });
     expect(await paymentCount(intent)).toBe(0);
   });
