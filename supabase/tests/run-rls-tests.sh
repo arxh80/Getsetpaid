@@ -1513,7 +1513,10 @@ fi
 # This drives the race for real: two sessions, each REPEATABLE READ, each
 # takes its snapshot, sleeps, then withdraws. Exactly one may land.
 # ============================================================================
-race_user=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -tAc \
+# -q: without it psql adds an "INSERT 0 1" line after the id, and `head -1`
+# can close the pipe before docker writes it -- SIGPIPE, exit 141 under
+# pipefail (CI, PR #46).
+race_user=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -tAc \
   "insert into auth.users (id, instance_id, aud, role, email)
    values (gen_random_uuid(), '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
            'consent-race-' || gen_random_uuid() || '@test.local') returning id" | head -1 | tr -d '[:space:]')
