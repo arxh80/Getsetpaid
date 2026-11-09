@@ -27,6 +27,9 @@ export const INVOICE_REFUSAL_SENTENCES: Readonly<Record<string, string>> = {
   invoice_send_email_invalid: "Enter the email address to send the invoice to.",
   invoice_number_taken: "That invoice number is already used. Change the number prefix in Invoice settings, then issue again.",
   invoice_settings_invalid: "One of the settings is not valid. Check each field and save again.",
+  stripe_link_state_invalid: "That Stripe connection attempt expired or was already used. Start again from Invoice settings.",
+  stripe_account_invalid: "Stripe returned an account we can’t use. Try connecting again.",
+  stripe_account_in_use: "That Stripe account is already connected to another GetSetPaid workspace.",
 };
 
 export function invoiceRefusal(error: { code?: string; hint?: string | null; message: string }): string {

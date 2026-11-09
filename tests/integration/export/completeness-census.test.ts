@@ -116,6 +116,10 @@ const NEITHER_DERIVATION: Readonly<Record<string, string>> = {
   retention_runs:
     "The retention job's run log: one row per run, with what it swept, how long it took and what it refused. It reaches no organisation and no person BY CONSTRUCTION -- every value in it is a count or a boolean (the CHECK on `swept` enforces exactly that), and `correlation_id` is a thread id rather than a reference to anything. It is in neither derivation because there is nothing for either walk to follow, and it belongs in no export for the same reason: it is the platform's record of its own housekeeping, about nobody. It is NOT catalogued, because a table with no foreign key cannot be catalogued without the both-directions assertions reporting it as `extra` -- rate_limit_counters' reason, for the opposite cause (that one is invisible DESPITE having both paths; this one has neither).",
 
+  // ---- Invoices part 2 (20261110000000). The platform's one fee row.
+  stripe_platform_settings:
+    "One row for the whole deployment: the application fee GetSetPaid takes on each card payment, in basis points (Q279). It has no organisation and no user column, reaches no person or workspace, and is the platform's own commercial configuration; no client role can read it.",
+
   // ---- Q228 (20261101000000). The first table whose ONLY foreign key is to
   // ---- another export-side table rather than to an organisation or a user.
   export_job_parts:
@@ -176,10 +180,13 @@ const WORKSPACE_EXPORTED = [
   // token_secret_id (projected out by name), and the sync history.
   "integration_connections",
   "integration_sync_runs",
-  // Invoices part 1 (20261107000000).
+  // Invoices part 1 (20261107000000), and part 2 (20261110000000): the
+  // Stripe link and the card payments received against the invoices.
+  "invoice_card_payments",
   "invoice_lines",
   "invoice_sends",
   "invoice_settings",
+  "invoice_stripe_accounts",
   "invoices",
   "meeting_links",
   "meetings",
@@ -211,6 +218,11 @@ const WORKSPACE_EXCUSED = [
   "export_jobs",
   "feedback",
   "incident_alerts",
+  // Invoices part 2 (20261110000000): operational counter / idempotency
+  // ledger, ids only. Neither is a record of the business, and no client
+  // role can read either.
+  "invoice_pay_sessions",
+  "stripe_events",
 ];
 
 const ACCOUNT_EXPORTED = [
@@ -259,6 +271,7 @@ const ACCOUNT_EXCUSED = [
   "financial_entries",
   "incident_alerts",
   "invoice_sends",
+  "invoice_stripe_accounts",
   "invoices",
   "legal_documents",
   "meetings",
@@ -506,7 +519,8 @@ describe("the tables in NEITHER derivation are a disposition, not a residue", ()
       // integration_sync_runs (20261030000000); 57 = 56 + Q228's
       // export_job_parts (20261101000000).
       // 61 = 57 + Invoices part 1's four tables (20261107000000).
-    ).toBe(61);
+      // 66 = 61 + Invoices part 2's five public tables (20261110000000).
+    ).toBe(66);
     // Kept, and no longer pretending to be the load-bearing one: the two
     // derivations overlap (a table can have both paths), so the remainder is
     // the complement by construction. What makes it worth a line is that it

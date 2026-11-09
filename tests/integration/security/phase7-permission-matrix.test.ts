@@ -1158,6 +1158,34 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "invoice settings (step-up in the Server Action). A bank change is audited by " +
     "column name only and queued as an email to the Owners and Admins. " +
     "Asserted in rls_invoices.sql § IX.",
+  begin_stripe_link:
+    "Invoices part 2 Task 3 -- a manage_finance holder in a Pro workspace, with a " +
+    "fresh invoice_settings step-up token, starts linking the workspace's own Stripe " +
+    "account: stores the hash of a single-use ten-minute OAuth state bound to the " +
+    "caller and returns it. Refused in order: forbidden, plan, step-up. Asserted in " +
+    "rls_invoices_stripe.sql § SL and rls_phase10_step_up.sql § SG22.",
+  claim_stripe_link_state:
+    "Invoices part 2 Task 3 fix 1 -- the OAuth callback's first call, BEFORE the code is " +
+    "exchanged (Stripe revokes a connection whose code is used twice): claims, once, a " +
+    "state the CALLER began and that has not expired, re-checks manage_finance and Pro on " +
+    "the state's workspace and returns that workspace. Anyone else's, a second claim, an " +
+    "expired or made-up state gets 42501 stripe_link_state_invalid. Asserted in " +
+    "rls_invoices_stripe.sql § SL.",
+  complete_stripe_link:
+    "Invoices part 2 Task 3 -- the OAuth callback's last call: the same holder completes a " +
+    "state THEY claimed (single use, unexpired); the workspace is the state's, never an " +
+    "argument. Stores the account Stripe returned; an account another workspace holds " +
+    "live is refused. Audits by name only. Asserted in rls_invoices_stripe.sql § SL.",
+  end_stripe_account_link:
+    "Invoices part 2 Task 3 -- the same holder, with a step-up token, disconnects the " +
+    "workspace's live Stripe link and gets the account id back for the deauthorise " +
+    "call; with nothing live it returns null and writes nothing. Asserted in " +
+    "rls_invoices_stripe.sql § SL and rls_phase10_step_up.sql § SG23.",
+  stripe_application_fee_bps:
+    "Invoices part 2 Task 3 -- returns the one integer the settings page states " +
+    "(Q279: 100 = 1%); reachable by any signed-in user, discloses nothing else " +
+    "(stripe_platform_settings grants no client a read). Asserted in " +
+    "rls_invoices_stripe.sql § SL.",
   audit_invoice_download:
     "Invoices part 1 Task 10 -- the PDF route calls it before rendering, so it is " +
     "reachable by whoever may read the invoice (view_finance, not tier-gated). It " +
@@ -1239,9 +1267,17 @@ const PRE_PHASE7_RELATIONS = [
   // view_finance holders (Owner, Admin, Finance; aal2); no INSERT, UPDATE or
   // DELETE grant for any client role (every write is a SECURITY DEFINER RPC).
   // Proved persona by persona in supabase/tests/rls_invoices.sql IR/IB.
+  //
+  // Invoices part 2 (20261110000000): the two Stripe tables a client reads,
+  // on the same terms (SELECT only, view_finance, aal2, every write an RPC).
+  // Proved in supabase/tests/rls_invoices_stripe.sql SR/SB. The other three
+  // (invoice_pay_sessions, stripe_events, stripe_platform_settings) grant
+  // authenticated NOTHING, so this census does not see them (ST3).
+  "invoice_card_payments",
   "invoice_lines",
   "invoice_sends",
   "invoice_settings",
+  "invoice_stripe_accounts",
   "invoices",
   "meeting_links",
   "meetings",
@@ -1397,6 +1433,22 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Task 9b job 2 -- the DSR received/closed notice queue; the address is auth.users through user_id, the tombstone excluded",
   "pending_export_ready_notifications(p_limit integer)":
     "Task 9b job 2 -- the export-ready notice queue; returns no archive key and no URL",
+  "pending_invoice_stripe_account_notifications(p_limit integer)":
+    "Invoices part 2 Task 3 -- the delivery tick reads Stripe link/end audit rows not yet emailed, with the workspace's current Owner/Admin addresses; no account id; refuses any session",
+  "stripe_account_deauthorized(p_event_id text, p_account text)":
+    "Invoices part 2 Task 3 (event id: Task 4) -- the webhook ends the live link of an account Stripe says revoked GetSetPaid, once per event id, and audits it with the tombstone as actor; refuses any session. Asserted in rls_invoices_stripe.sql § SL and § SW",
+  "stripe_account_updated(p_event_id text, p_account text, p_charges_enabled boolean)":
+    "Invoices part 2 Task 3 (event id: Task 4) -- the webhook mirrors Stripe's charges_enabled onto the live link of an account, once per event id; refuses any session. Asserted in rls_invoices_stripe.sql § SL and § SW",
+  "invoice_pay_page(p_invoice_id uuid)":
+    "Invoices part 2 Task 4 -- what the public pay page may say about an invoice id: payable false for every refusal, the seller's name only for a known non-draft invoice, number and gross only when payable. Asserted in rls_invoices_stripe.sql § SY",
+  "begin_invoice_card_payment(p_invoice_id uuid)":
+    "Invoices part 2 Task 4 -- the pay page's POST: refuses unless the invoice is payable by card now (including the Pro tier of its own workspace) or 20 sessions exist in the hour, then writes one counted session row and returns the account and the application fee. Asserted in rls_invoices_stripe.sql § SY",
+  "attach_invoice_pay_session(p_pay_session_id uuid, p_stripe_session_id text)":
+    "Invoices part 2 Task 4 -- stamps the Stripe Checkout Session id on the counted row, once. Asserted in rls_invoices_stripe.sql § SY",
+  "record_stripe_checkout_completed(p_event_id text, p_account text, p_invoice_id uuid, p_payment_intent text, p_amount_minor bigint, p_currency text, p_paid_at timestamp with time zone)":
+    "Invoices part 2 Task 4 -- a paid checkout: idempotent on the event id and the payment intent, a mismatch (account, amount, currency) alerts and changes nothing, an issued invoice is booked through the shared helper and marked paid by card, a settled one keeps the payment and is flagged. Audits by name only. Asserted in rls_invoices_stripe.sql § SW",
+  "record_stripe_charge_refunded(p_event_id text, p_account text, p_payment_intent text, p_refunded_minor bigint, p_refunded_at timestamp with time zone)":
+    "Invoices part 2 Task 4 -- a refund is flagged on the card payment of the account's own workspace (cumulative, clamped), never applied to the invoice. Audits by name only. Asserted in rls_invoices_stripe.sql § SW",
   "pending_invoice_bank_change_notifications(p_limit integer)":
     "Invoices part 1 Task 7 -- the delivery tick reads bank-detail changes not yet emailed, with the workspace's current Owner/Admin addresses and the current account's last four; refuses any session",
   "pending_lockout_notifications(p_limit integer)":

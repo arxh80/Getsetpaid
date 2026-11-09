@@ -13,6 +13,7 @@ import type { InvoiceSnapshot } from "@/lib/invoices/snapshot";
 
 export const INVOICE_NOTICE_ALLOWLIST = {
   bankDetailsChanged: ["organisationSlug", "organisationName", "accountLast4", "changedAt", "siteUrl"],
+  stripeAccountChanged: ["organisationSlug", "organisationName", "change", "changedAt", "siteUrl"],
 } as const;
 
 export interface BankDetailsChangedInput {
@@ -50,6 +51,40 @@ export function buildBankDetailsChangedNotice(input: BankDetailsChangedInput): E
   return body;
 }
 
+export interface StripeAccountChangedInput {
+  readonly organisationSlug: string;
+  readonly organisationName: string;
+  readonly change: "linked" | "ended";
+  readonly changedAt: string;
+  readonly siteUrl: string;
+}
+
+/** The Stripe-account fraud-guard notice: a payee on the invoices changed. Names no account. */
+export function buildStripeAccountChangedNotice(input: StripeAccountChangedInput): EmailBody {
+  assertInputAllowlisted("stripeAccountChanged", INVOICE_NOTICE_ALLOWLIST.stripeAccountChanged, input);
+  const slug = slugOrRefuse("stripeAccountChanged", input.organisationSlug);
+  if (input.change !== "linked" && input.change !== "ended") {
+    throw new NoticeContentError("stripeAccountChanged notice refused: unknown change");
+  }
+  const name = oneLine(input.organisationName, 120);
+  const label = name ? `“${name}” (${slug})` : slug;
+  const link = `${origin(input.siteUrl)}/${slug}/settings/invoicing`;
+  const linked = input.change === "linked";
+  const body = render(
+    `[GetSetPaid] A Stripe account was ${linked ? "connected to" : "disconnected from"} ${slug}'s invoices`,
+    [
+      linked
+        ? `A Stripe account was connected on ${ukDateTime(input.changedAt)} to the workspace ${label}, so its invoices can now be paid by card.`
+        : `The Stripe account connected to the workspace ${label} was disconnected on ${ukDateTime(input.changedAt)}, so its invoices no longer offer a card payment.`,
+      "If you expected this, there is nothing to do. If you did not, open Invoice settings now and check it, and contact GetSetPaid support straight away.",
+    ],
+    link,
+    "Open invoice settings",
+  );
+  assertOnlyLink("stripeAccountChanged", body, link);
+  return body;
+}
+
 const INVOICE_NUMBER = /^[A-Z0-9-]{0,12}[0-9]{4,10}$/;
 
 export interface InvoiceEmailInput {
@@ -59,17 +94,26 @@ export interface InvoiceEmailInput {
   readonly grossMinor: number;
   readonly dueDate: string;
   readonly bank: InvoiceSnapshot["seller"]["bank"];
+  /** The signed /pay link (Stripe Connect), only for an issued invoice on a live account. */
+  readonly payUrl?: string | null;
 }
 
-/** The invoice email to the customer: plain, no link (the PDF is attached),
- *  every person's text one line and neutralised. */
+// The ONE link an invoice email may carry: our own signed pay page. Anything
+// else in payUrl is refused, never rendered.
+const PAY_URL = /^https?:\/\/[^\s"<>]+\/pay\/[0-9a-f-]{36}\.[A-Za-z0-9_-]+$/;
+
+/** The invoice email to the customer: plain, no link but the optional pay link
+ *  (the PDF is attached), every person's text one line and neutralised. */
 export function buildInvoiceEmail(input: InvoiceEmailInput): EmailBody {
   if (!INVOICE_NUMBER.test(input.number)) throw new NoticeContentError("invoice email refused: bad number");
   const seller = oneLine(input.sellerName, 120);
   const recipient = oneLine(input.recipientName, 120);
+  const payUrl = input.payUrl ?? null;
+  if (payUrl !== null && !PAY_URL.test(payUrl)) throw new NoticeContentError("invoice email refused: bad pay link");
   const paragraphs = [
     `Dear ${recipient},`,
     `Please find attached invoice ${input.number} from ${seller} for ${formatGbp(input.grossMinor)}, due on ${formatDateOnly(input.dueDate)}.`,
+    ...(payUrl ? [`Pay by card: ${payUrl}`] : []),
     input.bank
       ? `Please pay by bank transfer to ${oneLine(input.bank.accountName, 140)}, sort code ${input.bank.sortCode}, account number ${input.bank.accountNumber}, quoting ${input.number}.`
       : `Please contact ${seller} for payment details, quoting ${input.number}.`,
@@ -78,6 +122,8 @@ export function buildInvoiceEmail(input: InvoiceEmailInput): EmailBody {
   return {
     subject: `Invoice ${input.number} from ${seller}`,
     text: paragraphs.join("\n\n"),
-    html: paragraphs.map((p) => `<p>${escapeHtml(p)}</p>`).join("\n"),
+    html: paragraphs
+      .map((p) => (payUrl && p === `Pay by card: ${payUrl}` ? `<p><a href="${escapeHtml(payUrl)}">Pay by card</a></p>` : `<p>${escapeHtml(p)}</p>`))
+      .join("\n"),
   };
 }

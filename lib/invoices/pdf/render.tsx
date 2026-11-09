@@ -24,8 +24,8 @@ function registerFonts(): void {
 
 export async function renderInvoicePdf(
   snapshot: InvoiceSnapshot,
-  options: { status: "issued" | "paid" | "void" },
+  options: { status: "issued" | "paid" | "void"; payUrl?: string | null },
 ): Promise<Buffer> {
   registerFonts();
-  return renderToBuffer(<InvoiceDocument snapshot={snapshot} status={options.status} />);
+  return renderToBuffer(<InvoiceDocument snapshot={snapshot} status={options.status} payUrl={options.payUrl} />);
 }

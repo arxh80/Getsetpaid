@@ -204,9 +204,13 @@ export const DECLARED_PRIVILEGES: readonly string[] = [
   "integration_sync_runs|authenticated|SELECT|*",
   // Invoices part 1 (20261107000000): SELECT only on all four; every write
   // is a SECURITY DEFINER RPC (rls_invoices.sql IT3-IT5, IB).
+  // Invoices part 2 (20261110000000): the same terms on the two Stripe tables a
+  // client reads (rls_invoices_stripe.sql ST3, SB).
+  "invoice_card_payments|authenticated|SELECT|*",
   "invoice_lines|authenticated|SELECT|*",
   "invoice_sends|authenticated|SELECT|*",
   "invoice_settings|authenticated|SELECT|*",
+  "invoice_stripe_accounts|authenticated|SELECT|*",
   "invoices|authenticated|SELECT|*",
   // legal_documents
   "legal_documents|anon|SELECT|body",

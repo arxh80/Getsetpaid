@@ -26,7 +26,8 @@
     "next": "16.4.2",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "stripe": "23.0.1"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

@@ -11,6 +11,7 @@ import { Alert } from "@/components/ui/alert";
 import { InvoiceEditor } from "@/components/invoices/invoice-editor";
 import { BLOCKED_NOTE_ID, type EditorInitial } from "@/lib/invoices/draft-form";
 import { InvoiceView } from "@/components/invoices/invoice-view";
+import { CardPaymentNotices } from "@/components/invoices/card-payment-notices";
 import { InvoiceStatusChip } from "@/components/invoices/invoice-status-chip";
 import { DeleteDraftForm, IssueInvoiceForm, MarkPaidForm, SendInvoiceForm, VoidInvoiceForm } from "@/components/invoices/invoice-actions";
 import { formatDateTime } from "@/lib/format/date";
@@ -104,6 +105,7 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
         <h1 className="tracking-display text-3xl font-extrabold text-ink tabular-nums">Invoice {invoice.number}</h1>
         <InvoiceStatusChip status={invoice.status} />
       </div>
+      <CardPaymentNotices payments={invoice.cardPayments} />
       {invoice.status === "void" && invoice.voidReason ? (
         <p className="max-w-prose text-base text-ink-muted">Voided: {invoice.voidReason}</p>
       ) : null}

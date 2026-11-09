@@ -59,7 +59,14 @@ import { authCookieOptions, supabasePublicKey, supabaseUrl } from "./env";
  *  point -- not a retry behind a nudge, because nobody is waiting for a
  *  garbage collection -- on the same tick, throttled in the database to about
  *  hourly, with its OWN bearer secret: this is the one that runs the sweep
- *  which deletes the audit log. Listed under `/api/retention`. */
+ *  which deletes the audit log. Listed under `/api/retention`.
+ *
+ *  `/pay` (invoices part 2 Task 5) is the card-payment page for an invoice's
+ *  recipient, who has no account; the credential is the signed token,
+ *  lib/stripe/pay-link.ts. The pay page and its POST both re-verify it.
+ *
+ *  NOT `/api/stripe`: its connect callback needs a signed-in user. The Stripe
+ *  webhook is public by its EXACT path, `/api/stripe/webhook`, never a prefix. */
 export const PUBLIC_PATHS = [
   "/login",
   "/signup",
@@ -70,6 +77,8 @@ export const PUBLIC_PATHS = [
   "/api/erasure",
   "/api/retention",
   "/legal",
+  "/pay",
+  "/api/stripe/webhook",
 ] as const;
 
 /** Signed-in users have no business on these -- bounce them to the hub. */

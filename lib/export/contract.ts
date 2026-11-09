@@ -465,6 +465,12 @@ export const WORKSPACE_EXCLUDED_TABLES: readonly {
     table: "erasure_jobs",
     plainEnglish: "the record of any request to delete this workspace or an account",
   },
+  // Invoices part 2 (20261110000000): operational counters, ids only.
+  {
+    table: "invoice_pay_sessions",
+    plainEnglish: "the count of card-payment checkouts started for your invoices",
+  },
+  { table: "stripe_events", plainEnglish: "the log of Stripe notifications already processed" },
   {
     table: "data_subject_requests",
     plainEnglish: "data protection requests routed to this workspace, which belong to the person who made them",

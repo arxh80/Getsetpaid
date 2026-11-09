@@ -58,7 +58,8 @@ describe("no raw-HTML sink in app source (G18)", () => {
   it("finds none", () => {
     const hits = files.flatMap((full) => rawHtmlSinks(relPath(full), readFileSync(full, "utf8")));
     expect(hits, "a raw-HTML sink renders text as markup: render it as text, or sanitise it and add a reviewed allowlist here").toEqual([]);
-  });
+    // Walks and parses every source file in the tree (a ceiling, not a retry): it timed out at the 5 s default under load.
+  }, 30_000);
 });
 
 describe("the raw-HTML sink detector", () => {

@@ -115,4 +115,29 @@ export const SUB_PROCESSORS: readonly SubProcessor[] = [
         "Every request and response: session cookies, IP addresses, page content, form submissions and uploads in transit",
     },
   },
+  {
+    // Invoices part 2 (Q279). Stripe Payments Europe, Ltd. (incorporated in
+    // Ireland) is the entity that contracts with a UK/EEA platform. The
+    // location below says "EU" and not the country, because the hosting-
+    // consistency test lets only the database region (Q145) name Ireland as a
+    // fact; the register's transfer cell names the incorporation. Nothing is sent until a
+    // workspace links its own Standard account and the platform keys are set
+    // (founder action F13). Card data is typed into Stripe's page and never
+    // reaches this application.
+    name: "Stripe Payments Europe, Ltd.",
+    purpose:
+      "Takes card payments for invoices. A person who pays an invoice by card is sent to Stripe’s payment page, and the money goes to the workspace that issued the invoice.",
+    personalData:
+      "The payer’s email address, the invoice number and the amount, sent when a card payment starts. Card details are entered on Stripe’s page and never reach us.",
+    location: "EU (Stripe’s European entity)",
+    transferBasis:
+      "The EEA is covered by the UK’s adequacy regulations, so no additional transfer safeguards are needed.",
+    dpaSigned: false,
+    register: {
+      purpose:
+        "Card payments for invoices: a payer who clicks \"Pay by card\" on an issued invoice is sent to Stripe Checkout, which takes the payment into the workspace's own Stripe account (Standard Connect, direct charge). **Built, not live:** nothing reaches Stripe until a workspace links its account and the platform's Stripe keys are set (founder action F13)",
+      personalData:
+        "Payer email address, invoice number and amount, sent to Stripe when the payment is started; the card details are typed into Stripe's page and never reach us. We hold only the Stripe account ID of a linked workspace and, per payment, the payment-intent ID, the amount and the refunded amount",
+    },
+  },
 ];

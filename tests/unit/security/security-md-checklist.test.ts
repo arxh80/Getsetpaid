@@ -32,6 +32,11 @@ const REQUIRED: [string, string][] = [
   ["CLAMAV_HOST", "G15: the real scanner"],
   ["Storage backup", "G30"],
   ["privilege census", "G31: the census against production"],
+  ["STRIPE_SECRET_KEY", "Q279 / F13: the Stripe API key"],
+  ["STRIPE_WEBHOOK_SECRET", "Q279 / F13: the webhook signature secret"],
+  ["STRIPE_CONNECT_CLIENT_ID", "Q279 / F13: the Connect OAuth client"],
+  ["INVOICE_PAY_LINK_SECRET", "Q279 / F13: the pay-link signing secret"],
+  ["/api/stripe/connect/callback", "Q279 / F13: the one registered OAuth redirect URI"],
 ];
 
 /** § 15's text: from its heading to the next "## " heading. */

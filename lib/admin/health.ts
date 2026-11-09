@@ -226,7 +226,12 @@ export type IncidentAlertType =
   // (sweep, reason), so "the audit purge has refused its ceiling every hour
   // for a month" arrives in the digest instead of sitting in a column on this
   // page that somebody has to look at.
-  | "retention_run_refused";
+  | "retention_run_refused"
+  // Invoices part 2 Task 2 (20261110000000): a Stripe webhook whose account,
+  // amount or currency did not match the invoice it named. Raised by the
+  // sessionless webhook RPC (Task 4); the details are the invoice id and the
+  // Stripe event id, never an amount, an account or a payment-intent id.
+  | "stripe_payment_mismatch";
 
 export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {
   rate_limit_tripped: "Rate limit tripped",
@@ -236,6 +241,7 @@ export const INCIDENT_ALERT_TYPE_LABELS: Record<IncidentAlertType, string> = {
   dsr_overdue: "Data request OVERDUE",
   dsr_alert_writer_failed: "Data request alerts FAILED to run",
   retention_run_refused: "Retention job REFUSED to run",
+  stripe_payment_mismatch: "Card payment did not match its invoice",
 };
 
 /**

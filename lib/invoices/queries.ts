@@ -5,6 +5,7 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import type { VatRate } from "@/lib/invoices/arithmetic";
 import type { InvoiceStatus } from "@/lib/invoices/status";
+import type { CardPaymentRow } from "@/components/invoices/card-payment-notices";
 
 export interface InvoiceSettingsRow {
   businessName: string | null;
@@ -75,13 +76,15 @@ export interface InvoiceDetail {
   grossMinor: number;
   snapshot: unknown;
   paidOn: string | null;
+  paidVia: "manual" | "card" | null;
+  cardPayments: CardPaymentRow[];
   voidedAt: string | null;
   voidReason: string | null;
   lines: InvoiceLineRow[];
 }
 
 const INVOICE_DETAIL_SELECT =
-  "id, status, number, recipient_company_id, recipient_contact_id, recipient_address, event_id, supply_date, notes, net_minor, vat_minor, gross_minor, snapshot, paid_on, voided_at, void_reason, deleted_at, invoice_lines(position, description, quantity, unit_price_minor, vat_rate, financial_entry_id, net_minor, vat_minor)";
+  "id, status, number, recipient_company_id, recipient_contact_id, recipient_address, event_id, supply_date, notes, net_minor, vat_minor, gross_minor, snapshot, paid_on, paid_via, voided_at, void_reason, deleted_at, invoice_lines(position, description, quantity, unit_price_minor, vat_rate, financial_entry_id, net_minor, vat_minor)";
 
 /** One invoice of this workspace through the caller's RLS. A soft-deleted
  *  draft, another tenant's id, an unparseable id and an absent one are all
@@ -103,6 +106,15 @@ export async function loadInvoice(
     return { outcome: "unavailable" };
   }
   if (!data || data.deleted_at !== null) return { outcome: "missing" };
+  // Same RLS (view_finance). A failed read shows no notice rather than failing the page:
+  // the invoice itself is still true.
+  const { data: payments, error: paymentsError } = await supabase
+    .from("invoice_card_payments")
+    .select("amount_minor, outcome, received_at, refunded_minor, refunded_at")
+    .eq("invoice_id", invoiceId)
+    .order("received_at", { ascending: true })
+    .limit(20);
+  if (paymentsError) console.error("[invoices] card payment lookup failed:", paymentsError.message);
   const lines = ((data.invoice_lines ?? []) as Record<string, unknown>[])
     .map((l) => ({
       position: Number(l.position),
@@ -132,6 +144,14 @@ export async function loadInvoice(
       grossMinor: Number(data.gross_minor),
       snapshot: data.snapshot,
       paidOn: data.paid_on ?? null,
+      paidVia: data.paid_via === "manual" || data.paid_via === "card" ? data.paid_via : null,
+      cardPayments: (payments ?? []).map((r) => ({
+        amountMinor: Number(r.amount_minor),
+        outcome: r.outcome as CardPaymentRow["outcome"],
+        receivedAt: String(r.received_at),
+        refundedMinor: Number(r.refunded_minor),
+        refundedAt: (r.refunded_at as string | null) ?? null,
+      })),
       voidedAt: data.voided_at ?? null,
       voidReason: data.void_reason ?? null,
       lines,

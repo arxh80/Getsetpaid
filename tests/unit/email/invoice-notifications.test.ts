@@ -28,7 +28,7 @@ vi.mock("@/lib/supabase/service", () => ({
   }),
 }));
 
-import { deliverInvoiceBankChangeNotifications } from "@/lib/email/invoice-notifications";
+import { deliverInvoiceBankChangeNotifications, deliverInvoiceStripeAccountNotifications } from "@/lib/email/invoice-notifications";
 
 const row = (id: string, emails: string[] | null) => ({
   audit_event_id: id,
@@ -71,5 +71,54 @@ describe("deliverInvoiceBankChangeNotifications", () => {
   });
   it("nothing pending is nothing_pending", async () => {
     await expect(deliverInvoiceBankChangeNotifications()).resolves.toEqual({ outcome: "nothing_pending" });
+  });
+});
+
+const stripeRow = (id: string, emails: string[] | null, change: string = "linked") => ({
+  audit_event_id: id,
+  emails,
+  organisation_slug: "neon-nights",
+  organisation_name: "Neon Nights Ltd",
+  change,
+  changed_at: "2026-10-20T12:00:00.000Z",
+});
+
+describe("deliverInvoiceStripeAccountNotifications", () => {
+  it("emails the resolver's Owners and Admins, THEN stamps the one audit row under its own notice", async () => {
+    db.rows = [stripeRow("s1", ["admin@example.test", "owner@example.test"])];
+    send.fn.mockResolvedValue({ ok: true, messageId: "m" });
+    await expect(deliverInvoiceStripeAccountNotifications()).resolves.toEqual({ outcome: "delivered", sent: 1, failed: 0, deferred: 0 });
+    expect(events.log).toEqual([
+      "rpc:pending_invoice_stripe_account_notifications",
+      "send:admin@example.test+owner@example.test",
+      "stamp:invoice_stripe_account_changed:s1",
+    ]);
+    expect(send.fn.mock.calls[0][0].subject).toContain("connected to neon-nights");
+  });
+  it("an ended link is worded as a disconnection", async () => {
+    db.rows = [stripeRow("s2", ["owner@example.test"], "ended")];
+    send.fn.mockResolvedValue({ ok: true, messageId: "m" });
+    await deliverInvoiceStripeAccountNotifications();
+    expect(send.fn.mock.calls[0][0].subject).toContain("disconnected from neon-nights");
+  });
+  it("a failed send stamps nothing", async () => {
+    db.rows = [stripeRow("s1", ["owner@example.test"])];
+    send.fn.mockResolvedValue({ ok: false, error: "Brevo 503" });
+    await deliverInvoiceStripeAccountNotifications();
+    expect(events.log.some((l) => l.startsWith("stamp:"))).toBe(false);
+  });
+  it("nobody to send to is recorded once as undeliverable", async () => {
+    db.rows = [stripeRow("s1", null)];
+    await deliverInvoiceStripeAccountNotifications();
+    expect(events.log).toContain("refuse:invoice_stripe_account_changed:s1:no_recipient");
+  });
+  it("a row with a change it does not know is refused as undeliverable, never sent", async () => {
+    db.rows = [stripeRow("s3", ["owner@example.test"], "exploded")];
+    await deliverInvoiceStripeAccountNotifications();
+    expect(send.fn).not.toHaveBeenCalled();
+    expect(events.log).toContain("refuse:invoice_stripe_account_changed:s3:content_refused");
+  });
+  it("nothing pending is nothing_pending", async () => {
+    await expect(deliverInvoiceStripeAccountNotifications()).resolves.toEqual({ outcome: "nothing_pending" });
   });
 });

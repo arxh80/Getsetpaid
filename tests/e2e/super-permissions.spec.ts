@@ -235,6 +235,12 @@ const ROUTE_HANDLERS: Record<string, string> = {
     "BEARER SECRET (EXPORT_RUNNER_SECRET), no session; 404 when the secret is unset and 404 on a wrong one, so a prober cannot tell the two apart -- probed below",
   "app/api/incident-alerts/deliver/route.ts":
     "BEARER SECRET (INCIDENT_ALERT_DELIVERY_SECRET), no session, same 404-either-way rule -- probed below",
+  "app/api/stripe/connect/callback/route.ts":
+    "session required (middleware: signed out is bounced to /login), then claim_stripe_link_state() binds the state row to THIS user, once, unexpired, with manage_finance and Pro re-checked; a forged or replayed state is refused to `/` with no workspace and no reason -- probed in invoices-card.spec.ts",
+  "app/api/stripe/webhook/route.ts":
+    "NO SESSION, by design: the gate is Stripe's signature over the raw body (STRIPE_WEBHOOK_SECRET), checked before any parse; an unsigned or wrongly signed call is a 400 and writes nothing, and the handler's writes go through a service-role RPC keyed on the event id -- probed (forged, then signed) in invoices-card.spec.ts",
+  "app/pay/[token]/start/route.ts":
+    "NO SESSION, by design: the HMAC-signed pay-link token is the credential and the only action it authorises is 'show me Stripe's page'; a tampered token or a not-payable invoice 303s back to the same refusal page and never reaches Stripe -- probed in invoices-card.spec.ts",
   "app/auth/callback/route.ts":
     "the OAuth/magic-link exchange. Unauthenticated BY DESIGN -- it is what turns a code into a session -- and gated by the code itself",
 };

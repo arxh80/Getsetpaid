@@ -2,6 +2,7 @@ import { getCurrentOrg } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { parseSnapshot } from "@/lib/invoices/snapshot";
 import { renderInvoicePdf } from "@/lib/invoices/pdf/render";
+import { invoicePayUrl } from "@/lib/invoices/pay-url";
 
 // GET /[orgSlug]/invoices/[invoiceId]/pdf (spec § PDF). THE ORDER IS THE
 // CONTROL: load through the caller's RLS (view_finance) so another tenant's,
@@ -46,7 +47,10 @@ export async function GET(
     return new Response("Error", { status: 500, headers: NO_STORE });
   }
 
-  const pdf = await renderInvoicePdf(snapshot, { status: data.status as "issued" | "paid" | "void" });
+  const pdf = await renderInvoicePdf(snapshot, {
+    status: data.status as "issued" | "paid" | "void",
+    payUrl: await invoicePayUrl(org.id, invoiceId, data.status),
+  });
   return new Response(new Uint8Array(pdf), {
     headers: {
       ...NO_STORE,

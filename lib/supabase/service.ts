@@ -34,6 +34,18 @@ import "server-only";
 //     lib/email/lockout-notification.ts to resolve the addresses of accounts
 //     with an unnotified lockout alert.
 //
+// THE CARD-PAYMENT PAGE (invoices part 2 Task 5): lib/invoices/pay.ts has no
+// session -- the recipient has no account -- and calls only invoice_pay_page,
+// begin_invoice_card_payment and attach_invoice_pay_session, all granted to
+// service_role alone (20261110002000). The credential is a signed token it
+// verifies first; the RPCs take an invoice id, never a user.
+//
+// THE STRIPE WEBHOOK (invoices part 2 Task 6): lib/invoices/stripe-webhook.ts
+// has no session either; its credential is the signature the route verified.
+// It calls only record_stripe_checkout_completed, record_stripe_charge_refunded,
+// stripe_account_deauthorized and stripe_account_updated, all granted to
+// service_role alone (20261110002000) and idempotent on the Stripe event id.
+//
 // AN RPC IS BOUNDED BY ITS OWN GRANT, NOT BY THE TABLE GRANTS ABOVE IT, and
 // that distinction is the whole reason this paragraph exists: a SECURITY
 // DEFINER function runs as its OWNER, so anything this client can execute can

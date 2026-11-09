@@ -1760,3 +1760,40 @@ Founder: "go ClamAV". Wired on branch `clamav-scanner` (PR #30): fail-closed cla
 ## Q278 -- Invoices part 1: how long an invoice is kept, default implemented
 
 - **Q278 -- Retention class of an invoice.** The spec says an issued, paid or void invoice is a financial record kept 7 years. Today `financial_entries` is `retained_with_workspace` and nothing deletes a financial record on a clock (Q180 is still open). **Default (built): the four invoice tables are classified `cascades` -- they live exactly as long as the workspace, and an issued invoice cannot be deleted by its workspace at all (the freeze trigger).** Classifying `invoices` as `retained_with_workspace` instead would require `/legal/data-retention` to name invoices (rls_phase8_retention.sql RL4 binds that class to the page), which is a new published legal version and waits for counsel. When Q180 is answered, invoices take the same seven-year class as financial entries.
+
+## Q279 -- Invoices part 2: Stripe Connect answers (founder 2026-11-05), recorded
+
+- **Q279 -- What did the founder decide for card payment of an invoice, and what did the build decide where the spec was silent?** Spec `docs/superpowers/specs/2026-11-05-invoices-stripe-design.md`, plan `docs/superpowers/plans/2026-11-05-invoices-stripe.md`. Part 1's table (Standard accounts, a percentage application fee, Pro only, our own invoices with Stripe only taking the payment, invoicing works without Stripe) still binds. **Answers of 2026-11-05, built:**
+
+  | Question | Answer |
+  |---|---|
+  | Stripe account today | None yet. Built and tested against a fake Stripe; the founder runs the real test-mode flow before launch (F13) |
+  | Application fee | 1% (100 basis points), held in one platform row (`stripe_platform_settings`), changed by SQL |
+  | Refund made in Stripe | Flagged on the invoice; the invoice stays paid; the workspace voids by hand if it wants |
+  | Payment methods | Card, with Apple Pay and Google Pay (Checkout adds the wallets). No Bacs or pay-by-bank, so no pending state |
+  | Pay link | Our own permanent link that mints a fresh Checkout Session per click (not Stripe Payment Links, not an emailed 24-hour session) |
+
+  **The plan's eight decisions, one line each (all built):**
+  1. Card-payment state lives in `invoice_card_payments`; `invoices` gains only `paid_via`.
+  2. `invoices.paid_via` (`manual` | `card`) and a rebuilt `invoices_paid_shape`; a card payment has no `paid_by`.
+  3. The OAuth `state` is a database row bound to the user (`begin_stripe_link`, then `claim_stripe_link_state`, then `complete_stripe_link`), not a cookie.
+  4. The pay link opens a page and a POST button creates the Checkout Session, so a mail scanner's GET has no side effect.
+  5. `stripe_events` carries `organisation_id`; an event for an unlinked account is acknowledged and not recorded.
+  6. The fake is chosen by `STRIPE_MODE=fake`, which production refuses (card payments then read unconfigured).
+  7. A mismatched webhook (account, amount or currency) raises the incident-alert type `stripe_payment_mismatch`.
+  8. The link and disconnect emails reuse the bank-change notice machinery as the sibling notice `invoice_stripe_account_changed`.
+
+  **Seven more the build took, with the founder's approval where marked:**
+  1. **One fixed OAuth callback, `/api/stripe/connect/callback`, behind sign-in** (founder approved). It replaced the plan's per-workspace path because Stripe matches `redirect_uri` exactly against a registered list. `claim_stripe_link_state(state)` runs before the code exchange and says which workspace; `complete_stripe_link(state, account, charges_enabled)` accepts only a claimed state. Stripe revokes a connection whose code is used twice. F13 registers this one URI.
+  2. **The pay path's Pro check is per workspace.** It uses `private.effective_organisation_plan` for the invoice's own workspace, not `finance_module_organisations()`, which is bound to `auth.uid()` while the payer is anonymous.
+  3. **A refunded amount only grows.** A late or out-of-order `charge.refunded` never lowers it. The `invoice.paid_by_card` audit payload matches `invoice.marked_paid` (founder approved).
+  4. **Payment and refund times come from the Stripe event envelope's `created`**, not `data.object.created` (founder approved, 2026-11-07).
+  5. **`PUBLIC_PATHS` gets the exact `/api/stripe/webhook`**, not the prefix `/api/stripe`, which would make the sign-in-only callback public. `/pay` is public too, with `Referrer-Policy: no-referrer` and noindex.
+  6. **CSP `form-action` gained `https://checkout.stripe.com` and `https://connect.stripe.com`**, because Chrome applies form-action to the whole redirect chain. The workspace slug `pay` is reserved (`20261110002500_reserve_the_pay_slug.sql`, `lib/org/reserved-slugs.ts`).
+  7. **Known limits.** A workspace whose plan lapsed below Pro cannot disconnect Stripe in-app, and the pay path refuses non-Pro anyway. The webhook route reads the request body before the signature check, with no size cap; the final review put the cap on F13's go-live list (in the app or at the proxy).
+
+  **Owed to the founder:** F13 in `docs/launch-gates.md` (Stripe account, four secrets, webhook, the one redirect URI, a real test-mode payment, Stripe's DPA, a webhook body cap before go-live; on the live deployment, confirm a test-mode event is acknowledged and ignored). Detail in `docs/as-built.md` § "Invoices part 2 (Stripe Connect), as it actually shipped".
+
+## Q280 -- Invoices part 2: the Subprocessors page and Stripe, default implemented
+
+- **Q280 -- Should the published Subprocessors page name Stripe now?** The page body is a published `legal_documents` version carrying the `{{subprocessors}}` block, which is rendered from `lib/legal/sub-processors.ts`; no new version is published. The engineering row is added to `docs/sub-processors.md` and the module together (the drift test binds them), so the rendered table lists Stripe as soon as this ships, with the DPA shown as not yet signed. **Default (built): engineering-draft row added; the published page text is updated with counsel's next review (F3).** The row's Location reads "EU (Stripe's European entity)" rather than "Ireland", because `seed-matches-catalogue.test.ts` lets only the database region (Q145) name Ireland as a fact; the register's transfer cell records that Stripe Payments Europe, Ltd. is incorporated in Ireland.

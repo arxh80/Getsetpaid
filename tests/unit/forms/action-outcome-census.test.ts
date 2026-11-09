@@ -52,6 +52,9 @@ const REPORTED_SURFACES = [
   // Phase 10 Task 21. Removing a member revalidates the members page into a
   // tree without that member's row, and so without these controls.
   "components/org/member-controls.tsx",
+  // Invoices part 2 Task 3. Disconnecting Stripe revalidates the settings page
+  // into the "ended" view, which no longer contains the Disconnect form.
+  "components/invoices/stripe-connection-panel.tsx",
 ];
 
 /**
