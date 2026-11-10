@@ -862,12 +862,12 @@ async function createUser(email: string): Promise<E2eUser> {
  * out a TOTP step. A hosted GoTrue with replay protection would; nothing here
  * runs against one (`localStack()` refuses anything but loopback).
  */
-export async function enrolTotp(email: string): Promise<string> {
+export async function enrolTotp(email: string, password = PASSWORD): Promise<string> {
   const { apiUrl, anonKey } = localStack();
   const client = createClient(apiUrl, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const signedIn = await client.auth.signInWithPassword({ email, password: PASSWORD });
+  const signedIn = await client.auth.signInWithPassword({ email, password });
   if (signedIn.error) {
     throw new Error(`Fixture: could not sign in as ${email}: ${signedIn.error.message}`);
   }

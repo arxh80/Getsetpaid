@@ -80,7 +80,7 @@ export async function signInByEmail(
  * The code is generated from the secret `setUpWorld` enrolled and verified
  * against the LIVE verifier -- no stub, no injected `aal` claim.
  */
-async function presentTotpCode(page: Page, secret: string): Promise<void> {
+export async function presentTotpCode(page: Page, secret: string): Promise<void> {
   const heading = page.getByRole("heading", { name: CHALLENGE_HEADING });
   await expect(heading).toBeVisible();
   await page

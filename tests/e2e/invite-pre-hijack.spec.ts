@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import {
   PASSWORD,
   authUserByEmail,
+  enrolTotp,
   ageAuthMailClocks,
   localStack,
   membershipsOfUser,
@@ -11,6 +12,7 @@ import {
   type InviteWorld,
 } from "./support/fixtures";
 import { totpCode } from "../support/totp";
+import { presentTotpCode } from "./support/sign-in";
 import {
   CONFIRM_LINK,
   expectSignInRefused,
@@ -263,6 +265,12 @@ test("a pending invitee can be invited by a second workspace and accept both", a
 
   await invitee.getByRole("button", { name: /Accept invitation to/ }).first().click();
   await expect(invitee).not.toHaveURL(/\/invites/);
+  // The first acceptance made them a member, and every role is MFA-required
+  // (20261110003000): the second invitation is behind the gate until a factor
+  // is enrolled and this session has presented a code.
+  const secret = await enrolTotp(address, P2);
+  await invitee.goto("/invites");
+  await presentTotpCode(invitee, secret);
   await invitee.goto("/invites");
   await invitee.getByRole("button", { name: /Accept invitation to/ }).click();
   await expect(invitee).not.toHaveURL(/\/invites/);
