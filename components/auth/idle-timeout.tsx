@@ -1,8 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { idleSignOutAction } from "@/lib/auth/actions";
 import {
   ACTIVITY_WRITE_THROTTLE_MS,
   WARNING_LEAD_MS,
@@ -40,7 +39,6 @@ const ACTIVITY_EVENTS = [
  * Mounted once, in app/(app)/layout.tsx, so it runs on every signed-in page.
  */
 export function IdleTimeout({ userId }: { userId: string }) {
-  const router = useRouter();
   const [phase, setPhase] = useState<IdlePhase>("active");
   const [remaining, setRemaining] = useState(0);
   const lastWriteRef = useRef(0);
@@ -94,14 +92,18 @@ export function IdleTimeout({ userId }: { userId: string }) {
     if (signingOutRef.current) return;
     signingOutRef.current = true;
     clearStoredActivity();
-    const supabase = createClient();
-    // 'local' clears this browser's session, same scope signOutAction uses
-    // for a manual sign-out -- revokes the refresh token server-side, which
-    // is what makes this ENFORCEMENT rather than a redirect over a session
-    // that is still technically alive.
-    await supabase.auth.signOut({ scope: "local" });
-    router.push("/login?error=idle_timeout");
-  }, [router, clearStoredActivity]);
+    // The server action revokes the refresh token and redirects to /login,
+    // which is what makes this ENFORCEMENT rather than a redirect over a
+    // session that is still technically alive. The auth cookies are httpOnly,
+    // so only the server can end the session.
+    try {
+      await idleSignOutAction();
+    } catch {
+      // Offline or the server is down: still signed in, so let the next poll
+      // tick try again rather than latch on a sign-out that never happened.
+      signingOutRef.current = false;
+    }
+  }, [clearStoredActivity]);
 
   const recordActivity = useCallback(
     (now: number) => {
