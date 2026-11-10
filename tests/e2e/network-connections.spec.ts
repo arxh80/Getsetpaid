@@ -1,11 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
-  PASSWORD,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
 } from "./support/fixtures";
-import { signIn, signOut } from "./support/sign-in";
+import { signIn, signOut, signInByEmail } from "./support/sign-in";
 
 // PHASE 6 (NETWORK), TASK 4: REQUEST-TO-CONNECT, WALKED WITH TWO REAL
 // ORGANISATIONS -- CONSTRAINT 17.
@@ -55,11 +54,7 @@ test.afterAll(async () => {
 });
 
 async function signInAsFreeMember(page: Page): Promise<void> {
-  await page.goto("/login");
-  await page.locator('input[name="email"]').fill(world.freeMember.email);
-  await page.locator('input[name="password"]').fill(PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).not.toHaveURL(/\/login/);
+  await signInByEmail(page, world.freeMember.email, world.freeMemberTotpSecret);
 }
 
 test("ALPHA sends to BETA's venue; BETA sees it in Received and accepts; both sides then resolve the other's connections field", async ({

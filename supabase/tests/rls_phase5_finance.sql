@@ -261,8 +261,10 @@ select fin.val('FA6 CONTROL: those same six roles DO hold view_crm (FA5 is the k
 -- gate is this one boolean, consumed inside permitted_organisations().
 select fin.val('FA7 private.role_requires_mfa(''finance'') is TRUE -- the entire MFA gate',
   $$select private.role_requires_mfa('finance')::text$$, 'true');
-select fin.val('FA8 CONTROL: it is FALSE for booker, so FA7 is not a constant',
-  $$select private.role_requires_mfa('booker')::text$$, 'false');
+-- Every role since 20261110003000. What keeps FA7 from being inert is § FF:
+-- the same finance user reads 0 at aal1 and 4 at aal2.
+select fin.val('FA8 ...and for booker too: every role is MFA-required',
+  $$select private.role_requires_mfa('booker')::text$$, 'true');
 -- THE TIER GATE'S SOURCE, same idea: the plan flags the gate reads.
 select fin.val('FA9 subscription_plans: pro is the ONLY plan with finance_module',
   $$select string_agg(key,',' order by key) from public.subscription_plans
@@ -876,12 +878,11 @@ select fin.try('FF12 aal2 POSITIVE: the UPDATE writes a row',
      where id='fa110000-0000-0000-0000-000000000005'$$, 'ok(1)');
 reset role; reset request.jwt.claims;
 
--- A NON-MFA ROLE IS UNAFFECTED, which is what proves the gate is role-scoped
--- rather than a blanket "aal2 to touch anything" that would lock out most of
--- the product. pbooker's fixture claims are aal1 and always were.
+-- A booker at aal2 (their fixture level since 20261110003000) still reads the
+-- CRM: the finance refusals are the key, not a session that reads nothing.
 set role authenticated;
 set request.jwt.claims = :'pbooker_c';
-select fin.val('FF13 CONTROL: an aal1 BOOKER still reads the CRM perfectly well',
+select fin.val('FF13 CONTROL: a BOOKER still reads the CRM perfectly well',
   $$select count(*)::text from public.events
      where id='ef110000-0000-0000-0000-000000000001'$$, '1');
 reset role; reset request.jwt.claims;

@@ -131,14 +131,6 @@ async function signInClient(
 }
 
 /**
- * Org roles CLAUDE.md § Session security requires MFA for. Mirrors
- * private.role_requires_mfa() in
- * supabase/migrations/20260827210000_mfa_aal_permission_gate.sql and
- * MFA_REQUIRED_ROLES in lib/auth/mfa-gate.ts.
- */
-const MFA_REQUIRED_ROLES = new Set<RoleKey>(["owner", "admin", "finance"]);
-
-/**
  * Takes a signed-in client from aal1 to aal2 by genuinely enrolling a TOTP
  * factor and completing a challenge against the live GoTrue verifier.
  *
@@ -160,12 +152,9 @@ const MFA_REQUIRED_ROLES = new Set<RoleKey>(["owner", "admin", "finance"]);
  * privileges are now legitimately established rather than accidentally
  * available.
  *
- * Applied ONLY to personas whose role requires MFA (plus the superuser).
- * manager, booker, venue_manager, marketing, standard_user, read_only and the
- * never-activated invited admin all stay at aal1 -- MFA is optional for those
- * roles at MVP, and running them at aal1 is what keeps the suite honest about
- * the gate being role-scoped rather than a blanket "aal2 to do anything",
- * which would lock out most of the product.
+ * Applied to every active persona (plus the superuser): every organisation
+ * role is MFA-required since 2026-11-10 (20261110003000, audit 2026-11-09
+ * finding 1). Only the never-activated invited admin stays at aal1.
  *
  * challengeAndVerify() upgrades the EXISTING session in place -- same
  * session_id, same auth.sessions.created_at, only `aal` moves. That is
@@ -279,13 +268,12 @@ export async function createFixtures(): Promise<RlsFixtures> {
 
   // ---- 2b. Raise the MFA-required personas to aal2, BEFORE any of them does
   // anything privileged. Owners (steps 3-4), the superuser (steps 6-7) and the
-  // active admin/finance personas the assertions use all need it; everyone
-  // else stays at aal1 on purpose. See elevateToAal2()'s header.
+  // active persona of every role all need it (every role is MFA-required
+  // since 20261110003000). See elevateToAal2()'s header.
   await elevateToAal2(ownerA.client, "ownerA");
   await elevateToAal2(ownerB.client, "ownerB");
   await elevateToAal2(superuser.client, "superuser");
   for (const role of nonOwnerRoles) {
-    if (!MFA_REQUIRED_ROLES.has(role)) continue;
     await elevateToAal2(clientByEmail.get(roleEmails.get(role)!)!, `active ${role}`);
   }
   // invitedAdminA is deliberately NOT elevated. Their role is 'admin', but

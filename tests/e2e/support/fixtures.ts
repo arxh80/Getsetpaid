@@ -564,6 +564,13 @@ export interface E2eWorld {
    * whether the finance keys are held at all.
    */
   financeTotpSecret: string;
+  /** The enrolled TOTP secret of every `users` persona, owner/admin/finance
+   *  included: every organisation role is MFA-required since 2026-11-10
+   *  (20261110003000), so every browser sign-in walks the challenge. */
+  totpSecrets: Record<E2eRole, string>;
+  /** ...and of the two standalone personas the specs sign in by hand. */
+  otherMemberTotpSecret: string;
+  freeMemberTotpSecret: string;
   /** Invoices part 1 (Task 9): the event with a budgeted income line, a Pro
    *  draft (to the supplier contact, one line), a Pro issued invoice
    *  (FIX-0001, planted, not from the counter), a Starter draft the tier
@@ -691,7 +698,7 @@ export interface E2eWorld {
   // sign-in would hold no key at all and every refusal would be the MFA gate
   // rather than the tenant boundary.
   //
-  // `otherMember` is a `manager`: MFA-optional, so a password sign-in really
+  // `otherMember` is a `manager`, with a TOTP factor enrolled, so its sign-in really
   // does hold `view_network` and `view_crm`, which is what makes a refusal on
   // ALPHA's contact a statement about the boundary. It is also UNCONNECTED to
   // ALPHA -- no connection request touches `otherOrgId` -- which is the
@@ -719,7 +726,7 @@ export interface E2eWorld {
   /** The Free-tier workspace. */
   freeOrgSlug: string;
   freeOrgId: string;
-  /** A member of `freeOrgSlug` only, MFA-optional (role `manager`, so it can
+  /** A member of `freeOrgSlug` only (role `manager`, so it can
    *  also stand in for "any role" -- view_network is held by all nine).
    *  Signed in by hand in the spec file rather than through `signIn()`,
    *  because it is not one of the fixed `E2eRole` personas every other test
@@ -855,7 +862,7 @@ async function createUser(email: string): Promise<E2eUser> {
  * out a TOTP step. A hosted GoTrue with replay protection would; nothing here
  * runs against one (`localStack()` refuses anything but loopback).
  */
-async function enrolTotp(email: string): Promise<string> {
+export async function enrolTotp(email: string): Promise<string> {
   const { apiUrl, anonKey } = localStack();
   const client = createClient(apiUrl, anonKey, {
     auth: { persistSession: false, autoRefreshToken: false },
@@ -2296,6 +2303,17 @@ export async function setUpWorld(): Promise<E2eWorld> {
   // every Owner/Admin assertion would pass or fail for the MFA reason.
   const ownerTotpSecret = await enrolTotp(users.owner.email);
   const adminTotpSecret = await enrolTotp(users.admin.email);
+  // Every role is MFA-required since 2026-11-10 (20261110003000), so the
+  // remaining personas need a factor too, or they meet the ENROL gate.
+  const totpSecrets: Record<E2eRole, string> = {
+    finance: financeTotpSecret,
+    owner: ownerTotpSecret,
+    admin: adminTotpSecret,
+    manager: await enrolTotp(users.manager.email),
+    standard_user: await enrolTotp(users.standard_user.email),
+    read_only: await enrolTotp(users.read_only.email),
+    booker: await enrolTotp(users.booker.email),
+  };
 
   // =========================================================================
   // PHASE 7 TASK 1: THE PLATFORM SUPERUSER
@@ -2657,6 +2675,9 @@ export async function setUpWorld(): Promise<E2eWorld> {
     starterEntryId,
     otherOrgFinanceEntryId,
     financeTotpSecret,
+    totpSecrets,
+    otherMemberTotpSecret: await enrolTotp(otherMember.email),
+    freeMemberTotpSecret: await enrolTotp(freeMember.email),
     ownerTotpSecret,
     adminTotpSecret,
     superuser,

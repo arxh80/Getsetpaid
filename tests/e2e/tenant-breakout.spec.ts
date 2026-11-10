@@ -9,14 +9,13 @@ import {
   FINANCE_LINES,
   NOTE_BODIES,
   OTHER_ARTIST_NAME,
-  PASSWORD,
   ROOM_NAME,
   VENUE_NAME,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
 } from "./support/fixtures";
-import { signIn } from "./support/sign-in";
+import { signIn, signInByEmail } from "./support/sign-in";
 
 // TENANT BREAKOUT AND RECORD SCOPE, THROUGH THE BROWSER.
 //
@@ -820,7 +819,7 @@ test("a Finance user cannot reach another tenant's finance, from either slug", a
 // deliberately different fixture, chosen there for the TIER angle ("Free sees
 // the directory in full"). Reusing `otherMember` here instead is what makes
 // this the TENANT angle rather than a duplicate: `otherMember` is a plain
-// `manager` of `otherOrgId`, MFA-optional, holding `view_network` at aal1,
+// `manager` of `otherOrgId`, holding `view_network`,
 // with no tier or suspension complication at all -- so a 404 here is provably
 // the tenant boundary and nothing else.
 
@@ -831,11 +830,7 @@ test("a Finance user cannot reach another tenant's finance, from either slug", a
  *  about"). The manual form walk, mirroring network-discovery.spec.ts's own
  *  `signInAsFreeMember`. */
 async function signInAsOtherMember(page: Page): Promise<void> {
-  await page.goto("/login");
-  await page.locator('input[name="email"]').fill(world.otherMember.email);
-  await page.locator('input[name="password"]').fill(PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).not.toHaveURL(/\/login/);
+  await signInByEmail(page, world.otherMember.email, world.otherMemberTotpSecret);
 }
 
 test("ALPHA's draft profile refuses a foreign tenant, and ALPHA's draft never appears in that tenant's directory", async ({
@@ -878,11 +873,7 @@ test("a Free-tier org's connection request is refused server-side even with disa
   // DIFFERENT profile; this test's own contribution is the DB-row-count
   // assertion neither that test nor `network-discovery.spec.ts`'s Free-tier
   // test makes.
-  await page.goto("/login");
-  await page.locator('input[name="email"]').fill(world.freeMember.email);
-  await page.locator('input[name="password"]').fill(PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).not.toHaveURL(/\/login/);
+  await signInByEmail(page, world.freeMember.email, world.freeMemberTotpSecret);
 
   // ---- THE BASELINE, BEFORE ANY CLICK --------------------------------------
   // A denominator for the "unchanged" claim below (Constraint 14): reading it

@@ -93,15 +93,15 @@ select gen_random_uuid()::text as conn_s  \gset
 select gen_random_uuid()::text as ro_s    \gset
 select gen_random_uuid()::text as ex_s    \gset
 select gen_random_uuid()::text as conn_v  \gset
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'mgr2_a')  as mgr2_a_c  \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'mgr2_a')  as mgr2_a_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_s') as owner_s_c \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'owner_s') as owner_s_c1 \gset
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'ro_s')    as ro_s_c    \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'ro_s')    as ro_s_c    \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'ex_s')    as ex_s_c    \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_a') as owner_a_c \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'admin_a') as admin_a_c \gset
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'mgr_a')   as mgr_a_c   \gset
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'ro_a')    as ro_a_c    \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'mgr_a')   as mgr_a_c   \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'ro_a')    as ro_a_c    \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_b') as owner_b_c \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_f') as owner_f_c \gset
 \o

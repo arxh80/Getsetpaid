@@ -644,8 +644,10 @@ select xp.try_hint('XJ4 queued -> succeeded skips a state and is refused',
 select xp.try_hint('XJ5 the request itself is immutable, even as postgres',
   format($$update public.export_jobs set requested_by=%L where id=%L$$, :'pstd1', :'alpha_job'),
   'denied(42501:export_request_is_immutable)');
-select xp.try_hint('XJ6 ...the assurance level included -- the replay cannot be promoted after the fact',
-  format($$update public.export_jobs set requested_aal='aal2' where id=%L$$, :'std_job'),
+-- 'aal1', because std_job was requested at aal2 (every fixture session is,
+-- since 20261110003000) and writing the same value is no change at all.
+select xp.try_hint('XJ6 ...the assurance level included -- the replay cannot be re-levelled after the fact',
+  format($$update public.export_jobs set requested_aal='aal1' where id=%L$$, :'std_job'),
   'denied(42501:export_request_is_immutable)');
 
 select xp.try('XJ7 a FAILURE must say why -- the shape CHECK refuses one that does not',

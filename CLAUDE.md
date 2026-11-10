@@ -156,7 +156,7 @@ There is a single hardcoded superuser (the founder) at MVP. Every `/super` reque
 ### Session security
 
 - Inactivity timeout 30 minutes; absolute lifetime 12 hours.
-- MFA is **required** for Platform Superuser, Owner, Admin and Finance, and optional for everyone else.
+- MFA is **required** for the Platform Superuser and every organisation role (all roles since 2026-11-10, Q281).
 - Step-up re-auth is required before: security-setting changes, large exports, deleting org data, and any high-risk admin/superuser function (impersonation included).
 - Sign-in: email/password, magic link and Google. Microsoft SSO is post-MVP.
 
@@ -235,7 +235,7 @@ Resolved 2026-08-26 (founder sign-off), and still binding:
 - **Invoicing (2026-10-20):** in scope, in three parts: invoices (bank transfer), Stripe Connect (Standard accounts, a percentage application fee), network delivery. Pro only. Our own invoices; Stripe only takes the payment. Q276.
 - **Retention and privacy:** 7 years financial, 2 years inactive (pending counsel). Audit log 30 days hot / 1 year total. DSR turnaround 30 days.
 - **Superuser and feedback:** impersonation needs admin acceptance, a time box and full audit. The superuser dashboard and in-app feedback are MVP (scope as above).
-- **Security:** sessions 30 min idle / 12 h absolute. MFA for Superuser, Owner, Admin and Finance. Step-up triggers as listed. Malware scanning plus a strict allowlist at MVP. Google SSO at MVP.
+- **Security:** sessions 30 min idle / 12 h absolute. MFA for Superuser, Owner, Admin and Finance (every role since 2026-11-10, Q281). Step-up triggers as listed. Malware scanning plus a strict allowlist at MVP. Google SSO at MVP.
 - **Operations and data:** 99.9% SLO. RPO 24h / RTO 4h. UK/EU residency. Dedup auto-merges on exact email only.
 
 Later rulings are recorded per question in the decisions queue (see § Project).
