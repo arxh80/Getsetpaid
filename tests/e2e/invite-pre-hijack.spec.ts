@@ -267,9 +267,12 @@ test("a pending invitee can be invited by a second workspace and accept both", a
   await expect(invitee).not.toHaveURL(/\/invites/);
   // The first acceptance made them a member, and every role is MFA-required
   // (20261110003000): the second invitation is behind the gate until a factor
-  // is enrolled and this session has presented a code.
+  // is enrolled and a session has presented a code. The factor is enrolled
+  // through the API, and the browser's session still carries the factor list
+  // from before it, so the browser signs in afresh to meet the challenge.
   const secret = await enrolTotp(address, P2);
-  await invitee.goto("/invites");
+  await invitee.context().clearCookies();
+  await submitSignIn(invitee, address, P2);
   await presentTotpCode(invitee, secret);
   await invitee.goto("/invites");
   await invitee.getByRole("button", { name: /Accept invitation to/ }).click();
