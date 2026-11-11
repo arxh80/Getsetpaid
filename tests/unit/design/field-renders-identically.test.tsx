@@ -16,12 +16,12 @@ describe("the shared field frame emits the markup the three copies emitted", () 
           required
           hint="Work address."
           error="Enter an email."
-          footer={<a href="/x">Forgot?</a>}
+          footer={<span>Forgot?</span>}
           className="max-w-sm"
         />,
       ),
     ).toBe(
-      "<div class=\"flex flex-col gap-2\"><label for=\"_R_0_\" class=\"text-sm font-semibold text-ink\">Email<span class=\"ml-2 font-normal text-ink-muted\">Required</span></label><p id=\"_R_0_-hint\" class=\"text-sm text-ink-muted\">Work address.</p><input spellCheck=\"false\" autoCorrect=\"off\" autoCapitalize=\"none\" type=\"email\" id=\"_R_0_\" required=\"\" aria-invalid=\"true\" aria-describedby=\"_R_0_-hint _R_0_-error\" class=\"h-11 w-full min-w-0 border bg-surface px-3 text-base text-ink placeholder:text-ink-muted transition-colors duration-[var(--dur-fast)] ease-brand border-danger disabled:cursor-not-allowed disabled:opacity-55 max-w-sm\" name=\"email\"/><p id=\"_R_0_-error\" role=\"alert\" class=\"text-sm font-semibold text-danger\">Enter an email.</p><a href=\"/x\">Forgot?</a></div>",
+      "<div class=\"flex flex-col gap-2\"><label for=\"_R_0_\" class=\"text-sm font-semibold text-ink\">Email<span class=\"ml-2 font-normal text-ink-muted\">Required</span></label><p id=\"_R_0_-hint\" class=\"text-sm text-ink-muted\">Work address.</p><input spellCheck=\"false\" autoCorrect=\"off\" autoCapitalize=\"none\" type=\"email\" id=\"_R_0_\" required=\"\" aria-invalid=\"true\" aria-describedby=\"_R_0_-hint _R_0_-error\" class=\"h-11 w-full min-w-0 border bg-surface px-3 text-base text-ink placeholder:text-ink-muted transition-colors duration-[var(--dur-fast)] ease-brand border-danger disabled:cursor-not-allowed disabled:opacity-55 max-w-sm\" name=\"email\"/><p id=\"_R_0_-error\" role=\"alert\" class=\"text-sm font-semibold text-danger\">Enter an email.</p><span>Forgot?</span></div>",
     );
   });
 
