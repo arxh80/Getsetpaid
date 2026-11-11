@@ -24,6 +24,81 @@ import { useId, type ComponentProps, type ReactNode } from "react";
 // The error state is never colour-alone: --danger text plus the message plus
 // aria-invalid. Colour is the least of the three signals.
 
+function useFieldIds(hint: ReactNode, error: string | undefined) {
+  const id = useId();
+  const describedBy =
+    [hint ? `${id}-hint` : null, error ? `${id}-error` : null]
+      .filter(Boolean)
+      .join(" ") || undefined;
+  return { id, describedBy };
+}
+
+// Hover/focus swap the hairline for the accent rail. --accent is a BORDER
+// colour here, never text: it is the brand green, and green text beside a
+// green focus rail is the structural confusion DESIGN.md § Palette exists to
+// prevent.
+function controlState(error: string | undefined) {
+  return (
+    "transition-colors duration-[var(--dur-fast)] ease-brand " +
+    (error
+      ? "border-danger "
+      : "border-rule hover:border-ink focus:border-accent ") +
+    "disabled:cursor-not-allowed disabled:opacity-55 "
+  );
+}
+
+/** The label, hint and error every field shares. The control is the child. */
+function FieldFrame({
+  id,
+  label,
+  hint,
+  error,
+  required,
+  footer,
+  children,
+}: {
+  id: string;
+  label: string;
+  hint?: ReactNode;
+  error?: string;
+  required?: boolean;
+  footer?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <label htmlFor={id} className="text-sm font-semibold text-ink">
+        {label}
+        {required ? (
+          <span className="ml-2 font-normal text-ink-muted">Required</span>
+        ) : (
+          <span className="ml-2 font-normal text-ink-muted">Optional</span>
+        )}
+      </label>
+
+      {hint ? (
+        <p id={`${id}-hint`} className="text-sm text-ink-muted">
+          {hint}
+        </p>
+      ) : null}
+
+      {children}
+
+      {error ? (
+        <p
+          id={`${id}-error`}
+          role="alert"
+          className="text-sm font-semibold text-danger"
+        >
+          {error}
+        </p>
+      ) : null}
+
+      {footer}
+    </div>
+  );
+}
+
 interface FieldProps extends Omit<ComponentProps<"input">, "id"> {
   label: string;
   /** Persistent guidance under the input. Never a placeholder. */
@@ -55,31 +130,17 @@ export function Field({
         } as const)
       : {};
 
-  const id = useId();
-  const hintId = `${id}-hint`;
-  const errorId = `${id}-error`;
-
-  const describedBy =
-    [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(" ") ||
-    undefined;
+  const { id, describedBy } = useFieldIds(hint, error);
 
   return (
-    <div className="flex flex-col gap-2">
-      <label htmlFor={id} className="text-sm font-semibold text-ink">
-        {label}
-        {required ? (
-          <span className="ml-2 font-normal text-ink-muted">Required</span>
-        ) : (
-          <span className="ml-2 font-normal text-ink-muted">Optional</span>
-        )}
-      </label>
-
-      {hint ? (
-        <p id={hintId} className="text-sm text-ink-muted">
-          {hint}
-        </p>
-      ) : null}
-
+    <FieldFrame
+      id={id}
+      label={label}
+      hint={hint}
+      error={error}
+      required={required}
+      footer={footer}
+    >
       <input
         {...typeDefaults}
         {...props}
@@ -90,27 +151,11 @@ export function Field({
         className={
           "h-11 w-full min-w-0 border bg-surface px-3 text-base text-ink " +
           "placeholder:text-ink-muted " +
-          "transition-colors duration-[var(--dur-fast)] ease-brand " +
-          // Hover/focus swap the hairline for the accent rail. --accent is a
-          // BORDER colour here, never text: it is the brand green, and green
-          // text beside a green focus rail is the structural confusion
-          // DESIGN.md § Palette exists to prevent.
-          (error
-            ? "border-danger "
-            : "border-rule hover:border-ink focus:border-accent ") +
-          "disabled:cursor-not-allowed disabled:opacity-55 " +
+          controlState(error) +
           className
         }
       />
-
-      {error ? (
-        <p id={errorId} role="alert" className="text-sm font-semibold text-danger">
-          {error}
-        </p>
-      ) : null}
-
-      {footer}
-    </div>
+    </FieldFrame>
   );
 }
 
@@ -126,10 +171,8 @@ interface TextAreaFieldProps extends Omit<ComponentProps<"textarea">, "id"> {
  * ADDED BY TASK 4b, AND A SEPARATE COMPONENT RATHER THAN A `multiline` PROP ON
  * `Field`. `Field` spreads `ComponentProps<"input">` onto an `<input>`;
  * `<textarea>` takes a different prop set (`rows`, no `type`, no `size`), so a
- * flag would mean two prop unions and a cast at the spread. Two components
- * that share their accessibility wiring by writing it out twice is worse than
- * one that shares it by structure -- but the wiring here is nine lines and
- * the alternative is a generic that neither reads nor typechecks well.
+ * flag would mean two prop unions and a cast at the spread. The accessibility
+ * wiring is shared by structure instead: `FieldFrame` and `useFieldIds`.
  *
  * WHAT IS DELIBERATELY THE SAME: the visible bound `<label>`, the persistent
  * hint, the error BELOW ITS OWN FIELD with `role="alert"` and
@@ -151,31 +194,10 @@ export function TextAreaField({
   rows = 5,
   ...props
 }: TextAreaFieldProps) {
-  const id = useId();
-  const hintId = `${id}-hint`;
-  const errorId = `${id}-error`;
-
-  const describedBy =
-    [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(" ") ||
-    undefined;
+  const { id, describedBy } = useFieldIds(hint, error);
 
   return (
-    <div className="flex flex-col gap-2">
-      <label htmlFor={id} className="text-sm font-semibold text-ink">
-        {label}
-        {required ? (
-          <span className="ml-2 font-normal text-ink-muted">Required</span>
-        ) : (
-          <span className="ml-2 font-normal text-ink-muted">Optional</span>
-        )}
-      </label>
-
-      {hint ? (
-        <p id={hintId} className="text-sm text-ink-muted">
-          {hint}
-        </p>
-      ) : null}
-
+    <FieldFrame id={id} label={label} hint={hint} error={error} required={required}>
       <textarea
         {...props}
         id={id}
@@ -186,21 +208,11 @@ export function TextAreaField({
         className={
           "w-full min-w-0 border bg-surface px-3 py-2 text-base text-ink " +
           "placeholder:text-ink-muted " +
-          "transition-colors duration-[var(--dur-fast)] ease-brand " +
-          (error
-            ? "border-danger "
-            : "border-rule hover:border-ink focus:border-accent ") +
-          "disabled:cursor-not-allowed disabled:opacity-55 " +
+          controlState(error) +
           className
         }
       />
-
-      {error ? (
-        <p id={errorId} role="alert" className="text-sm font-semibold text-danger">
-          {error}
-        </p>
-      ) : null}
-    </div>
+    </FieldFrame>
   );
 }
 
@@ -249,31 +261,10 @@ export function SelectField({
   children,
   ...props
 }: SelectFieldProps) {
-  const id = useId();
-  const hintId = `${id}-hint`;
-  const errorId = `${id}-error`;
-
-  const describedBy =
-    [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(" ") ||
-    undefined;
+  const { id, describedBy } = useFieldIds(hint, error);
 
   return (
-    <div className="flex flex-col gap-2">
-      <label htmlFor={id} className="text-sm font-semibold text-ink">
-        {label}
-        {required ? (
-          <span className="ml-2 font-normal text-ink-muted">Required</span>
-        ) : (
-          <span className="ml-2 font-normal text-ink-muted">Optional</span>
-        )}
-      </label>
-
-      {hint ? (
-        <p id={hintId} className="text-sm text-ink-muted">
-          {hint}
-        </p>
-      ) : null}
-
+    <FieldFrame id={id} label={label} hint={hint} error={error} required={required}>
       <select
         {...props}
         id={id}
@@ -282,26 +273,12 @@ export function SelectField({
         aria-describedby={describedBy}
         className={
           "h-11 w-full min-w-0 border bg-surface px-3 text-base text-ink " +
-          "transition-colors duration-[var(--dur-fast)] ease-brand " +
-          // Hover/focus swap the hairline for the accent rail. --accent is a
-          // BORDER colour here, never text: it is the brand green, and green
-          // text beside a green focus rail is the structural confusion
-          // DESIGN.md § Palette exists to prevent.
-          (error
-            ? "border-danger "
-            : "border-rule hover:border-ink focus:border-accent ") +
-          "disabled:cursor-not-allowed disabled:opacity-55 " +
+          controlState(error) +
           className
         }
       >
         {children}
       </select>
-
-      {error ? (
-        <p id={errorId} role="alert" className="text-sm font-semibold text-danger">
-          {error}
-        </p>
-      ) : null}
-    </div>
+    </FieldFrame>
   );
 }
