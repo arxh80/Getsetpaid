@@ -66,10 +66,15 @@
 // independently on every statement.
 
 import { revalidatePath } from "next/cache";
-import { getCurrentUser, getCurrentOrg, type CurrentOrg } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
-import { liveInOrg, refusedEndState, stateFor } from "@/lib/crm/actions";
+import {
+  authoriseWith,
+  liveInOrg,
+  refusedEndState,
+  stateFor,
+} from "@/lib/crm/actions";
 import type { RecordPresence } from "@/lib/crm/write-access";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { getFinanceWriteAccess } from "@/lib/crm/finance-access";
@@ -256,32 +261,11 @@ function readFinancialEntry(
  *
  * The finance analogue of lib/crm/actions.ts's authoriseOrg: same shape, same
  * verbatim-explanation discipline, but through getFinanceWriteAccess (the
- * finance_module tier term) rather than getCrmWriteAccess (crm_writes). Kept
- * local rather than parameterising authoriseOrg, because the CRM helper's tier
- * check is wired to one specific entitlement and finance is the one surface
- * that gates on a different one.
- *
- * EVERY REFUSAL CARRIES THE SUBMITTED VALUES BACK: React 19 resets the form
- * after the action, so a refusal that returns no `values` throws away what the
- * user typed (lib/crm/actions.ts states the measurement).
+ * finance_module tier term) rather than getCrmWriteAccess (crm_writes). Both
+ * run through authoriseWith, which owns the refusal handling.
  */
-async function authoriseFinance(
-  orgSlug: string | null,
-  formData: FormData,
-): Promise<
-  | { readonly ok: true; readonly org: CurrentOrg }
-  | { readonly ok: false; readonly state: FormState }
-> {
-  const echoed = echoedValues(formData);
-  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-  const org = await getCurrentOrg(orgSlug);
-  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-
-  const access = await getFinanceWriteAccess(org);
-  if (!access.canWrite) {
-    return { ok: false, state: { error: access.explanation, values: echoed } };
-  }
-  return { ok: true, org };
+async function authoriseFinance(orgSlug: string | null, formData: FormData) {
+  return authoriseWith(orgSlug, formData, getFinanceWriteAccess);
 }
 
 /**

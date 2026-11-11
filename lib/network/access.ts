@@ -76,9 +76,8 @@ import "server-only";
 // in Task A.
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
-import { getCurrentOrg, hasPermission, type CurrentOrg } from "@/lib/auth";
-import { FAILED_MESSAGE } from "@/lib/crm/write";
-import { echoedValues, type FormState } from "@/lib/forms";
+import { hasPermission, type CurrentOrg } from "@/lib/auth";
+import { authoriseWith } from "@/lib/crm/actions";
 import {
   SUSPENDED_READ_ONLY_EXPLANATION,
   readOnlyExplanation,
@@ -208,23 +207,8 @@ export async function getNetworkConnectionAccess(
  * It lives here because both callers are "use server" modules, where every
  * export becomes a callable action.
  */
-export async function authoriseConnectionWrite(
-  orgSlug: string | null,
-  formData: FormData,
-): Promise<
-  | { readonly ok: true; readonly org: CurrentOrg }
-  | { readonly ok: false; readonly state: FormState }
-> {
-  const echoed = echoedValues(formData);
-  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-  const org = await getCurrentOrg(orgSlug);
-  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-
-  const access = await getNetworkConnectionAccess(org);
-  if (!access.canWrite) {
-    return { ok: false, state: { error: access.explanation, values: echoed } };
-  }
-  return { ok: true, org };
+export async function authoriseConnectionWrite(orgSlug: string | null, formData: FormData) {
+  return authoriseWith(orgSlug, formData, getNetworkConnectionAccess);
 }
 
 /**

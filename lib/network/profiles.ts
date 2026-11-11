@@ -76,10 +76,10 @@
 // wrong direction a refusal rather than a silent no-op.
 
 import { revalidatePath } from "next/cache";
-import { getCurrentUser, getCurrentOrg, type CurrentOrg } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
-import { stateFor } from "@/lib/crm/actions";
+import { authoriseWith, stateFor } from "@/lib/crm/actions";
 import { commitWrite, FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
 import { normaliseWebsite } from "@/lib/crm/urls";
 import {
@@ -318,30 +318,12 @@ function profileColumns(values: ProfileValues) {
  * The network analogue of lib/crm/actions.ts's authoriseOrg: same shape, same
  * verbatim-explanation discipline, but through getNetworkPublishAccess (the
  * network_publish tier term and the manage_network_profile key) rather than
- * getCrmWriteAccess.
- *
- * EVERY REFUSAL CARRIES THE SUBMITTED VALUES BACK: React 19 resets the form
- * after the action, so a refusal that returns no `values` throws away what the
- * user typed -- and on THIS form that means the whole visibility ladder they
- * just set (Constraint 11's highest-exposure case).
+ * getCrmWriteAccess. Both run through authoriseWith, which echoes the
+ * submitted values back on every refusal -- on THIS form that is the whole
+ * visibility ladder the user just set (Constraint 11's highest-exposure case).
  */
-async function authoriseNetwork(
-  orgSlug: string | null,
-  formData: FormData,
-): Promise<
-  | { readonly ok: true; readonly org: CurrentOrg }
-  | { readonly ok: false; readonly state: FormState }
-> {
-  const echoed = echoedValues(formData);
-  if (!orgSlug) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-  const org = await getCurrentOrg(orgSlug);
-  if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
-
-  const access = await getNetworkPublishAccess(org);
-  if (!access.canWrite) {
-    return { ok: false, state: { error: access.explanation, values: echoed } };
-  }
-  return { ok: true, org };
+async function authoriseNetwork(orgSlug: string | null, formData: FormData) {
+  return authoriseWith(orgSlug, formData, getNetworkPublishAccess);
 }
 
 /**
