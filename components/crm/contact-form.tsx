@@ -4,10 +4,10 @@ import { useActionState } from "react";
 import Link from "next/link";
 import { createContactAction, updateContactAction } from "@/lib/crm/contacts";
 import { EMPTY_FORM_STATE } from "@/lib/forms";
-import { SOCIAL_PLATFORMS } from "@/lib/crm/urls";
 import { Field } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { Alert } from "@/components/ui/alert";
+import { SocialFieldset } from "@/components/crm/social-fieldset";
 
 // Create / edit a contact. One component, two actions.
 //
@@ -165,29 +165,7 @@ export function ContactForm({
         />
       </div>
 
-      <fieldset className="flex flex-col gap-5 border border-rule p-5">
-        {/* A real <fieldset>/<legend>, so a screen reader announces "Social,
-            Instagram" rather than seven unrelated inputs called after
-            platforms. */}
-        <legend className="px-2 text-sm font-semibold tracking-[0.04em] text-ink-muted uppercase">
-          Social
-        </legend>
-        <p className="max-w-prose text-sm text-ink-muted">
-          A handle or a full link. Only http:// and https:// links are stored —
-          anything else is refused, here and again when the page renders it.
-        </p>
-        {SOCIAL_PLATFORMS.map((platform) => (
-          <Field
-            key={platform.key}
-            label={platform.label}
-            name={`social_${platform.key}`}
-            defaultValue={shownSocial(platform.key)}
-            autoComplete="off"
-            maxLength={300}
-            error={state.fieldErrors?.[`social_${platform.key}`]}
-          />
-        ))}
-      </fieldset>
+      <SocialFieldset shown={shownSocial} fieldErrors={state.fieldErrors} />
 
       <div className="flex flex-wrap items-center gap-4">
         <Button type="submit" pending={pending} pendingLabel="Saving…">
