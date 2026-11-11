@@ -200,6 +200,27 @@ function readEntityType(
   return raw;
 }
 
+/** The gate and the two ids every write to an EXISTING definition needs. */
+async function authoriseDefinition(formData: FormData) {
+  const auth = await authoriseOrg(
+    field(formData, "orgSlug"),
+    formData,
+    DEFINITION_PERMISSION,
+  );
+  if (!auth.ok) return auth;
+
+  const entityType = readEntityType(formData);
+  const fieldId = field(formData, "fieldId");
+  if (entityType === null || !fieldId) {
+    const state: FormState = {
+      error: FAILED_MESSAGE,
+      values: echoedValues(formData),
+    };
+    return { ok: false as const, state };
+  }
+  return { ok: true as const, org: auth.org, entityType, fieldId };
+}
+
 export async function createCustomFieldAction(
   _prev: FormState,
   formData: FormData,
@@ -277,19 +298,9 @@ export async function updateCustomFieldAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authoriseOrg(
-    field(formData, "orgSlug"),
-    formData,
-    DEFINITION_PERMISSION,
-  );
-  if (!auth.ok) return auth.state;
-  const org = auth.org;
-
-  const entityType = readEntityType(formData);
-  const fieldId = field(formData, "fieldId");
-  if (entityType === null || !fieldId) {
-    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
-  }
+  const target = await authoriseDefinition(formData);
+  if (!target.ok) return target.state;
+  const { org, entityType, fieldId } = target;
 
   const parsed = readDefinition(formData, { withKey: false });
   if (!parsed.ok) return parsed.state;
@@ -345,19 +356,9 @@ export async function deleteCustomFieldAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authoriseOrg(
-    field(formData, "orgSlug"),
-    formData,
-    DEFINITION_PERMISSION,
-  );
-  if (!auth.ok) return auth.state;
-  const org = auth.org;
-
-  const entityType = readEntityType(formData);
-  const fieldId = field(formData, "fieldId");
-  if (entityType === null || !fieldId) {
-    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
-  }
+  const target = await authoriseDefinition(formData);
+  if (!target.ok) return target.state;
+  const { org, entityType, fieldId } = target;
 
   const supabase = await createClient();
   const result = await commitWrite(`remove custom field ${fieldId}`, () =>
@@ -389,19 +390,9 @@ export async function restoreCustomFieldAction(
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
-  const auth = await authoriseOrg(
-    field(formData, "orgSlug"),
-    formData,
-    DEFINITION_PERMISSION,
-  );
-  if (!auth.ok) return auth.state;
-  const org = auth.org;
-
-  const entityType = readEntityType(formData);
-  const fieldId = field(formData, "fieldId");
-  if (entityType === null || !fieldId) {
-    return { error: FAILED_MESSAGE, values: echoedValues(formData) };
-  }
+  const target = await authoriseDefinition(formData);
+  if (!target.ok) return target.state;
+  const { org, entityType, fieldId } = target;
 
   const slots = await slotsLeft(org.id, entityType);
   if (!slots.ok) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
