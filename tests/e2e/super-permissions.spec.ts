@@ -50,6 +50,7 @@ import {
 } from "./support/fixtures";
 import { signIn, signOut } from "./support/sign-in";
 import { totpCode } from "../support/totp";
+import { activityStorageKey } from "../../lib/auth/idle-timeout";
 
 let world: E2eWorld;
 
@@ -589,12 +590,11 @@ test("no script the browser loads contains the service-role key", async ({ page 
     }),
   ) as Record<string, string>;
   const serviceRoleKey = stack.SERVICE_ROLE_KEY;
-  const anonKey = stack.ANON_KEY;
-  expect(serviceRoleKey && anonKey, "could not read the local stack's keys").toBeTruthy();
-  expect(
-    serviceRoleKey,
-    "the two keys must differ, or the positive control below proves nothing",
-  ).not.toBe(anonKey);
+  expect(serviceRoleKey, "could not read the local stack's service-role key").toBeTruthy();
+  // The control's needle: the prefix of the idle timer's localStorage key,
+  // which components/auth/idle-timeout.tsx (mounted on every signed-in page)
+  // carries into its client chunk.
+  const controlNeedle = activityStorageKey("");
 
   await signIn(page, world, "manager");
   await page.goto(`/${world.orgSlug}/contacts`);
@@ -610,7 +610,7 @@ test("no script the browser loads contains the service-role key", async ({ page 
   // The DOCUMENT counts too: Next inlines `NEXT_PUBLIC_*` into the RSC payload
   // as readily as into a chunk, so searching only `<script src>` would leave
   // the likeliest hiding place unread.
-  let sawAnonKey = false;
+  let sawControl = false;
   const sources: { name: string; body: string }[] = [
     { name: "the document itself", body: await page.content() },
   ];
@@ -623,17 +623,19 @@ test("no script the browser loads contains the service-role key", async ({ page 
       `${name} contains the SERVICE-ROLE key -- it bypasses RLS and must never ` +
         `leave the server (CLAUDE.md § Non-negotiable rules)`,
     ).toBe(false);
-    if (body.includes(anonKey)) sawAnonKey = true;
+    // Script bodies only: the document must not satisfy a control about fetching scripts.
+    if (name !== "the document itself" && body.includes(controlNeedle)) sawControl = true;
   }
 
-  // THE POSITIVE CONTROL. The anon key IS meant to be in the bundle -- the
-  // browser client authenticates with it. Finding it proves the fetch, the
-  // decode and the substring search all work, so "the service key was not
-  // found" is a statement about the service key and not about a search that
-  // was looking at nothing.
+  // THE POSITIVE CONTROL. This used to be the anon key, but the browser holds
+  // no Supabase key any more: the auth cookies are httpOnly and every Supabase
+  // call is server-side (audit 2026-11-09, F6). A literal the client bundle
+  // must carry stands in for it. Finding it proves the fetch, the decode and
+  // the substring search all work, so "the service key was not found" is a
+  // statement about the service key, not about a search that read nothing.
   expect(
-    sawAnonKey,
-    "the ANON key was not found in any loaded script either, so this test's " +
-      "search found nothing at all and its service-key assertion is vacuous",
+    sawControl,
+    `"${controlNeedle}" was not found in any loaded script either, so this ` +
+      "test's search found nothing at all and its service-key assertion is vacuous",
   ).toBe(true);
 });

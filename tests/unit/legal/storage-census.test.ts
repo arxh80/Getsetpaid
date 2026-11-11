@@ -156,13 +156,6 @@ const DECLARED: readonly DeclaredSite[] = [
     why: "the proxy's client, which refreshes the sb-* session cookies",
   },
   {
-    file: "lib/supabase/client.ts",
-    kind: "supabase-client",
-    count: 1,
-    covers: SUPABASE_ITEM,
-    why: "the browser client; @supabase/ssr stores its session in the same sb-* cookies (document.cookie inside the library)",
-  },
-  {
     file: "components/nav/sidebar.tsx",
     kind: "web-storage-write",
     count: 1,

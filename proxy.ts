@@ -17,7 +17,11 @@ export async function proxy(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Everything except static assets and image files. Auth routes ARE matched
+     * Everything except Next's static assets and the one image this app
+     * serves (app/icon.svg), by NAME. An image-suffix pattern here once let
+     * any path ending .png skip the proxy: no CSP on the not-found page it
+     * rendered, and a client-supplied x-pathname reached currentPath()
+     * (audit 2026-11-09). Auth routes ARE matched
      * on purpose: /auth/callback needs the refreshed cookie jar, and /login
      * needs the signed-in bounce.
      *
@@ -26,6 +30,6 @@ export const config = {
      * Component cookie writer is a no-op (see lib/supabase/server.ts), nothing
      * repairs it.
      */
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    "/((?!_next/static|_next/image|icon\\.svg$).*)",
   ],
 };
