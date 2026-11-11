@@ -179,6 +179,8 @@ test("after a signed-in walk, every cookie and storage key the browser holds is 
   // ...and the workspace cookie really is unreadable by page scripts, as the
   // policy says.
   expect(cookies.find((c) => c.name === "gsp_current_org")?.httpOnly).toBe(true);
+  // ...and so are the session cookies (audit 2026-11-09).
+  for (const c of cookies.filter((x) => auth.matches.test(x.name))) expect(c.httpOnly, c.name).toBe(true);
   expect(await page.evaluate(() => document.cookie)).not.toContain("gsp_current_org");
 
   // ---- THE CENSUS ----------------------------------------------------------

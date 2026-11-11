@@ -61,6 +61,55 @@ describe("POST /api/stripe/webhook", () => {
     expect(handle).not.toHaveBeenCalled();
   });
 
+  // The body is read before the signature can be checked, so its size is capped
+  // first: an unsigned multi-gigabyte POST must not be buffered (F13, audit 2026-11-09).
+  const CAP = 1024 * 1024;
+  // A validly signed event padded with JSON whitespace to exactly `bytes`.
+  const padded = (bytes: number) => BODY.slice(0, -1) + " ".repeat(bytes - BODY.length) + "}";
+
+  it("accepts a signed body of exactly the cap (the control)", async () => {
+    const body = padded(CAP);
+    expect(Buffer.byteLength(body)).toBe(CAP);
+    expect((await POST(post(body, { "stripe-signature": sign(body) }))).status).toBe(200);
+    expect(handle).toHaveBeenCalledTimes(1);
+  });
+
+  it("is 413 for a body one byte over the cap, even when validly signed", async () => {
+    const body = padded(CAP + 1);
+    const res = await POST(post(body, { "stripe-signature": sign(body) }));
+    expect(res.status).toBe(413);
+    expect(handle).not.toHaveBeenCalled();
+  });
+
+  it("is 413 from a declared Content-Length alone, before reading the body", async () => {
+    const req = post(BODY, { "stripe-signature": sign(BODY), "content-length": String(CAP + 1) });
+    const text = vi.spyOn(req, "text");
+    expect((await POST(req)).status).toBe(413);
+    expect(text).not.toHaveBeenCalled();
+    expect(handle).not.toHaveBeenCalled();
+  });
+
+  it("stops reading a streamed body with no Content-Length once it passes the cap", async () => {
+    let pulled = 0;
+    const chunk = new Uint8Array(64 * 1024).fill(0x20);
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled += chunk.byteLength;
+        if (pulled > 64 * CAP) throw new Error("the route kept reading past the cap");
+        controller.enqueue(chunk);
+      },
+    });
+    const req = new Request("https://app.example.test/api/stripe/webhook", {
+      method: "POST",
+      body: stream,
+      headers: { "stripe-signature": "t=1,v1=x" },
+      duplex: "half",
+    } as RequestInit);
+    expect((await POST(req)).status).toBe(413);
+    expect(pulled).toBeLessThanOrEqual(CAP + 2 * chunk.byteLength);
+    expect(handle).not.toHaveBeenCalled();
+  });
+
   it("exports POST only, so GET is a 405", async () => {
     const mod = await import("@/app/api/stripe/webhook/route");
     expect(Object.keys(mod).sort()).toEqual(["POST"]);

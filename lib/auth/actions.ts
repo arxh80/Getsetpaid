@@ -440,6 +440,15 @@ export async function signOutAction(): Promise<void> {
   redirect("/login");
 }
 
+// The idle timer's sign-out (components/auth/idle-timeout.tsx). A server
+// action because the auth cookies are httpOnly: browser code cannot end the
+// session itself.
+export async function idleSignOutAction(): Promise<void> {
+  const supabase = await createClient();
+  await supabase.auth.signOut({ scope: "local" });
+  redirect("/login?error=idle_timeout");
+}
+
 // Phase 10 Task 22: "sign out everywhere", for a lost or stolen device.
 // 'global' revokes every refresh token this user holds, this browser's
 // included. An access token already issued keeps working until it expires
