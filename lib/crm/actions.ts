@@ -82,6 +82,27 @@ export async function authoriseOrg(
   orgSlug: string | null,
   formData: FormData,
   permissionKey: string,
+) {
+  return authoriseWith(orgSlug, formData, (org) =>
+    getCrmWriteAccess(org, permissionKey),
+  );
+}
+
+/**
+ * The one write gate. `authoriseOrg`, finance's `authoriseFinance` and the
+ * network's `authoriseNetwork` / `authoriseConnectionWrite` differ only in
+ * WHICH access check they run -- each names a different entitlement column --
+ * so the check is the parameter and the refusal handling is written once.
+ */
+export async function authoriseWith(
+  orgSlug: string | null,
+  formData: FormData,
+  getAccess: (
+    org: CurrentOrg,
+  ) => Promise<
+    | { readonly canWrite: true }
+    | { readonly canWrite: false; readonly explanation: string }
+  >,
 ): Promise<
   | { readonly ok: true; readonly org: CurrentOrg }
   | { readonly ok: false; readonly state: FormState }
@@ -99,7 +120,7 @@ export async function authoriseOrg(
   // is only invited to. All three are the same answer, on purpose.
   if (!org) return { ok: false, state: { error: FAILED_MESSAGE, values: echoed } };
 
-  const access = await getCrmWriteAccess(org, permissionKey);
+  const access = await getAccess(org);
   if (!access.canWrite) {
     return { ok: false, state: { error: access.explanation, values: echoed } };
   }
