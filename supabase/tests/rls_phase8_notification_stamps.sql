@@ -125,7 +125,7 @@ insert into public.erasure_jobs (id, kind, subject_user_id, requested_by, status
 values (:'era_queued', 'account', null, null, 'queued');
 set session_replication_role = origin;
 
-\set req_c '{"sub":"':req_user'","role":"authenticated","aal":"aal1"}'
+\set req_c '{"sub":"':req_user'","role":"authenticated","aal":"aal2"}'
 
 -- ---------------------------------------------------------------------------
 -- NG  THE GRANTS
@@ -396,7 +396,7 @@ values
   (:'t_old',        :'oa', :'ua_sender', 'NL old',        null, 'open',        now() - interval '8 days', null, null);
 set session_replication_role = origin;
 
-\set uas_c '{"sub":"':ua_sender'","role":"authenticated","aal":"aal1"}'
+\set uas_c '{"sub":"':ua_sender'","role":"authenticated","aal":"aal2"}'
 
 -- ---------------------------------------------------------------------------
 -- NL  THE LEDGER'S GRANTS AND WRITE PATH

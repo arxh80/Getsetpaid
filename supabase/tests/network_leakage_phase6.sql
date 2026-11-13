@@ -165,11 +165,10 @@ select id as beta_org  from public.organisations where slug='org-beta'  \gset
 -- membership; LA6/LA7 pin that the key is actually HELD, so a 0 later in this
 -- file is a boundary and not an inert session.
 --
--- Both counterparties are `manager`, which is MFA-OPTIONAL
--- (private.role_requires_mfa('manager') is false), so their aal1 sessions hold
--- view_network for real. That matters: an owner or admin counterparty at aal1
--- holds nothing, and every 0 measured through one would be the MFA gate rather
--- than the tenant boundary. § LK drives the aal1 question deliberately, where
+-- Both counterparties run at aal2 (`pgmgr_c`, `pbmgr_c`): every role is
+-- MFA-required since 20261110003000, so an aal1 session holds nothing, and
+-- every 0 measured through one would be the MFA gate rather than the tenant
+-- boundary. § LK drives the aal1 question deliberately, where
 -- it is the subject rather than a confound.
 -- ===========================================================================
 \o /dev/null
@@ -229,8 +228,8 @@ select leak.val('LA5b ...and GAMMA has never exchanged a request with ANYBODY, i
 -- THE SESSIONS ARE LIVE AND HOLD THE READ KEY. Without this pair every 0 below
 -- is satisfied by a session that cannot read anything at all.
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
-select leak.val('LA6 the UNCONNECTED counterparty''s aal1 session HOLDS view_network in GAMMA',
+set request.jwt.claims = :'pgmgr_c';
+select leak.val('LA6 the UNCONNECTED counterparty''s session HOLDS view_network in GAMMA',
   format($$select (%L::uuid in (select private.permitted_organisations('view_network')))::text$$,
          :'gamma_org'), 'true');
 select leak.val('LA6b ...and reads exactly its OWN organisation row (a live, RLS-scoped session)',
@@ -238,8 +237,8 @@ select leak.val('LA6b ...and reads exactly its OWN organisation row (a live, RLS
 reset role; reset request.jwt.claims;
 
 set role authenticated;
-set request.jwt.claims = :'pbmgr_c1';
-select leak.val('LA7 the CONNECTED counterparty''s aal1 session HOLDS view_network in BETA',
+set request.jwt.claims = :'pbmgr_c';
+select leak.val('LA7 the CONNECTED counterparty''s session HOLDS view_network in BETA',
   format($$select (%L::uuid in (select private.permitted_organisations('view_network')))::text$$,
          :'beta_org'), 'true');
 select leak.val('LA7b ...and reads BETA''s OWN contacts (so its 0s below are a boundary)',
@@ -269,7 +268,7 @@ reset role; reset request.jwt.claims;
 
 -- ---- UNCONNECTED ----------------------------------------------------------
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
+set request.jwt.claims = :'pgmgr_c';
 
 select leak.val('LB1 UNCONNECTED: ALPHA''s published profile IS in the directory',
   $$select display_name from public.network_directory
@@ -328,7 +327,7 @@ reset role; reset request.jwt.claims;
 
 -- ---- CONNECTED ------------------------------------------------------------
 set role authenticated;
-set request.jwt.claims = :'pbmgr_c1';
+set request.jwt.claims = :'pbmgr_c';
 
 select leak.val('LB7 CONNECTED: the directory STILL masks the `connections` field (the view''s test does not vary)',
   $$select coalesce(contact_email,'<null>') from public.network_directory
@@ -449,7 +448,7 @@ values ('e0110000-0000-0000-0000-0000000000f9', :'alpha_org', 'company',
         '{"city":"network"}'::jsonb, now(), now());
 \o
 set role authenticated;
-set request.jwt.claims = :'pbmgr_c1';
+set request.jwt.claims = :'pbmgr_c';
 select leak.val('LB13a DRIFT, PUBLISHED: predicate:directory:connected agree',
   $$select private.network_profile_is_discoverable('e0110000-0000-0000-0000-00000000000a')::text || ':' ||
            (select count(*) from public.network_directory where id='e0110000-0000-0000-0000-00000000000a')::text || ':' ||
@@ -471,7 +470,7 @@ reset role; reset request.jwt.claims;
 update public.organisations set deleted_at = now() where id = :'alpha_org';
 \o
 set role authenticated;
-set request.jwt.claims = :'pbmgr_c1';
+set request.jwt.claims = :'pbmgr_c';
 select leak.val('LB13d DRIFT, WOUND-DOWN (ALPHA suspended, no subscription row)',
   $$select private.network_profile_is_discoverable('e0110000-0000-0000-0000-00000000000a')::text || ':' ||
            (select count(*) from public.network_directory where id='e0110000-0000-0000-0000-00000000000a')::text || ':' ||
@@ -620,12 +619,12 @@ grant execute on function leak.sweep_fidelity(uuid,text[])         to authentica
 
 -- ---- THE NEGATIVE, TWICE --------------------------------------------------
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
+set request.jwt.claims = :'pgmgr_c';
 select leak.sweep('LC1 UNCONNECTED counterparty reads 0 ALPHA rows: ', :'alpha_org', '0');
 reset role; reset request.jwt.claims;
 
 set role authenticated;
-set request.jwt.claims = :'pbmgr_c1';
+set request.jwt.claims = :'pbmgr_c';
 select leak.sweep('LC2 CONNECTED counterparty reads 0 ALPHA rows: ', :'alpha_org', '0');
 reset role; reset request.jwt.claims;
 
@@ -675,13 +674,13 @@ reset role; reset request.jwt.claims;
 -- an accepted connection must not open a link path either (N4).
 -- ===========================================================================
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
+set request.jwt.claims = :'pgmgr_c';
 select leak.val('LD1 UNCONNECTED: 0 network_links visible in total',
   $$select count(*)::text from public.network_links$$, '0');
 reset role; reset request.jwt.claims;
 
 set role authenticated;
-set request.jwt.claims = :'pbmgr_c1';
+set request.jwt.claims = :'pbmgr_c';
 select leak.val('LD2 CONNECTED: 0 network_links visible in total -- accept opens no link path (N4)',
   $$select count(*)::text from public.network_links$$, '0');
 select leak.val('LD2b CONNECTED: ...including the one filed against BETA''s OWN profile (Q82)',
@@ -1224,7 +1223,7 @@ select leak.val('LG0 DENOMINATOR: ALPHA''s private id set is non-empty, and this
   $$select (count(*) >= 50)::text from leak.private_ids$$, 'true');
 
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
+set request.jwt.claims = :'pgmgr_c';
 select leak.val('LG1 DENOMINATOR: values inspected across the directory (11 per visible row, non-zero)',
   $$select (count(*) >= 11)::text from leak.directory_values$$, 'true');
 select leak.val('LG2 THE FINDING: NO value of any directory column is one of ALPHA''s private row ids',
@@ -1242,7 +1241,7 @@ update public.network_profiles
  where id = 'e0110000-0000-0000-0000-00000000000a';
 \o
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
+set request.jwt.claims = :'pgmgr_c';
 select leak.val('LG3 POSITIVE CONTROL: a private id planted in a `network` field IS caught',
   $$select count(*)::text from leak.directory_values v
      where v.val in (select id::text from leak.private_ids)$$, '1');
@@ -1256,7 +1255,7 @@ update public.network_profiles
  where id = 'e0110000-0000-0000-0000-00000000000a';
 \o
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
+set request.jwt.claims = :'pgmgr_c';
 select leak.val('LG3c ...and reverted, so LG2''s 0 stands for the shipped fixture',
   $$select count(*)::text from leak.directory_values v
      where v.val in (select id::text from leak.private_ids)$$, '0');
@@ -1273,7 +1272,7 @@ reset role; reset request.jwt.claims;
 -- name: 42703 is what a caller actually meets.
 -- ===========================================================================
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
+set request.jwt.claims = :'pgmgr_c';
 select leak.val('LH1 selecting entity_id from the directory is an UNDEFINED COLUMN, not a value',
   $$select entity_id::text from public.network_directory limit 1$$, 'denied(42703)');
 select leak.val('LH1b ...and organisation_id likewise',
@@ -1312,7 +1311,7 @@ on conflict (organisation_id) do update set plan_id='free', status='active';
 \o
 
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
+set request.jwt.claims = :'pgmgr_c';
 select leak.val('LI1 DOWNGRADE (i): ALPHA''s published profile is STILL in the counterparty''s directory',
   $$select display_name from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'Alpha Promotions');
@@ -1447,7 +1446,7 @@ select leak.val('LJ0 FIXTURE: ALPHA is suspended, with a paid period still runni
              from public.organisations o where o.id=%L$$, :'alpha_org'), 'true');
 
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
+set request.jwt.claims = :'pgmgr_c';
 select leak.val('LJ1 THE ANSWER (measured): a COUNTERPARTY STILL sees a SUSPENDED org''s published profile',
   $$select display_name from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'Alpha Promotions');
@@ -1457,7 +1456,7 @@ select leak.val('LJ1b ...with its `network` fields still resolving',
 reset role; reset request.jwt.claims;
 
 set role authenticated;
-set request.jwt.claims = :'pbmgr_c1';
+set request.jwt.claims = :'pbmgr_c';
 select leak.val('LJ2 ...and a CONNECTED counterparty still resolves its `connections` fields too',
   $$select contact_email from public.network_connected_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'bookings@alpha.test');
@@ -1473,7 +1472,7 @@ update public.organisation_subscriptions set current_period_end = now() - interv
  where organisation_id = :'alpha_org';
 \o
 set role authenticated;
-set request.jwt.claims = :'pgmgr_c1';
+set request.jwt.claims = :'pgmgr_c';
 select leak.val('LJ2c Q88 BOUNDARY: past period end, the counterparty NO LONGER sees the profile',
   $$select display_name from public.network_directory
      where id='e0110000-0000-0000-0000-00000000000a'$$, '<null>');
@@ -1482,7 +1481,7 @@ select leak.val('LJ2d ...not through the base table either',
      where id='e0110000-0000-0000-0000-00000000000a'$$, '0');
 reset role; reset request.jwt.claims;
 set role authenticated;
-set request.jwt.claims = :'pbmgr_c1';
+set request.jwt.claims = :'pbmgr_c';
 select leak.val('LJ2e ...and a CONNECTED counterparty loses it too (an accepted connection is not a bypass)',
   $$select contact_email from public.network_connected_profiles
      where id='e0110000-0000-0000-0000-00000000000a'$$, '<null>');

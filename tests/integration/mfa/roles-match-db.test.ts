@@ -98,20 +98,19 @@ describe("private.role_requires_mfa() and MFA_REQUIRED_ROLES describe the same r
     // query that errored into an empty set, or a function that returns the
     // same answer for everything, would make the set comparison below pass
     // trivially in one case and fail confusingly in the other. Assert the
-    // catalogue is the one the reference-data migration seeds, and that the
-    // function actually discriminates.
+    // catalogue is the one the reference-data migration seeds.
     const universe = await roleUniverse();
     const verdicts = await sqlVerdicts(universe);
 
     expect(universe.length).toBeGreaterThanOrEqual(9);
     expect(verdicts.size).toBe(universe.length);
 
+    // Every role requires MFA since 2026-11-10 (audit 2026-11-09, finding 1;
+    // 20261110003000), so "the function discriminates" no longer holds. What
+    // keeps the set comparison below honest is that the TypeScript set is
+    // checked against every catalogue role, not against itself.
     const requiring = [...verdicts.values()].filter(Boolean).length;
-    expect(requiring, "some role must require MFA").toBeGreaterThan(0);
-    expect(
-      requiring,
-      "some role must NOT require MFA -- a blanket true would lock out every unprivileged role",
-    ).toBeLessThan(universe.length);
+    expect(requiring, "every catalogue role must require MFA").toBe(universe.length);
   });
 
   it("SET EQUALITY: the roles Postgres gates are exactly the roles TypeScript gates", async () => {
@@ -159,10 +158,10 @@ describe("private.role_requires_mfa() and MFA_REQUIRED_ROLES describe the same r
     // to survive a comparison with the written rule.
     const verdicts = await sqlVerdicts(await roleUniverse());
 
-    for (const role of ["owner", "admin", "finance"]) {
-      expect(verdicts.get(role), `${role} must require MFA`).toBe(true);
-    }
     for (const role of [
+      "owner",
+      "admin",
+      "finance",
       "manager",
       "booker",
       "venue_manager",
@@ -170,7 +169,7 @@ describe("private.role_requires_mfa() and MFA_REQUIRED_ROLES describe the same r
       "standard_user",
       "read_only",
     ]) {
-      expect(verdicts.get(role), `${role} must NOT require MFA at MVP`).toBe(false);
+      expect(verdicts.get(role), `${role} must require MFA`).toBe(true);
     }
   });
 });

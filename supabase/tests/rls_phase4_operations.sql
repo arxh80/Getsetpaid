@@ -670,7 +670,7 @@ begin
   update public.permissions set survives_suspension=true where key='manage_tasks';
 
   perform pg_catalog.set_config('request.jwt.claims',
-    pg_catalog.json_build_object('sub',v_mgr,'role','authenticated','aal','aal1')::text, true);
+    pg_catalog.json_build_object('sub',v_mgr,'role','authenticated','aal','aal2')::text, true);
   v_first_gate := public.has_permission(v_alpha,'manage_tasks')::text;
 
   set local role authenticated;

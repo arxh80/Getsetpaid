@@ -31,14 +31,14 @@
 --   ---------------------------------------------  -------------------------
 --   powner      owner            aal2              pbowner  owner      aal2
 --   padmin      admin            aal2
---   pmanager    manager          aal1              pmulti   admin in BOTH,
---   pbooker     booker           aal1                       aal2
---   pvenuemgr   venue_manager    aal1
+--   pmanager    manager          aal2              pmulti   admin in BOTH,
+--   pbooker     booker           aal2                       aal2
+--   pvenuemgr   venue_manager    aal2
 --   pfinance    finance          aal2
---   pmarketing  marketing        aal1
---   pstd1       standard_user    aal1
---   pstd2       standard_user    aal1
---   pro         read_only        aal1
+--   pmarketing  marketing        aal2
+--   pstd1       standard_user    aal2
+--   pstd2       standard_user    aal2
+--   pro         read_only        aal2
 --
 -- WHO HOLDS manage_events (founder, Q29, 2026-08-30): owner, admin, manager,
 -- booker, venue_manager, standard_user. NOT finance, marketing, read_only.
@@ -1391,7 +1391,7 @@ begin
    where key = 'manage_events';
 
   perform pg_catalog.set_config('request.jwt.claims',
-    pg_catalog.json_build_object('sub', v_mgr, 'role','authenticated', 'aal','aal1')::text,
+    pg_catalog.json_build_object('sub', v_mgr, 'role','authenticated', 'aal','aal2')::text,
     true);
   v_first_gate := public.has_permission(v_alpha,'manage_events')::text;
 

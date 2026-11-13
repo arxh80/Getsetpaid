@@ -151,7 +151,7 @@ describe("the past_due grace window is the same rule in TypeScript and in SQL", 
                     now() as evaluated_at,
                     set_config('request.jwt.claims',
                       json_build_object('sub', m.user_id, 'role', 'authenticated',
-                                        'aal', 'aal1')::text, true) as claims
+                                        'aal', 'aal2')::text, true) as claims
              from m join s on s.organisation_id = m.organisation_id`,
             [offset],
           );

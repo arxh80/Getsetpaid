@@ -325,7 +325,7 @@ select gen_random_uuid()::text as worder \gset
 insert into auth.users (id, instance_id, aud, role, email)
 values (:'worder', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
         'consent-worder-' || :'worder' || '@test.local');
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'worder') as worder_c \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'worder') as worder_c \gset
 set role authenticated;
 set request.jwt.claims = :'worder_c';
 select cs.try_hint('CW20 a grant with NO wording is refused',
@@ -729,7 +729,7 @@ select gen_random_uuid()::text as leaver \gset
 insert into auth.users (id, instance_id, aud, role, email)
 values (:'leaver', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
         'consent-leaver-' || :'leaver' || '@test.local');
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'leaver') as leaver_c \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'leaver') as leaver_c \gset
 set role authenticated;
 set request.jwt.claims = :'leaver_c';
 select cs.try('CD1 POSITIVE: a new account grants',
@@ -788,7 +788,7 @@ select gen_random_uuid()::text as leaver2 \gset
 insert into auth.users (id, instance_id, aud, role, email)
 values (:'leaver2', '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
         'consent-leaver2-' || :'leaver2' || '@test.local');
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'leaver2') as leaver2_c \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'leaver2') as leaver2_c \gset
 set role authenticated;
 set request.jwt.claims = :'leaver2_c';
 select cs.try('CD10 POSITIVE: a second new account grants',

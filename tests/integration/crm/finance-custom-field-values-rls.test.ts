@@ -285,7 +285,7 @@ describe("financial_entry custom-field values are gated by the finance keys", ()
       await setValue(client, f.org, "event", f.eventId, f.eventFieldId, "P-9");
       await stopActing(client);
 
-      await actAs(client, f.bookerUid, "aal1");
+      await actAs(client, f.bookerUid, "aal2");
       expect(
         await readValues(client, f.org, "financial_entry", f.entryId),
         "no view_finance -> entity_is_visible('financial_entry') is false",
@@ -307,7 +307,7 @@ describe("financial_entry custom-field values are gated by the finance keys", ()
       await client.query("begin");
       const f = await proOrgWithLine(client);
 
-      await actAs(client, f.bookerUid, "aal1");
+      await actAs(client, f.bookerUid, "aal2");
       await expect(
         setValue(client, f.org, "financial_entry", f.entryId, f.financeFieldId, "B-2"),
         "no manage_finance -> entity_is_manageable('financial_entry') is false " +
@@ -330,7 +330,7 @@ describe("financial_entry custom-field values are gated by the finance keys", ()
       await client.query("begin");
       const f = await proOrgWithLine(client);
 
-      await actAs(client, f.bookerUid, "aal1");
+      await actAs(client, f.bookerUid, "aal2");
       expect(
         await setValue(client, f.org, "event", f.eventId, f.eventFieldId, "P-9"),
         "a Booker holds manage_events, so the identical write on an EVENT " +

@@ -171,7 +171,7 @@ select 'qp-s-' || left(:'org_s', 8) as slug_s \gset
 select 'qp-t-' || left(:'org_t', 8) as slug_t \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_p')  as owner_p_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'admin_p2') as admin_p2_c \gset
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'mgr_p3')   as mgr_p3_c   \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'mgr_p3')   as mgr_p3_c   \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_q')  as owner_q_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_r')  as owner_r_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'owner_s')  as owner_s_c  \gset

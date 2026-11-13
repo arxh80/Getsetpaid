@@ -28,7 +28,7 @@ import { totpCode } from "../support/totp";
 // Nothing about it reads the caller's organisation role at all -- there is
 // no code path that COULD treat an Owner differently from a Manager, so
 // proving the refusal with the cheaply-available `manager` persona (already
-// wired for browser sign-in, MFA-optional) demonstrates the same property
+// wired for browser sign-in) demonstrates the same property
 // an Owner would, without a second TOTP enrolment that adds no coverage.
 // tests/integration/rls/rls.test.ts's own section H is where the
 // STRONGEST version of this ("even a fully aal2'd Owner") is actually

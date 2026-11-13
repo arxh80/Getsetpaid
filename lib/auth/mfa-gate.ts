@@ -127,6 +127,7 @@ import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
 import type { FormState } from "@/lib/forms";
 import { getCurrentUser } from "./index";
+import { INVITABLE_ROLES } from "@/lib/org/roles";
 
 /**
  * Org roles CLAUDE.md § Session security requires MFA for.
@@ -146,7 +147,8 @@ import { getCurrentUser } from "./index";
  * and nothing in app/ or lib/ should import it -- use requiresMfaEnrollment()
  * or roleCheckRequiresMfa() instead.
  */
-export const MFA_REQUIRED_ROLES = new Set(["owner", "admin", "finance"]);
+// Every role since 2026-11-10 (audit 2026-11-09, finding 1; 20261110003000).
+export const MFA_REQUIRED_ROLES = new Set<string>(["owner", ...INVITABLE_ROLES.map((r) => r.key)]);
 
 /**
  * Pure decision: given the organisation_memberships query's own {data, error}
