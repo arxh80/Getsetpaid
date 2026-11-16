@@ -76,7 +76,8 @@ begin
   -- Housekeeping: the table holds five minutes of rows, never more.
   delete from private.step_up_tokens t where t.expires_at <= pg_catalog.now();
 
-  -- An unknown purpose is refused by step_up_tokens_purpose_known (23514).
+  -- An unknown purpose is refused by the table's purpose CHECK (23514). The
+  -- constraint is not named here: a unit test finds the live list by its name.
   insert into private.step_up_tokens (user_id, purpose, created_at, expires_at)
   values (v_uid, p_purpose, pg_catalog.now(), pg_catalog.now() + interval '5 minutes');
 end;
