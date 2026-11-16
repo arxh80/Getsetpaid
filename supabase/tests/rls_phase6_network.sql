@@ -674,6 +674,9 @@ select nw.try('NM10d CONTROL: the SAME write at exactly 4,000 characters is acce
   $$update public.network_profiles set bio = repeat('x', 4000)
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'ok(1)');
 reset role; reset request.jwt.claims;
+-- Put the fixture bio back: network_leakage_phase6.sql reads it byte for byte.
+update public.network_profiles set bio = 'Twenty years of shows'
+  where id='e0110000-0000-0000-0000-00000000000a';
 
 -- ===========================================================================
 -- NG. `anon` HOLDS NOTHING (N6). FIVE OBJECTS -- the denominator is stated.
