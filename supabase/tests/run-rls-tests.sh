@@ -487,7 +487,7 @@ fi
 # This is that suite.
 # ============================================================================
 
-run_suite "PHASE 6 NETWORK" rls_phase6_network.sql nw 161 "${P2VARS[@]}"
+run_suite "PHASE 6 NETWORK" rls_phase6_network.sql nw 163 "${P2VARS[@]}"
 p6_fails=$SUITE_FAILS
 if [ "$p6_fails" != "0" ]; then
   echo "PHASE 6 NETWORK SUITE FAILED: $p6_fails failing assertion(s)" >&2

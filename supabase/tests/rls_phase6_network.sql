@@ -665,7 +665,18 @@ select nw.try('NM10b CONTROL: the SAME write with city back at `network` is acce
        set field_visibility = field_visibility || '{"city":"network"}'::jsonb,
            city='Bristol'
      where id='e0110000-0000-0000-0000-00000000000a'$$, 'ok(1)');
+-- Audit 2026-11-16: the form's length caps are the database's too, because a
+-- direct PostgREST write never runs the form (20261116001000).
+select nw.try('NM10c a bio one character over the 4,000 cap is refused by the CHECK, whatever wrote it',
+  $$update public.network_profiles set bio = repeat('x', 4001)
+     where id='e0110000-0000-0000-0000-00000000000a'$$, 'denied(23514)');
+select nw.try('NM10d CONTROL: the SAME write at exactly 4,000 characters is accepted',
+  $$update public.network_profiles set bio = repeat('x', 4000)
+     where id='e0110000-0000-0000-0000-00000000000a'$$, 'ok(1)');
 reset role; reset request.jwt.claims;
+-- Put the fixture bio back: network_leakage_phase6.sql reads it byte for byte.
+update public.network_profiles set bio = 'Twenty years of shows'
+  where id='e0110000-0000-0000-0000-00000000000a';
 
 -- ===========================================================================
 -- NG. `anon` HOLDS NOTHING (N6). FIVE OBJECTS -- the denominator is stated.
