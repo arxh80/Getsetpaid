@@ -452,9 +452,9 @@ max_frequency = "5s"
 #      comparison only runs once that column is set) -- so a session that is
 #      abandoned before it ever needs to refresh is NOT caught by this alone,
 #      no matter how long it sits idle, up to the 12h timebox. Closed by
-#      components/auth/idle-timeout.tsx, which is genuine enforcement (it
-#      calls supabase.auth.signOut(), revoking the refresh token) rather than
-#      pure UX, precisely because of this gap.
+#      the custom access token hook below (20261116004000): the browser
+#      tracker in components/auth/idle-timeout.tsx only runs while a
+#      signed-in page is open, so it never saw a tab that was closed.
 #   2. Both limits are enforced at REFRESH time, not on every request -- an
 #      access token already issued keeps authenticating for the rest of its
 #      own jwt_expiry above regardless of session state. See the jwt_expiry
@@ -469,9 +469,15 @@ inactivity_timeout = "30m"
 # uri = "pg-functions://postgres/auth/before-user-created-hook"
 
 # This hook runs before a token is issued and allows you to add additional claims based on the authentication method used.
-# [auth.hook.custom_access_token]
-# enabled = true
-# uri = "pg-functions://<database>/<schema>/<hook_name>"
+#
+# Audit 2026-11-16: public.hook_custom_access_token (20261116004000) refuses a
+# token for a session that has never refreshed and is older than jwt_expiry +
+# inactivity_timeout (45 minutes), which is the first-refresh gap described
+# above [auth.sessions]. It adds no claim. ON HOSTED SUPABASE THIS HOOK MUST BE
+# ENABLED IN THE DASHBOARD TOO, like the password hook below.
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/public/hook_custom_access_token"
 
 # THE PER-ACCOUNT HALF OF SECURITY.md § 5's LOGIN ROW (Phase 7 Task 5).
 # GoTrue calls public.hook_password_verification_attempt (migration

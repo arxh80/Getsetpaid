@@ -32,6 +32,10 @@
 // enforced by SIGNING THE SESSION OUT (idle-timeout.tsx calls
 // supabase.auth.signOut(), which revokes the refresh token server-side) --
 // not by hiding the UI and leaving a live session behind it.
+//
+// This tracker only runs while a signed-in page is open. A tab closed before
+// the session's first refresh is covered in the database instead:
+// public.hook_custom_access_token (20261116004000) refuses that refresh.
 export const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** How long before the timeout to start warning, with a visible countdown. */
