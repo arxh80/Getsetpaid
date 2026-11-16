@@ -209,19 +209,18 @@ MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres -q -v ON_ERRO
 #                        privileged is by definition one that presented a
 #                        factor. Every existing owner assertion is unchanged.
 #   super               -> aal2, same reason.
-#   carol      standard_user -> aal1. MFA is OPTIONAL for her role at MVP, so
-#                        aal1 is her REALISTIC steady state -- and running her
-#                        assertions at aal1 is what proves the new gate is
-#                        role-scoped rather than a blanket "aal2 to write
-#                        anything", which would lock out every unprivileged
-#                        role in the product.
-#   dave       invited  -> aal1, same.
+#   carol/dave          -> aal2. Every organisation role is MFA-required since
+#                        2026-11-10 (20261110003000, audit 2026-11-09 finding
+#                        1), so aal1 would refuse them for the MFA reason and
+#                        every role-scoped refusal below would pass for the
+#                        wrong one. (They ran at aal1 while MFA was optional
+#                        for their roles.)
 #
 # Two extra claim sets per user are exported for the new section K:
 #   <u>_c1   the same user at aal1        (the stolen-password session)
 #   <u>_c0   the same user with NO `aal` claim at all (fail-closed check)
 # ----------------------------------------------------------------------------
-declare -A AAL=( [alice]=aal2 [bob]=aal2 [carol]=aal1 [dave]=aal1 [super]=aal2 )
+declare -A AAL=( [alice]=aal2 [bob]=aal2 [carol]=aal2 [dave]=aal2 [super]=aal2 )
 
 declare -A ID
 for u in alice bob carol dave super; do
@@ -317,16 +316,14 @@ fi
 #
 # ASSURANCE LEVEL PER FIXTURE USER, same rule as the block at the top of this
 # script: each user gets the level a REAL session of theirs would plausibly
-# have. owner/admin/finance require MFA (CLAUDE.md § Session security), so a
-# session of theirs that can do anything at all is one that presented a factor
-# -- and since 20260827210000 they hold NO permission below aal2, which now
-# reaches the CRM read policies too. Everyone else is aal1, which is their
-# realistic steady state and is what proves the gate is role-scoped rather
-# than a blanket lockout.
+# have. Every role requires MFA (CLAUDE.md § Session security; all roles since
+# 20261110003000), so a session that can do anything at all is one that
+# presented a factor -- they hold NO permission below aal2, which reaches the
+# CRM read policies too. The `_c1` claim sets are the stolen-password sessions.
 # ============================================================================
 declare -A P2AAL=(
-  [powner]=aal2 [padmin]=aal2 [pmanager]=aal1 [pbooker]=aal1 [pvenuemgr]=aal1
-  [pfinance]=aal2 [pmarketing]=aal1 [pstd1]=aal1 [pstd2]=aal1 [pro]=aal1
+  [powner]=aal2 [padmin]=aal2 [pmanager]=aal2 [pbooker]=aal2 [pvenuemgr]=aal2
+  [pfinance]=aal2 [pmarketing]=aal2 [pstd1]=aal2 [pstd2]=aal2 [pro]=aal2
   [pbowner]=aal2 [pmulti]=aal2
 )
 
@@ -354,7 +351,7 @@ for u in powner padmin pmanager pbooker pvenuemgr pfinance pmarketing \
   P2VARS+=( -v "${u}_c1={\"sub\":\"${P2ID[$u]}\",\"role\":\"authenticated\",\"aal\":\"aal1\"}" )
 done
 
-run_suite "PHASE 2 CRM" rls_phase2_crm.sql crm 694 "${P2VARS[@]}"
+run_suite "PHASE 2 CRM" rls_phase2_crm.sql crm 695 "${P2VARS[@]}"
 p2_fails=$SUITE_FAILS
 if [ "$p2_fails" != "0" ]; then
   echo "PHASE 2 CRM SUITE FAILED: $p2_fails failing assertion(s)" >&2
@@ -1832,17 +1829,52 @@ else:
   else printf '  FAIL  %-58s got %s want %s\n' "$name" "$v" "$want"; api_fails=$((api_fails+1)); fi
 }
 
-MGR=$(p2_token pmanager);   [ -n "$MGR" ] || { echo "no token for pmanager" >&2; exit 1; }
-BKR=$(p2_token pbooker);    [ -n "$BKR" ] || { echo "no token for pbooker" >&2; exit 1; }
-STD=$(p2_token pstd1);      [ -n "$STD" ] || { echo "no token for pstd1" >&2; exit 1; }
+p2_totp_elevate() { # aal1 access token -> aal2 access token ('' on failure)
+  local tok="$1" enroll fid secret ch cid code
+  enroll=$(curl -s -X POST "$API/auth/v1/factors" -H "apikey: $ANON" \
+    -H "Authorization: Bearer $tok" -H "Content-Type: application/json" \
+    -d "{\"factor_type\":\"totp\",\"friendly_name\":\"rls-suite-$$-$RANDOM\"}")
+  fid=$(printf '%s' "$enroll" | python -c \
+    "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  secret=$(printf '%s' "$enroll" | python -c \
+    "import sys,json;print(json.load(sys.stdin).get('totp',{}).get('secret',''))")
+  [ -n "$fid" ] && [ -n "$secret" ] || { printf ''; return; }
+  ch=$(curl -s -X POST "$API/auth/v1/factors/$fid/challenge" -H "apikey: $ANON" \
+    -H "Authorization: Bearer $tok" -H "Content-Type: application/json" -d '{}')
+  cid=$(printf '%s' "$ch" | python -c \
+    "import sys,json;print(json.load(sys.stdin).get('id',''))")
+  # RFC 6238, SHA-1 / 30s / 6 digits -- GoTrue's defaults. The same algorithm
+  # tests/support/totp.ts implements for the vitest suites; reimplemented in
+  # python here so this script keeps its no-node-dependency shape.
+  code=$(SECRET="$secret" python -c "
+import os,base64,hmac,hashlib,struct,time
+s=os.environ['SECRET'].upper(); s+='='*(-len(s)%8)
+h=hmac.new(base64.b32decode(s), struct.pack('>Q', int(time.time())//30), hashlib.sha1).digest()
+o=h[-1]&0x0f
+print(str((struct.unpack('>I',h[o:o+4])[0]&0x7fffffff)%1000000).zfill(6))")
+  curl -s -X POST "$API/auth/v1/factors/$fid/verify" -H "apikey: $ANON" \
+    -H "Authorization: Bearer $tok" -H "Content-Type: application/json" \
+    -d "{\"challenge_id\":\"$cid\",\"code\":\"$code\"}" \
+    | python -c "import sys,json;print(json.load(sys.stdin).get('access_token') or '')"
+}
+# Every organisation role is MFA-required since 2026-11-10 (20261110003000),
+# so a password grant alone (aal1) holds no key in any workspace. The personas
+# below sign in the way a real user now must: password, then a real TOTP
+# enrolment and verify. $OWN, $FIN and $BOWN stay aal1 ON PURPOSE (the
+# stolen-password probes); $OWN2/$FIN2 are their elevated twins.
+p2_token2() { p2_totp_elevate "$(p2_token "$1")"; }
+
+MGR=$(p2_token2 pmanager);   [ -n "$MGR" ] || { echo "no token for pmanager" >&2; exit 1; }
+BKR=$(p2_token2 pbooker);    [ -n "$BKR" ] || { echo "no token for pbooker" >&2; exit 1; }
+STD=$(p2_token2 pstd1);      [ -n "$STD" ] || { echo "no token for pstd1" >&2; exit 1; }
 OWN=$(p2_token powner);     [ -n "$OWN" ] || { echo "no token for powner" >&2; exit 1; }
 # Task 4: the read_only role, for the RPC refusal checks at the bottom.
-RO=$(p2_token pro);         [ -n "$RO" ]  || { echo "no token for pro" >&2; exit 1; }
+RO=$(p2_token2 pro);         [ -n "$RO" ]  || { echo "no token for pro" >&2; exit 1; }
 # Task 4b: the venue_manager, who is the role that DIVERGES on an agency page --
 # manage_contacts and manage_venues, and no manage_artists. Read out of
 # role_permissions rather than guessed; see T22c in rls_phase2_crm.sql for the
 # assumption that got corrected.
-VNM=$(p2_token pvenuemgr);  [ -n "$VNM" ] || { echo "no token for pvenuemgr" >&2; exit 1; }
+VNM=$(p2_token2 pvenuemgr);  [ -n "$VNM" ] || { echo "no token for pvenuemgr" >&2; exit 1; }
 
 # anon: the tables must not be reachable logged out at all.
 p2_code "anon GET contacts"                       401 GET  "contacts?select=id"
@@ -2066,34 +2098,7 @@ echo "=== Read-only suspension at the API surface (Q6 / Task 3a) ==="
 # aal1-owner checks above are load-bearing (the MFA read gate and its lockout
 # guard). $OWN keeps its aal1 meaning; $OWN2 is the elevated session.
 
-p2_totp_elevate() { # aal1 access token -> aal2 access token ('' on failure)
-  local tok="$1" enroll fid secret ch cid code
-  enroll=$(curl -s -X POST "$API/auth/v1/factors" -H "apikey: $ANON" \
-    -H "Authorization: Bearer $tok" -H "Content-Type: application/json" \
-    -d "{\"factor_type\":\"totp\",\"friendly_name\":\"rls-suite-$$-$RANDOM\"}")
-  fid=$(printf '%s' "$enroll" | python -c \
-    "import sys,json;print(json.load(sys.stdin).get('id',''))")
-  secret=$(printf '%s' "$enroll" | python -c \
-    "import sys,json;print(json.load(sys.stdin).get('totp',{}).get('secret',''))")
-  [ -n "$fid" ] && [ -n "$secret" ] || { printf ''; return; }
-  ch=$(curl -s -X POST "$API/auth/v1/factors/$fid/challenge" -H "apikey: $ANON" \
-    -H "Authorization: Bearer $tok" -H "Content-Type: application/json" -d '{}')
-  cid=$(printf '%s' "$ch" | python -c \
-    "import sys,json;print(json.load(sys.stdin).get('id',''))")
-  # RFC 6238, SHA-1 / 30s / 6 digits -- GoTrue's defaults. The same algorithm
-  # tests/support/totp.ts implements for the vitest suites; reimplemented in
-  # python here so this script keeps its no-node-dependency shape.
-  code=$(SECRET="$secret" python -c "
-import os,base64,hmac,hashlib,struct,time
-s=os.environ['SECRET'].upper(); s+='='*(-len(s)%8)
-h=hmac.new(base64.b32decode(s), struct.pack('>Q', int(time.time())//30), hashlib.sha1).digest()
-o=h[-1]&0x0f
-print(str((struct.unpack('>I',h[o:o+4])[0]&0x7fffffff)%1000000).zfill(6))")
-  curl -s -X POST "$API/auth/v1/factors/$fid/verify" -H "apikey: $ANON" \
-    -H "Authorization: Bearer $tok" -H "Content-Type: application/json" \
-    -d "{\"challenge_id\":\"$cid\",\"code\":\"$code\"}" \
-    | python -c "import sys,json;print(json.load(sys.stdin).get('access_token') or '')"
-}
+# p2_totp_elevate() is defined above, beside p2_token2().
 
 p2_aal() { # token -> its aal claim
   printf '%s' "$1" | python -c "
@@ -2620,8 +2625,7 @@ t4b_rpc "a venue_manager has no manage_artists -> 403" 403 \
 # the elevated session"), and CLAUDE.md requires MFA for Owner: the write
 # policies gate on `has_permission()`, which is aal2-gated for this role
 # (20260827210000_mfa_aal_permission_gate.sql), so an aal1 Owner is refused a
-# write exactly the way an aal1 Manager is not (Manager holds no MFA
-# requirement). The psql half of this same fix round used `:'powner_c'`,
+# write. The psql half of this same fix round used `:'powner_c'`,
 # which rls_phase2_crm.sql's own cast-of-characters table declares aal2 --
 # the psql and HTTP halves were never actually testing the same session, and
 # only the HTTP transport surfaced it. $OWN2 -- the real, TOTP-elevated
@@ -3492,7 +3496,7 @@ p2_rows "pbowner (BETA) GETs an ALPHA document (expect 0)" 0 \
 
 # I1 HTTP TWIN (Phase 8 final review A, I1; 20261029000000). The psql § SV
 # proves the verdict columns are the scanner's through set-by-hand claims; this
-# asks the same question the way the review's probe did -- a REAL aal1 Manager
+# asks the same question the way the review's probe did -- a REAL Manager
 # session over PostgREST, which is the path the app's anon key opens. Before
 # 20261029000000 the PATCH below answered 204 and the download gate read the
 # file as clean mid-scan. Each refusal is read twice: the status code, and the
@@ -3806,11 +3810,8 @@ p2_code "manager DELETEs a network profile (no DELETE grant)" 403 DELETE \
 # about -- exactly the NU5 finding's own header warns against ("the expected
 # value was itself the tell").
 #
-# A BETA-SIDE ACTOR IS NEEDED THAT DOES NOT REQUIRE aal2. pbowner (BETA's
-# owner) and pmulti (admin in both orgs) both need MFA for manage_network_
-# connections, and a password grant over HTTP yields aal1 only (measured
-# earlier in this script's "MFA enforcement" block) -- so neither could ACCEPT
-# here even correctly. pstd2 already exists as an auth user (standard_user in
+# THE BETA-SIDE ACTOR. It was chosen when a manager needed no aal2; every role
+# does since 20261110003000, so it signs in through p2_token2. pstd2 already exists as an auth user (standard_user in
 # ALPHA) and gains a SECOND membership, as 'manager' in BETA, which is an
 # ordinary multi-org-membership shape (CLAUDE.md: "supported from MVP") and
 # does not disturb pstd2's existing ALPHA role or any earlier assertion that
@@ -3845,7 +3846,7 @@ H4_REQUEST=$(MSYS_NO_PATHCONV=1 docker exec "$CTR" psql -U postgres -d postgres 
    values ('$ALPHA_ORG','$ALPHA_H4_PROFILE','$BETA_ORG','$BETA_H4_PROFILE')
    returning id" | head -n1 | tr -d '[:space:]')
 
-BETA_MGR=$(p2_token pstd2); [ -n "$BETA_MGR" ] || { echo "no token for pstd2 (BETA manager)" >&2; exit 1; }
+BETA_MGR=$(p2_token2 pstd2); [ -n "$BETA_MGR" ] || { echo "no token for pstd2 (BETA manager)" >&2; exit 1; }
 
 # THE FINDING: ALPHA (the SENDER, via its manager token) cannot accept its own
 # request. The row IS visible to the sender through the sender-withdraws
@@ -3887,9 +3888,9 @@ p2_json "CONTROL: the request really is accepted now" "accepted" \
 #           § LA created -- never connected to anybody.
 #   $CONN   a manager of org BETA, which IS connected to ALPHA (accepted in
 #           rls_phase6_network.sql NR9/NU4 and again in the Task 4 block above).
-# Both are managers, so a password grant's aal1 session really does hold
-# view_network -- an owner or admin counterparty would hold nothing at aal1 and
-# every 0 below would be the MFA gate wearing the tenant boundary's clothes.
+# Both sign in through p2_token2 (password, then TOTP): an aal1 session holds
+# no key for any role since 20261110003000, and every 0 below would be the MFA
+# gate wearing the tenant boundary's clothes.
 #
 # PLACED LAST, deliberately: it is the only block that signs in as these two,
 # and the Task 4 block above already claims the "last block" slot for its own
@@ -3912,8 +3913,8 @@ p2_rows_min() { # name min_count path token
   fi
 }
 
-UNCON=$(p2_token pgmgr); [ -n "$UNCON" ] || { echo "no token for pgmgr (unconnected counterparty)" >&2; exit 1; }
-CONN=$(p2_token pbmgr);  [ -n "$CONN" ]  || { echo "no token for pbmgr (connected counterparty)" >&2; exit 1; }
+UNCON=$(p2_token2 pgmgr); [ -n "$UNCON" ] || { echo "no token for pgmgr (unconnected counterparty)" >&2; exit 1; }
+CONN=$(p2_token2 pbmgr);  [ -n "$CONN" ]  || { echo "no token for pbmgr (connected counterparty)" >&2; exit 1; }
 
 ALPHA_PROFILE='e0110000-0000-0000-0000-00000000000a'
 ALPHA_DRAFT='e0110000-0000-0000-0000-00000000000d'

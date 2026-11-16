@@ -175,8 +175,8 @@ select cw.val('CF11 FIXTURE: no live request left between the two workspaces',
 select gen_random_uuid()::text as new_u  \gset
 select gen_random_uuid()::text as inv_u  \gset
 select gen_random_uuid()::text as invb_u \gset
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'inv_u')  as inv_c  \gset
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'invb_u') as invb_c \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'inv_u')  as inv_c  \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'invb_u') as invb_c \gset
 insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
 values (:'new_u',  '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cw-new@test.local',  now(), now(), now()),
        (:'inv_u',  '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', 'cw-inv@test.local',  now(), now(), now()),

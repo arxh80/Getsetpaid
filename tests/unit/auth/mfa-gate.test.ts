@@ -36,29 +36,17 @@ describe("roleCheckRequiresMfa — fail CLOSED on error, fail OPEN on genuine em
     expect(roleCheckRequiresMfa({ data: null, error: null })).toBe(false);
   });
 
-  it("requires MFA when a privileged role is present", () => {
-    for (const role of ["owner", "admin", "finance"]) {
+  // Every role since 2026-11-10 (audit 2026-11-09, finding 1).
+  it("requires MFA for every organisation role", () => {
+    for (const role of ["owner", "admin", "finance", "manager", "booker", "venue_manager", "marketing", "standard_user", "read_only"]) {
       expect(
         roleCheckRequiresMfa({ data: [{ role }], error: null }),
       ).toBe(true);
     }
   });
 
-  it("does not require MFA for a non-privileged role, with no error", () => {
-    for (const role of ["manager", "booker", "venue_manager", "marketing", "standard_user", "read_only"]) {
-      expect(
-        roleCheckRequiresMfa({ data: [{ role }], error: null }),
-      ).toBe(false);
-    }
-  });
-
-  it("requires MFA if ANY of several memberships is privileged, even if others aren't", () => {
-    expect(
-      roleCheckRequiresMfa({
-        data: [{ role: "standard_user" }, { role: "finance" }],
-        error: null,
-      }),
-    ).toBe(true);
+  it("does not require MFA for a role key that is not a real role", () => {
+    expect(roleCheckRequiresMfa({ data: [{ role: "superadmin" }], error: null })).toBe(false);
   });
 });
 

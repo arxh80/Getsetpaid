@@ -16,14 +16,14 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import {
   deletePlantedMember,
+  enrolTotp,
   plantActiveMember,
   setUpWorld,
   tearDownWorld,
-  PASSWORD,
   type E2eUser,
   type E2eWorld,
 } from "./support/fixtures";
-import { signIn } from "./support/sign-in";
+import { signIn, signInByEmail } from "./support/sign-in";
 
 let world: E2eWorld;
 let leaver: E2eUser;
@@ -38,14 +38,6 @@ test.afterAll(async () => {
   if (leaver) await deletePlantedMember(leaver.id);
   await tearDownWorld(world);
 });
-
-async function signInByEmail(page: Page, email: string): Promise<void> {
-  await page.goto("/login");
-  await page.locator('input[name="email"]').fill(email);
-  await page.locator('input[name="password"]').fill(PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).not.toHaveURL(/\/login/);
-}
 
 const removeButton = (page: Page, name: string) =>
   page.getByRole("button", { name: new RegExp(`^Remove ${name}$`) });
@@ -90,7 +82,8 @@ test("an Owner removes a member, and that member's next page load is refused", a
   const leaverContext = await browser.newContext();
   const leaverPage = await leaverContext.newPage();
   try {
-    await signInByEmail(leaverPage, leaver.email);
+    // Every role is MFA-required, so the planted member enrols a factor first.
+    await signInByEmail(leaverPage, leaver.email, await enrolTotp(leaver.email));
     await leaverPage.goto(`/${world.orgSlug}/contacts`);
     await expect(leaverPage.getByRole("heading", { name: "Contacts", level: 1 })).toBeVisible();
 

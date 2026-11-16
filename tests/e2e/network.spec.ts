@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
-import { PASSWORD, setUpWorld, tearDownWorld, type E2eWorld } from "./support/fixtures";
-import { signIn, signOut } from "./support/sign-in";
+import { setUpWorld, tearDownWorld, type E2eWorld } from "./support/fixtures";
+import { signIn, signOut, signInByEmail } from "./support/sign-in";
 
 // PHASE 6 (NETWORK), TASK 6: THE NETWORK GOLDEN PATH -- the FIFTH sibling to
 // golden-path.spec.ts / events.spec.ts / operations.spec.ts / documents.spec.ts
@@ -44,7 +44,7 @@ import { signIn, signOut } from "./support/sign-in";
 //           ALPHA -- no connection request touches otherOrgId"), which is
 //           what makes it the correct BETA for a walk that has to start
 //           genuinely disconnected. `otherMember` is a plain `manager` of
-//           `otherOrgId` (MFA-optional, holds `manage_contacts`,
+//           `otherOrgId` (holds `manage_contacts`,
 //           `manage_network_profile` and `manage_network_connections`, the
 //           same three role grants ALPHA's manager holds) and, like
 //           `freeMember` elsewhere in this suite, is signed in by hand rather
@@ -95,11 +95,7 @@ test.afterAll(async () => {
  *  header above and fixtures.ts's own note on why). The manual form walk,
  *  mirroring network-discovery.spec.ts's own `signInAsFreeMember`. */
 async function signInAsOtherMember(page: Page): Promise<void> {
-  await page.goto("/login");
-  await page.locator('input[name="email"]').fill(world.otherMember.email);
-  await page.locator('input[name="password"]').fill(PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).not.toHaveURL(/\/login/);
+  await signInByEmail(page, world.otherMember.email, world.otherMemberTotpSecret);
 }
 
 test("ALPHA publishes a venue with two network fields and one connections field; BETA discovers it, connects, and links it to its own company", async ({

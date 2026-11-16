@@ -1152,22 +1152,21 @@ select harness.val('K18 FAIL CLOSED: session_is_aal2() is false, not null',
 reset role; reset request.jwt.claims;
 
 -- ---------------------------------------------------------------------------
--- K19-K20. The rule is ROLE-scoped, not a blanket aal2-to-write. MFA is
--- required for owner/admin/finance ONLY and is optional for every other role
--- at MVP, so the predicate must key on the role. A blanket rule would pass
--- K1-K6 identically and lock out manager/booker/standard_user the moment a
--- later phase grants one of them a write permission.
+-- K19-K20. EVERY seeded role requires MFA (since 2026-11-10, 20261110003000,
+-- audit 2026-11-09 finding 1). It was owner/admin/finance only before that. A
+-- role the function stopped catching would let a guessed password act.
 -- ---------------------------------------------------------------------------
 set role authenticated;
 set request.jwt.claims = :'alice_c';
 
-select harness.val('K19 the MFA-required role list is exactly owner/admin/finance',
+select harness.val('K19 the MFA-required role list is every seeded role',
   $$select string_agg(r.key,',' order by r.key) from public.roles r
-     where private.role_requires_mfa(r.key)$$, 'admin,finance,owner');
+     where private.role_requires_mfa(r.key)$$,
+  'admin,booker,finance,manager,marketing,owner,read_only,standard_user,venue_manager');
 
-select harness.val('K20 ...and no other seeded role is caught by it',
+select harness.val('K20 ...and none is exempt',
   $$select count(*)::text from public.roles r
-     where private.role_requires_mfa(r.key)$$, '3');
+     where not private.role_requires_mfa(r.key)$$, '0');
 
 reset role; reset request.jwt.claims;
 

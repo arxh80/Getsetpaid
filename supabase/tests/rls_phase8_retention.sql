@@ -1622,7 +1622,7 @@ insert into public.documents (id, organisation_id, owner_user_id, filename, stor
    'application/pdf', 68, 'pending', null);
 
 set role authenticated;
-set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a2","role":"authenticated","aal":"aal1"}';
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a2","role":"authenticated","aal":"aal2"}';
 select rt.val('SV1 DENOMINATOR: the Manager (aal1, manage_documents) sees the pending row and holds the deleted_at UPDATE grant',
   $$select count(*)::text || '/' || has_column_privilege('authenticated','public.documents','deleted_at','UPDATE')::text
       from public.documents where id = '00000000-0000-4000-9000-0000000067f6' and scan_status = 'pending'$$, '1/true');
@@ -1650,7 +1650,7 @@ begin
   begin
     execute 'grant insert (scan_status, scanned_at), update (scan_status, scanned_at) on public.documents to authenticated';
     perform pg_catalog.set_config('request.jwt.claims',
-      '{"sub":"00000000-0000-4000-9000-0000000067a2","role":"authenticated","aal":"aal1"}', true);
+      '{"sub":"00000000-0000-4000-9000-0000000067a2","role":"authenticated","aal":"aal2"}', true);
     execute 'set local role authenticated';
     begin
       update public.documents set scan_status = 'clean', scanned_at = now()
@@ -1698,7 +1698,7 @@ select rt.val('SV7a the probe''s grant was rolled back, and the row is still pen
 -- THE RPC'S OWN RAILS. service_role with a PERSON's claims on the session is
 -- refused: the definer answers only a sessionless server caller.
 set role service_role;
-set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a2","role":"authenticated","aal":"aal1"}';
+set request.jwt.claims to '{"sub":"00000000-0000-4000-9000-0000000067a2","role":"authenticated","aal":"aal2"}';
 select rt.try_hint('SV8 the RPC refuses a session with a person on it',
   $$select public.record_document_scan_verdict('00000000-0000-4000-9000-0000000067b1',
                                                '00000000-0000-4000-9000-0000000067f6', 'clean')$$,

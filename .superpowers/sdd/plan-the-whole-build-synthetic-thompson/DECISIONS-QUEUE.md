@@ -1797,3 +1797,14 @@ Founder: "go ClamAV". Wired on branch `clamav-scanner` (PR #30): fail-closed cla
 ## Q280 -- Invoices part 2: the Subprocessors page and Stripe, default implemented
 
 - **Q280 -- Should the published Subprocessors page name Stripe now?** The page body is a published `legal_documents` version carrying the `{{subprocessors}}` block, which is rendered from `lib/legal/sub-processors.ts`; no new version is published. The engineering row is added to `docs/sub-processors.md` and the module together (the drift test binds them), so the rendered table lists Stripe as soon as this ships, with the DPA shown as not yet signed. **Default (built): engineering-draft row added; the published page text is updated with counsel's next review (F3).** The row's Location reads "EU (Stripe's European entity)" rather than "Ireland", because `seed-matches-catalogue.test.ts` lets only the database region (Q145) name Ireland as a fact; the register's transfer cell records that Stripe Payments Europe, Ltd. is incorporated in Ireland.
+
+## Q281 -- MFA for every organisation role (audit 2026-11-09, finding 1), implemented 2026-11-10
+
+- **Q281 -- How do we bound password guessing on the hosted project?** The founder is on Supabase Pro, which refuses the password-verification hook (Team and Enterprise only), so a password grant sent straight to GoTrue is limited per IP only (F8). Of the three options (Team plan, CAPTCHA with a new sub-processor, MFA for every role), the build took **MFA for every role**: `20261110003000_mfa_every_role.sql` makes `private.role_requires_mfa()` true for all roles, so a guessed password yields an aal1 session that reads and writes nothing in any workspace. No new vendor, no plan change.
+
+  **What changes for users:** every member (Manager, Booker, Venue Manager, Marketing, Standard User and Read Only included) must enrol an authenticator app at their next sign-in and enter a code at every sign-in.
+
+  **Owed to the founder:**
+  1. **Lost-device recovery.** There is still no self-service MFA recovery (`SECURITY.md` section 4). That now applies to every user, not three roles. Decide the support process before launch.
+  2. **Legal pages.** Terms and the Security page say two-factor is required "for owners, admins and finance users". Still true, now incomplete. A new version needs drafting at `/super/legal` and counsel's review.
+  3. **`SECURITY.md`** (gitignored, not in this change): section 4 and the "MFA is optional" known limitation need the same update.

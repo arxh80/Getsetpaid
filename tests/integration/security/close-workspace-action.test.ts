@@ -9,7 +9,7 @@
 // the forged-POST half of the e2e walk without a browser.
 //
 // DENOMINATOR: the refused callers are a real Admin at aal2 (the strongest
-// non-Owner there is -- `manage_organisation`, MFA satisfied) and a Manager at
+// non-Owner there is -- `manage_organisation`, MFA satisfied) and a non-Owner at
 // aal1. The positive half -- the same action reaching the RPC and closing a
 // workspace for its real Owner -- is tests/e2e/workspace-closure.spec.ts, so
 // the refusals here are the RPC's own and not an unwired call: each one is
@@ -115,9 +115,11 @@ describe("closeMyWorkspaceAction with the app-side Owner check lied to", () => {
     expect(await snapshot(fx.orgA.id)).toEqual({ state: "active", deleted: false, backups: "0", audits: "0" });
   });
 
-  it("a Manager at aal1 is refused BY THE RPC (close_needs_step_up) and nothing changes", async () => {
-    current.userId = fx.activeByRole.manager.userId;
-    current.client = fx.activeByRole.manager.client;
+  // The invited admin: the one fixture persona never elevated to aal2 (every
+  // active persona is, since every role became MFA-required, 20261110003000).
+  it("a non-Owner at aal1 is refused BY THE RPC (close_needs_step_up) and nothing changes", async () => {
+    current.userId = fx.invitedAdminA.userId;
+    current.client = fx.invitedAdminA.client;
     const out = await closeMyWorkspaceAction(EMPTY_FORM_STATE, form(fx.orgA.slug));
     // aal2 is checked before the Owner row (20261021000000), so an aal1
     // non-Owner reads the two-step sentence -- the RPC's answer, not ours,

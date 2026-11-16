@@ -106,7 +106,7 @@ select 'acct_A' || replace(gen_random_uuid()::text, '-', '') as acct_a \gset
 select 'acct_S' || replace(gen_random_uuid()::text, '-', '') as acct_s \gset
 select 'pi_A' || replace(gen_random_uuid()::text, '-', '') as pi_a \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_a') as fin_a_c \gset
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'ro_a')  as ro_a_c  \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'ro_a')  as ro_a_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_b') as fin_b_c \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_s') as fin_s_c \gset
 \o

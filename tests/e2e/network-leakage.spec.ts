@@ -3,13 +3,12 @@ import {
   ARTIST_NAME,
   EVENT_NAMES,
   NOTE_BODIES,
-  PASSWORD,
   setUpWorld,
   tearDownWorld,
   VENUE_NAME,
   type E2eWorld,
 } from "./support/fixtures";
-import { signIn } from "./support/sign-in";
+import { signIn, signInByEmail } from "./support/sign-in";
 
 // PHASE 6 (NETWORK), TASK 5: THE NETWORK-LEAKAGE MATRIX, IN A BROWSER.
 //
@@ -34,8 +33,8 @@ import { signIn } from "./support/sign-in";
 // THE TWO DISTANCES, AND WHY EACH IS THE PERSONA IT IS
 // ===========================================================================
 //   UNCONNECTED  `world.otherMember` -- a manager of `world.otherOrgId`, added
-//                by this task (see the fixture's own header). MFA-optional, so
-//                a password sign-in really does hold `view_crm` and
+//                by this task (see the fixture's own header). Signed in at aal2, so
+//                the session really does hold `view_crm` and
 //                `view_network`: a 404 below is the TENANT BOUNDARY and not a
 //                session that holds nothing. No connection request touches
 //                that organisation.
@@ -61,14 +60,10 @@ test.afterAll(async () => {
 
 /** Sign in as `world.otherMember` -- the manual form walk, like
  *  `signInAsFreeMember` in network-discovery.spec.ts, because this is not one
- *  of the fixed `E2eRole` personas `signIn()` addresses by role. `manager` is
- *  MFA-optional, so there is no TOTP step. */
+ *  of the fixed `E2eRole` personas `signIn()` addresses by role. every role is
+ *  MFA-required, so `signInByEmail` walks the TOTP step. */
 async function signInAsOtherMember(page: Page): Promise<void> {
-  await page.goto("/login");
-  await page.locator('input[name="email"]').fill(world.otherMember.email);
-  await page.locator('input[name="password"]').fill(PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).not.toHaveURL(/\/login/);
+  await signInByEmail(page, world.otherMember.email, world.otherMemberTotpSecret);
 }
 
 /**

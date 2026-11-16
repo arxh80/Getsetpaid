@@ -455,7 +455,7 @@ Any logged-in user, on any tier, can submit feedback (bug / idea / other) from w
 ### Session security
 
 - Inactivity timeout **30 minutes**; absolute max session lifetime **12 hours**.
-- MFA is **required** for: Platform Superuser, Organisation Owner, Admin, Finance. Optional (not enforced) for other roles at MVP.
+- MFA is **required** for the Platform Superuser and every organisation role. Until 2026-11-10 it was Owner, Admin and Finance only; `20261110003000_mfa_every_role.sql` made `private.role_requires_mfa()` true for all (Q281, audit 2026-11-09 finding 1).
 - Step-up re-authentication (re-enter credentials/MFA) is required before: changing security settings (MFA, password, email), large data exports, deleting organisation data, and any high-risk admin/superuser function (including impersonation).
 - SSO: **Google sign-in ships at MVP** (in addition to email/password + magic-link). Microsoft SSO is post-MVP.
 
@@ -553,7 +553,7 @@ Resolved 2026-08-26 (founder sign-off):
 - **Audit log retention:** hot 30 days, archived up to 1 year total, then purged.
 - **GDPR DSR turnaround target:** 30 days (ICO statutory maximum).
 - **Session limits:** 30min inactivity / 12hr absolute lifetime.
-- **MFA scope:** required for Superuser, Owner, Admin, Finance; optional for other roles at MVP.
+- **MFA scope:** required for Superuser, Owner, Admin, Finance; every role since 2026-11-10 (Q281).
 - **Step-up re-auth triggers:** security-setting changes, large exports, org data deletion, high-risk admin/superuser functions.
 - **Malware scanning:** enabled at MVP, plus a strict file-type allowlist (not just MIME/extension checks).
 - **SSO:** Google at MVP; Microsoft deferred.

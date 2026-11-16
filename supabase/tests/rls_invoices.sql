@@ -116,8 +116,8 @@ select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'own_a') as o
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'adm_a') as adm_a_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_a') as fin_a_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'fin_a') as fin_a_c1 \gset
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'mgr_a') as mgr_a_c  \gset
-select format('{"sub":"%s","role":"authenticated","aal":"aal1"}', :'ro_a')  as ro_a_c   \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'mgr_a') as mgr_a_c  \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'ro_a')  as ro_a_c   \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_b') as fin_b_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_s') as fin_s_c  \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_f') as fin_f_c  \gset

@@ -179,7 +179,7 @@ describe("event_finance_summary is gated by view_finance and drift-proof", () =>
       expect(Number(financeRow!.budgeted_expense_minor)).toBe(120000);
 
       // ---- THE GATE: the Booker sees no row --------------------------------
-      const bookerRow = await readAs(client, bookerUid, "aal1", org, eventid);
+      const bookerRow = await readAs(client, bookerUid, "aal2", org, eventid);
       expect(
         bookerRow,
         "a Booker holds no view_finance, so the security_invoker view returns no row",

@@ -59,7 +59,7 @@ export function qrCodeDataUri(qrCode: string): string {
 
 // The full-screen gate rendered by app/(app)/layout.tsx in place of the app
 // for a user CLAUDE.md § Session security requires MFA for
-// (Owner/Admin/Finance in any org, or the platform superuser) who has not yet
+// (any organisation role, or the platform superuser) who has not yet
 // verified a TOTP factor. See lib/auth/mfa-gate.ts for the "why any
 // membership" and "this is routing, not enforcement" reasoning.
 //
@@ -79,9 +79,8 @@ export function MfaEnrollGate({ next }: { next: string }) {
           Set up two-factor authentication
         </h1>
         <p className="text-lg text-ink-muted">
-          Your role can see or change things other people in your workspace
-          can’t, so this account needs an authenticator app before you
-          continue.
+          Every workspace account is protected by a second step at sign-in,
+          so this account needs an authenticator app before you continue.
         </p>
       </div>
 

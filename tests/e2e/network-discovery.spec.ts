@@ -1,11 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
-  PASSWORD,
   setUpWorld,
   tearDownWorld,
   type E2eWorld,
 } from "./support/fixtures";
-import { signIn } from "./support/sign-in";
+import { signIn, signInByEmail } from "./support/sign-in";
 
 // PHASE 6 (NETWORK), TASK 3: THE DIRECTORY AND THE PROFILE-AS-SEEN-BY-THE-
 // CALLER PAGE, WALKED WITH TWO ORGANISATIONS -- CONSTRAINT 17.
@@ -43,13 +42,9 @@ test.afterAll(async () => {
 /** Sign in as `world.freeMember` -- not one of the fixed `E2eRole` personas
  *  every other test in this suite addresses by role, so this is the manual
  *  form walk `signIn()` itself performs, without the role-keyed lookup. Free
- *  is MFA-optional at MVP (CLAUDE.md), so there is no TOTP step here. */
+ *  is MFA-required like every role, so `signInByEmail` walks the TOTP step. */
 async function signInAsFreeMember(page: Page): Promise<void> {
-  await page.goto("/login");
-  await page.locator('input[name="email"]').fill(world.freeMember.email);
-  await page.locator('input[name="password"]').fill(PASSWORD);
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page).not.toHaveURL(/\/login/);
+  await signInByEmail(page, world.freeMember.email, world.freeMemberTotpSecret);
 }
 
 test("a Free-tier, unconnected viewer browses the directory, finds ALPHA's profile, and sees masked fields plus a disabled, explained request control", async ({

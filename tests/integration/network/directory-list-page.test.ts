@@ -141,6 +141,8 @@ beforeAll(async () => {
   // A MANAGER of org A. `view_network` is held by all nine roles, and a
   // password grant yields aal1 — which `manager` is fine at, unlike an owner
   // (role_requires_mfa). So this is a realistic steady-state session.
+  // Since 2026-11-10 every role is MFA-required (20261110003000) and the
+  // fixture elevates this session to aal2 like every other active persona.
   current.client = fx.activeByRole.manager.client;
 });
 

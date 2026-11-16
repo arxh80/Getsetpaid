@@ -20,18 +20,18 @@
 --   ---------------------------------------------  -------------------------
 --   powner      owner            aal2              pbowner  owner      aal2
 --   padmin      admin            aal2
---   pmanager    manager          aal1              pmulti   admin in BOTH,
---   pbooker     booker           aal1                       aal2 -- the
---   pvenuemgr   venue_manager    aal1                       multi-org case
+--   pmanager    manager          aal2              pmulti   admin in BOTH,
+--   pbooker     booker           aal2                       aal2 -- the
+--   pvenuemgr   venue_manager    aal2                       multi-org case
 --   pfinance    finance          aal2                       CLAUDE.md ships
---   pmarketing  marketing        aal1                       at MVP
---   pstd1       standard_user    aal1
---   pstd2       standard_user    aal1
---   pro         read_only        aal1
+--   pmarketing  marketing        aal2                       at MVP
+--   pstd1       standard_user    aal2
+--   pstd2       standard_user    aal2
+--   pro         read_only        aal2
 --
 -- THE ASSURANCE LEVELS ARE NOT DECORATION. public.has_permission() has been
--- MFA-gated since 20260827210000: owner, admin and finance hold no permission
--- at all below aal2. Their fixtures therefore run at aal2, which is the
+-- MFA-gated since 20260827210000, and for every role since 20261110003000: no
+-- role holds a permission below aal2. Their fixtures therefore run at aal2, which is the
 -- realistic steady state for a role CLAUDE.md § Session security requires MFA
 -- for, and section J asserts the aal1 case explicitly rather than leaving it
 -- as an accident of the fixture.
@@ -1184,12 +1184,17 @@ select crm.val('J6  LOCKOUT GUARD: aal1 owner still sees their memberships',
   $$select (count(*) > 0)::text from public.organisation_memberships$$, 'true');
 reset role; reset request.jwt.claims;
 
--- MFA is OPTIONAL for booker, so an aal1 booker is a fully working user. This
--- is the assertion that proves the gate is role-scoped and not a blanket
--- "aal2 to read anything", which would lock out most of the product.
+-- Every role is MFA-required since 2026-11-10 (20261110003000, audit
+-- 2026-11-09 finding 1), so a booker's stolen password reads nothing either.
+-- (Until then this asserted the opposite: MFA was optional for booker.)
 set role authenticated;
 set request.jwt.claims = :'pbooker_c1';
-select crm.val('J7  aal1 BOOKER reads the CRM normally (MFA optional for them)',
+select crm.val('J7  aal1 BOOKER reads zero contacts (every role is MFA-required)',
+  $$select count(*)::text from public.contacts$$, '0');
+reset role; reset request.jwt.claims;
+set role authenticated;
+set request.jwt.claims = :'pbooker_c';
+select crm.val('J7b CONTROL: the same BOOKER at aal2 reads the CRM',
   $$select (count(*) > 0)::text from public.contacts$$, 'true');
 reset role; reset request.jwt.claims;
 

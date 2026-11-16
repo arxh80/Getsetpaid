@@ -302,9 +302,9 @@ values ('search', 'user', :'esub', private.rate_limit_window_start(pg_catalog.no
 -- real RPC from the subject's own session -- a request cannot be filed in
 -- somebody else's name, which is Task 3's whole attribution story.
 \o
-\set esub_c   '{"sub":"' :esub '","role":"authenticated","aal":"aal1"}'
-\set emate_c  '{"sub":"' :emate '","role":"authenticated","aal":"aal1"}'
-\set ebyst_c  '{"sub":"' :ebyst '","role":"authenticated","aal":"aal1"}'
+\set esub_c   '{"sub":"' :esub '","role":"authenticated","aal":"aal2"}'
+\set emate_c  '{"sub":"' :emate '","role":"authenticated","aal":"aal2"}'
+\set ebyst_c  '{"sub":"' :ebyst '","role":"authenticated","aal":"aal2"}'
 \set anon_c '{"role":"anon"}'
 \set svc_c  '{"role":"service_role"}'
 
