@@ -1175,7 +1175,9 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "Invoices part 2 Task 3 -- the OAuth callback's last call: the same holder completes a " +
     "state THEY claimed (single use, unexpired); the workspace is the state's, never an " +
     "argument. Stores the account Stripe returned; an account another workspace holds " +
-    "live is refused. Audits by name only. Asserted in rls_invoices_stripe.sql § SL.",
+    "live is refused, and so is any request without the server-only mark (the account " +
+    "id is trusted only from the callback). Audits by name only. Asserted in " +
+    "rls_invoices_stripe.sql § SL.",
   end_stripe_account_link:
     "Invoices part 2 Task 3 -- the same holder, with a step-up token, disconnects the " +
     "workspace's live Stripe link and gets the account id back for the deauthorise " +
