@@ -429,7 +429,7 @@ select ist.val('SL19 an account B holds live is refused stripe_account_in_use', 
 -- Audit 2026-11-16: the account id is trusted only from the callback, so a
 -- direct PostgREST call (no server mark) is refused before anything else.
 set getsetpaid.from_server = 'off';
-select ist.val('SL19a WITHOUT the server mark a claimed state cannot be completed, even with a fresh id: server_request_mark_required (SL20 is its control)', format($select public.complete_stripe_link(%L, %L, true)$, :'st4', :'acct_l3'), 'denied(42501:server_request_mark_required)');
+select ist.val('SL19a WITHOUT the server mark a claimed state cannot be completed, even with a fresh id: server_request_mark_required (SL20 is its control)', format($$select public.complete_stripe_link(%L, %L, true)$$, :'st4', :'acct_l3'), 'denied(42501:server_request_mark_required)');
 reset getsetpaid.from_server;
 select ist.val('SL20 POSITIVE CONTROL: the same claimed state with a FRESH id succeeds (none of the three refusals spent it)', format($$select 'ok' from (select public.complete_stripe_link(%L, %L, true)) s$$, :'st4', :'acct_l3'), 'ok');
 reset role;
