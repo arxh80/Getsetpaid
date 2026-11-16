@@ -1224,6 +1224,59 @@ select harness.try('W7  POSITIVE: a slug that merely CONTAINS a reserved word is
     end $d$ $q$, 'denied(P0098)');
 reset role; reset request.jwt.claims;
 
+-- WORKSPACE CREATION IS CAPPED (20261116002000; audit 2026-11-16): 3 an hour,
+-- 5 an account, counted on the caller's active Owner memberships. carol owns
+-- nothing. Every block rolls back, so no workspace is left behind.
+set role authenticated;
+set request.jwt.claims = :'carol_c';
+select harness.try('WC1 CONTROL: one account may create THREE workspaces in an hour (rolled back)',
+  $q$do $d$ begin
+      perform public.create_organisation('Cap One','wc-one');
+      perform public.create_organisation('Cap Two','wc-two');
+      perform public.create_organisation('Cap Three','wc-three');
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, 'denied(P0098)');
+select harness.try_hint('WC2 ...and the FOURTH in that hour is refused workspace_rate_limited',
+  $q$do $d$ begin
+      perform public.create_organisation('Cap One','wc-one');
+      perform public.create_organisation('Cap Two','wc-two');
+      perform public.create_organisation('Cap Three','wc-three');
+      perform public.create_organisation('Cap Four','wc-four');
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, 'denied(PT429:workspace_rate_limited)');
+reset role; reset request.jwt.claims;
+-- The account cap, with the hour out of the way: Owner memberships planted two
+-- hours old by the DBA, then create_organisation called as carol.
+select harness.try('WC3 CONTROL: an account that owns FOUR workspaces may create a fifth (rolled back)',
+  format($q$do $d$
+    declare v_id uuid; i integer;
+    begin
+      for i in 1..4 loop
+        insert into public.organisations (name, slug) values ('Cap Old ' || i, 'wc-old-' || i) returning id into v_id;
+        insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+        values (v_id, %L, 'owner', 'active', now() - interval '2 hours');
+      end loop;
+      perform set_config('request.jwt.claims', %L, true);
+      execute 'set local role authenticated';
+      perform public.create_organisation('Cap Fifth','wc-fifth');
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, :'carol', :'carol_c'), 'denied(P0098)');
+select harness.try_hint('WC4 ...and one that owns FIVE is refused workspace_limit_reached',
+  format($q$do $d$
+    declare v_id uuid; i integer;
+    begin
+      for i in 1..5 loop
+        insert into public.organisations (name, slug) values ('Cap Old ' || i, 'wc-old-' || i) returning id into v_id;
+        insert into public.organisation_memberships (organisation_id, user_id, role, status, joined_at)
+        values (v_id, %L, 'owner', 'active', now() - interval '2 hours');
+      end loop;
+      perform set_config('request.jwt.claims', %L, true);
+      execute 'set local role authenticated';
+      perform public.create_organisation('Cap Sixth','wc-sixth');
+      raise exception 'accepted' using errcode = 'P0098';
+    end $d$ $q$, :'carol', :'carol_c'), 'denied(22023:workspace_limit_reached)');
+reset role; reset request.jwt.claims;
+
 set role authenticated;
 set request.jwt.claims = :'alice_c';
 select harness.val('W8  DENOMINATOR: alice (Owner, aal2) can read org-a, whose slug she may change',

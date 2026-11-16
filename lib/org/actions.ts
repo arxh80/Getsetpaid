@@ -125,6 +125,14 @@ export async function createOrganisationAction(
     if (error.code === "22023" && error.hint === RESERVED_SLUG_HINT) {
       return { fieldErrors: { slug: RESERVED_SLUG_MESSAGE } };
     }
+    // The database's two creation limits (20261116002000): the numbers live
+    // there, so the sentences name none.
+    if (error.hint === "workspace_limit_reached") {
+      return { error: "This account already owns as many workspaces as it can." };
+    }
+    if (error.hint === "workspace_rate_limited") {
+      return { error: "You have created several workspaces in the last hour. Try again later." };
+    }
     return { error: "We couldn't create that organisation. Try again." };
   }
   if (!data) return { error: "We couldn't create that organisation. Try again." };
