@@ -301,6 +301,57 @@ select st.val('SF3 FIXTURE: the runner''s server mark is on in this session',
   $$select private.request_is_from_server()::text$$, 'true');
 
 -- ===========================================================================
+-- § SE  STEP-UP NEEDS AN ESTABLISHED FACTOR (20261116003000; audit 2026-11-16)
+-- ===========================================================================
+-- A factor enrolled during the session is not a fresh credential: a stolen
+-- session could enrol its own. The mint reads auth.sessions.factor_id.
+-- Calls the real mint as st's `other` user with a session, a factor and an
+-- amr the caller describes; everything it plants is rolled back.
+--   p_method  the NEWEST amr entry's method (the older one is the other kind)
+--   p_factor  'old' (enrolled a day before the session), 'new' (enrolled
+--             during it) or 'none' (the session names no factor)
+create function st.mint_as(p_method text, p_factor text)
+returns text language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+declare
+  v_uid uuid := (select i.v::uuid from st.ids i where i.k = 'other');
+  v_sid uuid := gen_random_uuid();
+  v_fid uuid := gen_random_uuid();
+  v_now bigint := extract(epoch from now())::bigint;
+  v_hint text; v_con text;
+begin
+  begin
+    if p_factor <> 'none' then
+      insert into auth.mfa_factors (id, user_id, factor_type, status, created_at, updated_at)
+      values (v_fid, v_uid, 'totp', 'verified',
+              now() - case p_factor when 'old' then interval '1 day' else interval '1 minute' end, now());
+    end if;
+    insert into auth.sessions (id, user_id, created_at, updated_at, aal, factor_id)
+    values (v_sid, v_uid, now() - interval '10 minutes', now(), 'aal2',
+            case when p_factor = 'none' then null else v_fid end);
+    perform set_config('request.jwt.claims', json_build_object(
+      'sub', v_uid, 'role', 'authenticated', 'aal', 'aal2', 'session_id', v_sid,
+      'amr', json_build_array(
+        json_build_object('method', case when p_method = 'password' then 'totp' else 'password' end, 'timestamp', v_now - 600),
+        json_build_object('method', p_method, 'timestamp', v_now)))::text, true);
+    perform public.mint_step_up_token('override');
+    raise exception using errcode = 'P0001', message = 'st_undo';
+  exception when others then
+    if sqlerrm = 'st_undo' then return 'ok'; end if;
+    get stacked diagnostics v_hint = pg_exception_hint, v_con = constraint_name;
+    return st.denied(sqlstate, v_hint, v_con);
+  end;
+end $$;
+
+select st.val('SE1 CONTROL: a totp event from a factor enrolled BEFORE the session mints',
+  $$select st.mint_as('totp', 'old')$$, 'ok');
+select st.val('SE2 a totp event from a factor enrolled DURING the session is refused',
+  $$select st.mint_as('totp', 'new')$$, 'denied(42501:step_up_needs_an_established_factor)');
+select st.val('SE3 ...and so is one whose factor is gone from the session (enrol, verify, unenrol)',
+  $$select st.mint_as('totp', 'none')$$, 'denied(42501:step_up_needs_an_established_factor)');
+select st.val('SE4 CONTROL: a fresh PASSWORD mints whatever the session''s factor is',
+  $$select st.mint_as('password', 'new')$$, 'ok');
+
+-- ===========================================================================
 -- § SM  THE MINT
 -- ===========================================================================
 select st.sc('SM1 a minted token is the caller''s, lives five minutes and is unspent',
