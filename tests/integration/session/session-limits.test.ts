@@ -121,7 +121,7 @@ describe("GoTrue session limits -- verifies supabase/config.toml [auth.sessions]
     expect(body.msg).toMatch(/inactivity/i);
   });
 
-  it("DOCUMENTS THE GAP: a session that has NEVER refreshed is exempt from the inactivity check, however long it has sat idle (bounded only by the 12h timebox)", async () => {
+  it("a session that has NEVER refreshed and has sat idle past the limit is refused its first refresh (the custom access token hook, 20261116004000)", async () => {
     const session = await freshSession("never-refreshed");
     await pool.query(
       `update auth.sessions set created_at = now() - interval '2 hours' where user_id = $1`,
@@ -130,13 +130,23 @@ describe("GoTrue session limits -- verifies supabase/config.toml [auth.sessions]
 
     const { status } = await refreshViaHttp(session.refreshToken);
 
-    // Succeeds: refreshed_at was NULL, so GoTrue's inactivity comparison
-    // never ran -- only the 12h timebox (comfortably not exceeded here)
-    // applies to a session's first-ever refresh. This is why
-    // components/auth/idle-timeout.tsx exists as genuine, independent
-    // enforcement rather than pure UX: GoTrue alone would let a session like
-    // this one survive up to ~2h (and up to just under 12h) of true
-    // inactivity with nobody ever touching the app again.
+    // refreshed_at is NULL, so GoTrue's own inactivity comparison never runs
+    // on this refresh. public.hook_custom_access_token refuses the token
+    // instead: never refreshed and older than jwt_expiry + inactivity_timeout
+    // means no request for at least the idle limit. Before the hook this
+    // returned 200 and the session lived up to the 12h timebox.
+    expect(status).toBeGreaterThanOrEqual(400);
+  });
+
+  it("CONTROL: a never-refreshed session inside jwt_expiry + the idle limit still refreshes", async () => {
+    const session = await freshSession("never-refreshed-recent");
+    await pool.query(
+      `update auth.sessions set created_at = now() - interval '20 minutes' where user_id = $1`,
+      [session.userId],
+    );
+
+    const { status } = await refreshViaHttp(session.refreshToken);
+
     expect(status).toBe(200);
   });
 
