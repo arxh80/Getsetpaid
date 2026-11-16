@@ -185,6 +185,19 @@ export async function elevateToAal2(client: SupabaseClient, label: string): Prom
       `Fixture: ${label} is still ${aal?.currentLevel ?? "unknown"} after a successful TOTP challenge`,
     );
   }
+
+  // A real Owner enrolled their factor in an EARLIER session. Since
+  // 20261116003000 the step-up mint refuses a factor enrolled during the
+  // session that presents it, so the fixture ages the one it just made.
+  const pool = new Pool({ connectionString: getLocalSupabaseStatus().dbUrl, max: 1 });
+  try {
+    await pool.query(
+      "update auth.mfa_factors set created_at = created_at - interval '1 day' where id = $1",
+      [enrolled.data.id],
+    );
+  } finally {
+    await pool.end();
+  }
 }
 
 export async function createFixtures(): Promise<RlsFixtures> {
