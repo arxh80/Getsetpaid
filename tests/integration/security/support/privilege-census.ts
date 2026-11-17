@@ -246,6 +246,8 @@ export const DECLARED_PRIVILEGES: readonly string[] = [
   "merges|authenticated|SELECT|*",
   // network_connected_profiles
   "network_connected_profiles|authenticated|SELECT|*",
+  // received_invoices (Invoices part 3: the receiver's definer view)
+  "received_invoices|authenticated|SELECT|*",
   // network_connection_requests
   "network_connection_requests|authenticated|INSERT|*",
   "network_connection_requests|authenticated|SELECT|*",

@@ -1193,6 +1193,10 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "reachable by whoever may read the invoice (view_finance, not tier-gated). It " +
     "refuses a draft and anything outside the caller's workspace, writes an " +
     "identifier-only audit row, and returns no data. Asserted in rls_invoices.sql § IY.",
+  audit_received_invoice_download:
+    "Invoices part 3 Task 3 -- the received PDF route calls it before rendering; " +
+    "view_finance in the receiving workspace, any tier; refuses a withdrawn delivery " +
+    "and everything outside it. Asserted in rls_invoice_deliveries.sql § DP.",
   record_invoice_send:
     "Invoices part 1 Task 11 -- sendInvoiceAction records an email Brevo accepted: " +
     "issued or paid only, manage_finance + Pro; audits invoice.sent with the number " +
@@ -1301,6 +1305,8 @@ const PRE_PHASE7_RELATIONS = [
   "merge_candidates",
   "merges",
   "network_connected_profiles",
+  // Invoices part 3: the receiver's definer view; rls_invoice_deliveries.sql § DV.
+  "received_invoices",
   "network_connection_requests",
   "network_directory",
   "network_links",

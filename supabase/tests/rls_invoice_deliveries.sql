@@ -504,6 +504,121 @@ reset request.jwt.claims;
 delete from public.rate_limit_counters where category = 'invoice_delivery' and subject_id in (:'fin_s', :'fin_x');
 
 -- ===========================================================================
+-- § DV THE RECEIVER'S VIEW. public.received_invoices is a definer view, the
+-- ONLY read path into another workspace's invoice. Its column list and its
+-- dependencies are pinned (DV2-DV4); its WHERE is the row gate (DV6-DV11).
+-- Live now: inv_i S->R (del_ir2). inv_v (void) is planted S->R here so the
+-- void case is visible.
+-- ===========================================================================
+select id as del_ir2 from public.invoice_deliveries where invoice_id = :'inv_i' and withdrawn_at is null \gset
+select count(*)::text as live_inv_i from public.invoice_deliveries where invoice_id = :'inv_i' and withdrawn_at is null \gset
+select idl.val('DV0 FIXTURE: inv_i has exactly one live delivery and inv_v none before the view is read', format($$select %L || '/' || (select count(*) from public.invoice_deliveries where invoice_id = %L and withdrawn_at is null)::text$$, :'live_inv_i', :'inv_v'), '1/0');
+insert into public.invoice_deliveries (invoice_id, from_organisation_id, to_organisation_id, delivered_by) values (:'inv_v', :'org_s', :'org_r', :'fin_s');
+select id as del_vr from public.invoice_deliveries where invoice_id = :'inv_v' and withdrawn_at is null \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'bk_r') as bk_r_c \gset
+
+-- The pg_depend walk of rls_phase6_network.sql's nw.view_deps / nw.view_fn_deps,
+-- restricted to public views (copied, not referenced).
+create view idl.view_deps as
+  select v.relname as viewname,
+         coalesce(string_agg(distinct tn.nspname || '.' || t.relname, ','
+                             order by tn.nspname || '.' || t.relname), '<none>') as tables,
+         count(distinct tn.nspname || '.' || t.relname)::text as n
+    from pg_catalog.pg_class v
+    join pg_catalog.pg_rewrite rw on rw.ev_class = v.oid
+    join pg_catalog.pg_depend d
+      on d.objid = rw.oid and d.classid = 'pg_catalog.pg_rewrite'::regclass
+    join pg_catalog.pg_class t on t.oid = d.refobjid
+    join pg_catalog.pg_namespace tn on tn.oid = t.relnamespace
+   where v.relnamespace = 'public'::regnamespace and v.relkind = 'v' and t.oid <> v.oid
+   group by v.relname;
+create view idl.view_fn_deps as
+  select v.relname as viewname,
+         coalesce(string_agg(distinct pn.nspname || '.' || p.proname, ','
+                             order by pn.nspname || '.' || p.proname), '<none>') as fns
+    from pg_catalog.pg_class v
+    join pg_catalog.pg_rewrite rw on rw.ev_class = v.oid
+    join pg_catalog.pg_depend d
+      on d.objid = rw.oid and d.classid = 'pg_catalog.pg_rewrite'::regclass
+     and d.refclassid = 'pg_catalog.pg_proc'::regclass
+    join pg_catalog.pg_proc p on p.oid = d.refobjid
+    join pg_catalog.pg_namespace pn on pn.oid = p.pronamespace
+   where v.relnamespace = 'public'::regnamespace and v.relkind = 'v'
+   group by v.relname;
+grant select on idl.view_deps, idl.view_fn_deps to authenticated, service_role;
+
+select idl.val('DV1 it is a view: security_invoker off, security_barrier on', $$select (relkind = 'v')::text || '/' || (coalesce(reloptions::text,'') like '%security_barrier=true%')::text || '/' || (coalesce(reloptions::text,'') like '%security_invoker=true%')::text from pg_class where oid = 'public.received_invoices'::regclass$$, 'true/true/false');
+select idl.val('DV2 THE COLUMN LIST IS PINNED (no event_id, recipient ids, paid_entry_id, void_reason, actor or Stripe columns)', $$select string_agg(attname, ',' order by attnum) from pg_attribute where attrelid = 'public.received_invoices'::regclass and attnum > 0$$, 'id,organisation_id,delivered_at,invoice_id,sender_name,number,status,issue_date,due_date,currency,net_minor,vat_minor,gross_minor,paid_on,snapshot,card_payment_enabled');
+select idl.val('DV3 THE RELATION DEPENDENCIES ARE PINNED', $$select tables || ' (' || n || ')' from idl.view_deps where viewname = 'received_invoices'$$, 'public.invoice_deliveries,public.invoice_stripe_accounts,public.invoices (3)');
+select idl.val('DV4 THE FUNCTION DEPENDENCIES ARE PINNED', $$select fns from idl.view_fn_deps where viewname = 'received_invoices'$$, 'private.permitted_organisations,private.request_is_from_server');
+select idl.val('DV5 authenticated holds SELECT and nothing else; anon and service_role nothing', $$select coalesce((select string_agg(p, '/' order by p) from unnest(array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p where case when p in ('INSERT','UPDATE','REFERENCES') then has_any_column_privilege('authenticated', 'public.received_invoices', p) else has_table_privilege('authenticated', 'public.received_invoices', p) end), 'none') || '/' || (select (count(*) filter (where has_table_privilege(r, 'public.received_invoices', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')))::text || '/' || (select count(*) from information_schema.column_privileges where table_schema = 'public' and table_name = 'received_invoices' and grantee in ('anon', 'PUBLIC', 'service_role'))::text from unnest(array['anon','service_role']) r)$$, 'SELECT/0/0');
+
+select format($$select count(*) filter (where id = %L) || '/' || count(*) filter (where id = %L) from public.received_invoices$$, :'del_ir2', :'del_vr') as rcv \gset
+set role authenticated;
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DV6 CONTROL: the receiver''s Finance user (a Starter workspace) reads both deliveries', :'rcv', '1/1');
+set request.jwt.claims = :'own_r_c';
+select idl.val('DV7 the receiver''s Owner reads both', :'rcv', '1/1');
+set request.jwt.claims = :'bk_r_c';
+select idl.val('DV8 the receiver''s Booker (no view_finance) reads neither', :'rcv', '0/0');
+set request.jwt.claims = :'fin_t_c';
+select idl.val('DV9 BREAKOUT: a third workspace''s Finance user reads neither', :'rcv', '0/0');
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DV10 the sender reads neither: it reads its own base table, not the inbox', :'rcv', '0/0');
+set request.jwt.claims = :'fin_r_c';
+set getsetpaid.from_server = off;
+select idl.val('DV11 the same receiver, the same query, with the server mark off: neither', :'rcv', '0/0');
+set getsetpaid.from_server = on;
+select idl.val('DV12 the row is the receiver''s and carries the sender''s name', format($$select (organisation_id = %L)::text || '/' || sender_name || '/' || status from public.received_invoices where id = %L$$, :'org_r', :'del_ir2'), 'true/IDL Sender Ltd/issued');
+select idl.val('DV13 the void invoice stays visible with status void', format($$select status from public.received_invoices where id = %L$$, :'del_vr'), 'void');
+select idl.val('DV14 card_payment_enabled: true for the issued invoice on a live account, false for the void one', format($$select (select card_payment_enabled from public.received_invoices where id = %L)::text || '/' || (select card_payment_enabled from public.received_invoices where id = %L)::text$$, :'del_ir2', :'del_vr'), 'true/false');
+select format($$select (select count(*) from public.invoices where id = %1$L) || '/' || (select count(*) from public.invoice_lines where invoice_id = %1$L) || '/' || (select count(*) from public.invoice_sends where invoice_id = %1$L) || '/' || (select count(*) from public.invoice_deliveries where invoice_id = %1$L) || '/' || (select count(*) from public.invoice_stripe_accounts where organisation_id = %2$L) || '/' || (select count(*) from public.invoice_card_payments where invoice_id = %1$L)$$, :'inv_i', :'org_s') as sender_tables \gset
+select idl.val('DV16 THE RECEIVER READS NO SENDER TABLE: invoices, lines, sends, deliveries, Stripe account, card payments', :'sender_tables', '0/0/0/0/0/0');
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DV16c CONTROL: the sender reads its invoice and its live delivery', format($$select (select count(*) from public.invoices where id = %1$L) || '/' || (select count(*) from public.invoice_deliveries where invoice_id = %1$L and withdrawn_at is null)$$, :'inv_i'), '1/1');
+select idl.val('DV15 the sender withdraws the void one', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_vr'), 'ok');
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DV15b ...and a withdrawn delivery leaves the receiver''s view', format($$select count(*)::text from public.received_invoices where id = %L$$, :'del_vr'), '0');
+reset role;
+reset request.jwt.claims;
+update public.organisations set deleted_at = now() where id = :'org_r';
+select format($$select count(*)::text from public.received_invoices where id = %L$$, :'del_ir2') as rcv_one \gset
+set role authenticated;
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DV17 a suspended receiver reads nothing (view_finance does not survive suspension)', :'rcv_one', '0');
+reset role;
+reset request.jwt.claims;
+update public.organisations set deleted_at = null where id = :'org_r';
+set role authenticated;
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DV17c CONTROL: restored, the same user reads it again', :'rcv_one', '1');
+reset role;
+reset request.jwt.claims;
+
+-- ===========================================================================
+-- § DP THE RECEIVED PDF AUDIT
+-- ===========================================================================
+select format($$select 'ok' from (select public.audit_received_invoice_download(%L)) s$$, :'del_ir2') as dp_ir \gset
+select format($$select 'ok' from (select public.audit_received_invoice_download(%L)) s$$, :'del_vr') as dp_vr \gset
+set role authenticated;
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DP1 the receiver''s Finance user audits a download of a live delivery', :'dp_ir', 'ok');
+reset role;
+reset request.jwt.claims;
+select idl.val('DP2 the audit row is in R, targets the delivery and carries number and status only', format($$select (organisation_id = %L)::text || '/' || after::text from public.audit_events where action = 'invoice.received_pdf_downloaded' and target_id = %L$$, :'org_r', :'del_ir2'), 'true/{"number": "IDL-0001", "status": "issued"}');
+set role authenticated;
+set request.jwt.claims = :'bk_r_c';
+select idl.val('DP3 the receiver''s Booker (no view_finance) is refused', :'dp_ir', 'denied(42501:forbidden)');
+set request.jwt.claims = :'fin_t_c';
+select idl.val('DP4 BREAKOUT: a third workspace''s Finance user is refused', :'dp_ir', 'denied(42501:forbidden)');
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DP5 the sender is refused (it is not the receiver)', :'dp_ir', 'denied(42501:forbidden)');
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DP6 a withdrawn delivery is refused to the receiver that DP1 let in on the live one', :'dp_vr', 'denied(42501:forbidden)');
+reset role;
+reset request.jwt.claims;
+
+-- ===========================================================================
 -- § DZ HOUSEKEEPING (later tasks insert their sections ABOVE this line)
 -- ===========================================================================
 reset role;

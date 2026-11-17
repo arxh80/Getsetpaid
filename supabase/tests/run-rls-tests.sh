@@ -1433,7 +1433,7 @@ fi
 # read path), the received PDF audit and the delivery notice. Self-contained
 # and re-runnable. Pin: grep -c '^select idl.val(' supabase/tests/rls_invoice_deliveries.sql
 # ============================================================================
-run_suite "INVOICE DELIVERIES" rls_invoice_deliveries.sql idl 67
+run_suite "INVOICE DELIVERIES" rls_invoice_deliveries.sql idl 94
 idl_fails=$SUITE_FAILS
 if [ "$idl_fails" != "0" ]; then
   echo "INVOICE DELIVERIES SUITE FAILED: $idl_fails failing assertion(s)" >&2
