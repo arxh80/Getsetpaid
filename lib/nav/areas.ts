@@ -162,6 +162,7 @@ export const OPERATIONS_AREAS: readonly NavAreaWithBlurb[] = [
  */
 export const FINANCE_ITEMS: readonly NavArea[] = [
   { path: "invoices", label: "Invoices", sub: "Bill and get paid" },
+  { path: "invoices/received", label: "Received", sub: "Invoices sent to you" },
   { path: "settings/invoicing", label: "Invoice settings", sub: "Business and bank details" },
 ] as const;
 

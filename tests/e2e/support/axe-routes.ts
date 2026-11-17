@@ -189,6 +189,17 @@ export const EXEMPT: readonly { route: string; reason: string }[] = [
     route: "/",
     reason: "the post-authentication hub renders nothing: it always redirects (sign in, a workspace, invites or onboarding)",
   },
+  // TRANSIENT (Invoices part 3 Task 6): both need a delivered invoice, which no
+  // fixture plants yet. Task 7's invoices-network.spec.ts scans them as Finance
+  // and moves both routes to SCANNED_ELSEWHERE.
+  {
+    route: "/[orgSlug]/invoices/received",
+    reason: "needs a delivered invoice to be more than the empty state; scanned by invoices-network.spec.ts (Task 7), which moves this route to SCANNED_ELSEWHERE",
+  },
+  {
+    route: "/[orgSlug]/invoices/received/[deliveryId]",
+    reason: "needs a delivered invoice to render at all; scanned by invoices-network.spec.ts (Task 7), which moves this route to SCANNED_ELSEWHERE",
+  },
   {
     route: "/super/[...unknown]",
     reason: "always notFound(): it renders the in-app 404, which accessibility.spec.ts scans directly",
