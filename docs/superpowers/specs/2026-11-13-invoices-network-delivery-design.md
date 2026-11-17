@@ -80,7 +80,7 @@ Columns, and nothing else:
 - `invoice_id` (needed to build the pay link; it is already printed on the
   PDF and email as part of `/pay/<id>.<sig>`)
 - `number`, `status`, `issue_date`, `due_date`, `currency`,
-  `net_minor`, `vat_minor`, `gross_minor`, `paid_at`
+  `net_minor`, `vat_minor`, `gross_minor`, `paid_on`
 - `snapshot` (the seller block, recipient block, lines and totals frozen
   at issue; exactly what the PDF prints)
 - `card_payment_enabled` (boolean; whether the Pay by card link is live)
@@ -118,7 +118,7 @@ only: invoice id, receiving organisation id). A second call for the same
 invoice and organisation is a no-op that returns the existing delivery.
 
 Rate limit: a `rate_limit_policies` row, 30 per hour per user, enforced by
-a `BEFORE INSERT` trigger on `invoice_deliveries`, as invoice email is.
+a `BEFORE INSERT` trigger on `invoice_deliveries`, modelled on `private.meter_connection_request()` (invoice email is spent app-side instead).
 
 ### `public.withdraw_invoice_delivery(p_delivery_id uuid)`
 
