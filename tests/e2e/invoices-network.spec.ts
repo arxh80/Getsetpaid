@@ -3,13 +3,14 @@ import AxeBuilder from "@axe-core/playwright";
 import {
   countAuditRows,
   DELIVERY_COMPANY_NAME,
+  enrolTotp,
   liveDeliveryId,
   setUpWorld,
   tearDownWorld,
   type E2eRole,
   type E2eWorld,
 } from "./support/fixtures";
-import { signIn } from "./support/sign-in";
+import { signIn, signInByEmail } from "./support/sign-in";
 
 // INVOICES, PART 3 -- NETWORK DELIVERY, walked in a real browser. The seventh
 // sibling of the golden path: the Pro workspace's Finance user drafts and
@@ -140,6 +141,8 @@ test("the receiver reads it in the inbox, opens it and downloads the PDF", async
 });
 
 test("refusal parity on the received routes", async ({ browser }) => {
+  // An empty id would make every refusal below pass for the wrong reason.
+  expect(deliveryId).not.toBe("");
   // The sender is not the recipient of its own delivery.
   const finance = await pageAs(browser, "finance");
   const senderSide = `/${world.proOrgSlug}/invoices/received/${deliveryId}`;
@@ -159,6 +162,30 @@ test("refusal parity on the received routes", async ({ browser }) => {
   expect((await owner.goto(receiverSide))?.status()).toBe(200);
   await expect(owner.getByRole("heading", { name: `Invoice ${invoiceNumber}`, level: 1 })).toBeVisible();
   expect((await owner.request.get(`${receiverSide}/pdf`)).status()).toBe(200);
+});
+
+test("an outsider who belongs to neither workspace cannot reach the delivery, under any slug", async ({ browser }) => {
+  expect(deliveryId).not.toBe("");
+  // otherOwner is the Owner (so holds view_finance) of a THIRD workspace; only
+  // the delivery id is foreign to them. Enrolled here: the world gives it no TOTP secret.
+  const page = await (await browser.newContext()).newPage();
+  await signInByEmail(page, world.otherOwner.email, await enrolTotp(world.otherOwner.email));
+
+  // Positive control: under their own slug the inbox renders for them (200, empty).
+  expect((await page.goto(`/${world.otherOrgSlug}/invoices/received`))?.status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "No invoices received yet" })).toBeVisible();
+
+  // The real delivery id under their own slug: record-level not-found, and a 404 PDF.
+  const ownSlug = `/${world.otherOrgSlug}/invoices/received/${deliveryId}`;
+  await expectNotFound(page, ownSlug);
+  expect((await page.request.get(`${ownSlug}/pdf`)).status()).toBe(404);
+
+  // The receiving workspace's slug: not a member, so the workspace-level literal 404.
+  const receiverSlug = `/${world.orgSlug}/invoices/received/${deliveryId}`;
+  expect((await page.goto(receiverSlug))?.status()).toBe(404);
+  await expect(page.locator("body")).toContainText("Page not found");
+  expect((await page.request.get(`${receiverSlug}/pdf`)).status()).toBe(404);
+  // (Same-shape control: alpha's Owner gets 200 on this very URL and its /pdf in the previous test.)
 });
 
 test("the sender withdraws it and the receiver sees not-found", async ({ browser }) => {
