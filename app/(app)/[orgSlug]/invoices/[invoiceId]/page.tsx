@@ -148,17 +148,16 @@ export default async function InvoicePage({ params }: PageProps<"/[orgSlug]/invo
             ) : null}
           </div>
         ) : null}
-        {invoice.status !== "void" || delivery.some((r) => r.deliveryId) ? (
-          <ActionOutcome testId="delivery-outcome">
-            <InvoiceDeliveryPanel
-              orgSlug={org.slug}
-              invoiceId={invoice.id}
-              rows={delivery}
-              canDeliver={access.canWrite && invoice.status !== "void"}
-              canWithdraw={canManageFinance && !org.isSuspended}
-            />
-          </ActionOutcome>
-        ) : null}
+        {/* Always mounted, void included: withdrawing the last delivery of a void invoice revalidates the panel to null, and the outcome must outlive it. */}
+        <ActionOutcome testId="delivery-outcome">
+          <InvoiceDeliveryPanel
+            orgSlug={org.slug}
+            invoiceId={invoice.id}
+            rows={delivery}
+            canDeliver={access.canWrite && invoice.status !== "void"}
+            canWithdraw={canManageFinance && !org.isSuspended}
+          />
+        </ActionOutcome>
         {invoice.status === "issued" ? (
           <div className="flex max-w-prose flex-col gap-3">
             <h3 className="text-lg font-bold text-ink">Record the payment</h3>
