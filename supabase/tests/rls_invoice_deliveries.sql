@@ -412,13 +412,31 @@ reset role;
 -- ===========================================================================
 -- § DW WITHDRAW. Live now: inv_i S->R (del_ir) and inv_x X->R (from DD7c).
 -- ===========================================================================
+insert into public.invoice_deliveries (invoice_id, from_organisation_id, to_organisation_id, delivered_by) values (:'inv_p', :'org_s', :'org_r', :'fin_s');
+select id as del_w1 from public.invoice_deliveries where invoice_id = :'inv_p' and withdrawn_at is null \gset
 set role authenticated;
 set request.jwt.claims = :'ro_s_c';
-select idl.val('DW1 a Read Only user in the sender cannot withdraw', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_ir'), 'denied(42501:invoice_delivery_refused)');
+select idl.val('DW1 a Read Only user in the sender cannot withdraw (its own live delivery of inv_p, so only the permission can refuse it)', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_w1'), 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+delete from public.invoice_deliveries where invoice_id = :'inv_p';
+insert into public.invoice_deliveries (invoice_id, from_organisation_id, to_organisation_id, delivered_by) values (:'inv_p', :'org_s', :'org_r', :'fin_s');
+select id as del_w2 from public.invoice_deliveries where invoice_id = :'inv_p' and withdrawn_at is null \gset
+set role authenticated;
 set request.jwt.claims = :'fin_r_c';
-select idl.val('DW2 THE RECEIVER''S Finance user cannot withdraw the sender''s delivery', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_ir'), 'denied(42501:invoice_delivery_refused)');
+select idl.val('DW2 THE RECEIVER''S Finance user cannot withdraw the sender''s delivery (its own live delivery of inv_p, so only the permission can refuse it)', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_w2'), 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+delete from public.invoice_deliveries where invoice_id = :'inv_p';
+insert into public.invoice_deliveries (invoice_id, from_organisation_id, to_organisation_id, delivered_by) values (:'inv_p', :'org_s', :'org_r', :'fin_s');
+select id as del_w3 from public.invoice_deliveries where invoice_id = :'inv_p' and withdrawn_at is null \gset
+set role authenticated;
 set request.jwt.claims = :'fin_t_c';
-select idl.val('DW3 BREAKOUT: a third workspace''s Finance user cannot withdraw it', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_ir'), 'denied(42501:invoice_delivery_refused)');
+select idl.val('DW3 BREAKOUT: a third workspace''s Finance user cannot withdraw it (its own live delivery of inv_p, so only the permission can refuse it)', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_w3'), 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+delete from public.invoice_deliveries where invoice_id = :'inv_p';
+set role authenticated;
 set request.jwt.claims = :'fin_s_c';
 select idl.val('DW4 POSITIVE: the sender''s Finance user withdraws it', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_ir'), 'ok');
 reset role;
