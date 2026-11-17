@@ -6,7 +6,7 @@
 // all of it in the database. Every refusal echoes the submitted values.
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { getCurrentOrg, type CurrentOrg } from "@/lib/auth";
+import { getCurrentOrg, hasPermission, type CurrentOrg } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import { echoedValues, field, type FormState } from "@/lib/forms";
 import { FAILED_MESSAGE, REFUSED_MESSAGE } from "@/lib/crm/write";
@@ -171,4 +171,40 @@ export async function createDraftFromFinanceAction(_prev: FormState, formData: F
   if (saveError) return refused(saveError, "draft from finance", formData);
   revalidatePath(`/${auth.org.slug}/invoices`);
   redirect(`/${auth.org.slug}/invoices/${String(invoiceId)}`);
+}
+
+const DELIVERY_BUDGET_MESSAGE = "You’ve delivered 30 invoices in the last hour. Try again in an hour.";
+
+export async function deliverInvoiceAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const auth = await authorise(formData);
+  if (!auth.ok) return auth.state;
+  const invoiceId = field(formData, "invoiceId");
+  const profileId = field(formData, "profileId");
+  if (!invoiceId || !profileId) return { error: FAILED_MESSAGE, values: echoedValues(formData) };
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("deliver_invoice", { p_invoice_id: invoiceId, p_network_profile_id: profileId });
+  if (error) {
+    if (error.code === "PT429") return { error: DELIVERY_BUDGET_MESSAGE, values: echoedValues(formData) };
+    return refused(error, "deliver", formData);
+  }
+  revalidatePath(`/${auth.org.slug}/invoices/${invoiceId}`);
+  return { message: "Delivered. It is in their received invoices now, and their finance team has been emailed." };
+}
+
+// No Pro check (plan decision 11): a downgraded workspace can still pull back what it sent.
+export async function withdrawInvoiceDeliveryAction(_prev: FormState, formData: FormData): Promise<FormState> {
+  const values = echoedValues(formData);
+  const orgSlug = field(formData, "orgSlug");
+  const org = orgSlug ? await getCurrentOrg(orgSlug) : null;
+  if (!org || org.isSuspended || !(await hasPermission(org.id, "manage_finance"))) {
+    return { error: REFUSED_MESSAGE, values };
+  }
+  const invoiceId = field(formData, "invoiceId");
+  const deliveryId = field(formData, "deliveryId");
+  if (!invoiceId || !deliveryId) return { error: FAILED_MESSAGE, values };
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("withdraw_invoice_delivery", { p_delivery_id: deliveryId });
+  if (error) return refused(error, "withdraw delivery", formData);
+  revalidatePath(`/${org.slug}/invoices/${invoiceId}`);
+  return { message: "Withdrawn. It is no longer in their received invoices." };
 }

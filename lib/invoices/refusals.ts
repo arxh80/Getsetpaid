@@ -25,6 +25,7 @@ export const INVOICE_REFUSAL_SENTENCES: Readonly<Record<string, string>> = {
   invoice_void_reason_required: "Give a reason for voiding — 500 characters at most.",
   invoice_not_sendable: "Only an issued or paid invoice can be sent.",
   invoice_send_email_invalid: "Enter the email address to send the invoice to.",
+  invoice_delivery_refused: "This invoice can’t be delivered there. It must be issued or paid, to a company you have linked to a connected workspace’s network profile. Reload the page to see where it stands.",
   invoice_number_taken: "That invoice number is already used. Change the number prefix in Invoice settings, then issue again.",
   invoice_settings_invalid: "One of the settings is not valid. Check each field and save again.",
   stripe_link_state_invalid: "That Stripe connection attempt expired or was already used. Start again from Invoice settings.",
