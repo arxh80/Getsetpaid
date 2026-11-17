@@ -1808,3 +1808,39 @@ Founder: "go ClamAV". Wired on branch `clamav-scanner` (PR #30): fail-closed cla
   1. **Lost-device recovery.** There is still no self-service MFA recovery (`SECURITY.md` section 4). That now applies to every user, not three roles. Decide the support process before launch.
   2. **Legal pages.** Terms and the Security page say two-factor is required "for owners, admins and finance users". Still true, now incomplete. A new version needs drafting at `/super/legal` and counsel's review.
   3. **`SECURITY.md`** (gitignored, not in this change): section 4 and the "MFA is optional" known limitation need the same update.
+
+## Q282 -- Invoices part 3: network delivery, founder answers 2026-11-13, implemented
+
+- **Q282 -- What did the founder decide for delivering an invoice into another workspace, and what did the build decide where the spec was silent?** Spec `docs/superpowers/specs/2026-11-13-invoices-network-delivery-design.md`, plan `docs/superpowers/plans/2026-11-13-invoices-network-delivery.md`. Parts 1 and 2 still bind (Pro only, our own invoices). **Answers of 2026-11-13, built:**
+
+  | Question | Answer |
+  |---|---|
+  | What can the receiver do? | Read-only inbox: view, download the PDF, follow the existing Pay by card link, see paid or void. Nothing is written into their CRM or finance. |
+  | How is the destination chosen? | By a button on the issued invoice, through the existing manual link between the recipient company and a network profile. No new picker. |
+  | Who sees the inbox? | Members with `view_finance` in the receiving workspace, on any tier. No new permission key. |
+
+  **Three defaults, accepted with the design (built):** (1) the receiver reads the sender's snapshot and nothing is copied, so a purge of the sender's workspace (60 days after closure, Q88) takes the delivery with it; (2) a delivery appears in the sender's workspace export only, not the receiver's; (3) no badge or unread state, one email is the only notice.
+
+  **The plan's twelve decisions, one line each (all implemented):**
+  1. The view's key columns are `id` and `organisation_id` (the delivery and the RECEIVING workspace), so the received list goes through `lib/list/query.ts` with no tenant-boundary exemption; `received_invoices` joins `TABLES_WITHOUT_SOFT_DELETE` only.
+  2. The view adds `sender_name` (`snapshot->'seller'->>'name'`), already inside the snapshot, so nothing new is disclosed.
+  3. The spec's `paid_at` is `paid_on` (`invoices.paid_on date`).
+  4. The budget is a `BEFORE INSERT` trigger modelled on `private.meter_connection_request()`: category `invoice_delivery`, scope user, 30 per 3600 s, not in the TypeScript `RateLimitCategory` union (trigger-metered budgets are left out of it). A repeat delivery inserts nothing and spends nothing.
+  5. One eligibility predicate, `private.invoice_delivery_target(invoice, profile)`, called by `deliver_invoice` and by `invoice_delivery_state`, the one read the sender's page makes. The page cannot compute eligibility itself: the sender may not hold `view_network`, and the base `network_profiles` table no longer answers a foreign row.
+  6. Every refusal of `deliver_invoice` and `withdraw_invoice_delivery` is the same error, `42501` with hint `invoice_delivery_refused`; only `not_authenticated` (28000) differs.
+  7. The received PDF download is audited as `invoice.received_pdf_downloaded` in the RECEIVING workspace, before it renders.
+  8. Retention class `cascades` (composite FK to `invoices`, `ON DELETE CASCADE`); the financial clock is the invoice's own.
+  9. The workspace export carries `invoice_deliveries` scoped on `from_organisation_id` (the sender only); the account export excuses it.
+  10. Notice recipients are the active members of the receiving workspace whose role holds `view_finance` (a `role_permissions` join), tombstone excluded, only while that workspace is not read-only, over a seven-day window.
+  11. Withdraw is gated on `manage_finance` and "not suspended" only, with no Pro check (a downgraded workspace can still pull back what it sent). Deliver uses part 1's `authorise()` (manage_finance, Pro, not suspended).
+  12. `withdrawn_by` may be null on a withdrawn row (erasure sets it null), so the pair check is one-way: `withdrawn_by is null or withdrawn_at is not null`.
+
+  **Taken during the build, where the founder ruled or the code forced it:**
+  1. **`received_invoices` blanks `snapshot.recipient.email`** (founder ruling 2026-11-17). The snapshot holds the sender's private CRM contact email, which the PDF never prints, so the view returns it as JSON null (`jsonb_set`, key kept because `parseSnapshot` reads it) and the receiver gets only what the PDF prints. Pinned by `rls_invoice_deliveries.sql` DV18 (receiver reads null, rest of the snapshot intact) with DV18a as the control (the base row does carry the email).
+  2. **`private.meter_invoice_delivery()` stays a copy of `private.meter_connection_request()`** (founder ruling 2026-11-17). About 100 lines are duplicated rather than factored into one shared meter. Follow-up debt: fold both into one function when either next changes.
+  3. **The delivery outcome region is always mounted** on issued, paid and void invoices (`<ActionOutcome testId="delivery-outcome">`), over the plan's condition "a non-void invoice or a live delivery". CLAUDE.md's rule "show outcomes where the action can't unmount them" governs: withdrawing the last delivery of a void invoice would otherwise unmount its own message.
+  4. **§ DN's DN2 is split (DN2, DN2b, DN2c).** `authenticated` holds no EXECUTE on `pending_invoice_delivery_notifications`, so the privilege check refuses before the body's server-only guard is reachable. DN2 is the `42501` for `authenticated`; DN2b carries a session as `service_role` and gets the hinted refusal; DN2c is the positive control (`service_role`, no session, reads).
+  5. **The cross-workspace breakout is proved in `invoices-network.spec.ts`** with a real delivery id and an outsider principal (the Owner of a third workspace, who holds `view_finance` there, so only the delivery id is foreign), with a control on the same principal. The random-UUID probe in `tenant-breakout.spec.ts` was removed: it could not go red if the guard were removed.
+  6. **No AI attribution** in commits or the PR body (founder's global rule, 2026-11-17).
+
+  **Owed to the founder:** reconcile `SECURITY.md` (gitignored; the text to add is in the build ledger as `security-md-addition.md`); decide on the Next.js upgrade notice `pnpm dev` prints (16.4.2 flagged as vulnerable; not acted on); the meter-copy debt above. Detail in `docs/as-built.md` § "Invoices part 3 (network delivery), as it actually shipped".
