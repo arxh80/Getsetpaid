@@ -1,8 +1,10 @@
 import "server-only";
-// THE BANK-CHANGE NOTICE (Invoices part 1, spec § Security 2) and its sibling,
-// THE STRIPE-ACCOUNT NOTICE (Invoices part 2: a link or an end), through the ONE
-// Brevo sender, on the existing delivery tick. Database halves: 20261107004000
-// and 20261110001000 (the resolvers, the ledger notices). Same loop, stamps and bounds as
+// THE BANK-CHANGE NOTICE (Invoices part 1, spec § Security 2) and its siblings,
+// THE STRIPE-ACCOUNT NOTICE (Invoices part 2: a link or an end) and THE
+// INVOICE-DELIVERED NOTICE (Invoices part 3: one email to the receiving
+// workspace), through the ONE Brevo sender, on the existing delivery tick.
+// Database halves: 20261107004000, 20261110001000 and 20261117003000 (the
+// resolvers, the ledger notices). Same loop, stamps and bounds as
 // lib/email/workspace-closure-notifications.ts: one email per audit row, its
 // recipients Bcc'd by deliverEach, the stamp written only after ok:true.
 import {
@@ -15,7 +17,11 @@ import {
 import type { EmailBody } from "@/lib/email/templates";
 import { createServiceClient } from "@/lib/supabase/service";
 import { siteUrl } from "@/lib/supabase/env";
-import { buildBankDetailsChangedNotice, buildStripeAccountChangedNotice } from "@/lib/email/invoice-templates";
+import {
+  buildBankDetailsChangedNotice,
+  buildInvoiceDeliveredNotice,
+  buildStripeAccountChangedNotice,
+} from "@/lib/email/invoice-templates";
 
 /** What every resolver row carries; each notice adds its own fields. */
 interface NoticeRow {
@@ -24,7 +30,7 @@ interface NoticeRow {
 }
 
 /**
- * The one sender both notices share: read the resolver, build one email per
+ * The one sender the notices share: read the resolver, build one email per
  * audit row, stamp it only after Brevo accepted it, record a deterministic
  * refusal once. `build` names the row's fields one by one -- never a spread.
  */
@@ -120,6 +126,34 @@ export function deliverInvoiceStripeAccountNotifications(
         organisationName: row.organisation_name,
         change: row.change as "linked" | "ended",
         changedAt: row.changed_at,
+        siteUrl: origin,
+      }),
+  });
+}
+
+interface InvoiceDeliveredRow extends NoticeRow {
+  readonly organisation_slug: string;
+  readonly organisation_name: string;
+  readonly sender_name: string | null;
+  readonly delivered_at: string;
+}
+
+/** Invoices part 3: one email per delivery to the receiver's view_finance holders. */
+export function deliverInvoiceDeliveredNotifications(
+  limit: number = REQUESTER_NOTICE_LIMIT,
+): Promise<RequesterNoticeResult> {
+  return deliverAuditNotices<InvoiceDeliveredRow>({
+    resolver: "pending_invoice_delivery_notifications",
+    notice: "invoice_delivered",
+    label: "invoice delivered notice",
+    limit,
+    // FIVE FIELDS, by name -- never a spread of the row.
+    build: (row, origin) =>
+      buildInvoiceDeliveredNotice({
+        organisationSlug: row.organisation_slug,
+        organisationName: row.organisation_name,
+        senderName: row.sender_name ?? "",
+        deliveredAt: row.delivered_at,
         siteUrl: origin,
       }),
   });

@@ -1458,6 +1458,8 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Task 9b job 2 -- the export-ready notice queue; returns no archive key and no URL",
   "pending_invoice_stripe_account_notifications(p_limit integer)":
     "Invoices part 2 Task 3 -- the delivery tick reads Stripe link/end audit rows not yet emailed, with the workspace's current Owner/Admin addresses; no account id; refuses any session",
+  "pending_invoice_delivery_notifications(p_limit integer)":
+    "Invoices part 3 Task 4 -- the delivery tick reads invoice.delivered rows and the RECEIVING workspace's view_finance addresses; refuses any session. Asserted in rls_invoice_deliveries.sql § DN",
   "stripe_account_deauthorized(p_event_id text, p_account text)":
     "Invoices part 2 Task 3 (event id: Task 4) -- the webhook ends the live link of an account Stripe says revoked GetSetPaid, once per event id, and audits it with the tombstone as actor; refuses any session. Asserted in rls_invoices_stripe.sql § SL and § SW",
   "stripe_account_updated(p_event_id text, p_account text, p_charges_enabled boolean)":

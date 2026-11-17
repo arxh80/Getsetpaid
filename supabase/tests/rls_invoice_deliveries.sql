@@ -643,6 +643,55 @@ reset role;
 reset request.jwt.claims;
 
 -- ===========================================================================
+-- § DN THE DELIVERY NOTICE. public.pending_invoice_delivery_notifications is
+-- the delivery tick's queue: one row per LIVE invoice.delivered audit row, with
+-- the RECEIVING workspace's view_finance holders' addresses. Live now: inv_i
+-- S->R (del_ir2, audited by deliver_invoice); del_ir is withdrawn.
+-- ===========================================================================
+reset role;
+reset request.jwt.claims;
+delete from private.notification_deliveries where notice = 'invoice_delivered' and audit_event_id in (select id from public.audit_events where action = 'invoice.delivered' and organisation_id in (:'org_s', :'org_r', :'org_x'));
+select (select slug from public.organisations where id = :'org_r') || ':IDL Sender Ltd:' || (select string_agg(email, '+' order by email) from auth.users where id in (:'fin_r', :'own_r')) as dn1_want \gset
+select id as dn_aud from public.audit_events where action = 'invoice.delivered' and target_id = :'del_ir2' \gset
+select id as dn_wd from public.audit_events where action = 'invoice.delivery_withdrawn' and target_id = :'del_ir' \gset
+select id as dn_old from public.audit_events where action = 'invoice.delivered' and target_id = :'del_ir' \gset
+select format($$select string_agg(organisation_slug || ':' || sender_name || ':' || array_to_string(emails, '+'), ',') from public.pending_invoice_delivery_notifications(30) where audit_event_id = %L$$, :'dn_aud') as dn_q \gset
+select idl.val('DN0 the resolver is executable by service_role only, a definer with an empty search_path', $$select string_agg(p.proname || '=' || coalesce((select string_agg(r, '/' order by r) from unnest(array['anon','authenticated','service_role']) r where has_function_privilege(r, p.oid, 'EXECUTE')), '-') || (case when p.prosecdef and p.proconfig = array['search_path=""'] then '' else '!' end), ',' order by p.proname) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'pending_invoice_delivery_notifications'$$, 'pending_invoice_delivery_notifications=service_role');
+select idl.val('DN1 the live delivery is one row: the RECEIVER''s slug, the SENDER''s business name, and the addresses of R''s view_finance holders only (not the booker, not any S member)', :'dn_q', :'dn1_want');
+select idl.val('DN1a CONTROL: the stripped-down expectation really names two addresses and not bk_r', format($$select (cardinality(string_to_array(%L, '+')) = 2)::text || '/' || (position(%L in %L) = 0)::text$$, :'dn1_want', 'idl-bk-r-' || :'bk_r', :'dn1_want'), 'true/true');
+select idl.val('DN6 a WITHDRAWN delivery''s audit row is not pending (DN1 shows a live one is)', format($$select count(*)::text from public.pending_invoice_delivery_notifications(30) where audit_event_id = %L$$, :'dn_old'), '0');
+set role authenticated;
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DN2 a signed-in user is refused the resolver by privilege', $$select count(*)::text from public.pending_invoice_delivery_notifications(30)$$, 'denied(42501)');
+reset role;
+reset request.jwt.claims;
+set role service_role;
+select idl.val('DN2c CONTROL: service_role with no user session reads the queue', $$select (count(*) > 0)::text from public.pending_invoice_delivery_notifications(30)$$, 'true');
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DN2b service_role carrying a USER''s session is refused by the body''s own guard', $$select count(*)::text from public.pending_invoice_delivery_notifications(30)$$, 'denied(42501:notification_stamp_is_server_only)');
+reset role;
+reset request.jwt.claims;
+select idl.val('DN3 stamping the delivered audit row under invoice_delivered writes one ledger row', format($$select public.mark_notices_delivered('invoice_delivered', array[%L::uuid])::text$$, :'dn_aud'), '1');
+select idl.val('DN3a ...and the row leaves the queue', :'dn_q', '<null>');
+select idl.val('DN4 the stamp refuses an invoice.delivery_withdrawn audit id under this notice', format($$select public.mark_notices_delivered('invoice_delivered', array[%L::uuid])::text$$, :'dn_wd'), '0');
+select idl.val('DN4a ...and so does the undeliverable stamp', format($$select public.mark_notices_undeliverable('invoice_delivered', array[%L::uuid], 'no_recipient')::text$$, :'dn_wd'), '0');
+
+-- A fresh live delivery (inv_p, S->R) with its own audit row, planted directly.
+delete from public.invoice_deliveries where invoice_id = :'inv_p';
+select gen_random_uuid()::text as dn_del \gset
+select gen_random_uuid()::text as dn_aud5 \gset
+insert into public.invoice_deliveries (id, invoice_id, from_organisation_id, to_organisation_id, delivered_by) values (:'dn_del', :'inv_p', :'org_s', :'org_r', :'fin_s');
+insert into public.audit_events (id, organisation_id, actor_user_id, action, target_type, target_id, correlation_id, after)
+values (:'dn_aud5', :'org_s', :'fin_s', 'invoice.delivered', 'invoice_delivery', :'dn_del', gen_random_uuid(), '{"number": "IDL-0002"}');
+select format($$select count(*)::text from public.pending_invoice_delivery_notifications(30) where audit_event_id = %L$$, :'dn_aud5') as dn_q5 \gset
+update public.organisations set deleted_at = now() where id = :'org_r';
+select idl.val('DN5 a receiver that went read-only gets nothing', :'dn_q5', '0');
+update public.organisations set deleted_at = null where id = :'org_r';
+select idl.val('DN5c CONTROL: restored, the same delivery is pending', :'dn_q5', '1');
+select idl.val('DN5d the undeliverable stamp records it once', format($$select public.mark_notices_undeliverable('invoice_delivered', array[%L::uuid], 'no_recipient')::text$$, :'dn_aud5'), '1');
+select idl.val('DN5e ...and an undeliverable row leaves the queue too', :'dn_q5', '0');
+
+-- ===========================================================================
 -- § DZ HOUSEKEEPING (later tasks insert their sections ABOVE this line)
 -- ===========================================================================
 reset role;
