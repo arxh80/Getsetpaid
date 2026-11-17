@@ -29,8 +29,7 @@
 - Audit payloads are **name-only** (CLAUDE.md § Non-negotiable rules): the invoice number at most, never an amount, an address, a profile id or the receiving organisation's name. Targets are ids.
 - UI: `DESIGN.md` tokens only, square corners, no shadows or gradients, `tabular-nums` on every number, money only through `formatGbp` (`lib/format/money.ts`), dates through `formatDateOnly`/`formatDate`. Every new page has a `loading.tsx`. Outcomes that unmount their form use `components/ui/action-outcome.tsx`.
 - A refusal looks like not-found (the streamed not-found contract, `DESIGN.md` § Error pages). Never a 403.
-- Commit and push after every change, one logical change per commit (`git pull --rebase` before `git push`). Every commit message ends with exactly:
-  `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
+- Commit and push after every change, one logical change per commit (`git pull --rebase` before `git push`). **No AI attribution** (the founder's global rule): no `Co-Authored-By: Claude` trailer in any commit, and no "Generated with Claude Code" line in the PR body.
 - Founder answers of 2026-11-13 are recorded as **Q282** in `.superpowers/sdd/plan-the-whole-build-synthetic-thompson/DECISIONS-QUEUE.md` (Task 8). New founder questions take Q283 onwards, each with an implemented default.
 - Never use bare `git stash`.
 
@@ -291,7 +290,7 @@ revoke all on function private.meter_invoice_delivery() from public, anon, authe
   - Mutant 2: `grant insert on public.invoice_deliveries to authenticated`. DT2 and DB1 go red. Revert.
   - Set the pin to `grep -c '^select idl.val(' supabase/tests/rls_invoice_deliveries.sql`. Full reset, then `bash supabase/tests/run-rls-tests.sh` must report "All suites passed".
   - `pnpm typecheck`, `pnpm exec vitest run tests/unit`, `pnpm exec vitest run tests/integration` (stack: check for other sessions first).
-  - Commit "Add invoice_deliveries, its budget and its catalogue rows", plus the trailer, and push.
+  - Commit "Add invoice_deliveries, its budget and its catalogue rows", and push.
 
 ---
 
@@ -563,7 +562,7 @@ grant execute on function public.invoice_delivery_state(uuid) to authenticated;
   - Replace `private.finance_module_organisations()` with `private.permitted_organisations('view_finance')`. DD7 goes red. Revert.
   - Remove the `has_permission(v_org, 'manage_finance')` term from `withdraw_invoice_delivery`. DW2 goes red: the receiver's `fin_r` withdraws the sender's delivery. Revert.
 
-- [ ] **Step 5: Pin, gates, commit.** Re-measure the pin. Full reset and run. `pnpm typecheck`, unit, integration. Commit "Deliver, withdraw and the delivery state RPCs", plus the trailer, and push.
+- [ ] **Step 5: Pin, gates, commit.** Re-measure the pin. Full reset and run. `pnpm typecheck`, unit, integration. Commit "Deliver, withdraw and the delivery state RPCs", and push.
 
 ---
 
@@ -705,7 +704,7 @@ grant execute on function public.audit_received_invoice_download(uuid) to authen
   - Drop `and private.request_is_from_server()`. DV11 goes red. Revert.
   - Join `public.invoice_lines` into the view (`left join public.invoice_lines l on false`). DV3 goes red. Revert.
 
-- [ ] **Step 5: Pin, gates, commit.** Re-measure the pin; full reset and run; `pnpm typecheck`, unit, integration. Commit "The received_invoices view and the received PDF audit", plus the trailer, and push.
+- [ ] **Step 5: Pin, gates, commit.** Re-measure the pin; full reset and run; `pnpm typecheck`, unit, integration. Commit "The received_invoices view and the received PDF audit", and push.
 
 ---
 
@@ -935,7 +934,7 @@ export function deliverInvoiceDeliveredNotifications(
 - [ ] **Step 7: Mutants, pin, gates, commit.**
   - Drop the `role_permissions` join from the resolver's email subquery. DN1 goes red (`bk_r`'s address appears). Revert.
   - In the builder, add `${input.senderName}` to the link. The "links ONLY" test goes red. Revert.
-  - Re-measure the pin; full reset and run; typecheck, unit, integration. Commit "Email the receiving workspace when an invoice is delivered", plus the trailer, and push.
+  - Re-measure the pin; full reset and run; typecheck, unit, integration. Commit "Email the receiving workspace when an invoice is delivered", and push.
 
 ---
 
@@ -1254,7 +1253,7 @@ export function InvoiceDeliveryPanel({
     ```
   - Add `"components/invoices/invoice-delivery-panel.tsx"` to the unmounting-forms list in `tests/unit/forms/action-outcome-census.test.ts`, with the comment `// Invoices part 3 Task 5. Delivering or withdrawing revalidates the invoice page into a tree without the pressed form.`
 
-- [ ] **Step 6: Gates and commit.** `npx eslint app lib components tests scripts`, `pnpm typecheck`, `pnpm exec vitest run tests/unit`. Start the dev server and open an issued invoice as the e2e demo's Finance user (or wait for Task 7's spec) to see the panel render nothing for an unlinked company. Commit "Deliver and withdraw on the invoice page", plus the trailer, and push.
+- [ ] **Step 6: Gates and commit.** `npx eslint app lib components tests scripts`, `pnpm typecheck`, `pnpm exec vitest run tests/unit`. Start the dev server and open an issued invoice as the e2e demo's Finance user (or wait for Task 7's spec) to see the panel render nothing for an unlinked company. Commit "Deliver and withdraw on the invoice page", and push.
 
 ---
 
@@ -1543,7 +1542,7 @@ export default async function ReceivedInvoicePage({ params }: PageProps<"/[orgSl
     "session + org membership + view_finance in the RECEIVING workspace through the definer view public.received_invoices (another workspace's, a withdrawn and an unknown delivery are the same 404), audited before the PDF is rendered -- probed in invoices-network.spec.ts",
 ```
 
-- [ ] **Step 7: Gates and commit.** `npx next typegen`, then `pnpm typecheck`, `npx eslint app lib components tests scripts`, `pnpm exec vitest run tests/unit`, and `pnpm exec vitest run tests/integration/list` (the soft-delete census checks `received_invoices` really has no `deleted_at` and really has `organisation_id`; the stack must be up). Commit "The received invoices inbox, detail page and PDF", plus the trailer, and push.
+- [ ] **Step 7: Gates and commit.** `npx next typegen`, then `pnpm typecheck`, `npx eslint app lib components tests scripts`, `pnpm exec vitest run tests/unit`, and `pnpm exec vitest run tests/integration/list` (the soft-delete census checks `received_invoices` really has no `deleted_at` and really has `organisation_id`; the stack must be up). Commit "The received invoices inbox, detail page and PDF", and push.
 
 ---
 
@@ -1630,7 +1629,7 @@ async function scan(page: Page) {
 
   Each must pass. A machine failure (`Target crashed`) is re-run, never retried in code.
 
-- [ ] **Step 5: Mutant, then commit.** Make `received/[deliveryId]/page.tsx` skip `getFinanceReadAccess` and make the view's WHERE use `view_crm` locally (do **not** commit either): step 5's refusal parity with a non-finance principal goes red. Revert both. Commit "The network delivery golden path, its scans and breakout probes", plus the trailer, and push.
+- [ ] **Step 5: Mutant, then commit.** Make `received/[deliveryId]/page.tsx` skip `getFinanceReadAccess` and make the view's WHERE use `view_crm` locally (do **not** commit either): step 5's refusal parity with a non-finance principal goes red. Revert both. Commit "The network delivery golden path, its scans and breakout probes", and push.
 
 ---
 
@@ -1658,8 +1657,6 @@ async function scan(page: Page) {
   5. The e2e specs this change reaches, one at a time: `invoices-network`, `invoices`, `invoices-card`, `tenant-breakout`, `super-permissions`, `accessibility`, `keyboard`, `network-connections`, `network-leakage`.
   6. Measure, don't increment: `npx playwright test --list | tail -1` and `grep -c "await scan(\|new AxeBuilder" tests/e2e/*.spec.ts`, for the PR body.
 
-- [ ] **Step 6: Commit, push, PR.** Commit "Record invoices part 3: as-built, CLAUDE.md and Q282", plus the trailer, and push. Open the PR to `main` with `gh pr create`: what it does, the twelve plan decisions, what was run locally and what is left to CI, the founder's open questions (if any). No template placeholder lines. The body ends with exactly:
-
-  `🤖 Generated with [Claude Code](https://claude.com/claude-code)`
+- [ ] **Step 6: Commit, push, PR.** Commit "Record invoices part 3: as-built, CLAUDE.md and Q282", and push. Open the PR to `main` with `gh pr create`: what it does, the twelve plan decisions, what was run locally and what is left to CI, the founder's open questions (if any). No template placeholder lines and no AI attribution line.
 
   Do not merge: merging to `main` needs the founder's approval.
