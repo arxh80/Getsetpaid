@@ -547,6 +547,13 @@ create view idl.view_fn_deps as
    group by v.relname;
 grant select on idl.view_deps, idl.view_fn_deps to authenticated, service_role;
 
+-- A row in every sender table DV16 says the receiver cannot read, so each
+-- refusal there can fail (the sender's control DV16c reads them all as >= 1).
+insert into public.invoice_sends (organisation_id, invoice_id, to_email, sent_by)
+values (:'org_s', :'inv_i', 'customer@example.test', :'fin_s');
+insert into public.invoice_card_payments (organisation_id, invoice_id, stripe_event_id, stripe_payment_intent_id, amount_minor, currency, outcome)
+values (:'org_s', :'inv_i', 'evt_idl1', 'pi_idl1' || replace(:'inv_i', '-', ''), 12000, 'GBP', 'applied');
+
 select idl.val('DV1 it is a view: security_invoker off, security_barrier on', $$select (relkind = 'v')::text || '/' || (coalesce(reloptions::text,'') like '%security_barrier=true%')::text || '/' || (coalesce(reloptions::text,'') like '%security_invoker=true%')::text from pg_class where oid = 'public.received_invoices'::regclass$$, 'true/true/false');
 select idl.val('DV2 THE COLUMN LIST IS PINNED (no event_id, recipient ids, paid_entry_id, void_reason, actor or Stripe columns)', $$select string_agg(attname, ',' order by attnum) from pg_attribute where attrelid = 'public.received_invoices'::regclass and attnum > 0$$, 'id,organisation_id,delivered_at,invoice_id,sender_name,number,status,issue_date,due_date,currency,net_minor,vat_minor,gross_minor,paid_on,snapshot,card_payment_enabled');
 select idl.val('DV3 THE RELATION DEPENDENCIES ARE PINNED', $$select tables || ' (' || n || ')' from idl.view_deps where viewname = 'received_invoices'$$, 'public.invoice_deliveries,public.invoice_stripe_accounts,public.invoices (3)');
@@ -575,7 +582,7 @@ select idl.val('DV14 card_payment_enabled: true for the issued invoice on a live
 select format($$select (select count(*) from public.invoices where id = %1$L) || '/' || (select count(*) from public.invoice_lines where invoice_id = %1$L) || '/' || (select count(*) from public.invoice_sends where invoice_id = %1$L) || '/' || (select count(*) from public.invoice_deliveries where invoice_id = %1$L) || '/' || (select count(*) from public.invoice_stripe_accounts where organisation_id = %2$L) || '/' || (select count(*) from public.invoice_card_payments where invoice_id = %1$L)$$, :'inv_i', :'org_s') as sender_tables \gset
 select idl.val('DV16 THE RECEIVER READS NO SENDER TABLE: invoices, lines, sends, deliveries, Stripe account, card payments', :'sender_tables', '0/0/0/0/0/0');
 set request.jwt.claims = :'fin_s_c';
-select idl.val('DV16c CONTROL: the sender reads its invoice and its live delivery', format($$select (select count(*) from public.invoices where id = %1$L) || '/' || (select count(*) from public.invoice_deliveries where invoice_id = %1$L and withdrawn_at is null)$$, :'inv_i'), '1/1');
+select idl.val('DV16c CONTROL: the sender reads the SAME six counts as >= 1 each (invoices, lines, sends, live deliveries, Stripe account, card payments)', format($$select (select count(*) from public.invoices where id = %1$L) || '/' || (select count(*) from public.invoice_lines where invoice_id = %1$L) || '/' || (select count(*) from public.invoice_sends where invoice_id = %1$L) || '/' || (select count(*) from public.invoice_deliveries where invoice_id = %1$L and withdrawn_at is null) || '/' || (select count(*) from public.invoice_stripe_accounts where organisation_id = %2$L) || '/' || (select count(*) from public.invoice_card_payments where invoice_id = %1$L)$$, :'inv_i', :'org_s'), '1/1/1/1/1/1');
 select idl.val('DV15 the sender withdraws the void one', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_vr'), 'ok');
 set request.jwt.claims = :'fin_r_c';
 select idl.val('DV15b ...and a withdrawn delivery leaves the receiver''s view', format($$select count(*)::text from public.received_invoices where id = %L$$, :'del_vr'), '0');
@@ -594,6 +601,23 @@ set request.jwt.claims = :'fin_r_c';
 select idl.val('DV17c CONTROL: restored, the same user reads it again', :'rcv_one', '1');
 reset role;
 reset request.jwt.claims;
+
+-- DV18: recipient.email in the snapshot is the sender's private CRM contact
+-- email; the view blanks it. Plant one on inv_i's frozen snapshot (as postgres,
+-- replica mode like § DZ: the freeze trigger refuses it otherwise), prove the
+-- BASE row carries it, then read the view as the receiver. Restored after.
+set session_replication_role = replica;
+update public.invoices set snapshot = jsonb_set(snapshot, '{recipient,email}', '"leak@sender-private.test"') where id = :'inv_i';
+set session_replication_role = origin;
+select idl.val('DV18a CONTROL: the planted email is on the sender''s base row', format($$select snapshot->'recipient'->>'email' from public.invoices where id = %L$$, :'inv_i'), 'leak@sender-private.test');
+set role authenticated;
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DV18 THE VIEW BLANKS recipient.email (key kept as null) while the rest of the snapshot is intact', format($$select (snapshot->'recipient'->>'email' is null)::text || '/' || (snapshot->'recipient' ? 'email')::text || '/' || (snapshot->'seller'->>'name') from public.received_invoices where id = %L$$, :'del_ir2'), 'true/true/IDL Sender Ltd');
+reset role;
+reset request.jwt.claims;
+set session_replication_role = replica;
+update public.invoices set snapshot = jsonb_set(snapshot, '{recipient,email}', 'null'::jsonb) where id = :'inv_i';
+set session_replication_role = origin;
 
 -- ===========================================================================
 -- § DP THE RECEIVED PDF AUDIT
@@ -636,7 +660,7 @@ delete from public.audit_events
     or actor_user_id in (:'fin_s', :'ro_s', :'own_s', :'fin_r', :'bk_r', :'own_r', :'fin_t', :'fin_u', :'fin_x');
 set session_replication_role = origin;
 delete from auth.users where id in (:'fin_s', :'ro_s', :'own_s', :'fin_r', :'bk_r', :'own_r', :'fin_t', :'fin_u', :'fin_x');
-select idl.val('DZ1 housekeeping left no row behind in any table the suite wrote', format($$select ((select count(*) from public.invoices where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.invoice_deliveries where from_organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L) or to_organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.network_profiles where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.network_connection_requests where from_organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.invoice_stripe_accounts where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from auth.users where id in (%6$L, %7$L, %8$L)))::text$$, :'org_s', :'org_r', :'org_t', :'org_u', :'org_x', :'fin_s', :'fin_r', :'fin_x'), '0');
+select idl.val('DZ1 housekeeping left no row behind in any table the suite wrote', format($$select ((select count(*) from public.invoices where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.invoice_deliveries where from_organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L) or to_organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.network_profiles where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.network_connection_requests where from_organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.invoice_stripe_accounts where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.invoice_sends where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from public.invoice_card_payments where organisation_id in (%1$L, %2$L, %3$L, %4$L, %5$L)) + (select count(*) from auth.users where id in (%6$L, %7$L, %8$L)))::text$$, :'org_s', :'org_r', :'org_t', :'org_u', :'org_x', :'fin_s', :'fin_r', :'fin_x'), '0');
 
 \echo
 \echo ==================== INVOICE DELIVERIES ====================

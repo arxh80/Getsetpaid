@@ -26,7 +26,7 @@ select
   i.vat_minor,
   i.gross_minor,
   i.paid_on,
-  i.snapshot,
+  pg_catalog.jsonb_set(i.snapshot, '{recipient,email}', 'null'::jsonb) as snapshot,
   (i.status = 'issued' and exists (
      select 1 from public.invoice_stripe_accounts a
       where a.organisation_id = i.organisation_id
@@ -41,7 +41,7 @@ where d.withdrawn_at is null
   and private.request_is_from_server();
 
 comment on view public.received_invoices is
-  'Invoices part 3: THE ONLY RECEIVER READ PATH. One row per live delivery into a workspace where the caller holds view_finance (any tier), only on a server-marked request. Definer view (security_invoker off, security_barrier on), like public.network_directory. Columns pinned in rls_invoice_deliveries.sql § DV2: never event_id, notes outside the snapshot, recipient ids, paid_entry_id, void_reason, actor columns, invoice_sends, invoice_lines.financial_entry_id or any Stripe identifier. Dependencies pinned from pg_depend (DV3/DV4). id is the delivery, organisation_id the receiving workspace.';
+  'Invoices part 3: THE ONLY RECEIVER READ PATH. One row per live delivery into a workspace where the caller holds view_finance (any tier), only on a server-marked request. Definer view (security_invoker off, security_barrier on), like public.network_directory. Columns pinned in rls_invoice_deliveries.sql § DV2: never event_id, notes outside the snapshot, recipient ids, paid_entry_id, void_reason, actor columns, invoice_sends, invoice_lines.financial_entry_id or any Stripe identifier. Dependencies pinned from pg_depend (DV3/DV4). id is the delivery, organisation_id the receiving workspace. snapshot has recipient.email blanked (the sender''s private CRM contact email, which the PDF never prints); the key stays because parseSnapshot reads it. Pinned in § DV18.';
 
 revoke all on public.received_invoices from public, anon, authenticated, service_role;
 grant select on public.received_invoices to authenticated;
