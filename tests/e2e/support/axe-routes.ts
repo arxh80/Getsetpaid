@@ -167,6 +167,9 @@ export const SCANNED_ELSEWHERE: readonly { route: string; spec: string }[] = [
   { route: "/[orgSlug]/network/[profileId]", spec: "accessibility.spec.ts" },
   { route: "/[orgSlug]/network/profiles/[profileId]", spec: "accessibility.spec.ts" },
   { route: "/[orgSlug]/network/requests", spec: "accessibility.spec.ts" },
+  // Invoices part 3: scanned as the RECEIVING workspace's Owner.
+  { route: "/[orgSlug]/invoices/received", spec: "invoices-network.spec.ts" },
+  { route: "/[orgSlug]/invoices/received/[deliveryId]", spec: "invoices-network.spec.ts" },
   { route: "/account/data-requests", spec: "data-requests.spec.ts" },
   { route: "/account/exports", spec: "exports.spec.ts" },
   { route: "/account/privacy", spec: "consent.spec.ts" },
@@ -188,17 +191,6 @@ export const EXEMPT: readonly { route: string; reason: string }[] = [
   {
     route: "/",
     reason: "the post-authentication hub renders nothing: it always redirects (sign in, a workspace, invites or onboarding)",
-  },
-  // TRANSIENT (Invoices part 3 Task 6): both need a delivered invoice, which no
-  // fixture plants yet. Task 7's invoices-network.spec.ts scans them as Finance
-  // and moves both routes to SCANNED_ELSEWHERE.
-  {
-    route: "/[orgSlug]/invoices/received",
-    reason: "needs a delivered invoice to be more than the empty state; scanned by invoices-network.spec.ts (Task 7), which moves this route to SCANNED_ELSEWHERE",
-  },
-  {
-    route: "/[orgSlug]/invoices/received/[deliveryId]",
-    reason: "needs a delivered invoice to render at all; scanned by invoices-network.spec.ts (Task 7), which moves this route to SCANNED_ELSEWHERE",
   },
   {
     route: "/super/[...unknown]",

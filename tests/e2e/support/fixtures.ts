@@ -271,6 +271,8 @@ export const FINANCE_EVENT_NAMES = {
  *  axe) rather than only by a unit test. */
 export const PRO_ARTIST_NAME = "E2E Ledger Headliner";
 export const PRO_SUPPLIER_NAME = "E2E Ledger Supplier";
+/** A Pro-workspace company linked to alpha's published profile: the recipient of the network-delivery golden path. */
+export const DELIVERY_COMPANY_NAME = "E2E Network Customer Ltd";
 
 interface FinanceLineFixture {
   readonly description: string;
@@ -738,6 +740,8 @@ export interface E2eWorld {
    *  subject: found by name from `proOrgSlug`, opened, and read as exactly
    *  the `network` fields until the accepted request below is planted. */
   networkAlphaProfileId: string;
+  /** A company in the Pro workspace, linked (network_links) to `networkAlphaProfileId`: Invoices part 3's recipient. */
+  deliveryCompanyId: string;
   /** Its `display_name`, suffixed per run -- see the planting code's own
    *  header for why a network profile name cannot be a bare literal. */
   networkAlphaProfileName: string;
@@ -962,6 +966,15 @@ export async function countIssuedInvoices(organisationId: string): Promise<numbe
     [organisationId],
   );
   return Number(rows[0]?.n ?? 0);
+}
+
+/** The live (not withdrawn) delivery of one invoice, or "" (Invoices part 3). As postgres. */
+export async function liveDeliveryId(invoiceId: string): Promise<string> {
+  const { rows } = await db().query<{ id: string }>(
+    `select id from public.invoice_deliveries where invoice_id = $1 and withdrawn_at is null`,
+    [invoiceId],
+  );
+  return rows[0]?.id ?? "";
 }
 
 /** Audit rows of one action about one target (Invoices part 1). As postgres. */
@@ -2601,6 +2614,22 @@ export async function setUpWorld(): Promise<E2eWorld> {
     ],
   );
 
+  // INVOICES PART 3: the Pro workspace's customer company, linked (privately,
+  // by the Pro workspace) to alpha's published profile -- the one the accepted
+  // connection above joins -- so an invoice to it can be delivered in-app.
+  const deliveryCompanyId = randomUUID();
+  await sql(
+    `insert into public.companies (id, organisation_id, owner_user_id, name)
+     values ($1,$2,$3,$4)`,
+    [deliveryCompanyId, proOrgId, users.finance.id, DELIVERY_COMPANY_NAME],
+  );
+  await sql(
+    `insert into public.network_links
+       (organisation_id, network_profile_id, private_entity_type, private_entity_id, created_by)
+     values ($1,$2,'company',$3,$4)`,
+    [proOrgId, networkAlphaProfileId, deliveryCompanyId, users.finance.id],
+  );
+
   // =========================================================================
   // PHASE 6 TASK 4's OWN ROWS -- request-to-connect and Gap B
   // =========================================================================
@@ -2693,6 +2722,7 @@ export async function setUpWorld(): Promise<E2eWorld> {
     freeOrgId,
     freeMember,
     networkAlphaProfileId,
+    deliveryCompanyId,
     networkAlphaProfileName,
     networkDraftProfileId,
     networkDraftProfileName,

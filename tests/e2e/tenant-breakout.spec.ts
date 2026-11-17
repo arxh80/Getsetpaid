@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import {
   ALT_VENUE_NAME,
@@ -926,6 +927,16 @@ test("another tenant's invoice is unreachable by id under my slug, by its own sl
   await expectRefusedAtWorkspace(page, `/${world.otherOrgSlug}/invoices/${world.otherInvoiceId}`);
   // The PDF route handler is not a page: a literal 404, never a 403.
   const pdf = await page.request.get(`/${world.proOrgSlug}/invoices/${world.otherInvoiceId}/pdf`);
+  expect(pdf.status()).toBe(404);
+});
+
+test("a received-invoice id nobody was sent is unreachable, and its PDF is a 404", async ({ page }) => {
+  // Invoices part 3. The control is the invoice probe above: the same
+  // principal reaches its own workspace's invoice routes.
+  await signIn(page, world, "finance");
+  const unknown = `/${world.proOrgSlug}/invoices/received/${randomUUID()}`;
+  await expectRefused(page, unknown);
+  const pdf = await page.request.get(`${unknown}/pdf`);
   expect(pdf.status()).toBe(404);
 });
 
