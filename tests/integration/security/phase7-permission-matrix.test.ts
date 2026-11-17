@@ -1198,6 +1198,19 @@ const MEMBER_REACHABLE_RPCS: Record<string, string> = {
     "issued or paid only, manage_finance + Pro; audits invoice.sent with the number " +
     "only. The budget (invoice_send, 30/h/user) is spent in the action before the " +
     "send. Asserted in rls_invoices.sql § IW.",
+  deliver_invoice:
+    "Invoices part 3 Task 2 -- delivers an issued or paid invoice into a connected " +
+    "workspace: manage_finance, then private.invoice_delivery_target (Pro, a live " +
+    "manual link, a live published foreign profile, an accepted connection). Every " +
+    "refusal is one error. Budget 30/h/user at the insert. Asserted in " +
+    "rls_invoice_deliveries.sql § DD/§ DL.",
+  withdraw_invoice_delivery:
+    "Invoices part 3 Task 2 -- the sender pulls back a live delivery; manage_finance, " +
+    "no tier gate. Asserted in rls_invoice_deliveries.sql § DW.",
+  invoice_delivery_state:
+    "Invoices part 3 Task 2 -- the sender's invoice page: live deliveries and the " +
+    "profiles it may deliver to now, display names only; empty without view_finance. " +
+    "Asserted in rls_invoice_deliveries.sql § DS.",
   mint_step_up_token:
     "Phase 10 Task 6 (G13) -- the app's server records a passed step-up for " +
     "the CALLER, for one purpose, right after checkStepUp(); every gated RPC " +

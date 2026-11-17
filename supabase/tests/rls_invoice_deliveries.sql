@@ -31,8 +31,10 @@ $$;
 -- Runs p_sql and records its single text result, or `denied(<sqlstate>:<hint>)`
 -- when it raises. A refusal is ALWAYS a recorded row, never a psql ERROR line
 -- (psql exits 0 on ERROR; run_suite counts both, and ON_ERROR_STOP halts here).
-create function idl.val(p_label text, p_sql text, p_expected text)
-returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+-- Runs p_sql and answers its single text result, or `denied(<sqlstate>:<hint>)`
+-- when it raises. idl.val records it; § DL calls it from inside a format().
+create function idl.try_text(p_sql text)
+returns text language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
 declare v_actual text; v_hint text;
 begin
   begin
@@ -43,7 +45,13 @@ begin
     if v_hint like 'Grant the required privileges%' then v_hint := 'missing_grant'; end if;
     v_actual := 'denied(' || sqlstate || coalesce(':' || nullif(v_hint, ''), '') || ')';
   end;
-  perform idl.record(p_label, p_expected, v_actual);
+  return v_actual;
+end $$;
+
+create function idl.val(p_label text, p_sql text, p_expected text)
+returns void language plpgsql security invoker set search_path = 'pg_catalog, public' as $$
+begin
+  perform idl.record(p_label, p_expected, idl.try_text(p_sql));
 end $$;
 
 -- Runs p_sql in a subtransaction that is ALWAYS rolled back, and answers which
@@ -72,6 +80,7 @@ end $$;
 grant usage on schema idl to authenticated, service_role;
 grant execute on function idl.record(text,text,text) to authenticated, service_role;
 grant execute on function idl.val(text,text,text)    to authenticated, service_role;
+grant execute on function idl.try_text(text)         to authenticated, service_role;
 
 -- ---------------------------------------------------------------------------
 -- FIXTURES (as postgres)
@@ -113,6 +122,7 @@ select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'ro_s')  as r
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_r') as fin_r_c \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'own_r') as own_r_c \gset
 select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_t') as fin_t_c \gset
+select format('{"sub":"%s","role":"authenticated","aal":"aal2"}', :'fin_x') as fin_x_c \gset
 \o
 
 insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, created_at, updated_at)
@@ -274,6 +284,206 @@ select idl.val('DK4 the export catalogue exports it in the sender''s workspace e
 select idl.val('DK5 the export catalogue is sound', $$select private.export_catalogue_is_sound()$$, 'sound');
 select idl.val('DK6 the delivery budget is 30 per hour per user', $$select max_requests || '/' || window_seconds || '/' || subject_scope from public.rate_limit_policies where category = 'invoice_delivery'$$, '30/3600/user');
 select idl.val('DK7 the meter trigger is the table''s only trigger', $$select string_agg(tgname, ',' order by tgname) from pg_trigger where tgrelid = 'public.invoice_deliveries'::regclass and not tgisinternal$$, 'meter_invoice_delivery');
+
+-- ===========================================================================
+-- § DD DELIVER. Rule 1 (manage_finance) is the RPC's; rules 2-6 are
+-- private.invoice_delivery_target's. EVERY refusal is one error:
+-- 42501 / invoice_delivery_refused. Each refusal below is paired with a
+-- positive control on the same inputs (DD1, DD7c, DD11, DD14c, DD17c).
+-- ===========================================================================
+select format($$select (public.deliver_invoice(%L, %L) is not null)::text$$, :'inv_i', :'prof_r') as call_ir \gset
+select format($$select (public.deliver_invoice(%L, %L) is not null)::text$$, :'inv_p', :'prof_r') as call_pr \gset
+select format($$select (public.deliver_invoice(%L, %L) is not null)::text$$, :'inv_x', :'prof_r') as call_xr \gset
+select format($$select (public.deliver_invoice(%L, %L) is not null)::text$$, :'inv_d', :'prof_r') as call_dr \gset
+select format($$select (public.deliver_invoice(%L, %L) is not null)::text$$, :'inv_v', :'prof_r') as call_vr \gset
+select format($$select (public.deliver_invoice(%L, %L) is not null)::text$$, :'inv_c', :'prof_r') as call_cr \gset
+select format($$select (public.deliver_invoice(%L, %L) is not null)::text$$, :'inv_i', :'prof_t') as call_it \gset
+select format($$select (public.deliver_invoice(%L, %L) is not null)::text$$, :'inv_p', :'prof_rd') as call_prd \gset
+select format($$select (public.deliver_invoice(%L, %L) is not null)::text$$, :'inv_p', :'prof_u') as call_pu \gset
+
+select idl.val('DD0 who may EXECUTE the three RPCs, and all are definers with an empty search_path (! marks one that is not)', $$select string_agg(p.proname || '=' || coalesce((select string_agg(r, '/' order by r) from unnest(array['anon','authenticated','service_role']) r where has_function_privilege(r, p.oid, 'EXECUTE')), '-') || (case when p.prosecdef and p.proconfig = array['search_path=""'] then '' else '!' end), ',' order by p.proname) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in ('deliver_invoice','withdraw_invoice_delivery','invoice_delivery_state')$$, 'deliver_invoice=authenticated,invoice_delivery_state=authenticated,withdraw_invoice_delivery=authenticated');
+select idl.val('DD0b the eligibility predicate is executable by none of the three roles', $$select count(*)::text from unnest(array['anon','authenticated','service_role']) r where has_function_privilege(r, 'private.invoice_delivery_target(uuid,uuid)', 'EXECUTE')$$, '0');
+
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD1 POSITIVE: the sender''s Finance user delivers its issued invoice to the connected receiver''s profile', :'call_ir', 'true');
+reset role;
+reset request.jwt.claims;
+select id as del_ir from public.invoice_deliveries where invoice_id = :'inv_i' and withdrawn_at is null \gset
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD2 the repeat is a no-op returning the same delivery id', format($$select (public.deliver_invoice(%L, %L) = %L)::text$$, :'inv_i', :'prof_r', :'del_ir'), 'true');
+reset role;
+reset request.jwt.claims;
+select idl.val('DD3 still one live row and one invoice.delivered audit row for it', format($$select (select count(*) from public.invoice_deliveries where invoice_id = %1$L and withdrawn_at is null)::text || '/' || (select count(*) from public.audit_events where action = 'invoice.delivered' and target_id = %2$L)::text$$, :'inv_i', :'del_ir'), '1/1');
+select idl.val('DD4 the audit row is name-only: the invoice number and nothing else', format($$select after::text from public.audit_events where action = 'invoice.delivered' and target_id = %L$$, :'del_ir'), '{"number": "IDL-0001"}');
+
+-- Rule 1: manage_finance in the invoice's workspace.
+set role authenticated;
+set request.jwt.claims = :'ro_s_c';
+select idl.val('DD5 a Read Only user in the sender is refused', :'call_pr', 'denied(42501:invoice_delivery_refused)');
+set request.jwt.claims = :'fin_t_c';
+select idl.val('DD6 BREAKOUT: another workspace''s Finance user is refused', :'call_pr', 'denied(42501:invoice_delivery_refused)');
+-- Rule 2: the invoice's workspace is Pro.
+set request.jwt.claims = :'fin_x_c';
+select idl.val('DD7 a Starter sender (otherwise eligible) is refused', :'call_xr', 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+update public.organisation_subscriptions set plan_id = 'pro' where organisation_id = :'org_x';
+set role authenticated;
+set request.jwt.claims = :'fin_x_c';
+select idl.val('DD7c CONTROL: the same call once the sender is Pro delivers', :'call_xr', 'true');
+reset role;
+reset request.jwt.claims;
+update public.organisation_subscriptions set plan_id = 'starter' where organisation_id = :'org_x';
+-- Rule 2: ... and not read-only.
+update public.organisations set deleted_at = now() where id = :'org_s';
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD8 a read-only (suspended) sender is refused', :'call_pr', 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+update public.organisations set deleted_at = null where id = :'org_s';
+-- Rule 3: issued or paid.
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD9 a draft invoice is refused', :'call_dr', 'denied(42501:invoice_delivery_refused)');
+select idl.val('DD10 a void invoice is refused', :'call_vr', 'denied(42501:invoice_delivery_refused)');
+select idl.val('DD11 CONTROL: a paid invoice is delivered', :'call_pr', 'true');
+-- Rule 4: to a company, with the caller's own live manual link.
+select idl.val('DD12 an invoice to a contact is refused', :'call_cr', 'denied(42501:invoice_delivery_refused)');
+select idl.val('DD13 a published profile in a workspace the sender has NO link to is refused', :'call_it', 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+delete from public.invoice_deliveries where invoice_id = :'inv_p';
+update public.network_links set deleted_at = now() where organisation_id = :'org_s' and network_profile_id = :'prof_r';
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD14 a soft-deleted link is refused', :'call_pr', 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+update public.network_links set deleted_at = null where organisation_id = :'org_s' and network_profile_id = :'prof_r';
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD14c CONTROL: the same call with the link restored delivers', :'call_pr', 'true');
+reset role;
+reset request.jwt.claims;
+delete from public.invoice_deliveries where invoice_id = :'inv_p';
+-- Rule 5: a published, live profile in a workspace that is not read-only.
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD15 a DRAFT profile (linked, in a connected workspace) is refused', :'call_prd', 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+update public.organisations set deleted_at = now() where id = :'org_r';
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD16 a read-only receiver is refused', :'call_pr', 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+update public.organisations set deleted_at = null where id = :'org_r';
+-- Rule 6: an ACCEPTED connection, either way round.
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD17 a linked, live profile in a workspace with NO connection is refused', :'call_pu', 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+insert into public.network_connection_requests (from_organisation_id, from_network_profile_id, to_organisation_id, to_network_profile_id, status, responded_at)
+values (:'org_s', :'prof_s', :'org_u', :'prof_u', 'accepted', now());
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD17c CONTROL: the same call once the connection is accepted delivers', :'call_pu', 'true');
+reset role;
+reset request.jwt.claims;
+delete from public.invoice_deliveries where invoice_id = :'inv_p';
+delete from public.network_connection_requests where from_organisation_id = :'org_s' and to_organisation_id = :'org_u';
+insert into public.network_connection_requests (from_organisation_id, from_network_profile_id, to_organisation_id, to_network_profile_id, status)
+values (:'org_s', :'prof_s', :'org_u', :'prof_u', 'pending');
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DD18 a connection request that is only PENDING does not count', :'call_pu', 'denied(42501:invoice_delivery_refused)');
+reset role;
+reset request.jwt.claims;
+delete from public.network_connection_requests where from_organisation_id = :'org_s' and to_organisation_id = :'org_u';
+set role authenticated;
+select idl.val('DD19 no session: refused as not authenticated', :'call_ir', 'denied(28000:not_authenticated)');
+reset role;
+
+-- ===========================================================================
+-- § DW WITHDRAW. Live now: inv_i S->R (del_ir) and inv_x X->R (from DD7c).
+-- ===========================================================================
+set role authenticated;
+set request.jwt.claims = :'ro_s_c';
+select idl.val('DW1 a Read Only user in the sender cannot withdraw', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_ir'), 'denied(42501:invoice_delivery_refused)');
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DW2 THE RECEIVER''S Finance user cannot withdraw the sender''s delivery', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_ir'), 'denied(42501:invoice_delivery_refused)');
+set request.jwt.claims = :'fin_t_c';
+select idl.val('DW3 BREAKOUT: a third workspace''s Finance user cannot withdraw it', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_ir'), 'denied(42501:invoice_delivery_refused)');
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DW4 POSITIVE: the sender''s Finance user withdraws it', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_ir'), 'ok');
+reset role;
+reset request.jwt.claims;
+select idl.val('DW5 the row is stamped withdrawn by fin_s, with one invoice.delivery_withdrawn audit row', format($$select (select (withdrawn_at is not null)::text || '/' || (withdrawn_by = %2$L)::text from public.invoice_deliveries where id = %1$L) || '/' || (select count(*) from public.audit_events where action = 'invoice.delivery_withdrawn' and target_id = %1$L)::text$$, :'del_ir', :'fin_s'), 'true/true/1');
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DW6 withdrawing again is refused (no live row)', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_ir'), 'denied(42501:invoice_delivery_refused)');
+select idl.val('DW7 the invoice can be delivered again', :'call_ir', 'true');
+reset role;
+reset request.jwt.claims;
+select id as del_ir2 from public.invoice_deliveries where invoice_id = :'inv_i' and withdrawn_at is null \gset
+select idl.val('DW8 ...as a NEW delivery', format($$select (%L::uuid <> %L::uuid)::text$$, :'del_ir2', :'del_ir'), 'true');
+select id as del_xr from public.invoice_deliveries where invoice_id = :'inv_x' and withdrawn_at is null \gset
+set role authenticated;
+set request.jwt.claims = :'fin_x_c';
+select idl.val('DW9 a STARTER sender can still withdraw (no tier gate)', format($$select 'ok' from (select public.withdraw_invoice_delivery(%L)) s$$, :'del_xr'), 'ok');
+reset role;
+reset request.jwt.claims;
+
+-- ===========================================================================
+-- § DS THE SENDER PAGE'S STATE READ. inv_i has one live delivery to R (del_ir2).
+-- ===========================================================================
+delete from public.invoice_deliveries where invoice_id = :'inv_p';
+select $$select string_agg(coalesce(display_name,'-') || ':' || (delivery_id is not null) || ':' || can_deliver, ',' order by display_name) from public.invoice_delivery_state(%L)$$ as ds_sql \gset
+select format(:'ds_sql', :'inv_i') as ds_i \gset
+select format(:'ds_sql', :'inv_p') as ds_p \gset
+select format(:'ds_sql', :'inv_c') as ds_c \gset
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DS1 a live delivery shows named; the unconnected (U) and draft profiles are absent', :'ds_i', 'IDL R:true:false');
+select idl.val('DS2 an invoice with no live delivery offers the connected profile', :'ds_p', 'IDL R:false:true');
+select idl.val('DS3 an invoice to a contact has no rows', :'ds_c', '<null>');
+set request.jwt.claims = :'fin_t_c';
+select idl.val('DS4 BREAKOUT: another workspace''s Finance user gets no rows, not an error', :'ds_i', '<null>');
+set request.jwt.claims = :'ro_s_c';
+select idl.val('DS5 a Read Only user gets what view_finance gives it: nothing (DR2)', :'ds_i', '<null>');
+reset role;
+reset request.jwt.claims;
+update public.network_links set deleted_at = now() where organisation_id = :'org_s' and network_profile_id = :'prof_r';
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DS6 a live delivery whose link was removed afterwards still shows, without a name', :'ds_i', '-:true:false');
+reset role;
+reset request.jwt.claims;
+update public.network_links set deleted_at = null where organisation_id = :'org_s' and network_profile_id = :'prof_r';
+
+-- ===========================================================================
+-- § DL THE BUDGET: 30 spent in this hour, so the 31st is refused at the insert.
+-- ===========================================================================
+insert into public.rate_limit_counters (category, subject_scope, subject_id, window_start, request_count)
+values ('invoice_delivery', 'user', :'fin_s', private.rate_limit_window_start(now(), 3600), 30)
+on conflict (category, subject_scope, subject_id, window_start) do update set request_count = 30;
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DL1 the 31st delivery in the hour is refused with 429', format($$select (x like 'denied(PT429:%%')::text from (select idl.try_text(format('select public.deliver_invoice(%%L, %%L)::text', %L, %L)) x) s$$, :'inv_p', :'prof_r'), 'true');
+reset role;
+reset request.jwt.claims;
+delete from public.rate_limit_counters where category = 'invoice_delivery' and subject_scope = 'user' and subject_id = :'fin_s';
+set role authenticated;
+set request.jwt.claims = :'fin_s_c';
+select idl.val('DL2 CONTROL: with the counter gone the same delivery is accepted', :'call_pr', 'true');
+reset role;
+reset request.jwt.claims;
+delete from public.rate_limit_counters where category = 'invoice_delivery' and subject_id in (:'fin_s', :'fin_x');
 
 -- ===========================================================================
 -- § DZ HOUSEKEEPING (later tasks insert their sections ABOVE this line)
