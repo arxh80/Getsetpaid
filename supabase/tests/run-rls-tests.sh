@@ -1427,6 +1427,23 @@ else
 fi
 
 # ============================================================================
+# INVOICES, PART 3 OF 3 -- NETWORK DELIVERY (20261117000000 onwards; Q282).
+# The two-tenant invoice_deliveries table, the deliver / withdraw RPCs and the
+# page's state read, the received_invoices definer view (the receiver's ONLY
+# read path), the received PDF audit and the delivery notice. Self-contained
+# and re-runnable. Pin: grep -c '^select idl.val(' supabase/tests/rls_invoice_deliveries.sql
+# ============================================================================
+run_suite "INVOICE DELIVERIES" rls_invoice_deliveries.sql idl 26
+idl_fails=$SUITE_FAILS
+if [ "$idl_fails" != "0" ]; then
+  echo "INVOICE DELIVERIES SUITE FAILED: $idl_fails failing assertion(s)" >&2
+  echo "  DR/DV red: A DELIVERED INVOICE IS READABLE OUTSIDE THE TWO WORKSPACES, or" >&2
+  echo "  the receiver reads the base tables. DD red: an ineligible delivery got through." >&2
+  echo "  DV pin red: the view gained a column or a dependency -- review it as a leak." >&2
+  psql_status=1
+fi
+
+# ============================================================================
 # PHASE 10 TASK 6 -- STEP-UP, ENFORCED IN THE DATABASE (G13; Task 2 F4;
 # 20261108001000). The server-marked mint, the single-use five-minute token per
 # purpose, and every gated RPC plus the export_jobs / erasure_jobs inserts

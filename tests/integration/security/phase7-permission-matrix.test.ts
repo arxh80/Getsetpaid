@@ -1276,6 +1276,8 @@ const PRE_PHASE7_RELATIONS = [
   // (invoice_pay_sessions, stripe_events, stripe_platform_settings) grant
   // authenticated NOTHING, so this census does not see them (ST3).
   "invoice_card_payments",
+  // Invoices part 3: the sender reads it; proved in rls_invoice_deliveries.sql § DR/§ DB.
+  "invoice_deliveries",
   "invoice_lines",
   "invoice_sends",
   "invoice_settings",

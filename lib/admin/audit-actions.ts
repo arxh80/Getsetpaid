@@ -399,6 +399,12 @@ export const PLATFORM_AUDIT_ACTIONS = [
   "invoice_stripe_account.ended",
   // 20261110001000: the webhook mirrored a real flip of charges_enabled (Q130 tombstone actor; no notice).
   "invoice_stripe_account.charges_enabled_changed",
+  // Invoices part 3 (20261117000000). Delivery into a connected workspace.
+  // delivered / delivery_withdrawn are the sender's (target: the delivery);
+  // received_pdf_downloaded is the RECEIVER's, written in its own workspace.
+  "invoice.delivered",
+  "invoice.delivery_withdrawn",
+  "invoice.received_pdf_downloaded",
 ] as const;
 
 /** The whole catalogue, deduplicated, in catalogue order: CRM writes first

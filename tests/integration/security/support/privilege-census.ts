@@ -207,6 +207,8 @@ export const DECLARED_PRIVILEGES: readonly string[] = [
   // Invoices part 2 (20261110000000): the same terms on the two Stripe tables a
   // client reads (rls_invoices_stripe.sql ST3, SB).
   "invoice_card_payments|authenticated|SELECT|*",
+  // Invoices part 3 (20261117000000): the sender reads it, no client writes it (rls_invoice_deliveries.sql DT, DB).
+  "invoice_deliveries|authenticated|SELECT|*",
   "invoice_lines|authenticated|SELECT|*",
   "invoice_sends|authenticated|SELECT|*",
   "invoice_settings|authenticated|SELECT|*",
