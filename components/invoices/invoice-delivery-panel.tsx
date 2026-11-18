@@ -38,7 +38,13 @@ function WithdrawForm({ orgSlug, invoiceId, row }: { orgSlug: string; invoiceId:
       <input type="hidden" name="orgSlug" value={orgSlug} />
       <input type="hidden" name="invoiceId" value={invoiceId} />
       <input type="hidden" name="deliveryId" value={row.deliveryId ?? ""} />
-      <Button type="submit" variant="secondary" pending={pending} pendingLabel="Withdrawing…">
+      <Button
+        type="submit"
+        variant="secondary"
+        pending={pending}
+        pendingLabel="Withdrawing…"
+        aria-label={`Withdraw delivery to ${row.displayName ?? "this workspace"}`}
+      >
         Withdraw
       </Button>
     </form>

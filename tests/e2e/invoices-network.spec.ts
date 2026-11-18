@@ -162,6 +162,7 @@ test("refusal parity on the received routes", async ({ browser }) => {
   expect((await owner.goto(receiverSide))?.status()).toBe(200);
   await expect(owner.getByRole("heading", { name: `Invoice ${invoiceNumber}`, level: 1 })).toBeVisible();
   expect((await owner.request.get(`${receiverSide}/pdf`)).status()).toBe(200);
+
 });
 
 test("an outsider who belongs to neither workspace cannot reach the delivery, under any slug", async ({ browser }) => {
@@ -191,7 +192,7 @@ test("an outsider who belongs to neither workspace cannot reach the delivery, un
 test("the sender withdraws it and the receiver sees not-found", async ({ browser }) => {
   const finance = await pageAs(browser, "finance");
   await finance.goto(`/${world.proOrgSlug}/invoices/${invoiceId}`);
-  await pressByKeyboard(finance, "Withdraw");
+  await pressByKeyboard(finance, `Withdraw delivery to ${world.networkAlphaProfileName}`);
   await expect(finance.getByTestId("delivery-outcome")).toContainText("Withdrawn");
   await expect(finance.getByRole("button", { name: `Deliver to ${world.networkAlphaProfileName}` })).toBeVisible();
 
