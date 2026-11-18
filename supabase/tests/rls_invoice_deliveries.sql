@@ -602,6 +602,17 @@ select idl.val('DV17c CONTROL: restored, the same user reads it again', :'rcv_on
 reset role;
 reset request.jwt.claims;
 
+-- DV17d: a suspended SENDER keeps the delivery readable (spec § Edge rules). Only the
+-- receiver's own read-only state closes the inbox (DV17); the sender's does not. The
+-- control is DV17c just above (same user, same row, readable) and the restore below.
+update public.organisations set deleted_at = now(), lifecycle_state = 'suspended' where id = :'org_s';
+set role authenticated;
+set request.jwt.claims = :'fin_r_c';
+select idl.val('DV17d a suspended SENDER leaves the delivered invoice readable to the receiver', :'rcv_one', '1');
+reset role;
+reset request.jwt.claims;
+update public.organisations set deleted_at = null, lifecycle_state = 'active' where id = :'org_s';
+
 -- DV18: recipient.email in the snapshot is the sender's private CRM contact
 -- email; the view blanks it. Plant one on inv_i's frozen snapshot (as postgres,
 -- replica mode like § DZ: the freeze trigger refuses it otherwise), prove the
