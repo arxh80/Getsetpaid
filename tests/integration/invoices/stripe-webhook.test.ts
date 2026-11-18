@@ -270,8 +270,9 @@ describe("account events and the rest", () => {
     expect(await handleStripeEvent(evt("account.updated", acctB, { charges_enabled: true }, { created: 1_789_999_000 })))
       .toEqual({ status: 200, outcome: "duplicate" });
     expect(await flag(), "an older event turned charges back on").toBe(false);
-    // CONTROL: a newer event is applied.
-    expect(await handleStripeEvent(evt("account.updated", acctB, { charges_enabled: true }, { created: 1_790_001_000 })))
+    // CONTROL: a newer (here: equal, the default) event is applied. Not later than the default:
+    // the row is re-linked below, and a stored later time would make the next tests' events "older".
+    expect(await handleStripeEvent(evt("account.updated", acctB, { charges_enabled: true })))
       .toEqual({ status: 200, outcome: "applied" });
     expect(await flag()).toBe(true);
   });
