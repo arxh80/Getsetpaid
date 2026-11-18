@@ -59,6 +59,9 @@ const WALL_CLOCK_BUDGET_MS = 60_000;
 /** The most entries a zip without ZIP64 holds: the entry ceiling the database does not declare. */
 const MAX_ZIP_ENTRIES = 65_535;
 
+/** A single archive passed a ROW ceiling: like ExportTooLargeError, the cue to build it in parts. */
+class RowCeilingError extends Error {}
+
 export interface Limits {
   page_size: number;
   max_rows_per_table: number;
@@ -212,8 +215,8 @@ export async function runPendingExportJobs(options?: {
         try {
           await buildAndStore(supabase, job, limits);
         } catch (cause) {
-          if (!(cause instanceof ExportTooLargeError)) throw cause;
-          // Q263 (Phase 10 Task 24): past a ceiling an ordinary export is no
+          if (!(cause instanceof ExportTooLargeError || cause instanceof RowCeilingError)) throw cause;
+          // Q263 (Phase 10 Task 24): past a ceiling (bytes or rows) an ordinary export is no
           // longer refused. It is built in parts, every part in THIS claim, so
           // it never sits queued between parts and is no less consistent than
           // the single archive it replaces. buildAndStore uploads only on
@@ -391,7 +394,7 @@ async function buildAndStore(supabase: ServiceClient, job: ClaimedJob, limits: L
     );
     totalRows += written.count;
     if (totalRows > limits.max_total_rows) {
-      throw new Error(
+      throw new RowCeilingError(
         `The export passed its ${limits.max_total_rows}-row ceiling at public.${entry.table_name}. Nothing was truncated: the export failed instead.`,
       );
     }
@@ -528,7 +531,7 @@ async function writeTable(
       }
 
       if (count > limits.max_rows_per_table) {
-        throw new Error(
+        throw new RowCeilingError(
           `public.${table} has more than the ${limits.max_rows_per_table}-row ceiling for one table. Nothing was truncated: the export failed instead.`,
         );
       }
