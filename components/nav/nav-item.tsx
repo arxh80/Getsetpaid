@@ -1,13 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { AnimatePresence, motion } from "framer-motion";
+import type { CSSProperties } from "react";
 import { NAV_ICONS } from "@/components/nav/nav-icons";
-import {
-  SIDEBAR_EASE,
-  SIDEBAR_LABEL_EXIT_SECONDS,
-  SIDEBAR_TRANSITION_SECONDS,
-} from "@/components/nav/motion-tokens";
 import type { SidebarNavItem } from "@/components/nav/types";
 
 /**
@@ -20,17 +15,18 @@ import type { SidebarNavItem } from "@/components/nav/types";
  * visible-but-sr-only label would risk once `aria-label` is added: expanded
  * and collapsed are mutually exclusive renders of the SAME element, driven by
  * one boolean, so AT REST there is never both an aria-label and a labelled
- * child text node. (The one exception is the ~120ms exit fade on collapse --
- * see the AnimatePresence comment below -- during which `aria-label` wins the
- * name computation outright, so the guarantee that matters holds throughout.)
+ * child text node: collapsed, the label is `display: none`, which takes it out
+ * of the accessibility tree. (The one exception is the ~120ms exit fade on
+ * collapse, during which `aria-label` wins the name computation outright, so
+ * the guarantee that matters holds throughout.)
  *
  * EXPANDED: the aria-label is dropped and the heading + subheading render as
  * real, visible text -- the link's accessible name is now computed from its
  * content (icon contributes nothing, being aria-hidden), exactly as sighted
- * users read it. `motion.span` gives it the brief fade-and-slide-in reveal
- * DESIGN.md's motion tokens allow for the "animated reveal" the brief asks
- * for; `reducedMotion` collapses that to an instant, zero-duration state
- * change per `prefers-reduced-motion`.
+ * users read it. A CSS transition gives it the brief fade-and-slide-in reveal
+ * DESIGN.md's motion tokens allow (`starting:` is the entry state); globals.css
+ * clamps it to an instant under `prefers-reduced-motion`, and
+ * `motion-reduce:delay-0` drops the stagger too.
  *
  * ACTIVE: `aria-current="page"` (computed by the parent from `usePathname()`,
  * not here -- one longest-prefix match across every item, so a nested route
@@ -43,13 +39,11 @@ export function NavItem({
   item,
   expanded,
   active,
-  reducedMotion,
   staggerIndex,
 }: {
   item: SidebarNavItem;
   expanded: boolean;
   active: boolean;
-  reducedMotion: boolean;
   /** Position across the WHOLE rail (not just this group), so the stagger
    *  reads as one continuous reveal down the list rather than resetting at
    *  every group boundary. */
@@ -85,38 +79,22 @@ export function NavItem({
       }
     >
       {Icon ? <Icon aria-hidden="true" className="size-5 shrink-0" /> : null}
-      {/* AnimatePresence so collapse FADES the label out (--dur-fast) instead
-          of snapping it away mid-width-tween (review finding 6). During the
-          ~120ms exit the aria-label (already applied, `expanded` having gone
-          false) and the departing text node briefly coexist -- harmless for
-          the double-announcement risk the header comment describes, because
-          `aria-label` wins the link's name computation outright whenever it
-          is present; at REST the two remain mutually exclusive exactly as
-          before. */}
-      <AnimatePresence initial={false}>
-        {expanded ? (
-          <motion.span
-            initial={{ opacity: 0, x: reducedMotion ? 0 : -6 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{
-              opacity: 0,
-              transition: {
-                duration: reducedMotion ? 0 : SIDEBAR_LABEL_EXIT_SECONDS,
-                ease: SIDEBAR_EASE,
-              },
-            }}
-            transition={{
-              duration: reducedMotion ? 0 : SIDEBAR_TRANSITION_SECONDS * 0.75,
-              delay: reducedMotion ? 0 : Math.min(staggerIndex * 0.015, 0.18),
-              ease: SIDEBAR_EASE,
-            }}
-            className="flex min-w-0 flex-col overflow-hidden whitespace-nowrap"
-          >
-            <span className="text-base leading-tight">{item.label}</span>
-            <span className="text-xs leading-tight text-ink-muted">{item.sub}</span>
-          </motion.span>
-        ) : null}
-      </AnimatePresence>
+      {/* Always mounted so collapse can FADE the label out (--dur-fast)
+          instead of snapping it away mid-width-tween (review finding 6):
+          `transition-discrete` holds `display` until the fade ends, then the
+          label is `hidden` and leaves the accessibility tree. */}
+      <span
+        style={{ "--stagger": `${Math.min(staggerIndex * 15, 180)}ms` } as CSSProperties}
+        className={
+          "min-w-0 flex-col overflow-hidden whitespace-nowrap transition-[opacity,translate,display] transition-discrete ease-brand " +
+          (expanded
+            ? "flex translate-x-0 opacity-100 delay-(--stagger) duration-[180ms] starting:-translate-x-1.5 starting:opacity-0 motion-reduce:delay-0"
+            : "hidden opacity-0 duration-[var(--dur-fast)]")
+        }
+      >
+        <span className="text-base leading-tight">{item.label}</span>
+        <span className="text-xs leading-tight text-ink-muted">{item.sub}</span>
+      </span>
     </Link>
   );
 }

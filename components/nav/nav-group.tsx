@@ -27,13 +27,11 @@ export function NavGroup({
   group,
   expanded,
   activeHref,
-  reducedMotion,
   indexOffset,
 }: {
   group: SidebarNavGroup;
   expanded: boolean;
   activeHref: string | null;
-  reducedMotion: boolean;
   /** Where this group's items start in the whole-rail stagger sequence. */
   indexOffset: number;
 }) {
@@ -61,7 +59,6 @@ export function NavGroup({
               item={item}
               expanded={expanded}
               active={item.href === activeHref}
-              reducedMotion={reducedMotion}
               staggerIndex={indexOffset + i}
             />
           </li>
