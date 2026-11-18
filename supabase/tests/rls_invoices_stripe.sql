@@ -679,7 +679,7 @@ select ist.val('SY33 no refused call wrote a pay-session row (read as postgres)'
 
 -- ---- BEGIN: the fee, the session row, the hourly budget ---------------------
 set role service_role;
-select ist.val('SY34 begin returns A''s live account, the number, the gross, a 1% fee of 120 on 12000, and a session id', format($$select concat_ws('|', (account = %L)::text, number, gross_minor, fee_minor, (pay_session_id is not null)::text) from public.begin_invoice_card_payment(%L)$$, :'acct_y', :'y_ok'), 'true|IST-0101|12000|120|true');
+select ist.val('SY34 begin returns A''s live account, the number, the gross, a 1% fee of 120 on 12000, a session id, and no earlier session', format($$select concat_ws('|', (account = %L)::text, number, gross_minor, fee_minor, (pay_session_id is not null)::text, coalesce(previous_stripe_session_id, 'none')) from public.begin_invoice_card_payment(%L)$$, :'acct_y', :'y_ok'), 'true|IST-0101|12000|120|true|none');
 reset role;
 select ist.val('SY35 ...and wrote exactly ONE pay-session row, for A and that invoice, with no Stripe session yet', format($$select count(*) || '|' || bool_and(organisation_id = %L and invoice_id = %L and stripe_session_id is null)::text from public.invoice_pay_sessions where invoice_id = %L$$, :'org_a', :'y_ok', :'y_ok'), '1|true');
 select id as y_sess from public.invoice_pay_sessions where invoice_id = :'y_ok' \gset
@@ -696,7 +696,11 @@ select :'org_a', :'y_rl', now() - interval '5 minutes' from generate_series(1, 1
 set role service_role;
 select ist.val('SY39 POSITIVE CONTROL: with 19 sessions in the hour (and 5 stale ones, which do not count) the next call succeeds', format($$select (pay_session_id is not null)::text from public.begin_invoice_card_payment(%L)$$, :'y_rl'), 'true');
 select ist.val('SY40 the next is the 21st in the hour: invoice_pay_rate_limited', format($$select account from public.begin_invoice_card_payment(%L)$$, :'y_rl'), 'denied(54000:invoice_pay_rate_limited)');
-select ist.val('SY41 the budget is per invoice: another invoice is unaffected', format($$select (pay_session_id is not null)::text from public.begin_invoice_card_payment(%L)$$, :'y_ok'), 'true');
+select ist.val('SY41 the budget is per invoice: another invoice is unaffected, and begin offers its stamped session so the payer is sent back to it', format($$select (pay_session_id is not null)::text || '|' || coalesce(previous_stripe_session_id, 'none') from public.begin_invoice_card_payment(%L)$$, :'y_ok'), 'true|cs_test_sy36');
+reset role;
+update public.invoice_pay_sessions set created_at = now() - interval '25 hours' where id = :'y_sess';
+set role service_role;
+select ist.val('SY41b a stamped session older than Stripe''s 24 hours is not offered', format($$select coalesce(previous_stripe_session_id, 'none') from public.begin_invoice_card_payment(%L)$$, :'y_ok'), 'none');
 reset role;
 select ist.val('SY42 the refused call wrote no row: the rate-limited invoice holds 20 in the hour', format($$select count(*)::text from public.invoice_pay_sessions where invoice_id = %L and created_at > now() - interval '1 hour'$$, :'y_rl'), '20');
 

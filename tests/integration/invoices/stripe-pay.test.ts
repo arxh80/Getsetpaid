@@ -147,6 +147,42 @@ describe("startCardPayment", () => {
     spy.mockRestore();
   });
 
+  it("a second click while the earlier session is open goes back to it: no second session to pay", async () => {
+    const t = tok(issued);
+    await startCardPayment(t, ORIGIN); // stamps a session
+    const read = vi.spyOn(FakeStripeGateway.prototype, "checkoutSession")
+      .mockResolvedValue({ status: "open", url: "https://checkout.stripe.test/c/pay/cs_open" });
+    const create = vi.spyOn(FakeStripeGateway.prototype, "createCheckoutSession");
+    expect(await startCardPayment(t, ORIGIN)).toEqual({ kind: "redirect", url: "https://checkout.stripe.test/c/pay/cs_open" });
+    expect(create).not.toHaveBeenCalled();
+    const { rows } = await pool.query<{ stripe_session_id: string }>(
+      `select stripe_session_id from public.invoice_pay_sessions where invoice_id = $1 and stripe_session_id is not null
+        order by created_at desc limit 1`, [issued]);
+    expect(read).toHaveBeenCalledWith(expect.stringMatching(/^acct_P/), rows[0].stripe_session_id);
+    read.mockRestore();
+    create.mockRestore();
+  });
+
+  it("an earlier session that is complete sends the payer to the thanks page, not to Stripe again", async () => {
+    const read = vi.spyOn(FakeStripeGateway.prototype, "checkoutSession").mockResolvedValue({ status: "complete", url: null });
+    const create = vi.spyOn(FakeStripeGateway.prototype, "createCheckoutSession");
+    expect(await startCardPayment(tok(issued), ORIGIN)).toEqual({ kind: "already_paid" });
+    expect(create).not.toHaveBeenCalled();
+    read.mockRestore();
+    create.mockRestore();
+  });
+
+  it("CONTROL: an earlier session that is expired, or that Stripe cannot read, gets a new one", async () => {
+    const create = vi.spyOn(FakeStripeGateway.prototype, "createCheckoutSession");
+    const read = vi.spyOn(FakeStripeGateway.prototype, "checkoutSession").mockRejectedValue(new Error("No such checkout.session"));
+    expect((await startCardPayment(tok(issued), ORIGIN)).kind).toBe("redirect");
+    read.mockResolvedValue({ status: "expired", url: null });
+    expect((await startCardPayment(tok(issued), ORIGIN)).kind).toBe("redirect");
+    expect(create).toHaveBeenCalledTimes(2);
+    read.mockRestore();
+    create.mockRestore();
+  });
+
   it("an unlinked invoice and a tampered token are refused", async () => {
     expect(await startCardPayment(tok(unlinked), ORIGIN)).toEqual({ kind: "refused", sellerName: "Pay Beta Ltd" });
     expect(await startCardPayment(tok(issued) + "x", ORIGIN)).toEqual({ kind: "refused", sellerName: null });
