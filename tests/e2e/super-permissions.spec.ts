@@ -226,6 +226,8 @@ const ROUTE_HANDLERS: Record<string, string> = {
     "session + org membership + scan-status gate, audited before the signed URL is minted",
   "app/(app)/[orgSlug]/invoices/[invoiceId]/pdf/route.ts":
     "session + org membership + view_finance through RLS (another tenant's, a missing and a draft invoice are the same 404), audited before the PDF is rendered -- probed in tenant-breakout.spec.ts",
+  "app/(app)/[orgSlug]/invoices/received/[deliveryId]/pdf/route.ts":
+    "session + org membership + view_finance in the RECEIVING workspace through the definer view public.received_invoices (another workspace's, a withdrawn and an unknown delivery are the same 404), audited before the PDF is rendered -- probed in invoices-network.spec.ts",
   "app/(app)/super/feedback/[feedbackId]/screenshot/route.ts":
     "platform superuser at aal2 -- probed principal by principal in this file",
   "app/api/erasure/run/route.ts":

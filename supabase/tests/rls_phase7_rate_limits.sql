@@ -219,9 +219,9 @@ select rl.val('RV6f Invoice sends: 30 / hour, per user',
   '30/3600/user');
 -- TWELVE SINCE PHASE 8 TASK 9a (`uploads`, Q113), THIRTEEN SINCE PHASE 10
 -- TASK 8 (`login_email`), FOURTEEN SINCE INVOICES PART 1 (`invoice_send`),
--- each with its § 5 row.
-select rl.val('RV7 the policy table holds exactly the fourteen § 5 categories',
-  $$select count(*)::text from public.rate_limit_policies$$, '14');
+-- FIFTEEN SINCE INVOICES PART 3 (`invoice_delivery`), each with its § 5 row.
+select rl.val('RV7 the policy table holds exactly the fifteen § 5 categories',
+  $$select count(*)::text from public.rate_limit_policies$$, '15');
 -- The ACCOUNT export's budget is its own category and not `exports`, because
 -- `exports` is organisation-scoped and an account export belongs to no
 -- workspace: metering it against one would be the caller-supplied attribution
@@ -252,8 +252,8 @@ select rl.try('RV10 ...nor INSERT a new category',
       (category, subject_scope, max_requests, window_seconds, description)
     values ('smuggled','user',1,1,'x')$$,
   'denied(42501)');
-select rl.val('RV11 the superuser CAN read the configuration, all fourteen rows (the health view states it)',
-  $$select count(*)::text from public.rate_limit_policies$$, '14');
+select rl.val('RV11 the superuser CAN read the configuration, all fifteen rows (the health view states it)',
+  $$select count(*)::text from public.rate_limit_policies$$, '15');
 reset role; reset request.jwt.claims;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
@@ -1581,8 +1581,8 @@ select rl.val('RZ3 the two suite documents are gone (not soft-deleted -- never e
 select rl.val('RZ4 ALPHA is still active and untouched',
   format($$select (deleted_at is null)::text from public.organisations where id=%L$$,
          :'alpha_org'), 'true');
-select rl.val('RZ5 the fourteen seeded policy rows (seven + consent_grant + data_subject_request + account_export + account_erasure + uploads + login_email + invoice_send) are exactly as they were',
-  $$select count(*)::text from public.rate_limit_policies$$, '14');
+select rl.val('RZ5 the fifteen seeded policy rows (seven + consent_grant + data_subject_request + account_export + account_erasure + uploads + login_email + invoice_send + invoice_delivery) are exactly as they were',
+  $$select count(*)::text from public.rate_limit_policies$$, '15');
 
 \pset format aligned
 select seq, case when pass then 'PASS' else 'FAIL' end as result, label, expected, actual
