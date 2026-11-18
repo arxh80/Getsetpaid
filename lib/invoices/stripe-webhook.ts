@@ -72,9 +72,11 @@ export async function handleStripeEvent(event: StripeEvent): Promise<WebhookResu
       return rpcResult(error, data === true ? "applied" : "duplicate");
     }
     case "account.updated": {
-      if (typeof obj.charges_enabled !== "boolean") return OK("ignored");
+      if (typeof obj.charges_enabled !== "boolean" || !num(created)) return OK("ignored");
+      // Stripe delivers out of order: the RPC ignores an event older than the newest applied.
       const { data, error } = await db.rpc("stripe_account_updated", {
         p_event_id: event.id, p_account: account, p_charges_enabled: obj.charges_enabled,
+        p_event_created: new Date(created * 1000).toISOString(),
       });
       return rpcResult(error, data === true ? "applied" : "duplicate");
     }
