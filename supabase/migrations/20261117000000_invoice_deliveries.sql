@@ -26,8 +26,12 @@ create table public.invoice_deliveries (
 create unique index invoice_deliveries_live_unique
   on public.invoice_deliveries (invoice_id, to_organisation_id) where withdrawn_at is null;
 create index invoice_deliveries_from_org_idx  on public.invoice_deliveries (from_organisation_id);
+-- Not partial: it is also the to_organisation_id FK's covering index (a partial one cannot serve the
+-- cascade lookup for withdrawn rows), and it still backs the received list's keyset.
 create index invoice_deliveries_to_org_list_idx
-  on public.invoice_deliveries (to_organisation_id, delivered_at, id) where withdrawn_at is null;
+  on public.invoice_deliveries (to_organisation_id, delivered_at, id);
+-- The composite invoice FK's leading column; invoice_deliveries_live_unique is partial, so it cannot cover it.
+create index invoice_deliveries_invoice_idx on public.invoice_deliveries (invoice_id, from_organisation_id);
 create index invoice_deliveries_delivered_by_idx on public.invoice_deliveries (delivered_by);
 create index invoice_deliveries_withdrawn_by_idx on public.invoice_deliveries (withdrawn_by);
 

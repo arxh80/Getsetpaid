@@ -728,7 +728,8 @@ select invariants.val('D3  every FK in public has its leading column indexed',
        and not exists (
          select 1 from pg_catalog.pg_index i
           where i.indrelid=con.conrelid
-            and i.indkey[0] = con.conkey[1])$$,
+            and i.indkey[0] = con.conkey[1]
+            and i.indpred is null)$$,
   '0');
 
 -- WAS PHASE-GATED, NOW LIVE. Task 2 (20260828121000) created the policies, so
