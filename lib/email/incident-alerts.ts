@@ -42,28 +42,11 @@ import "server-only";
 // go out. A claim-before-send would need an UPDATE the sender is allowed to
 // make on a row it has not yet emailed, which is the wrong direction for the
 // column and would mark undelivered alerts delivered after a crash. So the
-// duplicate is accepted and OVERLAP IS MADE UNREACHABLE INSTEAD, by keeping
-// the whole route's worst case well inside the 600-second cadence:
-//
-//   * this digest is ONE Brevo call, so at most one 10-second timeout;
-//   * lib/email/lockout-notification.ts, which runs on the same tick, is a
-//     sequential loop and is therefore bounded BOTH by a 30-account limit and
-//     by a 120-second wall-clock budget (fix round 1, M1 -- at the first cut's
-//     100 accounts the worst case was ~1000 s, i.e. longer than the cadence,
-//     and the earlier claim here that a 10-second Brevo timeout ruled overlap
-//     out was false the moment that loop was added).
-//
-//   * the Telegram alert (below, founder 2026-09-30, Q111) is ONE request with
-//     a 10-second timeout (lib/telegram/send.ts), so it adds at most ten.
-//
-//   * since 20261015000000, the DSR and export-ready notices (30 rows and a
-//     60-second budget each, ~70 s each) and the erasure-failure notice (one
-//     10-second call) -- lib/email/requester-notifications.ts.
-//
-// Worst case now ~300 s against a 600 s tick (20261015000000 reissues the
-// clock function's comment with that number; it was ~150 s at 20261014000000). The pg_net timeout does not
-// help with any of this: it abandons the response, it does not cancel the
-// handler.
+// duplicate is accepted and OVERLAP IS MADE UNREACHABLE INSTEAD: this digest
+// is ONE Brevo call (one 10 s timeout at most), and the route starts no
+// delivery past its deadline, so the tick ends inside its 600 s cadence
+// (app/api/incident-alerts/deliver/route.ts). The pg_net timeout does not help
+// with any of this: it abandons the response, it does not cancel the handler.
 
 import { sendEmail } from "@/lib/email/send";
 import { supportContactEmail } from "@/lib/email/feedback-notification";

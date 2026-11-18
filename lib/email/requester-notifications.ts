@@ -40,20 +40,11 @@ import "server-only";
 // ===========================================================================
 // BOUNDED, BECAUSE THE TICK IS SHARED (the lockout notice's M1 lesson)
 // ===========================================================================
-// The DSR and export loops are sequential, each send carrying Brevo's 10 s
-// timeout, so each is capped at 30 rows AND a wall-clock budget checked
-// BEFORE each send. At 60 s (~70 s worst case each) the route's worst case
-// was ~300 s (20261015000000), then ~440 s with job 3's two loops
-// (20261016000000). TASK 9c JOB 2b added two more deliverEach loops (the
-// workspace-closure and decision notices), so -- Q204's default -- the shared
-// budget is now 45 s: ~55 s worst case per loop (the budget plus one
-// in-flight 10 s send). Re-measured, the route's worst case is:
-//   digest 10 + Telegram 10 + lockouts ~130 + erasure-failure 10
-//   + six deliverEach loops x ~55 (DSR, export, connection, reminder,
-//     closure, decision) = ~490 s against the 600 s cadence.
-// (The live comment on private.deliver_incident_alerts() still says ~440 s
-// and eight deliveries -- Q213.) Deferred rows are not lost: nothing is
-// stamped for them.
+// Each loop is sequential, each send carrying Brevo's 10 s timeout, so each
+// is capped at 30 rows AND a 45 s wall-clock budget checked BEFORE each send:
+// ~55 s at worst. The tick as a whole is bounded by the route's start deadline
+// (app/api/incident-alerts/deliver/route.ts). Deferred rows are not lost:
+// nothing is stamped for them.
 
 import { sendEmail, type SendEmailResult } from "@/lib/email/send";
 import { supportContactEmail } from "@/lib/email/feedback-notification";
