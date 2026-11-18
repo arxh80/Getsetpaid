@@ -33,6 +33,9 @@ describe("FakeStripeGateway", () => {
     const id = `cs_fake_${INVOICE.replaceAll("-", "")}`;
     expect(s).toEqual({ id, url: `https://checkout.stripe.test/c/pay/${id}` });
   });
+  it("keeps no sessions: an earlier one reads as expired", async () => {
+    await expect(fake.checkoutSession("acct_fakeabcd1234", "cs_fake_x")).resolves.toEqual({ status: "expired", url: null });
+  });
   it("verifies a webhook signature with the real algorithm", () => {
     const payload = JSON.stringify({ id: "evt_1", object: "event", type: "checkout.session.completed" });
     const header = Stripe.webhooks.generateTestHeaderString({ payload, secret: ENV.webhookSecret });

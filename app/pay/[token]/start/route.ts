@@ -34,6 +34,8 @@ export async function POST(
       return NextResponse.redirect(outcome.url, { status: 303, headers: NO_STORE });
     case "refused":
       return seeOther(`/pay/${segment}`);
+    case "already_paid":
+      return seeOther(`/pay/${segment}/thanks`);
     case "unavailable":
       return seeOther(`/pay/${segment}?unavailable=1`);
   }

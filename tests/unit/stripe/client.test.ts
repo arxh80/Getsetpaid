@@ -7,10 +7,10 @@ import { INVOICE_ID_METADATA_KEY } from "@/lib/stripe/metadata";
 // Stripe-Account header (the direct charge lands on the seller's account), the
 // fee, amount and currency, the metadata key the webhook reads, and no retry on
 // the OAuth exchange (a second use of a code revokes the connection).
-const sdk = vi.hoisted(() => ({ ctor: vi.fn(), create: vi.fn(), token: vi.fn(), deauthorize: vi.fn() }));
+const sdk = vi.hoisted(() => ({ ctor: vi.fn(), create: vi.fn(), retrieve: vi.fn(), token: vi.fn(), deauthorize: vi.fn() }));
 vi.mock("stripe", () => ({
   default: class {
-    checkout = { sessions: { create: sdk.create } };
+    checkout = { sessions: { create: sdk.create, retrieve: sdk.retrieve } };
     oauth = { token: sdk.token, deauthorize: sdk.deauthorize };
     constructor(...args: unknown[]) {
       sdk.ctor(...args);
@@ -55,6 +55,16 @@ describe("the live Stripe gateway", () => {
       { stripeAccount: "acct_seller" },
     ]]);
     expect(out).toEqual({ id: "cs_live_1", url: "https://checkout.stripe.com/c/pay/cs_live_1" });
+  });
+
+  it("reads an earlier Checkout Session on the seller's account", async () => {
+    sdk.retrieve.mockResolvedValue({ status: "open", url: "https://checkout.stripe.com/c/pay/cs_live_1" });
+    await expect(getStripe()!.checkoutSession("acct_seller", "cs_live_1")).resolves.toEqual({
+      status: "open", url: "https://checkout.stripe.com/c/pay/cs_live_1",
+    });
+    expect(sdk.retrieve.mock.calls).toEqual([["cs_live_1", {}, { stripeAccount: "acct_seller" }]]);
+    sdk.retrieve.mockResolvedValue({ status: null, url: null });
+    await expect(getStripe()!.checkoutSession("acct_seller", "cs_live_1")).resolves.toEqual({ status: "expired", url: null });
   });
 
   it("exchanges the OAuth code once, with retries off for that one call", async () => {

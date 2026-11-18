@@ -1407,7 +1407,7 @@ fi
 # contained and re-runnable (it removes its own fixtures). Pin:
 # grep -c '^select ist.val(' supabase/tests/rls_invoices_stripe.sql
 # ============================================================================
-run_suite "INVOICES STRIPE" rls_invoices_stripe.sql ist 249
+run_suite "INVOICES STRIPE" rls_invoices_stripe.sql ist 250
 ist_fails=$SUITE_FAILS
 if [ "$ist_fails" != "0" ]; then
   echo "INVOICES STRIPE SUITE FAILED: $ist_fails failing assertion(s)" >&2
