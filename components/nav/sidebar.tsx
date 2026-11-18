@@ -11,15 +11,8 @@ import {
   type KeyboardEvent,
 } from "react";
 import { usePathname } from "next/navigation";
-import { motion, useReducedMotion } from "framer-motion";
 import { Pin, PinOff } from "lucide-react";
 import { NavGroup } from "@/components/nav/nav-group";
-import {
-  RAIL_WIDTH_COLLAPSED,
-  RAIL_WIDTH_EXPANDED,
-  SIDEBAR_EASE,
-  SIDEBAR_TRANSITION_SECONDS,
-} from "@/components/nav/motion-tokens";
 import type { SidebarNavGroup } from "@/components/nav/types";
 
 const PIN_STORAGE_KEY = "gsp:sidebar-pinned";
@@ -173,8 +166,8 @@ function setPinnedGlobal(next: boolean): void {
  * DESIGN.md § Motion: "Only opacity, background-color, border-color and
  * transform: translate are animated" -- `width` is not on that list, and this
  * component's rail-expand animation is exactly that: a `width` tween. The
- * brief driving this build asks explicitly for "framer-motion for the
- * expand/collapse WIDTH transition", and the two ways to honour DESIGN.md's
+ * brief driving this build asks explicitly for an animated expand/collapse
+ * WIDTH transition, and the two ways to honour DESIGN.md's
  * restriction to the letter were both judged worse: `transform: scaleX()`
  * would squash every child (icon, heading, subheading) horizontally along
  * with the rail, not just grow the container around them; an absolute-
@@ -183,21 +176,13 @@ function setPinnedGlobal(next: boolean): void {
  * build settled on, matching a reflowing desktop CRM shell) to OVERLAYING it,
  * which is a bigger, unrequested layout change and introduces its own
  * z-index/scrim questions DESIGN.md does not answer. So: `width`, kept to
- * DESIGN.md's own duration/easing tokens (`--dur-slow` / `--ease-brand`, see
- * components/nav/motion-tokens.ts) and dropped to instant under
- * `prefers-reduced-motion`, flagged here for a design-system owner to weigh
+ * DESIGN.md's own duration/easing tokens (`--dur-slow` / `--ease-brand`, a
+ * plain CSS transition) and dropped to instant under `prefers-reduced-motion`
+ * by globals.css, flagged here for a design-system owner to weigh
  * in on rather than silently choosing a side.
  */
 export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
   const pathname = usePathname();
-
-  // null until after mount (framer-motion's own SSR-safety -- it cannot know
-  // the OS/browser's reduced-motion preference on the server), so `?? false`
-  // is "assume motion is fine" for the one server-rendered frame, corrected
-  // on the client's first paint. Never the other way around: assuming
-  // reduced motion by default would need its own justification and DESIGN.md
-  // does not ask for that.
-  const reducedMotion = useReducedMotion() ?? false;
 
   // See getPinnedServerSnapshot()/subscribePinned()'s header comment: this
   // starts `false` on the server and the client's first render alike (no
@@ -349,7 +334,7 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
   );
 
   return (
-    <motion.nav
+    <nav
       ref={navRef}
       aria-label="Primary"
       onMouseEnter={handleMouseEnter}
@@ -357,13 +342,6 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
       onFocus={handleFocus}
       onBlur={handleBlur}
       onKeyDown={handleKeyDown}
-      initial={false}
-      animate={{ width: expanded ? RAIL_WIDTH_EXPANDED : RAIL_WIDTH_COLLAPSED }}
-      transition={{
-        duration: reducedMotion ? 0 : SIDEBAR_TRANSITION_SECONDS,
-        ease: SIDEBAR_EASE,
-      }}
-      style={{ width: RAIL_WIDTH_COLLAPSED }}
       // STICKY AT THE VIEWPORT'S OWN TOP. The rail is a SIBLING of <main> in
       // app/(app)/layout.tsx's full-width row (it used to sit INSIDE main's
       // padded, centred column, which is what forced the old top-8/sm:top-12
@@ -389,7 +367,12 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
       // Network section, the admin header links), so nothing becomes
       // unreachable; the rail is the wide-screen accelerator, not the only
       // road.
-      className="sticky top-0 hidden max-h-dvh shrink-0 flex-col overflow-x-hidden overflow-y-auto border-r border-rule bg-shell md:flex"
+      // 64px collapsed (icon-only), 280px expanded (heading + subheading).
+      className={
+        "sticky top-0 hidden max-h-dvh shrink-0 flex-col overflow-x-hidden overflow-y-auto border-r border-rule bg-shell md:flex " +
+        "transition-[width] duration-[var(--dur-slow)] ease-brand " +
+        (expanded ? "w-[280px]" : "w-16")
+      }
     >
       {/* pl-4 ANCHORS THE PIN ON THE ICON COLUMN'S 32px MIDLINE IN BOTH
           STATES (review finding 10, taken further than the conditional
@@ -439,10 +422,9 @@ export function Sidebar({ groups }: { groups: SidebarNavGroup[] }) {
           group={group}
           expanded={expanded}
           activeHref={activeHref}
-          reducedMotion={reducedMotion}
           indexOffset={indexOffset}
         />
       ))}
-    </motion.nav>
+    </nav>
   );
 }
