@@ -259,10 +259,33 @@ describe("the erasure runner removes the account's bytes from their buckets", ()
       [orgId],
     );
 
+    // A stored file of the person's, which a REFUSED erasure must not touch:
+    // the refusal used to be raised only after the purge (audit 2026-11-18).
+    const keptId = crypto.randomUUID();
+    const keptKey = `feedback/${keptId}`;
+    const keptUp = await createStorageClient()
+      .storage.from("feedback-screenshots")
+      .upload(keptKey, PNG, { contentType: "image/png", upsert: true });
+    expect(keptUp.error?.message).toBeUndefined();
+    const kept = await persona.client.from("feedback").insert({
+      id: keptId,
+      organisation_id: fx.orgA.id,
+      category: "bug",
+      message: "refused erasure keeps this screenshot",
+      route: "/",
+      screenshot_key: keptKey,
+      screenshot_mime: "image/png",
+      screenshot_size_bytes: PNG.length,
+      screenshot_scan_status: "clean",
+      screenshot_scanned_at: new Date().toISOString(),
+    } as never);
+    expect(kept.error?.message, "POSITIVE CONTROL: the kept feedback row").toBeUndefined();
+
     const outcome = await runPendingErasureJobs();
     expect(outcome.claimed).toBe(1);
     expect(outcome.succeeded).toBe(0);
     expect(outcome.failed).toBe(1);
+    expect(await objectExists("feedback-screenshots", keptKey), "a refused erasure removed a file").toBe(true);
 
     const { rows } = await pool.query<{ status: string; failure_reason: string | null }>(
       `select status, failure_reason from public.erasure_jobs where id = $1`,

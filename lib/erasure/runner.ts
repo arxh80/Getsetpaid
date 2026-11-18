@@ -143,7 +143,12 @@ async function claimNext(supabase: ServiceClient): Promise<ClaimedJob | null> {
  */
 async function purgeBytes(supabase: ServiceClient, job: ClaimedJob): Promise<void> {
   const { data, error } = await supabase.rpc("erasure_purge_manifest", { p_job_id: job.id });
-  if (error) throw new Error(`the purge manifest could not be read: ${error.message}`);
+  // The hint travels: since 20261118002000 the manifest raises the account refusals itself.
+  if (error) {
+    throw Object.assign(new Error(`the purge manifest could not be read: ${error.message}`), {
+      hint: error.hint ?? "",
+    });
+  }
 
   const rows = (data ?? []) as { bucket: string; object_key: string }[];
   if (rows.length === 0) return;
