@@ -188,7 +188,7 @@ export async function deliverInvoiceAction(_prev: FormState, formData: FormData)
     return refused(error, "deliver", formData);
   }
   revalidatePath(`/${auth.org.slug}/invoices/${invoiceId}`);
-  return { message: "Delivered. It is in their received invoices now, and their finance team has been emailed." };
+  return { message: "Delivered. It is in their received invoices now, and their finance team will be emailed." };
 }
 
 // No Pro check (plan decision 11): a downgraded workspace can still pull back what it sent.
