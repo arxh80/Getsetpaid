@@ -163,6 +163,9 @@ test("refusal parity on the received routes", async ({ browser }) => {
   await expect(owner.getByRole("heading", { name: `Invoice ${invoiceNumber}`, level: 1 })).toBeVisible();
   expect((await owner.request.get(`${receiverSide}/pdf`)).status()).toBe(200);
 
+  // A malformed id (Postgres 22P02) is the same not-found. The Owner above holds view_finance and reads
+  // the real id, so only the id's shape can be the reason here.
+  await expectNotFound(owner, `/${world.orgSlug}/invoices/received/not-a-uuid`);
 });
 
 test("an outsider who belongs to neither workspace cannot reach the delivery, under any slug", async ({ browser }) => {
