@@ -1,7 +1,7 @@
 -- ===========================================================================
 -- INVOICES PART 3 -- TASK 4: THE ONE EMAIL TO THE RECEIVER.
 --
--- Delivering an invoice (public.deliver_invoice, 20261117001000) audits
+-- Delivering an invoice (public.deliver_invoice, 20261119001000) audits
 -- invoice.delivered against the delivery id. This migration lets the delivery
 -- tick tell the RECEIVING workspace about it, once:
 --

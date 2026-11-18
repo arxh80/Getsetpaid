@@ -279,7 +279,7 @@ AS $function$
     ('invoice_stripe_account.linked'),
     ('invoice_stripe_account.ended'),
     ('invoice_stripe_account.charges_enabled_changed'),
-    -- Invoices part 3 (20261117000000; written by Tasks 2 and 3).
+    -- Invoices part 3 (20261119000000; written by Tasks 2 and 3).
     ('invoice.delivered'),
     ('invoice.delivery_withdrawn'),
     ('invoice.received_pdf_downloaded')
@@ -616,7 +616,7 @@ values
   ('workspace', 'invoice_pay_sessions', 'excused', 'Operational counter, ids only: one row per Checkout Session created, kept so the pay page can hold its 20-per-hour budget. It holds no record of the business, and no client role can read it.', null, null, null, null),
   ('workspace', 'stripe_events',        'excused', 'Webhook idempotency ledger, ids only: the Stripe event ids already processed. It holds no record of the business, and no client role can read it.', null, null, null, null),
   ('account',   'invoice_stripe_accounts', 'excused', 'Workspace record; the account appears only as linked_by. In the workspace export.', null, null, null, null),
-  -- INVOICES PART 3 (20261117000000). A delivery is the SENDER's record: it
+  -- INVOICES PART 3 (20261119000000). A delivery is the SENDER's record: it
   -- is read under the sender's RLS (view_finance) and appears in the sender's
   -- workspace export, keyed on from_organisation_id. The receiver reads the
   -- sender's snapshot through public.received_invoices, which is not an export.

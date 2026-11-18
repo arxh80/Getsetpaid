@@ -1427,7 +1427,7 @@ else
 fi
 
 # ============================================================================
-# INVOICES, PART 3 OF 3 -- NETWORK DELIVERY (20261117000000 onwards; Q282).
+# INVOICES, PART 3 OF 3 -- NETWORK DELIVERY (20261119000000 onwards; Q282).
 # The two-tenant invoice_deliveries table, the deliver / withdraw RPCs and the
 # page's state read, the received_invoices definer view (the receiver's ONLY
 # read path), the received PDF audit and the delivery notice. Self-contained

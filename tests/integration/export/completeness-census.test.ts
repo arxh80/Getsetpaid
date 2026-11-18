@@ -183,7 +183,7 @@ const WORKSPACE_EXPORTED = [
   // Invoices part 1 (20261107000000), and part 2 (20261110000000): the
   // Stripe link and the card payments received against the invoices.
   "invoice_card_payments",
-  // Invoices part 3 (20261117000000): the SENDER's delivery log, keyed on
+  // Invoices part 3 (20261119000000): the SENDER's delivery log, keyed on
   // from_organisation_id.
   "invoice_deliveries",
   "invoice_lines",
@@ -525,7 +525,7 @@ describe("the tables in NEITHER derivation are a disposition, not a residue", ()
       // export_job_parts (20261101000000).
       // 61 = 57 + Invoices part 1's four tables (20261107000000).
       // 66 = 61 + Invoices part 2's five public tables (20261110000000).
-      // 67 = 66 + Invoices part 3's invoice_deliveries (20261117000000).
+      // 67 = 66 + Invoices part 3's invoice_deliveries (20261119000000).
     ).toBe(67);
     // Kept, and no longer pretending to be the load-bearing one: the two
     // derivations overlap (a table can have both paths), so the remainder is

@@ -1,11 +1,11 @@
 -- ===========================================================================
 -- INVOICES, PART 3 OF 3 -- NETWORK DELIVERY (spec docs/superpowers/specs/2026-11-13-invoices-network-delivery-design.md).
 --
--- Task 1 (20261117000000): DT table, grants, policy; DR who reads the base table;
+-- Task 1 (20261119000000): DT table, grants, policy; DR who reads the base table;
 --                          DB no client writes; DK the catalogues
--- Task 2 (20261117001000): DD deliver; DW withdraw; DS the page's state; DL the budget
--- Task 3 (20261117002000): DV the received view; DP the received PDF audit
--- Task 4 (20261117003000): DN the notice resolver and ledger
+-- Task 2 (20261119001000): DD deliver; DW withdraw; DS the page's state; DL the budget
+-- Task 3 (20261119002000): DV the received view; DP the received PDF audit
+-- Task 4 (20261119003000): DN the notice resolver and ledger
 -- Later tasks add their sections ABOVE § DZ.
 --
 -- EVERY ASSERTION IS ONE LINE BEGINNING `select idl.val(`: run-rls-tests.sh's

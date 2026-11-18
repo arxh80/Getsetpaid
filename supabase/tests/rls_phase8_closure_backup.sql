@@ -188,7 +188,7 @@ begin
   insert into public.invoice_card_payments (organisation_id, invoice_id, stripe_event_id,
                                             stripe_payment_intent_id, amount_minor, currency, outcome)
     values (p_org, v_inv, 'evt_ck', 'pi_ck' || pg_catalog.replace(gen_random_uuid()::text, '-', ''), 10000, 'GBP', 'applied');
-  -- Invoices part 3 (20261117000000): the delivery is exported, keyed on the
+  -- Invoices part 3 (20261119000000): the delivery is exported, keyed on the
   -- SENDER (from_organisation_id), so p_other_org's inbox entry is not in
   -- p_other_org's own export.
   insert into public.invoice_deliveries (invoice_id, from_organisation_id, to_organisation_id, delivered_by)

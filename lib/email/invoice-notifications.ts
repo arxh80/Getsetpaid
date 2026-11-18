@@ -3,7 +3,7 @@ import "server-only";
 // THE STRIPE-ACCOUNT NOTICE (Invoices part 2: a link or an end) and THE
 // INVOICE-DELIVERED NOTICE (Invoices part 3: one email to the receiving
 // workspace), through the ONE Brevo sender, on the existing delivery tick.
-// Database halves: 20261107004000, 20261110001000 and 20261117003000 (the
+// Database halves: 20261107004000, 20261110001000 and 20261119003000 (the
 // resolvers, the ledger notices). Same loop, stamps and bounds as
 // lib/email/workspace-closure-notifications.ts: one email per audit row, its
 // recipients Bcc'd by deliverEach, the stamp written only after ok:true.
