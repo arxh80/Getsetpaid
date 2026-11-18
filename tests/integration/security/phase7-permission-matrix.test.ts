@@ -1462,8 +1462,8 @@ const SERVER_ONLY_RPCS: Record<string, string> = {
     "Invoices part 3 Task 4 -- the delivery tick reads invoice.delivered rows and the RECEIVING workspace's view_finance addresses; refuses any session. Asserted in rls_invoice_deliveries.sql § DN",
   "stripe_account_deauthorized(p_event_id text, p_account text)":
     "Invoices part 2 Task 3 (event id: Task 4) -- the webhook ends the live link of an account Stripe says revoked GetSetPaid, once per event id, and audits it with the tombstone as actor; refuses any session. Asserted in rls_invoices_stripe.sql § SL and § SW",
-  "stripe_account_updated(p_event_id text, p_account text, p_charges_enabled boolean)":
-    "Invoices part 2 Task 3 (event id: Task 4) -- the webhook mirrors Stripe's charges_enabled onto the live link of an account, once per event id; refuses any session. Asserted in rls_invoices_stripe.sql § SL and § SW",
+  "stripe_account_updated(p_event_id text, p_account text, p_charges_enabled boolean, p_event_created timestamp with time zone)":
+    "Invoices part 2 Task 3 (event id: Task 4; event time: audit 2026-11-18) -- the webhook mirrors Stripe's charges_enabled onto the live link of an account, once per event id, never from an event older than the newest applied; refuses any session. Asserted in rls_invoices_stripe.sql § SL and § SW",
   "invoice_pay_page(p_invoice_id uuid)":
     "Invoices part 2 Task 4 -- what the public pay page may say about an invoice id: payable false for every refusal, the seller's name only for a known non-draft invoice, number and gross only when payable. Asserted in rls_invoices_stripe.sql § SY",
   "begin_invoice_card_payment(p_invoice_id uuid)":
