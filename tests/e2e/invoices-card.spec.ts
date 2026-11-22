@@ -51,7 +51,14 @@ const eventId = () => `evt_e2e${randomUUID().replaceAll("-", "").slice(0, 16)}`;
 
 async function postSigned(page: Page, event: Record<string, unknown>) {
   const { data, headers } = signedWebhook(event);
-  return page.request.post("/api/stripe/webhook", { data, headers });
+  // A fresh connection per POST. Twice on 2026-11-22 (PRs #60, #76) the first
+  // POST of the refund test died with ECONNRESET and no server-side error at
+  // that second: an idle keep-alive socket from the previous test, closed by
+  // the dev server, was reused. Stripe opens its own connection per delivery.
+  return page.request.post("/api/stripe/webhook", {
+    data,
+    headers: { ...headers, connection: "close" },
+  });
 }
 
 async function accountId(): Promise<string> {
