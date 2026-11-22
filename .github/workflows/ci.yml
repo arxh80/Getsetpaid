@@ -245,7 +245,7 @@ jobs:
   # steps of one job on purpose: they parallelise, and a red tick names the
   # suite that failed without anybody opening a log.
   #
-  # The CLI is PINNED to 2.116.0, the version this project is developed
+  # The CLI is PINNED to 3.2.0, the version this project is developed
   # against. `latest` would mean a CLI release could turn a green branch red
   # with no commit of ours, and config.toml's schema is versioned with the CLI.
   # =========================================================================
@@ -269,7 +269,7 @@ jobs:
 
       - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
         with:
-          version: 2.116.0
+          version: 3.2.0
 
       # `supabase start` applies every migration on a fresh stack, so there is
       # no separate reset here. It is the slow step: eleven container images
@@ -308,7 +308,7 @@ jobs:
 
       - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
         with:
-          version: 2.116.0
+          version: 3.2.0
 
       # run-rls-tests.sh parses JSON with `python -c`, not `python3`. The runner
       # image ships python3 and does not guarantee the bare name, and a missing
@@ -376,7 +376,7 @@ jobs:
 
       - uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
         with:
-          version: 2.116.0
+          version: 3.2.0
 
       - name: Start Supabase
         run: supabase start

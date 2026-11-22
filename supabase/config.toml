@@ -279,8 +279,8 @@ web3 = 30
 # secret = ""
 
 [auth.email]
-# Allow/disallow new user signups via email to your project.
-enable_signup = true
+# Allow/disallow sign-in and sign-up via email (v3 renamed enable_signup to enabled).
+enabled = true
 # If enabled, a user will be required to confirm any email change on both the old, and new email
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
@@ -420,8 +420,8 @@ subject = "A sign-in factor was removed from your GetSetPaid account"
 content_path = "./templates/mfa-factor-unenrolled.html"
 
 [auth.sms]
-# Allow/disallow new user signups via SMS to your project.
-enable_signup = false
+# Allow/disallow sign-in and sign-up via SMS (v3 renamed enable_signup to enabled; nobody signs in by phone).
+enabled = false
 # If enabled, users need to confirm their phone number before signing in.
 enable_confirmations = false
 # Template for sending OTP to users
