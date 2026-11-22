@@ -49,6 +49,12 @@ overrides:
 #     eslint-config-next > @next/eslint-plugin-next > fast-glob > micromatch.
 #     Dev-only lint tooling: the patterns it expands are this repo's own lint
 #     config globs, never user input, and nothing in the shipped app imports it.
+#
+#   GHSA-fc5q-39xc-vjpf  picomatch <=4.0.7, ReDoS on repeated extglobs like
+#     +(*); no patched release (flagged 2026-11-17). 38 paths, all dev tooling
+#     (eslint, vitest, tailwind, playwright globbers); `pnpm why picomatch
+#     --prod` is empty. The globs are this repo's own config, never user input.
 auditConfig:
   ignoreGhsas:
     - GHSA-vfj7-8cjw-p6xm
+    - GHSA-fc5q-39xc-vjpf
