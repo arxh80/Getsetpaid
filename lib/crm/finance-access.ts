@@ -41,30 +41,17 @@ import "server-only";
 //   3. permission   this role does not hold manage_finance. Ask an Owner/Admin.
 //
 // ===========================================================================
-// THE TIER CHECK MIRRORS A DATABASE ESCAPE, AND GETTING IT WRONG WOULD DISABLE
-// EVERY FINANCE CONTROL IN THE PRODUCT
+// THE TIER CHECK MIRRORS THE DATABASE GATE
 // ===========================================================================
 // lib/entitlements/policy.ts resolves an organisation with NO subscription row
-// to { status: "no-subscription" }. private.finance_module_organisations()
-// exempts exactly that case ("not yet billed => not yet gated") -- STILL, as
-// of Phase 7 Task A (2026-09-08): that task closed the identical escape on
-// private.crm_write_organisations() and private.custom_field_limit(), but
-// deliberately left this one (and private.network_publish_organisations()'s
-// twin) untouched -- see FOLLOW-UPS.md § "Phase 7 -- superuser dashboard" for
-// the follow-up entry Task A added when it discharged the CRM one.
-// public.create_organisation() DOES write a subscription row now (a Starter
-// one, at birth), so "no subscription row" is no longer the state every
-// organisation is in -- it is reachable only by an organisation planted
-// directly (bypassing create_organisation()), which is exactly how the
-// binding test below constructs it. So entitlementsPermitFinance MUST still
-// return true for "no-subscription" -- reading financeModule straight off
-// TIER_MATRIX.free (which is false) would disable every finance control in
-// every workspace still reachable in that state, while the database happily
-// accepted the write. The mirror is explicit and bound by Task 4's finance
-// analogue of tests/integration/crm/crm-write-access-matches-db.test.ts; when
-// a future task removes the escape from the function, that test goes red
-// here -- the same way crm-write-access-matches-db.test.ts did for the CRM
-// escape in Task A.
+// to { status: "no-subscription" } with Free's entitlements. Until
+// 20261120002000, private.finance_module_organisations() exempted that case
+// ("not yet billed => not yet gated") and this function returned true to
+// match. That migration removed the escape, as Phase 7 Task A did for
+// private.crm_write_organisations(), so "no-subscription" now reads Free's
+// financeModule (false) here too. create_organisation() writes a row at birth,
+// so only a directly planted organisation is ever in that state. The mirror
+// is bound by tests/integration/crm/finance-access-matches-db.test.ts.
 
 import { getOrganisationEntitlements } from "@/lib/entitlements/policy";
 import { hasPermission, type CurrentOrg } from "@/lib/auth";
@@ -88,7 +75,7 @@ const EXPLANATION = {
  * without a session. Mirrors entitlementsPermitCrmWrites clause for clause,
  * reading `financeModule` where that reads `crmWrites`:
  *
- *   "no-subscription"  -> true   (the database escape; not yet billed)
+ *   "no-subscription"  -> Free's financeModule, false (20261120002000)
  *   "indeterminate"    -> false  (the conservative half; a failed lookup here
  *                                 disables a button, and disabling is safe)
  *   "resolved"         -> the plan's financeModule (Pro true, else false)
@@ -97,7 +84,6 @@ export function entitlementsPermitFinance(result: {
   status: "no-subscription" | "resolved" | "indeterminate";
   entitlements: { financeModule: boolean };
 }): boolean {
-  if (result.status === "no-subscription") return true;
   if (result.status === "indeterminate") return false;
   return result.entitlements.financeModule;
 }

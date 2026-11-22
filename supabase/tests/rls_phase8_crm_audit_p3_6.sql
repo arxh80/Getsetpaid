@@ -202,16 +202,17 @@ select now()::text as c7_t0 \gset
 -- ALPHA has no subscription row by the time this suite runs (see
 -- rls_phase7_crm_audit.sql § CA), and crm_write_organisations() refuses every
 -- member write without one. finance_module_organisations() needs Pro. SAVE,
--- PLANT Pro, RESTORE at § PZ. BETA is left without one: a workspace with no
--- subscription may publish (network_publish_organisations' first arm) and
--- may answer connection requests, which is all § PN needs of it.
+-- PLANT Pro, RESTORE at § PZ. BETA gets Starter: § PN needs it to publish and
+-- to answer connection requests, and a workspace with no subscription row is
+-- Free since 20261120002000.
 \o /dev/null
 create table c7.saved_sub as
   select * from public.organisation_subscriptions where organisation_id in (:'alpha_org', :'beta_org');
 delete from public.organisation_subscriptions where organisation_id in (:'alpha_org', :'beta_org');
 insert into public.organisation_subscriptions
   (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
-values (:'alpha_org', 'pro', 'monthly', 3, 'active', now() + interval '30 days');
+values (:'alpha_org', 'pro', 'monthly', 3, 'active', now() + interval '30 days'),
+       (:'beta_org', 'starter', 'monthly', 1, 'active', now() + interval '30 days');
 -- The connection-request budget is per organisation per hour; earlier suites
 -- and this one share the window. Clear both tenants' counters so § PN's three
 -- sends cannot be refused by an earlier suite's spend (the retention job
@@ -1054,6 +1055,10 @@ select c7.val('PM3b membership.deleted via audit_crm_row: before carries user_id
 select c7.val('PM3c the membership''s whole story: created, updated, deleted',
   format($$select c7.actions_for(%L)$$, :p_mb), 'membership.created,membership.updated,membership.deleted');
 
+-- § PN is done with BETA's planted Starter row (§ PA); PM4 creates BETA's row itself.
+\o /dev/null
+delete from public.organisation_subscriptions where organisation_id = :'beta_org';
+\o
 -- Subscriptions: the platform's writes (manage_billing), as `super`.
 set role authenticated;
 set request.jwt.claims = :'super_c';

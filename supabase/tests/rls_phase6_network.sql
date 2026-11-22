@@ -185,6 +185,14 @@ select nw.val('N00 FIXTURE: four profiles exist -- 2 published live, 1 draft, 1 
            count(*) filter (where deleted_at is not null)::text
       from public.network_profiles$$, '2/1/1');
 
+-- ALPHA arrives row-less (rls_phase5_finance.sql § FI18), which is Free since
+-- 20261120002000, so it gets the Starter row every real workspace is born
+-- with. § NZ removes it again, so downstream suites meet the state they expect.
+insert into public.organisation_subscriptions
+  (organisation_id, plan_id, billing_cycle, seat_count, status, current_period_end)
+values (:'alpha_org'::uuid, 'starter', 'monthly', 1, 'active', now() + interval '30 days')
+on conflict (organisation_id) do update set plan_id='starter', status='active';
+
 -- ===========================================================================
 -- NA. THE CONSTRAINT LAYER, AS `authenticated`.
 --
@@ -729,20 +737,24 @@ select nw.val('NG3b CONTROL: they hold 8 table-level SELECT/INSERT/UPDATE grants
 -- the gate is inert in the shipped state (create_organisation writes no
 -- subscription row, so every org matches the escape).
 --
--- WHEN PHASE 7 REMOVES THE ESCAPE, NT1 MUST BE RE-READ AND ITS EXPECTED RESULT
--- FLIPPED -- not re-run and found green. An inert gate makes a wrong test green
--- (FOLLOW-UPS.md § Phase 5), and NT1 is precisely the assertion that would stay
--- green for the wrong reason.
+-- 20261120002000 REMOVED THE ESCAPE, AND NT1 WAS RE-READ AND FLIPPED: a
+-- workspace with no subscription row now gets Free's entitlements, so the
+-- INSERT is refused. The profile NT5 edits is then planted as postgres.
 -- ===========================================================================
+delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
 set role authenticated;
 set request.jwt.claims = :'pmanager_c';
-select nw.try('NT1 NO SUBSCRIPTION ROW: a manage_network_profile holder INSERTs a profile (the ESCAPE)',
+select nw.try('NT1 NO SUBSCRIPTION ROW is Free: the INSERT is refused (20261120002000 removed the escape)',
   format($$insert into public.network_profiles
              (id, organisation_id, entity_kind, entity_id, display_name, field_visibility)
            values ('e0110000-0000-0000-0000-0000000000f1', %L, 'venue',
                    '55550000-0000-0000-0000-000000000001', 'Escape Profile', '{}'::jsonb)$$,
-         :'alpha_org'), 'ok(1)');
+         :'alpha_org'), 'denied(42501)');
 reset role; reset request.jwt.claims;
+insert into public.network_profiles
+  (id, organisation_id, entity_kind, entity_id, display_name, field_visibility)
+values ('e0110000-0000-0000-0000-0000000000f1', :'alpha_org', 'venue',
+        '55550000-0000-0000-0000-000000000001', 'Escape Profile', '{}'::jsonb);
 
 -- A REAL free row. network_publish = false.
 insert into public.organisation_subscriptions
@@ -778,7 +790,9 @@ select nw.try('NT5 STARTER: writes come back (the gate is the plan, not a one-wa
      where id='e0110000-0000-0000-0000-0000000000f1'$$, 'ok(1)');
 reset role; reset request.jwt.claims;
 
-delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
+-- Back to Starter (not row-less, which is Free): the rest of this file publishes.
+update public.organisation_subscriptions set plan_id='starter', status='active'
+ where organisation_id = :'alpha_org'::uuid;
 
 -- ---- THE ROLE GATE, paired -----------------------------------------------
 -- A BOOKER holds view_network and manage_network_connections but NOT
@@ -1862,6 +1876,7 @@ update public.network_profiles set deleted_at = now()
 -- and would go red for a reason nothing here caused. What this file owes is
 -- that section NT's free -> starter -> gone sequence really ended at "gone" for
 -- org-alpha, which is the state every downstream block was written against.
+delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
 select nw.val('NZ1 HOUSEKEEPING: this file left no ALPHA organisation_subscriptions row behind',
   format($$select count(*)::text from public.organisation_subscriptions
             where organisation_id = %L$$, :'alpha_org'), '0');

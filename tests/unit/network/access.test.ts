@@ -28,13 +28,20 @@ vi.mock("@/lib/entitlements/policy", async (importActual) => {
     await importActual<typeof import("@/lib/entitlements/policy")>();
   return {
     ...actual,
-    // The no-subscription escape ("not yet billed => not yet gated"): every
-    // organisation qualifies today (lib/network/access.ts's header). Fixed
-    // for every test in this file, via the SAME resolveEntitlements() the
-    // real code path calls, so only `hasPermission` varies.
-    getOrganisationEntitlements: vi
-      .fn()
-      .mockResolvedValue(actual.resolveEntitlements({ data: null, error: null })),
+    // An active Starter row, which carries network_publish (no row is Free
+    // since 20261120002000). Fixed for every test in this file, via the SAME
+    // resolveEntitlements() the real code path calls, so only `hasPermission`
+    // varies.
+    getOrganisationEntitlements: vi.fn().mockResolvedValue(
+      actual.resolveEntitlements({
+        data: {
+          plan_id: "starter",
+          status: "active",
+          current_period_end: new Date(Date.now() + 8.64e7).toISOString(),
+        },
+        error: null,
+      }),
+    ),
   };
 });
 

@@ -378,24 +378,12 @@ select fin.val('FB16 finance_module_organisations() reads e.finance_module (the 
 select fin.val('FB17 ...and does NOT read crm_writes (the copy-paste this file guards)',
   $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
             like '%crm_writes%')::text$$, 'false');
--- THE ESCAPE, AS A DELIBERATE TRIPWIRE. `not e.has_subscription` (formerly
--- `s.organisation_id is null`) is what makes the gate inert for an
--- organisation with no subscription row -- and Phase 7 Task A (20260908000000)
--- did NOT remove it: the ledger scopes Task A to
--- private.crm_write_organisations() and private.custom_field_limit() alone,
--- and finance_module_organisations()'s own escape is a deliberate separate
--- follow-up, UNTOUCHED BY TASK 4's routing through effective_organisation_plan()
--- (that migration's header: "preserved VERBATIM as its own disjunct,
--- unrelated to overrides"). This assertion therefore stays green through
--- both Task A and Task 4. What DID change at Task A is the fixture state
--- around it: create_organisation() now writes a real subscription row at
--- birth, so ALPHA no longer arrives here row-less on its own -- FE1/FE12
--- below strip the row explicitly to reach the state this escape actually
--- needs, which Task A's own N1/N16 in rls_phase2_crm.sql do too, for the
--- same reason.
-select fin.val('FB18 ...and still carries the "not yet billed => not yet gated" escape',
+-- THE ESCAPE IS GONE. Until 20261120002000 a workspace with no subscription
+-- row passed this gate (`not e.has_subscription`); it now gets Free's
+-- entitlements, as lib/entitlements/policy.ts already gave it.
+select fin.val('FB18 ...and no longer carries the "not yet billed => not yet gated" escape (20261120002000)',
   $$select (pg_get_functiondef('private.finance_module_organisations'::regproc)
-            like '%not e.has_subscription%')::text$$, 'true');
+            like '%has_subscription%')::text$$, 'false');
 
 -- THE SUMMARY VIEW. Its whole security story is `security_invoker=true`: it
 -- reads public.financial_entries as the CALLER, so financial_entries_select_
@@ -684,15 +672,16 @@ reset role; reset request.jwt.claims;
 -- row at birth, and every downstream section from Phase 3 onward needs a
 -- working row to keep its own CRM writes working, so § N's cleanup upgrades
 -- rather than deletes). FE1 strips it explicitly, which is now the only way
--- to reach the "no subscription row" state this section is FOR.
+-- to reach the "no subscription row" state. Since 20261120002000 that state
+-- gets Free's entitlements, so FE1 is a REFUSAL (it was the escape's baseline).
 delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
 set role authenticated;
 set request.jwt.claims = :'pfinance_c';
-select fin.try('FE1 BASELINE: no subscription row, a finance write is allowed',
+select fin.try('FE1 NO ROW: no subscription row is Free, the finance write is REFUSED (20261120002000)',
   format($$insert into public.financial_entries
              (organisation_id, event_id, category, amount_minor)
            values (%L,'ef110000-0000-0000-0000-000000000002','cost', 11)$$,
-         :'alpha_org'), 'ok(1)');
+         :'alpha_org'), 'denied(42501)');
 reset role; reset request.jwt.claims;
 
 -- PRO. finance_module = true.
@@ -804,20 +793,22 @@ select fin.val('FE11b ...and the READS are still open across all of it (Q67 agai
      where event_id='ef110000-0000-0000-0000-000000000001'$$, '4');
 reset role; reset request.jwt.claims;
 
--- Restore the shipped state: NO subscription row anywhere, exactly as section N
--- does for the CRM gate.
-delete from public.organisation_subscriptions where organisation_id = :'alpha_org'::uuid;
+-- Restore an active Pro row: section FF's aal2 writes need the finance module,
+-- and a row-less workspace no longer has it (20261120002000).
+update public.organisation_subscriptions
+   set plan_id='pro', status='active', current_period_end = now() + interval '30 days'
+ where organisation_id = :'alpha_org'::uuid;
 set role authenticated;
 set request.jwt.claims = :'pfinance_c';
-select fin.try('FE12 RESTORED: back to the inert state, finance writes allowed again',
+select fin.try('FE12 RESTORED: back on an active Pro row, finance writes allowed again',
   format($$insert into public.financial_entries
              (organisation_id, event_id, category, amount_minor)
            values (%L,'ef110000-0000-0000-0000-000000000002','cost', 88)$$,
          :'alpha_org'), 'ok(1)');
 reset role; reset request.jwt.claims;
-select fin.val('FE13 CONTROL: and no subscription row survives this section',
+select fin.val('FE13 CONTROL: and exactly one subscription row, active Pro, leaves this section',
   format($$select count(*)::text from public.organisation_subscriptions
-            where organisation_id=%L$$, :'alpha_org'), '0');
+            where organisation_id=%L and plan_id='pro' and status='active'$$, :'alpha_org'), '1');
 
 -- ===========================================================================
 -- FF. THE MFA GATE -- brief assertion 3, the SAME user at aal1 and aal2
