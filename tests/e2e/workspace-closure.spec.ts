@@ -76,7 +76,7 @@ test("an Owner closes the workspace; a Manager cannot, reads the banner, and can
   // ---- 1. the Owner reads the section -----------------------------------
   await signIn(page, world, "owner");
   await page.goto(settingsUrl);
-  const section = page.locator("#close-workspace");
+  const section = page.locator("#main #close-workspace");
   await expect(section.getByRole("heading", { level: 2, name: "Close this workspace" })).toBeVisible();
   await expect(section.getByText(/full backup/)).toBeVisible();
   await expect(section.getByText(/deleted permanently/)).toBeVisible();
