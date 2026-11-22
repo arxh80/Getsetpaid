@@ -12,6 +12,8 @@ export type StripeEvent = Stripe.Event;
 export interface CheckoutInput {
   account: string; invoiceId: string; number: string; grossMinor: number; feeMinor: number;
   successUrl: string; cancelUrl: string;
+  /** Same key, same session: Stripe returns the first request's session (lib/invoices/pay.ts). */
+  idempotencyKey: string;
 }
 export interface CheckoutSessionState { status: "open" | "complete" | "expired"; url: string | null }
 export interface StripeGateway {
@@ -56,7 +58,7 @@ class LiveStripeGateway implements StripeGateway {
         success_url: i.successUrl,
         cancel_url: i.cancelUrl,
       },
-      { stripeAccount: i.account },
+      { stripeAccount: i.account, idempotencyKey: i.idempotencyKey },
     );
     if (!session.url) throw new Error("stripe checkout: no url");
     return { id: session.id, url: session.url };

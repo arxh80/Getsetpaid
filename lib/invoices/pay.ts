@@ -1,6 +1,7 @@
 import "server-only";
 
-import { getStripe } from "@/lib/stripe/client";
+import { createHash } from "node:crypto";
+import { getStripe, type CheckoutInput } from "@/lib/stripe/client";
 import { verifyPayLinkToken } from "@/lib/stripe/pay-link";
 import { createServiceClient } from "@/lib/supabase/service";
 
@@ -26,6 +27,31 @@ export type StartOutcome =
   | { kind: "unavailable" };
 
 const NOTHING = { kind: "refused", sellerName: null } as const;
+
+/**
+ * Two clicks that arrive together both see no stamped session yet, so both
+ * would create one. With the same key Stripe returns the first one's session
+ * instead (and the SDK retries the 409 it gives while the first is in flight).
+ * The key covers every parameter, so a changed fee is a new session rather
+ * than an idempotency error, and the previous session id, so the first click
+ * after that session expires gets a fresh one. It also covers the minute:
+ * Stripe replays a cached 500 for 24 hours, so a key without one would turn a
+ * single Stripe failure into a day with no card payment for this invoice.
+ * shortcut: two clicks a second apart that straddle a minute boundary still
+ * get two sessions; the webhook's after_paid row and "Refund it in Stripe"
+ * remain the backstop.
+ */
+export function checkoutIdempotencyKey(
+  input: Omit<CheckoutInput, "idempotencyKey">,
+  previousStripeSessionId: string | null,
+  nowMs: number = Date.now(),
+): string {
+  const parts = [
+    input.account, input.invoiceId, input.number, input.grossMinor, input.feeMinor,
+    input.successUrl, input.cancelUrl, previousStripeSessionId, Math.floor(nowMs / 60_000),
+  ];
+  return `checkout-${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`;
+}
 
 export async function loadPayView(token: string): Promise<PayView> {
   const invoiceId = verifyPayLinkToken(token);
@@ -73,16 +99,20 @@ export async function startCardPayment(token: string, origin: string): Promise<S
     }
   }
 
+  const input = {
+    account: row.account,
+    invoiceId,
+    number: row.number,
+    grossMinor: Number(row.gross_minor),
+    feeMinor: Number(row.fee_minor),
+    successUrl: `${origin}/pay/${token}/thanks`,
+    cancelUrl: `${origin}/pay/${token}`,
+  };
   let session: { id: string; url: string };
   try {
     session = await gateway.createCheckoutSession({
-      account: row.account,
-      invoiceId,
-      number: row.number,
-      grossMinor: Number(row.gross_minor),
-      feeMinor: Number(row.fee_minor),
-      successUrl: `${origin}/pay/${token}/thanks`,
-      cancelUrl: `${origin}/pay/${token}`,
+      ...input,
+      idempotencyKey: checkoutIdempotencyKey(input, row.previous_stripe_session_id ?? null),
     });
   } catch (e) {
     console.error("[pay] Stripe refused to create a Checkout Session:", e instanceof Error ? e.message : "unknown");

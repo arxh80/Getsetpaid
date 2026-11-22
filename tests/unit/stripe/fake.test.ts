@@ -28,7 +28,7 @@ describe("FakeStripeGateway", () => {
   it("makes a checkout session keyed on the invoice", async () => {
     const s = await fake.createCheckoutSession({
       account: "acct_fakeabcd1234", invoiceId: INVOICE, number: "INV-1", grossMinor: 12000, feeMinor: 120,
-      successUrl: "https://app.test/ok", cancelUrl: "https://app.test/no",
+      successUrl: "https://app.test/ok", cancelUrl: "https://app.test/no", idempotencyKey: "checkout-abc",
     });
     const id = `cs_fake_${INVOICE.replaceAll("-", "")}`;
     expect(s).toEqual({ id, url: `https://checkout.stripe.test/c/pay/${id}` });
