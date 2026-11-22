@@ -207,37 +207,6 @@ export function financeParams(raw: RawSearchParams): FinancialEntryParams {
   });
 }
 
-/**
- * The restore view's spec. Mirrors EVENT_DELETED_LIST.
- *
- * A soft-deleted finance line is restorable, so the deleted view sorts by when
- * it was removed and reads soft-deleted rows (which the SELECT policy permits
- * on purpose -- 20260903003000 carries no deleted_at term).
- */
-export const FINANCIAL_ENTRY_DELETED_LIST = defineListSpec({
-  entity: "financial-entries-deleted",
-  noun: { one: "deleted finance line", many: "deleted finance lines" },
-  searchColumn: "description",
-  searchLabel: "Search deleted finance lines by description",
-  sort: {
-    deleted: {
-      column: "deleted_at",
-      label: "Deleted",
-      defaultDirection: "desc",
-      directionLabels: { asc: "oldest first", desc: "most recent first" },
-      // TRUE OF THE ROWS THIS LIST READS, not of the column. `deleted_at` IS
-      // nullable; `financial_entries_org_deleted_at_id_idx` is partial on
-      // `deleted_at is not null` and lib/list/query.ts's `scope: "deleted"`
-      // writes that predicate on every query, so no row this sort can reach has
-      // a NULL in it. Same trade as the six other restore views.
-      notNull: true,
-      backedBy: "financial_entries_org_deleted_at_id_idx",
-    },
-  },
-  defaultSort: "deleted",
-  filters: {},
-});
-
 export const FINANCIAL_ENTRY_DELETED_SELECT =
   "id, event_id, category, status, amount_minor, currency, occurred_on, description, deleted_at";
 

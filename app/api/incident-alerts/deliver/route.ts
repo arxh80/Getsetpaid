@@ -31,12 +31,9 @@ import {
 // pg_net-POSTs here with `Authorization: Bearer
 // <INCIDENT_ALERT_DELIVERY_SECRET>`, read from Supabase Vault.
 //
-// TWELVE DELIVERIES, ONE CLOCK, INDEPENDENT RESULTS: the operator's email
-// digest and Telegram alert, the lockout notice, the requester's DSR and
-// export-ready notices, the erasure-failure notice, the connection-request and
-// task-reminder notices, the workspace closure and decision notices, and the
-// invoice bank-change and Stripe-account notices. Each stamps its own rows
-// only after Brevo (or Telegram) accepted the send.
+// EVERY DELIVERY, ONE CLOCK, INDEPENDENT RESULTS: the list is the `settle`
+// calls in POST below. Each stamps its own rows only after Brevo (or Telegram)
+// accepted the send.
 //
 // ONE DEADLINE FOR THE ROUTE. Nothing claims a row before sending it, so a run
 // still sending when the next tick starts would send its unstamped rows twice.
