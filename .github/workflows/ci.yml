@@ -337,7 +337,13 @@ jobs:
   e2e:
     name: Playwright (golden paths, tenant breakout, axe)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Four runners, each with its own stack and dev server, so workers: 1 still
+    # holds inside each. One runner took 50-56 minutes; a shard takes about a quarter.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -381,13 +387,13 @@ jobs:
       # unless the stack above is up. So there is no readiness race to paper
       # over here.
       - name: E2E suite
-        run: pnpm test:e2e
+        run: pnpm test:e2e --shard=${{ matrix.shard }}/4
 
       - name: Upload the report on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: |
             playwright-report/
             test-results/
